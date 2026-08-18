@@ -25,7 +25,9 @@ Machine-specific absolute paths never enter models or reports. A semantic patch 
 
 ## Pipeline
 
-Inventory resolves every manifest export lane, re-export chain, runtime binding, and SDK exposure before emission. Semantic lowering accounts for every top-level declaration and returns structured diagnostics for unsupported syntax. Compiler orchestration refuses to emit a partially lowered module.
+Inventory resolves every manifest export lane, re-export chain, runtime binding, and SDK exposure before emission. Export-star graphs propagate declaration candidates to a fixed point, so cyclic barrels are lane-order independent and ambiguous names are reported rather than selected by traversal order. Cross-package edges resolve only through declared package export lanes.
+
+Semantic lowering reports `accountedDeclarations` as the number of top-level declaration syntax nodes inspected (with each variable declarator counted separately) and `accountedExports` as the number of standalone export statements plus default-export modifiers inspected. Re-export and export-assignment syntax is retained in `IrModule.exports`; a backend must lower those records or reject the module. Structured diagnostics cover unsupported syntax, and compiler orchestration refuses to emit a partially lowered module.
 
 Neutral patches run before backend emission. Backend-scoped patches use the same identity and audit machinery but apply only to the named backend. Emitted file paths are validated as relative, traversal-free paths, normalized to forward slashes, sorted, and checked for duplicates.
 
@@ -34,3 +36,5 @@ Neutral patches run before backend emission. Backend-scoped patches use the same
 Haxe is first because `flight-hx` has the broader semantic analyzer and an upstream Vitest oracle. Its existing generated output is the byte-stability check for moving rules here. Rust follows over the same inventory, neutral IR, patch system, and orchestration; Rust ownership and task lowering remain backend stages.
 
 The initial compiler slice intentionally fails on constructs whose existing target repositories still lower with target-fused logic. Each migration adds a neutral regression or a backend regression before moving the corresponding rule. Unsupported syntax is never emitted approximately or omitted from accounting.
+
+`npm run check` executes the coverage run and enforces the repository's current measured coverage floor. Raising those thresholds accompanies future compiler surface growth; they are a regression gate, not an aspirational configuration outside CI.

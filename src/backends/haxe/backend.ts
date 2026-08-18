@@ -43,6 +43,10 @@ export const haxeBackend: CompilerBackend<HaxeBackendOptions> = {
 export function emitHaxeModule(module: Readonly<IrModule>, options: Readonly<HaxeBackendOptions> = {}): EmittedFile {
   const packageName = packageNameToHaxePackage(module.packageName, options.rootPackage);
   const context: EmitContext = { module, options, packageName };
+  if (module.exports.length > 0) {
+    emissionError(context, 're-exports and export assignments require Haxe module-facade lowering');
+  }
+  const moduleName = haxeImplementationModule(module.source);
   const typeDeclarations = module.declarations.filter(
     (declaration) =>
       declaration.kind === 'class' ||
@@ -62,7 +66,7 @@ export function emitHaxeModule(module: Readonly<IrModule>, options: Readonly<Hax
   if (imports.length > 0) lines.push('', ...imports);
   for (const declaration of typeDeclarations) lines.push('', ...emitTypeDeclaration(declaration, context));
   if (valueDeclarations.length > 0) {
-    lines.push('', `class ${safeHaxeName(module.name)} {`);
+    lines.push('', `class ${moduleName} {`);
     valueDeclarations.forEach((declaration, index) => {
       if (index > 0) lines.push('');
       lines.push(...indentSource(emitModuleValue(declaration, context)));
@@ -71,7 +75,7 @@ export function emitHaxeModule(module: Readonly<IrModule>, options: Readonly<Hax
   }
   return {
     contents: lines.join('\n'),
-    path: `${packageName.replaceAll('.', '/')}/${safeHaxeName(module.name)}.hx`,
+    path: `${packageName.replaceAll('.', '/')}/${moduleName}.hx`,
   };
 }
 
@@ -100,11 +104,14 @@ export function sourcePathToHaxeModule(sourcePath: string): string | undefined {
 }
 
 function emitClass(declaration: Readonly<IrClassDeclaration>, context: EmitContext): string[] {
+  if (declaration.implements.length > 0) {
+    emissionError(context, `class ${declaration.name} implements interfaces that require nominal Haxe lowering`);
+  }
   const parameters = emitTypeParameters(declaration.typeParameters, context);
   const extendsType = declaration.extends ? ` extends ${emitType(declaration.extends, context)}` : '';
-  const implementsTypes = declaration.implements.map((type) => ` implements ${emitType(type, context)}`).join('');
+  const abstract = declaration.abstract ? 'abstract ' : '';
   const lines = [
-    `${declaration.exported ? '' : 'private '}class ${safeHaxeName(declaration.name)}${parameters}${extendsType}${implementsTypes} {`,
+    `${declaration.exported ? '' : 'private '}${abstract}class ${safeHaxeName(declaration.name)}${parameters}${extendsType} {`,
   ];
   declaration.fields.forEach((field, index) => {
     if (index > 0) lines.push('');
@@ -137,9 +144,21 @@ function emitClass(declaration: Readonly<IrClassDeclaration>, context: EmitConte
 }
 
 function emitEnum(declaration: Readonly<IrEnumDeclaration>, context: EmitContext): string[] {
-  const lines = [`enum abstract ${safeHaxeName(declaration.name)}(Int) from Int to Int {`];
-  declaration.members.forEach((member, index) => {
-    const value = member.initializer ? emitExpression(member.initializer, context) : String(index);
+  const kinds = new Set(declaration.members.map((member) => typeof member.value));
+  if (kinds.size > 1) emissionError(context, `enum ${declaration.name} mixes string and numeric values`);
+  if (declaration.members.some((member) => typeof member.value === 'number' && !Number.isFinite(member.value))) {
+    emissionError(context, `enum ${declaration.name} has a non-finite numeric value`);
+  }
+  const underlying = kinds.has('string')
+    ? 'String'
+    : declaration.members.some((member) => !Number.isInteger(member.value))
+      ? 'Float'
+      : 'Int';
+  const lines = [
+    `enum abstract ${safeHaxeName(declaration.name)}(${underlying}) from ${underlying} to ${underlying} {`,
+  ];
+  declaration.members.forEach((member) => {
+    const value = typeof member.value === 'string' ? JSON.stringify(member.value) : String(member.value);
     lines.push(`  var ${safeHaxeName(member.name)} = ${value};`);
   });
   lines.push('}');
@@ -151,11 +170,11 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
     case 'array':
       return `[${expression.elements.map((element) => (element ? emitExpression(element, context) : 'null')).join(', ')}]`;
     case 'assignment':
-      return `${emitExpression(expression.left, context)} ${mapBinaryOperator(expression.operator)} ${emitExpression(expression.right, context)}`;
+      return `${emitExpression(expression.left, context)} ${mapOperator(expression.operator, true, context)} ${emitExpression(expression.right, context)}`;
     case 'await':
       emissionError(context, 'await requires the Haxe async-lowering pass');
     case 'binary':
-      return `(${emitExpression(expression.left, context)} ${mapBinaryOperator(expression.operator)} ${emitExpression(expression.right, context)})`;
+      return `(${emitExpression(expression.left, context)} ${mapOperator(expression.operator, false, context)} ${emitExpression(expression.right, context)})`;
     case 'call':
       if (expression.optional) emissionError(context, 'optional calls require null-safe call lowering');
       return `${emitExpression(expression.callee, context)}(${expression.arguments.map((argument) => emitExpression(argument, context)).join(', ')})`;
@@ -201,6 +220,9 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
         .join(' + ');
     case 'unary': {
       const operand = emitExpression(expression.operand, context);
+      if (!haxeUnaryOperators.has(expression.operator)) {
+        emissionError(context, `operator ${expression.operator} requires Haxe semantic lowering`);
+      }
       return expression.postfix ? `${operand}${expression.operator}` : `${expression.operator} ${operand}`;
     }
   }
@@ -223,17 +245,12 @@ function emitImports(imports: readonly IrImport[], context: EmitContext): string
     if (imported.bindings.length === 0) continue;
     const modulePath = haxeImportModule(imported.specifier, context);
     for (const binding of imported.bindings) {
-      if (binding.imported === '*') {
-        emitted.add(`import ${modulePath} as ${safeHaxeName(binding.local)};`);
-      } else if (binding.typeOnly) {
-        emitted.add(
-          `import ${modulePath}.${safeHaxeName(binding.imported)}${binding.imported === binding.local ? '' : ` as ${safeHaxeName(binding.local)}`};`,
-        );
-      } else {
-        emitted.add(
-          `import ${modulePath}.${safeHaxeName(binding.imported)}${binding.imported === binding.local ? '' : ` as ${safeHaxeName(binding.local)}`};`,
-        );
+      if (binding.imported === '*' || binding.imported === 'default') {
+        emissionError(context, `${binding.imported} imports require explicit Haxe mapping for ${imported.specifier}`);
       }
+      emitted.add(
+        `import ${modulePath}.${safeHaxeName(binding.imported)}${binding.imported === binding.local ? '' : ` as ${safeHaxeName(binding.local)}`};`,
+      );
     }
   }
   return [...emitted].sort();
@@ -318,6 +335,7 @@ function emitStatement(statement: Readonly<IrStatement>, context: EmitContext): 
     case 'return':
       return [`return${statement.expression ? ` ${emitExpression(statement.expression, context)}` : ''};`];
     case 'switch': {
+      assertNoSwitchFallthrough(statement, context);
       const lines = [`switch (${emitExpression(statement.expression, context)}) {`];
       for (const clause of statement.cases) {
         lines.push(`  ${clause.expression ? `case ${emitExpression(clause.expression, context)}` : 'default'}:`);
@@ -459,7 +477,7 @@ function emitTypeParameters(parameters: readonly IrTypeParameter[], context: Emi
 function emitVariable(variable: Readonly<IrVariable>, context: EmitContext): string {
   const type = variable.type ? `:${emitType(variable.type, context)}` : '';
   const initializer = variable.initializer ? ` = ${emitExpression(variable.initializer, context)}` : '';
-  return `var ${safeHaxeName(variable.name)}${type}${initializer};`;
+  return `${variable.mutable ? 'var' : 'final'} ${safeHaxeName(variable.name)}${type}${initializer};`;
 }
 
 function emitVariableDeclaration(declaration: Readonly<IrVariableDeclaration>, context: EmitContext): string[] {
@@ -481,7 +499,7 @@ function haxeImportModule(specifier: string, context: EmitContext): string {
     const target = path.posix.normalize(
       path.posix.join(path.posix.dirname(context.module.source), specifier.replace(/\.[cm]?js$/u, '')),
     );
-    return `${context.packageName}.${sourcePathToHaxeModule(target) ?? `_${pascalCase(path.posix.basename(target))}`}`;
+    return `${context.packageName}.${haxeImplementationModule(target)}`;
   }
   if (specifier.startsWith('@')) {
     const packageName = /^(@[^/]+\/[^/]+)/u.exec(specifier)?.[1];
@@ -493,8 +511,24 @@ function haxeImportModule(specifier: string, context: EmitContext): string {
   emissionError(context, `external import ${specifier} requires a runtime or standard-library mapping`);
 }
 
-function mapBinaryOperator(operator: string): string {
+function haxeImplementationModule(sourcePath: string): string {
+  const filename = path.posix.basename(sourcePath).replace(/\.tsx?$/u, '');
+  return sourcePathToHaxeModule(sourcePath) ?? `_${pascalCase(filename)}`;
+}
+
+function mapOperator(operator: string, assignment: boolean, context: EmitContext): string {
+  const allowed = assignment ? haxeAssignmentOperators : haxeBinaryOperators;
+  if (!allowed.has(operator)) emissionError(context, `operator ${operator} requires Haxe semantic lowering`);
   return { '===': '==', '!==': '!=' }[operator] ?? operator;
+}
+
+function assertNoSwitchFallthrough(statement: Extract<IrStatement, { kind: 'switch' }>, context: EmitContext): void {
+  statement.cases.slice(0, -1).forEach((clause) => {
+    const last = clause.statements.at(-1);
+    if (!last || (last.kind !== 'break' && last.kind !== 'return' && last.kind !== 'throw')) {
+      emissionError(context, 'switch fallthrough requires control-flow lowering before Haxe emission');
+    }
+  });
 }
 
 function pascalCase(value: string): string {
@@ -555,6 +589,7 @@ const haxeKeywords = new Set([
   'public',
   'return',
   'static',
+  'super',
   'switch',
   'this',
   'throw',
@@ -566,3 +601,30 @@ const haxeKeywords = new Set([
   'var',
   'while',
 ]);
+
+const haxeAssignmentOperators = new Set(['=', '+=', '-=', '*=', '/=', '%=', '&=', '|=', '^=', '<<=', '>>=']);
+
+const haxeBinaryOperators = new Set([
+  '!==',
+  '!=',
+  '%',
+  '&',
+  '&&',
+  '*',
+  '+',
+  '-',
+  '/',
+  '<',
+  '<<',
+  '<=',
+  '===',
+  '==',
+  '>',
+  '>=',
+  '>>',
+  '^',
+  '|',
+  '||',
+]);
+
+const haxeUnaryOperators = new Set(['!', '+', '-', '++', '--', '~']);

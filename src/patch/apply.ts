@@ -33,7 +33,7 @@ export function applySemanticPatches(
     }
   }
 
-  for (const patch of [...active].sort((left, right) => left.id.localeCompare(right.id))) {
+  for (const patch of [...active].sort(comparePatchPrecedence)) {
     const matches = declarationIndex.get(targetKey(patch.target)) ?? [];
     if (matches.length === 0) throw new Error(`Unmatched semantic patch ${patch.id}`);
     if (matches.length > 1)
@@ -82,6 +82,12 @@ export function applySemanticPatches(
     },
     modules: output,
   };
+}
+
+function comparePatchPrecedence(left: Readonly<SemanticPatch>, right: Readonly<SemanticPatch>): number {
+  const leftRank = left.scope.kind === 'neutral' ? 0 : 1;
+  const rightRank = right.scope.kind === 'neutral' ? 0 : 1;
+  return leftRank - rightRank || left.id.localeCompare(right.id);
 }
 
 export function defineSemanticPatches<const Patches extends readonly SemanticPatch[]>(patches: Patches): Patches {

@@ -41,10 +41,20 @@ interface ParsedSource {
   localImports: Map<string, { importedName: string; specifier: string }>;
 }
 
+interface ResolvedExportSet {
+  conflicts: Map<string, Set<string>>;
+  exports: Map<string, ExportRecord>;
+}
+
+type ExportCandidates = Map<string, Map<string, ExportRecord>>;
+
 interface AnalysisContext {
+  exportDescriptors: ReadonlyMap<string, PackageExportDescriptor[]>;
   packageByName: ReadonlyMap<string, PackageDescriptor>;
   parsedSources: Map<string, ParsedSource>;
-  resolvedExports: Map<string, Map<string, ExportRecord>>;
+  program: ts.Program;
+  resolvedCandidates: Map<string, ExportCandidates>;
+  resolvedExports: Map<string, ResolvedExportSet>;
   upstreamDirectory: string;
 }
 
@@ -55,35 +65,38 @@ export function analyzeFlightWorkspace(options: Readonly<AnalyzeFlightWorkspaceO
   const sdkPackageName = options.sdkPackageName ?? `${packageScope}/sdk`;
   const packages = discoverPackages(packagesDirectory, packageScope);
   const project = createTypeScriptProject(path.resolve(upstreamDirectory, options.tsconfigPath ?? 'tsconfig.json'));
-  const context: AnalysisContext = {
-    packageByName: new Map(packages.map((item) => [item.name, item])),
-    parsedSources: new Map(),
-    resolvedExports: new Map(),
-    upstreamDirectory,
-  };
   const exportDescriptors = new Map(
     packages.map((descriptor) => [descriptor.name, readPackageExportDescriptors(descriptor, upstreamDirectory)]),
   );
-
+  const context: AnalysisContext = {
+    exportDescriptors,
+    packageByName: new Map(packages.map((item) => [item.name, item])),
+    parsedSources: new Map(),
+    program: project.program,
+    resolvedCandidates: new Map(),
+    resolvedExports: new Map(),
+    upstreamDirectory,
+  };
   const packageInventories = packages.map((descriptor): PackageInventory => {
     const sourceDirectory = path.join(descriptor.directory, 'src');
     const sourceFiles = walkFiles(sourceDirectory, isSourceFile);
     const testFiles = walkFiles(sourceDirectory, isTestFile);
     const packageJson = readJson(path.join(descriptor.directory, 'package.json'));
     const exportLanes = (exportDescriptors.get(descriptor.name) ?? []).map((entry): PackageExportLane => {
-      const resolved = [...resolveExports(entry.source, context, new Set()).values()];
+      const resolved = resolveExports(entry.source, context);
       const source = project.program.getSourceFile(entry.source);
       if (!source) throw new Error(`Cannot resolve upstream TypeScript source: ${portablePath(entry.source)}`);
       const runtimeExports = runtimeExportsForSource(source, project.checker, project.options);
-      const exports = resolved.map((record) =>
+      const exports = [...resolved.exports.values()].map((record) =>
         applyRuntimeExportDecision(record, runtimeExports.get(record.name), context, entry.specifier, runtimeExports),
       );
-      const { conflicts, uniqueExports } = deduplicateExports(exports);
+      const deduplicated = deduplicateExports(exports);
+      const conflicts = mergeExportConflicts(resolved.conflicts, deduplicated.conflicts);
       return {
         conditions: entry.conditions,
         entry: entry.entry,
         exportConflicts: conflicts,
-        exports: uniqueExports.sort(compareExports),
+        exports: deduplicated.uniqueExports.sort(compareExports),
         source: relativeSource(entry.source, upstreamDirectory),
         specifier: entry.specifier,
       };
@@ -257,6 +270,21 @@ function deduplicateExports(exports: readonly ExportRecord[]): {
   };
 }
 
+function mergeExportConflicts(
+  resolved: ReadonlyMap<string, ReadonlySet<string>>,
+  additional: readonly ExportConflict[],
+): ExportConflict[] {
+  const conflicts = new Map([...resolved].map(([name, sources]) => [name, new Set(sources)]));
+  for (const conflict of additional) {
+    const sources = conflicts.get(conflict.name) ?? new Set<string>();
+    conflict.sources.forEach((source) => sources.add(source));
+    conflicts.set(conflict.name, sources);
+  }
+  return [...conflicts]
+    .map(([name, sources]) => ({ name, sources: [...sources].sort() }))
+    .sort((left, right) => left.name.localeCompare(right.name));
+}
+
 function discoverPackages(packagesDirectory: string, packageScope: string): PackageDescriptor[] {
   if (!existsSync(packagesDirectory)) throw new Error(`Flight packages directory does not exist: ${packagesDirectory}`);
   return readdirSync(packagesDirectory, { withFileTypes: true })
@@ -319,8 +347,15 @@ function parseSource(file: string, context: AnalysisContext): ParsedSource {
   const normalizedFile = path.normalize(file);
   const cached = context.parsedSources.get(normalizedFile);
   if (cached) return cached;
-  const text = readFileSync(normalizedFile, 'utf8').replace(/^\uFEFF/u, '');
-  const sourceFile = ts.createSourceFile(normalizedFile, text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+  const sourceFile =
+    context.program.getSourceFile(normalizedFile) ??
+    ts.createSourceFile(
+      normalizedFile,
+      readFileSync(normalizedFile, 'utf8').replace(/^\uFEFF/u, ''),
+      ts.ScriptTarget.Latest,
+      true,
+      /\.tsx$/iu.test(normalizedFile) ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
+    );
   const directExports = new Map<string, ExportRecord>();
   const exportDeclarations: ts.ExportDeclaration[] = [];
   const localDeclarations = new Map<string, ExportRecord>();
@@ -357,7 +392,7 @@ function parseSource(file: string, context: AnalysisContext): ParsedSource {
     if (ts.isVariableStatement(statement)) {
       for (const declaration of statement.declarationList.declarations) {
         for (const name of exportedBindingNames(declaration.name)) {
-          const record = makeRecord(name, 'variable', statement, sourceFile, context);
+          const record = makeRecord(name, 'variable', declaration, sourceFile, context);
           localDeclarations.set(name, record);
           if (exported) directExports.set(name, record);
         }
@@ -492,73 +527,217 @@ function relativeSource(file: string, upstreamDirectory: string): string {
   return portablePath(relative);
 }
 
-function resolveExports(file: string, context: AnalysisContext, resolving: Set<string>): Map<string, ExportRecord> {
-  const normalizedFile = path.normalize(file);
-  const cached = context.resolvedExports.get(normalizedFile);
+function resolveExports(file: string, context: AnalysisContext): ResolvedExportSet {
+  const root = path.normalize(file);
+  const cached = context.resolvedExports.get(root);
   if (cached) return cached;
-  if (resolving.has(normalizedFile)) return new Map();
-  resolving.add(normalizedFile);
-  const parsed = parseSource(normalizedFile, context);
-  const exports = new Map(parsed.directExports);
+  const graph = collectExportGraph(root, context);
+  const states = new Map<string, ExportCandidates>();
+  for (const current of graph) {
+    states.set(
+      current,
+      context.resolvedCandidates.get(current) ?? directExportCandidates(parseSource(current, context).directExports),
+    );
+  }
+
+  const maximumPasses = Math.max(1, graph.size + 1);
+  for (let pass = 0; pass < maximumPasses; pass += 1) {
+    let changed = false;
+    const next = new Map<string, ExportCandidates>();
+    for (const current of [...graph].sort()) {
+      const resolved = context.resolvedCandidates.get(current) ?? resolveSourcePass(current, states, context);
+      next.set(current, resolved);
+      if (!sameExportCandidates(states.get(current)!, resolved)) changed = true;
+    }
+    states.clear();
+    for (const [current, state] of next) states.set(current, state);
+    if (!changed) {
+      validateNamedExports(graph, states, context);
+      for (const [current, state] of states) {
+        context.resolvedCandidates.set(current, state);
+        context.resolvedExports.set(current, finalizeExportCandidates(state));
+      }
+      return context.resolvedExports.get(root)!;
+    }
+  }
+  throw new Error(`Export graph did not converge for ${relativeSource(root, context.upstreamDirectory)}`);
+}
+
+function collectExportGraph(root: string, context: AnalysisContext): Set<string> {
+  const graph = new Set<string>();
+  const visit = (file: string): void => {
+    const normalized = path.normalize(file);
+    if (graph.has(normalized)) return;
+    graph.add(normalized);
+    if (context.resolvedCandidates.has(normalized)) return;
+    const parsed = parseSource(normalized, context);
+    for (const declaration of parsed.exportDeclarations) {
+      if (declaration.moduleSpecifier && ts.isStringLiteral(declaration.moduleSpecifier)) {
+        visit(resolveModule(normalized, declaration.moduleSpecifier.text, context));
+      } else if (declaration.exportClause && ts.isNamedExports(declaration.exportClause)) {
+        for (const element of declaration.exportClause.elements) {
+          const localName = element.propertyName?.text ?? element.name.text;
+          const imported = parsed.localImports.get(localName);
+          if (imported) visit(resolveModule(normalized, imported.specifier, context));
+        }
+      }
+    }
+  };
+  visit(root);
+  return graph;
+}
+
+function resolveSourcePass(
+  file: string,
+  states: ReadonlyMap<string, ExportCandidates>,
+  context: AnalysisContext,
+): ExportCandidates {
+  const parsed = parseSource(file, context);
+  const exports = directExportCandidates(parsed.directExports);
+  const starCandidates: ExportCandidates = new Map();
 
   for (const declaration of parsed.exportDeclarations) {
     const targetFile =
       declaration.moduleSpecifier && ts.isStringLiteral(declaration.moduleSpecifier)
-        ? resolveModule(normalizedFile, declaration.moduleSpecifier.text, context.packageByName)
+        ? resolveModule(file, declaration.moduleSpecifier.text, context)
         : undefined;
-    const targetExports = targetFile ? resolveExports(targetFile, context, resolving) : parsed.localDeclarations;
+    const target = targetFile ? states.get(targetFile)! : undefined;
+    const targetExports = target ?? directExportCandidates(parsed.localDeclarations);
     if (!declaration.exportClause) {
-      for (const [name, record] of targetExports) {
-        if (name !== 'default' && !exports.has(name)) exports.set(name, record);
+      for (const [name, candidates] of targetExports) {
+        if (name === 'default') continue;
+        mergeCandidates(starCandidates, name, candidates);
       }
       continue;
     }
     if (ts.isNamespaceExport(declaration.exportClause)) {
       const name = declaration.exportClause.name.text;
-      exports.set(name, makeRecord(name, 'namespace', declaration, declaration.getSourceFile(), context));
+      setCandidate(exports, name, makeRecord(name, 'namespace', declaration, declaration.getSourceFile(), context));
       continue;
     }
     for (const element of declaration.exportClause.elements) {
       const importedName = element.propertyName?.text ?? element.name.text;
       const exportedName = element.name.text;
-      let record = targetExports.get(importedName);
-      if (!targetFile && !record) {
+      let candidates = targetExports.get(importedName);
+      if (!targetFile && !candidates) {
         const imported = parsed.localImports.get(importedName);
-        if (imported) {
-          const importedFile = resolveModule(normalizedFile, imported.specifier, context.packageByName);
-          const importedExports = resolveExports(importedFile, context, resolving);
-          record = imported.importedName === '*' ? undefined : importedExports.get(imported.importedName);
+        if (imported && imported.importedName !== '*') {
+          const importedFile = resolveModule(file, imported.specifier, context);
+          candidates = states.get(importedFile)?.get(imported.importedName);
         }
       }
-      if (!record) {
-        throw new Error(
-          `Unresolved public export ${exportedName} in ${relativeSource(normalizedFile, context.upstreamDirectory)}`,
+      if (candidates) {
+        exports.set(
+          exportedName,
+          new Map([...candidates].map(([identity, record]) => [identity, { ...record, name: exportedName }])),
         );
       }
-      exports.set(exportedName, { ...record, name: exportedName });
     }
   }
 
-  resolving.delete(normalizedFile);
-  context.resolvedExports.set(normalizedFile, exports);
+  for (const [name, candidates] of starCandidates) {
+    if (exports.has(name)) continue;
+    exports.set(name, candidates);
+  }
   return exports;
 }
 
-function resolveModule(
-  containingFile: string,
-  specifier: string,
-  packageByName: ReadonlyMap<string, PackageDescriptor>,
-): string {
+function directExportCandidates(exports: ReadonlyMap<string, ExportRecord>): ExportCandidates {
+  const candidates: ExportCandidates = new Map();
+  for (const [name, record] of exports) setCandidate(candidates, name, record);
+  return candidates;
+}
+
+function exportIdentity(record: Readonly<ExportRecord>): string {
+  return `${record.source}\0${record.fingerprint}`;
+}
+
+function finalizeExportCandidates(candidates: Readonly<ExportCandidates>): ResolvedExportSet {
+  const conflicts = new Map<string, Set<string>>();
+  const exports = new Map<string, ExportRecord>();
+  for (const [name, records] of candidates) {
+    if (records.size === 1) exports.set(name, records.values().next().value!);
+    else conflicts.set(name, new Set([...records.values()].map((record) => record.source)));
+  }
+  return { conflicts, exports };
+}
+
+function mergeCandidates(target: ExportCandidates, name: string, candidates: ReadonlyMap<string, ExportRecord>): void {
+  const current = target.get(name) ?? new Map<string, ExportRecord>();
+  for (const [identity, record] of candidates) current.set(identity, record);
+  target.set(name, current);
+}
+
+function sameExportCandidates(left: Readonly<ExportCandidates>, right: Readonly<ExportCandidates>): boolean {
+  if (left.size !== right.size) return false;
+  for (const [name, leftCandidates] of left) {
+    const rightCandidates = right.get(name);
+    if (!rightCandidates || leftCandidates.size !== rightCandidates.size) return false;
+    for (const identity of leftCandidates.keys()) if (!rightCandidates.has(identity)) return false;
+  }
+  return true;
+}
+
+function setCandidate(target: ExportCandidates, name: string, record: ExportRecord): void {
+  target.set(name, new Map([[exportIdentity(record), record]]));
+}
+
+function validateNamedExports(
+  graph: ReadonlySet<string>,
+  states: ReadonlyMap<string, ExportCandidates>,
+  context: AnalysisContext,
+): void {
+  for (const file of graph) {
+    const parsed = parseSource(file, context);
+    for (const declaration of parsed.exportDeclarations) {
+      if (!declaration.exportClause || ts.isNamespaceExport(declaration.exportClause)) continue;
+      const targetFile =
+        declaration.moduleSpecifier && ts.isStringLiteral(declaration.moduleSpecifier)
+          ? resolveModule(file, declaration.moduleSpecifier.text, context)
+          : undefined;
+      for (const element of declaration.exportClause.elements) {
+        const exportedName = element.name.text;
+        assertSingleExportCandidate(states.get(file)?.get(exportedName), exportedName, file, context);
+        if (targetFile) {
+          const importedName = element.propertyName?.text ?? element.name.text;
+          const targetCandidates = states.get(targetFile) ?? context.resolvedCandidates.get(targetFile);
+          assertSingleExportCandidate(targetCandidates?.get(importedName), exportedName, file, context);
+        }
+      }
+    }
+  }
+}
+
+function assertSingleExportCandidate(
+  candidates: ReadonlyMap<string, ExportRecord> | undefined,
+  exportedName: string,
+  file: string,
+  context: AnalysisContext,
+): void {
+  if (candidates?.size === 1) return;
+  const source = relativeSource(file, context.upstreamDirectory);
+  if (!candidates || candidates.size === 0) throw new Error(`Unresolved public export ${exportedName} in ${source}`);
+  const candidatesList = [...new Set([...candidates.values()].map((record) => record.source))].sort().join(', ');
+  throw new Error(`Ambiguous public export ${exportedName} in ${source}: ${candidatesList}`);
+}
+
+function resolveModule(containingFile: string, specifier: string, context: AnalysisContext): string {
   const withoutJs = specifier.replace(/\.[cm]?js$/u, '');
   let candidate: string;
   if (withoutJs.startsWith('.')) {
     candidate = path.resolve(path.dirname(containingFile), withoutJs);
   } else {
-    const match = /^(@[^/]+\/[^/]+)(?:\/(.+))?$/u.exec(withoutJs);
+    const match = /^(@[^/]+\/[^/]+)(?:\/(.+))?$/u.exec(specifier);
     if (!match?.[1]) throw new Error(`Unsupported export module '${specifier}' in ${portablePath(containingFile)}`);
-    const descriptor = packageByName.get(match[1]);
+    const descriptor = context.packageByName.get(match[1]);
     if (!descriptor) throw new Error(`Unknown Flight package '${match[1]}' in ${portablePath(containingFile)}`);
-    candidate = path.join(descriptor.directory, 'src', match[2] ?? 'index');
+    const exportDescriptor = context.exportDescriptors
+      .get(descriptor.name)
+      ?.find((entry) => entry.specifier === specifier);
+    if (!exportDescriptor) {
+      throw new Error(`Package import uses an unaccounted export lane: ${specifier}`);
+    }
+    return exportDescriptor.source;
   }
   for (const resolved of [candidate, `${candidate}.ts`, `${candidate}.tsx`, path.join(candidate, 'index.ts')]) {
     if (existsSync(resolved) && statSync(resolved).isFile()) return resolved;
@@ -575,10 +754,7 @@ function runtimeBindingRecord(
     const record = makeRecord(name, 'namespace', declaration, declaration, context);
     return { fingerprint: record.fingerprint, kind: record.kind, source: record.source };
   }
-  let node: ts.Node = declaration;
-  if (ts.isVariableDeclaration(declaration) && ts.isVariableStatement(declaration.parent.parent)) {
-    node = declaration.parent.parent;
-  }
+  const node: ts.Node = declaration;
   const kind = declarationKind(node);
   if (!kind)
     throw new Error(`Unsupported runtime binding for ${name} in ${portablePath(declaration.getSourceFile().fileName)}`);

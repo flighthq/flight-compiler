@@ -164,7 +164,7 @@ export interface IrInterfaceDeclaration {
 export interface IrEnumDeclaration {
   exported: boolean;
   kind: 'enum';
-  members: Array<{ initializer?: IrExpression | undefined; name: string }>;
+  members: Array<{ name: string; value: number | string }>;
   name: string;
   origin: SourceOrigin;
 }
@@ -221,8 +221,16 @@ export interface IrImport {
   specifier: string;
 }
 
+export type IrExport =
+  | { kind: 'all'; specifier: string; typeOnly: boolean }
+  | { exported: string; imported: string; kind: 'reexport'; specifier: string; typeOnly: boolean }
+  | { exported: string; kind: 'local'; local: string; typeOnly: boolean }
+  | { exported: string; kind: 'namespace'; specifier: string; typeOnly: boolean }
+  | { expression: IrExpression; kind: 'default' };
+
 export interface IrModule {
   declarations: IrDeclaration[];
+  exports: IrExport[];
   imports: IrImport[];
   name: string;
   packageName: string;
@@ -239,6 +247,7 @@ export interface CompilerDiagnostic {
 
 export interface LoweringResult {
   accountedDeclarations: number;
+  accountedExports: number;
   diagnostics: CompilerDiagnostic[];
   module: IrModule;
 }

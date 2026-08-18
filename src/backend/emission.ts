@@ -5,6 +5,7 @@ import type { EmittedFile } from '../model/backend.ts';
 export class BackendEmissionError extends Error {
   constructor(backend: string, source: string, message: string) {
     super(`${backend} emission failed for ${source}: ${message}`);
+    this.name = 'BackendEmissionError';
   }
 }
 

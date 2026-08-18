@@ -60,7 +60,8 @@ export function compileTypeScriptModules<BackendOptions>(
 }
 
 export function parseTypeScriptSource(fileName: string, source: string): ts.SourceFile {
-  return ts.createSourceFile(fileName, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+  const scriptKind = /\.tsx$/iu.test(fileName) ? ts.ScriptKind.TSX : ts.ScriptKind.TS;
+  return ts.createSourceFile(fileName, source, ts.ScriptTarget.Latest, true, scriptKind);
 }
 
 export class CompilerDiagnosticsError extends Error {
@@ -73,6 +74,7 @@ export class CompilerDiagnosticsError extends Error {
         )
         .join('\n')}`,
     );
+    this.name = 'CompilerDiagnosticsError';
   }
 }
 

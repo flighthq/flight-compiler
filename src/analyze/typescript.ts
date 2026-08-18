@@ -10,6 +10,7 @@ import type {
   IrDeclaration,
   IrEnumDeclaration,
   IrExpression,
+  IrExport,
   IrFunctionDeclaration,
   IrFunctionSignature,
   IrImport,
@@ -55,11 +56,23 @@ export function lowerTypeScriptSource(
 ): LoweringResult {
   const context: LoweringContext = { diagnostics: [], options, sourceFile };
   const declarations: IrDeclaration[] = [];
+  const exports: IrExport[] = [];
   const pendingOverloads = new Map<string, IrFunctionSignature[]>();
   let accountedDeclarations = 0;
+  let accountedExports = 0;
 
   for (const statement of sourceFile.statements) {
-    if (ts.isImportDeclaration(statement) || ts.isExportDeclaration(statement) || ts.isExportAssignment(statement)) {
+    if (ts.isImportDeclaration(statement)) {
+      continue;
+    }
+    if (ts.isExportDeclaration(statement) || ts.isExportAssignment(statement)) {
+      accountedExports += 1;
+      try {
+        exports.push(...lowerExport(statement, context));
+      } catch (error) {
+        if (!(error instanceof UnsupportedSyntaxError)) throw error;
+        context.diagnostics.push(diagnostic(error.node, error.message, context));
+      }
       continue;
     }
     const declarationCount = ts.isVariableStatement(statement) ? statement.declarationList.declarations.length : 1;
@@ -74,6 +87,10 @@ export function lowerTypeScriptSource(
           continue;
         }
         declarations.push(lowerFunction(statement, pendingOverloads.get(name) ?? [], context));
+        if (hasModifier(statement, ts.SyntaxKind.DefaultKeyword)) {
+          exports.push({ exported: 'default', kind: 'local', local: name, typeOnly: false });
+          accountedExports += 1;
+        }
         pendingOverloads.delete(name);
       } else if (ts.isVariableStatement(statement)) {
         declarations.push(...lowerVariableStatement(statement, context));
@@ -85,6 +102,15 @@ export function lowerTypeScriptSource(
         declarations.push(lowerEnum(statement, context));
       } else if (ts.isClassDeclaration(statement)) {
         declarations.push(lowerClass(statement, context));
+        if (hasModifier(statement, ts.SyntaxKind.DefaultKeyword)) {
+          exports.push({
+            exported: 'default',
+            kind: 'local',
+            local: requiredDeclarationName(statement, context),
+            typeOnly: false,
+          });
+          accountedExports += 1;
+        }
       } else if (ts.isModuleDeclaration(statement)) {
         unsupported(statement, 'namespace declarations are not represented in the neutral IR yet');
       } else if (!ts.isEmptyStatement(statement)) {
@@ -108,9 +134,11 @@ export function lowerTypeScriptSource(
 
   return {
     accountedDeclarations,
+    accountedExports,
     diagnostics: context.diagnostics,
     module: {
       declarations,
+      exports,
       imports: lowerImports(sourceFile),
       name: options.moduleName ?? moduleNameFromSource(sourceFile.fileName),
       packageName: options.packageName,
@@ -140,7 +168,20 @@ function isExported(node: ts.Node): boolean {
 }
 
 function lowerClass(node: ts.ClassDeclaration, context: LoweringContext): IrClassDeclaration {
-  const constructor = node.members.find(ts.isConstructorDeclaration);
+  const constructors = node.members.filter(ts.isConstructorDeclaration);
+  if (constructors.length > 1) {
+    unsupported(node, `class ${requiredDeclarationName(node, context)} has constructor overloads`);
+  }
+  const constructor = constructors[0];
+  const parameterProperty = constructor?.parameters.find((parameter) =>
+    [
+      ts.SyntaxKind.PrivateKeyword,
+      ts.SyntaxKind.ProtectedKeyword,
+      ts.SyntaxKind.PublicKeyword,
+      ts.SyntaxKind.ReadonlyKeyword,
+    ].some((kind) => hasModifier(parameter, kind)),
+  );
+  if (parameterProperty) unsupported(parameterProperty, 'constructor parameter properties require field lowering');
   const fields: IrClassField[] = [];
   const methods: IrClassMethod[] = [];
   for (const member of node.members) {
@@ -196,16 +237,113 @@ function lowerClass(node: ts.ClassDeclaration, context: LoweringContext): IrClas
 }
 
 function lowerEnum(node: ts.EnumDeclaration, context: LoweringContext): IrEnumDeclaration {
+  const values = new Map<string, number | string>();
+  let previous: number | undefined;
+  const members = node.members.map((member, index) => {
+    const name = propertyName(member.name, context);
+    if (!member.initializer && index > 0 && previous === undefined) {
+      unsupported(member, 'enum member after a string value requires an initializer');
+    }
+    const value = member.initializer
+      ? evaluateEnumConstant(member.initializer, values, node.name.text)
+      : previous === undefined
+        ? 0
+        : previous + 1;
+    previous = typeof value === 'number' ? value : undefined;
+    values.set(name, value);
+    return { name, value };
+  });
   return {
     exported: isExported(node),
     kind: 'enum',
-    members: node.members.map((member) => ({
-      ...(member.initializer ? { initializer: lowerExpression(member.initializer, context) } : {}),
-      name: propertyName(member.name, context),
-    })),
+    members,
     name: node.name.text,
     origin: origin(node, context),
   };
+}
+
+function evaluateEnumConstant(
+  node: ts.Expression,
+  values: ReadonlyMap<string, number | string>,
+  enumName: string,
+): number | string {
+  if (ts.isParenthesizedExpression(node)) return evaluateEnumConstant(node.expression, values, enumName);
+  if (ts.isNumericLiteral(node)) return Number(node.text.replaceAll('_', ''));
+  if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) return node.text;
+  if (ts.isIdentifier(node)) {
+    const value = values.get(node.text);
+    if (value !== undefined) return value;
+  }
+  if (ts.isPropertyAccessExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === enumName) {
+    const value = values.get(node.name.text);
+    if (value !== undefined) return value;
+  }
+  if (
+    ts.isPrefixUnaryExpression(node) &&
+    (node.operator === ts.SyntaxKind.MinusToken || node.operator === ts.SyntaxKind.PlusToken)
+  ) {
+    const operand = evaluateEnumConstant(node.operand, values, enumName);
+    if (typeof operand === 'number') return node.operator === ts.SyntaxKind.MinusToken ? -operand : operand;
+  }
+  if (ts.isBinaryExpression(node)) {
+    const left = evaluateEnumConstant(node.left, values, enumName);
+    const right = evaluateEnumConstant(node.right, values, enumName);
+    if (typeof left === 'number' && typeof right === 'number') {
+      switch (node.operatorToken.kind) {
+        case ts.SyntaxKind.PlusToken:
+          return left + right;
+        case ts.SyntaxKind.MinusToken:
+          return left - right;
+        case ts.SyntaxKind.AsteriskToken:
+          return left * right;
+        case ts.SyntaxKind.SlashToken:
+          return left / right;
+        case ts.SyntaxKind.PercentToken:
+          return left % right;
+        case ts.SyntaxKind.AsteriskAsteriskToken:
+          return left ** right;
+        case ts.SyntaxKind.LessThanLessThanToken:
+          return left << right;
+        case ts.SyntaxKind.GreaterThanGreaterThanToken:
+          return left >> right;
+        case ts.SyntaxKind.GreaterThanGreaterThanGreaterThanToken:
+          return left >>> right;
+        case ts.SyntaxKind.AmpersandToken:
+          return left & right;
+        case ts.SyntaxKind.BarToken:
+          return left | right;
+        case ts.SyntaxKind.CaretToken:
+          return left ^ right;
+      }
+    }
+  }
+  unsupported(node, 'enum initializer must be a constant number, string, or prior member reference');
+}
+
+function lowerExport(node: ts.ExportDeclaration | ts.ExportAssignment, context: LoweringContext): IrExport[] {
+  if (ts.isExportAssignment(node)) {
+    if (node.isExportEquals) unsupported(node, 'export = assignments are not ECMAScript exports');
+    return [{ expression: lowerExpression(node.expression, context), kind: 'default' }];
+  }
+  const typeOnly = node.isTypeOnly;
+  const specifier =
+    node.moduleSpecifier && ts.isStringLiteral(node.moduleSpecifier) ? node.moduleSpecifier.text : undefined;
+  if (!node.exportClause) {
+    if (!specifier) unsupported(node, 'export-all declaration requires a module specifier');
+    return [{ kind: 'all', specifier, typeOnly }];
+  }
+  if (ts.isNamespaceExport(node.exportClause)) {
+    if (!specifier) unsupported(node, 'namespace re-export requires a module specifier');
+    return [{ exported: node.exportClause.name.text, kind: 'namespace', specifier, typeOnly }];
+  }
+  return node.exportClause.elements.map((element): IrExport => {
+    const imported = element.propertyName?.text ?? element.name.text;
+    const exported = element.name.text;
+    const bindingTypeOnly = typeOnly || element.isTypeOnly;
+    return specifier
+      ? { exported, imported, kind: 'reexport', specifier, typeOnly: bindingTypeOnly }
+      : { exported, kind: 'local', local: imported, typeOnly: bindingTypeOnly };
+  });
 }
 
 function lowerExpression(node: ts.Expression, context: LoweringContext): IrExpression {
@@ -634,6 +772,13 @@ function lowerType(node: ts.TypeNode, context: LoweringContext): IrType {
     if (node.literal.kind === ts.SyntaxKind.NullKeyword) return { kind: 'null' };
     if (ts.isStringLiteral(node.literal)) return { kind: 'literal', value: node.literal.text };
     if (ts.isNumericLiteral(node.literal)) return { kind: 'literal', value: Number(node.literal.text) };
+    if (
+      ts.isPrefixUnaryExpression(node.literal) &&
+      node.literal.operator === ts.SyntaxKind.MinusToken &&
+      ts.isNumericLiteral(node.literal.operand)
+    ) {
+      return { kind: 'literal', value: -Number(node.literal.operand.text) };
+    }
     if (node.literal.kind === ts.SyntaxKind.TrueKeyword) return { kind: 'literal', value: true };
     if (node.literal.kind === ts.SyntaxKind.FalseKeyword) return { kind: 'literal', value: false };
     unsupported(node, 'unsupported literal type');
@@ -725,11 +870,11 @@ function lowerVariable(node: ts.VariableDeclaration, mutable: boolean, context: 
 }
 
 function lowerVariableStatement(node: ts.VariableStatement, context: LoweringContext): IrVariableDeclaration[] {
-  return lowerVariables(node.declarationList, context).map((variable) => ({
+  return lowerVariables(node.declarationList, context).map((variable, index) => ({
     ...variable,
     exported: isExported(node),
     kind: 'variable',
-    origin: origin(node, context),
+    origin: origin(node.declarationList.declarations[index]!, context),
   }));
 }
 
