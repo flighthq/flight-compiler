@@ -1,0 +1,56 @@
+{
+  "name": "@flighthq/tool-compiler",
+  "version": "0.0.0",
+  "description": "Shared compiler kernel for mechanical Flight SDK target ports",
+  "author": "Joshua Granick and other contributors",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/flighthq/flight-compiler.git"
+  },
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE.md"
+  ],
+  "sideEffects": false,
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "check": "npm run format:check && npm run lint && npm run typecheck && npm run test && npm run build && npm run pack:check",
+    "ci": "npm run clean && npm run check",
+    "clean": "node -e \"require('node:fs').rmSync('dist', { force: true, recursive: true }); require('node:fs').rmSync('coverage', { force: true, recursive: true })\"",
+    "fix": "npm run lint:fix && npm run format",
+    "format": "oxfmt --write .",
+    "format:check": "oxfmt --check .",
+    "lint": "oxlint --max-warnings=0",
+    "lint:fix": "oxlint --fix --max-warnings=0",
+    "pack:check": "npm pack --dry-run",
+    "prepack": "npm run clean && npm run build",
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
+    "test:watch": "vitest",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "typescript": "5.9.3"
+  },
+  "devDependencies": {
+    "@types/node": "22.19.7",
+    "@vitest/coverage-v8": "4.1.10",
+    "oxfmt": "0.57.0",
+    "oxlint": "1.72.0",
+    "vitest": "4.1.10"
+  }
+}
