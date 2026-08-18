@@ -115,6 +115,18 @@ describe('backend emission regressions', () => {
     expect(output).toContain('return LIMIT;');
   });
 
+  it('keeps Rust parameters and nested closure parameters local when they shadow module constants', () => {
+    const result = lower(
+      'parameters.ts',
+      'export const limit: number = 4; export function read(limit: number): number { return limit; } export function makeReader(): (limit: number) => number { return (limit: number): number => limit; }',
+    );
+    const output = emitRustModule(result.module).contents;
+
+    expect(output).toContain('pub fn read(limit: f64) -> f64 {\n  return limit;');
+    expect(output).toContain('return |limit| limit;');
+    expect(output.match(/return LIMIT;/gu)).toBeNull();
+  });
+
   it('uses one Haxe identity for emitted and imported index modules and rejects default imports', () => {
     const index = lower('index.ts', 'export function helper(): number { return 1; }');
     const consumer = lower(
