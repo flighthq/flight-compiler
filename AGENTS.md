@@ -134,6 +134,8 @@ Use npm, not pnpm or Yarn. Node.js 22 or newer is required. Script names follow 
 - `npm run docs:check`: enforce the bounded codebase map, Claude pointer, local documentation links, and `npm run` citations that name a real script.
 - `npm run exports:check`: outside `compiler-types`, require one exactly named colocated test file for every non-barrel package source and one exact `describe('<function>')` block for every exported function. This proves test structure and naming, not assertion depth.
 - `npm run order:check`: require imports grouped builtin, external, then relative and alphabetized within each group, and exported package functions in alphabetical order.
+- `npm run license:check`: fail on licensed text — a license body, grant, SPDX identifier, reservation of rights, or foreign copyright notice — outside the named exemptions it prints on every run.
+- `npm run untested -- <package>`: list the branch and statement arms in one package that no test took. A location list, not a score, and nothing gates on it.
 - `npm run typecheck`: run the root and every workspace's strict no-emit check, collecting failures.
 - `npm run packages:check`: enforce manifests, flat source trees, dependency declarations and acyclicity, centralized contracts, class-free implementation, globally unique domain filenames and APIs, verb-first function names, transient-comment absence, tests, and public-facade completeness.
 - `npm run build`: clean stale output and assemble ESM JavaScript, declarations, maps, and declaration maps in `packages/tool-compiler/dist/`.

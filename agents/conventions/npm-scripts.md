@@ -82,3 +82,5 @@ A citation written as a bare backticked script name with no `npm run` lead is re
 | `pack:check`              | build fresh, then inspect the publishable tarball                              |
 | `clean` / `clean:dist`    | remove generated output / remove distribution output only                      |
 | `mutation`                | report surviving mutants for one package; a worklist, not a gate               |
+| `untested`                | list branch and statement arms no test took in one package; also not a gate    |
+| `license:check`           | licensed text outside the named exemptions                                     |

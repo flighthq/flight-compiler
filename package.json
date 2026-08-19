@@ -29,6 +29,7 @@
     "format:check": "oxfmt --check .",
     "lint": "oxlint --max-warnings=0",
     "lint:fix": "oxlint --fix --max-warnings=0",
+    "license:check": "npm run _scripts:build --silent && node ./.script-build/licenseProvenanceHealth.js",
     "mutation": "npm run _scripts:build --silent && node ./.script-build/mutationRun.js",
     "order:check": "npm run _scripts:build --silent && node ./.script-build/sourceOrderHealth.js",
     "pack:check": "npm run build --silent && node ./.script-build/packageArtifactHealth.js",
@@ -38,6 +39,7 @@
     "test:packages": "npm run _scripts:build --silent && node ./.script-build/isolatedPackageTest.js",
     "test:watch": "vitest",
     "typecheck": "npm run _scripts:build --silent && node ./.script-build/workspaceTypecheck.js",
+    "untested": "npm run _scripts:build --silent && node ./.script-build/untestedArms.js",
     "prepare": "husky"
   },
   "devDependencies": {
