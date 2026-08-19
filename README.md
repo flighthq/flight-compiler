@@ -14,6 +14,8 @@ The package owns the complete source-compilation path:
 
 [flight-hx](https://github.com/flighthq/flight-hx) is the first integration target; [flight-rs](https://github.com/flighthq/flight-rs) is the second. Those repositories retain their target ecosystem: runtime and standard-library support, project layout, examples, and integration tests. Compiler-owned target rules and emitters live here so both ports use one versioned toolchain.
 
+Development follows Flight's package-per-domain architecture. Nine private `@flighthq/compiler-*` workspaces isolate contracts, analysis, provenance, patches, emission, target backends, and orchestration; the repository publishes them as one self-contained `@flighthq/tool-compiler` artifact. Workspace source trees are flat, contracts are centralized in `compiler-types`, and implementations use functions and plain data instead of classes.
+
 ## Install
 
 ```sh
@@ -42,7 +44,7 @@ npm run fix
 npm run check
 ```
 
-`npm run check` formats, lints, type-checks, tests, builds, and validates the package tarball. See [AGENTS.md](AGENTS.md) for architecture and contribution rules.
+`npm run check` validates every workspace manifest and dependency boundary, formats, lints, type-checks each package, runs both isolated and coverage test lanes, builds the assembled artifact, and inspects the package tarball. See [AGENTS.md](AGENTS.md) for architecture and contribution rules.
 
 ## License
 

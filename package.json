@@ -9,12 +9,15 @@
     "url": "https://github.com/flighthq/flight-compiler.git"
   },
   "type": "module",
-  "main": "dist/index.js",
-  "types": "dist/index.d.ts",
+  "workspaces": [
+    "packages/*"
+  ],
+  "main": "dist/src/index.js",
+  "types": "dist/src/index.d.ts",
   "exports": {
     ".": {
-      "types": "./dist/index.d.ts",
-      "default": "./dist/index.js"
+      "types": "./dist/src/index.d.ts",
+      "default": "./dist/src/index.js"
     }
   },
   "files": [
@@ -27,21 +30,25 @@
     "node": ">=22"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.build.json",
-    "check": "npm run format:check && npm run lint && npm run typecheck && npm run test:coverage && npm run build && npm run pack:check",
+    "_scripts:build": "tsc -p tsconfig.scripts.json",
+    "build": "npm run clean:dist --silent && tsc -p tsconfig.build.json",
+    "check": "npm run packages:check && npm run format:check && npm run lint && npm run typecheck && npm run test:packages && npm run test:coverage && npm run build && npm run pack:check",
     "ci": "npm run clean && npm run check",
-    "clean": "node -e \"require('node:fs').rmSync('dist', { force: true, recursive: true }); require('node:fs').rmSync('coverage', { force: true, recursive: true })\"",
+    "clean": "npm run _scripts:build --silent && node ./.script-build/clean.js",
+    "clean:dist": "npm run _scripts:build --silent && node ./.script-build/clean.js --dist-only",
     "fix": "npm run lint:fix && npm run format",
     "format": "oxfmt --write .",
     "format:check": "oxfmt --check .",
     "lint": "oxlint --max-warnings=0",
     "lint:fix": "oxlint --fix --max-warnings=0",
-    "pack:check": "npm pack --dry-run",
+    "pack:check": "npm run _scripts:build --silent && node ./.script-build/pack-check.js",
+    "packages:check": "npm run _scripts:build --silent && node ./.script-build/packages.js",
     "prepack": "npm run clean && npm run build",
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",
+    "test:packages": "npm run _scripts:build --silent && node ./.script-build/test-packages.js",
     "test:watch": "vitest",
-    "typecheck": "tsc -p tsconfig.json --noEmit"
+    "typecheck": "npm run _scripts:build --silent && node ./.script-build/typecheck.js"
   },
   "dependencies": {
     "typescript": "5.9.3"

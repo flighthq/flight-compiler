@@ -1,0 +1,11 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "outDir": ".script-build",
+    "rewriteRelativeImportExtensions": true,
+    "rootDir": "scripts",
+    "types": ["node"]
+  },
+  "include": ["scripts/**/*.ts"]
+}

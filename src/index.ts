@@ -1,50 +1,9 @@
-export { fingerprintText, fingerprintTypeScriptNode, normalizeTypeScriptNode } from './analyze/fingerprint.ts';
-export {
-  analyzeFlightWorkspace,
-  packageRootExportLane,
-  readGitCommit,
-  readPackageExportManifest,
-  resolvePackageExportLane,
-} from './analyze/inventory.ts';
-export { createTypeScriptProject } from './analyze/program.ts';
-export {
-  declarationEmitsRuntimeBinding,
-  isExplicitTypeOnlyExport,
-  runtimeBindingDeclaration,
-  runtimeExportsForSource,
-} from './analyze/runtimeValues.ts';
-export { lowerTypeScriptSource } from './analyze/typescript.ts';
-export { BackendEmissionError } from './backend/emission.ts';
-export {
-  haxeBackend,
-  emitHaxeModule,
-  packageNameToHaxePackage,
-  sourcePathToHaxeModule,
-} from './backends/haxe/backend.ts';
-export {
-  rustBackend,
-  emitRustModule,
-  packageNameToRustCrate,
-  sourcePathToRustModule,
-} from './backends/rust/backend.ts';
-export {
-  compileModules,
-  CompilerDiagnosticsError,
-  compileTypeScriptModules,
-  parseTypeScriptSource,
-} from './compiler/compile.ts';
-export { applySemanticPatches, defineSemanticPatches } from './patch/apply.ts';
-
-export type { PackageExportDescriptor } from './analyze/inventory.ts';
-export type { TypeScriptProject } from './analyze/program.ts';
-export type { RuntimeExportDecision } from './analyze/runtimeValues.ts';
-export type { LowerTypeScriptSourceOptions } from './analyze/typescript.ts';
-export type { HaxeBackendOptions } from './backends/haxe/backend.ts';
-export type { RustBackendOptions } from './backends/rust/backend.ts';
-export type { CompileTypeScriptModulesOptions, TypeScriptModuleInput } from './compiler/compile.ts';
-export type * from './model/backend.ts';
-export type * from './model/compiler.ts';
-export type * from './model/inventory.ts';
-export type * from './model/ir.ts';
-export type * from './model/patch.ts';
-export type { AppliedSemanticPatches } from './patch/apply.ts';
+export * from '../packages/compiler-backend-hx/src/index.js';
+export * from '../packages/compiler-backend-rs/src/index.js';
+export * from '../packages/compiler-emission/src/index.js';
+export * from '../packages/compiler-inventory/src/index.js';
+export * from '../packages/compiler-orchestration/src/index.js';
+export * from '../packages/compiler-patch/src/index.js';
+export * from '../packages/compiler-provenance/src/index.js';
+export * from '../packages/compiler-semantic/src/index.js';
+export type * from '../packages/compiler-types/src/index.js';

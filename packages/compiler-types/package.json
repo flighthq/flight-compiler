@@ -1,0 +1,23 @@
+{
+  "name": "@flighthq/compiler-types",
+  "version": "0.0.0",
+  "description": "Shared compiler contracts, diagnostics, and target-neutral IR",
+  "author": "Joshua Granick and other contributors",
+  "license": "MIT",
+  "private": true,
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/flighthq/flight-compiler.git",
+    "directory": "packages/compiler-types"
+  },
+  "type": "module",
+  "sideEffects": false,
+  "scripts": {
+    "test": "vitest run --config ../../vitest.config.package.ts --root .",
+    "test:watch": "vitest --config ../../vitest.config.package.ts --root .",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "devDependencies": {
+    "typescript": "5.9.3"
+  }
+}

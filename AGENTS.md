@@ -12,8 +12,8 @@ Flight TypeScript checkout
   -> target-neutral IR and semantic patches
   -> deterministic inventory, provenance, and coverage
   -> target adapter
-       -> Haxe ownership lowering + emitter + runtime
-       -> Rust ownership lowering + emitter + runtime
+       -> Haxe ownership lowering + emitter + runtime contract
+       -> Rust ownership lowering + emitter + runtime contract
 ```
 
 Core owns TypeScript program construction, package and export-lane resolution, symbol identity, runtime/type-only classification, normalized fingerprints, source provenance, neutral IR, semantic patch identity, and shared report schemas.
@@ -24,18 +24,24 @@ Target repositories own ecosystem concerns: maintained runtime support, target s
 
 Haxe is the first integration target and defines the initial compatibility bar. Rust follows against the same neutral model and orchestration path. New core abstractions must still be genuinely target-neutral; “both current targets happen to need it” is evidence, not proof.
 
-## Source Layout
+## Workspace Layout
 
-- `src/analyze/`: read-only TypeScript and Flight workspace analysis.
-- `src/backend/`: backend contracts and shared source-emission infrastructure.
-- `src/backends/haxe/`: Haxe-specific lowering, naming, and source emission.
-- `src/backends/rust/`: Rust-specific lowering, naming, and source emission.
-- `src/compiler/`: deterministic orchestration from analyzed workspace to emitted files and reports.
-- `src/model/`: stable target-neutral data contracts.
-- `src/patch/`: fingerprinted semantic patch application and audits.
-- `src/index.ts`: cultivated public package surface.
-- `tests/`: focused compiler fixtures and public-contract tests.
+The repository follows Flight's package-per-domain convention. Internal workspace names always use the `compiler-` prefix so they remain unambiguous beside standard Flight packages:
+
+- `packages/compiler-types/`: every shared compiler contract, diagnostic shape, and target-neutral IR type.
+- `packages/compiler-inventory/`: read-only package, export-lane, symbol, and runtime-value analysis.
+- `packages/compiler-provenance/`: normalization, provenance, and stable fingerprints.
+- `packages/compiler-semantic/`: TypeScript semantic analysis and neutral lowering.
+- `packages/compiler-patch/`: fingerprinted semantic patch application and audits.
+- `packages/compiler-emission/`: target-neutral backend and output infrastructure.
+- `packages/compiler-backend-hx/`: Haxe-specific lowering, naming, and source emission.
+- `packages/compiler-backend-rs/`: Rust-specific lowering, naming, and source emission.
+- `packages/compiler-orchestration/`: deterministic pipeline composition.
+- `src/index.ts`: the cultivated public `@flighthq/tool-compiler` facade.
+- `scripts/`: repository health, isolated testing, typecheck, clean, and package-artifact gates.
 - `docs/`: durable architecture and migration decisions.
+
+Every workspace keeps a flat `src/` and colocates its unit tests. Cross-package imports go through the dependency package's `src/index.js`. Internal packages are private development boundaries; the root build assembles them into the single public package and must not leave private package specifiers in JavaScript or declarations.
 
 Keep imports side-effect-free. Importing the package must not read a checkout, start work, mutate registries, or write reports. Filesystem work begins only when a caller invokes an explicit function.
 
@@ -48,7 +54,7 @@ Keep imports side-effect-free. Importing the package must not read a checkout, s
 - Every declaration and patch retains stable upstream identity: package name, source path, export name, and normalized SHA-256 fingerprint.
 - Deterministic outputs contain no timestamps, machine-specific absolute paths, or filesystem iteration order.
 - Expected environmental absence returns a structured result where the API defines one. Invalid compiler configuration, unresolved public exports, ambiguous patches, and stale fingerprints fail loudly.
-- Prefer small free functions and plain data. Classes are appropriate only when an actual stateful compiler session needs encapsulation.
+- Use small free functions and plain data. Compiler packages do not define classes; tagged diagnostic values and explicit function records provide failure and capability contracts.
 - Exported names must be globally understandable without relying on a deep import path for context.
 
 ## TypeScript Style
@@ -68,10 +74,12 @@ Use npm, not pnpm or Yarn. Node.js 22 or newer is required.
 - `npm run fix`: apply Oxlint fixes and Oxfmt formatting after edits.
 - `npm run check`: complete deterministic gate; run before handoff.
 - `npm run test`: run Vitest once.
+- `npm run test:packages`: run every private package in isolation, then the public facade.
 - `npm run test:coverage`: run unit coverage.
-- `npm run typecheck`: strict no-emit TypeScript check.
-- `npm run build`: emit ESM JavaScript, declarations, maps, and declaration maps to `dist/`.
-- `npm run pack:check`: inspect the publishable tarball without writing one.
+- `npm run typecheck`: run the root and every workspace's strict no-emit check, collecting failures.
+- `npm run packages:check`: enforce manifests, flat source trees, dependency declarations and acyclicity, centralized contracts, class-free implementation, tests, and public-facade completeness.
+- `npm run build`: clean stale output and assemble ESM JavaScript, declarations, maps, and declaration maps in `dist/`.
+- `npm run pack:check`: inspect the publishable tarball and prove every private workspace is assembled without leaking private imports or source/tests.
 
 Tests should use temporary fixture workspaces and assert both success and fail-loudly behavior. Compiler changes require a focused regression covering the smallest syntax or graph shape that exposes the rule. Tests must not depend on a network checkout.
 
@@ -79,8 +87,8 @@ Run `npm run fix` before committing and `npm run check` after committing so the 
 
 ## Migration Discipline
 
-Extraction from `flight-hx` must preserve its generated Haxe byte-for-byte once that repository adopts this package. Move general analysis into the neutral core before changing semantics. Move Haxe-specific analysis, lowering, and emission into `src/backends/haxe/`; runtime and integration support remain in `flight-hx`.
+Extraction from `flight-hx` must preserve its generated Haxe byte-for-byte once that repository adopts this package. Move general analysis into the neutral packages before changing semantics. Move Haxe-specific analysis, lowering, and emission into `compiler-backend-hx`; runtime and integration support remain in `flight-hx`.
 
-Extraction from `flight-rs` follows after the Haxe seam is proven. Move its Rust-specific lowering and emitter here while keeping task runtimes, standard-library support, Cargo workspace structure, examples, and integration tests downstream. Port Rust-only task, ownership, host-capability, and conformance concepts only when their neutral meaning is separated from their Rust representation.
+Extraction from `flight-rs` follows after the Haxe seam is proven. Move its Rust-specific lowering and emitter into `compiler-backend-rs` while keeping task runtimes, standard-library support, Cargo workspace structure, examples, and integration tests downstream. Port Rust-only task, ownership, host-capability, and conformance concepts only when their neutral meaning is separated from their Rust representation.
 
 Generated Haxe and Rust are disposable outputs and do not belong in this repository. Shared oracle vectors may be added later only with a versioned deterministic schema, explicit provenance, and an idempotence gate.

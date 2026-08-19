@@ -12,6 +12,31 @@ This includes concrete Haxe and Rust compiler backends. A backend may define tar
 
 `flight-hx` and `flight-rs` own the target ecosystems around those files: compiler installation, Haxelib/Cargo layout, maintained runtime and standard-library implementations, host adapters, examples, oracle bridges, integration tests, packaging, and release workflows.
 
+## Package boundaries
+
+Compiler domains are private workspaces with intentionally flat source trees:
+
+```text
+compiler-types
+  <- compiler-provenance
+  <- compiler-inventory
+  <- compiler-semantic
+  <- compiler-patch
+  <- compiler-emission
+       <- compiler-backend-hx
+       <- compiler-backend-rs
+  <- compiler-orchestration
+       -> public @flighthq/tool-compiler facade
+```
+
+The diagram shows architectural direction rather than every direct edge. `compiler-types` owns all shared contracts, including the neutral IR and backend interfaces. No other workspace exports its own interface or type alias. Workspaces declare every cross-package edge, may not form runtime cycles, and import another workspace only through its flat `src/index.js` boundary.
+
+The `compiler-` prefix distinguishes internal compiler packages from standard Flight packages. Target backend workspace names use the established ecosystem abbreviations `hx` and `rs`; report and language API identifiers remain `haxe` and `rust`.
+
+The root package is the only publishable unit. Its build preserves workspace separation beneath `dist/` while rewriting imports to relative JavaScript paths, so installing `@flighthq/tool-compiler` never requires an unpublished internal package. The package-health and pack-health gates enforce this topology.
+
+Compiler implementation is functional: transformations receive explicit inputs and capability records and return plain data. Failures are tagged values with type guards rather than class hierarchies. This keeps each domain independently unit-testable and makes orchestration state visible at its boundary.
+
 ## Stable identities
 
 The compiler uses four independent identities:
