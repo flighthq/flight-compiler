@@ -4,6 +4,8 @@ import { fileURLToPath } from 'node:url';
 
 import ts from 'typescript';
 
+import { collectLocalExportNames, collectModuleSpecifiers, isExportedContractDeclaration } from './package-ast.js';
+
 interface PackageManifest {
   author?: string;
   dependencies?: Record<string, string>;
@@ -146,7 +148,7 @@ function checkPackage(packageName: string, rule: Readonly<PackageRule>): void {
     const sourceFile = ts.createSourceFile(file, readFileSync(file, 'utf8'), ts.ScriptTarget.Latest, true);
     visitSourceFile(sourceFile, packageName);
     const imports = file.endsWith('.test.ts') ? testImports : productionImports;
-    for (const specifier of moduleSpecifiers(sourceFile)) {
+    for (const specifier of collectModuleSpecifiers(sourceFile)) {
       const importedPackage = resolveCompilerPackageImport(file, specifier);
       if (!importedPackage || importedPackage === packageName) continue;
       imports.add(importedPackage);
@@ -181,17 +183,14 @@ function checkPackage(packageName: string, rule: Readonly<PackageRule>): void {
 }
 
 function visitSourceFile(sourceFile: ts.SourceFile, packageName: string): void {
+  const localExportNames = collectLocalExportNames(sourceFile);
   const visit = (node: ts.Node): void => {
     if (ts.isClassDeclaration(node) || ts.isClassExpression(node)) {
       errors.push(
         `${relative(sourceFile.fileName)}:${lineOf(sourceFile, node)}: compiler packages use functions and data, not classes`,
       );
     }
-    if (
-      packageName !== 'compiler-types' &&
-      (ts.isInterfaceDeclaration(node) || ts.isTypeAliasDeclaration(node)) &&
-      node.modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword)
-    ) {
+    if (packageName !== 'compiler-types' && isExportedContractDeclaration(node, sourceFile, localExportNames)) {
       errors.push(
         `${relative(sourceFile.fileName)}:${lineOf(sourceFile, node)}: exported contracts belong in compiler-types`,
       );
@@ -199,16 +198,6 @@ function visitSourceFile(sourceFile: ts.SourceFile, packageName: string): void {
     ts.forEachChild(node, visit);
   };
   visit(sourceFile);
-}
-
-function moduleSpecifiers(sourceFile: ts.SourceFile): string[] {
-  const specifiers: string[] = [];
-  for (const statement of sourceFile.statements) {
-    if ((ts.isImportDeclaration(statement) || ts.isExportDeclaration(statement)) && statement.moduleSpecifier) {
-      if (ts.isStringLiteral(statement.moduleSpecifier)) specifiers.push(statement.moduleSpecifier.text);
-    }
-  }
-  return specifiers;
 }
 
 function resolveCompilerPackageImport(file: string, specifier: string): string | undefined {
@@ -244,7 +233,7 @@ function checkPublicFacade(): void {
   const facade = path.join(root, 'src', 'index.ts');
   const sourceFile = ts.createSourceFile(facade, readFileSync(facade, 'utf8'), ts.ScriptTarget.Latest, true);
   const exportedPackages = new Set(
-    moduleSpecifiers(sourceFile)
+    collectModuleSpecifiers(sourceFile)
       .map((specifier) => resolveCompilerPackageImport(facade, specifier))
       .filter((value): value is string => value !== undefined),
   );

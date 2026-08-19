@@ -31,6 +31,14 @@ export interface CompilerDiagnosticsFailure extends Error {
   kind: 'compiler-diagnostics';
 }
 
+export type CompilerInvariantCode = 'duplicate-emitted-path' | 'duplicate-module-identity' | 'unsafe-emitted-path';
+
+export interface CompilerInvariantFailure extends Error {
+  code: CompilerInvariantCode;
+  kind: 'compiler-invariant';
+  subject: string;
+}
+
 export interface TypeScriptModuleInput extends LowerTypeScriptSourceOptions {
   sourceFile: ts.SourceFile;
 }

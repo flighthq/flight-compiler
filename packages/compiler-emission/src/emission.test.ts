@@ -1,4 +1,10 @@
-import { createBackendEmissionError, indentSource, isBackendEmissionError, normalizeEmittedFile } from './index.js';
+import {
+  createBackendEmissionError,
+  indentSource,
+  isBackendEmissionError,
+  isCompilerInvariantError,
+  normalizeEmittedFile,
+} from './index.js';
 
 describe('emission infrastructure', () => {
   it('normalizes contents and portable output paths', () => {
@@ -10,8 +16,20 @@ describe('emission infrastructure', () => {
   });
 
   it('rejects unsafe output identities', () => {
-    expect(() => normalizeEmittedFile({ contents: '', path: '../Value.hx' })).toThrow('unsafe file path');
-    expect(() => normalizeEmittedFile({ contents: '', path: '/Value.hx' })).toThrow('unsafe file path');
+    for (const path of ['../Value.hx', '/Value.hx']) {
+      try {
+        normalizeEmittedFile({ contents: '', path });
+        expect.unreachable('Expected an unsafe emitted path to fail');
+      } catch (error) {
+        expect(isCompilerInvariantError(error)).toBe(true);
+        expect(error).toMatchObject({
+          code: 'unsafe-emitted-path',
+          kind: 'compiler-invariant',
+          name: 'CompilerInvariantError',
+          subject: path,
+        });
+      }
+    }
   });
 
   it('creates inspectable tagged failures without a class hierarchy', () => {

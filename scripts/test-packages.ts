@@ -8,6 +8,7 @@ interface PackageManifest {
   scripts?: Record<string, string>;
 }
 
+// Isolated runs prove workspace boundaries; the later aggregate coverage run proves repository-wide instrumentation.
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const packagesDirectory = path.join(root, 'packages');
 const targets = readdirSync(packagesDirectory, { withFileTypes: true })

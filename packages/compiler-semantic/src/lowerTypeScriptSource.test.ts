@@ -44,8 +44,6 @@ describe('neutral TypeScript lowering', () => {
       "export { thing as value } from './thing.js'; export * from './other.js'; export default 1;",
     );
 
-    expect(result.accountedDeclarations).toBe(0);
-    expect(result.accountedExports).toBe(3);
     expect(result.module.exports).toEqual([
       { exported: 'value', imported: 'thing', kind: 'reexport', specifier: './thing.js', typeOnly: false },
       { kind: 'all', specifier: './other.js', typeOnly: false },

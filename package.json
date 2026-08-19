@@ -32,7 +32,7 @@
   "scripts": {
     "_scripts:build": "tsc -p tsconfig.scripts.json",
     "build": "npm run clean:dist --silent && tsc -p tsconfig.build.json",
-    "check": "npm run packages:check && npm run format:check && npm run lint && npm run typecheck && npm run test:packages && npm run test:coverage && npm run build && npm run pack:check",
+    "check": "npm run packages:check && npm run format:check && npm run lint && npm run typecheck && npm run test:packages && npm run test:coverage && npm run pack:check",
     "ci": "npm run clean && npm run check",
     "clean": "npm run _scripts:build --silent && node ./.script-build/clean.js",
     "clean:dist": "npm run _scripts:build --silent && node ./.script-build/clean.js --dist-only",
@@ -41,7 +41,7 @@
     "format:check": "oxfmt --check .",
     "lint": "oxlint --max-warnings=0",
     "lint:fix": "oxlint --fix --max-warnings=0",
-    "pack:check": "npm run _scripts:build --silent && node ./.script-build/pack-check.js",
+    "pack:check": "npm run build --silent && node ./.script-build/pack-check.js",
     "packages:check": "npm run _scripts:build --silent && node ./.script-build/packages.js",
     "prepack": "npm run clean && npm run build",
     "test": "vitest run",

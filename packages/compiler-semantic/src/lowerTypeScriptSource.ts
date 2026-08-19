@@ -49,15 +49,12 @@ export function lowerTypeScriptSource(
   const declarations: IrDeclaration[] = [];
   const exports: IrExport[] = [];
   const pendingOverloads = new Map<string, IrFunctionSignature[]>();
-  let accountedDeclarations = 0;
-  let accountedExports = 0;
 
   for (const statement of sourceFile.statements) {
     if (ts.isImportDeclaration(statement)) {
       continue;
     }
     if (ts.isExportDeclaration(statement) || ts.isExportAssignment(statement)) {
-      accountedExports += 1;
       try {
         exports.push(...lowerExport(statement, context));
       } catch (error) {
@@ -66,8 +63,6 @@ export function lowerTypeScriptSource(
       }
       continue;
     }
-    const declarationCount = ts.isVariableStatement(statement) ? statement.declarationList.declarations.length : 1;
-    accountedDeclarations += declarationCount;
     try {
       if (ts.isFunctionDeclaration(statement)) {
         const name = requiredDeclarationName(statement, context);
@@ -80,7 +75,6 @@ export function lowerTypeScriptSource(
         declarations.push(lowerFunction(statement, pendingOverloads.get(name) ?? [], context));
         if (hasModifier(statement, ts.SyntaxKind.DefaultKeyword)) {
           exports.push({ exported: 'default', kind: 'local', local: name, typeOnly: false });
-          accountedExports += 1;
         }
         pendingOverloads.delete(name);
       } else if (ts.isVariableStatement(statement)) {
@@ -100,7 +94,6 @@ export function lowerTypeScriptSource(
             local: requiredDeclarationName(statement, context),
             typeOnly: false,
           });
-          accountedExports += 1;
         }
       } else if (ts.isModuleDeclaration(statement)) {
         unsupported(statement, 'namespace declarations are not represented in the neutral IR yet');
@@ -124,14 +117,12 @@ export function lowerTypeScriptSource(
   }
 
   return {
-    accountedDeclarations,
-    accountedExports,
     diagnostics: context.diagnostics,
     module: {
       declarations,
       exports,
       imports: lowerImports(sourceFile),
-      name: options.moduleName ?? moduleNameFromSource(sourceFile.fileName),
+      name: moduleNameFromSource(sourceFile.fileName),
       packageName: options.packageName,
       source: relativeSource(sourceFile.fileName, options.upstreamDirectory),
     },

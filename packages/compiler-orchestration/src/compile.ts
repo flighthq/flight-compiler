@@ -1,6 +1,6 @@
 import ts from 'typescript';
 
-import { normalizeEmittedFile } from '../../compiler-emission/src/index.js';
+import { createCompilerInvariantError, normalizeEmittedFile } from '../../compiler-emission/src/index.js';
 import { applySemanticPatches } from '../../compiler-patch/src/index.js';
 import { lowerTypeScriptSource } from '../../compiler-semantic/src/index.js';
 import type {
@@ -97,7 +97,13 @@ function compareModules(left: Readonly<IrModule>, right: Readonly<IrModule>): nu
 function validateEmittedFiles(files: readonly EmittedFile[]): void {
   const paths = new Set<string>();
   for (const file of files) {
-    if (paths.has(file.path)) throw new Error(`Backend emitted duplicate file path: ${file.path}`);
+    if (paths.has(file.path)) {
+      throw createCompilerInvariantError(
+        'duplicate-emitted-path',
+        file.path,
+        `Backend emitted duplicate file path: ${file.path}`,
+      );
+    }
     paths.add(file.path);
   }
 }
@@ -106,8 +112,14 @@ function validateModuleIdentities(modules: readonly IrModule[]): void {
   const identities = new Set<string>();
   for (const module of modules) {
     const identity = `${module.packageName}\0${module.source}\0${module.name}`;
-    if (identities.has(identity))
-      throw new Error(`Duplicate compiler module identity: ${module.packageName}/${module.source}`);
+    if (identities.has(identity)) {
+      const subject = `${module.packageName}/${module.source}#${module.name}`;
+      throw createCompilerInvariantError(
+        'duplicate-module-identity',
+        subject,
+        `Duplicate compiler module identity: ${subject}`,
+      );
+    }
     identities.add(identity);
   }
 }

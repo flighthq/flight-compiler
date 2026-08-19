@@ -1,7 +1,13 @@
 import ts from 'typescript';
 
+import { isCompilerInvariantError } from '../../compiler-emission/src/index.js';
 import type { CompilerBackend } from '../../compiler-types/src/index.js';
-import { compileTypeScriptModules, isCompilerDiagnosticsError, parseTypeScriptSource } from './index.js';
+import {
+  compileModules,
+  compileTypeScriptModules,
+  isCompilerDiagnosticsError,
+  parseTypeScriptSource,
+} from './index.js';
 
 const fixtureBackend: CompilerBackend = {
   emitModule: (module) => [{ contents: `${module.packageName}:${module.name}`, path: `${module.name}.txt` }],
@@ -52,6 +58,49 @@ describe('compiler orchestration', () => {
     } catch (error) {
       expect(isCompilerDiagnosticsError(error)).toBe(true);
       expect(error).toMatchObject({ kind: 'compiler-diagnostics', name: 'CompilerDiagnosticsError' });
+    }
+  });
+
+  it('returns inspectable invariant failures for duplicate module and output identities', () => {
+    const module = {
+      declarations: [],
+      exports: [],
+      imports: [],
+      name: 'Value',
+      packageName: '@flighthq/math',
+      source: 'packages/math/src/value.ts',
+    };
+
+    try {
+      compileModules({ backend: fixtureBackend, backendOptions: {}, modules: [module, module] });
+      expect.unreachable('Expected duplicate module identities to fail');
+    } catch (error) {
+      expect(isCompilerInvariantError(error)).toBe(true);
+      expect(error).toMatchObject({
+        code: 'duplicate-module-identity',
+        kind: 'compiler-invariant',
+        subject: '@flighthq/math/packages/math/src/value.ts#Value',
+      });
+    }
+
+    const duplicatePathBackend: CompilerBackend = {
+      emitModule: () => [{ contents: '', path: 'Value.txt' }],
+      name: 'duplicate-path-fixture',
+    };
+    try {
+      compileModules({
+        backend: duplicatePathBackend,
+        backendOptions: {},
+        modules: [module, { ...module, name: 'Other' }],
+      });
+      expect.unreachable('Expected duplicate emitted paths to fail');
+    } catch (error) {
+      expect(isCompilerInvariantError(error)).toBe(true);
+      expect(error).toMatchObject({
+        code: 'duplicate-emitted-path',
+        kind: 'compiler-invariant',
+        subject: 'Value.txt',
+      });
     }
   });
 

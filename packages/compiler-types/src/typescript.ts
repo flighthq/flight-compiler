@@ -1,7 +1,6 @@
 import type ts from 'typescript';
 
 export interface LowerTypeScriptSourceOptions {
-  moduleName?: string | undefined;
   packageName: string;
   upstreamDirectory: string;
 }

@@ -1,6 +1,11 @@
 import path from 'node:path';
 
-import type { BackendEmissionFailure, EmittedFile } from '../../compiler-types/src/index.js';
+import type {
+  BackendEmissionFailure,
+  CompilerInvariantCode,
+  CompilerInvariantFailure,
+  EmittedFile,
+} from '../../compiler-types/src/index.js';
 
 export function createBackendEmissionError(backend: string, source: string, message: string): BackendEmissionFailure {
   const failure = Object.assign(new Error(`${backend} emission failed for ${source}: ${message}`), {
@@ -12,13 +17,41 @@ export function createBackendEmissionError(backend: string, source: string, mess
   return failure;
 }
 
-export function isBackendEmissionError(value: unknown): value is BackendEmissionFailure {
-  return value instanceof Error && 'kind' in value && value.kind === 'backend-emission';
+export function createCompilerInvariantError(
+  code: CompilerInvariantCode,
+  subject: string,
+  message: string,
+): CompilerInvariantFailure {
+  const failure = Object.assign(new Error(message), {
+    code,
+    kind: 'compiler-invariant' as const,
+    subject,
+  });
+  failure.name = 'CompilerInvariantError';
+  return failure;
 }
 
 export function indentSource(lines: readonly string[], depth = 1): string[] {
   const prefix = '  '.repeat(depth);
   return lines.map((line) => (line.length === 0 ? '' : `${prefix}${line}`));
+}
+
+export function isBackendEmissionError(value: unknown): value is BackendEmissionFailure {
+  return value instanceof Error && 'kind' in value && value.kind === 'backend-emission';
+}
+
+export function isCompilerInvariantError(value: unknown): value is CompilerInvariantFailure {
+  return (
+    value instanceof Error &&
+    'kind' in value &&
+    value.kind === 'compiler-invariant' &&
+    'code' in value &&
+    (value.code === 'duplicate-emitted-path' ||
+      value.code === 'duplicate-module-identity' ||
+      value.code === 'unsafe-emitted-path') &&
+    'subject' in value &&
+    typeof value.subject === 'string'
+  );
 }
 
 export function normalizeEmittedFile(file: Readonly<EmittedFile>): EmittedFile {
@@ -28,7 +61,11 @@ export function normalizeEmittedFile(file: Readonly<EmittedFile>): EmittedFile {
     path.posix.isAbsolute(normalizedPath) ||
     normalizedPath.split('/').some((segment) => segment === '' || segment === '.' || segment === '..')
   ) {
-    throw new Error(`Backend emitted an unsafe file path: ${file.path}`);
+    throw createCompilerInvariantError(
+      'unsafe-emitted-path',
+      file.path,
+      `Backend emitted an unsafe file path: ${file.path}`,
+    );
   }
   return {
     contents: `${file.contents.replaceAll('\r\n', '\n').trimEnd()}\n`,

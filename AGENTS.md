@@ -43,6 +43,8 @@ The repository follows Flight's package-per-domain convention. Internal workspac
 
 Every workspace keeps a flat `src/` and colocates its unit tests. Cross-package imports go through the dependency package's `src/index.js`. Internal packages are private development boundaries; the root build assembles them into the single public package and must not leave private package specifiers in JavaScript or declarations.
 
+A flat source tree is not a one-file rule. Split a large concern into focused sibling files within the same `src/` before creating another workspace. Add a workspace only for a distinct domain contract, dependency boundary, or lifecycle that benefits from independent health and unit-test gates.
+
 Keep imports side-effect-free. Importing the package must not read a checkout, start work, mutate registries, or write reports. Filesystem work begins only when a caller invokes an explicit function.
 
 ## Modeling Rules
@@ -75,13 +77,15 @@ Use npm, not pnpm or Yarn. Node.js 22 or newer is required.
 - `npm run check`: complete deterministic gate; run before handoff.
 - `npm run test`: run Vitest once.
 - `npm run test:packages`: run every private package in isolation, then the public facade.
-- `npm run test:coverage`: run unit coverage.
+- `npm run test:coverage`: run all unit tests together with aggregate instrumentation. The complete gate intentionally runs tests once in isolation and again for coverage because these lanes prove different properties.
 - `npm run typecheck`: run the root and every workspace's strict no-emit check, collecting failures.
 - `npm run packages:check`: enforce manifests, flat source trees, dependency declarations and acyclicity, centralized contracts, class-free implementation, tests, and public-facade completeness.
 - `npm run build`: clean stale output and assemble ESM JavaScript, declarations, maps, and declaration maps in `dist/`.
-- `npm run pack:check`: inspect the publishable tarball and prove every private workspace is assembled without leaking private imports or source/tests.
+- `npm run pack:check`: build fresh, inspect the publishable tarball, and prove every private workspace is assembled without leaking private imports or source/tests.
 
 Tests should use temporary fixture workspaces and assert both success and fail-loudly behavior. Compiler changes require a focused regression covering the smallest syntax or graph shape that exposes the rule. Tests must not depend on a network checkout.
+
+Coverage thresholds are enforced ratchets, not aspirational targets: the initial 45% branches, 77% functions, 65% lines, and 61% statements floors sit below the measured scaffold baseline so regressions fail immediately. Maintain or raise them as exercised compiler surface grows. Lowering a threshold requires an explicit architectural justification.
 
 Run `npm run fix` before committing and `npm run check` after committing so the verification applies to the exact carried tree.
 

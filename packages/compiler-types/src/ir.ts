@@ -246,8 +246,6 @@ export interface CompilerDiagnostic {
 }
 
 export interface LoweringResult {
-  accountedDeclarations: number;
-  accountedExports: number;
   diagnostics: CompilerDiagnostic[];
   module: IrModule;
 }

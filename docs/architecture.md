@@ -31,6 +31,8 @@ compiler-types
 
 The diagram shows architectural direction rather than every direct edge. `compiler-types` owns all shared contracts, including the neutral IR and backend interfaces. No other workspace exports its own interface or type alias. Workspaces declare every cross-package edge, may not form runtime cycles, and import another workspace only through its flat `src/index.js` boundary.
 
+Flat source trees keep navigation shallow without forcing a domain into one large implementation file. A package can be decomposed into focused sibling files while its contract and dependency lifecycle remain cohesive. A new package is reserved for a genuinely separate domain boundary, not file length alone.
+
 The `compiler-` prefix distinguishes internal compiler packages from standard Flight packages. Target backend workspace names use the established ecosystem abbreviations `hx` and `rs`; report and language API identifiers remain `haxe` and `rust`.
 
 The root package is the only publishable unit. Its build preserves workspace separation beneath `dist/` while rewriting imports to relative JavaScript paths, so installing `@flighthq/tool-compiler` never requires an unpublished internal package. The package-health and pack-health gates enforce this topology.
@@ -52,7 +54,7 @@ Machine-specific absolute paths never enter models or reports. A semantic patch 
 
 Inventory resolves every manifest export lane, re-export chain, runtime binding, and SDK exposure before emission. Export-star graphs propagate declaration candidates to a fixed point, so cyclic barrels are lane-order independent and ambiguous names are reported rather than selected by traversal order. Cross-package edges resolve only through declared package export lanes.
 
-Semantic lowering reports `accountedDeclarations` as the number of top-level declaration syntax nodes inspected (with each variable declarator counted separately) and `accountedExports` as the number of standalone export statements plus default-export modifiers inspected. Re-export and export-assignment syntax is retained in `IrModule.exports`; a backend must lower those records or reject the module. Structured diagnostics cover unsupported syntax, and compiler orchestration refuses to emit a partially lowered module.
+Re-export and export-assignment syntax is retained in `IrModule.exports`; a backend must lower those records or reject the module. Structured diagnostics cover unsupported syntax, and compiler orchestration refuses to emit a partially lowered module. Coverage metrics belong in compiler reports once they have a consumer and a complete definition; lowering does not expose counters that conflate inspected syntax with emitted IR.
 
 Neutral patches run before backend emission. Backend-scoped patches use the same identity and audit machinery but apply only to the named backend. Emitted file paths are validated as relative, traversal-free paths, normalized to forward slashes, sorted, and checked for duplicates.
 
@@ -60,6 +62,6 @@ Neutral patches run before backend emission. Backend-scoped patches use the same
 
 Haxe is first because `flight-hx` has the broader semantic analyzer and an upstream Vitest oracle. Its existing generated output is the byte-stability check for moving rules here. Rust follows over the same inventory, neutral IR, patch system, and orchestration; Rust ownership and task lowering remain backend stages.
 
-The initial compiler slice intentionally fails on constructs whose existing target repositories still lower with target-fused logic. Each migration adds a neutral regression or a backend regression before moving the corresponding rule. Unsupported syntax is never emitted approximately or omitted from accounting.
+The initial compiler slice intentionally fails on constructs whose existing target repositories still lower with target-fused logic. Each migration adds a neutral regression or a backend regression before moving the corresponding rule. Unsupported syntax is never emitted approximately or omitted without a structured diagnostic.
 
-`npm run check` executes the coverage run and enforces the repository's current measured coverage floor. Raising those thresholds accompanies future compiler surface growth; they are a regression gate, not an aspirational configuration outside CI.
+`npm run check` intentionally executes unit tests in two lanes: isolated workspace runs catch undeclared dependencies and leaky package boundaries, while the aggregate run measures repository-wide coverage. Coverage starts with enforced ratchets just below the measured scaffold baseline (45% branches, 77% functions, 65% lines, and 61% statements). Raising those thresholds accompanies future compiler surface growth; lowering one requires an explicit architectural justification.
