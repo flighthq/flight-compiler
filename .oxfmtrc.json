@@ -13,5 +13,5 @@
   "proseWrap": "never",
   "embeddedLanguageFormatting": "auto",
   "sortPackageJson": false,
-  "ignorePatterns": ["dist/**", "coverage/**"]
+  "ignorePatterns": ["api/**", "coverage/**", "dist/**"]
 }

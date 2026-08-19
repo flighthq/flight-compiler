@@ -45,7 +45,9 @@ Registering the same gate label twice throws rather than running it twice, becau
 
 ## Read versus write
 
-A command that compares against a committed baseline reads under its bare name and writes under an explicit write mode. This repository has no baselines yet; when one lands, the write mode is `:baseline` and it attaches to the check that owns that baseline. Only a check that owns a baseline gets one.
+A command that compares against a committed baseline reads under its bare name and writes under an explicit mode. `api` writes `api/tool-compiler.api.md` and `api:check` verifies it — the same pairing `format` and `format:check` use, with the writer taking the bare name because writing is the ordinary act and failing is the mode.
+
+A baseline is generated output, so the formatter does not own it: `api/**` is excluded in `.oxfmtrc.json` for the same reason `dist/**` is. A generated file the formatter rewrites can never match its generator.
 
 **One subject, one instrument.** Two commands that measure the same thing by different mechanisms make it impossible to say which gate exists. If a second measurement is genuinely needed, it names a different subject.
 
@@ -84,3 +86,4 @@ A citation written as a bare backticked script name with no `npm run` lead is re
 | `mutation`                | report surviving mutants for one package; a worklist, not a gate               |
 | `untested`                | list branch and statement arms no test took in one package; also not a gate    |
 | `license:check`           | licensed text outside the named exemptions                                     |
+| `api` / `api:check`       | rewrite the published API report / fail when it no longer matches the facade   |

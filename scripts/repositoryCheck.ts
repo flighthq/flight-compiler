@@ -31,6 +31,7 @@ add('format:check', binary('oxfmt'), ['--check', '.']);
 add('lint', binary('oxlint'), ['--max-warnings=0']);
 add('order:check', process.execPath, compiledScript('sourceOrderHealth'));
 add('license:check', process.execPath, compiledScript('licenseProvenanceHealth'));
+add('api:check', process.execPath, [...compiledScript('publicApiReport'), '--check']);
 add('typecheck', process.execPath, compiledScript('workspaceTypecheck'));
 add('test:packages', process.execPath, compiledScript('isolatedPackageTest'));
 add('test:coverage', binary('vitest'), ['run', '--coverage']);
