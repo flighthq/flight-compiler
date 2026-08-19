@@ -85,7 +85,7 @@ Use npm, not pnpm or Yarn. Node.js 22 or newer is required.
 
 Tests should use temporary fixture workspaces and assert both success and fail-loudly behavior. Compiler changes require a focused regression covering the smallest syntax or graph shape that exposes the rule. Tests must not depend on a network checkout.
 
-Coverage thresholds are enforced ratchets, not aspirational targets: the initial 45% branches, 77% functions, 65% lines, and 61% statements floors sit below the measured scaffold baseline so regressions fail immediately. Maintain or raise them as exercised compiler surface grows. Lowering a threshold requires an explicit architectural justification.
+Coverage thresholds are enforced ratchets, not aspirational targets: the current 50% branches, 79% functions, 67% lines, and 63% statements floors sit immediately below the measured baseline so regressions fail promptly. Maintain or raise them as exercised compiler surface grows. Lowering a threshold requires an explicit architectural justification.
 
 Run `npm run fix` before committing and `npm run check` after committing so the verification applies to the exact carried tree.
 

@@ -43,4 +43,14 @@ describe('emission infrastructure', () => {
       source: 'packages/math/src/value.ts',
     });
   });
+
+  it('rejects invariant failures forged with an unknown code', () => {
+    const forged = Object.assign(new Error('forged invariant'), {
+      code: 'future-code',
+      kind: 'compiler-invariant',
+      subject: 'fixture',
+    });
+
+    expect(isCompilerInvariantError(forged)).toBe(false);
+  });
 });

@@ -7,6 +7,12 @@ import type {
   EmittedFile,
 } from '../../compiler-types/src/index.js';
 
+const compilerInvariantCodes = {
+  'duplicate-emitted-path': true,
+  'duplicate-module-identity': true,
+  'unsafe-emitted-path': true,
+} as const satisfies Readonly<Record<CompilerInvariantCode, true>>;
+
 export function createBackendEmissionError(backend: string, source: string, message: string): BackendEmissionFailure {
   const failure = Object.assign(new Error(`${backend} emission failed for ${source}: ${message}`), {
     backend,
@@ -46,9 +52,8 @@ export function isCompilerInvariantError(value: unknown): value is CompilerInvar
     'kind' in value &&
     value.kind === 'compiler-invariant' &&
     'code' in value &&
-    (value.code === 'duplicate-emitted-path' ||
-      value.code === 'duplicate-module-identity' ||
-      value.code === 'unsafe-emitted-path') &&
+    typeof value.code === 'string' &&
+    Object.hasOwn(compilerInvariantCodes, value.code) &&
     'subject' in value &&
     typeof value.subject === 'string'
   );
