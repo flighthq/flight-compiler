@@ -12,3 +12,4 @@ Repository-wide contributor conventions. These state the standard; the health ga
 
 - [Commit conventions](conventions/commits.md): Conventional Commit subject, closed type set, scope rules, and why no body or trailers.
 - [npm script naming](conventions/npm-scripts.md): the `action:subject:modifier` grammar, `:check` as a mode rather than a subject, collapse aliases, and the current script surface.
+- [Testing conventions](conventions/testing.md): test structure, the two test lanes, what a bedrock test proves, proving a guard that lands with its fix, assertions that cannot fail, and instrument choice.

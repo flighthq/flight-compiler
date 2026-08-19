@@ -141,7 +141,7 @@ Use npm, not pnpm or Yarn. Node.js 22 or newer is required. Script names follow 
 
 Tests should use temporary fixture workspaces and assert both success and fail-loudly behavior. Compiler changes require a focused regression covering the smallest syntax or graph shape that exposes the rule. Tests must not depend on a network checkout.
 
-Bedrock tests are example-driven specifications, not coverage decoration. Test empty values, boundary values, malformed values, host-path differences, input immutability, deterministic ordering, idempotence where meaningful, and every tagged failure code. For normalization, test formatting-equivalent inputs and meaningfully distinct near-neighbors side by side.
+See [the testing conventions](agents/conventions/testing.md) for test structure, instrument choice, and the named shapes in which a green run proves nothing. Bedrock tests are example-driven specifications, not coverage decoration. Test empty values, boundary values, malformed values, host-path differences, input immutability, deterministic ordering, idempotence where meaningful, and every tagged failure code. For normalization, test formatting-equivalent inputs and meaningfully distinct near-neighbors side by side.
 
 Coverage thresholds are enforced ratchets, not aspirational targets: the current 50% branches, 79% functions, 67% lines, and 63% statements floors sit immediately below the measured baseline so regressions fail promptly. Maintain or raise them as exercised compiler surface grows. Lowering a threshold requires an explicit architectural justification.
 
