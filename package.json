@@ -29,6 +29,7 @@
     "format:check": "oxfmt --check .",
     "lint": "oxlint --max-warnings=0",
     "lint:fix": "oxlint --fix --max-warnings=0",
+    "order:check": "npm run _scripts:build --silent && node ./.script-build/sourceOrderHealth.js",
     "pack:check": "npm run build --silent && node ./.script-build/packageArtifactHealth.js",
     "packages:check": "npm run _scripts:build --silent && node ./.script-build/packageHealth.js",
     "test": "vitest run",
