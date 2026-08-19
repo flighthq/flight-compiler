@@ -1,0 +1,1 @@
+rust emission failed for @flighthq/golden/packages/golden/src/classShape.ts: class Counter field initializers require constructor lowering
