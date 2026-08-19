@@ -87,3 +87,5 @@ A citation written as a bare backticked script name with no `npm run` lead is re
 | `untested`                | list branch and statement arms no test took in one package; also not a gate    |
 | `license:check`           | licensed text outside the named exemptions                                     |
 | `api` / `api:check`       | rewrite the published API report / fail when it no longer matches the facade   |
+| `golden` / `golden:check` | rewrite emission fixtures / compare emitted output byte for byte               |
+| `smoke`                   | install the packed tarball as a consumer and compile through it (nightly)      |

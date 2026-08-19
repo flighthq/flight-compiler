@@ -1,0 +1,1 @@
+rust emission failed for packages/golden/src/unsupportedSwitch.ts: switch statements require exhaustive, fallthrough-aware Rust lowering

@@ -87,5 +87,5 @@ A floor set far under the measurement is not a ratchet, and a floor set exactly 
 
 - Behavior belongs in the colocated test of the package that owns it, where the developer changing that code will see it.
 - There is no standing "integration" or "API" bucket. The public facade is already exercised by `packages:check`, `pack:check`, and the facade's own test; a barrel smoke test is a weaker version of work the gate already does.
-- Cross-cutting output fidelity — the same fixture compiled to Haxe and Rust, byte for byte — belongs to the golden-output parity harness described in [the migration roadmap](../compiler-migration-roadmap.md), not to a package unit test.
+- Cross-cutting output fidelity belongs to the golden fixtures under `golden/`, not to a package unit test. Each fixture compiles one source through both backends and compares the whole emitted tree, and a fixture may pin a refusal instead: what the compiler declines to lower is as much a part of its contract as what it emits. Regenerate with `npm run golden` rather than hand-editing emitted text, so a reviewer never accepts a diff the compiler did not produce.
 - Proving that emitted Haxe or Rust actually compiles is a downstream concern for `flight-hx` and `flight-rs`, fed by fixtures from here. This repository does not install those toolchains.
