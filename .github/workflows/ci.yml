@@ -39,6 +39,8 @@ jobs:
         if: always()
       - run: npm run order:check
         if: always()
+      - run: npm run license:check
+        if: always()
       - run: npm run format:check
         if: always()
       - run: npm run lint

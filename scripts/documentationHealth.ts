@@ -82,10 +82,13 @@ function readManifestScripts(): Record<string, string> {
 }
 
 function trackedCitationSources(): string[] {
-  const listed = execFileSync('git', ['ls-files', '*.md', '.github/**/*.yml', '.github/**/*.yaml'], {
-    cwd: root,
-    encoding: 'utf8',
-  });
+  // Untracked-but-not-ignored files are included for the same reason the license gate includes them:
+  // a citation is worth checking before it is committed, not only after.
+  const listed = execFileSync(
+    'git',
+    ['ls-files', '--cached', '--others', '--exclude-standard', '*.md', '.github/**/*.yml', '.github/**/*.yaml'],
+    { cwd: root, encoding: 'utf8' },
+  );
   return listed
     .split('\n')
     .map((line) => line.trim())
