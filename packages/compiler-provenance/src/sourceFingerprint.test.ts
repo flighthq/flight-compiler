@@ -82,6 +82,19 @@ describe('normalizeTypeScriptNode', () => {
     expect(normalizeTypeScriptNode(literal.node, literal.source)).toContain('a  b');
     expect(normalizeTypeScriptNode(regexp.node, regexp.source)).toContain('a  b');
   });
+
+  it('falls back to source text when a leaf exposes a non-string text property', () => {
+    const fixture = declaration('/value.ts', 'export const value = 1;');
+    if (!ts.isVariableStatement(fixture.node)) throw new Error('Expected a variable statement fixture');
+    const name = fixture.node.declarationList.declarations[0]?.name;
+    if (!name || !ts.isIdentifier(name)) throw new Error('Expected an identifier fixture');
+    Object.defineProperty(name, 'text', { value: 42 });
+
+    const normalized = normalizeTypeScriptNode(fixture.node, fixture.source);
+
+    expect(normalized).toContain(`${String(ts.SyntaxKind.Identifier)}:5:value`);
+    expect(normalized).not.toContain(`${String(ts.SyntaxKind.Identifier)}:undefined:42`);
+  });
 });
 
 function declaration(fileName: string, contents: string): { node: ts.Statement; source: ts.SourceFile } {
