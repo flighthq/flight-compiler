@@ -20,7 +20,9 @@ action : subject : modifier…
 
 `:check` is the **non-writing mode of an existing verb**. `format` writes; `format:check` reports and fails. `lint` reports; `lint:fix` writes. A name ending in `:check` is a claim that the bare verb exists or would exist and does the corresponding work.
 
-Where this repository's gate has no writing counterpart, the bare name is deliberately absent rather than a stub: `packages:check`, `exports:check`, `docs:check`, and `pack:check` inspect structure that nothing can rewrite for you. Adding an inert `packages` alias would suggest a fix mode that does not exist.
+Where this repository's gate has no writing counterpart, the bare name is deliberately absent rather than a stub: `packages:check`, `exports:check`, `docs:check`, `order:check`, and `pack:check` inspect structure that nothing rewrites for you today. Adding an inert `packages` alias would suggest a fix mode that does not exist.
+
+`order:check` is the clearest candidate for a future writer: its rules are mechanical, so a bare `order` that rewrites import blocks and moves exported functions is a coherent command to add. It is absent because rewriting source is a riskier capability than reporting on it, not because the name is unavailable.
 
 When a gate later gains an automatic fix, it takes the bare name (or `:fix`) and the `:check` name keeps meaning exactly what it means now. Do not invert that pairing by making the bare name the failing one.
 
@@ -72,6 +74,7 @@ A citation written as a bare backticked script name with no `npm run` lead is re
 | `packages:check`          | manifests, layout, dependency direction, naming, and facade completeness       |
 | `exports:check`           | one colocated test per source and one `describe()` per exported function       |
 | `docs:check`              | bounded codebase map, Claude pointer, local links, and command citations       |
+| `order:check`             | import grouping and alphabetization, and exported-function order in packages   |
 | `test` / `test:watch`     | run the aggregate suite once / in watch mode                                   |
 | `test:packages`           | run every workspace in isolation, proving package boundaries                   |
 | `test:coverage`           | run the aggregate suite with instrumentation against the coverage ratchets     |

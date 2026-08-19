@@ -54,11 +54,6 @@ export function compileTypeScriptModules<BackendOptions>(
   });
 }
 
-export function parseTypeScriptSource(fileName: string, source: string): ts.SourceFile {
-  const scriptKind = /\.tsx$/iu.test(fileName) ? ts.ScriptKind.TSX : ts.ScriptKind.TS;
-  return ts.createSourceFile(fileName, source, ts.ScriptTarget.Latest, true, scriptKind);
-}
-
 export function createCompilerDiagnosticsFailure(
   diagnostics: readonly CompilerDiagnostic[],
 ): CompilerDiagnosticsFailure {
@@ -86,6 +81,11 @@ export function isCompilerDiagnosticsFailure(value: unknown): value is CompilerD
     Array.isArray(value.diagnostics) &&
     value.diagnostics.every(isCompilerDiagnosticValue)
   );
+}
+
+export function parseTypeScriptSource(fileName: string, source: string): ts.SourceFile {
+  const scriptKind = /\.tsx$/iu.test(fileName) ? ts.ScriptKind.TSX : ts.ScriptKind.TS;
+  return ts.createSourceFile(fileName, source, ts.ScriptTarget.Latest, true, scriptKind);
 }
 
 function compareDiagnostics(left: Readonly<CompilerDiagnostic>, right: Readonly<CompilerDiagnostic>): number {

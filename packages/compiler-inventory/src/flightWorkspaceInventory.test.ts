@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
+import type { PackageExportLane, PackageInventory } from '../../compiler-types/src/index.js';
 import {
   analyzeFlightWorkspace,
   getPackageInventoryRootExportLane,
@@ -10,7 +11,6 @@ import {
   readPackageExportManifest,
   resolvePackageExportLane,
 } from './flightWorkspaceInventory.js';
-import type { PackageExportLane, PackageInventory } from '../../compiler-types/src/index.js';
 
 describe('analyzeFlightWorkspace', () => {
   it('resolves export lanes, runtime bindings, SDK exposure, and portable provenance', () => {

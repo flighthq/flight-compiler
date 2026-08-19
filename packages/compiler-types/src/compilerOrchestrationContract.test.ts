@@ -1,11 +1,11 @@
+import type { CompilerBackend } from './compilerBackendContract.js';
+import type { CompilerDiagnostic } from './compilerDiagnosticContract.js';
+import type { IrModule } from './compilerIntermediateRepresentation.js';
 import type {
   CompileIrModulesOptions,
   CompileIrModulesResult,
   CompilerReport,
 } from './compilerOrchestrationContract.js';
-import type { CompilerBackend } from './compilerBackendContract.js';
-import type { CompilerDiagnostic } from './compilerDiagnosticContract.js';
-import type { IrModule } from './compilerIntermediateRepresentation.js';
 import type { CompilerSourceLocation } from './compilerSourceIdentity.js';
 
 describe('compiler orchestration contracts', () => {

@@ -113,7 +113,8 @@ Implement compiler facts and behavior in this repository's architecture; outside
 - Use strict TypeScript, exact optional properties, and checked indexed access.
 - Use `Readonly<T>` and readonly collections where mutation is not part of the contract.
 - Put type-only imports on their own `import type` line.
-- Keep exported functions alphabetized within a file unless pipeline order is clearer.
+- Keep exported functions alphabetized within a file; `npm run order:check` enforces it for package source.
+- Group imports as `node:` builtins, then external packages, then relative specifiers, alphabetized within each group.
 - Keep tests in source/API order. Each exported function needs direct behavior coverage, including its boundary and failure cases where applicable.
 - Add comments only for durable invariants, ownership, identity, determinism, or compiler behavior that names cannot express.
 - Do not add transient `TODO`, `FIXME`, or work-history comments to source.
@@ -132,6 +133,7 @@ Use npm, not pnpm or Yarn. Node.js 22 or newer is required. Script names follow 
 - `npm run test:coverage`: run all unit tests together with aggregate instrumentation. The complete gate intentionally runs tests once in isolation and again for coverage because these lanes prove different properties.
 - `npm run docs:check`: enforce the bounded codebase map, Claude pointer, local documentation links, and `npm run` citations that name a real script.
 - `npm run exports:check`: outside `compiler-types`, require one exactly named colocated test file for every non-barrel package source and one exact `describe('<function>')` block for every exported function. This proves test structure and naming, not assertion depth.
+- `npm run order:check`: require imports grouped builtin, external, then relative and alphabetized within each group, and exported package functions in alphabetical order.
 - `npm run typecheck`: run the root and every workspace's strict no-emit check, collecting failures.
 - `npm run packages:check`: enforce manifests, flat source trees, dependency declarations and acyclicity, centralized contracts, class-free implementation, globally unique domain filenames and APIs, verb-first function names, transient-comment absence, tests, and public-facade completeness.
 - `npm run build`: clean stale output and assemble ESM JavaScript, declarations, maps, and declaration maps in `packages/tool-compiler/dist/`.

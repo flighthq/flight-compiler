@@ -2,6 +2,7 @@ import path from 'node:path';
 
 import ts from 'typescript';
 
+import { fingerprintTypeScriptNode } from '../../compiler-provenance/src/index.js';
 import type {
   CompilerDiagnostic,
   IrClassDeclaration,
@@ -29,7 +30,6 @@ import type {
   LowerTypeScriptSourceOptions,
   CompilerSourceOrigin,
 } from '../../compiler-types/src/index.js';
-import { fingerprintTypeScriptNode } from '../../compiler-provenance/src/index.js';
 
 interface LoweringContext {
   diagnostics: CompilerDiagnostic[];

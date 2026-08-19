@@ -1,6 +1,6 @@
-import { availableParallelism } from 'node:os';
 import { spawn } from 'node:child_process';
 import { readdirSync } from 'node:fs';
+import { availableParallelism } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 

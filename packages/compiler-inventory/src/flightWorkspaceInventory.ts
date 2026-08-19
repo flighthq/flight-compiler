@@ -4,6 +4,7 @@ import path from 'node:path';
 
 import ts from 'typescript';
 
+import { fingerprintTypeScriptNode } from '../../compiler-provenance/src/index.js';
 import type {
   AnalyzeFlightWorkspaceOptions,
   ExportConflict,
@@ -13,14 +14,13 @@ import type {
   PackageExportDescriptor,
   PackageExportLane,
   PackageInventory,
+  RuntimeExportDecision,
   RuntimeBindingRecord,
   SdkExposure,
   UpstreamInventory,
 } from '../../compiler-types/src/index.js';
-import { fingerprintTypeScriptNode } from '../../compiler-provenance/src/index.js';
 import { createTypeScriptProject } from './typeScriptProject.js';
 import { analyzeTypeScriptSourceRuntimeExports } from './typeScriptRuntimeBinding.js';
-import type { RuntimeExportDecision } from '../../compiler-types/src/index.js';
 
 interface PackageDescriptor {
   directory: string;
