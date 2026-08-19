@@ -341,7 +341,6 @@ function checkTypeScriptFileNames(): void {
     ...workspaceNames.flatMap((workspaceName) =>
       readTypeScriptFiles(path.join(packagesDirectory, workspaceName, 'src')),
     ),
-    ...readTypeScriptFiles(path.join(root, 'scripts')),
     ...readTypeScriptFiles(root),
   ];
   const fileHomes = new Map<string, string>();

@@ -1,12 +1,12 @@
 # Compiler Naming Contract
 
-This contract makes source and API identity independent of directory context. It applies to authored TypeScript in package `src/` directories, repository scripts, and every declaration exported from a compiler implementation file.
+This contract makes compiler source and API identity independent of directory context. It applies to authored TypeScript in package `src/` directories and every declaration exported from a compiler implementation file. Repository automation under `scripts/` is explicitly outside this package contract; see [the codebase map](../AGENTS.md#workspace-layout).
 
 ## Source Files
 
 A file is named for the stable concept it owns, not for one operation implemented inside it. Names use lower camel case and contain no command verb. Related operations live together under their concept: `compilerSemanticPatch.ts` owns applying, defining, and identifying semantic patches; `sourceFingerprint.ts` owns source normalization and fingerprint operations.
 
-Non-routine TypeScript basenames are unique across the repository, compared case-insensitively. Colocated tests inherit the concept and append `.test.ts`, so `sourceFingerprint.test.ts` remains self-identifying. Repeated package `index.ts` files are the single package-entry exception. Root `vitest.config*.ts` files retain the ecosystem's conventional names.
+Non-routine package TypeScript basenames are unique across `packages/`, compared case-insensitively. Colocated tests inherit the concept and append `.test.ts`, so `sourceFingerprint.test.ts` remains self-identifying. Repeated package `index.ts` files are the single package-entry exception.
 
 Generic containers such as `shared.ts`, `internal.ts`, `utils.ts`, and `helpers.ts` are not domains. When code does not fit a precise concept name, its boundary is not settled enough to add.
 
