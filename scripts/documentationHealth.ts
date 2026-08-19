@@ -1,6 +1,10 @@
+import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+
+import { classifyCommandCitation, collectCommandCitations } from './documentedCommandCitations.js';
+import type { CommandCitationVerdict } from './documentedCommandCitations.js';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const errors: string[] = [];
@@ -35,6 +39,27 @@ for (const file of walkMarkdown(path.join(root, 'agents'))) {
   if (!agentIndex.includes(`(${relative})`)) errors.push(`agents/index.md does not link ${relative}`);
 }
 
+// Command citations are checked over every tracked Markdown file rather than the curated list above,
+// because a stale command misleads a reader wherever it is written. Each verdict count is printed so
+// a zero is readable as measured rather than as never executed.
+const scriptNames = new Set(Object.keys(readManifestScripts()));
+const citations = trackedMarkdownFiles().flatMap((file) =>
+  collectCommandCitations(relative(path.join(root, file)), readFileSync(path.join(root, file), 'utf8')),
+);
+const verdicts = new Map<CommandCitationVerdict, number>([
+  ['metasyntactic', 0],
+  ['missing', 0],
+  ['resolved', 0],
+  ['workspace-scoped', 0],
+]);
+for (const citation of citations) {
+  const verdict = classifyCommandCitation(citation, scriptNames);
+  verdicts.set(verdict, (verdicts.get(verdict) ?? 0) + 1);
+  if (verdict === 'missing') {
+    errors.push(`${citation.source}:${String(citation.line)} cites npm run ${citation.command}, which is not a script`);
+  }
+}
+
 for (const warning of warnings) process.stderr.write(`Documentation health warning: ${warning}\n`);
 if (errors.length > 0) {
   process.stderr.write(`Documentation health failed with ${String(errors.length)} error(s):\n`);
@@ -42,7 +67,26 @@ if (errors.length > 0) {
   process.exit(1);
 }
 
-process.stdout.write(`Documentation health passed for ${String(markdownFiles.length)} Markdown files.\n`);
+process.stdout.write(
+  `Documentation health passed for ${String(markdownFiles.length)} Markdown files and ${String(citations.length)} command citations ` +
+    `(${String(verdicts.get('resolved') ?? 0)} resolved, ${String(verdicts.get('workspace-scoped') ?? 0)} workspace-scoped, ${String(verdicts.get('metasyntactic') ?? 0)} placeholder).\n`,
+);
+
+function readManifestScripts(): Record<string, string> {
+  const manifest = JSON.parse(readFileSync(path.join(root, 'package.json'), 'utf8')) as {
+    scripts?: Record<string, string>;
+  };
+  return manifest.scripts ?? {};
+}
+
+function trackedMarkdownFiles(): string[] {
+  const listed = execFileSync('git', ['ls-files', '*.md'], { cwd: root, encoding: 'utf8' });
+  return listed
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0)
+    .sort();
+}
 
 function checkLocalLinks(file: string): void {
   const contents = readFileSync(file, 'utf8');
