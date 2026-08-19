@@ -57,7 +57,7 @@ The repository follows Flight's package-per-domain convention. Internal workspac
 - `packages/compiler-orchestration/`: deterministic pipeline composition.
 - `packages/tool-compiler/`: the only public workspace and the cultivated `@flighthq/tool-compiler` facade.
 - `scripts/`: repository health, isolated testing, typecheck, clean, and package-artifact gates.
-- `agents/`: durable agent-facing indexes, roadmaps, and migration state.
+- `agents/`: durable agent-facing indexes, roadmaps, migration state, and contributor conventions under `agents/conventions/`.
 - `docs/`: durable architecture and migration decisions.
 
 Every workspace keeps a flat `src/` and colocates its unit tests. Cross-package imports go through the dependency package's `src/index.js`. Internal packages are private development boundaries; the repository root is a private orchestration workspace, and its build assembles them into the single public package without leaving private package specifiers in JavaScript or declarations.
@@ -119,18 +119,18 @@ Implement compiler facts and behavior in this repository's architecture; outside
 - Do not add transient `TODO`, `FIXME`, or work-history comments to source.
 - Keep loose constants and implementation state after exported functions so the public surface scans first.
 - Boolean queries use `is*` or `has*`; accessors use `get*`; allocating operations use `create*` and make the allocated type explicit.
-- Keep commits to one Conventional Commit subject with no body or trailers.
+- Keep commits to one Conventional Commit subject with no body or trailers. See [the commit conventions](agents/conventions/commits.md); the `commit-msg` hook enforces the checkable parts.
 
 ## Commands
 
-Use npm, not pnpm or Yarn. Node.js 22 or newer is required.
+Use npm, not pnpm or Yarn. Node.js 22 or newer is required. Script names follow [the npm script naming grammar](agents/conventions/npm-scripts.md), where `:check` is the non-writing mode of a verb rather than a subject.
 
 - `npm run fix`: apply Oxlint fixes and Oxfmt formatting after edits.
-- `npm run check`: complete deterministic gate; run before handoff.
+- `npm run check`: complete deterministic gate; run before handoff. Every registered gate runs even after an earlier one fails, and the failures are reported together.
 - `npm run test`: run Vitest once.
 - `npm run test:packages`: run every private package and the public package in isolation.
 - `npm run test:coverage`: run all unit tests together with aggregate instrumentation. The complete gate intentionally runs tests once in isolation and again for coverage because these lanes prove different properties.
-- `npm run docs:check`: enforce the bounded codebase map, Claude pointer, and local documentation links.
+- `npm run docs:check`: enforce the bounded codebase map, Claude pointer, local documentation links, and `npm run` citations that name a real script.
 - `npm run exports:check`: outside `compiler-types`, require one exactly named colocated test file for every non-barrel package source and one exact `describe('<function>')` block for every exported function. This proves test structure and naming, not assertion depth.
 - `npm run typecheck`: run the root and every workspace's strict no-emit check, collecting failures.
 - `npm run packages:check`: enforce manifests, flat source trees, dependency declarations and acyclicity, centralized contracts, class-free implementation, globally unique domain filenames and APIs, verb-first function names, transient-comment absence, tests, and public-facade completeness.
