@@ -4,6 +4,7 @@ import type {
   BackendEmitContext,
   CompilerBackend,
   EmittedFile,
+  EmittedFileIdentity,
   HaxeCompilerBackendOptions,
   RustCompilerBackendOptions,
 } from './compilerBackendContract.js';
@@ -26,6 +27,7 @@ describe('compiler backend contracts', () => {
     expect(compilation).toEqual({ backend: 'haxe', files: [file] });
     expect(rustOptions).toEqual({ opaqueHostType: 'FlightHostValue' });
     expectTypeOf<BackendEmissionFailure>().toMatchTypeOf<CompilerSourceIdentity>();
+    expectTypeOf<EmittedFile>().toMatchTypeOf<EmittedFileIdentity>();
   });
 });
 

@@ -23,7 +23,7 @@ export function compileIrModules<BackendOptions>(
   const files = modules
     .flatMap((module) => options.backend.emitModule(module, { modules, options: options.backendOptions }))
     .map(normalizeEmittedFile)
-    .sort((left, right) => left.path.localeCompare(right.path));
+    .sort(compareEmittedFiles);
   validateEmittedFiles(files);
   return {
     compilation: { backend: options.backend.name, files },
@@ -99,6 +99,10 @@ function compareDiagnostics(left: Readonly<CompilerDiagnostic>, right: Readonly<
   );
 }
 
+function compareEmittedFiles(left: Readonly<EmittedFile>, right: Readonly<EmittedFile>): number {
+  return left.path < right.path ? -1 : left.path > right.path ? 1 : 0;
+}
+
 function isCompilerDiagnosticValue(value: unknown): value is CompilerDiagnostic {
   return (
     typeof value === 'object' &&
@@ -132,16 +136,18 @@ function compareModules(left: Readonly<IrModule>, right: Readonly<IrModule>): nu
 }
 
 function validateEmittedFiles(files: readonly EmittedFile[]): void {
-  const paths = new Set<string>();
+  const paths = new Map<string, string>();
   for (const file of files) {
-    if (paths.has(file.path)) {
+    const collisionKey = file.path.toLowerCase();
+    const existingPath = paths.get(collisionKey);
+    if (existingPath !== undefined) {
       throw createCompilerInvariantFailure(
         'duplicate-emitted-path',
         file.path,
-        `Backend emitted duplicate file path: ${file.path}`,
+        `Backend emitted colliding file paths: ${existingPath}, ${file.path}`,
       );
     }
-    paths.add(file.path);
+    paths.set(collisionKey, file.path);
   }
 }
 

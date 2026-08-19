@@ -1,5 +1,3 @@
-import path from 'node:path';
-
 import type {
   BackendEmissionFailure,
   BackendEmissionFailureCode,
@@ -76,32 +74,32 @@ export function isCompilerInvariantFailure(value: unknown): value is CompilerInv
 }
 
 export function normalizeEmittedFile(file: Readonly<EmittedFile>): EmittedFile {
-  const normalizedPath = file.path.replaceAll('\\', '/');
-  if (
-    normalizedPath.length === 0 ||
-    normalizedPath.includes('\0') ||
-    path.posix.isAbsolute(normalizedPath) ||
-    path.win32.isAbsolute(file.path) ||
-    /^[A-Za-z]:/u.test(file.path) ||
-    normalizedPath.split('/').some(isUnsafePortablePathSegment)
-  ) {
-    throw createCompilerInvariantFailure(
-      'unsafe-emitted-path',
-      file.path,
-      `Backend emitted an unsafe file path: ${file.path}`,
-    );
-  }
   return {
-    contents: `${file.contents.replaceAll('\r\n', '\n').replaceAll('\r', '\n').trimEnd()}\n`,
-    path: normalizedPath,
+    contents: normalizeEmittedFileContents(file.contents),
+    path: normalizeEmittedFilePath(file.path),
   };
 }
 
+export function normalizeEmittedFileContents(contents: string): string {
+  return `${contents.replaceAll('\r\n', '\n').replaceAll('\r', '\n').trimEnd()}\n`;
+}
+
+export function normalizeEmittedFilePath(value: string): string {
+  const normalizedPath = value.replaceAll('\\', '/').normalize('NFC');
+  if (normalizedPath.split('/').some(isUnsafePortablePathSegment)) {
+    throw createCompilerInvariantFailure('unsafe-emitted-path', value, `Backend emitted an unsafe file path: ${value}`);
+  }
+  return normalizedPath;
+}
+
 function isUnsafePortablePathSegment(segment: string): boolean {
+  switch (segment) {
+    case '':
+    case '.':
+    case '..':
+      return true;
+  }
   return (
-    segment === '' ||
-    segment === '.' ||
-    segment === '..' ||
     [...segment].some((character) => character.codePointAt(0)! <= 0x1f) ||
     /[<>:"|?*]/u.test(segment) ||
     /[ .]$/u.test(segment) ||

@@ -5,4 +5,6 @@ export {
   isBackendEmissionFailure,
   isCompilerInvariantFailure,
   normalizeEmittedFile,
+  normalizeEmittedFileContents,
+  normalizeEmittedFilePath,
 } from './compilerSourceEmission.js';

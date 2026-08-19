@@ -69,6 +69,7 @@ Strengths:
 - Representative compile-time composition tests exist for useful contract relationships without imposing one runtime test per type-only source.
 - Source, module, export, and source-origin identities share one readonly vocabulary rather than repeating structural fields.
 - Diagnostics reuse the same globally identified, one-based source-location contract and expose a closed stable code.
+- Emitted files expose portable normalized path identity separately from their normalized contents.
 - Public compiler results and nested collections are readonly; implementations build mutable local state and return immutable contracts.
 
 Open foundation work:
@@ -78,7 +79,7 @@ Open foundation work:
 - There is no versioned serialization/parser boundary for persisted IR; adding one prematurely would freeze the provisional model.
 - Contract tests prove representative composition but do not yet exhaust every discriminated family.
 
-Decision: do not declare the IR stable or publish a serialized IR format. Source, module, export, source-location, source-origin, and semantic-patch target identity, together with diagnostic and bedrock failure contracts, are now locked as readonly structural contracts. Continue with emitted-file identity before reviewing expression breadth.
+Decision: do not declare the IR stable or publish a serialized IR format. Source, module, export, source-location, source-origin, emitted-file, and semantic-patch target identity, together with diagnostic and bedrock failure contracts, are now locked as readonly structural contracts. Continue with declaration and type IR families before reviewing expression breadth.
 
 ### `compiler-provenance`
 
@@ -106,7 +107,7 @@ This pass makes patch target fields self-identifying, gives every expected and d
 
 ### `compiler-emission`
 
-Status: narrow and near-mature after the current hardening pass.
+Status: narrow and substantially mature after the current hardening pass.
 
 Strengths:
 
@@ -114,7 +115,7 @@ Strengths:
 - Backend and compiler-invariant failures are tagged plain `Error` records.
 - Emitted files remain target-neutral plain data.
 
-This pass rejects POSIX, Windows drive, UNC, traversal, empty-segment, reserved-device, invalid-character, trailing-dot/space, and NUL paths; canonicalizes all line endings; gives backend failures a stable code and global package/source identity; validates failure guards structurally; and covers empty output and indentation boundaries. Duplicate output identity remains an orchestration concern because it requires the complete emitted set.
+This pass gives path identity its own normalization primitive, canonicalizes separators and Unicode composition idempotently, and rejects POSIX, Windows drive, UNC, traversal, empty-segment, reserved-device, invalid-character, trailing-dot/space, and control-character paths. Content normalization is a separate primitive with a single final-newline contract. Backend failures carry a stable code and global package/source identity, guards validate structurally, and orchestration rejects exact, case-only, and Unicode-equivalent path collisions across the complete emitted set.
 
 ## Package isolation review
 
@@ -125,7 +126,7 @@ Each workspace passes its own strict typecheck and Vitest target. The package bo
 | `compiler-types` | Keep independent as the dependency-free vocabulary floor. | Strict typecheck and focused composition tests cover useful relationships; identity, source location, diagnostics/failures, and readonly collection boundaries are explicit, while IR completeness remains open. |
 | `compiler-provenance` | Keep independent as one narrow identity primitive. | Equivalence, counterexample, empty, Unicode, path, line-ending, raw-text, and TypeScript-version behavior are locked. |
 | `compiler-patch` | Keep independent because patch identity and auditing are a separate lifecycle. | All operations and failure codes, deterministic ordering, backend skipping, and caller-input immutability are exercised. |
-| `compiler-emission` | Keep independent as the portable emitted-file and backend-failure seam. | Host-path rejection, content normalization, indentation boundaries, and tagged failure guards are exercised. |
+| `compiler-emission` | Keep independent as the portable emitted-file and backend-failure seam. | Path/content normalization, host-path rejection, portable collision identity, indentation boundaries, and tagged failure guards are exercised. |
 | `compiler-inventory` | Keep independent as the first read-only composition above identity. | Export graphs, manifests, runtime bindings, config failures, portable paths, ordering, and Git identity are covered; host facts and exclusion parity are not. |
 | `compiler-semantic` | Keep together for now; it owns one TypeScript-to-neutral lowering pass. | Representative syntax and fail-loudly diagnostics exist, but most production Flight semantics remain unported. |
 | `compiler-backend-hx` | Keep together; naming was split into a focused sibling source, not a workspace. | Package/module identity boundaries are direct-tested; production lowering and byte-stable emission parity remain open. |

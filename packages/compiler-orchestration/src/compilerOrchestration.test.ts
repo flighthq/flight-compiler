@@ -20,13 +20,25 @@ describe('compileIrModules', () => {
     const zeta = createModule('Zeta');
     const alpha = createModule('Alpha');
     const modules = [zeta, alpha];
+    const sortingBackend: CompilerBackend = {
+      emitModule: (module) => [
+        { contents: '', path: `${module.name}-Zeta.txt` },
+        { contents: '', path: `${module.name}-Alpha.txt` },
+      ],
+      name: 'sorting-fixture',
+    };
 
-    const result = compileIrModules({ backend: fixtureBackend, backendOptions: {}, modules });
+    const result = compileIrModules({ backend: sortingBackend, backendOptions: {}, modules });
 
-    expect(result.compilation.files.map((file) => file.path)).toEqual(['Alpha.txt', 'Zeta.txt']);
+    expect(result.compilation.files.map((file) => file.path)).toEqual([
+      'Alpha-Alpha.txt',
+      'Alpha-Zeta.txt',
+      'Zeta-Alpha.txt',
+      'Zeta-Zeta.txt',
+    ]);
     expect(result.report).toEqual({
-      backend: 'fixture',
-      emittedFiles: 2,
+      backend: 'sorting-fixture',
+      emittedFiles: 4,
       modules: 2,
       schema: 'flight-compiler-report/1',
     });
@@ -66,6 +78,48 @@ describe('compileIrModules', () => {
         kind: 'compiler-invariant',
         subject: 'Value.txt',
       });
+    }
+  });
+
+  it('treats case and Unicode-equivalent portable paths as one emitted-file identity', () => {
+    const cases = [
+      {
+        firstPath: 'generated/Value.txt',
+        secondPath: 'generated/value.txt',
+        subject: 'generated/value.txt',
+      },
+      {
+        firstPath: 'generated/café.txt',
+        secondPath: 'generated/cafe\u0301.txt',
+        subject: 'generated/café.txt',
+      },
+    ];
+
+    for (const fixture of cases) {
+      const backend: CompilerBackend = {
+        emitModule: (module) => [
+          {
+            contents: '',
+            path: module.name === 'Alpha' ? fixture.firstPath : fixture.secondPath,
+          },
+        ],
+        name: 'portable-path-fixture',
+      };
+      try {
+        compileIrModules({
+          backend,
+          backendOptions: {},
+          modules: [createModule('Alpha'), createModule('Beta')],
+        });
+        expect.unreachable('Expected portable path identities to collide');
+      } catch (error) {
+        expect(isCompilerInvariantFailure(error)).toBe(true);
+        expect(error).toMatchObject({
+          code: 'duplicate-emitted-path',
+          kind: 'compiler-invariant',
+          subject: fixture.subject,
+        });
+      }
     }
   });
 });

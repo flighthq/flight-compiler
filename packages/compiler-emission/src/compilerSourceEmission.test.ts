@@ -5,6 +5,8 @@ import {
   isBackendEmissionFailure,
   isCompilerInvariantFailure,
   normalizeEmittedFile,
+  normalizeEmittedFileContents,
+  normalizeEmittedFilePath,
 } from './compilerSourceEmission.js';
 
 describe('createBackendEmissionFailure', () => {
@@ -121,22 +123,39 @@ describe('isCompilerInvariantFailure', () => {
 });
 
 describe('normalizeEmittedFile', () => {
-  it('normalizes line endings, trailing whitespace, empty contents, and portable paths without mutating input', () => {
-    const file = { contents: 'one\r\ntwo\rthree  \r\n\r\n', path: 'generated\\Value.hx' };
+  it('composes content and path normalization without mutating caller input', () => {
+    const file = { contents: 'one\r\ntwo  \r\n\r\n', path: 'generated\\cafe\u0301.hx' };
 
     expect(normalizeEmittedFile(file)).toEqual({
-      contents: 'one\ntwo\nthree\n',
-      path: 'generated/Value.hx',
+      contents: 'one\ntwo\n',
+      path: 'generated/café.hx',
     });
-    expect(file).toEqual({ contents: 'one\r\ntwo\rthree  \r\n\r\n', path: 'generated\\Value.hx' });
-    expect(normalizeEmittedFile({ contents: '', path: 'Empty.rs' })).toEqual({
-      contents: '\n',
-      path: 'Empty.rs',
-    });
+    expect(file).toEqual({ contents: 'one\r\ntwo  \r\n\r\n', path: 'generated\\cafe\u0301.hx' });
+  });
+});
+
+describe('normalizeEmittedFileContents', () => {
+  it('canonicalizes line endings and the final newline while preserving internal whitespace', () => {
+    expect(normalizeEmittedFileContents('one\r\ntwo\rthree  \r\n\r\n')).toBe('one\ntwo\nthree\n');
+    expect(normalizeEmittedFileContents('one  \ntwo')).toBe('one  \ntwo\n');
+    expect(normalizeEmittedFileContents('')).toBe('\n');
+    expect(normalizeEmittedFileContents('\n')).toBe('\n');
+    expect(normalizeEmittedFileContents(normalizeEmittedFileContents('value\r\n'))).toBe('value\n');
+  });
+});
+
+describe('normalizeEmittedFilePath', () => {
+  it('canonicalizes separators and Unicode composition idempotently', () => {
+    expect(normalizeEmittedFilePath('generated\\cafe\u0301.hx')).toBe('generated/café.hx');
+    expect(normalizeEmittedFilePath('generated/café.hx')).toBe('generated/café.hx');
+    expect(normalizeEmittedFilePath(normalizeEmittedFilePath('generated\\Value.hx'))).toBe('generated/Value.hx');
+    expect(normalizeEmittedFilePath('generated/COM0.hx')).toBe('generated/COM0.hx');
+    expect(normalizeEmittedFilePath('generated/LPT10.rs')).toBe('generated/LPT10.rs');
+    expect(normalizeEmittedFilePath('generated/value name.hx')).toBe('generated/value name.hx');
   });
 
-  it('rejects nonportable output identities with a stable invariant failure', () => {
-    for (const path of [
+  it('rejects each class of nonportable identity with a stable invariant failure', () => {
+    for (const value of [
       '',
       '.',
       '../Value.hx',
@@ -153,9 +172,10 @@ describe('normalizeEmittedFile', () => {
       'generated/value ',
       'generated/value?.hx',
       'generated\0Value.hx',
+      'generated/value\u001f.hx',
     ]) {
       try {
-        normalizeEmittedFile({ contents: '', path });
+        normalizeEmittedFilePath(value);
         expect.unreachable('Expected an unsafe emitted path to fail');
       } catch (error) {
         expect(isCompilerInvariantFailure(error)).toBe(true);
@@ -163,7 +183,7 @@ describe('normalizeEmittedFile', () => {
           code: 'unsafe-emitted-path',
           kind: 'compiler-invariant',
           name: 'CompilerInvariantError',
-          subject: path,
+          subject: value,
         });
       }
     }

@@ -1,9 +1,12 @@
 import type { IrModule } from './compilerIntermediateRepresentation.js';
 import type { CompilerSourceIdentity } from './compilerSourceIdentity.js';
 
-export interface EmittedFile {
-  readonly contents: string;
+export interface EmittedFileIdentity {
   readonly path: string;
+}
+
+export interface EmittedFile extends EmittedFileIdentity {
+  readonly contents: string;
 }
 
 export interface BackendEmitContext<Options> {
