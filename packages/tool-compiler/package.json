@@ -1,0 +1,39 @@
+{
+  "name": "@flighthq/tool-compiler",
+  "version": "0.0.0",
+  "description": "Shared compiler kernel for mechanical Flight SDK target ports",
+  "author": "Joshua Granick and other contributors",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/flighthq/flight-compiler.git",
+    "directory": "packages/tool-compiler"
+  },
+  "type": "module",
+  "main": "dist/packages/tool-compiler/src/index.js",
+  "types": "dist/packages/tool-compiler/src/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/packages/tool-compiler/src/index.d.ts",
+      "default": "./dist/packages/tool-compiler/src/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE.md"
+  ],
+  "sideEffects": false,
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "prepack": "npm --prefix ../.. run clean && npm --prefix ../.. run build",
+    "test": "vitest run --config ../../vitest.config.package.ts --root .",
+    "test:watch": "vitest --config ../../vitest.config.package.ts --root .",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "typescript": "5.9.3"
+  }
+}

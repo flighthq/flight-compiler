@@ -4,12 +4,12 @@
     "declaration": true,
     "declarationMap": true,
     "noEmit": false,
-    "outDir": "dist",
+    "outDir": "packages/tool-compiler/dist",
     "rewriteRelativeImportExtensions": true,
     "rootDir": ".",
     "sourceMap": true,
     "types": ["node"]
   },
-  "include": ["packages/*/src/**/*.ts", "src/**/*.ts"],
+  "include": ["packages/*/src/**/*.ts"],
   "exclude": ["**/*.test.ts"]
 }

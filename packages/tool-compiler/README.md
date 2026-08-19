@@ -16,7 +16,7 @@ The package's intended ownership is the complete source-compilation path:
 
 Development follows Flight's package-per-domain architecture. Nine private `@flighthq/compiler-*` workspaces isolate contracts, analysis, provenance, patches, emission, target backends, and orchestration; the public `packages/tool-compiler` workspace assembles them into one self-contained artifact. The repository root is a private development workspace. Source trees are flat, contracts are centralized in `compiler-types`, and implementations use functions and plain data instead of classes.
 
-The architecture and health foundation are in place, but the current compiler is not yet a drop-in replacement for the generators in `flight-hx` or `flight-rs`. See the [compiler migration roadmap](agents/compiler-migration-roadmap.md) for the readiness estimate, parity criteria, and extraction sequence.
+The architecture and health foundation are in place, but the current compiler is not yet a drop-in replacement for the generators in `flight-hx` or `flight-rs`. See the [compiler migration roadmap](https://github.com/flighthq/flight-compiler/blob/main/agents/compiler-migration-roadmap.md) for the readiness estimate, parity criteria, and extraction sequence.
 
 ## Install
 
@@ -46,7 +46,7 @@ npm run fix
 npm run check
 ```
 
-`npm run check` validates every workspace manifest and dependency boundary, formats, lints, type-checks each package, runs both isolated and coverage test lanes, builds the assembled artifact, and inspects the package tarball. See [AGENTS.md](AGENTS.md) for architecture and contribution rules.
+`npm run check` validates every workspace manifest and dependency boundary, formats, lints, type-checks each package, runs both isolated and coverage test lanes, builds the assembled artifact, and inspects the package tarball. See the repository [AGENTS.md](https://github.com/flighthq/flight-compiler/blob/main/AGENTS.md) for architecture and contribution rules.
 
 ## License
 

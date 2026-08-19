@@ -11,13 +11,18 @@ interface PackageManifest {
   dependencies?: Record<string, string>;
   description?: string;
   devDependencies?: Record<string, string>;
+  engines?: Record<string, string>;
+  exports?: Record<string, { default?: string; types?: string }>;
+  files?: string[];
   license?: string;
+  main?: string;
   name?: string;
   private?: boolean;
   repository?: { directory?: string; type?: string; url?: string };
   scripts?: Record<string, string>;
   sideEffects?: boolean;
   type?: string;
+  types?: string;
   version?: string;
 }
 
@@ -72,24 +77,29 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const packagesDirectory = path.join(root, 'packages');
 const errors: string[] = [];
 const packageNames = Object.keys(packageRules).sort();
+const publicPackageName = 'tool-compiler';
+const workspaceNames = [...packageNames, publicPackageName].sort();
 const discoveredPackages = readdirSync(packagesDirectory, { withFileTypes: true })
   .filter((entry) => entry.isDirectory())
   .map((entry) => entry.name)
   .sort();
 
 check(
-  JSON.stringify(discoveredPackages) === JSON.stringify(packageNames),
-  `workspace directories differ from the cultivated package set\n  expected: ${packageNames.join(', ')}\n  received: ${discoveredPackages.join(', ')}`,
+  JSON.stringify(discoveredPackages) === JSON.stringify(workspaceNames),
+  `workspace directories differ from the cultivated package set\n  expected: ${workspaceNames.join(', ')}\n  received: ${discoveredPackages.join(', ')}`,
 );
 
 const rootManifest = readJson<PackageManifest & { workspaces?: string[] }>(path.join(root, 'package.json'));
-check(rootManifest?.name === '@flighthq/tool-compiler', 'root package must be @flighthq/tool-compiler');
-check(rootManifest?.private !== true, 'root package must remain publishable');
+const publicPackageDirectory = path.join(packagesDirectory, publicPackageName);
+const publicManifest = readJson<PackageManifest>(path.join(publicPackageDirectory, 'package.json'));
+check(rootManifest?.name === 'flight-compiler', 'root package must be flight-compiler');
+check(rootManifest?.private === true, 'root development workspace must remain private');
 check(
   JSON.stringify(rootManifest?.workspaces) === JSON.stringify(['packages/*']),
   'root workspaces must be exactly ["packages/*"]',
 );
 
+checkPublicPackage();
 for (const packageName of packageNames) checkPackage(packageName, packageRules[packageName]!);
 checkDependencyCycles();
 checkPublicFacade();
@@ -100,7 +110,92 @@ if (errors.length > 0) {
   process.exit(1);
 }
 
-process.stdout.write(`Package health passed for ${String(packageNames.length)} private compiler packages.\n`);
+process.stdout.write(
+  `Package health passed for ${String(packageNames.length)} private compiler packages and @flighthq/tool-compiler.\n`,
+);
+
+function checkPublicPackage(): void {
+  if (!publicManifest) {
+    errors.push(`${publicPackageName}: package.json is missing or invalid`);
+    return;
+  }
+
+  check(publicManifest.name === '@flighthq/tool-compiler', 'tool-compiler: public package name is invalid');
+  check(publicManifest.version === '0.0.0', 'tool-compiler: initial package version must be 0.0.0');
+  check(
+    publicManifest.description === 'Shared compiler kernel for mechanical Flight SDK target ports',
+    'tool-compiler: description differs from the cultivated contract',
+  );
+  check(publicManifest.author === rootManifest?.author, 'tool-compiler: author must match root');
+  check(publicManifest.license === rootManifest?.license, 'tool-compiler: license must match root');
+  check(publicManifest.private !== true, 'tool-compiler: public package must remain publishable');
+  check(publicManifest.type === 'module', 'tool-compiler: type must be module');
+  check(publicManifest.sideEffects === false, 'tool-compiler: sideEffects must be false');
+  check(publicManifest.repository?.type === 'git', 'tool-compiler: repository type must be git');
+  check(
+    publicManifest.repository?.url === rootManifest?.repository?.url,
+    'tool-compiler: repository URL must match root',
+  );
+  check(
+    publicManifest.repository?.directory === 'packages/tool-compiler',
+    'tool-compiler: repository directory must identify its workspace',
+  );
+  check(
+    publicManifest.main === 'dist/packages/tool-compiler/src/index.js',
+    'tool-compiler: main must identify the assembled JavaScript facade',
+  );
+  check(
+    publicManifest.types === 'dist/packages/tool-compiler/src/index.d.ts',
+    'tool-compiler: types must identify the assembled declaration facade',
+  );
+  check(
+    publicManifest.exports?.['.']?.default === './dist/packages/tool-compiler/src/index.js' &&
+      publicManifest.exports['.']?.types === './dist/packages/tool-compiler/src/index.d.ts',
+    'tool-compiler: exports must expose the assembled facade',
+  );
+  check(
+    JSON.stringify(publicManifest.files) === JSON.stringify(['dist', 'README.md', 'LICENSE.md']),
+    'tool-compiler: files must contain only dist and package documentation',
+  );
+  check(publicManifest.engines?.node === '>=22', 'tool-compiler: Node.js engine must be >=22');
+  check(
+    publicManifest.dependencies?.typescript === rootManifest?.devDependencies?.typescript,
+    'tool-compiler: TypeScript dependency must match the repository toolchain',
+  );
+  for (const dependency of packageNames) {
+    check(
+      publicManifest.dependencies?.[`@flighthq/${dependency}`] === undefined &&
+        publicManifest.devDependencies?.[`@flighthq/${dependency}`] === undefined,
+      `tool-compiler: assembled private package @flighthq/${dependency} must not be declared`,
+    );
+  }
+  for (const script of ['prepack', 'test', 'test:watch', 'typecheck']) {
+    check(typeof publicManifest.scripts?.[script] === 'string', `tool-compiler: missing ${script} script`);
+  }
+  check(existsSync(path.join(publicPackageDirectory, 'tsconfig.json')), 'tool-compiler: missing tsconfig.json');
+
+  const sourceDirectory = path.join(publicPackageDirectory, 'src');
+  check(existsSync(path.join(sourceDirectory, 'index.ts')), 'tool-compiler: missing src/index.ts');
+  const sourceEntries = existsSync(sourceDirectory) ? readdirSync(sourceDirectory, { withFileTypes: true }) : [];
+  for (const entry of sourceEntries) {
+    check(!entry.isDirectory(), `tool-compiler: src must remain flat; found src/${entry.name}`);
+  }
+  check(
+    sourceEntries.some((entry) => entry.isFile() && entry.name.endsWith('.test.ts')),
+    'tool-compiler: at least one colocated unit test is required',
+  );
+  for (const fileName of ['LICENSE.md', 'README.md']) {
+    const rootFile = path.join(root, fileName);
+    const packageFile = path.join(publicPackageDirectory, fileName);
+    check(existsSync(packageFile), `tool-compiler: missing ${fileName}`);
+    if (fileName === 'LICENSE.md' && existsSync(packageFile)) {
+      check(
+        readFileSync(packageFile, 'utf8') === readFileSync(rootFile, 'utf8'),
+        `tool-compiler: ${fileName} differs from root`,
+      );
+    }
+  }
+}
 
 function checkPackage(packageName: string, rule: Readonly<PackageRule>): void {
   const packageDirectory = path.join(packagesDirectory, packageName);
@@ -113,7 +208,7 @@ function checkPackage(packageName: string, rule: Readonly<PackageRule>): void {
 
   const scopedName = `@flighthq/${packageName}`;
   check(manifest.name === scopedName, `${packageName}: package name must be ${scopedName}`);
-  check(manifest.version === rootManifest?.version, `${packageName}: version must match the public package`);
+  check(manifest.version === publicManifest?.version, `${packageName}: version must match the public package`);
   check(manifest.description === rule.description, `${packageName}: description differs from the cultivated contract`);
   check(manifest.author === rootManifest?.author, `${packageName}: author must match the public package`);
   check(manifest.license === rootManifest?.license, `${packageName}: license must match the public package`);
@@ -230,13 +325,23 @@ function checkDependencyCycles(): void {
 }
 
 function checkPublicFacade(): void {
-  const facade = path.join(root, 'src', 'index.ts');
+  const facade = path.join(publicPackageDirectory, 'src', 'index.ts');
+  if (!existsSync(facade)) return;
   const sourceFile = ts.createSourceFile(facade, readFileSync(facade, 'utf8'), ts.ScriptTarget.Latest, true);
-  const exportedPackages = new Set(
-    collectModuleSpecifiers(sourceFile)
-      .map((specifier) => resolveCompilerPackageImport(facade, specifier))
-      .filter((value): value is string => value !== undefined),
-  );
+  const exportedPackages = new Set<string>();
+  for (const statement of sourceFile.statements) {
+    check(ts.isExportDeclaration(statement), 'tool-compiler: public facade may contain only export declarations');
+  }
+  for (const specifier of collectModuleSpecifiers(sourceFile)) {
+    const exportedPackage = resolveCompilerPackageImport(facade, specifier);
+    check(exportedPackage !== undefined, `tool-compiler: public facade contains unsupported export ${specifier}`);
+    if (!exportedPackage) continue;
+    exportedPackages.add(exportedPackage);
+    check(
+      specifier === `../../${exportedPackage}/src/index.js`,
+      `tool-compiler: public facade exports must use ${exportedPackage}/src/index.js`,
+    );
+  }
   checkSet('public facade', 'workspace exports', exportedPackages, new Set(packageNames));
 }
 

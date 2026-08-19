@@ -1,9 +1,9 @@
 {
-  "name": "@flighthq/tool-compiler",
-  "version": "0.0.0",
-  "description": "Shared compiler kernel for mechanical Flight SDK target ports",
+  "name": "flight-compiler",
+  "description": "Development workspace for the shared Flight SDK target compiler",
   "author": "Joshua Granick and other contributors",
   "license": "MIT",
+  "private": true,
   "repository": {
     "type": "git",
     "url": "https://github.com/flighthq/flight-compiler.git"
@@ -12,20 +12,6 @@
   "workspaces": [
     "packages/*"
   ],
-  "main": "dist/src/index.js",
-  "types": "dist/src/index.d.ts",
-  "exports": {
-    ".": {
-      "types": "./dist/src/index.d.ts",
-      "default": "./dist/src/index.js"
-    }
-  },
-  "files": [
-    "dist",
-    "README.md",
-    "LICENSE.md"
-  ],
-  "sideEffects": false,
   "engines": {
     "node": ">=22"
   },
@@ -43,21 +29,18 @@
     "lint:fix": "oxlint --fix --max-warnings=0",
     "pack:check": "npm run build --silent && node ./.script-build/pack-check.js",
     "packages:check": "npm run _scripts:build --silent && node ./.script-build/packages.js",
-    "prepack": "npm run clean && npm run build",
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",
     "test:packages": "npm run _scripts:build --silent && node ./.script-build/test-packages.js",
     "test:watch": "vitest",
     "typecheck": "npm run _scripts:build --silent && node ./.script-build/typecheck.js"
   },
-  "dependencies": {
-    "typescript": "5.9.3"
-  },
   "devDependencies": {
     "@types/node": "22.19.7",
     "@vitest/coverage-v8": "4.1.10",
     "oxfmt": "0.57.0",
     "oxlint": "1.72.0",
+    "typescript": "5.9.3",
     "vitest": "4.1.10"
   }
 }

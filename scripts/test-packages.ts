@@ -37,17 +37,9 @@ for (const target of targets) {
   if (result.status !== 0) failures.push(target.manifest.name);
 }
 
-process.stdout.write('\n▶ @flighthq/tool-compiler public facade\n');
-const publicResult = spawnSync(
-  path.join(root, 'node_modules', '.bin', process.platform === 'win32' ? 'vitest.cmd' : 'vitest'),
-  ['run', '--config', 'vitest.config.package.ts', '--root', '.', 'src/index.test.ts'],
-  { cwd: root, stdio: 'inherit' },
-);
-if (publicResult.status !== 0) failures.push('@flighthq/tool-compiler');
-
 if (failures.length > 0) {
   process.stderr.write(`\n${String(failures.length)} package test target(s) failed: ${failures.join(', ')}\n`);
   process.exit(1);
 }
 
-process.stdout.write(`\n${String(targets.length + 1)} package test targets passed.\n`);
+process.stdout.write(`\n${String(targets.length)} package test targets passed.\n`);

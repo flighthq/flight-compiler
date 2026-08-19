@@ -35,7 +35,7 @@ Flat source trees keep navigation shallow without forcing a domain into one larg
 
 The `compiler-` prefix distinguishes internal compiler packages from standard Flight packages. Target backend workspace names use the established ecosystem abbreviations `hx` and `rs`; report and language API identifiers remain `haxe` and `rust`.
 
-The root package is the only publishable unit. Its build preserves workspace separation beneath `dist/` while rewriting imports to relative JavaScript paths, so installing `@flighthq/tool-compiler` never requires an unpublished internal package. The package-health and pack-health gates enforce this topology.
+The repository root is private and owns development orchestration. `packages/tool-compiler` is the only publishable workspace. Its build preserves workspace separation beneath the package's `dist/` while rewriting imports to relative JavaScript paths, so installing `@flighthq/tool-compiler` never requires an unpublished internal package. The package-health and pack-health gates enforce this topology.
 
 Compiler implementation is functional: transformations receive explicit inputs and capability records and return plain data. Failures are tagged values with type guards rather than class hierarchies. This keeps each domain independently unit-testable and makes orchestration state visible at its boundary.
 

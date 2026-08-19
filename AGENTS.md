@@ -37,11 +37,12 @@ The repository follows Flight's package-per-domain convention. Internal workspac
 - `packages/compiler-backend-hx/`: Haxe-specific lowering, naming, and source emission.
 - `packages/compiler-backend-rs/`: Rust-specific lowering, naming, and source emission.
 - `packages/compiler-orchestration/`: deterministic pipeline composition.
-- `src/index.ts`: the cultivated public `@flighthq/tool-compiler` facade.
+- `packages/tool-compiler/`: the only public workspace and the cultivated `@flighthq/tool-compiler` facade.
 - `scripts/`: repository health, isolated testing, typecheck, clean, and package-artifact gates.
+- `agents/`: durable agent-facing indexes, roadmaps, and migration state.
 - `docs/`: durable architecture and migration decisions.
 
-Every workspace keeps a flat `src/` and colocates its unit tests. Cross-package imports go through the dependency package's `src/index.js`. Internal packages are private development boundaries; the root build assembles them into the single public package and must not leave private package specifiers in JavaScript or declarations.
+Every workspace keeps a flat `src/` and colocates its unit tests. Cross-package imports go through the dependency package's `src/index.js`. Internal packages are private development boundaries; the repository root is a private orchestration workspace, and its build assembles them into the single public package without leaving private package specifiers in JavaScript or declarations.
 
 A flat source tree is not a one-file rule. Split a large concern into focused sibling files within the same `src/` before creating another workspace. Add a workspace only for a distinct domain contract, dependency boundary, or lifecycle that benefits from independent health and unit-test gates.
 
@@ -76,11 +77,11 @@ Use npm, not pnpm or Yarn. Node.js 22 or newer is required.
 - `npm run fix`: apply Oxlint fixes and Oxfmt formatting after edits.
 - `npm run check`: complete deterministic gate; run before handoff.
 - `npm run test`: run Vitest once.
-- `npm run test:packages`: run every private package in isolation, then the public facade.
+- `npm run test:packages`: run every private package and the public package in isolation.
 - `npm run test:coverage`: run all unit tests together with aggregate instrumentation. The complete gate intentionally runs tests once in isolation and again for coverage because these lanes prove different properties.
 - `npm run typecheck`: run the root and every workspace's strict no-emit check, collecting failures.
 - `npm run packages:check`: enforce manifests, flat source trees, dependency declarations and acyclicity, centralized contracts, class-free implementation, tests, and public-facade completeness.
-- `npm run build`: clean stale output and assemble ESM JavaScript, declarations, maps, and declaration maps in `dist/`.
+- `npm run build`: clean stale output and assemble ESM JavaScript, declarations, maps, and declaration maps in `packages/tool-compiler/dist/`.
 - `npm run pack:check`: build fresh, inspect the publishable tarball, and prove every private workspace is assembled without leaking private imports or source/tests.
 
 Tests should use temporary fixture workspaces and assert both success and fail-loudly behavior. Compiler changes require a focused regression covering the smallest syntax or graph shape that exposes the rule. Tests must not depend on a network checkout.

@@ -21,7 +21,7 @@ const packages = readdirSync(path.join(root, 'packages'), { withFileTypes: true 
   .map((entry) => entry.name)
   .sort();
 const targets: TypecheckTarget[] = [
-  { config: 'tsconfig.json', label: '@flighthq/tool-compiler' },
+  { config: 'tsconfig.json', label: 'flight-compiler repository' },
   ...packages.map((packageName) => ({
     config: `packages/${packageName}/tsconfig.json`,
     label: `@flighthq/${packageName}`,
