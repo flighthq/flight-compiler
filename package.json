@@ -35,14 +35,26 @@
     "test:coverage": "vitest run --coverage",
     "test:packages": "npm run _scripts:build --silent && node ./.script-build/isolatedPackageTest.js",
     "test:watch": "vitest",
-    "typecheck": "npm run _scripts:build --silent && node ./.script-build/workspaceTypecheck.js"
+    "typecheck": "npm run _scripts:build --silent && node ./.script-build/workspaceTypecheck.js",
+    "prepare": "husky"
   },
   "devDependencies": {
+    "@commitlint/cli": "19.8.1",
+    "@commitlint/config-conventional": "19.8.1",
     "@types/node": "22.19.7",
     "@vitest/coverage-v8": "4.1.10",
+    "husky": "9.1.7",
+    "lint-staged": "16.4.0",
     "oxfmt": "0.57.0",
     "oxlint": "1.72.0",
     "typescript": "5.9.3",
     "vitest": "4.1.10"
+  },
+  "lint-staged": {
+    "**/*.{ts,tsx}": [
+      "oxlint --fix --max-warnings=0 --no-error-on-unmatched-pattern",
+      "oxfmt --write --no-error-on-unmatched-pattern"
+    ],
+    "**/*.{json,md}": "oxfmt --write --no-error-on-unmatched-pattern"
   }
 }
