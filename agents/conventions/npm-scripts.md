@@ -81,3 +81,4 @@ A citation written as a bare backticked script name with no `npm run` lead is re
 | `build`                   | clean stale output and assemble the public artifact                            |
 | `pack:check`              | build fresh, then inspect the publishable tarball                              |
 | `clean` / `clean:dist`    | remove generated output / remove distribution output only                      |
+| `mutation`                | report surviving mutants for one package; a worklist, not a gate               |

@@ -71,6 +71,10 @@ Pick the instrument from the plausible shape of wrongness:
 
 Apply an instrument where its failure model is plausible, rather than applying every instrument everywhere.
 
+`npm run mutation -- <package>` substitutes one operator at a time and reruns that file's colocated test. The mutated text is served from memory and never written to disk, so the working tree is untouched even if the run is interrupted, and a substitution that would not change the source throws rather than reporting a survivor from an edit that never happened.
+
+It is not part of `npm run check`: one mutant costs a whole Vitest start, so the instrument is minutes where the gates are seconds. A surviving mutant is a question. Some survivors are equivalent mutants no test could distinguish; others mark an assertion that cannot fail. Read the line before concluding either.
+
 ## Coverage ratchets
 
 The thresholds in `vitest.config.ts` are enforced floors that sit just below the measured baseline, so a regression fails immediately. Maintain or raise them as exercised surface grows; lowering one requires an explicit architectural justification recorded with the change.
