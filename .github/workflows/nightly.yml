@@ -33,3 +33,5 @@ jobs:
           node-version: 22
       - run: npm ci
       - run: npm run ci
+      # The one lane allowed to reach the network: it installs the packed tarball as a consumer would.
+      - run: npm run smoke
