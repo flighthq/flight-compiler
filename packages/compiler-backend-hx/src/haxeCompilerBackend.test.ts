@@ -64,6 +64,18 @@ describe('emitIrModuleHaxe', () => {
     expect(() => emitIrModuleHaxe(fallthrough.module)).toThrow('switch fallthrough');
   });
 
+  it('rejects undefined expressions without Haxe nullability lowering', () => {
+    const nullable = lower('nullable.ts', 'export function nullable(): string | null { return null; }');
+    const undefinedValue = lower('missing.ts', 'export function missing(): undefined { return undefined; }');
+
+    expect(emitIrModuleHaxe(nullable.module).contents).toContain(
+      'static function nullable():Null<String> {\n    return null;',
+    );
+    expect(() => emitIrModuleHaxe(undefinedValue.module)).toThrow(
+      'undefined expressions require Haxe nullability lowering',
+    );
+  });
+
   it('preserves final locals and abstract classes', () => {
     const result = lower(
       'base.ts',

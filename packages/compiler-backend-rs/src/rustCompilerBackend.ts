@@ -195,6 +195,9 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
           : `|${expression.parameters.map((parameter) => safeRustValueName(parameter.name)).join(', ')}| {\n${indentSourceLines(emitStatements(expression.body, functionContext)).join('\n')}\n}`;
       }
     case 'identifier':
+      if (expression.name === 'undefined') {
+        emissionError(context, 'undefined expressions require Rust Option-aware lowering');
+      }
       return context.localNames.has(expression.name)
         ? safeRustValueName(expression.name)
         : (context.constants.get(expression.name) ?? safeRustValueName(expression.name));
@@ -292,8 +295,8 @@ function emitLiteral(value: boolean | null | number | string): string {
 
 function emitParameter(parameter: Readonly<IrParameter>, context: EmitContext): string {
   if (parameter.initializer) emissionError(context, `default parameter ${parameter.name} requires call-site lowering`);
-  if (parameter.optional) {
-    return `${safeRustValueName(parameter.name)}: Option<${emitType(parameter.type, context)}>`;
+  if (parameter.optional || isNullableType(parameter.type)) {
+    emissionError(context, `nullable parameter ${parameter.name} requires Option-aware Rust control-flow lowering`);
   }
   if (parameter.rest) return `${safeRustValueName(parameter.name)}: Vec<${emitType(parameter.type, context)}>`;
   return `${safeRustValueName(parameter.name)}: ${emitType(parameter.type, context)}`;
@@ -505,6 +508,14 @@ function mapOperator(operator: string, assignment: boolean, context: EmitContext
   if (operator === '===' || operator === '==') return '==';
   if (operator === '!==' || operator === '!=') return '!=';
   return operator;
+}
+
+function isNullableType(type: Readonly<IrType>): boolean {
+  return (
+    type.kind === 'null' ||
+    type.kind === 'undefined' ||
+    (type.kind === 'union' && type.types.some((member) => member.kind === 'null' || member.kind === 'undefined'))
+  );
 }
 
 function withLocalNames(

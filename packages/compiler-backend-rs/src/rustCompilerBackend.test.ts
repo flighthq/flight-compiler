@@ -83,6 +83,39 @@ describe('emitIrModuleRust', () => {
     expect(() => emitIrModuleRust(fallthrough.module)).toThrow('fallthrough-aware Rust lowering');
   });
 
+  it('rejects nullable parameters and undefined expressions without Option-aware lowering', () => {
+    const nullable = lower(
+      'nullable.ts',
+      'export function nullable(value: number | null): number | null { return value; }',
+    );
+    const optional = lower('optional.ts', 'export function optional(value?: number): number { return 0; }');
+    const undefinedNullable = lower(
+      'undefined-nullable.ts',
+      'export function undefinedNullable(value: number | undefined): number { return 0; }',
+    );
+    const nullableReturn = lower(
+      'nullable-return.ts',
+      'export function nullableReturn(): number | null { return null; }',
+    );
+    const undefinedValue = lower('missing.ts', 'export function missing(): undefined { return undefined; }');
+
+    expect(() => emitIrModuleRust(nullable.module)).toThrow(
+      'nullable parameter value requires Option-aware Rust control-flow lowering',
+    );
+    expect(() => emitIrModuleRust(optional.module)).toThrow(
+      'nullable parameter value requires Option-aware Rust control-flow lowering',
+    );
+    expect(() => emitIrModuleRust(undefinedNullable.module)).toThrow(
+      'nullable parameter value requires Option-aware Rust control-flow lowering',
+    );
+    expect(emitIrModuleRust(nullableReturn.module).contents).toContain(
+      'pub fn nullable_return() -> Option<f64> {\n  return None;',
+    );
+    expect(() => emitIrModuleRust(undefinedValue.module)).toThrow(
+      'undefined expressions require Rust Option-aware lowering',
+    );
+  });
+
   it('rejects class state and default parameters that would otherwise be dropped', () => {
     const staticField = lower('config.ts', 'export class Config { static limit: number = 3; value: number = 1; }');
     const defaultParameter = lower('default.ts', 'export function read(value: number = 1): number { return value; }');

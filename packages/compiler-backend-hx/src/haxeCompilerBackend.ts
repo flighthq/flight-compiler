@@ -169,6 +169,9 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
         ? `function(${emitParameters(expression.parameters, context)}) return ${emitExpression(expression.expression, context)}`
         : `function(${emitParameters(expression.parameters, context)}) {\n${indentSourceLines(emitStatements(expression.body, context)).join('\n')}\n}`;
     case 'identifier':
+      if (expression.name === 'undefined') {
+        emissionError(context, 'undefined expressions require Haxe nullability lowering');
+      }
       return safeHaxeName(expression.name);
     case 'literal':
       return emitLiteral(expression.value);
