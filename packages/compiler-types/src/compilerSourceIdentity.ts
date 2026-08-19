@@ -11,8 +11,13 @@ export interface CompilerExportIdentity extends CompilerSourceIdentity {
   readonly exportName: string;
 }
 
-export interface CompilerSourceOrigin extends CompilerSourceIdentity {
+export interface CompilerSourceLocation extends CompilerSourceIdentity {
+  /** One-based source column. */
   readonly column: number;
-  readonly fingerprint: string;
+  /** One-based source line. */
   readonly line: number;
+}
+
+export interface CompilerSourceOrigin extends CompilerSourceLocation {
+  readonly fingerprint: string;
 }

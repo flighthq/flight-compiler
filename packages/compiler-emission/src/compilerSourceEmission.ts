@@ -2,22 +2,25 @@ import path from 'node:path';
 
 import type {
   BackendEmissionFailure,
+  BackendEmissionFailureCode,
   CompilerInvariantCode,
   CompilerInvariantFailure,
+  CompilerSourceIdentity,
   EmittedFile,
 } from '../../compiler-types/src/index.js';
 
-const compilerInvariantCodes = {
-  'duplicate-emitted-path': true,
-  'duplicate-module-identity': true,
-  'unsafe-emitted-path': true,
-} as const satisfies Readonly<Record<CompilerInvariantCode, true>>;
-
-export function createBackendEmissionFailure(backend: string, source: string, message: string): BackendEmissionFailure {
-  const failure = Object.assign(new Error(`${backend} emission failed for ${source}: ${message}`), {
+export function createBackendEmissionFailure(
+  backend: string,
+  sourceIdentity: Readonly<CompilerSourceIdentity>,
+  message: string,
+): BackendEmissionFailure {
+  const subject = `${sourceIdentity.packageName}/${sourceIdentity.source}`;
+  const failure = Object.assign(new Error(`${backend} emission failed for ${subject}: ${message}`), {
     backend,
+    code: 'unsupported-ir' as const,
     kind: 'backend-emission' as const,
-    source,
+    packageName: sourceIdentity.packageName,
+    source: sourceIdentity.source,
   });
   failure.name = 'BackendEmissionError';
   return failure;
@@ -49,6 +52,11 @@ export function isBackendEmissionFailure(value: unknown): value is BackendEmissi
     value.kind === 'backend-emission' &&
     'backend' in value &&
     typeof value.backend === 'string' &&
+    'code' in value &&
+    typeof value.code === 'string' &&
+    Object.hasOwn(backendEmissionFailureCodes, value.code) &&
+    'packageName' in value &&
+    typeof value.packageName === 'string' &&
     'source' in value &&
     typeof value.source === 'string'
   );
@@ -100,3 +108,13 @@ function isUnsafePortablePathSegment(segment: string): boolean {
     /^(?:AUX|COM[1-9]|CON|LPT[1-9]|NUL|PRN)(?:\..*)?$/iu.test(segment)
   );
 }
+
+const backendEmissionFailureCodes = {
+  'unsupported-ir': true,
+} as const satisfies Readonly<Record<BackendEmissionFailureCode, true>>;
+
+const compilerInvariantCodes = {
+  'duplicate-emitted-path': true,
+  'duplicate-module-identity': true,
+  'unsafe-emitted-path': true,
+} as const satisfies Readonly<Record<CompilerInvariantCode, true>>;

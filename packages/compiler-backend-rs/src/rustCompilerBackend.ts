@@ -496,7 +496,7 @@ function emitVariableDeclaration(declaration: Readonly<IrVariableDeclaration>, c
 }
 
 function emissionError(context: EmitContext, message: string): never {
-  throw createBackendEmissionFailure('rust', context.module.source, message);
+  throw createBackendEmissionFailure('rust', context.module, message);
 }
 
 function mapOperator(operator: string, assignment: boolean, context: EmitContext): string {

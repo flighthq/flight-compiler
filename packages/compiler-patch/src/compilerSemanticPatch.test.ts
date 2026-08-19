@@ -174,8 +174,15 @@ describe('isSemanticPatchFailure', () => {
       patchIds: [1],
       subject: 'fixture',
     });
+    const internalInvariant = Object.assign(new Error('forged patch failure'), {
+      code: 'patch-index-desynchronized',
+      kind: 'semantic-patch',
+      patchIds: ['fixture'],
+      subject: 'fixture',
+    });
 
     expect(isSemanticPatchFailure(valid)).toBe(true);
+    expect(isSemanticPatchFailure(internalInvariant)).toBe(true);
     expect(isSemanticPatchFailure(unknownCode)).toBe(false);
     expect(isSemanticPatchFailure(malformedIds)).toBe(false);
   });

@@ -4,7 +4,9 @@ import type {
   CompilerReport,
 } from './compilerOrchestrationContract.js';
 import type { CompilerBackend } from './compilerBackendContract.js';
+import type { CompilerDiagnostic } from './compilerDiagnosticContract.js';
 import type { IrModule } from './compilerIntermediateRepresentation.js';
+import type { CompilerSourceLocation } from './compilerSourceIdentity.js';
 
 describe('compiler orchestration contracts', () => {
   it('tie backend input, patch audit, diagnostics, compilation, and report schemas together', () => {
@@ -27,9 +29,18 @@ describe('compiler orchestration contracts', () => {
       patchAudit: { applied: [], schema: 'flight-compiler-patch-audit/1', summary: { applied: 0, skipped: 0 } },
       report,
     };
+    const diagnostic: CompilerDiagnostic = {
+      code: 'unsupported-typescript',
+      column: 1,
+      line: 1,
+      message: 'unsupported',
+      packageName: '@flighthq/math',
+      source: 'packages/math/src/value.ts',
+    };
 
     expect(options.modules[0]).toBe(module);
     expect(result.report).toBe(report);
+    expectTypeOf(diagnostic).toMatchTypeOf<CompilerSourceLocation>();
   });
 });
 

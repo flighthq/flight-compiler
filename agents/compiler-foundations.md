@@ -68,6 +68,7 @@ Strengths:
 - Inventory, IR, patches, backends, and reports have explicit schema discriminants where serialized interchange already exists.
 - Representative compile-time composition tests exist for useful contract relationships without imposing one runtime test per type-only source.
 - Source, module, export, and source-origin identities share one readonly vocabulary rather than repeating structural fields.
+- Diagnostics reuse the same globally identified, one-based source-location contract and expose a closed stable code.
 - Public compiler results and nested collections are readonly; implementations build mutable local state and return immutable contracts.
 
 Open foundation work:
@@ -77,7 +78,7 @@ Open foundation work:
 - There is no versioned serialization/parser boundary for persisted IR; adding one prematurely would freeze the provisional model.
 - Contract tests prove representative composition but do not yet exhaust every discriminated family.
 
-Decision: do not declare the IR stable or publish a serialized IR format. Source, module, export, source-origin, and semantic-patch target identity are now locked as readonly structural contracts. Continue one family at a time with diagnostics/failures and emitted files before reviewing expression breadth.
+Decision: do not declare the IR stable or publish a serialized IR format. Source, module, export, source-location, source-origin, and semantic-patch target identity, together with diagnostic and bedrock failure contracts, are now locked as readonly structural contracts. Continue with emitted-file identity before reviewing expression breadth.
 
 ### `compiler-provenance`
 
@@ -101,7 +102,7 @@ Strengths:
 - Application clones input, orders neutral work before backend work, and emits a versioned audit.
 - Inactive backend patches remain visible as skipped rather than disappearing.
 
-This pass makes patch target fields self-identifying, gives every failure a stable code and guard, covers all four operations, exercises ambiguity/conflict/staleness/kind failures, and proves input immutability. A future change should add an explicit patch-document parser only when patches are loaded from untyped external data; the in-memory typed constructor does not justify one yet.
+This pass makes patch target fields self-identifying, gives every expected and defensive invariant failure a stable code and guard, covers all four operations, exercises ambiguity/conflict/staleness/kind failures, and proves input immutability. A future change should add an explicit patch-document parser only when patches are loaded from untyped external data; the in-memory typed constructor does not justify one yet.
 
 ### `compiler-emission`
 
@@ -113,7 +114,7 @@ Strengths:
 - Backend and compiler-invariant failures are tagged plain `Error` records.
 - Emitted files remain target-neutral plain data.
 
-This pass rejects POSIX, Windows drive, UNC, traversal, empty-segment, reserved-device, invalid-character, trailing-dot/space, and NUL paths; canonicalizes all line endings; validates failure guards structurally; and covers empty output and indentation boundaries. Duplicate output identity remains an orchestration concern because it requires the complete emitted set.
+This pass rejects POSIX, Windows drive, UNC, traversal, empty-segment, reserved-device, invalid-character, trailing-dot/space, and NUL paths; canonicalizes all line endings; gives backend failures a stable code and global package/source identity; validates failure guards structurally; and covers empty output and indentation boundaries. Duplicate output identity remains an orchestration concern because it requires the complete emitted set.
 
 ## Package isolation review
 
@@ -121,7 +122,7 @@ Each workspace passes its own strict typecheck and Vitest target. The package bo
 
 | Package | Isolation conclusion | Current robustness boundary |
 | --- | --- | --- |
-| `compiler-types` | Keep independent as the dependency-free vocabulary floor. | Strict typecheck and focused composition tests cover useful relationships; identity and readonly collection boundaries are explicit, while IR completeness remains open. |
+| `compiler-types` | Keep independent as the dependency-free vocabulary floor. | Strict typecheck and focused composition tests cover useful relationships; identity, source location, diagnostics/failures, and readonly collection boundaries are explicit, while IR completeness remains open. |
 | `compiler-provenance` | Keep independent as one narrow identity primitive. | Equivalence, counterexample, empty, Unicode, path, line-ending, raw-text, and TypeScript-version behavior are locked. |
 | `compiler-patch` | Keep independent because patch identity and auditing are a separate lifecycle. | All operations and failure codes, deterministic ordering, backend skipping, and caller-input immutability are exercised. |
 | `compiler-emission` | Keep independent as the portable emitted-file and backend-failure seam. | Host-path rejection, content normalization, indentation boundaries, and tagged failure guards are exercised. |

@@ -1,7 +1,8 @@
-export interface CompilerDiagnostic {
-  readonly code: string;
-  readonly column: number;
-  readonly line: number;
+import type { CompilerSourceLocation } from './compilerSourceIdentity.js';
+
+export type CompilerDiagnosticCode = 'unsupported-typescript';
+
+export interface CompilerDiagnostic extends CompilerSourceLocation {
+  readonly code: CompilerDiagnosticCode;
   readonly message: string;
-  readonly source: string;
 }

@@ -1,4 +1,5 @@
 import type { IrModule } from './compilerIntermediateRepresentation.js';
+import type { CompilerSourceIdentity } from './compilerSourceIdentity.js';
 
 export interface EmittedFile {
   readonly contents: string;
@@ -20,10 +21,12 @@ export interface BackendCompilation {
   readonly files: readonly EmittedFile[];
 }
 
-export interface BackendEmissionFailure extends Error {
+export type BackendEmissionFailureCode = 'unsupported-ir';
+
+export interface BackendEmissionFailure extends Error, CompilerSourceIdentity {
   readonly backend: string;
+  readonly code: BackendEmissionFailureCode;
   readonly kind: 'backend-emission';
-  readonly source: string;
 }
 
 export interface HaxeCompilerBackendOptions {

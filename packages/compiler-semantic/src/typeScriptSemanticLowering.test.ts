@@ -64,6 +64,21 @@ describe('lowerTypeScriptSource', () => {
     expect(parameterProperty.diagnostics[0]?.message).toContain('parameter properties');
   });
 
+  it('returns stable globally identified one-based diagnostics', () => {
+    const result = lower('namespace.ts', 'export namespace Values {}');
+
+    expect(result.diagnostics).toEqual([
+      {
+        code: 'unsupported-typescript',
+        column: 1,
+        line: 1,
+        message: 'namespace declarations are not represented in the neutral IR yet',
+        packageName: '@flighthq/math',
+        source: 'packages/math/src/namespace.ts',
+      },
+    ]);
+  });
+
   it('uses per-declarator fingerprints and lowers negative literal types', () => {
     const result = lower('values.ts', 'export const a = 1, b = 2; export type Sign = -1 | 0 | 1;');
     const [a, b, sign] = result.module.declarations;

@@ -83,7 +83,14 @@ describe('emitIrModuleHaxe', () => {
       expect.unreachable('Expected Haxe emission to fail');
     } catch (error) {
       expect(isBackendEmissionFailure(error)).toBe(true);
-      expect(error).toMatchObject({ backend: 'haxe', kind: 'backend-emission', name: 'BackendEmissionError' });
+      expect(error).toMatchObject({
+        backend: 'haxe',
+        code: 'unsupported-ir',
+        kind: 'backend-emission',
+        name: 'BackendEmissionError',
+        packageName: '@flighthq/math',
+        source: 'packages/math/src/unsupported.ts',
+      });
     }
   });
 });

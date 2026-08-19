@@ -138,6 +138,7 @@ function diagnostic(node: ts.Node, message: string, context: LoweringContext): C
     column: position.character + 1,
     line: position.line + 1,
     message,
+    packageName: context.options.packageName,
     source: relativeSource(context.sourceFile.fileName, context.options.upstreamDirectory),
   };
 }

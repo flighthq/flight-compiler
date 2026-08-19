@@ -1,4 +1,5 @@
 import type {
+  BackendEmissionFailure,
   BackendCompilation,
   BackendEmitContext,
   CompilerBackend,
@@ -7,6 +8,7 @@ import type {
   RustCompilerBackendOptions,
 } from './compilerBackendContract.js';
 import type { IrModule } from './compilerIntermediateRepresentation.js';
+import type { CompilerSourceIdentity } from './compilerSourceIdentity.js';
 
 describe('compiler backend contracts', () => {
   it('represent backend capabilities, options, and output as plain composable data', () => {
@@ -23,6 +25,7 @@ describe('compiler backend contracts', () => {
 
     expect(compilation).toEqual({ backend: 'haxe', files: [file] });
     expect(rustOptions).toEqual({ opaqueHostType: 'FlightHostValue' });
+    expectTypeOf<BackendEmissionFailure>().toMatchTypeOf<CompilerSourceIdentity>();
   });
 });
 

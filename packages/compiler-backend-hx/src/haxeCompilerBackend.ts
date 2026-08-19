@@ -467,7 +467,7 @@ function emitVariableDeclaration(declaration: Readonly<IrVariableDeclaration>, c
 }
 
 function emissionError(context: EmitContext, message: string): never {
-  throw createBackendEmissionFailure('haxe', context.module.source, message);
+  throw createBackendEmissionFailure('haxe', context.module, message);
 }
 
 function haxeImportModule(specifier: string, context: EmitContext): string {

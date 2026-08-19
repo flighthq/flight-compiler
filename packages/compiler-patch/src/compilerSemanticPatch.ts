@@ -109,7 +109,14 @@ export function applySemanticPatchSet(
     }
     const module = output[match.moduleIndex]!;
     const declarationPosition = module.declarations.indexOf(declaration);
-    if (declarationPosition < 0) throw new Error(`Semantic patch index lost declaration ${patch.id}`);
+    if (declarationPosition < 0) {
+      throw createSemanticPatchError(
+        'patch-index-desynchronized',
+        [patch.id],
+        targetSubject(patch.target),
+        `Semantic patch index lost declaration ${patch.id}`,
+      );
+    }
     const declarations = updatedDeclaration
       ? module.declarations.map((item, index) => (index === declarationPosition ? updatedDeclaration : item))
       : module.declarations.filter((_item, index) => index !== declarationPosition);
@@ -255,6 +262,7 @@ const semanticPatchFailureCodes = {
   'conflicting-patch-removal': true,
   'duplicate-patch-id': true,
   'incompatible-patch-operation': true,
+  'patch-index-desynchronized': true,
   'patch-kind-mismatch': true,
   'stale-patch-fingerprint': true,
   'unmatched-patch-target': true,

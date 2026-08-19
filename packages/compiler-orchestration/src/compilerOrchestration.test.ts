@@ -110,27 +110,69 @@ describe('compileTypeScriptModules', () => {
 });
 
 describe('createCompilerDiagnosticsFailure', () => {
-  it('creates a deterministic inspectable failure for ordered diagnostics', () => {
-    const diagnostics: CompilerDiagnostic[] = [
-      { code: 'TS0001', column: 3, line: 2, message: 'unsupported', source: 'value.ts' },
-    ];
+  it('orders and clones globally identified diagnostics without retaining caller input', () => {
+    const late = {
+      code: 'unsupported-typescript' as const,
+      column: 3,
+      line: 2,
+      message: 'late',
+      packageName: '@flighthq/math',
+      source: 'value.ts',
+    };
+    const early = {
+      code: 'unsupported-typescript' as const,
+      column: 1,
+      line: 1,
+      message: 'early',
+      packageName: '@flighthq/core',
+      source: 'index.ts',
+    };
+    const diagnostics: CompilerDiagnostic[] = [late, early];
 
     const failure = createCompilerDiagnosticsFailure(diagnostics);
 
     expect(failure).toBeInstanceOf(Error);
-    expect(failure.diagnostics).toBe(diagnostics);
-    expect(failure.message).toContain('value.ts:2:3 [TS0001] unsupported');
+    expect(failure.diagnostics).not.toBe(diagnostics);
+    expect(failure.diagnostics).toEqual([early, late]);
+    expect(failure.message).toContain('@flighthq/core/index.ts:1:1 [unsupported-typescript] early');
     expect(failure).toMatchObject({ kind: 'compiler-diagnostics', name: 'CompilerDiagnosticsError' });
+
+    diagnostics.reverse();
+    late.message = 'changed';
+    expect(failure.diagnostics).toEqual([early, { ...late, message: 'late' }]);
   });
 });
 
 describe('isCompilerDiagnosticsFailure', () => {
-  it('accepts produced failures and rejects tagged non-Error lookalikes', () => {
+  it('accepts complete produced failures and rejects malformed diagnostics', () => {
     const failure = createCompilerDiagnosticsFailure([]);
+    const diagnostic = {
+      code: 'unsupported-typescript',
+      column: 1,
+      line: 1,
+      message: 'unsupported',
+      packageName: '@flighthq/math',
+      source: 'value.ts',
+    };
+    const unknownCode = Object.assign(new Error('forged'), {
+      diagnostics: [{ ...diagnostic, code: 'future-code' }],
+      kind: 'compiler-diagnostics',
+    });
+    const missingPackage = Object.assign(new Error('forged'), {
+      diagnostics: [{ code: 'unsupported-typescript', column: 1, line: 1, message: 'unsupported', source: 'value.ts' }],
+      kind: 'compiler-diagnostics',
+    });
+    const invalidLocation = Object.assign(new Error('forged'), {
+      diagnostics: [{ ...diagnostic, line: 0 }],
+      kind: 'compiler-diagnostics',
+    });
 
     expect(isCompilerDiagnosticsFailure(failure)).toBe(true);
     expect(isCompilerDiagnosticsFailure({ kind: 'compiler-diagnostics' })).toBe(false);
     expect(isCompilerDiagnosticsFailure(new Error('plain'))).toBe(false);
+    expect(isCompilerDiagnosticsFailure(unknownCode)).toBe(false);
+    expect(isCompilerDiagnosticsFailure(missingPackage)).toBe(false);
+    expect(isCompilerDiagnosticsFailure(invalidLocation)).toBe(false);
   });
 });
 

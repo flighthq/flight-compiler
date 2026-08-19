@@ -8,15 +8,21 @@ import {
 } from './compilerSourceEmission.js';
 
 describe('createBackendEmissionFailure', () => {
-  it('creates an inspectable Error record with backend and source identity', () => {
-    const failure = createBackendEmissionFailure('haxe', 'packages/math/src/value.ts', 'unsupported');
+  it('creates an inspectable Error record with backend, code, and global source identity', () => {
+    const failure = createBackendEmissionFailure(
+      'haxe',
+      { packageName: '@flighthq/math', source: 'packages/math/src/value.ts' },
+      'unsupported',
+    );
 
     expect(failure).toBeInstanceOf(Error);
-    expect(failure.message).toBe('haxe emission failed for packages/math/src/value.ts: unsupported');
+    expect(failure.message).toBe('haxe emission failed for @flighthq/math/packages/math/src/value.ts: unsupported');
     expect(failure).toMatchObject({
       backend: 'haxe',
+      code: 'unsupported-ir',
       kind: 'backend-emission',
       name: 'BackendEmissionError',
+      packageName: '@flighthq/math',
       source: 'packages/math/src/value.ts',
     });
   });
@@ -54,20 +60,44 @@ describe('indentSourceLines', () => {
 
 describe('isBackendEmissionFailure', () => {
   it('accepts complete backend failures and rejects lookalikes', () => {
-    const valid = createBackendEmissionFailure('rust', 'value.ts', 'unsupported');
+    const valid = createBackendEmissionFailure(
+      'rust',
+      { packageName: '@flighthq/math', source: 'value.ts' },
+      'unsupported',
+    );
     const missingBackend = Object.assign(new Error('forged'), {
+      code: 'unsupported-ir',
       kind: 'backend-emission',
+      packageName: '@flighthq/math',
       source: 'value.ts',
     });
     const missingSource = Object.assign(new Error('forged'), {
       backend: 'rust',
+      code: 'unsupported-ir',
       kind: 'backend-emission',
+      packageName: '@flighthq/math',
+    });
+    const unknownCode = Object.assign(new Error('forged'), {
+      backend: 'rust',
+      code: 'future-code',
+      kind: 'backend-emission',
+      packageName: '@flighthq/math',
+      source: 'value.ts',
     });
 
     expect(isBackendEmissionFailure(valid)).toBe(true);
     expect(isBackendEmissionFailure(missingBackend)).toBe(false);
     expect(isBackendEmissionFailure(missingSource)).toBe(false);
-    expect(isBackendEmissionFailure({ backend: 'rust', kind: 'backend-emission', source: 'value.ts' })).toBe(false);
+    expect(isBackendEmissionFailure(unknownCode)).toBe(false);
+    expect(
+      isBackendEmissionFailure({
+        backend: 'rust',
+        code: 'unsupported-ir',
+        kind: 'backend-emission',
+        packageName: '@flighthq/math',
+        source: 'value.ts',
+      }),
+    ).toBe(false);
   });
 });
 

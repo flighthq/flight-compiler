@@ -51,6 +51,7 @@ export type SemanticPatchFailureCode =
   | 'conflicting-patch-removal'
   | 'duplicate-patch-id'
   | 'incompatible-patch-operation'
+  | 'patch-index-desynchronized'
   | 'patch-kind-mismatch'
   | 'stale-patch-fingerprint'
   | 'unmatched-patch-target';

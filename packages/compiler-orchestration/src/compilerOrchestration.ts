@@ -8,6 +8,7 @@ import type {
   CompileIrModulesResult,
   CompileTypeScriptModulesOptions,
   CompilerDiagnostic,
+  CompilerDiagnosticCode,
   CompilerDiagnosticsFailure,
   EmittedFile,
   IrModule,
@@ -43,7 +44,7 @@ export function compileTypeScriptModules<BackendOptions>(
   const lowered = options.sources.map(({ sourceFile, ...loweringOptions }) =>
     lowerTypeScriptSource(sourceFile, loweringOptions),
   );
-  const diagnostics = lowered.flatMap((result) => result.diagnostics).sort(compareDiagnostics);
+  const diagnostics = lowered.flatMap((result) => result.diagnostics);
   if (diagnostics.length > 0) throw createCompilerDiagnosticsFailure(diagnostics);
   return compileIrModules({
     backend: options.backend,
@@ -61,14 +62,15 @@ export function parseTypeScriptSource(fileName: string, source: string): ts.Sour
 export function createCompilerDiagnosticsFailure(
   diagnostics: readonly CompilerDiagnostic[],
 ): CompilerDiagnosticsFailure {
-  const message = `TypeScript lowering produced ${String(diagnostics.length)} diagnostic(s):\n${diagnostics
+  const orderedDiagnostics = diagnostics.map((diagnostic) => ({ ...diagnostic })).sort(compareDiagnostics);
+  const message = `TypeScript lowering produced ${String(orderedDiagnostics.length)} diagnostic(s):\n${orderedDiagnostics
     .map(
       (diagnostic) =>
-        `${diagnostic.source}:${String(diagnostic.line)}:${String(diagnostic.column)} [${diagnostic.code}] ${diagnostic.message}`,
+        `${diagnostic.packageName}/${diagnostic.source}:${String(diagnostic.line)}:${String(diagnostic.column)} [${diagnostic.code}] ${diagnostic.message}`,
     )
     .join('\n')}`;
   const failure = Object.assign(new Error(message), {
-    diagnostics,
+    diagnostics: orderedDiagnostics,
     kind: 'compiler-diagnostics' as const,
   });
   failure.name = 'CompilerDiagnosticsError';
@@ -76,15 +78,48 @@ export function createCompilerDiagnosticsFailure(
 }
 
 export function isCompilerDiagnosticsFailure(value: unknown): value is CompilerDiagnosticsFailure {
-  return value instanceof Error && 'kind' in value && value.kind === 'compiler-diagnostics';
+  return (
+    value instanceof Error &&
+    'kind' in value &&
+    value.kind === 'compiler-diagnostics' &&
+    'diagnostics' in value &&
+    Array.isArray(value.diagnostics) &&
+    value.diagnostics.every(isCompilerDiagnosticValue)
+  );
 }
 
 function compareDiagnostics(left: Readonly<CompilerDiagnostic>, right: Readonly<CompilerDiagnostic>): number {
   return (
+    left.packageName.localeCompare(right.packageName) ||
     left.source.localeCompare(right.source) ||
     left.line - right.line ||
     left.column - right.column ||
-    left.code.localeCompare(right.code)
+    left.code.localeCompare(right.code) ||
+    left.message.localeCompare(right.message)
+  );
+}
+
+function isCompilerDiagnosticValue(value: unknown): value is CompilerDiagnostic {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    'code' in value &&
+    typeof value.code === 'string' &&
+    Object.hasOwn(compilerDiagnosticCodes, value.code) &&
+    'column' in value &&
+    typeof value.column === 'number' &&
+    Number.isInteger(value.column) &&
+    value.column >= 1 &&
+    'line' in value &&
+    typeof value.line === 'number' &&
+    Number.isInteger(value.line) &&
+    value.line >= 1 &&
+    'message' in value &&
+    typeof value.message === 'string' &&
+    'packageName' in value &&
+    typeof value.packageName === 'string' &&
+    'source' in value &&
+    typeof value.source === 'string'
   );
 }
 
@@ -125,3 +160,7 @@ function validateModuleIdentities(modules: readonly IrModule[]): void {
     identities.add(identity);
   }
 }
+
+const compilerDiagnosticCodes = {
+  'unsupported-typescript': true,
+} as const satisfies Readonly<Record<CompilerDiagnosticCode, true>>;
