@@ -2,6 +2,7 @@ import ts from 'typescript';
 import { describe, expect, it } from 'vitest';
 
 import {
+  collectDescribeNames,
   collectExportedApiDeclarations,
   collectLocalExportNames,
   collectModuleSpecifiers,
@@ -12,6 +13,17 @@ import {
 } from './packageHealthAst.js';
 
 describe('package boundary AST analysis', () => {
+  it('finds exact describe names without accepting skipped or dynamically named suites', () => {
+    const sourceFile = source(`
+      describe('createWidget', () => {});
+      describe.skip('skipWidget', () => {});
+      describe(prefix + 'Widget', () => {});
+      describe(\`getWidgetName\`, () => {});
+    `);
+
+    expect([...collectDescribeNames(sourceFile)].sort()).toEqual(['createWidget', 'getWidgetName']);
+  });
+
   it('finds direct and aliased exported API declarations without counting private declarations', () => {
     const sourceFile = source(`
       export function createWidget() {}

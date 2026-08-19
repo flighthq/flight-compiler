@@ -1,6 +1,6 @@
 import ts from 'typescript';
 
-import { lowerTypeScriptSource } from './index.js';
+import { lowerTypeScriptSource } from './typeScriptSemanticLowering.js';
 
 function lower(file: string, source: string) {
   const sourceFile = ts.createSourceFile(`/flight/packages/math/src/${file}`, source, ts.ScriptTarget.Latest, true);
@@ -10,7 +10,7 @@ function lower(file: string, source: string) {
   });
 }
 
-describe('neutral TypeScript lowering', () => {
+describe('lowerTypeScriptSource', () => {
   it('resolves enum auto-increment values after explicit discriminants', () => {
     const result = lower('mode.ts', 'export enum Mode { A = 1, B, C = Mode.A << 3, D }');
 

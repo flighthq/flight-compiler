@@ -6,11 +6,13 @@ import path from 'node:path';
 import {
   analyzeFlightWorkspace,
   getPackageInventoryRootExportLane,
+  readGitCommit,
   readPackageExportManifest,
   resolvePackageExportLane,
-} from './index.js';
+} from './flightWorkspaceInventory.js';
+import type { PackageExportLane, PackageInventory } from '../../compiler-types/src/index.js';
 
-describe('Flight workspace inventory', () => {
+describe('analyzeFlightWorkspace', () => {
   it('resolves export lanes, runtime bindings, SDK exposure, and portable provenance', () => {
     const upstream = createUpstreamFixture();
     try {
@@ -56,6 +58,65 @@ describe('Flight workspace inventory', () => {
       rmSync(upstream, { force: true, recursive: true });
     }
   });
+});
+
+describe('getPackageInventoryRootExportLane', () => {
+  it('returns the root lane and fails loudly when the manifest has none', () => {
+    const rootLane = createPackageExportLane('.');
+    const contractLane = createPackageExportLane('./contract');
+    const inventory = createPackageInventory([contractLane, rootLane]);
+
+    expect(getPackageInventoryRootExportLane(inventory)).toBe(rootLane);
+    expect(() => getPackageInventoryRootExportLane(createPackageInventory([contractLane]))).toThrow(
+      'Package manifest has no root export lane',
+    );
+  });
+});
+
+describe('readGitCommit', () => {
+  it('returns the exact checkout commit and rejects a directory without repository identity', () => {
+    const upstream = createUpstreamFixture();
+    const plainDirectory = mkdtempSync(path.join(os.tmpdir(), 'flight-compiler-no-git-'));
+    try {
+      const expected = execFileSync('git', ['-C', upstream, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+
+      expect(readGitCommit(upstream)).toBe(expected);
+      expect(() => readGitCommit(plainDirectory)).toThrow('Upstream directory is not an initialized Git checkout');
+    } finally {
+      rmSync(upstream, { force: true, recursive: true });
+      rmSync(plainDirectory, { force: true, recursive: true });
+    }
+  });
+});
+
+describe('readPackageExportManifest', () => {
+  it('resolves every manifest lane to its source barrel', () => {
+    const upstream = createUpstreamFixture();
+    try {
+      expect(readPackageExportManifest(path.join(upstream, 'packages', 'types'), upstream)).toEqual([
+        {
+          conditions: [
+            { condition: 'default', source: 'packages/types/src/index.ts', target: './dist/index.js' },
+            { condition: 'types', source: 'packages/types/src/index.ts', target: './dist/index.d.ts' },
+          ],
+          entry: '.',
+          source: 'packages/types/src/index.ts',
+          specifier: '@flighthq/types',
+        },
+        {
+          conditions: [
+            { condition: 'default', source: 'packages/types/src/contract.ts', target: './dist/contract.js' },
+            { condition: 'types', source: 'packages/types/src/contract.ts', target: './dist/contract.d.ts' },
+          ],
+          entry: './contract',
+          source: 'packages/types/src/contract.ts',
+          specifier: '@flighthq/types/contract',
+        },
+      ]);
+    } finally {
+      rmSync(upstream, { force: true, recursive: true });
+    }
+  });
 
   it('fails when a manifest lane cannot be traced to a source barrel', () => {
     const upstream = createUpstreamFixture();
@@ -81,6 +142,48 @@ describe('Flight workspace inventory', () => {
     }
   });
 });
+
+describe('resolvePackageExportLane', () => {
+  it('resolves root and subpath lanes and rejects unsupported or unknown package identities', () => {
+    const rootLane = createPackageExportLane('.');
+    const contractLane = createPackageExportLane('./contract');
+    const inventoryByName = new Map([['@flighthq/types', createPackageInventory([rootLane, contractLane])]]);
+
+    expect(resolvePackageExportLane(inventoryByName, '@flighthq/types')).toBe(rootLane);
+    expect(resolvePackageExportLane(inventoryByName, '@flighthq/types/contract')).toBe(contractLane);
+    expect(() => resolvePackageExportLane(inventoryByName, 'typescript')).toThrow(
+      'Unsupported Flight package specifier',
+    );
+    expect(() => resolvePackageExportLane(inventoryByName, '@flighthq/missing')).toThrow(
+      'Unknown Flight package in public import',
+    );
+  });
+});
+
+function createPackageExportLane(entry: string): PackageExportLane {
+  return {
+    conditions: [],
+    entry,
+    exportConflicts: [],
+    exports: [],
+    source: `packages/types/src/${entry === '.' ? 'index' : entry.slice(2)}.ts`,
+    specifier: entry === '.' ? '@flighthq/types' : `@flighthq/types/${entry.slice(2)}`,
+  };
+}
+
+function createPackageInventory(exportLanes: PackageExportLane[]): PackageInventory {
+  return {
+    dependencies: [],
+    directory: 'packages/types',
+    exportLanes,
+    name: '@flighthq/types',
+    sdkExposures: [],
+    sdkIncluded: false,
+    sourceFiles: 0,
+    testFiles: 0,
+    version: '0.0.0',
+  };
+}
 
 function createUpstreamFixture(): string {
   const directory = mkdtempSync(path.join(os.tmpdir(), 'flight-compiler-inventory-'));

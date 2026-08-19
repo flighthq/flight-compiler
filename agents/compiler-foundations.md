@@ -52,6 +52,8 @@ A bedrock package is mature only when all of the following are true:
 
 Coverage percentage alone does not establish maturity. A one-line primitive can have complete coverage and a weak contract; a type-only contract can have no runtime statements and still require extensive compile-time design scrutiny.
 
+The repository also enforces a structural floor: each non-barrel package source has an exactly named colocated test, and each exported function has an exact `describe('<function>')` suite. That makes missing subjects visible. The assertions inside those suites must still satisfy the maturity standard above.
+
 ## Audit
 
 ### `compiler-types`
@@ -64,6 +66,7 @@ Strengths:
 - It has no implementation-package dependency.
 - Contracts are plain data, discriminated unions, and function records rather than classes.
 - Inventory, IR, patches, backends, and reports have explicit schema discriminants where serialized interchange already exists.
+- Each contract concept has its own matching compile-time composition test rather than one catch-all contract fixture.
 
 Open foundation work:
 
@@ -110,6 +113,25 @@ Strengths:
 - Emitted files remain target-neutral plain data.
 
 This pass rejects POSIX, Windows drive, UNC, traversal, empty-segment, reserved-device, invalid-character, trailing-dot/space, and NUL paths; canonicalizes all line endings; validates failure guards structurally; and covers empty output and indentation boundaries. Duplicate output identity remains an orchestration concern because it requires the complete emitted set.
+
+## Package isolation review
+
+Each workspace passes its own strict typecheck and Vitest target. The package boundary remains justified only where the subject and dependency direction are independently useful:
+
+| Package | Isolation conclusion | Current robustness boundary |
+| --- | --- | --- |
+| `compiler-types` | Keep independent as the dependency-free vocabulary floor. | One test per contract concept; IR completeness and deliberate collection mutability remain open. |
+| `compiler-provenance` | Keep independent as one narrow identity primitive. | Equivalence, counterexample, empty, Unicode, path, line-ending, raw-text, and TypeScript-version behavior are locked. |
+| `compiler-patch` | Keep independent because patch identity and auditing are a separate lifecycle. | All operations and failure codes, deterministic ordering, backend skipping, and caller-input immutability are exercised. |
+| `compiler-emission` | Keep independent as the portable emitted-file and backend-failure seam. | Host-path rejection, content normalization, indentation boundaries, and tagged failure guards are exercised. |
+| `compiler-inventory` | Keep independent as the first read-only composition above identity. | Export graphs, manifests, runtime bindings, config failures, portable paths, ordering, and Git identity are covered; host facts and exclusion parity are not. |
+| `compiler-semantic` | Keep together for now; it owns one TypeScript-to-neutral lowering pass. | Representative syntax and fail-loudly diagnostics exist, but most production Flight semantics remain unported. |
+| `compiler-backend-hx` | Keep together; naming was split into a focused sibling source, not a workspace. | Package/module identity boundaries are direct-tested; production lowering and byte-stable emission parity remain open. |
+| `compiler-backend-rs` | Keep together; naming and Rust keyword identity are focused sibling primitives. | Package/module identity, keyword handling, and representative emitter failures are covered; ownership and production parity remain open. |
+| `compiler-orchestration` | Keep independent as deterministic pass composition. | Duplicate identities and paths, diagnostics, patch flow, normalization, ordering, and input immutability are exercised. |
+| `tool-compiler` | Keep as the only public workspace and dependency assembly boundary. | The facade and packed artifact are checked; its final downstream request/result contract is not frozen. |
+
+No new workspace follows from this review. A large file alone is not a package domain. Split another flat sibling source when it owns a stable concept with a direct test; create another `compiler-*` workspace only when that concept also needs an independent dependency or lifecycle boundary. In particular, do not split target lowering from target emission until an explicit target model exists between them, and do not split semantic syntax families merely to export provisional helper APIs.
 
 ## Bedrock-first work order
 

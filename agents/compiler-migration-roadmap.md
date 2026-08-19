@@ -8,7 +8,7 @@ The downstream repositories continue to own their target ecosystems: maintained 
 
 ## Current position
 
-The repository foundation is established: functional package boundaries, centralized contracts, initial inventory and provenance, a neutral IR, deterministic patching and orchestration, and skeletal Haxe and Rust backends all exist. The build produces one self-contained public artifact from nine private `@flighthq/compiler-*` packages, and the health gates cover formatting, linting, strict type checking, isolated tests, aggregate coverage, package boundaries, clean builds, and tarball contents.
+The repository foundation is established: functional package boundaries, centralized contracts, initial inventory and provenance, a neutral IR, deterministic patching and orchestration, and skeletal Haxe and Rust backends all exist. The build produces one self-contained public artifact from nine private `@flighthq/compiler-*` packages, and the health gates cover formatting, linting, strict type checking, matching source/test concepts and exported-function suites, isolated tests, aggregate coverage, package boundaries, clean builds, and tarball contents.
 
 It is not yet a drop-in replacement for either downstream generator. The existing target repositories still contain most of the production semantic lowering, host analysis, reporting, and source-emission behavior. The estimates below are planning estimates as of 2026-08-18, not release claims:
 
@@ -65,6 +65,7 @@ Status: structure complete; bedrock contract hardening in progress.
 
 - Maintain the private `compiler-*` domain packages and the public `tool-compiler` workspace.
 - Keep all contracts in `compiler-types`, source trees flat, implementation class-free, and dependency edges acyclic.
+- Require every non-barrel package source to have its matching colocated test and every exported function to have an exact named suite; treat this as a structural floor rather than a coverage claim.
 - Preserve deterministic build, package, coverage, and boundary gates as the implementation grows.
 - Complete the maturity work in [Compiler foundations](compiler-foundations.md) from contracts through provenance, patches, and emission before expanding the higher compiler layers.
 

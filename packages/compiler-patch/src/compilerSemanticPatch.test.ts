@@ -7,12 +7,12 @@ import type {
   SemanticPatchFailure,
   SemanticPatchFailureCode,
 } from '../../compiler-types/src/index.js';
-import { applySemanticPatchSet, defineSemanticPatchSet, isSemanticPatchFailure } from './index.js';
+import { applySemanticPatchSet, defineSemanticPatchSet, isSemanticPatchFailure } from './compilerSemanticPatch.js';
 
 const packageName = '@flighthq/math';
 const source = 'packages/math/src/clamp.ts';
 
-describe('semantic patches', () => {
+describe('applySemanticPatchSet', () => {
   it('applies backend patches after neutral patches independent of patch identifiers', () => {
     const patches = defineSemanticPatchSet([
       renamePatch('zzz-neutral', 'neutralName', { kind: 'neutral' }),
@@ -137,7 +137,31 @@ describe('semantic patches', () => {
     }
   });
 
-  it('rejects malformed tagged failures', () => {
+  it('reports conflicts deterministically regardless of input order', () => {
+    const first = renamePatch('a-first', 'first', { kind: 'neutral' });
+    const second = renamePatch('z-second', 'second', { kind: 'neutral' });
+
+    const forward = captureFailure([createModule()], [first, second]);
+    const reverse = captureFailure([createModule()], [second, first]);
+
+    expect(reverse.code).toBe('conflicting-patch-operation');
+    expect(reverse.message).toBe(forward.message);
+    expect(reverse.patchIds).toEqual(forward.patchIds);
+  });
+});
+
+describe('defineSemanticPatchSet', () => {
+  it('preserves the exact caller-owned patch tuple without allocation or mutation', () => {
+    const patches = [renamePatch('math.clamp.rename', 'bounded', { kind: 'neutral' })] as const;
+
+    expect(defineSemanticPatchSet(patches)).toBe(patches);
+    expect(patches[0]).toMatchObject({ name: 'bounded', operation: 'rename' });
+  });
+});
+
+describe('isSemanticPatchFailure', () => {
+  it('accepts produced failures and rejects malformed tagged lookalikes', () => {
+    const valid = captureFailure([], [renamePatch('math.clamp.rename', 'bounded', { kind: 'neutral' })]);
     const unknownCode = Object.assign(new Error('forged patch failure'), {
       code: 'future-code',
       kind: 'semantic-patch',
@@ -151,20 +175,9 @@ describe('semantic patches', () => {
       subject: 'fixture',
     });
 
+    expect(isSemanticPatchFailure(valid)).toBe(true);
     expect(isSemanticPatchFailure(unknownCode)).toBe(false);
     expect(isSemanticPatchFailure(malformedIds)).toBe(false);
-  });
-
-  it('reports conflicts deterministically regardless of input order', () => {
-    const first = renamePatch('a-first', 'first', { kind: 'neutral' });
-    const second = renamePatch('z-second', 'second', { kind: 'neutral' });
-
-    const forward = captureFailure([createModule()], [first, second]);
-    const reverse = captureFailure([createModule()], [second, first]);
-
-    expect(reverse.code).toBe('conflicting-patch-operation');
-    expect(reverse.message).toBe(forward.message);
-    expect(reverse.patchIds).toEqual(forward.patchIds);
   });
 });
 

@@ -2,7 +2,7 @@ import ts from 'typescript';
 
 import { isBackendEmissionFailure } from '../../compiler-emission/src/index.js';
 import { lowerTypeScriptSource } from '../../compiler-semantic/src/index.js';
-import { emitIrModuleHaxe } from './index.js';
+import { createHaxeCompilerBackend, emitIrModuleHaxe } from './haxeCompilerBackend.js';
 
 function lower(file: string, source: string) {
   const sourceFile = ts.createSourceFile(`/flight/packages/math/src/${file}`, source, ts.ScriptTarget.Latest, true);
@@ -12,7 +12,20 @@ function lower(file: string, source: string) {
   });
 }
 
-describe('Haxe emission', () => {
+describe('createHaxeCompilerBackend', () => {
+  it('creates independent stateless backend records with Haxe identity', () => {
+    const first = createHaxeCompilerBackend();
+    const second = createHaxeCompilerBackend();
+
+    expect(first).not.toBe(second);
+    expect(first.name).toBe('haxe');
+    expect(first.emitModule(lower('value.ts', 'export const value = 1;').module, { modules: [], options: {} })).toEqual(
+      [emitIrModuleHaxe(lower('value.ts', 'export const value = 1;').module)],
+    );
+  });
+});
+
+describe('emitIrModuleHaxe', () => {
   it('emits numeric and string enums from neutral representation', () => {
     const numeric = lower('mode.ts', 'export enum Mode { A = 1, B, C = Mode.A << 3, D }');
     const strings = lower('kind.ts', "export enum Kind { A = 'a', B = 'b' }");

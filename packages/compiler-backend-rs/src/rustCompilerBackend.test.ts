@@ -1,7 +1,7 @@
 import ts from 'typescript';
 
 import { lowerTypeScriptSource } from '../../compiler-semantic/src/index.js';
-import { emitIrModuleRust } from './index.js';
+import { createRustCompilerBackend, emitIrModuleRust } from './rustCompilerBackend.js';
 
 function lower(file: string, source: string) {
   const sourceFile = ts.createSourceFile(`/flight/packages/math/src/${file}`, source, ts.ScriptTarget.Latest, true);
@@ -11,7 +11,19 @@ function lower(file: string, source: string) {
   });
 }
 
-describe('Rust emission', () => {
+describe('createRustCompilerBackend', () => {
+  it('creates independent stateless backend records with Rust identity', () => {
+    const first = createRustCompilerBackend();
+    const second = createRustCompilerBackend();
+    const module = lower('value.ts', 'export const value = 1;').module;
+
+    expect(first).not.toBe(second);
+    expect(first.name).toBe('rust');
+    expect(first.emitModule(module, { modules: [], options: {} })).toEqual([emitIrModuleRust(module)]);
+  });
+});
+
+describe('emitIrModuleRust', () => {
   it('emits numeric enums and rejects string enum representation', () => {
     const numeric = lower('mode.ts', 'export enum Mode { A = 1, B, C = Mode.A << 3, D }');
     const strings = lower('kind.ts', "export enum Kind { A = 'a', B = 'b' }");

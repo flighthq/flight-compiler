@@ -5,6 +5,24 @@ export interface ExportedApiDeclaration {
   name: string;
 }
 
+export function collectDescribeNames(sourceFile: ts.SourceFile): ReadonlySet<string> {
+  const names = new Set<string>();
+  const visit = (node: ts.Node): void => {
+    if (
+      ts.isCallExpression(node) &&
+      ts.isIdentifier(node.expression) &&
+      node.expression.text === 'describe' &&
+      node.arguments[0] &&
+      ts.isStringLiteralLike(node.arguments[0])
+    ) {
+      names.add(node.arguments[0].text);
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sourceFile);
+  return names;
+}
+
 export function isCompilerApiFunctionName(name: string): boolean {
   return compilerApiFunctionNamePattern.test(name);
 }

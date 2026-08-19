@@ -20,35 +20,12 @@ import type {
   IrVariable,
   IrVariableDeclaration,
 } from '../../compiler-types/src/index.js';
+import { convertPackageNameToHaxePackageName, convertSourcePathToHaxeModuleName } from './haxeCompilerIdentity.js';
 
 interface EmitContext {
   module: Readonly<IrModule>;
   options: Readonly<HaxeCompilerBackendOptions>;
   packageName: string;
-}
-
-export function convertPackageNameToHaxePackageName(packageName: string, rootPackage = 'flighthq'): string {
-  const bareName = packageName.replace(/^@[^/]+\//u, '');
-  const parts = bareName.split(/[-_]/u).filter(Boolean);
-  if (parts.length === 0) throw new Error(`Cannot map empty npm package name: ${packageName}`);
-  const segment = parts
-    .map((part, index) =>
-      index === 0 ? part.toLowerCase() : `${part.slice(0, 1).toUpperCase()}${part.slice(1).toLowerCase()}`,
-    )
-    .join('');
-  return `${rootPackage}.${segment}`;
-}
-
-export function convertSourcePathToHaxeModuleName(sourcePath: string): string | undefined {
-  const filename = path.basename(sourcePath).replace(/\.tsx?$/u, '');
-  if (
-    filename.toLowerCase() === 'index' ||
-    filename.toLowerCase() === 'internal' ||
-    /test(?:helper|util)/iu.test(filename)
-  ) {
-    return undefined;
-  }
-  return pascalCase(filename);
 }
 
 export function createHaxeCompilerBackend(): CompilerBackend<HaxeCompilerBackendOptions> {
@@ -496,7 +473,7 @@ function emissionError(context: EmitContext, message: string): never {
 function haxeImportModule(specifier: string, context: EmitContext): string {
   if (specifier.startsWith('.')) {
     const target = path.posix.normalize(
-      path.posix.join(path.posix.dirname(context.module.source), specifier.replace(/\.[cm]?js$/u, '')),
+      path.posix.join(path.posix.dirname(context.module.source), specifier.replace(/\.[cm]?js$/u, '.ts')),
     );
     return `${context.packageName}.${haxeImplementationModule(target)}`;
   }

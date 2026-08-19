@@ -1,6 +1,6 @@
+export { createRustCompilerBackend, emitIrModuleRust } from './rustCompilerBackend.js';
 export {
   convertPackageNameToRustCrateName,
   convertSourcePathToRustModuleName,
-  createRustCompilerBackend,
-  emitIrModuleRust,
-} from './rustCompilerBackend.js';
+  isRustCompilerKeyword,
+} from './rustCompilerIdentity.js';

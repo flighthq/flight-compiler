@@ -77,9 +77,10 @@ export function analyzeFlightWorkspace(options: Readonly<AnalyzeFlightWorkspaceO
     const testFiles = walkFiles(sourceDirectory, isTestFile);
     const packageJson = readJson(path.join(descriptor.directory, 'package.json'));
     const exportLanes = (exportDescriptors.get(descriptor.name) ?? []).map((entry): PackageExportLane => {
-      const resolved = resolveExports(entry.source, context);
-      const source = project.program.getSourceFile(entry.source);
-      if (!source) throw new Error(`Cannot resolve upstream TypeScript source: ${portablePath(entry.source)}`);
+      const sourcePath = resolvePackageExportSource(entry, upstreamDirectory);
+      const resolved = resolveExports(sourcePath, context);
+      const source = project.program.getSourceFile(sourcePath);
+      if (!source) throw new Error(`Cannot resolve upstream TypeScript source: ${portablePath(sourcePath)}`);
       const runtimeExports = analyzeTypeScriptSourceRuntimeExports(source, project.checker, project.options);
       const exports = [...resolved.exports.values()].map((record) =>
         applyRuntimeExportDecision(record, runtimeExports.get(record.name), context, entry.specifier, runtimeExports),
@@ -91,7 +92,7 @@ export function analyzeFlightWorkspace(options: Readonly<AnalyzeFlightWorkspaceO
         entry: entry.entry,
         exportConflicts: conflicts,
         exports: deduplicated.uniqueExports.sort(compareExports),
-        source: relativeSource(entry.source, upstreamDirectory),
+        source: entry.source,
         specifier: entry.specifier,
       };
     });
@@ -466,7 +467,7 @@ function readPackageExportDescriptors(
     return {
       conditions,
       entry,
-      source: sourceForExportTarget(descriptor, entry, 'types', typesTarget),
+      source: relativeSource(sourceForExportTarget(descriptor, entry, 'types', typesTarget), upstreamDirectory),
       specifier: entry === '.' ? descriptor.name : `${descriptor.name}${entry.slice(1)}`,
     };
   });
@@ -486,7 +487,7 @@ function readSdkExposures(
   if (!sdk) throw new Error('Expected SDK package while deriving SDK exposure');
   const exposures = new Map<string, SdkExposure[]>();
   for (const sdkLane of exportDescriptors.get(sdk.name) ?? []) {
-    const parsed = parseSource(sdkLane.source, context);
+    const parsed = parseSource(resolvePackageExportSource(sdkLane, context.upstreamDirectory), context);
     for (const declaration of parsed.exportDeclarations) {
       if (!declaration.moduleSpecifier || !ts.isStringLiteral(declaration.moduleSpecifier)) continue;
       const target = declaration.moduleSpecifier.text;
@@ -519,6 +520,10 @@ function relativeSource(file: string, upstreamDirectory: string): string {
     throw new Error(`Source is outside upstream checkout: ${portablePath(file)}`);
   }
   return portablePath(relative);
+}
+
+function resolvePackageExportSource(descriptor: Readonly<PackageExportDescriptor>, upstreamDirectory: string): string {
+  return path.resolve(upstreamDirectory, descriptor.source);
 }
 
 function resolveExports(file: string, context: AnalysisContext): ResolvedExportSet {
@@ -731,7 +736,7 @@ function resolveModule(containingFile: string, specifier: string, context: Analy
     if (!exportDescriptor) {
       throw new Error(`Package import uses an unaccounted export lane: ${specifier}`);
     }
-    return exportDescriptor.source;
+    return resolvePackageExportSource(exportDescriptor, context.upstreamDirectory);
   }
   for (const resolved of [candidate, `${candidate}.ts`, `${candidate}.tsx`, path.join(candidate, 'index.ts')]) {
     if (existsSync(resolved) && statSync(resolved).isFile()) return resolved;

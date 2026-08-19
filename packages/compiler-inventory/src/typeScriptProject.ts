@@ -17,6 +17,12 @@ export function createTypeScriptProject(tsconfigPath: string): TypeScriptProject
     },
   );
   if (!parsed) throw new Error(`Unable to parse TypeScript configuration: ${absoluteConfigPath}`);
+  if (parsed.errors.length > 0) {
+    const detail = parsed.errors
+      .map((diagnostic) => ts.flattenDiagnosticMessageText(diagnostic.messageText, '\n'))
+      .join('\n');
+    throw new Error(`Invalid TypeScript configuration ${absoluteConfigPath}:\n${detail}`);
+  }
 
   const program = ts.createProgram({
     options: parsed.options,

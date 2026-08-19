@@ -20,30 +20,17 @@ import type {
   IrVariable,
   IrVariableDeclaration,
 } from '../../compiler-types/src/index.js';
+import {
+  convertPackageNameToRustCrateName,
+  convertSourcePathToRustModuleName,
+  isRustCompilerKeyword,
+} from './rustCompilerIdentity.js';
 
 interface EmitContext {
   constants: ReadonlyMap<string, string>;
   localNames: ReadonlySet<string>;
   module: Readonly<IrModule>;
   options: Readonly<RustCompilerBackendOptions>;
-}
-
-export function convertPackageNameToRustCrateName(packageName: string): string {
-  const bareName = packageName.replace(/^@[^/]+\//u, '');
-  if (bareName.length === 0) throw new Error(`Cannot map empty npm package name: ${packageName}`);
-  return `flighthq-${bareName.replaceAll('_', '-').toLowerCase()}`;
-}
-
-export function convertSourcePathToRustModuleName(sourcePath: string): string | undefined {
-  const filename = path.basename(sourcePath).replace(/\.tsx?$/u, '');
-  if (
-    filename.toLowerCase() === 'index' ||
-    filename.toLowerCase() === 'internal' ||
-    /test(?:helper|util)/iu.test(filename)
-  ) {
-    return undefined;
-  }
-  return snakeCase(filename);
 }
 
 export function createRustCompilerBackend(): CompilerBackend<RustCompilerBackendOptions> {
@@ -538,7 +525,7 @@ function opaqueHostType(context: EmitContext): string {
 function rustImportModule(specifier: string, context: EmitContext): string {
   if (specifier.startsWith('.')) {
     const target = path.posix.normalize(
-      path.posix.join(path.posix.dirname(context.module.source), specifier.replace(/\.[cm]?js$/u, '')),
+      path.posix.join(path.posix.dirname(context.module.source), specifier.replace(/\.[cm]?js$/u, '.ts')),
     );
     return `crate::${convertSourcePathToRustModuleName(target) ?? `_internal_${snakeCase(path.posix.basename(target))}`}`;
   }
@@ -578,13 +565,13 @@ function safeRustTypeName(name: string): string {
     .split('.')
     .map((segment) => pascalCase(segment))
     .join('::');
-  return rustKeywords.has(value) ? `${value}_` : value;
+  return isRustCompilerKeyword(value) ? `${value}_` : value;
 }
 
 function safeRustValueName(name: string): string {
   if (name === 'this') return 'self';
   const value = snakeCase(name);
-  return rustKeywords.has(value) ? `${value}_` : value;
+  return isRustCompilerKeyword(value) ? `${value}_` : value;
 }
 
 function pascalCase(value: string): string {
@@ -606,63 +593,6 @@ function snakeCase(value: string): string {
     .replace(/[-\s]+/gu, '_')
     .toLowerCase();
 }
-
-const rustKeywords = new Set([
-  'abstract',
-  'as',
-  'async',
-  'await',
-  'break',
-  'become',
-  'box',
-  'const',
-  'continue',
-  'crate',
-  'dyn',
-  'do',
-  'else',
-  'enum',
-  'extern',
-  'false',
-  'fn',
-  'final',
-  'gen',
-  'for',
-  'if',
-  'impl',
-  'in',
-  'let',
-  'loop',
-  'macro',
-  'macro_rules',
-  'match',
-  'mod',
-  'move',
-  'mut',
-  'override',
-  'priv',
-  'pub',
-  'ref',
-  'return',
-  'self',
-  'Self',
-  'static',
-  'struct',
-  'super',
-  'trait',
-  'try',
-  'true',
-  'type',
-  'typeof',
-  'union',
-  'unsafe',
-  'unsized',
-  'use',
-  'where',
-  'while',
-  'virtual',
-  'yield',
-]);
 
 const rustAssignmentOperators = new Set(['=', '+=', '-=', '*=', '/=', '%=', '&=', '|=', '^=', '<<=', '>>=']);
 

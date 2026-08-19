@@ -48,7 +48,10 @@ export function analyzeTypeScriptSourceRuntimeExports(
   const module = checker.getSymbolAtLocation(source);
   if (!module) throw new Error(`Cannot resolve TypeScript module symbol: ${source.fileName}`);
   const decisions = new Map<string, RuntimeExportDecision>();
-  for (const exported of checker.getExportsOfModule(module)) {
+  const exports = [...checker.getExportsOfModule(module)].sort((left, right) =>
+    left.getName().localeCompare(right.getName()),
+  );
+  for (const exported of exports) {
     if (isTypeScriptExportExplicitlyTypeOnly(exported)) {
       decisions.set(exported.getName(), { runtime: false });
       continue;

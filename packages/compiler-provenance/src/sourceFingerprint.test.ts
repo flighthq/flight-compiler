@@ -1,47 +1,64 @@
 import ts from 'typescript';
 
-import { fingerprintSourceText, fingerprintTypeScriptNode, normalizeTypeScriptNode } from './index.js';
+import { fingerprintSourceText, fingerprintTypeScriptNode, normalizeTypeScriptNode } from './sourceFingerprint.js';
 
-describe('compiler provenance', () => {
-  it('fingerprints raw text with an explicit SHA-256 identity', () => {
+describe('fingerprintSourceText', () => {
+  it('uses an explicit deterministic SHA-256 identity for empty, ASCII, and Unicode text', () => {
     expect(fingerprintSourceText('export const value = 1;')).toBe(
       'sha256:fcbcb7aece718d280178457c2c5a3bfb8e8743b8331374c29a50397f38d511e4',
     );
-    expect(fingerprintSourceText('value')).not.toBe(fingerprintSourceText('value '));
+    expect(fingerprintSourceText('')).toBe('sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855');
+    expect(fingerprintSourceText('café')).toBe(fingerprintSourceText('café'));
+    expect(fingerprintSourceText('café')).not.toBe(fingerprintSourceText('cafe'));
   });
 
-  it('normalizes formatting, comments, source paths, and line endings', () => {
+  it('preserves raw text distinctions', () => {
+    expect(fingerprintSourceText('value')).not.toBe(fingerprintSourceText('value '));
+    expect(fingerprintSourceText('one\ntwo')).not.toBe(fingerprintSourceText('one\r\ntwo'));
+  });
+});
+
+describe('fingerprintTypeScriptNode', () => {
+  it('shares fingerprints for structurally equivalent nodes independent of source path and formatting', () => {
     const compact = declaration('/first.ts', 'export const value={count:1};');
     const formatted = declaration(
       '/second.ts',
       '/** documentation */\r\n// source comment\r\nexport  const value = {\r\n  count: 1 // member comment\r\n};',
     );
 
-    expect(normalizeTypeScriptNode(compact.node, compact.source)).toBe(
-      normalizeTypeScriptNode(formatted.node, formatted.source),
-    );
     expect(fingerprintTypeScriptNode(compact.node, compact.source)).toBe(
       fingerprintTypeScriptNode(formatted.node, formatted.source),
     );
-    expect(normalizeTypeScriptNode(compact.node, compact.source)).toMatch(
-      /^flight-typescript-node\/1;typescript=5\.9\.3:/u,
-    );
-    expect(normalizeTypeScriptNode(formatted.node, formatted.source)).not.toContain('comment');
   });
 
-  it('preserves semantic whitespace inside literals and regular expressions', () => {
+  it('separates meaningfully distinct near-neighbor nodes', () => {
     const singleSpace = declaration('/single.ts', 'export const value = "a b";');
     const doubleSpace = declaration('/double.ts', 'export const value = "a  b";');
     const regexpSingle = declaration('/regexp-single.ts', 'export const value = /a b/;');
     const regexpDouble = declaration('/regexp-double.ts', 'export const value = /a  b/;');
 
-    expect(normalizeTypeScriptNode(doubleSpace.node, doubleSpace.source)).toContain('a  b');
     expect(fingerprintTypeScriptNode(singleSpace.node, singleSpace.source)).not.toBe(
       fingerprintTypeScriptNode(doubleSpace.node, doubleSpace.source),
     );
     expect(fingerprintTypeScriptNode(regexpSingle.node, regexpSingle.source)).not.toBe(
       fingerprintTypeScriptNode(regexpDouble.node, regexpDouble.source),
     );
+  });
+});
+
+describe('normalizeTypeScriptNode', () => {
+  it('declares its schema and TypeScript-version identity while omitting comments and source paths', () => {
+    const compact = declaration('/first.ts', 'export const value={count:1};');
+    const formatted = declaration(
+      '/second.ts',
+      '/** documentation */\r\n// source comment\r\nexport  const value = {\r\n  count: 1 // member comment\r\n};',
+    );
+    const normalized = normalizeTypeScriptNode(compact.node, compact.source);
+
+    expect(normalized).toBe(normalizeTypeScriptNode(formatted.node, formatted.source));
+    expect(normalized).toMatch(/^flight-typescript-node\/1;typescript=5\.9\.3:/u);
+    expect(normalized).not.toContain('/first.ts');
+    expect(normalizeTypeScriptNode(formatted.node, formatted.source)).not.toContain('comment');
   });
 
   it('normalizes equivalent literal spelling and template line endings', () => {
@@ -50,12 +67,20 @@ describe('compiler provenance', () => {
     const templateLf = declaration('/template-lf.ts', 'export const value = `one\ntwo`;');
     const templateCrLf = declaration('/template-crlf.ts', 'export const value = `one\r\ntwo`;');
 
-    expect(fingerprintTypeScriptNode(singleQuoted.node, singleQuoted.source)).toBe(
-      fingerprintTypeScriptNode(doubleQuoted.node, doubleQuoted.source),
+    expect(normalizeTypeScriptNode(singleQuoted.node, singleQuoted.source)).toBe(
+      normalizeTypeScriptNode(doubleQuoted.node, doubleQuoted.source),
     );
-    expect(fingerprintTypeScriptNode(templateLf.node, templateLf.source)).toBe(
-      fingerprintTypeScriptNode(templateCrLf.node, templateCrLf.source),
+    expect(normalizeTypeScriptNode(templateLf.node, templateLf.source)).toBe(
+      normalizeTypeScriptNode(templateCrLf.node, templateCrLf.source),
     );
+  });
+
+  it('preserves semantic whitespace inside literals and regular expressions', () => {
+    const literal = declaration('/literal.ts', 'export const value = "a  b";');
+    const regexp = declaration('/regexp.ts', 'export const value = /a  b/;');
+
+    expect(normalizeTypeScriptNode(literal.node, literal.source)).toContain('a  b');
+    expect(normalizeTypeScriptNode(regexp.node, regexp.source)).toContain('a  b');
   });
 });
 
