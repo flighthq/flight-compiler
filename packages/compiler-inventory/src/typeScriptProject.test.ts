@@ -4,34 +4,53 @@ import path from 'node:path';
 
 import { createTypeScriptProject } from './typeScriptProject.js';
 
+// Constructing a real TypeScript program loads and checks the standard library, and v8 coverage
+// instrumentation roughly doubles that cost: measured at 29s with the default type surface and 12.8s
+// after `skipLibCheck` and an empty `types` list. The explicit ceiling belongs here rather than in the
+// shared Vitest default, so one genuinely expensive fixture does not buy every other test the right to
+// hang. Neither option weakens the claim: the project is still strict and still asserted to produce no
+// syntactic or semantic diagnostics.
+const typeScriptProgramTimeoutMs = 60_000;
+
 describe('createTypeScriptProject', () => {
-  it('constructs one strict project, checker, and compiler-option identity from a configuration', () => {
-    const directory = mkdtempSync(path.join(os.tmpdir(), 'flight-compiler-typescript-project-'));
-    try {
-      write(directory, 'src/value.ts', 'export const value: number = 1;\n');
-      write(
-        directory,
-        'tsconfig.json',
-        JSON.stringify({
-          compilerOptions: { module: 'ESNext', moduleResolution: 'Bundler', strict: true, target: 'ES2022' },
-          include: ['src/**/*.ts'],
-        }),
-      );
+  it(
+    'constructs one strict project, checker, and compiler-option identity from a configuration',
+    () => {
+      const directory = mkdtempSync(path.join(os.tmpdir(), 'flight-compiler-typescript-project-'));
+      try {
+        write(directory, 'src/value.ts', 'export const value: number = 1;\n');
+        write(
+          directory,
+          'tsconfig.json',
+          JSON.stringify({
+            compilerOptions: {
+              module: 'ESNext',
+              moduleResolution: 'Bundler',
+              skipLibCheck: true,
+              strict: true,
+              target: 'ES2022',
+              types: [],
+            },
+            include: ['src/**/*.ts'],
+          }),
+        );
 
-      const project = createTypeScriptProject(path.join(directory, 'tsconfig.json'));
-      const source = project.program.getSourceFile(path.join(directory, 'src', 'value.ts'));
+        const project = createTypeScriptProject(path.join(directory, 'tsconfig.json'));
+        const source = project.program.getSourceFile(path.join(directory, 'src', 'value.ts'));
 
-      expect(source?.fileName.replaceAll('\\', '/')).toBe(
-        path.join(directory, 'src', 'value.ts').replaceAll('\\', '/'),
-      );
-      expect(project.checker).toBe(project.program.getTypeChecker());
-      expect(project.options.strict).toBe(true);
-      expect(project.program.getSyntacticDiagnostics()).toEqual([]);
-      expect(project.program.getSemanticDiagnostics()).toEqual([]);
-    } finally {
-      rmSync(directory, { force: true, recursive: true });
-    }
-  });
+        expect(source?.fileName.replaceAll('\\', '/')).toBe(
+          path.join(directory, 'src', 'value.ts').replaceAll('\\', '/'),
+        );
+        expect(project.checker).toBe(project.program.getTypeChecker());
+        expect(project.options.strict).toBe(true);
+        expect(project.program.getSyntacticDiagnostics()).toEqual([]);
+        expect(project.program.getSemanticDiagnostics()).toEqual([]);
+      } finally {
+        rmSync(directory, { force: true, recursive: true });
+      }
+    },
+    typeScriptProgramTimeoutMs,
+  );
 
   it('fails loudly for missing and malformed configuration files', () => {
     const directory = mkdtempSync(path.join(os.tmpdir(), 'flight-compiler-typescript-project-invalid-'));
