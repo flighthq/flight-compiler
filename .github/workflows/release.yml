@@ -1,0 +1,68 @@
+# Publishes `@flighthq/tool-compiler` from a tag.
+#
+# The package is not published yet, so this workflow is written to be safe before it is convenient.
+# It runs the whole gate first, refuses when the tag and the manifest version disagree, and installs
+# the packed tarball into a clean consumer before it publishes anything. A release that fails any of
+# those is a release that should not exist.
+#
+# Publishing is a manual decision even on a tag: `workflow_dispatch` with an explicit confirmation
+# means an accidental tag push cannot publish. Provenance requires `id-token: write`, and the
+# registry credential is the `NPM_TOKEN` secret.
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      publish:
+        default: false
+        description: Publish to the registry rather than only verifying the artifact
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Verify and publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          cache: npm
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+      - run: npm ci
+
+      # The full sweep from a cold tree, not the split pull-request lanes: a release is exactly when
+      # the one-sequence proof is worth its minutes.
+      - run: npm run ci
+
+      - name: Check the tag matches the manifest version
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          manifest="$(node -p "require('./packages/tool-compiler/package.json').version")"
+          tag="${GITHUB_REF_NAME#v}"
+          if [ "$manifest" != "$tag" ]; then
+            echo "Tag $tag does not match manifest version $manifest" >&2
+            exit 1
+          fi
+
+      # Proves the artifact a consumer would install, before the registry has a copy of it.
+      - run: npm run smoke
+
+      - name: Publish
+        if: github.event_name == 'workflow_dispatch' && inputs.publish
+        run: npm publish --access public --provenance
+        working-directory: packages/tool-compiler
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

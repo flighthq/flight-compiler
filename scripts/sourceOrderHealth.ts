@@ -1,9 +1,10 @@
-import { readFileSync, readdirSync, existsSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import ts from 'typescript';
 
+import { rewriteImportBlock } from './importBlockWriter.js';
 import { collectSourceOrderIssues } from './sourceOrdering.js';
 
 // Reports the ordering rules AGENTS.md states and no formatter enforces. Every scanned file is
@@ -14,6 +15,9 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const packagesDirectory = path.join(root, 'packages');
 const scriptsDirectory = path.join(root, 'scripts');
 const errors: string[] = [];
+const fixMode = process.argv.includes('--fix');
+const rewritten: string[] = [];
+const refused: string[] = [];
 
 const packageSources = readdirSync(packagesDirectory, { withFileTypes: true })
   .filter((entry) => entry.isDirectory())
@@ -28,6 +32,10 @@ const scriptSources = typeScriptFiles(scriptsDirectory);
 for (const file of packageSources) checkFile(file, true);
 for (const file of scriptSources) checkFile(file, false);
 
+for (const file of rewritten) process.stdout.write(`Ordered imports in ${file}.\n`);
+// A refusal is printed rather than swallowed: the file still needs ordering, by hand.
+for (const reason of refused) process.stderr.write(`Left alone because of ${reason}\n`);
+
 if (errors.length > 0) {
   process.stderr.write(`Source order health failed with ${String(errors.length)} error(s):\n`);
   for (const error of errors) process.stderr.write(`- ${error}\n`);
@@ -39,8 +47,19 @@ process.stdout.write(
 );
 
 function checkFile(file: string, alphabetizeExports: boolean): void {
-  const contents = readFileSync(file, 'utf8');
-  const sourceFile = ts.createSourceFile(file, contents, ts.ScriptTarget.Latest, true, scriptKind(file));
+  let contents = readFileSync(file, 'utf8');
+  let sourceFile = ts.createSourceFile(file, contents, ts.ScriptTarget.Latest, true, scriptKind(file));
+  if (fixMode) {
+    const rewrite = rewriteImportBlock(sourceFile, contents);
+    if (rewrite.kind === 'ordered') {
+      writeFileSync(file, rewrite.text);
+      rewritten.push(relative(file));
+      contents = rewrite.text;
+      sourceFile = ts.createSourceFile(file, contents, ts.ScriptTarget.Latest, true, scriptKind(file));
+    } else if (rewrite.kind === 'refused') {
+      refused.push(`${relative(file)}: ${rewrite.reason}`);
+    }
+  }
   for (const issue of collectSourceOrderIssues(sourceFile, alphabetizeExports)) {
     errors.push(`${relative(file)}:${String(issue.line)} [${issue.rule}] ${issue.detail}`);
   }

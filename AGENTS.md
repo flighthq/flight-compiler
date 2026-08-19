@@ -135,6 +135,7 @@ Use npm, not pnpm or Yarn. Node.js 22 or newer is required. Script names follow 
 - `npm run test:coverage`: run all unit tests together with aggregate instrumentation. The complete gate intentionally runs tests once in isolation and again for coverage because these lanes prove different properties.
 - `npm run docs:check`: enforce the bounded codebase map, Claude pointer, local documentation links, and `npm run` citations that name a real script.
 - `npm run exports:check`: outside `compiler-types`, require one exactly named colocated test file for every non-barrel package source and one exact `describe('<function>')` block for every exported function. This proves test structure and naming, not assertion depth.
+- `npm run order`: rewrite leading import blocks into group order. It refuses a block containing a comment rather than re-attaching it to the wrong import, and never moves exported functions.
 - `npm run order:check`: require imports grouped builtin, external, then relative and alphabetized within each group, and exported package functions in alphabetical order.
 - `npm run golden`: rewrite the committed emission fixtures under `golden/`.
 - `npm run golden:check`: compile every fixture through both backends and compare emitted output byte for byte, including the refusals a fixture pins.
