@@ -18,7 +18,7 @@
   "scripts": {
     "_scripts:build": "tsc -p tsconfig.scripts.json",
     "build": "npm run clean:dist --silent && tsc -p tsconfig.build.json",
-    "check": "npm run packages:check && npm run exports:check && npm run docs:check && npm run format:check && npm run lint && npm run typecheck && npm run test:packages && npm run test:coverage && npm run pack:check",
+    "check": "npm run _scripts:build --silent && node ./.script-build/repositoryCheck.js",
     "ci": "npm run clean && npm run check",
     "clean": "npm run _scripts:build --silent && node ./.script-build/workspaceArtifactCleanup.js",
     "clean:dist": "npm run _scripts:build --silent && node ./.script-build/workspaceArtifactCleanup.js --dist-only",
