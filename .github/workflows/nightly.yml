@@ -1,0 +1,35 @@
+# The cold sweep the pull-request lanes deliberately skip.
+#
+# CI splits the gates across jobs that each start from a warm `npm ci`, so nothing there proves the
+# repository builds from a clean tree in one sequence. `npm run ci` is `clean` followed by the whole
+# `check` runner, which is exactly that proof — and it is too slow to sit on every pull request.
+#
+# It runs on a schedule rather than on merge so a green main branch is re-verified against a moving
+# toolchain: the same tree can stop building when a transitive dependency or the runner image moves
+# under it.
+name: Nightly
+
+on:
+  schedule:
+    - cron: '17 6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nightly
+  cancel-in-progress: false
+
+jobs:
+  cold-sweep:
+    name: Cold sweep
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          cache: npm
+          node-version: 22
+      - run: npm ci
+      - run: npm run ci

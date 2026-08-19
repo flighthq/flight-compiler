@@ -1,3 +1,11 @@
+# Pull-request and main-branch gate.
+#
+# The sweep is split into independent jobs so a failure names its own lane and the slow lanes run in
+# parallel with the fast ones. Within a job every gate step carries `if: always()`, preserving the
+# property `npm run check` has locally: these gates are independent, so stopping at the first failure
+# would hide the rest.
+#
+# `pack:check` builds before it inspects, so the artifact lane needs no separate build step.
 name: CI
 
 on:
@@ -8,8 +16,13 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  check:
+  quality:
+    name: Quality gates
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -18,4 +31,73 @@ jobs:
           cache: npm
           node-version: 22
       - run: npm ci
-      - run: npm run ci
+      - run: npm run packages:check
+        if: always()
+      - run: npm run exports:check
+        if: always()
+      - run: npm run docs:check
+        if: always()
+      - run: npm run order:check
+        if: always()
+      - run: npm run format:check
+        if: always()
+      - run: npm run lint
+        if: always()
+
+  typecheck:
+    name: Typecheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          cache: npm
+          node-version: 22
+      - run: npm ci
+      - run: npm run typecheck
+
+  test:
+    name: Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          cache: npm
+          node-version: 22
+      - run: npm ci
+      # The isolated lane proves package boundaries; the aggregate lane measures coverage against the
+      # ratchets. Neither subsumes the other, so both run even when the first fails.
+      - run: npm run test:packages
+        if: always()
+      - run: npm run test:coverage
+        if: always()
+
+  artifact:
+    name: Package artifact
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          cache: npm
+          node-version: 22
+      - run: npm ci
+      - run: npm run pack:check
+
+  commits:
+    name: Commit messages
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      # The commit-msg hook enforces this locally and can be bypassed, so the pull request checks the
+      # range itself. Full history is what makes the base..head range resolvable.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          cache: npm
+          node-version: 22
+      - run: npm ci
+      - run: npx commitlint --from ${{ github.event.pull_request.base.sha }} --to ${{ github.event.pull_request.head.sha }} --verbose

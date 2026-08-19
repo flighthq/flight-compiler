@@ -39,11 +39,13 @@ for (const file of walkMarkdown(path.join(root, 'agents'))) {
   if (!agentIndex.includes(`(${relative})`)) errors.push(`agents/index.md does not link ${relative}`);
 }
 
-// Command citations are checked over every tracked Markdown file rather than the curated list above,
-// because a stale command misleads a reader wherever it is written. Each verdict count is printed so
-// a zero is readable as measured rather than as never executed.
+// Command citations are checked over every tracked Markdown file and workflow rather than the curated
+// list above, because a stale command misleads a reader wherever it is written — and in a workflow it
+// also breaks the build. Each verdict count is printed so a zero is readable as measured rather than
+// as never executed.
 const scriptNames = new Set(Object.keys(readManifestScripts()));
-const citations = trackedMarkdownFiles().flatMap((file) =>
+const citationSources = trackedCitationSources();
+const citations = citationSources.flatMap((file) =>
   collectCommandCitations(relative(path.join(root, file)), readFileSync(path.join(root, file), 'utf8')),
 );
 const verdicts = new Map<CommandCitationVerdict, number>([
@@ -68,7 +70,7 @@ if (errors.length > 0) {
 }
 
 process.stdout.write(
-  `Documentation health passed for ${String(markdownFiles.length)} Markdown files and ${String(citations.length)} command citations ` +
+  `Documentation health passed for ${String(markdownFiles.length)} Markdown files and ${String(citations.length)} command citations in ${String(citationSources.length)} files ` +
     `(${String(verdicts.get('resolved') ?? 0)} resolved, ${String(verdicts.get('workspace-scoped') ?? 0)} workspace-scoped, ${String(verdicts.get('metasyntactic') ?? 0)} placeholder).\n`,
 );
 
@@ -79,8 +81,11 @@ function readManifestScripts(): Record<string, string> {
   return manifest.scripts ?? {};
 }
 
-function trackedMarkdownFiles(): string[] {
-  const listed = execFileSync('git', ['ls-files', '*.md'], { cwd: root, encoding: 'utf8' });
+function trackedCitationSources(): string[] {
+  const listed = execFileSync('git', ['ls-files', '*.md', '.github/**/*.yml', '.github/**/*.yaml'], {
+    cwd: root,
+    encoding: 'utf8',
+  });
   return listed
     .split('\n')
     .map((line) => line.trim())
