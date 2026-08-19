@@ -18,8 +18,8 @@ import type {
   UpstreamInventory,
 } from '../../compiler-types/src/index.js';
 import { fingerprintTypeScriptNode } from '../../compiler-provenance/src/index.js';
-import { createTypeScriptProject } from './createTypeScriptProject.js';
-import { runtimeExportsForSource } from './runtimeValues.js';
+import { createTypeScriptProject } from './typeScriptProject.js';
+import { analyzeTypeScriptSourceRuntimeExports } from './typeScriptRuntimeBinding.js';
 import type { RuntimeExportDecision } from '../../compiler-types/src/index.js';
 
 interface PackageDescriptor {
@@ -80,7 +80,7 @@ export function analyzeFlightWorkspace(options: Readonly<AnalyzeFlightWorkspaceO
       const resolved = resolveExports(entry.source, context);
       const source = project.program.getSourceFile(entry.source);
       if (!source) throw new Error(`Cannot resolve upstream TypeScript source: ${portablePath(entry.source)}`);
-      const runtimeExports = runtimeExportsForSource(source, project.checker, project.options);
+      const runtimeExports = analyzeTypeScriptSourceRuntimeExports(source, project.checker, project.options);
       const exports = [...resolved.exports.values()].map((record) =>
         applyRuntimeExportDecision(record, runtimeExports.get(record.name), context, entry.specifier, runtimeExports),
       );
@@ -130,7 +130,7 @@ export function analyzeFlightWorkspace(options: Readonly<AnalyzeFlightWorkspaceO
       exportLanes: sum(packageInventories, (item) => item.exportLanes.length),
       exports: sum(packageInventories, (item) => sum(item.exportLanes, (lane) => lane.exports.length)),
       packages: packageInventories.length,
-      rootExports: sum(packageInventories, (item) => packageRootExportLane(item).exports.length),
+      rootExports: sum(packageInventories, (item) => getPackageInventoryRootExportLane(item).exports.length),
       sourceFiles: sum(packageInventories, (item) => item.sourceFiles),
       testFiles: sum(packageInventories, (item) => item.testFiles),
     },
@@ -138,7 +138,7 @@ export function analyzeFlightWorkspace(options: Readonly<AnalyzeFlightWorkspaceO
   };
 }
 
-export function packageRootExportLane(inventory: Readonly<PackageInventory>): PackageExportLane {
+export function getPackageInventoryRootExportLane(inventory: Readonly<PackageInventory>): PackageExportLane {
   const lane = inventory.exportLanes.find((candidate) => candidate.entry === '.');
   if (!lane) throw new Error(`Package manifest has no root export lane: ${inventory.name}`);
   return lane;

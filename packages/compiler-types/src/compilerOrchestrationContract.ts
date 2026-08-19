@@ -1,11 +1,11 @@
 import type ts from 'typescript';
 
-import type { BackendCompilation, CompilerBackend } from './backend.js';
-import type { LowerTypeScriptSourceOptions } from './typescript.js';
-import type { CompilerDiagnostic, IrModule } from './ir.js';
-import type { PatchAudit, SemanticPatch } from './patch.js';
+import type { BackendCompilation, CompilerBackend } from './compilerBackendContract.js';
+import type { CompilerDiagnostic, IrModule } from './compilerIntermediateRepresentation.js';
+import type { PatchAudit, SemanticPatch } from './compilerSemanticPatchContract.js';
+import type { LowerTypeScriptSourceOptions } from './compilerTypeScriptContract.js';
 
-export interface CompileModulesOptions<BackendOptions> {
+export interface CompileIrModulesOptions<BackendOptions> {
   backend: CompilerBackend<BackendOptions>;
   backendOptions: Readonly<BackendOptions>;
   modules: readonly IrModule[];
@@ -19,7 +19,7 @@ export interface CompilerReport {
   schema: 'flight-compiler-report/1';
 }
 
-export interface CompileModulesResult {
+export interface CompileIrModulesResult {
   compilation: BackendCompilation;
   diagnostics: CompilerDiagnostic[];
   patchAudit: PatchAudit;
@@ -44,7 +44,7 @@ export interface TypeScriptModuleInput extends LowerTypeScriptSourceOptions {
 }
 
 export interface CompileTypeScriptModulesOptions<BackendOptions> extends Omit<
-  CompileModulesOptions<BackendOptions>,
+  CompileIrModulesOptions<BackendOptions>,
   'modules'
 > {
   sources: readonly TypeScriptModuleInput[];

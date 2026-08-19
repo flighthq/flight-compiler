@@ -1,7 +1,7 @@
 export {
-  compileModules,
+  compileIrModules,
   compileTypeScriptModules,
-  createCompilerDiagnosticsError,
-  isCompilerDiagnosticsError,
+  createCompilerDiagnosticsFailure,
+  isCompilerDiagnosticsFailure,
   parseTypeScriptSource,
-} from './compile.js';
+} from './compilerOrchestration.js';

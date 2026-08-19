@@ -1,1 +1,1 @@
-export { lowerTypeScriptSource } from './lowerTypeScriptSource.js';
+export { lowerTypeScriptSource } from './typeScriptSemanticLowering.js';

@@ -1,7 +1,7 @@
 import path from 'node:path';
 
-import { createBackendEmissionError, indentSource } from '../../compiler-emission/src/index.js';
-import type { CompilerBackend, EmittedFile, RustBackendOptions } from '../../compiler-types/src/index.js';
+import { createBackendEmissionFailure, indentSourceLines } from '../../compiler-emission/src/index.js';
+import type { CompilerBackend, EmittedFile, RustCompilerBackendOptions } from '../../compiler-types/src/index.js';
 import type {
   IrClassDeclaration,
   IrDeclaration,
@@ -25,17 +25,40 @@ interface EmitContext {
   constants: ReadonlyMap<string, string>;
   localNames: ReadonlySet<string>;
   module: Readonly<IrModule>;
-  options: Readonly<RustBackendOptions>;
+  options: Readonly<RustCompilerBackendOptions>;
 }
 
-export const rustBackend: CompilerBackend<RustBackendOptions> = {
-  emitModule(module, { options }) {
-    return [emitRustModule(module, options)];
-  },
-  name: 'rust',
-};
+export function convertPackageNameToRustCrateName(packageName: string): string {
+  const bareName = packageName.replace(/^@[^/]+\//u, '');
+  if (bareName.length === 0) throw new Error(`Cannot map empty npm package name: ${packageName}`);
+  return `flighthq-${bareName.replaceAll('_', '-').toLowerCase()}`;
+}
 
-export function emitRustModule(module: Readonly<IrModule>, options: Readonly<RustBackendOptions> = {}): EmittedFile {
+export function convertSourcePathToRustModuleName(sourcePath: string): string | undefined {
+  const filename = path.basename(sourcePath).replace(/\.tsx?$/u, '');
+  if (
+    filename.toLowerCase() === 'index' ||
+    filename.toLowerCase() === 'internal' ||
+    /test(?:helper|util)/iu.test(filename)
+  ) {
+    return undefined;
+  }
+  return snakeCase(filename);
+}
+
+export function createRustCompilerBackend(): CompilerBackend<RustCompilerBackendOptions> {
+  return {
+    emitModule(module, { options }) {
+      return [emitIrModuleRust(module, options)];
+    },
+    name: 'rust',
+  };
+}
+
+export function emitIrModuleRust(
+  module: Readonly<IrModule>,
+  options: Readonly<RustCompilerBackendOptions> = {},
+): EmittedFile {
   const constants = new Map(
     module.declarations.flatMap((declaration) =>
       declaration.kind === 'variable' && !declaration.mutable
@@ -58,26 +81,8 @@ export function emitRustModule(module: Readonly<IrModule>, options: Readonly<Rus
   });
   return {
     contents: lines.join('\n'),
-    path: `${sourcePathToRustModule(module.source) ?? `_internal_${snakeCase(module.name)}`}.rs`,
+    path: `${convertSourcePathToRustModuleName(module.source) ?? `_internal_${snakeCase(module.name)}`}.rs`,
   };
-}
-
-export function packageNameToRustCrate(packageName: string): string {
-  const bareName = packageName.replace(/^@[^/]+\//u, '');
-  if (bareName.length === 0) throw new Error(`Cannot map empty npm package name: ${packageName}`);
-  return `flighthq-${bareName.replaceAll('_', '-').toLowerCase()}`;
-}
-
-export function sourcePathToRustModule(sourcePath: string): string | undefined {
-  const filename = path.basename(sourcePath).replace(/\.tsx?$/u, '');
-  if (
-    filename.toLowerCase() === 'index' ||
-    filename.toLowerCase() === 'internal' ||
-    /test(?:helper|util)/iu.test(filename)
-  ) {
-    return undefined;
-  }
-  return snakeCase(filename);
 }
 
 function emitClass(declaration: Readonly<IrClassDeclaration>, context: EmitContext): string[] {
@@ -123,7 +128,7 @@ function emitClass(declaration: Readonly<IrClassDeclaration>, context: EmitConte
       );
       lines.push(
         `  ${method.visibility === 'public' ? 'pub ' : ''}fn ${safeRustValueName(method.name)}${emitTypeParameters(method.typeParameters, context)}(${parameters}) -> ${emitType(method.returns, context)} {`,
-        ...indentSource(emitStatements(method.body, methodContext), 2),
+        ...indentSourceLines(emitStatements(method.body, methodContext), 2),
         '  }',
       );
     });
@@ -200,7 +205,7 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
         );
         return expression.expression
           ? `|${expression.parameters.map((parameter) => safeRustValueName(parameter.name)).join(', ')}| ${emitExpression(expression.expression, functionContext)}`
-          : `|${expression.parameters.map((parameter) => safeRustValueName(parameter.name)).join(', ')}| {\n${indentSource(emitStatements(expression.body, functionContext)).join('\n')}\n}`;
+          : `|${expression.parameters.map((parameter) => safeRustValueName(parameter.name)).join(', ')}| {\n${indentSourceLines(emitStatements(expression.body, functionContext)).join('\n')}\n}`;
       }
     case 'identifier':
       return context.localNames.has(expression.name)
@@ -258,7 +263,7 @@ function emitFunction(declaration: Readonly<IrFunctionDeclaration>, context: Emi
   );
   return [
     `${declaration.exported ? 'pub ' : ''}fn ${safeRustValueName(declaration.name)}${emitTypeParameters(declaration.typeParameters, context)}(${declaration.parameters.map((parameter) => emitParameter(parameter, context)).join(', ')}) -> ${emitType(declaration.returns, context)} {`,
-    ...indentSource(emitStatements(declaration.body, functionContext)),
+    ...indentSourceLines(emitStatements(declaration.body, functionContext)),
     '}',
   ];
 }
@@ -329,7 +334,7 @@ function emitRecord(
 function emitStatement(statement: Readonly<IrStatement>, context: EmitContext): string[] {
   switch (statement.kind) {
     case 'block':
-      return ['{', ...indentSource(emitStatements(statement.statements, context)), '}'];
+      return ['{', ...indentSourceLines(emitStatements(statement.statements, context)), '}'];
     case 'break':
       return ['break;'];
     case 'continue':
@@ -337,7 +342,7 @@ function emitStatement(statement: Readonly<IrStatement>, context: EmitContext): 
     case 'do':
       return [
         'loop {',
-        ...indentSource(emitStatementBody(statement.body, context)),
+        ...indentSourceLines(emitStatementBody(statement.body, context)),
         `  if !(${emitExpression(statement.condition, context)}) { break; }`,
         '}',
       ];
@@ -353,18 +358,18 @@ function emitStatement(statement: Readonly<IrStatement>, context: EmitContext): 
         const loopContext = withLocalNames(context, [statement.variable.name]);
         return [
           `for ${statement.variable.mutable ? 'mut ' : ''}${safeRustValueName(statement.variable.name)} in ${emitExpression(statement.iterable, context)} {`,
-          ...indentSource(emitStatementBody(statement.body, loopContext)),
+          ...indentSourceLines(emitStatementBody(statement.body, loopContext)),
           '}',
         ];
       }
     case 'if': {
       const lines = [
         `if ${emitExpression(statement.condition, context)} {`,
-        ...indentSource(emitStatementBody(statement.consequent, context)),
+        ...indentSourceLines(emitStatementBody(statement.consequent, context)),
         '}',
       ];
       if (statement.otherwise)
-        lines.push('else {', ...indentSource(emitStatementBody(statement.otherwise, context)), '}');
+        lines.push('else {', ...indentSourceLines(emitStatementBody(statement.otherwise, context)), '}');
       return lines;
     }
     case 'return':
@@ -381,7 +386,7 @@ function emitStatement(statement: Readonly<IrStatement>, context: EmitContext): 
     case 'while':
       return [
         `while ${emitExpression(statement.condition, context)} {`,
-        ...indentSource(emitStatementBody(statement.body, context)),
+        ...indentSourceLines(emitStatementBody(statement.body, context)),
         '}',
       ];
   }
@@ -504,7 +509,7 @@ function emitVariableDeclaration(declaration: Readonly<IrVariableDeclaration>, c
 }
 
 function emissionError(context: EmitContext, message: string): never {
-  throw createBackendEmissionError('rust', context.module.source, message);
+  throw createBackendEmissionFailure('rust', context.module.source, message);
 }
 
 function mapOperator(operator: string, assignment: boolean, context: EmitContext): string {
@@ -535,12 +540,12 @@ function rustImportModule(specifier: string, context: EmitContext): string {
     const target = path.posix.normalize(
       path.posix.join(path.posix.dirname(context.module.source), specifier.replace(/\.[cm]?js$/u, '')),
     );
-    return `crate::${sourcePathToRustModule(target) ?? `_internal_${snakeCase(path.posix.basename(target))}`}`;
+    return `crate::${convertSourcePathToRustModuleName(target) ?? `_internal_${snakeCase(path.posix.basename(target))}`}`;
   }
   if (specifier.startsWith('@')) {
     const packageName = /^(@[^/]+\/[^/]+)/u.exec(specifier)?.[1];
     if (!packageName) emissionError(context, `cannot identify package import ${specifier}`);
-    return packageNameToRustCrate(packageName).replaceAll('-', '_');
+    return convertPackageNameToRustCrateName(packageName).replaceAll('-', '_');
   }
   emissionError(context, `external import ${specifier} requires a runtime or standard-library mapping`);
 }

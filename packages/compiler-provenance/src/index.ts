@@ -1,1 +1,1 @@
-export { fingerprintText, fingerprintTypeScriptNode, normalizeTypeScriptNode } from './fingerprint.js';
+export { fingerprintSourceText, fingerprintTypeScriptNode, normalizeTypeScriptNode } from './sourceFingerprint.js';

@@ -90,6 +90,8 @@ Keep imports side-effect-free. Importing the package must not read a checkout, s
 - Expected environmental absence returns a structured result where the API defines one. Invalid compiler configuration, unresolved public exports, ambiguous patches, and stale fingerprints fail loudly.
 - Use small free functions and plain data. Compiler packages do not define classes; tagged diagnostic values and explicit function records provide failure and capability contracts.
 - Exported names must be globally understandable without relying on a deep import path for context.
+- Authored TypeScript files use globally unique, verb-free concept-noun basenames. A test inherits its source concept with `.test.ts`; repeated package `index.ts` entry barrels and ecosystem-owned `vitest.config*.ts` names are the routine exceptions. Generic names such as `shared`, `internal`, `utils`, and `helpers` are forbidden. See [the compiler naming contract](agents/compiler-naming.md).
+- Every exported declaration name is globally unique. Exported runtime APIs are named free functions using `<verb><FullType><Modifier?>`: the full operated-on type follows the verb, with a modifier only when it distinguishes the operation, result, or target. Types remain concept nouns. Target abbreviations stay in package slugs; TypeScript APIs spell Haxe and Rust in full.
 - Expected failures use stable tagged data or tagged `Error` records with type guards. Error message text is for people, not control flow.
 - A normalization or fingerprint function must be tested with both equivalence pairs and semantic counterexamples. Canonicalization may remove irrelevant spelling differences but must never merge distinct programs.
 - Functions do not mutate caller-owned input unless mutation is the explicit contract. Clone at the boundary when a transformation needs a working copy.
@@ -110,7 +112,7 @@ Implement facts and behavior in this repository's architecture; do not translate
 - Add comments only for durable invariants, ownership, identity, determinism, or compiler behavior that names cannot express.
 - Do not add transient `TODO`, `FIXME`, or work-history comments to source.
 - Keep loose constants and implementation state after exported functions so the public surface scans first.
-- Boolean queries use `is*` or `has*`; accessors use `get*`; allocating operations name the allocation when it matters.
+- Boolean queries use `is*` or `has*`; accessors use `get*`; allocating operations use `create*` and make the allocated type explicit.
 - Keep commits to one Conventional Commit subject with no body or trailers.
 
 ## Commands
@@ -124,7 +126,7 @@ Use npm, not pnpm or Yarn. Node.js 22 or newer is required.
 - `npm run test:coverage`: run all unit tests together with aggregate instrumentation. The complete gate intentionally runs tests once in isolation and again for coverage because these lanes prove different properties.
 - `npm run docs:check`: enforce the bounded codebase map, Claude pointer, and local documentation links.
 - `npm run typecheck`: run the root and every workspace's strict no-emit check, collecting failures.
-- `npm run packages:check`: enforce manifests, flat source trees, dependency declarations and acyclicity, centralized contracts, class-free implementation, transient-comment absence, tests, and public-facade completeness.
+- `npm run packages:check`: enforce manifests, flat source trees, dependency declarations and acyclicity, centralized contracts, class-free implementation, globally unique domain filenames and APIs, verb-first function names, transient-comment absence, tests, and public-facade completeness.
 - `npm run build`: clean stale output and assemble ESM JavaScript, declarations, maps, and declaration maps in `packages/tool-compiler/dist/`.
 - `npm run pack:check`: build fresh, inspect the publishable tarball, and prove every private workspace is assembled without leaking private imports or source/tests.
 

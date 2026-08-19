@@ -5,7 +5,7 @@ import path from 'node:path';
 
 import {
   analyzeFlightWorkspace,
-  packageRootExportLane,
+  getPackageInventoryRootExportLane,
   readPackageExportManifest,
   resolvePackageExportLane,
 } from './index.js';
@@ -32,7 +32,7 @@ describe('Flight workspace inventory', () => {
         sourceFiles: 6,
         testFiles: 0,
       });
-      expect(packageRootExportLane(types)).toBe(root);
+      expect(getPackageInventoryRootExportLane(types)).toBe(root);
       expect(contract.exports).toEqual(root.exports);
       expect(root.exports.find((item) => item.name === 'Shape')).toMatchObject({
         kind: 'interface',

@@ -7,20 +7,20 @@ import type {
   SemanticPatchFailure,
   SemanticPatchFailureCode,
 } from '../../compiler-types/src/index.js';
-import { applySemanticPatches, defineSemanticPatches, isSemanticPatchError } from './index.js';
+import { applySemanticPatchSet, defineSemanticPatchSet, isSemanticPatchFailure } from './index.js';
 
 const packageName = '@flighthq/math';
 const source = 'packages/math/src/clamp.ts';
 
 describe('semantic patches', () => {
   it('applies backend patches after neutral patches independent of patch identifiers', () => {
-    const patches = defineSemanticPatches([
+    const patches = defineSemanticPatchSet([
       renamePatch('zzz-neutral', 'neutralName', { kind: 'neutral' }),
       renamePatch('aaa-rust', 'rustName', { backend: 'rust', kind: 'backend' }),
     ]);
 
-    const rust = applySemanticPatches([createModule()], patches, 'rust');
-    const haxe = applySemanticPatches([createModule()], patches, 'haxe');
+    const rust = applySemanticPatchSet([createModule()], patches, 'rust');
+    const haxe = applySemanticPatchSet([createModule()], patches, 'haxe');
 
     expect(rust.modules[0]?.declarations[0]?.name).toBe('rustName');
     expect(rust.audit.applied.map((record) => record.id)).toEqual(['zzz-neutral', 'aaa-rust']);
@@ -34,7 +34,7 @@ describe('semantic patches', () => {
       createTypeDeclaration('Range'),
       createFunctionDeclaration('obsolete'),
     ]);
-    const patches = defineSemanticPatches([
+    const patches = defineSemanticPatchSet([
       {
         ...patchBase('03-remove', 'obsolete', 'function'),
         operation: 'remove',
@@ -52,7 +52,7 @@ describe('semantic patches', () => {
       },
     ]);
 
-    const result = applySemanticPatches([module], patches, 'haxe');
+    const result = applySemanticPatchSet([module], patches, 'haxe');
     const declarations = result.modules[0]?.declarations;
 
     expect(declarations?.map((declaration) => declaration.name)).toEqual(['bounded', 'Range']);
@@ -151,8 +151,8 @@ describe('semantic patches', () => {
       subject: 'fixture',
     });
 
-    expect(isSemanticPatchError(unknownCode)).toBe(false);
-    expect(isSemanticPatchError(malformedIds)).toBe(false);
+    expect(isSemanticPatchFailure(unknownCode)).toBe(false);
+    expect(isSemanticPatchFailure(malformedIds)).toBe(false);
   });
 
   it('reports conflicts deterministically regardless of input order', () => {
@@ -170,10 +170,10 @@ describe('semantic patches', () => {
 
 function captureFailure(modules: IrModule[], patches: SemanticPatch[]): SemanticPatchFailure {
   try {
-    applySemanticPatches(modules, patches, 'haxe');
+    applySemanticPatchSet(modules, patches, 'haxe');
     throw new Error('Expected semantic patch application to fail');
   } catch (error) {
-    if (!isSemanticPatchError(error)) throw error;
+    if (!isSemanticPatchFailure(error)) throw error;
     return error;
   }
 }

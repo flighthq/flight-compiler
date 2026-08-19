@@ -1,25 +1,25 @@
 import {
-  createBackendEmissionError,
-  createCompilerInvariantError,
-  indentSource,
-  isBackendEmissionError,
-  isCompilerInvariantError,
+  createBackendEmissionFailure,
+  createCompilerInvariantFailure,
+  indentSourceLines,
+  isBackendEmissionFailure,
+  isCompilerInvariantFailure,
   normalizeEmittedFile,
 } from './index.js';
 
 describe('emission infrastructure', () => {
   it('creates inspectable tagged failures without a class hierarchy', () => {
-    const backend = createBackendEmissionError('haxe', 'packages/math/src/value.ts', 'unsupported');
-    const invariant = createCompilerInvariantError('duplicate-emitted-path', 'Value.hx', 'duplicate');
+    const backend = createBackendEmissionFailure('haxe', 'packages/math/src/value.ts', 'unsupported');
+    const invariant = createCompilerInvariantFailure('duplicate-emitted-path', 'Value.hx', 'duplicate');
 
-    expect(isBackendEmissionError(backend)).toBe(true);
+    expect(isBackendEmissionFailure(backend)).toBe(true);
     expect(backend).toMatchObject({
       backend: 'haxe',
       kind: 'backend-emission',
       name: 'BackendEmissionError',
       source: 'packages/math/src/value.ts',
     });
-    expect(isCompilerInvariantError(invariant)).toBe(true);
+    expect(isCompilerInvariantFailure(invariant)).toBe(true);
     expect(invariant).toMatchObject({
       code: 'duplicate-emitted-path',
       kind: 'compiler-invariant',
@@ -29,9 +29,9 @@ describe('emission infrastructure', () => {
   });
 
   it('indents nonempty lines without changing blank lines', () => {
-    expect(indentSource(['one', '', 'two'], 2)).toEqual(['    one', '', '    two']);
-    expect(indentSource(['one', ''], 0)).toEqual(['one', '']);
-    expect(indentSource([])).toEqual([]);
+    expect(indentSourceLines(['one', '', 'two'], 2)).toEqual(['    one', '', '    two']);
+    expect(indentSourceLines(['one', ''], 0)).toEqual(['one', '']);
+    expect(indentSourceLines([])).toEqual([]);
   });
 
   it('normalizes line endings, trailing whitespace, empty contents, and portable paths', () => {
@@ -68,7 +68,7 @@ describe('emission infrastructure', () => {
         normalizeEmittedFile({ contents: '', path });
         expect.unreachable('Expected an unsafe emitted path to fail');
       } catch (error) {
-        expect(isCompilerInvariantError(error)).toBe(true);
+        expect(isCompilerInvariantFailure(error)).toBe(true);
         expect(error).toMatchObject({
           code: 'unsafe-emitted-path',
           kind: 'compiler-invariant',
@@ -90,7 +90,7 @@ describe('emission infrastructure', () => {
       source: 'fixture.ts',
     });
 
-    expect(isBackendEmissionError(incompleteBackend)).toBe(false);
-    expect(isCompilerInvariantError(unknownInvariant)).toBe(false);
+    expect(isBackendEmissionFailure(incompleteBackend)).toBe(false);
+    expect(isCompilerInvariantFailure(unknownInvariant)).toBe(false);
   });
 });

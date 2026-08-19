@@ -1,1 +1,6 @@
-export { emitRustModule, packageNameToRustCrate, rustBackend, sourcePathToRustModule } from './backend.js';
+export {
+  convertPackageNameToRustCrateName,
+  convertSourcePathToRustModuleName,
+  createRustCompilerBackend,
+  emitIrModuleRust,
+} from './rustCompilerBackend.js';

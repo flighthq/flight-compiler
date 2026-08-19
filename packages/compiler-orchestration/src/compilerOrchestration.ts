@@ -1,11 +1,11 @@
 import ts from 'typescript';
 
-import { createCompilerInvariantError, normalizeEmittedFile } from '../../compiler-emission/src/index.js';
-import { applySemanticPatches } from '../../compiler-patch/src/index.js';
+import { createCompilerInvariantFailure, normalizeEmittedFile } from '../../compiler-emission/src/index.js';
+import { applySemanticPatchSet } from '../../compiler-patch/src/index.js';
 import { lowerTypeScriptSource } from '../../compiler-semantic/src/index.js';
 import type {
-  CompileModulesOptions,
-  CompileModulesResult,
+  CompileIrModulesOptions,
+  CompileIrModulesResult,
   CompileTypeScriptModulesOptions,
   CompilerDiagnostic,
   CompilerDiagnosticsFailure,
@@ -13,11 +13,11 @@ import type {
   IrModule,
 } from '../../compiler-types/src/index.js';
 
-export function compileModules<BackendOptions>(
-  options: Readonly<CompileModulesOptions<BackendOptions>>,
-): CompileModulesResult {
+export function compileIrModules<BackendOptions>(
+  options: Readonly<CompileIrModulesOptions<BackendOptions>>,
+): CompileIrModulesResult {
   validateModuleIdentities(options.modules);
-  const patched = applySemanticPatches(options.modules, options.patches ?? [], options.backend.name);
+  const patched = applySemanticPatchSet(options.modules, options.patches ?? [], options.backend.name);
   const modules = [...patched.modules].sort(compareModules);
   const files = modules
     .flatMap((module) => options.backend.emitModule(module, { modules, options: options.backendOptions }))
@@ -39,13 +39,13 @@ export function compileModules<BackendOptions>(
 
 export function compileTypeScriptModules<BackendOptions>(
   options: Readonly<CompileTypeScriptModulesOptions<BackendOptions>>,
-): CompileModulesResult {
+): CompileIrModulesResult {
   const lowered = options.sources.map(({ sourceFile, ...loweringOptions }) =>
     lowerTypeScriptSource(sourceFile, loweringOptions),
   );
   const diagnostics = lowered.flatMap((result) => result.diagnostics).sort(compareDiagnostics);
-  if (diagnostics.length > 0) throw createCompilerDiagnosticsError(diagnostics);
-  return compileModules({
+  if (diagnostics.length > 0) throw createCompilerDiagnosticsFailure(diagnostics);
+  return compileIrModules({
     backend: options.backend,
     backendOptions: options.backendOptions,
     modules: lowered.map((result) => result.module),
@@ -58,7 +58,9 @@ export function parseTypeScriptSource(fileName: string, source: string): ts.Sour
   return ts.createSourceFile(fileName, source, ts.ScriptTarget.Latest, true, scriptKind);
 }
 
-export function createCompilerDiagnosticsError(diagnostics: readonly CompilerDiagnostic[]): CompilerDiagnosticsFailure {
+export function createCompilerDiagnosticsFailure(
+  diagnostics: readonly CompilerDiagnostic[],
+): CompilerDiagnosticsFailure {
   const message = `TypeScript lowering produced ${String(diagnostics.length)} diagnostic(s):\n${diagnostics
     .map(
       (diagnostic) =>
@@ -73,7 +75,7 @@ export function createCompilerDiagnosticsError(diagnostics: readonly CompilerDia
   return failure;
 }
 
-export function isCompilerDiagnosticsError(value: unknown): value is CompilerDiagnosticsFailure {
+export function isCompilerDiagnosticsFailure(value: unknown): value is CompilerDiagnosticsFailure {
   return value instanceof Error && 'kind' in value && value.kind === 'compiler-diagnostics';
 }
 
@@ -98,7 +100,7 @@ function validateEmittedFiles(files: readonly EmittedFile[]): void {
   const paths = new Set<string>();
   for (const file of files) {
     if (paths.has(file.path)) {
-      throw createCompilerInvariantError(
+      throw createCompilerInvariantFailure(
         'duplicate-emitted-path',
         file.path,
         `Backend emitted duplicate file path: ${file.path}`,
@@ -114,7 +116,7 @@ function validateModuleIdentities(modules: readonly IrModule[]): void {
     const identity = `${module.packageName}\0${module.source}\0${module.name}`;
     if (identities.has(identity)) {
       const subject = `${module.packageName}/${module.source}#${module.name}`;
-      throw createCompilerInvariantError(
+      throw createCompilerInvariantFailure(
         'duplicate-module-identity',
         subject,
         `Duplicate compiler module identity: ${subject}`,

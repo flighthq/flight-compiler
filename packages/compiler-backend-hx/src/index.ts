@@ -1,1 +1,6 @@
-export { emitHaxeModule, haxeBackend, packageNameToHaxePackage, sourcePathToHaxeModule } from './backend.js';
+export {
+  convertPackageNameToHaxePackageName,
+  convertSourcePathToHaxeModuleName,
+  createHaxeCompilerBackend,
+  emitIrModuleHaxe,
+} from './haxeCompilerBackend.js';

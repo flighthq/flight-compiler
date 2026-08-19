@@ -2,13 +2,34 @@ import ts from 'typescript';
 import { describe, expect, it } from 'vitest';
 
 import {
+  collectExportedApiDeclarations,
   collectLocalExportNames,
   collectModuleSpecifiers,
   containsTransientWorkComment,
+  isCompilerApiFunctionName,
+  isDomainTypeScriptFileName,
   isExportedContractDeclaration,
-} from './package-ast.js';
+} from './packageHealthAst.js';
 
 describe('package boundary AST analysis', () => {
+  it('finds direct and aliased exported API declarations without counting private declarations', () => {
+    const sourceFile = source(`
+      export function createWidget() {}
+      function getWidgetName() { return 'widget'; }
+      const hidden = 1;
+      const hasWidgetValue = true;
+      interface Widget { name: string }
+      export { getWidgetName as readWidgetName, hasWidgetValue, Widget as PublicWidget };
+    `);
+
+    expect(collectExportedApiDeclarations(sourceFile)).toEqual([
+      { kind: 'function', name: 'createWidget' },
+      { kind: 'value', name: 'hasWidgetValue' },
+      { kind: 'type', name: 'PublicWidget' },
+      { kind: 'function', name: 'readWidgetName' },
+    ]);
+  });
+
   it('distinguishes transient work comments from identifiers and fixture strings', () => {
     expect(containsTransientWorkComment('const TODO = "FIXME";')).toBe(false);
     expect(containsTransientWorkComment('const fixture = "// TODO";')).toBe(false);
@@ -34,6 +55,20 @@ describe('package boundary AST analysis', () => {
       '../../compiler-types/src/static.js',
       '../../compiler-types/src/type.js',
     ]);
+  });
+
+  it('recognizes verb-first API names with a complete PascalCase type segment', () => {
+    expect(isCompilerApiFunctionName('createHaxeCompilerBackend')).toBe(true);
+    expect(isCompilerApiFunctionName('getPackageInventoryRootExportLane')).toBe(true);
+    expect(isCompilerApiFunctionName('packageRootExportLane')).toBe(false);
+    expect(isCompilerApiFunctionName('create')).toBe(false);
+  });
+
+  it('recognizes concept-noun TypeScript file names and rejects function or generic names', () => {
+    expect(isDomainTypeScriptFileName('compilerSemanticPatch.ts')).toBe(true);
+    expect(isDomainTypeScriptFileName('sourceFingerprint.test.ts')).toBe(true);
+    expect(isDomainTypeScriptFileName('applySemanticPatchSet.ts')).toBe(false);
+    expect(isDomainTypeScriptFileName('utils.ts')).toBe(false);
   });
 
   it('finds contracts exported through a separate local export list', () => {

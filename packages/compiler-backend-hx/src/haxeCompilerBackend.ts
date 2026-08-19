@@ -1,7 +1,7 @@
 import path from 'node:path';
 
-import { createBackendEmissionError, indentSource } from '../../compiler-emission/src/index.js';
-import type { CompilerBackend, EmittedFile, HaxeBackendOptions } from '../../compiler-types/src/index.js';
+import { createBackendEmissionFailure, indentSourceLines } from '../../compiler-emission/src/index.js';
+import type { CompilerBackend, EmittedFile, HaxeCompilerBackendOptions } from '../../compiler-types/src/index.js';
 import type {
   IrClassDeclaration,
   IrDeclaration,
@@ -23,19 +23,48 @@ import type {
 
 interface EmitContext {
   module: Readonly<IrModule>;
-  options: Readonly<HaxeBackendOptions>;
+  options: Readonly<HaxeCompilerBackendOptions>;
   packageName: string;
 }
 
-export const haxeBackend: CompilerBackend<HaxeBackendOptions> = {
-  emitModule(module, { options }) {
-    return [emitHaxeModule(module, options)];
-  },
-  name: 'haxe',
-};
+export function convertPackageNameToHaxePackageName(packageName: string, rootPackage = 'flighthq'): string {
+  const bareName = packageName.replace(/^@[^/]+\//u, '');
+  const parts = bareName.split(/[-_]/u).filter(Boolean);
+  if (parts.length === 0) throw new Error(`Cannot map empty npm package name: ${packageName}`);
+  const segment = parts
+    .map((part, index) =>
+      index === 0 ? part.toLowerCase() : `${part.slice(0, 1).toUpperCase()}${part.slice(1).toLowerCase()}`,
+    )
+    .join('');
+  return `${rootPackage}.${segment}`;
+}
 
-export function emitHaxeModule(module: Readonly<IrModule>, options: Readonly<HaxeBackendOptions> = {}): EmittedFile {
-  const packageName = packageNameToHaxePackage(module.packageName, options.rootPackage);
+export function convertSourcePathToHaxeModuleName(sourcePath: string): string | undefined {
+  const filename = path.basename(sourcePath).replace(/\.tsx?$/u, '');
+  if (
+    filename.toLowerCase() === 'index' ||
+    filename.toLowerCase() === 'internal' ||
+    /test(?:helper|util)/iu.test(filename)
+  ) {
+    return undefined;
+  }
+  return pascalCase(filename);
+}
+
+export function createHaxeCompilerBackend(): CompilerBackend<HaxeCompilerBackendOptions> {
+  return {
+    emitModule(module, { options }) {
+      return [emitIrModuleHaxe(module, options)];
+    },
+    name: 'haxe',
+  };
+}
+
+export function emitIrModuleHaxe(
+  module: Readonly<IrModule>,
+  options: Readonly<HaxeCompilerBackendOptions> = {},
+): EmittedFile {
+  const packageName = convertPackageNameToHaxePackageName(module.packageName, options.rootPackage);
   const context: EmitContext = { module, options, packageName };
   if (module.exports.length > 0) {
     emissionError(context, 're-exports and export assignments require Haxe module-facade lowering');
@@ -63,7 +92,7 @@ export function emitHaxeModule(module: Readonly<IrModule>, options: Readonly<Hax
     lines.push('', `class ${moduleName} {`);
     valueDeclarations.forEach((declaration, index) => {
       if (index > 0) lines.push('');
-      lines.push(...indentSource(emitModuleValue(declaration, context)));
+      lines.push(...indentSourceLines(emitModuleValue(declaration, context)));
     });
     lines.push('}');
   }
@@ -71,30 +100,6 @@ export function emitHaxeModule(module: Readonly<IrModule>, options: Readonly<Hax
     contents: lines.join('\n'),
     path: `${packageName.replaceAll('.', '/')}/${moduleName}.hx`,
   };
-}
-
-export function packageNameToHaxePackage(packageName: string, rootPackage = 'flighthq'): string {
-  const bareName = packageName.replace(/^@[^/]+\//u, '');
-  const parts = bareName.split(/[-_]/u).filter(Boolean);
-  if (parts.length === 0) throw new Error(`Cannot map empty npm package name: ${packageName}`);
-  const segment = parts
-    .map((part, index) =>
-      index === 0 ? part.toLowerCase() : `${part.slice(0, 1).toUpperCase()}${part.slice(1).toLowerCase()}`,
-    )
-    .join('');
-  return `${rootPackage}.${segment}`;
-}
-
-export function sourcePathToHaxeModule(sourcePath: string): string | undefined {
-  const filename = path.basename(sourcePath).replace(/\.tsx?$/u, '');
-  if (
-    filename.toLowerCase() === 'index' ||
-    filename.toLowerCase() === 'internal' ||
-    /test(?:helper|util)/iu.test(filename)
-  ) {
-    return undefined;
-  }
-  return pascalCase(filename);
 }
 
 function emitClass(declaration: Readonly<IrClassDeclaration>, context: EmitContext): string[] {
@@ -120,7 +125,7 @@ function emitClass(declaration: Readonly<IrClassDeclaration>, context: EmitConte
   if (declaration.constructorParameters.length > 0 || declaration.constructorBody.length > 0) {
     if (declaration.fields.length > 0) lines.push('');
     lines.push(`  public function new(${emitParameters(declaration.constructorParameters, context)}) {`);
-    lines.push(...indentSource(emitStatements(declaration.constructorBody, context), 2), '  }');
+    lines.push(...indentSourceLines(emitStatements(declaration.constructorBody, context), 2), '  }');
   }
   declaration.methods.forEach((method) => {
     if (lines.length > 1) lines.push('');
@@ -129,7 +134,7 @@ function emitClass(declaration: Readonly<IrClassDeclaration>, context: EmitConte
     const static_ = method.static ? 'static ' : '';
     lines.push(
       `  ${visibility}${static_}function ${safeHaxeName(method.name)}${emitTypeParameters(method.typeParameters, context)}(${emitParameters(method.parameters, context)}):${emitType(method.returns, context)} {`,
-      ...indentSource(emitStatements(method.body, context), 2),
+      ...indentSourceLines(emitStatements(method.body, context), 2),
       '  }',
     );
   });
@@ -185,7 +190,7 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
         emissionError(context, 'generic function expressions are not valid Haxe values');
       return expression.expression
         ? `function(${emitParameters(expression.parameters, context)}) return ${emitExpression(expression.expression, context)}`
-        : `function(${emitParameters(expression.parameters, context)}) {\n${indentSource(emitStatements(expression.body, context)).join('\n')}\n}`;
+        : `function(${emitParameters(expression.parameters, context)}) {\n${indentSourceLines(emitStatements(expression.body, context)).join('\n')}\n}`;
     case 'identifier':
       return safeHaxeName(expression.name);
     case 'literal':
@@ -228,7 +233,7 @@ function emitFunction(declaration: Readonly<IrFunctionDeclaration>, context: Emi
   const access = declaration.exported ? 'public ' : 'private ';
   return [
     `${access}static function ${safeHaxeName(declaration.name)}${emitTypeParameters(declaration.typeParameters, context)}(${emitParameters(declaration.parameters, context)}):${emitType(declaration.returns, context)} {`,
-    ...indentSource(emitStatements(declaration.body, context)),
+    ...indentSourceLines(emitStatements(declaration.body, context)),
     '}',
   ];
 }
@@ -288,7 +293,7 @@ function emitParameters(parameters: readonly IrParameter[], context: EmitContext
 function emitStatement(statement: Readonly<IrStatement>, context: EmitContext): string[] {
   switch (statement.kind) {
     case 'block':
-      return ['{', ...indentSource(emitStatements(statement.statements, context)), '}'];
+      return ['{', ...indentSourceLines(emitStatements(statement.statements, context)), '}'];
     case 'break':
       return ['break;'];
     case 'continue':
@@ -296,7 +301,7 @@ function emitStatement(statement: Readonly<IrStatement>, context: EmitContext): 
     case 'do':
       return [
         'do {',
-        ...indentSource(emitStatementBody(statement.body, context)),
+        ...indentSourceLines(emitStatementBody(statement.body, context)),
         `} while (${emitExpression(statement.condition, context)});`,
       ];
     case 'expression':
@@ -306,24 +311,24 @@ function emitStatement(statement: Readonly<IrStatement>, context: EmitContext): 
     case 'forIn':
       return [
         `for (${safeHaxeName(statement.variable.name)} in Reflect.fields(${emitExpression(statement.object, context)})) {`,
-        ...indentSource(emitStatementBody(statement.body, context)),
+        ...indentSourceLines(emitStatementBody(statement.body, context)),
         '}',
       ];
     case 'forOf':
       if (statement.await) emissionError(context, 'async iteration requires the Haxe async-lowering pass');
       return [
         `for (${safeHaxeName(statement.variable.name)} in ${emitExpression(statement.iterable, context)}) {`,
-        ...indentSource(emitStatementBody(statement.body, context)),
+        ...indentSourceLines(emitStatementBody(statement.body, context)),
         '}',
       ];
     case 'if': {
       const lines = [
         `if (${emitExpression(statement.condition, context)}) {`,
-        ...indentSource(emitStatementBody(statement.consequent, context)),
+        ...indentSourceLines(emitStatementBody(statement.consequent, context)),
         '}',
       ];
       if (statement.otherwise)
-        lines.push('else {', ...indentSource(emitStatementBody(statement.otherwise, context)), '}');
+        lines.push('else {', ...indentSourceLines(emitStatementBody(statement.otherwise, context)), '}');
       return lines;
     }
     case 'return':
@@ -334,7 +339,7 @@ function emitStatement(statement: Readonly<IrStatement>, context: EmitContext): 
       for (const clause of statement.cases) {
         lines.push(`  ${clause.expression ? `case ${emitExpression(clause.expression, context)}` : 'default'}:`);
         lines.push(
-          ...indentSource(
+          ...indentSourceLines(
             emitStatements(
               clause.statements.filter((item) => item.kind !== 'break'),
               context,
@@ -352,12 +357,12 @@ function emitStatement(statement: Readonly<IrStatement>, context: EmitContext): 
       if (statement.finallyBody) emissionError(context, 'finally blocks require completion-preserving Haxe lowering');
       return [
         'try {',
-        ...indentSource(emitStatementBody(statement.tryBody, context)),
+        ...indentSourceLines(emitStatementBody(statement.tryBody, context)),
         '}',
         ...(statement.catchBody
           ? [
               `catch (${safeHaxeName(statement.catchName ?? 'error')}:Dynamic) {`,
-              ...indentSource(emitStatementBody(statement.catchBody, context)),
+              ...indentSourceLines(emitStatementBody(statement.catchBody, context)),
               '}',
             ]
           : []),
@@ -367,7 +372,7 @@ function emitStatement(statement: Readonly<IrStatement>, context: EmitContext): 
     case 'while':
       return [
         `while (${emitExpression(statement.condition, context)}) {`,
-        ...indentSource(emitStatementBody(statement.body, context)),
+        ...indentSourceLines(emitStatementBody(statement.body, context)),
         '}',
       ];
   }
@@ -485,7 +490,7 @@ function emitVariableDeclaration(declaration: Readonly<IrVariableDeclaration>, c
 }
 
 function emissionError(context: EmitContext, message: string): never {
-  throw createBackendEmissionError('haxe', context.module.source, message);
+  throw createBackendEmissionFailure('haxe', context.module.source, message);
 }
 
 function haxeImportModule(specifier: string, context: EmitContext): string {
@@ -498,7 +503,7 @@ function haxeImportModule(specifier: string, context: EmitContext): string {
   if (specifier.startsWith('@')) {
     const packageName = /^(@[^/]+\/[^/]+)/u.exec(specifier)?.[1];
     if (!packageName) emissionError(context, `cannot identify package import ${specifier}`);
-    const haxePackage = packageNameToHaxePackage(packageName, context.options.rootPackage);
+    const haxePackage = convertPackageNameToHaxePackageName(packageName, context.options.rootPackage);
     const packageModule = pascalCase(haxePackage.split('.').at(-1)!);
     return `${haxePackage}.${packageModule}`;
   }
@@ -507,7 +512,7 @@ function haxeImportModule(specifier: string, context: EmitContext): string {
 
 function haxeImplementationModule(sourcePath: string): string {
   const filename = path.posix.basename(sourcePath).replace(/\.tsx?$/u, '');
-  return sourcePathToHaxeModule(sourcePath) ?? `_${pascalCase(filename)}`;
+  return convertSourcePathToHaxeModuleName(sourcePath) ?? `_${pascalCase(filename)}`;
 }
 
 function mapOperator(operator: string, assignment: boolean, context: EmitContext): string {

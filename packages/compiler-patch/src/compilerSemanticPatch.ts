@@ -8,7 +8,7 @@ import type {
   SemanticPatchFailureCode,
 } from '../../compiler-types/src/index.js';
 
-export function applySemanticPatches(
+export function applySemanticPatchSet(
   modules: readonly IrModule[],
   patches: readonly SemanticPatch[],
   backend: string,
@@ -130,11 +130,11 @@ function comparePatchIdentifiers(left: Readonly<SemanticPatch>, right: Readonly<
   return left.id.localeCompare(right.id);
 }
 
-export function defineSemanticPatches<const Patches extends readonly SemanticPatch[]>(patches: Patches): Patches {
+export function defineSemanticPatchSet<const Patches extends readonly SemanticPatch[]>(patches: Patches): Patches {
   return patches;
 }
 
-export function isSemanticPatchError(value: unknown): value is SemanticPatchFailure {
+export function isSemanticPatchFailure(value: unknown): value is SemanticPatchFailure {
   return (
     value instanceof Error &&
     'kind' in value &&

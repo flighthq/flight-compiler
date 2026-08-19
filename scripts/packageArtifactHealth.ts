@@ -82,7 +82,12 @@ for (const file of walk(distDirectory)) {
 const publicModule = (await import(
   pathToFileURL(path.join(distDirectory, 'packages', 'tool-compiler', 'src', 'index.js')).href
 )) as Record<string, unknown>;
-for (const publicExport of ['analyzeFlightWorkspace', 'compileTypeScriptModules', 'haxeBackend', 'rustBackend']) {
+for (const publicExport of [
+  'analyzeFlightWorkspace',
+  'compileTypeScriptModules',
+  'createHaxeCompilerBackend',
+  'createRustCompilerBackend',
+]) {
   check(publicExport in publicModule, `assembled public module is missing ${publicExport}`);
 }
 

@@ -2,12 +2,12 @@ import { createHash } from 'node:crypto';
 
 import ts from 'typescript';
 
-export function fingerprintText(value: string): string {
+export function fingerprintSourceText(value: string): string {
   return `sha256:${createHash('sha256').update(value).digest('hex')}`;
 }
 
 export function fingerprintTypeScriptNode(node: ts.Node, sourceFile: ts.SourceFile): string {
-  return fingerprintText(normalizeTypeScriptNode(node, sourceFile));
+  return fingerprintSourceText(normalizeTypeScriptNode(node, sourceFile));
 }
 
 export function normalizeTypeScriptNode(node: ts.Node, sourceFile: ts.SourceFile): string {

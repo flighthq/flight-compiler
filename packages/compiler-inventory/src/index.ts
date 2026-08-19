@@ -1,14 +1,14 @@
 export {
   analyzeFlightWorkspace,
-  packageRootExportLane,
+  getPackageInventoryRootExportLane,
   readGitCommit,
   readPackageExportManifest,
   resolvePackageExportLane,
-} from './analyzeFlightWorkspace.js';
-export { createTypeScriptProject } from './createTypeScriptProject.js';
+} from './flightWorkspaceInventory.js';
+export { createTypeScriptProject } from './typeScriptProject.js';
 export {
-  declarationEmitsRuntimeBinding,
-  isExplicitTypeOnlyExport,
-  runtimeBindingDeclaration,
-  runtimeExportsForSource,
-} from './runtimeValues.js';
+  analyzeTypeScriptSourceRuntimeExports,
+  getTypeScriptSymbolRuntimeBindingDeclaration,
+  hasTypeScriptDeclarationRuntimeBinding,
+  isTypeScriptExportExplicitlyTypeOnly,
+} from './typeScriptRuntimeBinding.js';

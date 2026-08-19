@@ -1,13 +1,13 @@
 import ts from 'typescript';
 
-import { fingerprintText, fingerprintTypeScriptNode, normalizeTypeScriptNode } from './index.js';
+import { fingerprintSourceText, fingerprintTypeScriptNode, normalizeTypeScriptNode } from './index.js';
 
 describe('compiler provenance', () => {
   it('fingerprints raw text with an explicit SHA-256 identity', () => {
-    expect(fingerprintText('export const value = 1;')).toBe(
+    expect(fingerprintSourceText('export const value = 1;')).toBe(
       'sha256:fcbcb7aece718d280178457c2c5a3bfb8e8743b8331374c29a50397f38d511e4',
     );
-    expect(fingerprintText('value')).not.toBe(fingerprintText('value '));
+    expect(fingerprintSourceText('value')).not.toBe(fingerprintSourceText('value '));
   });
 
   it('normalizes formatting, comments, source paths, and line endings', () => {

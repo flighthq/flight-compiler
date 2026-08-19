@@ -1,4 +1,4 @@
-import type { IrModule } from './ir.js';
+import type { IrModule } from './compilerIntermediateRepresentation.js';
 
 export interface EmittedFile {
   contents: string;
@@ -26,13 +26,13 @@ export interface BackendEmissionFailure extends Error {
   source: string;
 }
 
-export interface HaxeBackendOptions {
+export interface HaxeCompilerBackendOptions {
   generatedHeader?: string | undefined;
   rootPackage?: string | undefined;
   runtimeModule?: string | undefined;
 }
 
-export interface RustBackendOptions {
+export interface RustCompilerBackendOptions {
   generatedHeader?: string | undefined;
   opaqueHostType?: string | undefined;
 }

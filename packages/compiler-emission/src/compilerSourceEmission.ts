@@ -13,7 +13,7 @@ const compilerInvariantCodes = {
   'unsafe-emitted-path': true,
 } as const satisfies Readonly<Record<CompilerInvariantCode, true>>;
 
-export function createBackendEmissionError(backend: string, source: string, message: string): BackendEmissionFailure {
+export function createBackendEmissionFailure(backend: string, source: string, message: string): BackendEmissionFailure {
   const failure = Object.assign(new Error(`${backend} emission failed for ${source}: ${message}`), {
     backend,
     kind: 'backend-emission' as const,
@@ -23,7 +23,7 @@ export function createBackendEmissionError(backend: string, source: string, mess
   return failure;
 }
 
-export function createCompilerInvariantError(
+export function createCompilerInvariantFailure(
   code: CompilerInvariantCode,
   subject: string,
   message: string,
@@ -37,12 +37,12 @@ export function createCompilerInvariantError(
   return failure;
 }
 
-export function indentSource(lines: readonly string[], depth = 1): string[] {
+export function indentSourceLines(lines: readonly string[], depth = 1): string[] {
   const prefix = '  '.repeat(depth);
   return lines.map((line) => (line.length === 0 ? '' : `${prefix}${line}`));
 }
 
-export function isBackendEmissionError(value: unknown): value is BackendEmissionFailure {
+export function isBackendEmissionFailure(value: unknown): value is BackendEmissionFailure {
   return (
     value instanceof Error &&
     'kind' in value &&
@@ -54,7 +54,7 @@ export function isBackendEmissionError(value: unknown): value is BackendEmission
   );
 }
 
-export function isCompilerInvariantError(value: unknown): value is CompilerInvariantFailure {
+export function isCompilerInvariantFailure(value: unknown): value is CompilerInvariantFailure {
   return (
     value instanceof Error &&
     'kind' in value &&
@@ -77,7 +77,7 @@ export function normalizeEmittedFile(file: Readonly<EmittedFile>): EmittedFile {
     /^[A-Za-z]:/u.test(file.path) ||
     normalizedPath.split('/').some(isUnsafePortablePathSegment)
   ) {
-    throw createCompilerInvariantError(
+    throw createCompilerInvariantFailure(
       'unsafe-emitted-path',
       file.path,
       `Backend emitted an unsafe file path: ${file.path}`,

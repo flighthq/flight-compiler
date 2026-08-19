@@ -5,11 +5,14 @@ import { fileURLToPath } from 'node:url';
 import ts from 'typescript';
 
 import {
+  collectExportedApiDeclarations,
   collectLocalExportNames,
   collectModuleSpecifiers,
   containsTransientWorkComment,
+  isCompilerApiFunctionName,
+  isDomainTypeScriptFileName,
   isExportedContractDeclaration,
-} from './package-ast.js';
+} from './packageHealthAst.js';
 
 interface PackageManifest {
   author?: string;
@@ -81,6 +84,7 @@ const packageRules: Readonly<Record<string, PackageRule>> = {
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const packagesDirectory = path.join(root, 'packages');
 const errors: string[] = [];
+const exportedApiHomes = new Map<string, string>();
 const packageNames = Object.keys(packageRules).sort();
 const publicPackageName = 'tool-compiler';
 const workspaceNames = [...packageNames, publicPackageName].sort();
@@ -106,6 +110,7 @@ check(
 
 checkPublicPackage();
 for (const packageName of packageNames) checkPackage(packageName, packageRules[packageName]!);
+checkTypeScriptFileNames();
 checkDependencyCycles();
 checkPublicFacade();
 
@@ -296,6 +301,25 @@ function checkPackage(packageName: string, rule: Readonly<PackageRule>): void {
 
 function visitSourceFile(sourceFile: ts.SourceFile, packageName: string): void {
   const localExportNames = collectLocalExportNames(sourceFile);
+  if (!sourceFile.fileName.endsWith('.test.ts') && path.basename(sourceFile.fileName) !== 'index.ts') {
+    for (const declaration of collectExportedApiDeclarations(sourceFile)) {
+      const existingHome = exportedApiHomes.get(declaration.name);
+      check(
+        existingHome === undefined,
+        `${relative(sourceFile.fileName)}: exported API ${declaration.name} duplicates ${relative(existingHome ?? sourceFile.fileName)}`,
+      );
+      if (existingHome === undefined) exportedApiHomes.set(declaration.name, sourceFile.fileName);
+      if (declaration.kind === 'value') {
+        errors.push(
+          `${relative(sourceFile.fileName)}: exported runtime API ${declaration.name} must be a named free function`,
+        );
+      } else if (declaration.kind === 'function' && !isCompilerApiFunctionName(declaration.name)) {
+        errors.push(
+          `${relative(sourceFile.fileName)}: exported function ${declaration.name} must be verb + full type + optional modifier`,
+        );
+      }
+    }
+  }
   const visit = (node: ts.Node): void => {
     if (ts.isClassDeclaration(node) || ts.isClassExpression(node)) {
       errors.push(
@@ -310,6 +334,32 @@ function visitSourceFile(sourceFile: ts.SourceFile, packageName: string): void {
     ts.forEachChild(node, visit);
   };
   visit(sourceFile);
+}
+
+function checkTypeScriptFileNames(): void {
+  const files = [
+    ...workspaceNames.flatMap((workspaceName) =>
+      readTypeScriptFiles(path.join(packagesDirectory, workspaceName, 'src')),
+    ),
+    ...readTypeScriptFiles(path.join(root, 'scripts')),
+    ...readTypeScriptFiles(root),
+  ];
+  const fileHomes = new Map<string, string>();
+  for (const file of files) {
+    const fileName = path.basename(file);
+    if (fileName === 'index.ts' || /^vitest\.config(?:\.[a-zA-Z0-9-]+)?\.ts$/u.test(fileName)) continue;
+    const identity = fileName.toLowerCase();
+    const existingHome = fileHomes.get(identity);
+    check(
+      existingHome === undefined,
+      `${relative(file)}: TypeScript file name duplicates ${relative(existingHome ?? file)}`,
+    );
+    fileHomes.set(identity, file);
+    check(
+      isDomainTypeScriptFileName(fileName),
+      `${relative(file)}: TypeScript file names must be verb-free, non-generic concept nouns`,
+    );
+  }
 }
 
 function resolveCompilerPackageImport(file: string, specifier: string): string | undefined {
@@ -385,6 +435,13 @@ function readJson<T>(file: string): T | undefined {
   } catch {
     return undefined;
   }
+}
+
+function readTypeScriptFiles(directory: string): string[] {
+  if (!existsSync(directory)) return [];
+  return readdirSync(directory, { withFileTypes: true })
+    .filter((entry) => entry.isFile() && entry.name.endsWith('.ts'))
+    .map((entry) => path.join(directory, entry.name));
 }
 
 function relative(file: string): string {

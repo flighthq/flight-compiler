@@ -1,4 +1,9 @@
-import { compileTypeScriptModules, haxeBackend, parseTypeScriptSource, rustBackend } from './index.js';
+import {
+  compileTypeScriptModules,
+  createHaxeCompilerBackend,
+  createRustCompilerBackend,
+  parseTypeScriptSource,
+} from './index.js';
 
 const sourceText = `
 export type Range = { min: number; max: number };
@@ -19,6 +24,8 @@ describe('@flighthq/tool-compiler', () => {
       sourceFile: parseTypeScriptSource('/flight/packages/math/src/clamp.ts', sourceText),
       upstreamDirectory: '/flight',
     };
+    const haxeBackend = createHaxeCompilerBackend();
+    const rustBackend = createRustCompilerBackend();
     const haxe = compileTypeScriptModules({ backend: haxeBackend, backendOptions: {}, sources: [input] });
     const rust = compileTypeScriptModules({ backend: rustBackend, backendOptions: {}, sources: [input] });
 

@@ -1,8 +1,8 @@
 import ts from 'typescript';
 
-import { isBackendEmissionError } from '../../compiler-emission/src/index.js';
+import { isBackendEmissionFailure } from '../../compiler-emission/src/index.js';
 import { lowerTypeScriptSource } from '../../compiler-semantic/src/index.js';
-import { emitHaxeModule } from './index.js';
+import { emitIrModuleHaxe } from './index.js';
 
 function lower(file: string, source: string) {
   const sourceFile = ts.createSourceFile(`/flight/packages/math/src/${file}`, source, ts.ScriptTarget.Latest, true);
@@ -17,8 +17,8 @@ describe('Haxe emission', () => {
     const numeric = lower('mode.ts', 'export enum Mode { A = 1, B, C = Mode.A << 3, D }');
     const strings = lower('kind.ts', "export enum Kind { A = 'a', B = 'b' }");
 
-    expect(emitHaxeModule(numeric.module).contents).toContain('var D = 9;');
-    expect(emitHaxeModule(strings.module).contents).toContain('enum abstract Kind(String) from String to String');
+    expect(emitIrModuleHaxe(numeric.module).contents).toContain('var D = 9;');
+    expect(emitIrModuleHaxe(strings.module).contents).toContain('enum abstract Kind(String) from String to String');
   });
 
   it('uses one identity for emitted and imported index modules and rejects default imports', () => {
@@ -32,10 +32,10 @@ describe('Haxe emission', () => {
       "import helper from './index.js'; export function use(): number { return helper(); }",
     );
 
-    expect(emitHaxeModule(index.module).path).toBe('flighthq/math/_Index.hx');
-    expect(emitHaxeModule(index.module).contents).toContain('class _Index');
-    expect(emitHaxeModule(consumer.module).contents).toContain('import flighthq.math._Index.helper;');
-    expect(() => emitHaxeModule(defaultImport.module)).toThrow('default imports require explicit Haxe mapping');
+    expect(emitIrModuleHaxe(index.module).path).toBe('flighthq/math/_Index.hx');
+    expect(emitIrModuleHaxe(index.module).contents).toContain('class _Index');
+    expect(emitIrModuleHaxe(consumer.module).contents).toContain('import flighthq.math._Index.helper;');
+    expect(() => emitIrModuleHaxe(defaultImport.module)).toThrow('default imports require explicit Haxe mapping');
   });
 
   it('rejects module facades, operators, and switch fallthrough without semantic lowering', () => {
@@ -46,9 +46,9 @@ describe('Haxe emission', () => {
       'export function choose(a: number): number { switch (a) { case 1: case 2: return 2; default: return 0; } }',
     );
 
-    expect(() => emitHaxeModule(barrel.module)).toThrow('module-facade lowering');
-    expect(() => emitHaxeModule(operator.module)).toThrow('operator ** requires Haxe semantic lowering');
-    expect(() => emitHaxeModule(fallthrough.module)).toThrow('switch fallthrough');
+    expect(() => emitIrModuleHaxe(barrel.module)).toThrow('module-facade lowering');
+    expect(() => emitIrModuleHaxe(operator.module)).toThrow('operator ** requires Haxe semantic lowering');
+    expect(() => emitIrModuleHaxe(fallthrough.module)).toThrow('switch fallthrough');
   });
 
   it('preserves final locals and abstract classes', () => {
@@ -56,7 +56,7 @@ describe('Haxe emission', () => {
       'base.ts',
       'export abstract class Base {} export function read(): number { const value: number = 1; return value; }',
     );
-    const output = emitHaxeModule(result.module).contents;
+    const output = emitIrModuleHaxe(result.module).contents;
 
     expect(output).toContain('abstract class Base');
     expect(output).toContain('final value:Float = 1;');
@@ -66,10 +66,10 @@ describe('Haxe emission', () => {
     const result = lower('unsupported.ts', 'export async function read(): Promise<number> { return 1; }');
 
     try {
-      emitHaxeModule(result.module);
+      emitIrModuleHaxe(result.module);
       expect.unreachable('Expected Haxe emission to fail');
     } catch (error) {
-      expect(isBackendEmissionError(error)).toBe(true);
+      expect(isBackendEmissionFailure(error)).toBe(true);
       expect(error).toMatchObject({ backend: 'haxe', kind: 'backend-emission', name: 'BackendEmissionError' });
     }
   });

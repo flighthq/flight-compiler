@@ -1,4 +1,4 @@
-import type { IrModule, IrStatement, IrType } from './ir.js';
+import type { IrModule, IrStatement, IrType } from './compilerIntermediateRepresentation.js';
 
 export interface PatchTarget {
   readonly exportName: string;

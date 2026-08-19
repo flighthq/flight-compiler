@@ -1,8 +1,8 @@
 export {
-  createBackendEmissionError,
-  createCompilerInvariantError,
-  indentSource,
-  isBackendEmissionError,
-  isCompilerInvariantError,
+  createBackendEmissionFailure,
+  createCompilerInvariantFailure,
+  indentSourceLines,
+  isBackendEmissionFailure,
+  isCompilerInvariantFailure,
   normalizeEmittedFile,
-} from './emission.js';
+} from './compilerSourceEmission.js';

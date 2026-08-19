@@ -2,7 +2,7 @@ import ts from 'typescript';
 
 import type { RuntimeExportDecision } from '../../compiler-types/src/index.js';
 
-export function declarationEmitsRuntimeBinding(
+export function hasTypeScriptDeclarationRuntimeBinding(
   declaration: ts.Declaration | ts.SourceFile,
   options: ts.CompilerOptions,
 ): boolean {
@@ -21,7 +21,7 @@ export function declarationEmitsRuntimeBinding(
   );
 }
 
-export function isExplicitTypeOnlyExport(symbol: ts.Symbol): boolean {
+export function isTypeScriptExportExplicitlyTypeOnly(symbol: ts.Symbol): boolean {
   const declarations = (symbol.declarations ?? []).filter(
     (declaration): declaration is ts.ExportSpecifier | ts.NamespaceExport =>
       ts.isExportSpecifier(declaration) || ts.isNamespaceExport(declaration),
@@ -29,18 +29,18 @@ export function isExplicitTypeOnlyExport(symbol: ts.Symbol): boolean {
   return declarations.length > 0 && declarations.every((declaration) => exportDeclarationIsTypeOnly(declaration));
 }
 
-export function runtimeBindingDeclaration(
+export function getTypeScriptSymbolRuntimeBindingDeclaration(
   symbol: ts.Symbol,
   options: ts.CompilerOptions,
 ): ts.Declaration | ts.SourceFile | undefined {
   if (!(symbol.flags & ts.SymbolFlags.Value)) return undefined;
   const declarations = symbol.declarations ?? [];
   const valueDeclaration = symbol.valueDeclaration;
-  if (valueDeclaration && declarationEmitsRuntimeBinding(valueDeclaration, options)) return valueDeclaration;
-  return declarations.find((declaration) => declarationEmitsRuntimeBinding(declaration, options));
+  if (valueDeclaration && hasTypeScriptDeclarationRuntimeBinding(valueDeclaration, options)) return valueDeclaration;
+  return declarations.find((declaration) => hasTypeScriptDeclarationRuntimeBinding(declaration, options));
 }
 
-export function runtimeExportsForSource(
+export function analyzeTypeScriptSourceRuntimeExports(
   source: ts.SourceFile,
   checker: ts.TypeChecker,
   options: ts.CompilerOptions,
@@ -49,12 +49,12 @@ export function runtimeExportsForSource(
   if (!module) throw new Error(`Cannot resolve TypeScript module symbol: ${source.fileName}`);
   const decisions = new Map<string, RuntimeExportDecision>();
   for (const exported of checker.getExportsOfModule(module)) {
-    if (isExplicitTypeOnlyExport(exported)) {
+    if (isTypeScriptExportExplicitlyTypeOnly(exported)) {
       decisions.set(exported.getName(), { runtime: false });
       continue;
     }
     const target = exported.flags & ts.SymbolFlags.Alias ? checker.getAliasedSymbol(exported) : exported;
-    const declaration = runtimeBindingDeclaration(target, options);
+    const declaration = getTypeScriptSymbolRuntimeBindingDeclaration(target, options);
     decisions.set(exported.getName(), declaration ? { declaration, runtime: true } : { runtime: false });
   }
   return decisions;

@@ -1,11 +1,11 @@
 import ts from 'typescript';
 
-import { isCompilerInvariantError } from '../../compiler-emission/src/index.js';
+import { isCompilerInvariantFailure } from '../../compiler-emission/src/index.js';
 import type { CompilerBackend } from '../../compiler-types/src/index.js';
 import {
-  compileModules,
+  compileIrModules,
   compileTypeScriptModules,
-  isCompilerDiagnosticsError,
+  isCompilerDiagnosticsFailure,
   parseTypeScriptSource,
 } from './index.js';
 
@@ -56,7 +56,7 @@ describe('compiler orchestration', () => {
       });
       expect.unreachable('Expected semantic lowering to fail');
     } catch (error) {
-      expect(isCompilerDiagnosticsError(error)).toBe(true);
+      expect(isCompilerDiagnosticsFailure(error)).toBe(true);
       expect(error).toMatchObject({ kind: 'compiler-diagnostics', name: 'CompilerDiagnosticsError' });
     }
   });
@@ -72,10 +72,10 @@ describe('compiler orchestration', () => {
     };
 
     try {
-      compileModules({ backend: fixtureBackend, backendOptions: {}, modules: [module, module] });
+      compileIrModules({ backend: fixtureBackend, backendOptions: {}, modules: [module, module] });
       expect.unreachable('Expected duplicate module identities to fail');
     } catch (error) {
-      expect(isCompilerInvariantError(error)).toBe(true);
+      expect(isCompilerInvariantFailure(error)).toBe(true);
       expect(error).toMatchObject({
         code: 'duplicate-module-identity',
         kind: 'compiler-invariant',
@@ -88,14 +88,14 @@ describe('compiler orchestration', () => {
       name: 'duplicate-path-fixture',
     };
     try {
-      compileModules({
+      compileIrModules({
         backend: duplicatePathBackend,
         backendOptions: {},
         modules: [module, { ...module, name: 'Other' }],
       });
       expect.unreachable('Expected duplicate emitted paths to fail');
     } catch (error) {
-      expect(isCompilerInvariantError(error)).toBe(true);
+      expect(isCompilerInvariantFailure(error)).toBe(true);
       expect(error).toMatchObject({
         code: 'duplicate-emitted-path',
         kind: 'compiler-invariant',
