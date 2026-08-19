@@ -16,7 +16,7 @@ describe('compiler contracts', () => {
       operation: 'remove',
       reason: 'contract fixture',
       scope: { kind: 'neutral' },
-      target: { export: 'value', package: '@flighthq/math', source: module.source },
+      target: { exportName: 'value', packageName: '@flighthq/math', source: module.source },
     };
     const backend: CompilerBackend = {
       emitModule: () => [],

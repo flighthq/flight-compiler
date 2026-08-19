@@ -43,7 +43,15 @@ export function indentSource(lines: readonly string[], depth = 1): string[] {
 }
 
 export function isBackendEmissionError(value: unknown): value is BackendEmissionFailure {
-  return value instanceof Error && 'kind' in value && value.kind === 'backend-emission';
+  return (
+    value instanceof Error &&
+    'kind' in value &&
+    value.kind === 'backend-emission' &&
+    'backend' in value &&
+    typeof value.backend === 'string' &&
+    'source' in value &&
+    typeof value.source === 'string'
+  );
 }
 
 export function isCompilerInvariantError(value: unknown): value is CompilerInvariantFailure {
@@ -63,8 +71,11 @@ export function normalizeEmittedFile(file: Readonly<EmittedFile>): EmittedFile {
   const normalizedPath = file.path.replaceAll('\\', '/');
   if (
     normalizedPath.length === 0 ||
+    normalizedPath.includes('\0') ||
     path.posix.isAbsolute(normalizedPath) ||
-    normalizedPath.split('/').some((segment) => segment === '' || segment === '.' || segment === '..')
+    path.win32.isAbsolute(file.path) ||
+    /^[A-Za-z]:/u.test(file.path) ||
+    normalizedPath.split('/').some(isUnsafePortablePathSegment)
   ) {
     throw createCompilerInvariantError(
       'unsafe-emitted-path',
@@ -73,7 +84,19 @@ export function normalizeEmittedFile(file: Readonly<EmittedFile>): EmittedFile {
     );
   }
   return {
-    contents: `${file.contents.replaceAll('\r\n', '\n').trimEnd()}\n`,
+    contents: `${file.contents.replaceAll('\r\n', '\n').replaceAll('\r', '\n').trimEnd()}\n`,
     path: normalizedPath,
   };
+}
+
+function isUnsafePortablePathSegment(segment: string): boolean {
+  return (
+    segment === '' ||
+    segment === '.' ||
+    segment === '..' ||
+    [...segment].some((character) => character.codePointAt(0)! <= 0x1f) ||
+    /[<>:"|?*]/u.test(segment) ||
+    /[ .]$/u.test(segment) ||
+    /^(?:AUX|COM[1-9]|CON|LPT[1-9]|NUL|PRN)(?:\..*)?$/iu.test(segment)
+  );
 }

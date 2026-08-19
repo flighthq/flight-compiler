@@ -1,5 +1,6 @@
 import {
   createBackendEmissionError,
+  createCompilerInvariantError,
   indentSource,
   isBackendEmissionError,
   isCompilerInvariantError,
@@ -7,16 +8,62 @@ import {
 } from './index.js';
 
 describe('emission infrastructure', () => {
-  it('normalizes contents and portable output paths', () => {
-    expect(normalizeEmittedFile({ contents: 'line\r\n\r\n', path: 'generated\\Value.hx' })).toEqual({
-      contents: 'line\n',
-      path: 'generated/Value.hx',
+  it('creates inspectable tagged failures without a class hierarchy', () => {
+    const backend = createBackendEmissionError('haxe', 'packages/math/src/value.ts', 'unsupported');
+    const invariant = createCompilerInvariantError('duplicate-emitted-path', 'Value.hx', 'duplicate');
+
+    expect(isBackendEmissionError(backend)).toBe(true);
+    expect(backend).toMatchObject({
+      backend: 'haxe',
+      kind: 'backend-emission',
+      name: 'BackendEmissionError',
+      source: 'packages/math/src/value.ts',
     });
-    expect(indentSource(['one', '', 'two'], 2)).toEqual(['    one', '', '    two']);
+    expect(isCompilerInvariantError(invariant)).toBe(true);
+    expect(invariant).toMatchObject({
+      code: 'duplicate-emitted-path',
+      kind: 'compiler-invariant',
+      name: 'CompilerInvariantError',
+      subject: 'Value.hx',
+    });
   });
 
-  it('rejects unsafe output identities', () => {
-    for (const path of ['../Value.hx', '/Value.hx']) {
+  it('indents nonempty lines without changing blank lines', () => {
+    expect(indentSource(['one', '', 'two'], 2)).toEqual(['    one', '', '    two']);
+    expect(indentSource(['one', ''], 0)).toEqual(['one', '']);
+    expect(indentSource([])).toEqual([]);
+  });
+
+  it('normalizes line endings, trailing whitespace, empty contents, and portable paths', () => {
+    expect(normalizeEmittedFile({ contents: 'one\r\ntwo\rthree  \r\n\r\n', path: 'generated\\Value.hx' })).toEqual({
+      contents: 'one\ntwo\nthree\n',
+      path: 'generated/Value.hx',
+    });
+    expect(normalizeEmittedFile({ contents: '', path: 'Empty.rs' })).toEqual({
+      contents: '\n',
+      path: 'Empty.rs',
+    });
+  });
+
+  it('rejects nonportable output identities', () => {
+    for (const path of [
+      '',
+      '.',
+      '../Value.hx',
+      '/Value.hx',
+      'C:\\Value.hx',
+      'C:Value.hx',
+      '\\Value.hx',
+      '\\\\server\\Value.hx',
+      'generated//Value.hx',
+      'generated/./Value.hx',
+      'generated/../Value.hx',
+      'generated/CON.hx',
+      'generated/value.',
+      'generated/value ',
+      'generated/value?.hx',
+      'generated\0Value.hx',
+    ]) {
       try {
         normalizeEmittedFile({ contents: '', path });
         expect.unreachable('Expected an unsafe emitted path to fail');
@@ -32,25 +79,18 @@ describe('emission infrastructure', () => {
     }
   });
 
-  it('creates inspectable tagged failures without a class hierarchy', () => {
-    const failure = createBackendEmissionError('haxe', 'packages/math/src/value.ts', 'unsupported');
-
-    expect(isBackendEmissionError(failure)).toBe(true);
-    expect(failure).toMatchObject({
-      backend: 'haxe',
-      kind: 'backend-emission',
-      name: 'BackendEmissionError',
-      source: 'packages/math/src/value.ts',
-    });
-  });
-
-  it('rejects invariant failures forged with an unknown code', () => {
-    const forged = Object.assign(new Error('forged invariant'), {
+  it('rejects malformed tagged failures', () => {
+    const unknownInvariant = Object.assign(new Error('forged invariant'), {
       code: 'future-code',
       kind: 'compiler-invariant',
       subject: 'fixture',
     });
+    const incompleteBackend = Object.assign(new Error('forged backend failure'), {
+      kind: 'backend-emission',
+      source: 'fixture.ts',
+    });
 
-    expect(isCompilerInvariantError(forged)).toBe(false);
+    expect(isBackendEmissionError(incompleteBackend)).toBe(false);
+    expect(isCompilerInvariantError(unknownInvariant)).toBe(false);
   });
 });

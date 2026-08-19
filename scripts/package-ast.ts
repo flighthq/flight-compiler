@@ -1,5 +1,18 @@
 import ts from 'typescript';
 
+export function containsTransientWorkComment(contents: string): boolean {
+  const scanner = ts.createScanner(ts.ScriptTarget.Latest, false, ts.LanguageVariant.Standard, contents);
+  for (let token = scanner.scan(); token !== ts.SyntaxKind.EndOfFileToken; token = scanner.scan()) {
+    if (
+      (token === ts.SyntaxKind.SingleLineCommentTrivia || token === ts.SyntaxKind.MultiLineCommentTrivia) &&
+      /\b(?:FIXME|TODO)\b/u.test(scanner.getTokenText())
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
 export function collectLocalExportNames(sourceFile: ts.SourceFile): ReadonlySet<string> {
   const names = new Set<string>();
   for (const statement of sourceFile.statements) {

@@ -1,1 +1,1 @@
-export { applySemanticPatches, defineSemanticPatches } from './applySemanticPatches.js';
+export { applySemanticPatches, defineSemanticPatches, isSemanticPatchError } from './applySemanticPatches.js';

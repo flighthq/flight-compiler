@@ -1,49 +1,66 @@
 import type { IrModule, IrStatement, IrType } from './ir.js';
 
 export interface PatchTarget {
-  export: string;
-  package: string;
-  source: string;
+  readonly exportName: string;
+  readonly packageName: string;
+  readonly source: string;
 }
 
-export type PatchScope = { kind: 'neutral' } | { backend: string; kind: 'backend' };
+export type PatchScope = { readonly kind: 'neutral' } | { readonly backend: string; readonly kind: 'backend' };
 
 interface BasePatch {
-  expect: {
-    fingerprint: string;
-    kind: 'class' | 'enum' | 'function' | 'interface' | 'type' | 'variable';
+  readonly expect: {
+    readonly fingerprint: string;
+    readonly kind: 'class' | 'enum' | 'function' | 'interface' | 'type' | 'variable';
   };
-  id: string;
-  reason: string;
-  scope: PatchScope;
-  target: PatchTarget;
+  readonly id: string;
+  readonly reason: string;
+  readonly scope: PatchScope;
+  readonly target: PatchTarget;
 }
 
 export type SemanticPatch =
-  | (BasePatch & { operation: 'remove' })
-  | (BasePatch & { name: string; operation: 'rename' })
-  | (BasePatch & { body: IrStatement[]; operation: 'replaceBody' })
-  | (BasePatch & { operation: 'replaceType'; type: IrType });
+  | (BasePatch & { readonly operation: 'remove' })
+  | (BasePatch & { readonly name: string; readonly operation: 'rename' })
+  | (BasePatch & { readonly body: readonly IrStatement[]; readonly operation: 'replaceBody' })
+  | (BasePatch & { readonly operation: 'replaceType'; readonly type: IrType });
 
 export interface PatchAuditRecord {
-  fingerprint: string;
-  id: string;
-  operation: SemanticPatch['operation'];
-  reason: string;
-  scope: PatchScope;
-  target: PatchTarget;
+  readonly fingerprint: string;
+  readonly id: string;
+  readonly operation: SemanticPatch['operation'];
+  readonly reason: string;
+  readonly scope: PatchScope;
+  readonly target: PatchTarget;
 }
 
 export interface PatchAudit {
-  applied: PatchAuditRecord[];
-  schema: 'flight-compiler-patch-audit/1';
-  summary: {
-    applied: number;
-    skipped: number;
+  readonly applied: readonly PatchAuditRecord[];
+  readonly schema: 'flight-compiler-patch-audit/1';
+  readonly summary: {
+    readonly applied: number;
+    readonly skipped: number;
   };
 }
 
 export interface AppliedSemanticPatches {
-  audit: PatchAudit;
-  modules: IrModule[];
+  readonly audit: PatchAudit;
+  readonly modules: readonly IrModule[];
+}
+
+export type SemanticPatchFailureCode =
+  | 'ambiguous-patch-target'
+  | 'conflicting-patch-operation'
+  | 'conflicting-patch-removal'
+  | 'duplicate-patch-id'
+  | 'incompatible-patch-operation'
+  | 'patch-kind-mismatch'
+  | 'stale-patch-fingerprint'
+  | 'unmatched-patch-target';
+
+export interface SemanticPatchFailure extends Error {
+  readonly code: SemanticPatchFailureCode;
+  readonly kind: 'semantic-patch';
+  readonly patchIds: readonly string[];
+  readonly subject: string;
 }

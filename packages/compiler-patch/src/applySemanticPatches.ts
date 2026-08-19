@@ -4,6 +4,8 @@ import type {
   IrModule,
   PatchAuditRecord,
   SemanticPatch,
+  SemanticPatchFailure,
+  SemanticPatchFailureCode,
 } from '../../compiler-types/src/index.js';
 
 export function applySemanticPatches(
@@ -23,8 +25,8 @@ export function applySemanticPatches(
   for (const module of output) {
     for (const declaration of module.declarations) {
       const key = targetKey({
-        export: declaration.name,
-        package: declaration.origin.packageName,
+        exportName: declaration.name,
+        packageName: declaration.origin.packageName,
         source: declaration.origin.source,
       });
       const indexed = declarationIndex.get(key) ?? [];
@@ -35,15 +37,35 @@ export function applySemanticPatches(
 
   for (const patch of [...active].sort(comparePatchPrecedence)) {
     const matches = declarationIndex.get(targetKey(patch.target)) ?? [];
-    if (matches.length === 0) throw new Error(`Unmatched semantic patch ${patch.id}`);
+    if (matches.length === 0) {
+      throw createSemanticPatchError(
+        'unmatched-patch-target',
+        [patch.id],
+        targetSubject(patch.target),
+        `Unmatched semantic patch ${patch.id}`,
+      );
+    }
     if (matches.length > 1)
-      throw new Error(`Ambiguous semantic patch ${patch.id}: matched ${String(matches.length)} declarations`);
+      throw createSemanticPatchError(
+        'ambiguous-patch-target',
+        [patch.id],
+        targetSubject(patch.target),
+        `Ambiguous semantic patch ${patch.id}: matched ${String(matches.length)} declarations`,
+      );
     const { declaration, module } = matches[0]!;
     if (declaration.kind !== patch.expect.kind) {
-      throw new Error(`Semantic patch ${patch.id} expected ${patch.expect.kind}, received ${declaration.kind}`);
+      throw createSemanticPatchError(
+        'patch-kind-mismatch',
+        [patch.id],
+        targetSubject(patch.target),
+        `Semantic patch ${patch.id} expected ${patch.expect.kind}, received ${declaration.kind}`,
+      );
     }
     if (declaration.origin.fingerprint !== patch.expect.fingerprint) {
-      throw new Error(
+      throw createSemanticPatchError(
+        'stale-patch-fingerprint',
+        [patch.id],
+        targetSubject(patch.target),
         `Stale semantic patch ${patch.id}: expected ${patch.expect.fingerprint}, received ${declaration.origin.fingerprint}`,
       );
     }
@@ -56,11 +78,25 @@ export function applySemanticPatches(
         declaration.name = patch.name;
         break;
       case 'replaceBody':
-        if (declaration.kind !== 'function') throw new Error(`Semantic patch ${patch.id} requires a function`);
-        declaration.body = structuredClone(patch.body);
+        if (declaration.kind !== 'function') {
+          throw createSemanticPatchError(
+            'incompatible-patch-operation',
+            [patch.id],
+            targetSubject(patch.target),
+            `Semantic patch ${patch.id} requires a function`,
+          );
+        }
+        declaration.body = structuredClone([...patch.body]);
         break;
       case 'replaceType':
-        if (declaration.kind !== 'type') throw new Error(`Semantic patch ${patch.id} requires a type alias`);
+        if (declaration.kind !== 'type') {
+          throw createSemanticPatchError(
+            'incompatible-patch-operation',
+            [patch.id],
+            targetSubject(patch.target),
+            `Semantic patch ${patch.id} requires a type alias`,
+          );
+        }
         declaration.type = structuredClone(patch.type);
         break;
     }
@@ -69,8 +105,8 @@ export function applySemanticPatches(
       id: patch.id,
       operation: patch.operation,
       reason: patch.reason,
-      scope: patch.scope,
-      target: patch.target,
+      scope: structuredClone(patch.scope),
+      target: structuredClone(patch.target),
     });
   }
 
@@ -90,17 +126,57 @@ function comparePatchPrecedence(left: Readonly<SemanticPatch>, right: Readonly<S
   return leftRank - rightRank || left.id.localeCompare(right.id);
 }
 
+function comparePatchIdentifiers(left: Readonly<SemanticPatch>, right: Readonly<SemanticPatch>): number {
+  return left.id.localeCompare(right.id);
+}
+
 export function defineSemanticPatches<const Patches extends readonly SemanticPatch[]>(patches: Patches): Patches {
   return patches;
 }
 
+export function isSemanticPatchError(value: unknown): value is SemanticPatchFailure {
+  return (
+    value instanceof Error &&
+    'kind' in value &&
+    value.kind === 'semantic-patch' &&
+    'code' in value &&
+    typeof value.code === 'string' &&
+    Object.hasOwn(semanticPatchFailureCodes, value.code) &&
+    'patchIds' in value &&
+    Array.isArray(value.patchIds) &&
+    value.patchIds.every((id) => typeof id === 'string') &&
+    'subject' in value &&
+    typeof value.subject === 'string'
+  );
+}
+
+function createSemanticPatchError(
+  code: SemanticPatchFailureCode,
+  patchIds: readonly string[],
+  subject: string,
+  message: string,
+): SemanticPatchFailure {
+  const failure = Object.assign(new Error(message), {
+    code,
+    kind: 'semantic-patch' as const,
+    patchIds: [...patchIds].sort(),
+    subject,
+  });
+  failure.name = 'SemanticPatchError';
+  return failure;
+}
+
 function targetKey(target: Readonly<SemanticPatch['target']>): string {
-  return `${target.package}\0${target.source}\0${target.export}`;
+  return JSON.stringify([target.packageName, target.source, target.exportName]);
+}
+
+function targetSubject(target: Readonly<SemanticPatch['target']>): string {
+  return `${target.packageName}/${target.source}#${target.exportName}`;
 }
 
 function validateActiveRemovals(patches: readonly SemanticPatch[]): void {
   const byTarget = new Map<string, SemanticPatch[]>();
-  for (const patch of patches) {
+  for (const patch of [...patches].sort(comparePatchIdentifiers)) {
     const key = targetKey(patch.target);
     const targetPatches = byTarget.get(key) ?? [];
     targetPatches.push(patch);
@@ -108,7 +184,10 @@ function validateActiveRemovals(patches: readonly SemanticPatch[]): void {
   }
   for (const targetPatches of byTarget.values()) {
     if (targetPatches.length > 1 && targetPatches.some((patch) => patch.operation === 'remove')) {
-      throw new Error(
+      throw createSemanticPatchError(
+        'conflicting-patch-removal',
+        targetPatches.map((patch) => patch.id),
+        targetSubject(targetPatches[0]!.target),
         `Remove patch conflicts with another active patch: ${targetPatches.map((patch) => patch.id).join(', ')}`,
       );
     }
@@ -117,11 +196,24 @@ function validateActiveRemovals(patches: readonly SemanticPatch[]): void {
 
 function validateConflicts(patches: readonly SemanticPatch[]): void {
   const owners = new Map<string, string>();
-  for (const patch of patches) {
+  for (const patch of [...patches].sort(comparePatchIdentifiers)) {
     const scope = patch.scope.kind === 'neutral' ? 'neutral' : `backend:${patch.scope.backend}`;
-    const key = `${scope}\0${patch.target.package}\0${patch.target.source}\0${patch.target.export}\0${patch.operation}`;
+    const key = JSON.stringify([
+      scope,
+      patch.target.packageName,
+      patch.target.source,
+      patch.target.exportName,
+      patch.operation,
+    ]);
     const owner = owners.get(key);
-    if (owner) throw new Error(`Conflicting semantic patches ${owner} and ${patch.id}`);
+    if (owner) {
+      throw createSemanticPatchError(
+        'conflicting-patch-operation',
+        [owner, patch.id],
+        targetSubject(patch.target),
+        `Conflicting semantic patches ${owner} and ${patch.id}`,
+      );
+    }
     owners.set(key, patch.id);
   }
 }
@@ -129,7 +221,25 @@ function validateConflicts(patches: readonly SemanticPatch[]): void {
 function validateUniqueIds(patches: readonly SemanticPatch[]): void {
   const ids = new Set<string>();
   for (const patch of patches) {
-    if (ids.has(patch.id)) throw new Error(`Duplicate semantic patch id ${patch.id}`);
+    if (ids.has(patch.id)) {
+      throw createSemanticPatchError(
+        'duplicate-patch-id',
+        [patch.id],
+        patch.id,
+        `Duplicate semantic patch id ${patch.id}`,
+      );
+    }
     ids.add(patch.id);
   }
 }
+
+const semanticPatchFailureCodes = {
+  'ambiguous-patch-target': true,
+  'conflicting-patch-operation': true,
+  'conflicting-patch-removal': true,
+  'duplicate-patch-id': true,
+  'incompatible-patch-operation': true,
+  'patch-kind-mismatch': true,
+  'stale-patch-fingerprint': true,
+  'unmatched-patch-target': true,
+} as const satisfies Readonly<Record<SemanticPatchFailureCode, true>>;

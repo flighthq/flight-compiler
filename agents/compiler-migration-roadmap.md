@@ -61,17 +61,18 @@ Do not copy every downstream test preemptively. Move a compiler-owned test with 
 
 ### 0. Repository foundation
 
-Status: substantially complete.
+Status: structure complete; bedrock contract hardening in progress.
 
 - Maintain the private `compiler-*` domain packages and the public `tool-compiler` workspace.
 - Keep all contracts in `compiler-types`, source trees flat, implementation class-free, and dependency edges acyclic.
 - Preserve deterministic build, package, coverage, and boundary gates as the implementation grows.
+- Complete the maturity work in [Compiler foundations](compiler-foundations.md) from contracts through provenance, patches, and emission before expanding the higher compiler layers.
 
-Exit criterion: `npm run check` proves a clean, self-contained public artifact and every workspace is independently testable.
+Exit criterion: `npm run check` proves a clean, self-contained public artifact; every workspace is independently testable; and the bedrock audit has no unresolved identity, determinism, failure-contract, or portability decision required by the next layer.
 
 ### 1. Freeze the compatibility contract
 
-Status: next.
+Status: follows foundation hardening.
 
 - Pin representative Flight, `flight-hx`, and later `flight-rs` revisions.
 - Add a parity harness that invokes both the existing downstream generator and the new compiler with identical inputs.
@@ -153,13 +154,14 @@ Exit criterion: a tagged release can be built, inspected, installed, verified, a
 
 ## Recommended next work
 
-The next implementation should be Phase 1, not another broad lowering expansion:
+Work from the dependency floor toward parity:
 
-1. Define the public compile request/result and filesystem-free check API needed by `flight-hx`.
-2. Build a read-only old-versus-new Haxe parity harness against pinned local checkouts.
-3. Choose one representative Haxe generator fixture and compare source, file paths, inventory, exclusions, patches, and reports.
-4. Use the first mismatch cluster to select the next vertical slice, starting with shared inventory or provenance when possible.
-5. Move that slice and its compiler-owned tests here, rerun parity, and repeat until inventory then emission converge.
-6. Defer the Rust production migration until the public seam and parity workflow have survived the Haxe adoption.
+1. Review the identity and failure vocabulary in `compiler-types`, without declaring the complete neutral IR stable or serializable.
+2. Finish and freeze the narrow `compiler-provenance`, `compiler-patch`, and `compiler-emission` primitives against the maturity rubric in [Compiler foundations](compiler-foundations.md).
+3. Audit `compiler-inventory` as the first composition above bedrock, adding direct tests for package discovery, export lanes, runtime bindings, host facts, exclusions, and deterministic reports.
+4. Review neutral declarations and types before expanding expression and statement lowering.
+5. Define the public compile request/result only after the core vocabulary it exposes is worth preserving.
+6. Build the pinned Haxe parity harness when it can measure a stable compiler seam, then use mismatches to drive vertical capability slices.
+7. Defer the Rust production migration until the public seam and parity workflow have survived Haxe adoption.
 
-This order turns progress into measured compatibility rather than accumulated implementation volume. It also prevents premature public API design from hardening around the current skeletal backends.
+This order optimizes for trustworthy primitives rather than the earliest downstream switch. Parity remains the proof that the composition is correct, but downstream implementation details do not get to define weak primitives by accident.

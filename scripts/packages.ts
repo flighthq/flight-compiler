@@ -4,7 +4,12 @@ import { fileURLToPath } from 'node:url';
 
 import ts from 'typescript';
 
-import { collectLocalExportNames, collectModuleSpecifiers, isExportedContractDeclaration } from './package-ast.js';
+import {
+  collectLocalExportNames,
+  collectModuleSpecifiers,
+  containsTransientWorkComment,
+  isExportedContractDeclaration,
+} from './package-ast.js';
 
 interface PackageManifest {
   author?: string;
@@ -224,6 +229,13 @@ function checkPackage(packageName: string, rule: Readonly<PackageRule>): void {
   for (const script of ['test', 'test:watch', 'typecheck']) {
     check(typeof manifest.scripts?.[script] === 'string', `${packageName}: missing ${script} script`);
   }
+  const packageTypeScriptVersion = manifest.dependencies?.typescript ?? manifest.devDependencies?.typescript;
+  if (packageTypeScriptVersion !== undefined) {
+    check(
+      packageTypeScriptVersion === rootManifest?.devDependencies?.typescript,
+      `${packageName}: TypeScript version must match the repository toolchain`,
+    );
+  }
   check(existsSync(path.join(packageDirectory, 'tsconfig.json')), `${packageName}: missing tsconfig.json`);
   check(existsSync(path.join(sourceDirectory, 'index.ts')), `${packageName}: missing src/index.ts`);
 
@@ -240,7 +252,12 @@ function checkPackage(packageName: string, rule: Readonly<PackageRule>): void {
   const productionImports = new Set<string>();
   const testImports = new Set<string>();
   for (const file of sourceFiles) {
-    const sourceFile = ts.createSourceFile(file, readFileSync(file, 'utf8'), ts.ScriptTarget.Latest, true);
+    const contents = readFileSync(file, 'utf8');
+    check(
+      !containsTransientWorkComment(contents),
+      `${relative(file)}: transient work comments do not belong in source`,
+    );
+    const sourceFile = ts.createSourceFile(file, contents, ts.ScriptTarget.Latest, true);
     visitSourceFile(sourceFile, packageName);
     const imports = file.endsWith('.test.ts') ? testImports : productionImports;
     for (const specifier of collectModuleSpecifiers(sourceFile)) {

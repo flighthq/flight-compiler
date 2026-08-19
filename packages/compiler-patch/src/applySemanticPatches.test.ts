@@ -1,46 +1,16 @@
-import type { IrFunctionDeclaration, IrModule, SemanticPatch } from '../../compiler-types/src/index.js';
-import { applySemanticPatches, defineSemanticPatches } from './index.js';
+import type {
+  IrDeclaration,
+  IrFunctionDeclaration,
+  IrModule,
+  IrTypeDeclaration,
+  SemanticPatch,
+  SemanticPatchFailure,
+  SemanticPatchFailureCode,
+} from '../../compiler-types/src/index.js';
+import { applySemanticPatches, defineSemanticPatches, isSemanticPatchError } from './index.js';
 
-function createModule(): IrModule {
-  const declaration: IrFunctionDeclaration = {
-    async: false,
-    body: [],
-    exported: true,
-    kind: 'function',
-    name: 'clamp',
-    origin: {
-      column: 1,
-      fingerprint: 'sha256:clamp',
-      line: 1,
-      packageName: '@flighthq/math',
-      source: 'packages/math/src/clamp.ts',
-    },
-    overloads: [],
-    parameters: [],
-    returns: { kind: 'primitive', name: 'number' },
-    typeParameters: [],
-  };
-  return {
-    declarations: [declaration],
-    exports: [],
-    imports: [],
-    name: 'clamp',
-    packageName: '@flighthq/math',
-    source: 'packages/math/src/clamp.ts',
-  };
-}
-
-function renamePatch(id: string, name: string, scope: SemanticPatch['scope']): SemanticPatch {
-  return {
-    expect: { fingerprint: 'sha256:clamp', kind: 'function' },
-    id,
-    name,
-    operation: 'rename',
-    reason: 'test',
-    scope,
-    target: { export: 'clamp', package: '@flighthq/math', source: 'packages/math/src/clamp.ts' },
-  };
-}
+const packageName = '@flighthq/math';
+const source = 'packages/math/src/clamp.ts';
 
 describe('semantic patches', () => {
   it('applies backend patches after neutral patches independent of patch identifiers', () => {
@@ -58,16 +28,224 @@ describe('semantic patches', () => {
     expect(haxe.audit.summary).toEqual({ applied: 1, skipped: 1 });
   });
 
-  it('rejects stale, unmatched, and conflicting patch identities', () => {
-    const valid = renamePatch('math.clamp.rename', 'renamed', { kind: 'neutral' });
-    const stale = { ...valid, expect: { ...valid.expect, fingerprint: 'sha256:stale' } };
-    const unmatched = { ...valid, id: 'math.missing.rename', target: { ...valid.target, export: 'missing' } };
-    const conflicting = renamePatch('math.clamp.rename-again', 'again', { kind: 'neutral' });
+  it('applies every operation deterministically without mutating caller-owned input', () => {
+    const module = createModule([
+      createFunctionDeclaration('clamp'),
+      createTypeDeclaration('Range'),
+      createFunctionDeclaration('obsolete'),
+    ]);
+    const patches = defineSemanticPatches([
+      {
+        ...patchBase('03-remove', 'obsolete', 'function'),
+        operation: 'remove',
+      },
+      {
+        ...patchBase('01-body', 'clamp', 'function'),
+        body: [{ expression: { kind: 'literal', value: 1 }, kind: 'return' }],
+        operation: 'replaceBody',
+      },
+      renamePatch('02-rename', 'bounded', { kind: 'neutral' }),
+      {
+        ...patchBase('04-type', 'Range', 'type'),
+        operation: 'replaceType',
+        type: { kind: 'primitive', name: 'string' },
+      },
+    ]);
 
-    expect(() => applySemanticPatches([createModule()], [stale], 'haxe')).toThrow('Stale semantic patch');
-    expect(() => applySemanticPatches([createModule()], [unmatched], 'haxe')).toThrow('Unmatched semantic patch');
-    expect(() => applySemanticPatches([createModule()], [valid, conflicting], 'haxe')).toThrow(
-      'Conflicting semantic patches',
-    );
+    const result = applySemanticPatches([module], patches, 'haxe');
+    const declarations = result.modules[0]?.declarations;
+
+    expect(declarations?.map((declaration) => declaration.name)).toEqual(['bounded', 'Range']);
+    expect(declarations?.[0]).toMatchObject({
+      body: [{ expression: { kind: 'literal', value: 1 }, kind: 'return' }],
+      kind: 'function',
+    });
+    expect(declarations?.[1]).toMatchObject({ kind: 'type', type: { kind: 'primitive', name: 'string' } });
+    expect(result.audit.applied.map((record) => record.id)).toEqual(['01-body', '02-rename', '03-remove', '04-type']);
+    expect(result.audit.summary).toEqual({ applied: 4, skipped: 0 });
+    const bodyPatch = patches.find((patch) => patch.id === '01-body');
+    expect(result.audit.applied[0]?.scope).not.toBe(bodyPatch?.scope);
+    expect(result.audit.applied[0]?.target).not.toBe(bodyPatch?.target);
+    expect(module.declarations.map((declaration) => declaration.name)).toEqual(['clamp', 'Range', 'obsolete']);
+    expect((module.declarations[0] as IrFunctionDeclaration).body).toEqual([]);
+    expect((module.declarations[1] as IrTypeDeclaration).type).toEqual({ kind: 'primitive', name: 'number' });
+  });
+
+  it('returns a tagged failure for every invalid identity or operation state', () => {
+    const valid = renamePatch('math.clamp.rename', 'renamed', { kind: 'neutral' });
+    const cases: Array<{
+      code: SemanticPatchFailureCode;
+      modules?: IrModule[];
+      patches: SemanticPatch[];
+    }> = [
+      {
+        code: 'ambiguous-patch-target',
+        modules: [createModule(), { ...createModule(), name: 'Other' }],
+        patches: [valid],
+      },
+      {
+        code: 'conflicting-patch-operation',
+        patches: [valid, renamePatch('math.clamp.rename-again', 'again', { kind: 'neutral' })],
+      },
+      {
+        code: 'conflicting-patch-removal',
+        patches: [
+          valid,
+          {
+            ...patchBase('math.clamp.remove', 'clamp', 'function'),
+            operation: 'remove',
+          },
+        ],
+      },
+      {
+        code: 'duplicate-patch-id',
+        patches: [valid, renamePatch('math.clamp.rename', 'again', { kind: 'neutral' })],
+      },
+      {
+        code: 'incompatible-patch-operation',
+        patches: [
+          {
+            ...patchBase('math.clamp.type', 'clamp', 'function'),
+            operation: 'replaceType',
+            type: { kind: 'primitive', name: 'string' },
+          },
+        ],
+      },
+      {
+        code: 'patch-kind-mismatch',
+        patches: [{ ...valid, expect: { fingerprint: 'sha256:clamp', kind: 'type' } }],
+      },
+      {
+        code: 'stale-patch-fingerprint',
+        patches: [{ ...valid, expect: { ...valid.expect, fingerprint: 'sha256:stale' } }],
+      },
+      {
+        code: 'unmatched-patch-target',
+        patches: [{ ...valid, target: { ...valid.target, exportName: 'missing' } }],
+      },
+    ];
+
+    for (const fixture of cases) {
+      const failure = captureFailure(fixture.modules ?? [createModule()], fixture.patches);
+      expect(failure).toMatchObject({
+        code: fixture.code,
+        kind: 'semantic-patch',
+        name: 'SemanticPatchError',
+      });
+      expect(failure.patchIds.length).toBeGreaterThan(0);
+      expect(failure.subject.length).toBeGreaterThan(0);
+    }
+  });
+
+  it('rejects malformed tagged failures', () => {
+    const unknownCode = Object.assign(new Error('forged patch failure'), {
+      code: 'future-code',
+      kind: 'semantic-patch',
+      patchIds: ['fixture'],
+      subject: 'fixture',
+    });
+    const malformedIds = Object.assign(new Error('forged patch failure'), {
+      code: 'duplicate-patch-id',
+      kind: 'semantic-patch',
+      patchIds: [1],
+      subject: 'fixture',
+    });
+
+    expect(isSemanticPatchError(unknownCode)).toBe(false);
+    expect(isSemanticPatchError(malformedIds)).toBe(false);
+  });
+
+  it('reports conflicts deterministically regardless of input order', () => {
+    const first = renamePatch('a-first', 'first', { kind: 'neutral' });
+    const second = renamePatch('z-second', 'second', { kind: 'neutral' });
+
+    const forward = captureFailure([createModule()], [first, second]);
+    const reverse = captureFailure([createModule()], [second, first]);
+
+    expect(reverse.code).toBe('conflicting-patch-operation');
+    expect(reverse.message).toBe(forward.message);
+    expect(reverse.patchIds).toEqual(forward.patchIds);
   });
 });
+
+function captureFailure(modules: IrModule[], patches: SemanticPatch[]): SemanticPatchFailure {
+  try {
+    applySemanticPatches(modules, patches, 'haxe');
+    throw new Error('Expected semantic patch application to fail');
+  } catch (error) {
+    if (!isSemanticPatchError(error)) throw error;
+    return error;
+  }
+}
+
+function createFunctionDeclaration(name: string): IrFunctionDeclaration {
+  return {
+    async: false,
+    body: [],
+    exported: true,
+    kind: 'function',
+    name,
+    origin: {
+      column: 1,
+      fingerprint: `sha256:${name}`,
+      line: 1,
+      packageName,
+      source,
+    },
+    overloads: [],
+    parameters: [],
+    returns: { kind: 'primitive', name: 'number' },
+    typeParameters: [],
+  };
+}
+
+function createModule(declarations: IrDeclaration[] = [createFunctionDeclaration('clamp')]): IrModule {
+  return {
+    declarations,
+    exports: [],
+    imports: [],
+    name: 'Clamp',
+    packageName,
+    source,
+  };
+}
+
+function createTypeDeclaration(name: string): IrTypeDeclaration {
+  return {
+    exported: true,
+    kind: 'type',
+    name,
+    origin: {
+      column: 1,
+      fingerprint: `sha256:${name}`,
+      line: 1,
+      packageName,
+      source,
+    },
+    type: { kind: 'primitive', name: 'number' },
+    typeParameters: [],
+  };
+}
+
+function patchBase(
+  id: string,
+  exportName: string,
+  kind: SemanticPatch['expect']['kind'],
+): Pick<SemanticPatch, 'expect' | 'id' | 'reason' | 'scope' | 'target'> {
+  return {
+    expect: { fingerprint: `sha256:${exportName}`, kind },
+    id,
+    reason: 'test',
+    scope: { kind: 'neutral' },
+    target: { exportName, packageName, source },
+  };
+}
+
+function renamePatch(id: string, name: string, scope: SemanticPatch['scope']): SemanticPatch {
+  return {
+    ...patchBase(id, 'clamp', 'function'),
+    name,
+    operation: 'rename',
+    scope,
+  };
+}

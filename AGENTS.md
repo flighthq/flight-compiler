@@ -2,6 +2,24 @@
 
 This repository publishes `@flighthq/tool-compiler`, the shared TypeScript compiler used to generate non-TypeScript Flight targets. Read this file in full at the start of each session. The upstream Flight SDK is the API and behavioral source of truth; this package describes it but never edits it.
 
+This file is a codebase map, not a notebook. Put rules here only when every contributor needs them and source, tests, manifests, or generated output cannot make them obvious. Put domain detail and changing plans under `agents/`, then leave a short pointer here. `npm run docs:check` keeps this map below 40,000 characters and verifies the Claude entry point and local document links.
+
+## Pre-Release API Philosophy
+
+This compiler has no published consumers yet. Compatibility with a provisional local API is not a reason to preserve the wrong name, parameter order, contract, or package boundary. Correct foundational design now is cheaper than a permanent adapter later.
+
+Treat every exported name and contract as a candidate for the final form. Names, module shape, dependency direction, determinism, ownership, and portability are design outputs, not cleanup. A package name is a promise of a coherent, mature domain; a thin placeholder is unfinished work, not an intentional architecture.
+
+Work from the dependency floor upward. Stabilize contracts and identity before analyzers, analyzers before orchestration, and orchestration before downstream compatibility. Do not make a lower layer more abstract merely to anticipate an upper layer. A target-neutral concept must stand on its own meaning.
+
+## Design Posture
+
+The compiler favors explicit data and named passes over objects with hidden behavior. Reading a contract should reveal what data exists; reading a function signature should reveal what work, mutation, allocation, or I/O can happen. Imports perform no work.
+
+Clarity is allowed to cost a few more call-site lines. Explicit analysis, lowering, patch, and emission phases are preferable to a convenient operation that silently combines them. Filesystem and process access stay at the edge and enter through explicit calls or capability records.
+
+Use canonical compiler vocabulary. If a name requires knowledge of its directory to make sense, it is not yet a public name. Prefer an industry-recognized term when it precisely matches the concept; otherwise name the Flight-specific concept in full.
+
 ## Architecture
 
 The invariant is one TypeScript source of truth and one compiler with a target-neutral core plus multiple target backends:
@@ -46,6 +64,19 @@ Every workspace keeps a flat `src/` and colocates its unit tests. Cross-package 
 
 A flat source tree is not a one-file rule. Split a large concern into focused sibling files within the same `src/` before creating another workspace. Add a workspace only for a distinct domain contract, dependency boundary, or lifecycle that benefits from independent health and unit-test gates.
 
+## Composition and Bedrock
+
+Complexity usually means a unit is hiding smaller primitives. Decompose until each package has one irreducible job, then stop. A screw, nut, bolt, or 2×4 should be simple in isolation; assemblies remain understandable because their parts are simple. Splitting an already irreducible primitive only creates naming, dependency, and lifecycle overhead.
+
+The dependency floor is deliberate:
+
+- `compiler-types` defines vocabulary and contracts without implementation dependencies.
+- `compiler-provenance` defines deterministic normalization and identity without depending on another compiler package.
+- `compiler-patch` and `compiler-emission` depend only on the contracts they operate over.
+- inventory, semantic lowering, backends, and orchestration are compositions above that floor.
+
+Before expanding a higher package, read [the compiler foundations audit](agents/compiler-foundations.md). A foundation is mature only when its boundary is narrow, its vocabulary is worth freezing, deterministic behavior is tested by equivalence and counterexample, failure values are inspectable, and callers cannot observe accidental mutation or host-platform differences.
+
 Keep imports side-effect-free. Importing the package must not read a checkout, start work, mutate registries, or write reports. Filesystem work begins only when a caller invokes an explicit function.
 
 ## Modeling Rules
@@ -59,6 +90,15 @@ Keep imports side-effect-free. Importing the package must not read a checkout, s
 - Expected environmental absence returns a structured result where the API defines one. Invalid compiler configuration, unresolved public exports, ambiguous patches, and stale fingerprints fail loudly.
 - Use small free functions and plain data. Compiler packages do not define classes; tagged diagnostic values and explicit function records provide failure and capability contracts.
 - Exported names must be globally understandable without relying on a deep import path for context.
+- Expected failures use stable tagged data or tagged `Error` records with type guards. Error message text is for people, not control flow.
+- A normalization or fingerprint function must be tested with both equivalence pairs and semantic counterexamples. Canonicalization may remove irrelevant spelling differences but must never merge distinct programs.
+- Functions do not mutate caller-owned input unless mutation is the explicit contract. Clone at the boundary when a transformation needs a working copy.
+
+## License Provenance
+
+The root `LICENSE.md` is the operative license and copyright statement. Do not copy third-party source, fixtures, corpora, specifications, or definition files into this repository. Testing against an external checkout is allowed when it is fetched or supplied outside the repository and nothing from it is committed.
+
+Implement facts and behavior in this repository's architecture; do not translate a reference implementation line by line. When an external artifact is needed for a reproducible check, record how to obtain it and its content hash without importing its license text or creating a new attribution obligation.
 
 ## TypeScript Style
 
@@ -66,8 +106,11 @@ Keep imports side-effect-free. Importing the package must not read a checkout, s
 - Use `Readonly<T>` and readonly collections where mutation is not part of the contract.
 - Put type-only imports on their own `import type` line.
 - Keep exported functions alphabetized within a file unless pipeline order is clearer.
+- Keep tests in source/API order. Each exported function needs direct behavior coverage, including its boundary and failure cases where applicable.
 - Add comments only for durable invariants, ownership, identity, determinism, or compiler behavior that names cannot express.
 - Do not add transient `TODO`, `FIXME`, or work-history comments to source.
+- Keep loose constants and implementation state after exported functions so the public surface scans first.
+- Boolean queries use `is*` or `has*`; accessors use `get*`; allocating operations name the allocation when it matters.
 - Keep commits to one Conventional Commit subject with no body or trailers.
 
 ## Commands
@@ -79,12 +122,15 @@ Use npm, not pnpm or Yarn. Node.js 22 or newer is required.
 - `npm run test`: run Vitest once.
 - `npm run test:packages`: run every private package and the public package in isolation.
 - `npm run test:coverage`: run all unit tests together with aggregate instrumentation. The complete gate intentionally runs tests once in isolation and again for coverage because these lanes prove different properties.
+- `npm run docs:check`: enforce the bounded codebase map, Claude pointer, and local documentation links.
 - `npm run typecheck`: run the root and every workspace's strict no-emit check, collecting failures.
-- `npm run packages:check`: enforce manifests, flat source trees, dependency declarations and acyclicity, centralized contracts, class-free implementation, tests, and public-facade completeness.
+- `npm run packages:check`: enforce manifests, flat source trees, dependency declarations and acyclicity, centralized contracts, class-free implementation, transient-comment absence, tests, and public-facade completeness.
 - `npm run build`: clean stale output and assemble ESM JavaScript, declarations, maps, and declaration maps in `packages/tool-compiler/dist/`.
 - `npm run pack:check`: build fresh, inspect the publishable tarball, and prove every private workspace is assembled without leaking private imports or source/tests.
 
 Tests should use temporary fixture workspaces and assert both success and fail-loudly behavior. Compiler changes require a focused regression covering the smallest syntax or graph shape that exposes the rule. Tests must not depend on a network checkout.
+
+Bedrock tests are example-driven specifications, not coverage decoration. Test empty values, boundary values, malformed values, host-path differences, input immutability, deterministic ordering, idempotence where meaningful, and every tagged failure code. For normalization, test formatting-equivalent inputs and meaningfully distinct near-neighbors side by side.
 
 Coverage thresholds are enforced ratchets, not aspirational targets: the current 50% branches, 79% functions, 67% lines, and 63% statements floors sit immediately below the measured baseline so regressions fail promptly. Maintain or raise them as exercised compiler surface grows. Lowering a threshold requires an explicit architectural justification.
 

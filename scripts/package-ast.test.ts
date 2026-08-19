@@ -1,9 +1,21 @@
 import ts from 'typescript';
 import { describe, expect, it } from 'vitest';
 
-import { collectLocalExportNames, collectModuleSpecifiers, isExportedContractDeclaration } from './package-ast.js';
+import {
+  collectLocalExportNames,
+  collectModuleSpecifiers,
+  containsTransientWorkComment,
+  isExportedContractDeclaration,
+} from './package-ast.js';
 
 describe('package boundary AST analysis', () => {
+  it('distinguishes transient work comments from identifiers and fixture strings', () => {
+    expect(containsTransientWorkComment('const TODO = "FIXME";')).toBe(false);
+    expect(containsTransientWorkComment('const fixture = "// TODO";')).toBe(false);
+    expect(containsTransientWorkComment('// TODO: temporary work\nconst value = 1;')).toBe(true);
+    expect(containsTransientWorkComment('const value = 1; /* FIXME later */')).toBe(true);
+  });
+
   it('finds static, dynamic, import-type, and import-equals module edges at any depth', () => {
     const sourceFile = source(`
       import value from '../../compiler-types/src/static.js';

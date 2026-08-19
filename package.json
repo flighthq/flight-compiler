@@ -18,10 +18,11 @@
   "scripts": {
     "_scripts:build": "tsc -p tsconfig.scripts.json",
     "build": "npm run clean:dist --silent && tsc -p tsconfig.build.json",
-    "check": "npm run packages:check && npm run format:check && npm run lint && npm run typecheck && npm run test:packages && npm run test:coverage && npm run pack:check",
+    "check": "npm run packages:check && npm run docs:check && npm run format:check && npm run lint && npm run typecheck && npm run test:packages && npm run test:coverage && npm run pack:check",
     "ci": "npm run clean && npm run check",
     "clean": "npm run _scripts:build --silent && node ./.script-build/clean.js",
     "clean:dist": "npm run _scripts:build --silent && node ./.script-build/clean.js --dist-only",
+    "docs:check": "npm run _scripts:build --silent && node ./.script-build/docs.js",
     "fix": "npm run lint:fix && npm run format",
     "format": "oxfmt --write .",
     "format:check": "oxfmt --check .",
