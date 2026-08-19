@@ -1,51 +1,52 @@
 import type ts from 'typescript';
 
 import type { BackendCompilation, CompilerBackend } from './compilerBackendContract.js';
-import type { CompilerDiagnostic, IrModule } from './compilerIntermediateRepresentation.js';
+import type { CompilerDiagnostic } from './compilerDiagnosticContract.js';
+import type { IrModule } from './compilerIntermediateRepresentation.js';
 import type { PatchAudit, SemanticPatch } from './compilerSemanticPatchContract.js';
 import type { LowerTypeScriptSourceOptions } from './compilerTypeScriptContract.js';
 
 export interface CompileIrModulesOptions<BackendOptions> {
-  backend: CompilerBackend<BackendOptions>;
-  backendOptions: Readonly<BackendOptions>;
-  modules: readonly IrModule[];
-  patches?: readonly SemanticPatch[] | undefined;
+  readonly backend: CompilerBackend<BackendOptions>;
+  readonly backendOptions: Readonly<BackendOptions>;
+  readonly modules: readonly IrModule[];
+  readonly patches?: readonly SemanticPatch[] | undefined;
 }
 
 export interface CompilerReport {
-  backend: string;
-  emittedFiles: number;
-  modules: number;
-  schema: 'flight-compiler-report/1';
+  readonly backend: string;
+  readonly emittedFiles: number;
+  readonly modules: number;
+  readonly schema: 'flight-compiler-report/1';
 }
 
 export interface CompileIrModulesResult {
-  compilation: BackendCompilation;
-  diagnostics: CompilerDiagnostic[];
-  patchAudit: PatchAudit;
-  report: CompilerReport;
+  readonly compilation: BackendCompilation;
+  readonly diagnostics: readonly CompilerDiagnostic[];
+  readonly patchAudit: PatchAudit;
+  readonly report: CompilerReport;
 }
 
 export interface CompilerDiagnosticsFailure extends Error {
-  diagnostics: readonly CompilerDiagnostic[];
-  kind: 'compiler-diagnostics';
+  readonly diagnostics: readonly CompilerDiagnostic[];
+  readonly kind: 'compiler-diagnostics';
 }
 
 export type CompilerInvariantCode = 'duplicate-emitted-path' | 'duplicate-module-identity' | 'unsafe-emitted-path';
 
 export interface CompilerInvariantFailure extends Error {
-  code: CompilerInvariantCode;
-  kind: 'compiler-invariant';
-  subject: string;
+  readonly code: CompilerInvariantCode;
+  readonly kind: 'compiler-invariant';
+  readonly subject: string;
 }
 
 export interface TypeScriptModuleInput extends LowerTypeScriptSourceOptions {
-  sourceFile: ts.SourceFile;
+  readonly sourceFile: ts.SourceFile;
 }
 
 export interface CompileTypeScriptModulesOptions<BackendOptions> extends Omit<
   CompileIrModulesOptions<BackendOptions>,
   'modules'
 > {
-  sources: readonly TypeScriptModuleInput[];
+  readonly sources: readonly TypeScriptModuleInput[];
 }

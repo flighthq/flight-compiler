@@ -45,7 +45,7 @@ process.stdout.write(
 function collectSourceTestRecords(): SourceTestRecord[] {
   const records: SourceTestRecord[] = [];
   for (const packageEntry of readdirSync(packagesDirectory, { withFileTypes: true })) {
-    if (!packageEntry.isDirectory()) continue;
+    if (!packageEntry.isDirectory() || packageEntry.name === 'compiler-types') continue;
     const sourceDirectory = path.join(packagesDirectory, packageEntry.name, 'src');
     if (!existsSync(sourceDirectory)) continue;
     for (const entry of readdirSync(sourceDirectory, { withFileTypes: true })) {

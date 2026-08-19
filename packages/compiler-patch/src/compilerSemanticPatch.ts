@@ -8,6 +8,11 @@ import type {
   SemanticPatchFailureCode,
 } from '../../compiler-types/src/index.js';
 
+interface IndexedDeclaration {
+  declaration: IrDeclaration;
+  readonly moduleIndex: number;
+}
+
 export function applySemanticPatchSet(
   modules: readonly IrModule[],
   patches: readonly SemanticPatch[],
@@ -15,14 +20,14 @@ export function applySemanticPatchSet(
 ): AppliedSemanticPatches {
   validateUniqueIds(patches);
   validateConflicts(patches);
-  const output = structuredClone(modules) as IrModule[];
+  let output: readonly IrModule[] = structuredClone(modules);
   const active = patches.filter(
     (patch) => patch.scope.kind === 'neutral' || (patch.scope.kind === 'backend' && patch.scope.backend === backend),
   );
   validateActiveRemovals(active);
   const applied: PatchAuditRecord[] = [];
-  const declarationIndex = new Map<string, Array<{ declaration: IrDeclaration; module: IrModule }>>();
-  for (const module of output) {
+  const declarationIndex = new Map<string, IndexedDeclaration[]>();
+  for (const [moduleIndex, module] of output.entries()) {
     for (const declaration of module.declarations) {
       const key = targetKey({
         exportName: declaration.name,
@@ -30,7 +35,7 @@ export function applySemanticPatchSet(
         source: declaration.origin.source,
       });
       const indexed = declarationIndex.get(key) ?? [];
-      indexed.push({ declaration, module });
+      indexed.push({ declaration, moduleIndex });
       declarationIndex.set(key, indexed);
     }
   }
@@ -52,7 +57,8 @@ export function applySemanticPatchSet(
         targetSubject(patch.target),
         `Ambiguous semantic patch ${patch.id}: matched ${String(matches.length)} declarations`,
       );
-    const { declaration, module } = matches[0]!;
+    const match = matches[0]!;
+    const { declaration } = match;
     if (declaration.kind !== patch.expect.kind) {
       throw createSemanticPatchError(
         'patch-kind-mismatch',
@@ -70,12 +76,13 @@ export function applySemanticPatchSet(
       );
     }
 
+    let updatedDeclaration: IrDeclaration | undefined;
     switch (patch.operation) {
       case 'remove':
-        module.declarations.splice(module.declarations.indexOf(declaration), 1);
+        updatedDeclaration = undefined;
         break;
       case 'rename':
-        declaration.name = patch.name;
+        updatedDeclaration = { ...declaration, name: patch.name };
         break;
       case 'replaceBody':
         if (declaration.kind !== 'function') {
@@ -86,7 +93,7 @@ export function applySemanticPatchSet(
             `Semantic patch ${patch.id} requires a function`,
           );
         }
-        declaration.body = structuredClone([...patch.body]);
+        updatedDeclaration = { ...declaration, body: structuredClone([...patch.body]) };
         break;
       case 'replaceType':
         if (declaration.kind !== 'type') {
@@ -97,9 +104,18 @@ export function applySemanticPatchSet(
             `Semantic patch ${patch.id} requires a type alias`,
           );
         }
-        declaration.type = structuredClone(patch.type);
+        updatedDeclaration = { ...declaration, type: structuredClone(patch.type) };
         break;
     }
+    const module = output[match.moduleIndex]!;
+    const declarationPosition = module.declarations.indexOf(declaration);
+    if (declarationPosition < 0) throw new Error(`Semantic patch index lost declaration ${patch.id}`);
+    const declarations = updatedDeclaration
+      ? module.declarations.map((item, index) => (index === declarationPosition ? updatedDeclaration : item))
+      : module.declarations.filter((_item, index) => index !== declarationPosition);
+    output = output.map((item, index) => (index === match.moduleIndex ? { ...module, declarations } : item));
+    if (updatedDeclaration) match.declaration = updatedDeclaration;
+    else declarationIndex.delete(targetKey(patch.target));
     applied.push({
       fingerprint: declaration.origin.fingerprint,
       id: patch.id,

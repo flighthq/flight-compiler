@@ -1,10 +1,7 @@
 import type { IrModule, IrStatement, IrType } from './compilerIntermediateRepresentation.js';
+import type { CompilerExportIdentity } from './compilerSourceIdentity.js';
 
-export interface PatchTarget {
-  readonly exportName: string;
-  readonly packageName: string;
-  readonly source: string;
-}
+export type SemanticPatchTarget = CompilerExportIdentity;
 
 export type PatchScope = { readonly kind: 'neutral' } | { readonly backend: string; readonly kind: 'backend' };
 
@@ -16,7 +13,7 @@ interface BasePatch {
   readonly id: string;
   readonly reason: string;
   readonly scope: PatchScope;
-  readonly target: PatchTarget;
+  readonly target: SemanticPatchTarget;
 }
 
 export type SemanticPatch =
@@ -31,7 +28,7 @@ export interface PatchAuditRecord {
   readonly operation: SemanticPatch['operation'];
   readonly reason: string;
   readonly scope: PatchScope;
-  readonly target: PatchTarget;
+  readonly target: SemanticPatchTarget;
 }
 
 export interface PatchAudit {

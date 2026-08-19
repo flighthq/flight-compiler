@@ -14,6 +14,7 @@ import type {
   IrFunctionDeclaration,
   IrFunctionSignature,
   IrImport,
+  IrImportBinding,
   IrInterfaceDeclaration,
   IrObjectMember,
   IrObjectTypeMember,
@@ -24,9 +25,9 @@ import type {
   IrTypeParameter,
   IrVariable,
   IrVariableDeclaration,
-  LoweringResult,
+  TypeScriptLoweringResult,
   LowerTypeScriptSourceOptions,
-  SourceOrigin,
+  CompilerSourceOrigin,
 } from '../../compiler-types/src/index.js';
 import { fingerprintTypeScriptNode } from '../../compiler-provenance/src/index.js';
 
@@ -44,7 +45,7 @@ interface UnsupportedSyntaxFailure extends Error {
 export function lowerTypeScriptSource(
   sourceFile: ts.SourceFile,
   options: Readonly<LowerTypeScriptSourceOptions>,
-): LoweringResult {
+): TypeScriptLoweringResult {
   const context: LoweringContext = { diagnostics: [], options, sourceFile };
   const declarations: IrDeclaration[] = [];
   const exports: IrExport[] = [];
@@ -499,7 +500,7 @@ function lowerFunctionSignature(node: ts.SignatureDeclaration, context: Lowering
 function lowerImports(sourceFile: ts.SourceFile): IrImport[] {
   return sourceFile.statements.flatMap((statement): IrImport[] => {
     if (!ts.isImportDeclaration(statement) || !ts.isStringLiteral(statement.moduleSpecifier)) return [];
-    const bindings: IrImport['bindings'] = [];
+    const bindings: IrImportBinding[] = [];
     const clause = statement.importClause;
     if (clause?.name) bindings.push({ imported: 'default', local: clause.name.text, typeOnly: clause.isTypeOnly });
     const namedBindings = clause?.namedBindings;
@@ -901,7 +902,7 @@ function moduleNameFromSource(file: string): string {
   return name === 'index' ? 'Index' : `${name.slice(0, 1).toUpperCase()}${name.slice(1)}`;
 }
 
-function origin(node: ts.Node, context: LoweringContext): SourceOrigin {
+function origin(node: ts.Node, context: LoweringContext): CompilerSourceOrigin {
   const start = node.getStart(context.sourceFile);
   const position = context.sourceFile.getLineAndCharacterOfPosition(start);
   return {

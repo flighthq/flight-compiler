@@ -64,6 +64,8 @@ Every workspace keeps a flat `src/` and colocates its unit tests. Cross-package 
 
 `scripts/` is repository automation, not compiler package source. Requirements stated for `packages/` do not extend to scripts: package-domain filename uniqueness, free-function-only organization, simple-primitive decomposition, centralized exported contracts, matching colocated tests, exact per-export `describe()` suites, and package coverage expectations are all explicitly inapplicable. Scripts may use task-oriented names and whatever local structure makes the automation clearest, and they need focused tests only when their risk warrants them. They remain subject to the repository's strict TypeScript, formatting, linting, documentation, build, and applicable script-specific health checks.
 
+`compiler-types` is the type-only contract workspace, so runtime-test structure is not a package requirement there. Its source files do not need matching `.test.ts` files, exact `describe()` suites, or a minimum test count. Add compile-time composition tests only when they prove a useful assignability, inference, or exhaustiveness property; typecheck is the baseline contract gate. Naming, flat layout, centralized vocabulary, strictness, and dependency-floor requirements still apply.
+
 A flat source tree is not a one-file rule. Split a large concern into focused sibling files within the same `src/` before creating another workspace. Add a workspace only for a distinct domain contract, dependency boundary, or lifecycle that benefits from independent health and unit-test gates.
 
 ## Composition and Bedrock
@@ -102,7 +104,9 @@ Keep imports side-effect-free. Importing the package must not read a checkout, s
 
 The root `LICENSE.md` is the operative license and copyright statement. Do not copy third-party source, fixtures, corpora, specifications, or definition files into this repository. Testing against an external checkout is allowed when it is fetched or supplied outside the repository and nothing from it is committed.
 
-Implement facts and behavior in this repository's architecture; do not translate a reference implementation line by line. When an external artifact is needed for a reproducible check, record how to obtain it and its content hash without importing its license text or creating a new attribution obligation.
+The first-party [`flighthq/flight`](https://github.com/flighthq/flight) repository is an approved source for repository scripts and documentation. Those materials may be reviewed, adapted, or copied when they improve this repository's tooling or contributor guidance; preserve relevant copyright or provenance notices and keep product-specific Flight checks out unless this compiler owns the same concern. This exception does not extend to unrelated upstream implementation code or other repositories.
+
+Implement compiler facts and behavior in this repository's architecture; outside the approved Flight scripts/documentation exception, do not translate a reference implementation line by line. When an external artifact is needed for a reproducible check, record how to obtain it and its content hash without importing its license text or creating a new attribution obligation.
 
 ## TypeScript Style
 
@@ -127,7 +131,7 @@ Use npm, not pnpm or Yarn. Node.js 22 or newer is required.
 - `npm run test:packages`: run every private package and the public package in isolation.
 - `npm run test:coverage`: run all unit tests together with aggregate instrumentation. The complete gate intentionally runs tests once in isolation and again for coverage because these lanes prove different properties.
 - `npm run docs:check`: enforce the bounded codebase map, Claude pointer, and local documentation links.
-- `npm run exports:check`: require one exactly named colocated test file for every non-barrel package source and one exact `describe('<function>')` block for every exported function. This proves test structure and naming, not assertion depth.
+- `npm run exports:check`: outside `compiler-types`, require one exactly named colocated test file for every non-barrel package source and one exact `describe('<function>')` block for every exported function. This proves test structure and naming, not assertion depth.
 - `npm run typecheck`: run the root and every workspace's strict no-emit check, collecting failures.
 - `npm run packages:check`: enforce manifests, flat source trees, dependency declarations and acyclicity, centralized contracts, class-free implementation, globally unique domain filenames and APIs, verb-first function names, transient-comment absence, tests, and public-facade completeness.
 - `npm run build`: clean stale output and assemble ESM JavaScript, declarations, maps, and declaration maps in `packages/tool-compiler/dist/`.

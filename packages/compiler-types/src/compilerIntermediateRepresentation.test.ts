@@ -5,6 +5,7 @@ import type {
   IrStatement,
   IrType,
 } from './compilerIntermediateRepresentation.js';
+import type { CompilerModuleIdentity, CompilerSourceOrigin } from './compilerSourceIdentity.js';
 
 describe('compiler intermediate representation contracts', () => {
   it('compose type, expression, statement, declaration, and module identities as plain data', () => {
@@ -40,5 +41,8 @@ describe('compiler intermediate representation contracts', () => {
 
     expect(module.declarations[0]).toBe(declaration);
     expect(module).toMatchObject({ name: 'Value', packageName: '@flighthq/math' });
+    expectTypeOf(module).toMatchTypeOf<CompilerModuleIdentity>();
+    expectTypeOf(module.declarations).toEqualTypeOf<readonly IrDeclaration[]>();
+    expectTypeOf(declaration.origin).toEqualTypeOf<CompilerSourceOrigin>();
   });
 });

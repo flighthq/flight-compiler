@@ -1,38 +1,38 @@
 import type { IrModule } from './compilerIntermediateRepresentation.js';
 
 export interface EmittedFile {
-  contents: string;
-  path: string;
+  readonly contents: string;
+  readonly path: string;
 }
 
 export interface BackendEmitContext<Options> {
-  modules: readonly IrModule[];
-  options: Readonly<Options>;
+  readonly modules: readonly IrModule[];
+  readonly options: Readonly<Options>;
 }
 
 export interface CompilerBackend<Options = Record<string, never>> {
-  emitModule(module: Readonly<IrModule>, context: BackendEmitContext<Options>): readonly EmittedFile[];
-  name: string;
+  readonly emitModule: (module: Readonly<IrModule>, context: BackendEmitContext<Options>) => readonly EmittedFile[];
+  readonly name: string;
 }
 
 export interface BackendCompilation {
-  backend: string;
-  files: EmittedFile[];
+  readonly backend: string;
+  readonly files: readonly EmittedFile[];
 }
 
 export interface BackendEmissionFailure extends Error {
-  backend: string;
-  kind: 'backend-emission';
-  source: string;
+  readonly backend: string;
+  readonly kind: 'backend-emission';
+  readonly source: string;
 }
 
 export interface HaxeCompilerBackendOptions {
-  generatedHeader?: string | undefined;
-  rootPackage?: string | undefined;
-  runtimeModule?: string | undefined;
+  readonly generatedHeader?: string | undefined;
+  readonly rootPackage?: string | undefined;
+  readonly runtimeModule?: string | undefined;
 }
 
 export interface RustCompilerBackendOptions {
-  generatedHeader?: string | undefined;
-  opaqueHostType?: string | undefined;
+  readonly generatedHeader?: string | undefined;
+  readonly opaqueHostType?: string | undefined;
 }

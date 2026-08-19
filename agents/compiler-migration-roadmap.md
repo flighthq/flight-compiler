@@ -65,7 +65,7 @@ Status: structure complete; bedrock contract hardening in progress.
 
 - Maintain the private `compiler-*` domain packages and the public `tool-compiler` workspace.
 - Keep all contracts in `compiler-types`, source trees flat, implementation class-free, and dependency edges acyclic.
-- Require every non-barrel package source to have its matching colocated test and every exported function to have an exact named suite; treat this as a structural floor rather than a coverage claim.
+- Outside the type-only `compiler-types` workspace, require every non-barrel package source to have its matching colocated test and every exported function to have an exact named suite; treat this as a structural floor rather than a coverage claim.
 - Preserve deterministic build, package, coverage, and boundary gates as the implementation grows.
 - Complete the maturity work in [Compiler foundations](compiler-foundations.md) from contracts through provenance, patches, and emission before expanding the higher compiler layers.
 

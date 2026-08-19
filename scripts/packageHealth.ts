@@ -252,7 +252,9 @@ function checkPackage(packageName: string, rule: Readonly<PackageRule>): void {
     .filter((entry) => entry.isFile() && entry.name.endsWith('.ts'))
     .map((entry) => path.join(sourceDirectory, entry.name));
   const testFiles = sourceFiles.filter((file) => file.endsWith('.test.ts'));
-  check(testFiles.length > 0, `${packageName}: at least one colocated unit test is required`);
+  if (packageName !== 'compiler-types') {
+    check(testFiles.length > 0, `${packageName}: at least one colocated unit test is required`);
+  }
 
   const productionImports = new Set<string>();
   const testImports = new Set<string>();

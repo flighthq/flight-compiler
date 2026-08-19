@@ -13,8 +13,8 @@
   "type": "module",
   "sideEffects": false,
   "scripts": {
-    "test": "vitest run --config ../../vitest.config.package.ts --root .",
-    "test:watch": "vitest --config ../../vitest.config.package.ts --root .",
+    "test": "vitest run --passWithNoTests --config ../../vitest.config.package.ts --root .",
+    "test:watch": "vitest --passWithNoTests --config ../../vitest.config.package.ts --root .",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "devDependencies": {

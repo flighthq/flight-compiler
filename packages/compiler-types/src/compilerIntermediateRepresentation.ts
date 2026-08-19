@@ -1,205 +1,224 @@
-export interface SourceOrigin {
-  column: number;
-  fingerprint: string;
-  line: number;
-  packageName: string;
-  source: string;
-}
+import type { CompilerModuleIdentity, CompilerSourceOrigin } from './compilerSourceIdentity.js';
 
 export interface IrTypeParameter {
-  constraint?: IrType | undefined;
-  default?: IrType | undefined;
-  name: string;
+  readonly constraint?: IrType | undefined;
+  readonly default?: IrType | undefined;
+  readonly name: string;
 }
 
 export interface IrParameter {
-  initializer?: IrExpression | undefined;
-  name: string;
-  optional: boolean;
-  rest: boolean;
-  type: IrType;
+  readonly initializer?: IrExpression | undefined;
+  readonly name: string;
+  readonly optional: boolean;
+  readonly rest: boolean;
+  readonly type: IrType;
 }
 
 export interface IrObjectTypeMember {
-  name: string;
-  optional: boolean;
-  readonly: boolean;
-  type: IrType;
+  readonly name: string;
+  readonly optional: boolean;
+  readonly readonly: boolean;
+  readonly type: IrType;
 }
 
 export type IrType =
-  | { kind: 'array'; element: IrType; readonly: boolean }
-  | { kind: 'function'; parameters: IrParameter[]; returns: IrType; typeParameters: IrTypeParameter[] }
-  | { kind: 'indexedAccess'; index: IrType; object: IrType }
-  | { kind: 'intersection'; types: IrType[] }
-  | { kind: 'keyof'; type: IrType }
-  | { kind: 'literal'; value: boolean | number | string }
-  | { kind: 'named'; name: string; typeArguments: IrType[] }
-  | { kind: 'never' }
-  | { kind: 'null' }
-  | { kind: 'object'; members: IrObjectTypeMember[] }
-  | { kind: 'primitive'; name: 'bigint' | 'boolean' | 'number' | 'string' | 'symbol' | 'void' }
-  | { kind: 'tuple'; elements: Array<{ optional: boolean; rest: boolean; type: IrType }>; readonly: boolean }
-  | { kind: 'typeOf'; name: string }
-  | { kind: 'undefined' }
-  | { kind: 'union'; types: IrType[] }
-  | { kind: 'unknown'; source: 'any' | 'object' | 'this' | 'unknown' };
+  | Readonly<{ kind: 'array'; element: IrType; readonly: boolean }>
+  | Readonly<{
+      kind: 'function';
+      parameters: readonly IrParameter[];
+      returns: IrType;
+      typeParameters: readonly IrTypeParameter[];
+    }>
+  | Readonly<{ kind: 'indexedAccess'; index: IrType; object: IrType }>
+  | Readonly<{ kind: 'intersection'; types: readonly IrType[] }>
+  | Readonly<{ kind: 'keyof'; type: IrType }>
+  | Readonly<{ kind: 'literal'; value: boolean | number | string }>
+  | Readonly<{ kind: 'named'; name: string; typeArguments: readonly IrType[] }>
+  | Readonly<{ kind: 'never' }>
+  | Readonly<{ kind: 'null' }>
+  | Readonly<{ kind: 'object'; members: readonly IrObjectTypeMember[] }>
+  | Readonly<{ kind: 'primitive'; name: 'bigint' | 'boolean' | 'number' | 'string' | 'symbol' | 'void' }>
+  | Readonly<{
+      kind: 'tuple';
+      elements: ReadonlyArray<Readonly<{ optional: boolean; rest: boolean; type: IrType }>>;
+      readonly: boolean;
+    }>
+  | Readonly<{ kind: 'typeOf'; name: string }>
+  | Readonly<{ kind: 'undefined' }>
+  | Readonly<{ kind: 'union'; types: readonly IrType[] }>
+  | Readonly<{ kind: 'unknown'; source: 'any' | 'object' | 'this' | 'unknown' }>;
 
 export type IrExpression =
-  | { kind: 'array'; elements: Array<IrExpression | undefined> }
-  | { kind: 'assignment'; left: IrExpression; operator: string; right: IrExpression }
-  | { kind: 'await'; expression: IrExpression }
-  | { kind: 'binary'; left: IrExpression; operator: string; right: IrExpression }
-  | { kind: 'call'; arguments: IrExpression[]; callee: IrExpression; optional: boolean; typeArguments: IrType[] }
-  | { kind: 'cast'; expression: IrExpression; type: IrType }
-  | { condition: IrExpression; kind: 'conditional'; whenFalse: IrExpression; whenTrue: IrExpression }
-  | { index: IrExpression; kind: 'element'; object: IrExpression; optional: boolean }
-  | {
+  | Readonly<{ kind: 'array'; elements: ReadonlyArray<IrExpression | undefined> }>
+  | Readonly<{ kind: 'assignment'; left: IrExpression; operator: string; right: IrExpression }>
+  | Readonly<{ kind: 'await'; expression: IrExpression }>
+  | Readonly<{ kind: 'binary'; left: IrExpression; operator: string; right: IrExpression }>
+  | Readonly<{
+      kind: 'call';
+      arguments: readonly IrExpression[];
+      callee: IrExpression;
+      optional: boolean;
+      typeArguments: readonly IrType[];
+    }>
+  | Readonly<{ kind: 'cast'; expression: IrExpression; type: IrType }>
+  | Readonly<{ condition: IrExpression; kind: 'conditional'; whenFalse: IrExpression; whenTrue: IrExpression }>
+  | Readonly<{ index: IrExpression; kind: 'element'; object: IrExpression; optional: boolean }>
+  | Readonly<{
       async: boolean;
-      body: IrStatement[];
+      body: readonly IrStatement[];
       expression?: IrExpression | undefined;
       kind: 'function';
       name?: string | undefined;
-      parameters: IrParameter[];
+      parameters: readonly IrParameter[];
       returns: IrType;
-      typeParameters: IrTypeParameter[];
-    }
-  | { kind: 'identifier'; name: string }
-  | { kind: 'literal'; value: boolean | null | number | string }
-  | { arguments: IrExpression[]; callee: IrExpression; kind: 'new'; typeArguments: IrType[] }
-  | { kind: 'object'; members: IrObjectMember[] }
-  | { kind: 'property'; name: string; object: IrExpression; optional: boolean }
-  | { flags: string; kind: 'regexp'; pattern: string }
-  | { expression: IrExpression; kind: 'spread' }
-  | { kind: 'template'; parts: Array<IrExpression | string> }
-  | { kind: 'unary'; operand: IrExpression; operator: string; postfix: boolean };
+      typeParameters: readonly IrTypeParameter[];
+    }>
+  | Readonly<{ kind: 'identifier'; name: string }>
+  | Readonly<{ kind: 'literal'; value: boolean | null | number | string }>
+  | Readonly<{
+      arguments: readonly IrExpression[];
+      callee: IrExpression;
+      kind: 'new';
+      typeArguments: readonly IrType[];
+    }>
+  | Readonly<{ kind: 'object'; members: readonly IrObjectMember[] }>
+  | Readonly<{ kind: 'property'; name: string; object: IrExpression; optional: boolean }>
+  | Readonly<{ flags: string; kind: 'regexp'; pattern: string }>
+  | Readonly<{ expression: IrExpression; kind: 'spread' }>
+  | Readonly<{ kind: 'template'; parts: ReadonlyArray<IrExpression | string> }>
+  | Readonly<{ kind: 'unary'; operand: IrExpression; operator: string; postfix: boolean }>;
 
 export type IrObjectMember =
-  | { key: IrExpression; kind: 'computedProperty'; value: IrExpression }
-  | { kind: 'property'; name: string; value: IrExpression }
-  | { expression: IrExpression; kind: 'spread' };
+  | Readonly<{ key: IrExpression; kind: 'computedProperty'; value: IrExpression }>
+  | Readonly<{ kind: 'property'; name: string; value: IrExpression }>
+  | Readonly<{ expression: IrExpression; kind: 'spread' }>;
 
 export interface IrVariable {
-  initializer?: IrExpression | undefined;
-  mutable: boolean;
-  name: string;
-  type?: IrType | undefined;
+  readonly initializer?: IrExpression | undefined;
+  readonly mutable: boolean;
+  readonly name: string;
+  readonly type?: IrType | undefined;
 }
 
 export interface IrSwitchCase {
-  expression?: IrExpression | undefined;
-  statements: IrStatement[];
+  readonly expression?: IrExpression | undefined;
+  readonly statements: readonly IrStatement[];
 }
 
 export type IrStatement =
-  | { kind: 'block'; statements: IrStatement[] }
-  | { kind: 'break' }
-  | { kind: 'continue' }
-  | { body: IrStatement; condition: IrExpression; kind: 'do' }
-  | { expression: IrExpression; kind: 'expression' }
-  | {
+  | Readonly<{ kind: 'block'; statements: readonly IrStatement[] }>
+  | Readonly<{ kind: 'break' }>
+  | Readonly<{ kind: 'continue' }>
+  | Readonly<{ body: IrStatement; condition: IrExpression; kind: 'do' }>
+  | Readonly<{ expression: IrExpression; kind: 'expression' }>
+  | Readonly<{
       body: IrStatement;
       condition?: IrExpression | undefined;
       increment?: IrExpression | undefined;
-      initializer?: IrExpression | IrVariable[] | undefined;
+      initializer?: IrExpression | readonly IrVariable[] | undefined;
       kind: 'for';
-    }
-  | { await: boolean; body: IrStatement; iterable: IrExpression; kind: 'forOf'; variable: IrVariable }
-  | { body: IrStatement; kind: 'forIn'; object: IrExpression; variable: IrVariable }
-  | { condition: IrExpression; consequent: IrStatement; kind: 'if'; otherwise?: IrStatement | undefined }
-  | { expression?: IrExpression | undefined; kind: 'return' }
-  | { cases: IrSwitchCase[]; expression: IrExpression; kind: 'switch' }
-  | { expression: IrExpression; kind: 'throw' }
-  | {
+    }>
+  | Readonly<{ await: boolean; body: IrStatement; iterable: IrExpression; kind: 'forOf'; variable: IrVariable }>
+  | Readonly<{ body: IrStatement; kind: 'forIn'; object: IrExpression; variable: IrVariable }>
+  | Readonly<{
+      condition: IrExpression;
+      consequent: IrStatement;
+      kind: 'if';
+      otherwise?: IrStatement | undefined;
+    }>
+  | Readonly<{ expression?: IrExpression | undefined; kind: 'return' }>
+  | Readonly<{ cases: readonly IrSwitchCase[]; expression: IrExpression; kind: 'switch' }>
+  | Readonly<{ expression: IrExpression; kind: 'throw' }>
+  | Readonly<{
       catchBody?: IrStatement | undefined;
       catchName?: string | undefined;
       finallyBody?: IrStatement | undefined;
       kind: 'try';
       tryBody: IrStatement;
-    }
-  | { declarations: IrVariable[]; kind: 'variable' }
-  | { body: IrStatement; condition: IrExpression; kind: 'while' };
+    }>
+  | Readonly<{ declarations: readonly IrVariable[]; kind: 'variable' }>
+  | Readonly<{ body: IrStatement; condition: IrExpression; kind: 'while' }>;
 
 export interface IrFunctionSignature {
-  parameters: IrParameter[];
-  returns: IrType;
-  typeParameters: IrTypeParameter[];
+  readonly parameters: readonly IrParameter[];
+  readonly returns: IrType;
+  readonly typeParameters: readonly IrTypeParameter[];
 }
 
 export interface IrFunctionDeclaration extends IrFunctionSignature {
-  async: boolean;
-  body: IrStatement[];
-  exported: boolean;
-  kind: 'function';
-  name: string;
-  origin: SourceOrigin;
-  overloads: IrFunctionSignature[];
+  readonly async: boolean;
+  readonly body: readonly IrStatement[];
+  readonly exported: boolean;
+  readonly kind: 'function';
+  readonly name: string;
+  readonly origin: CompilerSourceOrigin;
+  readonly overloads: readonly IrFunctionSignature[];
 }
 
 export interface IrVariableDeclaration extends IrVariable {
-  exported: boolean;
-  kind: 'variable';
-  origin: SourceOrigin;
+  readonly exported: boolean;
+  readonly kind: 'variable';
+  readonly origin: CompilerSourceOrigin;
 }
 
 export interface IrTypeDeclaration {
-  exported: boolean;
-  kind: 'type';
-  name: string;
-  origin: SourceOrigin;
-  type: IrType;
-  typeParameters: IrTypeParameter[];
+  readonly exported: boolean;
+  readonly kind: 'type';
+  readonly name: string;
+  readonly origin: CompilerSourceOrigin;
+  readonly type: IrType;
+  readonly typeParameters: readonly IrTypeParameter[];
 }
 
 export interface IrInterfaceDeclaration {
-  exported: boolean;
-  extends: IrType[];
-  kind: 'interface';
-  members: IrObjectTypeMember[];
-  name: string;
-  origin: SourceOrigin;
-  typeParameters: IrTypeParameter[];
+  readonly exported: boolean;
+  readonly extends: readonly IrType[];
+  readonly kind: 'interface';
+  readonly members: readonly IrObjectTypeMember[];
+  readonly name: string;
+  readonly origin: CompilerSourceOrigin;
+  readonly typeParameters: readonly IrTypeParameter[];
 }
 
 export interface IrEnumDeclaration {
-  exported: boolean;
-  kind: 'enum';
-  members: Array<{ name: string; value: number | string }>;
-  name: string;
-  origin: SourceOrigin;
+  readonly exported: boolean;
+  readonly kind: 'enum';
+  readonly members: ReadonlyArray<{ readonly name: string; readonly value: number | string }>;
+  readonly name: string;
+  readonly origin: CompilerSourceOrigin;
 }
 
 export interface IrClassField {
-  initializer?: IrExpression | undefined;
-  name: string;
-  optional: boolean;
-  readonly: boolean;
-  static: boolean;
-  type: IrType;
-  visibility: 'private' | 'protected' | 'public';
+  readonly initializer?: IrExpression | undefined;
+  readonly name: string;
+  readonly optional: boolean;
+  readonly readonly: boolean;
+  readonly static: boolean;
+  readonly type: IrType;
+  readonly visibility: 'private' | 'protected' | 'public';
 }
 
 export interface IrClassMethod extends IrFunctionSignature {
-  async: boolean;
-  body: IrStatement[];
-  name: string;
-  static: boolean;
-  visibility: 'private' | 'protected' | 'public';
+  readonly async: boolean;
+  readonly body: readonly IrStatement[];
+  readonly name: string;
+  readonly static: boolean;
+  readonly visibility: 'private' | 'protected' | 'public';
 }
 
 export interface IrClassDeclaration {
-  abstract: boolean;
-  constructorBody: IrStatement[];
-  constructorParameters: IrParameter[];
-  exported: boolean;
-  extends?: IrType | undefined;
-  fields: IrClassField[];
-  implements: IrType[];
-  kind: 'class';
-  methods: IrClassMethod[];
-  name: string;
-  origin: SourceOrigin;
-  typeParameters: IrTypeParameter[];
+  readonly abstract: boolean;
+  readonly constructorBody: readonly IrStatement[];
+  readonly constructorParameters: readonly IrParameter[];
+  readonly exported: boolean;
+  readonly extends?: IrType | undefined;
+  readonly fields: readonly IrClassField[];
+  readonly implements: readonly IrType[];
+  readonly kind: 'class';
+  readonly methods: readonly IrClassMethod[];
+  readonly name: string;
+  readonly origin: CompilerSourceOrigin;
+  readonly typeParameters: readonly IrTypeParameter[];
 }
 
 export type IrDeclaration =
@@ -211,41 +230,25 @@ export type IrDeclaration =
   | IrVariableDeclaration;
 
 export interface IrImportBinding {
-  imported: string;
-  local: string;
-  typeOnly: boolean;
+  readonly imported: string;
+  readonly local: string;
+  readonly typeOnly: boolean;
 }
 
 export interface IrImport {
-  bindings: IrImportBinding[];
-  specifier: string;
+  readonly bindings: readonly IrImportBinding[];
+  readonly specifier: string;
 }
 
 export type IrExport =
-  | { kind: 'all'; specifier: string; typeOnly: boolean }
-  | { exported: string; imported: string; kind: 'reexport'; specifier: string; typeOnly: boolean }
-  | { exported: string; kind: 'local'; local: string; typeOnly: boolean }
-  | { exported: string; kind: 'namespace'; specifier: string; typeOnly: boolean }
-  | { expression: IrExpression; kind: 'default' };
+  | Readonly<{ kind: 'all'; specifier: string; typeOnly: boolean }>
+  | Readonly<{ exported: string; imported: string; kind: 'reexport'; specifier: string; typeOnly: boolean }>
+  | Readonly<{ exported: string; kind: 'local'; local: string; typeOnly: boolean }>
+  | Readonly<{ exported: string; kind: 'namespace'; specifier: string; typeOnly: boolean }>
+  | Readonly<{ expression: IrExpression; kind: 'default' }>;
 
-export interface IrModule {
-  declarations: IrDeclaration[];
-  exports: IrExport[];
-  imports: IrImport[];
-  name: string;
-  packageName: string;
-  source: string;
-}
-
-export interface CompilerDiagnostic {
-  code: string;
-  column: number;
-  line: number;
-  message: string;
-  source: string;
-}
-
-export interface LoweringResult {
-  diagnostics: CompilerDiagnostic[];
-  module: IrModule;
+export interface IrModule extends CompilerModuleIdentity {
+  readonly declarations: readonly IrDeclaration[];
+  readonly exports: readonly IrExport[];
+  readonly imports: readonly IrImport[];
 }

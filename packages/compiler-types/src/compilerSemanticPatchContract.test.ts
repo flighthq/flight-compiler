@@ -1,5 +1,6 @@
 import type { IrStatement, IrType } from './compilerIntermediateRepresentation.js';
 import type { SemanticPatch } from './compilerSemanticPatchContract.js';
+import type { CompilerExportIdentity } from './compilerSourceIdentity.js';
 
 describe('compiler semantic patch contracts', () => {
   it('represent every patch operation with shared target, expectation, reason, and scope identity', () => {
@@ -24,5 +25,6 @@ describe('compiler semantic patch contracts', () => {
 
     expect(patches.map((patch) => patch.operation)).toEqual(['remove', 'rename', 'replaceBody', 'replaceType']);
     expect(patches.every((patch) => patch.target === common.target)).toBe(true);
+    expectTypeOf<SemanticPatch['target']>().toEqualTypeOf<CompilerExportIdentity>();
   });
 });

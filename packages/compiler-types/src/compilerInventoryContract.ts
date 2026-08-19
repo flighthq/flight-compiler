@@ -1,83 +1,83 @@
 export type ExportKind = 'class' | 'default' | 'enum' | 'function' | 'interface' | 'namespace' | 'type' | 'variable';
 
 export interface RuntimeBindingRecord {
-  fingerprint: string;
-  kind: ExportKind;
-  source: string;
+  readonly fingerprint: string;
+  readonly kind: ExportKind;
+  readonly source: string;
 }
 
 export interface ExportRecord {
-  fingerprint: string;
-  kind: ExportKind;
-  name: string;
-  runtime: boolean;
-  runtimeBinding?: RuntimeBindingRecord | undefined;
-  source: string;
+  readonly fingerprint: string;
+  readonly kind: ExportKind;
+  readonly name: string;
+  readonly runtime: boolean;
+  readonly runtimeBinding?: RuntimeBindingRecord | undefined;
+  readonly source: string;
 }
 
 export interface ExportConflict {
-  name: string;
-  sources: string[];
+  readonly name: string;
+  readonly sources: readonly string[];
 }
 
 export interface PackageExportCondition {
-  condition: string;
-  source: string;
-  target: string;
+  readonly condition: string;
+  readonly source: string;
+  readonly target: string;
 }
 
 export interface PackageExportLane {
-  conditions: PackageExportCondition[];
-  entry: string;
-  exportConflicts: ExportConflict[];
-  exports: ExportRecord[];
-  source: string;
-  specifier: string;
+  readonly conditions: readonly PackageExportCondition[];
+  readonly entry: string;
+  readonly exportConflicts: readonly ExportConflict[];
+  readonly exports: readonly ExportRecord[];
+  readonly source: string;
+  readonly specifier: string;
 }
 
 export interface SdkExposure {
-  sdkLane: string;
-  target: string;
+  readonly sdkLane: string;
+  readonly target: string;
 }
 
 export interface PackageInventory {
-  dependencies: string[];
-  directory: string;
-  exportLanes: PackageExportLane[];
-  name: string;
-  sdkExposures: SdkExposure[];
-  sdkIncluded: boolean;
-  sourceFiles: number;
-  testFiles: number;
-  version: string;
+  readonly dependencies: readonly string[];
+  readonly directory: string;
+  readonly exportLanes: readonly PackageExportLane[];
+  readonly name: string;
+  readonly sdkExposures: readonly SdkExposure[];
+  readonly sdkIncluded: boolean;
+  readonly sourceFiles: number;
+  readonly testFiles: number;
+  readonly version: string;
 }
 
 export interface UpstreamInventory {
-  packages: PackageInventory[];
-  schema: 'flight-compiler-inventory/1';
-  summary: {
-    exportConflicts: number;
-    exportLanes: number;
-    exports: number;
-    packages: number;
-    rootExports: number;
-    sourceFiles: number;
-    testFiles: number;
+  readonly packages: readonly PackageInventory[];
+  readonly schema: 'flight-compiler-inventory/1';
+  readonly summary: {
+    readonly exportConflicts: number;
+    readonly exportLanes: number;
+    readonly exports: number;
+    readonly packages: number;
+    readonly rootExports: number;
+    readonly sourceFiles: number;
+    readonly testFiles: number;
   };
-  upstreamCommit: string;
+  readonly upstreamCommit: string;
 }
 
 export interface AnalyzeFlightWorkspaceOptions {
-  packageScope?: string | undefined;
-  packagesDirectory?: string | undefined;
-  sdkPackageName?: string | undefined;
-  tsconfigPath?: string | undefined;
-  upstreamDirectory: string;
+  readonly packageScope?: string | undefined;
+  readonly packagesDirectory?: string | undefined;
+  readonly sdkPackageName?: string | undefined;
+  readonly tsconfigPath?: string | undefined;
+  readonly upstreamDirectory: string;
 }
 
 export interface PackageExportDescriptor {
-  conditions: PackageExportCondition[];
-  entry: string;
-  source: string;
-  specifier: string;
+  readonly conditions: readonly PackageExportCondition[];
+  readonly entry: string;
+  readonly source: string;
+  readonly specifier: string;
 }

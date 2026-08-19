@@ -26,6 +26,6 @@ Types and interfaces remain globally unique concept nouns in `compiler-types`; t
 
 ## Enforcement
 
-`npm run packages:check` rejects duplicate non-routine TypeScript basenames, verb-shaped or generic source names, duplicate exported declarations, exported runtime constants, and exported functions outside the approved verb-first grammar. `npm run exports:check` requires a matching concept test file and an exact `describe('<function>')` block for every exported function. The latter is a structural naming gate, not proof that an assertion exercises the function. The AST helpers and naming predicates have focused unit coverage in `scripts/packageHealthAst.test.ts`.
+`npm run packages:check` rejects duplicate non-routine TypeScript basenames, verb-shaped or generic source names, duplicate exported declarations, exported runtime constants, and exported functions outside the approved verb-first grammar. Outside the type-only `compiler-types` workspace, `npm run exports:check` requires a matching concept test file and an exact `describe('<function>')` block for every exported function. The latter is a structural naming gate, not proof that an assertion exercises the function. The AST helpers and naming predicates have focused unit coverage in `scripts/packageHealthAst.test.ts`.
 
 The gate proves structural form, not vocabulary quality. Review still decides whether a type segment is complete, whether a modifier carries real meaning, and whether a proposed concept deserves its own file.

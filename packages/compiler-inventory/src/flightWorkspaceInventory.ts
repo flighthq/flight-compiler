@@ -109,8 +109,8 @@ export function analyzeFlightWorkspace(options: Readonly<AnalyzeFlightWorkspaceO
     };
   });
 
-  packageInventories.sort((left, right) => left.name.localeCompare(right.name));
-  const inventoryByName = new Map(packageInventories.map((item) => [item.name, item]));
+  const sortedPackageInventories = [...packageInventories].sort((left, right) => left.name.localeCompare(right.name));
+  const inventoryByName = new Map(sortedPackageInventories.map((item) => [item.name, item]));
   const sdkExposures = readSdkExposures(
     context.packageByName.get(sdkPackageName),
     inventoryByName,
@@ -118,22 +118,28 @@ export function analyzeFlightWorkspace(options: Readonly<AnalyzeFlightWorkspaceO
     exportDescriptors,
     packageScope,
   );
-  for (const item of packageInventories) {
-    item.sdkExposures = sdkExposures.get(item.name) ?? [];
-    item.sdkIncluded = item.sdkExposures.length > 0;
-  }
+  const completedPackageInventories = sortedPackageInventories.map((item): PackageInventory => {
+    const packageSdkExposures = sdkExposures.get(item.name) ?? [];
+    return {
+      ...item,
+      sdkExposures: packageSdkExposures,
+      sdkIncluded: packageSdkExposures.length > 0,
+    };
+  });
 
   return {
-    packages: packageInventories,
+    packages: completedPackageInventories,
     schema: 'flight-compiler-inventory/1',
     summary: {
-      exportConflicts: sum(packageInventories, (item) => sum(item.exportLanes, (lane) => lane.exportConflicts.length)),
-      exportLanes: sum(packageInventories, (item) => item.exportLanes.length),
-      exports: sum(packageInventories, (item) => sum(item.exportLanes, (lane) => lane.exports.length)),
-      packages: packageInventories.length,
-      rootExports: sum(packageInventories, (item) => getPackageInventoryRootExportLane(item).exports.length),
-      sourceFiles: sum(packageInventories, (item) => item.sourceFiles),
-      testFiles: sum(packageInventories, (item) => item.testFiles),
+      exportConflicts: sum(completedPackageInventories, (item) =>
+        sum(item.exportLanes, (lane) => lane.exportConflicts.length),
+      ),
+      exportLanes: sum(completedPackageInventories, (item) => item.exportLanes.length),
+      exports: sum(completedPackageInventories, (item) => sum(item.exportLanes, (lane) => lane.exports.length)),
+      packages: completedPackageInventories.length,
+      rootExports: sum(completedPackageInventories, (item) => getPackageInventoryRootExportLane(item).exports.length),
+      sourceFiles: sum(completedPackageInventories, (item) => item.sourceFiles),
+      testFiles: sum(completedPackageInventories, (item) => item.testFiles),
     },
     upstreamCommit: readGitCommit(upstreamDirectory),
   };

@@ -52,7 +52,7 @@ A bedrock package is mature only when all of the following are true:
 
 Coverage percentage alone does not establish maturity. A one-line primitive can have complete coverage and a weak contract; a type-only contract can have no runtime statements and still require extensive compile-time design scrutiny.
 
-The repository also enforces a structural floor: each non-barrel package source has an exactly named colocated test, and each exported function has an exact `describe('<function>')` suite. That makes missing subjects visible. The assertions inside those suites must still satisfy the maturity standard above.
+The repository also enforces a structural floor for runtime packages: each non-barrel source has an exactly named colocated test, and each exported function has an exact `describe('<function>')` suite. That makes missing runtime subjects visible. `compiler-types` is exempt because typecheck, useful assignability tests, and contract review—not empty runtime suites—are its appropriate evidence. Assertions inside required runtime suites must still satisfy the maturity standard above.
 
 ## Audit
 
@@ -66,17 +66,18 @@ Strengths:
 - It has no implementation-package dependency.
 - Contracts are plain data, discriminated unions, and function records rather than classes.
 - Inventory, IR, patches, backends, and reports have explicit schema discriminants where serialized interchange already exists.
-- Each contract concept has its own matching compile-time composition test rather than one catch-all contract fixture.
+- Representative compile-time composition tests exist for useful contract relationships without imposing one runtime test per type-only source.
+- Source, module, export, and source-origin identities share one readonly vocabulary rather than repeating structural fields.
+- Public compiler results and nested collections are readonly; implementations build mutable local state and return immutable contracts.
 
 Open foundation work:
 
 - The neutral IR is an initial coverage-driven model, not yet a reviewed complete vocabulary.
 - Several operator fields remain unconstrained strings and therefore do not yet express the actual supported language.
-- Collection mutability is not consistently a deliberate part of the public contract.
 - There is no versioned serialization/parser boundary for persisted IR; adding one prematurely would freeze the provisional model.
 - Contract tests prove representative composition but do not yet exhaust every discriminated family.
 
-Decision: do not declare the IR stable or publish a serialized IR format. Review one contract family at a time in dependency order, starting with source identity, diagnostics/failures, module identity, emitted files, and patch identity before expression breadth.
+Decision: do not declare the IR stable or publish a serialized IR format. Source, module, export, source-origin, and semantic-patch target identity are now locked as readonly structural contracts. Continue one family at a time with diagnostics/failures and emitted files before reviewing expression breadth.
 
 ### `compiler-provenance`
 
@@ -120,7 +121,7 @@ Each workspace passes its own strict typecheck and Vitest target. The package bo
 
 | Package | Isolation conclusion | Current robustness boundary |
 | --- | --- | --- |
-| `compiler-types` | Keep independent as the dependency-free vocabulary floor. | One test per contract concept; IR completeness and deliberate collection mutability remain open. |
+| `compiler-types` | Keep independent as the dependency-free vocabulary floor. | Strict typecheck and focused composition tests cover useful relationships; identity and readonly collection boundaries are explicit, while IR completeness remains open. |
 | `compiler-provenance` | Keep independent as one narrow identity primitive. | Equivalence, counterexample, empty, Unicode, path, line-ending, raw-text, and TypeScript-version behavior are locked. |
 | `compiler-patch` | Keep independent because patch identity and auditing are a separate lifecycle. | All operations and failure codes, deterministic ordering, backend skipping, and caller-input immutability are exercised. |
 | `compiler-emission` | Keep independent as the portable emitted-file and backend-failure seam. | Host-path rejection, content normalization, indentation boundaries, and tagged failure guards are exercised. |
