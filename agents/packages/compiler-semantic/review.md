@@ -1,0 +1,57 @@
+---
+package: '@flighthq/compiler-semantic'
+status: early
+score: 38
+updated: 2026-08-20
+ingested:
+  - source
+  - agents/compiler-migration-roadmap.md
+  - golden/
+---
+
+# compiler-semantic — Review
+
+TypeScript-to-neutral lowering: ~3,000 lines across the lowering pass, static-fact derivation and the barrel. It is the widest domain in the repository — the whole of TypeScript is its input — and the package that most determines how much of the Flight SDK can actually be ported.
+
+## Verdict
+
+**early — 38/100.** What exists is built the right way: the TypeScript compiler API rather than pattern matching, binding provenance resolved through a checker, closed operator vocabularies, and structured diagnostics for everything it will not lower. The score is low because the domain is enormous and the covered fraction is small — the roadmap says 20–25% and the refusal list bears that out. Destructuring, namespaces, overloads, parameter properties, generators, decorators and most of the type system are all unrepresented. That is the honest state of a slice deliberately built narrow-and-correct rather than wide-and-approximate, and the refusals are the asset here, not the embarrassment.
+
+## What a fully expressed TypeScript-lowering domain looks like
+
+- **Total syntactic coverage** of the language subset the SDK actually uses, with everything else refused by name rather than mis-lowered.
+- **Type-directed lowering.** Many decisions — what `+` means, whether `x` is nullable, whether a call is a method or a free function — need the checker, not the syntax tree. A reference version resolves operand domains from types and lowers accordingly.
+- **Complete binding provenance**: every identifier resolved to a declaration with a stable id, scope and kind, so a target can rename freely without breaking references. Largely present.
+- **Semantic facts alongside syntax**: truthiness, numeric domain, mutability, aliasing, receiver identity, purity — the things a target needs to choose a representation. Present in first form.
+- **Narrowing and control-flow facts.** TypeScript's narrowing is load-bearing in idiomatic code; a lowerer that ignores it produces code whose declared types and actual values disagree.
+- **Diagnostics that locate and explain**: file, line, column, the construct, and what would have to exist to support it. Present.
+- **Overload and declaration-merging resolution** into a single lowered form.
+- **Deterministic, caller-non-mutating operation over a shared program.** Present.
+- **A coverage report**: which upstream declarations lowered, which refused, and by which rule — so a port can measure its own readiness.
+
+## Present capabilities
+
+- **Compiler-API parsing throughout.** No regular-expression syntax inference anywhere; every decision reads the parsed tree, and `.tsx` is parsed as TSX.
+- **Binding provenance through a checker.** Module declarations, local exports including type-only aliases, imports, parameters, locals, loop and catch bindings, named function expressions, closures and class `this` all resolve to stable ids with kind and scope. The lowerer parses its own tree for this so caller-owned ASTs are never mutated — verified by a caller-immutability test.
+- **Stable ids survive renaming.** Both backends map binding ids to current spellings, so a semantic rename keeps internal references aligned rather than dangling. This is what makes the patch system safe to use on real code.
+- **Closed operator vocabularies with exhaustive token maps.** Adding an IR operator or dropping a TypeScript token mapping is a compile error, verified by planting drift in both directions. Before this, unmapped operators passed through verbatim into both target languages.
+- **Static facts as their own primitive.** `compilerIrStaticFacts.ts` derives receiver identity, typed-array classification, mixed-width writes, truthiness and logical domains rather than leaving each backend to infer them.
+- **Enum values resolved, not copied.** Auto-increment follows TypeScript's rule (a member after `A = 1` is 2, not its index), string and numeric members are separated, and a member after a string value without an initializer is refused. The naive index-based version was a real defect that produced colliding discriminants.
+- **Export syntax represented.** `IrModule.exports` carries re-export, export-all, namespace and default records, so a barrel is data rather than a silently skipped statement — an earlier version dropped them with no diagnostic at all.
+- **Structured refusal, uniformly.** Around thirty named diagnostics, each locating the construct and naming what is missing. The contract that unsupported syntax is never approximated is honoured.
+
+## Gaps
+
+Measured against the reference, in rough order of how much SDK surface each blocks:
+
+- **Destructuring, everywhere.** Parameters, variables and catch bindings all refuse. This is ordinary idiomatic TypeScript and appears throughout any real codebase.
+- **Function and method overloads.** Declaration overloads are collected but class method overloads and constructor overloads refuse outright. Overload sets are how the SDK expresses optional-argument APIs.
+- **Parameter properties.** `constructor(private readonly x: number)` refuses. It is the common TypeScript class idiom.
+- **Namespaces and `export =`.** Unrepresented in the IR at all.
+- **Most of the type system.** Conditional, mapped, template-literal, `infer`, variadic tuples and recursive aliases have no IR representation, so nothing can lower them.
+- **No narrowing model.** The nullability refusal in both backends exists precisely because narrowing is unmodelled: after `if (value === undefined) return fallback;`, the lowerer cannot tell the backends that `value` is now non-optional, so the honest move was to refuse. Every nullable-parameter function in the SDK is blocked behind this.
+- **No async or generator lowering.** Both are refused by both backends; the neutral model has no task or coroutine concept to lower them into.
+- **No decorators, no class static blocks, no accessors.** Getters and setters refuse as unsupported class members.
+- **Type-directed operator semantics are named but incomplete.** The roadmap's next iterations — declared-versus-flow operand domains, populated from checker evidence, then numeric arithmetic and narrowed storage — are the missing half of what makes `+` lowerable.
+- **No coverage report.** There is no way to point the lowerer at the SDK and ask what fraction of its declarations lower today. The counters that once purported to do this were removed for being ambiguous, correctly, but nothing replaced them — and this is the number the migration most needs.
+- **Single-file lowering only.** Each source lowers independently; cross-module semantic facts (is this exported type used as a value anywhere, is this function ever awaited) are not available to the lowerer.
