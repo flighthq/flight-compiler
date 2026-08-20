@@ -70,6 +70,7 @@ describe('package boundary AST analysis', () => {
   });
 
   it('recognizes verb-first API names with a complete PascalCase type segment', () => {
+    expect(isCompilerApiFunctionName('combineCompilerStaticFactAudits')).toBe(true);
     expect(isCompilerApiFunctionName('createHaxeCompilerBackend')).toBe(true);
     expect(isCompilerApiFunctionName('getPackageInventoryRootExportLane')).toBe(true);
     expect(isCompilerApiFunctionName('packageRootExportLane')).toBe(false);

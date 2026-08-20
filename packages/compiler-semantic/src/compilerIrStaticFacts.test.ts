@@ -1,6 +1,7 @@
 import ts from 'typescript';
 
-import { analyzeIrModulesStaticFacts } from './compilerIrStaticFacts.js';
+import type { CompilerStaticFactAudit } from '../../compiler-types/src/index.js';
+import { analyzeIrModulesStaticFacts, combineCompilerStaticFactAudits } from './compilerIrStaticFacts.js';
 import { lowerTypeScriptSource } from './typeScriptSemanticLowering.js';
 
 describe('analyzeIrModulesStaticFacts', () => {
@@ -264,3 +265,87 @@ describe('analyzeIrModulesStaticFacts', () => {
     ]);
   });
 });
+
+describe('combineCompilerStaticFactAudits', () => {
+  it('combines every fact identity deterministically without changing its inputs', () => {
+    const first = createAudit(1, 1);
+    const second = createAudit(2, 2, true);
+    const snapshot = structuredClone([first, second]);
+    const combined = combineCompilerStaticFactAudits([first, second]);
+
+    expect(combined).toEqual({
+      facts: [
+        { access: 'write', count: 3, kind: 'indexedAccess', receivers: ['uint16Array', 'uint32Array'] },
+        {
+          count: 3,
+          kind: 'logicalExpression',
+          left: 'boolean',
+          operator: '&&',
+          result: 'boolean',
+          right: 'boolean',
+        },
+        {
+          count: 3,
+          kind: 'mixedWidthIndexedWrite',
+          receivers: ['uint16Array', 'uint32Array'],
+          widths: [16, 32],
+        },
+        { count: 3, domain: 'number', kind: 'numericRelation' },
+        { context: 'controlFlowCondition', count: 3, domain: 'boolean', kind: 'truthiness' },
+        { count: 3, kind: 'typedArraySet', receivers: ['uint16Array', 'uint32Array'] },
+      ],
+      modules: 3,
+      schema: 'flight-compiler-static-facts/4',
+    });
+    expect([first, second]).toEqual(snapshot);
+    expect(combined.facts[0]).not.toBe(first.facts[0]);
+    if (combined.facts[0]?.kind !== 'indexedAccess' || first.facts[0]?.kind !== 'indexedAccess') {
+      throw new Error('Expected indexed-access facts');
+    }
+    expect(combined.facts[0].receivers).not.toBe(first.facts[0].receivers);
+    expect(combineCompilerStaticFactAudits([second, first])).toEqual(combineCompilerStaticFactAudits([first, second]));
+  });
+
+  it('has an empty identity and composes associatively', () => {
+    const first = createAudit(1, 1);
+    const second = createAudit(2, 2);
+    const third = createAudit(3, 3);
+
+    expect(combineCompilerStaticFactAudits([])).toEqual({
+      facts: [],
+      modules: 0,
+      schema: 'flight-compiler-static-facts/4',
+    });
+    expect(combineCompilerStaticFactAudits([combineCompilerStaticFactAudits([first, second]), third])).toEqual(
+      combineCompilerStaticFactAudits([first, combineCompilerStaticFactAudits([second, third])]),
+    );
+  });
+});
+
+function createAudit(count: number, modules: number, reverse = false): CompilerStaticFactAudit {
+  const facts: CompilerStaticFactAudit['facts'] = [
+    { access: 'write', count, kind: 'indexedAccess', receivers: ['uint16Array', 'uint32Array'] },
+    {
+      count,
+      kind: 'logicalExpression',
+      left: 'boolean',
+      operator: '&&',
+      result: 'boolean',
+      right: 'boolean',
+    },
+    {
+      count,
+      kind: 'mixedWidthIndexedWrite',
+      receivers: ['uint16Array', 'uint32Array'],
+      widths: [16, 32],
+    },
+    { count, domain: 'number', kind: 'numericRelation' },
+    { context: 'controlFlowCondition', count, domain: 'boolean', kind: 'truthiness' },
+    { count, kind: 'typedArraySet', receivers: ['uint16Array', 'uint32Array'] },
+  ];
+  return {
+    facts: reverse ? [...facts].reverse() : facts,
+    modules,
+    schema: 'flight-compiler-static-facts/4',
+  };
+}

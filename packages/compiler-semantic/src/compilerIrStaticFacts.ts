@@ -57,13 +57,19 @@ export function analyzeIrModulesStaticFacts(modules: readonly Readonly<IrModule>
       if (item.kind === 'default') analyzeExpression(item.expression, analysis, 'read');
     }
   }
-  return {
-    facts: [...analysis.counts.values()]
-      .map(({ count, fact }): CompilerStaticFactCount => ({ ...fact, count }) as CompilerStaticFactCount)
-      .sort(compareStaticFacts),
-    modules: modules.length,
-    schema: 'flight-compiler-static-facts/4',
-  };
+  return createStaticFactAudit(analysis, modules.length);
+}
+
+export function combineCompilerStaticFactAudits(
+  audits: readonly Readonly<CompilerStaticFactAudit>[],
+): CompilerStaticFactAudit {
+  const analysis: StaticFactAnalysis = { counts: new Map() };
+  let modules = 0;
+  for (const audit of audits) {
+    modules += audit.modules;
+    for (const fact of audit.facts) addStaticFact(getStaticFactWithoutCount(fact), analysis, fact.count);
+  }
+  return createStaticFactAudit(analysis, modules);
 }
 
 function addIndexedAccessFact(
@@ -108,10 +114,10 @@ function addMixedWidthIndexedWriteFact(
   );
 }
 
-function addStaticFact(fact: StaticFact, analysis: StaticFactAnalysis): void {
+function addStaticFact(fact: StaticFact, analysis: StaticFactAnalysis, count = 1): void {
   const identity = staticFactIdentity(fact);
   const existing = analysis.counts.get(identity);
-  analysis.counts.set(identity, { count: (existing?.count ?? 0) + 1, fact });
+  analysis.counts.set(identity, { count: (existing?.count ?? 0) + count, fact });
 }
 
 function addTruthinessFact(
@@ -342,7 +348,19 @@ function analyzeVariable(variable: Readonly<IrVariable>, analysis: StaticFactAna
 }
 
 function compareStaticFacts(left: CompilerStaticFactCount, right: CompilerStaticFactCount): number {
-  return staticFactIdentity(left).localeCompare(staticFactIdentity(right));
+  const leftIdentity = staticFactIdentity(left);
+  const rightIdentity = staticFactIdentity(right);
+  return leftIdentity === rightIdentity ? 0 : leftIdentity < rightIdentity ? -1 : 1;
+}
+
+function createStaticFactAudit(analysis: StaticFactAnalysis, modules: number): CompilerStaticFactAudit {
+  return {
+    facts: [...analysis.counts.values()]
+      .map(({ count, fact }): CompilerStaticFactCount => ({ ...fact, count }) as CompilerStaticFactCount)
+      .sort(compareStaticFacts),
+    modules,
+    schema: 'flight-compiler-static-facts/4',
+  };
 }
 
 function getExpressionValueDomain(expression: Readonly<IrExpression>): IrOperatorValueDomain {
@@ -386,6 +404,33 @@ function getExpressionValueDomain(expression: Readonly<IrExpression>): IrOperato
   }
 }
 
+function getStaticFactWithoutCount(fact: CompilerStaticFactCount): StaticFact {
+  switch (fact.kind) {
+    case 'indexedAccess':
+      return { access: fact.access, kind: fact.kind, receivers: [...fact.receivers] as typeof fact.receivers };
+    case 'logicalExpression':
+      return {
+        kind: fact.kind,
+        left: fact.left,
+        operator: fact.operator,
+        result: fact.result,
+        right: fact.right,
+      };
+    case 'mixedWidthIndexedWrite':
+      return {
+        kind: fact.kind,
+        receivers: [...fact.receivers] as typeof fact.receivers,
+        widths: [...fact.widths] as typeof fact.widths,
+      };
+    case 'numericRelation':
+      return { domain: fact.domain, kind: fact.kind };
+    case 'truthiness':
+      return { context: fact.context, domain: fact.domain, kind: fact.kind };
+    case 'typedArraySet':
+      return { kind: fact.kind, receivers: [...fact.receivers] as typeof fact.receivers };
+  }
+}
+
 function isVariableList(value: IrExpression | readonly IrVariable[] | undefined): value is readonly IrVariable[] {
   return Array.isArray(value);
 }
@@ -410,9 +455,9 @@ function staticFactIdentity(fact: StaticFact): string {
     case 'mixedWidthIndexedWrite':
       return JSON.stringify([fact.kind, fact.receivers, fact.widths]);
     case 'numericRelation':
-      return `${fact.kind}\0${fact.domain}`;
+      return JSON.stringify([fact.kind, fact.domain]);
     case 'truthiness':
-      return `${fact.kind}\0${fact.context}\0${fact.domain}`;
+      return JSON.stringify([fact.kind, fact.context, fact.domain]);
     case 'typedArraySet':
       return JSON.stringify([fact.kind, fact.receivers]);
   }
