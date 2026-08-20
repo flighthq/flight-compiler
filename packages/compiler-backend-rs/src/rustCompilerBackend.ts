@@ -3,6 +3,8 @@ import path from 'node:path';
 import { createBackendEmissionFailure, indentSourceLines } from '../../compiler-emission/src/index.js';
 import type { CompilerBackend, EmittedFile, RustCompilerBackendOptions } from '../../compiler-types/src/index.js';
 import type {
+  IrAssignmentOperator,
+  IrBinaryOperator,
   IrClassDeclaration,
   IrDeclaration,
   IrEnumDeclaration,
@@ -13,6 +15,8 @@ import type {
   IrModule,
   IrObjectTypeProperty,
   IrParameter,
+  IrPostfixUnaryOperator,
+  IrPrefixUnaryOperator,
   IrStatement,
   IrType,
   IrTypeAliasDeclaration,
@@ -32,6 +36,8 @@ interface EmitContext {
   module: Readonly<IrModule>;
   options: Readonly<RustCompilerBackendOptions>;
 }
+
+type OperatorEmissionDecision = Readonly<{ emitted: string }> | Readonly<{ refusal: string }>;
 
 export function createRustCompilerBackend(): CompilerBackend<RustCompilerBackendOptions> {
   return {
@@ -170,11 +176,11 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
     case 'array':
       return `vec![${expression.elements.map((element) => (element ? emitExpression(element, context) : 'Default::default()')).join(', ')}]`;
     case 'assignment':
-      return `${emitExpression(expression.left, context)} ${mapOperator(expression.operator, true, context)} ${emitExpression(expression.right, context)}`;
+      return `${emitExpression(expression.left, context)} ${emitAssignmentOperatorRust(expression.operator, context)} ${emitExpression(expression.right, context)}`;
     case 'await':
       emissionError(context, 'await requires Flight task lowering');
     case 'binary':
-      return `(${emitExpression(expression.left, context)} ${mapOperator(expression.operator, false, context)} ${emitExpression(expression.right, context)})`;
+      return `(${emitExpression(expression.left, context)} ${emitBinaryOperatorRust(expression.operator, context)} ${emitExpression(expression.right, context)})`;
     case 'call':
       if (expression.optional) emissionError(context, 'optional calls require Option-aware lowering');
       return `${emitExpression(expression.callee, context)}(${expression.arguments.map((argument) => emitExpression(argument, context)).join(', ')})`;
@@ -231,19 +237,10 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
     }
     case 'unary': {
       const operand = emitExpression(expression.operand, context);
-      if (expression.operator === 'typeof' || expression.operator === 'delete' || expression.operator === 'void') {
-        emissionError(context, `${expression.operator} requires Rust semantic lowering`);
-      }
-      if (expression.operator === '++' || expression.operator === '--') {
-        emissionError(
-          context,
-          `${expression.postfix ? 'postfix' : 'prefix'} ${expression.operator} requires value-preserving Rust lowering`,
-        );
-      }
-      if (expression.postfix || (expression.operator !== '!' && expression.operator !== '-')) {
-        emissionError(context, `operator ${expression.operator} requires Rust semantic lowering`);
-      }
-      return `${expression.operator}${operand}`;
+      const operator = expression.postfix
+        ? emitPostfixUnaryOperatorRust(expression.operator, context)
+        : emitPrefixUnaryOperatorRust(expression.operator, context);
+      return expression.postfix ? `${operand}${operator}` : `${operator}${operand}`;
     }
   }
 }
@@ -511,12 +508,26 @@ function emissionError(context: EmitContext, message: string): never {
   throw createBackendEmissionFailure('rust', context.module, message);
 }
 
-function mapOperator(operator: string, assignment: boolean, context: EmitContext): string {
-  const allowed = assignment ? rustAssignmentOperators : rustBinaryOperators;
-  if (!allowed.has(operator)) emissionError(context, `operator ${operator} requires Rust semantic lowering`);
-  if (operator === '===' || operator === '==') return '==';
-  if (operator === '!==' || operator === '!=') return '!=';
-  return operator;
+function emitAssignmentOperatorRust(operator: IrAssignmentOperator, context: EmitContext): string {
+  const emitted = rustAssignmentOperatorEmission[operator];
+  if (!emitted) emissionError(context, `operator ${operator} requires Rust semantic lowering`);
+  return emitted;
+}
+
+function emitBinaryOperatorRust(operator: IrBinaryOperator, context: EmitContext): string {
+  const emitted = rustBinaryOperatorEmission[operator];
+  if (!emitted) emissionError(context, `operator ${operator} requires Rust semantic lowering`);
+  return emitted;
+}
+
+function emitPostfixUnaryOperatorRust(operator: IrPostfixUnaryOperator, context: EmitContext): string {
+  emissionError(context, rustPostfixUnaryOperatorRefusal[operator]);
+}
+
+function emitPrefixUnaryOperatorRust(operator: IrPrefixUnaryOperator, context: EmitContext): string {
+  const decision = rustPrefixUnaryOperatorDecision[operator];
+  if ('refusal' in decision) emissionError(context, decision.refusal);
+  return decision.emitted;
 }
 
 function isNullableType(type: Readonly<IrType>): boolean {
@@ -614,27 +625,67 @@ function snakeCase(value: string): string {
     .toLowerCase();
 }
 
-const rustAssignmentOperators = new Set(['=', '+=', '-=', '*=', '/=', '%=', '&=', '|=', '^=', '<<=', '>>=']);
+const rustAssignmentOperatorEmission = {
+  '%=': '%=',
+  '&&=': undefined,
+  '&=': '&=',
+  '**=': undefined,
+  '*=': '*=',
+  '+=': '+=',
+  '-=': '-=',
+  '/=': '/=',
+  '<<=': '<<=',
+  '=': '=',
+  '>>=': '>>=',
+  '>>>=': undefined,
+  '??=': undefined,
+  '^=': '^=',
+  '|=': '|=',
+  '||=': undefined,
+} as const satisfies Readonly<Record<IrAssignmentOperator, string | undefined>>;
 
-const rustBinaryOperators = new Set([
-  '!==',
-  '!=',
-  '%',
-  '&',
-  '&&',
-  '*',
-  '+',
-  '-',
-  '/',
-  '<',
-  '<<',
-  '<=',
-  '===',
-  '==',
-  '>',
-  '>=',
-  '>>',
-  '^',
-  '|',
-  '||',
-]);
+const rustBinaryOperatorEmission = {
+  '%': '%',
+  '&': '&',
+  '&&': '&&',
+  '*': '*',
+  '**': undefined,
+  '+': '+',
+  ',': undefined,
+  '-': '-',
+  '/': '/',
+  '<': '<',
+  '<<': '<<',
+  '<=': '<=',
+  '!=': '!=',
+  '!==': '!=',
+  '==': '==',
+  '===': '==',
+  '>': '>',
+  '>=': '>=',
+  '>>': '>>',
+  '>>>': undefined,
+  '??': undefined,
+  '^': '^',
+  in: undefined,
+  instanceof: undefined,
+  '|': '|',
+  '||': '||',
+} as const satisfies Readonly<Record<IrBinaryOperator, string | undefined>>;
+
+const rustPostfixUnaryOperatorRefusal = {
+  '++': 'postfix ++ requires value-preserving Rust lowering',
+  '--': 'postfix -- requires value-preserving Rust lowering',
+} as const satisfies Readonly<Record<IrPostfixUnaryOperator, string>>;
+
+const rustPrefixUnaryOperatorDecision = {
+  '!': { emitted: '!' },
+  '+': { refusal: 'operator + requires Rust semantic lowering' },
+  '++': { refusal: 'prefix ++ requires value-preserving Rust lowering' },
+  '-': { emitted: '-' },
+  '--': { refusal: 'prefix -- requires value-preserving Rust lowering' },
+  delete: { refusal: 'delete requires Rust semantic lowering' },
+  typeof: { refusal: 'typeof requires Rust semantic lowering' },
+  void: { refusal: 'void requires Rust semantic lowering' },
+  '~': { refusal: 'operator ~ requires Rust semantic lowering' },
+} as const satisfies Readonly<Record<IrPrefixUnaryOperator, OperatorEmissionDecision>>;

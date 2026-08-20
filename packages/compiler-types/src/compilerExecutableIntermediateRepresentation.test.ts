@@ -18,4 +18,8 @@ describe('compiler executable intermediate representation contracts', () => {
     expectTypeOf(parameter).toMatchTypeOf<IrFunctionTypeParameter>();
     expectTypeOf<Extract<IrParameter, { rest: true }>['initializer']>().toEqualTypeOf<undefined>();
   });
+
+  it('couples postfix unary position to valid operators', () => {
+    expectTypeOf<Extract<IrExpression, { kind: 'unary'; postfix: true }>['operator']>().toEqualTypeOf<'++' | '--'>();
+  });
 });

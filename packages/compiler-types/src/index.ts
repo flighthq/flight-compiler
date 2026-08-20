@@ -4,6 +4,7 @@ export type * from './compilerDiagnosticContract.js';
 export type * from './compilerExecutableIntermediateRepresentation.js';
 export type * from './compilerInventoryContract.js';
 export type * from './compilerModuleIntermediateRepresentation.js';
+export type * from './compilerOperatorIntermediateRepresentation.js';
 export type * from './compilerOrchestrationContract.js';
 export type * from './compilerSemanticPatchContract.js';
 export type * from './compilerSourceIdentity.js';

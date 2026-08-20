@@ -70,17 +70,63 @@ describe('emitIrModuleRust', () => {
     expect(output.match(/return LIMIT;/gu)).toBeNull();
   });
 
-  it('rejects module facades, operators, and switch fallthrough without target lowering', () => {
+  it('emits supported assignment, binary, and prefix operators from closed target mappings', () => {
+    const result = lower(
+      'operators.ts',
+      'export function operators(left: number, right: number, disabled: boolean): boolean { let value: number = left; value += right; return value === right && !disabled; }',
+    );
+    const output = emitIrModuleRust(result.module).contents;
+
+    expect(output).toContain('value += right;');
+    expect(output).toContain('return ((value == right) && !disabled);');
+  });
+
+  it('rejects module facades and switch fallthrough without target lowering', () => {
     const barrel = lower('barrel.ts', "export * from './other.js';");
-    const operator = lower('operator.ts', 'export function power(a: number, b: number): number { return a ** b; }');
     const fallthrough = lower(
       'switch.ts',
       'export function choose(a: number): number { switch (a) { case 1: case 2: return 2; default: return 0; } }',
     );
 
     expect(() => emitIrModuleRust(barrel.module)).toThrow('module-facade lowering');
-    expect(() => emitIrModuleRust(operator.module)).toThrow('operator ** requires Rust semantic lowering');
     expect(() => emitIrModuleRust(fallthrough.module)).toThrow('fallthrough-aware Rust lowering');
+  });
+
+  it.each([
+    [
+      'assignment',
+      'export function power(a: number, b: number): number { a **= b; return a; }',
+      'operator **= requires Rust semantic lowering',
+    ],
+    [
+      'binary',
+      'export function power(a: number, b: number): number { return a ** b; }',
+      'operator ** requires Rust semantic lowering',
+    ],
+    [
+      'keyword unary',
+      'export function type(a: number): string { return typeof a; }',
+      'typeof requires Rust semantic lowering',
+    ],
+    [
+      'postfix unary',
+      'export function increment(a: number): number { return a++; }',
+      'postfix ++ requires value-preserving Rust lowering',
+    ],
+    [
+      'prefix update unary',
+      'export function increment(a: number): number { return ++a; }',
+      'prefix ++ requires value-preserving Rust lowering',
+    ],
+    [
+      'prefix unary',
+      'export function positive(a: number): number { return +a; }',
+      'operator + requires Rust semantic lowering',
+    ],
+  ])('refuses unsupported %s operators explicitly', (family, source, message) => {
+    const result = lower(`${family.replaceAll(' ', '-')}-operator.ts`, source);
+
+    expect(() => emitIrModuleRust(result.module)).toThrow(message);
   });
 
   it('rejects nullable parameters and undefined expressions without Option-aware lowering', () => {

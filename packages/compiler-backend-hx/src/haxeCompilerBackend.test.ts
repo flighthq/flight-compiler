@@ -51,17 +51,37 @@ describe('emitIrModuleHaxe', () => {
     expect(() => emitIrModuleHaxe(defaultImport.module)).toThrow('default imports require explicit Haxe mapping');
   });
 
-  it('rejects module facades, operators, and switch fallthrough without semantic lowering', () => {
+  it('rejects module facades and switch fallthrough without semantic lowering', () => {
     const barrel = lower('barrel.ts', "export * from './other.js';");
-    const operator = lower('operator.ts', 'export function power(a: number, b: number): number { return a ** b; }');
     const fallthrough = lower(
       'switch.ts',
       'export function choose(a: number): number { switch (a) { case 1: case 2: return 2; default: return 0; } }',
     );
 
     expect(() => emitIrModuleHaxe(barrel.module)).toThrow('module-facade lowering');
-    expect(() => emitIrModuleHaxe(operator.module)).toThrow('operator ** requires Haxe semantic lowering');
     expect(() => emitIrModuleHaxe(fallthrough.module)).toThrow('switch fallthrough');
+  });
+
+  it.each([
+    [
+      'assignment',
+      'export function power(a: number, b: number): number { a **= b; return a; }',
+      'operator **= requires Haxe semantic lowering',
+    ],
+    [
+      'binary',
+      'export function power(a: number, b: number): number { return a ** b; }',
+      'operator ** requires Haxe semantic lowering',
+    ],
+    [
+      'keyword unary',
+      'export function type(a: number): string { return typeof a; }',
+      'operator typeof requires Haxe semantic lowering',
+    ],
+  ])('refuses unsupported %s operators explicitly', (family, source, message) => {
+    const result = lower(`${family.replaceAll(' ', '-')}-operator.ts`, source);
+
+    expect(() => emitIrModuleHaxe(result.module)).toThrow(message);
   });
 
   it('rejects undefined expressions without Haxe nullability lowering', () => {
@@ -85,6 +105,26 @@ describe('emitIrModuleHaxe', () => {
 
     expect(output).toContain('abstract class Base');
     expect(output).toContain('final value:Float = 1;');
+  });
+
+  it('emits supported postfix operators from the closed target mapping', () => {
+    const result = lower(
+      'increment.ts',
+      'export function increment(value: number): number { let result: number = value; return result++; }',
+    );
+
+    expect(emitIrModuleHaxe(result.module).contents).toContain('return result++;');
+  });
+
+  it('emits supported assignment, binary, and prefix operators from closed target mappings', () => {
+    const result = lower(
+      'operators.ts',
+      'export function operators(left: number, right: number, disabled: boolean): boolean { let value: number = left; value += right; return value === right && !disabled; }',
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('value += right;');
+    expect(output).toContain('return ((value == right) && ! disabled);');
   });
 
   it('returns a tagged emission failure', () => {

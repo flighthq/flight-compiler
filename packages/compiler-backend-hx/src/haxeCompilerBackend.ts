@@ -3,6 +3,8 @@ import path from 'node:path';
 import { createBackendEmissionFailure, indentSourceLines } from '../../compiler-emission/src/index.js';
 import type { CompilerBackend, EmittedFile, HaxeCompilerBackendOptions } from '../../compiler-types/src/index.js';
 import type {
+  IrAssignmentOperator,
+  IrBinaryOperator,
   IrClassDeclaration,
   IrDeclaration,
   IrEnumDeclaration,
@@ -13,6 +15,8 @@ import type {
   IrModule,
   IrObjectTypeProperty,
   IrParameter,
+  IrPostfixUnaryOperator,
+  IrPrefixUnaryOperator,
   IrStatement,
   IrType,
   IrTypeAliasDeclaration,
@@ -149,11 +153,11 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
     case 'array':
       return `[${expression.elements.map((element) => (element ? emitExpression(element, context) : 'null')).join(', ')}]`;
     case 'assignment':
-      return `${emitExpression(expression.left, context)} ${mapOperator(expression.operator, true, context)} ${emitExpression(expression.right, context)}`;
+      return `${emitExpression(expression.left, context)} ${emitAssignmentOperatorHaxe(expression.operator, context)} ${emitExpression(expression.right, context)}`;
     case 'await':
       emissionError(context, 'await requires the Haxe async-lowering pass');
     case 'binary':
-      return `(${emitExpression(expression.left, context)} ${mapOperator(expression.operator, false, context)} ${emitExpression(expression.right, context)})`;
+      return `(${emitExpression(expression.left, context)} ${emitBinaryOperatorHaxe(expression.operator, context)} ${emitExpression(expression.right, context)})`;
     case 'call':
       if (expression.optional) emissionError(context, 'optional calls require null-safe call lowering');
       return `${emitExpression(expression.callee, context)}(${expression.arguments.map((argument) => emitExpression(argument, context)).join(', ')})`;
@@ -202,10 +206,10 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
         .join(' + ');
     case 'unary': {
       const operand = emitExpression(expression.operand, context);
-      if (!haxeUnaryOperators.has(expression.operator)) {
-        emissionError(context, `operator ${expression.operator} requires Haxe semantic lowering`);
-      }
-      return expression.postfix ? `${operand}${expression.operator}` : `${expression.operator} ${operand}`;
+      const operator = expression.postfix
+        ? emitPostfixUnaryOperatorHaxe(expression.operator)
+        : emitPrefixUnaryOperatorHaxe(expression.operator, context);
+      return expression.postfix ? `${operand}${operator}` : `${operator} ${operand}`;
     }
   }
 }
@@ -500,10 +504,26 @@ function haxeImplementationModule(sourcePath: string): string {
   return convertSourcePathToHaxeModuleName(sourcePath) ?? `_${pascalCase(filename)}`;
 }
 
-function mapOperator(operator: string, assignment: boolean, context: EmitContext): string {
-  const allowed = assignment ? haxeAssignmentOperators : haxeBinaryOperators;
-  if (!allowed.has(operator)) emissionError(context, `operator ${operator} requires Haxe semantic lowering`);
-  return { '===': '==', '!==': '!=' }[operator] ?? operator;
+function emitAssignmentOperatorHaxe(operator: IrAssignmentOperator, context: EmitContext): string {
+  const emitted = haxeAssignmentOperatorEmission[operator];
+  if (!emitted) emissionError(context, `operator ${operator} requires Haxe semantic lowering`);
+  return emitted;
+}
+
+function emitBinaryOperatorHaxe(operator: IrBinaryOperator, context: EmitContext): string {
+  const emitted = haxeBinaryOperatorEmission[operator];
+  if (!emitted) emissionError(context, `operator ${operator} requires Haxe semantic lowering`);
+  return emitted;
+}
+
+function emitPostfixUnaryOperatorHaxe(operator: IrPostfixUnaryOperator): string {
+  return haxePostfixUnaryOperatorEmission[operator];
+}
+
+function emitPrefixUnaryOperatorHaxe(operator: IrPrefixUnaryOperator, context: EmitContext): string {
+  const emitted = haxePrefixUnaryOperatorEmission[operator];
+  if (!emitted) emissionError(context, `operator ${operator} requires Haxe semantic lowering`);
+  return emitted;
 }
 
 function assertNoSwitchFallthrough(statement: Extract<IrStatement, { kind: 'switch' }>, context: EmitContext): void {
@@ -586,29 +606,67 @@ const haxeKeywords = new Set([
   'while',
 ]);
 
-const haxeAssignmentOperators = new Set(['=', '+=', '-=', '*=', '/=', '%=', '&=', '|=', '^=', '<<=', '>>=']);
+const haxeAssignmentOperatorEmission = {
+  '%=': '%=',
+  '&&=': undefined,
+  '&=': '&=',
+  '**=': undefined,
+  '*=': '*=',
+  '+=': '+=',
+  '-=': '-=',
+  '/=': '/=',
+  '<<=': '<<=',
+  '=': '=',
+  '>>=': '>>=',
+  '>>>=': undefined,
+  '??=': undefined,
+  '^=': '^=',
+  '|=': '|=',
+  '||=': undefined,
+} as const satisfies Readonly<Record<IrAssignmentOperator, string | undefined>>;
 
-const haxeBinaryOperators = new Set([
-  '!==',
-  '!=',
-  '%',
-  '&',
-  '&&',
-  '*',
-  '+',
-  '-',
-  '/',
-  '<',
-  '<<',
-  '<=',
-  '===',
-  '==',
-  '>',
-  '>=',
-  '>>',
-  '^',
-  '|',
-  '||',
-]);
+const haxeBinaryOperatorEmission = {
+  '%': '%',
+  '&': '&',
+  '&&': '&&',
+  '*': '*',
+  '**': undefined,
+  '+': '+',
+  ',': undefined,
+  '-': '-',
+  '/': '/',
+  '<': '<',
+  '<<': '<<',
+  '<=': '<=',
+  '!=': '!=',
+  '!==': '!=',
+  '==': '==',
+  '===': '==',
+  '>': '>',
+  '>=': '>=',
+  '>>': '>>',
+  '>>>': undefined,
+  '??': undefined,
+  '^': '^',
+  in: undefined,
+  instanceof: undefined,
+  '|': '|',
+  '||': '||',
+} as const satisfies Readonly<Record<IrBinaryOperator, string | undefined>>;
 
-const haxeUnaryOperators = new Set(['!', '+', '-', '++', '--', '~']);
+const haxePostfixUnaryOperatorEmission = {
+  '++': '++',
+  '--': '--',
+} as const satisfies Readonly<Record<IrPostfixUnaryOperator, string>>;
+
+const haxePrefixUnaryOperatorEmission = {
+  '!': '!',
+  '+': '+',
+  '++': '++',
+  '-': '-',
+  '--': '--',
+  delete: undefined,
+  typeof: undefined,
+  void: undefined,
+  '~': '~',
+} as const satisfies Readonly<Record<IrPrefixUnaryOperator, string | undefined>>;

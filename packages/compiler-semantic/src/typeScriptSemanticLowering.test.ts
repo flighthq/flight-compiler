@@ -139,6 +139,34 @@ describe('lowerTypeScriptSource', () => {
     });
   });
 
+  it('normalizes assignment, binary, prefix, postfix, and keyword operator families', () => {
+    const result = lower(
+      'operators.ts',
+      'export function operators(value: number, other: number): number { value **= other; value++; --value; typeof value; return (value ** other, value ?? other); }',
+    );
+    const [operators] = result.module.declarations;
+
+    expect(result.diagnostics).toEqual([]);
+    expect(operators).toMatchObject({
+      body: [
+        { expression: { kind: 'assignment', operator: '**=' }, kind: 'expression' },
+        { expression: { kind: 'unary', operator: '++', postfix: true }, kind: 'expression' },
+        { expression: { kind: 'unary', operator: '--', postfix: false }, kind: 'expression' },
+        { expression: { kind: 'unary', operator: 'typeof', postfix: false }, kind: 'expression' },
+        {
+          expression: {
+            kind: 'binary',
+            left: { kind: 'binary', operator: '**' },
+            operator: ',',
+            right: { kind: 'binary', operator: '??' },
+          },
+          kind: 'return',
+        },
+      ],
+      kind: 'function',
+    });
+  });
+
   it('diagnoses optional rest parameters instead of constructing invalid IR', () => {
     const parameter = lower('parameter.ts', 'export function invalid(...values?: number[]): void {}');
 

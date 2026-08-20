@@ -58,7 +58,7 @@ The repository also enforces a structural floor for runtime packages: each non-b
 
 ### `compiler-types`
 
-Status: foundational. Source identity and the declaration/type IR families have been reviewed; the complete IR is not mature.
+Status: foundational. Source identity, declaration/type IR, and expression operator families have been reviewed; the complete IR is not mature.
 
 Strengths:
 
@@ -76,16 +76,19 @@ Strengths:
 - Parameter and tuple-element cardinality excludes contradictory optional-rest states, and union/intersection contracts require at least two constituents.
 - Class constructors distinguish absence from an explicit empty constructor; class and interface heritage accepts named type references rather than arbitrary types.
 - Previously anonymous constructor, enum-member, function-type-parameter, tuple-element, visibility, type-alias, and type-reference contracts have stable domain names for focused testing and reuse.
+- Assignment, binary, prefix-unary, and postfix-unary operators have closed target-neutral vocabularies in a focused flat contract; postfix position cannot carry a prefix-only operator.
+- TypeScript token normalization and both target emission decisions are exhaustive over those vocabularies, so a TypeScript upgrade or IR addition fails typecheck until every producer and backend chooses emit or refuse.
+- A cross-target golden fixture pins supported compound assignment, strict equality normalization, logical composition, and unary emission; focused backend tests pin unsupported assignment, binary, keyword-unary, and postfix decisions.
 
 Open foundation work:
 
 - The neutral IR is an initial coverage-driven model, not yet a reviewed complete vocabulary.
-- Several operator fields remain unconstrained strings and therefore do not yet express the actual supported language.
+- Operator operand types and JavaScript coercion semantics are not represented yet; a closed token vocabulary prevents drift but does not make every syntactically supported target emission semantically sound.
 - Expression and statement binding identity/provenance has not been reviewed, so shadowing and target name-resolution requirements remain provisional.
 - There is no versioned serialization/parser boundary for persisted IR; adding one prematurely would freeze the provisional model.
 - Contract tests prove representative composition but do not yet exhaust every discriminated family.
 
-Decision: do not declare the IR stable or publish a serialized IR format. Source, module, export, source-location, source-origin, emitted-file, and semantic-patch target identity, together with diagnostic and bedrock failure contracts, are now locked as readonly structural contracts. Declaration and type families now have a reviewed structural floor. Continue with expression and statement families, beginning with closed operator sets and binding provenance.
+Decision: do not declare the IR stable or publish a serialized IR format. Source, module, export, source-location, source-origin, emitted-file, and semantic-patch target identity, together with diagnostic and bedrock failure contracts, are now locked as readonly structural contracts. Declaration, type, and expression-operator families now have a reviewed structural floor. Continue with expression and statement binding provenance before widening target emission.
 
 ### `compiler-provenance`
 
@@ -129,7 +132,7 @@ Each workspace passes its own strict typecheck and Vitest target. The package bo
 
 | Package | Isolation conclusion | Current robustness boundary |
 | --- | --- | --- |
-| `compiler-types` | Keep independent as the dependency-free vocabulary floor. | Strict typecheck and focused composition tests cover useful relationships; identity, declaration/type separation and cardinality, source location, diagnostics/failures, and readonly collection boundaries are explicit, while expression/statement completeness remains open. |
+| `compiler-types` | Keep independent as the dependency-free vocabulary floor. | Strict typecheck and focused composition tests cover useful relationships; identity, declaration/type separation and cardinality, closed operator vocabularies, source location, diagnostics/failures, and readonly collection boundaries are explicit, while expression/statement completeness remains open. |
 | `compiler-provenance` | Keep independent as one narrow identity primitive. | Equivalence, counterexample, empty, Unicode, path, line-ending, raw-text, and TypeScript-version behavior are locked. |
 | `compiler-patch` | Keep independent because patch identity and auditing are a separate lifecycle. | All operations and failure codes, deterministic ordering, backend skipping, and caller-input immutability are exercised. |
 | `compiler-emission` | Keep independent as the portable emitted-file and backend-failure seam. | Path/content normalization, host-path rejection, portable collision identity, indentation boundaries, and tagged failure guards are exercised. |
@@ -149,7 +152,7 @@ No new workspace follows from this review. A large file alone is not a package d
 3. Finish semantic patch failure and audit contracts, then decide whether patches need a versioned untyped document format.
 4. Finish emission path/content invariants and backend failure contracts.
 5. Audit inventory as the first composition above bedrock: package discovery, export lanes, runtime bindings, host facts, exclusions, and deterministic reports.
-6. Audit semantic IR families one at a time. Declaration and type families now have a reviewed floor; continue with expression/statement operators and binding provenance.
+6. Audit semantic IR families one at a time. Declaration, type, and expression-operator families now have a reviewed floor; continue with expression/statement binding provenance and type-directed operator semantics.
 7. Only then expand orchestration and target backends, using downstream parity as verification of the stable primitives rather than as their design source.
 
 ## Freeze rule

@@ -5,6 +5,8 @@ import ts from 'typescript';
 import { fingerprintTypeScriptNode } from '../../compiler-provenance/src/index.js';
 import type {
   CompilerDiagnostic,
+  IrAssignmentOperator,
+  IrBinaryOperator,
   IrClassDeclaration,
   IrClassField,
   IrClassMethod,
@@ -21,6 +23,8 @@ import type {
   IrObjectMember,
   IrObjectTypeProperty,
   IrParameter,
+  IrPostfixUnaryOperator,
+  IrPrefixUnaryOperator,
   IrStatement,
   IrTupleTypeElement,
   IrType,
@@ -44,6 +48,8 @@ interface UnsupportedSyntaxFailure extends Error {
   kind: 'unsupported-syntax';
   node: ts.Node;
 }
+
+type TypeScriptBinaryOperator = Exclude<ts.BinaryOperator, ts.AssignmentOperator>;
 
 export function lowerTypeScriptSource(
   sourceFile: ts.SourceFile,
@@ -397,19 +403,18 @@ function lowerExpression(node: ts.Expression, context: LoweringContext): IrExpre
     };
   }
   if (ts.isBinaryExpression(node)) {
-    const operator = node.operatorToken.getText(context.sourceFile);
     if (isAssignmentOperator(node.operatorToken.kind)) {
       return {
         kind: 'assignment',
         left: lowerExpression(node.left, context),
-        operator,
+        operator: lowerAssignmentOperator(node.operatorToken.kind),
         right: lowerExpression(node.right, context),
       };
     }
     return {
       kind: 'binary',
       left: lowerExpression(node.left, context),
-      operator,
+      operator: lowerBinaryOperator(node.operatorToken.kind),
       right: lowerExpression(node.right, context),
     };
   }
@@ -417,7 +422,7 @@ function lowerExpression(node: ts.Expression, context: LoweringContext): IrExpre
     return {
       kind: 'unary',
       operand: lowerExpression(node.operand, context),
-      operator: ts.tokenToString(node.operator) ?? node.getText(context.sourceFile).slice(0, 1),
+      operator: lowerPrefixUnaryOperator(node.operator),
       postfix: false,
     };
   }
@@ -425,7 +430,7 @@ function lowerExpression(node: ts.Expression, context: LoweringContext): IrExpre
     return {
       kind: 'unary',
       operand: lowerExpression(node.operand, context),
-      operator: ts.tokenToString(node.operator) ?? node.getText(context.sourceFile).slice(-2),
+      operator: lowerPostfixUnaryOperator(node.operator),
       postfix: true,
     };
   }
@@ -938,8 +943,24 @@ function commonType(types: readonly [IrType, ...IrType[]]): IrType {
   return values.length === 1 ? values[0]! : { kind: 'union', types: [values[0]!, values[1]!, ...values.slice(2)] };
 }
 
-function isAssignmentOperator(kind: ts.SyntaxKind): boolean {
+function isAssignmentOperator(kind: ts.BinaryOperator): kind is ts.AssignmentOperator {
   return kind >= ts.SyntaxKind.FirstAssignment && kind <= ts.SyntaxKind.LastAssignment;
+}
+
+function lowerAssignmentOperator(kind: ts.AssignmentOperator): IrAssignmentOperator {
+  return typeScriptAssignmentOperators[kind];
+}
+
+function lowerBinaryOperator(kind: TypeScriptBinaryOperator): IrBinaryOperator {
+  return typeScriptBinaryOperators[kind];
+}
+
+function lowerPostfixUnaryOperator(kind: ts.PostfixUnaryOperator): IrPostfixUnaryOperator {
+  return typeScriptPostfixUnaryOperators[kind];
+}
+
+function lowerPrefixUnaryOperator(kind: ts.PrefixUnaryOperator): IrPrefixUnaryOperator {
+  return typeScriptPrefixUnaryOperators[kind];
 }
 
 function isThisParameter(node: ts.ParameterDeclaration): boolean {
@@ -995,6 +1016,68 @@ function unsupported(node: ts.Node, message: string): never {
   failure.name = 'UnsupportedSyntaxError';
   throw failure;
 }
+
+const typeScriptAssignmentOperators = {
+  [ts.SyntaxKind.AmpersandAmpersandEqualsToken]: '&&=',
+  [ts.SyntaxKind.AmpersandEqualsToken]: '&=',
+  [ts.SyntaxKind.AsteriskAsteriskEqualsToken]: '**=',
+  [ts.SyntaxKind.AsteriskEqualsToken]: '*=',
+  [ts.SyntaxKind.BarBarEqualsToken]: '||=',
+  [ts.SyntaxKind.BarEqualsToken]: '|=',
+  [ts.SyntaxKind.CaretEqualsToken]: '^=',
+  [ts.SyntaxKind.EqualsToken]: '=',
+  [ts.SyntaxKind.GreaterThanGreaterThanEqualsToken]: '>>=',
+  [ts.SyntaxKind.GreaterThanGreaterThanGreaterThanEqualsToken]: '>>>=',
+  [ts.SyntaxKind.LessThanLessThanEqualsToken]: '<<=',
+  [ts.SyntaxKind.MinusEqualsToken]: '-=',
+  [ts.SyntaxKind.PercentEqualsToken]: '%=',
+  [ts.SyntaxKind.PlusEqualsToken]: '+=',
+  [ts.SyntaxKind.QuestionQuestionEqualsToken]: '??=',
+  [ts.SyntaxKind.SlashEqualsToken]: '/=',
+} as const satisfies Readonly<Record<ts.AssignmentOperator, IrAssignmentOperator>>;
+
+const typeScriptBinaryOperators = {
+  [ts.SyntaxKind.AmpersandAmpersandToken]: '&&',
+  [ts.SyntaxKind.AmpersandToken]: '&',
+  [ts.SyntaxKind.AsteriskAsteriskToken]: '**',
+  [ts.SyntaxKind.AsteriskToken]: '*',
+  [ts.SyntaxKind.BarBarToken]: '||',
+  [ts.SyntaxKind.BarToken]: '|',
+  [ts.SyntaxKind.CaretToken]: '^',
+  [ts.SyntaxKind.CommaToken]: ',',
+  [ts.SyntaxKind.EqualsEqualsEqualsToken]: '===',
+  [ts.SyntaxKind.EqualsEqualsToken]: '==',
+  [ts.SyntaxKind.ExclamationEqualsEqualsToken]: '!==',
+  [ts.SyntaxKind.ExclamationEqualsToken]: '!=',
+  [ts.SyntaxKind.GreaterThanEqualsToken]: '>=',
+  [ts.SyntaxKind.GreaterThanGreaterThanGreaterThanToken]: '>>>',
+  [ts.SyntaxKind.GreaterThanGreaterThanToken]: '>>',
+  [ts.SyntaxKind.GreaterThanToken]: '>',
+  [ts.SyntaxKind.InKeyword]: 'in',
+  [ts.SyntaxKind.InstanceOfKeyword]: 'instanceof',
+  [ts.SyntaxKind.LessThanEqualsToken]: '<=',
+  [ts.SyntaxKind.LessThanLessThanToken]: '<<',
+  [ts.SyntaxKind.LessThanToken]: '<',
+  [ts.SyntaxKind.MinusToken]: '-',
+  [ts.SyntaxKind.PercentToken]: '%',
+  [ts.SyntaxKind.PlusToken]: '+',
+  [ts.SyntaxKind.QuestionQuestionToken]: '??',
+  [ts.SyntaxKind.SlashToken]: '/',
+} as const satisfies Readonly<Record<TypeScriptBinaryOperator, IrBinaryOperator>>;
+
+const typeScriptPostfixUnaryOperators = {
+  [ts.SyntaxKind.MinusMinusToken]: '--',
+  [ts.SyntaxKind.PlusPlusToken]: '++',
+} as const satisfies Readonly<Record<ts.PostfixUnaryOperator, IrPostfixUnaryOperator>>;
+
+const typeScriptPrefixUnaryOperators = {
+  [ts.SyntaxKind.ExclamationToken]: '!',
+  [ts.SyntaxKind.MinusMinusToken]: '--',
+  [ts.SyntaxKind.MinusToken]: '-',
+  [ts.SyntaxKind.PlusPlusToken]: '++',
+  [ts.SyntaxKind.PlusToken]: '+',
+  [ts.SyntaxKind.TildeToken]: '~',
+} as const satisfies Readonly<Record<ts.PrefixUnaryOperator, IrPrefixUnaryOperator>>;
 
 function isUnsupportedSyntaxFailure(value: unknown): value is UnsupportedSyntaxFailure {
   return value instanceof Error && 'kind' in value && value.kind === 'unsupported-syntax' && 'node' in value;

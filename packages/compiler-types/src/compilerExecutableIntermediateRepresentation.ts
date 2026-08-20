@@ -1,3 +1,9 @@
+import type {
+  IrAssignmentOperator,
+  IrBinaryOperator,
+  IrPostfixUnaryOperator,
+  IrPrefixUnaryOperator,
+} from './compilerOperatorIntermediateRepresentation.js';
 import type { IrFunctionTypeParameter, IrType, IrTypeParameter } from './compilerTypeIntermediateRepresentation.js';
 
 export type IrParameter = IrFunctionTypeParameter &
@@ -5,9 +11,9 @@ export type IrParameter = IrFunctionTypeParameter &
 
 export type IrExpression =
   | Readonly<{ kind: 'array'; elements: ReadonlyArray<IrExpression | undefined> }>
-  | Readonly<{ kind: 'assignment'; left: IrExpression; operator: string; right: IrExpression }>
+  | Readonly<{ kind: 'assignment'; left: IrExpression; operator: IrAssignmentOperator; right: IrExpression }>
   | Readonly<{ kind: 'await'; expression: IrExpression }>
-  | Readonly<{ kind: 'binary'; left: IrExpression; operator: string; right: IrExpression }>
+  | Readonly<{ kind: 'binary'; left: IrExpression; operator: IrBinaryOperator; right: IrExpression }>
   | Readonly<{
       kind: 'call';
       arguments: readonly IrExpression[];
@@ -41,7 +47,8 @@ export type IrExpression =
   | Readonly<{ flags: string; kind: 'regexp'; pattern: string }>
   | Readonly<{ expression: IrExpression; kind: 'spread' }>
   | Readonly<{ kind: 'template'; parts: ReadonlyArray<IrExpression | string> }>
-  | Readonly<{ kind: 'unary'; operand: IrExpression; operator: string; postfix: boolean }>;
+  | Readonly<{ kind: 'unary'; operand: IrExpression; operator: IrPostfixUnaryOperator; postfix: true }>
+  | Readonly<{ kind: 'unary'; operand: IrExpression; operator: IrPrefixUnaryOperator; postfix: false }>;
 
 export type IrObjectMember =
   | Readonly<{ key: IrExpression; kind: 'computedProperty'; value: IrExpression }>
