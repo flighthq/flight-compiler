@@ -6,6 +6,7 @@ import type {
   IrExpression,
   IrModule,
   IrStatement,
+  IrTypeBindingIdentity,
   IrVariable,
 } from '../../compiler-types/src/index.js';
 import { createCompilerInvariantFailure } from './compilerSourceEmission.js';
@@ -100,13 +101,13 @@ function normalizeCandidate(candidate: Readonly<CompilerTargetNameCandidate>): C
 }
 
 interface IrBindingIntroduction {
-  readonly binding: IrBindingIdentity;
+  readonly binding: IrBindingIdentity | IrTypeBindingIdentity;
   readonly scope: string;
 }
 
 function getIrModuleBindingIntroductions(module: Readonly<IrModule>): IrBindingIntroduction[] {
   const bindings: IrBindingIntroduction[] = [];
-  const add = (binding: Readonly<IrBindingIdentity>, scope: string): void => {
+  const add = (binding: Readonly<IrBindingIdentity | IrTypeBindingIdentity>, scope: string): void => {
     bindings.push({ binding, scope });
   };
   for (const imported of module.imports) {
@@ -117,6 +118,7 @@ function getIrModuleBindingIntroductions(module: Readonly<IrModule>): IrBindingI
     switch (declaration.kind) {
       case 'class': {
         add(declaration.binding, 'module');
+        declaration.typeParameters.forEach((parameter) => add(parameter.binding, `class:${declaration.binding.id}`));
         const constructorScope = `class:${declaration.binding.id}:constructor`;
         declaration.classConstructor?.parameters.forEach((parameter) => add(parameter.binding, constructorScope));
         declaration.classConstructor?.parameters.forEach((parameter, parameterIndex) => {
@@ -143,6 +145,7 @@ function getIrModuleBindingIntroductions(module: Readonly<IrModule>): IrBindingI
         });
         declaration.methods.forEach((method, methodIndex) => {
           const methodScope = `class:${declaration.binding.id}:method:${String(methodIndex)}`;
+          method.typeParameters.forEach((parameter) => add(parameter.binding, methodScope));
           method.parameters.forEach((parameter) => add(parameter.binding, methodScope));
           method.parameters.forEach((parameter, parameterIndex) => {
             if (parameter.initializer) {
@@ -170,6 +173,7 @@ function getIrModuleBindingIntroductions(module: Readonly<IrModule>): IrBindingI
       case 'function': {
         add(declaration.binding, 'module');
         const functionScope = `function:${declaration.binding.id}`;
+        declaration.typeParameters.forEach((parameter) => add(parameter.binding, functionScope));
         declaration.parameters.forEach((parameter) => add(parameter.binding, functionScope));
         declaration.parameters.forEach((parameter, parameterIndex) => {
           if (parameter.initializer) {
@@ -192,6 +196,8 @@ function getIrModuleBindingIntroductions(module: Readonly<IrModule>): IrBindingI
       }
       case 'interface':
       case 'typeAlias':
+        add(declaration.binding, 'module');
+        declaration.typeParameters.forEach((parameter) => add(parameter.binding, `type:${declaration.binding.id}`));
         break;
       case 'variable':
         collectVariableBindings(declaration, 'module', declarationPath, add);
@@ -204,7 +210,7 @@ function getIrModuleBindingIntroductions(module: Readonly<IrModule>): IrBindingI
 function collectExpressionBindings(
   expression: Readonly<IrExpression>,
   path: string,
-  add: (binding: Readonly<IrBindingIdentity>, scope: string) => void,
+  add: (binding: Readonly<IrBindingIdentity | IrTypeBindingIdentity>, scope: string) => void,
 ): void {
   switch (expression.kind) {
     case 'array':
@@ -241,6 +247,7 @@ function collectExpressionBindings(
     case 'function': {
       const functionScope = `function:${expression.binding?.id ?? path}`;
       if (expression.binding) add(expression.binding, functionScope);
+      expression.typeParameters.forEach((parameter) => add(parameter.binding, functionScope));
       expression.parameters.forEach((parameter) => add(parameter.binding, functionScope));
       expression.parameters.forEach((parameter, parameterIndex) => {
         if (parameter.initializer) {
@@ -283,7 +290,7 @@ function collectStatementBindings(
   statement: Readonly<IrStatement>,
   scope: string,
   path: string,
-  add: (binding: Readonly<IrBindingIdentity>, scope: string) => void,
+  add: (binding: Readonly<IrBindingIdentity | IrTypeBindingIdentity>, scope: string) => void,
 ): void {
   switch (statement.kind) {
     case 'block':
@@ -365,7 +372,7 @@ function collectVariableBindings(
   variable: Readonly<IrVariable>,
   scope: string,
   path: string,
-  add: (binding: Readonly<IrBindingIdentity>, scope: string) => void,
+  add: (binding: Readonly<IrBindingIdentity | IrTypeBindingIdentity>, scope: string) => void,
 ): void {
   add(variable.binding, scope);
   if (variable.initializer) collectExpressionBindings(variable.initializer, `${path}:initializer`, add);

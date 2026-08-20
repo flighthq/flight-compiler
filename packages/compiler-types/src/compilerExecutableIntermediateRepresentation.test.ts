@@ -18,6 +18,7 @@ describe('compiler executable intermediate representation contracts', () => {
         kind: 'parameter',
         name: 'value',
         scope: 'local',
+        space: 'value',
       },
       initializer: expression,
       optional: true,

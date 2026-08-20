@@ -7,7 +7,11 @@ import type {
 
 describe('compiler type intermediate representation contracts', () => {
   it('separates structural type parameters and requires compound type arity', () => {
-    const reference: IrTypeReference = { kind: 'named', name: 'Value', typeArguments: [] };
+    const reference: IrTypeReference = {
+      kind: 'named',
+      reference: { kind: 'ambient', name: 'Value' },
+      typeArguments: [],
+    };
     const parameter: IrFunctionTypeParameter = {
       name: 'value',
       optional: false,

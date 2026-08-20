@@ -28,6 +28,8 @@ import type {
   IrStatement,
   IrType,
   IrTypeAliasDeclaration,
+  IrTypeBindingIdentity,
+  IrTypeReference,
   IrTypeParameter,
   IrUnaryOperatorSemantics,
   IrVariable,
@@ -59,7 +61,10 @@ export function emitIrModuleHaxe(
   const targetNames = new Map(
     createIrModuleTargetNameAllocation(module, (binding) => ({
       namespace: 'identifier',
-      preferredName: safeHaxeName(binding.name),
+      preferredName:
+        binding.space === 'type' || binding.kind === 'class' || binding.kind === 'enum'
+          ? safeHaxeTypeName(binding.name)
+          : safeHaxeName(binding.name),
     })).map((allocation) => [allocation.identity, allocation.name]),
   );
   const context: EmitContext = { module, options, packageName, targetNames };
@@ -256,7 +261,10 @@ function emitImports(imports: readonly IrImport[], context: EmitContext): string
       if (binding.imported === '*' || binding.imported === 'default') {
         emissionError(context, `${binding.imported} imports require explicit Haxe mapping for ${imported.specifier}`);
       }
-      const importedName = safeHaxeName(binding.imported);
+      const importedName =
+        binding.binding.space === 'type' || binding.binding.kind === 'class' || binding.binding.kind === 'enum'
+          ? safeHaxeTypeName(binding.imported)
+          : safeHaxeName(binding.imported);
       const localName = getBindingTargetNameHaxe(binding.binding, context);
       emitted.add(`import ${modulePath}.${importedName}${importedName === localName ? '' : ` as ${localName}`};`);
     }
@@ -266,9 +274,9 @@ function emitImports(imports: readonly IrImport[], context: EmitContext): string
 
 function emitInterface(declaration: Readonly<IrInterfaceDeclaration>, context: EmitContext): string[] {
   if (declaration.extends.length > 0)
-    emissionError(context, `interface ${declaration.name} inheritance requires structural flattening`);
+    emissionError(context, `interface ${declaration.binding.name} inheritance requires structural flattening`);
   return [
-    `typedef ${safeHaxeName(declaration.name)}${emitTypeParameters(declaration.typeParameters, context)} = ${emitAnonymousType(declaration.properties, context)};`,
+    `typedef ${getBindingTargetNameHaxe(declaration.binding, context)}${emitTypeParameters(declaration.typeParameters, context)} = ${emitAnonymousType(declaration.properties, context)};`,
   ];
 }
 
@@ -421,11 +429,15 @@ function emitType(type: Readonly<IrType>, context: EmitContext): string {
     case 'literal':
       return typeof type.value === 'boolean' ? 'Bool' : typeof type.value === 'number' ? 'Float' : 'String';
     case 'named': {
-      if ((type.name === 'Readonly' || type.name === 'Partial' || type.name === 'Required') && type.typeArguments[0]) {
+      const sourceName = type.reference.kind === 'ambient' ? type.reference.name : undefined;
+      if (
+        (sourceName === 'Readonly' || sourceName === 'Partial' || sourceName === 'Required') &&
+        type.typeArguments[0]
+      ) {
         return emitType(type.typeArguments[0], context);
       }
       const arguments_ = type.typeArguments.map((argument) => emitType(argument, context));
-      return `${qualifiedHaxeName(type.name)}${arguments_.length > 0 ? `<${arguments_.join(', ')}>` : ''}`;
+      return `${getTypeReferenceTargetNameHaxe(type, context)}${arguments_.length > 0 ? `<${arguments_.join(', ')}>` : ''}`;
     }
     case 'never':
       return 'Dynamic';
@@ -481,7 +493,7 @@ function emitTypeDeclaration(declaration: Readonly<IrDeclaration>, context: Emit
 
 function emitTypeAlias(declaration: Readonly<IrTypeAliasDeclaration>, context: EmitContext): string[] {
   return [
-    `typedef ${safeHaxeName(declaration.name)}${emitTypeParameters(declaration.typeParameters, context)} = ${emitType(declaration.type, context)};`,
+    `typedef ${getBindingTargetNameHaxe(declaration.binding, context)}${emitTypeParameters(declaration.typeParameters, context)} = ${emitType(declaration.type, context)};`,
   ];
 }
 
@@ -490,7 +502,7 @@ function emitTypeParameters(parameters: readonly IrTypeParameter[], context: Emi
   return `<${parameters
     .map(
       (parameter) =>
-        `${safeHaxeName(parameter.name)}${parameter.constraint ? `:${emitType(parameter.constraint, context)}` : ''}`,
+        `${getBindingTargetNameHaxe(parameter.binding, context)}${parameter.constraint ? `:${emitType(parameter.constraint, context)}` : ''}`,
     )
     .join(', ')}>`;
 }
@@ -512,10 +524,21 @@ function emitVariableDeclaration(declaration: Readonly<IrVariableDeclaration>, c
   ];
 }
 
-function getBindingTargetNameHaxe(binding: Readonly<IrBindingIdentity>, context: EmitContext): string {
+function getBindingTargetNameHaxe(
+  binding: Readonly<IrBindingIdentity | IrTypeBindingIdentity>,
+  context: EmitContext,
+): string {
   const targetName = context.targetNames.get(binding.id);
   if (!targetName) emissionError(context, `binding ${binding.name} has no Haxe target name allocation`);
   return targetName;
+}
+
+function getTypeReferenceTargetNameHaxe(type: Readonly<IrTypeReference>, context: EmitContext): string {
+  if (type.reference.kind === 'ambient') return qualifiedHaxeName(type.reference.name);
+  return [
+    getBindingTargetNameHaxe(type.reference.binding, context),
+    ...type.reference.path.map((segment) => safeHaxeTypeName(segment)),
+  ].join('.');
 }
 
 function emissionError(context: EmitContext, message: string): never {
@@ -685,6 +708,10 @@ function qualifiedHaxeName(name: string): string {
 
 function safeHaxeName(name: string): string {
   return haxeKeywords.has(name) ? `${name}_` : name;
+}
+
+function safeHaxeTypeName(name: string): string {
+  return safeHaxeName(pascalCase(name));
 }
 
 const haxeKeywords = new Set([

@@ -32,6 +32,17 @@ describe('emitIrModuleRust', () => {
     expect(() => emitIrModuleRust(strings.module)).toThrow('requires integer discriminants for Rust');
   });
 
+  it('emits type-only imports and their references from one type-space identity', () => {
+    const result = lower(
+      'type-import.ts',
+      "import type { sourceType as localType } from './types.js'; export type Alias = localType;",
+    );
+    const output = emitIrModuleRust(result.module).contents;
+
+    expect(output).toContain('use crate::types::{SourceType as LocalType};');
+    expect(output).toContain('pub type Alias = LocalType;');
+  });
+
   it('keeps local bindings distinct from same-named module constants', () => {
     const result = lower(
       'guard.ts',
@@ -223,6 +234,14 @@ describe('emitIrModuleRust', () => {
     expect(output).toContain('let foo_bar_3: f64 = foo_bar_2;');
     expect(output).toContain('foo_bar_3;');
     expect(output).toContain('return (foo_bar + foo_bar_2);');
+  });
+
+  it('allocates type-space collisions and keeps named type references aligned', () => {
+    const result = lower('type-collisions.ts', 'export type fooBar = number; export type foo_bar = fooBar;');
+    const output = emitIrModuleRust(result.module).contents;
+
+    expect(output).toContain('pub type FooBar = f64;');
+    expect(output).toContain('pub type FooBar_2 = FooBar;');
   });
 
   it('rejects class state and default parameters that would otherwise be dropped', () => {

@@ -1,4 +1,10 @@
-import type { IrBindingIdentity, IrIdentifierReference } from './compilerBindingIntermediateRepresentation.js';
+import type {
+  IrBindingIdentity,
+  IrIdentifierReference,
+  IrTypeBindingIdentity,
+  IrTypeNameReference,
+  IrValueNameReference,
+} from './compilerBindingIntermediateRepresentation.js';
 import type { CompilerSourceOrigin } from './compilerSourceIdentity.js';
 
 describe('compiler binding intermediate representation contracts', () => {
@@ -12,6 +18,7 @@ describe('compiler binding intermediate representation contracts', () => {
       name: 'value',
       packageName: '@flighthq/math',
       scope: 'local',
+      space: 'value',
       source: 'packages/math/src/value.ts',
     };
     const references: readonly IrIdentifierReference[] = [
@@ -23,9 +30,34 @@ describe('compiler binding intermediate representation contracts', () => {
     expect(references.map((reference) => reference.kind)).toEqual(['binding', 'ambient', 'this']);
     expectTypeOf(binding).toMatchTypeOf<CompilerSourceOrigin>();
     expectTypeOf<IrBindingIdentity['kind']>().toEqualTypeOf<
-      'catch' | 'class' | 'enum' | 'function' | 'import' | 'interface' | 'parameter' | 'typeAlias' | 'variable'
+      'catch' | 'class' | 'enum' | 'function' | 'import' | 'parameter' | 'variable'
     >();
     expectTypeOf<IrBindingIdentity['scope']>().toEqualTypeOf<'local' | 'module'>();
     expectTypeOf<Extract<IrIdentifierReference, { kind: 'binding' }>['binding']>().toEqualTypeOf<IrBindingIdentity>();
+  });
+
+  it('separates type-only identities while permitting dual-space declarations in type references', () => {
+    const typeBinding: IrTypeBindingIdentity = {
+      column: 1,
+      fingerprint: 'sha256:type',
+      id: 'type-binding:["@flighthq/math","value.ts",0]',
+      kind: 'typeParameter',
+      line: 1,
+      name: 'Value',
+      packageName: '@flighthq/math',
+      scope: 'local',
+      source: 'value.ts',
+      space: 'type',
+    };
+    const reference: IrTypeNameReference = { binding: typeBinding, kind: 'binding', path: [] };
+
+    expect(reference).toMatchObject({ binding: { space: 'type' }, kind: 'binding', path: [] });
+    expectTypeOf<IrTypeBindingIdentity['kind']>().toEqualTypeOf<
+      'import' | 'interface' | 'typeAlias' | 'typeParameter'
+    >();
+    expectTypeOf<Extract<IrTypeNameReference, { kind: 'binding' }>['binding']>().toEqualTypeOf<
+      IrBindingIdentity | IrTypeBindingIdentity
+    >();
+    expectTypeOf<Extract<IrValueNameReference, { kind: 'binding' }>['binding']>().toEqualTypeOf<IrBindingIdentity>();
   });
 });

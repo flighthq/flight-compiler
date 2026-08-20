@@ -16,9 +16,16 @@ describe('compiler declaration intermediate representation contracts', () => {
       source: 'packages/math/src/value.ts',
     };
     const alias: IrTypeAliasDeclaration = {
+      binding: {
+        ...origin,
+        id: 'type-binding:["@flighthq/math","packages/math/src/value.ts",0]',
+        kind: 'typeAlias',
+        name: 'Value',
+        scope: 'module',
+        space: 'type',
+      },
       exported: true,
       kind: 'typeAlias',
-      name: 'Value',
       origin,
       type: { kind: 'primitive', name: 'number' },
       typeParameters: [],
@@ -31,6 +38,7 @@ describe('compiler declaration intermediate representation contracts', () => {
         kind: 'class',
         name: 'Container',
         scope: 'module',
+        space: 'value',
       },
       classConstructor: { body: [], parameters: [] },
       exported: true,

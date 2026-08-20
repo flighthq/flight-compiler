@@ -145,16 +145,107 @@ describe('lowerTypeScriptSource', () => {
     const box = result.module.declarations[1];
 
     expect(box).toMatchObject({
-      extends: [{ kind: 'named', name: 'Base', typeArguments: [{ kind: 'named', name: 'Value' }] }],
+      binding: { kind: 'interface', name: 'Box', space: 'type' },
+      extends: [
+        {
+          kind: 'named',
+          reference: { binding: { kind: 'interface', name: 'Base', space: 'type' }, kind: 'binding', path: [] },
+          typeArguments: [
+            {
+              kind: 'named',
+              reference: { binding: { kind: 'typeParameter', name: 'Value', space: 'type' }, kind: 'binding' },
+            },
+          ],
+        },
+      ],
       kind: 'interface',
       properties: [
         {
           name: 'get',
           optional: false,
           readonly: true,
-          type: { kind: 'function', parameters: [], returns: { kind: 'named', name: 'Value' } },
+          type: {
+            kind: 'function',
+            parameters: [],
+            returns: {
+              kind: 'named',
+              reference: { binding: { kind: 'typeParameter', name: 'Value', space: 'type' }, kind: 'binding' },
+            },
+          },
         },
       ],
+    });
+    if (box?.kind !== 'interface') throw new Error('Expected Box interface');
+    const parameter = box.typeParameters[0]?.binding;
+    const heritageParameter = box.extends[0]?.typeArguments[0];
+    const methodReturn = box.properties[0]?.type;
+    if (
+      heritageParameter?.kind !== 'named' ||
+      methodReturn?.kind !== 'function' ||
+      methodReturn.returns.kind !== 'named'
+    ) {
+      throw new Error('Expected type parameter references');
+    }
+    expect(heritageParameter.reference).toMatchObject({ binding: { id: parameter?.id }, kind: 'binding' });
+    expect(methodReturn.returns.reference).toMatchObject({ binding: { id: parameter?.id }, kind: 'binding' });
+  });
+
+  it('resolves type-only imports, dual-space imports, and shadowed type parameters by identity', () => {
+    const result = lower(
+      'type-bindings.ts',
+      "import type { Remote as Imported } from './types.js'; import { RemoteClass } from './classes.js'; type Alias = Imported; export function identity<Imported>(value: Imported, instance: RemoteClass): Imported { return value; }",
+    );
+    const typeImport = result.module.imports[0]?.bindings[0]?.binding;
+    const dualImport = result.module.imports[1]?.bindings[0]?.binding;
+    const [alias, identity] = result.module.declarations;
+
+    expect(result.diagnostics).toEqual([]);
+    expect(typeImport).toMatchObject({ kind: 'import', name: 'Imported', space: 'type' });
+    expect(dualImport).toMatchObject({ kind: 'import', name: 'RemoteClass', space: 'value' });
+    if (alias?.kind !== 'typeAlias' || identity?.kind !== 'function' || alias.type.kind !== 'named') {
+      throw new Error('Expected alias and generic function declarations');
+    }
+    const typeParameter = identity.typeParameters[0]?.binding;
+    const parameterType = identity.parameters[0]?.type;
+    const instanceType = identity.parameters[1]?.type;
+    expect(alias.type.reference).toMatchObject({ binding: { id: typeImport?.id }, kind: 'binding', path: [] });
+    expect(typeParameter).toMatchObject({ kind: 'typeParameter', name: 'Imported', space: 'type' });
+    expect(typeParameter?.id).not.toBe(typeImport?.id);
+    if (parameterType?.kind !== 'named' || instanceType?.kind !== 'named' || identity.returns.kind !== 'named') {
+      throw new Error('Expected named parameter and return types');
+    }
+    expect(parameterType.reference).toMatchObject({ binding: { id: typeParameter?.id }, kind: 'binding' });
+    expect(identity.returns.reference).toMatchObject({ binding: { id: typeParameter?.id }, kind: 'binding' });
+    expect(instanceType.reference).toMatchObject({ binding: { id: dualImport?.id }, kind: 'binding' });
+  });
+
+  it('preserves qualified type paths and restricts typeof queries to value-space identity', () => {
+    const result = lower(
+      'qualified-types.ts',
+      "import type * as Types from './types.js'; const sample = 1; export type Remote = Types.Value; export type Sample = typeof sample;",
+    );
+    const imported = result.module.imports[0]?.bindings[0]?.binding;
+    const [sample, remote, sampleType] = result.module.declarations;
+
+    expect(result.diagnostics).toEqual([]);
+    if (
+      sample?.kind !== 'variable' ||
+      remote?.kind !== 'typeAlias' ||
+      remote.type.kind !== 'named' ||
+      sampleType?.kind !== 'typeAlias' ||
+      sampleType.type.kind !== 'typeOf'
+    ) {
+      throw new Error('Expected value, qualified type, and typeof declarations');
+    }
+    expect(remote.type.reference).toMatchObject({
+      binding: { id: imported?.id, space: 'type' },
+      kind: 'binding',
+      path: ['Value'],
+    });
+    expect(sampleType.type.reference).toMatchObject({
+      binding: { id: sample.binding.id, space: 'value' },
+      kind: 'binding',
+      path: [],
     });
   });
 

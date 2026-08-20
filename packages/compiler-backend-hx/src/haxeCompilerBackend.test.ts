@@ -51,6 +51,17 @@ describe('emitIrModuleHaxe', () => {
     expect(() => emitIrModuleHaxe(defaultImport.module)).toThrow('default imports require explicit Haxe mapping');
   });
 
+  it('emits type-only imports and their references from one type-space identity', () => {
+    const result = lower(
+      'type-import.ts',
+      "import type { sourceType as localType } from './types.js'; export type Alias = localType;",
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('import flighthq.math.Types.SourceType as LocalType;');
+    expect(output).toContain('typedef Alias = LocalType;');
+  });
+
   it('rejects module facades and switch fallthrough without semantic lowering', () => {
     const barrel = lower('barrel.ts', "export * from './other.js';");
     const fallthrough = lower(
@@ -132,6 +143,14 @@ describe('emitIrModuleHaxe', () => {
     expect(output).toContain('final operator__3:Float = operator__2;');
     expect(output).toContain('operator__3;');
     expect(output).toContain('return (operator_ + operator__2);');
+  });
+
+  it('allocates type-space collisions and keeps named type references aligned', () => {
+    const result = lower('type-collisions.ts', 'export type operator = number; export type operator_ = operator;');
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('typedef Operator = Float;');
+    expect(output).toContain('typedef Operator_2 = Operator;');
   });
 
   it('preserves final locals and abstract classes', () => {

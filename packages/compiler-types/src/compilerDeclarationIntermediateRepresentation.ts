@@ -1,4 +1,4 @@
-import type { IrBindingIdentity } from './compilerBindingIntermediateRepresentation.js';
+import type { IrBindingIdentity, IrTypeBindingIdentity } from './compilerBindingIntermediateRepresentation.js';
 import type {
   IrExpression,
   IrParameter,
@@ -36,19 +36,19 @@ export interface IrVariableDeclaration extends IrVariable {
 }
 
 export interface IrTypeAliasDeclaration {
+  readonly binding: IrTypeBindingIdentity;
   readonly exported: boolean;
   readonly kind: 'typeAlias';
-  readonly name: string;
   readonly origin: CompilerSourceOrigin;
   readonly type: IrType;
   readonly typeParameters: readonly IrTypeParameter[];
 }
 
 export interface IrInterfaceDeclaration {
+  readonly binding: IrTypeBindingIdentity;
   readonly exported: boolean;
   readonly extends: readonly IrTypeReference[];
   readonly kind: 'interface';
-  readonly name: string;
   readonly origin: CompilerSourceOrigin;
   readonly properties: readonly IrObjectTypeProperty[];
   readonly typeParameters: readonly IrTypeParameter[];

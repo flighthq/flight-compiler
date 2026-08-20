@@ -101,6 +101,42 @@ describe('applySemanticPatchSet', () => {
     expect(module.declarations[0]).toMatchObject({ binding: { name: 'clamp' } });
   });
 
+  it('renames type-space introductions without rewriting source-backed type references', () => {
+    const declaration = createTypeDeclaration('Range');
+    const module = createModule([
+      {
+        ...declaration,
+        type: {
+          kind: 'named',
+          reference: { binding: declaration.binding, kind: 'binding', path: [] },
+          typeArguments: [],
+        },
+      },
+    ]);
+    const result = applySemanticPatchSet(
+      [module],
+      [
+        {
+          ...patchBase('math.range.rename', 'Range', 'typeAlias'),
+          name: 'Span',
+          operation: 'rename',
+        },
+      ],
+      'haxe',
+    );
+    const renamed = result.modules[0]?.declarations[0];
+
+    if (renamed?.kind !== 'typeAlias' || renamed.type.kind !== 'named') {
+      throw new Error('Expected renamed type alias');
+    }
+    expect(renamed.binding).toMatchObject({ id: declaration.binding.id, name: 'Span', space: 'type' });
+    expect(renamed.type.reference).toMatchObject({
+      binding: { id: declaration.binding.id, name: 'Range', space: 'type' },
+      kind: 'binding',
+    });
+    expect(module.declarations[0]).toMatchObject({ binding: { name: 'Range' } });
+  });
+
   it('returns a tagged failure for every invalid identity or operation state', () => {
     const valid = renamePatch('math.clamp.rename', 'renamed', { kind: 'neutral' });
     const cases: Array<{
@@ -240,6 +276,7 @@ function createFunctionDeclaration(name: string): IrFunctionDeclaration {
       name,
       packageName,
       scope: 'module',
+      space: 'value',
       source,
     },
     body: [],
@@ -260,9 +297,7 @@ function createFunctionDeclaration(name: string): IrFunctionDeclaration {
 }
 
 function declarationName(declaration: Readonly<IrDeclaration>): string {
-  return declaration.kind === 'interface' || declaration.kind === 'typeAlias'
-    ? declaration.name
-    : declaration.binding.name;
+  return declaration.binding.name;
 }
 
 function createModule(declarations: IrDeclaration[] = [createFunctionDeclaration('clamp')]): IrModule {
@@ -278,9 +313,20 @@ function createModule(declarations: IrDeclaration[] = [createFunctionDeclaration
 
 function createTypeDeclaration(name: string): IrTypeAliasDeclaration {
   return {
+    binding: {
+      column: 1,
+      fingerprint: `sha256:${name}`,
+      id: `type-binding:[${JSON.stringify(packageName)},${JSON.stringify(source)},${JSON.stringify(name)}]`,
+      kind: 'typeAlias',
+      line: 1,
+      name,
+      packageName,
+      scope: 'module',
+      source,
+      space: 'type',
+    },
     exported: true,
     kind: 'typeAlias',
-    name,
     origin: {
       column: 1,
       fingerprint: `sha256:${name}`,

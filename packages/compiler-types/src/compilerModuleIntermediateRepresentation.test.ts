@@ -15,6 +15,7 @@ describe('compiler module intermediate representation contracts', () => {
         name: 'readValue',
         packageName: '@flighthq/math',
         scope: 'module',
+        space: 'value',
         source: 'packages/math/src/value.ts',
       },
       body: [{ expression: { kind: 'literal', value: 1 }, kind: 'return' }],

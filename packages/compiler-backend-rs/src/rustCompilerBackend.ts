@@ -28,6 +28,8 @@ import type {
   IrStatement,
   IrType,
   IrTypeAliasDeclaration,
+  IrTypeBindingIdentity,
+  IrTypeReference,
   IrTypeParameter,
   IrUnaryOperatorSemantics,
   IrVariable,
@@ -121,7 +123,7 @@ function emitClass(declaration: Readonly<IrClassDeclaration>, context: EmitConte
   if (declaration.methods.length > 0) {
     lines.push(
       '',
-      `impl${emitTypeParameters(declaration.typeParameters, context)} ${getBindingTargetNameRust(declaration.binding, context)}${emitTypeArguments(declaration.typeParameters)} {`,
+      `impl${emitTypeParameters(declaration.typeParameters, context)} ${getBindingTargetNameRust(declaration.binding, context)}${emitTypeArguments(declaration.typeParameters, context)} {`,
     );
     declaration.methods.forEach((method, index) => {
       if (index > 0) lines.push('');
@@ -267,9 +269,10 @@ function emitImports(imports: readonly IrImport[], context: EmitContext): string
       if (binding.imported === '*' || binding.imported === 'default') {
         emissionError(context, `${binding.imported} imports require explicit Rust mapping for ${imported.specifier}`);
       }
-      const importedName = /^[A-Z]/u.test(binding.imported)
-        ? safeRustTypeName(binding.imported)
-        : safeRustValueName(binding.imported);
+      const importedName =
+        binding.binding.space === 'type' || /^[A-Z]/u.test(binding.imported)
+          ? safeRustTypeName(binding.imported)
+          : safeRustValueName(binding.imported);
       const localName = getBindingTargetNameRust(binding.binding, context);
       return importedName === localName ? importedName : `${importedName} as ${localName}`;
     });
@@ -280,9 +283,9 @@ function emitImports(imports: readonly IrImport[], context: EmitContext): string
 
 function emitInterface(declaration: Readonly<IrInterfaceDeclaration>, context: EmitContext): string[] {
   if (declaration.extends.length > 0)
-    emissionError(context, `interface ${declaration.name} inheritance requires record flattening`);
+    emissionError(context, `interface ${declaration.binding.name} inheritance requires record flattening`);
   return emitRecord(
-    declaration.name,
+    getBindingTargetNameRust(declaration.binding, context),
     declaration.properties,
     declaration.typeParameters,
     declaration.exported,
@@ -330,7 +333,7 @@ function emitParameter(parameter: Readonly<IrParameter>, context: EmitContext): 
 }
 
 function emitRecord(
-  name: string,
+  targetName: string,
   properties: readonly IrObjectTypeProperty[],
   typeParameters: readonly IrTypeParameter[],
   exported: boolean,
@@ -338,7 +341,7 @@ function emitRecord(
 ): string[] {
   const lines = [
     '#[derive(Clone, Debug)]',
-    `${exported ? 'pub ' : ''}struct ${safeRustTypeName(name)}${emitTypeParameters(typeParameters, context)} {`,
+    `${exported ? 'pub ' : ''}struct ${targetName}${emitTypeParameters(typeParameters, context)} {`,
   ];
   for (const property of properties) {
     const type = emitType(property.type, context);
@@ -433,12 +436,16 @@ function emitType(type: Readonly<IrType>, context: EmitContext): string {
     case 'literal':
       return typeof type.value === 'boolean' ? 'bool' : typeof type.value === 'number' ? 'f64' : 'String';
     case 'named': {
-      if ((type.name === 'Readonly' || type.name === 'Required') && type.typeArguments[0]) {
+      const sourceName = type.reference.kind === 'ambient' ? type.reference.name : undefined;
+      if ((sourceName === 'Readonly' || sourceName === 'Required') && type.typeArguments[0]) {
         return emitType(type.typeArguments[0], context);
       }
-      if (type.name === 'Partial' && type.typeArguments[0])
+      if (sourceName === 'Partial' && type.typeArguments[0])
         emissionError(context, 'Partial<T> requires structural field lowering');
-      const mapped = rustStandardType(type.name);
+      const mapped =
+        type.reference.kind === 'ambient'
+          ? rustStandardType(type.reference.name)
+          : getTypeReferenceTargetNameRust(type, context);
       const arguments_ = type.typeArguments.map((argument) => emitType(argument, context));
       return `${mapped}${arguments_.length > 0 ? `<${arguments_.join(', ')}>` : ''}`;
     }
@@ -471,7 +478,7 @@ function emitType(type: Readonly<IrType>, context: EmitContext): string {
 function emitTypeAlias(declaration: Readonly<IrTypeAliasDeclaration>, context: EmitContext): string[] {
   if (declaration.type.kind === 'object') {
     return emitRecord(
-      declaration.name,
+      getBindingTargetNameRust(declaration.binding, context),
       declaration.type.properties,
       declaration.typeParameters,
       declaration.exported,
@@ -479,21 +486,21 @@ function emitTypeAlias(declaration: Readonly<IrTypeAliasDeclaration>, context: E
     );
   }
   return [
-    `${declaration.exported ? 'pub ' : ''}type ${safeRustTypeName(declaration.name)}${emitTypeParameters(declaration.typeParameters, context)} = ${emitType(declaration.type, context)};`,
+    `${declaration.exported ? 'pub ' : ''}type ${getBindingTargetNameRust(declaration.binding, context)}${emitTypeParameters(declaration.typeParameters, context)} = ${emitType(declaration.type, context)};`,
   ];
 }
 
-function emitTypeArguments(parameters: readonly IrTypeParameter[]): string {
+function emitTypeArguments(parameters: readonly IrTypeParameter[], context: EmitContext): string {
   return parameters.length === 0
     ? ''
-    : `<${parameters.map((parameter) => safeRustTypeName(parameter.name)).join(', ')}>`;
+    : `<${parameters.map((parameter) => getBindingTargetNameRust(parameter.binding, context)).join(', ')}>`;
 }
 
 function emitTypeParameters(parameters: readonly IrTypeParameter[], context: EmitContext): string {
   if (parameters.length === 0) return '';
   return `<${parameters
     .map((parameter) => {
-      const name = safeRustTypeName(parameter.name);
+      const name = getBindingTargetNameRust(parameter.binding, context);
       return `${name}${parameter.constraint ? `: ${emitType(parameter.constraint, context)}` : ''}`;
     })
     .join(', ')}>`;
@@ -516,19 +523,33 @@ function emitVariableDeclaration(declaration: Readonly<IrVariableDeclaration>, c
   ];
 }
 
-function getBindingTargetNameRust(binding: Readonly<IrBindingIdentity>, context: EmitContext): string {
+function getBindingTargetNameRust(
+  binding: Readonly<IrBindingIdentity | IrTypeBindingIdentity>,
+  context: EmitContext,
+): string {
   const targetName = context.targetNames.get(binding.id);
   if (!targetName) emissionError(context, `binding ${binding.name} has no Rust target name allocation`);
   return targetName;
 }
 
-function getPreferredBindingNameRust(binding: Readonly<IrBindingIdentity>, constants: ReadonlySet<string>): string {
+function getPreferredBindingNameRust(
+  binding: Readonly<IrBindingIdentity | IrTypeBindingIdentity>,
+  constants: ReadonlySet<string>,
+): string {
   if (constants.has(binding.id)) return screamingSnakeCase(binding.name);
-  return binding.kind === 'class' ||
+  return binding.space === 'type' ||
+    binding.kind === 'class' ||
     binding.kind === 'enum' ||
     (binding.kind === 'import' && /^[A-Z]/u.test(binding.name))
     ? safeRustTypeName(binding.name)
     : safeRustValueName(binding.name);
+}
+
+function getTypeReferenceTargetNameRust(type: Readonly<IrTypeReference>, context: EmitContext): string {
+  if (type.reference.kind === 'ambient') return safeRustTypeName(type.reference.name);
+  return [getBindingTargetNameRust(type.reference.binding, context), ...type.reference.path.map(safeRustTypeName)].join(
+    '::',
+  );
 }
 
 function emissionError(context: EmitContext, message: string): never {

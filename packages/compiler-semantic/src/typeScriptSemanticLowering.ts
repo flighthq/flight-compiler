@@ -37,9 +37,12 @@ import type {
   IrTupleTypeElement,
   IrType,
   IrTypeAliasDeclaration,
+  IrTypeBindingIdentity,
+  IrTypeNameReference,
   IrTypeParameter,
   IrTypeReference,
   IrUnaryOperatorSemantics,
+  IrValueNameReference,
   IrVariable,
   IrVariableDeclaration,
   TypeScriptLoweringResult,
@@ -52,6 +55,7 @@ interface LoweringContext {
   diagnostics: CompilerDiagnostic[];
   options: Readonly<LowerTypeScriptSourceOptions>;
   sourceFile: ts.SourceFile;
+  typeBindings: Map<ts.Symbol, IrTypeBindingIdentity>;
 }
 
 interface TypeScriptAnalysis {
@@ -77,6 +81,7 @@ export function lowerTypeScriptSource(
     diagnostics: [],
     options,
     sourceFile: analysis.sourceFile,
+    typeBindings: new Map(),
   };
   const declarations: IrDeclaration[] = [];
   const exports: IrExport[] = [];
@@ -367,14 +372,11 @@ function lowerExport(node: ts.ExportDeclaration | ts.ExportAssignment, context: 
     const imported = importedNode.text;
     const exported = element.name.text;
     const bindingTypeOnly = typeOnly || element.isTypeOnly;
-    return specifier
-      ? { exported, imported, kind: 'reexport', specifier, typeOnly: bindingTypeOnly }
-      : {
-          binding: lowerExportBindingIdentity(element, importedNode, context),
-          exported,
-          kind: 'local',
-          typeOnly: bindingTypeOnly,
-        };
+    if (specifier) return { exported, imported, kind: 'reexport', specifier, typeOnly: bindingTypeOnly };
+    const binding = lowerExportBindingIdentity(element, importedNode, context);
+    return binding.space === 'type'
+      ? { binding, exported, kind: 'local', typeOnly: true }
+      : { binding, exported, kind: 'local', typeOnly: bindingTypeOnly };
   });
 }
 
@@ -525,9 +527,13 @@ function lowerExpressionWithTypeArguments(
 ): IrTypeReference {
   return {
     kind: 'named',
-    name: node.expression.getText(context.sourceFile),
+    reference: lowerExpressionTypeNameReference(node.expression, context),
     typeArguments: node.typeArguments?.map((type) => lowerType(type, context)) ?? [],
   };
+}
+
+function lowerExpressionTypeNameReference(expression: ts.Expression, context: LoweringContext): IrTypeNameReference {
+  return lowerTypeNameNodeReference(expression, context);
 }
 
 function lowerFunction(
@@ -578,41 +584,43 @@ function lowerImports(sourceFile: ts.SourceFile, context: LoweringContext): IrIm
     const bindings: IrImportBinding[] = [];
     const clause = statement.importClause;
     if (clause?.name) {
-      bindings.push({
-        binding: lowerBindingIdentity(clause.name, context),
-        imported: 'default',
-        typeOnly: clause.isTypeOnly,
-      });
+      bindings.push(lowerImportBindingIdentity(clause.name, 'default', clause.isTypeOnly, context));
     }
     const namedBindings = clause?.namedBindings;
     if (namedBindings && ts.isNamespaceImport(namedBindings)) {
-      bindings.push({
-        binding: lowerBindingIdentity(namedBindings.name, context),
-        imported: '*',
-        typeOnly: clause.isTypeOnly,
-      });
+      bindings.push(lowerImportBindingIdentity(namedBindings.name, '*', clause.isTypeOnly, context));
     } else if (namedBindings && ts.isNamedImports(namedBindings)) {
       for (const binding of namedBindings.elements) {
-        bindings.push({
-          imported: binding.propertyName?.text ?? binding.name.text,
-          binding: lowerBindingIdentity(binding.name, context),
-          typeOnly: clause.isTypeOnly || binding.isTypeOnly,
-        });
+        const typeOnly = clause.isTypeOnly || binding.isTypeOnly;
+        bindings.push(
+          lowerImportBindingIdentity(binding.name, binding.propertyName?.text ?? binding.name.text, typeOnly, context),
+        );
       }
     }
     return [{ bindings, specifier: statement.moduleSpecifier.text }];
   });
 }
 
+function lowerImportBindingIdentity(
+  name: ts.Identifier,
+  imported: string,
+  typeOnly: boolean,
+  context: LoweringContext,
+): IrImportBinding {
+  return typeOnly
+    ? { binding: lowerTypeBindingIdentity(name, context), imported, typeOnly: true }
+    : { binding: lowerBindingIdentity(name, context), imported, typeOnly: false };
+}
+
 function lowerInterface(node: ts.InterfaceDeclaration, context: LoweringContext): IrInterfaceDeclaration {
   return {
+    binding: lowerTypeBindingIdentity(node.name, context),
     exported: isExported(node),
     extends:
       node.heritageClauses?.flatMap((clause) =>
         clause.types.map((type) => lowerExpressionWithTypeArguments(type, context)),
       ) ?? [],
     kind: 'interface',
-    name: node.name.text,
     origin: origin(node, context),
     properties: lowerTypeProperties(node.members, context),
     typeParameters: lowerTypeParameters(node.typeParameters, context),
@@ -826,10 +834,11 @@ function lowerType(node: ts.TypeNode, context: LoweringContext): IrType {
   if (ts.isTypeReferenceNode(node)) {
     const name = node.typeName.getText(context.sourceFile);
     const arguments_ = node.typeArguments?.map((type) => lowerType(type, context)) ?? [];
-    if ((name === 'Array' || name === 'ReadonlyArray') && arguments_.length === 1) {
+    const reference = lowerTypeNameReference(node.typeName, context);
+    if (reference.kind === 'ambient' && (name === 'Array' || name === 'ReadonlyArray') && arguments_.length === 1) {
       return { element: arguments_[0]!, kind: 'array', readonly: name === 'ReadonlyArray' };
     }
-    return { kind: 'named', name, typeArguments: arguments_ };
+    return { kind: 'named', reference, typeArguments: arguments_ };
   }
   if (ts.isArrayTypeNode(node))
     return { element: lowerType(node.elementType, context), kind: 'array', readonly: false };
@@ -890,19 +899,63 @@ function lowerType(node: ts.TypeNode, context: LoweringContext): IrType {
       object: lowerType(node.objectType, context),
     };
   }
-  if (ts.isTypeQueryNode(node)) return { kind: 'typeOf', name: node.exprName.getText(context.sourceFile) };
+  if (ts.isTypeQueryNode(node)) return { kind: 'typeOf', reference: lowerValueNameReference(node.exprName, context) };
   unsupported(node, `unsupported type ${ts.SyntaxKind[node.kind]}`);
 }
 
 function lowerTypeAlias(node: ts.TypeAliasDeclaration, context: LoweringContext): IrTypeAliasDeclaration {
   return {
+    binding: lowerTypeBindingIdentity(node.name, context),
     exported: isExported(node),
     kind: 'typeAlias',
-    name: node.name.text,
     origin: origin(node, context),
     type: lowerType(node.type, context),
     typeParameters: lowerTypeParameters(node.typeParameters, context),
   };
+}
+
+function lowerTypeNameReference(node: ts.EntityName, context: LoweringContext): IrTypeNameReference {
+  return lowerTypeNameNodeReference(node, context);
+}
+
+function lowerTypeNameNodeReference(
+  node: ts.EntityName | ts.Expression,
+  context: LoweringContext,
+): IrTypeNameReference {
+  const parts = getTypeNameNodeParts(node);
+  if (!parts) return { kind: 'ambient', name: node.getText(context.sourceFile) };
+  const symbol = context.checker.getSymbolAtLocation(parts.root);
+  if (symbol?.declarations?.some(isValueBindingDeclaration)) {
+    return { binding: lowerBindingSymbol(symbol, parts.root, context), kind: 'binding', path: parts.path };
+  }
+  if (symbol?.declarations?.some(isTypeBindingDeclaration)) {
+    return { binding: lowerTypeBindingSymbol(symbol, parts.root, context), kind: 'binding', path: parts.path };
+  }
+  return { kind: 'ambient', name: node.getText(context.sourceFile) };
+}
+
+function lowerValueNameReference(node: ts.EntityName, context: LoweringContext): IrValueNameReference {
+  const parts = getTypeNameNodeParts(node);
+  if (!parts) return { kind: 'ambient', name: node.getText(context.sourceFile) };
+  const symbol = context.checker.getSymbolAtLocation(parts.root);
+  return symbol?.declarations?.some(isValueBindingDeclaration)
+    ? { binding: lowerBindingSymbol(symbol, parts.root, context), kind: 'binding', path: parts.path }
+    : { kind: 'ambient', name: node.getText(context.sourceFile) };
+}
+
+function getTypeNameNodeParts(
+  node: ts.EntityName | ts.Expression,
+): Readonly<{ path: readonly string[]; root: ts.Identifier }> | undefined {
+  if (ts.isIdentifier(node)) return { path: [], root: node };
+  if (ts.isQualifiedName(node)) {
+    const left = getTypeNameNodeParts(node.left);
+    return left ? { path: [...left.path, node.right.text], root: left.root } : undefined;
+  }
+  if (ts.isPropertyAccessExpression(node)) {
+    const left = getTypeNameNodeParts(node.expression);
+    return left ? { path: [...left.path, node.name.text], root: left.root } : undefined;
+  }
+  return undefined;
 }
 
 function lowerTypeProperties(members: readonly ts.TypeElement[], context: LoweringContext): IrObjectTypeProperty[] {
@@ -944,9 +997,9 @@ function lowerTypeParameters(
 ): IrTypeParameter[] {
   return (
     nodes?.map((node) => ({
+      binding: lowerTypeBindingIdentity(node.name, context),
       ...(node.constraint ? { constraint: lowerType(node.constraint, context) } : {}),
       ...(node.default ? { default: lowerType(node.default, context) } : {}),
-      name: node.name.text,
     })) ?? []
   );
 }
@@ -1114,7 +1167,7 @@ function createTypeScriptAnalysis(sourceFile: ts.SourceFile): TypeScriptAnalysis
 
 function lowerIdentifierReference(node: ts.Identifier, context: LoweringContext): IrIdentifierReference {
   const symbol = context.checker.getSymbolAtLocation(node);
-  return symbol?.declarations?.some(isBindingDeclaration)
+  return symbol?.declarations?.some(isValueBindingDeclaration)
     ? { binding: lowerBindingSymbol(symbol, node, context), kind: 'binding' }
     : { kind: 'ambient', name: node.text };
 }
@@ -1123,10 +1176,12 @@ function lowerExportBindingIdentity(
   node: ts.ExportSpecifier,
   name: ts.Identifier,
   context: LoweringContext,
-): IrBindingIdentity {
+): IrBindingIdentity | IrTypeBindingIdentity {
   const symbol = context.checker.getExportSpecifierLocalTargetSymbol(node);
   if (!symbol) unsupported(name, `export binding ${name.text} cannot be resolved`);
-  return lowerBindingSymbol(symbol, name, context);
+  if (symbol.declarations?.some(isValueBindingDeclaration)) return lowerBindingSymbol(symbol, name, context);
+  if (symbol.declarations?.some(isTypeBindingDeclaration)) return lowerTypeBindingSymbol(symbol, name, context);
+  return unsupported(name, `export binding ${name.text} has no supported declaration`);
 }
 
 function lowerBindingIdentity(node: ts.Identifier, context: LoweringContext): IrBindingIdentity {
@@ -1138,7 +1193,7 @@ function lowerBindingIdentity(node: ts.Identifier, context: LoweringContext): Ir
 function lowerBindingSymbol(symbol: ts.Symbol, node: ts.Identifier, context: LoweringContext): IrBindingIdentity {
   const cached = context.bindings.get(symbol);
   if (cached) return cached;
-  const declaration = symbol.declarations?.find(isBindingDeclaration);
+  const declaration = symbol.declarations?.find(isValueBindingDeclaration);
   if (!declaration) return unsupported(node, `binding ${node.text} has no supported declaration`);
   const name = bindingDeclarationName(declaration);
   const source = relativeSource(context.sourceFile.fileName, context.options.upstreamDirectory);
@@ -1148,6 +1203,7 @@ function lowerBindingSymbol(symbol: ts.Symbol, node: ts.Identifier, context: Low
     kind: bindingDeclarationKind(declaration),
     name: name.text,
     scope: bindingDeclarationScope(declaration),
+    space: 'value',
   };
   context.bindings.set(symbol, binding);
   return binding;
@@ -1160,24 +1216,20 @@ type TypeScriptBindingDeclaration =
   | ts.FunctionExpression
   | ts.ImportClause
   | ts.ImportSpecifier
-  | ts.InterfaceDeclaration
   | ts.NamespaceImport
   | ts.ParameterDeclaration
-  | ts.TypeAliasDeclaration
   | ts.VariableDeclaration;
 
-function isBindingDeclaration(node: ts.Declaration): node is TypeScriptBindingDeclaration {
+function isValueBindingDeclaration(node: ts.Declaration): node is TypeScriptBindingDeclaration {
   return (
     ts.isClassDeclaration(node) ||
     ts.isEnumDeclaration(node) ||
     ts.isFunctionDeclaration(node) ||
     ts.isFunctionExpression(node) ||
-    ts.isImportClause(node) ||
-    ts.isImportSpecifier(node) ||
-    ts.isInterfaceDeclaration(node) ||
-    ts.isNamespaceImport(node) ||
+    (ts.isImportClause(node) && !isTypeOnlyImportBindingDeclaration(node)) ||
+    (ts.isImportSpecifier(node) && !isTypeOnlyImportBindingDeclaration(node)) ||
+    (ts.isNamespaceImport(node) && !isTypeOnlyImportBindingDeclaration(node)) ||
     ts.isParameter(node) ||
-    ts.isTypeAliasDeclaration(node) ||
     ts.isVariableDeclaration(node)
   );
 }
@@ -1193,10 +1245,77 @@ function bindingDeclarationKind(node: TypeScriptBindingDeclaration): IrBindingKi
   if (ts.isEnumDeclaration(node)) return 'enum';
   if (ts.isFunctionDeclaration(node) || ts.isFunctionExpression(node)) return 'function';
   if (ts.isImportClause(node) || ts.isImportSpecifier(node) || ts.isNamespaceImport(node)) return 'import';
-  if (ts.isInterfaceDeclaration(node)) return 'interface';
   if (ts.isParameter(node)) return 'parameter';
-  if (ts.isTypeAliasDeclaration(node)) return 'typeAlias';
   return ts.isCatchClause(node.parent) ? 'catch' : 'variable';
+}
+
+type TypeScriptTypeBindingDeclaration =
+  | ts.ImportClause
+  | ts.ImportSpecifier
+  | ts.InterfaceDeclaration
+  | ts.NamespaceImport
+  | ts.TypeAliasDeclaration
+  | ts.TypeParameterDeclaration;
+
+function isTypeBindingDeclaration(node: ts.Declaration): node is TypeScriptTypeBindingDeclaration {
+  return (
+    ts.isInterfaceDeclaration(node) ||
+    ts.isTypeAliasDeclaration(node) ||
+    ts.isTypeParameterDeclaration(node) ||
+    ((ts.isImportClause(node) || ts.isImportSpecifier(node) || ts.isNamespaceImport(node)) &&
+      isTypeOnlyImportBindingDeclaration(node))
+  );
+}
+
+function isTypeOnlyImportBindingDeclaration(node: ts.ImportClause | ts.ImportSpecifier | ts.NamespaceImport): boolean {
+  if (ts.isImportSpecifier(node) && node.isTypeOnly) return true;
+  for (let current: ts.Node | undefined = node; current; current = current.parent) {
+    if (ts.isImportClause(current)) return current.isTypeOnly;
+    if (ts.isImportDeclaration(current)) return false;
+  }
+  return false;
+}
+
+function lowerTypeBindingIdentity(node: ts.Identifier, context: LoweringContext): IrTypeBindingIdentity {
+  const symbol = context.checker.getSymbolAtLocation(node);
+  if (!symbol) unsupported(node, `type binding ${node.text} cannot be resolved`);
+  return lowerTypeBindingSymbol(symbol, node, context);
+}
+
+function lowerTypeBindingSymbol(
+  symbol: ts.Symbol,
+  node: ts.Identifier,
+  context: LoweringContext,
+): IrTypeBindingIdentity {
+  const cached = context.typeBindings.get(symbol);
+  if (cached) return cached;
+  const declaration = symbol.declarations?.find(isTypeBindingDeclaration);
+  if (!declaration) return unsupported(node, `type binding ${node.text} has no supported declaration`);
+  const name = typeBindingDeclarationName(declaration);
+  const source = relativeSource(context.sourceFile.fileName, context.options.upstreamDirectory);
+  const binding: IrTypeBindingIdentity = {
+    ...origin(name, context),
+    id: `type-binding:${JSON.stringify([context.options.packageName, source, name.getStart(context.sourceFile)])}`,
+    kind: typeBindingDeclarationKind(declaration),
+    name: name.text,
+    scope: ts.isTypeParameterDeclaration(declaration) ? 'local' : 'module',
+    space: 'type',
+  };
+  context.typeBindings.set(symbol, binding);
+  return binding;
+}
+
+function typeBindingDeclarationKind(declaration: TypeScriptTypeBindingDeclaration): IrTypeBindingIdentity['kind'] {
+  if (ts.isInterfaceDeclaration(declaration)) return 'interface';
+  if (ts.isTypeAliasDeclaration(declaration)) return 'typeAlias';
+  if (ts.isTypeParameterDeclaration(declaration)) return 'typeParameter';
+  return 'import';
+}
+
+function typeBindingDeclarationName(declaration: TypeScriptTypeBindingDeclaration): ts.Identifier {
+  const name = declaration.name;
+  if (!name || !ts.isIdentifier(name)) unsupported(declaration, 'type binding declarations require identifier names');
+  return name;
 }
 
 function bindingDeclarationScope(node: TypeScriptBindingDeclaration): IrBindingScope {

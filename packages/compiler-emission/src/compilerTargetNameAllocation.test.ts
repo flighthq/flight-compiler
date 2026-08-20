@@ -87,6 +87,7 @@ describe('createIrModuleTargetNameAllocation', () => {
       name,
       packageName: '@flighthq/math',
       scope: 'local' as const,
+      space: 'value' as const,
       source: 'value.ts',
     });
     const moduleBinding = { ...binding('module', 'value'), scope: 'module' as const };

@@ -144,15 +144,20 @@ export function applySemanticPatchSet(
 }
 
 function declarationSemanticName(declaration: Readonly<IrDeclaration>): string {
-  return declaration.kind === 'interface' || declaration.kind === 'typeAlias'
-    ? declaration.name
-    : declaration.binding.name;
+  return declaration.binding.name;
 }
 
 function renameSemanticDeclaration(declaration: Readonly<IrDeclaration>, name: string): IrDeclaration {
-  return declaration.kind === 'interface' || declaration.kind === 'typeAlias'
-    ? { ...declaration, name }
-    : { ...declaration, binding: { ...declaration.binding, name } };
+  switch (declaration.kind) {
+    case 'class':
+    case 'enum':
+    case 'function':
+    case 'variable':
+      return { ...declaration, binding: { ...declaration.binding, name } };
+    case 'interface':
+    case 'typeAlias':
+      return { ...declaration, binding: { ...declaration.binding, name } };
+  }
 }
 
 function comparePatchPrecedence(left: Readonly<SemanticPatch>, right: Readonly<SemanticPatch>): number {

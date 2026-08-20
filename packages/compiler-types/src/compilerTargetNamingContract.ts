@@ -1,4 +1,4 @@
-import type { IrBindingIdentity } from './compilerBindingIntermediateRepresentation.js';
+import type { IrBindingIdentity, IrTypeBindingIdentity } from './compilerBindingIntermediateRepresentation.js';
 
 export interface CompilerTargetNameCandidate {
   readonly identity: string;
@@ -7,7 +7,7 @@ export interface CompilerTargetNameCandidate {
 }
 
 export type CompilerTargetNamePreference = (
-  binding: Readonly<IrBindingIdentity>,
+  binding: Readonly<IrBindingIdentity | IrTypeBindingIdentity>,
 ) => Readonly<{ namespace: string; preferredName: string }>;
 
 export interface CompilerTargetNameAllocation {
