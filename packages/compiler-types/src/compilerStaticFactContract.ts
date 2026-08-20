@@ -3,8 +3,16 @@ import type {
   IrTypedArrayElementWidth,
   IrTypedArrayReceiver,
 } from './compilerAccessSemanticIntermediateRepresentation.js';
-import type { IrBinaryOperator } from './compilerOperatorIntermediateRepresentation.js';
-import type { IrOperatorValueDomain } from './compilerOperatorSemanticIntermediateRepresentation.js';
+import type {
+  IrAssignmentOperator,
+  IrBinaryOperator,
+  IrPostfixUnaryOperator,
+  IrPrefixUnaryOperator,
+} from './compilerOperatorIntermediateRepresentation.js';
+import type {
+  IrOperatorOperandDomains,
+  IrOperatorValueDomain,
+} from './compilerOperatorSemanticIntermediateRepresentation.js';
 
 export type CompilerStaticTruthinessContext =
   | 'conditionalExpression'
@@ -13,6 +21,38 @@ export type CompilerStaticTruthinessContext =
   | 'negationOperand';
 
 export type CompilerStaticIndexedAccessMode = 'read' | 'readWrite' | 'write';
+
+export type CompilerStaticNumericArithmeticFact =
+  | Readonly<{
+      kind: 'numericArithmetic';
+      left: IrOperatorOperandDomains;
+      operation: 'assignment';
+      operator: Extract<IrAssignmentOperator, '%=' | '**=' | '*=' | '+=' | '-=' | '/='>;
+      result: 'bigint' | 'number';
+      right: IrOperatorOperandDomains;
+    }>
+  | Readonly<{
+      kind: 'numericArithmetic';
+      left: IrOperatorOperandDomains;
+      operation: 'binary';
+      operator: Extract<IrBinaryOperator, '%' | '**' | '*' | '+' | '-' | '/'>;
+      result: 'bigint' | 'number';
+      right: IrOperatorOperandDomains;
+    }>
+  | Readonly<{
+      kind: 'numericArithmetic';
+      operand: IrOperatorOperandDomains;
+      operation: 'postfixUnary';
+      operator: IrPostfixUnaryOperator;
+      result: 'bigint' | 'number';
+    }>
+  | Readonly<{
+      kind: 'numericArithmetic';
+      operand: IrOperatorOperandDomains;
+      operation: 'prefixUnary';
+      operator: Extract<IrPrefixUnaryOperator, '+' | '++' | '-' | '--'>;
+      result: 'bigint' | 'number';
+    }>;
 
 export type CompilerStaticFactCount =
   | Readonly<{
@@ -26,6 +66,7 @@ export type CompilerStaticFactCount =
       domain: 'bigint' | 'number';
       kind: 'numericRelation';
     }>
+  | (CompilerStaticNumericArithmeticFact & Readonly<{ count: number }>)
   | Readonly<{
       count: number;
       kind: 'logicalExpression';
@@ -55,5 +96,5 @@ export type CompilerStaticFactCount =
 export interface CompilerStaticFactAudit {
   readonly facts: readonly CompilerStaticFactCount[];
   readonly modules: number;
-  readonly schema: 'flight-compiler-static-facts/4';
+  readonly schema: 'flight-compiler-static-facts/5';
 }

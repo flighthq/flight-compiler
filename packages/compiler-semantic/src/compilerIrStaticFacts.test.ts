@@ -43,6 +43,15 @@ describe('analyzeIrModulesStaticFacts', () => {
           result: 'boolean',
           right: 'boolean',
         },
+        {
+          count: 1,
+          kind: 'numericArithmetic',
+          left: { declared: 'number', flow: 'number' },
+          operation: 'assignment',
+          operator: '+=',
+          result: 'number',
+          right: { declared: 'number', flow: 'number' },
+        },
         { count: 1, domain: 'number', kind: 'numericRelation' },
         { context: 'conditionalExpression', count: 1, domain: 'unknown', kind: 'truthiness' },
         { context: 'controlFlowCondition', count: 3, domain: 'boolean', kind: 'truthiness' },
@@ -50,10 +59,88 @@ describe('analyzeIrModulesStaticFacts', () => {
         { context: 'negationOperand', count: 1, domain: 'boolean', kind: 'truthiness' },
       ],
       modules: 1,
-      schema: 'flight-compiler-static-facts/4',
+      schema: 'flight-compiler-static-facts/5',
     });
     expect(analyzeIrModulesStaticFacts([lowered.module])).toEqual(analyzeIrModulesStaticFacts([lowered.module]));
     expect(lowered.module).toEqual(snapshot);
+  });
+
+  it('audits arithmetic operation shape and narrowed storage without target policy', () => {
+    const sourceFile = ts.createSourceFile(
+      '/flight/packages/math/src/arithmetic.ts',
+      `
+        export function calculate(value: number | string, other: number | boolean, text: string): number {
+          if (typeof value === 'number' && typeof other === 'number') {
+            value += other;
+            value + other;
+            value + other;
+            value++;
+            -value;
+            +text;
+            text + text;
+            return value;
+          }
+          return 0;
+        }
+        export function subtract(left: bigint, right: bigint): bigint { return left - right; }
+      `,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const lowered = lowerTypeScriptSource(sourceFile, {
+      packageName: '@flighthq/math',
+      upstreamDirectory: '/flight',
+    });
+    const facts = analyzeIrModulesStaticFacts([lowered.module]).facts.filter(
+      (fact) => fact.kind === 'numericArithmetic',
+    );
+
+    expect(lowered.diagnostics).toEqual([]);
+    expect(facts).toEqual([
+      {
+        count: 1,
+        kind: 'numericArithmetic',
+        left: { declared: 'unknown', flow: 'number' },
+        operation: 'assignment',
+        operator: '+=',
+        result: 'number',
+        right: { declared: 'unknown', flow: 'number' },
+      },
+      {
+        count: 2,
+        kind: 'numericArithmetic',
+        left: { declared: 'unknown', flow: 'number' },
+        operation: 'binary',
+        operator: '+',
+        result: 'number',
+        right: { declared: 'unknown', flow: 'number' },
+      },
+      {
+        count: 1,
+        kind: 'numericArithmetic',
+        left: { declared: 'bigint', flow: 'bigint' },
+        operation: 'binary',
+        operator: '-',
+        result: 'bigint',
+        right: { declared: 'bigint', flow: 'bigint' },
+      },
+      {
+        count: 1,
+        kind: 'numericArithmetic',
+        operand: { declared: 'unknown', flow: 'number' },
+        operation: 'postfixUnary',
+        operator: '++',
+        result: 'number',
+      },
+      {
+        count: 1,
+        kind: 'numericArithmetic',
+        operand: { declared: 'unknown', flow: 'number' },
+        operation: 'prefixUnary',
+        operator: '-',
+        result: 'number',
+      },
+    ]);
   });
 
   it('separates unknown and object truthiness and omits nullish coalescing from truthiness', () => {
@@ -85,7 +172,7 @@ describe('analyzeIrModulesStaticFacts', () => {
     expect(analyzeIrModulesStaticFacts([])).toEqual({
       facts: [],
       modules: 0,
-      schema: 'flight-compiler-static-facts/4',
+      schema: 'flight-compiler-static-facts/5',
     });
   });
 
@@ -290,12 +377,46 @@ describe('combineCompilerStaticFactAudits', () => {
           receivers: ['uint16Array', 'uint32Array'],
           widths: [16, 32],
         },
+        {
+          count: 3,
+          kind: 'numericArithmetic',
+          left: { declared: 'unknown', flow: 'number' },
+          operation: 'assignment',
+          operator: '+=',
+          result: 'number',
+          right: { declared: 'unknown', flow: 'number' },
+        },
+        {
+          count: 3,
+          kind: 'numericArithmetic',
+          left: { declared: 'unknown', flow: 'number' },
+          operation: 'binary',
+          operator: '+',
+          result: 'number',
+          right: { declared: 'unknown', flow: 'number' },
+        },
+        {
+          count: 3,
+          kind: 'numericArithmetic',
+          operand: { declared: 'unknown', flow: 'number' },
+          operation: 'postfixUnary',
+          operator: '++',
+          result: 'number',
+        },
+        {
+          count: 3,
+          kind: 'numericArithmetic',
+          operand: { declared: 'unknown', flow: 'number' },
+          operation: 'prefixUnary',
+          operator: '-',
+          result: 'number',
+        },
         { count: 3, domain: 'number', kind: 'numericRelation' },
         { context: 'controlFlowCondition', count: 3, domain: 'boolean', kind: 'truthiness' },
         { count: 3, kind: 'typedArraySet', receivers: ['uint16Array', 'uint32Array'] },
       ],
       modules: 3,
-      schema: 'flight-compiler-static-facts/4',
+      schema: 'flight-compiler-static-facts/5',
     });
     expect([first, second]).toEqual(snapshot);
     expect(combined.facts[0]).not.toBe(first.facts[0]);
@@ -303,6 +424,32 @@ describe('combineCompilerStaticFactAudits', () => {
       throw new Error('Expected indexed-access facts');
     }
     expect(combined.facts[0].receivers).not.toBe(first.facts[0].receivers);
+    const combinedArithmetic = combined.facts.find(
+      (fact) => fact.kind === 'numericArithmetic' && fact.operation === 'binary',
+    );
+    const firstArithmetic = first.facts.find(
+      (fact) => fact.kind === 'numericArithmetic' && fact.operation === 'binary',
+    );
+    if (
+      combinedArithmetic?.kind !== 'numericArithmetic' ||
+      combinedArithmetic.operation !== 'binary' ||
+      firstArithmetic?.kind !== 'numericArithmetic' ||
+      firstArithmetic.operation !== 'binary'
+    ) {
+      throw new Error('Expected binary numeric-arithmetic facts');
+    }
+    expect(combinedArithmetic.left).not.toBe(firstArithmetic.left);
+    expect(combinedArithmetic.right).not.toBe(firstArithmetic.right);
+    const combinedUnary = combined.facts.find(
+      (fact) => fact.kind === 'numericArithmetic' && fact.operation === 'prefixUnary',
+    );
+    const firstUnary = first.facts.find(
+      (fact) => fact.kind === 'numericArithmetic' && fact.operation === 'prefixUnary',
+    );
+    if (combinedUnary?.operation !== 'prefixUnary' || firstUnary?.operation !== 'prefixUnary') {
+      throw new Error('Expected prefix numeric-arithmetic facts');
+    }
+    expect(combinedUnary.operand).not.toBe(firstUnary.operand);
     expect(combineCompilerStaticFactAudits([second, first])).toEqual(combineCompilerStaticFactAudits([first, second]));
   });
 
@@ -314,7 +461,7 @@ describe('combineCompilerStaticFactAudits', () => {
     expect(combineCompilerStaticFactAudits([])).toEqual({
       facts: [],
       modules: 0,
-      schema: 'flight-compiler-static-facts/4',
+      schema: 'flight-compiler-static-facts/5',
     });
     expect(combineCompilerStaticFactAudits([combineCompilerStaticFactAudits([first, second]), third])).toEqual(
       combineCompilerStaticFactAudits([first, combineCompilerStaticFactAudits([second, third])]),
@@ -339,6 +486,40 @@ function createAudit(count: number, modules: number, reverse = false): CompilerS
       receivers: ['uint16Array', 'uint32Array'],
       widths: [16, 32],
     },
+    {
+      count,
+      kind: 'numericArithmetic',
+      left: { declared: 'unknown', flow: 'number' },
+      operation: 'assignment',
+      operator: '+=',
+      result: 'number',
+      right: { declared: 'unknown', flow: 'number' },
+    },
+    {
+      count,
+      kind: 'numericArithmetic',
+      left: { declared: 'unknown', flow: 'number' },
+      operation: 'binary',
+      operator: '+',
+      result: 'number',
+      right: { declared: 'unknown', flow: 'number' },
+    },
+    {
+      count,
+      kind: 'numericArithmetic',
+      operand: { declared: 'unknown', flow: 'number' },
+      operation: 'postfixUnary',
+      operator: '++',
+      result: 'number',
+    },
+    {
+      count,
+      kind: 'numericArithmetic',
+      operand: { declared: 'unknown', flow: 'number' },
+      operation: 'prefixUnary',
+      operator: '-',
+      result: 'number',
+    },
     { count, domain: 'number', kind: 'numericRelation' },
     { context: 'controlFlowCondition', count, domain: 'boolean', kind: 'truthiness' },
     { count, kind: 'typedArraySet', receivers: ['uint16Array', 'uint32Array'] },
@@ -346,6 +527,6 @@ function createAudit(count: number, modules: number, reverse = false): CompilerS
   return {
     facts: reverse ? [...facts].reverse() : facts,
     modules,
-    schema: 'flight-compiler-static-facts/4',
+    schema: 'flight-compiler-static-facts/5',
   };
 }

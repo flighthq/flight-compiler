@@ -2,6 +2,7 @@ import type {
   CompilerStaticFactAudit,
   CompilerStaticFactCount,
   CompilerStaticIndexedAccessMode,
+  CompilerStaticNumericArithmeticFact,
   CompilerStaticTruthinessContext,
   IrBinaryOperator,
   IrBinaryOperatorSemantics,
@@ -9,12 +10,14 @@ import type {
   IrExpression,
   IrIndexedReceiver,
   IrModule,
+  IrOperatorOperandDomains,
   IrOperatorValueDomain,
   IrStatement,
   IrTypedArrayElementWidth,
   IrTypedArrayReceiver,
   IrVariable,
 } from '../../compiler-types/src/index.js';
+import { getCompilerStaticNumericArithmeticFact } from './compilerStaticNumericArithmetic.js';
 
 interface StaticFactAnalysis {
   counts: Map<string, { count: number; fact: StaticFact }>;
@@ -34,6 +37,7 @@ type StaticFact =
       result: IrOperatorValueDomain;
       right: IrOperatorValueDomain;
     }>
+  | CompilerStaticNumericArithmeticFact
   | Readonly<{
       access: CompilerStaticIndexedAccessMode;
       kind: 'indexedAccess';
@@ -79,6 +83,14 @@ function addIndexedAccessFact(
 ): void {
   const normalized = [...new Set(receivers)].sort() as [IrIndexedReceiver, ...IrIndexedReceiver[]];
   addStaticFact({ access, kind: 'indexedAccess', receivers: normalized }, analysis);
+}
+
+function addNumericArithmeticFact(
+  expression: Readonly<Extract<IrExpression, { kind: 'assignment' | 'binary' | 'unary' }>>,
+  analysis: StaticFactAnalysis,
+): void {
+  const fact = getCompilerStaticNumericArithmeticFact(expression);
+  if (fact) addStaticFact(fact, analysis);
 }
 
 function addNumericRelationFact(domain: 'bigint' | 'number', analysis: StaticFactAnalysis): void {
@@ -188,6 +200,7 @@ function analyzeExpression(
       if (expression.operator === '&&=' || expression.operator === '||=') {
         addTruthinessFact('logicalOperand', expression.left, analysis, expression.semantics.left.flow);
       }
+      addNumericArithmeticFact(expression, analysis);
       const leftAccess = expression.operator === '=' ? 'write' : 'readWrite';
       analyzeExpression(expression.left, analysis, leftAccess);
       analyzeExpression(expression.right, analysis, 'read');
@@ -202,6 +215,7 @@ function analyzeExpression(
         addTruthinessFact('logicalOperand', expression.left, analysis, expression.semantics.left.flow);
         addLogicalExpressionFact(expression.operator, expression.semantics, analysis);
       }
+      addNumericArithmeticFact(expression, analysis);
       if (
         (expression.operator === '<' ||
           expression.operator === '<=' ||
@@ -267,6 +281,7 @@ function analyzeExpression(
       if (expression.operator === '!') {
         addTruthinessFact('negationOperand', expression.operand, analysis, expression.semantics.operand.flow);
       }
+      addNumericArithmeticFact(expression, analysis);
       analyzeExpression(
         expression.operand,
         analysis,
@@ -368,8 +383,12 @@ function createStaticFactAudit(analysis: StaticFactAnalysis, modules: number): C
       .map(({ count, fact }): CompilerStaticFactCount => ({ ...fact, count }) as CompilerStaticFactCount)
       .sort(compareStaticFacts),
     modules,
-    schema: 'flight-compiler-static-facts/4',
+    schema: 'flight-compiler-static-facts/5',
   };
+}
+
+function cloneOperatorOperandDomains(domains: Readonly<IrOperatorOperandDomains>): IrOperatorOperandDomains {
+  return { declared: domains.declared, flow: domains.flow };
 }
 
 function getExpressionValueDomain(expression: Readonly<IrExpression>): IrOperatorValueDomain {
@@ -431,6 +450,43 @@ function getStaticFactWithoutCount(fact: CompilerStaticFactCount): StaticFact {
         receivers: [...fact.receivers] as typeof fact.receivers,
         widths: [...fact.widths] as typeof fact.widths,
       };
+    case 'numericArithmetic':
+      switch (fact.operation) {
+        case 'assignment':
+          return {
+            kind: fact.kind,
+            left: cloneOperatorOperandDomains(fact.left),
+            operation: fact.operation,
+            operator: fact.operator,
+            result: fact.result,
+            right: cloneOperatorOperandDomains(fact.right),
+          };
+        case 'binary':
+          return {
+            kind: fact.kind,
+            left: cloneOperatorOperandDomains(fact.left),
+            operation: fact.operation,
+            operator: fact.operator,
+            result: fact.result,
+            right: cloneOperatorOperandDomains(fact.right),
+          };
+        case 'postfixUnary':
+          return {
+            kind: fact.kind,
+            operand: cloneOperatorOperandDomains(fact.operand),
+            operation: fact.operation,
+            operator: fact.operator,
+            result: fact.result,
+          };
+        case 'prefixUnary':
+          return {
+            kind: fact.kind,
+            operand: cloneOperatorOperandDomains(fact.operand),
+            operation: fact.operation,
+            operator: fact.operator,
+            result: fact.result,
+          };
+      }
     case 'numericRelation':
       return { domain: fact.domain, kind: fact.kind };
     case 'truthiness':
@@ -463,6 +519,31 @@ function staticFactIdentity(fact: StaticFact): string {
       return JSON.stringify([fact.kind, fact.operator, fact.left, fact.right, fact.result]);
     case 'mixedWidthIndexedWrite':
       return JSON.stringify([fact.kind, fact.receivers, fact.widths]);
+    case 'numericArithmetic':
+      switch (fact.operation) {
+        case 'assignment':
+        case 'binary':
+          return JSON.stringify([
+            fact.kind,
+            fact.operation,
+            fact.operator,
+            fact.left.declared,
+            fact.left.flow,
+            fact.right.declared,
+            fact.right.flow,
+            fact.result,
+          ]);
+        case 'postfixUnary':
+        case 'prefixUnary':
+          return JSON.stringify([
+            fact.kind,
+            fact.operation,
+            fact.operator,
+            fact.operand.declared,
+            fact.operand.flow,
+            fact.result,
+          ]);
+      }
     case 'numericRelation':
       return JSON.stringify([fact.kind, fact.domain]);
     case 'truthiness':

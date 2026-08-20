@@ -87,7 +87,7 @@ Strengths:
 - Interface, type-alias, type-parameter, and type-only-import declarations introduce a distinct type-space identity; classes, enums, and ordinary imports intentionally retain their dual-space value identity when referenced as types.
 - Named types and `typeof` queries distinguish resolved binding roots from ambient names and preserve qualified member paths separately. Shadowed type parameters therefore resolve by symbol rather than spelling, while standard ambient types remain eligible for explicit backend mappings.
 - Target-name allocation covers value and type introductions in one deterministic target namespace. Haxe and Rust backends use the allocated identity for declarations, imports, type parameters, and type references. Internal bindings are renamable when target case or keyword normalization collides; public declarations keep their preferred target spelling, win over internal collisions, and fail with a tagged allocation refusal when two fixed spellings collide.
-- A versioned target-neutral static-fact vocabulary distinguishes truthiness source context and value domain, logical-expression operator and complete domain tuple, numeric relation domain, and indexed read/write mode without naming a target runtime operation.
+- A versioned target-neutral static-fact vocabulary distinguishes truthiness source context and value domain, logical-expression operator and complete domain tuple, numeric relation domain, numeric arithmetic operation/operator and declared-versus-flow operand domains, and indexed read/write mode without naming a target runtime operation.
 - Element access preserves a non-empty normalized set of source receiver identities, including mutable or readonly arrays, every standard numeric typed-array family, strings, structural objects, and unknown receivers. Union aliases retain their members instead of introducing target-specific compound names.
 - Typed-array `set` calls carry their exact normalized receiver set only when checker and declaration evidence classifies every possible receiver as a typed array; an ordinary array or object member with the same spelling remains an ordinary call.
 - Typed-array element widths are neutral source facts. The static audit reports writes through receiver unions with distinct fixed widths while retaining their exact receiver and width sets; equal-width alternatives, open array unions, reads, and deletes do not acquire a target escape policy.
@@ -96,7 +96,7 @@ Strengths:
 Open foundation work:
 
 - The neutral IR is an initial coverage-driven model, not yet a reviewed complete vocabulary.
-- Operator semantics now preserve static primitive operand and result domains, but target lowering for coercive, nullable, bigint, symbol, object, and uncertain-domain operations remains intentionally incomplete.
+- Operator semantics preserve declared and flow-sensitive primitive operand domains separately from result domains. Numeric arithmetic audits retain that evidence by operation and operator, but target lowering for coercive, nullable, bigint, symbol, object, and uncertain-domain operations remains intentionally incomplete.
 - Structural member names and qualified type-reference member paths remain textual. Member identity should be introduced only when a demonstrated lowering or patch operation must distinguish declarations beyond their resolved root symbol.
 - Declaration merging is not yet represented as an explicit neutral operation; a future corpus-driven slice must choose whether to merge supported declarations during semantic lowering or reject the shape with a structured diagnostic.
 - There is no versioned serialization/parser boundary for persisted IR; adding one prematurely would freeze the provisional model.
@@ -151,13 +151,13 @@ Each workspace passes its own strict typecheck and Vitest target. The package bo
 | `compiler-patch` | Keep independent because patch identity and auditing are a separate lifecycle. | All operations and failure codes, deterministic ordering, backend skipping, and caller-input immutability are exercised. |
 | `compiler-emission` | Keep independent as the portable emitted-file and backend-failure seam. | Path/content normalization, host-path rejection, portable path and target-name collision identity, fixed-versus-renamable lexical allocation, indentation boundaries, and tagged failure guards are exercised. |
 | `compiler-inventory` | Keep independent as the first read-only composition above identity. | Package discovery yields validated, portable, deterministically ordered manifest, dependency, bin, production-import, host-module, evidence-backed tooling-exclusion, and checker-resolved production host-endpoint facts; every manifest, project, Git, export-graph, source-resolution, runtime-classification, SDK, endpoint-receiver, and exclusion failure is tagged for message-independent handling. Host receiver classification enters through an explicit neutral capability; target runtime implementation coverage remains downstream. |
-| `compiler-semantic` | Keep together for now; it owns TypeScript-to-neutral lowering and analysis over that neutral model. | Deterministic TypeScript-backed value bindings, operator value-domain analysis, normalized indexed receiver sets, and a versioned immutable static-fact audit cover truthiness, numeric relations, indexed access, typed-array set calls, and mixed-width indexed writes across every IR container; most production Flight semantics remain unported. |
+| `compiler-semantic` | Keep together for now; it owns TypeScript-to-neutral lowering and analysis over that neutral model. | Deterministic TypeScript-backed value bindings, declared-versus-flow operator domains, normalized indexed receiver sets, and a versioned immutable static-fact audit cover truthiness, numeric relations and arithmetic, indexed access, typed-array set calls, and mixed-width indexed writes across every IR container; most production Flight semantics remain unported. |
 | `compiler-backend-hx` | Keep together; naming was split into a focused sibling source, not a workspace. | Package/module identity, collision-free value/type binding allocation, keyword and case normalization, ambient-versus-bound references, and direct-versus-coercive operator decisions are direct-tested; production lowering and byte-stable parity remain open. |
 | `compiler-backend-rs` | Keep together; naming and Rust keyword identity are focused sibling primitives. | Package/module identity, collision-free value/type binding allocation, keyword and case normalization, identity-based declarations/references, and direct-versus-lowered operator decisions are covered; ownership and production parity remain open. |
 | `compiler-orchestration` | Keep independent as deterministic pass composition. | Duplicate identities and paths, diagnostics, patch flow, normalization, ordering, and input immutability are exercised. |
 | `tool-compiler` | Keep as the only public workspace and dependency assembly boundary. | The facade and packed artifact are checked; its final downstream request/result contract is not frozen. |
 
-No new workspace follows from this review. A large file alone is not a package domain. Split another flat sibling source when it owns a stable concept with a direct test; create another `compiler-*` workspace only when that concept also needs an independent dependency or lifecycle boundary. In particular, do not split target lowering from target emission until an explicit target model exists between them, and do not split semantic syntax families merely to export provisional helper APIs.
+The current isolation review did not create another workspace. A large file alone is not a package domain. Split another flat sibling source when it owns a stable concept with a direct test; create another `compiler-*` workspace only when that concept also needs an independent dependency or lifecycle boundary. A later cross-target refusal review identified pure target-neutral IR-to-IR desugaring as the first credible `compiler-lowering` boundary. The next batch must prove that boundary with a concrete transform and lifecycle contract before creating it; target naming, ecosystem policy, and source emission remain backend concerns.
 
 ## Bedrock-first work order
 
@@ -187,11 +187,17 @@ The deterministic-ordering batch completed three bounded iterations:
 2. Remove host-locale ordering from semantic patch selection and audits.
 3. Remove host-locale ordering from orchestration modules, diagnostics, and emitted output.
 
-The next semantic-numeric batch has three bounded iterations:
+The semantic-numeric batch completed three bounded iterations:
 
 1. Introduce a named declared-versus-flow operand-domain contract and migrate operator semantics without changing backend behavior.
 2. Populate declared and flow domains from checker evidence, including explicitly typed unions narrowed at an operation site.
 3. Audit numeric arithmetic operations by operator and declared/flow domains so target backends can identify narrowed storage without target policy in the neutral IR.
+
+The next control-flow-lowering batch has three bounded iterations:
+
+1. Define a pure, deterministic `compiler-lowering` IR-to-IR pass contract by implementing C-style `for` normalization with explicit unsupported-shape diagnostics and caller-input immutability.
+2. Preserve JavaScript `continue` behavior by inserting the increment only for continues that target the normalized loop, without rewriting continues owned by nested loops.
+3. Compose lowering explicitly before both target backends and lock initializer scope, omitted conditions, break/continue behavior, deterministic diagnostics, and cross-target golden output.
 
 ## Freeze rule
 
