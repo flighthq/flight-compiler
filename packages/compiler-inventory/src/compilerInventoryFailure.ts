@@ -34,5 +34,6 @@ const compilerInventoryFailureCodes = {
   'invalid-package-manifest': true,
   'invalid-package-scope': true,
   'missing-packages-directory': true,
+  'package-exclusion-drift': true,
   'unsupported-dynamic-import': true,
 } as const satisfies Readonly<Record<CompilerInventoryFailureCode, true>>;

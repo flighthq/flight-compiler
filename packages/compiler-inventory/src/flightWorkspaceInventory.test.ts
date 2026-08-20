@@ -28,6 +28,7 @@ describe('analyzeFlightWorkspace', () => {
       expect(inventory.summary).toEqual({
         exportConflicts: 0,
         exportLanes: 3,
+        excludedPackages: 0,
         exports: 9,
         hostDependencies: 0,
         hostImports: 0,
@@ -179,6 +180,7 @@ function createPackageInventory(exportLanes: PackageExportLane[]): PackageInvent
     bins: [],
     dependencies: [],
     directory: 'packages/types',
+    exclusion: null,
     exportLanes,
     hostFacts: { dependencies: [], imports: [] },
     imports: [],

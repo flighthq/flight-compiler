@@ -74,10 +74,24 @@ export interface PackageHostFacts {
   readonly imports: readonly PackageHostModuleReference[];
 }
 
+export interface PackageExclusionEvidence {
+  readonly bins: readonly PackageBinEntry[];
+  readonly hostDependencies: readonly PackageHostModuleReference[];
+  readonly hostImports: readonly PackageHostModuleReference[];
+  readonly sdkExposures: readonly SdkExposure[];
+}
+
+export interface PackageExclusion {
+  readonly evidence: PackageExclusionEvidence;
+  readonly reason: string;
+  readonly rule: 'node-playwright-tooling';
+}
+
 export interface PackageInventory {
   readonly bins: readonly PackageBinEntry[];
   readonly dependencies: readonly string[];
   readonly directory: string;
+  readonly exclusion: PackageExclusion | null;
   readonly exportLanes: readonly PackageExportLane[];
   readonly hostFacts: PackageHostFacts;
   readonly imports: readonly PackageImportRecord[];
@@ -95,6 +109,7 @@ export interface UpstreamInventory {
   readonly summary: {
     readonly exportConflicts: number;
     readonly exportLanes: number;
+    readonly excludedPackages: number;
     readonly exports: number;
     readonly hostDependencies: number;
     readonly hostImports: number;
@@ -108,11 +123,17 @@ export interface UpstreamInventory {
 }
 
 export interface AnalyzeFlightWorkspaceOptions {
+  readonly expectedExclusionPackageNames?: readonly string[] | undefined;
   readonly packageScope?: string | undefined;
   readonly packagesDirectory?: string | undefined;
   readonly sdkPackageName?: string | undefined;
   readonly tsconfigPath?: string | undefined;
   readonly upstreamDirectory: string;
+}
+
+export interface AnalyzeFlightPackageExclusionsOptions {
+  readonly expectedPackageNames?: readonly string[] | undefined;
+  readonly packages: readonly Readonly<PackageInventory>[];
 }
 
 export interface ReadFlightPackageManifestsOptions {
@@ -132,6 +153,7 @@ export type CompilerInventoryFailureCode =
   | 'invalid-package-manifest'
   | 'invalid-package-scope'
   | 'missing-packages-directory'
+  | 'package-exclusion-drift'
   | 'unsupported-dynamic-import';
 
 export interface CompilerInventoryFailure extends Error {

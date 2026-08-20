@@ -12,6 +12,7 @@ describe('analyzeFlightPackageHostFacts', () => {
     };
     const imports: PackageImportRecord[] = [
       createImport('node:fs'),
+      createImport('node:path'),
       createImport('@playwright/test'),
       createImport('@playwright/test'),
       createImport('@flighthq/types'),
@@ -26,6 +27,7 @@ describe('analyzeFlightPackageHostFacts', () => {
       ],
       imports: [
         { kind: 'node', specifier: 'node:fs' },
+        { kind: 'node', specifier: 'node:path' },
         { kind: 'playwright', specifier: '@playwright/test' },
       ],
     });

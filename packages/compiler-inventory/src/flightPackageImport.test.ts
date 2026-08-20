@@ -13,9 +13,10 @@ describe('analyzeFlightPackageImports', () => {
       write(
         upstream,
         'packages/math/src/zeta.ts',
-        "import type { Shape } from './shape.js';\nimport value from 'node:path';\nexport * from '@flighthq/types';\nconst task = import('@playwright/test');\nimport fs = require('node:fs');\nvoid Shape; void value; void task; void fs;\n",
+        "import type { Shape } from './shape.js';\nimport { value as shapeValue } from './shape.js';\nimport value from 'node:path';\nexport type * from './shape.js';\nexport * from '@flighthq/types';\nconst task = import('@playwright/test');\nimport fs = require('node:fs');\nvoid Shape; void shapeValue; void value; void task; void fs;\n",
       );
       write(upstream, 'packages/math/src/alpha.ts', "import 'electron';\nimport 'electron';\n");
+      write(upstream, 'packages/math/src/nested/view.tsx', "import '@capacitor/core';\nexport const view = <div />;\n");
       write(upstream, 'packages/math/src/ignored.test.ts', "import '@tauri-apps/api';\n");
       write(upstream, 'packages/math/src/ignored.d.ts', "import '@capacitor/core';\n");
 
@@ -30,6 +31,24 @@ describe('analyzeFlightPackageImports', () => {
         },
         {
           kind: 'import',
+          source: 'packages/math/src/nested/view.tsx',
+          specifier: '@capacitor/core',
+          typeOnly: false,
+        },
+        {
+          kind: 'import',
+          source: 'packages/math/src/zeta.ts',
+          specifier: './shape.js',
+          typeOnly: false,
+        },
+        {
+          kind: 'import',
+          source: 'packages/math/src/zeta.ts',
+          specifier: './shape.js',
+          typeOnly: true,
+        },
+        {
+          kind: 'reexport',
           source: 'packages/math/src/zeta.ts',
           specifier: './shape.js',
           typeOnly: true,

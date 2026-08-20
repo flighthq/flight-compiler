@@ -1,4 +1,5 @@
 export { createCompilerInventoryFailure, isCompilerInventoryFailure } from './compilerInventoryFailure.js';
+export { analyzeFlightPackageExclusions } from './flightPackageExclusion.js';
 export { analyzeFlightPackageHostFacts } from './flightPackageHostFacts.js';
 export { analyzeFlightPackageImports } from './flightPackageImport.js';
 export { readFlightPackageManifests } from './flightPackageManifest.js';

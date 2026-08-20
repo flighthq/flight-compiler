@@ -22,6 +22,7 @@ describe('compiler inventory contracts', () => {
       bins: [{ name: 'math', target: './dist/cli.js' }],
       dependencies: [],
       directory: 'packages/math',
+      exclusion: null,
       exportLanes: [lane],
       hostFacts: { dependencies: [], imports: [] },
       imports: [],
@@ -38,6 +39,7 @@ describe('compiler inventory contracts', () => {
       summary: {
         exportConflicts: 1,
         exportLanes: 1,
+        excludedPackages: 0,
         exports: 1,
         hostDependencies: 0,
         hostImports: 0,

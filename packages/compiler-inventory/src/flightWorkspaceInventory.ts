@@ -19,6 +19,7 @@ import type {
   SdkExposure,
   UpstreamInventory,
 } from '../../compiler-types/src/index.js';
+import { analyzeFlightPackageExclusions } from './flightPackageExclusion.js';
 import { analyzeFlightPackageHostFacts } from './flightPackageHostFacts.js';
 import { analyzeFlightPackageImports } from './flightPackageImport.js';
 import { readFlightPackageManifests } from './flightPackageManifest.js';
@@ -111,6 +112,7 @@ export function analyzeFlightWorkspace(options: Readonly<AnalyzeFlightWorkspaceO
       bins: packageManifest.bins,
       dependencies: packageManifest.dependencies,
       directory: relativeSource(descriptor.directory, upstreamDirectory),
+      exclusion: null,
       exportLanes,
       hostFacts: analyzeFlightPackageHostFacts(packageManifest, imports),
       imports,
@@ -132,7 +134,7 @@ export function analyzeFlightWorkspace(options: Readonly<AnalyzeFlightWorkspaceO
     exportDescriptors,
     packageScope,
   );
-  const completedPackageInventories = sortedPackageInventories.map((item): PackageInventory => {
+  const exposedPackageInventories = sortedPackageInventories.map((item): PackageInventory => {
     const packageSdkExposures = sdkExposures.get(item.name) ?? [];
     return {
       ...item,
@@ -140,6 +142,13 @@ export function analyzeFlightWorkspace(options: Readonly<AnalyzeFlightWorkspaceO
       sdkIncluded: packageSdkExposures.length > 0,
     };
   });
+  const exclusions = analyzeFlightPackageExclusions({
+    ...(options.expectedExclusionPackageNames ? { expectedPackageNames: options.expectedExclusionPackageNames } : {}),
+    packages: exposedPackageInventories,
+  });
+  const completedPackageInventories = exposedPackageInventories.map(
+    (item): PackageInventory => ({ ...item, exclusion: exclusions.get(item.name) ?? null }),
+  );
 
   return {
     packages: completedPackageInventories,
@@ -149,6 +158,7 @@ export function analyzeFlightWorkspace(options: Readonly<AnalyzeFlightWorkspaceO
         sum(item.exportLanes, (lane) => lane.exportConflicts.length),
       ),
       exportLanes: sum(completedPackageInventories, (item) => item.exportLanes.length),
+      excludedPackages: exclusions.size,
       exports: sum(completedPackageInventories, (item) => sum(item.exportLanes, (lane) => lane.exports.length)),
       hostDependencies: sum(completedPackageInventories, (item) => item.hostFacts.dependencies.length),
       hostImports: sum(completedPackageInventories, (item) => item.hostFacts.imports.length),
