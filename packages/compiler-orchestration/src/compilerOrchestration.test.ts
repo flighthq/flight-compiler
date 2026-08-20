@@ -45,6 +45,18 @@ describe('compileIrModules', () => {
     expect(modules).toEqual([zeta, alpha]);
   });
 
+  it('orders module and emitted-path identities by code unit rather than host locale', () => {
+    const modules = ['éclair', 'alpha', 'Zulu'].map((name) => ({
+      ...createModule(name),
+      source: 'packages/math/src/shared.ts',
+    }));
+
+    const result = compileIrModules({ backend: fixtureBackend, backendOptions: {}, modules });
+
+    expect(result.compilation.files.map((file) => file.path)).toEqual(['Zulu.txt', 'alpha.txt', 'éclair.txt']);
+    expect(modules.map((module) => module.name)).toEqual(['éclair', 'alpha', 'Zulu']);
+  });
+
   it('returns inspectable invariant failures for duplicate module and output identities', () => {
     const module = createModule('Value');
 
@@ -194,6 +206,33 @@ describe('createCompilerDiagnosticsFailure', () => {
     diagnostics.reverse();
     late.message = 'changed';
     expect(failure.diagnostics).toEqual([early, { ...late, message: 'late' }]);
+  });
+
+  it('orders diagnostic identities by code unit rather than host locale', () => {
+    const createDiagnostic = (packageName: string, message: string): CompilerDiagnostic => ({
+      code: 'unsupported-typescript',
+      column: 1,
+      line: 1,
+      message,
+      packageName,
+      source: 'shared.ts',
+    });
+    const diagnostics = [
+      createDiagnostic('@flighthq/éclair', 'éclair'),
+      createDiagnostic('@flighthq/alpha', 'alpha'),
+      createDiagnostic('@flighthq/Zulu', 'Zulu'),
+    ];
+
+    expect(
+      createCompilerDiagnosticsFailure(diagnostics).diagnostics.map((diagnostic) => diagnostic.packageName),
+    ).toEqual(['@flighthq/Zulu', '@flighthq/alpha', '@flighthq/éclair']);
+    expect(
+      createCompilerDiagnosticsFailure([
+        createDiagnostic('@flighthq/shared', 'éclair'),
+        createDiagnostic('@flighthq/shared', 'alpha'),
+        createDiagnostic('@flighthq/shared', 'Zulu'),
+      ]).diagnostics.map((diagnostic) => diagnostic.message),
+    ).toEqual(['Zulu', 'alpha', 'éclair']);
   });
 });
 

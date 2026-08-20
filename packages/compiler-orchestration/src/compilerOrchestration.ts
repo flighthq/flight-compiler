@@ -90,17 +90,17 @@ export function parseTypeScriptSource(fileName: string, source: string): ts.Sour
 
 function compareDiagnostics(left: Readonly<CompilerDiagnostic>, right: Readonly<CompilerDiagnostic>): number {
   return (
-    left.packageName.localeCompare(right.packageName) ||
-    left.source.localeCompare(right.source) ||
+    compareText(left.packageName, right.packageName) ||
+    compareText(left.source, right.source) ||
     left.line - right.line ||
     left.column - right.column ||
-    left.code.localeCompare(right.code) ||
-    left.message.localeCompare(right.message)
+    compareText(left.code, right.code) ||
+    compareText(left.message, right.message)
   );
 }
 
 function compareEmittedFiles(left: Readonly<EmittedFile>, right: Readonly<EmittedFile>): number {
-  return left.path < right.path ? -1 : left.path > right.path ? 1 : 0;
+  return compareText(left.path, right.path);
 }
 
 function isCompilerDiagnosticValue(value: unknown): value is CompilerDiagnostic {
@@ -129,10 +129,14 @@ function isCompilerDiagnosticValue(value: unknown): value is CompilerDiagnostic 
 
 function compareModules(left: Readonly<IrModule>, right: Readonly<IrModule>): number {
   return (
-    left.packageName.localeCompare(right.packageName) ||
-    left.source.localeCompare(right.source) ||
-    left.name.localeCompare(right.name)
+    compareText(left.packageName, right.packageName) ||
+    compareText(left.source, right.source) ||
+    compareText(left.name, right.name)
   );
+}
+
+function compareText(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
 }
 
 function validateEmittedFiles(files: readonly EmittedFile[]): void {
