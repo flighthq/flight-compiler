@@ -9,6 +9,7 @@ import type {
   IrModule,
   IrOperatorValueDomain,
   IrStatement,
+  IrTypedArrayElementWidth,
   IrTypedArrayReceiver,
   IrVariable,
 } from '../../compiler-types/src/index.js';
@@ -32,6 +33,11 @@ type StaticFact =
   | Readonly<{
       kind: 'typedArraySet';
       receivers: readonly [IrTypedArrayReceiver, ...IrTypedArrayReceiver[]];
+    }>
+  | Readonly<{
+      kind: 'mixedWidthIndexedWrite';
+      receivers: readonly [IrTypedArrayReceiver, IrTypedArrayReceiver, ...IrTypedArrayReceiver[]];
+      widths: readonly [IrTypedArrayElementWidth, IrTypedArrayElementWidth, ...IrTypedArrayElementWidth[]];
     }>;
 
 export function analyzeIrModulesStaticFacts(modules: readonly Readonly<IrModule>[]): CompilerStaticFactAudit {
@@ -47,7 +53,7 @@ export function analyzeIrModulesStaticFacts(modules: readonly Readonly<IrModule>
       .map(({ count, fact }): CompilerStaticFactCount => ({ ...fact, count }) as CompilerStaticFactCount)
       .sort(compareStaticFacts),
     modules: modules.length,
-    schema: 'flight-compiler-static-facts/1',
+    schema: 'flight-compiler-static-facts/2',
   };
 }
 
@@ -62,6 +68,27 @@ function addIndexedAccessFact(
 
 function addNumericRelationFact(domain: 'bigint' | 'number', analysis: StaticFactAnalysis): void {
   addStaticFact({ domain, kind: 'numericRelation' }, analysis);
+}
+
+function addMixedWidthIndexedWriteFact(
+  access: CompilerStaticIndexedAccessMode,
+  receivers: readonly [IrIndexedReceiver, ...IrIndexedReceiver[]],
+  analysis: StaticFactAnalysis,
+): void {
+  if (access === 'read' || !receivers.every(isIrTypedArrayReceiver)) return;
+  const normalizedReceivers = [...new Set(receivers)].sort() as IrTypedArrayReceiver[];
+  const widths = [...new Set(normalizedReceivers.map((receiver) => typedArrayElementWidths[receiver]))].sort(
+    (left, right) => left - right,
+  );
+  if (normalizedReceivers.length < 2 || widths.length < 2) return;
+  addStaticFact(
+    {
+      kind: 'mixedWidthIndexedWrite',
+      receivers: normalizedReceivers as [IrTypedArrayReceiver, IrTypedArrayReceiver, ...IrTypedArrayReceiver[]],
+      widths: widths as [IrTypedArrayElementWidth, IrTypedArrayElementWidth, ...IrTypedArrayElementWidth[]],
+    },
+    analysis,
+  );
 }
 
 function addStaticFact(fact: StaticFact, analysis: StaticFactAnalysis): void {
@@ -117,7 +144,7 @@ function analyzeDeclaration(declaration: Readonly<IrDeclaration>, analysis: Stat
 function analyzeExpression(
   expression: Readonly<IrExpression>,
   analysis: StaticFactAnalysis,
-  indexedAccess: CompilerStaticIndexedAccessMode,
+  indexedAccess: CompilerStaticIndexedAccessMode | undefined,
 ): void {
   switch (expression.kind) {
     case 'array':
@@ -173,7 +200,10 @@ function analyzeExpression(
       analyzeExpression(expression.whenFalse, analysis, 'read');
       return;
     case 'element':
-      addIndexedAccessFact(indexedAccess, expression.semantics.receivers, analysis);
+      if (indexedAccess) {
+        addIndexedAccessFact(indexedAccess, expression.semantics.receivers, analysis);
+        addMixedWidthIndexedWriteFact(indexedAccess, expression.semantics.receivers, analysis);
+      }
       analyzeExpression(expression.object, analysis, 'read');
       analyzeExpression(expression.index, analysis, 'read');
       return;
@@ -210,7 +240,7 @@ function analyzeExpression(
         expression.operator === '++' || expression.operator === '--'
           ? 'readWrite'
           : expression.operator === 'delete'
-            ? 'write'
+            ? undefined
             : 'read',
       );
       return;
@@ -342,6 +372,10 @@ function isVariableList(value: IrExpression | readonly IrVariable[] | undefined)
   return Array.isArray(value);
 }
 
+function isIrTypedArrayReceiver(value: IrIndexedReceiver): value is IrTypedArrayReceiver {
+  return value !== 'array' && value !== 'object' && value !== 'string' && value !== 'unknown';
+}
+
 function analyzeInitializer(
   value: Readonly<{ initializer?: IrExpression | undefined }>,
   analysis: StaticFactAnalysis,
@@ -353,6 +387,8 @@ function staticFactIdentity(fact: StaticFact): string {
   switch (fact.kind) {
     case 'indexedAccess':
       return JSON.stringify([fact.kind, fact.access, fact.receivers]);
+    case 'mixedWidthIndexedWrite':
+      return JSON.stringify([fact.kind, fact.receivers, fact.widths]);
     case 'numericRelation':
       return `${fact.kind}\0${fact.domain}`;
     case 'truthiness':
@@ -361,3 +397,17 @@ function staticFactIdentity(fact: StaticFact): string {
       return JSON.stringify([fact.kind, fact.receivers]);
   }
 }
+
+const typedArrayElementWidths: Readonly<Record<IrTypedArrayReceiver, IrTypedArrayElementWidth>> = {
+  bigInt64Array: 64,
+  bigUint64Array: 64,
+  float32Array: 32,
+  float64Array: 64,
+  int16Array: 16,
+  int32Array: 32,
+  int8Array: 8,
+  uint16Array: 16,
+  uint32Array: 32,
+  uint8Array: 8,
+  uint8ClampedArray: 8,
+};

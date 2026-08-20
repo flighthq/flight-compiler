@@ -41,7 +41,7 @@ describe('analyzeIrModulesStaticFacts', () => {
         { context: 'negation', count: 1, domain: 'boolean', kind: 'truthiness' },
       ],
       modules: 1,
-      schema: 'flight-compiler-static-facts/1',
+      schema: 'flight-compiler-static-facts/2',
     });
     expect(analyzeIrModulesStaticFacts([lowered.module])).toEqual(analyzeIrModulesStaticFacts([lowered.module]));
     expect(lowered.module).toEqual(snapshot);
@@ -68,7 +68,7 @@ describe('analyzeIrModulesStaticFacts', () => {
     expect(analyzeIrModulesStaticFacts([])).toEqual({
       facts: [],
       modules: 0,
-      schema: 'flight-compiler-static-facts/1',
+      schema: 'flight-compiler-static-facts/2',
     });
   });
 
@@ -135,6 +135,72 @@ describe('analyzeIrModulesStaticFacts', () => {
         count: 2,
         kind: 'typedArraySet',
         receivers: ['float32Array', 'uint8Array'],
+      },
+    ]);
+  });
+
+  it('counts mixed-width typed-array writes without classifying reads, deletes, or equal widths', () => {
+    const sourceFile = ts.createSourceFile(
+      '/flight/packages/math/src/indexed-writes.ts',
+      `
+        type Mixed = Uint32Array | Uint16Array;
+        type EqualWidth = Float32Array | Int32Array;
+        type Open = Uint32Array | number[];
+        export function write(mixed: Mixed, equalWidth: EqualWidth, open: Open, index: number): number {
+          mixed[index] = 1;
+          mixed[index] += 1;
+          mixed[index]++;
+          equalWidth[index] = 1;
+          open[index] = 1;
+          delete mixed[index];
+          return mixed[index];
+        }
+      `,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const lowered = lowerTypeScriptSource(sourceFile, {
+      packageName: '@flighthq/math',
+      upstreamDirectory: '/flight',
+    });
+
+    expect(lowered.diagnostics).toEqual([]);
+    expect(analyzeIrModulesStaticFacts([lowered.module]).facts).toEqual([
+      {
+        access: 'read',
+        count: 1,
+        kind: 'indexedAccess',
+        receivers: ['uint16Array', 'uint32Array'],
+      },
+      {
+        access: 'readWrite',
+        count: 2,
+        kind: 'indexedAccess',
+        receivers: ['uint16Array', 'uint32Array'],
+      },
+      {
+        access: 'write',
+        count: 1,
+        kind: 'indexedAccess',
+        receivers: ['array', 'uint32Array'],
+      },
+      {
+        access: 'write',
+        count: 1,
+        kind: 'indexedAccess',
+        receivers: ['float32Array', 'int32Array'],
+      },
+      {
+        access: 'write',
+        count: 1,
+        kind: 'indexedAccess',
+        receivers: ['uint16Array', 'uint32Array'],
+      },
+      {
+        count: 3,
+        kind: 'mixedWidthIndexedWrite',
+        receivers: ['uint16Array', 'uint32Array'],
+        widths: [16, 32],
       },
     ]);
   });

@@ -19,6 +19,8 @@ export interface IrElementAccessSemantics {
   readonly receivers: readonly [IrIndexedReceiver, ...IrIndexedReceiver[]];
 }
 
+export type IrTypedArrayElementWidth = 8 | 16 | 32 | 64;
+
 export type IrTypedArrayReceiver = Exclude<IrIndexedReceiver, 'array' | 'object' | 'string' | 'unknown'>;
 
 export interface IrTypedArraySetSemantics {

@@ -1,5 +1,9 @@
+import type {
+  IrIndexedReceiver,
+  IrTypedArrayElementWidth,
+  IrTypedArrayReceiver,
+} from './compilerAccessSemanticIntermediateRepresentation.js';
 import type { IrOperatorValueDomain } from './compilerOperatorSemanticIntermediateRepresentation.js';
-import type { IrIndexedReceiver, IrTypedArrayReceiver } from './compilerAccessSemanticIntermediateRepresentation.js';
 
 export type CompilerStaticTruthinessContext = 'condition' | 'logical' | 'negation';
 
@@ -27,10 +31,16 @@ export type CompilerStaticFactCount =
       count: number;
       kind: 'typedArraySet';
       receivers: readonly [IrTypedArrayReceiver, ...IrTypedArrayReceiver[]];
+    }>
+  | Readonly<{
+      count: number;
+      kind: 'mixedWidthIndexedWrite';
+      receivers: readonly [IrTypedArrayReceiver, IrTypedArrayReceiver, ...IrTypedArrayReceiver[]];
+      widths: readonly [IrTypedArrayElementWidth, IrTypedArrayElementWidth, ...IrTypedArrayElementWidth[]];
     }>;
 
 export interface CompilerStaticFactAudit {
   readonly facts: readonly CompilerStaticFactCount[];
   readonly modules: number;
-  readonly schema: 'flight-compiler-static-facts/1';
+  readonly schema: 'flight-compiler-static-facts/2';
 }
