@@ -3,19 +3,10 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import type {
-  CompilerInventoryFailureCode,
-  PackageExportLane,
-  PackageInventory,
-} from '../../compiler-types/src/index.js';
+import type { CompilerInventoryFailureCode } from '../../compiler-types/src/index.js';
 import { isCompilerInventoryFailure } from './compilerInventoryFailure.js';
-import {
-  analyzeFlightWorkspace,
-  getPackageInventoryRootExportLane,
-  readGitCommit,
-  readPackageExportManifest,
-  resolvePackageExportLane,
-} from './flightWorkspaceInventory.js';
+import { getPackageInventoryRootExportLane, resolvePackageExportLane } from './flightPackageExportLane.js';
+import { analyzeFlightWorkspace, readGitCommit, readPackageExportManifest } from './flightWorkspaceInventory.js';
 
 describe('analyzeFlightWorkspace', () => {
   it('resolves export lanes, runtime bindings, SDK exposure, and portable provenance', () => {
@@ -86,20 +77,6 @@ describe('analyzeFlightWorkspace', () => {
     } finally {
       rmSync(upstream, { force: true, recursive: true });
     }
-  });
-});
-
-describe('getPackageInventoryRootExportLane', () => {
-  it('returns the root lane and fails loudly when the manifest has none', () => {
-    const rootLane = createPackageExportLane('.');
-    const contractLane = createPackageExportLane('./contract');
-    const inventory = createPackageInventory([contractLane, rootLane]);
-
-    expect(getPackageInventoryRootExportLane(inventory)).toBe(rootLane);
-    expectInventoryFailure(
-      () => getPackageInventoryRootExportLane(createPackageInventory([contractLane])),
-      'missing-package-export',
-    );
   });
 });
 
@@ -200,22 +177,6 @@ describe('readPackageExportManifest', () => {
   });
 });
 
-describe('resolvePackageExportLane', () => {
-  it('resolves root and subpath lanes and rejects unsupported or unknown package identities', () => {
-    const rootLane = createPackageExportLane('.');
-    const contractLane = createPackageExportLane('./contract');
-    const inventoryByName = new Map([['@flighthq/types', createPackageInventory([rootLane, contractLane])]]);
-
-    expect(resolvePackageExportLane(inventoryByName, '@flighthq/types')).toBe(rootLane);
-    expect(resolvePackageExportLane(inventoryByName, '@flighthq/types/contract')).toBe(contractLane);
-    expectInventoryFailure(
-      () => resolvePackageExportLane(inventoryByName, 'typescript'),
-      'unsupported-package-specifier',
-    );
-    expectInventoryFailure(() => resolvePackageExportLane(inventoryByName, '@flighthq/missing'), 'unknown-package');
-  });
-});
-
 function expectInventoryFailure(run: () => unknown, code: CompilerInventoryFailureCode): void {
   let failure: unknown;
   try {
@@ -225,35 +186,6 @@ function expectInventoryFailure(run: () => unknown, code: CompilerInventoryFailu
   }
   expect(isCompilerInventoryFailure(failure)).toBe(true);
   expect(failure).toMatchObject({ code, kind: 'compiler-inventory' });
-}
-
-function createPackageExportLane(entry: string): PackageExportLane {
-  return {
-    conditions: [],
-    entry,
-    exportConflicts: [],
-    exports: [],
-    source: `packages/types/src/${entry === '.' ? 'index' : entry.slice(2)}.ts`,
-    specifier: entry === '.' ? '@flighthq/types' : `@flighthq/types/${entry.slice(2)}`,
-  };
-}
-
-function createPackageInventory(exportLanes: PackageExportLane[]): PackageInventory {
-  return {
-    bins: [],
-    dependencies: [],
-    directory: 'packages/types',
-    exclusion: null,
-    exportLanes,
-    hostFacts: { dependencies: [], imports: [] },
-    imports: [],
-    name: '@flighthq/types',
-    sdkExposures: [],
-    sdkIncluded: false,
-    sourceFiles: 0,
-    testFiles: 0,
-    version: '0.0.0',
-  };
 }
 
 function createUpstreamFixture(): string {

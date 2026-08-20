@@ -169,11 +169,17 @@ No new workspace follows from this review. A large file alone is not a package d
 6. Audit semantic IR families one at a time. Declaration, type, type-directed expression-operator, and value/type binding families now have a reviewed floor; expand them only from a demonstrated inventory or parity need.
 7. Only then expand orchestration and target backends, using downstream parity as verification of the stable primitives rather than as their design source.
 
-The current semantic-fact batch proceeds in three bounded iterations:
+The semantic-fact batch completed three bounded iterations:
 
 1. Distinguish conditional-expression, control-flow-condition, logical-operand, and negation-operand truthiness sites.
 2. Record logical-expression operators and operand/result domains separately from truthiness use.
 3. Compose version-matched static-fact audits deterministically without revisiting their source modules.
+
+The current inventory-decomposition batch proceeds in three bounded iterations:
+
+1. Isolate package export-lane lookup and specifier resolution.
+2. Isolate Git checkout revision identity.
+3. Isolate package export-map parsing and source-barrel validation.
 
 ## Freeze rule
 
