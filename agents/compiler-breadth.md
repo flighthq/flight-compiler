@@ -127,6 +127,18 @@ Per package, against the repository's own rule that a package has one irreducibl
 
 **`compiler-provenance`, `compiler-patch`, `compiler-orchestration`, `tool-compiler` — primitive.** Each has one job, states it, and does not reach beyond it. `compiler-provenance` at 130 lines is the model the others are measured against.
 
+## The one primitive that is actually duplicated
+
+`function compareText(left, right) { return left < right ? -1 : left > right ? 1 : 0; }` appears **eleven times** across four packages — emission, patch, orchestration, and seven files in inventory — byte-identical in every copy. It is not a convenience wrapper; it is the definition of deterministic ordering for this compiler, and determinism is a stated invariant rather than a style preference.
+
+Three things follow from eleven copies:
+
+- **The ordering decision is invisible.** `left < right` is UTF-16 code-unit order, which is the correct choice precisely because it is locale-independent — and nothing anywhere says so. A future contributor "fixing" one copy to `localeCompare` would make one package's output locale-dependent, and the other ten would disagree with it.
+- **It generates systematic mutation noise.** Every copy sorts values that are unique by construction, so its equality arm is unreachable and each copy contributes two permanent survivors. Eleven copies, twenty-two survivors that no test can kill, spread across four packages' reports forever.
+- **A shared primitive would be tested once, including the equality arm** that no current caller can reach but a correct total comparator must have.
+
+`compiler-provenance` is the natural home: the dependency floor already assigns it deterministic normalization and identity, and it depends on no other compiler package. This is consolidating an existing primitive rather than splitting an irreducible one, so it does not run into the overhead the composition rules warn about. It is the cheapest real determinism improvement left on the board.
+
 ## Recommended order
 
 1. **Extend the runtime contract only from demonstrated reachability.** Ambient type and value identities, completeness, constructors, static members, and target tables are explicit. Primitive `symbol`, callback, and opaque-host capabilities remain outside completeness until a target path demonstrates their required identity.
