@@ -322,6 +322,61 @@ describe('lowerTypeScriptSource', () => {
     });
   });
 
+  it('distinguishes declared operand domains from flow-narrowed checker domains', () => {
+    const result = lower(
+      'operator-narrowing.ts',
+      `
+        export function calculate(value: number | string, other: number | boolean): number {
+          if (typeof value === 'number' && typeof other === 'number') {
+            value += other;
+            -value;
+            return value + other;
+          }
+          return (value as number) + 1;
+        }
+      `,
+    );
+    const [calculate] = result.module.declarations;
+
+    expect(result.diagnostics).toEqual([]);
+    const narrowed = calculate?.kind === 'function' ? calculate.body[0] : undefined;
+    const statements =
+      narrowed?.kind === 'if' && narrowed.consequent.kind === 'block' ? narrowed.consequent.statements : [];
+    const [assignment, unary, binary] = statements;
+    if (
+      assignment?.kind !== 'expression' ||
+      assignment.expression.kind !== 'assignment' ||
+      unary?.kind !== 'expression' ||
+      unary.expression.kind !== 'unary' ||
+      binary?.kind !== 'return' ||
+      binary.expression?.kind !== 'binary'
+    ) {
+      throw new Error('Expected narrowed assignment, unary, and binary expressions');
+    }
+    expect([assignment.expression.semantics, unary.expression.semantics, binary.expression.semantics]).toEqual([
+      {
+        left: { declared: 'unknown', flow: 'number' },
+        result: 'number',
+        right: { declared: 'unknown', flow: 'number' },
+      },
+      { operand: { declared: 'unknown', flow: 'number' }, result: 'number' },
+      {
+        left: { declared: 'unknown', flow: 'number' },
+        result: 'number',
+        right: { declared: 'unknown', flow: 'number' },
+      },
+    ]);
+    const asserted = calculate?.kind === 'function' ? calculate.body[1] : undefined;
+    if (asserted?.kind !== 'return' || asserted.expression?.kind !== 'binary') {
+      throw new Error('Expected asserted binary expression');
+    }
+    expect(asserted.expression.semantics).toEqual({
+      left: { declared: 'unknown', flow: 'number' },
+      result: 'number',
+      right: { declared: 'number', flow: 'number' },
+    });
+  });
+
   it('preserves indexed receiver sets without target policy or union aliases', () => {
     const result = lower(
       'indexed-receivers.ts',

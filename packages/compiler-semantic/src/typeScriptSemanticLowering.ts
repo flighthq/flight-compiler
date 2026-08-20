@@ -1209,9 +1209,13 @@ function lowerBinaryOperatorSemantics(node: ts.BinaryExpression, context: Loweri
   };
 }
 
-function lowerOperatorOperandDomains(node: ts.Node, context: LoweringContext): IrOperatorOperandDomains {
-  const flow = lowerOperatorValueDomain(node, context);
-  return { declared: flow, flow };
+function lowerOperatorOperandDomains(node: ts.Expression, context: LoweringContext): IrOperatorOperandDomains {
+  const flowType = context.checker.getTypeAtLocation(node);
+  const declaredType = getTypeScriptExpressionDeclaredType(node, context) ?? flowType;
+  return {
+    declared: lowerTypeScriptTypeOperatorValueDomain(declaredType, context.checker),
+    flow: lowerTypeScriptTypeOperatorValueDomain(flowType, context.checker),
+  };
 }
 
 function lowerOperatorValueDomain(node: ts.Node, context: LoweringContext): IrOperatorValueDomain {
@@ -1245,6 +1249,25 @@ function lowerTypeScriptTypeOperatorValueDomain(type: ts.Type, checker: ts.TypeC
   if (type.flags & (ts.TypeFlags.Undefined | ts.TypeFlags.Void)) return 'undefined';
   if (type.flags & (ts.TypeFlags.NonPrimitive | ts.TypeFlags.Object)) return 'object';
   return 'unknown';
+}
+
+function getTypeScriptExpressionDeclaredType(expression: ts.Expression, context: LoweringContext): ts.Type | undefined {
+  if (
+    ts.isParenthesizedExpression(expression) ||
+    ts.isAsExpression(expression) ||
+    ts.isTypeAssertionExpression(expression) ||
+    ts.isSatisfiesExpression(expression) ||
+    ts.isNonNullExpression(expression)
+  ) {
+    return getTypeScriptExpressionDeclaredType(expression.expression, context);
+  }
+  const unresolved = context.checker.getSymbolAtLocation(expression);
+  const symbol =
+    unresolved?.flags && unresolved.flags & ts.SymbolFlags.Alias
+      ? context.checker.getAliasedSymbol(unresolved)
+      : unresolved;
+  const declaration = symbol?.valueDeclaration ?? symbol?.declarations?.[0];
+  return symbol && declaration ? context.checker.getTypeOfSymbolAtLocation(symbol, declaration) : undefined;
 }
 
 function lowerTypeScriptIndexedReceivers(type: ts.Type, checker: ts.TypeChecker): IrIndexedReceiver[] {
