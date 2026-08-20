@@ -108,7 +108,7 @@ Stating these matters as much as the additions, because each is a plausible-soun
 - **Target project layout** — Haxelib and Cargo structure. AGENTS.md assigns ecosystem concerns to the target repositories, and a package here would compete with them.
 - **Runtime implementations.** The contract belongs here; the implementation is downstream by the same rule.
 - **A CLI package.** A command-line entry point belongs _in_ `tool-compiler` as part of its published surface, not beside it. A separate cell would split one product across two.
-- **`compiler-utils` or any generic container.** Forbidden by [the naming contract](compiler-naming.md), and rightly: a concept that cannot be named does not have a settled boundary.
+- **`compiler-utils` or any generic container.** Forbidden by [the naming contract](compiler-naming.md), and rightly: a concept that cannot be named does not have a settled boundary. This is not an argument against the canonical-form cell below, and I first misread it as one: that concept is named, and named by this repository's own determinism rules. The container this bans is the one defined by what is left over, not by what it owns.
 - **A diagnostics-rendering cell.** Formatting a diagnostic for a human is small and has no independent lifecycle. It is a flat sibling in whichever cell owns the report.
 
 ## Are the domains suitably primitive?
@@ -127,7 +127,7 @@ Per package, against the repository's own rule that a package has one irreducibl
 
 **`compiler-provenance`, `compiler-patch`, `compiler-orchestration`, `tool-compiler` — primitive.** Each has one job, states it, and does not reach beyond it. `compiler-provenance` at 130 lines is the model the others are measured against.
 
-## The one primitive that is actually duplicated
+## Missing cell 5 — canonical form
 
 `function compareText(left, right) { return left < right ? -1 : left > right ? 1 : 0; }` appears **eleven times** across four packages — emission, patch, orchestration, and seven files in inventory — byte-identical in every copy. It is not a convenience wrapper; it is the definition of deterministic ordering for this compiler, and determinism is a stated invariant rather than a style preference.
 
@@ -137,9 +137,29 @@ Three things follow from eleven copies:
 - **It generates systematic mutation noise.** Every copy sorts values that are unique by construction, so its equality arm is unreachable and each copy contributes two permanent survivors. Eleven copies, twenty-two survivors that no test can kill, spread across four packages' reports forever.
 - **A shared primitive would be tested once, including the equality arm** that no current caller can reach but a correct total comparator must have.
 
-`compiler-provenance` is the natural home by domain — the dependency floor already assigns it deterministic normalization and identity — but a wholesale move does not survive checking. Provenance declares a `typescript` dependency, while `compiler-emission` and `compiler-patch` currently depend on `@flighthq/compiler-types` alone. Consolidating all eleven copies there would pull TypeScript into the dependency floor of two packages that deliberately do not have it, which is a poor trade for a one-line comparator. `compiler-types` cannot hold it either: it is the type-only contract workspace, and the facade re-exports it with `export type *`, so a runtime function cannot live there. A new package for determinism primitives would be the thin placeholder the composition rules explicitly reject.
+`compareText` is not the whole of it, and looking only at it is what made my first reading of this wrong. The same shape holds for **portable path form**, which is implemented six times — and in two spellings that disagree:
 
-What does survive: **seven of the eleven copies are in `compiler-inventory`, which already depends on `compiler-provenance`.** Moving those seven collapses the majority of the duplication, adds no dependency edge anywhere, and gives the ordering decision one documented definition that the remaining copies in emission, patch, and orchestration can be pointed at. Those three stay duplicated until a floor exists that does not carry TypeScript — which is a reason to keep provenance's TypeScript dependency under review, not a reason to widen it.
+- `value.split(path.sep).join('/')` in five `compiler-inventory` sources and in `compiler-semantic`. This is **host-dependent**: on POSIX `path.sep` is `/`, so a path segment containing a literal backslash is left exactly as it was.
+- `sourcePath.replaceAll('\\', '/')` in `compiler-emission` and in both backends' identity modules. This is **host-independent**: a backslash always becomes a separator.
+
+Feed both the same manifest path containing a backslash on a POSIX host and they produce different answers, so one file has two canonical identities depending on which package looked at it — and the disagreement is a function of the host. That is the exact property the modeling rules forbid ("deterministic outputs contain no ... machine-specific absolute paths") and that the foundations bar names ("callers cannot observe accidental mutation or host-platform differences"). The triggering input is unusual enough that this is a latent identity hazard rather than a live defect today, but nothing in the repository would catch it becoming one. Add Unicode canonical form (`normalize('NFC')`, twice in emission) and content normalization (CRLF collapse and single-final-newline, in emission), and the surface is three primitive families spread across six packages.
+
+### Why this is a cell and not `compiler-utils`
+
+The naming contract rightly forbids a generic container, and the test it applies is whether the concept can be **named**. This one is already named, repeatedly, by the repository itself: the modeling rules state the determinism invariant, and the foundations bar makes host-independence part of maturity. The domain is _canonical form_ — the rules that make two runs, two machines, and two operating systems agree on the same bytes. That is a settled boundary, not a leftovers drawer.
+
+It also passes the second half of the bar, which is the decisive part. A new workspace is warranted only when the concept **needs an independent dependency or lifecycle boundary**, and this one needs the strictest boundary in the repository: **zero dependencies**. That requirement is precisely why the code is duplicated rather than shared today:
+
+- `compiler-provenance` is the right home by domain, but it declares `typescript` — and it needs to, being a single source that fingerprints TypeScript syntax. `compiler-emission` and `compiler-patch` depend on `@flighthq/compiler-types` alone, deliberately. Routing a one-line comparator through provenance would pull TypeScript into the floor of two packages that have kept it out.
+- `compiler-types` cannot hold it: it is the type-only contract workspace and the facade re-exports it with `export type *`, so no runtime function can live there.
+
+There is no floor below `compiler-types` that carries runtime code, and that absence is the reason for every copy. On mass, the cell would own more than `compiler-provenance` does — provenance is one source file and is a legitimate cell — so "thin placeholder" does not apply either.
+
+### What it would own
+
+Deterministic text order; portable path form, in one spelling with the host-dependence decided; Unicode canonical form; content normalization; and the canonical serialization boundary listed as a recurring gap in the package portfolio, which currently has nowhere to go. Nothing target-specific, nothing that reads a checkout.
+
+The drift has already started: `hostWorkspaceSource.test.ts` sorts with `localeCompare` while all eleven production copies sort by code unit. It is only a test's assertion order today, and it is the first spelling of a rule that exists in eleven places and is written down in none.
 
 ## Recommended order
 
