@@ -579,7 +579,7 @@ function emitAssignmentOperatorRust(
   if (!isAssignmentOperatorDirectRust(operator, semantics)) {
     emissionError(
       context,
-      `operator ${operator} on ${semantics.left} and ${semantics.right} requires Rust type-directed lowering`,
+      `operator ${operator} on ${semantics.left.flow} and ${semantics.right.flow} requires Rust type-directed lowering`,
     );
   }
   return emitted;
@@ -595,7 +595,7 @@ function emitBinaryOperatorRust(
   if (!isBinaryOperatorDirectRust(operator, semantics)) {
     emissionError(
       context,
-      `operator ${operator} on ${semantics.left} and ${semantics.right} requires Rust type-directed lowering`,
+      `operator ${operator} on ${semantics.left.flow} and ${semantics.right.flow} requires Rust type-directed lowering`,
     );
   }
   return emitted;
@@ -613,7 +613,7 @@ function emitPrefixUnaryOperatorRust(
   const decision = rustPrefixUnaryOperatorDecision[operator];
   if ('refusal' in decision) emissionError(context, decision.refusal);
   if (!isPrefixUnaryOperatorDirectRust(operator, semantics)) {
-    emissionError(context, `operator ${operator} on ${semantics.operand} requires Rust type-directed lowering`);
+    emissionError(context, `operator ${operator} on ${semantics.operand.flow} requires Rust type-directed lowering`);
   }
   return decision.emitted;
 }
@@ -637,16 +637,16 @@ function isBinaryOperatorDirectRust(
     return hasMatchingOperatorDomains(semantics, ['number']);
   }
   if (operator === '<' || operator === '<=' || operator === '>' || operator === '>=') {
-    return semantics.left === 'number' && semantics.right === 'number' && semantics.result === 'boolean';
+    return semantics.left.flow === 'number' && semantics.right.flow === 'number' && semantics.result === 'boolean';
   }
   if (operator === '&&' || operator === '||') {
     return hasMatchingOperatorDomains(semantics, ['boolean']);
   }
   if (operator === '===' || operator === '!==') {
     return (
-      semantics.left === semantics.right &&
+      semantics.left.flow === semantics.right.flow &&
       semantics.result === 'boolean' &&
-      (semantics.left === 'boolean' || semantics.left === 'number' || semantics.left === 'string')
+      (semantics.left.flow === 'boolean' || semantics.left.flow === 'number' || semantics.left.flow === 'string')
     );
   }
   return false;
@@ -656,17 +656,19 @@ function isPrefixUnaryOperatorDirectRust(
   operator: IrPrefixUnaryOperator,
   semantics: Readonly<IrUnaryOperatorSemantics>,
 ): boolean {
-  if (operator === '!') return semantics.operand === 'boolean' && semantics.result === 'boolean';
-  if (operator === '-') return semantics.operand === 'number' && semantics.result === 'number';
+  if (operator === '!') return semantics.operand.flow === 'boolean' && semantics.result === 'boolean';
+  if (operator === '-') return semantics.operand.flow === 'number' && semantics.result === 'number';
   return false;
 }
 
 function hasMatchingOperatorDomains(
   semantics: Readonly<IrAssignmentOperatorSemantics | IrBinaryOperatorSemantics>,
-  supported: readonly IrAssignmentOperatorSemantics['left'][],
+  supported: readonly IrAssignmentOperatorSemantics['left']['flow'][],
 ): boolean {
   return (
-    semantics.left === semantics.right && semantics.left === semantics.result && supported.includes(semantics.left)
+    semantics.left.flow === semantics.right.flow &&
+    semantics.left.flow === semantics.result &&
+    supported.includes(semantics.left.flow)
   );
 }
 

@@ -9,19 +9,24 @@ export type IrOperatorValueDomain =
   | 'undefined'
   | 'unknown';
 
+export interface IrOperatorOperandDomains {
+  readonly declared: IrOperatorValueDomain;
+  readonly flow: IrOperatorValueDomain;
+}
+
 export interface IrAssignmentOperatorSemantics {
-  readonly left: IrOperatorValueDomain;
+  readonly left: IrOperatorOperandDomains;
   readonly result: IrOperatorValueDomain;
-  readonly right: IrOperatorValueDomain;
+  readonly right: IrOperatorOperandDomains;
 }
 
 export interface IrBinaryOperatorSemantics {
-  readonly left: IrOperatorValueDomain;
+  readonly left: IrOperatorOperandDomains;
   readonly result: IrOperatorValueDomain;
-  readonly right: IrOperatorValueDomain;
+  readonly right: IrOperatorOperandDomains;
 }
 
 export interface IrUnaryOperatorSemantics {
-  readonly operand: IrOperatorValueDomain;
+  readonly operand: IrOperatorOperandDomains;
   readonly result: IrOperatorValueDomain;
 }

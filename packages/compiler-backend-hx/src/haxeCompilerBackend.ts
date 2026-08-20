@@ -590,7 +590,7 @@ function emitAssignmentOperatorHaxe(
   if (!isAssignmentOperatorDirectHaxe(operator, semantics)) {
     emissionError(
       context,
-      `operator ${operator} on ${semantics.left} and ${semantics.right} requires Haxe type-directed lowering`,
+      `operator ${operator} on ${semantics.left.flow} and ${semantics.right.flow} requires Haxe type-directed lowering`,
     );
   }
   return emitted;
@@ -606,7 +606,7 @@ function emitBinaryOperatorHaxe(
   if (!isBinaryOperatorDirectHaxe(operator, semantics)) {
     emissionError(
       context,
-      `operator ${operator} on ${semantics.left} and ${semantics.right} requires Haxe type-directed lowering`,
+      `operator ${operator} on ${semantics.left.flow} and ${semantics.right.flow} requires Haxe type-directed lowering`,
     );
   }
   return emitted;
@@ -617,8 +617,8 @@ function emitPostfixUnaryOperatorHaxe(
   semantics: Readonly<IrUnaryOperatorSemantics>,
   context: EmitContext,
 ): string {
-  if (semantics.operand !== 'number' || semantics.result !== 'number') {
-    emissionError(context, `operator ${operator} on ${semantics.operand} requires Haxe type-directed lowering`);
+  if (semantics.operand.flow !== 'number' || semantics.result !== 'number') {
+    emissionError(context, `operator ${operator} on ${semantics.operand.flow} requires Haxe type-directed lowering`);
   }
   return haxePostfixUnaryOperatorEmission[operator];
 }
@@ -631,7 +631,7 @@ function emitPrefixUnaryOperatorHaxe(
   const emitted = haxePrefixUnaryOperatorEmission[operator];
   if (!emitted) emissionError(context, `operator ${operator} requires Haxe semantic lowering`);
   if (!isPrefixUnaryOperatorDirectHaxe(operator, semantics)) {
-    emissionError(context, `operator ${operator} on ${semantics.operand} requires Haxe type-directed lowering`);
+    emissionError(context, `operator ${operator} on ${semantics.operand.flow} requires Haxe type-directed lowering`);
   }
   return emitted;
 }
@@ -657,16 +657,16 @@ function isBinaryOperatorDirectHaxe(
     return hasMatchingOperatorDomains(semantics, ['number']);
   }
   if (operator === '<' || operator === '<=' || operator === '>' || operator === '>=') {
-    return semantics.left === 'number' && semantics.right === 'number' && semantics.result === 'boolean';
+    return semantics.left.flow === 'number' && semantics.right.flow === 'number' && semantics.result === 'boolean';
   }
   if (operator === '&&' || operator === '||') {
     return hasMatchingOperatorDomains(semantics, ['boolean']);
   }
   if (operator === '===' || operator === '!==') {
     return (
-      semantics.left === semantics.right &&
+      semantics.left.flow === semantics.right.flow &&
       semantics.result === 'boolean' &&
-      (semantics.left === 'boolean' || semantics.left === 'number' || semantics.left === 'string')
+      (semantics.left.flow === 'boolean' || semantics.left.flow === 'number' || semantics.left.flow === 'string')
     );
   }
   return false;
@@ -676,19 +676,21 @@ function isPrefixUnaryOperatorDirectHaxe(
   operator: IrPrefixUnaryOperator,
   semantics: Readonly<IrUnaryOperatorSemantics>,
 ): boolean {
-  if (operator === '!') return semantics.operand === 'boolean' && semantics.result === 'boolean';
+  if (operator === '!') return semantics.operand.flow === 'boolean' && semantics.result === 'boolean';
   if (operator === '+' || operator === '-' || operator === '++' || operator === '--') {
-    return semantics.operand === 'number' && semantics.result === 'number';
+    return semantics.operand.flow === 'number' && semantics.result === 'number';
   }
   return false;
 }
 
 function hasMatchingOperatorDomains(
   semantics: Readonly<IrAssignmentOperatorSemantics | IrBinaryOperatorSemantics>,
-  supported: readonly IrAssignmentOperatorSemantics['left'][],
+  supported: readonly IrAssignmentOperatorSemantics['left']['flow'][],
 ): boolean {
   return (
-    semantics.left === semantics.right && semantics.left === semantics.result && supported.includes(semantics.left)
+    semantics.left.flow === semantics.right.flow &&
+    semantics.left.flow === semantics.result &&
+    supported.includes(semantics.left.flow)
   );
 }
 

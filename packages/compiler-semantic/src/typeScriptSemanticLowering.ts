@@ -31,6 +31,7 @@ import type {
   IrIndexedReceiver,
   IrObjectMember,
   IrObjectTypeProperty,
+  IrOperatorOperandDomains,
   IrOperatorValueDomain,
   IrParameter,
   IrPostfixUnaryOperator,
@@ -1190,9 +1191,9 @@ function lowerAssignmentOperatorSemantics(
   context: LoweringContext,
 ): IrAssignmentOperatorSemantics {
   return {
-    left: lowerOperatorValueDomain(node.left, context),
+    left: lowerOperatorOperandDomains(node.left, context),
     result: lowerOperatorValueDomain(node, context),
-    right: lowerOperatorValueDomain(node.right, context),
+    right: lowerOperatorOperandDomains(node.right, context),
   };
 }
 
@@ -1202,10 +1203,15 @@ function lowerBinaryOperator(kind: TypeScriptBinaryOperator): IrBinaryOperator {
 
 function lowerBinaryOperatorSemantics(node: ts.BinaryExpression, context: LoweringContext): IrBinaryOperatorSemantics {
   return {
-    left: lowerOperatorValueDomain(node.left, context),
+    left: lowerOperatorOperandDomains(node.left, context),
     result: lowerOperatorValueDomain(node, context),
-    right: lowerOperatorValueDomain(node.right, context),
+    right: lowerOperatorOperandDomains(node.right, context),
   };
+}
+
+function lowerOperatorOperandDomains(node: ts.Node, context: LoweringContext): IrOperatorOperandDomains {
+  const flow = lowerOperatorValueDomain(node, context);
+  return { declared: flow, flow };
 }
 
 function lowerOperatorValueDomain(node: ts.Node, context: LoweringContext): IrOperatorValueDomain {
@@ -1279,7 +1285,7 @@ function lowerUnaryOperatorSemantics(
   context: LoweringContext,
 ): IrUnaryOperatorSemantics {
   return {
-    operand: lowerOperatorValueDomain(operand, context),
+    operand: lowerOperatorOperandDomains(operand, context),
     result: lowerOperatorValueDomain(node, context),
   };
 }

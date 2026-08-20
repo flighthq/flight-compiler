@@ -287,12 +287,36 @@ describe('lowerTypeScriptSource', () => {
     expect(result.diagnostics).toEqual([]);
     expect(domains).toMatchObject({
       body: [
-        { expression: { semantics: { left: 'number', result: 'number', right: 'number' } } },
-        { expression: { semantics: { left: 'string', result: 'string', right: 'string' } } },
-        { expression: { semantics: { left: 'string', result: 'string', right: 'number' } } },
-        { expression: { semantics: { operand: 'boolean', result: 'boolean' } } },
-        { expression: { semantics: { operand: 'unknown', result: 'boolean' } } },
-        { expression: { semantics: { operand: 'number', result: 'string' } } },
+        {
+          expression: {
+            semantics: {
+              left: { declared: 'number', flow: 'number' },
+              result: 'number',
+              right: { declared: 'number', flow: 'number' },
+            },
+          },
+        },
+        {
+          expression: {
+            semantics: {
+              left: { declared: 'string', flow: 'string' },
+              result: 'string',
+              right: { declared: 'string', flow: 'string' },
+            },
+          },
+        },
+        {
+          expression: {
+            semantics: {
+              left: { declared: 'string', flow: 'string' },
+              result: 'string',
+              right: { declared: 'number', flow: 'number' },
+            },
+          },
+        },
+        { expression: { semantics: { operand: { declared: 'boolean', flow: 'boolean' }, result: 'boolean' } } },
+        { expression: { semantics: { operand: { declared: 'unknown', flow: 'unknown' }, result: 'boolean' } } },
+        { expression: { semantics: { operand: { declared: 'number', flow: 'number' }, result: 'string' } } },
       ],
       kind: 'function',
     });

@@ -90,7 +90,16 @@ function addLogicalExpressionFact(
   semantics: Readonly<IrBinaryOperatorSemantics>,
   analysis: StaticFactAnalysis,
 ): void {
-  addStaticFact({ kind: 'logicalExpression', operator, ...semantics }, analysis);
+  addStaticFact(
+    {
+      kind: 'logicalExpression',
+      left: semantics.left.flow,
+      operator,
+      result: semantics.result,
+      right: semantics.right.flow,
+    },
+    analysis,
+  );
 }
 
 function addMixedWidthIndexedWriteFact(
@@ -177,7 +186,7 @@ function analyzeExpression(
       return;
     case 'assignment': {
       if (expression.operator === '&&=' || expression.operator === '||=') {
-        addTruthinessFact('logicalOperand', expression.left, analysis, expression.semantics.left);
+        addTruthinessFact('logicalOperand', expression.left, analysis, expression.semantics.left.flow);
       }
       const leftAccess = expression.operator === '=' ? 'write' : 'readWrite';
       analyzeExpression(expression.left, analysis, leftAccess);
@@ -190,7 +199,7 @@ function analyzeExpression(
       return;
     case 'binary': {
       if (expression.operator === '&&' || expression.operator === '||') {
-        addTruthinessFact('logicalOperand', expression.left, analysis, expression.semantics.left);
+        addTruthinessFact('logicalOperand', expression.left, analysis, expression.semantics.left.flow);
         addLogicalExpressionFact(expression.operator, expression.semantics, analysis);
       }
       if (
@@ -198,10 +207,10 @@ function analyzeExpression(
           expression.operator === '<=' ||
           expression.operator === '>' ||
           expression.operator === '>=') &&
-        expression.semantics.left === expression.semantics.right &&
-        (expression.semantics.left === 'bigint' || expression.semantics.left === 'number')
+        expression.semantics.left.flow === expression.semantics.right.flow &&
+        (expression.semantics.left.flow === 'bigint' || expression.semantics.left.flow === 'number')
       ) {
-        addNumericRelationFact(expression.semantics.left, analysis);
+        addNumericRelationFact(expression.semantics.left.flow, analysis);
       }
       analyzeExpression(expression.left, analysis, 'read');
       analyzeExpression(expression.right, analysis, 'read');
@@ -256,7 +265,7 @@ function analyzeExpression(
       return;
     case 'unary':
       if (expression.operator === '!') {
-        addTruthinessFact('negationOperand', expression.operand, analysis, expression.semantics.operand);
+        addTruthinessFact('negationOperand', expression.operand, analysis, expression.semantics.operand.flow);
       }
       analyzeExpression(
         expression.operand,

@@ -1,6 +1,7 @@
 import type {
   IrAssignmentOperatorSemantics,
   IrBinaryOperatorSemantics,
+  IrOperatorOperandDomains,
   IrOperatorValueDomain,
   IrUnaryOperatorSemantics,
 } from './compilerOperatorSemanticIntermediateRepresentation.js';
@@ -10,17 +11,23 @@ describe('compiler operator semantic intermediate representation contracts', () 
     expectTypeOf<IrOperatorValueDomain>().toEqualTypeOf<
       'bigint' | 'boolean' | 'null' | 'number' | 'object' | 'string' | 'symbol' | 'undefined' | 'unknown'
     >();
+    expectTypeOf<IrOperatorOperandDomains>().toEqualTypeOf<
+      Readonly<{
+        declared: IrOperatorValueDomain;
+        flow: IrOperatorValueDomain;
+      }>
+    >();
     expectTypeOf<IrAssignmentOperatorSemantics>().toEqualTypeOf<
       Readonly<{
-        left: IrOperatorValueDomain;
+        left: IrOperatorOperandDomains;
         result: IrOperatorValueDomain;
-        right: IrOperatorValueDomain;
+        right: IrOperatorOperandDomains;
       }>
     >();
     expectTypeOf<IrBinaryOperatorSemantics>().toEqualTypeOf<IrAssignmentOperatorSemantics>();
     expectTypeOf<IrUnaryOperatorSemantics>().toEqualTypeOf<
       Readonly<{
-        operand: IrOperatorValueDomain;
+        operand: IrOperatorOperandDomains;
         result: IrOperatorValueDomain;
       }>
     >();
