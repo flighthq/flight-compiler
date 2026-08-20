@@ -33,5 +33,6 @@ describe('compiler executable intermediate representation contracts', () => {
 
   it('couples postfix unary position to valid operators', () => {
     expectTypeOf<Extract<IrExpression, { kind: 'unary'; postfix: true }>['operator']>().toEqualTypeOf<'++' | '--'>();
+    expectTypeOf<Extract<IrExpression, { kind: 'binary' }>['semantics']>().toHaveProperty('result');
   });
 });

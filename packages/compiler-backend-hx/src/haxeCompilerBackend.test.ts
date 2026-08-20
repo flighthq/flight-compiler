@@ -165,6 +165,29 @@ describe('emitIrModuleHaxe', () => {
     expect(output).toContain('return ((value == right) && ! disabled);');
   });
 
+  it('emits only operators whose static domains preserve Haxe meaning', () => {
+    const strings = lower(
+      'string-operators.ts',
+      'export function join(left: string, right: string): string { return left + right; }',
+    );
+    const mixed = lower(
+      'mixed-operators.ts',
+      'export function join(left: string, right: number): string { return left + right; }',
+    );
+    const loose = lower(
+      'loose-equality.ts',
+      'export function equal(left: number, right: number): boolean { return left == right; }',
+    );
+
+    expect(emitIrModuleHaxe(strings.module).contents).toContain('return (left + right);');
+    expect(() => emitIrModuleHaxe(mixed.module)).toThrow(
+      'operator + on string and number requires Haxe type-directed lowering',
+    );
+    expect(() => emitIrModuleHaxe(loose.module)).toThrow(
+      'operator == on number and number requires Haxe type-directed lowering',
+    );
+  });
+
   it('returns a tagged emission failure', () => {
     const result = lower('unsupported.ts', 'export async function read(): Promise<number> { return 1; }');
 

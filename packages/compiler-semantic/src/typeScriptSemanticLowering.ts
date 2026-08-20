@@ -7,10 +7,12 @@ import type {
   CompilerDiagnostic,
   CompilerSourceOrigin,
   IrAssignmentOperator,
+  IrAssignmentOperatorSemantics,
   IrBindingIdentity,
   IrBindingKind,
   IrBindingScope,
   IrBinaryOperator,
+  IrBinaryOperatorSemantics,
   IrClassDeclaration,
   IrClassField,
   IrClassMethod,
@@ -27,6 +29,7 @@ import type {
   IrInterfaceDeclaration,
   IrObjectMember,
   IrObjectTypeProperty,
+  IrOperatorValueDomain,
   IrParameter,
   IrPostfixUnaryOperator,
   IrPrefixUnaryOperator,
@@ -36,6 +39,7 @@ import type {
   IrTypeAliasDeclaration,
   IrTypeParameter,
   IrTypeReference,
+  IrUnaryOperatorSemantics,
   IrVariable,
   IrVariableDeclaration,
   TypeScriptLoweringResult,
@@ -440,6 +444,7 @@ function lowerExpression(node: ts.Expression, context: LoweringContext): IrExpre
         left: lowerExpression(node.left, context),
         operator: lowerAssignmentOperator(node.operatorToken.kind),
         right: lowerExpression(node.right, context),
+        semantics: lowerAssignmentOperatorSemantics(node, context),
       };
     }
     return {
@@ -447,6 +452,7 @@ function lowerExpression(node: ts.Expression, context: LoweringContext): IrExpre
       left: lowerExpression(node.left, context),
       operator: lowerBinaryOperator(node.operatorToken.kind),
       right: lowerExpression(node.right, context),
+      semantics: lowerBinaryOperatorSemantics(node, context),
     };
   }
   if (ts.isPrefixUnaryExpression(node)) {
@@ -455,6 +461,7 @@ function lowerExpression(node: ts.Expression, context: LoweringContext): IrExpre
       operand: lowerExpression(node.operand, context),
       operator: lowerPrefixUnaryOperator(node.operator),
       postfix: false,
+      semantics: lowerUnaryOperatorSemantics(node, node.operand, context),
     };
   }
   if (ts.isPostfixUnaryExpression(node)) {
@@ -463,11 +470,18 @@ function lowerExpression(node: ts.Expression, context: LoweringContext): IrExpre
       operand: lowerExpression(node.operand, context),
       operator: lowerPostfixUnaryOperator(node.operator),
       postfix: true,
+      semantics: lowerUnaryOperatorSemantics(node, node.operand, context),
     };
   }
   if (ts.isTypeOfExpression(node) || ts.isVoidExpression(node) || ts.isDeleteExpression(node)) {
     const operator = ts.isTypeOfExpression(node) ? 'typeof' : ts.isVoidExpression(node) ? 'void' : 'delete';
-    return { kind: 'unary', operand: lowerExpression(node.expression, context), operator, postfix: false };
+    return {
+      kind: 'unary',
+      operand: lowerExpression(node.expression, context),
+      operator,
+      postfix: false,
+      semantics: lowerUnaryOperatorSemantics(node, node.expression, context),
+    };
   }
   if (ts.isConditionalExpression(node)) {
     return {
@@ -1005,8 +1019,31 @@ function lowerAssignmentOperator(kind: ts.AssignmentOperator): IrAssignmentOpera
   return typeScriptAssignmentOperators[kind];
 }
 
+function lowerAssignmentOperatorSemantics(
+  node: ts.BinaryExpression,
+  context: LoweringContext,
+): IrAssignmentOperatorSemantics {
+  return {
+    left: lowerOperatorValueDomain(node.left, context),
+    result: lowerOperatorValueDomain(node, context),
+    right: lowerOperatorValueDomain(node.right, context),
+  };
+}
+
 function lowerBinaryOperator(kind: TypeScriptBinaryOperator): IrBinaryOperator {
   return typeScriptBinaryOperators[kind];
+}
+
+function lowerBinaryOperatorSemantics(node: ts.BinaryExpression, context: LoweringContext): IrBinaryOperatorSemantics {
+  return {
+    left: lowerOperatorValueDomain(node.left, context),
+    result: lowerOperatorValueDomain(node, context),
+    right: lowerOperatorValueDomain(node.right, context),
+  };
+}
+
+function lowerOperatorValueDomain(node: ts.Node, context: LoweringContext): IrOperatorValueDomain {
+  return lowerTypeScriptTypeOperatorValueDomain(context.checker.getTypeAtLocation(node), context.checker);
 }
 
 function lowerPostfixUnaryOperator(kind: ts.PostfixUnaryOperator): IrPostfixUnaryOperator {
@@ -1015,6 +1052,38 @@ function lowerPostfixUnaryOperator(kind: ts.PostfixUnaryOperator): IrPostfixUnar
 
 function lowerPrefixUnaryOperator(kind: ts.PrefixUnaryOperator): IrPrefixUnaryOperator {
   return typeScriptPrefixUnaryOperators[kind];
+}
+
+function lowerTypeScriptTypeOperatorValueDomain(type: ts.Type, checker: ts.TypeChecker): IrOperatorValueDomain {
+  if (type.isUnion()) {
+    const domains = new Set(type.types.map((member) => lowerTypeScriptTypeOperatorValueDomain(member, checker)));
+    return domains.size === 1 ? domains.values().next().value! : 'unknown';
+  }
+  if (type.flags & ts.TypeFlags.TypeParameter) {
+    const constraint = checker.getBaseConstraintOfType(type);
+    return constraint ? lowerTypeScriptTypeOperatorValueDomain(constraint, checker) : 'unknown';
+  }
+  if (type.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown | ts.TypeFlags.Never)) return 'unknown';
+  if (type.flags & ts.TypeFlags.BigIntLike) return 'bigint';
+  if (type.flags & ts.TypeFlags.BooleanLike) return 'boolean';
+  if (type.flags & ts.TypeFlags.Null) return 'null';
+  if (type.flags & ts.TypeFlags.NumberLike) return 'number';
+  if (type.flags & ts.TypeFlags.StringLike) return 'string';
+  if (type.flags & ts.TypeFlags.ESSymbolLike) return 'symbol';
+  if (type.flags & (ts.TypeFlags.Undefined | ts.TypeFlags.Void)) return 'undefined';
+  if (type.flags & (ts.TypeFlags.NonPrimitive | ts.TypeFlags.Object)) return 'object';
+  return 'unknown';
+}
+
+function lowerUnaryOperatorSemantics(
+  node: ts.Node,
+  operand: ts.Expression,
+  context: LoweringContext,
+): IrUnaryOperatorSemantics {
+  return {
+    operand: lowerOperatorValueDomain(operand, context),
+    result: lowerOperatorValueDomain(node, context),
+  };
 }
 
 function isThisParameter(node: ts.ParameterDeclaration): boolean {
@@ -1031,6 +1100,7 @@ function createTypeScriptAnalysis(sourceFile: ts.SourceFile): TypeScriptAnalysis
   const options: ts.CompilerOptions = {
     noLib: true,
     noResolve: true,
+    strictNullChecks: true,
     target: analysisSourceFile.languageVersion,
   };
   const host = ts.createCompilerHost(options, true);

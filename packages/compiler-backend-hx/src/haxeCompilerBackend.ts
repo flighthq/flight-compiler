@@ -8,7 +8,9 @@ import {
 import type { CompilerBackend, EmittedFile, HaxeCompilerBackendOptions } from '../../compiler-types/src/index.js';
 import type {
   IrAssignmentOperator,
+  IrAssignmentOperatorSemantics,
   IrBinaryOperator,
+  IrBinaryOperatorSemantics,
   IrBindingIdentity,
   IrClassDeclaration,
   IrDeclaration,
@@ -27,6 +29,7 @@ import type {
   IrType,
   IrTypeAliasDeclaration,
   IrTypeParameter,
+  IrUnaryOperatorSemantics,
   IrVariable,
   IrVariableDeclaration,
 } from '../../compiler-types/src/index.js';
@@ -168,12 +171,18 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
   switch (expression.kind) {
     case 'array':
       return `[${expression.elements.map((element) => (element ? emitExpression(element, context) : 'null')).join(', ')}]`;
-    case 'assignment':
-      return `${emitExpression(expression.left, context)} ${emitAssignmentOperatorHaxe(expression.operator, context)} ${emitExpression(expression.right, context)}`;
+    case 'assignment': {
+      const left = emitExpression(expression.left, context);
+      const right = emitExpression(expression.right, context);
+      return `${left} ${emitAssignmentOperatorHaxe(expression.operator, expression.semantics, context)} ${right}`;
+    }
     case 'await':
       emissionError(context, 'await requires the Haxe async-lowering pass');
-    case 'binary':
-      return `(${emitExpression(expression.left, context)} ${emitBinaryOperatorHaxe(expression.operator, context)} ${emitExpression(expression.right, context)})`;
+    case 'binary': {
+      const left = emitExpression(expression.left, context);
+      const right = emitExpression(expression.right, context);
+      return `(${left} ${emitBinaryOperatorHaxe(expression.operator, expression.semantics, context)} ${right})`;
+    }
     case 'call':
       if (expression.optional) emissionError(context, 'optional calls require null-safe call lowering');
       return `${emitExpression(expression.callee, context)}(${expression.arguments.map((argument) => emitExpression(argument, context)).join(', ')})`;
@@ -220,8 +229,8 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
     case 'unary': {
       const operand = emitExpression(expression.operand, context);
       const operator = expression.postfix
-        ? emitPostfixUnaryOperatorHaxe(expression.operator)
-        : emitPrefixUnaryOperatorHaxe(expression.operator, context);
+        ? emitPostfixUnaryOperatorHaxe(expression.operator, expression.semantics, context)
+        : emitPrefixUnaryOperatorHaxe(expression.operator, expression.semantics, context);
       return expression.postfix ? `${operand}${operator}` : `${operator} ${operand}`;
     }
   }
@@ -535,26 +544,116 @@ function haxeImplementationModule(sourcePath: string): string {
   return convertSourcePathToHaxeModuleName(sourcePath) ?? `_${pascalCase(filename)}`;
 }
 
-function emitAssignmentOperatorHaxe(operator: IrAssignmentOperator, context: EmitContext): string {
+function emitAssignmentOperatorHaxe(
+  operator: IrAssignmentOperator,
+  semantics: Readonly<IrAssignmentOperatorSemantics>,
+  context: EmitContext,
+): string {
   const emitted = haxeAssignmentOperatorEmission[operator];
   if (!emitted) emissionError(context, `operator ${operator} requires Haxe semantic lowering`);
+  if (!isAssignmentOperatorDirectHaxe(operator, semantics)) {
+    emissionError(
+      context,
+      `operator ${operator} on ${semantics.left} and ${semantics.right} requires Haxe type-directed lowering`,
+    );
+  }
   return emitted;
 }
 
-function emitBinaryOperatorHaxe(operator: IrBinaryOperator, context: EmitContext): string {
+function emitBinaryOperatorHaxe(
+  operator: IrBinaryOperator,
+  semantics: Readonly<IrBinaryOperatorSemantics>,
+  context: EmitContext,
+): string {
   const emitted = haxeBinaryOperatorEmission[operator];
   if (!emitted) emissionError(context, `operator ${operator} requires Haxe semantic lowering`);
+  if (!isBinaryOperatorDirectHaxe(operator, semantics)) {
+    emissionError(
+      context,
+      `operator ${operator} on ${semantics.left} and ${semantics.right} requires Haxe type-directed lowering`,
+    );
+  }
   return emitted;
 }
 
-function emitPostfixUnaryOperatorHaxe(operator: IrPostfixUnaryOperator): string {
+function emitPostfixUnaryOperatorHaxe(
+  operator: IrPostfixUnaryOperator,
+  semantics: Readonly<IrUnaryOperatorSemantics>,
+  context: EmitContext,
+): string {
+  if (semantics.operand !== 'number' || semantics.result !== 'number') {
+    emissionError(context, `operator ${operator} on ${semantics.operand} requires Haxe type-directed lowering`);
+  }
   return haxePostfixUnaryOperatorEmission[operator];
 }
 
-function emitPrefixUnaryOperatorHaxe(operator: IrPrefixUnaryOperator, context: EmitContext): string {
+function emitPrefixUnaryOperatorHaxe(
+  operator: IrPrefixUnaryOperator,
+  semantics: Readonly<IrUnaryOperatorSemantics>,
+  context: EmitContext,
+): string {
   const emitted = haxePrefixUnaryOperatorEmission[operator];
   if (!emitted) emissionError(context, `operator ${operator} requires Haxe semantic lowering`);
+  if (!isPrefixUnaryOperatorDirectHaxe(operator, semantics)) {
+    emissionError(context, `operator ${operator} on ${semantics.operand} requires Haxe type-directed lowering`);
+  }
   return emitted;
+}
+
+function isAssignmentOperatorDirectHaxe(
+  operator: IrAssignmentOperator,
+  semantics: Readonly<IrAssignmentOperatorSemantics>,
+): boolean {
+  if (operator === '=') return true;
+  if (operator === '+=') return hasMatchingOperatorDomains(semantics, ['number', 'string']);
+  if (operator === '%=' || operator === '*=' || operator === '-=' || operator === '/=') {
+    return hasMatchingOperatorDomains(semantics, ['number']);
+  }
+  return false;
+}
+
+function isBinaryOperatorDirectHaxe(
+  operator: IrBinaryOperator,
+  semantics: Readonly<IrBinaryOperatorSemantics>,
+): boolean {
+  if (operator === '+') return hasMatchingOperatorDomains(semantics, ['number', 'string']);
+  if (operator === '%' || operator === '*' || operator === '-' || operator === '/') {
+    return hasMatchingOperatorDomains(semantics, ['number']);
+  }
+  if (operator === '<' || operator === '<=' || operator === '>' || operator === '>=') {
+    return semantics.left === 'number' && semantics.right === 'number' && semantics.result === 'boolean';
+  }
+  if (operator === '&&' || operator === '||') {
+    return hasMatchingOperatorDomains(semantics, ['boolean']);
+  }
+  if (operator === '===' || operator === '!==') {
+    return (
+      semantics.left === semantics.right &&
+      semantics.result === 'boolean' &&
+      (semantics.left === 'boolean' || semantics.left === 'number' || semantics.left === 'string')
+    );
+  }
+  return false;
+}
+
+function isPrefixUnaryOperatorDirectHaxe(
+  operator: IrPrefixUnaryOperator,
+  semantics: Readonly<IrUnaryOperatorSemantics>,
+): boolean {
+  if (operator === '!') return semantics.operand === 'boolean' && semantics.result === 'boolean';
+  if (operator === '+' || operator === '-' || operator === '++' || operator === '--') {
+    return semantics.operand === 'number' && semantics.result === 'number';
+  }
+  return false;
+}
+
+function hasMatchingOperatorDomains(
+  semantics: Readonly<IrAssignmentOperatorSemantics | IrBinaryOperatorSemantics>,
+  supported: readonly IrAssignmentOperatorSemantics['left'][],
+): boolean {
+  return (
+    semantics.left === semantics.right && semantics.left === semantics.result && supported.includes(semantics.left)
+  );
 }
 
 function assertNoSwitchFallthrough(statement: Extract<IrStatement, { kind: 'switch' }>, context: EmitContext): void {

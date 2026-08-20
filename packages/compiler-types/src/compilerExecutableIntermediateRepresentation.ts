@@ -5,6 +5,11 @@ import type {
   IrPostfixUnaryOperator,
   IrPrefixUnaryOperator,
 } from './compilerOperatorIntermediateRepresentation.js';
+import type {
+  IrAssignmentOperatorSemantics,
+  IrBinaryOperatorSemantics,
+  IrUnaryOperatorSemantics,
+} from './compilerOperatorSemanticIntermediateRepresentation.js';
 import type { IrFunctionTypeParameter, IrType, IrTypeParameter } from './compilerTypeIntermediateRepresentation.js';
 
 export type IrParameter = Omit<IrFunctionTypeParameter, 'name'> &
@@ -13,9 +18,21 @@ export type IrParameter = Omit<IrFunctionTypeParameter, 'name'> &
 
 export type IrExpression =
   | Readonly<{ kind: 'array'; elements: ReadonlyArray<IrExpression | undefined> }>
-  | Readonly<{ kind: 'assignment'; left: IrExpression; operator: IrAssignmentOperator; right: IrExpression }>
+  | Readonly<{
+      kind: 'assignment';
+      left: IrExpression;
+      operator: IrAssignmentOperator;
+      right: IrExpression;
+      semantics: IrAssignmentOperatorSemantics;
+    }>
   | Readonly<{ kind: 'await'; expression: IrExpression }>
-  | Readonly<{ kind: 'binary'; left: IrExpression; operator: IrBinaryOperator; right: IrExpression }>
+  | Readonly<{
+      kind: 'binary';
+      left: IrExpression;
+      operator: IrBinaryOperator;
+      right: IrExpression;
+      semantics: IrBinaryOperatorSemantics;
+    }>
   | Readonly<{
       kind: 'call';
       arguments: readonly IrExpression[];
@@ -49,8 +66,20 @@ export type IrExpression =
   | Readonly<{ flags: string; kind: 'regexp'; pattern: string }>
   | Readonly<{ expression: IrExpression; kind: 'spread' }>
   | Readonly<{ kind: 'template'; parts: ReadonlyArray<IrExpression | string> }>
-  | Readonly<{ kind: 'unary'; operand: IrExpression; operator: IrPostfixUnaryOperator; postfix: true }>
-  | Readonly<{ kind: 'unary'; operand: IrExpression; operator: IrPrefixUnaryOperator; postfix: false }>;
+  | Readonly<{
+      kind: 'unary';
+      operand: IrExpression;
+      operator: IrPostfixUnaryOperator;
+      postfix: true;
+      semantics: IrUnaryOperatorSemantics;
+    }>
+  | Readonly<{
+      kind: 'unary';
+      operand: IrExpression;
+      operator: IrPrefixUnaryOperator;
+      postfix: false;
+      semantics: IrUnaryOperatorSemantics;
+    }>;
 
 export type IrObjectMember =
   | Readonly<{ key: IrExpression; kind: 'computedProperty'; value: IrExpression }>

@@ -8,7 +8,9 @@ import {
 import type { CompilerBackend, EmittedFile, RustCompilerBackendOptions } from '../../compiler-types/src/index.js';
 import type {
   IrAssignmentOperator,
+  IrAssignmentOperatorSemantics,
   IrBinaryOperator,
+  IrBinaryOperatorSemantics,
   IrBindingIdentity,
   IrClassDeclaration,
   IrDeclaration,
@@ -27,6 +29,7 @@ import type {
   IrType,
   IrTypeAliasDeclaration,
   IrTypeParameter,
+  IrUnaryOperatorSemantics,
   IrVariable,
   IrVariableDeclaration,
 } from '../../compiler-types/src/index.js';
@@ -180,12 +183,18 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
   switch (expression.kind) {
     case 'array':
       return `vec![${expression.elements.map((element) => (element ? emitExpression(element, context) : 'Default::default()')).join(', ')}]`;
-    case 'assignment':
-      return `${emitExpression(expression.left, context)} ${emitAssignmentOperatorRust(expression.operator, context)} ${emitExpression(expression.right, context)}`;
+    case 'assignment': {
+      const left = emitExpression(expression.left, context);
+      const right = emitExpression(expression.right, context);
+      return `${left} ${emitAssignmentOperatorRust(expression.operator, expression.semantics, context)} ${right}`;
+    }
     case 'await':
       emissionError(context, 'await requires Flight task lowering');
-    case 'binary':
-      return `(${emitExpression(expression.left, context)} ${emitBinaryOperatorRust(expression.operator, context)} ${emitExpression(expression.right, context)})`;
+    case 'binary': {
+      const left = emitExpression(expression.left, context);
+      const right = emitExpression(expression.right, context);
+      return `(${left} ${emitBinaryOperatorRust(expression.operator, expression.semantics, context)} ${right})`;
+    }
     case 'call':
       if (expression.optional) emissionError(context, 'optional calls require Option-aware lowering');
       return `${emitExpression(expression.callee, context)}(${expression.arguments.map((argument) => emitExpression(argument, context)).join(', ')})`;
@@ -233,7 +242,7 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
       const operand = emitExpression(expression.operand, context);
       const operator = expression.postfix
         ? emitPostfixUnaryOperatorRust(expression.operator, context)
-        : emitPrefixUnaryOperatorRust(expression.operator, context);
+        : emitPrefixUnaryOperatorRust(expression.operator, expression.semantics, context);
       return expression.postfix ? `${operand}${operator}` : `${operator}${operand}`;
     }
   }
@@ -526,15 +535,35 @@ function emissionError(context: EmitContext, message: string): never {
   throw createBackendEmissionFailure('rust', context.module, message);
 }
 
-function emitAssignmentOperatorRust(operator: IrAssignmentOperator, context: EmitContext): string {
+function emitAssignmentOperatorRust(
+  operator: IrAssignmentOperator,
+  semantics: Readonly<IrAssignmentOperatorSemantics>,
+  context: EmitContext,
+): string {
   const emitted = rustAssignmentOperatorEmission[operator];
   if (!emitted) emissionError(context, `operator ${operator} requires Rust semantic lowering`);
+  if (!isAssignmentOperatorDirectRust(operator, semantics)) {
+    emissionError(
+      context,
+      `operator ${operator} on ${semantics.left} and ${semantics.right} requires Rust type-directed lowering`,
+    );
+  }
   return emitted;
 }
 
-function emitBinaryOperatorRust(operator: IrBinaryOperator, context: EmitContext): string {
+function emitBinaryOperatorRust(
+  operator: IrBinaryOperator,
+  semantics: Readonly<IrBinaryOperatorSemantics>,
+  context: EmitContext,
+): string {
   const emitted = rustBinaryOperatorEmission[operator];
   if (!emitted) emissionError(context, `operator ${operator} requires Rust semantic lowering`);
+  if (!isBinaryOperatorDirectRust(operator, semantics)) {
+    emissionError(
+      context,
+      `operator ${operator} on ${semantics.left} and ${semantics.right} requires Rust type-directed lowering`,
+    );
+  }
   return emitted;
 }
 
@@ -542,10 +571,69 @@ function emitPostfixUnaryOperatorRust(operator: IrPostfixUnaryOperator, context:
   emissionError(context, rustPostfixUnaryOperatorRefusal[operator]);
 }
 
-function emitPrefixUnaryOperatorRust(operator: IrPrefixUnaryOperator, context: EmitContext): string {
+function emitPrefixUnaryOperatorRust(
+  operator: IrPrefixUnaryOperator,
+  semantics: Readonly<IrUnaryOperatorSemantics>,
+  context: EmitContext,
+): string {
   const decision = rustPrefixUnaryOperatorDecision[operator];
   if ('refusal' in decision) emissionError(context, decision.refusal);
+  if (!isPrefixUnaryOperatorDirectRust(operator, semantics)) {
+    emissionError(context, `operator ${operator} on ${semantics.operand} requires Rust type-directed lowering`);
+  }
   return decision.emitted;
+}
+
+function isAssignmentOperatorDirectRust(
+  operator: IrAssignmentOperator,
+  semantics: Readonly<IrAssignmentOperatorSemantics>,
+): boolean {
+  if (operator === '=') return true;
+  if (operator === '%=' || operator === '*=' || operator === '+=' || operator === '-=' || operator === '/=') {
+    return hasMatchingOperatorDomains(semantics, ['number']);
+  }
+  return false;
+}
+
+function isBinaryOperatorDirectRust(
+  operator: IrBinaryOperator,
+  semantics: Readonly<IrBinaryOperatorSemantics>,
+): boolean {
+  if (operator === '%' || operator === '*' || operator === '+' || operator === '-' || operator === '/') {
+    return hasMatchingOperatorDomains(semantics, ['number']);
+  }
+  if (operator === '<' || operator === '<=' || operator === '>' || operator === '>=') {
+    return semantics.left === 'number' && semantics.right === 'number' && semantics.result === 'boolean';
+  }
+  if (operator === '&&' || operator === '||') {
+    return hasMatchingOperatorDomains(semantics, ['boolean']);
+  }
+  if (operator === '===' || operator === '!==') {
+    return (
+      semantics.left === semantics.right &&
+      semantics.result === 'boolean' &&
+      (semantics.left === 'boolean' || semantics.left === 'number' || semantics.left === 'string')
+    );
+  }
+  return false;
+}
+
+function isPrefixUnaryOperatorDirectRust(
+  operator: IrPrefixUnaryOperator,
+  semantics: Readonly<IrUnaryOperatorSemantics>,
+): boolean {
+  if (operator === '!') return semantics.operand === 'boolean' && semantics.result === 'boolean';
+  if (operator === '-') return semantics.operand === 'number' && semantics.result === 'number';
+  return false;
+}
+
+function hasMatchingOperatorDomains(
+  semantics: Readonly<IrAssignmentOperatorSemantics | IrBinaryOperatorSemantics>,
+  supported: readonly IrAssignmentOperatorSemantics['left'][],
+): boolean {
+  return (
+    semantics.left === semantics.right && semantics.left === semantics.result && supported.includes(semantics.left)
+  );
 }
 
 function isNullableType(type: Readonly<IrType>): boolean {

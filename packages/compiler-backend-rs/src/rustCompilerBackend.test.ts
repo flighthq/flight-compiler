@@ -81,6 +81,31 @@ describe('emitIrModuleRust', () => {
     expect(output).toContain('return ((value == right) && !disabled);');
   });
 
+  it('refuses operators whose static domains require Rust type-directed lowering', () => {
+    const strings = lower(
+      'string-operators.ts',
+      'export function join(left: string, right: string): string { return left + right; }',
+    );
+    const unknown = lower(
+      'unknown-operators.ts',
+      'export function both(left: any, right: boolean): boolean { return left && right; }',
+    );
+    const loose = lower(
+      'loose-equality.ts',
+      'export function equal(left: number, right: number): boolean { return left == right; }',
+    );
+
+    expect(() => emitIrModuleRust(strings.module)).toThrow(
+      'operator + on string and string requires Rust type-directed lowering',
+    );
+    expect(() => emitIrModuleRust(unknown.module)).toThrow(
+      'operator && on unknown and boolean requires Rust type-directed lowering',
+    );
+    expect(() => emitIrModuleRust(loose.module)).toThrow(
+      'operator == on number and number requires Rust type-directed lowering',
+    );
+  });
+
   it('rejects module facades and switch fallthrough without target lowering', () => {
     const barrel = lower('barrel.ts', "export * from './other.js';");
     const fallthrough = lower(

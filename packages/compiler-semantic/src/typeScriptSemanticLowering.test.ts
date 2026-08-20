@@ -186,6 +186,27 @@ describe('lowerTypeScriptSource', () => {
     });
   });
 
+  it('preserves static operator operand and result domains without target policy', () => {
+    const result = lower(
+      'operator-domains.ts',
+      'export function domains(numberValue: number, text: string, flag: boolean, mystery: any): void { numberValue + numberValue; text + text; text + numberValue; !flag; !mystery; typeof numberValue; }',
+    );
+    const [domains] = result.module.declarations;
+
+    expect(result.diagnostics).toEqual([]);
+    expect(domains).toMatchObject({
+      body: [
+        { expression: { semantics: { left: 'number', result: 'number', right: 'number' } } },
+        { expression: { semantics: { left: 'string', result: 'string', right: 'string' } } },
+        { expression: { semantics: { left: 'string', result: 'string', right: 'number' } } },
+        { expression: { semantics: { operand: 'boolean', result: 'boolean' } } },
+        { expression: { semantics: { operand: 'unknown', result: 'boolean' } } },
+        { expression: { semantics: { operand: 'number', result: 'string' } } },
+      ],
+      kind: 'function',
+    });
+  });
+
   it('resolves deterministic identities through module, lexical, closure, import, class, and control-flow scopes', () => {
     const source = `
       import { external as imported } from './dependency.js';
