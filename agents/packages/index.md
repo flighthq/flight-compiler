@@ -25,9 +25,10 @@ The three lowest scores are also the three packages that gate the migration. `co
 
 ## Recurring gaps across packages
 
-Four gaps appear in more than one review and are worth reading as one problem each rather than as several:
+Five gaps appear in more than one review and are worth reading as one problem each rather than as several:
 
 - **No serialization boundary anywhere.** The IR, the inventory report and the patch set are all in-process typed values. Nothing can cross a process, be cached, or be diffed by a tool that is not this compiler — which the oracle-vector and drift-tracking plans both eventually need.
 - **No incrementality.** Inventory and orchestration both re-do whole-checkout work every run, and provenance re-walks every tree. Acceptable at present scale, and named before it is not.
 - **Reporting is thinner than the work performed.** Orchestration counts files, inventory counts exports, and neither can say which declarations refused and why — which is the number the migration most needs and the one nothing currently produces.
+- **The lowering passes the refusals name have no home.** Sixty-two of seventy-seven backend refusals point at a transformation that exists nowhere, and most of them are the same work for both targets. [The breadth analysis](../compiler-breadth.md) treats this as the strongest missing cell.
 - **No emitted-output verification.** The golden fixtures pin bytes, not validity. A fixture can pin invalid target source, and once did. Compiling emitted Haxe and Rust belongs downstream, but a parse-level check here would close the gap between "the bytes did not change" and "the bytes are correct".

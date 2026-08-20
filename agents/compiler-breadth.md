@@ -20,41 +20,51 @@ Counting every backend refusal in both emitters:
 
 The refusal text is the repository telling itself what is missing. `requires control-flow lowering before Haxe emission`, `requires the Haxe async-lowering pass`, `requires Option-aware Rust control-flow lowering`, `requires call-site lowering`, `requires structural-copy lowering` — each names a transformation, none of them exists, and there is nowhere for one to live. A backend refuses and points at a stage that was never built.
 
-## Missing cell 1 — neutral lowering passes
+## Missing cell 1 — a lowering pass library the backends call
 
-**The strongest case, and the one that unblocks the most.** Sorting the 62 by whether the work is target-specific:
+**The strongest case, and the one that unblocks the most.** Sorting the 62 refusals by whether the work is genuinely target-specific:
 
-| neutral — same work for both targets            | target-specific                              |
-| ----------------------------------------------- | -------------------------------------------- |
-| C-style `for` → `while`                         | Rust ownership                               |
-| switch fallthrough → explicit control flow      | Rust trait lowering                          |
-| `async`/`await` → task form                     | type-directed operator semantics             |
-| nullability and narrowing → explicit optional   | Rust initialization/structural-type lowering |
-| default parameters → call-site or body prologue |                                              |
-| spread and object spread → structural copy      |                                              |
-| destructuring → explicit bindings               |                                              |
+| neutral — the same transformation for any target | target-specific                              |
+| ------------------------------------------------ | -------------------------------------------- |
+| C-style `for` → `while`                          | Rust ownership                               |
+| switch fallthrough → explicit control flow       | Rust trait lowering                          |
+| `async`/`await` → explicit suspension form       | type-directed operator semantics             |
+| default parameters → prologue assignment         | Rust initialization/structural-type lowering |
+| destructuring → explicit bindings                |                                              |
+| spread and object spread → structural copy       |                                              |
 
-The left column is one body of work that both backends currently refuse independently and neither performs. Desugaring a C-style `for` into a `while` is not a Haxe question or a Rust question; it is an IR-to-IR transformation that should happen once, before either emitter sees the module.
+Desugaring a C-style `for` into a `while` is not a Haxe question or a Rust question — neither language has a C-style `for`, and both emitters refuse it separately today.
 
-Against the test:
+### It is a library, not a pipeline
 
-- **Independent dependency boundary.** It depends on `compiler-types` and the semantic facts; it is depended on by both backends and by orchestration. It does not need the filesystem, the TypeScript checker, or either target.
-- **Independent lifecycle.** Passes arrive one at a time, each with its own regression set and its own golden fixtures converting from pinned refusal to pinned output. That is a different cadence from the emitters.
+The passes are **an API a backend calls, not a stage that runs before it.** Whether a feature should be lowered is a backend decision, and the same feature can be right to unwrap for one target and wrong for another.
 
-It also supplies precisely the thing the foundations audit named as the precondition for splitting target lowering from target emission: _"do not split target lowering from target emission until an explicit target model exists between them."_ A neutral lowering stage is where that model becomes explicit.
+`async`/`await` is the clearest case. Converting an async function into an explicit suspension form is a well-defined transformation that does not depend on the target, so it belongs here and should be written once. But Haxe has no `await` and needs the transformation, while Rust has native `async fn` — hand it a pre-unwrapped state machine and you have thrown away the ability to emit idiomatic Rust and given `rustc` a worse version of a machine it builds better itself. The pass exists once; each backend elects it.
 
-**Recommended name and shape:** `compiler-lowering`, one pass per source file, each `IrModule → IrModule`, each independently testable, composed in a stated order by orchestration. It starts nearly empty and grows one pass at a time; the first pass to move is control flow, because it is the smallest and both backends refuse it identically.
+The same shape applies to type mapping. A backend may decide to map an external dependency **directly** to a native type — Haxe's `Map` to `haxe.ds.Map` — while routing others through the runtime contract (missing cell 2). That is a per-target judgement about idiom and fidelity, and the compiler should not make it centrally.
+
+So the package owns three things:
+
+- **The pass framework**: a pass interface (`IrModule → IrModule`), declared ordering constraints, and composition.
+- **The neutral passes themselves**, each independently testable, added one at a time.
+- **Pass verification**: after a pass runs, the IR still satisfies its invariants, and each pass states whether it is idempotent. A pass that produces malformed IR fails there rather than at emission, where the message would name the wrong stage.
+
+A third category sits alongside the passes and is worth separating explicitly: **neutral analysis that annotates rather than rewrites.** Narrowing is the example — "after `if (v === undefined) return`, `v` is non-optional" is a target-independent fact, while `Null<T>` versus `Option<T>` is a target-specific representation. That is the pattern the static-facts work already established: compute the fact once, let each backend choose the shape.
+
+### Against the test
+
+- **Independent dependency boundary.** It depends on `compiler-types` and the semantic facts; it is depended on by both backends. It needs no filesystem, no TypeScript checker, and no target.
+- **Independent lifecycle.** Passes arrive one at a time, each with its own regressions and its own golden fixtures converting from pinned refusal to pinned output. That is a different cadence from the emitters, which change when a target's idiom changes.
+
+It also supplies the precondition the foundations audit named for splitting target lowering from target emission: _"do not split target lowering from target emission until an explicit target model exists between them."_ A pass library with a declared IR-to-IR contract is where that model becomes explicit.
+
+**Recommended shape:** `compiler-lowering`, one pass per source file, backend-elected, composed by orchestration from each backend's declared selection. The first pass to move is control flow — it is the smallest, and both backends refuse it identically today.
 
 ## Missing cell 2 — the target runtime contract
 
-Both emitters already reference symbols that exist nowhere:
+Both emitters already reference symbols that exist nowhere: `FlightTask`, `FlightCallback` and the opaque host value in Rust, and in Haxe nothing at all — an unmapped named type is emitted verbatim into a `.hx` file, so `Promise` and `Uint8Array` arrive as themselves. The Rust backend carries a private `rustStandardType` table; Haxe has no equivalent. The same domain half-implemented in one emitter and absent from the other is the signal.
 
-- `FlightTask`, `FlightCallback`, and the opaque host value in Rust
-- the Haxe standard-library surface, which has **no mapping at all**, so an unmapped named type is emitted verbatim into a `.hx` file
-
-That last one is the largest silent-wrong-output surface left in the repository. Unlike an operator, an unknown _type_ name does not refuse: `Promise`, `Uint8Array` and `Map` reach a Haxe file as themselves. The Rust backend has a private `rustStandardType` table, so the same domain is half-implemented in one emitter and absent from the other — which is the classic signal of a missing shared cell.
-
-The architecture in [AGENTS.md](../AGENTS.md) already lists it, one line per target:
+The architecture in [AGENTS.md](../AGENTS.md) already names it, one line per target:
 
 ```text
 -> Haxe ownership lowering + emitter + runtime contract
@@ -63,9 +73,21 @@ The architecture in [AGENTS.md](../AGENTS.md) already lists it, one line per tar
 
 Three concepts per target; one of them is a package.
 
-Against the test: the contract's **lifecycle is genuinely independent**, because its counterpart is implemented downstream in `flight-hx` and `flight-rs`. A version of this compiler declares "emitted code may reference these symbols with these shapes"; a downstream runtime satisfies it. That pairing has to be versioned separately from the emitter, which is exactly the boundary the test asks for.
+### The compiler owns the vocabulary, not the implementation
 
-**Recommended shape:** a neutral `compiler-runtime-contract` cell owning the contract vocabulary and its versioning, with the per-target mapping tables living as flat siblings inside each existing backend cell — the tables are target data, not a shared domain, and moving them out would create a dependency inversion.
+The downstream design already in use in `flight-hx` sets the right seam: the generator remaps an external type to a runtime library type — `flighthq._internal.*` — and the target repository decides whether that is a typedef onto a system type or a hand-written implementation satisfying the contract. That means **the compiler never needs to know Haxe's standard library.** It needs the contract vocabulary — the named capabilities emitted code may reference — and the per-target naming of them. How a contract is satisfied lives downstream, where the knowledge is.
+
+Mapping is therefore backend-elective in the same way lowering is. A backend may bind an external type directly to a native one where the fidelity is exact, and route the rest through the contract where it is not. The compiler's job is to make sure every external type reachable from the inventory has _some_ decision recorded.
+
+That changes what the failure should be. An unmapped external type is **not** a code-level emitter refusal; it is a **contract-completeness failure** — "no runtime contract entry for `Uint8Array`" — checkable before emission begins, and fixed by adding a table entry rather than by changing an emitter. That is a better failure in three ways: it fires earlier, it names the actual missing thing, and it is repaired with data.
+
+### Expect this seam to push back
+
+This is where the neutral model meets each target's reality, so it is where the neutral model will be told it is wrong. The three most likely sources of pressure: **aliasing and mutation semantics**, **integer width**, and **structural versus nominal typing**. When a contract cannot be satisfied idiomatically in a target, the finding belongs back in the neutral model rather than absorbed silently by a target adapter — otherwise the model quietly becomes "whatever the first target does".
+
+Against the test, the contract's **lifecycle is genuinely independent**: its counterpart is implemented downstream, so it versions against `flight-hx` and `flight-rs` rather than against the emitter. Each downstream should declare which contract version it implements, so a compiler upgrade that adds a required symbol is detectable rather than a broken build.
+
+**Recommended shape:** a neutral `compiler-runtime-contract` cell owning the contract vocabulary, its versioning, and the completeness check, with each backend's binding table living as a flat sibling inside that backend's existing cell — the bindings are target data, and moving them out would invert the dependency.
 
 ## Missing cell 3 — reporting and coverage
 
@@ -107,8 +129,8 @@ Per package, against the repository's own rule that a package has one irreducibl
 
 ## Recommended order
 
-1. **`compiler-lowering`**, starting with control-flow desugaring. It unblocks the most refusals, is the same work for both targets, and supplies the target model the backend split is waiting on.
-2. **The runtime contract and the Haxe standard-library mapping.** Closes the largest silent-wrong-output surface in the repository — an unmapped type name currently emits verbatim rather than refusing. The refusal is worth adding even before the mapping exists.
-3. **Split `compiler-inventory`** along the host-access seam once host facts settle.
+1. **`compiler-lowering`**, starting with control-flow desugaring, and with the pass interface designed for backend election from the first pass rather than retrofitted. It unblocks the most refusals, is the same transformation for both targets, and supplies the target model the backend split is waiting on.
+2. **The runtime contract**, with its completeness check before its tables. Closes the largest silent-wrong-output surface in the repository: an unmapped external type currently reaches a `.hx` file verbatim, and the completeness check turns that into a named failure before emission begins — repaired by adding a binding rather than by changing an emitter. Each backend then elects direct native mapping or contract routing per type.
+3. **Invert `compiler-inventory`'s host access onto a capability record** before considering a package split. AGENTS.md already requires this — "filesystem and process access stay at the edge and enter through explicit calls or capability records" — and four of its analysis sources already satisfy it. Doing the inversion first makes the analysis half testable from in-memory fixtures instead of `mkdtemp` trees, which is where the repository's slowest tests live, and leaves the package split mechanical or unnecessary.
 4. **Reporting**, as orchestration's own domain rather than a new cell, until a downstream consumer forces the versioning question.
 5. **Serialization**, on its stated trigger.

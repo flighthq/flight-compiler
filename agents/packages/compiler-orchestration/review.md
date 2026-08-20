@@ -19,7 +19,7 @@ Deterministic pass composition: ~475 lines in one implementation source. It take
 ## What a fully expressed compiler-driver domain looks like
 
 - **A versioned request and result contract.** A caller describes what to compile and receives a structured result — emitted files, diagnostics, patch audit, coverage, timings — with a schema that can cross a process boundary. This is the seam a downstream repository actually integrates against.
-- **Deterministic composition** with a stated pass order and no host dependence. Present.
+- **Deterministic composition** with a stated pass order and no host dependence. Present for the fixed pipeline; a fuller version composes each backend's _elected_ lowering passes, since whether a feature is unwrapped is a target decision rather than a global one.
 - **Complete diagnostic aggregation** across every pass — inventory, lowering, patching, emission — reported together with severity, so a caller sees every problem in one run rather than the first.
 - **Partial success where it is meaningful.** A large port wants "emit what compiles, report what did not" as an option, not only all-or-nothing.
 - **Incrementality.** Re-compiling one changed module does not re-lower a checkout.

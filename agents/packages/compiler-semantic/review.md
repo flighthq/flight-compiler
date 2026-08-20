@@ -49,6 +49,7 @@ Measured against the reference, in rough order of how much SDK surface each bloc
 - **Parameter properties.** `constructor(private readonly x: number)` refuses. It is the common TypeScript class idiom.
 - **Namespaces and `export =`.** Unrepresented in the IR at all.
 - **Most of the type system.** Conditional, mapped, template-literal, `infer`, variadic tuples and recursive aliases have no IR representation, so nothing can lower them.
+- **The refusals name passes that have no home.** Sixty-two of the seventy-seven backend refusals point at a lowering — control flow, async, nullability, call-site, structural copy — and none of those transformations exists anywhere. Most are neutral work this package's output should be transformable into rather than work either emitter should invent; see [the breadth analysis](../../compiler-breadth.md).
 - **No narrowing model.** The nullability refusal in both backends exists precisely because narrowing is unmodelled: after `if (value === undefined) return fallback;`, the lowerer cannot tell the backends that `value` is now non-optional, so the honest move was to refuse. Every nullable-parameter function in the SDK is blocked behind this.
 - **No async or generator lowering.** Both are refused by both backends; the neutral model has no task or coroutine concept to lower them into.
 - **No decorators, no class static blocks, no accessors.** Getters and setters refuse as unsupported class members.
