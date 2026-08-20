@@ -1,0 +1,1 @@
+haxe emission failed for @flighthq/golden/packages/golden/src/spreadCall.ts: spread expressions require call or collection lowering

@@ -37,9 +37,9 @@ export function createMemoryWorkspaceSource(files: Readonly<Record<string, strin
         const name = separator === -1 ? remainder : remainder.slice(0, separator);
         if (name.length > 0) entries.set(name, { isDirectory: separator !== -1, name });
       }
-      return [...entries.values()].sort((left, right) =>
-        left.name < right.name ? -1 : left.name > right.name ? 1 : 0,
-      );
+      // Names are Map keys, so two entries can never compare equal and the comparator needs no
+      // equality arm.
+      return [...entries.values()].sort((left, right) => (left.name < right.name ? -1 : 1));
     },
     readTextFile: (file: string): string => {
       const contents = normalized.get(normalize(file));

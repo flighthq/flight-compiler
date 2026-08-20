@@ -1,0 +1,1 @@
+haxe emission failed for @flighthq/golden/packages/golden/src/cStyleFor.ts: C-style for loops require control-flow lowering before Haxe emission

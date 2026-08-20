@@ -61,6 +61,22 @@ describe('createMemoryWorkspaceSource', () => {
     );
   });
 
+  it('lists the root directory', () => {
+    const source = createMemoryWorkspaceSource({ '/flight/package.json': '{}', '/README.md': '# root\n' });
+
+    expect(source.listDirectory('/')).toEqual([
+      { isDirectory: false, name: 'README.md' },
+      { isDirectory: true, name: 'flight' },
+    ]);
+  });
+
+  it('ignores a trailing separator on a directory path', () => {
+    const source = createMemoryWorkspaceSource(workspace);
+
+    expect(source.isDirectory('/flight/packages/')).toBe(true);
+    expect(source.listDirectory('/flight/packages/')).toEqual([{ isDirectory: true, name: 'math' }]);
+  });
+
   it('holds an empty workspace without inventing entries', () => {
     const empty = createMemoryWorkspaceSource({});
 
