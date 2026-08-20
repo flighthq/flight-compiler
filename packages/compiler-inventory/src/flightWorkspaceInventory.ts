@@ -134,7 +134,7 @@ export function analyzeFlightWorkspace(options: Readonly<AnalyzeFlightWorkspaceO
     };
   });
 
-  const sortedPackageInventories = [...packageInventories].sort((left, right) => left.name.localeCompare(right.name));
+  const sortedPackageInventories = [...packageInventories].sort((left, right) => compareText(left.name, right.name));
   const inventoryByName = new Map(sortedPackageInventories.map((item) => [item.name, item]));
   const sdkExposures = readSdkExposures(
     context.packageByName.get(sdkPackageName),
@@ -206,7 +206,11 @@ function applyRuntimeExportDecision(
 }
 
 function compareExports(left: Readonly<ExportRecord>, right: Readonly<ExportRecord>): number {
-  return left.name.localeCompare(right.name) || left.source.localeCompare(right.source);
+  return compareText(left.name, right.name) || compareText(left.source, right.source);
+}
+
+function compareText(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
 }
 
 function declarationKind(node: ts.Node): ExportKind | undefined {
@@ -241,7 +245,7 @@ function deduplicateExports(exports: readonly ExportRecord[]): {
   return {
     conflicts: [...conflictSources]
       .map(([name, sources]) => ({ name, sources: [...sources].sort() }))
-      .sort((left, right) => left.name.localeCompare(right.name)),
+      .sort((left, right) => compareText(left.name, right.name)),
     uniqueExports: [...byName.values()],
   };
 }
@@ -258,7 +262,7 @@ function mergeExportConflicts(
   }
   return [...conflicts]
     .map(([name, sources]) => ({ name, sources: [...sources].sort() }))
-    .sort((left, right) => left.name.localeCompare(right.name));
+    .sort((left, right) => compareText(left.name, right.name));
 }
 
 function escapeRegularExpression(value: string): string {
@@ -432,7 +436,7 @@ function readSdkExposures(
     exposures.set(
       packageName,
       [...unique.values()].sort(
-        (left, right) => left.sdkLane.localeCompare(right.sdkLane) || left.target.localeCompare(right.target),
+        (left, right) => compareText(left.sdkLane, right.sdkLane) || compareText(left.target, right.target),
       ),
     );
   }

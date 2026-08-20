@@ -196,6 +196,47 @@ describe('analyzeTypeScriptHostEndpoints', () => {
       rmSync(fixture.directory, { force: true, recursive: true });
     }
   });
+
+  it('orders endpoint and source identities by code unit rather than host locale', () => {
+    const fixture = createHostEndpointFixture();
+    try {
+      const declarations = 'interface HostApi { value: number }\ndeclare const host: HostApi;\n';
+      write(fixture.directory, 'packages/web/src/A.ts', `${declarations}host.value;\nhost.Zulu;\n`);
+      write(fixture.directory, 'packages/web/src/a.ts', `${declarations}host.value;\nhost.alpha;\n`);
+      write(fixture.directory, 'packages/web/src/é.ts', `${declarations}host.value;\nhost.éclair;\n`);
+      const project = createTypeScriptProject(path.join(fixture.directory, 'tsconfig.json'));
+      const inventory = analyzeTypeScriptHostEndpoints({
+        manifests: [fixture.manifest],
+        project,
+        resolveReceiver: (type, checker) => (checker.typeToString(type) === 'HostApi' ? 'web.host' : undefined),
+        upstreamDirectory: fixture.directory,
+      });
+
+      expect(inventory.endpoints.map((endpoint) => endpoint.endpoint)).toEqual([
+        'Factory',
+        'Zulu',
+        'alpha',
+        'label',
+        'optional',
+        'run',
+        'value',
+        'value',
+        'value',
+        'éclair',
+      ]);
+      expect(
+        inventory.endpoints.find((endpoint) => endpoint.endpoint === 'value')?.sites.map((site) => site.source),
+      ).toEqual([
+        'packages/web/src/A.ts',
+        'packages/web/src/a.ts',
+        'packages/web/src/extra.ts',
+        'packages/web/src/index.ts',
+        'packages/web/src/é.ts',
+      ]);
+    } finally {
+      rmSync(fixture.directory, { force: true, recursive: true });
+    }
+  });
 });
 
 function createHostEndpointFixture(): { directory: string; manifest: FlightPackageManifest } {

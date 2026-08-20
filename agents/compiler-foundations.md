@@ -175,11 +175,17 @@ The semantic-fact batch completed three bounded iterations:
 2. Record logical-expression operators and operand/result domains separately from truthiness use.
 3. Compose version-matched static-fact audits deterministically without revisiting their source modules.
 
-The current inventory-decomposition batch proceeds in three bounded iterations:
+The inventory-decomposition batch completed three bounded iterations:
 
 1. Isolate package export-lane lookup and specifier resolution.
 2. Isolate Git checkout revision identity.
 3. Isolate package export-map parsing and source-barrel validation.
+
+The current deterministic-ordering batch proceeds in three bounded iterations:
+
+1. Remove host-locale ordering from inventory facts and reports.
+2. Remove host-locale ordering from semantic patch selection and audits.
+3. Remove host-locale ordering from orchestration modules, diagnostics, and emitted output.
 
 ## Freeze rule
 

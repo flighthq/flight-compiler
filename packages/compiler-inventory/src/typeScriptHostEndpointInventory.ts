@@ -29,7 +29,7 @@ export function analyzeTypeScriptHostEndpoints(
   options: Readonly<AnalyzeTypeScriptHostEndpointsOptions>,
 ): CompilerHostEndpointInventory {
   const upstreamDirectory = path.resolve(options.upstreamDirectory);
-  const manifests = [...options.manifests].sort((left, right) => left.name.localeCompare(right.name));
+  const manifests = [...options.manifests].sort((left, right) => compareText(left.name, right.name));
   const uses: HostEndpointUse[] = [];
   for (const sourceFile of options.project.program.getSourceFiles()) {
     const manifest = getSourceFileManifest(sourceFile, manifests, upstreamDirectory);
@@ -82,9 +82,9 @@ function compareHostEndpointRecords(
   right: Readonly<CompilerHostEndpointRecord>,
 ): number {
   return (
-    left.receiver.localeCompare(right.receiver) ||
-    left.endpoint.localeCompare(right.endpoint) ||
-    left.operation.localeCompare(right.operation)
+    compareText(left.receiver, right.receiver) ||
+    compareText(left.endpoint, right.endpoint) ||
+    compareText(left.operation, right.operation)
   );
 }
 
@@ -93,11 +93,15 @@ function compareSourceLocations(
   right: Readonly<CompilerSourceLocation>,
 ): number {
   return (
-    left.packageName.localeCompare(right.packageName) ||
-    left.source.localeCompare(right.source) ||
+    compareText(left.packageName, right.packageName) ||
+    compareText(left.source, right.source) ||
     left.line - right.line ||
     left.column - right.column
   );
+}
+
+function compareText(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
 }
 
 function getPortableRelativePath(file: string, upstreamDirectory: string): string {

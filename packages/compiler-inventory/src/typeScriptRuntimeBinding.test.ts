@@ -14,11 +14,11 @@ import {
 } from './typeScriptRuntimeBinding.js';
 
 describe('analyzeTypeScriptSourceRuntimeExports', () => {
-  it('classifies aliased value, enum, const-enum, interface, and type-only exports', () => {
+  it('classifies exports and orders their identities by code unit rather than host locale', () => {
     withProject(({ checker, options, source }) => {
       const decisions = analyzeTypeScriptSourceRuntimeExports(source, checker, options);
 
-      expect([...decisions.keys()]).toEqual(['ConstMode', 'Mode', 'Shape', 'value']);
+      expect([...decisions.keys()]).toEqual(['ConstMode', 'Mode', 'Shape', 'Zulu', 'alpha', 'value', 'éclair']);
       expect(decisions.get('value')).toMatchObject({ runtime: true });
       expect(decisions.get('Mode')).toMatchObject({ runtime: true });
       expect(decisions.get('ConstMode')).toEqual({ runtime: false });
@@ -136,12 +136,12 @@ function withProject(
     write(
       directory,
       'src/value.ts',
-      'export const value = 1; export enum Mode { A } export const enum ConstMode { A } export interface Shape {}',
+      'export const Zulu = 1; export const alpha = 1; export const éclair = 1; export const value = 1; export enum Mode { A } export const enum ConstMode { A } export interface Shape {}',
     );
     write(
       directory,
       'src/index.ts',
-      "export { ConstMode, Mode, value } from './value.js'; export type { Shape } from './value.js';",
+      "export { alpha, ConstMode, éclair, Mode, value, Zulu } from './value.js'; export type { Shape } from './value.js';",
     );
     const project = createTypeScriptProject(path.join(directory, 'tsconfig.json'));
     const source = project.program.getSourceFile(path.join(directory, 'src', 'index.ts'));

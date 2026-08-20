@@ -18,7 +18,7 @@ export function analyzeTypeScriptSourceRuntimeExports(
   }
   const decisions = new Map<string, RuntimeExportDecision>();
   const exports = [...checker.getExportsOfModule(module)].sort((left, right) =>
-    left.getName().localeCompare(right.getName()),
+    compareText(left.getName(), right.getName()),
   );
   for (const exported of exports) {
     if (isTypeScriptExportExplicitlyTypeOnly(exported)) {
@@ -85,4 +85,8 @@ function isAmbientDeclaration(declaration: ts.Declaration): boolean {
     if (ts.canHaveModifiers(current) && hasModifier(current, ts.SyntaxKind.DeclareKeyword)) return true;
   }
   return declaration.getSourceFile().isDeclarationFile;
+}
+
+function compareText(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
 }
