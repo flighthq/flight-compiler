@@ -76,6 +76,11 @@ const packageRules: Readonly<Record<string, PackageRule>> = {
     dependencies: [],
     description: 'Stable source normalization, provenance, and fingerprints',
   },
+  'compiler-runtime-contract': {
+    dependencies: ['compiler-types'],
+    description: 'Target-neutral runtime binding reachability and completeness',
+    devDependencies: ['compiler-semantic'],
+  },
   'compiler-semantic': {
     dependencies: ['compiler-provenance', 'compiler-types'],
     description: 'TypeScript semantic analysis and target-neutral lowering',

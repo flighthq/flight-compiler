@@ -27,6 +27,7 @@ Per-package domain surveys following Flight's `agents/packages/<name>/` conventi
 - [compiler-inventory](packages/compiler-inventory/review.md): what is in this workspace and what does it export.
 - [compiler-semantic](packages/compiler-semantic/review.md): TypeScript in, neutral IR out.
 - [compiler-lowering](packages/compiler-lowering/review.md): verified neutral IR-to-IR passes elected by backends.
+- [compiler-runtime-contract](packages/compiler-runtime-contract/review.md): prove every reachable external type has one target binding decision.
 - [compiler-backend-hx](packages/compiler-backend-hx/review.md): neutral IR in, idiomatic Haxe out.
 - [compiler-backend-rs](packages/compiler-backend-rs/review.md): neutral IR in, idiomatic Rust out.
 - [compiler-orchestration](packages/compiler-orchestration/review.md): compose the passes deterministically.

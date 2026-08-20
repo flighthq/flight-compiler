@@ -51,6 +51,7 @@ The repository follows Flight's package-per-domain convention. Internal workspac
 - `packages/compiler-types/`: every shared compiler contract, diagnostic shape, and target-neutral IR type.
 - `packages/compiler-inventory/`: read-only package, export-lane, symbol, and runtime-value analysis.
 - `packages/compiler-provenance/`: normalization, provenance, and stable fingerprints.
+- `packages/compiler-runtime-contract/`: target-neutral external-type reachability and binding completeness.
 - `packages/compiler-semantic/`: TypeScript semantic analysis and neutral lowering.
 - `packages/compiler-patch/`: fingerprinted semantic patch application and audits.
 - `packages/compiler-emission/`: target-neutral backend and output infrastructure.
@@ -82,6 +83,7 @@ The dependency floor is deliberate:
 - `compiler-types` defines vocabulary and contracts without implementation dependencies.
 - `compiler-provenance` defines deterministic normalization and identity without depending on another compiler package.
 - `compiler-patch` and `compiler-emission` depend only on the contracts they operate over.
+- `compiler-runtime-contract` validates reachable external-type decisions over `compiler-types` alone.
 - `compiler-lowering` provides verified neutral transforms over `compiler-types`; backends elect its passes.
 - inventory, semantic lowering, backends, and orchestration are compositions above that floor.
 

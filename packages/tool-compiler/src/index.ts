@@ -6,5 +6,6 @@ export * from '../../compiler-lowering/src/index.js';
 export * from '../../compiler-orchestration/src/index.js';
 export * from '../../compiler-patch/src/index.js';
 export * from '../../compiler-provenance/src/index.js';
+export * from '../../compiler-runtime-contract/src/index.js';
 export * from '../../compiler-semantic/src/index.js';
 export type * from '../../compiler-types/src/index.js';

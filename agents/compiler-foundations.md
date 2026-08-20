@@ -13,12 +13,13 @@ compiler-types
   <- compiler-patch
   <- compiler-emission
   <- compiler-lowering
+  <- compiler-runtime-contract
 
 compiler-types + compiler-provenance
   <- compiler-inventory
   <- compiler-semantic
 
-compiler-types + compiler-emission + compiler-lowering
+compiler-types + compiler-emission + compiler-lowering + compiler-runtime-contract
   <- compiler-backend-hx
   <- compiler-backend-rs
 
@@ -152,6 +153,7 @@ Each workspace passes its own strict typecheck and Vitest target. The package bo
 | `compiler-patch` | Keep independent because patch identity and auditing are a separate lifecycle. | All operations and failure codes, deterministic ordering, backend skipping, and caller-input immutability are exercised. |
 | `compiler-emission` | Keep independent as the portable emitted-file and backend-failure seam. | Path/content normalization, host-path rejection, portable path and target-name collision identity, fixed-versus-renamable lexical allocation, indentation boundaries, and tagged failure guards are exercised. |
 | `compiler-lowering` | Keep independent as the backend-elected library of neutral IR-to-IR transforms. | Pass ordering, verification, idempotence, immutability, stable pass-named failures, initializer scope, omitted conditions, discarded numeric updates, and continue-correct nested-loop behavior are direct-tested with zero unreached arms. |
+| `compiler-runtime-contract` | Keep independent as the target-neutral external-type binding completeness seam. | Exact ambient source identities are collected across reachable IR and compared deterministically with a versioned native-or-runtime binding plan; target names and runtime implementations stay out. |
 | `compiler-inventory` | Keep independent as the first read-only composition above identity. | Package discovery yields validated, portable, deterministically ordered manifest, dependency, bin, production-import, host-module, evidence-backed tooling-exclusion, and checker-resolved production host-endpoint facts; every manifest, project, Git, export-graph, source-resolution, runtime-classification, SDK, endpoint-receiver, and exclusion failure is tagged for message-independent handling. Host receiver classification enters through an explicit neutral capability; target runtime implementation coverage remains downstream. |
 | `compiler-semantic` | Keep together for now; it owns TypeScript-to-neutral lowering and analysis over that neutral model. | Deterministic TypeScript-backed value bindings, declared-versus-flow operator domains, normalized indexed receiver sets, and a versioned immutable static-fact audit cover truthiness, numeric relations and arithmetic, indexed access, typed-array set calls, and mixed-width indexed writes across every IR container; most production Flight semantics remain unported. |
 | `compiler-backend-hx` | Keep together; naming was split into a focused sibling source, not a workspace. | Package/module identity, collision-free value/type binding allocation, keyword and case normalization, ambient-versus-bound references, and direct-versus-coercive operator decisions are direct-tested; production lowering and byte-stable parity remain open. |
