@@ -71,6 +71,24 @@ describe('applySemanticPatchSet', () => {
     expect((module.declarations[1] as IrTypeAliasDeclaration).type).toEqual({ kind: 'primitive', name: 'number' });
   });
 
+  it('orders same-scope patch identities by code unit rather than host locale', () => {
+    const declarations = ['first', 'second', 'third'].map(createFunctionDeclaration);
+    const patches: SemanticPatch[] = [
+      { ...patchBase('é-third', 'third', 'function'), name: 'thirdPatched', operation: 'rename' },
+      { ...patchBase('a-second', 'second', 'function'), name: 'secondPatched', operation: 'rename' },
+      { ...patchBase('Z-first', 'first', 'function'), name: 'firstPatched', operation: 'rename' },
+    ];
+
+    const result = applySemanticPatchSet([createModule(declarations)], patches, 'haxe');
+
+    expect(result.audit.applied.map((record) => record.id)).toEqual(['Z-first', 'a-second', 'é-third']);
+    expect(result.modules[0]?.declarations.map(declarationName)).toEqual([
+      'firstPatched',
+      'secondPatched',
+      'thirdPatched',
+    ]);
+  });
+
   it('renames a binding introduction without rewriting source-backed reference identity', () => {
     const declaration = createFunctionDeclaration('clamp');
     const module = createModule([
@@ -204,8 +222,8 @@ describe('applySemanticPatchSet', () => {
   });
 
   it('reports conflicts deterministically regardless of input order', () => {
-    const first = renamePatch('a-first', 'first', { kind: 'neutral' });
-    const second = renamePatch('z-second', 'second', { kind: 'neutral' });
+    const first = renamePatch('Z-first', 'first', { kind: 'neutral' });
+    const second = renamePatch('é-second', 'second', { kind: 'neutral' });
 
     const forward = captureFailure([createModule()], [first, second]);
     const reverse = captureFailure([createModule()], [second, first]);
@@ -213,6 +231,7 @@ describe('applySemanticPatchSet', () => {
     expect(reverse.code).toBe('conflicting-patch-operation');
     expect(reverse.message).toBe(forward.message);
     expect(reverse.patchIds).toEqual(forward.patchIds);
+    expect(reverse.patchIds).toEqual(['Z-first', 'é-second']);
   });
 });
 
