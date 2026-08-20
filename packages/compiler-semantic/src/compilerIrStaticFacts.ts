@@ -3,6 +3,8 @@ import type {
   CompilerStaticFactCount,
   CompilerStaticIndexedAccessMode,
   CompilerStaticTruthinessContext,
+  IrBinaryOperator,
+  IrBinaryOperatorSemantics,
   IrDeclaration,
   IrExpression,
   IrIndexedReceiver,
@@ -25,6 +27,13 @@ type StaticFact =
       kind: 'truthiness';
     }>
   | Readonly<{ domain: 'bigint' | 'number'; kind: 'numericRelation' }>
+  | Readonly<{
+      kind: 'logicalExpression';
+      left: IrOperatorValueDomain;
+      operator: Extract<IrBinaryOperator, '&&' | '||'>;
+      result: IrOperatorValueDomain;
+      right: IrOperatorValueDomain;
+    }>
   | Readonly<{
       access: CompilerStaticIndexedAccessMode;
       kind: 'indexedAccess';
@@ -53,7 +62,7 @@ export function analyzeIrModulesStaticFacts(modules: readonly Readonly<IrModule>
       .map(({ count, fact }): CompilerStaticFactCount => ({ ...fact, count }) as CompilerStaticFactCount)
       .sort(compareStaticFacts),
     modules: modules.length,
-    schema: 'flight-compiler-static-facts/3',
+    schema: 'flight-compiler-static-facts/4',
   };
 }
 
@@ -68,6 +77,14 @@ function addIndexedAccessFact(
 
 function addNumericRelationFact(domain: 'bigint' | 'number', analysis: StaticFactAnalysis): void {
   addStaticFact({ domain, kind: 'numericRelation' }, analysis);
+}
+
+function addLogicalExpressionFact(
+  operator: Extract<IrBinaryOperator, '&&' | '||'>,
+  semantics: Readonly<IrBinaryOperatorSemantics>,
+  analysis: StaticFactAnalysis,
+): void {
+  addStaticFact({ kind: 'logicalExpression', operator, ...semantics }, analysis);
 }
 
 function addMixedWidthIndexedWriteFact(
@@ -168,6 +185,7 @@ function analyzeExpression(
     case 'binary': {
       if (expression.operator === '&&' || expression.operator === '||') {
         addTruthinessFact('logicalOperand', expression.left, analysis, expression.semantics.left);
+        addLogicalExpressionFact(expression.operator, expression.semantics, analysis);
       }
       if (
         (expression.operator === '<' ||
@@ -387,6 +405,8 @@ function staticFactIdentity(fact: StaticFact): string {
   switch (fact.kind) {
     case 'indexedAccess':
       return JSON.stringify([fact.kind, fact.access, fact.receivers]);
+    case 'logicalExpression':
+      return JSON.stringify([fact.kind, fact.operator, fact.left, fact.right, fact.result]);
     case 'mixedWidthIndexedWrite':
       return JSON.stringify([fact.kind, fact.receivers, fact.widths]);
     case 'numericRelation':

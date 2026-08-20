@@ -3,6 +3,7 @@ import type {
   IrTypedArrayElementWidth,
   IrTypedArrayReceiver,
 } from './compilerAccessSemanticIntermediateRepresentation.js';
+import type { IrBinaryOperator } from './compilerOperatorIntermediateRepresentation.js';
 import type { IrOperatorValueDomain } from './compilerOperatorSemanticIntermediateRepresentation.js';
 
 export type CompilerStaticTruthinessContext =
@@ -26,6 +27,14 @@ export type CompilerStaticFactCount =
       kind: 'numericRelation';
     }>
   | Readonly<{
+      count: number;
+      kind: 'logicalExpression';
+      left: IrOperatorValueDomain;
+      operator: Extract<IrBinaryOperator, '&&' | '||'>;
+      result: IrOperatorValueDomain;
+      right: IrOperatorValueDomain;
+    }>
+  | Readonly<{
       access: CompilerStaticIndexedAccessMode;
       count: number;
       kind: 'indexedAccess';
@@ -46,5 +55,5 @@ export type CompilerStaticFactCount =
 export interface CompilerStaticFactAudit {
   readonly facts: readonly CompilerStaticFactCount[];
   readonly modules: number;
-  readonly schema: 'flight-compiler-static-facts/3';
+  readonly schema: 'flight-compiler-static-facts/4';
 }

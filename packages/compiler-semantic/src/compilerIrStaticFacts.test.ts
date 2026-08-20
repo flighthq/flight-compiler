@@ -34,6 +34,14 @@ describe('analyzeIrModulesStaticFacts', () => {
         { access: 'read', count: 4, kind: 'indexedAccess', receivers: ['array'] },
         { access: 'readWrite', count: 2, kind: 'indexedAccess', receivers: ['array'] },
         { access: 'write', count: 1, kind: 'indexedAccess', receivers: ['array'] },
+        {
+          count: 1,
+          kind: 'logicalExpression',
+          left: 'boolean',
+          operator: '&&',
+          result: 'boolean',
+          right: 'boolean',
+        },
         { count: 1, domain: 'number', kind: 'numericRelation' },
         { context: 'conditionalExpression', count: 1, domain: 'unknown', kind: 'truthiness' },
         { context: 'controlFlowCondition', count: 3, domain: 'boolean', kind: 'truthiness' },
@@ -41,7 +49,7 @@ describe('analyzeIrModulesStaticFacts', () => {
         { context: 'negationOperand', count: 1, domain: 'boolean', kind: 'truthiness' },
       ],
       modules: 1,
-      schema: 'flight-compiler-static-facts/3',
+      schema: 'flight-compiler-static-facts/4',
     });
     expect(analyzeIrModulesStaticFacts([lowered.module])).toEqual(analyzeIrModulesStaticFacts([lowered.module]));
     expect(lowered.module).toEqual(snapshot);
@@ -61,6 +69,14 @@ describe('analyzeIrModulesStaticFacts', () => {
 
     expect(analyzeIrModulesStaticFacts([lowered.module])).toMatchObject({
       facts: [
+        {
+          count: 1,
+          kind: 'logicalExpression',
+          left: 'object',
+          operator: '&&',
+          result: 'unknown',
+          right: 'unknown',
+        },
         { context: 'conditionalExpression', count: 1, domain: 'unknown', kind: 'truthiness' },
         { context: 'logicalOperand', count: 1, domain: 'object', kind: 'truthiness' },
       ],
@@ -68,7 +84,7 @@ describe('analyzeIrModulesStaticFacts', () => {
     expect(analyzeIrModulesStaticFacts([])).toEqual({
       facts: [],
       modules: 0,
-      schema: 'flight-compiler-static-facts/3',
+      schema: 'flight-compiler-static-facts/4',
     });
   });
 
@@ -137,6 +153,48 @@ describe('analyzeIrModulesStaticFacts', () => {
         kind: 'typedArraySet',
         receivers: ['float32Array', 'uint8Array'],
       },
+    ]);
+  });
+
+  it('distinguishes logical-expression semantics from operand truthiness and logical assignment', () => {
+    const sourceFile = ts.createSourceFile(
+      '/flight/packages/math/src/logical-expressions.ts',
+      `
+        export function choose(left: boolean, right: boolean, value: unknown): unknown {
+          left || right;
+          ({} && value);
+          left ||= right;
+          return value ?? right;
+        }
+      `,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const lowered = lowerTypeScriptSource(sourceFile, {
+      packageName: '@flighthq/math',
+      upstreamDirectory: '/flight',
+    });
+
+    expect(lowered.diagnostics).toEqual([]);
+    expect(analyzeIrModulesStaticFacts([lowered.module]).facts).toEqual([
+      {
+        count: 1,
+        kind: 'logicalExpression',
+        left: 'object',
+        operator: '&&',
+        result: 'unknown',
+        right: 'unknown',
+      },
+      {
+        count: 1,
+        kind: 'logicalExpression',
+        left: 'boolean',
+        operator: '||',
+        result: 'boolean',
+        right: 'boolean',
+      },
+      { context: 'logicalOperand', count: 2, domain: 'boolean', kind: 'truthiness' },
+      { context: 'logicalOperand', count: 1, domain: 'object', kind: 'truthiness' },
     ]);
   });
 
