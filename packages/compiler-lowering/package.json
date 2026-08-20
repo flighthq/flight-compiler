@@ -19,5 +19,9 @@
   },
   "dependencies": {
     "@flighthq/compiler-types": "*"
+  },
+  "devDependencies": {
+    "@flighthq/compiler-semantic": "*",
+    "typescript": "5.9.3"
   }
 }

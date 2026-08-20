@@ -18,7 +18,8 @@ export type CompilerLoweringFailureCode =
   | 'invalid-pass-order'
   | 'malformed-ir'
   | 'non-idempotent-pass'
-  | 'pass-execution-failed';
+  | 'pass-execution-failed'
+  | 'unsupported-ir';
 
 export interface CompilerLoweringFailure extends Error, CompilerSourceIdentity {
   readonly code: CompilerLoweringFailureCode;

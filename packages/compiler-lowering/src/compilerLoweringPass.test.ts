@@ -31,6 +31,7 @@ describe('isCompilerLoweringFailure', () => {
       'malformed-ir',
       'non-idempotent-pass',
       'pass-execution-failed',
+      'unsupported-ir',
     ];
 
     expect(

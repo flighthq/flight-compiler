@@ -132,4 +132,5 @@ const compilerLoweringFailureCodes: Readonly<Record<CompilerLoweringFailureCode,
   'malformed-ir': true,
   'non-idempotent-pass': true,
   'pass-execution-failed': true,
+  'unsupported-ir': true,
 };

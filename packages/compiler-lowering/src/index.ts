@@ -1,3 +1,4 @@
+export { createCompilerLoweringPassCStyleFor } from './compilerCStyleForLowering.js';
 export {
   createCompilerLoweringFailure,
   isCompilerLoweringFailure,
