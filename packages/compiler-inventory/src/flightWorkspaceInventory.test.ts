@@ -6,7 +6,7 @@ import path from 'node:path';
 import type { CompilerInventoryFailureCode } from '../../compiler-types/src/index.js';
 import { isCompilerInventoryFailure } from './compilerInventoryFailure.js';
 import { getPackageInventoryRootExportLane, resolvePackageExportLane } from './flightPackageExportLane.js';
-import { analyzeFlightWorkspace, readGitCommit, readPackageExportManifest } from './flightWorkspaceInventory.js';
+import { analyzeFlightWorkspace, readPackageExportManifest } from './flightWorkspaceInventory.js';
 
 describe('analyzeFlightWorkspace', () => {
   it('resolves export lanes, runtime bindings, SDK exposure, and portable provenance', () => {
@@ -76,22 +76,6 @@ describe('analyzeFlightWorkspace', () => {
       expectInventoryFailure(() => analyzeFlightWorkspace({ upstreamDirectory: upstream }), 'missing-sdk-package');
     } finally {
       rmSync(upstream, { force: true, recursive: true });
-    }
-  });
-});
-
-describe('readGitCommit', () => {
-  it('returns the exact checkout commit and rejects a directory without repository identity', () => {
-    const upstream = createUpstreamFixture();
-    const plainDirectory = mkdtempSync(path.join(os.tmpdir(), 'flight-compiler-no-git-'));
-    try {
-      const expected = execFileSync('git', ['-C', upstream, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
-
-      expect(readGitCommit(upstream)).toBe(expected);
-      expectInventoryFailure(() => readGitCommit(plainDirectory), 'invalid-git-commit');
-    } finally {
-      rmSync(upstream, { force: true, recursive: true });
-      rmSync(plainDirectory, { force: true, recursive: true });
     }
   });
 });

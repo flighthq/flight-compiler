@@ -4,7 +4,8 @@ export { getPackageInventoryRootExportLane, resolvePackageExportLane } from './f
 export { analyzeFlightPackageHostFacts } from './flightPackageHostFacts.js';
 export { analyzeFlightPackageImports } from './flightPackageImport.js';
 export { readFlightPackageManifests } from './flightPackageManifest.js';
-export { analyzeFlightWorkspace, readGitCommit, readPackageExportManifest } from './flightWorkspaceInventory.js';
+export { analyzeFlightWorkspace, readPackageExportManifest } from './flightWorkspaceInventory.js';
+export { readGitCommit } from './gitCheckoutRevision.js';
 export { createTypeScriptProject } from './typeScriptProject.js';
 export { analyzeTypeScriptHostEndpoints } from './typeScriptHostEndpointInventory.js';
 export {

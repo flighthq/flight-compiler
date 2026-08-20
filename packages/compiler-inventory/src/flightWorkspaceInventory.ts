@@ -1,4 +1,3 @@
-import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import path from 'node:path';
 
@@ -25,6 +24,7 @@ import { getPackageInventoryRootExportLane, resolvePackageExportLane } from './f
 import { analyzeFlightPackageHostFacts } from './flightPackageHostFacts.js';
 import { analyzeFlightPackageImports } from './flightPackageImport.js';
 import { readFlightPackageManifests } from './flightPackageManifest.js';
+import { readGitCommit } from './gitCheckoutRevision.js';
 import { createTypeScriptProject } from './typeScriptProject.js';
 import { analyzeTypeScriptSourceRuntimeExports } from './typeScriptRuntimeBinding.js';
 
@@ -179,31 +179,6 @@ export function analyzeFlightWorkspace(options: Readonly<AnalyzeFlightWorkspaceO
     },
     upstreamCommit: readGitCommit(upstreamDirectory),
   };
-}
-
-export function readGitCommit(directory: string): string {
-  try {
-    const commit = execFileSync('git', ['-C', path.resolve(directory), 'rev-parse', 'HEAD'], {
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'pipe'],
-    }).trim();
-    if (!/^[0-9a-f]{40}$/u.test(commit)) {
-      throw createCompilerInventoryFailure(
-        'invalid-git-commit',
-        path.resolve(directory),
-        `Git returned an invalid commit: ${commit}`,
-      );
-    }
-    return commit;
-  } catch (error) {
-    const detail = error instanceof Error ? `: ${error.message}` : '';
-    throw createCompilerInventoryFailure(
-      'invalid-git-commit',
-      path.resolve(directory),
-      `Upstream directory is not an initialized Git checkout${detail}`,
-      error,
-    );
-  }
 }
 
 export function readPackageExportManifest(
