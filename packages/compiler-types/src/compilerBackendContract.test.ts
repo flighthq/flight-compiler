@@ -8,7 +8,7 @@ import type {
   HaxeCompilerBackendOptions,
   RustCompilerBackendOptions,
 } from './compilerBackendContract.js';
-import type { IrModule } from './compilerIntermediateRepresentation.js';
+import type { IrModule } from './compilerModuleIntermediateRepresentation.js';
 import type { CompilerSourceIdentity } from './compilerSourceIdentity.js';
 
 describe('compiler backend contracts', () => {

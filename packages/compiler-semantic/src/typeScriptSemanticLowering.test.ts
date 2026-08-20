@@ -84,8 +84,79 @@ describe('lowerTypeScriptSource', () => {
     const [a, b, sign] = result.module.declarations;
 
     expect(a?.origin.fingerprint).not.toBe(b?.origin.fingerprint);
-    expect(sign).toMatchObject({ kind: 'type', type: { kind: 'union' } });
-    if (sign?.kind !== 'type' || sign.type.kind !== 'union') throw new Error('Expected union type alias');
+    expect(sign).toMatchObject({ kind: 'typeAlias', type: { kind: 'union' } });
+    if (sign?.kind !== 'typeAlias' || sign.type.kind !== 'union') throw new Error('Expected union type alias');
     expect(sign.type.types[0]).toEqual({ kind: 'literal', value: -1 });
+  });
+
+  it('separates executable defaults from function types', () => {
+    const result = lower('contracts.ts', 'export const callback = (value: number = 1): number => value;');
+    const [callback] = result.module.declarations;
+
+    expect(callback).toMatchObject({
+      initializer: { kind: 'function', parameters: [{ initializer: { kind: 'literal', value: 1 } }] },
+      kind: 'variable',
+      type: { kind: 'function', parameters: [{ name: 'value', optional: true, rest: false }] },
+    });
+    if (
+      callback?.kind !== 'variable' ||
+      callback.type?.kind !== 'function' ||
+      callback.initializer?.kind !== 'function'
+    ) {
+      throw new Error('Expected a function-valued variable');
+    }
+    expect(callback.type.parameters[0]).not.toHaveProperty('initializer');
+    expect(callback.initializer.parameters[0]).toHaveProperty('initializer');
+  });
+
+  it('distinguishes absent and explicit class constructors', () => {
+    const result = lower('constructors.ts', 'export class Implicit {} export class Explicit { constructor() {} }');
+    const [implicit, explicit] = result.module.declarations;
+
+    expect(implicit).toMatchObject({ kind: 'class', name: 'Implicit' });
+    expect(implicit).not.toHaveProperty('classConstructor');
+    expect(explicit).toMatchObject({ classConstructor: { body: [], parameters: [] }, kind: 'class', name: 'Explicit' });
+  });
+
+  it('represents interface heritage as type references and structural members as properties', () => {
+    const result = lower(
+      'box.ts',
+      'interface Base<Value> { readonly value: Value } export interface Box<Value> extends Base<Value> { get(): Value }',
+    );
+    const box = result.module.declarations[1];
+
+    expect(box).toMatchObject({
+      extends: [{ kind: 'named', name: 'Base', typeArguments: [{ kind: 'named', name: 'Value' }] }],
+      kind: 'interface',
+      properties: [
+        {
+          name: 'get',
+          optional: false,
+          readonly: true,
+          type: { kind: 'function', parameters: [], returns: { kind: 'named', name: 'Value' } },
+        },
+      ],
+    });
+  });
+
+  it('diagnoses optional rest parameters instead of constructing invalid IR', () => {
+    const parameter = lower('parameter.ts', 'export function invalid(...values?: number[]): void {}');
+
+    expect(parameter.module.declarations).toEqual([]);
+    expect(parameter.diagnostics[0]?.message).toBe('rest parameters cannot be optional or defaulted');
+  });
+
+  it('diagnoses defaulted rest parameters instead of constructing invalid IR', () => {
+    const parameter = lower('parameter.ts', 'export function invalid(...values: number[] = []): void {}');
+
+    expect(parameter.module.declarations).toEqual([]);
+    expect(parameter.diagnostics[0]?.message).toBe('rest parameters cannot be optional or defaulted');
+  });
+
+  it('diagnoses optional rest tuple elements instead of constructing invalid IR', () => {
+    const tuple = lower('tuple.ts', 'export type Invalid = [...values?: number[]];');
+
+    expect(tuple.module.declarations).toEqual([]);
+    expect(tuple.diagnostics[0]?.message).toBe('rest tuple elements cannot be optional');
   });
 });

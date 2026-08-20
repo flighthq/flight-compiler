@@ -1,7 +1,7 @@
 import type ts from 'typescript';
 
 import type { CompilerDiagnostic } from './compilerDiagnosticContract.js';
-import type { IrModule } from './compilerIntermediateRepresentation.js';
+import type { IrModule } from './compilerModuleIntermediateRepresentation.js';
 
 export interface LowerTypeScriptSourceOptions {
   readonly packageName: string;

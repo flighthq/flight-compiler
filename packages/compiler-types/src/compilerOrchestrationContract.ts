@@ -2,7 +2,7 @@ import type ts from 'typescript';
 
 import type { BackendCompilation, CompilerBackend } from './compilerBackendContract.js';
 import type { CompilerDiagnostic } from './compilerDiagnosticContract.js';
-import type { IrModule } from './compilerIntermediateRepresentation.js';
+import type { IrModule } from './compilerModuleIntermediateRepresentation.js';
 import type { PatchAudit, SemanticPatch } from './compilerSemanticPatchContract.js';
 import type { LowerTypeScriptSourceOptions } from './compilerTypeScriptContract.js';
 

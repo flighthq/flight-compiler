@@ -2,7 +2,7 @@ import type {
   IrDeclaration,
   IrFunctionDeclaration,
   IrModule,
-  IrTypeDeclaration,
+  IrTypeAliasDeclaration,
   SemanticPatch,
   SemanticPatchFailure,
   SemanticPatchFailureCode,
@@ -46,7 +46,7 @@ describe('applySemanticPatchSet', () => {
       },
       renamePatch('02-rename', 'bounded', { kind: 'neutral' }),
       {
-        ...patchBase('04-type', 'Range', 'type'),
+        ...patchBase('04-type', 'Range', 'typeAlias'),
         operation: 'replaceType',
         type: { kind: 'primitive', name: 'string' },
       },
@@ -60,7 +60,7 @@ describe('applySemanticPatchSet', () => {
       body: [{ expression: { kind: 'literal', value: 1 }, kind: 'return' }],
       kind: 'function',
     });
-    expect(declarations?.[1]).toMatchObject({ kind: 'type', type: { kind: 'primitive', name: 'string' } });
+    expect(declarations?.[1]).toMatchObject({ kind: 'typeAlias', type: { kind: 'primitive', name: 'string' } });
     expect(result.audit.applied.map((record) => record.id)).toEqual(['01-body', '02-rename', '03-remove', '04-type']);
     expect(result.audit.summary).toEqual({ applied: 4, skipped: 0 });
     const bodyPatch = patches.find((patch) => patch.id === '01-body');
@@ -68,7 +68,7 @@ describe('applySemanticPatchSet', () => {
     expect(result.audit.applied[0]?.target).not.toBe(bodyPatch?.target);
     expect(module.declarations.map((declaration) => declaration.name)).toEqual(['clamp', 'Range', 'obsolete']);
     expect((module.declarations[0] as IrFunctionDeclaration).body).toEqual([]);
-    expect((module.declarations[1] as IrTypeDeclaration).type).toEqual({ kind: 'primitive', name: 'number' });
+    expect((module.declarations[1] as IrTypeAliasDeclaration).type).toEqual({ kind: 'primitive', name: 'number' });
   });
 
   it('returns a tagged failure for every invalid identity or operation state', () => {
@@ -113,7 +113,7 @@ describe('applySemanticPatchSet', () => {
       },
       {
         code: 'patch-kind-mismatch',
-        patches: [{ ...valid, expect: { fingerprint: 'sha256:clamp', kind: 'type' } }],
+        patches: [{ ...valid, expect: { fingerprint: 'sha256:clamp', kind: 'typeAlias' } }],
       },
       {
         code: 'stale-patch-fingerprint',
@@ -230,10 +230,10 @@ function createModule(declarations: IrDeclaration[] = [createFunctionDeclaration
   };
 }
 
-function createTypeDeclaration(name: string): IrTypeDeclaration {
+function createTypeDeclaration(name: string): IrTypeAliasDeclaration {
   return {
     exported: true,
-    kind: 'type',
+    kind: 'typeAlias',
     name,
     origin: {
       column: 1,

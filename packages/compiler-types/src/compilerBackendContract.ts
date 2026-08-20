@@ -1,4 +1,4 @@
-import type { IrModule } from './compilerIntermediateRepresentation.js';
+import type { IrModule } from './compilerModuleIntermediateRepresentation.js';
 import type { CompilerSourceIdentity } from './compilerSourceIdentity.js';
 
 export interface EmittedFileIdentity {

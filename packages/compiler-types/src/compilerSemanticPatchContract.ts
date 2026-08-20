@@ -1,5 +1,7 @@
-import type { IrModule, IrStatement, IrType } from './compilerIntermediateRepresentation.js';
+import type { IrStatement } from './compilerExecutableIntermediateRepresentation.js';
+import type { IrModule } from './compilerModuleIntermediateRepresentation.js';
 import type { CompilerExportIdentity } from './compilerSourceIdentity.js';
+import type { IrType } from './compilerTypeIntermediateRepresentation.js';
 
 export type SemanticPatchTarget = CompilerExportIdentity;
 
@@ -8,7 +10,7 @@ export type PatchScope = { readonly kind: 'neutral' } | { readonly backend: stri
 interface BasePatch {
   readonly expect: {
     readonly fingerprint: string;
-    readonly kind: 'class' | 'enum' | 'function' | 'interface' | 'type' | 'variable';
+    readonly kind: 'class' | 'enum' | 'function' | 'interface' | 'typeAlias' | 'variable';
   };
   readonly id: string;
   readonly reason: string;

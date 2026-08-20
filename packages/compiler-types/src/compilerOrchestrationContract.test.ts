@@ -1,6 +1,6 @@
 import type { CompilerBackend } from './compilerBackendContract.js';
 import type { CompilerDiagnostic } from './compilerDiagnosticContract.js';
-import type { IrModule } from './compilerIntermediateRepresentation.js';
+import type { IrModule } from './compilerModuleIntermediateRepresentation.js';
 import type {
   CompileIrModulesOptions,
   CompileIrModulesResult,

@@ -58,7 +58,7 @@ The repository also enforces a structural floor for runtime packages: each non-b
 
 ### `compiler-types`
 
-Status: foundational, not mature.
+Status: foundational. Source identity and the declaration/type IR families have been reviewed; the complete IR is not mature.
 
 Strengths:
 
@@ -71,15 +71,21 @@ Strengths:
 - Diagnostics reuse the same globally identified, one-based source-location contract and expose a closed stable code.
 - Emitted files expose portable normalized path identity separately from their normalized contents.
 - Public compiler results and nested collections are readonly; implementations build mutable local state and return immutable contracts.
+- Declaration, executable, module, and type IR contracts live in focused flat sources rather than one omnibus contract.
+- Function types cannot carry executable default expressions, while executable parameters retain defaults where they are meaningful.
+- Parameter and tuple-element cardinality excludes contradictory optional-rest states, and union/intersection contracts require at least two constituents.
+- Class constructors distinguish absence from an explicit empty constructor; class and interface heritage accepts named type references rather than arbitrary types.
+- Previously anonymous constructor, enum-member, function-type-parameter, tuple-element, visibility, type-alias, and type-reference contracts have stable domain names for focused testing and reuse.
 
 Open foundation work:
 
 - The neutral IR is an initial coverage-driven model, not yet a reviewed complete vocabulary.
 - Several operator fields remain unconstrained strings and therefore do not yet express the actual supported language.
+- Expression and statement binding identity/provenance has not been reviewed, so shadowing and target name-resolution requirements remain provisional.
 - There is no versioned serialization/parser boundary for persisted IR; adding one prematurely would freeze the provisional model.
 - Contract tests prove representative composition but do not yet exhaust every discriminated family.
 
-Decision: do not declare the IR stable or publish a serialized IR format. Source, module, export, source-location, source-origin, emitted-file, and semantic-patch target identity, together with diagnostic and bedrock failure contracts, are now locked as readonly structural contracts. Continue with declaration and type IR families before reviewing expression breadth.
+Decision: do not declare the IR stable or publish a serialized IR format. Source, module, export, source-location, source-origin, emitted-file, and semantic-patch target identity, together with diagnostic and bedrock failure contracts, are now locked as readonly structural contracts. Declaration and type families now have a reviewed structural floor. Continue with expression and statement families, beginning with closed operator sets and binding provenance.
 
 ### `compiler-provenance`
 
@@ -123,7 +129,7 @@ Each workspace passes its own strict typecheck and Vitest target. The package bo
 
 | Package | Isolation conclusion | Current robustness boundary |
 | --- | --- | --- |
-| `compiler-types` | Keep independent as the dependency-free vocabulary floor. | Strict typecheck and focused composition tests cover useful relationships; identity, source location, diagnostics/failures, and readonly collection boundaries are explicit, while IR completeness remains open. |
+| `compiler-types` | Keep independent as the dependency-free vocabulary floor. | Strict typecheck and focused composition tests cover useful relationships; identity, declaration/type separation and cardinality, source location, diagnostics/failures, and readonly collection boundaries are explicit, while expression/statement completeness remains open. |
 | `compiler-provenance` | Keep independent as one narrow identity primitive. | Equivalence, counterexample, empty, Unicode, path, line-ending, raw-text, and TypeScript-version behavior are locked. |
 | `compiler-patch` | Keep independent because patch identity and auditing are a separate lifecycle. | All operations and failure codes, deterministic ordering, backend skipping, and caller-input immutability are exercised. |
 | `compiler-emission` | Keep independent as the portable emitted-file and backend-failure seam. | Path/content normalization, host-path rejection, portable collision identity, indentation boundaries, and tagged failure guards are exercised. |
@@ -143,7 +149,7 @@ No new workspace follows from this review. A large file alone is not a package d
 3. Finish semantic patch failure and audit contracts, then decide whether patches need a versioned untyped document format.
 4. Finish emission path/content invariants and backend failure contracts.
 5. Audit inventory as the first composition above bedrock: package discovery, export lanes, runtime bindings, host facts, exclusions, and deterministic reports.
-6. Audit semantic IR families one at a time, beginning with declarations and types before expression and statement breadth.
+6. Audit semantic IR families one at a time. Declaration and type families now have a reviewed floor; continue with expression/statement operators and binding provenance.
 7. Only then expand orchestration and target backends, using downstream parity as verification of the stable primitives rather than as their design source.
 
 ## Freeze rule

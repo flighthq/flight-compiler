@@ -11,11 +11,11 @@ import type {
   IrImport,
   IrInterfaceDeclaration,
   IrModule,
-  IrObjectTypeMember,
+  IrObjectTypeProperty,
   IrParameter,
   IrStatement,
   IrType,
-  IrTypeDeclaration,
+  IrTypeAliasDeclaration,
   IrTypeParameter,
   IrVariable,
   IrVariableDeclaration,
@@ -52,7 +52,7 @@ export function emitIrModuleHaxe(
       declaration.kind === 'class' ||
       declaration.kind === 'enum' ||
       declaration.kind === 'interface' ||
-      declaration.kind === 'type',
+      declaration.kind === 'typeAlias',
   );
   const valueDeclarations = module.declarations.filter(
     (declaration): declaration is IrFunctionDeclaration | IrVariableDeclaration =>
@@ -99,10 +99,13 @@ function emitClass(declaration: Readonly<IrClassDeclaration>, context: EmitConte
       `  ${visibility}${static_}${storage} ${safeHaxeName(field.name)}:${emitType(field.type, context)}${initializer};`,
     );
   });
-  if (declaration.constructorParameters.length > 0 || declaration.constructorBody.length > 0) {
+  if (
+    declaration.classConstructor &&
+    (declaration.classConstructor.parameters.length > 0 || declaration.classConstructor.body.length > 0)
+  ) {
     if (declaration.fields.length > 0) lines.push('');
-    lines.push(`  public function new(${emitParameters(declaration.constructorParameters, context)}) {`);
-    lines.push(...indentSourceLines(emitStatements(declaration.constructorBody, context), 2), '  }');
+    lines.push(`  public function new(${emitParameters(declaration.classConstructor.parameters, context)}) {`);
+    lines.push(...indentSourceLines(emitStatements(declaration.classConstructor.body, context), 2), '  }');
   }
   declaration.methods.forEach((method) => {
     if (lines.length > 1) lines.push('');
@@ -239,7 +242,7 @@ function emitInterface(declaration: Readonly<IrInterfaceDeclaration>, context: E
   if (declaration.extends.length > 0)
     emissionError(context, `interface ${declaration.name} inheritance requires structural flattening`);
   return [
-    `typedef ${safeHaxeName(declaration.name)}${emitTypeParameters(declaration.typeParameters, context)} = ${emitAnonymousType(declaration.members, context)};`,
+    `typedef ${safeHaxeName(declaration.name)}${emitTypeParameters(declaration.typeParameters, context)} = ${emitAnonymousType(declaration.properties, context)};`,
   ];
 }
 
@@ -393,7 +396,7 @@ function emitType(type: Readonly<IrType>, context: EmitContext): string {
     case 'undefined':
       return 'Dynamic';
     case 'object':
-      return emitAnonymousType(type.members, context);
+      return emitAnonymousType(type.properties, context);
     case 'primitive':
       return {
         bigint: 'haxe.Int64',
@@ -416,9 +419,11 @@ function emitType(type: Readonly<IrType>, context: EmitContext): string {
   }
 }
 
-function emitAnonymousType(members: readonly IrObjectTypeMember[], context: EmitContext): string {
-  return `{ ${members
-    .map((member) => `${member.optional ? '?' : ''}${safeHaxeName(member.name)}:${emitType(member.type, context)}`)
+function emitAnonymousType(properties: readonly IrObjectTypeProperty[], context: EmitContext): string {
+  return `{ ${properties
+    .map(
+      (property) => `${property.optional ? '?' : ''}${safeHaxeName(property.name)}:${emitType(property.type, context)}`,
+    )
     .join(', ')} }`;
 }
 
@@ -430,14 +435,14 @@ function emitTypeDeclaration(declaration: Readonly<IrDeclaration>, context: Emit
       return emitEnum(declaration, context);
     case 'interface':
       return emitInterface(declaration, context);
-    case 'type':
+    case 'typeAlias':
       return emitTypeAlias(declaration, context);
     default:
       emissionError(context, `unexpected value declaration ${declaration.name} in type emission`);
   }
 }
 
-function emitTypeAlias(declaration: Readonly<IrTypeDeclaration>, context: EmitContext): string[] {
+function emitTypeAlias(declaration: Readonly<IrTypeAliasDeclaration>, context: EmitContext): string[] {
   return [
     `typedef ${safeHaxeName(declaration.name)}${emitTypeParameters(declaration.typeParameters, context)} = ${emitType(declaration.type, context)};`,
   ];

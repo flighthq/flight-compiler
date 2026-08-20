@@ -11,11 +11,11 @@ import type {
   IrImport,
   IrInterfaceDeclaration,
   IrModule,
-  IrObjectTypeMember,
+  IrObjectTypeProperty,
   IrParameter,
   IrStatement,
   IrType,
-  IrTypeDeclaration,
+  IrTypeAliasDeclaration,
   IrTypeParameter,
   IrVariable,
   IrVariableDeclaration,
@@ -76,7 +76,10 @@ function emitClass(declaration: Readonly<IrClassDeclaration>, context: EmitConte
   if (declaration.extends || declaration.implements.length > 0) {
     emissionError(context, `class ${declaration.name} inheritance requires Rust ownership lowering`);
   }
-  if (declaration.constructorParameters.length > 0 || declaration.constructorBody.length > 0) {
+  if (
+    declaration.classConstructor &&
+    (declaration.classConstructor.parameters.length > 0 || declaration.classConstructor.body.length > 0)
+  ) {
     emissionError(context, `class ${declaration.name} constructor requires Rust initialization lowering`);
   }
   if (declaration.abstract) emissionError(context, `abstract class ${declaration.name} requires Rust trait lowering`);
@@ -134,7 +137,7 @@ function emitDeclaration(declaration: Readonly<IrDeclaration>, context: EmitCont
       return emitFunction(declaration, context);
     case 'interface':
       return emitInterface(declaration, context);
-    case 'type':
+    case 'typeAlias':
       return emitTypeAlias(declaration, context);
     case 'variable':
       return emitVariableDeclaration(declaration, context);
@@ -283,7 +286,13 @@ function emitImports(imports: readonly IrImport[], context: EmitContext): string
 function emitInterface(declaration: Readonly<IrInterfaceDeclaration>, context: EmitContext): string[] {
   if (declaration.extends.length > 0)
     emissionError(context, `interface ${declaration.name} inheritance requires record flattening`);
-  return emitRecord(declaration.name, declaration.members, declaration.typeParameters, declaration.exported, context);
+  return emitRecord(
+    declaration.name,
+    declaration.properties,
+    declaration.typeParameters,
+    declaration.exported,
+    context,
+  );
 }
 
 function emitLiteral(value: boolean | null | number | string): string {
@@ -304,7 +313,7 @@ function emitParameter(parameter: Readonly<IrParameter>, context: EmitContext): 
 
 function emitRecord(
   name: string,
-  members: readonly IrObjectTypeMember[],
+  properties: readonly IrObjectTypeProperty[],
   typeParameters: readonly IrTypeParameter[],
   exported: boolean,
   context: EmitContext,
@@ -313,9 +322,9 @@ function emitRecord(
     '#[derive(Clone, Debug)]',
     `${exported ? 'pub ' : ''}struct ${safeRustTypeName(name)}${emitTypeParameters(typeParameters, context)} {`,
   ];
-  for (const member of members) {
-    const type = emitType(member.type, context);
-    lines.push(`  pub ${safeRustValueName(member.name)}: ${member.optional ? `Option<${type}>` : type},`);
+  for (const property of properties) {
+    const type = emitType(property.type, context);
+    lines.push(`  pub ${safeRustValueName(property.name)}: ${property.optional ? `Option<${type}>` : type},`);
   }
   lines.push('}');
   return lines;
@@ -450,11 +459,11 @@ function emitType(type: Readonly<IrType>, context: EmitContext): string {
   }
 }
 
-function emitTypeAlias(declaration: Readonly<IrTypeDeclaration>, context: EmitContext): string[] {
+function emitTypeAlias(declaration: Readonly<IrTypeAliasDeclaration>, context: EmitContext): string[] {
   if (declaration.type.kind === 'object') {
     return emitRecord(
       declaration.name,
-      declaration.type.members,
+      declaration.type.properties,
       declaration.typeParameters,
       declaration.exported,
       context,

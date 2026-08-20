@@ -96,7 +96,7 @@ export function applySemanticPatchSet(
         updatedDeclaration = { ...declaration, body: structuredClone([...patch.body]) };
         break;
       case 'replaceType':
-        if (declaration.kind !== 'type') {
+        if (declaration.kind !== 'typeAlias') {
           throw createSemanticPatchError(
             'incompatible-patch-operation',
             [patch.id],

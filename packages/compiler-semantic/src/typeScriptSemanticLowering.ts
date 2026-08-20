@@ -14,16 +14,19 @@ import type {
   IrExport,
   IrFunctionDeclaration,
   IrFunctionSignature,
+  IrFunctionTypeParameter,
   IrImport,
   IrImportBinding,
   IrInterfaceDeclaration,
   IrObjectMember,
-  IrObjectTypeMember,
+  IrObjectTypeProperty,
   IrParameter,
   IrStatement,
+  IrTupleTypeElement,
   IrType,
-  IrTypeDeclaration,
+  IrTypeAliasDeclaration,
   IrTypeParameter,
+  IrTypeReference,
   IrVariable,
   IrVariableDeclaration,
   TypeScriptLoweringResult,
@@ -204,10 +207,14 @@ function lowerClass(node: ts.ClassDeclaration, context: LoweringContext): IrClas
     unsupported(extendsClause, 'classes must extend one base type');
   return {
     abstract: hasModifier(node, ts.SyntaxKind.AbstractKeyword),
-    constructorBody: constructor?.body ? lowerStatementList(constructor.body.statements, context) : [],
-    constructorParameters: constructor
-      ? constructor.parameters.map((parameter) => lowerParameter(parameter, context))
-      : [],
+    ...(constructor
+      ? {
+          classConstructor: {
+            body: constructor.body ? lowerStatementList(constructor.body.statements, context) : [],
+            parameters: constructor.parameters.map((parameter) => lowerParameter(parameter, context)),
+          },
+        }
+      : {}),
     exported: isExported(node),
     ...(extendsClause?.types[0] ? { extends: lowerExpressionWithTypeArguments(extendsClause.types[0], context) } : {}),
     fields,
@@ -462,7 +469,10 @@ function lowerExpression(node: ts.Expression, context: LoweringContext): IrExpre
   unsupported(node, `unsupported expression ${ts.SyntaxKind[node.kind]}`);
 }
 
-function lowerExpressionWithTypeArguments(node: ts.ExpressionWithTypeArguments, context: LoweringContext): IrType {
+function lowerExpressionWithTypeArguments(
+  node: ts.ExpressionWithTypeArguments,
+  context: LoweringContext,
+): IrTypeReference {
   return {
     kind: 'named',
     name: node.expression.getText(context.sourceFile),
@@ -498,6 +508,20 @@ function lowerFunctionSignature(node: ts.SignatureDeclaration, context: Lowering
   };
 }
 
+function lowerFunctionType(
+  node: ts.SignatureDeclaration,
+  context: LoweringContext,
+): Extract<IrType, { kind: 'function' }> {
+  return {
+    kind: 'function',
+    parameters: node.parameters
+      .filter((parameter) => !isThisParameter(parameter))
+      .map((parameter) => lowerFunctionTypeParameter(parameter, context)),
+    returns: node.type ? lowerType(node.type, context) : { kind: 'unknown', source: 'any' },
+    typeParameters: lowerTypeParameters(node.typeParameters, context),
+  };
+}
+
 function lowerImports(sourceFile: ts.SourceFile): IrImport[] {
   return sourceFile.statements.flatMap((statement): IrImport[] => {
     if (!ts.isImportDeclaration(statement) || !ts.isStringLiteral(statement.moduleSpecifier)) return [];
@@ -528,9 +552,9 @@ function lowerInterface(node: ts.InterfaceDeclaration, context: LoweringContext)
         clause.types.map((type) => lowerExpressionWithTypeArguments(type, context)),
       ) ?? [],
     kind: 'interface',
-    members: lowerTypeMembers(node.members, context),
     name: node.name.text,
     origin: origin(node, context),
+    properties: lowerTypeProperties(node.members, context),
     typeParameters: lowerTypeParameters(node.typeParameters, context),
   };
 }
@@ -572,18 +596,27 @@ function lowerObjectMember(node: ts.ObjectLiteralElementLike, context: LoweringC
 }
 
 function lowerParameter(node: ts.ParameterDeclaration, context: LoweringContext): IrParameter {
+  const parameter = lowerFunctionTypeParameter(node, context);
+  if (!node.initializer) return parameter;
+  if (!parameter.optional) unsupported(node, 'default parameters must be optional and non-rest');
+  return { ...parameter, initializer: lowerExpression(node.initializer, context) };
+}
+
+function lowerFunctionTypeParameter(node: ts.ParameterDeclaration, context: LoweringContext): IrFunctionTypeParameter {
   if (!ts.isIdentifier(node.name)) unsupported(node.name, 'destructured parameters are not represented yet');
-  return {
-    ...(node.initializer ? { initializer: lowerExpression(node.initializer, context) } : {}),
-    name: node.name.text,
-    optional: node.questionToken !== undefined || node.initializer !== undefined,
-    rest: node.dotDotDotToken !== undefined,
-    type: node.type
-      ? lowerType(node.type, context)
-      : node.initializer
-        ? inferInitializerType(node.initializer, context)
-        : { kind: 'unknown', source: 'any' },
-  };
+  const type: IrType = node.type
+    ? lowerType(node.type, context)
+    : node.initializer
+      ? inferInitializerType(node.initializer, context)
+      : { kind: 'unknown', source: 'any' };
+  const value = { name: node.name.text, type };
+  if (node.dotDotDotToken) {
+    if (node.questionToken || node.initializer) unsupported(node, 'rest parameters cannot be optional or defaulted');
+    return { ...value, optional: false, rest: true };
+  }
+  return node.questionToken || node.initializer
+    ? { ...value, optional: true, rest: false }
+    : { ...value, optional: false, rest: false };
 }
 
 function lowerStatement(node: ts.Statement, context: LoweringContext): IrStatement {
@@ -729,16 +762,17 @@ function lowerType(node: ts.TypeNode, context: LoweringContext): IrType {
     return { element: lowerType(node.elementType, context), kind: 'array', readonly: false };
   if (ts.isTupleTypeNode(node)) {
     return {
-      elements: node.elements.map((element) => {
+      elements: node.elements.map((element): IrTupleTypeElement => {
         if (ts.isOptionalTypeNode(element))
           return { optional: true, rest: false, type: lowerType(element.type, context) };
         if (ts.isRestTypeNode(element)) return { optional: false, rest: true, type: lowerType(element.type, context) };
         if (ts.isNamedTupleMember(element)) {
-          return {
-            optional: element.questionToken !== undefined,
-            rest: element.dotDotDotToken !== undefined,
-            type: lowerType(element.type, context),
-          };
+          const type = lowerType(element.type, context);
+          if (element.dotDotDotToken) {
+            if (element.questionToken) unsupported(element, 'rest tuple elements cannot be optional');
+            return { optional: false, rest: true, type };
+          }
+          return element.questionToken ? { optional: true, rest: false, type } : { optional: false, rest: false, type };
         }
         return { optional: false, rest: false, type: lowerType(element, context) };
       }),
@@ -746,12 +780,12 @@ function lowerType(node: ts.TypeNode, context: LoweringContext): IrType {
       readonly: false,
     };
   }
-  if (ts.isUnionTypeNode(node)) return { kind: 'union', types: node.types.map((type) => lowerType(type, context)) };
+  if (ts.isUnionTypeNode(node)) return { kind: 'union', types: lowerCompoundTypes(node.types, node, context) };
   if (ts.isIntersectionTypeNode(node)) {
-    return { kind: 'intersection', types: node.types.map((type) => lowerType(type, context)) };
+    return { kind: 'intersection', types: lowerCompoundTypes(node.types, node, context) };
   }
-  if (ts.isFunctionTypeNode(node)) return { kind: 'function', ...lowerFunctionSignature(node, context) };
-  if (ts.isTypeLiteralNode(node)) return { kind: 'object', members: lowerTypeMembers(node.members, context) };
+  if (ts.isFunctionTypeNode(node)) return lowerFunctionType(node, context);
+  if (ts.isTypeLiteralNode(node)) return { kind: 'object', properties: lowerTypeProperties(node.members, context) };
   if (ts.isLiteralTypeNode(node)) {
     if (node.literal.kind === ts.SyntaxKind.NullKeyword) return { kind: 'null' };
     if (ts.isStringLiteral(node.literal)) return { kind: 'literal', value: node.literal.text };
@@ -787,10 +821,10 @@ function lowerType(node: ts.TypeNode, context: LoweringContext): IrType {
   unsupported(node, `unsupported type ${ts.SyntaxKind[node.kind]}`);
 }
 
-function lowerTypeAlias(node: ts.TypeAliasDeclaration, context: LoweringContext): IrTypeDeclaration {
+function lowerTypeAlias(node: ts.TypeAliasDeclaration, context: LoweringContext): IrTypeAliasDeclaration {
   return {
     exported: isExported(node),
-    kind: 'type',
+    kind: 'typeAlias',
     name: node.name.text,
     origin: origin(node, context),
     type: lowerType(node.type, context),
@@ -798,8 +832,8 @@ function lowerTypeAlias(node: ts.TypeAliasDeclaration, context: LoweringContext)
   };
 }
 
-function lowerTypeMembers(members: readonly ts.TypeElement[], context: LoweringContext): IrObjectTypeMember[] {
-  return members.map((member): IrObjectTypeMember => {
+function lowerTypeProperties(members: readonly ts.TypeElement[], context: LoweringContext): IrObjectTypeProperty[] {
+  return members.map((member): IrObjectTypeProperty => {
     if (ts.isPropertySignature(member)) {
       if (!member.type) unsupported(member, 'property signature requires a type');
       return {
@@ -814,11 +848,21 @@ function lowerTypeMembers(members: readonly ts.TypeElement[], context: LoweringC
         name: propertyName(member.name, context),
         optional: member.questionToken !== undefined,
         readonly: true,
-        type: { kind: 'function', ...lowerFunctionSignature(member, context) },
+        type: lowerFunctionType(member, context),
       };
     }
     unsupported(member, `unsupported type member ${ts.SyntaxKind[member.kind]}`);
   });
+}
+
+function lowerCompoundTypes(
+  nodes: readonly ts.TypeNode[],
+  owner: ts.Node,
+  context: LoweringContext,
+): readonly [IrType, IrType, ...IrType[]] {
+  const [first, second, ...rest] = nodes.map((type) => lowerType(type, context));
+  if (!first || !second) unsupported(owner, 'compound types require at least two constituent types');
+  return [first, second, ...rest];
 }
 
 function lowerTypeParameters(
@@ -874,20 +918,24 @@ function inferInitializerType(node: ts.Expression, context: LoweringContext): Ir
       ts.isOmittedExpression(element) ? [] : [inferInitializerType(element, context)],
     );
     return {
-      element: elementTypes.length === 0 ? { kind: 'unknown', source: 'any' } : commonType(elementTypes),
+      element:
+        elementTypes.length === 0
+          ? { kind: 'unknown', source: 'any' }
+          : commonType([elementTypes[0]!, ...elementTypes.slice(1)]),
       kind: 'array',
       readonly: false,
     };
   }
   if (ts.isArrowFunction(node) || ts.isFunctionExpression(node)) {
-    return { kind: 'function', ...lowerFunctionSignature(node, context) };
+    return lowerFunctionType(node, context);
   }
   return { kind: 'unknown', source: 'any' };
 }
 
-function commonType(types: IrType[]): IrType {
+function commonType(types: readonly [IrType, ...IrType[]]): IrType {
   const serialized = new Map(types.map((type) => [JSON.stringify(type), type]));
-  return serialized.size === 1 ? serialized.values().next().value! : { kind: 'union', types: [...serialized.values()] };
+  const values = [...serialized.values()];
+  return values.length === 1 ? values[0]! : { kind: 'union', types: [values[0]!, values[1]!, ...values.slice(2)] };
 }
 
 function isAssignmentOperator(kind: ts.SyntaxKind): boolean {
