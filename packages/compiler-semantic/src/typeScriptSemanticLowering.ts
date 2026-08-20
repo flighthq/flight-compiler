@@ -27,6 +27,7 @@ import type {
   IrImportBinding,
   IrIdentifierReference,
   IrInterfaceDeclaration,
+  IrIndexedReceiver,
   IrObjectMember,
   IrObjectTypeProperty,
   IrOperatorValueDomain,
@@ -420,6 +421,7 @@ function lowerExpression(node: ts.Expression, context: LoweringContext): IrExpre
       kind: 'element',
       object: lowerExpression(node.expression, context),
       optional: node.questionDotToken !== undefined,
+      semantics: lowerElementAccessSemantics(node.expression, context),
     };
   }
   if (ts.isCallExpression(node)) {
@@ -530,6 +532,84 @@ function lowerExpressionWithTypeArguments(
     reference: lowerExpressionTypeNameReference(node.expression, context),
     typeArguments: node.typeArguments?.map((type) => lowerType(type, context)) ?? [],
   };
+}
+
+function lowerElementAccessSemantics(
+  receiver: ts.Expression,
+  context: LoweringContext,
+): { receivers: [IrIndexedReceiver, ...IrIndexedReceiver[]] } {
+  const checked = lowerTypeScriptIndexedReceivers(context.checker.getTypeAtLocation(receiver), context.checker);
+  const declared = getTypeScriptExpressionIndexedReceivers(receiver, context);
+  const values = declared && checked.every((value) => value === 'object' || value === 'unknown') ? declared : checked;
+  return { receivers: values.length > 0 ? [values[0]!, ...values.slice(1)] : ['unknown'] };
+}
+
+function getTypeScriptExpressionIndexedReceivers(
+  expression: ts.Expression,
+  context: LoweringContext,
+): IrIndexedReceiver[] | undefined {
+  if (ts.isArrayLiteralExpression(expression)) return ['array'];
+  if (
+    ts.isStringLiteral(expression) ||
+    ts.isNoSubstitutionTemplateLiteral(expression) ||
+    ts.isTemplateExpression(expression)
+  ) {
+    return ['string'];
+  }
+  if (ts.isObjectLiteralExpression(expression)) return ['object'];
+  if (ts.isNewExpression(expression)) {
+    const name = ts.isIdentifier(expression.expression) ? expression.expression.text : undefined;
+    const receiver = name ? typeScriptIndexedReceiverNames[name] : undefined;
+    return receiver ? [receiver] : undefined;
+  }
+  const symbol = context.checker.getSymbolAtLocation(expression);
+  const declaration = symbol?.valueDeclaration ?? symbol?.declarations?.[0];
+  const type =
+    declaration &&
+    (ts.isParameter(declaration) ||
+      ts.isVariableDeclaration(declaration) ||
+      ts.isPropertyDeclaration(declaration) ||
+      ts.isPropertySignature(declaration))
+      ? declaration.type
+      : undefined;
+  return type ? getTypeScriptTypeNodeIndexedReceivers(type, context, new Set()) : undefined;
+}
+
+function getTypeScriptTypeNodeIndexedReceivers(
+  node: ts.TypeNode,
+  context: LoweringContext,
+  seen: Set<ts.Symbol>,
+): IrIndexedReceiver[] | undefined {
+  if (ts.isParenthesizedTypeNode(node) || ts.isTypeOperatorNode(node)) {
+    return getTypeScriptTypeNodeIndexedReceivers(node.type, context, seen);
+  }
+  if (ts.isUnionTypeNode(node)) {
+    const receivers = node.types.flatMap(
+      (type): IrIndexedReceiver[] => getTypeScriptTypeNodeIndexedReceivers(type, context, seen) ?? ['unknown'],
+    );
+    return [...new Set(receivers)].sort();
+  }
+  if (ts.isArrayTypeNode(node) || ts.isTupleTypeNode(node)) return ['array'];
+  if (node.kind === ts.SyntaxKind.StringKeyword) return ['string'];
+  if (node.kind === ts.SyntaxKind.AnyKeyword || node.kind === ts.SyntaxKind.UnknownKeyword) return ['unknown'];
+  if (ts.isTypeLiteralNode(node)) return ['object'];
+  if (ts.isTypeReferenceNode(node)) {
+    const name = ts.isIdentifier(node.typeName) ? node.typeName.text : node.typeName.right.text;
+    const receiver = typeScriptIndexedReceiverNames[name];
+    if (receiver) return [receiver];
+    const unresolved = context.checker.getSymbolAtLocation(node.typeName);
+    const symbol =
+      unresolved?.flags && unresolved.flags & ts.SymbolFlags.Alias
+        ? context.checker.getAliasedSymbol(unresolved)
+        : unresolved;
+    if (!symbol || seen.has(symbol)) return undefined;
+    const declaration = symbol.declarations?.find(ts.isTypeAliasDeclaration);
+    if (!declaration) return undefined;
+    const nextSeen = new Set(seen);
+    nextSeen.add(symbol);
+    return getTypeScriptTypeNodeIndexedReceivers(declaration.type, context, nextSeen);
+  }
+  return undefined;
 }
 
 function lowerExpressionTypeNameReference(expression: ts.Expression, context: LoweringContext): IrTypeNameReference {
@@ -1128,6 +1208,38 @@ function lowerTypeScriptTypeOperatorValueDomain(type: ts.Type, checker: ts.TypeC
   return 'unknown';
 }
 
+function lowerTypeScriptIndexedReceivers(type: ts.Type, checker: ts.TypeChecker): IrIndexedReceiver[] {
+  if (type.isUnion()) {
+    return [...new Set(type.types.flatMap((member) => lowerTypeScriptIndexedReceivers(member, checker)))].sort();
+  }
+  if (type.flags & ts.TypeFlags.TypeParameter) {
+    const constraint = checker.getBaseConstraintOfType(type);
+    return constraint ? lowerTypeScriptIndexedReceivers(constraint, checker) : ['unknown'];
+  }
+  const display = checker.typeToString(type, undefined, ts.TypeFormatFlags.NoTruncation);
+  const named = typeScriptIndexedReceiverNames[display] ?? getTypeScriptArrayReceiver(display);
+  if (named) return [named];
+  const symbolName = (type.aliasSymbol ?? type.getSymbol())?.getName();
+  if (symbolName) {
+    const symbolReceiver = typeScriptIndexedReceiverNames[symbolName];
+    if (symbolReceiver) return [symbolReceiver];
+  }
+  if (type.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown | ts.TypeFlags.Never)) return ['unknown'];
+  if (type.flags & ts.TypeFlags.StringLike) return ['string'];
+  if (checker.isArrayType(type) || checker.isTupleType(type)) return ['array'];
+  if (type.flags & (ts.TypeFlags.NonPrimitive | ts.TypeFlags.Object)) return ['object'];
+  return ['unknown'];
+}
+
+function getTypeScriptArrayReceiver(display: string): IrIndexedReceiver | undefined {
+  return display.endsWith('[]') ||
+    display.startsWith('Array<') ||
+    display.startsWith('ReadonlyArray<') ||
+    /^readonly \[|^\[/u.test(display)
+    ? 'array'
+    : undefined;
+}
+
 function lowerUnaryOperatorSemantics(
   node: ts.Node,
   operand: ts.Expression,
@@ -1425,6 +1537,22 @@ const typeScriptBinaryOperators = {
   [ts.SyntaxKind.QuestionQuestionToken]: '??',
   [ts.SyntaxKind.SlashToken]: '/',
 } as const satisfies Readonly<Record<TypeScriptBinaryOperator, IrBinaryOperator>>;
+
+const typeScriptIndexedReceiverNames: Readonly<Partial<Record<string, IrIndexedReceiver>>> = {
+  Array: 'array',
+  BigInt64Array: 'bigInt64Array',
+  BigUint64Array: 'bigUint64Array',
+  Float32Array: 'float32Array',
+  Float64Array: 'float64Array',
+  Int16Array: 'int16Array',
+  Int32Array: 'int32Array',
+  Int8Array: 'int8Array',
+  ReadonlyArray: 'array',
+  Uint16Array: 'uint16Array',
+  Uint32Array: 'uint32Array',
+  Uint8Array: 'uint8Array',
+  Uint8ClampedArray: 'uint8ClampedArray',
+};
 
 const typeScriptPostfixUnaryOperators = {
   [ts.SyntaxKind.MinusMinusToken]: '--',

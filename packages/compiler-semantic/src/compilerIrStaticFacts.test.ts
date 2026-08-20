@@ -31,9 +31,9 @@ describe('analyzeIrModulesStaticFacts', () => {
     expect(lowered.diagnostics).toEqual([]);
     expect(analyzeIrModulesStaticFacts([lowered.module])).toEqual({
       facts: [
-        { access: 'read', count: 4, kind: 'indexedAccess' },
-        { access: 'readWrite', count: 2, kind: 'indexedAccess' },
-        { access: 'write', count: 1, kind: 'indexedAccess' },
+        { access: 'read', count: 4, kind: 'indexedAccess', receivers: ['array'] },
+        { access: 'readWrite', count: 2, kind: 'indexedAccess', receivers: ['array'] },
+        { access: 'write', count: 1, kind: 'indexedAccess', receivers: ['array'] },
         { count: 1, domain: 'number', kind: 'numericRelation' },
         { context: 'condition', count: 3, domain: 'boolean', kind: 'truthiness' },
         { context: 'condition', count: 1, domain: 'unknown', kind: 'truthiness' },
@@ -108,7 +108,7 @@ describe('analyzeIrModulesStaticFacts', () => {
     expect(lowered.diagnostics).toEqual([]);
     expect(analyzeIrModulesStaticFacts([lowered.module]).facts).toEqual(
       expect.arrayContaining([
-        { access: 'read', count: 2, kind: 'indexedAccess' },
+        { access: 'read', count: 2, kind: 'indexedAccess', receivers: ['array'] },
         { count: 1, domain: 'number', kind: 'numericRelation' },
         { context: 'condition', count: 3, domain: 'boolean', kind: 'truthiness' },
         { context: 'condition', count: 1, domain: 'unknown', kind: 'truthiness' },

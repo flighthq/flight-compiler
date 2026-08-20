@@ -1,4 +1,5 @@
 import type { IrBindingIdentity, IrIdentifierReference } from './compilerBindingIntermediateRepresentation.js';
+import type { IrElementAccessSemantics } from './compilerAccessSemanticIntermediateRepresentation.js';
 import type {
   IrAssignmentOperator,
   IrBinaryOperator,
@@ -42,7 +43,13 @@ export type IrExpression =
     }>
   | Readonly<{ kind: 'cast'; expression: IrExpression; type: IrType }>
   | Readonly<{ condition: IrExpression; kind: 'conditional'; whenFalse: IrExpression; whenTrue: IrExpression }>
-  | Readonly<{ index: IrExpression; kind: 'element'; object: IrExpression; optional: boolean }>
+  | Readonly<{
+      index: IrExpression;
+      kind: 'element';
+      object: IrExpression;
+      optional: boolean;
+      semantics: IrElementAccessSemantics;
+    }>
   | Readonly<{
       async: boolean;
       body: readonly IrStatement[];

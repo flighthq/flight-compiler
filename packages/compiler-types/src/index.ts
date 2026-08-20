@@ -1,3 +1,4 @@
+export type * from './compilerAccessSemanticIntermediateRepresentation.js';
 export type * from './compilerBackendContract.js';
 export type * from './compilerBindingIntermediateRepresentation.js';
 export type * from './compilerDeclarationIntermediateRepresentation.js';

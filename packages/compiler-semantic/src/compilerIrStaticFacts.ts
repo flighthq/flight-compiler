@@ -5,6 +5,7 @@ import type {
   CompilerStaticTruthinessContext,
   IrDeclaration,
   IrExpression,
+  IrIndexedReceiver,
   IrModule,
   IrOperatorValueDomain,
   IrStatement,
@@ -22,7 +23,11 @@ type StaticFact =
       kind: 'truthiness';
     }>
   | Readonly<{ domain: 'bigint' | 'number'; kind: 'numericRelation' }>
-  | Readonly<{ access: CompilerStaticIndexedAccessMode; kind: 'indexedAccess' }>;
+  | Readonly<{
+      access: CompilerStaticIndexedAccessMode;
+      kind: 'indexedAccess';
+      receivers: readonly [IrIndexedReceiver, ...IrIndexedReceiver[]];
+    }>;
 
 export function analyzeIrModulesStaticFacts(modules: readonly Readonly<IrModule>[]): CompilerStaticFactAudit {
   const analysis: StaticFactAnalysis = { counts: new Map() };
@@ -41,8 +46,13 @@ export function analyzeIrModulesStaticFacts(modules: readonly Readonly<IrModule>
   };
 }
 
-function addIndexedAccessFact(access: CompilerStaticIndexedAccessMode, analysis: StaticFactAnalysis): void {
-  addStaticFact({ access, kind: 'indexedAccess' }, analysis);
+function addIndexedAccessFact(
+  access: CompilerStaticIndexedAccessMode,
+  receivers: readonly [IrIndexedReceiver, ...IrIndexedReceiver[]],
+  analysis: StaticFactAnalysis,
+): void {
+  const normalized = [...new Set(receivers)].sort() as [IrIndexedReceiver, ...IrIndexedReceiver[]];
+  addStaticFact({ access, kind: 'indexedAccess', receivers: normalized }, analysis);
 }
 
 function addNumericRelationFact(domain: 'bigint' | 'number', analysis: StaticFactAnalysis): void {
@@ -147,7 +157,7 @@ function analyzeExpression(
       analyzeExpression(expression.whenFalse, analysis, 'read');
       return;
     case 'element':
-      addIndexedAccessFact(indexedAccess, analysis);
+      addIndexedAccessFact(indexedAccess, expression.semantics.receivers, analysis);
       analyzeExpression(expression.object, analysis, 'read');
       analyzeExpression(expression.index, analysis, 'read');
       return;
@@ -326,7 +336,7 @@ function analyzeInitializer(
 function staticFactIdentity(fact: StaticFact): string {
   switch (fact.kind) {
     case 'indexedAccess':
-      return `${fact.kind}\0${fact.access}`;
+      return JSON.stringify([fact.kind, fact.access, fact.receivers]);
     case 'numericRelation':
       return `${fact.kind}\0${fact.domain}`;
     case 'truthiness':

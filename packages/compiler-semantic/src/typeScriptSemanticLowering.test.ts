@@ -298,6 +298,24 @@ describe('lowerTypeScriptSource', () => {
     });
   });
 
+  it('preserves indexed receiver sets without target policy or union aliases', () => {
+    const result = lower(
+      'indexed-receivers.ts',
+      'type Values = readonly number[]; type Mixed = Uint32Array | Uint16Array; export function read(array: Values, floats: Float32Array, mixed: Mixed, record: { value: number }, text: string, mystery: any): unknown[] { return [array[0], floats[0], mixed[0], record["value"], text[0], mystery[0]]; }',
+    );
+    const [, , read] = result.module.declarations;
+
+    expect(result.diagnostics).toEqual([]);
+    if (read?.kind !== 'function' || read.body[0]?.kind !== 'return' || read.body[0].expression?.kind !== 'array') {
+      throw new Error('Expected indexed receiver expressions');
+    }
+    expect(
+      read.body[0].expression.elements.map((element) =>
+        element?.kind === 'element' ? element.semantics.receivers : undefined,
+      ),
+    ).toEqual([['array'], ['float32Array'], ['uint16Array', 'uint32Array'], ['object'], ['string'], ['unknown']]);
+  });
+
   it('resolves deterministic identities through module, lexical, closure, import, class, and control-flow scopes', () => {
     const source = `
       import { external as imported } from './dependency.js';
