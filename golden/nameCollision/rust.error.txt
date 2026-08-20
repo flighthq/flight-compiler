@@ -1,0 +1,1 @@
+rust emission failed for @flighthq/golden/packages/golden/src/nameCollision.ts: public declarations share fixed Rust target name foo_bar
