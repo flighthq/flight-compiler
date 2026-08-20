@@ -35,13 +35,13 @@ describe('analyzeIrModulesStaticFacts', () => {
         { access: 'readWrite', count: 2, kind: 'indexedAccess', receivers: ['array'] },
         { access: 'write', count: 1, kind: 'indexedAccess', receivers: ['array'] },
         { count: 1, domain: 'number', kind: 'numericRelation' },
-        { context: 'condition', count: 3, domain: 'boolean', kind: 'truthiness' },
-        { context: 'condition', count: 1, domain: 'unknown', kind: 'truthiness' },
-        { context: 'logical', count: 1, domain: 'boolean', kind: 'truthiness' },
-        { context: 'negation', count: 1, domain: 'boolean', kind: 'truthiness' },
+        { context: 'conditionalExpression', count: 1, domain: 'unknown', kind: 'truthiness' },
+        { context: 'controlFlowCondition', count: 3, domain: 'boolean', kind: 'truthiness' },
+        { context: 'logicalOperand', count: 1, domain: 'boolean', kind: 'truthiness' },
+        { context: 'negationOperand', count: 1, domain: 'boolean', kind: 'truthiness' },
       ],
       modules: 1,
-      schema: 'flight-compiler-static-facts/2',
+      schema: 'flight-compiler-static-facts/3',
     });
     expect(analyzeIrModulesStaticFacts([lowered.module])).toEqual(analyzeIrModulesStaticFacts([lowered.module]));
     expect(lowered.module).toEqual(snapshot);
@@ -61,14 +61,14 @@ describe('analyzeIrModulesStaticFacts', () => {
 
     expect(analyzeIrModulesStaticFacts([lowered.module])).toMatchObject({
       facts: [
-        { context: 'condition', count: 1, domain: 'unknown', kind: 'truthiness' },
-        { context: 'logical', count: 1, domain: 'object', kind: 'truthiness' },
+        { context: 'conditionalExpression', count: 1, domain: 'unknown', kind: 'truthiness' },
+        { context: 'logicalOperand', count: 1, domain: 'object', kind: 'truthiness' },
       ],
     });
     expect(analyzeIrModulesStaticFacts([])).toEqual({
       facts: [],
       modules: 0,
-      schema: 'flight-compiler-static-facts/2',
+      schema: 'flight-compiler-static-facts/3',
     });
   });
 
@@ -110,8 +110,9 @@ describe('analyzeIrModulesStaticFacts', () => {
       expect.arrayContaining([
         { access: 'read', count: 2, kind: 'indexedAccess', receivers: ['array'] },
         { count: 1, domain: 'number', kind: 'numericRelation' },
-        { context: 'condition', count: 3, domain: 'boolean', kind: 'truthiness' },
-        { context: 'condition', count: 1, domain: 'unknown', kind: 'truthiness' },
+        { context: 'conditionalExpression', count: 1, domain: 'boolean', kind: 'truthiness' },
+        { context: 'controlFlowCondition', count: 2, domain: 'boolean', kind: 'truthiness' },
+        { context: 'controlFlowCondition', count: 1, domain: 'unknown', kind: 'truthiness' },
       ]),
     );
     expect(lowered.module).toEqual(snapshot);

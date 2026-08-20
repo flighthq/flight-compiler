@@ -168,6 +168,12 @@ No new workspace follows from this review. A large file alone is not a package d
 6. Audit semantic IR families one at a time. Declaration, type, type-directed expression-operator, and value/type binding families now have a reviewed floor; expand them only from a demonstrated inventory or parity need.
 7. Only then expand orchestration and target backends, using downstream parity as verification of the stable primitives rather than as their design source.
 
+The current semantic-fact batch proceeds in three bounded iterations:
+
+1. Distinguish conditional-expression, control-flow-condition, logical-operand, and negation-operand truthiness sites.
+2. Record logical-expression operators and operand/result domains separately from truthiness use.
+3. Compose version-matched static-fact audits deterministically without revisiting their source modules.
+
 ## Freeze rule
 
 “Mature” means the primitive is boring: narrow, unsurprising, and difficult to misuse. It does not mean the file may never change. A mature primitive can gain a new, orthogonal capability when a higher layer proves the need, but existing meaning changes only with an explicit contract review and regression demonstrating why the old meaning was wrong.

@@ -5,7 +5,11 @@ import type {
 } from './compilerAccessSemanticIntermediateRepresentation.js';
 import type { IrOperatorValueDomain } from './compilerOperatorSemanticIntermediateRepresentation.js';
 
-export type CompilerStaticTruthinessContext = 'condition' | 'logical' | 'negation';
+export type CompilerStaticTruthinessContext =
+  | 'conditionalExpression'
+  | 'controlFlowCondition'
+  | 'logicalOperand'
+  | 'negationOperand';
 
 export type CompilerStaticIndexedAccessMode = 'read' | 'readWrite' | 'write';
 
@@ -42,5 +46,5 @@ export type CompilerStaticFactCount =
 export interface CompilerStaticFactAudit {
   readonly facts: readonly CompilerStaticFactCount[];
   readonly modules: number;
-  readonly schema: 'flight-compiler-static-facts/2';
+  readonly schema: 'flight-compiler-static-facts/3';
 }

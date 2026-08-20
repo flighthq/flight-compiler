@@ -53,7 +53,7 @@ export function analyzeIrModulesStaticFacts(modules: readonly Readonly<IrModule>
       .map(({ count, fact }): CompilerStaticFactCount => ({ ...fact, count }) as CompilerStaticFactCount)
       .sort(compareStaticFacts),
     modules: modules.length,
-    schema: 'flight-compiler-static-facts/2',
+    schema: 'flight-compiler-static-facts/3',
   };
 }
 
@@ -154,7 +154,7 @@ function analyzeExpression(
       return;
     case 'assignment': {
       if (expression.operator === '&&=' || expression.operator === '||=') {
-        addTruthinessFact('logical', expression.left, analysis, expression.semantics.left);
+        addTruthinessFact('logicalOperand', expression.left, analysis, expression.semantics.left);
       }
       const leftAccess = expression.operator === '=' ? 'write' : 'readWrite';
       analyzeExpression(expression.left, analysis, leftAccess);
@@ -167,7 +167,7 @@ function analyzeExpression(
       return;
     case 'binary': {
       if (expression.operator === '&&' || expression.operator === '||') {
-        addTruthinessFact('logical', expression.left, analysis, expression.semantics.left);
+        addTruthinessFact('logicalOperand', expression.left, analysis, expression.semantics.left);
       }
       if (
         (expression.operator === '<' ||
@@ -194,7 +194,7 @@ function analyzeExpression(
       analyzeExpression(expression.expression, analysis, indexedAccess);
       return;
     case 'conditional':
-      addTruthinessFact('condition', expression.condition, analysis);
+      addTruthinessFact('conditionalExpression', expression.condition, analysis);
       analyzeExpression(expression.condition, analysis, 'read');
       analyzeExpression(expression.whenTrue, analysis, 'read');
       analyzeExpression(expression.whenFalse, analysis, 'read');
@@ -232,7 +232,7 @@ function analyzeExpression(
       return;
     case 'unary':
       if (expression.operator === '!') {
-        addTruthinessFact('negation', expression.operand, analysis, expression.semantics.operand);
+        addTruthinessFact('negationOperand', expression.operand, analysis, expression.semantics.operand);
       }
       analyzeExpression(
         expression.operand,
@@ -258,7 +258,7 @@ function analyzeStatement(statement: Readonly<IrStatement>, analysis: StaticFact
       return;
     case 'do':
     case 'while':
-      addTruthinessFact('condition', statement.condition, analysis);
+      addTruthinessFact('controlFlowCondition', statement.condition, analysis);
       analyzeExpression(statement.condition, analysis, 'read');
       analyzeStatement(statement.body, analysis);
       return;
@@ -273,7 +273,7 @@ function analyzeStatement(statement: Readonly<IrStatement>, analysis: StaticFact
         analyzeExpression(statement.initializer, analysis, 'read');
       }
       if (statement.condition) {
-        addTruthinessFact('condition', statement.condition, analysis);
+        addTruthinessFact('controlFlowCondition', statement.condition, analysis);
         analyzeExpression(statement.condition, analysis, 'read');
       }
       if (statement.increment) analyzeExpression(statement.increment, analysis, 'read');
@@ -290,7 +290,7 @@ function analyzeStatement(statement: Readonly<IrStatement>, analysis: StaticFact
       analyzeStatement(statement.body, analysis);
       return;
     case 'if':
-      addTruthinessFact('condition', statement.condition, analysis);
+      addTruthinessFact('controlFlowCondition', statement.condition, analysis);
       analyzeExpression(statement.condition, analysis, 'read');
       analyzeStatement(statement.consequent, analysis);
       if (statement.otherwise) analyzeStatement(statement.otherwise, analysis);
