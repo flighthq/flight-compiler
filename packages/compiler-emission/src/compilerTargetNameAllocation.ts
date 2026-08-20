@@ -106,9 +106,11 @@ function compareCandidate(
   left: Readonly<CompilerTargetNameCandidate>,
   right: Readonly<CompilerTargetNameCandidate>,
 ): number {
+  // Allocation reserves every preferred name in a scope before assigning any, so the order of
+  // candidates preferring different names cannot change the result; identity is unique by contract
+  // and makes this total. Ordering by preferred name would be an unobservable term.
   return (
     compareText(left.scope, right.scope) ||
-    compareText(left.preferredName, right.preferredName) ||
     compareDisposition(left.disposition, right.disposition) ||
     compareText(left.identity, right.identity)
   );
