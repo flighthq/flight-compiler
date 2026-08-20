@@ -11,4 +11,5 @@ export {
 export {
   createCompilerTargetNameAllocation,
   createIrModuleTargetNameAllocation,
+  isCompilerTargetNameAllocationFailure,
 } from './compilerTargetNameAllocation.js';

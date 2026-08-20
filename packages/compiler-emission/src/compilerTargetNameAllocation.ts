@@ -1,7 +1,9 @@
 import type {
-  CompilerTargetNamePreference,
   CompilerTargetNameAllocation,
+  CompilerTargetNameAllocationFailure,
   CompilerTargetNameCandidate,
+  CompilerTargetNameDisposition,
+  CompilerTargetNamePreference,
   IrBindingIdentity,
   IrExpression,
   IrModule,
@@ -25,6 +27,15 @@ export function createCompilerTargetNameAllocation(
       );
     }
     identities.add(candidate.identity);
+  }
+
+  const fixedNames = new Map<string, CompilerTargetNameCandidate>();
+  for (const candidate of normalized) {
+    if (candidate.disposition !== 'fixed') continue;
+    const fixedNameIdentity = `${candidate.scope}\0${candidate.preferredName}`;
+    const existing = fixedNames.get(fixedNameIdentity);
+    if (existing) throw createTargetNameAllocationFailure(existing, candidate);
+    fixedNames.set(fixedNameIdentity, candidate);
   }
 
   const preferredNames = new Map<string, Set<string>>();
@@ -62,11 +73,32 @@ export function createIrModuleTargetNameAllocation(
     getIrModuleBindingIntroductions(module).map((introduction) => {
       const preference = getPreference(introduction.binding);
       return {
+        disposition: introduction.disposition,
         identity: introduction.binding.id,
         preferredName: preference.preferredName,
         scope: `${preference.namespace}\0${introduction.scope}`,
       };
     }),
+  );
+}
+
+export function isCompilerTargetNameAllocationFailure(value: unknown): value is CompilerTargetNameAllocationFailure {
+  return (
+    value instanceof Error &&
+    'kind' in value &&
+    value.kind === 'target-name-allocation' &&
+    'code' in value &&
+    value.code === 'fixed-target-name-collision' &&
+    'identities' in value &&
+    Array.isArray(value.identities) &&
+    value.identities.length >= 2 &&
+    value.identities.every((identity) => typeof identity === 'string' && identity.length > 0) &&
+    'scope' in value &&
+    typeof value.scope === 'string' &&
+    value.scope.length > 0 &&
+    'targetName' in value &&
+    typeof value.targetName === 'string' &&
+    value.targetName.length > 0
   );
 }
 
@@ -77,8 +109,13 @@ function compareCandidate(
   return (
     compareText(left.scope, right.scope) ||
     compareText(left.preferredName, right.preferredName) ||
+    compareDisposition(left.disposition, right.disposition) ||
     compareText(left.identity, right.identity)
   );
+}
+
+function compareDisposition(left: CompilerTargetNameDisposition, right: CompilerTargetNameDisposition): number {
+  return left === right ? 0 : left === 'fixed' ? -1 : 1;
 }
 
 function compareText(left: string, right: string): number {
@@ -86,29 +123,40 @@ function compareText(left: string, right: string): number {
 }
 
 function normalizeCandidate(candidate: Readonly<CompilerTargetNameCandidate>): CompilerTargetNameCandidate {
+  const disposition = candidate.disposition;
   const identity = candidate.identity.normalize('NFC');
   const preferredName = candidate.preferredName.normalize('NFC');
   const scope = candidate.scope.normalize('NFC');
-  if (identity.length === 0 || preferredName.length === 0 || scope.length === 0) {
+  if (
+    (disposition !== 'fixed' && disposition !== 'renamable') ||
+    identity.length === 0 ||
+    preferredName.length === 0 ||
+    scope.length === 0
+  ) {
     const subject = identity || preferredName || scope || '<empty>';
     throw createCompilerInvariantFailure(
       'invalid-target-name-candidate',
       subject,
-      'Target name candidates require nonempty identity, preferredName, and scope values',
+      'Target name candidates require a fixed or renamable disposition and nonempty identity, preferredName, and scope values',
     );
   }
-  return { identity, preferredName, scope };
+  return { disposition, identity, preferredName, scope };
 }
 
 interface IrBindingIntroduction {
   readonly binding: IrBindingIdentity | IrTypeBindingIdentity;
+  readonly disposition: CompilerTargetNameDisposition;
   readonly scope: string;
 }
 
 function getIrModuleBindingIntroductions(module: Readonly<IrModule>): IrBindingIntroduction[] {
   const bindings: IrBindingIntroduction[] = [];
-  const add = (binding: Readonly<IrBindingIdentity | IrTypeBindingIdentity>, scope: string): void => {
-    bindings.push({ binding, scope });
+  const add = (
+    binding: Readonly<IrBindingIdentity | IrTypeBindingIdentity>,
+    scope: string,
+    disposition: CompilerTargetNameDisposition = 'renamable',
+  ): void => {
+    bindings.push({ binding, disposition, scope });
   };
   for (const imported of module.imports) {
     for (const importedBinding of imported.bindings) add(importedBinding.binding, 'module');
@@ -117,7 +165,7 @@ function getIrModuleBindingIntroductions(module: Readonly<IrModule>): IrBindingI
     const declarationPath = `declaration:${String(declarationIndex)}`;
     switch (declaration.kind) {
       case 'class': {
-        add(declaration.binding, 'module');
+        add(declaration.binding, 'module', declaration.exported ? 'fixed' : 'renamable');
         declaration.typeParameters.forEach((parameter) => add(parameter.binding, `class:${declaration.binding.id}`));
         const constructorScope = `class:${declaration.binding.id}:constructor`;
         declaration.classConstructor?.parameters.forEach((parameter) => add(parameter.binding, constructorScope));
@@ -168,10 +216,10 @@ function getIrModuleBindingIntroductions(module: Readonly<IrModule>): IrBindingI
         break;
       }
       case 'enum':
-        add(declaration.binding, 'module');
+        add(declaration.binding, 'module', declaration.exported ? 'fixed' : 'renamable');
         break;
       case 'function': {
-        add(declaration.binding, 'module');
+        add(declaration.binding, 'module', declaration.exported ? 'fixed' : 'renamable');
         const functionScope = `function:${declaration.binding.id}`;
         declaration.typeParameters.forEach((parameter) => add(parameter.binding, functionScope));
         declaration.parameters.forEach((parameter) => add(parameter.binding, functionScope));
@@ -196,11 +244,14 @@ function getIrModuleBindingIntroductions(module: Readonly<IrModule>): IrBindingI
       }
       case 'interface':
       case 'typeAlias':
-        add(declaration.binding, 'module');
+        add(declaration.binding, 'module', declaration.exported ? 'fixed' : 'renamable');
         declaration.typeParameters.forEach((parameter) => add(parameter.binding, `type:${declaration.binding.id}`));
         break;
       case 'variable':
-        collectVariableBindings(declaration, 'module', declarationPath, add);
+        add(declaration.binding, 'module', declaration.exported ? 'fixed' : 'renamable');
+        if (declaration.initializer) {
+          collectExpressionBindings(declaration.initializer, `${declarationPath}:initializer`, add);
+        }
         break;
     }
   });
@@ -376,4 +427,23 @@ function collectVariableBindings(
 ): void {
   add(variable.binding, scope);
   if (variable.initializer) collectExpressionBindings(variable.initializer, `${path}:initializer`, add);
+}
+
+function createTargetNameAllocationFailure(
+  first: Readonly<CompilerTargetNameCandidate>,
+  second: Readonly<CompilerTargetNameCandidate>,
+): CompilerTargetNameAllocationFailure {
+  const identities = [first.identity, second.identity].sort(compareText);
+  const failure = Object.assign(
+    new Error(`Fixed target name ${first.preferredName} collides in scope ${first.scope}: ${identities.join(', ')}`),
+    {
+      code: 'fixed-target-name-collision' as const,
+      identities,
+      kind: 'target-name-allocation' as const,
+      scope: first.scope,
+      targetName: first.preferredName,
+    },
+  );
+  failure.name = 'CompilerTargetNameAllocationError';
+  return failure;
 }

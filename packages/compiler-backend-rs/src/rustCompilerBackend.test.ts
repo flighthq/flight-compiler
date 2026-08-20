@@ -1,5 +1,6 @@
 import ts from 'typescript';
 
+import { isBackendEmissionFailure } from '../../compiler-emission/src/index.js';
 import { lowerTypeScriptSource } from '../../compiler-semantic/src/index.js';
 import { createRustCompilerBackend, emitIrModuleRust } from './rustCompilerBackend.js';
 
@@ -236,12 +237,38 @@ describe('emitIrModuleRust', () => {
     expect(output).toContain('return (foo_bar + foo_bar_2);');
   });
 
-  it('allocates type-space collisions and keeps named type references aligned', () => {
-    const result = lower('type-collisions.ts', 'export type fooBar = number; export type foo_bar = fooBar;');
+  it('keeps a public target name fixed while renaming an internal collision', () => {
+    const result = lower(
+      'internal-collision.ts',
+      'function fooBar(value: number): number { return value; } export function foo_bar(value: number): number { return fooBar(value); }',
+    );
     const output = emitIrModuleRust(result.module).contents;
 
-    expect(output).toContain('pub type FooBar = f64;');
-    expect(output).toContain('pub type FooBar_2 = FooBar;');
+    expect(output).toContain('fn foo_bar_2(value: f64) -> f64');
+    expect(output).toContain('pub fn foo_bar(value: f64) -> f64');
+    expect(output).toContain('return foo_bar_2(value);');
+  });
+
+  it('refuses public value and type collisions introduced by Rust normalization', () => {
+    const values = lower(
+      'value-collisions.ts',
+      'export function fooBar(value: number): number { return value; } export function foo_bar(value: number): number { return value + 1; }',
+    );
+    const result = lower('type-collisions.ts', 'export type fooBar = number; export type foo_bar = fooBar;');
+
+    try {
+      emitIrModuleRust(values.module);
+      expect.unreachable('Expected public Rust target names to collide');
+    } catch (error) {
+      expect(isBackendEmissionFailure(error)).toBe(true);
+      expect(error).toMatchObject({
+        backend: 'rust',
+        code: 'unsupported-ir',
+        kind: 'backend-emission',
+        message: expect.stringContaining('public declarations share fixed Rust target name foo_bar'),
+      });
+    }
+    expect(() => emitIrModuleRust(result.module)).toThrow('public declarations share fixed Rust target name FooBar');
   });
 
   it('rejects class state and default parameters that would otherwise be dropped', () => {

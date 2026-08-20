@@ -58,6 +58,8 @@ Re-export and export-assignment syntax is retained in `IrModule.exports`; a back
 
 Neutral patches run before backend emission. Backend-scoped patches use the same identity and audit machinery but apply only to the named backend. Emitted file paths are validated as relative, traversal-free paths, normalized to forward slashes, sorted, and checked for duplicates.
 
+Each backend defines the conventional target spelling for a source binding. That preferred spelling is fixed for a public declaration because it becomes part of the generated target API. An internal binding yields its preferred spelling to a public declaration and may receive a deterministic suffix; two public declarations that normalize to the same target name are refused through a structured backend emission failure rather than assigned an order-dependent public name.
+
 ## Extraction order
 
 Haxe is first because `flight-hx` has the broader semantic analyzer and an upstream Vitest oracle. Its existing generated output is the byte-stability check for moving rules here. Rust follows over the same inventory, neutral IR, patch system, and orchestration; Rust ownership and task lowering remain backend stages.

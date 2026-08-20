@@ -2,14 +2,15 @@ import { isCompilerInvariantFailure } from './compilerSourceEmission.js';
 import {
   createCompilerTargetNameAllocation,
   createIrModuleTargetNameAllocation,
+  isCompilerTargetNameAllocationFailure,
 } from './compilerTargetNameAllocation.js';
 
 describe('createCompilerTargetNameAllocation', () => {
   it('allocates collisions deterministically without consuming another preferred name', () => {
     const candidates = [
-      { identity: 'third', preferredName: 'value_2', scope: 'module' },
-      { identity: 'second', preferredName: 'value', scope: 'module' },
-      { identity: 'first', preferredName: 'value', scope: 'module' },
+      { disposition: 'renamable' as const, identity: 'third', preferredName: 'value_2', scope: 'module' },
+      { disposition: 'renamable' as const, identity: 'second', preferredName: 'value', scope: 'module' },
+      { disposition: 'renamable' as const, identity: 'first', preferredName: 'value', scope: 'module' },
     ];
 
     expect(createCompilerTargetNameAllocation(candidates)).toEqual([
@@ -21,17 +22,54 @@ describe('createCompilerTargetNameAllocation', () => {
       createCompilerTargetNameAllocation(candidates),
     );
     expect(candidates).toEqual([
-      { identity: 'third', preferredName: 'value_2', scope: 'module' },
-      { identity: 'second', preferredName: 'value', scope: 'module' },
-      { identity: 'first', preferredName: 'value', scope: 'module' },
+      { disposition: 'renamable', identity: 'third', preferredName: 'value_2', scope: 'module' },
+      { disposition: 'renamable', identity: 'second', preferredName: 'value', scope: 'module' },
+      { disposition: 'renamable', identity: 'first', preferredName: 'value', scope: 'module' },
     ]);
+  });
+
+  it('preserves a fixed target name and renames an internal collision independently of input order', () => {
+    const candidates = [
+      { disposition: 'renamable' as const, identity: 'internal', preferredName: 'value', scope: 'module' },
+      { disposition: 'fixed' as const, identity: 'public', preferredName: 'value', scope: 'module' },
+    ];
+    const expected = [
+      { identity: 'internal', name: 'value_2', scope: 'module' },
+      { identity: 'public', name: 'value', scope: 'module' },
+    ];
+
+    expect(createCompilerTargetNameAllocation(candidates)).toEqual(expected);
+    expect(createCompilerTargetNameAllocation([...candidates].reverse())).toEqual(expected);
+  });
+
+  it('refuses canonically equivalent fixed target names with deterministic identities', () => {
+    const candidates = [
+      { disposition: 'fixed' as const, identity: 'second', preferredName: 'cafe\u0301', scope: 'module' },
+      { disposition: 'fixed' as const, identity: 'first', preferredName: 'caf\u00e9', scope: 'module' },
+    ];
+
+    try {
+      createCompilerTargetNameAllocation(candidates);
+      expect.unreachable('Expected fixed target names to collide');
+    } catch (error) {
+      expect(isCompilerTargetNameAllocationFailure(error)).toBe(true);
+      expect(error).toMatchObject({
+        code: 'fixed-target-name-collision',
+        identities: ['first', 'second'],
+        kind: 'target-name-allocation',
+        name: 'CompilerTargetNameAllocationError',
+        scope: 'module',
+        targetName: 'caf\u00e9',
+      });
+    }
+    expect(candidates[0]?.preferredName).toBe('cafe\u0301');
   });
 
   it('keeps the same preferred spelling independent across target scopes', () => {
     expect(
       createCompilerTargetNameAllocation([
-        { identity: 'local', preferredName: 'value', scope: 'function' },
-        { identity: 'module', preferredName: 'value', scope: 'module' },
+        { disposition: 'renamable', identity: 'local', preferredName: 'value', scope: 'function' },
+        { disposition: 'renamable', identity: 'module', preferredName: 'value', scope: 'module' },
       ]),
     ).toEqual([
       { identity: 'local', name: 'value', scope: 'function' },
@@ -42,8 +80,8 @@ describe('createCompilerTargetNameAllocation', () => {
   it('normalizes canonically equivalent target spellings before collision allocation', () => {
     expect(
       createCompilerTargetNameAllocation([
-        { identity: 'decomposed', preferredName: 'cafe\u0301', scope: 'module' },
-        { identity: 'composed', preferredName: 'caf\u00e9', scope: 'module' },
+        { disposition: 'renamable', identity: 'decomposed', preferredName: 'cafe\u0301', scope: 'module' },
+        { disposition: 'renamable', identity: 'composed', preferredName: 'caf\u00e9', scope: 'module' },
       ]),
     ).toEqual([
       { identity: 'composed', name: 'caf\u00e9', scope: 'module' },
@@ -55,14 +93,19 @@ describe('createCompilerTargetNameAllocation', () => {
     {
       code: 'duplicate-target-name-identity',
       input: [
-        { identity: 'same', preferredName: 'first', scope: 'module' },
-        { identity: 'same', preferredName: 'second', scope: 'module' },
+        { disposition: 'renamable' as const, identity: 'same', preferredName: 'first', scope: 'module' },
+        { disposition: 'renamable' as const, identity: 'same', preferredName: 'second', scope: 'module' },
       ],
       subject: 'same',
     },
     {
       code: 'invalid-target-name-candidate',
-      input: [{ identity: '', preferredName: 'value', scope: 'module' }],
+      input: [{ disposition: 'renamable' as const, identity: '', preferredName: 'value', scope: 'module' }],
+      subject: 'value',
+    },
+    {
+      code: 'invalid-target-name-candidate',
+      input: [{ disposition: 'invalid' as never, identity: 'value', preferredName: 'value', scope: 'module' }],
       subject: 'value',
     },
   ])('fails invalid candidates with stable $code identity', ({ code, input, subject }) => {
@@ -73,6 +116,38 @@ describe('createCompilerTargetNameAllocation', () => {
       expect(isCompilerInvariantFailure(error)).toBe(true);
       expect(error).toMatchObject({ code, kind: 'compiler-invariant', subject });
     }
+  });
+});
+
+describe('isCompilerTargetNameAllocationFailure', () => {
+  it('accepts only complete tagged target-name allocation failures', () => {
+    let failure: unknown;
+    try {
+      createCompilerTargetNameAllocation([
+        { disposition: 'fixed', identity: 'first', preferredName: 'value', scope: 'module' },
+        { disposition: 'fixed', identity: 'second', preferredName: 'value', scope: 'module' },
+      ]);
+    } catch (error) {
+      failure = error;
+    }
+
+    if (!isCompilerTargetNameAllocationFailure(failure)) {
+      throw new Error('Expected a target-name allocation failure fixture');
+    }
+    const changeFailure = (changes: Readonly<Record<string, unknown>>): Error =>
+      Object.assign(new Error('changed'), failure, changes);
+
+    expect(isCompilerTargetNameAllocationFailure(new Error('plain'))).toBe(false);
+    expect(isCompilerTargetNameAllocationFailure(changeFailure({ kind: 'unknown' }))).toBe(false);
+    expect(isCompilerTargetNameAllocationFailure(changeFailure({ code: 'unknown' }))).toBe(false);
+    expect(isCompilerTargetNameAllocationFailure(changeFailure({ identities: 'first,second' }))).toBe(false);
+    expect(isCompilerTargetNameAllocationFailure(changeFailure({ identities: [] }))).toBe(false);
+    expect(isCompilerTargetNameAllocationFailure(changeFailure({ identities: ['first', 2] }))).toBe(false);
+    expect(isCompilerTargetNameAllocationFailure(changeFailure({ identities: ['first', ''] }))).toBe(false);
+    expect(isCompilerTargetNameAllocationFailure(changeFailure({ scope: 1 }))).toBe(false);
+    expect(isCompilerTargetNameAllocationFailure(changeFailure({ scope: '' }))).toBe(false);
+    expect(isCompilerTargetNameAllocationFailure(changeFailure({ targetName: 1 }))).toBe(false);
+    expect(isCompilerTargetNameAllocationFailure(changeFailure({ targetName: '' }))).toBe(false);
   });
 });
 

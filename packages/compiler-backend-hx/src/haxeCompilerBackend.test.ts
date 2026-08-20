@@ -145,12 +145,21 @@ describe('emitIrModuleHaxe', () => {
     expect(output).toContain('return (operator_ + operator__2);');
   });
 
-  it('allocates type-space collisions and keeps named type references aligned', () => {
+  it('refuses public type collisions introduced by Haxe normalization', () => {
     const result = lower('type-collisions.ts', 'export type operator = number; export type operator_ = operator;');
+
+    expect(() => emitIrModuleHaxe(result.module)).toThrow('public declarations share fixed Haxe target name Operator');
+  });
+
+  it('preserves public source spellings when Haxe normalization does not collide', () => {
+    const result = lower(
+      'value-spellings.ts',
+      'export function fooBar(value: number): number { return value; } export function foo_bar(value: number): number { return value + 1; }',
+    );
     const output = emitIrModuleHaxe(result.module).contents;
 
-    expect(output).toContain('typedef Operator = Float;');
-    expect(output).toContain('typedef Operator_2 = Operator;');
+    expect(output).toContain('static function fooBar(value:Float):Float');
+    expect(output).toContain('static function foo_bar(value:Float):Float');
   });
 
   it('preserves final locals and abstract classes', () => {

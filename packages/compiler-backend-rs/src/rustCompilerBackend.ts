@@ -4,6 +4,7 @@ import {
   createBackendEmissionFailure,
   createIrModuleTargetNameAllocation,
   indentSourceLines,
+  isCompilerTargetNameAllocationFailure,
 } from '../../compiler-emission/src/index.js';
 import type { CompilerBackend, EmittedFile, RustCompilerBackendOptions } from '../../compiler-types/src/index.js';
 import type {
@@ -67,12 +68,24 @@ export function emitIrModuleRust(
       declaration.kind === 'variable' && !declaration.mutable ? [declaration.binding.id] : [],
     ),
   );
-  const targetNames = new Map(
-    createIrModuleTargetNameAllocation(module, (binding) => ({
-      namespace: 'identifier',
-      preferredName: getPreferredBindingNameRust(binding, constantIdentities),
-    })).map((allocation) => [allocation.identity, allocation.name]),
-  );
+  let targetNames: Map<string, string>;
+  try {
+    targetNames = new Map(
+      createIrModuleTargetNameAllocation(module, (binding) => ({
+        namespace: 'identifier',
+        preferredName: getPreferredBindingNameRust(binding, constantIdentities),
+      })).map((allocation) => [allocation.identity, allocation.name]),
+    );
+  } catch (error) {
+    if (isCompilerTargetNameAllocationFailure(error)) {
+      throw createBackendEmissionFailure(
+        'rust',
+        module,
+        `public declarations share fixed Rust target name ${error.targetName}`,
+      );
+    }
+    throw error;
+  }
   const context: EmitContext = { module, options, targetNames };
   if (module.exports.length > 0) {
     emissionError(context, 're-exports and export assignments require Rust module-facade lowering');
