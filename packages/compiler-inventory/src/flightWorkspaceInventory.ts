@@ -1,4 +1,3 @@
-import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import path from 'node:path';
 
 import ts from 'typescript';
@@ -16,6 +15,7 @@ import type {
   RuntimeBindingRecord,
   SdkExposure,
   UpstreamInventory,
+  WorkspaceSource,
 } from '../../compiler-types/src/index.js';
 import { createCompilerInventoryFailure } from './compilerInventoryFailure.js';
 import { analyzeFlightPackageExclusions } from './flightPackageExclusion.js';
@@ -57,6 +57,7 @@ interface AnalysisContext {
   resolvedCandidates: Map<string, ExportCandidates>;
   resolvedExports: Map<string, ResolvedExportSet>;
   upstreamDirectory: string;
+  workspaceSource: WorkspaceSource;
 }
 
 export function analyzeFlightWorkspace(options: Readonly<AnalyzeFlightWorkspaceOptions>): UpstreamInventory {
@@ -89,11 +90,12 @@ export function analyzeFlightWorkspace(options: Readonly<AnalyzeFlightWorkspaceO
     resolvedCandidates: new Map(),
     resolvedExports: new Map(),
     upstreamDirectory,
+    workspaceSource,
   };
   const packageInventories = packages.map((descriptor): PackageInventory => {
     const sourceDirectory = path.join(descriptor.directory, 'src');
-    const sourceFiles = walkFiles(sourceDirectory, isSourceFile);
-    const testFiles = walkFiles(sourceDirectory, isTestFile);
+    const sourceFiles = walkFiles(sourceDirectory, isSourceFile, workspaceSource);
+    const testFiles = walkFiles(sourceDirectory, isTestFile, workspaceSource);
     const packageManifest = packageManifestByName.get(descriptor.name)!;
     const imports = analyzeFlightPackageImports({ manifest: packageManifest, upstreamDirectory }, workspaceSource);
     const exportLanes = (exportDescriptors.get(descriptor.name) ?? []).map((entry): PackageExportLane => {
@@ -318,7 +320,7 @@ function parseSource(file: string, context: AnalysisContext): ParsedSource {
     context.program.getSourceFile(normalizedFile) ??
     ts.createSourceFile(
       normalizedFile,
-      readFileSync(normalizedFile, 'utf8').replace(/^\uFEFF/u, ''),
+      context.workspaceSource.readTextFile(normalizedFile).replace(/^\uFEFF/u, ''),
       ts.ScriptTarget.Latest,
       true,
       /\.tsx$/iu.test(normalizedFile) ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
@@ -706,7 +708,7 @@ function resolveModule(containingFile: string, specifier: string, context: Analy
     return resolvePackageExportSource(exportDescriptor, context.upstreamDirectory);
   }
   for (const resolved of [candidate, `${candidate}.ts`, `${candidate}.tsx`, path.join(candidate, 'index.ts')]) {
-    if (existsSync(resolved) && statSync(resolved).isFile()) return resolved;
+    if (context.workspaceSource.isFile(resolved)) return resolved;
   }
   throw createCompilerInventoryFailure(
     'unresolved-source',
@@ -752,13 +754,13 @@ function sum<T>(items: readonly T[], selector: (item: T) => number): number {
   return items.reduce((total, item) => total + selector(item), 0);
 }
 
-function walkFiles(directory: string, predicate: (file: string) => boolean): string[] {
-  if (!existsSync(directory)) return [];
+function walkFiles(directory: string, predicate: (file: string) => boolean, workspace: WorkspaceSource): string[] {
+  if (!workspace.isDirectory(directory)) return [];
   const files: string[] = [];
-  for (const entry of readdirSync(directory, { withFileTypes: true })) {
+  for (const entry of workspace.listDirectory(directory)) {
     const target = path.join(directory, entry.name);
-    if (entry.isDirectory()) files.push(...walkFiles(target, predicate));
-    else if (entry.isFile() && predicate(target)) files.push(target);
+    if (entry.isDirectory) files.push(...walkFiles(target, predicate, workspace));
+    else if (predicate(target)) files.push(target);
   }
   return files.sort();
 }
