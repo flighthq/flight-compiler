@@ -77,6 +77,16 @@ Apply an instrument where its failure model is plausible, rather than applying e
 
 Neither is part of `npm run check`: one mutant costs a whole Vitest start, so the instrument is minutes where the gates are seconds. A surviving mutant is a question. Some survivors are equivalent mutants no test could distinguish; others mark an assertion that cannot fail. Read the line before concluding either.
 
+Three survivor shapes have recurred here, and none of them is a missing test:
+
+- **Failure-code registry markers.** A `{ 'unsupported-ir': true } as const satisfies Readonly<Record<Code, true>>` table is read for key presence through `Object.hasOwn`, so the value is a type-level marker and flipping it changes nothing. `compiler-patch` and `compiler-emission` each carry one.
+- **Unreachable equality arms.** A comparator's equal branch over keys that are unique by construction cannot be taken. Delete the arm rather than write a test that fakes reaching it.
+- **Unobservable ordering terms.** A comparator tiebreak the surrounding algorithm is deliberately insensitive to. `createCompilerTargetNameAllocation` reserves every preferred name in a scope before assigning any, which makes allocation independent of the order of candidates preferring different names, so ordering by preferred name could not change an allocation. It was deleted, not tested, after 20,000 random candidate sets over colliding name families produced byte-identical allocations with and without the term.
+
+A survivor that no test could kill is a claim about the code, so verify it as one. Argument alone is how a real gap gets filed as equivalent: run the differential, or state plainly that you did not.
+
+The instrument itself must not manufacture these. Mutating a literal in type position produced six guaranteed survivors in `compiler-emission` before `collectMutants` learned to skip type nodes — noise that reads exactly like a real gap on every future run.
+
 ## Coverage ratchets
 
 The thresholds in `vitest.config.ts` are enforced floors that sit just below the measured baseline, so a regression fails immediately. Maintain or raise them as exercised surface grows; lowering one requires an explicit architectural justification recorded with the change.

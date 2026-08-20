@@ -37,6 +37,14 @@ describe('collectMutants', () => {
     expect(descriptions('// a && b\nconst a = "x === y";')).toEqual([]);
   });
 
+  it('never mutates a literal in type position, which cannot change what the code does', () => {
+    expect(descriptions('type Flag = true;')).toEqual([]);
+    expect(descriptions('const codes = { first: true } as const satisfies Record<string, true>;')).toEqual([
+      'boolean-literal:true -> false',
+    ]);
+    expect(descriptions('const flag: false = false;')).toEqual(['boolean-literal:false -> true']);
+  });
+
   it('leaves operators with no meaningful substitution alone', () => {
     expect(descriptions('const a = x ?? y;')).toEqual([]);
     expect(descriptions('const a = x * y;')).toEqual([]);

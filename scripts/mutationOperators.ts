@@ -2,6 +2,8 @@ import ts from 'typescript';
 
 // Mutation operators over the parsed syntax tree rather than over text, so a replacement can never
 // land inside a string, a comment, or a longer operator that merely contains the one being replaced.
+// Type nodes are skipped for the same reason: a literal in type position is erased before the code
+// runs, so mutating it is guaranteed to survive and reads exactly like a real gap in the tests.
 //
 // Each mutant records the exact source offsets it rewrites. A caller that cannot show the mutated
 // text differs from the original has not run a mutation at all, and a survivor from a no-op edit
@@ -41,7 +43,11 @@ export function applyMutant(source: string, mutant: Readonly<Mutant>): string {
 
 export function collectMutants(sourceFile: ts.SourceFile): Mutant[] {
   const mutants: Mutant[] = [];
-  const visit = (node: ts.Node): void => {
+  const visit = (node: ts.Node, withinType: boolean): void => {
+    if (withinType || ts.isTypeNode(node)) {
+      ts.forEachChild(node, (child) => visit(child, true));
+      return;
+    }
     if (ts.isBinaryExpression(node)) {
       for (const replacement of binaryReplacements.get(node.operatorToken.kind) ?? []) {
         mutants.push(
@@ -70,9 +76,9 @@ export function collectMutants(sourceFile: ts.SourceFile): Mutant[] {
         start: node.getStart(sourceFile),
       });
     }
-    ts.forEachChild(node, visit);
+    ts.forEachChild(node, (child) => visit(child, false));
   };
-  visit(sourceFile);
+  visit(sourceFile, false);
   return mutants.sort((left, right) => left.start - right.start);
 }
 
