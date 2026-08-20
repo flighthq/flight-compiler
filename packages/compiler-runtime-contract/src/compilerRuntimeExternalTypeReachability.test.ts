@@ -1,5 +1,6 @@
 import ts from 'typescript';
 
+import type { IrModule } from '../../compiler-types/src/index.js';
 import { lowerTypeScriptSource } from '../../compiler-semantic/src/index.js';
 import { collectIrModulesRuntimeExternalTypeIdentities } from './compilerRuntimeExternalTypeReachability.js';
 
@@ -144,5 +145,49 @@ describe('collectIrModulesRuntimeExternalTypeIdentities', () => {
 
     expect(collectIrModulesRuntimeExternalTypeIdentities([])).toEqual([]);
     expect(collectIrModulesRuntimeExternalTypeIdentities([lowered.module])).toEqual([]);
+  });
+
+  it('fails defensively for forged declaration, expression, member, statement, and type kinds', () => {
+    const empty = lowerTypeScriptSource(
+      ts.createSourceFile('/flight/packages/runtime/src/base.ts', '', ts.ScriptTarget.Latest, true),
+      { packageName: '@flighthq/runtime', upstreamDirectory: '/flight' },
+    ).module;
+    const functionModule = lowerTypeScriptSource(
+      ts.createSourceFile(
+        '/flight/packages/runtime/src/function.ts',
+        'export function read(): void {}',
+        ts.ScriptTarget.Latest,
+        true,
+      ),
+      { packageName: '@flighthq/runtime', upstreamDirectory: '/flight' },
+    ).module;
+    const typeModule = lowerTypeScriptSource(
+      ts.createSourceFile(
+        '/flight/packages/runtime/src/type.ts',
+        'export type Value = string;',
+        ts.ScriptTarget.Latest,
+        true,
+      ),
+      { packageName: '@flighthq/runtime', upstreamDirectory: '/flight' },
+    ).module;
+    const functionDeclaration = functionModule.declarations[0]!;
+    const typeDeclaration = typeModule.declarations[0]!;
+    const invalidKind = { kind: 'invalid' };
+    const malformedModules = [
+      { ...empty, declarations: [invalidKind] },
+      { ...empty, exports: [{ expression: invalidKind, kind: 'default' }] },
+      {
+        ...empty,
+        exports: [{ expression: { kind: 'object', members: [invalidKind] }, kind: 'default' }],
+      },
+      { ...functionModule, declarations: [{ ...functionDeclaration, body: [invalidKind] }] },
+      { ...typeModule, declarations: [{ ...typeDeclaration, type: invalidKind }] },
+    ] as unknown as readonly IrModule[];
+
+    for (const malformed of malformedModules) {
+      expect(() => collectIrModulesRuntimeExternalTypeIdentities([malformed])).toThrow(
+        'Unexpected neutral IR kind invalid',
+      );
+    }
   });
 });

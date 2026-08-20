@@ -61,6 +61,8 @@ function collectDeclarationExternalTypes(declaration: Readonly<IrDeclaration>, a
     case 'variable':
       visitVariable(declaration, add);
       break;
+    default:
+      return assertNeverIr(declaration);
   }
 }
 
@@ -138,6 +140,8 @@ function visitExpression(expression: Readonly<IrExpression>, add: AddExternalTyp
           case 'spread':
             visitExpression(member.expression, add);
             break;
+          default:
+            return assertNeverIr(member);
         }
       });
       break;
@@ -152,6 +156,8 @@ function visitExpression(expression: Readonly<IrExpression>, add: AddExternalTyp
     case 'unary':
       visitExpression(expression.operand, add);
       break;
+    default:
+      return assertNeverIr(expression);
   }
 }
 
@@ -228,6 +234,8 @@ function visitStatement(statement: Readonly<IrStatement>, add: AddExternalType):
     case 'variable':
       statement.declarations.forEach((variable) => visitVariable(variable, add));
       break;
+    default:
+      return assertNeverIr(statement);
   }
 }
 
@@ -270,6 +278,8 @@ function visitType(type: Readonly<IrType>, add: AddExternalType): void {
     case 'tuple':
       type.elements.forEach((element) => visitType(element.type, add));
       break;
+    default:
+      return assertNeverIr(type);
   }
 }
 
@@ -286,6 +296,11 @@ function visitVariable(variable: Readonly<IrVariable>, add: AddExternalType): vo
 }
 
 type AddExternalType = (sourceName: string) => void;
+
+function assertNeverIr(value: never): never {
+  const kind = (value as { readonly kind?: unknown }).kind;
+  throw new Error(`Unexpected neutral IR kind ${String(kind)}`);
+}
 
 // These TypeScript utility wrappers change compile-time type meaning but do not name runtime storage.
 const compilerIntrinsicTypeNames = new Set(['Partial', 'Readonly', 'Required']);
