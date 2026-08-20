@@ -28,6 +28,24 @@ describe('applySemanticPatchSet', () => {
     expect(haxe.audit.summary).toEqual({ applied: 1, skipped: 1 });
   });
 
+  // Two targets differing only by backend must coexist: that is how one upstream declaration carries a
+  // different correction per target. Mutating the scope key in validateConflicts collapses them into
+  // one key and raises a false conflict, and nothing noticed until this case existed.
+  it('lets two backends correct the same declaration without conflicting', () => {
+    const patches = defineSemanticPatchSet([
+      renamePatch('rust-rename', 'rustName', { backend: 'rust', kind: 'backend' }),
+      renamePatch('haxe-rename', 'haxeName', { backend: 'haxe', kind: 'backend' }),
+    ]);
+
+    const rust = applySemanticPatchSet([createModule()], patches, 'rust');
+    const haxe = applySemanticPatchSet([createModule()], patches, 'haxe');
+
+    expect(rust.modules[0]?.declarations[0]).toMatchObject({ binding: { name: 'rustName' } });
+    expect(rust.audit.summary).toEqual({ applied: 1, skipped: 1 });
+    expect(haxe.modules[0]?.declarations[0]).toMatchObject({ binding: { name: 'haxeName' } });
+    expect(haxe.audit.summary).toEqual({ applied: 1, skipped: 1 });
+  });
+
   it('applies every operation deterministically without mutating caller-owned input', () => {
     const module = createModule([
       createFunctionDeclaration('clamp'),
