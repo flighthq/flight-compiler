@@ -181,11 +181,17 @@ The inventory-decomposition batch completed three bounded iterations:
 2. Isolate Git checkout revision identity.
 3. Isolate package export-map parsing and source-barrel validation.
 
-The current deterministic-ordering batch proceeds in three bounded iterations:
+The deterministic-ordering batch completed three bounded iterations:
 
 1. Remove host-locale ordering from inventory facts and reports.
 2. Remove host-locale ordering from semantic patch selection and audits.
 3. Remove host-locale ordering from orchestration modules, diagnostics, and emitted output.
+
+The next semantic-numeric batch has three bounded iterations:
+
+1. Introduce a named declared-versus-flow operand-domain contract and migrate operator semantics without changing backend behavior.
+2. Populate declared and flow domains from checker evidence, including explicitly typed unions narrowed at an operation site.
+3. Audit numeric arithmetic operations by operator and declared/flow domains so target backends can identify narrowed storage without target policy in the neutral IR.
 
 ## Freeze rule
 
