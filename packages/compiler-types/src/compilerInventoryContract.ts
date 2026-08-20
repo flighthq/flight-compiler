@@ -40,7 +40,21 @@ export interface SdkExposure {
   readonly target: string;
 }
 
+export interface PackageBinEntry {
+  readonly name: string;
+  readonly target: string;
+}
+
+export interface FlightPackageManifest {
+  readonly bins: readonly PackageBinEntry[];
+  readonly dependencies: readonly string[];
+  readonly directory: string;
+  readonly name: string;
+  readonly version: string;
+}
+
 export interface PackageInventory {
+  readonly bins: readonly PackageBinEntry[];
   readonly dependencies: readonly string[];
   readonly directory: string;
   readonly exportLanes: readonly PackageExportLane[];
@@ -73,6 +87,25 @@ export interface AnalyzeFlightWorkspaceOptions {
   readonly sdkPackageName?: string | undefined;
   readonly tsconfigPath?: string | undefined;
   readonly upstreamDirectory: string;
+}
+
+export interface ReadFlightPackageManifestsOptions {
+  readonly packageScope?: string | undefined;
+  readonly packagesDirectory?: string | undefined;
+  readonly upstreamDirectory: string;
+}
+
+export type CompilerInventoryFailureCode =
+  | 'duplicate-package-name'
+  | 'invalid-package-directory'
+  | 'invalid-package-manifest'
+  | 'invalid-package-scope'
+  | 'missing-packages-directory';
+
+export interface CompilerInventoryFailure extends Error {
+  readonly code: CompilerInventoryFailureCode;
+  readonly kind: 'compiler-inventory';
+  readonly subject: string;
 }
 
 export interface PackageExportDescriptor {

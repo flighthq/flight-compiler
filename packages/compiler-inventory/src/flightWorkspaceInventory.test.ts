@@ -173,6 +173,7 @@ function createPackageExportLane(entry: string): PackageExportLane {
 
 function createPackageInventory(exportLanes: PackageExportLane[]): PackageInventory {
   return {
+    bins: [],
     dependencies: [],
     directory: 'packages/types',
     exportLanes,

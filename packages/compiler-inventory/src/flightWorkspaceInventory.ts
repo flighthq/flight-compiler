@@ -19,6 +19,7 @@ import type {
   SdkExposure,
   UpstreamInventory,
 } from '../../compiler-types/src/index.js';
+import { readFlightPackageManifests } from './flightPackageManifest.js';
 import { createTypeScriptProject } from './typeScriptProject.js';
 import { analyzeTypeScriptSourceRuntimeExports } from './typeScriptRuntimeBinding.js';
 
@@ -54,10 +55,17 @@ interface AnalysisContext {
 
 export function analyzeFlightWorkspace(options: Readonly<AnalyzeFlightWorkspaceOptions>): UpstreamInventory {
   const upstreamDirectory = path.resolve(options.upstreamDirectory);
-  const packagesDirectory = path.resolve(upstreamDirectory, options.packagesDirectory ?? 'packages');
   const packageScope = options.packageScope ?? '@flighthq';
   const sdkPackageName = options.sdkPackageName ?? `${packageScope}/sdk`;
-  const packages = discoverPackages(packagesDirectory, packageScope);
+  const packageManifests = readFlightPackageManifests(options);
+  const packageManifestByName = new Map(packageManifests.map((manifest) => [manifest.name, manifest]));
+  const packages = packageManifests.map(
+    (manifest): PackageDescriptor => ({
+      directory: path.resolve(upstreamDirectory, manifest.directory),
+      name: manifest.name,
+      version: manifest.version,
+    }),
+  );
   const project = createTypeScriptProject(path.resolve(upstreamDirectory, options.tsconfigPath ?? 'tsconfig.json'));
   const exportDescriptors = new Map(
     packages.map((descriptor) => [descriptor.name, readPackageExportDescriptors(descriptor, upstreamDirectory)]),
@@ -75,7 +83,7 @@ export function analyzeFlightWorkspace(options: Readonly<AnalyzeFlightWorkspaceO
     const sourceDirectory = path.join(descriptor.directory, 'src');
     const sourceFiles = walkFiles(sourceDirectory, isSourceFile);
     const testFiles = walkFiles(sourceDirectory, isTestFile);
-    const packageJson = readJson(path.join(descriptor.directory, 'package.json'));
+    const packageManifest = packageManifestByName.get(descriptor.name)!;
     const exportLanes = (exportDescriptors.get(descriptor.name) ?? []).map((entry): PackageExportLane => {
       const sourcePath = resolvePackageExportSource(entry, upstreamDirectory);
       const resolved = resolveExports(sourcePath, context);
@@ -97,7 +105,8 @@ export function analyzeFlightWorkspace(options: Readonly<AnalyzeFlightWorkspaceO
       };
     });
     return {
-      dependencies: collectDependencies(packageJson),
+      bins: packageManifest.bins,
+      dependencies: packageManifest.dependencies,
       directory: relativeSource(descriptor.directory, upstreamDirectory),
       exportLanes,
       name: descriptor.name,
@@ -219,17 +228,6 @@ function applyRuntimeExportDecision(
   return { ...record, runtime: true, runtimeBinding: binding };
 }
 
-function collectDependencies(packageJson: Readonly<Record<string, unknown>>): string[] {
-  const names = new Set<string>();
-  for (const key of ['dependencies', 'optionalDependencies', 'peerDependencies'] as const) {
-    const dependencies = packageJson[key];
-    if (dependencies && typeof dependencies === 'object' && !Array.isArray(dependencies)) {
-      for (const name of Object.keys(dependencies)) names.add(name);
-    }
-  }
-  return [...names].sort();
-}
-
 function compareExports(left: Readonly<ExportRecord>, right: Readonly<ExportRecord>): number {
   return left.name.localeCompare(right.name) || left.source.localeCompare(right.source);
 }
@@ -283,25 +281,6 @@ function mergeExportConflicts(
   }
   return [...conflicts]
     .map(([name, sources]) => ({ name, sources: [...sources].sort() }))
-    .sort((left, right) => left.name.localeCompare(right.name));
-}
-
-function discoverPackages(packagesDirectory: string, packageScope: string): PackageDescriptor[] {
-  if (!existsSync(packagesDirectory)) throw new Error(`Flight packages directory does not exist: ${packagesDirectory}`);
-  return readdirSync(packagesDirectory, { withFileTypes: true })
-    .filter((entry) => entry.isDirectory())
-    .map((entry) => path.join(packagesDirectory, entry.name))
-    .filter((directory) => existsSync(path.join(directory, 'package.json')))
-    .map((directory) => {
-      const packageJson = readJson(path.join(directory, 'package.json'));
-      if (typeof packageJson.name !== 'string' || typeof packageJson.version !== 'string') {
-        throw new Error(`Invalid package metadata: ${portablePath(directory)}`);
-      }
-      if (!packageJson.name.startsWith(`${packageScope}/`)) {
-        throw new Error(`Package ${packageJson.name} is outside configured scope ${packageScope}`);
-      }
-      return { directory, name: packageJson.name, version: packageJson.version };
-    })
     .sort((left, right) => left.name.localeCompare(right.name));
 }
 

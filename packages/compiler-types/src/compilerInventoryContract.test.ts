@@ -19,6 +19,7 @@ describe('compiler inventory contracts', () => {
       specifier: '@flighthq/math',
     };
     const packageInventory: PackageInventory = {
+      bins: [{ name: 'math', target: './dist/cli.js' }],
       dependencies: [],
       directory: 'packages/math',
       exportLanes: [lane],
