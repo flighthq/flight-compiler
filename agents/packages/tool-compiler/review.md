@@ -49,3 +49,7 @@ The only public workspace: a nine-line barrel re-exporting the nine private pack
 - **No self-reported provenance.** Emitted files carry a fixed header string; nothing lets a consumer ask the package which version produced an artifact.
 - **README is thin against the surface.** It documents `analyzeFlightWorkspace` and the development commands; the compile path a consumer most needs has no worked example.
 - **The public package is not published.** Drop-in condition four — installs into a clean consumer — is met and verified; conditions one through six as a whole are not, and the release workflow that would ship it has never run.
+
+## Reviewer follow-up
+
+The surface was 119 exports when this review was written. It is 191 now — 136 types and 55 functions — a 60% increase across the semantic batches, the new lowering package, and the inventory capability contracts, with no consumer added and no per-name decision made about any of them. The facade is ten `export *` lines, so every name a package barrel gains is published by default; `api:check` faithfully records the growth without ever asking whether it was intended. The gap below is therefore not a stable observation about a fixed surface — the surface is growing at roughly the rate the compiler is, and the cultivation debt grows with it. `compiler-lowering`'s own review already flags that it exposes a concrete pass and a generic runner before any downstream consumer exercises them.
