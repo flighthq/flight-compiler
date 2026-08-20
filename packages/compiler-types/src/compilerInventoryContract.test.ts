@@ -23,6 +23,8 @@ describe('compiler inventory contracts', () => {
       dependencies: [],
       directory: 'packages/math',
       exportLanes: [lane],
+      hostFacts: { dependencies: [], imports: [] },
+      imports: [],
       name: '@flighthq/math',
       sdkExposures: [{ sdkLane: '@flighthq/sdk', target: '@flighthq/math' }],
       sdkIncluded: true,
@@ -32,12 +34,15 @@ describe('compiler inventory contracts', () => {
     };
     const inventory: UpstreamInventory = {
       packages: [packageInventory],
-      schema: 'flight-compiler-inventory/1',
+      schema: 'flight-compiler-inventory/2',
       summary: {
         exportConflicts: 1,
         exportLanes: 1,
         exports: 1,
+        hostDependencies: 0,
+        hostImports: 0,
         packages: 1,
+        productionImports: 0,
         rootExports: 1,
         sourceFiles: 2,
         testFiles: 1,

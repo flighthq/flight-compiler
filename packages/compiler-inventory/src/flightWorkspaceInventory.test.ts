@@ -23,13 +23,16 @@ describe('analyzeFlightWorkspace', () => {
       const root = resolvePackageExportLane(inventoryByName, '@flighthq/types');
       const contract = resolvePackageExportLane(inventoryByName, '@flighthq/types/contract');
 
-      expect(inventory.schema).toBe('flight-compiler-inventory/1');
+      expect(inventory.schema).toBe('flight-compiler-inventory/2');
       expect(inventory.upstreamCommit).toMatch(/^[0-9a-f]{40}$/u);
       expect(inventory.summary).toEqual({
         exportConflicts: 0,
         exportLanes: 3,
         exports: 9,
+        hostDependencies: 0,
+        hostImports: 0,
         packages: 2,
+        productionImports: 5,
         rootExports: 6,
         sourceFiles: 6,
         testFiles: 0,
@@ -177,6 +180,8 @@ function createPackageInventory(exportLanes: PackageExportLane[]): PackageInvent
     dependencies: [],
     directory: 'packages/types',
     exportLanes,
+    hostFacts: { dependencies: [], imports: [] },
+    imports: [],
     name: '@flighthq/types',
     sdkExposures: [],
     sdkIncluded: false,

@@ -53,11 +53,34 @@ export interface FlightPackageManifest {
   readonly version: string;
 }
 
+export type PackageImportKind = 'dynamic' | 'import' | 'importEquals' | 'reexport';
+
+export interface PackageImportRecord {
+  readonly kind: PackageImportKind;
+  readonly source: string;
+  readonly specifier: string;
+  readonly typeOnly: boolean;
+}
+
+export type PackageHostKind = 'capacitor' | 'electron' | 'node' | 'playwright' | 'tauri';
+
+export interface PackageHostModuleReference {
+  readonly kind: PackageHostKind;
+  readonly specifier: string;
+}
+
+export interface PackageHostFacts {
+  readonly dependencies: readonly PackageHostModuleReference[];
+  readonly imports: readonly PackageHostModuleReference[];
+}
+
 export interface PackageInventory {
   readonly bins: readonly PackageBinEntry[];
   readonly dependencies: readonly string[];
   readonly directory: string;
   readonly exportLanes: readonly PackageExportLane[];
+  readonly hostFacts: PackageHostFacts;
+  readonly imports: readonly PackageImportRecord[];
   readonly name: string;
   readonly sdkExposures: readonly SdkExposure[];
   readonly sdkIncluded: boolean;
@@ -68,12 +91,15 @@ export interface PackageInventory {
 
 export interface UpstreamInventory {
   readonly packages: readonly PackageInventory[];
-  readonly schema: 'flight-compiler-inventory/1';
+  readonly schema: 'flight-compiler-inventory/2';
   readonly summary: {
     readonly exportConflicts: number;
     readonly exportLanes: number;
     readonly exports: number;
+    readonly hostDependencies: number;
+    readonly hostImports: number;
     readonly packages: number;
+    readonly productionImports: number;
     readonly rootExports: number;
     readonly sourceFiles: number;
     readonly testFiles: number;
@@ -95,12 +121,18 @@ export interface ReadFlightPackageManifestsOptions {
   readonly upstreamDirectory: string;
 }
 
+export interface AnalyzeFlightPackageImportsOptions {
+  readonly manifest: Readonly<FlightPackageManifest>;
+  readonly upstreamDirectory: string;
+}
+
 export type CompilerInventoryFailureCode =
   | 'duplicate-package-name'
   | 'invalid-package-directory'
   | 'invalid-package-manifest'
   | 'invalid-package-scope'
-  | 'missing-packages-directory';
+  | 'missing-packages-directory'
+  | 'unsupported-dynamic-import';
 
 export interface CompilerInventoryFailure extends Error {
   readonly code: CompilerInventoryFailureCode;

@@ -29,6 +29,7 @@ describe('isCompilerInventoryFailure', () => {
       'invalid-package-manifest',
       'invalid-package-scope',
       'missing-packages-directory',
+      'unsupported-dynamic-import',
     ] as const;
 
     expect(

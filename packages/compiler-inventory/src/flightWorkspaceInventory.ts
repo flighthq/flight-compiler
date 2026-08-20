@@ -19,6 +19,8 @@ import type {
   SdkExposure,
   UpstreamInventory,
 } from '../../compiler-types/src/index.js';
+import { analyzeFlightPackageHostFacts } from './flightPackageHostFacts.js';
+import { analyzeFlightPackageImports } from './flightPackageImport.js';
 import { readFlightPackageManifests } from './flightPackageManifest.js';
 import { createTypeScriptProject } from './typeScriptProject.js';
 import { analyzeTypeScriptSourceRuntimeExports } from './typeScriptRuntimeBinding.js';
@@ -84,6 +86,7 @@ export function analyzeFlightWorkspace(options: Readonly<AnalyzeFlightWorkspaceO
     const sourceFiles = walkFiles(sourceDirectory, isSourceFile);
     const testFiles = walkFiles(sourceDirectory, isTestFile);
     const packageManifest = packageManifestByName.get(descriptor.name)!;
+    const imports = analyzeFlightPackageImports({ manifest: packageManifest, upstreamDirectory });
     const exportLanes = (exportDescriptors.get(descriptor.name) ?? []).map((entry): PackageExportLane => {
       const sourcePath = resolvePackageExportSource(entry, upstreamDirectory);
       const resolved = resolveExports(sourcePath, context);
@@ -109,6 +112,8 @@ export function analyzeFlightWorkspace(options: Readonly<AnalyzeFlightWorkspaceO
       dependencies: packageManifest.dependencies,
       directory: relativeSource(descriptor.directory, upstreamDirectory),
       exportLanes,
+      hostFacts: analyzeFlightPackageHostFacts(packageManifest, imports),
+      imports,
       name: descriptor.name,
       sdkExposures: [],
       sdkIncluded: false,
@@ -138,14 +143,17 @@ export function analyzeFlightWorkspace(options: Readonly<AnalyzeFlightWorkspaceO
 
   return {
     packages: completedPackageInventories,
-    schema: 'flight-compiler-inventory/1',
+    schema: 'flight-compiler-inventory/2',
     summary: {
       exportConflicts: sum(completedPackageInventories, (item) =>
         sum(item.exportLanes, (lane) => lane.exportConflicts.length),
       ),
       exportLanes: sum(completedPackageInventories, (item) => item.exportLanes.length),
       exports: sum(completedPackageInventories, (item) => sum(item.exportLanes, (lane) => lane.exports.length)),
+      hostDependencies: sum(completedPackageInventories, (item) => item.hostFacts.dependencies.length),
+      hostImports: sum(completedPackageInventories, (item) => item.hostFacts.imports.length),
       packages: completedPackageInventories.length,
+      productionImports: sum(completedPackageInventories, (item) => item.imports.length),
       rootExports: sum(completedPackageInventories, (item) => getPackageInventoryRootExportLane(item).exports.length),
       sourceFiles: sum(completedPackageInventories, (item) => item.sourceFiles),
       testFiles: sum(completedPackageInventories, (item) => item.testFiles),

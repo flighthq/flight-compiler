@@ -15,7 +15,7 @@ It is not yet a drop-in replacement for either downstream generator. The existin
 | Area | Estimated readiness | Principal remaining work |
 | --- | --: | --- |
 | Repository and package architecture | 85–90% | Publication lifecycle, consumer smoke test, and release gates |
-| Inventory and provenance | 50–60% | Full downstream export, host, static-fact, and exclusion behavior |
+| Inventory and provenance | 55–60% | Full downstream export, host-endpoint, static-fact, and exclusion behavior |
 | Neutral IR and semantic lowering | 20–25% | The majority of production TypeScript semantics and diagnostics |
 | Haxe generator parity | 10–15% | Target lowering, naming, reports, patches, and byte-stable emission |
 | Rust generator parity | 5–10% | Target lowering, ownership, tasks, rejections, host concerns, and emission |
