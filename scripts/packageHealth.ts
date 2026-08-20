@@ -59,6 +59,10 @@ const packageRules: Readonly<Record<string, PackageRule>> = {
     dependencies: ['compiler-provenance', 'compiler-types'],
     description: 'Flight package, export-lane, symbol, and runtime-value inventory',
   },
+  'compiler-lowering': {
+    dependencies: ['compiler-types'],
+    description: 'Backend-elected target-neutral IR lowering passes',
+  },
   'compiler-orchestration': {
     dependencies: ['compiler-emission', 'compiler-patch', 'compiler-semantic', 'compiler-types'],
     description: 'Deterministic compiler pipeline orchestration',

@@ -6,6 +6,7 @@ export type * from './compilerDiagnosticContract.js';
 export type * from './compilerExecutableIntermediateRepresentation.js';
 export type * from './compilerHostEndpointContract.js';
 export type * from './compilerInventoryContract.js';
+export type * from './compilerLoweringContract.js';
 export type * from './compilerModuleIntermediateRepresentation.js';
 export type * from './compilerOperatorIntermediateRepresentation.js';
 export type * from './compilerOperatorSemanticIntermediateRepresentation.js';
