@@ -6,7 +6,7 @@ import path from 'node:path';
 import type { CompilerInventoryFailureCode } from '../../compiler-types/src/index.js';
 import { isCompilerInventoryFailure } from './compilerInventoryFailure.js';
 import { getPackageInventoryRootExportLane, resolvePackageExportLane } from './flightPackageExportLane.js';
-import { analyzeFlightWorkspace, readPackageExportManifest } from './flightWorkspaceInventory.js';
+import { analyzeFlightWorkspace } from './flightWorkspaceInventory.js';
 
 describe('analyzeFlightWorkspace', () => {
   it('resolves export lanes, runtime bindings, SDK exposure, and portable provenance', () => {
@@ -76,87 +76,6 @@ describe('analyzeFlightWorkspace', () => {
       expectInventoryFailure(() => analyzeFlightWorkspace({ upstreamDirectory: upstream }), 'missing-sdk-package');
     } finally {
       rmSync(upstream, { force: true, recursive: true });
-    }
-  });
-});
-
-describe('readPackageExportManifest', () => {
-  it('resolves every manifest lane to its source barrel', () => {
-    const upstream = createUpstreamFixture();
-    try {
-      expect(readPackageExportManifest(path.join(upstream, 'packages', 'types'), upstream)).toEqual([
-        {
-          conditions: [
-            { condition: 'default', source: 'packages/types/src/index.ts', target: './dist/index.js' },
-            { condition: 'types', source: 'packages/types/src/index.ts', target: './dist/index.d.ts' },
-          ],
-          entry: '.',
-          source: 'packages/types/src/index.ts',
-          specifier: '@flighthq/types',
-        },
-        {
-          conditions: [
-            { condition: 'default', source: 'packages/types/src/contract.ts', target: './dist/contract.js' },
-            { condition: 'types', source: 'packages/types/src/contract.ts', target: './dist/contract.d.ts' },
-          ],
-          entry: './contract',
-          source: 'packages/types/src/contract.ts',
-          specifier: '@flighthq/types/contract',
-        },
-      ]);
-    } finally {
-      rmSync(upstream, { force: true, recursive: true });
-    }
-  });
-
-  it('fails when a manifest lane cannot be traced to a source barrel', () => {
-    const upstream = createUpstreamFixture();
-    try {
-      const packageDirectory = path.join(upstream, 'packages', 'types');
-      write(
-        packageDirectory,
-        'package.json',
-        JSON.stringify({
-          exports: {
-            '.': { default: './dist/index.js', types: './dist/index.d.ts' },
-            './missing': { default: './dist/missing.js', types: './dist/missing.d.ts' },
-          },
-          name: '@flighthq/types',
-          version: '0.0.0',
-        }),
-      );
-      expectInventoryFailure(() => readPackageExportManifest(packageDirectory, upstream), 'unresolved-source');
-    } finally {
-      rmSync(upstream, { force: true, recursive: true });
-    }
-  });
-
-  it('rejects malformed export maps and source paths outside the checkout', () => {
-    const upstream = createUpstreamFixture();
-    const externalPackage = mkdtempSync(path.join(os.tmpdir(), 'flight-compiler-external-package-'));
-    try {
-      const packageDirectory = path.join(upstream, 'packages', 'types');
-      write(
-        packageDirectory,
-        'package.json',
-        JSON.stringify({ exports: [], name: '@flighthq/types', version: '0.0.0' }),
-      );
-      expectInventoryFailure(() => readPackageExportManifest(packageDirectory, upstream), 'invalid-package-export');
-
-      write(
-        externalPackage,
-        'package.json',
-        JSON.stringify({
-          exports: { '.': { default: './dist/index.js', types: './dist/index.d.ts' } },
-          name: '@flighthq/external',
-          version: '0.0.0',
-        }),
-      );
-      write(externalPackage, 'src/index.ts', 'export {};');
-      expectInventoryFailure(() => readPackageExportManifest(externalPackage, upstream), 'invalid-source-path');
-    } finally {
-      rmSync(upstream, { force: true, recursive: true });
-      rmSync(externalPackage, { force: true, recursive: true });
     }
   });
 });

@@ -9,7 +9,6 @@ import type {
   ExportConflict,
   ExportKind,
   ExportRecord,
-  PackageExportCondition,
   PackageExportDescriptor,
   PackageExportLane,
   PackageInventory,
@@ -21,6 +20,7 @@ import type {
 import { createCompilerInventoryFailure } from './compilerInventoryFailure.js';
 import { analyzeFlightPackageExclusions } from './flightPackageExclusion.js';
 import { getPackageInventoryRootExportLane, resolvePackageExportLane } from './flightPackageExportLane.js';
+import { readPackageExportManifest } from './flightPackageExportManifest.js';
 import { analyzeFlightPackageHostFacts } from './flightPackageHostFacts.js';
 import { analyzeFlightPackageImports } from './flightPackageImport.js';
 import { readFlightPackageManifests } from './flightPackageManifest.js';
@@ -73,7 +73,7 @@ export function analyzeFlightWorkspace(options: Readonly<AnalyzeFlightWorkspaceO
   );
   const project = createTypeScriptProject(path.resolve(upstreamDirectory, options.tsconfigPath ?? 'tsconfig.json'));
   const exportDescriptors = new Map(
-    packages.map((descriptor) => [descriptor.name, readPackageExportDescriptors(descriptor, upstreamDirectory)]),
+    packages.map((descriptor) => [descriptor.name, readPackageExportManifest(descriptor.directory, upstreamDirectory)]),
   );
   const context: AnalysisContext = {
     exportDescriptors,
@@ -179,22 +179,6 @@ export function analyzeFlightWorkspace(options: Readonly<AnalyzeFlightWorkspaceO
     },
     upstreamCommit: readGitCommit(upstreamDirectory),
   };
-}
-
-export function readPackageExportManifest(
-  packageDirectory: string,
-  upstreamDirectory = path.dirname(path.resolve(packageDirectory)),
-): PackageExportDescriptor[] {
-  const directory = path.resolve(packageDirectory);
-  const packageJson = readJson(path.join(directory, 'package.json'));
-  if (typeof packageJson.name !== 'string' || typeof packageJson.version !== 'string') {
-    const subject = portablePath(directory);
-    throw createCompilerInventoryFailure('invalid-package-manifest', subject, `Invalid package metadata: ${subject}`);
-  }
-  return readPackageExportDescriptors(
-    { directory, name: packageJson.name, version: packageJson.version },
-    path.resolve(upstreamDirectory),
-  );
 }
 
 function applyRuntimeExportDecision(
@@ -400,96 +384,6 @@ function parseSource(file: string, context: AnalysisContext): ParsedSource {
 
 function portablePath(value: string): string {
   return value.split(path.sep).join('/');
-}
-
-function readJson(file: string): Record<string, unknown> {
-  try {
-    const value = JSON.parse(readFileSync(file, 'utf8')) as unknown;
-    if (value === null || typeof value !== 'object' || Array.isArray(value)) {
-      throw new TypeError('expected a JSON object');
-    }
-    return value as Record<string, unknown>;
-  } catch (error) {
-    throw createCompilerInventoryFailure(
-      'invalid-package-manifest',
-      portablePath(file),
-      `Package manifest is not valid JSON: ${portablePath(file)}`,
-      error,
-    );
-  }
-}
-
-function readPackageExportDescriptors(
-  descriptor: Readonly<PackageDescriptor>,
-  upstreamDirectory: string,
-): PackageExportDescriptor[] {
-  const packageJson = readJson(path.join(descriptor.directory, 'package.json'));
-  const manifestExports = packageJson.exports;
-  if (!manifestExports || typeof manifestExports !== 'object' || Array.isArray(manifestExports)) {
-    throw createCompilerInventoryFailure(
-      'invalid-package-export',
-      descriptor.name,
-      `Package manifest has no export map: ${descriptor.name}`,
-    );
-  }
-  const descriptors = Object.entries(manifestExports).map(([entry, rawConditions]): PackageExportDescriptor => {
-    if (entry !== '.' && !/^\.\/[A-Za-z0-9][A-Za-z0-9._/-]*$/u.test(entry)) {
-      throw createCompilerInventoryFailure(
-        'invalid-package-export',
-        `${descriptor.name}${entry.slice(1)}`,
-        `Unsupported package export lane '${entry}' in ${descriptor.name}`,
-      );
-    }
-    if (!rawConditions || typeof rawConditions !== 'object' || Array.isArray(rawConditions)) {
-      const subject = `${descriptor.name}${entry.slice(1)}`;
-      throw createCompilerInventoryFailure(
-        'invalid-package-export',
-        subject,
-        `Package export lane ${subject} has no condition map`,
-      );
-    }
-    const conditionsRecord = rawConditions as Record<string, unknown>;
-    const typesTarget = conditionsRecord.types;
-    const defaultTarget = conditionsRecord.default;
-    if (typeof typesTarget !== 'string' || typeof defaultTarget !== 'string') {
-      const subject = `${descriptor.name}${entry.slice(1)}`;
-      throw createCompilerInventoryFailure(
-        'invalid-package-export',
-        subject,
-        `Package export lane ${subject} needs types and default targets`,
-      );
-    }
-    const conditions = Object.entries(conditionsRecord)
-      .map(([condition, target]): PackageExportCondition => {
-        if (typeof target !== 'string') {
-          throw createCompilerInventoryFailure(
-            'invalid-package-export',
-            `${descriptor.name}${entry.slice(1)}[${condition}]`,
-            `Package export condition ${descriptor.name}${entry.slice(1)} [${condition}] is not a string target`,
-          );
-        }
-        return {
-          condition,
-          source: relativeSource(sourceForExportTarget(descriptor, entry, condition, target), upstreamDirectory),
-          target,
-        };
-      })
-      .sort((left, right) => left.condition.localeCompare(right.condition));
-    return {
-      conditions,
-      entry,
-      source: relativeSource(sourceForExportTarget(descriptor, entry, 'types', typesTarget), upstreamDirectory),
-      specifier: entry === '.' ? descriptor.name : `${descriptor.name}${entry.slice(1)}`,
-    };
-  });
-  if (!descriptors.some((entry) => entry.entry === '.')) {
-    throw createCompilerInventoryFailure(
-      'missing-package-export',
-      descriptor.name,
-      `Package manifest has no root export lane: ${descriptor.name}`,
-    );
-  }
-  return descriptors.sort((left, right) => left.entry.localeCompare(right.entry));
 }
 
 function readSdkExposures(
@@ -842,32 +736,6 @@ function setDeclarationRecord(target: Map<string, ExportRecord>, name: string, r
     return;
   }
   target.set(name, record);
-}
-
-function sourceForExportTarget(
-  descriptor: Readonly<PackageDescriptor>,
-  entry: string,
-  condition: string,
-  target: string,
-): string {
-  const match = /^\.\/dist\/(?<stem>.+?)\.(?:d\.[cm]?ts|[cm]?js)$/u.exec(target);
-  const stem = match?.groups?.stem;
-  if (!stem || stem.split('/').some((segment) => segment === '.' || segment === '..' || segment === '')) {
-    throw createCompilerInventoryFailure(
-      'invalid-package-export',
-      `${descriptor.name}${entry.slice(1)}[${condition}]`,
-      `Package export condition ${descriptor.name}${entry.slice(1)} [${condition}] has an unaccounted target: ${target}`,
-    );
-  }
-  const sourceBase = path.join(descriptor.directory, 'src', ...stem.split('/'));
-  for (const source of [`${sourceBase}.ts`, `${sourceBase}.tsx`]) {
-    if (existsSync(source) && statSync(source).isFile()) return source;
-  }
-  throw createCompilerInventoryFailure(
-    'unresolved-source',
-    `${descriptor.name}${entry.slice(1)}[${condition}]`,
-    `Package export condition ${descriptor.name}${entry.slice(1)} [${condition}] has no source barrel for ${target}`,
-  );
 }
 
 function sum<T>(items: readonly T[], selector: (item: T) => number): number {
