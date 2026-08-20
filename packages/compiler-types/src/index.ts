@@ -9,5 +9,6 @@ export type * from './compilerOperatorIntermediateRepresentation.js';
 export type * from './compilerOrchestrationContract.js';
 export type * from './compilerSemanticPatchContract.js';
 export type * from './compilerSourceIdentity.js';
+export type * from './compilerTargetNamingContract.js';
 export type * from './compilerTypeIntermediateRepresentation.js';
 export type * from './compilerTypeScriptContract.js';

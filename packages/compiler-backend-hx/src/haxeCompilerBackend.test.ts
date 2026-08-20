@@ -121,6 +121,19 @@ describe('emitIrModuleHaxe', () => {
     expect(output).toContain('return renamed();');
   });
 
+  it('allocates collision-free Haxe names for shadowed and keyword-normalized bindings', () => {
+    const result = lower(
+      'collisions.ts',
+      'export function choose(operator: number, operator_: number): number { { const operator: number = operator_; operator; } return operator + operator_; }',
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('static function choose(operator_:Float, operator__2:Float):Float');
+    expect(output).toContain('final operator__3:Float = operator__2;');
+    expect(output).toContain('operator__3;');
+    expect(output).toContain('return (operator_ + operator__2);');
+  });
+
   it('preserves final locals and abstract classes', () => {
     const result = lower(
       'base.ts',

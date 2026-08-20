@@ -187,6 +187,19 @@ describe('emitIrModuleRust', () => {
     expect(output).toContain('return renamed();');
   });
 
+  it('allocates collision-free Rust names for shadowed and case-normalized bindings', () => {
+    const result = lower(
+      'collisions.ts',
+      'export function choose(fooBar: number, foo_bar: number): number { { const fooBar: number = foo_bar; fooBar; } return fooBar + foo_bar; }',
+    );
+    const output = emitIrModuleRust(result.module).contents;
+
+    expect(output).toContain('pub fn choose(foo_bar: f64, foo_bar_2: f64) -> f64');
+    expect(output).toContain('let foo_bar_3: f64 = foo_bar_2;');
+    expect(output).toContain('foo_bar_3;');
+    expect(output).toContain('return (foo_bar + foo_bar_2);');
+  });
+
   it('rejects class state and default parameters that would otherwise be dropped', () => {
     const staticField = lower('config.ts', 'export class Config { static limit: number = 3; value: number = 1; }');
     const defaultParameter = lower('default.ts', 'export function read(value: number = 1): number { return value; }');

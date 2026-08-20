@@ -1,10 +1,15 @@
 import path from 'node:path';
 
-import { createBackendEmissionFailure, indentSourceLines } from '../../compiler-emission/src/index.js';
+import {
+  createBackendEmissionFailure,
+  createIrModuleTargetNameAllocation,
+  indentSourceLines,
+} from '../../compiler-emission/src/index.js';
 import type { CompilerBackend, EmittedFile, HaxeCompilerBackendOptions } from '../../compiler-types/src/index.js';
 import type {
   IrAssignmentOperator,
   IrBinaryOperator,
+  IrBindingIdentity,
   IrClassDeclaration,
   IrDeclaration,
   IrEnumDeclaration,
@@ -28,10 +33,10 @@ import type {
 import { convertPackageNameToHaxePackageName, convertSourcePathToHaxeModuleName } from './haxeCompilerIdentity.js';
 
 interface EmitContext {
-  bindingNames: ReadonlyMap<string, string>;
   module: Readonly<IrModule>;
   options: Readonly<HaxeCompilerBackendOptions>;
   packageName: string;
+  targetNames: ReadonlyMap<string, string>;
 }
 
 export function createHaxeCompilerBackend(): CompilerBackend<HaxeCompilerBackendOptions> {
@@ -48,7 +53,13 @@ export function emitIrModuleHaxe(
   options: Readonly<HaxeCompilerBackendOptions> = {},
 ): EmittedFile {
   const packageName = convertPackageNameToHaxePackageName(module.packageName, options.rootPackage);
-  const context: EmitContext = { bindingNames: moduleBindingNames(module), module, options, packageName };
+  const targetNames = new Map(
+    createIrModuleTargetNameAllocation(module, (binding) => ({
+      namespace: 'identifier',
+      preferredName: safeHaxeName(binding.name),
+    })).map((allocation) => [allocation.identity, allocation.name]),
+  );
+  const context: EmitContext = { module, options, packageName, targetNames };
   if (module.exports.length > 0) {
     emissionError(context, 're-exports and export assignments require Haxe module-facade lowering');
   }
@@ -96,7 +107,7 @@ function emitClass(declaration: Readonly<IrClassDeclaration>, context: EmitConte
   const extendsType = declaration.extends ? ` extends ${emitType(declaration.extends, context)}` : '';
   const abstract = declaration.abstract ? 'abstract ' : '';
   const lines = [
-    `${declaration.exported ? '' : 'private '}${abstract}class ${safeHaxeName(declaration.binding.name)}${parameters}${extendsType} {`,
+    `${declaration.exported ? '' : 'private '}${abstract}class ${getBindingTargetNameHaxe(declaration.binding, context)}${parameters}${extendsType} {`,
   ];
   declaration.fields.forEach((field, index) => {
     if (index > 0) lines.push('');
@@ -143,7 +154,7 @@ function emitEnum(declaration: Readonly<IrEnumDeclaration>, context: EmitContext
       ? 'Float'
       : 'Int';
   const lines = [
-    `enum abstract ${safeHaxeName(declaration.binding.name)}(${underlying}) from ${underlying} to ${underlying} {`,
+    `enum abstract ${getBindingTargetNameHaxe(declaration.binding, context)}(${underlying}) from ${underlying} to ${underlying} {`,
   ];
   declaration.members.forEach((member) => {
     const value = typeof member.value === 'string' ? JSON.stringify(member.value) : String(member.value);
@@ -221,7 +232,7 @@ function emitFunction(declaration: Readonly<IrFunctionDeclaration>, context: Emi
     emissionError(context, `async function ${declaration.binding.name} requires the Haxe async-lowering pass`);
   const access = declaration.exported ? 'public ' : 'private ';
   return [
-    `${access}static function ${safeHaxeName(declaration.binding.name)}${emitTypeParameters(declaration.typeParameters, context)}(${emitParameters(declaration.parameters, context)}):${emitType(declaration.returns, context)} {`,
+    `${access}static function ${getBindingTargetNameHaxe(declaration.binding, context)}${emitTypeParameters(declaration.typeParameters, context)}(${emitParameters(declaration.parameters, context)}):${emitType(declaration.returns, context)} {`,
     ...indentSourceLines(emitStatements(declaration.body, context)),
     '}',
   ];
@@ -236,9 +247,9 @@ function emitImports(imports: readonly IrImport[], context: EmitContext): string
       if (binding.imported === '*' || binding.imported === 'default') {
         emissionError(context, `${binding.imported} imports require explicit Haxe mapping for ${imported.specifier}`);
       }
-      emitted.add(
-        `import ${modulePath}.${safeHaxeName(binding.imported)}${binding.imported === binding.binding.name ? '' : ` as ${safeHaxeName(binding.binding.name)}`};`,
-      );
+      const importedName = safeHaxeName(binding.imported);
+      const localName = getBindingTargetNameHaxe(binding.binding, context);
+      emitted.add(`import ${modulePath}.${importedName}${importedName === localName ? '' : ` as ${localName}`};`);
     }
   }
   return [...emitted].sort();
@@ -260,7 +271,7 @@ function emitIdentifierReferenceHaxe(reference: Readonly<IrIdentifierReference>,
     }
     return safeHaxeName(reference.name);
   }
-  return safeHaxeName(context.bindingNames.get(reference.binding.id) ?? reference.binding.name);
+  return getBindingTargetNameHaxe(reference.binding, context);
 }
 
 function emitLiteral(value: boolean | null | number | string): string {
@@ -278,28 +289,10 @@ function emitModuleValue(
     : emitVariableDeclaration(declaration, context);
 }
 
-function moduleBindingNames(module: Readonly<IrModule>): ReadonlyMap<string, string> {
-  const names = new Map<string, string>();
-  for (const imported of module.imports) {
-    for (const binding of imported.bindings) names.set(binding.binding.id, binding.binding.name);
-  }
-  for (const declaration of module.declarations) {
-    if (
-      declaration.kind === 'class' ||
-      declaration.kind === 'enum' ||
-      declaration.kind === 'function' ||
-      declaration.kind === 'variable'
-    ) {
-      names.set(declaration.binding.id, declaration.binding.name);
-    }
-  }
-  return names;
-}
-
 function emitParameters(parameters: readonly IrParameter[], context: EmitContext): string {
   return parameters
     .map((parameter) => {
-      const name = safeHaxeName(parameter.binding.name);
+      const name = getBindingTargetNameHaxe(parameter.binding, context);
       const type = emitType(parameter.type, context);
       if (parameter.rest) return `...${name}:${type}`;
       if (parameter.initializer) return `${name}:${type} = ${emitExpression(parameter.initializer, context)}`;
@@ -328,14 +321,14 @@ function emitStatement(statement: Readonly<IrStatement>, context: EmitContext): 
       emissionError(context, 'C-style for loops require control-flow lowering before Haxe emission');
     case 'forIn':
       return [
-        `for (${safeHaxeName(statement.variable.binding.name)} in Reflect.fields(${emitExpression(statement.object, context)})) {`,
+        `for (${getBindingTargetNameHaxe(statement.variable.binding, context)} in Reflect.fields(${emitExpression(statement.object, context)})) {`,
         ...indentSourceLines(emitStatementBody(statement.body, context)),
         '}',
       ];
     case 'forOf':
       if (statement.await) emissionError(context, 'async iteration requires the Haxe async-lowering pass');
       return [
-        `for (${safeHaxeName(statement.variable.binding.name)} in ${emitExpression(statement.iterable, context)}) {`,
+        `for (${getBindingTargetNameHaxe(statement.variable.binding, context)} in ${emitExpression(statement.iterable, context)}) {`,
         ...indentSourceLines(emitStatementBody(statement.body, context)),
         '}',
       ];
@@ -379,7 +372,7 @@ function emitStatement(statement: Readonly<IrStatement>, context: EmitContext): 
         '}',
         ...(statement.catchClause
           ? [
-              `catch (${safeHaxeName(statement.catchClause.binding?.name ?? 'error')}:Dynamic) {`,
+              `catch (${statement.catchClause.binding ? getBindingTargetNameHaxe(statement.catchClause.binding, context) : 'error'}:Dynamic) {`,
               ...indentSourceLines(emitStatementBody(statement.catchClause.body, context)),
               '}',
             ]
@@ -496,7 +489,7 @@ function emitTypeParameters(parameters: readonly IrTypeParameter[], context: Emi
 function emitVariable(variable: Readonly<IrVariable>, context: EmitContext): string {
   const type = variable.type ? `:${emitType(variable.type, context)}` : '';
   const initializer = variable.initializer ? ` = ${emitExpression(variable.initializer, context)}` : '';
-  return `${variable.mutable ? 'var' : 'final'} ${safeHaxeName(variable.binding.name)}${type}${initializer};`;
+  return `${variable.mutable ? 'var' : 'final'} ${getBindingTargetNameHaxe(variable.binding, context)}${type}${initializer};`;
 }
 
 function emitVariableDeclaration(declaration: Readonly<IrVariableDeclaration>, context: EmitContext): string[] {
@@ -506,8 +499,14 @@ function emitVariableDeclaration(declaration: Readonly<IrVariableDeclaration>, c
   const storage = declaration.mutable ? 'var' : 'final';
   const type = declaration.type ? `:${emitType(declaration.type, context)}` : '';
   return [
-    `${access}static ${storage} ${safeHaxeName(declaration.binding.name)}${type} = ${emitExpression(declaration.initializer, context)};`,
+    `${access}static ${storage} ${getBindingTargetNameHaxe(declaration.binding, context)}${type} = ${emitExpression(declaration.initializer, context)};`,
   ];
+}
+
+function getBindingTargetNameHaxe(binding: Readonly<IrBindingIdentity>, context: EmitContext): string {
+  const targetName = context.targetNames.get(binding.id);
+  if (!targetName) emissionError(context, `binding ${binding.name} has no Haxe target name allocation`);
+  return targetName;
 }
 
 function emissionError(context: EmitContext, message: string): never {

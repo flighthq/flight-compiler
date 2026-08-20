@@ -1,0 +1,372 @@
+import type {
+  CompilerTargetNamePreference,
+  CompilerTargetNameAllocation,
+  CompilerTargetNameCandidate,
+  IrBindingIdentity,
+  IrExpression,
+  IrModule,
+  IrStatement,
+  IrVariable,
+} from '../../compiler-types/src/index.js';
+import { createCompilerInvariantFailure } from './compilerSourceEmission.js';
+
+export function createCompilerTargetNameAllocation(
+  candidates: readonly Readonly<CompilerTargetNameCandidate>[],
+): readonly CompilerTargetNameAllocation[] {
+  const normalized = candidates.map(normalizeCandidate).sort(compareCandidate);
+  const identities = new Set<string>();
+  for (const candidate of normalized) {
+    if (identities.has(candidate.identity)) {
+      throw createCompilerInvariantFailure(
+        'duplicate-target-name-identity',
+        candidate.identity,
+        `Target name candidate identity is duplicated: ${candidate.identity}`,
+      );
+    }
+    identities.add(candidate.identity);
+  }
+
+  const preferredNames = new Map<string, Set<string>>();
+  for (const candidate of normalized) {
+    const names = preferredNames.get(candidate.scope) ?? new Set<string>();
+    names.add(candidate.preferredName);
+    preferredNames.set(candidate.scope, names);
+  }
+
+  const allocatedNames = new Map<string, Set<string>>();
+  const allocations = normalized.map((candidate): CompilerTargetNameAllocation => {
+    const allocated = allocatedNames.get(candidate.scope) ?? new Set<string>();
+    const preferred = preferredNames.get(candidate.scope)!;
+    let name = candidate.preferredName;
+    for (let suffix = 2; allocated.has(name); suffix += 1) {
+      name = `${candidate.preferredName}_${String(suffix)}`;
+      while (preferred.has(name) || allocated.has(name)) {
+        suffix += 1;
+        name = `${candidate.preferredName}_${String(suffix)}`;
+      }
+    }
+    allocated.add(name);
+    allocatedNames.set(candidate.scope, allocated);
+    return { identity: candidate.identity, name, scope: candidate.scope };
+  });
+
+  return allocations.sort((left, right) => compareText(left.identity, right.identity));
+}
+
+export function createIrModuleTargetNameAllocation(
+  module: Readonly<IrModule>,
+  getPreference: CompilerTargetNamePreference,
+): readonly CompilerTargetNameAllocation[] {
+  return createCompilerTargetNameAllocation(
+    getIrModuleBindingIntroductions(module).map((introduction) => {
+      const preference = getPreference(introduction.binding);
+      return {
+        identity: introduction.binding.id,
+        preferredName: preference.preferredName,
+        scope: `${preference.namespace}\0${introduction.scope}`,
+      };
+    }),
+  );
+}
+
+function compareCandidate(
+  left: Readonly<CompilerTargetNameCandidate>,
+  right: Readonly<CompilerTargetNameCandidate>,
+): number {
+  return (
+    compareText(left.scope, right.scope) ||
+    compareText(left.preferredName, right.preferredName) ||
+    compareText(left.identity, right.identity)
+  );
+}
+
+function compareText(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
+function normalizeCandidate(candidate: Readonly<CompilerTargetNameCandidate>): CompilerTargetNameCandidate {
+  const identity = candidate.identity.normalize('NFC');
+  const preferredName = candidate.preferredName.normalize('NFC');
+  const scope = candidate.scope.normalize('NFC');
+  if (identity.length === 0 || preferredName.length === 0 || scope.length === 0) {
+    const subject = identity || preferredName || scope || '<empty>';
+    throw createCompilerInvariantFailure(
+      'invalid-target-name-candidate',
+      subject,
+      'Target name candidates require nonempty identity, preferredName, and scope values',
+    );
+  }
+  return { identity, preferredName, scope };
+}
+
+interface IrBindingIntroduction {
+  readonly binding: IrBindingIdentity;
+  readonly scope: string;
+}
+
+function getIrModuleBindingIntroductions(module: Readonly<IrModule>): IrBindingIntroduction[] {
+  const bindings: IrBindingIntroduction[] = [];
+  const add = (binding: Readonly<IrBindingIdentity>, scope: string): void => {
+    bindings.push({ binding, scope });
+  };
+  for (const imported of module.imports) {
+    for (const importedBinding of imported.bindings) add(importedBinding.binding, 'module');
+  }
+  module.declarations.forEach((declaration, declarationIndex) => {
+    const declarationPath = `declaration:${String(declarationIndex)}`;
+    switch (declaration.kind) {
+      case 'class': {
+        add(declaration.binding, 'module');
+        const constructorScope = `class:${declaration.binding.id}:constructor`;
+        declaration.classConstructor?.parameters.forEach((parameter) => add(parameter.binding, constructorScope));
+        declaration.classConstructor?.parameters.forEach((parameter, parameterIndex) => {
+          if (parameter.initializer) {
+            collectExpressionBindings(
+              parameter.initializer,
+              `${declarationPath}:constructor:parameter:${String(parameterIndex)}`,
+              add,
+            );
+          }
+        });
+        declaration.classConstructor?.body.forEach((statement, statementIndex) =>
+          collectStatementBindings(
+            statement,
+            constructorScope,
+            `${declarationPath}:constructor:statement:${String(statementIndex)}`,
+            add,
+          ),
+        );
+        declaration.fields.forEach((field, fieldIndex) => {
+          if (field.initializer) {
+            collectExpressionBindings(field.initializer, `${declarationPath}:field:${String(fieldIndex)}`, add);
+          }
+        });
+        declaration.methods.forEach((method, methodIndex) => {
+          const methodScope = `class:${declaration.binding.id}:method:${String(methodIndex)}`;
+          method.parameters.forEach((parameter) => add(parameter.binding, methodScope));
+          method.parameters.forEach((parameter, parameterIndex) => {
+            if (parameter.initializer) {
+              collectExpressionBindings(
+                parameter.initializer,
+                `${declarationPath}:method:${String(methodIndex)}:parameter:${String(parameterIndex)}`,
+                add,
+              );
+            }
+          });
+          method.body.forEach((statement, statementIndex) =>
+            collectStatementBindings(
+              statement,
+              methodScope,
+              `${declarationPath}:method:${String(methodIndex)}:statement:${String(statementIndex)}`,
+              add,
+            ),
+          );
+        });
+        break;
+      }
+      case 'enum':
+        add(declaration.binding, 'module');
+        break;
+      case 'function': {
+        add(declaration.binding, 'module');
+        const functionScope = `function:${declaration.binding.id}`;
+        declaration.parameters.forEach((parameter) => add(parameter.binding, functionScope));
+        declaration.parameters.forEach((parameter, parameterIndex) => {
+          if (parameter.initializer) {
+            collectExpressionBindings(
+              parameter.initializer,
+              `${declarationPath}:parameter:${String(parameterIndex)}`,
+              add,
+            );
+          }
+        });
+        declaration.body.forEach((statement, statementIndex) =>
+          collectStatementBindings(
+            statement,
+            functionScope,
+            `${declarationPath}:statement:${String(statementIndex)}`,
+            add,
+          ),
+        );
+        break;
+      }
+      case 'interface':
+      case 'typeAlias':
+        break;
+      case 'variable':
+        collectVariableBindings(declaration, 'module', declarationPath, add);
+        break;
+    }
+  });
+  return bindings;
+}
+
+function collectExpressionBindings(
+  expression: Readonly<IrExpression>,
+  path: string,
+  add: (binding: Readonly<IrBindingIdentity>, scope: string) => void,
+): void {
+  switch (expression.kind) {
+    case 'array':
+      expression.elements.forEach((element, index) => {
+        if (element) collectExpressionBindings(element, `${path}:element:${String(index)}`, add);
+      });
+      break;
+    case 'assignment':
+    case 'binary':
+      collectExpressionBindings(expression.left, `${path}:left`, add);
+      collectExpressionBindings(expression.right, `${path}:right`, add);
+      break;
+    case 'await':
+    case 'cast':
+    case 'spread':
+      collectExpressionBindings(expression.expression, `${path}:expression`, add);
+      break;
+    case 'call':
+    case 'new':
+      collectExpressionBindings(expression.callee, `${path}:callee`, add);
+      expression.arguments.forEach((argument, index) =>
+        collectExpressionBindings(argument, `${path}:argument:${String(index)}`, add),
+      );
+      break;
+    case 'conditional':
+      collectExpressionBindings(expression.condition, `${path}:condition`, add);
+      collectExpressionBindings(expression.whenFalse, `${path}:false`, add);
+      collectExpressionBindings(expression.whenTrue, `${path}:true`, add);
+      break;
+    case 'element':
+      collectExpressionBindings(expression.index, `${path}:index`, add);
+      collectExpressionBindings(expression.object, `${path}:object`, add);
+      break;
+    case 'function': {
+      const functionScope = `function:${expression.binding?.id ?? path}`;
+      if (expression.binding) add(expression.binding, functionScope);
+      expression.parameters.forEach((parameter) => add(parameter.binding, functionScope));
+      expression.parameters.forEach((parameter, parameterIndex) => {
+        if (parameter.initializer) {
+          collectExpressionBindings(parameter.initializer, `${path}:parameter:${String(parameterIndex)}`, add);
+        }
+      });
+      expression.body.forEach((statement, statementIndex) =>
+        collectStatementBindings(statement, functionScope, `${path}:statement:${String(statementIndex)}`, add),
+      );
+      if (expression.expression) collectExpressionBindings(expression.expression, `${path}:result`, add);
+      break;
+    }
+    case 'identifier':
+    case 'literal':
+    case 'regexp':
+      break;
+    case 'object':
+      expression.members.forEach((member, index) => {
+        const memberPath = `${path}:member:${String(index)}`;
+        if (member.kind === 'computedProperty') collectExpressionBindings(member.key, `${memberPath}:key`, add);
+        if (member.kind === 'spread') collectExpressionBindings(member.expression, memberPath, add);
+        else collectExpressionBindings(member.value, `${memberPath}:value`, add);
+      });
+      break;
+    case 'property':
+      collectExpressionBindings(expression.object, `${path}:object`, add);
+      break;
+    case 'template':
+      expression.parts.forEach((part, index) => {
+        if (typeof part !== 'string') collectExpressionBindings(part, `${path}:part:${String(index)}`, add);
+      });
+      break;
+    case 'unary':
+      collectExpressionBindings(expression.operand, `${path}:operand`, add);
+      break;
+  }
+}
+
+function collectStatementBindings(
+  statement: Readonly<IrStatement>,
+  scope: string,
+  path: string,
+  add: (binding: Readonly<IrBindingIdentity>, scope: string) => void,
+): void {
+  switch (statement.kind) {
+    case 'block':
+      statement.statements.forEach((child, index) =>
+        collectStatementBindings(child, scope, `${path}:statement:${String(index)}`, add),
+      );
+      break;
+    case 'break':
+    case 'continue':
+      break;
+    case 'do':
+    case 'while':
+      collectStatementBindings(statement.body, scope, `${path}:body`, add);
+      collectExpressionBindings(statement.condition, `${path}:condition`, add);
+      break;
+    case 'expression':
+    case 'throw':
+      collectExpressionBindings(statement.expression, `${path}:expression`, add);
+      break;
+    case 'for':
+      if (isIrVariableList(statement.initializer)) {
+        statement.initializer.forEach((variable, index) =>
+          collectVariableBindings(variable, scope, `${path}:initializer:${String(index)}`, add),
+        );
+      } else if (statement.initializer) {
+        collectExpressionBindings(statement.initializer, `${path}:initializer`, add);
+      }
+      if (statement.condition) collectExpressionBindings(statement.condition, `${path}:condition`, add);
+      if (statement.increment) collectExpressionBindings(statement.increment, `${path}:increment`, add);
+      collectStatementBindings(statement.body, scope, `${path}:body`, add);
+      break;
+    case 'forIn':
+      collectVariableBindings(statement.variable, scope, `${path}:variable`, add);
+      collectExpressionBindings(statement.object, `${path}:object`, add);
+      collectStatementBindings(statement.body, scope, `${path}:body`, add);
+      break;
+    case 'forOf':
+      collectVariableBindings(statement.variable, scope, `${path}:variable`, add);
+      collectExpressionBindings(statement.iterable, `${path}:iterable`, add);
+      collectStatementBindings(statement.body, scope, `${path}:body`, add);
+      break;
+    case 'if':
+      collectExpressionBindings(statement.condition, `${path}:condition`, add);
+      collectStatementBindings(statement.consequent, scope, `${path}:consequent`, add);
+      if (statement.otherwise) collectStatementBindings(statement.otherwise, scope, `${path}:otherwise`, add);
+      break;
+    case 'return':
+      if (statement.expression) collectExpressionBindings(statement.expression, `${path}:expression`, add);
+      break;
+    case 'switch':
+      collectExpressionBindings(statement.expression, `${path}:expression`, add);
+      statement.cases.forEach((clause, clauseIndex) => {
+        const clausePath = `${path}:case:${String(clauseIndex)}`;
+        if (clause.expression) collectExpressionBindings(clause.expression, `${clausePath}:expression`, add);
+        clause.statements.forEach((child, statementIndex) =>
+          collectStatementBindings(child, scope, `${clausePath}:statement:${String(statementIndex)}`, add),
+        );
+      });
+      break;
+    case 'try':
+      collectStatementBindings(statement.tryBody, scope, `${path}:try`, add);
+      if (statement.catchClause?.binding) add(statement.catchClause.binding, scope);
+      if (statement.catchClause) collectStatementBindings(statement.catchClause.body, scope, `${path}:catch`, add);
+      if (statement.finallyBody) collectStatementBindings(statement.finallyBody, scope, `${path}:finally`, add);
+      break;
+    case 'variable':
+      statement.declarations.forEach((variable, index) =>
+        collectVariableBindings(variable, scope, `${path}:variable:${String(index)}`, add),
+      );
+      break;
+  }
+}
+
+function isIrVariableList(value: IrExpression | readonly IrVariable[] | undefined): value is readonly IrVariable[] {
+  return Array.isArray(value);
+}
+
+function collectVariableBindings(
+  variable: Readonly<IrVariable>,
+  scope: string,
+  path: string,
+  add: (binding: Readonly<IrBindingIdentity>, scope: string) => void,
+): void {
+  add(variable.binding, scope);
+  if (variable.initializer) collectExpressionBindings(variable.initializer, `${path}:initializer`, add);
+}

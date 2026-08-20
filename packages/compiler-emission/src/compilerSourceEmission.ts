@@ -114,5 +114,7 @@ const backendEmissionFailureCodes = {
 const compilerInvariantCodes = {
   'duplicate-emitted-path': true,
   'duplicate-module-identity': true,
+  'duplicate-target-name-identity': true,
+  'invalid-target-name-candidate': true,
   'unsafe-emitted-path': true,
 } as const satisfies Readonly<Record<CompilerInvariantCode, true>>;

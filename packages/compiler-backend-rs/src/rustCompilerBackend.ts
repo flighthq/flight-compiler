@@ -1,10 +1,15 @@
 import path from 'node:path';
 
-import { createBackendEmissionFailure, indentSourceLines } from '../../compiler-emission/src/index.js';
+import {
+  createBackendEmissionFailure,
+  createIrModuleTargetNameAllocation,
+  indentSourceLines,
+} from '../../compiler-emission/src/index.js';
 import type { CompilerBackend, EmittedFile, RustCompilerBackendOptions } from '../../compiler-types/src/index.js';
 import type {
   IrAssignmentOperator,
   IrBinaryOperator,
+  IrBindingIdentity,
   IrClassDeclaration,
   IrDeclaration,
   IrEnumDeclaration,
@@ -32,10 +37,9 @@ import {
 } from './rustCompilerIdentity.js';
 
 interface EmitContext {
-  bindingNames: ReadonlyMap<string, string>;
-  constants: ReadonlyMap<string, string>;
   module: Readonly<IrModule>;
   options: Readonly<RustCompilerBackendOptions>;
+  targetNames: ReadonlyMap<string, string>;
 }
 
 type OperatorEmissionDecision = Readonly<{ emitted: string }> | Readonly<{ refusal: string }>;
@@ -53,14 +57,18 @@ export function emitIrModuleRust(
   module: Readonly<IrModule>,
   options: Readonly<RustCompilerBackendOptions> = {},
 ): EmittedFile {
-  const constants = new Map(
+  const constantIdentities = new Set(
     module.declarations.flatMap((declaration) =>
-      declaration.kind === 'variable' && !declaration.mutable
-        ? [[declaration.binding.id, screamingSnakeCase(declaration.binding.name)]]
-        : [],
+      declaration.kind === 'variable' && !declaration.mutable ? [declaration.binding.id] : [],
     ),
   );
-  const context: EmitContext = { bindingNames: moduleBindingNames(module), constants, module, options };
+  const targetNames = new Map(
+    createIrModuleTargetNameAllocation(module, (binding) => ({
+      namespace: 'identifier',
+      preferredName: getPreferredBindingNameRust(binding, constantIdentities),
+    })).map((allocation) => [allocation.identity, allocation.name]),
+  );
+  const context: EmitContext = { module, options, targetNames };
   if (module.exports.length > 0) {
     emissionError(context, 're-exports and export assignments require Rust module-facade lowering');
   }
@@ -99,7 +107,7 @@ function emitClass(declaration: Readonly<IrClassDeclaration>, context: EmitConte
   }
   const lines = [
     '#[derive(Clone, Debug)]',
-    `${declaration.exported ? 'pub ' : ''}struct ${safeRustTypeName(declaration.binding.name)}${emitTypeParameters(declaration.typeParameters, context)} {`,
+    `${declaration.exported ? 'pub ' : ''}struct ${getBindingTargetNameRust(declaration.binding, context)}${emitTypeParameters(declaration.typeParameters, context)} {`,
   ];
   for (const field of declaration.fields) {
     lines.push(
@@ -110,7 +118,7 @@ function emitClass(declaration: Readonly<IrClassDeclaration>, context: EmitConte
   if (declaration.methods.length > 0) {
     lines.push(
       '',
-      `impl${emitTypeParameters(declaration.typeParameters, context)} ${safeRustTypeName(declaration.binding.name)}${emitTypeArguments(declaration.typeParameters)} {`,
+      `impl${emitTypeParameters(declaration.typeParameters, context)} ${getBindingTargetNameRust(declaration.binding, context)}${emitTypeArguments(declaration.typeParameters)} {`,
     );
     declaration.methods.forEach((method, index) => {
       if (index > 0) lines.push('');
@@ -159,7 +167,7 @@ function emitEnum(declaration: Readonly<IrEnumDeclaration>, context: EmitContext
   const lines = [
     '#[derive(Clone, Copy, Debug, PartialEq, Eq)]',
     '#[repr(i32)]',
-    `${declaration.exported ? 'pub ' : ''}enum ${safeRustTypeName(declaration.binding.name)} {`,
+    `${declaration.exported ? 'pub ' : ''}enum ${getBindingTargetNameRust(declaration.binding, context)} {`,
   ];
   declaration.members.forEach((member) => {
     lines.push(`  ${safeRustTypeName(member.name)} = ${String(member.value)},`);
@@ -192,8 +200,8 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
       if (expression.async) emissionError(context, 'async closures require Flight task lowering');
       if (expression.typeParameters.length > 0) emissionError(context, 'generic closures require monomorphization');
       return expression.expression
-        ? `|${expression.parameters.map((parameter) => safeRustValueName(parameter.binding.name)).join(', ')}| ${emitExpression(expression.expression, context)}`
-        : `|${expression.parameters.map((parameter) => safeRustValueName(parameter.binding.name)).join(', ')}| {\n${indentSourceLines(emitStatements(expression.body, context)).join('\n')}\n}`;
+        ? `|${expression.parameters.map((parameter) => getBindingTargetNameRust(parameter.binding, context)).join(', ')}| ${emitExpression(expression.expression, context)}`
+        : `|${expression.parameters.map((parameter) => getBindingTargetNameRust(parameter.binding, context)).join(', ')}| {\n${indentSourceLines(emitStatements(expression.body, context)).join('\n')}\n}`;
     case 'identifier':
       return emitIdentifierReferenceRust(expression.reference, context);
     case 'literal':
@@ -235,7 +243,7 @@ function emitFunction(declaration: Readonly<IrFunctionDeclaration>, context: Emi
   if (declaration.async)
     emissionError(context, `async function ${declaration.binding.name} requires Flight task lowering`);
   return [
-    `${declaration.exported ? 'pub ' : ''}fn ${safeRustValueName(declaration.binding.name)}${emitTypeParameters(declaration.typeParameters, context)}(${declaration.parameters.map((parameter) => emitParameter(parameter, context)).join(', ')}) -> ${emitType(declaration.returns, context)} {`,
+    `${declaration.exported ? 'pub ' : ''}fn ${getBindingTargetNameRust(declaration.binding, context)}${emitTypeParameters(declaration.typeParameters, context)}(${declaration.parameters.map((parameter) => emitParameter(parameter, context)).join(', ')}) -> ${emitType(declaration.returns, context)} {`,
     ...indentSourceLines(emitStatements(declaration.body, context)),
     '}',
   ];
@@ -253,9 +261,7 @@ function emitImports(imports: readonly IrImport[], context: EmitContext): string
       const importedName = /^[A-Z]/u.test(binding.imported)
         ? safeRustTypeName(binding.imported)
         : safeRustValueName(binding.imported);
-      const localName = /^[A-Z]/u.test(binding.binding.name)
-        ? safeRustTypeName(binding.binding.name)
-        : safeRustValueName(binding.binding.name);
+      const localName = getBindingTargetNameRust(binding.binding, context);
       return importedName === localName ? importedName : `${importedName} as ${localName}`;
     });
     lines.add(`use ${module}::{${names.sort().join(', ')}};`);
@@ -277,11 +283,9 @@ function emitInterface(declaration: Readonly<IrInterfaceDeclaration>, context: E
 
 function emitConstructorReferenceRust(reference: Readonly<IrIdentifierReference>, context: EmitContext): string {
   if (reference.kind === 'this') emissionError(context, 'this cannot be used as a Rust constructor');
-  const name =
-    reference.kind === 'ambient'
-      ? reference.name
-      : (context.bindingNames.get(reference.binding.id) ?? reference.binding.name);
-  return safeRustTypeName(name);
+  return reference.kind === 'ambient'
+    ? safeRustTypeName(reference.name)
+    : getBindingTargetNameRust(reference.binding, context);
 }
 
 function emitIdentifierReferenceRust(reference: Readonly<IrIdentifierReference>, context: EmitContext): string {
@@ -292,14 +296,7 @@ function emitIdentifierReferenceRust(reference: Readonly<IrIdentifierReference>,
     }
     return safeRustValueName(reference.name);
   }
-  const constant = context.constants.get(reference.binding.id);
-  if (constant) return constant;
-  const name = context.bindingNames.get(reference.binding.id) ?? reference.binding.name;
-  return reference.binding.kind === 'class' ||
-    reference.binding.kind === 'enum' ||
-    (reference.binding.kind === 'import' && /^[A-Z]/u.test(name))
-    ? safeRustTypeName(name)
-    : safeRustValueName(name);
+  return getBindingTargetNameRust(reference.binding, context);
 }
 
 function emitLiteral(value: boolean | null | number | string): string {
@@ -307,24 +304,6 @@ function emitLiteral(value: boolean | null | number | string): string {
   if (value === null) return 'None';
   if (typeof value === 'number' && Number.isInteger(value)) return `${String(value)}.0`;
   return String(value);
-}
-
-function moduleBindingNames(module: Readonly<IrModule>): ReadonlyMap<string, string> {
-  const names = new Map<string, string>();
-  for (const imported of module.imports) {
-    for (const binding of imported.bindings) names.set(binding.binding.id, binding.binding.name);
-  }
-  for (const declaration of module.declarations) {
-    if (
-      declaration.kind === 'class' ||
-      declaration.kind === 'enum' ||
-      declaration.kind === 'function' ||
-      declaration.kind === 'variable'
-    ) {
-      names.set(declaration.binding.id, declaration.binding.name);
-    }
-  }
-  return names;
 }
 
 function emitParameter(parameter: Readonly<IrParameter>, context: EmitContext): string {
@@ -336,8 +315,9 @@ function emitParameter(parameter: Readonly<IrParameter>, context: EmitContext): 
       `nullable parameter ${parameter.binding.name} requires Option-aware Rust control-flow lowering`,
     );
   }
-  if (parameter.rest) return `${safeRustValueName(parameter.binding.name)}: Vec<${emitType(parameter.type, context)}>`;
-  return `${safeRustValueName(parameter.binding.name)}: ${emitType(parameter.type, context)}`;
+  const name = getBindingTargetNameRust(parameter.binding, context);
+  if (parameter.rest) return `${name}: Vec<${emitType(parameter.type, context)}>`;
+  return `${name}: ${emitType(parameter.type, context)}`;
 }
 
 function emitRecord(
@@ -383,7 +363,7 @@ function emitStatement(statement: Readonly<IrStatement>, context: EmitContext): 
     case 'forOf':
       if (statement.await) emissionError(context, 'async iteration requires Flight task lowering');
       return [
-        `for ${statement.variable.mutable ? 'mut ' : ''}${safeRustValueName(statement.variable.binding.name)} in ${emitExpression(statement.iterable, context)} {`,
+        `for ${statement.variable.mutable ? 'mut ' : ''}${getBindingTargetNameRust(statement.variable.binding, context)} in ${emitExpression(statement.iterable, context)} {`,
         ...indentSourceLines(emitStatementBody(statement.body, context)),
         '}',
       ];
@@ -513,7 +493,7 @@ function emitTypeParameters(parameters: readonly IrTypeParameter[], context: Emi
 function emitVariable(variable: Readonly<IrVariable>, context: EmitContext): string {
   const type = variable.type ? `: ${emitType(variable.type, context)}` : '';
   const initializer = variable.initializer ? ` = ${emitExpression(variable.initializer, context)}` : '';
-  return `let ${variable.mutable ? 'mut ' : ''}${safeRustValueName(variable.binding.name)}${type}${initializer};`;
+  return `let ${variable.mutable ? 'mut ' : ''}${getBindingTargetNameRust(variable.binding, context)}${type}${initializer};`;
 }
 
 function emitVariableDeclaration(declaration: Readonly<IrVariableDeclaration>, context: EmitContext): string[] {
@@ -523,8 +503,23 @@ function emitVariableDeclaration(declaration: Readonly<IrVariableDeclaration>, c
   if (declaration.mutable)
     emissionError(context, `mutable module variable ${declaration.binding.name} requires synchronization lowering`);
   return [
-    `${declaration.exported ? 'pub ' : ''}const ${context.constants.get(declaration.binding.id)!}: ${emitType(declaration.type, context)} = ${emitExpression(declaration.initializer, context)};`,
+    `${declaration.exported ? 'pub ' : ''}const ${getBindingTargetNameRust(declaration.binding, context)}: ${emitType(declaration.type, context)} = ${emitExpression(declaration.initializer, context)};`,
   ];
+}
+
+function getBindingTargetNameRust(binding: Readonly<IrBindingIdentity>, context: EmitContext): string {
+  const targetName = context.targetNames.get(binding.id);
+  if (!targetName) emissionError(context, `binding ${binding.name} has no Rust target name allocation`);
+  return targetName;
+}
+
+function getPreferredBindingNameRust(binding: Readonly<IrBindingIdentity>, constants: ReadonlySet<string>): string {
+  if (constants.has(binding.id)) return screamingSnakeCase(binding.name);
+  return binding.kind === 'class' ||
+    binding.kind === 'enum' ||
+    (binding.kind === 'import' && /^[A-Z]/u.test(binding.name))
+    ? safeRustTypeName(binding.name)
+    : safeRustValueName(binding.name);
 }
 
 function emissionError(context: EmitContext, message: string): never {

@@ -32,7 +32,12 @@ export interface CompilerDiagnosticsFailure extends Error {
   readonly kind: 'compiler-diagnostics';
 }
 
-export type CompilerInvariantCode = 'duplicate-emitted-path' | 'duplicate-module-identity' | 'unsafe-emitted-path';
+export type CompilerInvariantCode =
+  | 'duplicate-emitted-path'
+  | 'duplicate-module-identity'
+  | 'duplicate-target-name-identity'
+  | 'invalid-target-name-candidate'
+  | 'unsafe-emitted-path';
 
 export interface CompilerInvariantFailure extends Error {
   readonly code: CompilerInvariantCode;
