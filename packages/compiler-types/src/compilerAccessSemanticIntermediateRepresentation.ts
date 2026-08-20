@@ -18,3 +18,13 @@ export type IrIndexedReceiver =
 export interface IrElementAccessSemantics {
   readonly receivers: readonly [IrIndexedReceiver, ...IrIndexedReceiver[]];
 }
+
+export type IrTypedArrayReceiver = Exclude<IrIndexedReceiver, 'array' | 'object' | 'string' | 'unknown'>;
+
+export interface IrTypedArraySetSemantics {
+  readonly receivers: readonly [IrTypedArrayReceiver, ...IrTypedArrayReceiver[]];
+}
+
+export interface IrCallSemantics {
+  readonly typedArraySet?: IrTypedArraySetSemantics | undefined;
+}

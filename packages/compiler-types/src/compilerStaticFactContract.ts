@@ -1,5 +1,5 @@
 import type { IrOperatorValueDomain } from './compilerOperatorSemanticIntermediateRepresentation.js';
-import type { IrIndexedReceiver } from './compilerAccessSemanticIntermediateRepresentation.js';
+import type { IrIndexedReceiver, IrTypedArrayReceiver } from './compilerAccessSemanticIntermediateRepresentation.js';
 
 export type CompilerStaticTruthinessContext = 'condition' | 'logical' | 'negation';
 
@@ -22,6 +22,11 @@ export type CompilerStaticFactCount =
       count: number;
       kind: 'indexedAccess';
       receivers: readonly [IrIndexedReceiver, ...IrIndexedReceiver[]];
+    }>
+  | Readonly<{
+      count: number;
+      kind: 'typedArraySet';
+      receivers: readonly [IrTypedArrayReceiver, ...IrTypedArrayReceiver[]];
     }>;
 
 export interface CompilerStaticFactAudit {

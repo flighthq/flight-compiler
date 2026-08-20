@@ -316,6 +316,30 @@ describe('lowerTypeScriptSource', () => {
     ).toEqual([['array'], ['float32Array'], ['uint16Array', 'uint32Array'], ['object'], ['string'], ['unknown']]);
   });
 
+  it('identifies typed-array set calls from receiver semantics rather than member spelling', () => {
+    const result = lower(
+      'typed-array-set.ts',
+      'type Buffers = Uint8Array | Float32Array; interface Custom { set(values: number[]): void } export function copy(target: Buffers, big: BigInt64Array, custom: Custom, array: number[], source: number[]): void { target.set(source); big["set"](source); custom.set(source); array["set"](source); target.subarray(); }',
+    );
+    const [, , copy] = result.module.declarations;
+
+    expect(result.diagnostics).toEqual([]);
+    if (copy?.kind !== 'function') throw new Error('Expected typed-array copy function');
+    expect(
+      copy.body.map((statement) =>
+        statement.kind === 'expression' && statement.expression.kind === 'call'
+          ? statement.expression.semantics
+          : undefined,
+      ),
+    ).toEqual([
+      { typedArraySet: { receivers: ['float32Array', 'uint8Array'] } },
+      { typedArraySet: { receivers: ['bigInt64Array'] } },
+      {},
+      {},
+      {},
+    ]);
+  });
+
   it('resolves deterministic identities through module, lexical, closure, import, class, and control-flow scopes', () => {
     const source = `
       import { external as imported } from './dependency.js';

@@ -9,6 +9,7 @@ import type {
   IrModule,
   IrOperatorValueDomain,
   IrStatement,
+  IrTypedArrayReceiver,
   IrVariable,
 } from '../../compiler-types/src/index.js';
 
@@ -27,6 +28,10 @@ type StaticFact =
       access: CompilerStaticIndexedAccessMode;
       kind: 'indexedAccess';
       receivers: readonly [IrIndexedReceiver, ...IrIndexedReceiver[]];
+    }>
+  | Readonly<{
+      kind: 'typedArraySet';
+      receivers: readonly [IrTypedArrayReceiver, ...IrTypedArrayReceiver[]];
     }>;
 
 export function analyzeIrModulesStaticFacts(modules: readonly Readonly<IrModule>[]): CompilerStaticFactAudit {
@@ -72,6 +77,14 @@ function addTruthinessFact(
   domain = getExpressionValueDomain(expression),
 ): void {
   addStaticFact({ context, domain, kind: 'truthiness' }, analysis);
+}
+
+function addTypedArraySetFact(
+  receivers: readonly [IrTypedArrayReceiver, ...IrTypedArrayReceiver[]],
+  analysis: StaticFactAnalysis,
+): void {
+  const normalized = [...new Set(receivers)].sort() as [IrTypedArrayReceiver, ...IrTypedArrayReceiver[]];
+  addStaticFact({ kind: 'typedArraySet', receivers: normalized }, analysis);
 }
 
 function analyzeDeclaration(declaration: Readonly<IrDeclaration>, analysis: StaticFactAnalysis): void {
@@ -144,6 +157,9 @@ function analyzeExpression(
       return;
     }
     case 'call':
+      if (expression.semantics.typedArraySet) {
+        addTypedArraySetFact(expression.semantics.typedArraySet.receivers, analysis);
+      }
       analyzeExpression(expression.callee, analysis, 'read');
       expression.arguments.forEach((argument) => analyzeExpression(argument, analysis, 'read'));
       return;
@@ -341,5 +357,7 @@ function staticFactIdentity(fact: StaticFact): string {
       return `${fact.kind}\0${fact.domain}`;
     case 'truthiness':
       return `${fact.kind}\0${fact.context}\0${fact.domain}`;
+    case 'typedArraySet':
+      return JSON.stringify([fact.kind, fact.receivers]);
   }
 }

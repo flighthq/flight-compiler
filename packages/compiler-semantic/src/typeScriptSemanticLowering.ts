@@ -16,6 +16,7 @@ import type {
   IrClassDeclaration,
   IrClassField,
   IrClassMethod,
+  IrCallSemantics,
   IrDeclaration,
   IrEnumDeclaration,
   IrExpression,
@@ -43,6 +44,7 @@ import type {
   IrTypeParameter,
   IrTypeReference,
   IrUnaryOperatorSemantics,
+  IrTypedArrayReceiver,
   IrValueNameReference,
   IrVariable,
   IrVariableDeclaration,
@@ -430,6 +432,7 @@ function lowerExpression(node: ts.Expression, context: LoweringContext): IrExpre
       callee: lowerExpression(node.expression, context),
       kind: 'call',
       optional: node.questionDotToken !== undefined,
+      semantics: lowerCallSemantics(node, context),
       typeArguments: node.typeArguments?.map((type) => lowerType(type, context)) ?? [],
     };
   }
@@ -538,10 +541,17 @@ function lowerElementAccessSemantics(
   receiver: ts.Expression,
   context: LoweringContext,
 ): { receivers: [IrIndexedReceiver, ...IrIndexedReceiver[]] } {
+  return { receivers: getTypeScriptExpressionIndexedReceiverSet(receiver, context) };
+}
+
+function getTypeScriptExpressionIndexedReceiverSet(
+  receiver: ts.Expression,
+  context: LoweringContext,
+): [IrIndexedReceiver, ...IrIndexedReceiver[]] {
   const checked = lowerTypeScriptIndexedReceivers(context.checker.getTypeAtLocation(receiver), context.checker);
   const declared = getTypeScriptExpressionIndexedReceivers(receiver, context);
   const values = declared && checked.every((value) => value === 'object' || value === 'unknown') ? declared : checked;
-  return { receivers: values.length > 0 ? [values[0]!, ...values.slice(1)] : ['unknown'] };
+  return values.length > 0 ? [values[0]!, ...values.slice(1)] : ['unknown'];
 }
 
 function getTypeScriptExpressionIndexedReceivers(
@@ -610,6 +620,29 @@ function getTypeScriptTypeNodeIndexedReceivers(
     return getTypeScriptTypeNodeIndexedReceivers(declaration.type, context, nextSeen);
   }
   return undefined;
+}
+
+function lowerCallSemantics(node: ts.CallExpression, context: LoweringContext): IrCallSemantics {
+  const access = node.expression;
+  const receiver = ts.isPropertyAccessExpression(access)
+    ? access.name.text === 'set'
+      ? access.expression
+      : undefined
+    : ts.isElementAccessExpression(access) &&
+        access.argumentExpression &&
+        (ts.isStringLiteral(access.argumentExpression) ||
+          ts.isNoSubstitutionTemplateLiteral(access.argumentExpression)) &&
+        access.argumentExpression.text === 'set'
+      ? access.expression
+      : undefined;
+  if (!receiver) return {};
+  const receivers = getTypeScriptExpressionIndexedReceiverSet(receiver, context);
+  if (!receivers.every(isIrTypedArrayReceiver)) return {};
+  return { typedArraySet: { receivers: receivers as [IrTypedArrayReceiver, ...IrTypedArrayReceiver[]] } };
+}
+
+function isIrTypedArrayReceiver(value: IrIndexedReceiver): value is IrTypedArrayReceiver {
+  return value !== 'array' && value !== 'object' && value !== 'string' && value !== 'unknown';
 }
 
 function lowerExpressionTypeNameReference(expression: ts.Expression, context: LoweringContext): IrTypeNameReference {

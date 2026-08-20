@@ -89,6 +89,7 @@ Strengths:
 - Target-name allocation covers value and type introductions in one deterministic target namespace. Haxe and Rust backends use the allocated identity for declarations, imports, type parameters, and type references, including collisions introduced by target case or keyword normalization.
 - A versioned target-neutral static-fact vocabulary distinguishes truthiness context and value domain, numeric relation domain, and indexed read/write mode without naming a target runtime operation.
 - Element access preserves a non-empty normalized set of source receiver identities, including mutable or readonly arrays, every standard numeric typed-array family, strings, structural objects, and unknown receivers. Union aliases retain their members instead of introducing target-specific compound names.
+- Typed-array `set` calls carry their exact normalized receiver set only when checker and declaration evidence classifies every possible receiver as a typed array; an ordinary array or object member with the same spelling remains an ordinary call.
 
 Open foundation work:
 

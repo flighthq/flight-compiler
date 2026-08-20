@@ -116,4 +116,26 @@ describe('analyzeIrModulesStaticFacts', () => {
     );
     expect(lowered.module).toEqual(snapshot);
   });
+
+  it('counts typed-array set calls by normalized receiver set', () => {
+    const sourceFile = ts.createSourceFile(
+      '/flight/packages/math/src/typed-array-set.ts',
+      'type Mixed = Uint8Array | Float32Array; export function copy(target: Mixed, source: number[]): void { target.set(source); target.set(source); }',
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const lowered = lowerTypeScriptSource(sourceFile, {
+      packageName: '@flighthq/math',
+      upstreamDirectory: '/flight',
+    });
+
+    expect(lowered.diagnostics).toEqual([]);
+    expect(analyzeIrModulesStaticFacts([lowered.module]).facts).toEqual([
+      {
+        count: 2,
+        kind: 'typedArraySet',
+        receivers: ['float32Array', 'uint8Array'],
+      },
+    ]);
+  });
 });
