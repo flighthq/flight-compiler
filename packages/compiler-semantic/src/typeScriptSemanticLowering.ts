@@ -366,7 +366,7 @@ function lowerExport(node: ts.ExportDeclaration | ts.ExportAssignment, context: 
     return specifier
       ? { exported, imported, kind: 'reexport', specifier, typeOnly: bindingTypeOnly }
       : {
-          binding: lowerBindingIdentity(importedNode, context),
+          binding: lowerExportBindingIdentity(element, importedNode, context),
           exported,
           kind: 'local',
           typeOnly: bindingTypeOnly,
@@ -1047,6 +1047,16 @@ function lowerIdentifierReference(node: ts.Identifier, context: LoweringContext)
   return symbol?.declarations?.some(isBindingDeclaration)
     ? { binding: lowerBindingSymbol(symbol, node, context), kind: 'binding' }
     : { kind: 'ambient', name: node.text };
+}
+
+function lowerExportBindingIdentity(
+  node: ts.ExportSpecifier,
+  name: ts.Identifier,
+  context: LoweringContext,
+): IrBindingIdentity {
+  const symbol = context.checker.getExportSpecifierLocalTargetSymbol(node);
+  if (!symbol) unsupported(name, `export binding ${name.text} cannot be resolved`);
+  return lowerBindingSymbol(symbol, name, context);
 }
 
 function lowerBindingIdentity(node: ts.Identifier, context: LoweringContext): IrBindingIdentity {
