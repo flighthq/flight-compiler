@@ -4,6 +4,7 @@ import path from 'node:path';
 
 import ts from 'typescript';
 
+import { isCompilerInventoryFailure } from './compilerInventoryFailure.js';
 import { createTypeScriptProject } from './typeScriptProject.js';
 import {
   analyzeTypeScriptSourceRuntimeExports,
@@ -22,6 +23,25 @@ describe('analyzeTypeScriptSourceRuntimeExports', () => {
       expect(decisions.get('Mode')).toMatchObject({ runtime: true });
       expect(decisions.get('ConstMode')).toEqual({ runtime: false });
       expect(decisions.get('Shape')).toEqual({ runtime: false });
+    });
+  });
+
+  it('fails with a tagged classification error when the checker has no module symbol', () => {
+    const source = ts.createSourceFile('/value.ts', 'export const value = 1;', ts.ScriptTarget.Latest, true);
+    const checker = { getSymbolAtLocation: () => undefined } as unknown as ts.TypeChecker;
+    let failure: unknown;
+
+    try {
+      analyzeTypeScriptSourceRuntimeExports(source, checker, {});
+    } catch (error) {
+      failure = error;
+    }
+
+    expect(isCompilerInventoryFailure(failure)).toBe(true);
+    expect(failure).toMatchObject({
+      code: 'runtime-export-classification',
+      kind: 'compiler-inventory',
+      subject: '/value.ts',
     });
   });
 });

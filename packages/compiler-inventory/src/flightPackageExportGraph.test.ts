@@ -3,7 +3,8 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { analyzeFlightWorkspace } from './index.js';
+import type { CompilerInventoryFailureCode } from '../../compiler-types/src/index.js';
+import { analyzeFlightWorkspace, isCompilerInventoryFailure } from './index.js';
 
 describe('inventory export graph regressions', () => {
   it('omits ambiguous star exports and reports every conflicting source', () => {
@@ -78,7 +79,44 @@ describe('inventory export graph regressions', () => {
       rmSync(upstream, { force: true, recursive: true });
     }
   });
+
+  it('rejects unresolved named exports with a stable failure identity', () => {
+    const upstream = createFixture({
+      'packages/types/src/index.ts': "export { missing } from './value.js';",
+      'packages/types/src/value.ts': 'export const present = 1;',
+    });
+    try {
+      expectInventoryFailure(() => analyzeFlightWorkspace({ upstreamDirectory: upstream }), 'unresolved-export');
+    } finally {
+      rmSync(upstream, { force: true, recursive: true });
+    }
+  });
+
+  it('rejects explicitly reexported ambiguity with a stable failure identity', () => {
+    const upstream = createFixture({
+      'packages/types/src/a.ts': 'export const collide = 1;',
+      'packages/types/src/b.ts': 'export const collide = 2;',
+      'packages/types/src/barrel.ts': "export * from './a.js'; export * from './b.js';",
+      'packages/types/src/index.ts': "export { collide } from './barrel.js';",
+    });
+    try {
+      expectInventoryFailure(() => analyzeFlightWorkspace({ upstreamDirectory: upstream }), 'ambiguous-export');
+    } finally {
+      rmSync(upstream, { force: true, recursive: true });
+    }
+  });
 });
+
+function expectInventoryFailure(run: () => unknown, code: CompilerInventoryFailureCode): void {
+  let failure: unknown;
+  try {
+    run();
+  } catch (error) {
+    failure = error;
+  }
+  expect(isCompilerInventoryFailure(failure)).toBe(true);
+  expect(failure).toMatchObject({ code, kind: 'compiler-inventory' });
+}
 
 function createFixture(
   files: Readonly<Record<string, string>>,

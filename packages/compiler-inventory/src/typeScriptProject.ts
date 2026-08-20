@@ -3,6 +3,7 @@ import path from 'node:path';
 import ts from 'typescript';
 
 import type { TypeScriptProject } from '../../compiler-types/src/index.js';
+import { createCompilerInventoryFailure } from './compilerInventoryFailure.js';
 
 export function createTypeScriptProject(tsconfigPath: string): TypeScriptProject {
   const absoluteConfigPath = path.resolve(tsconfigPath);
@@ -12,16 +13,30 @@ export function createTypeScriptProject(tsconfigPath: string): TypeScriptProject
     {
       ...ts.sys,
       onUnRecoverableConfigFileDiagnostic: (diagnostic) => {
-        throw new Error(ts.flattenDiagnosticMessageText(diagnostic.messageText, '\n'));
+        throw createCompilerInventoryFailure(
+          'invalid-typescript-project',
+          absoluteConfigPath,
+          ts.flattenDiagnosticMessageText(diagnostic.messageText, '\n'),
+        );
       },
     },
   );
-  if (!parsed) throw new Error(`Unable to parse TypeScript configuration: ${absoluteConfigPath}`);
+  if (!parsed) {
+    throw createCompilerInventoryFailure(
+      'invalid-typescript-project',
+      absoluteConfigPath,
+      `Unable to parse TypeScript configuration: ${absoluteConfigPath}`,
+    );
+  }
   if (parsed.errors.length > 0) {
     const detail = parsed.errors
       .map((diagnostic) => ts.flattenDiagnosticMessageText(diagnostic.messageText, '\n'))
       .join('\n');
-    throw new Error(`Invalid TypeScript configuration ${absoluteConfigPath}:\n${detail}`);
+    throw createCompilerInventoryFailure(
+      'invalid-typescript-project',
+      absoluteConfigPath,
+      `Invalid TypeScript configuration ${absoluteConfigPath}:\n${detail}`,
+    );
   }
 
   const program = ts.createProgram({

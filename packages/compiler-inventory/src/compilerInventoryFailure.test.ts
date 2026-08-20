@@ -24,12 +24,24 @@ describe('createCompilerInventoryFailure', () => {
 describe('isCompilerInventoryFailure', () => {
   it('accepts every failure code and rejects lookalikes, unknown codes, and plain objects', () => {
     const codes = [
+      'ambiguous-export',
       'duplicate-package-name',
+      'invalid-git-commit',
       'invalid-package-directory',
+      'invalid-package-export',
       'invalid-package-manifest',
       'invalid-package-scope',
+      'invalid-source-path',
+      'invalid-typescript-project',
+      'missing-package-export',
       'missing-packages-directory',
+      'missing-sdk-package',
       'package-exclusion-drift',
+      'runtime-export-classification',
+      'unknown-package',
+      'unresolved-export',
+      'unresolved-source',
+      'unsupported-package-specifier',
       'unsupported-dynamic-import',
     ] as const;
 

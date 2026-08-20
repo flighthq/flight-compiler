@@ -1,6 +1,7 @@
 import ts from 'typescript';
 
 import type { RuntimeExportDecision } from '../../compiler-types/src/index.js';
+import { createCompilerInventoryFailure } from './compilerInventoryFailure.js';
 
 export function analyzeTypeScriptSourceRuntimeExports(
   source: ts.SourceFile,
@@ -8,7 +9,13 @@ export function analyzeTypeScriptSourceRuntimeExports(
   options: ts.CompilerOptions,
 ): ReadonlyMap<string, RuntimeExportDecision> {
   const module = checker.getSymbolAtLocation(source);
-  if (!module) throw new Error(`Cannot resolve TypeScript module symbol: ${source.fileName}`);
+  if (!module) {
+    throw createCompilerInventoryFailure(
+      'runtime-export-classification',
+      source.fileName,
+      `Cannot resolve TypeScript module symbol: ${source.fileName}`,
+    );
+  }
   const decisions = new Map<string, RuntimeExportDecision>();
   const exports = [...checker.getExportsOfModule(module)].sort((left, right) =>
     left.getName().localeCompare(right.getName()),

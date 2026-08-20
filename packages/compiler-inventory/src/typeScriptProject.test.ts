@@ -2,6 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
+import { isCompilerInventoryFailure } from './compilerInventoryFailure.js';
 import { createTypeScriptProject } from './typeScriptProject.js';
 
 // Constructing a real TypeScript program loads and checks the standard library, and v8 coverage
@@ -57,8 +58,16 @@ describe('createTypeScriptProject', () => {
     try {
       write(directory, 'tsconfig.json', '{ invalid json');
 
-      expect(() => createTypeScriptProject(path.join(directory, 'missing.json'))).toThrow();
-      expect(() => createTypeScriptProject(path.join(directory, 'tsconfig.json'))).toThrow();
+      for (const file of ['missing.json', 'tsconfig.json']) {
+        let failure: unknown;
+        try {
+          createTypeScriptProject(path.join(directory, file));
+        } catch (error) {
+          failure = error;
+        }
+        expect(isCompilerInventoryFailure(failure)).toBe(true);
+        expect(failure).toMatchObject({ code: 'invalid-typescript-project', kind: 'compiler-inventory' });
+      }
     } finally {
       rmSync(directory, { force: true, recursive: true });
     }

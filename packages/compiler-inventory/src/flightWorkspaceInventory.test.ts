@@ -3,7 +3,12 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import type { PackageExportLane, PackageInventory } from '../../compiler-types/src/index.js';
+import type {
+  CompilerInventoryFailureCode,
+  PackageExportLane,
+  PackageInventory,
+} from '../../compiler-types/src/index.js';
+import { isCompilerInventoryFailure } from './compilerInventoryFailure.js';
 import {
   analyzeFlightWorkspace,
   getPackageInventoryRootExportLane,
@@ -55,9 +60,29 @@ describe('analyzeFlightWorkspace', () => {
       });
       expect(types.sdkExposures).toEqual([{ sdkLane: '@flighthq/sdk', target: '@flighthq/types' }]);
       expect(types.sdkIncluded).toBe(true);
-      expect(() => resolvePackageExportLane(inventoryByName, '@flighthq/types/private')).toThrow(
-        'Package import uses an unaccounted export lane: @flighthq/types/private',
+      expectInventoryFailure(
+        () => resolvePackageExportLane(inventoryByName, '@flighthq/types/private'),
+        'missing-package-export',
       );
+    } finally {
+      rmSync(upstream, { force: true, recursive: true });
+    }
+  });
+
+  it('reports the absent SDK package with a stable failure identity', () => {
+    const upstream = createUpstreamFixture();
+    try {
+      write(
+        upstream,
+        'packages/sdk/package.json',
+        JSON.stringify({
+          exports: { '.': { default: './dist/index.js', types: './dist/index.d.ts' } },
+          name: '@flighthq/not-sdk',
+          version: '0.0.0',
+        }),
+      );
+
+      expectInventoryFailure(() => analyzeFlightWorkspace({ upstreamDirectory: upstream }), 'missing-sdk-package');
     } finally {
       rmSync(upstream, { force: true, recursive: true });
     }
@@ -71,8 +96,9 @@ describe('getPackageInventoryRootExportLane', () => {
     const inventory = createPackageInventory([contractLane, rootLane]);
 
     expect(getPackageInventoryRootExportLane(inventory)).toBe(rootLane);
-    expect(() => getPackageInventoryRootExportLane(createPackageInventory([contractLane]))).toThrow(
-      'Package manifest has no root export lane',
+    expectInventoryFailure(
+      () => getPackageInventoryRootExportLane(createPackageInventory([contractLane])),
+      'missing-package-export',
     );
   });
 });
@@ -85,7 +111,7 @@ describe('readGitCommit', () => {
       const expected = execFileSync('git', ['-C', upstream, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
 
       expect(readGitCommit(upstream)).toBe(expected);
-      expect(() => readGitCommit(plainDirectory)).toThrow('Upstream directory is not an initialized Git checkout');
+      expectInventoryFailure(() => readGitCommit(plainDirectory), 'invalid-git-commit');
     } finally {
       rmSync(upstream, { force: true, recursive: true });
       rmSync(plainDirectory, { force: true, recursive: true });
@@ -138,11 +164,38 @@ describe('readPackageExportManifest', () => {
           version: '0.0.0',
         }),
       );
-      expect(() => readPackageExportManifest(packageDirectory, upstream)).toThrow(
-        'Package export condition @flighthq/types/missing [default] has no source barrel',
-      );
+      expectInventoryFailure(() => readPackageExportManifest(packageDirectory, upstream), 'unresolved-source');
     } finally {
       rmSync(upstream, { force: true, recursive: true });
+    }
+  });
+
+  it('rejects malformed export maps and source paths outside the checkout', () => {
+    const upstream = createUpstreamFixture();
+    const externalPackage = mkdtempSync(path.join(os.tmpdir(), 'flight-compiler-external-package-'));
+    try {
+      const packageDirectory = path.join(upstream, 'packages', 'types');
+      write(
+        packageDirectory,
+        'package.json',
+        JSON.stringify({ exports: [], name: '@flighthq/types', version: '0.0.0' }),
+      );
+      expectInventoryFailure(() => readPackageExportManifest(packageDirectory, upstream), 'invalid-package-export');
+
+      write(
+        externalPackage,
+        'package.json',
+        JSON.stringify({
+          exports: { '.': { default: './dist/index.js', types: './dist/index.d.ts' } },
+          name: '@flighthq/external',
+          version: '0.0.0',
+        }),
+      );
+      write(externalPackage, 'src/index.ts', 'export {};');
+      expectInventoryFailure(() => readPackageExportManifest(externalPackage, upstream), 'invalid-source-path');
+    } finally {
+      rmSync(upstream, { force: true, recursive: true });
+      rmSync(externalPackage, { force: true, recursive: true });
     }
   });
 });
@@ -155,14 +208,24 @@ describe('resolvePackageExportLane', () => {
 
     expect(resolvePackageExportLane(inventoryByName, '@flighthq/types')).toBe(rootLane);
     expect(resolvePackageExportLane(inventoryByName, '@flighthq/types/contract')).toBe(contractLane);
-    expect(() => resolvePackageExportLane(inventoryByName, 'typescript')).toThrow(
-      'Unsupported Flight package specifier',
+    expectInventoryFailure(
+      () => resolvePackageExportLane(inventoryByName, 'typescript'),
+      'unsupported-package-specifier',
     );
-    expect(() => resolvePackageExportLane(inventoryByName, '@flighthq/missing')).toThrow(
-      'Unknown Flight package in public import',
-    );
+    expectInventoryFailure(() => resolvePackageExportLane(inventoryByName, '@flighthq/missing'), 'unknown-package');
   });
 });
+
+function expectInventoryFailure(run: () => unknown, code: CompilerInventoryFailureCode): void {
+  let failure: unknown;
+  try {
+    run();
+  } catch (error) {
+    failure = error;
+  }
+  expect(isCompilerInventoryFailure(failure)).toBe(true);
+  expect(failure).toMatchObject({ code, kind: 'compiler-inventory' });
+}
 
 function createPackageExportLane(entry: string): PackageExportLane {
   return {

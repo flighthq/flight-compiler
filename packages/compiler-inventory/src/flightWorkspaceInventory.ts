@@ -19,6 +19,7 @@ import type {
   SdkExposure,
   UpstreamInventory,
 } from '../../compiler-types/src/index.js';
+import { createCompilerInventoryFailure } from './compilerInventoryFailure.js';
 import { analyzeFlightPackageExclusions } from './flightPackageExclusion.js';
 import { analyzeFlightPackageHostFacts } from './flightPackageHostFacts.js';
 import { analyzeFlightPackageImports } from './flightPackageImport.js';
@@ -92,7 +93,14 @@ export function analyzeFlightWorkspace(options: Readonly<AnalyzeFlightWorkspaceO
       const sourcePath = resolvePackageExportSource(entry, upstreamDirectory);
       const resolved = resolveExports(sourcePath, context);
       const source = project.program.getSourceFile(sourcePath);
-      if (!source) throw new Error(`Cannot resolve upstream TypeScript source: ${portablePath(sourcePath)}`);
+      if (!source) {
+        const subject = portablePath(sourcePath);
+        throw createCompilerInventoryFailure(
+          'unresolved-source',
+          subject,
+          `Cannot resolve upstream TypeScript source: ${subject}`,
+        );
+      }
       const runtimeExports = analyzeTypeScriptSourceRuntimeExports(source, project.checker, project.options);
       const exports = [...resolved.exports.values()].map((record) =>
         applyRuntimeExportDecision(record, runtimeExports.get(record.name), context, entry.specifier, runtimeExports),
@@ -174,7 +182,13 @@ export function analyzeFlightWorkspace(options: Readonly<AnalyzeFlightWorkspaceO
 
 export function getPackageInventoryRootExportLane(inventory: Readonly<PackageInventory>): PackageExportLane {
   const lane = inventory.exportLanes.find((candidate) => candidate.entry === '.');
-  if (!lane) throw new Error(`Package manifest has no root export lane: ${inventory.name}`);
+  if (!lane) {
+    throw createCompilerInventoryFailure(
+      'missing-package-export',
+      inventory.name,
+      `Package manifest has no root export lane: ${inventory.name}`,
+    );
+  }
   return lane;
 }
 
@@ -184,11 +198,22 @@ export function readGitCommit(directory: string): string {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
     }).trim();
-    if (!/^[0-9a-f]{40}$/u.test(commit)) throw new Error(`Git returned an invalid commit: ${commit}`);
+    if (!/^[0-9a-f]{40}$/u.test(commit)) {
+      throw createCompilerInventoryFailure(
+        'invalid-git-commit',
+        path.resolve(directory),
+        `Git returned an invalid commit: ${commit}`,
+      );
+    }
     return commit;
   } catch (error) {
     const detail = error instanceof Error ? `: ${error.message}` : '';
-    throw new Error(`Upstream directory is not an initialized Git checkout${detail}`);
+    throw createCompilerInventoryFailure(
+      'invalid-git-commit',
+      path.resolve(directory),
+      `Upstream directory is not an initialized Git checkout${detail}`,
+      error,
+    );
   }
 }
 
@@ -199,7 +224,8 @@ export function readPackageExportManifest(
   const directory = path.resolve(packageDirectory);
   const packageJson = readJson(path.join(directory, 'package.json'));
   if (typeof packageJson.name !== 'string' || typeof packageJson.version !== 'string') {
-    throw new Error(`Invalid package metadata: ${portablePath(directory)}`);
+    const subject = portablePath(directory);
+    throw createCompilerInventoryFailure('invalid-package-manifest', subject, `Invalid package metadata: ${subject}`);
   }
   return readPackageExportDescriptors(
     { directory, name: packageJson.name, version: packageJson.version },
@@ -215,12 +241,30 @@ export function resolvePackageExportLane(
   const escapedScope = escapeRegularExpression(packageScope);
   const match = new RegExp(`^(${escapedScope}/[^/]+)(?<subpath>/.*)?$`, 'u').exec(specifier);
   const packageName = match?.[1];
-  if (!packageName) throw new Error(`Unsupported Flight package specifier: ${specifier}`);
+  if (!packageName) {
+    throw createCompilerInventoryFailure(
+      'unsupported-package-specifier',
+      specifier,
+      `Unsupported Flight package specifier: ${specifier}`,
+    );
+  }
   const inventory = inventoryByName.get(packageName);
-  if (!inventory) throw new Error(`Unknown Flight package in public import: ${packageName}`);
+  if (!inventory) {
+    throw createCompilerInventoryFailure(
+      'unknown-package',
+      packageName,
+      `Unknown Flight package in public import: ${packageName}`,
+    );
+  }
   const entry = match.groups?.subpath ? `.${match.groups.subpath}` : '.';
   const lane = inventory.exportLanes.find((candidate) => candidate.entry === entry);
-  if (!lane) throw new Error(`Package import uses an unaccounted export lane: ${specifier}`);
+  if (!lane) {
+    throw createCompilerInventoryFailure(
+      'missing-package-export',
+      specifier,
+      `Package import uses an unaccounted export lane: ${specifier}`,
+    );
+  }
   return lane;
 }
 
@@ -232,7 +276,9 @@ function applyRuntimeExportDecision(
   decisions: ReadonlyMap<string, RuntimeExportDecision>,
 ): ExportRecord {
   if (!decision) {
-    throw new Error(
+    throw createCompilerInventoryFailure(
+      'runtime-export-classification',
+      `${specifier}#${record.name}`,
       `Cannot classify runtime export ${record.name} from ${record.source} in ${specifier}; TypeScript reported: ${[
         ...decisions.keys(),
       ].join(', ')}`,
@@ -428,7 +474,20 @@ function portablePath(value: string): string {
 }
 
 function readJson(file: string): Record<string, unknown> {
-  return JSON.parse(readFileSync(file, 'utf8')) as Record<string, unknown>;
+  try {
+    const value = JSON.parse(readFileSync(file, 'utf8')) as unknown;
+    if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+      throw new TypeError('expected a JSON object');
+    }
+    return value as Record<string, unknown>;
+  } catch (error) {
+    throw createCompilerInventoryFailure(
+      'invalid-package-manifest',
+      portablePath(file),
+      `Package manifest is not valid JSON: ${portablePath(file)}`,
+      error,
+    );
+  }
 }
 
 function readPackageExportDescriptors(
@@ -438,25 +497,45 @@ function readPackageExportDescriptors(
   const packageJson = readJson(path.join(descriptor.directory, 'package.json'));
   const manifestExports = packageJson.exports;
   if (!manifestExports || typeof manifestExports !== 'object' || Array.isArray(manifestExports)) {
-    throw new Error(`Package manifest has no export map: ${descriptor.name}`);
+    throw createCompilerInventoryFailure(
+      'invalid-package-export',
+      descriptor.name,
+      `Package manifest has no export map: ${descriptor.name}`,
+    );
   }
   const descriptors = Object.entries(manifestExports).map(([entry, rawConditions]): PackageExportDescriptor => {
     if (entry !== '.' && !/^\.\/[A-Za-z0-9][A-Za-z0-9._/-]*$/u.test(entry)) {
-      throw new Error(`Unsupported package export lane '${entry}' in ${descriptor.name}`);
+      throw createCompilerInventoryFailure(
+        'invalid-package-export',
+        `${descriptor.name}${entry.slice(1)}`,
+        `Unsupported package export lane '${entry}' in ${descriptor.name}`,
+      );
     }
     if (!rawConditions || typeof rawConditions !== 'object' || Array.isArray(rawConditions)) {
-      throw new Error(`Package export lane ${descriptor.name}${entry.slice(1)} has no condition map`);
+      const subject = `${descriptor.name}${entry.slice(1)}`;
+      throw createCompilerInventoryFailure(
+        'invalid-package-export',
+        subject,
+        `Package export lane ${subject} has no condition map`,
+      );
     }
     const conditionsRecord = rawConditions as Record<string, unknown>;
     const typesTarget = conditionsRecord.types;
     const defaultTarget = conditionsRecord.default;
     if (typeof typesTarget !== 'string' || typeof defaultTarget !== 'string') {
-      throw new Error(`Package export lane ${descriptor.name}${entry.slice(1)} needs types and default targets`);
+      const subject = `${descriptor.name}${entry.slice(1)}`;
+      throw createCompilerInventoryFailure(
+        'invalid-package-export',
+        subject,
+        `Package export lane ${subject} needs types and default targets`,
+      );
     }
     const conditions = Object.entries(conditionsRecord)
       .map(([condition, target]): PackageExportCondition => {
         if (typeof target !== 'string') {
-          throw new Error(
+          throw createCompilerInventoryFailure(
+            'invalid-package-export',
+            `${descriptor.name}${entry.slice(1)}[${condition}]`,
             `Package export condition ${descriptor.name}${entry.slice(1)} [${condition}] is not a string target`,
           );
         }
@@ -475,7 +554,11 @@ function readPackageExportDescriptors(
     };
   });
   if (!descriptors.some((entry) => entry.entry === '.')) {
-    throw new Error(`Package manifest has no root export lane: ${descriptor.name}`);
+    throw createCompilerInventoryFailure(
+      'missing-package-export',
+      descriptor.name,
+      `Package manifest has no root export lane: ${descriptor.name}`,
+    );
   }
   return descriptors.sort((left, right) => left.entry.localeCompare(right.entry));
 }
@@ -487,7 +570,13 @@ function readSdkExposures(
   exportDescriptors: ReadonlyMap<string, PackageExportDescriptor[]>,
   packageScope: string,
 ): Map<string, SdkExposure[]> {
-  if (!sdk) throw new Error('Expected SDK package while deriving SDK exposure');
+  if (!sdk) {
+    throw createCompilerInventoryFailure(
+      'missing-sdk-package',
+      packageScope,
+      'Expected SDK package while deriving SDK exposure',
+    );
+  }
   const exposures = new Map<string, SdkExposure[]>();
   for (const sdkLane of exportDescriptors.get(sdk.name) ?? []) {
     const parsed = parseSource(resolvePackageExportSource(sdkLane, context.upstreamDirectory), context);
@@ -495,11 +584,21 @@ function readSdkExposures(
       if (!declaration.moduleSpecifier || !ts.isStringLiteral(declaration.moduleSpecifier)) continue;
       const target = declaration.moduleSpecifier.text;
       if (!target.startsWith(`${packageScope}/`)) {
-        throw new Error(`SDK export lane ${sdkLane.specifier} has unsupported external target: ${target}`);
+        throw createCompilerInventoryFailure(
+          'unsupported-package-specifier',
+          target,
+          `SDK export lane ${sdkLane.specifier} has unsupported external target: ${target}`,
+        );
       }
       resolvePackageExportLane(inventoryByName, target, packageScope);
       const targetPackage = new RegExp(`^(${escapeRegularExpression(packageScope)}/[^/]+)`, 'u').exec(target)?.[1];
-      if (!targetPackage) throw new Error(`Cannot identify SDK target package: ${target}`);
+      if (!targetPackage) {
+        throw createCompilerInventoryFailure(
+          'unsupported-package-specifier',
+          target,
+          `Cannot identify SDK target package: ${target}`,
+        );
+      }
       const packageExposures = exposures.get(targetPackage) ?? [];
       packageExposures.push({ sdkLane: sdkLane.specifier, target });
       exposures.set(targetPackage, packageExposures);
@@ -519,8 +618,13 @@ function readSdkExposures(
 
 function relativeSource(file: string, upstreamDirectory: string): string {
   const relative = path.relative(upstreamDirectory, path.resolve(file));
-  if (relative === '' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
-    throw new Error(`Source is outside upstream checkout: ${portablePath(file)}`);
+  if (relative === '' || relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+    const subject = portablePath(file);
+    throw createCompilerInventoryFailure(
+      'invalid-source-path',
+      subject,
+      `Source is outside upstream checkout: ${subject}`,
+    );
   }
   return portablePath(relative);
 }
@@ -562,7 +666,8 @@ function resolveExports(file: string, context: AnalysisContext): ResolvedExportS
       return context.resolvedExports.get(root)!;
     }
   }
-  throw new Error(`Export graph did not converge for ${relativeSource(root, context.upstreamDirectory)}`);
+  const subject = relativeSource(root, context.upstreamDirectory);
+  throw createCompilerInventoryFailure('unresolved-export', subject, `Export graph did not converge for ${subject}`);
 }
 
 function collectExportGraph(root: string, context: AnalysisContext): Set<string> {
@@ -718,9 +823,19 @@ function assertSingleExportCandidate(
 ): void {
   if (candidates?.size === 1) return;
   const source = relativeSource(file, context.upstreamDirectory);
-  if (!candidates || candidates.size === 0) throw new Error(`Unresolved public export ${exportedName} in ${source}`);
+  if (!candidates || candidates.size === 0) {
+    throw createCompilerInventoryFailure(
+      'unresolved-export',
+      `${source}#${exportedName}`,
+      `Unresolved public export ${exportedName} in ${source}`,
+    );
+  }
   const candidatesList = [...new Set([...candidates.values()].map((record) => record.source))].sort().join(', ');
-  throw new Error(`Ambiguous public export ${exportedName} in ${source}: ${candidatesList}`);
+  throw createCompilerInventoryFailure(
+    'ambiguous-export',
+    `${source}#${exportedName}`,
+    `Ambiguous public export ${exportedName} in ${source}: ${candidatesList}`,
+  );
 }
 
 function resolveModule(containingFile: string, specifier: string, context: AnalysisContext): string {
@@ -730,21 +845,41 @@ function resolveModule(containingFile: string, specifier: string, context: Analy
     candidate = path.resolve(path.dirname(containingFile), withoutJs);
   } else {
     const match = /^(@[^/]+\/[^/]+)(?:\/(.+))?$/u.exec(specifier);
-    if (!match?.[1]) throw new Error(`Unsupported export module '${specifier}' in ${portablePath(containingFile)}`);
+    if (!match?.[1]) {
+      throw createCompilerInventoryFailure(
+        'unsupported-package-specifier',
+        specifier,
+        `Unsupported export module '${specifier}' in ${portablePath(containingFile)}`,
+      );
+    }
     const descriptor = context.packageByName.get(match[1]);
-    if (!descriptor) throw new Error(`Unknown Flight package '${match[1]}' in ${portablePath(containingFile)}`);
+    if (!descriptor) {
+      throw createCompilerInventoryFailure(
+        'unknown-package',
+        match[1],
+        `Unknown Flight package '${match[1]}' in ${portablePath(containingFile)}`,
+      );
+    }
     const exportDescriptor = context.exportDescriptors
       .get(descriptor.name)
       ?.find((entry) => entry.specifier === specifier);
     if (!exportDescriptor) {
-      throw new Error(`Package import uses an unaccounted export lane: ${specifier}`);
+      throw createCompilerInventoryFailure(
+        'missing-package-export',
+        specifier,
+        `Package import uses an unaccounted export lane: ${specifier}`,
+      );
     }
     return resolvePackageExportSource(exportDescriptor, context.upstreamDirectory);
   }
   for (const resolved of [candidate, `${candidate}.ts`, `${candidate}.tsx`, path.join(candidate, 'index.ts')]) {
     if (existsSync(resolved) && statSync(resolved).isFile()) return resolved;
   }
-  throw new Error(`Cannot resolve export '${specifier}' from ${portablePath(containingFile)}`);
+  throw createCompilerInventoryFailure(
+    'unresolved-source',
+    `${portablePath(containingFile)}#${specifier}`,
+    `Cannot resolve export '${specifier}' from ${portablePath(containingFile)}`,
+  );
 }
 
 function runtimeBindingRecord(
@@ -758,8 +893,13 @@ function runtimeBindingRecord(
   }
   const node: ts.Node = declaration;
   const kind = declarationKind(node);
-  if (!kind)
-    throw new Error(`Unsupported runtime binding for ${name} in ${portablePath(declaration.getSourceFile().fileName)}`);
+  if (!kind) {
+    throw createCompilerInventoryFailure(
+      'runtime-export-classification',
+      name,
+      `Unsupported runtime binding for ${name} in ${portablePath(declaration.getSourceFile().fileName)}`,
+    );
+  }
   const record = makeRecord(name, kind, node, declaration.getSourceFile(), context);
   return { fingerprint: record.fingerprint, kind: record.kind, source: record.source };
 }
@@ -784,7 +924,9 @@ function sourceForExportTarget(
   const match = /^\.\/dist\/(?<stem>.+?)\.(?:d\.[cm]?ts|[cm]?js)$/u.exec(target);
   const stem = match?.groups?.stem;
   if (!stem || stem.split('/').some((segment) => segment === '.' || segment === '..' || segment === '')) {
-    throw new Error(
+    throw createCompilerInventoryFailure(
+      'invalid-package-export',
+      `${descriptor.name}${entry.slice(1)}[${condition}]`,
       `Package export condition ${descriptor.name}${entry.slice(1)} [${condition}] has an unaccounted target: ${target}`,
     );
   }
@@ -792,7 +934,9 @@ function sourceForExportTarget(
   for (const source of [`${sourceBase}.ts`, `${sourceBase}.tsx`]) {
     if (existsSync(source) && statSync(source).isFile()) return source;
   }
-  throw new Error(
+  throw createCompilerInventoryFailure(
+    'unresolved-source',
+    `${descriptor.name}${entry.slice(1)}[${condition}]`,
     `Package export condition ${descriptor.name}${entry.slice(1)} [${condition}] has no source barrel for ${target}`,
   );
 }
