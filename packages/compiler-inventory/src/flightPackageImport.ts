@@ -1,13 +1,17 @@
-import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import path from 'node:path';
 
 import ts from 'typescript';
 
-import type { AnalyzeFlightPackageImportsOptions, PackageImportRecord } from '../../compiler-types/src/index.js';
+import type {
+  AnalyzeFlightPackageImportsOptions,
+  PackageImportRecord,
+  WorkspaceSource,
+} from '../../compiler-types/src/index.js';
 import { createCompilerInventoryFailure } from './compilerInventoryFailure.js';
 
 export function analyzeFlightPackageImports(
   options: Readonly<AnalyzeFlightPackageImportsOptions>,
+  workspace: WorkspaceSource,
 ): readonly PackageImportRecord[] {
   const upstreamDirectory = path.resolve(options.upstreamDirectory);
   const packageDirectory = path.resolve(upstreamDirectory, options.manifest.directory);
@@ -26,10 +30,10 @@ export function analyzeFlightPackageImports(
   }
 
   const records = new Map<string, PackageImportRecord>();
-  for (const file of walkProductionTypeScriptFiles(path.join(packageDirectory, 'src'))) {
+  for (const file of walkProductionTypeScriptFiles(path.join(packageDirectory, 'src'), workspace)) {
     const source = ts.createSourceFile(
       file,
-      readFileSync(file, 'utf8').replace(/^\uFEFF/u, ''),
+      workspace.readTextFile(file).replace(/^\uFEFF/u, ''),
       ts.ScriptTarget.Latest,
       true,
       file.endsWith('.tsx') ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
@@ -95,14 +99,14 @@ function compareText(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0;
 }
 
-function walkProductionTypeScriptFiles(directory: string): string[] {
-  if (!existsSync(directory)) return [];
+function walkProductionTypeScriptFiles(directory: string, workspace: WorkspaceSource): string[] {
+  if (!workspace.isDirectory(directory)) return [];
   const files: string[] = [];
-  for (const entry of readdirSync(directory, { withFileTypes: true })) {
+  for (const entry of workspace.listDirectory(directory)) {
     const target = path.join(directory, entry.name);
-    if (entry.isDirectory()) files.push(...walkProductionTypeScriptFiles(target));
+    if (entry.isDirectory) files.push(...walkProductionTypeScriptFiles(target, workspace));
     else if (
-      entry.isFile() &&
+      !entry.isDirectory &&
       /\.tsx?$/u.test(entry.name) &&
       !/\.(?:test|spec)\.tsx?$/u.test(entry.name) &&
       !entry.name.endsWith('.d.ts')

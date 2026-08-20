@@ -5,6 +5,7 @@ import path from 'node:path';
 import type { FlightPackageManifest } from '../../compiler-types/src/index.js';
 import { isCompilerInventoryFailure } from './compilerInventoryFailure.js';
 import { analyzeFlightPackageImports } from './flightPackageImport.js';
+import { createHostWorkspaceSource } from './hostWorkspaceSource.js';
 
 describe('analyzeFlightPackageImports', () => {
   it('collects deterministic production import, re-export, import-equals, and dynamic-import facts', () => {
@@ -20,7 +21,10 @@ describe('analyzeFlightPackageImports', () => {
       write(upstream, 'packages/math/src/ignored.test.ts', "import '@tauri-apps/api';\n");
       write(upstream, 'packages/math/src/ignored.d.ts', "import '@capacitor/core';\n");
 
-      const records = analyzeFlightPackageImports({ manifest: createManifest(), upstreamDirectory: upstream });
+      const records = analyzeFlightPackageImports(
+        { manifest: createManifest(), upstreamDirectory: upstream },
+        createHostWorkspaceSource(),
+      );
 
       expect(records).toEqual([
         {
@@ -88,7 +92,9 @@ describe('analyzeFlightPackageImports', () => {
     const manifest = createManifest();
     const before = structuredClone(manifest);
     try {
-      expect(analyzeFlightPackageImports({ manifest, upstreamDirectory: upstream })).toEqual([]);
+      expect(
+        analyzeFlightPackageImports({ manifest, upstreamDirectory: upstream }, createHostWorkspaceSource()),
+      ).toEqual([]);
       expect(manifest).toEqual(before);
     } finally {
       rmSync(upstream, { force: true, recursive: true });
@@ -107,7 +113,10 @@ describe('analyzeFlightPackageImports', () => {
       for (const testCase of cases) {
         let failure: unknown;
         try {
-          analyzeFlightPackageImports({ manifest: testCase.manifest, upstreamDirectory: upstream });
+          analyzeFlightPackageImports(
+            { manifest: testCase.manifest, upstreamDirectory: upstream },
+            createHostWorkspaceSource(),
+          );
         } catch (error) {
           failure = error;
         }

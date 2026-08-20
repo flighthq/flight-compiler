@@ -1,7 +1,10 @@
-import { existsSync, readFileSync, statSync } from 'node:fs';
 import path from 'node:path';
 
-import type { PackageExportCondition, PackageExportDescriptor } from '../../compiler-types/src/index.js';
+import type {
+  PackageExportCondition,
+  PackageExportDescriptor,
+  WorkspaceSource,
+} from '../../compiler-types/src/index.js';
 import { createCompilerInventoryFailure } from './compilerInventoryFailure.js';
 
 interface FlightPackageExportManifestIdentity {
@@ -11,10 +14,11 @@ interface FlightPackageExportManifestIdentity {
 
 export function readPackageExportManifest(
   packageDirectory: string,
+  workspace: WorkspaceSource,
   upstreamDirectory = path.dirname(path.resolve(packageDirectory)),
 ): PackageExportDescriptor[] {
   const directory = path.resolve(packageDirectory);
-  const packageJson = readJson(path.join(directory, 'package.json'));
+  const packageJson = readJson(path.join(directory, 'package.json'), workspace);
   if (typeof packageJson.name !== 'string' || typeof packageJson.version !== 'string') {
     const subject = portablePath(directory);
     throw createCompilerInventoryFailure('invalid-package-manifest', subject, `Invalid package metadata: ${subject}`);
@@ -23,6 +27,7 @@ export function readPackageExportManifest(
     { directory, name: packageJson.name },
     path.resolve(upstreamDirectory),
     packageJson,
+    workspace,
   );
 }
 
@@ -34,9 +39,9 @@ function portablePath(value: string): string {
   return value.split(path.sep).join('/');
 }
 
-function readJson(file: string): Record<string, unknown> {
+function readJson(file: string, workspace: WorkspaceSource): Record<string, unknown> {
   try {
-    const value = JSON.parse(readFileSync(file, 'utf8')) as unknown;
+    const value = JSON.parse(workspace.readTextFile(file)) as unknown;
     if (value === null || typeof value !== 'object' || Array.isArray(value)) {
       throw new TypeError('expected a JSON object');
     }
@@ -55,6 +60,7 @@ function readPackageExportDescriptors(
   descriptor: Readonly<FlightPackageExportManifestIdentity>,
   upstreamDirectory: string,
   packageJson: Readonly<Record<string, unknown>>,
+  workspace: WorkspaceSource,
 ): PackageExportDescriptor[] {
   const manifestExports = packageJson.exports;
   if (!manifestExports || typeof manifestExports !== 'object' || Array.isArray(manifestExports)) {
@@ -102,7 +108,10 @@ function readPackageExportDescriptors(
         }
         return {
           condition,
-          source: relativeSource(sourceForExportTarget(descriptor, entry, condition, target), upstreamDirectory),
+          source: relativeSource(
+            sourceForExportTarget(descriptor, entry, condition, target, workspace),
+            upstreamDirectory,
+          ),
           target,
         };
       })
@@ -110,7 +119,10 @@ function readPackageExportDescriptors(
     return {
       conditions,
       entry,
-      source: relativeSource(sourceForExportTarget(descriptor, entry, 'types', typesTarget), upstreamDirectory),
+      source: relativeSource(
+        sourceForExportTarget(descriptor, entry, 'types', typesTarget, workspace),
+        upstreamDirectory,
+      ),
       specifier: entry === '.' ? descriptor.name : `${descriptor.name}${entry.slice(1)}`,
     };
   });
@@ -142,6 +154,7 @@ function sourceForExportTarget(
   entry: string,
   condition: string,
   target: string,
+  workspace: WorkspaceSource,
 ): string {
   const match = /^\.\/dist\/(?<stem>.+?)\.(?:d\.[cm]?ts|[cm]?js)$/u.exec(target);
   const stem = match?.groups?.stem;
@@ -153,8 +166,8 @@ function sourceForExportTarget(
     );
   }
   const sourceBase = path.join(descriptor.directory, 'src', ...stem.split('/'));
-  for (const source of [`${sourceBase}.ts`, `${sourceBase}.tsx`]) {
-    if (existsSync(source) && statSync(source).isFile()) return source;
+  for (const candidate of [`${sourceBase}.ts`, `${sourceBase}.tsx`]) {
+    if (workspace.isFile(candidate)) return candidate;
   }
   throw createCompilerInventoryFailure(
     'unresolved-source',

@@ -76,7 +76,10 @@ export function analyzeFlightWorkspace(options: Readonly<AnalyzeFlightWorkspaceO
   );
   const project = createTypeScriptProject(path.resolve(upstreamDirectory, options.tsconfigPath ?? 'tsconfig.json'));
   const exportDescriptors = new Map(
-    packages.map((descriptor) => [descriptor.name, readPackageExportManifest(descriptor.directory, upstreamDirectory)]),
+    packages.map((descriptor) => [
+      descriptor.name,
+      readPackageExportManifest(descriptor.directory, workspaceSource, upstreamDirectory),
+    ]),
   );
   const context: AnalysisContext = {
     exportDescriptors,
@@ -92,7 +95,7 @@ export function analyzeFlightWorkspace(options: Readonly<AnalyzeFlightWorkspaceO
     const sourceFiles = walkFiles(sourceDirectory, isSourceFile);
     const testFiles = walkFiles(sourceDirectory, isTestFile);
     const packageManifest = packageManifestByName.get(descriptor.name)!;
-    const imports = analyzeFlightPackageImports({ manifest: packageManifest, upstreamDirectory });
+    const imports = analyzeFlightPackageImports({ manifest: packageManifest, upstreamDirectory }, workspaceSource);
     const exportLanes = (exportDescriptors.get(descriptor.name) ?? []).map((entry): PackageExportLane => {
       const sourcePath = resolvePackageExportSource(entry, upstreamDirectory);
       const resolved = resolveExports(sourcePath, context);
