@@ -42,12 +42,12 @@ interface PackageRule {
 
 const packageRules: Readonly<Record<string, PackageRule>> = {
   'compiler-backend-hx': {
-    dependencies: ['compiler-emission', 'compiler-types'],
+    dependencies: ['compiler-emission', 'compiler-lowering', 'compiler-types'],
     description: 'Haxe lowering, naming, and source emission backend',
     devDependencies: ['compiler-semantic'],
   },
   'compiler-backend-rs': {
-    dependencies: ['compiler-emission', 'compiler-types'],
+    dependencies: ['compiler-emission', 'compiler-lowering', 'compiler-types'],
     description: 'Rust lowering, naming, and source emission backend',
     devDependencies: ['compiler-semantic'],
   },

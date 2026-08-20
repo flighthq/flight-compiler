@@ -25,6 +25,34 @@ describe('createRustCompilerBackend', () => {
 });
 
 describe('emitIrModuleRust', () => {
+  it('elects C-style for lowering while preserving Rust default-parameter refusal', () => {
+    const loop = lower(
+      'loop.ts',
+      'export function total(limit: number): number { let total = 0; for (let index = 0; index < limit; index++) { total += index; } return total; }',
+    );
+    const defaults = lower(
+      'defaults.ts',
+      'export function scale(value: number, factor: number = 2): number { return value * factor; }',
+    );
+    const output = emitIrModuleRust(loop.module).contents;
+
+    expect(output).toContain('let mut index: f64 = 0.0;');
+    expect(output).toContain('while (index < limit)');
+    expect(output).toContain('index += 1.0;');
+    expect(() => emitIrModuleRust(defaults.module)).toThrow('default parameter factor requires call-site lowering');
+  });
+
+  it('reports pass-named failures from the elected lowering plan', () => {
+    const result = lower(
+      'unsafe-loop.ts',
+      'export function loop(): void { for (let index = 0; index < 1; index++) { try { continue; } finally { index; } } }',
+    );
+
+    expect(() => emitIrModuleRust(result.module)).toThrow(
+      'Compiler lowering pass c-style-for failed for @flighthq/math/packages/math/src/unsafe-loop.ts: continue across a finally block requires completion-record lowering',
+    );
+  });
+
   it('emits numeric enums and rejects string enum representation', () => {
     const numeric = lower('mode.ts', 'export enum Mode { A = 1, B, C = Mode.A << 3, D }');
     const strings = lower('kind.ts', "export enum Kind { A = 'a', B = 'b' }");

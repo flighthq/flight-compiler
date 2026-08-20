@@ -26,6 +26,34 @@ describe('createHaxeCompilerBackend', () => {
 });
 
 describe('emitIrModuleHaxe', () => {
+  it('elects C-style for lowering without lowering native Haxe default parameters', () => {
+    const loop = lower(
+      'loop.ts',
+      'export function total(limit: number): number { let total = 0; for (let index = 0; index < limit; index++) { total += index; } return total; }',
+    );
+    const defaults = lower(
+      'defaults.ts',
+      'export function scale(value: number, factor: number = 2): number { return value * factor; }',
+    );
+    const output = emitIrModuleHaxe(loop.module).contents;
+
+    expect(output).toContain('var index:Float = 0;');
+    expect(output).toContain('while ((index < limit))');
+    expect(output).toContain('index += 1;');
+    expect(emitIrModuleHaxe(defaults.module).contents).toContain('factor:Float = 2');
+  });
+
+  it('reports pass-named failures from the elected lowering plan', () => {
+    const result = lower(
+      'unsafe-loop.ts',
+      'export function loop(): void { for (let index = 0; index < 1; index++) { try { continue; } finally { index; } } }',
+    );
+
+    expect(() => emitIrModuleHaxe(result.module)).toThrow(
+      'Compiler lowering pass c-style-for failed for @flighthq/math/packages/math/src/unsafe-loop.ts: continue across a finally block requires completion-record lowering',
+    );
+  });
+
   it('emits numeric and string enums from neutral representation', () => {
     const numeric = lower('mode.ts', 'export enum Mode { A = 1, B, C = Mode.A << 3, D }');
     const strings = lower('kind.ts', "export enum Kind { A = 'a', B = 'b' }");

@@ -6,6 +6,10 @@ import {
   indentSourceLines,
   isCompilerTargetNameAllocationFailure,
 } from '../../compiler-emission/src/index.js';
+import {
+  createCompilerLoweringPassCStyleFor,
+  lowerIrModuleWithCompilerPasses,
+} from '../../compiler-lowering/src/index.js';
 import type { CompilerBackend, EmittedFile, RustCompilerBackendOptions } from '../../compiler-types/src/index.js';
 import type {
   IrAssignmentOperator,
@@ -60,9 +64,10 @@ export function createRustCompilerBackend(): CompilerBackend<RustCompilerBackend
 }
 
 export function emitIrModuleRust(
-  module: Readonly<IrModule>,
+  sourceModule: Readonly<IrModule>,
   options: Readonly<RustCompilerBackendOptions> = {},
 ): EmittedFile {
+  const module = lowerIrModuleWithCompilerPasses(sourceModule, [createCompilerLoweringPassCStyleFor()]);
   const constantIdentities = new Set(
     module.declarations.flatMap((declaration) =>
       declaration.kind === 'variable' && !declaration.mutable ? [declaration.binding.id] : [],

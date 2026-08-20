@@ -6,6 +6,10 @@ import {
   indentSourceLines,
   isCompilerTargetNameAllocationFailure,
 } from '../../compiler-emission/src/index.js';
+import {
+  createCompilerLoweringPassCStyleFor,
+  lowerIrModuleWithCompilerPasses,
+} from '../../compiler-lowering/src/index.js';
 import type { CompilerBackend, EmittedFile, HaxeCompilerBackendOptions } from '../../compiler-types/src/index.js';
 import type {
   IrAssignmentOperator,
@@ -55,9 +59,10 @@ export function createHaxeCompilerBackend(): CompilerBackend<HaxeCompilerBackend
 }
 
 export function emitIrModuleHaxe(
-  module: Readonly<IrModule>,
+  sourceModule: Readonly<IrModule>,
   options: Readonly<HaxeCompilerBackendOptions> = {},
 ): EmittedFile {
+  const module = lowerIrModuleWithCompilerPasses(sourceModule, [createCompilerLoweringPassCStyleFor()]);
   const packageName = convertPackageNameToHaxePackageName(module.packageName, options.rootPackage);
   let targetNames: Map<string, string>;
   try {

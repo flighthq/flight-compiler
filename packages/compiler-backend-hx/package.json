@@ -19,6 +19,7 @@
   },
   "dependencies": {
     "@flighthq/compiler-emission": "*",
+    "@flighthq/compiler-lowering": "*",
     "@flighthq/compiler-types": "*"
   },
   "devDependencies": {

@@ -12,12 +12,13 @@ compiler-types        compiler-provenance
 compiler-types
   <- compiler-patch
   <- compiler-emission
+  <- compiler-lowering
 
 compiler-types + compiler-provenance
   <- compiler-inventory
   <- compiler-semantic
 
-compiler-types + compiler-emission
+compiler-types + compiler-emission + compiler-lowering
   <- compiler-backend-hx
   <- compiler-backend-rs
 
@@ -150,6 +151,7 @@ Each workspace passes its own strict typecheck and Vitest target. The package bo
 | `compiler-provenance` | Keep independent as one narrow identity primitive. | Equivalence, counterexample, empty, Unicode, path, line-ending, raw-text, and TypeScript-version behavior are locked. |
 | `compiler-patch` | Keep independent because patch identity and auditing are a separate lifecycle. | All operations and failure codes, deterministic ordering, backend skipping, and caller-input immutability are exercised. |
 | `compiler-emission` | Keep independent as the portable emitted-file and backend-failure seam. | Path/content normalization, host-path rejection, portable path and target-name collision identity, fixed-versus-renamable lexical allocation, indentation boundaries, and tagged failure guards are exercised. |
+| `compiler-lowering` | Keep independent as the backend-elected library of neutral IR-to-IR transforms. | Pass ordering, verification, idempotence, immutability, stable pass-named failures, initializer scope, omitted conditions, discarded numeric updates, and continue-correct nested-loop behavior are direct-tested with zero unreached arms. |
 | `compiler-inventory` | Keep independent as the first read-only composition above identity. | Package discovery yields validated, portable, deterministically ordered manifest, dependency, bin, production-import, host-module, evidence-backed tooling-exclusion, and checker-resolved production host-endpoint facts; every manifest, project, Git, export-graph, source-resolution, runtime-classification, SDK, endpoint-receiver, and exclusion failure is tagged for message-independent handling. Host receiver classification enters through an explicit neutral capability; target runtime implementation coverage remains downstream. |
 | `compiler-semantic` | Keep together for now; it owns TypeScript-to-neutral lowering and analysis over that neutral model. | Deterministic TypeScript-backed value bindings, declared-versus-flow operator domains, normalized indexed receiver sets, and a versioned immutable static-fact audit cover truthiness, numeric relations and arithmetic, indexed access, typed-array set calls, and mixed-width indexed writes across every IR container; most production Flight semantics remain unported. |
 | `compiler-backend-hx` | Keep together; naming was split into a focused sibling source, not a workspace. | Package/module identity, collision-free value/type binding allocation, keyword and case normalization, ambient-versus-bound references, and direct-versus-coercive operator decisions are direct-tested; production lowering and byte-stable parity remain open. |
@@ -157,7 +159,7 @@ Each workspace passes its own strict typecheck and Vitest target. The package bo
 | `compiler-orchestration` | Keep independent as deterministic pass composition. | Duplicate identities and paths, diagnostics, patch flow, normalization, ordering, and input immutability are exercised. |
 | `tool-compiler` | Keep as the only public workspace and dependency assembly boundary. | The facade and packed artifact are checked; its final downstream request/result contract is not frozen. |
 
-The current isolation review did not create another workspace. A large file alone is not a package domain. Split another flat sibling source when it owns a stable concept with a direct test; create another `compiler-*` workspace only when that concept also needs an independent dependency or lifecycle boundary. A later cross-target refusal review identified pure target-neutral IR-to-IR desugaring as the first credible `compiler-lowering` boundary. The next batch must prove that boundary with a concrete transform and lifecycle contract before creating it; target naming, ecosystem policy, and source emission remain backend concerns.
+The current isolation review created `compiler-lowering` only after cross-target refusals demonstrated an independent dependency and lifecycle boundary. A large file alone is still not a package domain. Split another flat sibling source when it owns a stable concept with a direct test; create another `compiler-*` workspace only when that concept also needs an independent dependency or lifecycle boundary. Target naming, ecosystem policy, and source emission remain backend concerns.
 
 ## Bedrock-first work order
 
@@ -193,11 +195,17 @@ The semantic-numeric batch completed three bounded iterations:
 2. Populate declared and flow domains from checker evidence, including explicitly typed unions narrowed at an operation site.
 3. Audit numeric arithmetic operations by operator and declared/flow domains so target backends can identify narrowed storage without target policy in the neutral IR.
 
-The next control-flow-lowering batch has three bounded iterations:
+The control-flow-lowering batch completed three bounded iterations:
 
-1. Define a pure, deterministic `compiler-lowering` IR-to-IR pass contract by implementing C-style `for` normalization with explicit unsupported-shape diagnostics and caller-input immutability.
-2. Preserve JavaScript `continue` behavior by inserting the increment only for continues that target the normalized loop, without rewriting continues owned by nested loops.
-3. Compose lowering explicitly before both target backends and lock initializer scope, omitted conditions, break/continue behavior, deterministic diagnostics, and cross-target golden output.
+1. Define pure `IrModule`-to-`IrModule` pass records with declared ordering, output verification, idempotence checks, caller-input immutability, and stable pass-named failures.
+2. Normalize C-style `for` statements while preserving initializer scope, omitted conditions, discarded numeric updates, and continue ownership across nested loops, switches, and `finally` boundaries.
+3. Have Haxe and Rust explicitly elect the pass, preserve target-specific default-parameter decisions, and lock direct and cross-target emitted output.
+
+The next runtime-contract batch has three bounded iterations:
+
+1. Define the versioned runtime capability and external-type binding vocabulary in `compiler-types`, including a deterministic completeness result that names every missing decision.
+2. Implement the target-neutral completeness check over reachable inventory identities in a narrow `compiler-runtime-contract` package, without owning target names or downstream runtime implementations.
+3. Add explicit Haxe and Rust binding tables that elect direct native mapping or a versioned runtime capability per external type, and refuse emission before source generation when the elected table is incomplete.
 
 ## Freeze rule
 

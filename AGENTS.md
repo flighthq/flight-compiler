@@ -34,6 +34,8 @@ Flight TypeScript checkout
        -> Rust ownership lowering + emitter + runtime contract
 ```
 
+Target-neutral IR-to-IR passes are a backend-elected library, not a mandatory stage before the target adapter. Each backend names the passes it needs so a target with native semantics can preserve idiomatic output while another target elects an explicit lowering for the same source feature.
+
 Core owns TypeScript program construction, package and export-lane resolution, symbol identity, runtime/type-only classification, normalized fingerprints, source provenance, neutral IR, semantic patch identity, and shared report schemas.
 
 This package also owns compiler orchestration, the backend contract, target-specific semantic and ownership lowering, language naming, emitted file layout, and concrete Haxe and Rust source emitters. Target-specific data belongs under its backend model and must not leak into the neutral IR.
@@ -52,6 +54,7 @@ The repository follows Flight's package-per-domain convention. Internal workspac
 - `packages/compiler-semantic/`: TypeScript semantic analysis and neutral lowering.
 - `packages/compiler-patch/`: fingerprinted semantic patch application and audits.
 - `packages/compiler-emission/`: target-neutral backend and output infrastructure.
+- `packages/compiler-lowering/`: backend-elected, target-neutral IR-to-IR passes and verification.
 - `packages/compiler-backend-hx/`: Haxe-specific lowering, naming, and source emission.
 - `packages/compiler-backend-rs/`: Rust-specific lowering, naming, and source emission.
 - `packages/compiler-orchestration/`: deterministic pipeline composition.
@@ -79,6 +82,7 @@ The dependency floor is deliberate:
 - `compiler-types` defines vocabulary and contracts without implementation dependencies.
 - `compiler-provenance` defines deterministic normalization and identity without depending on another compiler package.
 - `compiler-patch` and `compiler-emission` depend only on the contracts they operate over.
+- `compiler-lowering` provides verified neutral transforms over `compiler-types`; backends elect its passes.
 - inventory, semantic lowering, backends, and orchestration are compositions above that floor.
 
 Before expanding a higher package, read [the compiler foundations audit](agents/compiler-foundations.md). A foundation is mature only when its boundary is narrow, its vocabulary is worth freezing, deterministic behavior is tested by equivalence and counterexample, failure values are inspectable, and callers cannot observe accidental mutation or host-platform differences.

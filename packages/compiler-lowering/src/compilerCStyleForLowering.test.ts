@@ -44,7 +44,10 @@ describe('createCompilerLoweringPassCStyleFor', () => {
                 kind: 'block',
                 statements: [{ expression: { kind: 'assignment', operator: '+=' }, kind: 'expression' }],
               },
-              { expression: { kind: 'unary', operator: '++', postfix: true }, kind: 'expression' },
+              {
+                expression: { kind: 'assignment', operator: '+=', right: { kind: 'literal', value: 1 } },
+                kind: 'expression',
+              },
             ],
           },
           condition: { kind: 'binary', operator: '<' },
@@ -102,7 +105,7 @@ describe('createCompilerLoweringPassCStyleFor', () => {
     expect(directContinue.consequent).toMatchObject({
       kind: 'block',
       statements: [
-        { expression: { kind: 'unary', operand: { reference: { binding: { name: 'outer' } } } }, kind: 'expression' },
+        { expression: { kind: 'assignment', left: { reference: { binding: { name: 'outer' } } } }, kind: 'expression' },
         { kind: 'continue' },
       ],
     });
@@ -110,23 +113,23 @@ describe('createCompilerLoweringPassCStyleFor', () => {
     expect(getIf(innerSourceBody.statements[0]).consequent).toMatchObject({
       kind: 'block',
       statements: [
-        { expression: { kind: 'unary', operand: { reference: { binding: { name: 'inner' } } } }, kind: 'expression' },
+        { expression: { kind: 'assignment', left: { reference: { binding: { name: 'inner' } } } }, kind: 'expression' },
         { kind: 'continue' },
       ],
     });
     expect(switchStatement.cases[0]?.statements[0]).toMatchObject({
       kind: 'block',
       statements: [
-        { expression: { kind: 'unary', operand: { reference: { binding: { name: 'outer' } } } }, kind: 'expression' },
+        { expression: { kind: 'assignment', left: { reference: { binding: { name: 'outer' } } } }, kind: 'expression' },
         { kind: 'continue' },
       ],
     });
     expect(outerWhileBody.statements[1]).toMatchObject({
-      expression: { kind: 'unary', operand: { reference: { binding: { name: 'outer' } } } },
+      expression: { kind: 'assignment', left: { reference: { binding: { name: 'outer' } } } },
       kind: 'expression',
     });
     expect(getBlock(innerWhile.body).statements[1]).toMatchObject({
-      expression: { kind: 'unary', operand: { reference: { binding: { name: 'inner' } } } },
+      expression: { kind: 'assignment', left: { reference: { binding: { name: 'inner' } } } },
       kind: 'expression',
     });
   });
@@ -148,7 +151,8 @@ describe('createCompilerLoweringPassCStyleFor', () => {
             const record = ({ ...{ callback }, [values[0]]: callback } as object);
             const chosen = callback ? values[0] : values[1];
             do { uninitialized; } while (false);
-            for (uninitialized = 0; chosen; uninitialized) { break; }
+            for (uninitialized = 0; chosen; !uninitialized) { break; }
+            for (let remaining = 1; remaining > 0; --remaining) { break; }
             for (const value of values) { value; }
             for (const key in { callback }) { key; }
             if (chosen) callback(); else record;

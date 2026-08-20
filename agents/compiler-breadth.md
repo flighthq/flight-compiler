@@ -13,12 +13,12 @@ A missing cell is not "a concept we could name". It is a concept the repository 
 Counting every backend refusal in both emitters:
 
 ```text
-77  total refusals across compiler-backend-hx and compiler-backend-rs
-62  of them name a "lowering" that must happen somewhere
- 0  of those lowerings have a package
+77  original refusals across compiler-backend-hx and compiler-backend-rs
+62  of them named a "lowering" that had to happen somewhere
+ 1  verified backend-elected pass now owns the first shared control-flow transform
 ```
 
-The refusal text is the repository telling itself what is missing. `requires control-flow lowering before Haxe emission`, `requires the Haxe async-lowering pass`, `requires Option-aware Rust control-flow lowering`, `requires call-site lowering`, `requires structural-copy lowering` — each names a transformation, none of them exists, and there is nowhere for one to live. A backend refuses and points at a stage that was never built.
+The refusal text told the repository what was missing. `compiler-lowering` now owns the first shared transform, C-style `for` normalization, while async, option-aware control flow, call-site, and structural-copy lowering remain absent. A remaining backend refusal still points to a concrete pass or target decision that has not been built.
 
 ## Missing cell 1 — a lowering pass library the backends call
 
@@ -58,7 +58,7 @@ A third category sits alongside the passes and is worth separating explicitly: *
 
 It also supplies the precondition the foundations audit named for splitting target lowering from target emission: _"do not split target lowering from target emission until an explicit target model exists between them."_ A pass library with a declared IR-to-IR contract is where that model becomes explicit.
 
-**Recommended shape:** `compiler-lowering`, one pass per source file, backend-elected, composed by orchestration from each backend's declared selection. The first pass to move is control flow — it is the smallest, and both backends refuse it identically today.
+**Implemented shape:** `compiler-lowering`, one pass per source file, called explicitly from each backend's elected selection. The first pass is control flow because it is the smallest transform both targets need. Orchestration does not impose it before backend selection.
 
 ## Missing cell 2 — the target runtime contract
 
@@ -129,8 +129,8 @@ Per package, against the repository's own rule that a package has one irreducibl
 
 ## Recommended order
 
-1. **`compiler-lowering`**, starting with control-flow desugaring, and with the pass interface designed for backend election from the first pass rather than retrofitted. It unblocks the most refusals, is the same transformation for both targets, and supplies the target model the backend split is waiting on.
-2. **The runtime contract**, with its completeness check before its tables. Closes the largest silent-wrong-output surface in the repository: an unmapped external type currently reaches a `.hx` file verbatim, and the completeness check turns that into a named failure before emission begins — repaired by adding a binding rather than by changing an emitter. Each backend then elects direct native mapping or contract routing per type.
+1. **The runtime contract**, with its completeness check before its tables. Closes the largest silent-wrong-output surface in the repository: an unmapped external type currently reaches a `.hx` file verbatim, and the completeness check turns that into a named failure before emission begins — repaired by adding a binding rather than by changing an emitter. Each backend then elects direct native mapping or contract routing per type.
+2. **Add neutral lowering passes one demonstrated refusal family at a time.** The pass lifecycle is now proven by C-style control flow; it does not justify a mandatory pre-backend pipeline or speculative transforms.
 3. **Decide whether `compiler-inventory` splits.** The host-access inversion AGENTS.md requires is done — one edge module, every analysis function taking a `WorkspaceSource` — so the boundary is enforced by types rather than asserted, and the split is now a mechanical move rather than a design question. It may also prove unnecessary, which is the cheaper outcome. The inversion's justification was the stated rule and the seam, **not** speed: the temp-directory tests cost 45ms, while every slow test in the package is one that constructs a TypeScript program, which the inversion does not touch.
 4. **Reporting**, as orchestration's own domain rather than a new cell, until a downstream consumer forces the versioning question.
 5. **Serialization**, on its stated trigger.

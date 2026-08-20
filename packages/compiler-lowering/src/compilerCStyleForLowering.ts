@@ -306,7 +306,7 @@ function lowerIrStatementCStyleFor(
   analysis: CStyleForLoweringAnalysis,
 ): IrStatement {
   analysis.loweredStatements += 1;
-  const increment = statement.increment ? lowerIrExpression(statement.increment, analysis) : undefined;
+  const increment = statement.increment ? lowerIrDiscardedUpdateCStyleFor(statement.increment, analysis) : undefined;
   const initializer = statement.initializer;
   if (isIrVariableList(initializer) && initializer.length === 0) {
     throw createCompilerLoweringFailure(
@@ -340,6 +340,31 @@ function lowerIrStatementCStyleFor(
         kind: 'while',
       },
     ],
+  };
+}
+
+function lowerIrDiscardedUpdateCStyleFor(
+  expression: Readonly<IrExpression>,
+  analysis: CStyleForLoweringAnalysis,
+): IrExpression {
+  const lowered = lowerIrExpression(expression, analysis);
+  if (
+    lowered.kind !== 'unary' ||
+    (lowered.operator !== '++' && lowered.operator !== '--') ||
+    lowered.semantics.result !== 'number'
+  ) {
+    return lowered;
+  }
+  return {
+    kind: 'assignment',
+    left: lowered.operand,
+    operator: lowered.operator === '++' ? '+=' : '-=',
+    right: { kind: 'literal', value: 1 },
+    semantics: {
+      left: lowered.semantics.operand,
+      result: lowered.semantics.result,
+      right: { declared: 'number', flow: 'number' },
+    },
   };
 }
 
