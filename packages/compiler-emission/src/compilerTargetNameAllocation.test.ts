@@ -108,6 +108,26 @@ describe('createCompilerTargetNameAllocation', () => {
       input: [{ disposition: 'invalid' as never, identity: 'value', preferredName: 'value', scope: 'module' }],
       subject: 'value',
     },
+    {
+      code: 'invalid-target-name-candidate',
+      input: [{ disposition: 'invalid' as never, identity: 'candidate', preferredName: 'value', scope: 'module' }],
+      subject: 'candidate',
+    },
+    {
+      code: 'invalid-target-name-candidate',
+      input: [{ disposition: 'renamable' as const, identity: 'candidate', preferredName: '', scope: 'module' }],
+      subject: 'candidate',
+    },
+    {
+      code: 'invalid-target-name-candidate',
+      input: [{ disposition: 'renamable' as const, identity: 'candidate', preferredName: 'value', scope: '' }],
+      subject: 'candidate',
+    },
+    {
+      code: 'invalid-target-name-candidate',
+      input: [{ disposition: 'renamable' as const, identity: '', preferredName: '', scope: '' }],
+      subject: '<empty>',
+    },
   ])('fails invalid candidates with stable $code identity', ({ code, input, subject }) => {
     try {
       createCompilerTargetNameAllocation(input);
@@ -214,6 +234,72 @@ describe('createIrModuleTargetNameAllocation', () => {
     ).toEqual([
       { identity: 'local', name: 'value', scope: expect.stringContaining('function:') },
       { identity: 'module', name: 'value', scope: 'value\0module' },
+    ]);
+  });
+
+  it('collects bindings introduced in computed keys, spread members, and template parts', () => {
+    const binding = (id: string) => ({
+      column: 1,
+      fingerprint: id.repeat(64).slice(0, 64),
+      id,
+      kind: 'variable' as const,
+      line: 1,
+      name: 'value',
+      packageName: '@flighthq/math',
+      scope: 'local' as const,
+      space: 'value' as const,
+      source: 'value.ts',
+    });
+    const introducer = (id: string) => ({
+      async: false,
+      binding: binding(id),
+      body: [],
+      kind: 'function' as const,
+      parameters: [],
+      returns: { kind: 'primitive' as const, name: 'void' as const },
+      typeParameters: [],
+    });
+    const moduleBinding = { ...binding('module'), scope: 'module' as const };
+    const module = {
+      declarations: [
+        {
+          binding: moduleBinding,
+          exported: true,
+          initializer: {
+            kind: 'object' as const,
+            members: [
+              { key: introducer('computedKey'), kind: 'computedProperty' as const, value: introducer('computedValue') },
+              { expression: introducer('spreadExpression'), kind: 'spread' as const },
+              {
+                kind: 'property' as const,
+                name: 'plain',
+                value: { kind: 'template' as const, parts: ['prefix', introducer('templatePart')] },
+              },
+            ],
+          },
+          kind: 'variable' as const,
+          mutable: false,
+          origin: moduleBinding,
+        },
+      ],
+      exports: [],
+      imports: [],
+      name: 'Value',
+      packageName: '@flighthq/math',
+      source: 'value.ts',
+    };
+
+    expect(
+      createIrModuleTargetNameAllocation(module, (candidate) => ({
+        namespace: 'value',
+        preferredName: candidate.name,
+      })),
+    ).toEqual([
+      { identity: 'computedKey', name: 'value', scope: 'value\0function:computedKey' },
+      { identity: 'computedValue', name: 'value', scope: 'value\0function:computedValue' },
+      { identity: 'module', name: 'value', scope: 'value\0module' },
+      { identity: 'spreadExpression', name: 'value', scope: 'value\0function:spreadExpression' },
+      { identity: 'templatePart', name: 'value', scope: 'value\0function:templatePart' },
     ]);
   });
 });
