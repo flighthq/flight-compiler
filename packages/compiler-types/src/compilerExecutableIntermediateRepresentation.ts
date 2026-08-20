@@ -1,3 +1,4 @@
+import type { IrBindingIdentity, IrIdentifierReference } from './compilerBindingIntermediateRepresentation.js';
 import type {
   IrAssignmentOperator,
   IrBinaryOperator,
@@ -6,7 +7,8 @@ import type {
 } from './compilerOperatorIntermediateRepresentation.js';
 import type { IrFunctionTypeParameter, IrType, IrTypeParameter } from './compilerTypeIntermediateRepresentation.js';
 
-export type IrParameter = IrFunctionTypeParameter &
+export type IrParameter = Omit<IrFunctionTypeParameter, 'name'> &
+  Readonly<{ binding: IrBindingIdentity }> &
   (Readonly<{ initializer?: never; optional: false }> | Readonly<{ initializer?: IrExpression; optional: true }>);
 
 export type IrExpression =
@@ -27,14 +29,14 @@ export type IrExpression =
   | Readonly<{
       async: boolean;
       body: readonly IrStatement[];
+      binding?: IrBindingIdentity | undefined;
       expression?: IrExpression | undefined;
       kind: 'function';
-      name?: string | undefined;
       parameters: readonly IrParameter[];
       returns: IrType;
       typeParameters: readonly IrTypeParameter[];
     }>
-  | Readonly<{ kind: 'identifier'; name: string }>
+  | Readonly<{ kind: 'identifier'; reference: IrIdentifierReference }>
   | Readonly<{ kind: 'literal'; value: boolean | null | number | string }>
   | Readonly<{
       arguments: readonly IrExpression[];
@@ -56,10 +58,15 @@ export type IrObjectMember =
   | Readonly<{ expression: IrExpression; kind: 'spread' }>;
 
 export interface IrVariable {
+  readonly binding: IrBindingIdentity;
   readonly initializer?: IrExpression | undefined;
   readonly mutable: boolean;
-  readonly name: string;
   readonly type?: IrType | undefined;
+}
+
+export interface IrCatchClause {
+  readonly binding?: IrBindingIdentity | undefined;
+  readonly body: IrStatement;
 }
 
 export interface IrSwitchCase {
@@ -92,8 +99,7 @@ export type IrStatement =
   | Readonly<{ cases: readonly IrSwitchCase[]; expression: IrExpression; kind: 'switch' }>
   | Readonly<{ expression: IrExpression; kind: 'throw' }>
   | Readonly<{
-      catchBody?: IrStatement | undefined;
-      catchName?: string | undefined;
+      catchClause?: IrCatchClause | undefined;
       finallyBody?: IrStatement | undefined;
       kind: 'try';
       tryBody: IrStatement;

@@ -8,7 +8,7 @@ The downstream repositories continue to own their target ecosystems: maintained 
 
 ## Current position
 
-The repository foundation is established: functional package boundaries, centralized contracts, initial inventory and provenance, a neutral IR, deterministic patching and orchestration, and skeletal Haxe and Rust backends all exist. The build produces one self-contained public artifact from nine private `@flighthq/compiler-*` packages, and the health gates cover formatting, linting, strict type checking, matching source/test concepts and exported-function suites, isolated tests, aggregate coverage, package boundaries, clean builds, and tarball contents.
+The repository foundation is established: functional package boundaries, centralized contracts, initial inventory and provenance, a neutral IR with deterministic runtime binding identity, deterministic patching and orchestration, and skeletal Haxe and Rust backends all exist. The build produces one self-contained public artifact from nine private `@flighthq/compiler-*` packages, and the health gates cover formatting, linting, strict type checking, matching source/test concepts and exported-function suites, isolated tests, aggregate coverage, package boundaries, clean builds, and tarball contents.
 
 It is not yet a drop-in replacement for either downstream generator. The existing target repositories still contain most of the production semantic lowering, host analysis, reporting, and source-emission behavior. The estimates below are planning estimates as of 2026-08-18, not release claims:
 

@@ -58,7 +58,7 @@ The repository also enforces a structural floor for runtime packages: each non-b
 
 ### `compiler-types`
 
-Status: foundational. Source identity, declaration/type IR, and expression operator families have been reviewed; the complete IR is not mature.
+Status: foundational. Source identity, declaration/type IR, expression operator families, and expression/statement binding identity have been reviewed; the complete IR is not mature.
 
 Strengths:
 
@@ -79,16 +79,22 @@ Strengths:
 - Assignment, binary, prefix-unary, and postfix-unary operators have closed target-neutral vocabularies in a focused flat contract; postfix position cannot carry a prefix-only operator.
 - TypeScript token normalization and both target emission decisions are exhaustive over those vocabularies, so a TypeScript upgrade or IR addition fails typecheck until every producer and backend chooses emit or refuse.
 - A cross-target golden fixture pins supported compound assignment, strict equality normalization, logical composition, and unary emission; focused backend tests pin unsupported assignment, binary, keyword-unary, and postfix decisions.
+- Runtime declarations, imports, parameters, locals, loop variables, catch variables, and named function expressions introduce a shared source-backed binding identity; identifier expressions distinguish resolved bindings, ambient names, and `this` without encoding target names.
+- Binding IDs are deterministic from package, portable source path, and declaration offset. The lowering pass delegates lexical resolution to the pinned TypeScript checker, so nested blocks, parameters, closures, imports, classes, catch clauses, and control-flow scopes do not depend on backend name heuristics.
+- TypeScript symbol and flow analysis runs on an internal syntax tree, preserving the caller-owned parsed source instead of leaking checker mutation across compiler passes.
+- Local exports link to binding identity, semantic renames preserve that identity, and backends map the stable ID to the current declaration spelling. A rename therefore updates internal references without mutating source provenance.
+- Cross-target golden and focused backend tests distinguish a local named `undefined` from the ambient value, while the existing explicit ambient-nullability refusal remains locked.
 
 Open foundation work:
 
 - The neutral IR is an initial coverage-driven model, not yet a reviewed complete vocabulary.
 - Operator operand types and JavaScript coercion semantics are not represented yet; a closed token vocabulary prevents drift but does not make every syntactically supported target emission semantically sound.
-- Expression and statement binding identity/provenance has not been reviewed, so shadowing and target name-resolution requirements remain provisional.
+- Type references and structural member names remain textual; type-space symbol identity and target collision allocation should be reviewed as separate demonstrated needs rather than folded into runtime binding identity.
+- A source-backed identity prevents accidental capture but does not itself allocate collision-free target names. Each backend still needs an explicit naming pass before broader target emission can be called mature.
 - There is no versioned serialization/parser boundary for persisted IR; adding one prematurely would freeze the provisional model.
 - Contract tests prove representative composition but do not yet exhaust every discriminated family.
 
-Decision: do not declare the IR stable or publish a serialized IR format. Source, module, export, source-location, source-origin, emitted-file, and semantic-patch target identity, together with diagnostic and bedrock failure contracts, are now locked as readonly structural contracts. Declaration, type, and expression-operator families now have a reviewed structural floor. Continue with expression and statement binding provenance before widening target emission.
+Decision: do not declare the IR stable or publish a serialized IR format. Source, module, export, source-location, source-origin, binding, emitted-file, and semantic-patch target identity, together with diagnostic and bedrock failure contracts, are now locked as readonly structural contracts. Declaration, type, expression-operator, and runtime binding families now have a reviewed structural floor. Continue with type-directed operator semantics and type-space identity before widening target emission.
 
 ### `compiler-provenance`
 
@@ -132,14 +138,14 @@ Each workspace passes its own strict typecheck and Vitest target. The package bo
 
 | Package | Isolation conclusion | Current robustness boundary |
 | --- | --- | --- |
-| `compiler-types` | Keep independent as the dependency-free vocabulary floor. | Strict typecheck and focused composition tests cover useful relationships; identity, declaration/type separation and cardinality, closed operator vocabularies, source location, diagnostics/failures, and readonly collection boundaries are explicit, while expression/statement completeness remains open. |
+| `compiler-types` | Keep independent as the dependency-free vocabulary floor. | Strict typecheck and focused composition tests cover useful relationships; identity, declaration/type separation and cardinality, closed operator vocabularies, source location, runtime binding provenance, diagnostics/failures, and readonly collection boundaries are explicit, while complete type-space identity and expression/statement coverage remain open. |
 | `compiler-provenance` | Keep independent as one narrow identity primitive. | Equivalence, counterexample, empty, Unicode, path, line-ending, raw-text, and TypeScript-version behavior are locked. |
 | `compiler-patch` | Keep independent because patch identity and auditing are a separate lifecycle. | All operations and failure codes, deterministic ordering, backend skipping, and caller-input immutability are exercised. |
 | `compiler-emission` | Keep independent as the portable emitted-file and backend-failure seam. | Path/content normalization, host-path rejection, portable collision identity, indentation boundaries, and tagged failure guards are exercised. |
 | `compiler-inventory` | Keep independent as the first read-only composition above identity. | Export graphs, manifests, runtime bindings, config failures, portable paths, ordering, and Git identity are covered; host facts and exclusion parity are not. |
-| `compiler-semantic` | Keep together for now; it owns one TypeScript-to-neutral lowering pass. | Representative syntax and fail-loudly diagnostics exist, but most production Flight semantics remain unported. |
-| `compiler-backend-hx` | Keep together; naming was split into a focused sibling source, not a workspace. | Package/module identity boundaries are direct-tested, and unsupported `undefined` value semantics refuse explicitly; production lowering and byte-stable emission parity remain open. |
-| `compiler-backend-rs` | Keep together; naming and Rust keyword identity are focused sibling primitives. | Package/module identity, keyword handling, and representative emitter failures are covered; nullable executable parameters refuse until Option-aware control-flow lowering exists, while ownership and production parity remain open. |
+| `compiler-semantic` | Keep together for now; it owns one TypeScript-to-neutral lowering pass. | Deterministic TypeScript-backed binding resolution, representative syntax, and fail-loudly diagnostics exist, but most production Flight semantics remain unported. |
+| `compiler-backend-hx` | Keep together; naming was split into a focused sibling source, not a workspace. | Package/module and runtime binding identity boundaries are direct-tested; ambient `undefined` refuses while a same-spelled local emits, and production lowering plus byte-stable parity remain open. |
+| `compiler-backend-rs` | Keep together; naming and Rust keyword identity are focused sibling primitives. | Package/module identity, keyword handling, identity-based constant/local resolution, and representative failures are covered; nullable executable parameters refuse until Option-aware control-flow lowering exists, while ownership and production parity remain open. |
 | `compiler-orchestration` | Keep independent as deterministic pass composition. | Duplicate identities and paths, diagnostics, patch flow, normalization, ordering, and input immutability are exercised. |
 | `tool-compiler` | Keep as the only public workspace and dependency assembly boundary. | The facade and packed artifact are checked; its final downstream request/result contract is not frozen. |
 
@@ -152,7 +158,7 @@ No new workspace follows from this review. A large file alone is not a package d
 3. Finish semantic patch failure and audit contracts, then decide whether patches need a versioned untyped document format.
 4. Finish emission path/content invariants and backend failure contracts.
 5. Audit inventory as the first composition above bedrock: package discovery, export lanes, runtime bindings, host facts, exclusions, and deterministic reports.
-6. Audit semantic IR families one at a time. Declaration, type, and expression-operator families now have a reviewed floor; continue with expression/statement binding provenance and type-directed operator semantics.
+6. Audit semantic IR families one at a time. Declaration, type, expression-operator, and runtime binding families now have a reviewed floor; continue with type-directed operator semantics and type-space identity.
 7. Only then expand orchestration and target backends, using downstream parity as verification of the stable primitives rather than as their design source.
 
 ## Freeze rule

@@ -25,13 +25,19 @@ describe('compiler declaration intermediate representation contracts', () => {
     };
     const classDeclaration: IrClassDeclaration = {
       abstract: false,
+      binding: {
+        ...origin,
+        id: 'binding:["@flighthq/math","packages/math/src/value.ts",0]',
+        kind: 'class',
+        name: 'Container',
+        scope: 'module',
+      },
       classConstructor: { body: [], parameters: [] },
       exported: true,
       fields: [],
       implements: [],
       kind: 'class',
       methods: [],
-      name: 'Container',
       origin,
       typeParameters: [],
     };

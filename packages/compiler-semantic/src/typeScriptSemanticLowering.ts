@@ -5,7 +5,11 @@ import ts from 'typescript';
 import { fingerprintTypeScriptNode } from '../../compiler-provenance/src/index.js';
 import type {
   CompilerDiagnostic,
+  CompilerSourceOrigin,
   IrAssignmentOperator,
+  IrBindingIdentity,
+  IrBindingKind,
+  IrBindingScope,
   IrBinaryOperator,
   IrClassDeclaration,
   IrClassField,
@@ -19,6 +23,7 @@ import type {
   IrFunctionTypeParameter,
   IrImport,
   IrImportBinding,
+  IrIdentifierReference,
   IrInterfaceDeclaration,
   IrObjectMember,
   IrObjectTypeProperty,
@@ -35,12 +40,18 @@ import type {
   IrVariableDeclaration,
   TypeScriptLoweringResult,
   LowerTypeScriptSourceOptions,
-  CompilerSourceOrigin,
 } from '../../compiler-types/src/index.js';
 
 interface LoweringContext {
+  bindings: Map<ts.Symbol, IrBindingIdentity>;
+  checker: ts.TypeChecker;
   diagnostics: CompilerDiagnostic[];
   options: Readonly<LowerTypeScriptSourceOptions>;
+  sourceFile: ts.SourceFile;
+}
+
+interface TypeScriptAnalysis {
+  checker: ts.TypeChecker;
   sourceFile: ts.SourceFile;
 }
 
@@ -55,12 +66,19 @@ export function lowerTypeScriptSource(
   sourceFile: ts.SourceFile,
   options: Readonly<LowerTypeScriptSourceOptions>,
 ): TypeScriptLoweringResult {
-  const context: LoweringContext = { diagnostics: [], options, sourceFile };
+  const analysis = createTypeScriptAnalysis(sourceFile);
+  const context: LoweringContext = {
+    bindings: new Map(),
+    checker: analysis.checker,
+    diagnostics: [],
+    options,
+    sourceFile: analysis.sourceFile,
+  };
   const declarations: IrDeclaration[] = [];
   const exports: IrExport[] = [];
   const pendingOverloads = new Map<string, IrFunctionSignature[]>();
 
-  for (const statement of sourceFile.statements) {
+  for (const statement of context.sourceFile.statements) {
     if (ts.isImportDeclaration(statement)) {
       continue;
     }
@@ -84,7 +102,12 @@ export function lowerTypeScriptSource(
         }
         declarations.push(lowerFunction(statement, pendingOverloads.get(name) ?? [], context));
         if (hasModifier(statement, ts.SyntaxKind.DefaultKeyword)) {
-          exports.push({ exported: 'default', kind: 'local', local: name, typeOnly: false });
+          exports.push({
+            binding: lowerBindingIdentity(statement.name!, context),
+            exported: 'default',
+            kind: 'local',
+            typeOnly: false,
+          });
         }
         pendingOverloads.delete(name);
       } else if (ts.isVariableStatement(statement)) {
@@ -101,7 +124,7 @@ export function lowerTypeScriptSource(
           exports.push({
             exported: 'default',
             kind: 'local',
-            local: requiredDeclarationName(statement, context),
+            binding: lowerBindingIdentity(statement.name!, context),
             typeOnly: false,
           });
         }
@@ -119,7 +142,7 @@ export function lowerTypeScriptSource(
   for (const [name, overloads] of pendingOverloads) {
     context.diagnostics.push(
       diagnostic(
-        sourceFile,
+        context.sourceFile,
         `function overload ${name} has no implementation (${String(overloads.length)} signature(s))`,
         context,
       ),
@@ -131,8 +154,8 @@ export function lowerTypeScriptSource(
     module: {
       declarations,
       exports,
-      imports: lowerImports(sourceFile),
-      name: moduleNameFromSource(sourceFile.fileName),
+      imports: lowerImports(context.sourceFile, context),
+      name: moduleNameFromSource(context.sourceFile.fileName),
       packageName: options.packageName,
       source: relativeSource(sourceFile.fileName, options.upstreamDirectory),
     },
@@ -161,6 +184,7 @@ function isExported(node: ts.Node): boolean {
 }
 
 function lowerClass(node: ts.ClassDeclaration, context: LoweringContext): IrClassDeclaration {
+  requiredDeclarationName(node, context);
   const constructors = node.members.filter(ts.isConstructorDeclaration);
   if (constructors.length > 1) {
     unsupported(node, `class ${requiredDeclarationName(node, context)} has constructor overloads`);
@@ -213,6 +237,7 @@ function lowerClass(node: ts.ClassDeclaration, context: LoweringContext): IrClas
     unsupported(extendsClause, 'classes must extend one base type');
   return {
     abstract: hasModifier(node, ts.SyntaxKind.AbstractKeyword),
+    binding: lowerBindingIdentity(node.name!, context),
     ...(constructor
       ? {
           classConstructor: {
@@ -227,7 +252,6 @@ function lowerClass(node: ts.ClassDeclaration, context: LoweringContext): IrClas
     implements: implementsClause?.types.map((type) => lowerExpressionWithTypeArguments(type, context)) ?? [],
     kind: 'class',
     methods,
-    name: requiredDeclarationName(node, context),
     origin: origin(node, context),
     typeParameters: lowerTypeParameters(node.typeParameters, context),
   };
@@ -251,10 +275,10 @@ function lowerEnum(node: ts.EnumDeclaration, context: LoweringContext): IrEnumDe
     return { name, value };
   });
   return {
+    binding: lowerBindingIdentity(node.name, context),
     exported: isExported(node),
     kind: 'enum',
     members,
-    name: node.name.text,
     origin: origin(node, context),
   };
 }
@@ -334,12 +358,19 @@ function lowerExport(node: ts.ExportDeclaration | ts.ExportAssignment, context: 
     return [{ exported: node.exportClause.name.text, kind: 'namespace', specifier, typeOnly }];
   }
   return node.exportClause.elements.map((element): IrExport => {
-    const imported = element.propertyName?.text ?? element.name.text;
+    const importedNode = element.propertyName ?? element.name;
+    if (!ts.isIdentifier(importedNode)) unsupported(importedNode, 'local export names must be identifiers');
+    const imported = importedNode.text;
     const exported = element.name.text;
     const bindingTypeOnly = typeOnly || element.isTypeOnly;
     return specifier
       ? { exported, imported, kind: 'reexport', specifier, typeOnly: bindingTypeOnly }
-      : { exported, kind: 'local', local: imported, typeOnly: bindingTypeOnly };
+      : {
+          binding: lowerBindingIdentity(importedNode, context),
+          exported,
+          kind: 'local',
+          typeOnly: bindingTypeOnly,
+        };
   });
 }
 
@@ -349,8 +380,8 @@ function lowerExpression(node: ts.Expression, context: LoweringContext): IrExpre
     return { expression: lowerExpression(node.expression, context), kind: 'cast', type: lowerType(node.type, context) };
   }
   if (ts.isNonNullExpression(node)) return lowerExpression(node.expression, context);
-  if (ts.isIdentifier(node)) return { kind: 'identifier', name: node.text };
-  if (node.kind === ts.SyntaxKind.ThisKeyword) return { kind: 'identifier', name: 'this' };
+  if (ts.isIdentifier(node)) return { kind: 'identifier', reference: lowerIdentifierReference(node, context) };
+  if (node.kind === ts.SyntaxKind.ThisKeyword) return { kind: 'identifier', reference: { kind: 'this' } };
   if (node.kind === ts.SyntaxKind.TrueKeyword) return { kind: 'literal', value: true };
   if (node.kind === ts.SyntaxKind.FalseKeyword) return { kind: 'literal', value: false };
   if (node.kind === ts.SyntaxKind.NullKeyword) return { kind: 'literal', value: null };
@@ -454,7 +485,7 @@ function lowerExpression(node: ts.Expression, context: LoweringContext): IrExpre
         ? { body: lowerStatementList(node.body.statements, context) }
         : { body: [], expression: lowerExpression(node.body, context) }),
       kind: 'function',
-      ...(node.name ? { name: node.name.text } : {}),
+      ...(node.name ? { binding: lowerBindingIdentity(node.name, context) } : {}),
       ...signature,
     };
   }
@@ -493,10 +524,10 @@ function lowerFunction(
   if (!node.body) unsupported(node, 'function declaration requires a body');
   return {
     async: hasModifier(node, ts.SyntaxKind.AsyncKeyword),
+    binding: lowerBindingIdentity(node.name!, context),
     body: lowerStatementList(node.body.statements, context),
     exported: isExported(node),
     kind: 'function',
-    name: requiredDeclarationName(node, context),
     origin: origin(node, context),
     overloads: [...overloads],
     ...lowerFunctionSignature(node, context),
@@ -527,20 +558,30 @@ function lowerFunctionType(
   };
 }
 
-function lowerImports(sourceFile: ts.SourceFile): IrImport[] {
+function lowerImports(sourceFile: ts.SourceFile, context: LoweringContext): IrImport[] {
   return sourceFile.statements.flatMap((statement): IrImport[] => {
     if (!ts.isImportDeclaration(statement) || !ts.isStringLiteral(statement.moduleSpecifier)) return [];
     const bindings: IrImportBinding[] = [];
     const clause = statement.importClause;
-    if (clause?.name) bindings.push({ imported: 'default', local: clause.name.text, typeOnly: clause.isTypeOnly });
+    if (clause?.name) {
+      bindings.push({
+        binding: lowerBindingIdentity(clause.name, context),
+        imported: 'default',
+        typeOnly: clause.isTypeOnly,
+      });
+    }
     const namedBindings = clause?.namedBindings;
     if (namedBindings && ts.isNamespaceImport(namedBindings)) {
-      bindings.push({ imported: '*', local: namedBindings.name.text, typeOnly: clause.isTypeOnly });
+      bindings.push({
+        binding: lowerBindingIdentity(namedBindings.name, context),
+        imported: '*',
+        typeOnly: clause.isTypeOnly,
+      });
     } else if (namedBindings && ts.isNamedImports(namedBindings)) {
       for (const binding of namedBindings.elements) {
         bindings.push({
           imported: binding.propertyName?.text ?? binding.name.text,
-          local: binding.name.text,
+          binding: lowerBindingIdentity(binding.name, context),
           typeOnly: clause.isTypeOnly || binding.isTypeOnly,
         });
       }
@@ -567,7 +608,11 @@ function lowerInterface(node: ts.InterfaceDeclaration, context: LoweringContext)
 function lowerObjectMember(node: ts.ObjectLiteralElementLike, context: LoweringContext): IrObjectMember {
   if (ts.isSpreadAssignment(node)) return { expression: lowerExpression(node.expression, context), kind: 'spread' };
   if (ts.isShorthandPropertyAssignment(node)) {
-    return { kind: 'property', name: node.name.text, value: { kind: 'identifier', name: node.name.text } };
+    return {
+      kind: 'property',
+      name: node.name.text,
+      value: { kind: 'identifier', reference: lowerIdentifierReference(node.name, context) },
+    };
   }
   if (ts.isPropertyAssignment(node)) {
     if (ts.isComputedPropertyName(node.name)) {
@@ -601,10 +646,17 @@ function lowerObjectMember(node: ts.ObjectLiteralElementLike, context: LoweringC
 }
 
 function lowerParameter(node: ts.ParameterDeclaration, context: LoweringContext): IrParameter {
-  const parameter = lowerFunctionTypeParameter(node, context);
-  if (!node.initializer) return parameter;
-  if (!parameter.optional) unsupported(node, 'default parameters must be optional and non-rest');
-  return { ...parameter, initializer: lowerExpression(node.initializer, context) };
+  if (!ts.isIdentifier(node.name)) unsupported(node.name, 'destructured parameters are not represented yet');
+  const typeParameter = lowerFunctionTypeParameter(node, context);
+  const parameter = {
+    binding: lowerBindingIdentity(node.name, context),
+    type: typeParameter.type,
+  };
+  if (typeParameter.rest) return { ...parameter, optional: false, rest: true };
+  if (!typeParameter.optional) return { ...parameter, optional: false, rest: false };
+  return node.initializer
+    ? { ...parameter, initializer: lowerExpression(node.initializer, context), optional: true, rest: false }
+    : { ...parameter, optional: true, rest: false };
 }
 
 function lowerFunctionTypeParameter(node: ts.ParameterDeclaration, context: LoweringContext): IrFunctionTypeParameter {
@@ -710,8 +762,10 @@ function lowerStatement(node: ts.Statement, context: LoweringContext): IrStateme
     return {
       ...(node.catchClause
         ? {
-            catchBody: lowerStatement(node.catchClause.block, context),
-            ...(catchName ? { catchName: catchName.text } : {}),
+            catchClause: {
+              body: lowerStatement(node.catchClause.block, context),
+              ...(catchName ? { binding: lowerBindingIdentity(catchName, context) } : {}),
+            },
           }
         : {}),
       ...(node.finallyBlock ? { finallyBody: lowerStatement(node.finallyBlock, context) } : {}),
@@ -891,9 +945,9 @@ function lowerVariables(node: ts.VariableDeclarationList, context: LoweringConte
 function lowerVariable(node: ts.VariableDeclaration, mutable: boolean, context: LoweringContext): IrVariable {
   if (!ts.isIdentifier(node.name)) unsupported(node.name, 'destructured variables are not represented yet');
   return {
+    binding: lowerBindingIdentity(node.name, context),
     ...(node.initializer ? { initializer: lowerExpression(node.initializer, context) } : {}),
     mutable,
-    name: node.name.text,
     ...(node.type
       ? { type: lowerType(node.type, context) }
       : node.initializer
@@ -965,6 +1019,114 @@ function lowerPrefixUnaryOperator(kind: ts.PrefixUnaryOperator): IrPrefixUnaryOp
 
 function isThisParameter(node: ts.ParameterDeclaration): boolean {
   return ts.isIdentifier(node.name) && node.name.text === 'this';
+}
+
+function createTypeScriptAnalysis(sourceFile: ts.SourceFile): TypeScriptAnalysis {
+  const analysisSourceFile = ts.createSourceFile(
+    sourceFile.fileName,
+    sourceFile.text,
+    sourceFile.languageVersion,
+    true,
+  );
+  const options: ts.CompilerOptions = {
+    noLib: true,
+    noResolve: true,
+    target: analysisSourceFile.languageVersion,
+  };
+  const host = ts.createCompilerHost(options, true);
+  host.fileExists = (file) => file === analysisSourceFile.fileName;
+  host.getSourceFile = (file) => (file === analysisSourceFile.fileName ? analysisSourceFile : undefined);
+  host.readFile = (file) => (file === analysisSourceFile.fileName ? analysisSourceFile.text : undefined);
+  host.writeFile = () => undefined;
+  const program = ts.createProgram({ host, options, rootNames: [analysisSourceFile.fileName] });
+  return { checker: program.getTypeChecker(), sourceFile: analysisSourceFile };
+}
+
+function lowerIdentifierReference(node: ts.Identifier, context: LoweringContext): IrIdentifierReference {
+  const symbol = context.checker.getSymbolAtLocation(node);
+  return symbol?.declarations?.some(isBindingDeclaration)
+    ? { binding: lowerBindingSymbol(symbol, node, context), kind: 'binding' }
+    : { kind: 'ambient', name: node.text };
+}
+
+function lowerBindingIdentity(node: ts.Identifier, context: LoweringContext): IrBindingIdentity {
+  const symbol = context.checker.getSymbolAtLocation(node);
+  if (!symbol) unsupported(node, `binding ${node.text} cannot be resolved`);
+  return lowerBindingSymbol(symbol, node, context);
+}
+
+function lowerBindingSymbol(symbol: ts.Symbol, node: ts.Identifier, context: LoweringContext): IrBindingIdentity {
+  const cached = context.bindings.get(symbol);
+  if (cached) return cached;
+  const declaration = symbol.declarations?.find(isBindingDeclaration);
+  if (!declaration) return unsupported(node, `binding ${node.text} has no supported declaration`);
+  const name = bindingDeclarationName(declaration);
+  const source = relativeSource(context.sourceFile.fileName, context.options.upstreamDirectory);
+  const binding: IrBindingIdentity = {
+    ...origin(name, context),
+    id: `binding:${JSON.stringify([context.options.packageName, source, name.getStart(context.sourceFile)])}`,
+    kind: bindingDeclarationKind(declaration),
+    name: name.text,
+    scope: bindingDeclarationScope(declaration),
+  };
+  context.bindings.set(symbol, binding);
+  return binding;
+}
+
+type TypeScriptBindingDeclaration =
+  | ts.ClassDeclaration
+  | ts.EnumDeclaration
+  | ts.FunctionDeclaration
+  | ts.FunctionExpression
+  | ts.ImportClause
+  | ts.ImportSpecifier
+  | ts.InterfaceDeclaration
+  | ts.NamespaceImport
+  | ts.ParameterDeclaration
+  | ts.TypeAliasDeclaration
+  | ts.VariableDeclaration;
+
+function isBindingDeclaration(node: ts.Declaration): node is TypeScriptBindingDeclaration {
+  return (
+    ts.isClassDeclaration(node) ||
+    ts.isEnumDeclaration(node) ||
+    ts.isFunctionDeclaration(node) ||
+    ts.isFunctionExpression(node) ||
+    ts.isImportClause(node) ||
+    ts.isImportSpecifier(node) ||
+    ts.isInterfaceDeclaration(node) ||
+    ts.isNamespaceImport(node) ||
+    ts.isParameter(node) ||
+    ts.isTypeAliasDeclaration(node) ||
+    ts.isVariableDeclaration(node)
+  );
+}
+
+function bindingDeclarationName(node: TypeScriptBindingDeclaration): ts.Identifier {
+  const name = node.name;
+  if (!name || !ts.isIdentifier(name)) unsupported(node, 'binding declarations require identifier names');
+  return name;
+}
+
+function bindingDeclarationKind(node: TypeScriptBindingDeclaration): IrBindingKind {
+  if (ts.isClassDeclaration(node)) return 'class';
+  if (ts.isEnumDeclaration(node)) return 'enum';
+  if (ts.isFunctionDeclaration(node) || ts.isFunctionExpression(node)) return 'function';
+  if (ts.isImportClause(node) || ts.isImportSpecifier(node) || ts.isNamespaceImport(node)) return 'import';
+  if (ts.isInterfaceDeclaration(node)) return 'interface';
+  if (ts.isParameter(node)) return 'parameter';
+  if (ts.isTypeAliasDeclaration(node)) return 'typeAlias';
+  return ts.isCatchClause(node.parent) ? 'catch' : 'variable';
+}
+
+function bindingDeclarationScope(node: TypeScriptBindingDeclaration): IrBindingScope {
+  if (ts.isImportClause(node) || ts.isImportSpecifier(node) || ts.isNamespaceImport(node)) return 'module';
+  if (ts.isFunctionExpression(node) || ts.isParameter(node) || ts.isCatchClause(node.parent)) return 'local';
+  for (let parent = node.parent; parent; parent = parent.parent) {
+    if (ts.isFunctionLike(parent)) return 'local';
+    if (ts.isSourceFile(parent)) return 'module';
+  }
+  return 'local';
 }
 
 function moduleNameFromSource(file: string): string {

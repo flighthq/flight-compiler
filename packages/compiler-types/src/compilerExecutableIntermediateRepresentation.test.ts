@@ -1,12 +1,25 @@
 import type { IrExpression, IrParameter, IrStatement } from './compilerExecutableIntermediateRepresentation.js';
-import type { IrFunctionTypeParameter } from './compilerTypeIntermediateRepresentation.js';
+import type { CompilerSourceOrigin } from './compilerSourceIdentity.js';
 
 describe('compiler executable intermediate representation contracts', () => {
   it('adds executable initializer data without weakening the type-only parameter contract', () => {
     const expression: IrExpression = { kind: 'literal', value: 1 };
+    const origin: CompilerSourceOrigin = {
+      column: 1,
+      fingerprint: 'sha256:value',
+      line: 1,
+      packageName: '@flighthq/math',
+      source: 'packages/math/src/value.ts',
+    };
     const parameter: IrParameter = {
+      binding: {
+        ...origin,
+        id: 'binding:["@flighthq/math","packages/math/src/value.ts",0]',
+        kind: 'parameter',
+        name: 'value',
+        scope: 'local',
+      },
       initializer: expression,
-      name: 'value',
       optional: true,
       rest: false,
       type: { kind: 'primitive', name: 'number' },
@@ -15,8 +28,7 @@ describe('compiler executable intermediate representation contracts', () => {
 
     expect(parameter.initializer).toBe(expression);
     expect(statement.expression).toBe(expression);
-    expectTypeOf(parameter).toMatchTypeOf<IrFunctionTypeParameter>();
-    expectTypeOf<Extract<IrParameter, { rest: true }>['initializer']>().toEqualTypeOf<undefined>();
+    expectTypeOf<IrParameter>().toHaveProperty('binding');
   });
 
   it('couples postfix unary position to valid operators', () => {

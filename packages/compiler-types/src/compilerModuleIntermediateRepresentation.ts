@@ -1,10 +1,11 @@
+import type { IrBindingIdentity } from './compilerBindingIntermediateRepresentation.js';
 import type { IrDeclaration } from './compilerDeclarationIntermediateRepresentation.js';
 import type { IrExpression } from './compilerExecutableIntermediateRepresentation.js';
 import type { CompilerModuleIdentity } from './compilerSourceIdentity.js';
 
 export interface IrImportBinding {
+  readonly binding: IrBindingIdentity;
   readonly imported: string;
-  readonly local: string;
   readonly typeOnly: boolean;
 }
 
@@ -16,7 +17,7 @@ export interface IrImport {
 export type IrExport =
   | Readonly<{ kind: 'all'; specifier: string; typeOnly: boolean }>
   | Readonly<{ exported: string; imported: string; kind: 'reexport'; specifier: string; typeOnly: boolean }>
-  | Readonly<{ exported: string; kind: 'local'; local: string; typeOnly: boolean }>
+  | Readonly<{ binding: IrBindingIdentity; exported: string; kind: 'local'; typeOnly: boolean }>
   | Readonly<{ exported: string; kind: 'namespace'; specifier: string; typeOnly: boolean }>
   | Readonly<{ expression: IrExpression; kind: 'default' }>;
 

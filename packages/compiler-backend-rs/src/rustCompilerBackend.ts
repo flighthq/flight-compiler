@@ -10,6 +10,7 @@ import type {
   IrEnumDeclaration,
   IrExpression,
   IrFunctionDeclaration,
+  IrIdentifierReference,
   IrImport,
   IrInterfaceDeclaration,
   IrModule,
@@ -31,8 +32,8 @@ import {
 } from './rustCompilerIdentity.js';
 
 interface EmitContext {
+  bindingNames: ReadonlyMap<string, string>;
   constants: ReadonlyMap<string, string>;
-  localNames: ReadonlySet<string>;
   module: Readonly<IrModule>;
   options: Readonly<RustCompilerBackendOptions>;
 }
@@ -55,11 +56,11 @@ export function emitIrModuleRust(
   const constants = new Map(
     module.declarations.flatMap((declaration) =>
       declaration.kind === 'variable' && !declaration.mutable
-        ? [[declaration.name, screamingSnakeCase(declaration.name)]]
+        ? [[declaration.binding.id, screamingSnakeCase(declaration.binding.name)]]
         : [],
     ),
   );
-  const context: EmitContext = { constants, localNames: new Set(), module, options };
+  const context: EmitContext = { bindingNames: moduleBindingNames(module), constants, module, options };
   if (module.exports.length > 0) {
     emissionError(context, 're-exports and export assignments require Rust module-facade lowering');
   }
@@ -80,24 +81,25 @@ export function emitIrModuleRust(
 
 function emitClass(declaration: Readonly<IrClassDeclaration>, context: EmitContext): string[] {
   if (declaration.extends || declaration.implements.length > 0) {
-    emissionError(context, `class ${declaration.name} inheritance requires Rust ownership lowering`);
+    emissionError(context, `class ${declaration.binding.name} inheritance requires Rust ownership lowering`);
   }
   if (
     declaration.classConstructor &&
     (declaration.classConstructor.parameters.length > 0 || declaration.classConstructor.body.length > 0)
   ) {
-    emissionError(context, `class ${declaration.name} constructor requires Rust initialization lowering`);
+    emissionError(context, `class ${declaration.binding.name} constructor requires Rust initialization lowering`);
   }
-  if (declaration.abstract) emissionError(context, `abstract class ${declaration.name} requires Rust trait lowering`);
+  if (declaration.abstract)
+    emissionError(context, `abstract class ${declaration.binding.name} requires Rust trait lowering`);
   if (declaration.fields.some((field) => field.static)) {
-    emissionError(context, `class ${declaration.name} static fields require associated-item lowering`);
+    emissionError(context, `class ${declaration.binding.name} static fields require associated-item lowering`);
   }
   if (declaration.fields.some((field) => field.initializer)) {
-    emissionError(context, `class ${declaration.name} field initializers require constructor lowering`);
+    emissionError(context, `class ${declaration.binding.name} field initializers require constructor lowering`);
   }
   const lines = [
     '#[derive(Clone, Debug)]',
-    `${declaration.exported ? 'pub ' : ''}struct ${safeRustTypeName(declaration.name)}${emitTypeParameters(declaration.typeParameters, context)} {`,
+    `${declaration.exported ? 'pub ' : ''}struct ${safeRustTypeName(declaration.binding.name)}${emitTypeParameters(declaration.typeParameters, context)} {`,
   ];
   for (const field of declaration.fields) {
     lines.push(
@@ -108,7 +110,7 @@ function emitClass(declaration: Readonly<IrClassDeclaration>, context: EmitConte
   if (declaration.methods.length > 0) {
     lines.push(
       '',
-      `impl${emitTypeParameters(declaration.typeParameters, context)} ${safeRustTypeName(declaration.name)}${emitTypeArguments(declaration.typeParameters)} {`,
+      `impl${emitTypeParameters(declaration.typeParameters, context)} ${safeRustTypeName(declaration.binding.name)}${emitTypeArguments(declaration.typeParameters)} {`,
     );
     declaration.methods.forEach((method, index) => {
       if (index > 0) lines.push('');
@@ -117,14 +119,9 @@ function emitClass(declaration: Readonly<IrClassDeclaration>, context: EmitConte
         ...(method.static ? [] : ['&mut self']),
         ...method.parameters.map((parameter) => emitParameter(parameter, context)),
       ].join(', ');
-      const methodContext = withLocalNames(
-        context,
-        method.parameters.map((parameter) => parameter.name),
-        method.static ? [] : ['this'],
-      );
       lines.push(
         `  ${method.visibility === 'public' ? 'pub ' : ''}fn ${safeRustValueName(method.name)}${emitTypeParameters(method.typeParameters, context)}(${parameters}) -> ${emitType(method.returns, context)} {`,
-        ...indentSourceLines(emitStatements(method.body, methodContext), 2),
+        ...indentSourceLines(emitStatements(method.body, context), 2),
         '  }',
       );
     });
@@ -152,17 +149,17 @@ function emitDeclaration(declaration: Readonly<IrDeclaration>, context: EmitCont
 
 function emitEnum(declaration: Readonly<IrEnumDeclaration>, context: EmitContext): string[] {
   if (declaration.members.some((member) => typeof member.value !== 'number' || !Number.isInteger(member.value))) {
-    emissionError(context, `enum ${declaration.name} requires integer discriminants for Rust`);
+    emissionError(context, `enum ${declaration.binding.name} requires integer discriminants for Rust`);
   }
   if (
     declaration.members.some((member) => Number(member.value) < -2_147_483_648 || Number(member.value) > 2_147_483_647)
   ) {
-    emissionError(context, `enum ${declaration.name} has a discriminant outside the Rust i32 range`);
+    emissionError(context, `enum ${declaration.binding.name} has a discriminant outside the Rust i32 range`);
   }
   const lines = [
     '#[derive(Clone, Copy, Debug, PartialEq, Eq)]',
     '#[repr(i32)]',
-    `${declaration.exported ? 'pub ' : ''}enum ${safeRustTypeName(declaration.name)} {`,
+    `${declaration.exported ? 'pub ' : ''}enum ${safeRustTypeName(declaration.binding.name)} {`,
   ];
   declaration.members.forEach((member) => {
     lines.push(`  ${safeRustTypeName(member.name)} = ${String(member.value)},`);
@@ -194,29 +191,18 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
     case 'function':
       if (expression.async) emissionError(context, 'async closures require Flight task lowering');
       if (expression.typeParameters.length > 0) emissionError(context, 'generic closures require monomorphization');
-      {
-        const functionContext = withLocalNames(
-          context,
-          expression.parameters.map((parameter) => parameter.name),
-        );
-        return expression.expression
-          ? `|${expression.parameters.map((parameter) => safeRustValueName(parameter.name)).join(', ')}| ${emitExpression(expression.expression, functionContext)}`
-          : `|${expression.parameters.map((parameter) => safeRustValueName(parameter.name)).join(', ')}| {\n${indentSourceLines(emitStatements(expression.body, functionContext)).join('\n')}\n}`;
-      }
+      return expression.expression
+        ? `|${expression.parameters.map((parameter) => safeRustValueName(parameter.binding.name)).join(', ')}| ${emitExpression(expression.expression, context)}`
+        : `|${expression.parameters.map((parameter) => safeRustValueName(parameter.binding.name)).join(', ')}| {\n${indentSourceLines(emitStatements(expression.body, context)).join('\n')}\n}`;
     case 'identifier':
-      if (expression.name === 'undefined') {
-        emissionError(context, 'undefined expressions require Rust Option-aware lowering');
-      }
-      return context.localNames.has(expression.name)
-        ? safeRustValueName(expression.name)
-        : (context.constants.get(expression.name) ?? safeRustValueName(expression.name));
+      return emitIdentifierReferenceRust(expression.reference, context);
     case 'literal':
       return emitLiteral(expression.value);
     case 'new':
       if (expression.callee.kind !== 'identifier') {
         emissionError(context, 'qualified constructors require Rust type-path lowering');
       }
-      return `${safeRustTypeName(expression.callee.name)}::new(${expression.arguments.map((argument) => emitExpression(argument, context)).join(', ')})`;
+      return `${emitConstructorReferenceRust(expression.callee.reference, context)}::new(${expression.arguments.map((argument) => emitExpression(argument, context)).join(', ')})`;
     case 'object':
       emissionError(context, 'anonymous object construction requires Rust structural-type lowering');
     case 'property':
@@ -246,14 +232,11 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
 }
 
 function emitFunction(declaration: Readonly<IrFunctionDeclaration>, context: EmitContext): string[] {
-  if (declaration.async) emissionError(context, `async function ${declaration.name} requires Flight task lowering`);
-  const functionContext = withLocalNames(
-    context,
-    declaration.parameters.map((parameter) => parameter.name),
-  );
+  if (declaration.async)
+    emissionError(context, `async function ${declaration.binding.name} requires Flight task lowering`);
   return [
-    `${declaration.exported ? 'pub ' : ''}fn ${safeRustValueName(declaration.name)}${emitTypeParameters(declaration.typeParameters, context)}(${declaration.parameters.map((parameter) => emitParameter(parameter, context)).join(', ')}) -> ${emitType(declaration.returns, context)} {`,
-    ...indentSourceLines(emitStatements(declaration.body, functionContext)),
+    `${declaration.exported ? 'pub ' : ''}fn ${safeRustValueName(declaration.binding.name)}${emitTypeParameters(declaration.typeParameters, context)}(${declaration.parameters.map((parameter) => emitParameter(parameter, context)).join(', ')}) -> ${emitType(declaration.returns, context)} {`,
+    ...indentSourceLines(emitStatements(declaration.body, context)),
     '}',
   ];
 }
@@ -270,9 +253,9 @@ function emitImports(imports: readonly IrImport[], context: EmitContext): string
       const importedName = /^[A-Z]/u.test(binding.imported)
         ? safeRustTypeName(binding.imported)
         : safeRustValueName(binding.imported);
-      const localName = /^[A-Z]/u.test(binding.local)
-        ? safeRustTypeName(binding.local)
-        : safeRustValueName(binding.local);
+      const localName = /^[A-Z]/u.test(binding.binding.name)
+        ? safeRustTypeName(binding.binding.name)
+        : safeRustValueName(binding.binding.name);
       return importedName === localName ? importedName : `${importedName} as ${localName}`;
     });
     lines.add(`use ${module}::{${names.sort().join(', ')}};`);
@@ -292,6 +275,33 @@ function emitInterface(declaration: Readonly<IrInterfaceDeclaration>, context: E
   );
 }
 
+function emitConstructorReferenceRust(reference: Readonly<IrIdentifierReference>, context: EmitContext): string {
+  if (reference.kind === 'this') emissionError(context, 'this cannot be used as a Rust constructor');
+  const name =
+    reference.kind === 'ambient'
+      ? reference.name
+      : (context.bindingNames.get(reference.binding.id) ?? reference.binding.name);
+  return safeRustTypeName(name);
+}
+
+function emitIdentifierReferenceRust(reference: Readonly<IrIdentifierReference>, context: EmitContext): string {
+  if (reference.kind === 'this') return 'self';
+  if (reference.kind === 'ambient') {
+    if (reference.name === 'undefined') {
+      emissionError(context, 'undefined expressions require Rust Option-aware lowering');
+    }
+    return safeRustValueName(reference.name);
+  }
+  const constant = context.constants.get(reference.binding.id);
+  if (constant) return constant;
+  const name = context.bindingNames.get(reference.binding.id) ?? reference.binding.name;
+  return reference.binding.kind === 'class' ||
+    reference.binding.kind === 'enum' ||
+    (reference.binding.kind === 'import' && /^[A-Z]/u.test(name))
+    ? safeRustTypeName(name)
+    : safeRustValueName(name);
+}
+
 function emitLiteral(value: boolean | null | number | string): string {
   if (typeof value === 'string') return `${JSON.stringify(value)}.to_owned()`;
   if (value === null) return 'None';
@@ -299,13 +309,35 @@ function emitLiteral(value: boolean | null | number | string): string {
   return String(value);
 }
 
-function emitParameter(parameter: Readonly<IrParameter>, context: EmitContext): string {
-  if (parameter.initializer) emissionError(context, `default parameter ${parameter.name} requires call-site lowering`);
-  if (parameter.optional || isNullableType(parameter.type)) {
-    emissionError(context, `nullable parameter ${parameter.name} requires Option-aware Rust control-flow lowering`);
+function moduleBindingNames(module: Readonly<IrModule>): ReadonlyMap<string, string> {
+  const names = new Map<string, string>();
+  for (const imported of module.imports) {
+    for (const binding of imported.bindings) names.set(binding.binding.id, binding.binding.name);
   }
-  if (parameter.rest) return `${safeRustValueName(parameter.name)}: Vec<${emitType(parameter.type, context)}>`;
-  return `${safeRustValueName(parameter.name)}: ${emitType(parameter.type, context)}`;
+  for (const declaration of module.declarations) {
+    if (
+      declaration.kind === 'class' ||
+      declaration.kind === 'enum' ||
+      declaration.kind === 'function' ||
+      declaration.kind === 'variable'
+    ) {
+      names.set(declaration.binding.id, declaration.binding.name);
+    }
+  }
+  return names;
+}
+
+function emitParameter(parameter: Readonly<IrParameter>, context: EmitContext): string {
+  if (parameter.initializer)
+    emissionError(context, `default parameter ${parameter.binding.name} requires call-site lowering`);
+  if (parameter.optional || isNullableType(parameter.type)) {
+    emissionError(
+      context,
+      `nullable parameter ${parameter.binding.name} requires Option-aware Rust control-flow lowering`,
+    );
+  }
+  if (parameter.rest) return `${safeRustValueName(parameter.binding.name)}: Vec<${emitType(parameter.type, context)}>`;
+  return `${safeRustValueName(parameter.binding.name)}: ${emitType(parameter.type, context)}`;
 }
 
 function emitRecord(
@@ -350,14 +382,11 @@ function emitStatement(statement: Readonly<IrStatement>, context: EmitContext): 
       emissionError(context, 'object key iteration requires record or host-object lowering');
     case 'forOf':
       if (statement.await) emissionError(context, 'async iteration requires Flight task lowering');
-      {
-        const loopContext = withLocalNames(context, [statement.variable.name]);
-        return [
-          `for ${statement.variable.mutable ? 'mut ' : ''}${safeRustValueName(statement.variable.name)} in ${emitExpression(statement.iterable, context)} {`,
-          ...indentSourceLines(emitStatementBody(statement.body, loopContext)),
-          '}',
-        ];
-      }
+      return [
+        `for ${statement.variable.mutable ? 'mut ' : ''}${safeRustValueName(statement.variable.binding.name)} in ${emitExpression(statement.iterable, context)} {`,
+        ...indentSourceLines(emitStatementBody(statement.body, context)),
+        '}',
+      ];
     case 'if': {
       const lines = [
         `if ${emitExpression(statement.condition, context)} {`,
@@ -395,13 +424,7 @@ function emitStatementBody(statement: Readonly<IrStatement>, context: EmitContex
 }
 
 function emitStatements(statements: readonly IrStatement[], context: EmitContext): string[] {
-  const blockContext = withLocalNames(
-    context,
-    statements.flatMap((statement) =>
-      statement.kind === 'variable' ? statement.declarations.map((variable) => variable.name) : [],
-    ),
-  );
-  return statements.flatMap((statement) => emitStatement(statement, blockContext));
+  return statements.flatMap((statement) => emitStatement(statement, context));
 }
 
 function emitType(type: Readonly<IrType>, context: EmitContext): string {
@@ -490,17 +513,17 @@ function emitTypeParameters(parameters: readonly IrTypeParameter[], context: Emi
 function emitVariable(variable: Readonly<IrVariable>, context: EmitContext): string {
   const type = variable.type ? `: ${emitType(variable.type, context)}` : '';
   const initializer = variable.initializer ? ` = ${emitExpression(variable.initializer, context)}` : '';
-  return `let ${variable.mutable ? 'mut ' : ''}${safeRustValueName(variable.name)}${type}${initializer};`;
+  return `let ${variable.mutable ? 'mut ' : ''}${safeRustValueName(variable.binding.name)}${type}${initializer};`;
 }
 
 function emitVariableDeclaration(declaration: Readonly<IrVariableDeclaration>, context: EmitContext): string[] {
   if (!declaration.initializer || !declaration.type) {
-    emissionError(context, `module variable ${declaration.name} requires an initializer and type`);
+    emissionError(context, `module variable ${declaration.binding.name} requires an initializer and type`);
   }
   if (declaration.mutable)
-    emissionError(context, `mutable module variable ${declaration.name} requires synchronization lowering`);
+    emissionError(context, `mutable module variable ${declaration.binding.name} requires synchronization lowering`);
   return [
-    `${declaration.exported ? 'pub ' : ''}const ${context.constants.get(declaration.name)!}: ${emitType(declaration.type, context)} = ${emitExpression(declaration.initializer, context)};`,
+    `${declaration.exported ? 'pub ' : ''}const ${context.constants.get(declaration.binding.id)!}: ${emitType(declaration.type, context)} = ${emitExpression(declaration.initializer, context)};`,
   ];
 }
 
@@ -536,17 +559,6 @@ function isNullableType(type: Readonly<IrType>): boolean {
     type.kind === 'undefined' ||
     (type.kind === 'union' && type.types.some((member) => member.kind === 'null' || member.kind === 'undefined'))
   );
-}
-
-function withLocalNames(
-  context: EmitContext,
-  names: readonly string[],
-  additional: readonly string[] = [],
-): EmitContext {
-  return {
-    ...context,
-    localNames: new Set([...context.localNames, ...additional, ...names]),
-  };
 }
 
 function opaqueHostType(context: EmitContext): string {

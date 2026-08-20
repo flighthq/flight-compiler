@@ -7,6 +7,6 @@ class Counter {
   public final label:String = "counter";
 
   public function advance(by:Float):Float {
-    return (by + this_.step);
+    return (by + this.step);
   }
 }

@@ -22,9 +22,9 @@ describe('applySemanticPatchSet', () => {
     const rust = applySemanticPatchSet([createModule()], patches, 'rust');
     const haxe = applySemanticPatchSet([createModule()], patches, 'haxe');
 
-    expect(rust.modules[0]?.declarations[0]?.name).toBe('rustName');
+    expect(rust.modules[0]?.declarations[0]).toMatchObject({ binding: { name: 'rustName' } });
     expect(rust.audit.applied.map((record) => record.id)).toEqual(['zzz-neutral', 'aaa-rust']);
-    expect(haxe.modules[0]?.declarations[0]?.name).toBe('neutralName');
+    expect(haxe.modules[0]?.declarations[0]).toMatchObject({ binding: { name: 'neutralName' } });
     expect(haxe.audit.summary).toEqual({ applied: 1, skipped: 1 });
   });
 
@@ -55,7 +55,7 @@ describe('applySemanticPatchSet', () => {
     const result = applySemanticPatchSet([module], patches, 'haxe');
     const declarations = result.modules[0]?.declarations;
 
-    expect(declarations?.map((declaration) => declaration.name)).toEqual(['bounded', 'Range']);
+    expect(declarations?.map(declarationName)).toEqual(['bounded', 'Range']);
     expect(declarations?.[0]).toMatchObject({
       body: [{ expression: { kind: 'literal', value: 1 }, kind: 'return' }],
       kind: 'function',
@@ -66,9 +66,39 @@ describe('applySemanticPatchSet', () => {
     const bodyPatch = patches.find((patch) => patch.id === '01-body');
     expect(result.audit.applied[0]?.scope).not.toBe(bodyPatch?.scope);
     expect(result.audit.applied[0]?.target).not.toBe(bodyPatch?.target);
-    expect(module.declarations.map((declaration) => declaration.name)).toEqual(['clamp', 'Range', 'obsolete']);
+    expect(module.declarations.map(declarationName)).toEqual(['clamp', 'Range', 'obsolete']);
     expect((module.declarations[0] as IrFunctionDeclaration).body).toEqual([]);
     expect((module.declarations[1] as IrTypeAliasDeclaration).type).toEqual({ kind: 'primitive', name: 'number' });
+  });
+
+  it('renames a binding introduction without rewriting source-backed reference identity', () => {
+    const declaration = createFunctionDeclaration('clamp');
+    const module = createModule([
+      {
+        ...declaration,
+        body: [
+          {
+            expression: { kind: 'identifier', reference: { binding: declaration.binding, kind: 'binding' } },
+            kind: 'return',
+          },
+        ],
+      },
+    ]);
+    const result = applySemanticPatchSet(
+      [module],
+      [renamePatch('math.clamp.rename', 'bounded', { kind: 'neutral' })],
+      'haxe',
+    );
+    const renamed = result.modules[0]?.declarations[0];
+
+    if (renamed?.kind !== 'function' || renamed.body[0]?.kind !== 'return') {
+      throw new Error('Expected renamed function');
+    }
+    expect(renamed.binding).toMatchObject({ id: declaration.binding.id, name: 'bounded' });
+    expect(renamed.body[0].expression).toMatchObject({
+      reference: { binding: { id: declaration.binding.id, name: 'clamp' }, kind: 'binding' },
+    });
+    expect(module.declarations[0]).toMatchObject({ binding: { name: 'clamp' } });
   });
 
   it('returns a tagged failure for every invalid identity or operation state', () => {
@@ -201,10 +231,20 @@ function captureFailure(modules: IrModule[], patches: SemanticPatch[]): Semantic
 function createFunctionDeclaration(name: string): IrFunctionDeclaration {
   return {
     async: false,
+    binding: {
+      column: 1,
+      fingerprint: `sha256:${name}`,
+      id: `binding:[${JSON.stringify(packageName)},${JSON.stringify(source)},${JSON.stringify(name)}]`,
+      kind: 'function',
+      line: 1,
+      name,
+      packageName,
+      scope: 'module',
+      source,
+    },
     body: [],
     exported: true,
     kind: 'function',
-    name,
     origin: {
       column: 1,
       fingerprint: `sha256:${name}`,
@@ -217,6 +257,12 @@ function createFunctionDeclaration(name: string): IrFunctionDeclaration {
     returns: { kind: 'primitive', name: 'number' },
     typeParameters: [],
   };
+}
+
+function declarationName(declaration: Readonly<IrDeclaration>): string {
+  return declaration.kind === 'interface' || declaration.kind === 'typeAlias'
+    ? declaration.name
+    : declaration.binding.name;
 }
 
 function createModule(declarations: IrDeclaration[] = [createFunctionDeclaration('clamp')]): IrModule {

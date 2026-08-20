@@ -1,4 +1,5 @@
 export type * from './compilerBackendContract.js';
+export type * from './compilerBindingIntermediateRepresentation.js';
 export type * from './compilerDeclarationIntermediateRepresentation.js';
 export type * from './compilerDiagnosticContract.js';
 export type * from './compilerExecutableIntermediateRepresentation.js';

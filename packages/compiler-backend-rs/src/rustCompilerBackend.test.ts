@@ -162,6 +162,31 @@ describe('emitIrModuleRust', () => {
     );
   });
 
+  it('emits a local binding named undefined without confusing it with the ambient value', () => {
+    const result = lower(
+      'local-undefined.ts',
+      'export function read(value: number): number { const undefined: number = value; return undefined; }',
+    );
+    const output = emitIrModuleRust(result.module).contents;
+
+    expect(output).toContain('let undefined: f64 = value;');
+    expect(output).toContain('return undefined;');
+  });
+
+  it('uses binding identity to keep renamed declarations and references aligned', () => {
+    const result = lower('rename.ts', 'export function read(): number { return read(); }');
+    const declaration = result.module.declarations[0];
+    if (declaration?.kind !== 'function') throw new Error('Expected function declaration');
+    const renamed = {
+      ...result.module,
+      declarations: [{ ...declaration, binding: { ...declaration.binding, name: 'renamed' } }],
+    };
+    const output = emitIrModuleRust(renamed).contents;
+
+    expect(output).toContain('pub fn renamed() -> f64');
+    expect(output).toContain('return renamed();');
+  });
+
   it('rejects class state and default parameters that would otherwise be dropped', () => {
     const staticField = lower('config.ts', 'export class Config { static limit: number = 3; value: number = 1; }');
     const defaultParameter = lower('default.ts', 'export function read(value: number = 1): number { return value; }');

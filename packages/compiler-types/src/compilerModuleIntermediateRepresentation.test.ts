@@ -6,10 +6,20 @@ describe('compiler module intermediate representation contracts', () => {
   it('composes declaration collections with globally identified modules', () => {
     const declaration: IrDeclaration = {
       async: false,
+      binding: {
+        column: 1,
+        fingerprint: 'sha256:value',
+        id: 'binding:["@flighthq/math","packages/math/src/value.ts",0]',
+        kind: 'function',
+        line: 1,
+        name: 'readValue',
+        packageName: '@flighthq/math',
+        scope: 'module',
+        source: 'packages/math/src/value.ts',
+      },
       body: [{ expression: { kind: 'literal', value: 1 }, kind: 'return' }],
       exported: true,
       kind: 'function',
-      name: 'readValue',
       origin: {
         column: 1,
         fingerprint: 'sha256:value',

@@ -1,5 +1,6 @@
 import ts from 'typescript';
 
+import type { IrBindingIdentity, IrExpression } from '../../compiler-types/src/index.js';
 import { lowerTypeScriptSource } from './typeScriptSemanticLowering.js';
 
 function lower(file: string, source: string) {
@@ -48,6 +49,20 @@ describe('lowerTypeScriptSource', () => {
       { exported: 'value', imported: 'thing', kind: 'reexport', specifier: './thing.js', typeOnly: false },
       { kind: 'all', specifier: './other.js', typeOnly: false },
       { expression: { kind: 'literal', value: 1 }, kind: 'default' },
+    ]);
+  });
+
+  it('links type-only local exports to their source-backed declaration identity', () => {
+    const result = lower('types.ts', 'type Value = number; export type { Value };');
+
+    expect(result.diagnostics).toEqual([]);
+    expect(result.module.exports).toEqual([
+      {
+        binding: expect.objectContaining({ kind: 'typeAlias', name: 'Value', scope: 'module' }),
+        exported: 'Value',
+        kind: 'local',
+        typeOnly: true,
+      },
     ]);
   });
 
@@ -113,9 +128,13 @@ describe('lowerTypeScriptSource', () => {
     const result = lower('constructors.ts', 'export class Implicit {} export class Explicit { constructor() {} }');
     const [implicit, explicit] = result.module.declarations;
 
-    expect(implicit).toMatchObject({ kind: 'class', name: 'Implicit' });
+    expect(implicit).toMatchObject({ binding: { name: 'Implicit' }, kind: 'class' });
     expect(implicit).not.toHaveProperty('classConstructor');
-    expect(explicit).toMatchObject({ classConstructor: { body: [], parameters: [] }, kind: 'class', name: 'Explicit' });
+    expect(explicit).toMatchObject({
+      binding: { name: 'Explicit' },
+      classConstructor: { body: [], parameters: [] },
+      kind: 'class',
+    });
   });
 
   it('represents interface heritage as type references and structural members as properties', () => {
@@ -167,6 +186,167 @@ describe('lowerTypeScriptSource', () => {
     });
   });
 
+  it('resolves deterministic identities through module, lexical, closure, import, class, and control-flow scopes', () => {
+    const source = `
+      import { external as imported } from './dependency.js';
+      const value = 1;
+      export { value as exportedValue };
+      export function read(value: number, values: number[]): number {
+        const local = value;
+        {
+          const value = local;
+          const closure = (): number => value;
+        }
+        for (const value of values) { value; }
+        const undefined = local;
+        try { throw Error; } catch (error) { return error ? imported : undefined; }
+      }
+      export class Holder {
+        read(value: number): Holder { value; return this; }
+      }
+    `;
+    const result = lower('bindings.ts', source);
+    const [moduleValue, read, holder] = result.module.declarations;
+
+    expect(result.diagnostics).toEqual([]);
+    if (moduleValue?.kind !== 'variable' || read?.kind !== 'function' || holder?.kind !== 'class') {
+      throw new Error('Expected value, function, and class declarations');
+    }
+    const imported = result.module.imports[0]?.bindings[0]?.binding;
+    const localExport = result.module.exports[0];
+    expect(imported).toMatchObject({ kind: 'import', name: 'imported', scope: 'module' });
+    expect(localExport).toMatchObject({
+      binding: { id: moduleValue.binding.id },
+      exported: 'exportedValue',
+      kind: 'local',
+    });
+    expect(moduleValue.binding).toMatchObject({
+      kind: 'variable',
+      name: 'value',
+      packageName: '@flighthq/math',
+      scope: 'module',
+      source: 'packages/math/src/bindings.ts',
+    });
+    expect(read.binding.id).not.toBe(moduleValue.binding.id);
+
+    const [valueParameter, valuesParameter] = read.parameters;
+    const [localStatement, nestedStatement, loopStatement, undefinedStatement, tryStatement] = read.body;
+    if (
+      !valueParameter ||
+      !valuesParameter ||
+      localStatement?.kind !== 'variable' ||
+      nestedStatement?.kind !== 'block' ||
+      loopStatement?.kind !== 'forOf' ||
+      undefinedStatement?.kind !== 'variable' ||
+      tryStatement?.kind !== 'try'
+    ) {
+      throw new Error('Expected binding coverage statements');
+    }
+    const local = localStatement.declarations[0]!;
+    expect(bindingReference(local.initializer).id).toBe(valueParameter.binding.id);
+
+    const [shadowStatement, closureStatement] = nestedStatement.statements;
+    if (shadowStatement?.kind !== 'variable' || closureStatement?.kind !== 'variable') {
+      throw new Error('Expected nested shadow and closure variables');
+    }
+    const shadow = shadowStatement.declarations[0]!;
+    const closure = closureStatement.declarations[0]?.initializer;
+    expect(bindingReference(shadow.initializer).id).toBe(local.binding.id);
+    expect(shadow.binding.id).not.toBe(valueParameter.binding.id);
+    if (closure?.kind !== 'function' || !closure.expression) throw new Error('Expected expression-bodied closure');
+    expect(bindingReference(closure.expression).id).toBe(shadow.binding.id);
+
+    expect(bindingReference(loopStatement.iterable).id).toBe(valuesParameter.binding.id);
+    if (loopStatement.body.kind !== 'block' || loopStatement.body.statements[0]?.kind !== 'expression') {
+      throw new Error('Expected loop expression body');
+    }
+    expect(bindingReference(loopStatement.body.statements[0].expression).id).toBe(loopStatement.variable.binding.id);
+
+    const undefinedVariable = undefinedStatement.declarations[0]!;
+    expect(undefinedVariable.binding).toMatchObject({ kind: 'variable', name: 'undefined', scope: 'local' });
+    expect(bindingReference(undefinedVariable.initializer).id).toBe(local.binding.id);
+    if (!tryStatement.catchClause || tryStatement.catchClause.body.kind !== 'block') {
+      throw new Error('Expected catch clause');
+    }
+    if (tryStatement.tryBody.kind !== 'block' || tryStatement.tryBody.statements[0]?.kind !== 'throw') {
+      throw new Error('Expected try throw statement');
+    }
+    expect(ambientReference(tryStatement.tryBody.statements[0].expression)).toBe('Error');
+    const returned = tryStatement.catchClause.body.statements[0];
+    if (returned?.kind !== 'return' || returned.expression?.kind !== 'conditional') {
+      throw new Error('Expected conditional catch return');
+    }
+    expect(bindingReference(returned.expression.condition).id).toBe(tryStatement.catchClause.binding?.id);
+    expect(bindingReference(returned.expression.whenTrue).id).toBe(imported?.id);
+    expect(bindingReference(returned.expression.whenFalse).id).toBe(undefinedVariable.binding.id);
+
+    const method = holder.methods[0];
+    if (!method || method.body[0]?.kind !== 'expression' || method.body[1]?.kind !== 'return') {
+      throw new Error('Expected class method binding references');
+    }
+    expect(bindingReference(method.body[0].expression).id).toBe(method.parameters[0]?.binding.id);
+    expect(method.body[1].expression).toEqual({ kind: 'identifier', reference: { kind: 'this' } });
+    expect(lower('bindings.ts', source).module).toEqual(result.module);
+  });
+
+  it('keeps a named function-expression binding distinct from its same-named owner', () => {
+    const result = lower('recursion.ts', 'export const recurse = function recurse(): number { return recurse(); };');
+    const [owner] = result.module.declarations;
+
+    if (owner?.kind !== 'variable' || owner.initializer?.kind !== 'function' || !owner.initializer.binding) {
+      throw new Error('Expected named function expression');
+    }
+    const returned = owner.initializer.body[0];
+    if (returned?.kind !== 'return' || returned.expression?.kind !== 'call') {
+      throw new Error('Expected recursive call');
+    }
+    expect(owner.initializer.binding).toMatchObject({ kind: 'function', name: 'recurse', scope: 'local' });
+    expect(owner.initializer.binding.id).not.toBe(owner.binding.id);
+    expect(bindingReference(returned.expression.callee).id).toBe(owner.initializer.binding.id);
+  });
+
+  it('resolves symbols on an internal analysis tree without mutating the caller-owned AST', () => {
+    const sourceFile = ts.createSourceFile(
+      '/flight/packages/math/src/owned.ts',
+      'export function read(): number { const value = 1; return value; }',
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const functionStatement = sourceFile.statements[0];
+    if (!functionStatement || !ts.isFunctionDeclaration(functionStatement) || !functionStatement.body) {
+      throw new Error('Expected function statement');
+    }
+    const variableStatement = functionStatement.body.statements[0];
+    const returnStatement = functionStatement.body.statements[1];
+    if (
+      !variableStatement ||
+      !returnStatement ||
+      !ts.isVariableStatement(variableStatement) ||
+      !ts.isReturnStatement(returnStatement)
+    ) {
+      throw new Error('Expected variable and return statements');
+    }
+    const declaration = variableStatement.declarationList.declarations[0]!;
+    const state = [sourceFile, declaration, returnStatement.expression!].map(
+      (node) => node as unknown as { flowNode?: unknown; locals?: unknown; symbol?: unknown },
+    );
+    const snapshot = () => state.map(({ flowNode, locals, symbol }) => ({ flowNode, locals, symbol }));
+    const unbound = [
+      { flowNode: undefined, locals: undefined, symbol: undefined },
+      { flowNode: undefined, locals: undefined, symbol: undefined },
+      { flowNode: undefined, locals: undefined, symbol: undefined },
+    ];
+    expect(snapshot()).toEqual(unbound);
+
+    const result = lowerTypeScriptSource(sourceFile, {
+      packageName: '@flighthq/math',
+      upstreamDirectory: '/flight',
+    });
+
+    expect(result.diagnostics).toEqual([]);
+    expect(snapshot()).toEqual(unbound);
+  });
+
   it('diagnoses optional rest parameters instead of constructing invalid IR', () => {
     const parameter = lower('parameter.ts', 'export function invalid(...values?: number[]): void {}');
 
@@ -188,3 +368,17 @@ describe('lowerTypeScriptSource', () => {
     expect(tuple.diagnostics[0]?.message).toBe('rest tuple elements cannot be optional');
   });
 });
+
+function ambientReference(expression: Readonly<IrExpression> | undefined): string {
+  if (expression?.kind !== 'identifier' || expression.reference.kind !== 'ambient') {
+    throw new Error('Expected an ambient identifier reference');
+  }
+  return expression.reference.name;
+}
+
+function bindingReference(expression: Readonly<IrExpression> | undefined): IrBindingIdentity {
+  if (expression?.kind !== 'identifier' || expression.reference.kind !== 'binding') {
+    throw new Error('Expected a bound identifier reference');
+  }
+  return expression.reference.binding;
+}

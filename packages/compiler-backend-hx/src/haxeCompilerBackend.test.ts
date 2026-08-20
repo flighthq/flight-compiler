@@ -96,6 +96,31 @@ describe('emitIrModuleHaxe', () => {
     );
   });
 
+  it('emits a local binding named undefined without confusing it with the ambient value', () => {
+    const result = lower(
+      'local-undefined.ts',
+      'export function read(value: number): number { const undefined: number = value; return undefined; }',
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('final undefined:Float = value;');
+    expect(output).toContain('return undefined;');
+  });
+
+  it('uses binding identity to keep renamed declarations and references aligned', () => {
+    const result = lower('rename.ts', 'export function read(): number { return read(); }');
+    const declaration = result.module.declarations[0];
+    if (declaration?.kind !== 'function') throw new Error('Expected function declaration');
+    const renamed = {
+      ...result.module,
+      declarations: [{ ...declaration, binding: { ...declaration.binding, name: 'renamed' } }],
+    };
+    const output = emitIrModuleHaxe(renamed).contents;
+
+    expect(output).toContain('static function renamed():Float');
+    expect(output).toContain('return renamed();');
+  });
+
   it('preserves final locals and abstract classes', () => {
     const result = lower(
       'base.ts',

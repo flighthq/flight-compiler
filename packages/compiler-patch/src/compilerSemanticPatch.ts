@@ -30,7 +30,7 @@ export function applySemanticPatchSet(
   for (const [moduleIndex, module] of output.entries()) {
     for (const declaration of module.declarations) {
       const key = targetKey({
-        exportName: declaration.name,
+        exportName: declarationSemanticName(declaration),
         packageName: declaration.origin.packageName,
         source: declaration.origin.source,
       });
@@ -82,7 +82,7 @@ export function applySemanticPatchSet(
         updatedDeclaration = undefined;
         break;
       case 'rename':
-        updatedDeclaration = { ...declaration, name: patch.name };
+        updatedDeclaration = renameSemanticDeclaration(declaration, patch.name);
         break;
       case 'replaceBody':
         if (declaration.kind !== 'function') {
@@ -141,6 +141,18 @@ export function applySemanticPatchSet(
     },
     modules: output,
   };
+}
+
+function declarationSemanticName(declaration: Readonly<IrDeclaration>): string {
+  return declaration.kind === 'interface' || declaration.kind === 'typeAlias'
+    ? declaration.name
+    : declaration.binding.name;
+}
+
+function renameSemanticDeclaration(declaration: Readonly<IrDeclaration>, name: string): IrDeclaration {
+  return declaration.kind === 'interface' || declaration.kind === 'typeAlias'
+    ? { ...declaration, name }
+    : { ...declaration, binding: { ...declaration.binding, name } };
 }
 
 function comparePatchPrecedence(left: Readonly<SemanticPatch>, right: Readonly<SemanticPatch>): number {

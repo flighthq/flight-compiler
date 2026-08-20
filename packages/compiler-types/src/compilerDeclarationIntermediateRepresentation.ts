@@ -1,3 +1,4 @@
+import type { IrBindingIdentity } from './compilerBindingIntermediateRepresentation.js';
 import type {
   IrExpression,
   IrParameter,
@@ -21,9 +22,9 @@ export interface IrFunctionSignature {
 export interface IrFunctionDeclaration extends IrFunctionSignature {
   readonly async: boolean;
   readonly body: readonly IrStatement[];
+  readonly binding: IrBindingIdentity;
   readonly exported: boolean;
   readonly kind: 'function';
-  readonly name: string;
   readonly origin: CompilerSourceOrigin;
   readonly overloads: readonly IrFunctionSignature[];
 }
@@ -59,10 +60,10 @@ export interface IrEnumMember {
 }
 
 export interface IrEnumDeclaration {
+  readonly binding: IrBindingIdentity;
   readonly exported: boolean;
   readonly kind: 'enum';
   readonly members: readonly IrEnumMember[];
-  readonly name: string;
   readonly origin: CompilerSourceOrigin;
 }
 
@@ -93,6 +94,7 @@ export interface IrClassMethod extends IrFunctionSignature {
 
 export interface IrClassDeclaration {
   readonly abstract: boolean;
+  readonly binding: IrBindingIdentity;
   readonly classConstructor?: IrClassConstructor | undefined;
   readonly exported: boolean;
   readonly extends?: IrTypeReference | undefined;
@@ -100,7 +102,6 @@ export interface IrClassDeclaration {
   readonly implements: readonly IrTypeReference[];
   readonly kind: 'class';
   readonly methods: readonly IrClassMethod[];
-  readonly name: string;
   readonly origin: CompilerSourceOrigin;
   readonly typeParameters: readonly IrTypeParameter[];
 }
