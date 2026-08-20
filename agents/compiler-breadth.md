@@ -60,9 +60,9 @@ It also supplies the precondition the foundations audit named for splitting targ
 
 **Implemented shape:** `compiler-lowering`, one pass per source file, called explicitly from each backend's elected selection. The first pass is control flow because it is the smallest transform both targets need. Orchestration does not impose it before backend selection.
 
-## Missing cell 2 — the target runtime contract
+## Implemented cell 2 — the target runtime contract
 
-Both emitters already reference symbols that exist nowhere: `FlightTask`, `FlightCallback` and the opaque host value in Rust, and in Haxe nothing at all — an unmapped named type is emitted verbatim into a `.hx` file, so `Promise` and `Uint8Array` arrive as themselves. The Rust backend carries a private `rustStandardType` table; Haxe has no equivalent. The same domain half-implemented in one emitter and absent from the other is the signal.
+Both emitters previously referenced symbols without a shared contract: Rust carried a private standard-type table, while Haxe passed an unmapped named type verbatim into a `.hx` file. `compiler-runtime-contract` now owns the versioned neutral capability and external-type decision vocabulary plus exhaustive reachable-IR completeness. Flat Haxe and Rust sibling tables elect native or runtime representation independently, and an unmapped type refuses before target-name allocation or source generation.
 
 The architecture in [AGENTS.md](../AGENTS.md) already names it, one line per target:
 
@@ -87,7 +87,7 @@ This is where the neutral model meets each target's reality, so it is where the 
 
 Against the test, the contract's **lifecycle is genuinely independent**: its counterpart is implemented downstream, so it versions against `flight-hx` and `flight-rs` rather than against the emitter. Each downstream should declare which contract version it implements, so a compiler upgrade that adds a required symbol is detectable rather than a broken build.
 
-**Recommended shape:** a neutral `compiler-runtime-contract` cell owning the contract vocabulary, its versioning, and the completeness check, with each backend's binding table living as a flat sibling inside that backend's existing cell — the bindings are target data, and moving them out would invert the dependency.
+**Implemented shape:** a neutral `compiler-runtime-contract` cell owns the contract vocabulary, versioning, reachability, and completeness check. Each backend's binding table remains a flat sibling inside that backend's existing cell, so target data does not invert the dependency. Runtime implementations remain downstream.
 
 ## Missing cell 3 — reporting and coverage
 
@@ -129,7 +129,7 @@ Per package, against the repository's own rule that a package has one irreducibl
 
 ## Recommended order
 
-1. **The runtime contract**, with its completeness check before its tables. Closes the largest silent-wrong-output surface in the repository: an unmapped external type currently reaches a `.hx` file verbatim, and the completeness check turns that into a named failure before emission begins — repaired by adding a binding rather than by changing an emitter. Each backend then elects direct native mapping or contract routing per type.
+1. **Extend the runtime contract only from demonstrated reachability.** The external-type vocabulary, completeness check, and target tables are complete. Ambient runtime values, constructors, and static members are the next boundary when corpus evidence requires them.
 2. **Add neutral lowering passes one demonstrated refusal family at a time.** The pass lifecycle is now proven by C-style control flow; it does not justify a mandatory pre-backend pipeline or speculative transforms.
 3. **Decide whether `compiler-inventory` splits.** The host-access inversion AGENTS.md requires is done — one edge module, every analysis function taking a `WorkspaceSource` — so the boundary is enforced by types rather than asserted, and the split is now a mechanical move rather than a design question. It may also prove unnecessary, which is the cheaper outcome. The inversion's justification was the stated rule and the seam, **not** speed: the temp-directory tests cost 45ms, while every slow test in the package is one that constructs a TypeScript program, which the inversion does not touch.
 4. **Reporting**, as orchestration's own domain rather than a new cell, until a downstream consumer forces the versioning question.

@@ -1,0 +1,1 @@
+haxe emission failed for @flighthq/golden/packages/golden/src/runtimeExternalTypeMissing.ts: runtime external type binding plan is incomplete (missing: Date)

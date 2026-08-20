@@ -4,3 +4,7 @@ export {
   convertSourcePathToRustModuleName,
   isRustCompilerKeyword,
 } from './rustCompilerIdentity.js';
+export {
+  createCompilerRuntimeExternalTypeBindingPlanRust,
+  getCompilerRuntimeExternalTypeTargetRust,
+} from './rustRuntimeExternalTypeBinding.js';

@@ -37,7 +37,8 @@ Rust lowering, naming and source emission: ~1,280 lines across the emitter, the 
 - **Public-collision refusal.** Two exported declarations whose Rust spellings normalize to one name refuse with a message naming the shared spelling, rather than silently renaming one and changing the published API. Internal collisions still rename deterministically. Pinned by a golden fixture.
 - **Exact enum discriminants.** `#[repr(i32)]` enums emit integer discriminants, with out-of-range values and non-integer members refused. An earlier version emitted `A = 1.0` into a `repr(i32)` enum and `"a".to_owned()` for string enums.
 - **Closed operator handling** through exhaustive records, with everything unmapped refused.
-- **Structs from interfaces and object type aliases**, `Option<T>` for optional-plus-null unions, `Vec<T>` for arrays, tuples, and a standard-type table covering `Map`, `Set`, typed arrays and `Promise`.
+- **Structs from interfaces and object type aliases**, `Option<T>` for optional-plus-null unions, `Vec<T>` for arrays, and tuples.
+- **Explicit external-type election.** A versioned table maps collections and typed arrays directly to native Rust representations, routes `Promise` through the downstream task capability, and rejects every unknown reachable ambient type before target-name allocation.
 - **Correct `panic!` formatting.** `panic!("{:?}", …)` — the earlier over-escaped `"{{:?}}"` form was a hard compile error on every `throw`.
 - **Golden-pinned output and refusals**, including the name-collision refusal and the nullability refusals.
 
@@ -52,5 +53,5 @@ Rust lowering, naming and source emission: ~1,280 lines across the emitter, the 
 - **No exhaustiveness story for `match`.** Switch statements refuse, correctly, because the source language's non-exhaustive switch has no sound Rust form yet.
 - **Non-nullable unions, intersections, anonymous object types and construction, `Partial<T>`, object-key iteration and default parameters all refuse.**
 - **Integer width is unmodelled.** Every numeric is `f64`; array indices are cast `as usize` at use. Rust's integer types are where a large part of target correctness lives.
-- **`FlightCallback` and the opaque host value are named without a contract.** Emitted code references symbols whose shape is defined nowhere in this repository. The implementation belonging downstream is correct; the _contract_ not existing here is the gap, and it is the missing cell [the breadth analysis](../../compiler-breadth.md) proposes. `rustStandardType` is the same domain half-built and private to this emitter.
+- **Callback, opaque-host, symbol, and runtime value requirements are not completeness-checked.** Their neutral capability names now exist, but function, primitive, constructor, and static-member reachability has not yet been connected to the versioned plan.
 - **No output verification and no byte-parity harness** against `flight-rs`, same as the Haxe backend.

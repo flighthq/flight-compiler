@@ -161,7 +161,7 @@ Work from the dependency floor toward parity:
 1. Review the identity and failure vocabulary in `compiler-types`, without declaring the complete neutral IR stable or serializable.
 2. Finish and freeze the narrow `compiler-provenance`, `compiler-patch`, and `compiler-emission` primitives against the maturity rubric in [Compiler foundations](compiler-foundations.md).
 3. Audit `compiler-inventory` as the first composition above bedrock, adding direct tests for package discovery, export lanes, runtime bindings, host facts, exclusions, and deterministic reports.
-4. Establish the versioned runtime-contract vocabulary and deterministic completeness check before adding target binding tables.
+4. Extend the completed external-type runtime contract only when reachable runtime values, constructors, or static members demonstrate another neutral requirement.
 5. Review neutral declarations and types before expanding expression and statement lowering beyond the first verified control-flow pass.
 6. Define the public compile request/result only after the core vocabulary it exposes is worth preserving.
 7. Build the pinned Haxe parity harness when it can measure a stable compiler seam, then use mismatches to drive vertical capability slices.

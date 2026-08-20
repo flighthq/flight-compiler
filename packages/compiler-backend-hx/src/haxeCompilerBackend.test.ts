@@ -26,6 +26,24 @@ describe('createHaxeCompilerBackend', () => {
 });
 
 describe('emitIrModuleHaxe', () => {
+  it('emits explicit native and runtime external type bindings and rejects an incomplete plan first', () => {
+    const supported = lower(
+      'external-types.ts',
+      'export function preserve(values: Map<string, number>, bytes: Uint8Array, task: Promise<number>): Promise<number> { values; bytes; return task; }',
+    );
+    const missing = lower('external-missing.ts', 'export type operator = Date; export type operator_ = Date;');
+    const output = emitIrModuleHaxe(supported.module).contents;
+    const custom = emitIrModuleHaxe(supported.module, { runtimeModule: 'custom.runtime' }).contents;
+
+    expect(output).toContain('values:flighthq._internal._Map<String, Float>');
+    expect(output).toContain('bytes:flighthq._internal._UInt8Array');
+    expect(output).toContain('task:flighthq._internal._Promise<Float>');
+    expect(custom).toContain('task:custom.runtime._Promise<Float>');
+    expect(() => emitIrModuleHaxe(missing.module)).toThrow(
+      'runtime external type binding plan is incomplete (missing: Date)',
+    );
+  });
+
   it('elects C-style for lowering without lowering native Haxe default parameters', () => {
     const loop = lower(
       'loop.ts',

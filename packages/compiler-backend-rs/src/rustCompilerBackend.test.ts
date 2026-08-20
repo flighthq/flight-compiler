@@ -25,6 +25,22 @@ describe('createRustCompilerBackend', () => {
 });
 
 describe('emitIrModuleRust', () => {
+  it('emits explicit native and runtime external type bindings and rejects an incomplete plan first', () => {
+    const supported = lower(
+      'external-types.ts',
+      'export function preserve(values: Map<string, number>, bytes: Uint8Array, task: Promise<number>): Promise<number> { values; bytes; return task; }',
+    );
+    const missing = lower('external-missing.ts', 'export type fooBar = Date; export type foo_bar = Date;');
+    const output = emitIrModuleRust(supported.module).contents;
+
+    expect(output).toContain('values: std::collections::HashMap<String, f64>');
+    expect(output).toContain('bytes: Vec<u8>');
+    expect(output).toContain('task: FlightTask<f64>');
+    expect(() => emitIrModuleRust(missing.module)).toThrow(
+      'runtime external type binding plan is incomplete (missing: Date)',
+    );
+  });
+
   it('elects C-style for lowering while preserving Rust default-parameter refusal', () => {
     const loop = lower(
       'loop.ts',

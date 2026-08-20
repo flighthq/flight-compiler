@@ -10,6 +10,10 @@ import {
   createCompilerLoweringPassCStyleFor,
   lowerIrModuleWithCompilerPasses,
 } from '../../compiler-lowering/src/index.js';
+import {
+  analyzeCompilerRuntimeExternalTypeCompleteness,
+  collectIrModulesRuntimeExternalTypeIdentities,
+} from '../../compiler-runtime-contract/src/index.js';
 import type { CompilerBackend, EmittedFile, RustCompilerBackendOptions } from '../../compiler-types/src/index.js';
 import type {
   IrAssignmentOperator,
@@ -45,6 +49,10 @@ import {
   convertSourcePathToRustModuleName,
   isRustCompilerKeyword,
 } from './rustCompilerIdentity.js';
+import {
+  createCompilerRuntimeExternalTypeBindingPlanRust,
+  getCompilerRuntimeExternalTypeTargetRust,
+} from './rustRuntimeExternalTypeBinding.js';
 
 interface EmitContext {
   module: Readonly<IrModule>;
@@ -68,6 +76,7 @@ export function emitIrModuleRust(
   options: Readonly<RustCompilerBackendOptions> = {},
 ): EmittedFile {
   const module = lowerIrModuleWithCompilerPasses(sourceModule, [createCompilerLoweringPassCStyleFor()]);
+  assertRuntimeExternalTypeBindingsRust(module);
   const constantIdentities = new Set(
     module.declarations.flatMap((declaration) =>
       declaration.kind === 'variable' && !declaration.mutable ? [declaration.binding.id] : [],
@@ -460,10 +469,7 @@ function emitType(type: Readonly<IrType>, context: EmitContext): string {
       }
       if (sourceName === 'Partial' && type.typeArguments[0])
         emissionError(context, 'Partial<T> requires structural field lowering');
-      const mapped =
-        type.reference.kind === 'ambient'
-          ? rustStandardType(type.reference.name)
-          : getTypeReferenceTargetNameRust(type, context);
+      const mapped = getTypeReferenceTargetNameRust(type, context);
       const arguments_ = type.typeArguments.map((argument) => emitType(argument, context));
       return `${mapped}${arguments_.length > 0 ? `<${arguments_.join(', ')}>` : ''}`;
     }
@@ -564,9 +570,34 @@ function getPreferredBindingNameRust(
 }
 
 function getTypeReferenceTargetNameRust(type: Readonly<IrTypeReference>, context: EmitContext): string {
-  if (type.reference.kind === 'ambient') return safeRustTypeName(type.reference.name);
+  if (type.reference.kind === 'ambient') {
+    const targetName = getCompilerRuntimeExternalTypeTargetRust(type.reference.name);
+    if (!targetName) emissionError(context, `external type ${type.reference.name} has no Rust binding`);
+    return targetName;
+  }
   return [getBindingTargetNameRust(type.reference.binding, context), ...type.reference.path.map(safeRustTypeName)].join(
     '::',
+  );
+}
+
+function assertRuntimeExternalTypeBindingsRust(module: Readonly<IrModule>): void {
+  const completeness = analyzeCompilerRuntimeExternalTypeCompleteness(
+    collectIrModulesRuntimeExternalTypeIdentities([module]),
+    createCompilerRuntimeExternalTypeBindingPlanRust(),
+  );
+  if (completeness.kind === 'complete') return;
+  const problems = [
+    completeness.missingExternalTypes.length > 0
+      ? `missing: ${completeness.missingExternalTypes.map(({ sourceName }) => sourceName).join(', ')}`
+      : undefined,
+    completeness.duplicateExternalTypes.length > 0
+      ? `duplicate: ${completeness.duplicateExternalTypes.map(({ sourceName }) => sourceName).join(', ')}`
+      : undefined,
+  ].filter((problem): problem is string => problem !== undefined);
+  throw createBackendEmissionFailure(
+    'rust',
+    module,
+    `runtime external type binding plan is incomplete (${problems.join('; ')})`,
   );
 }
 
@@ -702,29 +733,6 @@ function rustImportModule(specifier: string, context: EmitContext): string {
     return convertPackageNameToRustCrateName(packageName).replaceAll('-', '_');
   }
   emissionError(context, `external import ${specifier} requires a runtime or standard-library mapping`);
-}
-
-function rustStandardType(name: string): string {
-  return (
-    (
-      {
-        Array: 'Vec',
-        Boolean: 'bool',
-        Float32Array: 'Vec<f32>',
-        Float64Array: 'Vec<f64>',
-        Int16Array: 'Vec<i16>',
-        Int32Array: 'Vec<i32>',
-        Int8Array: 'Vec<i8>',
-        Map: 'std::collections::HashMap',
-        Promise: 'FlightTask',
-        Set: 'std::collections::HashSet',
-        Uint16Array: 'Vec<u16>',
-        Uint32Array: 'Vec<u32>',
-        Uint8Array: 'Vec<u8>',
-        Uint8ClampedArray: 'Vec<u8>',
-      } as Readonly<Record<string, string>>
-    )[name] ?? safeRustTypeName(name)
-  );
 }
 
 function safeRustTypeName(name: string): string {

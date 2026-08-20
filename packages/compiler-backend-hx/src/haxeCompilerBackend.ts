@@ -10,6 +10,10 @@ import {
   createCompilerLoweringPassCStyleFor,
   lowerIrModuleWithCompilerPasses,
 } from '../../compiler-lowering/src/index.js';
+import {
+  analyzeCompilerRuntimeExternalTypeCompleteness,
+  collectIrModulesRuntimeExternalTypeIdentities,
+} from '../../compiler-runtime-contract/src/index.js';
 import type { CompilerBackend, EmittedFile, HaxeCompilerBackendOptions } from '../../compiler-types/src/index.js';
 import type {
   IrAssignmentOperator,
@@ -41,6 +45,10 @@ import type {
   IrVariableDeclaration,
 } from '../../compiler-types/src/index.js';
 import { convertPackageNameToHaxePackageName, convertSourcePathToHaxeModuleName } from './haxeCompilerIdentity.js';
+import {
+  createCompilerRuntimeExternalTypeBindingPlanHaxe,
+  getCompilerRuntimeExternalTypeTargetHaxe,
+} from './haxeRuntimeExternalTypeBinding.js';
 
 interface EmitContext {
   module: Readonly<IrModule>;
@@ -63,6 +71,7 @@ export function emitIrModuleHaxe(
   options: Readonly<HaxeCompilerBackendOptions> = {},
 ): EmittedFile {
   const module = lowerIrModuleWithCompilerPasses(sourceModule, [createCompilerLoweringPassCStyleFor()]);
+  assertRuntimeExternalTypeBindingsHaxe(module);
   const packageName = convertPackageNameToHaxePackageName(module.packageName, options.rootPackage);
   let targetNames: Map<string, string>;
   try {
@@ -552,7 +561,14 @@ function getBindingTargetNameHaxe(
 }
 
 function getTypeReferenceTargetNameHaxe(type: Readonly<IrTypeReference>, context: EmitContext): string {
-  if (type.reference.kind === 'ambient') return qualifiedHaxeName(type.reference.name);
+  if (type.reference.kind === 'ambient') {
+    const targetName = getCompilerRuntimeExternalTypeTargetHaxe(
+      type.reference.name,
+      context.options.runtimeModule ?? 'flighthq._internal',
+    );
+    if (!targetName) emissionError(context, `external type ${type.reference.name} has no Haxe binding`);
+    return targetName;
+  }
   return [
     getBindingTargetNameHaxe(type.reference.binding, context),
     ...type.reference.path.map((segment) => safeHaxeTypeName(segment)),
@@ -708,6 +724,27 @@ function assertNoSwitchFallthrough(statement: Extract<IrStatement, { kind: 'swit
   });
 }
 
+function assertRuntimeExternalTypeBindingsHaxe(module: Readonly<IrModule>): void {
+  const completeness = analyzeCompilerRuntimeExternalTypeCompleteness(
+    collectIrModulesRuntimeExternalTypeIdentities([module]),
+    createCompilerRuntimeExternalTypeBindingPlanHaxe(),
+  );
+  if (completeness.kind === 'complete') return;
+  const problems = [
+    completeness.missingExternalTypes.length > 0
+      ? `missing: ${completeness.missingExternalTypes.map(({ sourceName }) => sourceName).join(', ')}`
+      : undefined,
+    completeness.duplicateExternalTypes.length > 0
+      ? `duplicate: ${completeness.duplicateExternalTypes.map(({ sourceName }) => sourceName).join(', ')}`
+      : undefined,
+  ].filter((problem): problem is string => problem !== undefined);
+  throw createBackendEmissionFailure(
+    'haxe',
+    module,
+    `runtime external type binding plan is incomplete (${problems.join('; ')})`,
+  );
+}
+
 function pascalCase(value: string): string {
   const match = /^(?<prefix>_*)(?<name>.*)$/u.exec(value);
   const prefix = match?.groups?.prefix ?? '';
@@ -717,13 +754,6 @@ function pascalCase(value: string): string {
     .filter(Boolean)
     .map((part) => `${part.slice(0, 1).toUpperCase()}${part.slice(1)}`)
     .join('')}`;
-}
-
-function qualifiedHaxeName(name: string): string {
-  return name
-    .split('.')
-    .map((segment) => safeHaxeName(segment))
-    .join('.');
 }
 
 function safeHaxeName(name: string): string {

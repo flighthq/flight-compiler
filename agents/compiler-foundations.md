@@ -203,7 +203,7 @@ The control-flow-lowering batch completed three bounded iterations:
 2. Normalize C-style `for` statements while preserving initializer scope, omitted conditions, discarded numeric updates, and continue ownership across nested loops, switches, and `finally` boundaries.
 3. Have Haxe and Rust explicitly elect the pass, preserve target-specific default-parameter decisions, and lock direct and cross-target emitted output.
 
-The next runtime-contract batch has three bounded iterations:
+The runtime-contract batch completed three bounded iterations:
 
 1. Define the versioned runtime capability and external-type binding vocabulary in `compiler-types`, including a deterministic completeness result that names every missing decision.
 2. Implement the target-neutral completeness check over reachable inventory identities in a narrow `compiler-runtime-contract` package, without owning target names or downstream runtime implementations.
