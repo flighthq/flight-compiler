@@ -11,6 +11,7 @@ export type * from './compilerModuleIntermediateRepresentation.js';
 export type * from './compilerOperatorIntermediateRepresentation.js';
 export type * from './compilerOperatorSemanticIntermediateRepresentation.js';
 export type * from './compilerOrchestrationContract.js';
+export type * from './compilerRuntimeContract.js';
 export type * from './compilerSemanticPatchContract.js';
 export type * from './compilerSourceIdentity.js';
 export type * from './compilerStaticFactContract.js';
