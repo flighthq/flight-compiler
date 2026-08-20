@@ -32,6 +32,7 @@ const compilerInventoryFailureCodes = {
   'ambiguous-export': true,
   'duplicate-package-name': true,
   'invalid-git-commit': true,
+  'invalid-host-endpoint-receiver': true,
   'invalid-package-directory': true,
   'invalid-package-export': true,
   'invalid-package-manifest': true,

@@ -85,12 +85,13 @@ Exit criterion: one command produces a stable, actionable Haxe parity report wit
 
 ### 2. Complete shared inventory and provenance
 
-Status: partial.
+Status: partial; neutral static-fact and checker-resolved host-endpoint primitives exist, but downstream corpus parity does not.
 
 - Port export-lane, re-export, runtime binding, typed-structure, static-fact, host-surface, and exclusion analysis that is target-neutral.
 - Preserve exact package, module, declaration, and revision identities.
 - Move matching compiler-owned fixtures and failure tests with each capability.
 - Reject target-specific facts from neutral contracts unless their target-independent meaning is explicit.
+- Keep host receiver matching as an injected checker capability and host runtime implementation or conformance coverage in the target repositories.
 
 Exit criterion: Haxe inventory and compiler-input reports match for the pinned corpus before target emission begins.
 

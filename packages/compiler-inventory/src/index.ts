@@ -11,6 +11,7 @@ export {
   resolvePackageExportLane,
 } from './flightWorkspaceInventory.js';
 export { createTypeScriptProject } from './typeScriptProject.js';
+export { analyzeTypeScriptHostEndpoints } from './typeScriptHostEndpointInventory.js';
 export {
   analyzeTypeScriptSourceRuntimeExports,
   getTypeScriptSymbolRuntimeBindingDeclaration,

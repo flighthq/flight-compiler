@@ -151,6 +151,7 @@ export type CompilerInventoryFailureCode =
   | 'ambiguous-export'
   | 'duplicate-package-name'
   | 'invalid-git-commit'
+  | 'invalid-host-endpoint-receiver'
   | 'invalid-package-directory'
   | 'invalid-package-export'
   | 'invalid-package-manifest'

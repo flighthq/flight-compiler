@@ -3,6 +3,7 @@ export type * from './compilerBindingIntermediateRepresentation.js';
 export type * from './compilerDeclarationIntermediateRepresentation.js';
 export type * from './compilerDiagnosticContract.js';
 export type * from './compilerExecutableIntermediateRepresentation.js';
+export type * from './compilerHostEndpointContract.js';
 export type * from './compilerInventoryContract.js';
 export type * from './compilerModuleIntermediateRepresentation.js';
 export type * from './compilerOperatorIntermediateRepresentation.js';
