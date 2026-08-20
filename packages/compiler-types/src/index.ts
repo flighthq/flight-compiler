@@ -16,3 +16,4 @@ export type * from './compilerStaticFactContract.js';
 export type * from './compilerTargetNamingContract.js';
 export type * from './compilerTypeIntermediateRepresentation.js';
 export type * from './compilerTypeScriptContract.js';
+export type * from './compilerWorkspaceSourceContract.js';

@@ -1,3 +1,5 @@
+import type { WorkspaceSource } from './compilerWorkspaceSourceContract.js';
+
 export type ExportKind = 'class' | 'default' | 'enum' | 'function' | 'interface' | 'namespace' | 'type' | 'variable';
 
 export interface RuntimeBindingRecord {
@@ -124,6 +126,9 @@ export interface UpstreamInventory {
 
 export interface AnalyzeFlightWorkspaceOptions {
   readonly expectedExclusionPackageNames?: readonly string[] | undefined;
+  // Absent means the host filesystem. Supplying one lets a caller analyse a workspace that is not on
+  // disk, and lets analysis be exercised without a temporary directory.
+  readonly source?: WorkspaceSource | undefined;
   readonly packageScope?: string | undefined;
   readonly packagesDirectory?: string | undefined;
   readonly sdkPackageName?: string | undefined;

@@ -1,71 +1,72 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import os from 'node:os';
-import path from 'node:path';
-
+import type { AnalyzeFlightWorkspaceOptions } from '../../compiler-types/src/index.js';
 import { isCompilerInventoryFailure } from './compilerInventoryFailure.js';
 import { readFlightPackageManifests } from './flightPackageManifest.js';
+import { createMemoryWorkspaceSource } from './memoryWorkspaceSource.js';
+
+// The workspace is described rather than built. A directory exists here because a file inside it
+// does, so a package directory that should be skipped carries a non-manifest file rather than being
+// empty — which exercises the same rule and keeps the fixture readable in one place.
+const upstreamDirectory = '/flight';
+
+function manifest(contents: Readonly<Record<string, unknown>>): string {
+  return JSON.stringify(contents);
+}
+
+function read(files: Readonly<Record<string, string>>, options: Partial<AnalyzeFlightWorkspaceOptions> = {}): unknown {
+  return readFlightPackageManifests({ upstreamDirectory, ...options }, createMemoryWorkspaceSource(files));
+}
 
 describe('readFlightPackageManifests', () => {
   it('returns sorted portable manifest facts with merged production dependencies and bin shapes', () => {
-    const upstream = createDirectory();
-    try {
-      writeManifest(upstream, 'zeta', {
+    const manifests = read({
+      '/flight/packages/alpha/package.json': manifest({
+        bin: { first: './dist/first.js', second: './dist/second.js' },
+        name: '@flighthq/alpha',
+        version: '2.0.0',
+      }),
+      '/flight/packages/not-a-package/README.md': '# not a package\n',
+      '/flight/packages/zeta/package.json': manifest({
         bin: './dist/cli.js',
         dependencies: { zeta: '^1' },
         name: '@flighthq/zeta',
         optionalDependencies: { alpha: '^1' },
         peerDependencies: { zeta: '^2' },
         version: '1.0.0',
-      });
-      writeManifest(upstream, 'alpha', {
-        bin: { second: './dist/second.js', first: './dist/first.js' },
+      }),
+    });
+
+    expect(manifests).toEqual([
+      {
+        bins: [
+          { name: 'first', target: './dist/first.js' },
+          { name: 'second', target: './dist/second.js' },
+        ],
+        dependencies: [],
+        directory: 'packages/alpha',
         name: '@flighthq/alpha',
         version: '2.0.0',
-      });
-      mkdirSync(path.join(upstream, 'packages', 'not-a-package'));
-
-      const manifests = readFlightPackageManifests({ upstreamDirectory: upstream });
-
-      expect(manifests).toEqual([
-        {
-          bins: [
-            { name: 'first', target: './dist/first.js' },
-            { name: 'second', target: './dist/second.js' },
-          ],
-          dependencies: [],
-          directory: 'packages/alpha',
-          name: '@flighthq/alpha',
-          version: '2.0.0',
-        },
-        {
-          bins: [{ name: 'default', target: './dist/cli.js' }],
-          dependencies: ['alpha', 'zeta'],
-          directory: 'packages/zeta',
-          name: '@flighthq/zeta',
-          version: '1.0.0',
-        },
-      ]);
-    } finally {
-      rmSync(upstream, { force: true, recursive: true });
-    }
+      },
+      {
+        bins: [{ name: 'default', target: './dist/cli.js' }],
+        dependencies: ['alpha', 'zeta'],
+        directory: 'packages/zeta',
+        name: '@flighthq/zeta',
+        version: '1.0.0',
+      },
+    ]);
   });
 
-  it('accepts an empty packages directory and custom relative package location and scope', () => {
-    const upstream = createDirectory();
-    try {
-      expect(readFlightPackageManifests({ upstreamDirectory: upstream })).toEqual([]);
-      writeManifest(upstream, 'math', { name: '@example/math', version: '0.0.0' }, path.join('workspace', 'modules'));
+  it('accepts a packages directory holding no packages', () => {
+    expect(read({ '/flight/packages/.keep': '' })).toEqual([]);
+  });
 
-      expect(
-        readFlightPackageManifests({
-          packageScope: '@example',
-          packagesDirectory: 'workspace/modules',
-          upstreamDirectory: upstream,
-        }),
-      ).toEqual([expect.objectContaining({ directory: 'workspace/modules/math', name: '@example/math' })]);
-    } finally {
-      rmSync(upstream, { force: true, recursive: true });
-    }
+  it('accepts a custom relative package location and scope', () => {
+    expect(
+      read(
+        { '/flight/workspace/modules/math/package.json': manifest({ name: '@example/math', version: '0.0.0' }) },
+        { packageScope: '@example', packagesDirectory: 'workspace/modules' },
+      ),
+    ).toEqual([expect.objectContaining({ directory: 'workspace/modules/math', name: '@example/math' })]);
   });
 
   it('fails with stable codes for invalid directory, JSON, metadata, scope, dependencies, bins, and duplicates', () => {
@@ -76,100 +77,62 @@ describe('readFlightPackageManifests', () => {
         | 'invalid-package-manifest'
         | 'invalid-package-scope'
         | 'missing-packages-directory';
-      prepare: (upstream: string) => Parameters<typeof readFlightPackageManifests>[0];
+      files: Readonly<Record<string, string>>;
+      options?: Partial<AnalyzeFlightWorkspaceOptions>;
     }> = [
       {
         code: 'missing-packages-directory',
-        prepare: (upstream) => ({ packagesDirectory: 'missing', upstreamDirectory: upstream }),
+        files: { '/flight/packages/.keep': '' },
+        options: { packagesDirectory: 'missing' },
       },
       {
         code: 'invalid-package-directory',
-        prepare: (upstream) => ({ packagesDirectory: '..', upstreamDirectory: upstream }),
+        files: { '/flight/packages/.keep': '' },
+        options: { packagesDirectory: '..' },
       },
+      { code: 'invalid-package-manifest', files: { '/flight/packages/math/package.json': '{ invalid' } },
       {
         code: 'invalid-package-manifest',
-        prepare: (upstream) => {
-          write(upstream, 'packages/math/package.json', '{ invalid');
-          return { upstreamDirectory: upstream };
-        },
-      },
-      {
-        code: 'invalid-package-manifest',
-        prepare: (upstream) => {
-          writeManifest(upstream, 'math', { name: '@flighthq/math' });
-          return { upstreamDirectory: upstream };
-        },
+        files: { '/flight/packages/math/package.json': manifest({ name: '@flighthq/math' }) },
       },
       {
         code: 'invalid-package-scope',
-        prepare: (upstream) => {
-          writeManifest(upstream, 'math', { name: '@other/math', version: '0.0.0' });
-          return { upstreamDirectory: upstream };
-        },
+        files: { '/flight/packages/math/package.json': manifest({ name: '@other/math', version: '0.0.0' }) },
       },
       {
         code: 'invalid-package-manifest',
-        prepare: (upstream) => {
-          writeManifest(upstream, 'math', {
+        files: {
+          '/flight/packages/math/package.json': manifest({
             dependencies: { typescript: 5 },
             name: '@flighthq/math',
             version: '0.0.0',
-          });
-          return { upstreamDirectory: upstream };
+          }),
         },
       },
       {
         code: 'invalid-package-manifest',
-        prepare: (upstream) => {
-          writeManifest(upstream, 'math', { bin: [], name: '@flighthq/math', version: '0.0.0' });
-          return { upstreamDirectory: upstream };
+        files: {
+          '/flight/packages/math/package.json': manifest({ bin: [], name: '@flighthq/math', version: '0.0.0' }),
         },
       },
       {
         code: 'duplicate-package-name',
-        prepare: (upstream) => {
-          writeManifest(upstream, 'math-a', { name: '@flighthq/math', version: '0.0.0' });
-          writeManifest(upstream, 'math-b', { name: '@flighthq/math', version: '0.0.0' });
-          return { upstreamDirectory: upstream };
+        files: {
+          '/flight/packages/math-a/package.json': manifest({ name: '@flighthq/math', version: '0.0.0' }),
+          '/flight/packages/math-b/package.json': manifest({ name: '@flighthq/math', version: '0.0.0' }),
         },
       },
     ];
 
     for (const testCase of cases) {
-      const upstream = createDirectory();
+      let failure: unknown;
       try {
-        let failure: unknown;
-        try {
-          readFlightPackageManifests(testCase.prepare(upstream));
-        } catch (error) {
-          failure = error;
-        }
-        expect(isCompilerInventoryFailure(failure), testCase.code).toBe(true);
-        expect(failure).toMatchObject({ code: testCase.code, kind: 'compiler-inventory' });
-      } finally {
-        rmSync(upstream, { force: true, recursive: true });
+        read(testCase.files, testCase.options);
+      } catch (error) {
+        failure = error;
       }
+      expect(isCompilerInventoryFailure(failure), testCase.code).toBe(true);
+      expect(failure).toMatchObject({ code: testCase.code, kind: 'compiler-inventory' });
     }
   });
 });
-
-function createDirectory(packagesDirectory = 'packages'): string {
-  const directory = mkdtempSync(path.join(os.tmpdir(), 'flight-compiler-package-manifest-'));
-  mkdirSync(path.join(directory, packagesDirectory), { recursive: true });
-  return directory;
-}
-
-function writeManifest(
-  upstream: string,
-  directory: string,
-  manifest: Readonly<Record<string, unknown>>,
-  packagesDirectory = 'packages',
-): void {
-  write(upstream, path.join(packagesDirectory, directory, 'package.json'), JSON.stringify(manifest));
-}
-
-function write(directory: string, file: string, contents: string): void {
-  const target = path.join(directory, file);
-  mkdirSync(path.dirname(target), { recursive: true });
-  writeFileSync(target, contents);
-}

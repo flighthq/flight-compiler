@@ -25,6 +25,7 @@ import { analyzeFlightPackageHostFacts } from './flightPackageHostFacts.js';
 import { analyzeFlightPackageImports } from './flightPackageImport.js';
 import { readFlightPackageManifests } from './flightPackageManifest.js';
 import { readGitCommit } from './gitCheckoutRevision.js';
+import { createHostWorkspaceSource } from './hostWorkspaceSource.js';
 import { createTypeScriptProject } from './typeScriptProject.js';
 import { analyzeTypeScriptSourceRuntimeExports } from './typeScriptRuntimeBinding.js';
 
@@ -62,7 +63,9 @@ export function analyzeFlightWorkspace(options: Readonly<AnalyzeFlightWorkspaceO
   const upstreamDirectory = path.resolve(options.upstreamDirectory);
   const packageScope = options.packageScope ?? '@flighthq';
   const sdkPackageName = options.sdkPackageName ?? `${packageScope}/sdk`;
-  const packageManifests = readFlightPackageManifests(options);
+  // The one place the host default is chosen; everything below takes the capability.
+  const workspaceSource = options.source ?? createHostWorkspaceSource();
+  const packageManifests = readFlightPackageManifests(options, workspaceSource);
   const packageManifestByName = new Map(packageManifests.map((manifest) => [manifest.name, manifest]));
   const packages = packageManifests.map(
     (manifest): PackageDescriptor => ({

@@ -1,21 +1,22 @@
-import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import path from 'node:path';
 
 import type {
   FlightPackageManifest,
   PackageBinEntry,
   ReadFlightPackageManifestsOptions,
+  WorkspaceSource,
 } from '../../compiler-types/src/index.js';
 import { createCompilerInventoryFailure } from './compilerInventoryFailure.js';
 
 export function readFlightPackageManifests(
   options: Readonly<ReadFlightPackageManifestsOptions>,
+  source: WorkspaceSource,
 ): readonly FlightPackageManifest[] {
   const upstreamDirectory = path.resolve(options.upstreamDirectory);
   const packagesDirectory = path.resolve(upstreamDirectory, options.packagesDirectory ?? 'packages');
   const packageScope = options.packageScope ?? '@flighthq';
   const portablePackagesDirectory = relativeUpstreamPath(packagesDirectory, upstreamDirectory);
-  if (!existsSync(packagesDirectory) || !statSync(packagesDirectory).isDirectory()) {
+  if (!source.isDirectory(packagesDirectory)) {
     throw createCompilerInventoryFailure(
       'missing-packages-directory',
       portablePackagesDirectory,
@@ -23,11 +24,12 @@ export function readFlightPackageManifests(
     );
   }
 
-  const manifests = readdirSync(packagesDirectory, { withFileTypes: true })
-    .filter((entry) => entry.isDirectory())
+  const manifests = source
+    .listDirectory(packagesDirectory)
+    .filter((entry) => entry.isDirectory)
     .map((entry) => path.join(packagesDirectory, entry.name, 'package.json'))
-    .filter((manifestPath) => existsSync(manifestPath))
-    .map((manifestPath) => readFlightPackageManifest(manifestPath, upstreamDirectory, packageScope))
+    .filter((manifestPath) => source.isFile(manifestPath))
+    .map((manifestPath) => readFlightPackageManifest(manifestPath, upstreamDirectory, packageScope, source))
     .sort((left, right) => compareText(left.name, right.name));
   for (let index = 1; index < manifests.length; index += 1) {
     if (manifests[index - 1]!.name === manifests[index]!.name) {
@@ -49,11 +51,12 @@ function readFlightPackageManifest(
   manifestPath: string,
   upstreamDirectory: string,
   packageScope: string,
+  source: WorkspaceSource,
 ): FlightPackageManifest {
   const subject = relativeUpstreamPath(manifestPath, upstreamDirectory);
   let parsed: unknown;
   try {
-    parsed = JSON.parse(readFileSync(manifestPath, 'utf8')) as unknown;
+    parsed = JSON.parse(source.readTextFile(manifestPath)) as unknown;
   } catch (error) {
     throw createCompilerInventoryFailure(
       'invalid-package-manifest',
