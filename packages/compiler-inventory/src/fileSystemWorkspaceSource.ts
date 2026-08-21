@@ -3,10 +3,10 @@ import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import type { WorkspaceSource, WorkspaceSourceEntry } from '../../compiler-types/src/index.js';
 import { createCompilerInventoryFailure } from './compilerInventoryFailure.js';
 
-// The one place inventory touches the host filesystem. Everything else takes the capability, so the
-// import of `node:fs` above is the package's complete host surface for reading a workspace.
+// The one place inventory touches a real filesystem. Everything else takes the capability, so the
+// import of `node:fs` above is the package's complete filesystem surface for reading a workspace.
 
-export function createHostWorkspaceSource(): WorkspaceSource {
+export function createFileSystemWorkspaceSource(): WorkspaceSource {
   return {
     isDirectory: (candidate: string): boolean => existsSync(candidate) && statSync(candidate).isDirectory(),
     isFile: (candidate: string): boolean => existsSync(candidate) && statSync(candidate).isFile(),

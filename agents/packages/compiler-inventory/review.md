@@ -25,7 +25,7 @@ The largest package: 12 implementation sources and ~3,500 lines covering package
 - **Host and platform facts**: which packages touch the host, which endpoints they call, what capability each implies, and what a target must provide to satisfy them. Partly present and new.
 - **Exclusion and inclusion rules** that explain themselves: what is out of the port and _why_, sourced from declaration rather than inference. Present in first form.
 - **A stable, versioned report** consumable by a downstream repository without this compiler in scope, with counts that add up and provenance for every record.
-- **Determinism independent of host**: filesystem order, locale, case-sensitivity and path separators cannot change the output. Largely present.
+- **Determinism independent of the machine**: filesystem order, locale, case-sensitivity and path separators cannot change the output. Largely present.
 - **Incrementality**: re-analysing an unchanged checkout is cheap, keyed on file identity, because this is the slowest thing the compiler does.
 - **Diffability**: two inventories of two revisions produce a structured difference — added, removed, changed exports — which is how a port tracks upstream drift.
 
@@ -37,7 +37,7 @@ The largest package: 12 implementation sources and ~3,500 lines covering package
 - **Runtime binding classification.** Const enums under `preserveConstEnums`/`isolatedModules`, ambient declarations, alias resolution and explicit `export type` are each handled, and the record carries the binding's own fingerprint when it differs from the export's.
 - **Failure identity.** `compilerInventoryFailure.ts` gives the package tagged failures with codes and guards rather than bare `Error`s, matching the house contract.
 - **Exclusions, host facts and host endpoints** are modelled as their own primitives with colocated tests, which is the right decomposition even though the content is early.
-- **Portable, deterministic output.** Sorted package, lane and export lists; relative POSIX paths; no absolute host paths; the shared `compiler-canonical-form` primitives prevent host path and locale differences from changing a report.
+- **Portable, deterministic output.** Sorted package, lane and export lists; relative POSIX paths; no absolute machine paths; the shared `compiler-canonical-form` primitives prevent machine path and locale differences from changing a report.
 - **Checkout identity.** `gitCheckoutRevision` pins the upstream commit into the report, which is what makes an inventory comparable across runs.
 - **`.tsx` handled by extension** rather than parsed as `.ts`, closing an earlier defect where JSX would silently misparse.
 
@@ -56,7 +56,7 @@ The largest package: 12 implementation sources and ~3,500 lines covering package
 
 406 mutants across fourteen files: 273 killed, 133 survived. The distribution is the finding, more than any single survivor.
 
-The small primitives are proven. `flightPackageExportLane`, `hostWorkspaceSource`, `typeScriptProject`, and `gitCheckoutRevision` have **no** survivors at all. `flightWorkspaceInventory` — 766 lines, the orchestrating analysis the whole package exists to produce — has **56 survivors out of 108 mutants**, over half. Verification quality here tracks file size and role in exactly the wrong direction: the pieces that are easy to test are tested, and the piece that decides what the compiler sees is the least checked.
+The small primitives are proven. `flightPackageExportLane`, `fileSystemWorkspaceSource`, `typeScriptProject`, and `gitCheckoutRevision` have **no** survivors at all. `flightWorkspaceInventory` — 766 lines, the orchestrating analysis the whole package exists to produce — has **56 survivors out of 108 mutants**, over half. Verification quality here tracks file size and role in exactly the wrong direction: the pieces that are easy to test are tested, and the piece that decides what the compiler sees is the least checked.
 
 Three real gaps were closed rather than filed:
 
@@ -76,16 +76,16 @@ Left open deliberately, and worth naming rather than quietly skipping: roughly f
 
 ## Reviewer note — what the portable path rule merges
 
-`normalizePathPortable` converts every backslash to a slash, host-independently. That is the right call: the alternative spelling it replaced was host-dependent, and host-dependent identity is the defect. But the rule is lossy in one direction that this package is the one to notice, because it is the package that turns real filesystem entries into source identities.
+`normalizePathPortable` converts every backslash to a slash, machine-independently. That is the right call: the alternative spelling it replaced was machine-dependent, and machine-dependent identity is the defect. But the rule is lossy in one direction that this package is the one to notice, because it is the package that turns real filesystem entries into source identities.
 
 A backslash is a legal character in a POSIX filename — POSIX forbids only `/` and NUL. `normalizePathPortable` is applied to `path.relative(upstreamDirectory, file)`, so a real POSIX file named `weird\name.ts` becomes the identity `weird/name.ts`: the identity of a file in a directory that does not exist. Worse, it is a **collision** — a real `weird/name.ts` alongside it maps to the same identity, and source identity is fingerprinted and carried as provenance. Emission refuses colliding emitted paths; nothing refuses two upstream files collapsing into one identity before emission ever sees them.
 
-Closed at the discovery edge: `createHostWorkspaceSource` now refuses an entry whose own name contains a backslash, under `invalid-source-path`, before joining or normalizing. The reasoning below is why that layer is the right one.
+Closed at the discovery edge: `createFileSystemWorkspaceSource` now refuses an entry whose own name contains a backslash, under `invalid-source-path`, before joining or normalizing. The reasoning below is why that layer is the right one.
 
-The fix is not to restore the host-dependent spelling. It is that a backslash inside a single **directory entry name** is unambiguous — it is part of the name, not a separator — while a backslash in a path _assembled by the host's path API_ is a separator on Windows. Refusing a discovered entry whose own name contains a backslash, under the existing `invalid-source-path` code, keeps the determinism and removes the collision. Pathological input, legal input, and currently silent.
+The fix is not to restore the machine-dependent spelling. It is that a backslash inside a single **directory entry name** is unambiguous — it is part of the name, not a separator — while a backslash in a path _assembled by the machine's path API_ is a separator on Windows. Refusing a discovered entry whose own name contains a backslash, under the existing `invalid-source-path` code, keeps the determinism and removes the collision. Pathological input, legal input, and currently silent.
 
 One thing the first fix left behind, since closed: the rule lived in one of the two implementations of `WorkspaceSource` rather than in the capability contract. `createMemoryWorkspaceSource` normalizes its keys through `normalizePathPortable`, so a key of `weird\name.ts` silently becomes `weird/name.ts` — precisely what the host source now refuses. The fake therefore accepts a workspace production rejects, which lets a fixture assert behavior on a state that cannot occur, and a third implementation — the memory source's own comment anticipates an editor or a bundler — would reintroduce the collision with nothing to stop it.
 
 `WorkspaceSourceEntry.name` is one path segment, and "a segment contains no separator" is a property of the capability rather than of one implementation. The contract now states it, and the memory source refuses such a key rather than reinterpreting it, so both implementations answer the same way.
 
-Both sources still normalize separators on _lookup_, so a memory workspace answers `isFile` for a backslash-spelled query that a POSIX host would miss. That asymmetry is deliberate and unreachable from compiler code: every path reaching a lookup has already been through `normalizePathPortable`, and leniency on a query cannot create an identity, only find one that a stricter spelling would have found too.
+Both sources still normalize separators on _lookup_, so a memory workspace answers `isFile` for a backslash-spelled query that a POSIX machine would miss. That asymmetry is deliberate and unreachable from compiler code: every path reaching a lookup has already been through `normalizePathPortable`, and leniency on a query cannot create an identity, only find one that a stricter spelling would have found too.

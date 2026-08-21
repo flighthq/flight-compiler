@@ -24,6 +24,16 @@ The verb states the operation. The type segment names the complete compiler type
 
 Types and interfaces remain globally unique concept nouns in `compiler-types`; the verb grammar applies only to runtime APIs. Package slugs use the approved `hx` and `rs` tokens, while source symbols spell `Haxe` and `Rust` in full. For target-neutral IR inputs, the target is the modifier: `emitIrModuleHaxe` and `emitIrModuleRust`. A target-specific backend is itself the allocated type identity: `createHaxeCompilerBackend` and `createRustCompilerBackend`.
 
+## Reserved Words
+
+Three environments meet in this compiler and the words for them are not interchangeable. [AGENTS.md](../AGENTS.md) defines the distinction; the naming consequence is:
+
+- **Runtime** names the ambient surface generated code may assume. Use it for capability names, binding plans, and external-symbol identity.
+- **Host** names the environment that embeds and runs the generated program — Capacitor, Electron, Node, Playwright, Tauri. Use it for endpoint inventories, package host facts, and opaque host values.
+- **Machine** names the computer the compiler runs on. Use it for determinism and portability concerns: separators, locale, filesystem order, absolute paths.
+
+Never spell the third sense "host". `createFileSystemWorkspaceSource` is named for what it reads, not for the computer it reads on, and its sibling is `createMemoryWorkspaceSource` — filesystem versus memory is the real distinction. The TypeScript compiler API spells the machine sense `ts.CompilerHost`; that vocabulary belongs to the API this compiler consumes, not to the names authored here.
+
 ## Enforcement
 
 `npm run packages:check` rejects duplicate non-routine TypeScript basenames, verb-shaped or generic source names, duplicate exported declarations, exported runtime constants, and exported functions outside the approved verb-first grammar. Outside the type-only `compiler-types` workspace, `npm run exports:check` requires a matching concept test file and an exact `describe('<function>')` block for every exported function. The latter is a structural naming gate, not proof that an assertion exercises the function. The AST helpers and naming predicates have focused unit coverage in `scripts/packageHealthAst.test.ts`.

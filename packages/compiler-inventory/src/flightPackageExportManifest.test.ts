@@ -4,8 +4,8 @@ import path from 'node:path';
 
 import type { CompilerInventoryFailureCode } from '../../compiler-types/src/index.js';
 import { isCompilerInventoryFailure } from './compilerInventoryFailure.js';
+import { createFileSystemWorkspaceSource } from './fileSystemWorkspaceSource.js';
 import { readPackageExportManifest } from './flightPackageExportManifest.js';
-import { createHostWorkspaceSource } from './hostWorkspaceSource.js';
 
 describe('readPackageExportManifest', () => {
   it('resolves every condition and lane to deterministic source-barrel identities', () => {
@@ -19,7 +19,11 @@ describe('readPackageExportManifest', () => {
     });
     try {
       expect(
-        readPackageExportManifest(path.join(upstream, 'packages', 'types'), createHostWorkspaceSource(), upstream),
+        readPackageExportManifest(
+          path.join(upstream, 'packages', 'types'),
+          createFileSystemWorkspaceSource(),
+          upstream,
+        ),
       ).toEqual([
         {
           conditions: [
@@ -61,7 +65,11 @@ describe('readPackageExportManifest', () => {
       try {
         expectInventoryFailure(
           () =>
-            readPackageExportManifest(path.join(upstream, 'packages', 'types'), createHostWorkspaceSource(), upstream),
+            readPackageExportManifest(
+              path.join(upstream, 'packages', 'types'),
+              createFileSystemWorkspaceSource(),
+              upstream,
+            ),
           code,
         );
       } finally {
@@ -76,22 +84,26 @@ describe('readPackageExportManifest', () => {
     const packageDirectory = path.join(upstream, 'packages', 'types');
     try {
       expectInventoryFailure(
-        () => readPackageExportManifest(packageDirectory, createHostWorkspaceSource(), upstream),
+        () => readPackageExportManifest(packageDirectory, createFileSystemWorkspaceSource(), upstream),
         'unresolved-source',
       );
       expectInventoryFailure(
         () =>
-          readPackageExportManifest(path.join(external, 'packages', 'types'), createHostWorkspaceSource(), upstream),
+          readPackageExportManifest(
+            path.join(external, 'packages', 'types'),
+            createFileSystemWorkspaceSource(),
+            upstream,
+          ),
         'invalid-source-path',
       );
       writeFileSync(path.join(packageDirectory, 'package.json'), '{');
       expectInventoryFailure(
-        () => readPackageExportManifest(packageDirectory, createHostWorkspaceSource(), upstream),
+        () => readPackageExportManifest(packageDirectory, createFileSystemWorkspaceSource(), upstream),
         'invalid-package-manifest',
       );
       writeFileSync(path.join(packageDirectory, 'package.json'), '[]');
       expectInventoryFailure(
-        () => readPackageExportManifest(packageDirectory, createHostWorkspaceSource(), upstream),
+        () => readPackageExportManifest(packageDirectory, createFileSystemWorkspaceSource(), upstream),
         'invalid-package-manifest',
       );
       writeFileSync(
@@ -99,7 +111,7 @@ describe('readPackageExportManifest', () => {
         JSON.stringify({ exports: {}, name: '@flighthq/types' }),
       );
       expectInventoryFailure(
-        () => readPackageExportManifest(packageDirectory, createHostWorkspaceSource(), upstream),
+        () => readPackageExportManifest(packageDirectory, createFileSystemWorkspaceSource(), upstream),
         'invalid-package-manifest',
       );
     } finally {

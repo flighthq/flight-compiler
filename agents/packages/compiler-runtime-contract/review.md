@@ -14,7 +14,7 @@ The target-neutral seam that identifies reachable ambient source symbols and pro
 
 ## Verdict
 
-**near-mature — 86/100.** `flight-runtime-contract/2` closes the false equivalence between a source type and its runtime value. Reachability is exhaustive over the current IR, includes constructors, static members, direct values and `typeof` queries, excludes lexical bindings and declared intrinsics, and normalizes exact source identity before host-independent ordering. Completeness independently reports every missing and duplicate type/value decision; mutation kills every generated contract mutant. Remaining work needs new requirement families or diagnostic evidence, not more branches in the ambient-symbol model.
+**near-mature — 86/100.** `flight-runtime-contract/2` closes the false equivalence between a source type and its runtime value. Reachability is exhaustive over the current IR, includes constructors, static members, direct values and `typeof` queries, excludes lexical bindings and declared intrinsics, and normalizes exact source identity before machine-independent ordering. Completeness independently reports every missing and duplicate type/value decision; mutation kills every generated contract mutant. Remaining work needs new requirement families or diagnostic evidence, not more branches in the ambient-symbol model.
 
 ## Present capabilities
 
@@ -28,7 +28,7 @@ The target-neutral seam that identifies reachable ambient source symbols and pro
 
 ## Gaps
 
-- Primitive `symbol`, function callbacks and opaque host values have capability vocabulary but no demonstrated completeness identity yet.
+- Primitive `symbol` and function callbacks have capability vocabulary but no demonstrated completeness identity yet: nothing binds them and nothing consumes them. The third orphan, `host-value`, was removed — an opaque host value is a host concern, and its target representation is already a backend option (`opaqueHostType`) rather than a runtime capability.
 - A missing decision names the exact symbol and space but not the modules or declarations that made it reachable.
 - The in-process typed plan has no untyped document parser or tagged invalid-document failure; add that only if plans cross a serialization boundary.
 - Target tables state the compiler election, not whether a particular downstream runtime release implements the elected contract version; that compatibility handshake belongs at integration time.

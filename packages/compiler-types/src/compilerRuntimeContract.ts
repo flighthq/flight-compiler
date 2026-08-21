@@ -1,8 +1,10 @@
+// Runtime capabilities name what the ambient runtime surface must provide. Host concerns do not
+// belong here: the host lane is discovered and registered explicitly, and a target's representation
+// for an opaque host value is a backend option (`opaqueHostType`), not a runtime capability.
 export type CompilerRuntimeCapabilityName =
   | 'callback'
   | 'float32-array'
   | 'float64-array'
-  | 'host-value'
   | 'int8-array'
   | 'int16-array'
   | 'int32-array'

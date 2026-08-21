@@ -62,7 +62,7 @@ The repository follows Flight's package-per-domain convention. Internal workspac
 - `packages/compiler-emission/`: target-neutral backend and output infrastructure.
 - `packages/compiler-lowering/`: backend-elected, target-neutral IR-to-IR passes and verification.
 - `packages/compiler-module/`: target-neutral module linking, initialization, temporal access, live bindings, and evaluation order.
-- `packages/compiler-canonical-form/`: dependency-free, host-independent canonical forms for deterministic compiler data.
+- `packages/compiler-canonical-form/`: dependency-free, machine-independent canonical forms for deterministic compiler data.
 - `packages/compiler-backend-hx/`: Haxe-specific lowering, naming, and source emission.
 - `packages/compiler-backend-rs/`: Rust-specific lowering, naming, and source emission.
 - `packages/compiler-orchestration/`: deterministic pipeline composition.
@@ -89,7 +89,7 @@ The dependency floor is deliberate:
 
 - `compiler-types` defines vocabulary and contracts without implementation dependencies.
 - `compiler-closure` derives representation-free closure obligations over shared IR traversal.
-- `compiler-provenance` defines deterministic normalization and exact source-fingerprint identity over shared contracts and host-independent canonical form.
+- `compiler-provenance` defines deterministic normalization and exact source-fingerprint identity over shared contracts and machine-independent canonical form.
 - `compiler-patch` depends on shared contracts, deterministic canonical form, and exact provenance identity; `compiler-emission` depends only on its contracts and canonical form.
 - `compiler-ir-validation` verifies target-neutral IR structure over shared contracts and exact provenance identity.
 - `compiler-ir-traversal` provides dependency-floor, read-only IR observation over `compiler-types` without embedding analysis policy.
@@ -100,9 +100,21 @@ The dependency floor is deliberate:
 - `compiler-module` defines graph linking, instantiation, temporal access, live binding cells, and dependency-first evaluation over canonical form, traversal, and shared contracts.
 - inventory, semantic lowering, backends, and orchestration are compositions above that floor. Haxe task emission additionally composes `compiler-task` state-machine analysis with the target runtime-capability election.
 
-Before expanding a higher package, read [the compiler foundations audit](agents/compiler-foundations.md). A foundation is mature only when its boundary is narrow, its vocabulary is worth freezing, deterministic behavior is tested by equivalence and counterexample, failure values are inspectable, and callers cannot observe accidental mutation or host-platform differences.
+Before expanding a higher package, read [the compiler foundations audit](agents/compiler-foundations.md). A foundation is mature only when its boundary is narrow, its vocabulary is worth freezing, deterministic behavior is tested by equivalence and counterexample, failure values are inspectable, and callers cannot observe accidental mutation or machine differences.
 
 Keep imports side-effect-free. Importing the package must not read a checkout, start work, mutate registries, or write reports. Filesystem work begins only when a caller invokes an explicit function.
+
+## Runtime, Host, and Machine
+
+Three environments meet in this compiler and only one of them may be called the host.
+
+**Runtime** is the ambient surface generated code may assume: `Promise`, `Math`, `Map`, the typed arrays. It is a _proven-total_ lane. Reachability collects every ambient symbol a module reaches, each one must receive exactly one binding in `flight-runtime-contract/2`, and an incomplete plan fails loudly. Completeness is what lets the runtime lane need no registration, so the completeness gate is load-bearing rather than decorative.
+
+**Host** is the environment that embeds and runs the generated program — Capacitor, Electron, Node, Playwright, Tauri. It is a _discovered-partial_ lane. Endpoints are found by walking call sites with a caller-injected receiver resolver, and the result is evidence about what a package touches. It is never required to be complete, which is why host use is registered explicitly and runtime use is not.
+
+_Proven-total versus discovered-partial_ is the real distinction. Completeness cannot be proven over a set that is discovered, so the two lanes cannot merge.
+
+**Machine** is the computer the compiler itself runs on. Its separator, locale, filesystem order, and absolute paths must never reach output. Use "machine" for this sense — never "host", which this repository reserves for the embedding environment above. Note that the TypeScript compiler API spells this sense `ts.CompilerHost`; the vocabularies deliberately disagree, and ours is the one that applies to names authored here.
 
 ## Modeling Rules
 
@@ -113,7 +125,7 @@ Keep imports side-effect-free. Importing the package must not read a checkout, s
 - Every declaration and patch retains stable upstream identity: package name, source path, export name, and normalized SHA-256 fingerprint.
 - Deterministic outputs contain no timestamps, machine-specific absolute paths, or filesystem iteration order.
 - Deterministic package ordering uses `compareTextCodeUnits` from `compiler-canonical-form`; package source does not define local text comparators or call locale-sensitive `localeCompare`.
-- Portable compiler path separator form uses `normalizePathPortable` from `compiler-canonical-form`; package source does not locally translate backslash or the current host's `path.sep` to slash.
+- Portable compiler path separator form uses `normalizePathPortable` from `compiler-canonical-form`; package source does not locally translate backslash or the current machine's `path.sep` to slash.
 - Expected environmental absence returns a structured result where the API defines one. Invalid compiler configuration, unresolved public exports, ambiguous patches, and stale fingerprints fail loudly.
 - Use small free functions and plain data. Compiler packages do not define classes; tagged diagnostic values and explicit function records provide failure and capability contracts.
 - Exported names must be globally understandable without relying on a deep import path for context.
@@ -173,7 +185,7 @@ Use npm, not pnpm or Yarn. Node.js 22 or newer is required. Script names follow 
 
 Tests should use temporary fixture workspaces and assert both success and fail-loudly behavior. Compiler changes require a focused regression covering the smallest syntax or graph shape that exposes the rule. Tests must not depend on a network checkout.
 
-See [the testing conventions](agents/conventions/testing.md) for test structure, instrument choice, and the named shapes in which a green run proves nothing. Bedrock tests are example-driven specifications, not coverage decoration. Test empty values, boundary values, malformed values, host-path differences, input immutability, deterministic ordering, idempotence where meaningful, and every tagged failure code. For normalization, test formatting-equivalent inputs and meaningfully distinct near-neighbors side by side.
+See [the testing conventions](agents/conventions/testing.md) for test structure, instrument choice, and the named shapes in which a green run proves nothing. Bedrock tests are example-driven specifications, not coverage decoration. Test empty values, boundary values, malformed values, machine path differences, input immutability, deterministic ordering, idempotence where meaningful, and every tagged failure code. For normalization, test formatting-equivalent inputs and meaningfully distinct near-neighbors side by side.
 
 Coverage thresholds are enforced ratchets, not aspirational targets: the current 75% branches, 90% functions, 86% lines, and 83% statements floors sit immediately below the measured baseline so regressions fail promptly. Maintain or raise them as exercised compiler surface grows. Lowering a threshold requires an explicit architectural justification.
 

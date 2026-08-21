@@ -1,7 +1,7 @@
 import { normalizePathPortable } from './compilerPortablePath.js';
 
 describe('normalizePathPortable', () => {
-  it('canonicalizes every separator spelling independently of the host platform', () => {
+  it('canonicalizes every separator spelling independently of the machine platform', () => {
     expect(normalizePathPortable('packages\\math/src\\value.ts')).toBe('packages/math/src/value.ts');
     expect(normalizePathPortable('packages/math/src/value.ts')).toBe('packages/math/src/value.ts');
     expect(normalizePathPortable('C:\\source\\value.ts')).toBe('C:/source/value.ts');

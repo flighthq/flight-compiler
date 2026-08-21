@@ -4,17 +4,17 @@ import path from 'node:path';
 
 import { compareTextCodeUnits } from '../../compiler-canonical-form/src/index.js';
 import { isCompilerInventoryFailure } from './compilerInventoryFailure.js';
-import { createHostWorkspaceSource } from './hostWorkspaceSource.js';
+import { createFileSystemWorkspaceSource } from './fileSystemWorkspaceSource.js';
 
-// The only inventory test that still needs a real directory, because a host source is exactly the
+// The only inventory test that still needs a real directory, because a filesystem source is exactly the
 // thing an in-memory fixture cannot stand in for.
-describe('createHostWorkspaceSource', () => {
+describe('createFileSystemWorkspaceSource', () => {
   it('reads, lists and classifies real filesystem entries', () => {
-    const directory = mkdtempSync(path.join(os.tmpdir(), 'flight-host-workspace-'));
+    const directory = mkdtempSync(path.join(os.tmpdir(), 'flight-filesystem-workspace-'));
     try {
       mkdirSync(path.join(directory, 'packages'), { recursive: true });
       writeFileSync(path.join(directory, 'package.json'), '{ "name": "flight" }');
-      const source = createHostWorkspaceSource();
+      const source = createFileSystemWorkspaceSource();
 
       expect(source.readTextFile(path.join(directory, 'package.json'))).toBe('{ "name": "flight" }');
       expect(source.isFile(path.join(directory, 'package.json'))).toBe(true);
@@ -39,7 +39,7 @@ describe('createHostWorkspaceSource', () => {
       return;
     }
 
-    const directory = mkdtempSync(path.join(os.tmpdir(), 'flight-host-workspace-backslash-'));
+    const directory = mkdtempSync(path.join(os.tmpdir(), 'flight-filesystem-workspace-backslash-'));
     try {
       mkdirSync(path.join(directory, 'weird'), { recursive: true });
       writeFileSync(path.join(directory, 'weird', 'name.ts'), 'export const nested = true;\n');
@@ -47,7 +47,7 @@ describe('createHostWorkspaceSource', () => {
 
       let failure: unknown;
       try {
-        createHostWorkspaceSource().listDirectory(directory);
+        createFileSystemWorkspaceSource().listDirectory(directory);
       } catch (error) {
         failure = error;
       }

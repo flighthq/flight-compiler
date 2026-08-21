@@ -4,8 +4,8 @@ import path from 'node:path';
 
 import type { FlightPackageManifest } from '../../compiler-types/src/index.js';
 import { isCompilerInventoryFailure } from './compilerInventoryFailure.js';
+import { createFileSystemWorkspaceSource } from './fileSystemWorkspaceSource.js';
 import { analyzeFlightPackageImports } from './flightPackageImport.js';
-import { createHostWorkspaceSource } from './hostWorkspaceSource.js';
 
 describe('analyzeFlightPackageImports', () => {
   it('collects deterministic production import, re-export, import-equals, and dynamic-import facts', () => {
@@ -23,7 +23,7 @@ describe('analyzeFlightPackageImports', () => {
 
       const records = analyzeFlightPackageImports(
         { manifest: createManifest(), upstreamDirectory: upstream },
-        createHostWorkspaceSource(),
+        createFileSystemWorkspaceSource(),
       );
 
       expect(records).toEqual([
@@ -93,7 +93,7 @@ describe('analyzeFlightPackageImports', () => {
     const before = structuredClone(manifest);
     try {
       expect(
-        analyzeFlightPackageImports({ manifest, upstreamDirectory: upstream }, createHostWorkspaceSource()),
+        analyzeFlightPackageImports({ manifest, upstreamDirectory: upstream }, createFileSystemWorkspaceSource()),
       ).toEqual([]);
       expect(manifest).toEqual(before);
     } finally {
@@ -115,7 +115,7 @@ describe('analyzeFlightPackageImports', () => {
         try {
           analyzeFlightPackageImports(
             { manifest: testCase.manifest, upstreamDirectory: upstream },
-            createHostWorkspaceSource(),
+            createFileSystemWorkspaceSource(),
           );
         } catch (error) {
           failure = error;

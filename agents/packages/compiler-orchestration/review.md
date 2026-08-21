@@ -33,7 +33,7 @@ Deterministic pass composition: ~475 lines in one implementation source. It take
 - **Fixed, stated pass order.** Validate module identity, apply patches, sort modules, emit, normalize, sort files, validate the set. Reading the function tells you the pipeline.
 - **All-or-nothing on diagnostics.** `compileTypeScriptModules` collects lowering diagnostics across every source, sorts them deterministically, and throws a tagged `CompilerDiagnosticsFailure` rather than emitting a partially lowered module — the contract the architecture document states.
 - **Emitted-set validation with real collision identity.** Duplicate module identity and duplicate emitted paths are tagged invariant failures, and path comparison now rejects exact, case-only and Unicode-equivalent collisions, so two files that differ only by case cannot both land on a case-insensitive host.
-- **Deterministic ordering, host-independent.** Modules and files sort through the shared `compiler-canonical-form` code-unit primitive, so a machine's locale cannot reorder output.
+- **Deterministic ordering, machine-independent.** Modules and files sort through the shared `compiler-canonical-form` code-unit primitive, so a machine's locale cannot reorder output.
 - **Caller input untouched.** Patching clones, and the orchestration path never mutates the modules it is handed — exercised by an immutability test.
 - **Tagged failures throughout.** Diagnostics and invariants both carry codes and guards; the bare `Error`s that used to sit here are gone.
 - **A versioned report discriminant.** `flight-compiler-report/1` exists as a shape.
