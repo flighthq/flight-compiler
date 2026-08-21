@@ -25,6 +25,21 @@ Overall drop-in readiness is approximately 15%. The architecture is much closer 
 
 The present neutral lowerer and target backends cover a useful first slice, but still fail loudly on major areas such as tasks and async behavior, optional access, destructuring, structural types, target host mappings, mutable module state, rejection lowering, many operators and facades, and Rust ownership decisions. Failing loudly is the correct interim behavior; unsupported declarations must never be silently approximated or omitted.
 
+## Runtime surface: ambient globals, decided 2026-08-21
+
+The Flight runtime surface stays **ambient globals** — `Promise`, `Math.max`, `Map`, the typed arrays — rather than an imported `@flighthq/runtime` package. This is a decision about the SDK, recorded here because the compiler is what would have to change if it is revisited.
+
+It works today with no new compiler machinery. `collectIrModulesRuntimeExternalSymbolIdentities` collects a symbol only where `reference.kind === 'ambient'`, every collected symbol must receive exactly one binding in `flight-runtime-contract/2`, and an incomplete plan fails loudly. That completeness gate is what makes the runtime lane need no registration, and it is load-bearing rather than decorative: remove it and an unbound symbol becomes silence instead of a refusal.
+
+**What would have to change if the runtime becomes an imported package.** Import classification is specifier-shaped today — relative resolves to a local module, `@scope/name` maps to a target package by string transform, anything else refuses. An imported runtime symbol would therefore be treated as an ordinary Flight package import: it would never enter the binding plan, never receive a capability, and never be completeness-checked. Making that work needs four things, and none of them is small:
+
+1. a binding reference kind (or package-scoped classification) that marks a designated specifier as a runtime seam rather than a package import;
+2. reachability collecting external symbols from imports, not only from ambient references;
+3. per-target binding tables keyed on `(package, exportName)` rather than a bare `sourceName`;
+4. both emitters suppressing the target import they would otherwise write for that specifier.
+
+**The rule to keep either way:** the compiler resolves the runtime surface to declarations, never to an implementation. If a `runtime` specifier ever auto-resolves to `runtime-js` sources, the compiler parses those bodies and attempts to lower a JavaScript implementation into Haxe and Rust. Auto-resolution belongs to bundlers and the JavaScript runtime, not to compile-time analysis.
+
 ## Definition of drop-in
 
 A target is ready to switch only when all of these conditions hold:
