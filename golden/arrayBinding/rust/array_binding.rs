@@ -6,3 +6,15 @@ pub fn select(values: (f64, f64, f64)) -> f64 {
   let third: f64 = array_pattern_value.2;
   return third;
 }
+
+pub fn select_default(values: (Option<f64>,)) -> f64 {
+  let array_pattern_value: (Option<f64>,) = values;
+  let first: f64 = array_pattern_value.0.unwrap_or_else(|| 4.0);
+  return first;
+}
+
+pub fn select_rest(values: (f64, Vec<f64>)) -> Vec<f64> {
+  let array_pattern_value: (f64, Vec<f64>) = values;
+  let rest: Vec<f64> = array_pattern_value.1;
+  return rest;
+}

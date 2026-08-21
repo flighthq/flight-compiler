@@ -278,6 +278,9 @@ function analyzeExpression(
         if (typeof part !== 'string') analyzeExpression(part, analysis, 'read');
       });
       return;
+    case 'tupleRest':
+      analyzeExpression(expression.object, analysis, 'read');
+      return;
     case 'unary':
       if (expression.operator === '!') {
         addTruthinessFact('negationOperand', expression.operand, analysis, expression.semantics.operand.flow);
@@ -292,6 +295,10 @@ function analyzeExpression(
             ? undefined
             : 'read',
       );
+      return;
+    case 'undefinedDefault':
+      analyzeExpression(expression.fallback, analysis, 'read');
+      analyzeExpression(expression.value, analysis, 'read');
       return;
     case 'identifier':
     case 'literal':
@@ -438,8 +445,15 @@ function getExpressionValueDomain(expression: Readonly<IrExpression>): IrOperato
       return 'string';
     case 'template':
       return 'string';
+    case 'tupleRest':
+      return 'object';
     case 'unary':
       return expression.semantics.result;
+    case 'undefinedDefault': {
+      const fallback = getExpressionValueDomain(expression.fallback);
+      const value = getExpressionValueDomain(expression.value);
+      return value === 'undefined' || value === fallback ? fallback : 'unknown';
+    }
     case 'await':
     case 'call':
     case 'element':

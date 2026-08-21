@@ -75,6 +75,7 @@ export type IrExpression =
   | Readonly<{ flags: string; kind: 'regexp'; pattern: string }>
   | Readonly<{ expression: IrExpression; kind: 'spread' }>
   | Readonly<{ kind: 'template'; parts: ReadonlyArray<IrExpression | string> }>
+  | Readonly<{ kind: 'tupleRest'; object: IrExpression; start: number }>
   | Readonly<{
       kind: 'unary';
       operand: IrExpression;
@@ -88,7 +89,8 @@ export type IrExpression =
       operator: IrPrefixUnaryOperator;
       postfix: false;
       semantics: IrUnaryOperatorSemantics;
-    }>;
+    }>
+  | Readonly<{ fallback: IrExpression; kind: 'undefinedDefault'; value: IrExpression }>;
 
 export type IrObjectMember =
   | Readonly<{ key: IrExpression; kind: 'computedProperty'; value: IrExpression }>

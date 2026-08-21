@@ -275,6 +275,8 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
       );
       return `format!(${JSON.stringify(format)}${values.length > 0 ? `, ${values.join(', ')}` : ''})`;
     }
+    case 'tupleRest':
+      return `${emitExpression(expression.object, context)}.${String(expression.start)}`;
     case 'unary': {
       const operand = emitExpression(expression.operand, context);
       const operator = expression.postfix
@@ -282,6 +284,8 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
         : emitPrefixUnaryOperatorRust(expression.operator, expression.semantics, context);
       return expression.postfix ? `${operand}${operator}` : `${operator}${operand}`;
     }
+    case 'undefinedDefault':
+      return `${emitExpression(expression.value, context)}.unwrap_or_else(|| ${emitExpression(expression.fallback, context)})`;
   }
 }
 
@@ -498,7 +502,10 @@ function emitType(type: Readonly<IrType>, context: EmitContext): string {
         type.name
       ];
     case 'tuple': {
-      const elements = type.elements.map((element) => emitType(element.type, context));
+      const elements = type.elements.map((element) => {
+        const emitted = emitType(element.type, context);
+        return element.optional ? `Option<${emitted}>` : emitted;
+      });
       return `(${elements.join(', ')}${elements.length === 1 ? ',' : ''})`;
     }
     case 'union': {

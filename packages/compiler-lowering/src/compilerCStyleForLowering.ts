@@ -112,8 +112,14 @@ function hasIrExpressionCStyleForStatement(expression: Readonly<IrExpression>): 
       return expression.parts.some((part) =>
         typeof part === 'string' ? false : hasIrExpressionCStyleForStatement(part),
       );
+    case 'tupleRest':
+      return hasIrExpressionCStyleForStatement(expression.object);
     case 'unary':
       return hasIrExpressionCStyleForStatement(expression.operand);
+    case 'undefinedDefault':
+      return (
+        hasIrExpressionCStyleForStatement(expression.fallback) || hasIrExpressionCStyleForStatement(expression.value)
+      );
     case 'identifier':
     case 'literal':
     case 'regexp':
@@ -331,8 +337,16 @@ function lowerIrExpression(expression: Readonly<IrExpression>, analysis: CStyleF
         ...expression,
         parts: expression.parts.map((part) => (typeof part === 'string' ? part : lowerIrExpression(part, analysis))),
       };
+    case 'tupleRest':
+      return { ...expression, object: lowerIrExpression(expression.object, analysis) };
     case 'unary':
       return { ...expression, operand: lowerIrExpression(expression.operand, analysis) };
+    case 'undefinedDefault':
+      return {
+        ...expression,
+        fallback: lowerIrExpression(expression.fallback, analysis),
+        value: lowerIrExpression(expression.value, analysis),
+      };
     case 'identifier':
     case 'literal':
     case 'regexp':

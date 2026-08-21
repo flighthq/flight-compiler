@@ -366,8 +366,18 @@ function visitExpression(expression: Readonly<IrExpression>, path: string, state
         if (typeof part !== 'string') visitExpression(part, `${path}.parts[${String(index)}]`, state);
       });
       break;
+    case 'tupleRest':
+      if (!Number.isSafeInteger(expression.start) || expression.start < 0) {
+        addFailure('invalid-node-shape', `${path}.start`, 'tuple rest start must be a nonnegative integer', state);
+      }
+      visitExpression(expression.object, `${path}.object`, state);
+      break;
     case 'unary':
       visitExpression(expression.operand, `${path}.operand`, state);
+      break;
+    case 'undefinedDefault':
+      visitExpression(expression.fallback, `${path}.fallback`, state);
+      visitExpression(expression.value, `${path}.value`, state);
       break;
     default:
       addUnknownKind(expression, path, state);

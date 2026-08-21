@@ -337,8 +337,15 @@ function collectExpressionBindings(
         if (typeof part !== 'string') collectExpressionBindings(part, `${path}:part:${String(index)}`, add);
       });
       break;
+    case 'tupleRest':
+      collectExpressionBindings(expression.object, `${path}:object`, add);
+      break;
     case 'unary':
       collectExpressionBindings(expression.operand, `${path}:operand`, add);
+      break;
+    case 'undefinedDefault':
+      collectExpressionBindings(expression.fallback, `${path}:fallback`, add);
+      collectExpressionBindings(expression.value, `${path}:value`, add);
       break;
   }
 }

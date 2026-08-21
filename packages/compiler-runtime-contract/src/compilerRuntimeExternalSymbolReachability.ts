@@ -156,8 +156,15 @@ function visitExpression(expression: Readonly<IrExpression>, add: AddExternalSym
         if (typeof part !== 'string') visitExpression(part, add);
       });
       break;
+    case 'tupleRest':
+      visitExpression(expression.object, add);
+      break;
     case 'unary':
       visitExpression(expression.operand, add);
+      break;
+    case 'undefinedDefault':
+      visitExpression(expression.fallback, add);
+      visitExpression(expression.value, add);
       break;
     default:
       return assertNeverIr(expression);

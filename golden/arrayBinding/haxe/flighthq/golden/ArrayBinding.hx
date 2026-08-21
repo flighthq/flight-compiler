@@ -7,4 +7,16 @@ class ArrayBinding {
     final third:Float = arrayPatternValue[2];
     return third;
   }
+
+  public static function selectDefault(values:Array<Dynamic>):Float {
+    final arrayPatternValue:Array<Dynamic> = values;
+    final first:Float = (arrayPatternValue[0] ?? 4);
+    return first;
+  }
+
+  public static function selectRest(values:Array<Dynamic>):Array<Float> {
+    final arrayPatternValue:Array<Dynamic> = values;
+    final rest:Array<Float> = arrayPatternValue.slice(1);
+    return rest;
+  }
 }

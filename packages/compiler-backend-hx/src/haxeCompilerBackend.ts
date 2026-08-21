@@ -264,6 +264,8 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
       return expression.parts
         .map((part) => (typeof part === 'string' ? emitLiteral(part) : `Std.string(${emitExpression(part, context)})`))
         .join(' + ');
+    case 'tupleRest':
+      return `${emitExpression(expression.object, context)}.slice(${String(expression.start)})`;
     case 'unary': {
       const operand = emitExpression(expression.operand, context);
       const operator = expression.postfix
@@ -271,6 +273,8 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
         : emitPrefixUnaryOperatorHaxe(expression.operator, expression.semantics, context);
       return expression.postfix ? `${operand}${operator}` : `${operator} ${operand}`;
     }
+    case 'undefinedDefault':
+      return `(${emitExpression(expression.value, context)} ?? ${emitExpression(expression.fallback, context)})`;
   }
 }
 

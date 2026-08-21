@@ -11,6 +11,7 @@ import type {
   IrVariable,
 } from '../../compiler-types/src/index.js';
 import { createCompilerLoweringPassArrayBindingPattern } from './compilerArrayBindingPatternLowering.js';
+import { createCompilerLoweringPassCStyleFor } from './compilerCStyleForLowering.js';
 import { isCompilerLoweringFailure, lowerIrModuleWithCompilerPasses } from './compilerLoweringPass.js';
 
 describe('createCompilerLoweringPassArrayBindingPattern', () => {
@@ -18,10 +19,11 @@ describe('createCompilerLoweringPassArrayBindingPattern', () => {
     const module = lower(
       'fixed-patterns.ts',
       `
-        export function select(values: [number, number, number], matrix: [[number]]): number {
+        export function select(values: [number, number, number], matrix: [[number]], optional: [number?]): number {
           const [first, , second]: [number, number, number] = values;
           let [[nested]]: [[number]] = matrix;
-          return first + second + nested;
+          const [defaulted = first]: [number?] = optional;
+          return first + second + nested + defaulted;
         }
       `,
     );
@@ -35,6 +37,7 @@ describe('createCompilerLoweringPassArrayBindingPattern', () => {
     const body = getFunctionDeclaration(output, 'select').body;
     const fixed = getVariableStatement(body[0]).declarations.map(getNamedVariable);
     const nested = getVariableStatement(body[1]).declarations.map(getNamedVariable);
+    const defaulted = getVariableStatement(body[2]).declarations.map(getNamedVariable);
 
     expect(pass).toMatchObject({ idempotent: true, name: 'array-binding-pattern', runsAfter: [] });
     expect(fixed).toHaveLength(3);
@@ -95,6 +98,27 @@ describe('createCompilerLoweringPassArrayBindingPattern', () => {
     ]);
     expect(fixed[0]?.binding.id).not.toBe(nested[0]?.binding.id);
     expect(nested[0]?.binding.id).not.toBe(nested[1]?.binding.id);
+    expect(defaulted).toMatchObject([
+      {
+        binding: { name: 'arrayPatternValue' },
+        initializer: { reference: { binding: sourceFunction.parameters[2]?.binding } },
+        mutable: false,
+        type: { elements: [{ optional: true }], kind: 'tuple' },
+      },
+      {
+        binding: { name: 'defaulted' },
+        initializer: {
+          fallback: { reference: { binding: sourceFirst } },
+          kind: 'undefinedDefault',
+          value: {
+            index: { value: 0 },
+            object: { reference: { binding: defaulted[0]?.binding } },
+            semantics: { receivers: ['tuple'] },
+          },
+        },
+        type: { kind: 'primitive', name: 'number' },
+      },
+    ]);
     expect(fixed[0]?.binding.id).toContain('array-pattern:$.declarations[0].body[0].declarations[0]');
     expect(module).toEqual(snapshot);
     expect(pass.verifyIrModule(module)).toEqual({
@@ -134,29 +158,81 @@ describe('createCompilerLoweringPassArrayBindingPattern', () => {
     ]);
   });
 
+  it('composes default fallback expressions with later control-flow lowering', () => {
+    const output = lowerIrModuleWithCompilerPasses(
+      lower(
+        'default-control-flow.ts',
+        `
+          export function choose(values: [(() => void)?]): () => void {
+            const [callback = (): void => { for (;;) { break; } }]: [(() => void)?] = values;
+            return callback;
+          }
+        `,
+      ),
+      [createCompilerLoweringPassArrayBindingPattern(), createCompilerLoweringPassCStyleFor()],
+    );
+    const declarations = getVariableStatement(getFunctionDeclaration(output, 'choose').body[0]).declarations.map(
+      getNamedVariable,
+    );
+    const initializer = declarations[1]?.initializer;
+    if (initializer?.kind !== 'undefinedDefault' || initializer.fallback.kind !== 'function') {
+      throw new Error('Expected lowered default fallback function');
+    }
+
+    expect(initializer.fallback.body[0]).toMatchObject({
+      kind: 'block',
+      statements: [{ body: { kind: 'block' }, condition: { value: true }, kind: 'while' }],
+    });
+    expect(createCompilerLoweringPassArrayBindingPattern().verifyIrModule(output)).toEqual({ kind: 'valid' });
+    expect(createCompilerLoweringPassCStyleFor().verifyIrModule(output)).toEqual({ kind: 'valid' });
+  });
+
+  it('lowers an aligned variadic tuple tail without re-evaluating its source', () => {
+    const output = lowerIrModuleWithCompilerPasses(
+      lower(
+        'rest-tail.ts',
+        'export function split(values: [number, ...string[]]): string[] { const [first, ...rest]: [number, ...string[]] = values; first; return rest; }',
+      ),
+      [createCompilerLoweringPassArrayBindingPattern()],
+    );
+    const declarations = getVariableStatement(getFunctionDeclaration(output, 'split').body[0]).declarations.map(
+      getNamedVariable,
+    );
+
+    expect(declarations).toMatchObject([
+      { binding: { name: 'arrayPatternValue' }, initializer: { kind: 'identifier' } },
+      { binding: { name: 'first' }, initializer: { index: { value: 0 }, kind: 'element' } },
+      {
+        binding: { name: 'rest' },
+        initializer: {
+          kind: 'tupleRest',
+          object: { reference: { binding: declarations[0]?.binding } },
+          start: 1,
+        },
+        type: { element: { kind: 'primitive', name: 'string' }, kind: 'array' },
+      },
+    ]);
+  });
+
   it.each([
     {
-      reason: 'array binding default at index 0 requires target-neutral undefined semantics',
-      source: 'export const [value = 0]: [number] = [0];',
+      reason: 'array binding rest at index 1 requires an aligned variadic tuple tail',
+      source: 'export const [first, ...rest]: [number, number] = [1, 2];',
     },
     {
-      reason: 'array binding rest requires target-neutral slice semantics',
-      source: 'export const [first, ...rest]: [number, ...number[]] = [1];',
-    },
-    {
-      reason: 'array binding lowering requires a statically known required tuple type',
+      reason: 'array binding lowering requires a statically known tuple type',
       source: 'export const [value]: number[] = [1];',
     },
     {
-      reason: 'array binding index 0 requires a statically known required tuple element',
+      reason: 'array binding index 0 requires a present tuple element or default initializer',
       source: 'export const [value]: [number?] = [];',
     },
     {
-      reason: 'array binding index 1 requires a statically known required tuple element',
+      reason: 'array binding index 1 requires a present tuple element or default initializer',
       source: 'export const [first, second]: [number] = [1];',
     },
     {
-      reason: 'array binding lowering requires a statically known required tuple type',
+      reason: 'array binding lowering requires a statically known tuple type',
       source: 'export function read(values: number[]): number { const [value] = values; return value; }',
     },
     {
@@ -166,6 +242,10 @@ describe('createCompilerLoweringPassArrayBindingPattern', () => {
     {
       reason: 'array binding pattern requires an initializer outside iteration statements',
       source: 'export function read(): void { let [value]: [number]; }',
+    },
+    {
+      reason: 'nested array binding default at index 0 requires contextual tuple-expression lowering',
+      source: 'export const [[value] = [1]]: [[number]?] = [];',
     },
     {
       reason: 'forOf array bindings require iteration destructuring lowering',
