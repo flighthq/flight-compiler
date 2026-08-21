@@ -38,15 +38,13 @@ export interface IrInvocationSemantics {
   readonly defaultParameters?: IrDefaultParameterInvocationSemantics | undefined;
   readonly optionalParameters?: IrOptionalParameterInvocationSemantics | undefined;
   readonly overloadImplementation?: IrOverloadImplementationInvocationSemantics | undefined;
+  readonly signature?: IrInvocationSignatureSemantics | undefined;
 }
 
-export interface IrConstructorInvocationSemantics {
+export interface IrInvocationSignatureSemantics {
   readonly parameterCount: number;
   readonly providedArgumentCount: number | 'dynamic';
-}
-
-export interface IrNewSemantics extends IrInvocationSemantics {
-  readonly constructorSignature?: IrConstructorInvocationSemantics | undefined;
+  readonly restParameter?: number | undefined;
 }
 
 export interface IrCallSemantics extends IrInvocationSemantics {

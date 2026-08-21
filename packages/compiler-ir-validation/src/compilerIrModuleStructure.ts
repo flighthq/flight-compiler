@@ -404,6 +404,7 @@ function visitExpression(expression: Readonly<IrExpression>, path: string, state
       break;
     case 'call':
       validateIrOptionalChainEvidence(expression.optional, expression.semantics.optionalChain, path, state);
+      validateIrInvocationSignatureEvidence(expression, path, state);
       validateIrDefaultParameterInvocationEvidence(expression, path, state);
       validateIrOptionalParameterInvocationEvidence(expression, path, state);
       validateIrOverloadImplementationInvocationEvidence(expression, path, state);
@@ -424,7 +425,7 @@ function visitExpression(expression: Readonly<IrExpression>, path: string, state
       );
       break;
     case 'new':
-      validateIrConstructorInvocationEvidence(expression, path, state);
+      validateIrInvocationSignatureEvidence(expression, path, state);
       validateIrDefaultParameterInvocationEvidence(expression, path, state);
       validateIrOptionalParameterInvocationEvidence(expression, path, state);
       validateIrOverloadImplementationInvocationEvidence(expression, path, state);
@@ -622,12 +623,12 @@ function hasIrTypeUndefinedOptionDomain(type: Readonly<IrType>): boolean {
   return type.types.some((member) => member.kind !== 'null' && member.kind !== 'undefined');
 }
 
-function validateIrConstructorInvocationEvidence(
-  expression: Readonly<Extract<IrExpression, { kind: 'new' }>>,
+function validateIrInvocationSignatureEvidence(
+  expression: Readonly<IrInvocationExpression>,
   path: string,
   state: IrModuleValidationState,
 ): void {
-  const evidence = expression.semantics.constructorSignature;
+  const evidence = expression.semantics.signature;
   if (!evidence) return;
   const providedValid =
     evidence.providedArgumentCount === 'dynamic'
@@ -639,16 +640,30 @@ function validateIrConstructorInvocationEvidence(
   const overloadValid =
     !expression.semantics.overloadImplementation ||
     expression.semantics.overloadImplementation.implementationParameterCount === evidence.parameterCount;
+  const defaultsValid =
+    !expression.semantics.defaultParameters ||
+    expression.semantics.defaultParameters.parameterCount === evidence.parameterCount;
+  const optionalsValid =
+    !expression.semantics.optionalParameters ||
+    expression.semantics.optionalParameters.parameterCount === evidence.parameterCount;
+  const restValid =
+    evidence.restParameter === undefined ||
+    (Number.isSafeInteger(evidence.restParameter) &&
+      evidence.restParameter >= 0 &&
+      evidence.restParameter === evidence.parameterCount - 1);
   if (
     !Number.isSafeInteger(evidence.parameterCount) ||
     evidence.parameterCount < 0 ||
     !providedValid ||
-    !overloadValid
+    !overloadValid ||
+    !defaultsValid ||
+    !optionalsValid ||
+    !restValid
   ) {
     addFailure(
       'invalid-node-shape',
-      `${path}.semantics.constructorSignature`,
-      'constructor invocation evidence must have exact argument state and implementation ABI arity',
+      `${path}.semantics.signature`,
+      'invocation signature evidence must have exact argument state, implementation ABI arity, and final rest position',
       state,
     );
   }

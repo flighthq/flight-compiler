@@ -125,6 +125,28 @@ describe('emitIrModuleHaxe', () => {
     expect(output).toContain('return new Box(1);');
   });
 
+  it('evaluates fixed extra arguments before erasing them from a Haxe call', () => {
+    const result = lower(
+      'extra-argument.ts',
+      'function effect(value: number): number { return value; } function choose(value: number): number { return value; } export function read(): number { return choose(effect(1), effect(2)); }',
+    );
+    const property = lower(
+      'property-extra-argument.ts',
+      'export class Picker { choose(value: number): number { return value; } } export function read(picker: Picker): number { return picker.choose(1, 2); }',
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('final extraArgument0 = effect(1);');
+    expect(output).toContain('final extraArgument1 = effect(2);');
+    expect(output).toContain('choose(extraArgument0);');
+    expect(output).not.toContain('choose(effect(1), effect(2))');
+    expect(output.indexOf('extraArgument0 = effect(1)')).toBeLessThan(output.indexOf('extraArgument1 = effect(2)'));
+    expect(output.indexOf('extraArgument1 = effect(2)')).toBeLessThan(output.indexOf('choose(extraArgument0)'));
+    expect(() => emitIrModuleHaxe(property.module)).toThrow(
+      'extra JavaScript call arguments require target-neutral erasure lowering',
+    );
+  });
+
   it('elects fixed array binding lowering and reports residual destructuring semantics', () => {
     const fixed = lower(
       'array-binding.ts',

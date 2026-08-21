@@ -171,6 +171,18 @@ function analyzeIrExpressionVariableInitialization(
       expression.arguments.forEach((argument) =>
         analyzeIrExpressionVariableInitialization(argument, initialized, variables, sourceIdentity, completion),
       );
+      if (immediatelyInvoked && expression.kind === 'call' && expression.semantics.statementValue) {
+        const invoked = analyzeIrStatementListVariableInitialization(
+          immediatelyInvoked.body,
+          new Set(initialized),
+          variables,
+          sourceIdentity,
+        );
+        addIrVariableInitializationCompletion(completion, 'throw', invoked.throw);
+        const returned = combineCompilerVariableInitializationSets(invoked.normal, invoked.return);
+        if (returned) replaceIrVariableInitializationSet(initialized, returned);
+        return;
+      }
       if (immediatelyInvoked) {
         assertIrExpressionFunctionCaptureVariableInitialization(
           immediatelyInvoked,

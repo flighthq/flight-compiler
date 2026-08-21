@@ -1157,7 +1157,7 @@ describe('lowerTypeScriptSource', () => {
     ).toEqual([
       { typedArraySet: { receivers: ['float32Array', 'uint8Array'] } },
       { typedArraySet: { receivers: ['bigInt64Array'] } },
-      {},
+      { signature: { parameterCount: 1, providedArgumentCount: 1 } },
       {},
       {},
     ]);
@@ -1835,7 +1835,7 @@ describe('lowerTypeScriptSource', () => {
       arguments: [{ kind: 'literal', value: 1 }],
       kind: 'new',
       semantics: {
-        constructorSignature: { parameterCount: 2, providedArgumentCount: 1 },
+        signature: { parameterCount: 2, providedArgumentCount: 1 },
         defaultParameters: {
           defaulted: [1],
           omitted: [1],
@@ -1849,6 +1849,58 @@ describe('lowerTypeScriptSource', () => {
         },
       },
     });
+    expect(result.diagnostics).toEqual([]);
+  });
+
+  it('erases fixed extra arguments only after preserving their left-to-right evaluation', () => {
+    const result = lower(
+      'extra-argument-erasure.ts',
+      `
+        function effect(value: number): number { return value; }
+        function choose(value: number): number { return value; }
+        function collect(first: number, ...rest: number[]): number { return first; }
+        export function read(): number { collect(1, 2, 3); return choose(effect(1), effect(2)); }
+      `,
+    );
+    const declaration = result.module.declarations.find(
+      (item) => item.kind === 'function' && item.binding.name === 'read',
+    );
+    if (declaration?.kind !== 'function') throw new Error('Expected read function');
+    const restCall = declaration.body[0]?.kind === 'expression' ? declaration.body[0].expression : undefined;
+    const wrapper = declaration.body[1]?.kind === 'return' ? declaration.body[1].expression : undefined;
+    if (wrapper?.kind !== 'call' || wrapper.callee.kind !== 'function') {
+      throw new Error('Expected extra-argument statement-value carrier');
+    }
+    const variables = wrapper.callee.body.slice(0, -1);
+    const completion = wrapper.callee.body.at(-1);
+
+    expect(restCall).toMatchObject({
+      kind: 'call',
+      semantics: { signature: { parameterCount: 2, providedArgumentCount: 3, restParameter: 1 } },
+    });
+    expect(wrapper).toMatchObject({
+      arguments: [],
+      semantics: { statementValue: { completion: 'finalReturn' } },
+    });
+    expect(variables).toMatchObject([
+      { declarations: [{ binding: { name: 'extraArgument0' }, initializer: { kind: 'call' } }], kind: 'variable' },
+      { declarations: [{ binding: { name: 'extraArgument1' }, initializer: { kind: 'call' } }], kind: 'variable' },
+    ]);
+    expect(completion).toMatchObject({
+      expression: {
+        arguments: [{ reference: { binding: { name: 'extraArgument0' }, kind: 'binding' } }],
+        kind: 'call',
+        semantics: { signature: { parameterCount: 1, providedArgumentCount: 1 } },
+      },
+      kind: 'return',
+    });
+    const identities = variables.flatMap((statement) =>
+      statement.kind === 'variable'
+        ? statement.declarations.flatMap((variable) => ('binding' in variable ? [variable.binding.id] : []))
+        : [],
+    );
+    expect(new Set(identities).size).toBe(2);
+    expect(identities.every((identity) => identity.includes('extra-argument'))).toBe(true);
     expect(result.diagnostics).toEqual([]);
   });
 

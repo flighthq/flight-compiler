@@ -690,7 +690,7 @@ describe('emitIrModuleRust', () => {
     expect(output).toContain('return choose(value);');
   });
 
-  it('refuses optional and default calls whose JavaScript arity needs another Rust lowering', () => {
+  it('refuses dynamic and missing calls while erasing fixed extras after their evaluation', () => {
     const spread = lower(
       'spread-call.ts',
       'function choose(first: number, second?: number): number { return first; } export function read(values: [number]): number { return choose(...values); }',
@@ -703,14 +703,25 @@ describe('emitIrModuleRust', () => {
       'missing-call.ts',
       'function choose(first: number, second?: number): number { return first; } export function read(): number { return choose(); }',
     );
+    const property = lower(
+      'property-extra-call.ts',
+      'export class Picker { choose(value: number): number { return value; } } export function read(picker: Picker): number { return picker.choose(1, 2); }',
+    );
 
     expect(() => emitIrModuleRust(spread.module)).toThrow(
       'spread calls into optional or default parameters require Rust ABI expansion lowering',
     );
-    expect(() => emitIrModuleRust(extra.module)).toThrow(
-      'extra JavaScript call arguments require Rust ABI erasure lowering',
-    );
+    const output = emitIrModuleRust(extra.module).contents;
+    expect(output).toContain('let extra_argument0 = 1.0;');
+    expect(output).toContain('let extra_argument1 = 2.0;');
+    expect(output).toContain('choose(Some(extra_argument0))');
+    expect(output).not.toContain('choose(Some(1.0), 2.0)');
+    expect(output.indexOf('extra_argument0 = 1.0')).toBeLessThan(output.indexOf('extra_argument1 = 2.0'));
+    expect(output.indexOf('extra_argument1 = 2.0')).toBeLessThan(output.indexOf('choose(Some(extra_argument0))'));
     expect(() => emitIrModuleRust(missing.module)).toThrow('missing required call argument at position 0');
+    expect(() => emitIrModuleRust(property.module)).toThrow(
+      'extra JavaScript call arguments require target-neutral erasure lowering',
+    );
   });
 
   it('emits contextual undefined option values as Rust None', () => {

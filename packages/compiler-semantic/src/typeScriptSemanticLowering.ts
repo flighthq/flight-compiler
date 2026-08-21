@@ -35,7 +35,6 @@ import type {
   IrInterfaceDeclaration,
   IrIndexedReceiver,
   IrInvocationSemantics,
-  IrNewSemantics,
   IrObjectMember,
   IrObjectBindingPatternProperty,
   IrObjectTypeProperty,
@@ -498,10 +497,10 @@ function lowerExpression(
   if (ts.isCallExpression(node)) {
     const optional = node.questionDotToken !== undefined;
     const signature = getTypeScriptInvocationSignatureResolution(node, context);
-    return {
+    const expression = {
       arguments: lowerTypeScriptInvocationArguments(node, signature, context),
       callee: lowerExpression(node.expression, context),
-      kind: 'call',
+      kind: 'call' as const,
       optional,
       semantics: {
         ...lowerCallSemantics(node, signature, context),
@@ -509,6 +508,7 @@ function lowerExpression(
       },
       typeArguments: node.typeArguments?.map((type) => lowerType(type, context)) ?? [],
     };
+    return lowerTypeScriptExtraArgumentCallExpression(node, expression, context);
   }
   if (ts.isNewExpression(node)) {
     const signature = getTypeScriptInvocationSignatureResolution(node, context);
@@ -516,10 +516,7 @@ function lowerExpression(
       arguments: lowerTypeScriptInvocationArguments(node, signature, context),
       callee: lowerExpression(node.expression, context),
       kind: 'new',
-      semantics: {
-        ...lowerInvocationSemantics(node, signature, context),
-        ...getTypeScriptConstructorInvocationSemantics(node, signature),
-      },
+      semantics: lowerInvocationSemantics(node, signature, context),
       typeArguments: node.typeArguments?.map((type) => lowerType(type, context)) ?? [],
     };
   }
@@ -640,6 +637,116 @@ function lowerTypeScriptInvocationArguments(
       parameter.questionToken || parameter.initializer ? addIrTypeBindingPatternUndefined(type) : type;
     return lowerExpression(argument, context, contextualType);
   });
+}
+
+function lowerTypeScriptExtraArgumentCallExpression(
+  node: ts.CallExpression,
+  expression: Readonly<Extract<IrExpression, { kind: 'call' }>>,
+  context: LoweringContext,
+): IrExpression {
+  const signature = expression.semantics.signature;
+  if (
+    !signature ||
+    signature.providedArgumentCount === 'dynamic' ||
+    signature.restParameter !== undefined ||
+    expression.arguments.length <= signature.parameterCount
+  ) {
+    return expression;
+  }
+  if (expression.optional || expression.callee.kind !== 'identifier' || expression.callee.reference.kind === 'this') {
+    return expression;
+  }
+  const defaulted = new Set(expression.semantics.defaultParameters?.defaulted ?? []);
+  if (
+    expression.arguments
+      .slice(0, signature.parameterCount)
+      .some((argument, index) => argument.kind === 'undefinedValue' && defaulted.has(index))
+  ) {
+    return expression;
+  }
+  const bindings = expression.arguments.map((_, index) => createTypeScriptExtraArgumentBinding(node, index, context));
+  const call: Extract<IrExpression, { kind: 'call' }> = {
+    ...expression,
+    arguments: bindings.slice(0, signature.parameterCount).map((binding) => ({
+      kind: 'identifier',
+      reference: { binding, kind: 'binding' },
+    })),
+    semantics: {
+      ...expression.semantics,
+      ...(expression.semantics.defaultParameters
+        ? {
+            defaultParameters: {
+              ...expression.semantics.defaultParameters,
+              omitted: [],
+              providedArgumentCount: signature.parameterCount,
+            },
+          }
+        : {}),
+      ...(expression.semantics.optionalParameters
+        ? {
+            optionalParameters: {
+              ...expression.semantics.optionalParameters,
+              omitted: [],
+              providedArgumentCount: signature.parameterCount,
+            },
+          }
+        : {}),
+      signature: { ...signature, providedArgumentCount: signature.parameterCount },
+    },
+  };
+  return {
+    arguments: [],
+    callee: {
+      async: false,
+      body: [
+        ...bindings.map(
+          (binding, index): IrStatement => ({
+            declarations: [
+              {
+                binding,
+                initializer: expression.arguments[index]!,
+                mutable: false,
+              },
+            ],
+            kind: 'variable',
+          }),
+        ),
+        { expression: call, kind: 'return' },
+      ],
+      kind: 'function',
+      parameters: [],
+      returns: lowerTypeScriptExpressionTypeEvidence(node, context) ?? { kind: 'unknown', source: 'unknown' },
+      typeParameters: [],
+    },
+    kind: 'call',
+    optional: false,
+    semantics: {
+      statementValue: { asyncContext: 'inherit', completion: 'finalReturn', thisBinding: 'lexical' },
+    },
+    typeArguments: [],
+  };
+}
+
+function createTypeScriptExtraArgumentBinding(
+  node: ts.CallExpression,
+  index: number,
+  context: LoweringContext,
+): IrBindingIdentity {
+  const sourceOrigin = origin(node.arguments[index] ?? node, context);
+  return {
+    ...sourceOrigin,
+    id: `binding:${JSON.stringify([
+      sourceOrigin.packageName,
+      sourceOrigin.source,
+      'extra-argument',
+      node.getStart(context.sourceFile),
+      index,
+    ])}`,
+    kind: 'variable',
+    name: `extraArgument${String(index)}`,
+    scope: 'block',
+    space: 'value',
+  };
 }
 
 function hasIrTypeContextualUndefinedOption(type: Readonly<IrType>): boolean {
@@ -942,6 +1049,7 @@ function lowerInvocationSemantics(
 ): IrInvocationSemantics {
   return {
     ...getTypeScriptDefaultParameterInvocationSemantics(node, signature),
+    ...getTypeScriptInvocationSignatureSemantics(node, signature),
     ...getTypeScriptOptionalParameterInvocationSemantics(node, signature, context),
     ...getTypeScriptOverloadImplementationInvocationSemantics(signature),
   };
@@ -1050,16 +1158,19 @@ function getTypeScriptOverloadImplementationInvocationSemantics(
   };
 }
 
-function getTypeScriptConstructorInvocationSemantics(
-  node: ts.NewExpression,
+function getTypeScriptInvocationSignatureSemantics(
+  node: ts.CallExpression | ts.NewExpression,
   signature: Readonly<TypeScriptInvocationSignatureResolution> | undefined,
-): Pick<IrNewSemantics, 'constructorSignature'> {
+): Pick<IrInvocationSemantics, 'signature'> {
   if (!signature) return {};
+  const parameters = signature.implementation.parameters.filter(ts.isParameter);
   const arguments_ = node.arguments ?? [];
+  const restParameter = parameters.findIndex((parameter) => parameter.dotDotDotToken !== undefined);
   return {
-    constructorSignature: {
-      parameterCount: signature.implementation.parameters.filter(ts.isParameter).length,
+    signature: {
+      parameterCount: parameters.length,
       providedArgumentCount: arguments_.some(ts.isSpreadElement) ? 'dynamic' : arguments_.length,
+      ...(restParameter < 0 ? {} : { restParameter }),
     },
   };
 }

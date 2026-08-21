@@ -388,6 +388,11 @@ describe('validateIrModuleStructure', () => {
       'function choose(value: number): number; function choose(value: number, radix?: number): number; function choose(value: number, radix = 10): number { return value; } export function read(): number { return choose(1); }',
     );
     expect(validateIrModuleStructure(valid)).toEqual({ kind: 'valid' });
+    const rest = lower(
+      'rest-implementation-call.ts',
+      'function collect(first: number, ...rest: number[]): number { return first; } export function read(): number { return collect(1, 2, 3); }',
+    );
+    expect(validateIrModuleStructure(rest)).toEqual({ kind: 'valid' });
 
     for (const replacement of [
       { implementationParameterCount: -1, overloadIndex: 0, resolvedParameterCount: 1 },
@@ -406,7 +411,9 @@ describe('validateIrModuleStructure', () => {
       (expression.semantics as { overloadImplementation?: unknown }).overloadImplementation = replacement;
 
       expect(validateIrModuleStructure(invalid)).toMatchObject({
-        failures: [expect.objectContaining({ path: expect.stringContaining('.overloadImplementation') })],
+        failures: expect.arrayContaining([
+          expect.objectContaining({ path: expect.stringContaining('.overloadImplementation') }),
+        ]),
         kind: 'invalid',
       });
     }
@@ -439,6 +446,7 @@ describe('validateIrModuleStructure', () => {
       { parameterCount: -1, providedArgumentCount: 1 },
       { parameterCount: 2, providedArgumentCount: 0 },
       { parameterCount: 2, providedArgumentCount: 'dynamic' as const },
+      { parameterCount: 2, providedArgumentCount: 1, restParameter: 0 },
     ]) {
       const invalid = structuredClone(constructor);
       const declaration = invalid.declarations.find(
@@ -447,10 +455,10 @@ describe('validateIrModuleStructure', () => {
       const statement = declaration?.kind === 'function' ? declaration.body[0] : undefined;
       const expression = statement?.kind === 'return' ? statement.expression : undefined;
       if (expression?.kind !== 'new') throw new Error('Expected overloaded constructor call');
-      (expression.semantics as { constructorSignature?: unknown }).constructorSignature = replacement;
+      (expression.semantics as { signature?: unknown }).signature = replacement;
 
       expect(validateIrModuleStructure(invalid)).toMatchObject({
-        failures: [expect.objectContaining({ path: expect.stringContaining('.constructorSignature') })],
+        failures: [expect.objectContaining({ path: expect.stringContaining('.signature') })],
         kind: 'invalid',
       });
     }

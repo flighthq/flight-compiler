@@ -337,6 +337,15 @@ function emitCallArgumentsHaxe(
   expression: Readonly<Extract<IrExpression, { kind: 'call' }>>,
   context: EmitContext,
 ): string {
+  const signature = expression.semantics.signature;
+  if (
+    signature &&
+    signature.restParameter === undefined &&
+    typeof signature.providedArgumentCount === 'number' &&
+    signature.providedArgumentCount > signature.parameterCount
+  ) {
+    emissionError(context, 'extra JavaScript call arguments require target-neutral erasure lowering');
+  }
   const defaulted = new Set(expression.semantics.defaultParameters?.defaulted ?? []);
   return expression.arguments
     .map((argument, index) => {
