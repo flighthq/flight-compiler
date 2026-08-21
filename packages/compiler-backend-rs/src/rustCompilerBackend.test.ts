@@ -199,6 +199,24 @@ describe('emitIrModuleRust', () => {
     expect(emitIrModuleRust(result.module).contents).toContain('let value: (f64, Option<String>) = (2.0, None);');
   });
 
+  it('emits statically ordered pure-object for-in keys and refuses dynamic shapes', () => {
+    const fixed = lower(
+      'static-for-in.ts',
+      "export function first(): string { for (const key in { second: 2, 10: 10, 2: 2, first: 1 }) return key; return ''; }",
+    );
+    const dynamic = lower(
+      'dynamic-for-in.ts',
+      "interface Values { value: number } export function first(values: Values): string { for (const key in values) return key; return ''; }",
+    );
+
+    expect(emitIrModuleRust(fixed.module).contents).toContain(
+      'for key in ["2".to_owned(), "10".to_owned(), "second".to_owned(), "first".to_owned()]',
+    );
+    expect(() => emitIrModuleRust(dynamic.module)).toThrow(
+      'object key iteration requires static pure-object key evidence',
+    );
+  });
+
   it('clones fixed tuple spread fields through collision-free sequential evaluation carriers', () => {
     const result = lower(
       'tuple-spread.ts',

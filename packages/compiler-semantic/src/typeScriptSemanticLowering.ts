@@ -979,6 +979,7 @@ function lowerStatement(node: ts.Statement, context: LoweringContext): IrStateme
         }
       : {
           body: lowerStatement(node.statement, context),
+          ...getTypeScriptForInKeyPlan(node.expression, context),
           kind: 'forIn',
           object: lowerExpression(node.expression, context),
           variable,
@@ -1246,9 +1247,7 @@ function lowerVariable(
       : node.initializer
         ? inferInitializerType(node.initializer, context)
         : undefined;
-  const valueType = node.type
-    ? lowerType(resolveTypeScriptTypeNodeAlias(node.type, context, new Set()), context)
-    : type;
+  const valueType = node.type ? lowerTypeScriptTypeNodeEvidence(node.type, context) : type;
   const target = ts.isIdentifier(node.name)
     ? { binding: lowerBindingIdentity(node.name, context) }
     : { pattern: lowerBindingPattern(node.name, context, valueType) };
@@ -1261,11 +1260,56 @@ function lowerVariable(
   };
 }
 
+function getTypeScriptForInKeyPlan(
+  expression: ts.Expression,
+  context: LoweringContext,
+): Readonly<{ keyPlan: { keys: readonly string[]; kind: 'staticObject' } }> | undefined {
+  if (!ts.isObjectLiteralExpression(expression)) return undefined;
+  const keys: string[] = [];
+  for (const member of expression.properties) {
+    if (
+      !ts.isPropertyAssignment(member) ||
+      ts.isComputedPropertyName(member.name) ||
+      !isTypeScriptForInStaticObjectValue(member.initializer)
+    ) {
+      return undefined;
+    }
+    const key = propertyName(member.name, context);
+    if (!keys.includes(key)) keys.push(key);
+  }
+  return { keyPlan: { keys: orderTypeScriptForInStaticObjectKeys(keys), kind: 'staticObject' } };
+}
+
+function isTypeScriptForInStaticObjectValue(expression: ts.Expression): boolean {
+  return (
+    ts.isNumericLiteral(expression) ||
+    ts.isStringLiteral(expression) ||
+    expression.kind === ts.SyntaxKind.FalseKeyword ||
+    expression.kind === ts.SyntaxKind.NullKeyword ||
+    expression.kind === ts.SyntaxKind.TrueKeyword
+  );
+}
+
+function orderTypeScriptForInStaticObjectKeys(keys: readonly string[]): readonly string[] {
+  const indices: Array<{ key: string; value: number }> = [];
+  const names: string[] = [];
+  for (const key of keys) {
+    const value = Number(key);
+    if (Number.isSafeInteger(value) && value >= 0 && value < 4_294_967_295 && String(value) === key) {
+      indices.push({ key, value });
+    } else {
+      names.push(key);
+    }
+  }
+  indices.sort((left, right) => left.value - right.value);
+  return [...indices.map((index) => index.key), ...names];
+}
+
 function lowerTypeScriptForOfElementType(expression: ts.Expression, context: LoweringContext): IrType | undefined {
   const iterableType = getTypeScriptExpressionTypeNodeEvidence(expression, context);
   if (!iterableType) return undefined;
-  const elementType = getTypeScriptTypeNodeIterableElement(iterableType, context, new Set());
-  return elementType ? lowerType(resolveTypeScriptTypeNodeAlias(elementType, context, new Set()), context) : undefined;
+  const element = getTypeScriptTypeNodeIterableElementEvidence(iterableType, context, new Set());
+  return element ? lowerTypeScriptTypeNodeEvidence(element.type, context, new Set(), element.substitutions) : undefined;
 }
 
 function lowerTypeScriptExpressionTypeEvidence(
@@ -1273,7 +1317,7 @@ function lowerTypeScriptExpressionTypeEvidence(
   context: LoweringContext,
 ): IrType | undefined {
   const type = getTypeScriptExpressionTypeNodeEvidence(expression, context);
-  return type ? lowerType(resolveTypeScriptTypeNodeAlias(type, context, new Set()), context) : undefined;
+  return type ? lowerTypeScriptTypeNodeEvidence(type, context) : undefined;
 }
 
 function getTypeScriptExpressionTypeNodeEvidence(
@@ -1314,29 +1358,34 @@ function getTypeScriptExpressionTypeNodeEvidence(
   return undefined;
 }
 
-function getTypeScriptTypeNodeIterableElement(
+interface TypeScriptTypeNodeEvidence {
+  readonly substitutions: ReadonlyMap<ts.Symbol, ts.TypeNode>;
+  readonly type: ts.TypeNode;
+}
+
+function getTypeScriptTypeNodeIterableElementEvidence(
   type: ts.TypeNode,
   context: LoweringContext,
   seen: ReadonlySet<ts.Symbol>,
   substitutions: ReadonlyMap<ts.Symbol, ts.TypeNode> = new Map(),
-): ts.TypeNode | undefined {
+): TypeScriptTypeNodeEvidence | undefined {
   const substituted = getTypeScriptTypeNodeSubstitution(type, context, substitutions);
   if (substituted !== type) {
-    return getTypeScriptTypeNodeIterableElement(substituted, context, seen, substitutions);
+    return getTypeScriptTypeNodeIterableElementEvidence(substituted, context, seen, substitutions);
   }
   if (ts.isParenthesizedTypeNode(type)) {
-    return getTypeScriptTypeNodeIterableElement(type.type, context, seen, substitutions);
+    return getTypeScriptTypeNodeIterableElementEvidence(type.type, context, seen, substitutions);
   }
   if (ts.isTypeOperatorNode(type) && type.operator === ts.SyntaxKind.ReadonlyKeyword) {
-    return getTypeScriptTypeNodeIterableElement(type.type, context, seen, substitutions);
+    return getTypeScriptTypeNodeIterableElementEvidence(type.type, context, seen, substitutions);
   }
-  if (ts.isArrayTypeNode(type)) return getTypeScriptTypeNodeSubstitution(type.elementType, context, substitutions);
+  if (ts.isArrayTypeNode(type)) return { substitutions, type: type.elementType };
   if (ts.isTypeReferenceNode(type)) {
     const parts = getTypeNameNodeParts(type.typeName);
     const name = parts ? [parts.root.text, ...parts.path].join('.') : undefined;
     const element = type.typeArguments?.[0];
     if ((name === 'Array' || name === 'ReadonlyArray') && type.typeArguments?.length === 1 && element) {
-      return getTypeScriptTypeNodeSubstitution(element, context, substitutions);
+      return { substitutions, type: element };
     }
     const symbol = context.checker.getSymbolAtLocation(type.typeName);
     if (!symbol || seen.has(symbol)) return undefined;
@@ -1346,7 +1395,7 @@ function getTypeScriptTypeNodeIterableElement(
     if (!nextSubstitutions) return undefined;
     const nextSeen = new Set(seen);
     nextSeen.add(symbol);
-    return getTypeScriptTypeNodeIterableElement(declaration.type, context, nextSeen, nextSubstitutions);
+    return getTypeScriptTypeNodeIterableElementEvidence(declaration.type, context, nextSeen, nextSubstitutions);
   }
   return undefined;
 }
@@ -1380,19 +1429,93 @@ function getTypeScriptTypeNodeSubstitution(
   return (symbol && substitutions.get(symbol)) ?? type;
 }
 
-function resolveTypeScriptTypeNodeAlias(
+function lowerTypeScriptTypeNodeEvidence(
   type: ts.TypeNode,
   context: LoweringContext,
-  seen: ReadonlySet<ts.Symbol>,
-): ts.TypeNode {
-  if (!ts.isTypeReferenceNode(type)) return type;
-  const symbol = context.checker.getSymbolAtLocation(type.typeName);
-  if (!symbol || seen.has(symbol)) return type;
-  const declaration = symbol.declarations?.find(ts.isTypeAliasDeclaration);
-  if (!declaration || declaration.typeParameters?.length) return type;
-  const nextSeen = new Set(seen);
-  nextSeen.add(symbol);
-  return resolveTypeScriptTypeNodeAlias(declaration.type, context, nextSeen);
+  seen: ReadonlySet<ts.Symbol> = new Set(),
+  substitutions: ReadonlyMap<ts.Symbol, ts.TypeNode> = new Map(),
+): IrType {
+  const substituted = getTypeScriptTypeNodeSubstitution(type, context, substitutions);
+  if (substituted !== type) return lowerTypeScriptTypeNodeEvidence(substituted, context, seen, substitutions);
+  if (ts.isParenthesizedTypeNode(type)) {
+    return lowerTypeScriptTypeNodeEvidence(type.type, context, seen, substitutions);
+  }
+  if (ts.isTypeOperatorNode(type) && type.operator === ts.SyntaxKind.ReadonlyKeyword) {
+    const inner = lowerTypeScriptTypeNodeEvidence(type.type, context, seen, substitutions);
+    return inner.kind === 'array' || inner.kind === 'tuple' ? { ...inner, readonly: true } : inner;
+  }
+  if (ts.isTypeReferenceNode(type)) {
+    const parts = getTypeNameNodeParts(type.typeName);
+    const name = parts ? [parts.root.text, ...parts.path].join('.') : undefined;
+    const element = type.typeArguments?.[0];
+    if ((name === 'Array' || name === 'ReadonlyArray') && type.typeArguments?.length === 1 && element) {
+      return {
+        element: lowerTypeScriptTypeNodeEvidence(element, context, seen, substitutions),
+        kind: 'array',
+        readonly: name === 'ReadonlyArray',
+      };
+    }
+    const symbol = context.checker.getSymbolAtLocation(type.typeName);
+    const declaration = symbol?.declarations?.find(ts.isTypeAliasDeclaration);
+    if (symbol && declaration && !seen.has(symbol)) {
+      const nextSubstitutions = createTypeScriptTypeNodeAliasSubstitutions(type, declaration, context, substitutions);
+      if (nextSubstitutions) {
+        const nextSeen = new Set(seen);
+        nextSeen.add(symbol);
+        return lowerTypeScriptTypeNodeEvidence(declaration.type, context, nextSeen, nextSubstitutions);
+      }
+    }
+    return lowerType(type, context);
+  }
+  if (ts.isArrayTypeNode(type)) {
+    return {
+      element: lowerTypeScriptTypeNodeEvidence(type.elementType, context, seen, substitutions),
+      kind: 'array',
+      readonly: false,
+    };
+  }
+  if (ts.isTupleTypeNode(type)) {
+    return {
+      elements: type.elements.map((element): IrTupleTypeElement => {
+        if (ts.isOptionalTypeNode(element)) {
+          return {
+            optional: true,
+            rest: false,
+            type: lowerTypeScriptTypeNodeEvidence(element.type, context, seen, substitutions),
+          };
+        }
+        if (ts.isRestTypeNode(element)) {
+          return {
+            optional: false,
+            rest: true,
+            type: lowerTypeScriptTypeNodeEvidence(element.type, context, seen, substitutions),
+          };
+        }
+        if (ts.isNamedTupleMember(element)) {
+          const value = lowerTypeScriptTypeNodeEvidence(element.type, context, seen, substitutions);
+          if (element.dotDotDotToken) return { optional: false, rest: true, type: value };
+          return element.questionToken
+            ? { optional: true, rest: false, type: value }
+            : { optional: false, rest: false, type: value };
+        }
+        return {
+          optional: false,
+          rest: false,
+          type: lowerTypeScriptTypeNodeEvidence(element, context, seen, substitutions),
+        };
+      }),
+      kind: 'tuple',
+      readonly: false,
+    };
+  }
+  if (ts.isUnionTypeNode(type) || ts.isIntersectionTypeNode(type)) {
+    const types = type.types.map((member) => lowerTypeScriptTypeNodeEvidence(member, context, seen, substitutions));
+    if (types.length < 2) return lowerType(type, context);
+    return type.kind === ts.SyntaxKind.UnionType
+      ? { kind: 'union', types: [types[0]!, types[1]!, ...types.slice(2)] }
+      : { kind: 'intersection', types: [types[0]!, types[1]!, ...types.slice(2)] };
+  }
+  return lowerType(type, context);
 }
 
 function lowerBindingPattern(

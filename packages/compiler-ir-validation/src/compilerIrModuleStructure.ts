@@ -570,13 +570,36 @@ function visitStatement(statement: Readonly<IrStatement>, path: string, state: I
         visitStatement(statement.body, `${path}.body`, state);
       });
       break;
-    case 'forIn':
+    case 'forIn': {
       visitExpression(statement.object, `${path}.object`, state);
+      if (statement.keyPlan) {
+        const keys = getIrExpressionStaticForInKeys(statement.object);
+        if (statement.keyPlan.kind !== 'staticObject' || !keys) {
+          addFailure(
+            'invalid-node-shape',
+            `${path}.keyPlan`,
+            'static for-in keys require a pure fixed object expression',
+            state,
+          );
+        } else if (
+          statement.keyPlan.keys.some((key) => typeof key !== 'string') ||
+          new Set(statement.keyPlan.keys).size !== statement.keyPlan.keys.length ||
+          JSON.stringify(statement.keyPlan.keys) !== JSON.stringify(keys)
+        ) {
+          addFailure(
+            'invalid-node-shape',
+            `${path}.keyPlan.keys`,
+            'static for-in keys must exactly match JavaScript object enumeration order',
+            state,
+          );
+        }
+      }
       visitLexicalScope('block', path, state, () => {
         visitVariable(statement.variable, `${path}.variable`, ['block', 'function'], state);
         visitStatement(statement.body, `${path}.body`, state);
       });
       break;
+    }
     case 'forOf':
       visitExpression(statement.iterable, `${path}.iterable`, state);
       visitLexicalScope('block', path, state, () => {
@@ -724,6 +747,31 @@ function visitTypeParameters(
     if (parameter.constraint) visitType(parameter.constraint, `${parameterPath}.constraint`, state);
     if (parameter.default) visitType(parameter.default, `${parameterPath}.default`, state);
   });
+}
+
+function getIrExpressionStaticForInKeys(expression: Readonly<IrExpression>): readonly string[] | undefined {
+  if (
+    expression.kind !== 'object' ||
+    expression.members.some((member) => member.kind !== 'property' || member.value.kind !== 'literal')
+  ) {
+    return undefined;
+  }
+  const keys: string[] = [];
+  expression.members.forEach((member) => {
+    if (member.kind === 'property' && !keys.includes(member.name)) keys.push(member.name);
+  });
+  const indices: Array<{ key: string; value: number }> = [];
+  const names: string[] = [];
+  for (const key of keys) {
+    const value = Number(key);
+    if (Number.isSafeInteger(value) && value >= 0 && value < 4_294_967_295 && String(value) === key) {
+      indices.push({ key, value });
+    } else {
+      names.push(key);
+    }
+  }
+  indices.sort((left, right) => left.value - right.value);
+  return [...indices.map((index) => index.key), ...names];
 }
 
 function visitVariable(

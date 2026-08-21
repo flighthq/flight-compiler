@@ -203,6 +203,15 @@ describe('emitIrModuleHaxe', () => {
     expect(emitIrModuleHaxe(result.module).contents).toContain('final value:Array<Dynamic> = [2, null];');
   });
 
+  it('emits statically ordered pure-object for-in keys', () => {
+    const result = lower(
+      'static-for-in.ts',
+      "export function first(): string { for (const key in { second: 2, 10: 10, 2: 2, first: 1 }) return key; return ''; }",
+    );
+
+    expect(emitIrModuleHaxe(result.module).contents).toContain('for (key in ["2", "10", "second", "first"])');
+  });
+
   it('emits fixed tuple spreads with collision-free sequential evaluation carriers', () => {
     const result = lower(
       'tuple-spread.ts',

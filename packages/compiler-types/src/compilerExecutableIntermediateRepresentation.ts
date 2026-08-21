@@ -148,6 +148,11 @@ export interface IrSwitchCase {
   readonly statements: readonly IrStatement[];
 }
 
+export interface IrForInKeyPlan {
+  readonly keys: readonly string[];
+  readonly kind: 'staticObject';
+}
+
 export type IrSwitchCaseCompletion =
   | Readonly<{ kind: 'abrupt' }>
   | Readonly<{ kind: 'fallthrough' }>
@@ -168,7 +173,13 @@ export type IrStatement =
       kind: 'for';
     }>
   | Readonly<{ await: boolean; body: IrStatement; iterable: IrExpression; kind: 'forOf'; variable: IrVariable }>
-  | Readonly<{ body: IrStatement; kind: 'forIn'; object: IrExpression; variable: IrVariable }>
+  | Readonly<{
+      body: IrStatement;
+      keyPlan?: IrForInKeyPlan | undefined;
+      kind: 'forIn';
+      object: IrExpression;
+      variable: IrVariable;
+    }>
   | Readonly<{
       condition: IrExpression;
       consequent: IrStatement;

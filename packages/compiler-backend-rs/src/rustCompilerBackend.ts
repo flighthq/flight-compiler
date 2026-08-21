@@ -442,7 +442,16 @@ function emitStatement(statement: Readonly<IrStatement>, context: EmitContext): 
     case 'for':
       emissionError(context, 'C-style for loops require control-flow lowering before Rust emission');
     case 'forIn':
-      emissionError(context, 'object key iteration requires record or host-object lowering');
+      if ('pattern' in statement.variable)
+        emissionError(context, 'binding patterns require destructuring lowering before Rust emission');
+      if (!statement.keyPlan) {
+        emissionError(context, 'object key iteration requires static pure-object key evidence');
+      }
+      return [
+        `for ${statement.variable.mutable ? 'mut ' : ''}${getBindingTargetNameRust(statement.variable.binding, context)} in [${statement.keyPlan.keys.map((key) => `${JSON.stringify(key)}.to_owned()`).join(', ')}] {`,
+        ...indentSourceLines(emitStatementBody(statement.body, context)),
+        '}',
+      ];
     case 'forOf':
       if (statement.await) emissionError(context, 'async iteration requires Flight task lowering');
       if ('pattern' in statement.variable)

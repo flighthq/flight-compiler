@@ -204,6 +204,33 @@ describe('validateIrModuleStructure', () => {
     }
   });
 
+  it('validates static for-in keys against pure object enumeration order', () => {
+    const valid = lower(
+      'static-for-in.ts',
+      "export function first(): string { for (const key in { second: 2, 10: 10, 2: 2 }) return key; return ''; }",
+    );
+
+    expect(validateIrModuleStructure(valid)).toEqual({ kind: 'valid' });
+
+    const invalid = structuredClone(valid);
+    const declaration = invalid.declarations[0];
+    if (declaration?.kind !== 'function' || declaration.body[0]?.kind !== 'forIn') {
+      throw new Error('Expected static for-in statement');
+    }
+    (declaration.body[0] as { keyPlan?: { keys: readonly string[]; kind: 'staticObject' } }).keyPlan = {
+      keys: ['second', '2', '10'],
+      kind: 'staticObject',
+    };
+    const result = validateIrModuleStructure(invalid);
+
+    expect(result.kind).toBe('invalid');
+    if (result.kind === 'invalid') {
+      expect(result.failures).toContainEqual(
+        expect.objectContaining({ code: 'invalid-node-shape', path: expect.stringContaining('.keyPlan.keys') }),
+      );
+    }
+  });
+
   it('accepts exact repeated function-scoped variable declarations but not other duplicate introductions', () => {
     const repeated = lower(
       'repeated-var.ts',

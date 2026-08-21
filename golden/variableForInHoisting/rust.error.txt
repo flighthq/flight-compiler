@@ -1,1 +1,1 @@
-rust emission failed for @flighthq/golden/packages/golden/src/variableForInHoisting.ts: object key iteration requires record or host-object lowering
+rust emission failed for @flighthq/golden/packages/golden/src/variableForInHoisting.ts: object key iteration requires static pure-object key evidence

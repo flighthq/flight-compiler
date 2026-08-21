@@ -402,7 +402,7 @@ function emitStatement(statement: Readonly<IrStatement>, context: EmitContext): 
       if ('pattern' in statement.variable)
         emissionError(context, 'binding patterns require destructuring lowering before Haxe emission');
       return [
-        `for (${getBindingTargetNameHaxe(statement.variable.binding, context)} in Reflect.fields(${emitExpression(statement.object, context)})) {`,
+        `for (${getBindingTargetNameHaxe(statement.variable.binding, context)} in ${statement.keyPlan ? `[${statement.keyPlan.keys.map((key) => JSON.stringify(key)).join(', ')}]` : `Reflect.fields(${emitExpression(statement.object, context)})`}) {`,
         ...indentSourceLines(emitStatementBody(statement.body, context)),
         '}',
       ];

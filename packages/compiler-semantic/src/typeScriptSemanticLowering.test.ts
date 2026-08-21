@@ -887,6 +887,77 @@ describe('lowerTypeScriptSource', () => {
     ]);
   });
 
+  it('records exact JavaScript key order only for pure fixed for-in object expressions', () => {
+    const result = lower(
+      'for-in-keys.ts',
+      `
+        export function fixed(): string {
+          for (const key in { second: 2, 10: 10, 2: 2, first: 1 }) return key;
+          return '';
+        }
+        export function dynamic(values: { value: number }, callback: () => number): void {
+          for (const key in values) key;
+          for (const key in { value: callback() }) key;
+        }
+      `,
+    );
+    const fixed = result.module.declarations.find(
+      (declaration) => declaration.kind === 'function' && declaration.binding.name === 'fixed',
+    );
+    const dynamic = result.module.declarations.find(
+      (declaration) => declaration.kind === 'function' && declaration.binding.name === 'dynamic',
+    );
+    if (fixed?.kind !== 'function' || dynamic?.kind !== 'function') throw new Error('Expected for-in functions');
+    const fixedLoop = fixed.body[0];
+
+    expect(result.diagnostics).toEqual([]);
+    expect(fixedLoop).toMatchObject({ keyPlan: { keys: ['2', '10', 'second', 'first'], kind: 'staticObject' } });
+    expect(
+      dynamic.body
+        .filter((statement) => statement.kind === 'forIn')
+        .every((statement) => statement.keyPlan === undefined),
+    ).toBe(true);
+  });
+
+  it('substitutes generic alias evidence through iteration, destructuring, operators, and tuple spreads', () => {
+    const result = lower(
+      'generic-alias-evidence.ts',
+      `
+        type Pair<T, U = string> = [T, U];
+        type Wrapped<T> = Pair<T>;
+        type Rows<T> = Array<Pair<T>>;
+        export function visit(rows: Rows<number>, pair: Wrapped<number>, values: Pair<number, boolean>): void {
+          for (const [rowNumber, rowText] of rows) { rowNumber += 1; rowText += '!'; }
+          const [valueNumber, valueFlag]: Pair<number, boolean> = values;
+          valueNumber += 1; valueFlag &&= true;
+          const copy: Pair<number> = [...pair];
+          copy;
+        }
+      `,
+    );
+    const declaration = result.module.declarations.find(
+      (item) => item.kind === 'function' && item.binding.name === 'visit',
+    );
+    if (declaration?.kind !== 'function') throw new Error('Expected generic alias evidence function');
+    const assignments = collectAssignmentExpressions(declaration.body);
+    const variables = declaration.body
+      .filter((statement) => statement.kind === 'variable')
+      .flatMap((statement) => statement.declarations);
+    const copy = variables.find((variable) => !('pattern' in variable) && variable.binding.name === 'copy');
+
+    expect(result.diagnostics).toEqual([]);
+    expect(assignments.map((assignment) => assignment.semantics.left.flow)).toEqual([
+      'number',
+      'string',
+      'number',
+      'boolean',
+    ]);
+    expect(copy?.initializer).toMatchObject({
+      kind: 'tupleSpread',
+      type: { elements: [{ type: { name: 'number' } }, { type: { name: 'string' } }] },
+    });
+  });
+
   it('distinguishes declared operand domains from flow-narrowed checker domains', () => {
     const result = lower(
       'operator-narrowing.ts',
