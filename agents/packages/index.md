@@ -9,10 +9,10 @@ A score is a judgement about **domain coverage**, not about code quality. `compi
 | [compiler-canonical-form](compiler-canonical-form/review.md) | mature | 96 | which bytes represent equivalent compiler text and paths across hosts |
 | [compiler-provenance](compiler-provenance/review.md) | near-mature | 88 | are two pieces of source the same thing |
 | [compiler-emission](compiler-emission/review.md) | mature | 90 | portable generated-file identity, contents, and provenance |
-| [compiler-patch](compiler-patch/review.md) | substantially-mature | 78 | correct upstream semantics without editing upstream |
+| [compiler-patch](compiler-patch/review.md) | near-mature | 90 | correct upstream semantics without editing upstream |
 | [compiler-types](compiler-types/review.md) | foundational | 72 | the vocabulary everything else speaks |
 | [compiler-runtime-contract](compiler-runtime-contract/review.md) | near-mature | 86 | does every reachable ambient type/value symbol have one target binding decision |
-| [compiler-ir-validation](compiler-ir-validation/review.md) | solid | 72 | is a target-neutral IR module structurally trustworthy |
+| [compiler-ir-validation](compiler-ir-validation/review.md) | near-mature | 84 | is a target-neutral IR module structurally trustworthy |
 | [compiler-inventory](compiler-inventory/review.md) | solid | 68 | what is in this workspace and what does it export |
 | [tool-compiler](tool-compiler/review.md) | solid | 62 | the one published artifact |
 | [compiler-orchestration](compiler-orchestration/review.md) | solid | 60 | compose the passes deterministically |
@@ -20,6 +20,8 @@ A score is a judgement about **domain coverage**, not about code quality. `compi
 | [compiler-semantic](compiler-semantic/review.md) | early | 44 | TypeScript in, neutral IR out |
 | [compiler-backend-hx](compiler-backend-hx/review.md) | early | 30 | neutral IR in, idiomatic Haxe out |
 | [compiler-backend-rs](compiler-backend-rs/review.md) | early | 26 | neutral IR in, idiomatic Rust out |
+
+Two scores are older than the source they measure. `compiler-lowering` (48) and the two backend reviews (30, 26) were written before the destructuring, switch-fallthrough, hoisting, tuple and nullable batches landed on 2026-08-21; the lowering review in particular still reads "only one transform exists", which is no longer true. Read those three against their `updated:` date until they are re-scored.
 
 ## What the shape says
 
@@ -34,5 +36,5 @@ Five gaps appear in more than one review and are worth reading as one problem ea
 - **No serialization boundary anywhere.** The IR, the inventory report and the patch set are all in-process typed values. Nothing can cross a process, be cached, or be diffed by a tool that is not this compiler — which the oracle-vector and drift-tracking plans both eventually need.
 - **No incrementality.** Inventory and orchestration both re-do whole-checkout work every run, and provenance re-walks every tree. Acceptable at present scale, and named before it is not.
 - **Reporting is thinner than the work performed.** Orchestration counts files, inventory counts exports, and neither can say which declarations refused and why — which is the number the migration most needs and the one nothing currently produces.
-- **Most lowering passes named by refusals are still absent.** The first shared control-flow transform now has a verified, backend-elected home in `compiler-lowering`; async, call-site, spread, structural-copy, option-aware, and target ownership work remain. [The breadth analysis](../compiler-breadth.md) separates neutral reusable passes from target representation.
+- **The neutral pass library is no longer a single transform, but its second half is still absent.** `compiler-lowering` now elects six passes — C-style `for`, switch fallthrough, array and object binding patterns, the shared binding-pattern entry, and function-scoped variable hoisting — each validated structurally and by its own postcondition. Async and task meaning, call-site and spread lowering, structural-copy, option-aware access, and target ownership remain unwritten, and every one of them is named by a refusal a golden fixture already pins. [The breadth analysis](../compiler-breadth.md) separates neutral reusable passes from target representation.
 - **No emitted-output verification.** The golden fixtures pin bytes, not validity. A fixture can pin invalid target source, and once did. Compiling emitted Haxe and Rust belongs downstream, but a parse-level check here would close the gap between "the bytes did not change" and "the bytes are correct".
