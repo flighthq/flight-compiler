@@ -58,10 +58,12 @@ import type {
   IrVariable,
   IrVariableDeclaration,
   TypeScriptLoweringResult,
+  TypeScriptInvocationSignatureResolution,
   LowerTypeScriptSourceOptions,
 } from '../../compiler-types/src/index.js';
 import { getIrTypeOperatorValueDomain } from './compilerOperatorDomainEvidence.js';
 import { getTypeScriptForInKeyEvidence } from './compilerTypeScriptForInKeyEvidence.js';
+import { getTypeScriptInvocationSignatureResolution } from './compilerTypeScriptInvocationSemantics.js';
 import {
   createTypeScriptSyntacticAliasSubstitutions,
   createTypeScriptSyntacticDeclarationSubstitutions,
@@ -83,12 +85,6 @@ interface LoweringContext {
 interface TypeScriptAnalysis {
   checker: ts.TypeChecker;
   sourceFile: ts.SourceFile;
-}
-
-interface TypeScriptInvocationSignatureResolution {
-  readonly implementation: ts.SignatureDeclaration | ts.JSDocSignature;
-  readonly overloadIndex?: number | undefined;
-  readonly resolved: ts.SignatureDeclaration | ts.JSDocSignature;
 }
 
 interface UnsupportedSyntaxFailure extends Error {
@@ -496,7 +492,7 @@ function lowerExpression(
   }
   if (ts.isCallExpression(node)) {
     const optional = node.questionDotToken !== undefined;
-    const signature = getTypeScriptInvocationSignatureResolution(node, context);
+    const signature = getTypeScriptInvocationSignatureResolution(node, context.checker);
     const expression = {
       arguments: lowerTypeScriptInvocationArguments(node, signature, context),
       callee: lowerExpression(node.expression, context),
@@ -511,7 +507,7 @@ function lowerExpression(
     return addTypeScriptExtraArgumentErasureSemantics(node, expression, context);
   }
   if (ts.isNewExpression(node)) {
-    const signature = getTypeScriptInvocationSignatureResolution(node, context);
+    const signature = getTypeScriptInvocationSignatureResolution(node, context.checker);
     return {
       arguments: lowerTypeScriptInvocationArguments(node, signature, context),
       callee: lowerExpression(node.expression, context),
@@ -1061,39 +1057,6 @@ function getTypeScriptDefaultParameterInvocationSemantics(
       providedArgumentCount: dynamic ? 'dynamic' : arguments_.length,
     },
   };
-}
-
-function getTypeScriptInvocationSignatureResolution(
-  node: ts.CallExpression | ts.NewExpression,
-  context: LoweringContext,
-): TypeScriptInvocationSignatureResolution | undefined {
-  const resolved = context.checker.getResolvedSignature(node)?.declaration;
-  if (!resolved) return undefined;
-  if (ts.isFunctionDeclaration(resolved) && !resolved.body && resolved.name) {
-    const symbol = context.checker.getSymbolAtLocation(resolved.name);
-    const declarations = symbol?.declarations?.filter(ts.isFunctionDeclaration) ?? [];
-    return getTypeScriptOverloadSignatureResolution(resolved, declarations);
-  }
-  if (
-    ts.isConstructorDeclaration(resolved) &&
-    !resolved.body &&
-    (ts.isClassDeclaration(resolved.parent) || ts.isClassExpression(resolved.parent))
-  ) {
-    const declarations = resolved.parent.members.filter(ts.isConstructorDeclaration);
-    return getTypeScriptOverloadSignatureResolution(resolved, declarations);
-  }
-  return { implementation: resolved, resolved };
-}
-
-function getTypeScriptOverloadSignatureResolution<
-  Declaration extends ts.FunctionDeclaration | ts.ConstructorDeclaration,
->(resolved: Declaration, declarations: readonly Declaration[]): TypeScriptInvocationSignatureResolution {
-  const implementation = declarations.find((declaration) => declaration.body !== undefined);
-  if (!implementation) {
-    return { implementation: resolved, resolved };
-  }
-  const overloadIndex = declarations.filter((declaration) => !declaration.body).indexOf(resolved);
-  return overloadIndex < 0 ? { implementation: resolved, resolved } : { implementation, overloadIndex, resolved };
 }
 
 function getTypeScriptOverloadImplementationInvocationSemantics(

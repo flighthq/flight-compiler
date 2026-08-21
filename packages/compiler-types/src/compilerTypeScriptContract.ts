@@ -23,3 +23,9 @@ export interface TypeScriptLoweringResult {
   readonly diagnostics: readonly CompilerDiagnostic[];
   readonly module: IrModule;
 }
+
+export interface TypeScriptInvocationSignatureResolution {
+  readonly implementation: ts.SignatureDeclaration | ts.JSDocSignature;
+  readonly overloadIndex?: number | undefined;
+  readonly resolved: ts.SignatureDeclaration | ts.JSDocSignature;
+}
