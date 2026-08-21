@@ -365,7 +365,7 @@ function lowerIrExpression(expression: Readonly<IrExpression>, analysis: CStyleF
       return {
         ...expression,
         excluded: expression.excluded.map((key) =>
-          key.kind === 'computed' ? { expression: lowerIrExpression(key.expression, analysis), kind: 'computed' } : key,
+          key.kind === 'computed' ? { ...key, expression: lowerIrExpression(key.expression, analysis) } : key,
         ),
         object: expression.object,
       };
@@ -653,7 +653,7 @@ function lowerIrBindingPattern(
         ...(property.initializer ? { initializer: lowerIrExpression(property.initializer, analysis) } : {}),
         key:
           property.key.kind === 'computed'
-            ? { expression: lowerIrExpression(property.key.expression, analysis), kind: 'computed' }
+            ? { ...property.key, expression: lowerIrExpression(property.key.expression, analysis) }
             : property.key,
         pattern: lowerIrBindingPattern(property.pattern, analysis),
       })),

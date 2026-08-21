@@ -353,8 +353,8 @@ function lowerIrExpressionSwitchFallthrough(
         excluded: expression.excluded.map((key) =>
           key.kind === 'computed'
             ? {
+                ...key,
                 expression: lowerIrExpressionSwitchFallthrough(key.expression, sourceIdentity),
-                kind: 'computed',
               }
             : key,
         ),

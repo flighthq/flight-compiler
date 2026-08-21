@@ -23,7 +23,7 @@ interface ArrayBindingPatternLoweringAnalysis {
 
 interface LoweredArrayBindingVariable {
   readonly synthetic: boolean;
-  readonly variable: IrNamedVariable;
+  readonly variable: IrVariable;
 }
 
 export function createCompilerLoweringPassArrayBindingPattern(): CompilerLoweringPass {
@@ -66,7 +66,7 @@ function createIrArrayBindingPatternElementAccess(binding: Readonly<IrBindingIde
     kind: 'element',
     object: { kind: 'identifier', reference: { binding, kind: 'binding' } },
     optional: false,
-    semantics: { receivers: ['tuple'] },
+    semantics: { key: 'number', receivers: ['tuple'] },
   };
 }
 
@@ -197,12 +197,17 @@ function lowerIrArrayBindingPattern(
       ];
     }
     if (element.pattern.kind !== 'array') {
-      throw createCompilerLoweringFailure(
-        'unsupported-ir',
-        compilerLoweringPassNameArrayBindingPattern,
-        element.pattern,
-        'nested object binding requires object binding normalization before array binding normalization',
-      );
+      return [
+        {
+          synthetic: false,
+          variable: {
+            initializer,
+            mutable,
+            pattern: element.pattern,
+            type: elementType,
+          },
+        },
+      ];
     }
     const temporaryBinding = createIrArrayBindingPatternTemporary(element.pattern, elementPath);
     const temporary: LoweredArrayBindingVariable = {
@@ -264,12 +269,18 @@ function lowerIrArrayBindingPattern(
     ];
   }
   if (pattern.rest.kind !== 'array') {
-    throw createCompilerLoweringFailure(
-      'unsupported-ir',
-      compilerLoweringPassNameArrayBindingPattern,
-      pattern.rest,
-      'nested object binding rest requires object binding normalization before array binding normalization',
-    );
+    return [
+      ...variables,
+      {
+        synthetic: false,
+        variable: {
+          initializer: suffix.expression,
+          mutable,
+          pattern: pattern.rest,
+          type: suffix.type,
+        },
+      },
+    ];
   }
   const restPath = `${path}.rest`;
   const temporaryBinding = createIrArrayBindingPatternTemporary(pattern.rest, restPath);
@@ -467,12 +478,12 @@ function lowerIrExpressionArrayBindingPattern(
         excluded: expression.excluded.map((key, index) =>
           key.kind === 'computed'
             ? {
+                ...key,
                 expression: lowerIrExpressionArrayBindingPattern(
                   key.expression,
                   `${path}.excluded[${String(index)}].expression`,
                   analysis,
                 ),
-                kind: 'computed',
               }
             : key,
         ),
@@ -827,7 +838,7 @@ function lowerIrStatementArrayBindingPattern(
 
 function prependIrStatementArrayBindingPatternVariables(
   body: Readonly<IrStatement>,
-  variables: readonly IrNamedVariable[],
+  variables: readonly IrVariable[],
 ): IrStatement {
   if (variables.length === 0) return body;
   const declaration: IrStatement = { declarations: variables, kind: 'variable' };
@@ -865,12 +876,23 @@ function lowerIrVariableArrayBindingPattern(
     ];
   }
   if (variable.pattern.kind !== 'array') {
-    throw createCompilerLoweringFailure(
-      'unsupported-ir',
-      compilerLoweringPassNameArrayBindingPattern,
-      analysis.sourceIdentity,
-      'only array binding patterns can be normalized by this pass',
-    );
+    return [
+      {
+        synthetic: false,
+        variable: {
+          ...variable,
+          ...(variable.initializer
+            ? {
+                initializer: lowerIrExpressionArrayBindingPattern(
+                  variable.initializer,
+                  `${path}.initializer`,
+                  analysis,
+                ),
+              }
+            : {}),
+        },
+      },
+    ];
   }
   if (!variable.initializer) {
     throw createCompilerLoweringFailure(

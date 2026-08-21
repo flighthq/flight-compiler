@@ -17,8 +17,11 @@ export type IrIndexedReceiver =
   | 'unknown';
 
 export interface IrElementAccessSemantics {
+  readonly key: IrPropertyKeyCoercion;
   readonly receivers: readonly [IrIndexedReceiver, ...IrIndexedReceiver[]];
 }
+
+export type IrPropertyKeyCoercion = 'number' | 'string' | 'symbol' | 'toPropertyKey';
 
 export type IrTypedArrayElementWidth = 8 | 16 | 32 | 64;
 
@@ -29,5 +32,13 @@ export interface IrTypedArraySetSemantics {
 }
 
 export interface IrCallSemantics {
+  readonly defaultParameters?: IrDefaultParameterCallSemantics | undefined;
   readonly typedArraySet?: IrTypedArraySetSemantics | undefined;
+}
+
+export interface IrDefaultParameterCallSemantics {
+  readonly defaulted: readonly number[];
+  readonly omitted: readonly number[];
+  readonly parameterCount: number;
+  readonly providedArgumentCount: number | 'dynamic';
 }

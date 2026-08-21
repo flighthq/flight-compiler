@@ -8,9 +8,8 @@ import {
   isCompilerTargetNameAllocationFailure,
 } from '../../compiler-emission/src/index.js';
 import {
-  createCompilerLoweringPassArrayBindingPattern,
+  createCompilerLoweringPassBindingPattern,
   createCompilerLoweringPassCStyleFor,
-  createCompilerLoweringPassObjectBindingPattern,
   createCompilerLoweringPassSwitchFallthrough,
   createCompilerLoweringPassVariableHoisting,
   lowerIrModuleWithCompilerPasses,
@@ -77,8 +76,7 @@ export function emitIrModuleHaxe(
   options: Readonly<HaxeCompilerBackendOptions> = {},
 ): EmittedFile {
   const module = lowerIrModuleWithCompilerPasses(sourceModule, [
-    createCompilerLoweringPassObjectBindingPattern(),
-    createCompilerLoweringPassArrayBindingPattern(),
+    createCompilerLoweringPassBindingPattern(),
     createCompilerLoweringPassVariableHoisting(),
     createCompilerLoweringPassCStyleFor(),
     createCompilerLoweringPassSwitchFallthrough(),
@@ -232,7 +230,7 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
     }
     case 'call':
       if (expression.optional) emissionError(context, 'optional calls require null-safe call lowering');
-      return `${emitExpression(expression.callee, context)}(${expression.arguments.map((argument) => emitExpression(argument, context)).join(', ')})`;
+      return `${expression.callee.kind === 'function' ? `(${emitExpression(expression.callee, context)})` : emitExpression(expression.callee, context)}(${expression.arguments.map((argument) => emitExpression(argument, context)).join(', ')})`;
     case 'cast':
       return `(cast ${emitExpression(expression.expression, context)} : ${emitType(expression.type, context)})`;
     case 'conditional':
@@ -240,7 +238,10 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
     case 'element':
       if (expression.optional) emissionError(context, 'optional element access requires null-safe access lowering');
       if (expression.semantics.receivers.includes('object')) {
-        emissionError(context, 'computed object access requires JavaScript property-key coercion lowering');
+        if (expression.semantics.receivers.length !== 1 || expression.semantics.key !== 'string') {
+          emissionError(context, 'computed object access requires unresolved JavaScript property-key coercion');
+        }
+        return `Reflect.field(${emitExpression(expression.object, context)}, ${emitExpression(expression.index, context)})`;
       }
       if (expression.semantics.receivers.includes('tuple')) {
         const index = getElementAccessTupleIndexHaxe(expression, context);
@@ -270,12 +271,15 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
         })
         .join(', ')} }`;
     case 'objectRest': {
-      if (expression.excluded.some((key) => key.kind === 'computed')) {
-        emissionError(context, 'computed object-rest exclusions require JavaScript property-key coercion lowering');
+      if (expression.excluded.some((key) => key.kind === 'computed' && key.coercion !== 'string')) {
+        emissionError(context, 'computed object-rest exclusions require unresolved JavaScript property-key coercion');
       }
       const name = getGeneratedTargetNameHaxe('objectRestValue', context);
       const exclusions = expression.excluded
-        .map((key) => `Reflect.deleteField(${name}, ${JSON.stringify(key.kind === 'named' ? key.name : '')});`)
+        .map(
+          (key) =>
+            `Reflect.deleteField(${name}, ${key.kind === 'named' ? JSON.stringify(key.name) : emitExpression(key.expression, context)});`,
+        )
         .join(' ');
       return `(function() { final ${name} = Reflect.copy(${emitExpression(expression.object, context)}); ${exclusions} return ${name}; })()`;
     }

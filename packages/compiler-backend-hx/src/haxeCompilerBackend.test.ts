@@ -163,7 +163,7 @@ describe('emitIrModuleHaxe', () => {
     );
   });
 
-  it('elects object binding lowering with named rest copies and computed-key refusal', () => {
+  it('elects object binding lowering with named and proven-string computed rest copies', () => {
     const named = lower(
       'object-binding.ts',
       `
@@ -192,9 +192,9 @@ describe('emitIrModuleHaxe', () => {
     expect(output).toContain('final value:Float = (objectPatternValue.value ?? 1);');
     expect(output).toContain('Reflect.copy(objectPatternValue)');
     expect(output).toContain('Reflect.deleteField(objectRestValue, "value")');
-    expect(() => emitIrModuleHaxe(computed.module)).toThrow(
-      'computed object access requires JavaScript property-key coercion lowering',
-    );
+    const computedOutput = emitIrModuleHaxe(computed.module).contents;
+    expect(computedOutput).toContain('Reflect.field(objectPatternValue, objectPatternKey)');
+    expect(computedOutput).toContain('Reflect.deleteField(objectRestValue, objectPatternKey)');
   });
 
   it('elects function-scoped variable hoisting after destructuring normalization', () => {
@@ -270,6 +270,18 @@ describe('emitIrModuleHaxe', () => {
     const output = emitIrModuleHaxe(result.module).contents;
     expect(output).toContain('return value?.count;');
     expect(output).toContain('return value?.read();');
+  });
+
+  it('emits expression-position destructuring with the original aggregate completion value', () => {
+    const result = lower(
+      'assignment-completion.ts',
+      'export function assign(tuple: [number]): [number] { let value = 0; return ([value] = tuple); }',
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('(function() {');
+    expect(output).toContain('value = destructuringAssignmentValue[0];');
+    expect(output).toContain('return destructuringAssignmentValue;');
   });
 
   it('emits fixed tuple spreads with collision-free sequential evaluation carriers', () => {

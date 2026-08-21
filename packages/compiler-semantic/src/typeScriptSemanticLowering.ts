@@ -41,6 +41,7 @@ import type {
   IrParameter,
   IrPostfixUnaryOperator,
   IrPrefixUnaryOperator,
+  IrPropertyKeyCoercion,
   IrStatement,
   IrTupleTypeElement,
   IrType,
@@ -458,7 +459,7 @@ function lowerExpression(
       kind: 'element',
       object: lowerExpression(node.expression, context),
       optional: node.questionDotToken !== undefined,
-      semantics: lowerElementAccessSemantics(node.expression, context),
+      semantics: lowerElementAccessSemantics(node.expression, node.argumentExpression, context),
     };
   }
   if (ts.isCallExpression(node)) {
@@ -485,7 +486,7 @@ function lowerExpression(
         node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
         (ts.isArrayLiteralExpression(node.left) || ts.isObjectLiteralExpression(node.left))
       ) {
-        unsupported(node, 'destructuring assignment value contexts require completion-value lowering');
+        return lowerTypeScriptDestructuringAssignmentExpression(node, context);
       }
       return {
         kind: 'assignment',
@@ -676,9 +677,21 @@ function lowerExpressionWithTypeArguments(
 
 function lowerElementAccessSemantics(
   receiver: ts.Expression,
+  key: ts.Expression,
   context: LoweringContext,
-): { receivers: [IrIndexedReceiver, ...IrIndexedReceiver[]] } {
-  return { receivers: getTypeScriptExpressionIndexedReceiverSet(receiver, context) };
+): { key: IrPropertyKeyCoercion; receivers: [IrIndexedReceiver, ...IrIndexedReceiver[]] } {
+  return {
+    key: getTypeScriptPropertyKeyCoercion(key, context),
+    receivers: getTypeScriptExpressionIndexedReceiverSet(receiver, context),
+  };
+}
+
+function getTypeScriptPropertyKeyCoercion(expression: ts.Expression, context: LoweringContext): IrPropertyKeyCoercion {
+  const flags = context.checker.getTypeAtLocation(expression).flags;
+  if ((flags & ts.TypeFlags.StringLike) !== 0) return 'string';
+  if ((flags & ts.TypeFlags.NumberLike) !== 0) return 'number';
+  if ((flags & ts.TypeFlags.ESSymbolLike) !== 0) return 'symbol';
+  return 'toPropertyKey';
 }
 
 function getTypeScriptExpressionIndexedReceiverSet(
@@ -761,6 +774,9 @@ function getTypeScriptTypeNodeIndexedReceivers(
 }
 
 function lowerCallSemantics(node: ts.CallExpression, context: LoweringContext): IrCallSemantics {
+  const semantics: IrCallSemantics = {
+    ...getTypeScriptDefaultParameterCallSemantics(node, context),
+  };
   const access = node.expression;
   const receiver = ts.isPropertyAccessExpression(access)
     ? access.name.text === 'set'
@@ -773,10 +789,33 @@ function lowerCallSemantics(node: ts.CallExpression, context: LoweringContext): 
         access.argumentExpression.text === 'set'
       ? access.expression
       : undefined;
-  if (!receiver) return {};
+  if (!receiver) return semantics;
   const receivers = getTypeScriptExpressionIndexedReceiverSet(receiver, context);
-  if (!receivers.every(isIrTypedArrayReceiver)) return {};
-  return { typedArraySet: { receivers: receivers as [IrTypedArrayReceiver, ...IrTypedArrayReceiver[]] } };
+  if (!receivers.every(isIrTypedArrayReceiver)) return semantics;
+  return {
+    ...semantics,
+    typedArraySet: { receivers: receivers as [IrTypedArrayReceiver, ...IrTypedArrayReceiver[]] },
+  };
+}
+
+function getTypeScriptDefaultParameterCallSemantics(
+  node: ts.CallExpression,
+  context: LoweringContext,
+): Pick<IrCallSemantics, 'defaultParameters'> {
+  const declaration = context.checker.getResolvedSignature(node)?.declaration;
+  if (!declaration || !('parameters' in declaration)) return {};
+  const parameters = declaration.parameters.filter(ts.isParameter);
+  const defaulted = parameters.flatMap((parameter, index) => (parameter.initializer ? [index] : []));
+  if (defaulted.length === 0) return {};
+  const dynamic = node.arguments.some(ts.isSpreadElement);
+  return {
+    defaultParameters: {
+      defaulted,
+      omitted: dynamic ? [] : defaulted.filter((index) => index >= node.arguments.length),
+      parameterCount: parameters.length,
+      providedArgumentCount: dynamic ? 'dynamic' : node.arguments.length,
+    },
+  };
 }
 
 function isIrTypedArrayReceiver(value: IrIndexedReceiver): value is IrTypedArrayReceiver {
@@ -1172,6 +1211,50 @@ function lowerTypeScriptDestructuringAssignmentStatement(
   };
 }
 
+function lowerTypeScriptDestructuringAssignmentExpression(
+  expression: ts.BinaryExpression,
+  context: LoweringContext,
+): IrExpression {
+  const sourceType = lowerTypeScriptExpressionTypeEvidence(expression.right, context);
+  const sourceTypeNode = getTypeScriptSyntacticExpressionTypeEvidence(expression.right, context.checker);
+  const storageType = sourceTypeNode ? lowerType(sourceTypeNode, context) : sourceType;
+  const statements = lowerTypeScriptDestructuringAssignmentTarget(
+    expression.left,
+    lowerExpression(expression.right, context, sourceType),
+    sourceType,
+    'root',
+    context,
+    storageType,
+  );
+  const first = statements[0];
+  const variable = first?.kind === 'variable' ? first.declarations[0] : undefined;
+  if (!variable || 'pattern' in variable) {
+    return unsupported(expression, 'destructuring assignment completion requires one aggregate value carrier');
+  }
+  const returns = storageType ?? sourceType ?? { kind: 'unknown', source: 'unknown' };
+  return {
+    arguments: [],
+    callee: {
+      async: false,
+      body: [
+        ...statements,
+        {
+          expression: { kind: 'identifier', reference: { binding: variable.binding, kind: 'binding' } },
+          kind: 'return',
+        },
+      ],
+      kind: 'function',
+      parameters: [],
+      returns,
+      typeParameters: [],
+    },
+    kind: 'call',
+    optional: false,
+    semantics: {},
+    typeArguments: [],
+  };
+}
+
 function lowerTypeScriptDestructuringAssignmentTarget(
   target: ts.Expression,
   source: IrExpression,
@@ -1236,7 +1319,10 @@ function lowerTypeScriptDestructuringAssignmentTarget(
               kind: 'element',
               object,
               optional: false,
-              semantics: { receivers: [sourceType?.kind === 'tuple' ? 'tuple' : 'unknown'] },
+              semantics: {
+                key: 'number',
+                receivers: [sourceType?.kind === 'tuple' ? 'tuple' : 'unknown'],
+              },
             },
             elementType,
             `${path}.elements[${String(index)}]`,
@@ -1266,7 +1352,10 @@ function lowerTypeScriptDestructuringAssignmentTarget(
             kind: 'element',
             object,
             optional: false,
-            semantics: { receivers: ['object'] },
+            semantics: {
+              key: getTypeScriptPropertyKeyCoercion(name.expression, context),
+              receivers: ['object'],
+            },
           }
         : { kind: 'property', name: keyName!, object, optional: false };
       if (ts.isShorthandPropertyAssignment(property)) {
@@ -1929,7 +2018,11 @@ function lowerBindingPattern(
           ? element.name
           : unsupported(element.name, 'nested object binding requires an explicit property name'));
       const key = ts.isComputedPropertyName(propertyNode)
-        ? { expression: lowerExpression(propertyNode.expression, context), kind: 'computed' as const }
+        ? {
+            coercion: getTypeScriptPropertyKeyCoercion(propertyNode.expression, context),
+            expression: lowerExpression(propertyNode.expression, context),
+            kind: 'computed' as const,
+          }
         : { kind: 'named' as const, name: propertyName(propertyNode, context) };
       const propertyType =
         key.kind === 'named' ? getIrObjectTypeBindingPatternProperty(sourceType, key.name) : undefined;

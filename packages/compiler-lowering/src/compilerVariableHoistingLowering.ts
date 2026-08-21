@@ -344,8 +344,8 @@ function lowerIrBindingPatternVariableHoisting(
         key:
           property.key.kind === 'computed'
             ? {
+                ...property.key,
                 expression: lowerIrExpressionVariableHoisting(property.key.expression, analysis),
-                kind: 'computed',
               }
             : property.key,
         pattern: lowerIrBindingPatternVariableHoisting(property.pattern, analysis),
@@ -503,7 +503,7 @@ function lowerIrExpressionVariableHoisting(
         ...expression,
         excluded: expression.excluded.map((key) =>
           key.kind === 'computed'
-            ? { expression: lowerIrExpressionVariableHoisting(key.expression, analysis), kind: 'computed' }
+            ? { ...key, expression: lowerIrExpressionVariableHoisting(key.expression, analysis) }
             : key,
         ),
         object: expression.object,

@@ -1377,7 +1377,7 @@ describe('lowerTypeScriptSource', () => {
           },
         },
         {
-          key: { expression: { kind: 'identifier' }, kind: 'computed' },
+          key: { coercion: 'string', expression: { kind: 'identifier' }, kind: 'computed' },
           pattern: { binding: { name: 'computed' }, kind: 'binding' },
         },
       ],
@@ -1516,20 +1516,60 @@ describe('lowerTypeScriptSource', () => {
     ).toBe(2);
   });
 
-  it('refuses destructuring assignment values until completion values are modeled', () => {
+  it('models destructuring assignment completion values with one aggregate carrier', () => {
     const result = lower(
       'assignment-value.ts',
-      'let value = 0; const tuple: [number] = [1]; export const rejected = ([value] = tuple); export const kept = value;',
+      'export function assign(tuple: [number]): [number] { let value = 0; return ([value] = tuple); }',
     );
+    const declaration = result.module.declarations[0];
+    if (declaration?.kind !== 'function' || declaration.body[1]?.kind !== 'return') {
+      throw new Error('Expected assignment completion return');
+    }
+    const completion = declaration.body[1].expression;
 
-    expect(result.diagnostics.map((diagnostic) => diagnostic.message)).toContain(
-      'destructuring assignment value contexts require completion-value lowering',
+    expect(result.diagnostics).toEqual([]);
+    expect(completion).toMatchObject({
+      callee: {
+        body: [
+          { declarations: [{ binding: { name: 'destructuringAssignmentValue' } }], kind: 'variable' },
+          { expression: { left: { reference: { binding: { name: 'value' } } } }, kind: 'expression' },
+          { expression: { reference: { binding: { name: 'destructuringAssignmentValue' } } }, kind: 'return' },
+        ],
+        kind: 'function',
+      },
+      kind: 'call',
+    });
+  });
+
+  it('records default-parameter ABI positions and fixed call-site omissions independently of syntax', () => {
+    const result = lower(
+      'default-parameter-abi.ts',
+      `
+        function choose(first: number, second = first + 1, third = 3): number { return third; }
+        export function read(): number { choose(1); return choose(1, 2); }
+      `,
     );
-    expect(result.module.declarations).toMatchObject([
-      { binding: { name: 'value' } },
-      { binding: { name: 'tuple' } },
-      { binding: { name: 'kept' } },
-    ]);
+    const declaration = result.module.declarations.find(
+      (item) => item.kind === 'function' && item.binding.name === 'read',
+    );
+    if (declaration?.kind !== 'function') throw new Error('Expected read function');
+    const first = declaration.body[0];
+    const second = declaration.body[1];
+
+    expect(first).toMatchObject({
+      expression: {
+        semantics: {
+          defaultParameters: { defaulted: [1, 2], omitted: [1, 2], parameterCount: 3, providedArgumentCount: 1 },
+        },
+      },
+    });
+    expect(second).toMatchObject({
+      expression: {
+        semantics: {
+          defaultParameters: { defaulted: [1, 2], omitted: [2], parameterCount: 3, providedArgumentCount: 2 },
+        },
+      },
+    });
   });
 
   it('distinguishes contextual fixed tuple expressions from open array expressions', () => {

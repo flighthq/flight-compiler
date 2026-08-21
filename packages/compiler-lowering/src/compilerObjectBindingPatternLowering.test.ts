@@ -1,14 +1,9 @@
 import ts from 'typescript';
 
 import { lowerTypeScriptSource } from '../../compiler-semantic/src/index.js';
-import type {
-  CompilerLoweringFailure,
-  IrFunctionDeclaration,
-  IrModule,
-  IrStatement,
-} from '../../compiler-types/src/index.js';
+import type { IrFunctionDeclaration, IrModule, IrStatement } from '../../compiler-types/src/index.js';
 import { createCompilerLoweringPassArrayBindingPattern } from './compilerArrayBindingPatternLowering.js';
-import { isCompilerLoweringFailure, lowerIrModuleWithCompilerPasses } from './compilerLoweringPass.js';
+import { lowerIrModuleWithCompilerPasses } from './compilerLoweringPass.js';
 import { createCompilerLoweringPassObjectBindingPattern } from './compilerObjectBindingPatternLowering.js';
 
 describe('createCompilerLoweringPassObjectBindingPattern', () => {
@@ -63,7 +58,7 @@ describe('createCompilerLoweringPassObjectBindingPattern', () => {
     expect(module).toEqual(snapshot);
   });
 
-  it('composes object-then-array lowering and refuses the inverse mixed nesting explicitly', () => {
+  it('composes object-then-array lowering and leaves inverse nesting for the unified pass', () => {
     const objectThenArray = lower(
       'object-array.ts',
       `
@@ -92,17 +87,12 @@ describe('createCompilerLoweringPassObjectBindingPattern', () => {
       { binding: { name: 'arrayPatternValue' } },
       { binding: { name: 'value' } },
     ]);
-    try {
-      lowerIrModuleWithCompilerPasses(arrayThenObject, [createCompilerLoweringPassObjectBindingPattern()]);
-      expect.unreachable('Expected mixed nesting refusal');
-    } catch (error) {
-      expect(isCompilerLoweringFailure(error)).toBe(true);
-      expect(error as CompilerLoweringFailure).toMatchObject({
-        code: 'unsupported-ir',
-        pass: 'object-binding-pattern',
-      });
-      expect((error as Error).message).toContain('unified binding-pattern lowering');
-    }
+    const objectPass = createCompilerLoweringPassObjectBindingPattern();
+    const partial = objectPass.lowerIrModule(arrayThenObject);
+    expect(objectPass.verifyIrModule(partial)).toEqual({
+      kind: 'invalid',
+      reason: 'object binding pattern remains after normalization',
+    });
   });
 
   it('refuses defaults without resolved and distinct undefined evidence', () => {

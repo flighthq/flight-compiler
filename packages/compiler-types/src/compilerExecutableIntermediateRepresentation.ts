@@ -1,4 +1,8 @@
-import type { IrCallSemantics, IrElementAccessSemantics } from './compilerAccessSemanticIntermediateRepresentation.js';
+import type {
+  IrCallSemantics,
+  IrElementAccessSemantics,
+  IrPropertyKeyCoercion,
+} from './compilerAccessSemanticIntermediateRepresentation.js';
 import type { IrBindingIdentity, IrIdentifierReference } from './compilerBindingIntermediateRepresentation.js';
 import type { IrBindingPattern } from './compilerBindingPatternIntermediateRepresentation.js';
 import type {
@@ -93,6 +97,7 @@ export type IrExpression =
       excluded: readonly IrObjectRestKey[];
       kind: 'objectRest';
       object: IrIdentifierExpression;
+      type: IrType;
     }>
   | Readonly<{ kind: 'property'; name: string; object: IrExpression; optional: boolean }>
   | Readonly<{ flags: string; kind: 'regexp'; pattern: string }>
@@ -128,7 +133,7 @@ export type IrObjectMember =
   | Readonly<{ expression: IrExpression; kind: 'spread' }>;
 
 export type IrObjectRestKey =
-  | Readonly<{ kind: 'computed'; expression: IrExpression }>
+  | Readonly<{ coercion: IrPropertyKeyCoercion; kind: 'computed'; expression: IrExpression }>
   | Readonly<{ kind: 'named'; name: string }>;
 
 export interface IrNamedVariable {

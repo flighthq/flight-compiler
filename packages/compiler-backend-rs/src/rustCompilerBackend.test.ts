@@ -160,7 +160,7 @@ describe('emitIrModuleRust', () => {
     );
   });
 
-  it('elects flat object binding lowering and refuses object-rest ownership', () => {
+  it('elects flat object binding lowering and clones closed residual object-rest fields', () => {
     const flat = lower(
       'object-binding.ts',
       `
@@ -175,10 +175,10 @@ describe('emitIrModuleRust', () => {
       'object-rest.ts',
       `
         type Shape = { value: number; other: boolean };
-        export function select(source: Shape): object {
+        export function select(source: Shape): void {
           const { value, ...rest }: Shape = source;
           value;
-          return rest;
+          rest.other;
         }
       `,
     );
@@ -186,9 +186,9 @@ describe('emitIrModuleRust', () => {
 
     expect(output).toContain('let object_pattern_value: Shape = source;');
     expect(output).toContain('let value: f64 = object_pattern_value.value;');
-    expect(() => emitIrModuleRust(rest.module)).toThrow(
-      'object rest requires Rust record ownership and projection lowering',
-    );
+    const restOutput = emitIrModuleRust(rest.module).contents;
+    expect(restOutput).toContain('struct ObjectRestRecord { other: bool, }');
+    expect(restOutput).toContain('ObjectRestRecord { other: object_pattern_value.other.clone(), }');
   });
 
   it('elects function-scoped variable hoisting after destructuring normalization', () => {
@@ -264,6 +264,18 @@ describe('emitIrModuleRust', () => {
     );
 
     expect(() => emitIrModuleRust(result.module)).toThrow('optional property access requires Option-aware lowering');
+  });
+
+  it('emits expression-position destructuring with the original aggregate completion value', () => {
+    const result = lower(
+      'assignment-completion.ts',
+      'export function assign(tuple: [number]): [number] { let value = 0; return ([value] = tuple); }',
+    );
+    const output = emitIrModuleRust(result.module).contents;
+
+    expect(output).toContain('let destructuring_assignment_value: (f64,) = tuple;');
+    expect(output).toContain('value = destructuring_assignment_value.0;');
+    expect(output).toContain('return destructuring_assignment_value;');
   });
 
   it('clones fixed tuple spread fields through collision-free sequential evaluation carriers', () => {

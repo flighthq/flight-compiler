@@ -175,6 +175,7 @@ function lowerIrObjectBindingPattern(
         },
       });
       const key = {
+        coercion: property.key.coercion,
         expression: { kind: 'identifier', reference: { binding: keyBinding, kind: 'binding' } },
         kind: 'computed',
       } as const;
@@ -185,7 +186,7 @@ function lowerIrObjectBindingPattern(
         kind: 'element',
         object: { kind: 'identifier', reference: { binding: sourceBinding, kind: 'binding' } },
         optional: false,
-        semantics: { receivers: ['object'] },
+        semantics: { key: property.key.coercion, receivers: ['object'] },
       };
     }
     if (
@@ -283,6 +284,7 @@ function lowerIrObjectBindingPattern(
           excluded,
           kind: 'objectRest',
           object: { kind: 'identifier', reference: { binding: sourceBinding, kind: 'binding' } },
+          type: pattern.rest.type ?? { kind: 'unknown', source: 'object' },
         },
         mutable,
         ...(pattern.rest.type ? { type: pattern.rest.type } : {}),
@@ -317,14 +319,6 @@ function lowerIrVariableObjectBindingPattern(
     ];
   }
   if (variable.pattern.kind !== 'object') {
-    if (hasIrObjectBindingPatternValue(variable.pattern)) {
-      throw createCompilerLoweringFailure(
-        'unsupported-ir',
-        compilerLoweringPassNameObjectBindingPattern,
-        analysis.sourceIdentity,
-        'an object binding nested in an array requires unified binding-pattern lowering',
-      );
-    }
     return [
       {
         synthetic: false,
@@ -448,22 +442,12 @@ function lowerIrDeclarationObjectBindingPattern(
       ];
     case 'variable':
       return lowerIrVariableObjectBindingPattern(declaration, path, analysis).map(
-        ({ synthetic, variable }): IrVariableDeclaration => {
-          if ('pattern' in variable) {
-            throw createCompilerLoweringFailure(
-              'unsupported-ir',
-              compilerLoweringPassNameObjectBindingPattern,
-              declaration.origin,
-              'module object binding cannot leave a nested array binding',
-            );
-          }
-          return {
-            ...variable,
-            exported: synthetic ? false : declaration.exported,
-            kind: 'variable',
-            origin: declaration.origin,
-          };
-        },
+        ({ synthetic, variable }): IrVariableDeclaration => ({
+          ...variable,
+          exported: synthetic ? false : declaration.exported,
+          kind: 'variable',
+          origin: declaration.origin,
+        }),
       );
     case 'enum':
     case 'interface':
@@ -567,14 +551,6 @@ function lowerIrStatementObjectBindingPattern(
         return statement.kind === 'forIn'
           ? { ...statement, body: loweredBody, object: iterable, variable }
           : { ...statement, body: loweredBody, iterable, variable };
-      }
-      if ('pattern' in statement.variable && hasIrObjectBindingPatternValue(statement.variable.pattern)) {
-        throw createCompilerLoweringFailure(
-          'unsupported-ir',
-          compilerLoweringPassNameObjectBindingPattern,
-          analysis.sourceIdentity,
-          'an object binding nested in an array iteration requires unified binding-pattern lowering',
-        );
       }
       const variable = lowerIrVariableObjectBindingPattern(statement.variable, `${path}.variable`, analysis)[0]!
         .variable;
@@ -739,7 +715,7 @@ function lowerIrExpressionObjectBindingPattern(
         ...expression,
         excluded: expression.excluded.map((key, index) =>
           key.kind === 'computed'
-            ? { expression: lower(key.expression, `excluded[${String(index)}].expression`), kind: 'computed' }
+            ? { ...key, expression: lower(key.expression, `excluded[${String(index)}].expression`) }
             : key,
         ),
       };

@@ -1,3 +1,4 @@
+import type { IrPropertyKeyCoercion } from './compilerAccessSemanticIntermediateRepresentation.js';
 import type { IrBindingIdentity, IrBindingScope } from './compilerBindingIntermediateRepresentation.js';
 import type { IrExpression } from './compilerExecutableIntermediateRepresentation.js';
 import type { CompilerSourceOrigin } from './compilerSourceIdentity.js';
@@ -33,7 +34,7 @@ export interface IrObjectBindingPattern extends CompilerSourceOrigin {
 }
 
 export type IrObjectBindingPatternKey =
-  | Readonly<{ kind: 'computed'; expression: IrExpression }>
+  | Readonly<{ coercion: IrPropertyKeyCoercion; kind: 'computed'; expression: IrExpression }>
   | Readonly<{ kind: 'named'; name: string }>;
 
 export interface IrObjectBindingPatternProperty {

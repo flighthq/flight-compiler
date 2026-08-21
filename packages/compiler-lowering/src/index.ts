@@ -1,4 +1,5 @@
 export { createCompilerLoweringPassArrayBindingPattern } from './compilerArrayBindingPatternLowering.js';
+export { createCompilerLoweringPassBindingPattern } from './compilerBindingPatternLowering.js';
 export { hasIrModuleArrayBindingPattern } from './compilerArrayBindingPatternPresence.js';
 export { createCompilerLoweringPassCStyleFor } from './compilerCStyleForLowering.js';
 export { createCompilerLoweringPassObjectBindingPattern } from './compilerObjectBindingPatternLowering.js';
