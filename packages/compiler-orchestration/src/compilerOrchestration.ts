@@ -1,7 +1,7 @@
 import ts from 'typescript';
 
-import { createCompilerInvariantFailure, normalizeEmittedFile } from '../../compiler-emission/src/index.js';
 import { compareTextCodeUnits } from '../../compiler-canonical-form/src/index.js';
+import { createCompilerInvariantFailure, normalizeEmittedFile } from '../../compiler-emission/src/index.js';
 import { applySemanticPatchSet } from '../../compiler-patch/src/index.js';
 import { lowerTypeScriptSource } from '../../compiler-semantic/src/index.js';
 import type {
