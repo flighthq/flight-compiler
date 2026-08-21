@@ -127,7 +127,7 @@ describe('normalizeEmittedFile', () => {
     const file = { contents: 'one\r\ntwo  \r\n\r\n', path: 'generated\\cafe\u0301.hx' };
 
     expect(normalizeEmittedFile(file)).toEqual({
-      contents: 'one\ntwo\n',
+      contents: 'one\ntwo  \n',
       path: 'generated/café.hx',
     });
     expect(file).toEqual({ contents: 'one\r\ntwo  \r\n\r\n', path: 'generated\\cafe\u0301.hx' });
@@ -135,9 +135,11 @@ describe('normalizeEmittedFile', () => {
 });
 
 describe('normalizeEmittedFileContents', () => {
-  it('canonicalizes line endings and the final newline while preserving internal whitespace', () => {
-    expect(normalizeEmittedFileContents('one\r\ntwo\rthree  \r\n\r\n')).toBe('one\ntwo\nthree\n');
+  it('canonicalizes line endings and the final newline without erasing source text', () => {
+    expect(normalizeEmittedFileContents('one\r\ntwo\rthree  \r\n\r\n')).toBe('one\ntwo\nthree  \n');
     expect(normalizeEmittedFileContents('one  \ntwo')).toBe('one  \ntwo\n');
+    expect(normalizeEmittedFileContents('one\t\n\ttwo\t\n\n')).toBe('one\t\n\ttwo\t\n');
+    expect(normalizeEmittedFileContents('x'.repeat(10_000))).toBe(`${'x'.repeat(10_000)}\n`);
     expect(normalizeEmittedFileContents('')).toBe('\n');
     expect(normalizeEmittedFileContents('\n')).toBe('\n');
     expect(normalizeEmittedFileContents(normalizeEmittedFileContents('value\r\n'))).toBe('value\n');

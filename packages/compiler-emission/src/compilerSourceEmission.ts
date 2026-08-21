@@ -82,7 +82,8 @@ export function normalizeEmittedFile(file: Readonly<EmittedFile>): EmittedFile {
 }
 
 export function normalizeEmittedFileContents(contents: string): string {
-  return `${contents.replaceAll('\r\n', '\n').replaceAll('\r', '\n').trimEnd()}\n`;
+  const lineNormalized = contents.replaceAll('\r\n', '\n').replaceAll('\r', '\n');
+  return `${lineNormalized.replace(/\n+$/u, '')}\n`;
 }
 
 export function normalizeEmittedFilePath(value: string): string {
