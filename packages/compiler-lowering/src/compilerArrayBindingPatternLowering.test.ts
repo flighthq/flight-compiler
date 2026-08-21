@@ -187,6 +187,25 @@ describe('createCompilerLoweringPassArrayBindingPattern', () => {
     expect(createCompilerLoweringPassCStyleFor().verifyIrModule(output)).toEqual({ kind: 'valid' });
   });
 
+  it('lowers defaults for required tuple elements whose type includes undefined', () => {
+    const output = lowerIrModuleWithCompilerPasses(
+      lower(
+        'required-undefined-default.ts',
+        'export function choose(values: [number | undefined]): number { const [value = 3]: [number | undefined] = values; return value; }',
+      ),
+      [createCompilerLoweringPassArrayBindingPattern()],
+    );
+    const declarations = getVariableStatement(getFunctionDeclaration(output, 'choose').body[0]).declarations.map(
+      getNamedVariable,
+    );
+
+    expect(declarations[1]).toMatchObject({
+      binding: { name: 'value' },
+      initializer: { fallback: { value: 3 }, kind: 'undefinedDefault' },
+      type: { kind: 'primitive', name: 'number' },
+    });
+  });
+
   it('lowers an aligned variadic tuple tail without re-evaluating its source', () => {
     const output = lowerIrModuleWithCompilerPasses(
       lower(
@@ -246,6 +265,15 @@ describe('createCompilerLoweringPassArrayBindingPattern', () => {
     {
       reason: 'nested array binding default at index 0 requires contextual tuple-expression lowering',
       source: 'export const [[value] = [1]]: [[number]?] = [];',
+    },
+    {
+      reason: 'array binding default at index 0 requires distinct null and undefined representations',
+      source:
+        'export function read(values: [(number | null)?]): number | null { const [value = 1]: [(number | null)?] = values; return value; }',
+    },
+    {
+      reason: 'array binding default at index 0 requires resolved undefined membership',
+      source: 'export function read<T>(values: [T]): T { const [value = undefined as T]: [T] = values; return value; }',
     },
     {
       reason: 'forOf array bindings require iteration destructuring lowering',

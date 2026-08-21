@@ -97,6 +97,10 @@ describe('emitIrModuleRust', () => {
       'array-default.ts',
       'export function select(values: [number?]): number { const [first = 0]: [number?] = values; return first; }',
     );
+    const requiredDefault = lower(
+      'array-required-default.ts',
+      'export function select(values: [number | undefined]): number { const [first = 0]: [number | undefined] = values; return first; }',
+    );
     const dynamicIndex = lower(
       'tuple-index.ts',
       'export function select(values: [number], index: number): number { return values[index]; }',
@@ -107,6 +111,9 @@ describe('emitIrModuleRust', () => {
     expect(output).toContain('let first: f64 = array_pattern_value.0;');
     expect(output).toContain('let third: f64 = array_pattern_value.2;');
     expect(emitIrModuleRust(defaulted.module).contents).toContain(
+      'let first: f64 = array_pattern_value.0.unwrap_or_else(|| 0.0);',
+    );
+    expect(emitIrModuleRust(requiredDefault.module).contents).toContain(
       'let first: f64 = array_pattern_value.0.unwrap_or_else(|| 0.0);',
     );
     expect(emitIrModuleRust(rest.module).contents).toContain('let rest: Vec<f64> = array_pattern_value.1;');

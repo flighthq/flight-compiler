@@ -70,6 +70,30 @@ function createIrArrayBindingPatternElementAccess(binding: Readonly<IrBindingIde
   };
 }
 
+function hasIrTypeArrayBindingPatternMember(type: Readonly<IrType>, kind: 'null' | 'undefined'): boolean {
+  return type.kind === kind || (type.kind === 'union' && type.types.some((member) => member.kind === kind));
+}
+
+function hasIrTypeArrayBindingPatternUnresolvedUndefined(type: Readonly<IrType>): boolean {
+  if (type.kind === 'union') return type.types.some(hasIrTypeArrayBindingPatternUnresolvedUndefined);
+  return (
+    type.kind === 'indexedAccess' ||
+    type.kind === 'intersection' ||
+    type.kind === 'keyof' ||
+    type.kind === 'named' ||
+    type.kind === 'typeOf' ||
+    type.kind === 'unknown'
+  );
+}
+
+function removeIrTypeArrayBindingPatternUndefined(type: Readonly<IrType>): IrType {
+  if (type.kind !== 'union') return type;
+  const retained = type.types.filter((member) => member.kind !== 'undefined');
+  if (retained.length === 1) return retained[0]!;
+  if (retained.length >= 2) return { kind: 'union', types: [retained[0]!, retained[1]!, ...retained.slice(2)] };
+  return { kind: 'never' };
+}
+
 function lowerIrArrayBindingPattern(
   pattern: Readonly<IrArrayBindingPattern>,
   sourceBinding: Readonly<IrBindingIdentity>,
@@ -106,7 +130,31 @@ function lowerIrArrayBindingPattern(
         `array binding index ${String(index)} requires a present tuple element or default initializer`,
       );
     }
-    if (tupleElement.optional && patternElement.initializer && patternElement.pattern.kind === 'array') {
+    if (
+      patternElement.initializer &&
+      !tupleElement.optional &&
+      !hasIrTypeArrayBindingPatternMember(tupleElement.type, 'undefined') &&
+      hasIrTypeArrayBindingPatternUnresolvedUndefined(tupleElement.type)
+    ) {
+      throw createCompilerLoweringFailure(
+        'unsupported-ir',
+        compilerLoweringPassNameArrayBindingPattern,
+        pattern,
+        `array binding default at index ${String(index)} requires resolved undefined membership`,
+      );
+    }
+    const appliesDefault =
+      patternElement.initializer !== undefined &&
+      (tupleElement.optional || hasIrTypeArrayBindingPatternMember(tupleElement.type, 'undefined'));
+    if (appliesDefault && hasIrTypeArrayBindingPatternMember(tupleElement.type, 'null')) {
+      throw createCompilerLoweringFailure(
+        'unsupported-ir',
+        compilerLoweringPassNameArrayBindingPattern,
+        pattern,
+        `array binding default at index ${String(index)} requires distinct null and undefined representations`,
+      );
+    }
+    if (appliesDefault && patternElement.pattern.kind === 'array') {
       throw createCompilerLoweringFailure(
         'unsupported-ir',
         compilerLoweringPassNameArrayBindingPattern,
@@ -120,8 +168,14 @@ function lowerIrArrayBindingPattern(
     const tupleElement = sourceType.elements[index]!;
     const elementPath = `${path}.elements[${String(index)}]`;
     const elementAccess = createIrArrayBindingPatternElementAccess(sourceBinding, index);
+    const appliesDefault =
+      element.initializer !== undefined &&
+      (tupleElement.optional || hasIrTypeArrayBindingPatternMember(tupleElement.type, 'undefined'));
+    const elementType = appliesDefault
+      ? removeIrTypeArrayBindingPatternUndefined(tupleElement.type)
+      : tupleElement.type;
     const initializer: IrExpression =
-      tupleElement.optional && element.initializer
+      appliesDefault && element.initializer
         ? {
             fallback: lowerIrExpressionArrayBindingPattern(element.initializer, `${elementPath}.initializer`, analysis),
             kind: 'undefinedDefault',
@@ -136,7 +190,7 @@ function lowerIrArrayBindingPattern(
             binding: element.pattern.binding,
             initializer,
             mutable,
-            type: element.pattern.type ?? tupleElement.type,
+            type: element.pattern.type ?? elementType,
           },
         },
       ];
@@ -148,19 +202,12 @@ function lowerIrArrayBindingPattern(
         binding: temporaryBinding,
         initializer,
         mutable: false,
-        type: tupleElement.type,
+        type: elementType,
       },
     };
     return [
       temporary,
-      ...lowerIrArrayBindingPattern(
-        element.pattern,
-        temporaryBinding,
-        tupleElement.type,
-        mutable,
-        elementPath,
-        analysis,
-      ),
+      ...lowerIrArrayBindingPattern(element.pattern, temporaryBinding, elementType, mutable, elementPath, analysis),
     ];
   });
   if (!pattern.rest) return variables;

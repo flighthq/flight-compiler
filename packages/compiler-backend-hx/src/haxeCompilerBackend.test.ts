@@ -96,6 +96,10 @@ describe('emitIrModuleHaxe', () => {
       'array-default.ts',
       'export function select(values: [number?]): number { const [first = 0]: [number?] = values; return first; }',
     );
+    const requiredDefault = lower(
+      'array-required-default.ts',
+      'export function select(values: [number | undefined]): number { const [first = 0]: [number | undefined] = values; return first; }',
+    );
     const dynamicIndex = lower(
       'tuple-index.ts',
       'export function select(values: [number], index: number): number { return values[index]; }',
@@ -110,6 +114,9 @@ describe('emitIrModuleHaxe', () => {
     expect(output).toContain('final first:Float = arrayPatternValue[0];');
     expect(output).toContain('final third:Float = arrayPatternValue[2];');
     expect(emitIrModuleHaxe(defaulted.module).contents).toContain('final first:Float = (arrayPatternValue[0] ?? 0);');
+    expect(emitIrModuleHaxe(requiredDefault.module).contents).toContain(
+      'final first:Float = (arrayPatternValue[0] ?? 0);',
+    );
     expect(emitIrModuleHaxe(rest.module).contents).toContain('final rest:Array<Float> = arrayPatternValue.slice(1);');
     expect(() => emitIrModuleHaxe(dynamicIndex.module)).toThrow(
       'tuple projection requires one statically known nonnegative integer index',
