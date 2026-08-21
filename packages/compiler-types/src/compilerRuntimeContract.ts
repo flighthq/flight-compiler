@@ -17,6 +17,45 @@ export type CompilerRuntimeCapabilityName =
 
 export type CompilerRuntimeContractVersion = 'flight-runtime-contract/1';
 
+export type CompilerRuntimeExternalSymbolSpace = 'type' | 'value';
+
+export interface CompilerRuntimeExternalSymbolIdentity {
+  readonly sourceName: string;
+  readonly space: CompilerRuntimeExternalSymbolSpace;
+}
+
+export type CompilerRuntimeExternalSymbolBinding =
+  | Readonly<{
+      externalSymbol: CompilerRuntimeExternalSymbolIdentity;
+      kind: 'native';
+    }>
+  | Readonly<{
+      capability: CompilerRuntimeCapabilityName;
+      externalSymbol: CompilerRuntimeExternalSymbolIdentity;
+      kind: 'runtime';
+    }>;
+
+export interface CompilerRuntimeExternalSymbolBindingPlan {
+  readonly bindings: readonly CompilerRuntimeExternalSymbolBinding[];
+  readonly contract: 'flight-runtime-contract/2';
+}
+
+export type CompilerRuntimeExternalSymbolCompleteness =
+  | Readonly<{
+      contract: 'flight-runtime-contract/2';
+      kind: 'complete';
+      requiredExternalSymbols: readonly CompilerRuntimeExternalSymbolIdentity[];
+      schema: 'flight-runtime-contract-completeness/2';
+    }>
+  | Readonly<{
+      contract: 'flight-runtime-contract/2';
+      duplicateExternalSymbols: readonly CompilerRuntimeExternalSymbolIdentity[];
+      kind: 'incomplete';
+      missingExternalSymbols: readonly CompilerRuntimeExternalSymbolIdentity[];
+      requiredExternalSymbols: readonly CompilerRuntimeExternalSymbolIdentity[];
+      schema: 'flight-runtime-contract-completeness/2';
+    }>;
+
 export interface CompilerRuntimeExternalTypeIdentity {
   readonly sourceName: string;
 }
