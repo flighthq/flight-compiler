@@ -1,3 +1,4 @@
+import { fingerprintSourceText } from '../../compiler-provenance/src/index.js';
 import type {
   IrDeclaration,
   IrFunctionDeclaration,
@@ -7,11 +8,86 @@ import type {
   SemanticPatchFailure,
   SemanticPatchFailureCode,
 } from '../../compiler-types/src/index.js';
-import { fingerprintSourceText } from '../../compiler-provenance/src/index.js';
-import { applySemanticPatchSet, defineSemanticPatchSet, isSemanticPatchFailure } from './compilerSemanticPatch.js';
+import {
+  analyzeSemanticPatchSet,
+  applySemanticPatchSet,
+  defineSemanticPatchSet,
+  isSemanticPatchFailure,
+} from './compilerSemanticPatch.js';
 
 const packageName = '@flighthq/math';
 const source = 'packages/math/src/clamp.ts';
+
+describe('analyzeSemanticPatchSet', () => {
+  it('previews ordered before-and-after snapshots and the exact application audit without returning modules', () => {
+    const module = createModule();
+    const patches: SemanticPatch[] = [
+      {
+        ...patchBase('03-rust', 'clamp', 'function'),
+        name: 'rustName',
+        operation: 'rename',
+        scope: { backend: 'rust', kind: 'backend' },
+      },
+      {
+        ...patchBase('02-body', 'clamp', 'function'),
+        body: [{ expression: { kind: 'literal', value: 1 }, kind: 'return' }],
+        operation: 'replaceBody',
+        scope: { backend: 'haxe', kind: 'backend' },
+      },
+      renamePatch('01-rename', 'bounded', { kind: 'neutral' }),
+    ];
+    const moduleSnapshot = structuredClone(module);
+    const patchSnapshot = structuredClone(patches);
+
+    const analysis = analyzeSemanticPatchSet([module], patches, 'haxe');
+    const applied = applySemanticPatchSet([module], patches, 'haxe');
+
+    expect(analysis.schema).toBe('flight-compiler-patch-analysis/1');
+    expect(analysis.audit).toEqual(applied.audit);
+    expect(analysis.audit.skipped.map((record) => record.id)).toEqual(['03-rust']);
+    expect(analysis.changes.map(({ patch }) => patch.id)).toEqual(['01-rename', '02-body']);
+    expect(analysis.changes[0]).toMatchObject({
+      after: { binding: { name: 'bounded' } },
+      before: { binding: { name: 'clamp' } },
+      patch: { operation: 'rename' },
+    });
+    expect(analysis.changes[1]).toMatchObject({
+      after: { binding: { name: 'bounded' }, body: [{ kind: 'return' }] },
+      before: { binding: { name: 'bounded' }, body: [] },
+      patch: { operation: 'replaceBody' },
+    });
+    expect(analysis).not.toHaveProperty('modules');
+    expect(analysis.changes[0]?.before).not.toBe(module.declarations[0]);
+    expect(module).toEqual(moduleSnapshot);
+    expect(patches).toEqual(patchSnapshot);
+  });
+
+  it('represents removal by omitting the after snapshot and shares tagged validation failures', () => {
+    const remove: SemanticPatch = {
+      ...patchBase('remove', 'clamp', 'function'),
+      operation: 'remove',
+    };
+    const analysis = analyzeSemanticPatchSet([createModule()], [remove], 'haxe');
+
+    expect(analysis.changes).toHaveLength(1);
+    expect(analysis.changes[0]).not.toHaveProperty('after');
+    expect(analysis.changes[0]?.before).toMatchObject({ binding: { name: 'clamp' } });
+    expect(() => analyzeSemanticPatchSet([createModule()], [remove], '')).toThrowError(
+      expect.objectContaining({ code: 'invalid-patch-backend', kind: 'semantic-patch' }),
+    );
+    expect(analyzeSemanticPatchSet([], [], 'haxe')).toEqual({
+      audit: {
+        applied: [],
+        backend: 'haxe',
+        schema: 'flight-compiler-patch-audit/2',
+        skipped: [],
+        summary: { applied: 0, skipped: 0 },
+      },
+      changes: [],
+      schema: 'flight-compiler-patch-analysis/1',
+    });
+  });
+});
 
 describe('applySemanticPatchSet', () => {
   it('applies backend patches after neutral patches independent of patch identifiers', () => {

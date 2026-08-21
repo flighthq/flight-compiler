@@ -1,3 +1,4 @@
+import type { IrDeclaration } from './compilerDeclarationIntermediateRepresentation.js';
 import type { IrStatement } from './compilerExecutableIntermediateRepresentation.js';
 import type { IrModule } from './compilerModuleIntermediateRepresentation.js';
 import type { CompilerSourceFingerprint } from './compilerSourceFingerprint.js';
@@ -54,6 +55,18 @@ export interface PatchAudit {
 export interface AppliedSemanticPatches {
   readonly audit: PatchAudit;
   readonly modules: readonly IrModule[];
+}
+
+export interface SemanticPatchAnalysisChange {
+  readonly after?: IrDeclaration;
+  readonly before: IrDeclaration;
+  readonly patch: PatchAuditRecord;
+}
+
+export interface SemanticPatchAnalysis {
+  readonly audit: PatchAudit;
+  readonly changes: readonly SemanticPatchAnalysisChange[];
+  readonly schema: 'flight-compiler-patch-analysis/1';
 }
 
 export type SemanticPatchFailureCode =

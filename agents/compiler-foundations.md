@@ -216,6 +216,12 @@ The control-flow-lowering batch completed three bounded iterations:
 2. Normalize C-style `for` statements while preserving initializer scope, omitted conditions, discarded numeric updates, and continue ownership across nested loops, switches, and `finally` boundaries.
 3. Have Haxe and Rust explicitly elect the pass, preserve target-specific default-parameter decisions, and lock direct and cross-target emitted output.
 
+The patch-integrity batch completed three bounded iterations:
+
+1. Validate every in-process patch definition through stable tagged failures, including exact provenance fingerprints and legal scope/operation payloads.
+2. Version the selected backend and deterministic applied/skipped records in `flight-compiler-patch-audit/2`.
+3. Reuse the application engine for `flight-compiler-patch-analysis/1` before/after snapshots without returning rewritten modules.
+
 The runtime-contract batch completed three bounded iterations:
 
 1. Define the versioned runtime capability and external-type binding vocabulary in `compiler-types`, including a deterministic completeness result that names every missing decision.

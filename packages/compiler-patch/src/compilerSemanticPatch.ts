@@ -7,6 +7,8 @@ import type {
   PatchAuditRecord,
   PatchAuditSkippedRecord,
   SemanticPatch,
+  SemanticPatchAnalysis,
+  SemanticPatchAnalysisChange,
   SemanticPatchFailure,
   SemanticPatchFailureCode,
 } from '../../compiler-types/src/index.js';
@@ -16,11 +18,33 @@ interface IndexedDeclaration {
   readonly moduleIndex: number;
 }
 
+interface ExecutedSemanticPatchSet extends AppliedSemanticPatches {
+  readonly changes: readonly SemanticPatchAnalysisChange[];
+}
+
+export function analyzeSemanticPatchSet(
+  modules: readonly IrModule[],
+  patches: readonly SemanticPatch[],
+  backend: string,
+): SemanticPatchAnalysis {
+  const { audit, changes } = executeSemanticPatchSet(modules, patches, backend);
+  return { audit, changes, schema: 'flight-compiler-patch-analysis/1' };
+}
+
 export function applySemanticPatchSet(
   modules: readonly IrModule[],
   patches: readonly SemanticPatch[],
   backend: string,
 ): AppliedSemanticPatches {
+  const { audit, modules: output } = executeSemanticPatchSet(modules, patches, backend);
+  return { audit, modules: output };
+}
+
+function executeSemanticPatchSet(
+  modules: readonly IrModule[],
+  patches: readonly SemanticPatch[],
+  backend: string,
+): ExecutedSemanticPatchSet {
   validatePatchBackend(backend);
   validatePatchDefinitions(patches);
   validateUniqueIds(patches);
@@ -35,6 +59,7 @@ export function applySemanticPatchSet(
     .map((patch) => ({ ...createPatchAuditRecord(patch), skipReason: 'backend-mismatch' }));
   validateActiveRemovals(active);
   const applied: PatchAuditRecord[] = [];
+  const changes: SemanticPatchAnalysisChange[] = [];
   const declarationIndex = new Map<string, IndexedDeclaration[]>();
   for (const [moduleIndex, module] of output.entries()) {
     for (const declaration of module.declarations) {
@@ -85,6 +110,7 @@ export function applySemanticPatchSet(
       );
     }
 
+    const before = structuredClone(declaration);
     let updatedDeclaration: IrDeclaration | undefined;
     switch (patch.operation) {
       case 'remove':
@@ -132,7 +158,13 @@ export function applySemanticPatchSet(
     output = output.map((item, index) => (index === match.moduleIndex ? { ...module, declarations } : item));
     if (updatedDeclaration) match.declaration = updatedDeclaration;
     else declarationIndex.delete(targetKey(patch.target));
-    applied.push(createPatchAuditRecord(patch));
+    const patchRecord = createPatchAuditRecord(patch);
+    applied.push(patchRecord);
+    changes.push({
+      ...(updatedDeclaration ? { after: structuredClone(updatedDeclaration) } : {}),
+      before,
+      patch: structuredClone(patchRecord),
+    });
   }
 
   return {
@@ -143,6 +175,7 @@ export function applySemanticPatchSet(
       skipped,
       summary: { applied: applied.length, skipped: skipped.length },
     },
+    changes,
     modules: output,
   };
 }

@@ -1,1 +1,6 @@
-export { applySemanticPatchSet, defineSemanticPatchSet, isSemanticPatchFailure } from './compilerSemanticPatch.js';
+export {
+  analyzeSemanticPatchSet,
+  applySemanticPatchSet,
+  defineSemanticPatchSet,
+  isSemanticPatchFailure,
+} from './compilerSemanticPatch.js';
