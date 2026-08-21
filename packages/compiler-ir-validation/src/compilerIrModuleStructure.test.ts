@@ -131,6 +131,37 @@ describe('validateIrModuleStructure', () => {
       [
         {
           ...module,
+          declarations: [{ ...declaration, binding: { ...declaration.binding, scope: 'function' } }],
+        },
+        'invalid-binding-introduction',
+      ],
+      [
+        {
+          ...module,
+          declarations: [
+            {
+              ...declaration,
+              parameters: [{ ...parameter, binding: { ...parameter.binding, kind: 'variable' } }],
+            },
+          ],
+        },
+        'invalid-binding-introduction',
+      ],
+      [
+        {
+          ...typeModule,
+          declarations: [
+            {
+              ...typeDeclaration,
+              binding: { ...typeDeclaration.binding, kind: 'import' },
+            },
+          ],
+        },
+        'invalid-binding-introduction',
+      ],
+      [
+        {
+          ...module,
           declarations: [{ ...declaration, binding: { ...declaration.binding, packageName: '@flighthq/other' } }],
         },
         'invalid-binding-origin',

@@ -3,6 +3,7 @@ export type CompilerIrModuleValidationFailureCode =
   | 'duplicate-binding-identity'
   | 'inconsistent-binding-reference'
   | 'invalid-binding-identity'
+  | 'invalid-binding-introduction'
   | 'invalid-binding-origin'
   | 'invalid-compound-type-arity'
   | 'invalid-declaration-origin'

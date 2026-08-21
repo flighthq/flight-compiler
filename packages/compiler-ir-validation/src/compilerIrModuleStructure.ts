@@ -5,6 +5,8 @@ import type {
   CompilerIrModuleValidationFailureCode,
   CompilerSourceOrigin,
   IrBindingIdentity,
+  IrBindingKind,
+  IrBindingScope,
   IrDeclaration,
   IrExpression,
   IrFunctionSignature,
@@ -14,6 +16,7 @@ import type {
   IrStatement,
   IrType,
   IrTypeBindingIdentity,
+  IrTypeBindingKind,
   IrTypeParameter,
   IrVariable,
 } from '../../compiler-types/src/index.js';
@@ -21,6 +24,12 @@ import type {
 interface BindingDefinition {
   readonly binding: Readonly<IrBindingIdentity | IrTypeBindingIdentity>;
   readonly path: string;
+}
+
+interface BindingIntroductionExpectation {
+  readonly kind: IrBindingKind | IrTypeBindingKind;
+  readonly scope: IrBindingScope | readonly IrBindingScope[];
+  readonly space: 'type' | 'value';
 }
 
 interface BindingReference {
@@ -51,8 +60,13 @@ export function validateIrModuleStructure(module: Readonly<IrModule>): CompilerI
   try {
     validateModuleIdentity(module, state);
     module.imports.forEach((imported, importIndex) => {
-      imported.bindings.forEach(({ binding }, bindingIndex) =>
-        addBindingDefinition(binding, `$.imports[${String(importIndex)}].bindings[${String(bindingIndex)}]`, state),
+      imported.bindings.forEach(({ binding, typeOnly }, bindingIndex) =>
+        addBindingDefinition(
+          binding,
+          `$.imports[${String(importIndex)}].bindings[${String(bindingIndex)}]`,
+          { kind: 'import', scope: 'module', space: typeOnly ? 'type' : 'value' },
+          state,
+        ),
       );
     });
     module.declarations.forEach((declaration, index) =>
@@ -85,6 +99,7 @@ export function validateIrModuleStructure(module: Readonly<IrModule>): CompilerI
 function addBindingDefinition(
   binding: Readonly<IrBindingIdentity | IrTypeBindingIdentity>,
   path: string,
+  expectation: Readonly<BindingIntroductionExpectation>,
   state: IrModuleValidationState,
 ): void {
   if (!isNonEmptyString(binding.id) || !isNonEmptyString(binding.name)) {
@@ -92,6 +107,7 @@ function addBindingDefinition(
     return;
   }
   validateBindingOrigin(binding, path, state);
+  validateBindingIntroduction(binding, path, expectation, state);
   const existing = state.bindings.get(binding.id);
   if (existing) {
     addFailure(
@@ -139,8 +155,13 @@ function visitDeclaration(declaration: Readonly<IrDeclaration>, path: string, st
   switch (declaration.kind) {
     case 'class':
       validateDeclarationOrigin(declaration, path, state);
-      addBindingDefinition(declaration.binding, `${path}.binding`, state);
-      visitTypeParameters(declaration.typeParameters, `${path}.typeParameters`, state);
+      addBindingDefinition(
+        declaration.binding,
+        `${path}.binding`,
+        { kind: 'class', scope: 'module', space: 'value' },
+        state,
+      );
+      visitTypeParameters(declaration.typeParameters, `${path}.typeParameters`, 'declaration', state);
       if (declaration.extends) visitType(declaration.extends, `${path}.extends`, state);
       declaration.implements.forEach((type, index) => visitType(type, `${path}.implements[${String(index)}]`, state));
       declaration.fields.forEach((field, index) => {
@@ -164,11 +185,21 @@ function visitDeclaration(declaration: Readonly<IrDeclaration>, path: string, st
       break;
     case 'enum':
       validateDeclarationOrigin(declaration, path, state);
-      addBindingDefinition(declaration.binding, `${path}.binding`, state);
+      addBindingDefinition(
+        declaration.binding,
+        `${path}.binding`,
+        { kind: 'enum', scope: 'module', space: 'value' },
+        state,
+      );
       break;
     case 'function':
       validateDeclarationOrigin(declaration, path, state);
-      addBindingDefinition(declaration.binding, `${path}.binding`, state);
+      addBindingDefinition(
+        declaration.binding,
+        `${path}.binding`,
+        { kind: 'function', scope: 'module', space: 'value' },
+        state,
+      );
       visitFunctionSignature(declaration, path, state);
       declaration.overloads.forEach((overload, index) =>
         visitFunctionSignature(overload, `${path}.overloads[${String(index)}]`, state),
@@ -179,8 +210,13 @@ function visitDeclaration(declaration: Readonly<IrDeclaration>, path: string, st
       break;
     case 'interface':
       validateDeclarationOrigin(declaration, path, state);
-      addBindingDefinition(declaration.binding, `${path}.binding`, state);
-      visitTypeParameters(declaration.typeParameters, `${path}.typeParameters`, state);
+      addBindingDefinition(
+        declaration.binding,
+        `${path}.binding`,
+        { kind: 'interface', scope: 'module', space: 'type' },
+        state,
+      );
+      visitTypeParameters(declaration.typeParameters, `${path}.typeParameters`, 'declaration', state);
       declaration.extends.forEach((type, index) => visitType(type, `${path}.extends[${String(index)}]`, state));
       declaration.properties.forEach((property, index) =>
         visitType(property.type, `${path}.properties[${String(index)}].type`, state),
@@ -188,13 +224,18 @@ function visitDeclaration(declaration: Readonly<IrDeclaration>, path: string, st
       break;
     case 'typeAlias':
       validateDeclarationOrigin(declaration, path, state);
-      addBindingDefinition(declaration.binding, `${path}.binding`, state);
-      visitTypeParameters(declaration.typeParameters, `${path}.typeParameters`, state);
+      addBindingDefinition(
+        declaration.binding,
+        `${path}.binding`,
+        { kind: 'typeAlias', scope: 'module', space: 'type' },
+        state,
+      );
+      visitTypeParameters(declaration.typeParameters, `${path}.typeParameters`, 'declaration', state);
       visitType(declaration.type, `${path}.type`, state);
       break;
     case 'variable':
       validateDeclarationOrigin(declaration, path, state);
-      visitVariable(declaration, path, state);
+      visitVariable(declaration, path, ['module'], state);
       break;
     default:
       addUnknownKind(declaration, path, state);
@@ -249,10 +290,17 @@ function visitExpression(expression: Readonly<IrExpression>, path: string, state
       visitExpression(expression.object, `${path}.object`, state);
       break;
     case 'function':
-      if (expression.binding) addBindingDefinition(expression.binding, `${path}.binding`, state);
+      if (expression.binding) {
+        addBindingDefinition(
+          expression.binding,
+          `${path}.binding`,
+          { kind: 'function', scope: 'function', space: 'value' },
+          state,
+        );
+      }
       visitParameters(expression.parameters, `${path}.parameters`, state);
       visitType(expression.returns, `${path}.returns`, state);
-      visitTypeParameters(expression.typeParameters, `${path}.typeParameters`, state);
+      visitTypeParameters(expression.typeParameters, `${path}.typeParameters`, 'function', state);
       expression.body.forEach((statement, index) => visitStatement(statement, `${path}.body[${String(index)}]`, state));
       if (expression.expression) visitExpression(expression.expression, `${path}.expression`, state);
       break;
@@ -292,7 +340,7 @@ function visitFunctionSignature(
 ): void {
   visitParameters(signature.parameters, `${path}.parameters`, state);
   visitType(signature.returns, `${path}.returns`, state);
-  visitTypeParameters(signature.typeParameters, `${path}.typeParameters`, state);
+  visitTypeParameters(signature.typeParameters, `${path}.typeParameters`, 'function', state);
 }
 
 function visitObjectMember(member: Readonly<IrObjectMember>, path: string, state: IrModuleValidationState): void {
@@ -320,7 +368,12 @@ function visitParameters(
   validateParameterCardinality(parameters, path, state);
   parameters.forEach((parameter, index) => {
     const parameterPath = `${path}[${String(index)}]`;
-    addBindingDefinition(parameter.binding, `${parameterPath}.binding`, state);
+    addBindingDefinition(
+      parameter.binding,
+      `${parameterPath}.binding`,
+      { kind: 'parameter', scope: 'function', space: 'value' },
+      state,
+    );
     visitType(parameter.type, `${parameterPath}.type`, state);
     if (parameter.initializer) visitExpression(parameter.initializer, `${parameterPath}.initializer`, state);
   });
@@ -348,7 +401,7 @@ function visitStatement(statement: Readonly<IrStatement>, path: string, state: I
     case 'for':
       if (Array.isArray(statement.initializer)) {
         statement.initializer.forEach((variable, index) =>
-          visitVariable(variable, `${path}.initializer[${String(index)}]`, state),
+          visitVariable(variable, `${path}.initializer[${String(index)}]`, ['block', 'function'], state),
         );
       } else if (statement.initializer) {
         visitExpression(statement.initializer as IrExpression, `${path}.initializer`, state);
@@ -358,12 +411,12 @@ function visitStatement(statement: Readonly<IrStatement>, path: string, state: I
       visitStatement(statement.body, `${path}.body`, state);
       break;
     case 'forIn':
-      visitVariable(statement.variable, `${path}.variable`, state);
+      visitVariable(statement.variable, `${path}.variable`, ['block', 'function'], state);
       visitExpression(statement.object, `${path}.object`, state);
       visitStatement(statement.body, `${path}.body`, state);
       break;
     case 'forOf':
-      visitVariable(statement.variable, `${path}.variable`, state);
+      visitVariable(statement.variable, `${path}.variable`, ['block', 'function'], state);
       visitExpression(statement.iterable, `${path}.iterable`, state);
       visitStatement(statement.body, `${path}.body`, state);
       break;
@@ -389,7 +442,12 @@ function visitStatement(statement: Readonly<IrStatement>, path: string, state: I
       visitStatement(statement.tryBody, `${path}.tryBody`, state);
       if (statement.catchClause) {
         if (statement.catchClause.binding) {
-          addBindingDefinition(statement.catchClause.binding, `${path}.catchClause.binding`, state);
+          addBindingDefinition(
+            statement.catchClause.binding,
+            `${path}.catchClause.binding`,
+            { kind: 'catch', scope: 'block', space: 'value' },
+            state,
+          );
         }
         visitStatement(statement.catchClause.body, `${path}.catchClause.body`, state);
       }
@@ -397,7 +455,7 @@ function visitStatement(statement: Readonly<IrStatement>, path: string, state: I
       break;
     case 'variable':
       statement.declarations.forEach((variable, index) =>
-        visitVariable(variable, `${path}.declarations[${String(index)}]`, state),
+        visitVariable(variable, `${path}.declarations[${String(index)}]`, ['block', 'function'], state),
       );
       break;
     default:
@@ -416,7 +474,7 @@ function visitType(type: Readonly<IrType>, path: string, state: IrModuleValidati
         visitType(parameter.type, `${path}.parameters[${String(index)}].type`, state),
       );
       visitType(type.returns, `${path}.returns`, state);
-      visitTypeParameters(type.typeParameters, `${path}.typeParameters`, state);
+      visitTypeParameters(type.typeParameters, `${path}.typeParameters`, 'function', state);
       break;
     case 'indexedAccess':
       visitType(type.index, `${path}.index`, state);
@@ -471,18 +529,29 @@ function visitType(type: Readonly<IrType>, path: string, state: IrModuleValidati
 function visitTypeParameters(
   parameters: readonly Readonly<IrTypeParameter>[],
   path: string,
+  scope: Extract<IrBindingScope, 'declaration' | 'function'>,
   state: IrModuleValidationState,
 ): void {
   parameters.forEach((parameter, index) => {
     const parameterPath = `${path}[${String(index)}]`;
-    addBindingDefinition(parameter.binding, `${parameterPath}.binding`, state);
+    addBindingDefinition(
+      parameter.binding,
+      `${parameterPath}.binding`,
+      { kind: 'typeParameter', scope, space: 'type' },
+      state,
+    );
     if (parameter.constraint) visitType(parameter.constraint, `${parameterPath}.constraint`, state);
     if (parameter.default) visitType(parameter.default, `${parameterPath}.default`, state);
   });
 }
 
-function visitVariable(variable: Readonly<IrVariable>, path: string, state: IrModuleValidationState): void {
-  addBindingDefinition(variable.binding, `${path}.binding`, state);
+function visitVariable(
+  variable: Readonly<IrVariable>,
+  path: string,
+  scopes: readonly IrBindingScope[],
+  state: IrModuleValidationState,
+): void {
+  addBindingDefinition(variable.binding, `${path}.binding`, { kind: 'variable', scope: scopes, space: 'value' }, state);
   if (variable.type) visitType(variable.type, `${path}.type`, state);
   if (variable.initializer) visitExpression(variable.initializer, `${path}.initializer`, state);
 }
@@ -493,6 +562,23 @@ function validateBindingOrigin(
   state: IrModuleValidationState,
 ): void {
   validateSourceOrigin(binding, path, 'invalid-binding-origin', 'binding', state);
+}
+
+function validateBindingIntroduction(
+  binding: Readonly<IrBindingIdentity | IrTypeBindingIdentity>,
+  path: string,
+  expectation: Readonly<BindingIntroductionExpectation>,
+  state: IrModuleValidationState,
+): void {
+  const scopes = typeof expectation.scope === 'string' ? [expectation.scope] : expectation.scope;
+  if (binding.space !== expectation.space || binding.kind !== expectation.kind || !scopes.includes(binding.scope)) {
+    addFailure(
+      'invalid-binding-introduction',
+      path,
+      `binding introduction requires ${expectation.space} ${expectation.kind} in ${scopes.join(' or ')} scope`,
+      state,
+    );
+  }
 }
 
 function validateSourceOrigin(
