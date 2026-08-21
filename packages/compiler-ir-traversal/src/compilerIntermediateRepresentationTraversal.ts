@@ -355,6 +355,11 @@ function analyzeIrInvocationSemanticsTraversal(
   observer: Readonly<CompilerIrTraversalObserver>,
   path: CompilerIrTraversalPath,
 ): void {
+  semantics.defaultParameters?.provided.forEach((provided, index) => {
+    const providedPath = createIrTraversalPath(path, 'defaultParameters', 'provided', index);
+    analyzeIrTypeTraversal(provided.argumentType, observer, createIrTraversalPath(providedPath, 'argumentType'));
+    analyzeIrTypeTraversal(provided.parameterType, observer, createIrTraversalPath(providedPath, 'parameterType'));
+  });
   semantics.optionalParameters?.provided.forEach((provided, index) => {
     const providedPath = createIrTraversalPath(path, 'optionalParameters', 'provided', index);
     analyzeIrTypeTraversal(provided.argumentType, observer, createIrTraversalPath(providedPath, 'argumentType'));

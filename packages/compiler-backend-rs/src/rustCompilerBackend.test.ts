@@ -746,23 +746,32 @@ describe('emitIrModuleRust', () => {
     expect(output).toContain('return choose(None, None);');
   });
 
-  it('reuses a nullable Rust carrier for optional nullable parameters and arguments', () => {
+  it('preserves distinct undefined and null carriers for optional nullable parameters and arguments', () => {
     const result = lower(
       'optional-nullable.ts',
       `
-        function choose(value?: number | null): number | null | undefined { return value; }
-        export function omitted(): number | null | undefined { return choose(); }
-        export function present(): number | null | undefined { return choose(1); }
-        export function empty(): number | null | undefined { return choose(null); }
-        export function forward(value: number | null | undefined): number | null | undefined { return choose(value); }
+        function choose(value?: number | null): void { value; }
+        export function invoke(value: number | null): void { choose(); choose(1); choose(null); choose(value); }
       `,
     );
     const output = emitIrModuleRust(result.module).contents;
 
-    expect(output).toContain('fn choose(value: Option<f64>) -> Option<f64>');
-    expect(output).toContain('return choose(Some(1.0));');
-    expect(output.match(/return choose\(None\);/gu)).toHaveLength(2);
-    expect(output).toContain('return choose(value);');
+    expect(output).toContain('fn choose(value: Option<Option<f64>>) -> ()');
+    expect(output).toContain('choose(None);');
+    expect(output).toContain('choose(Some(Some(1.0)));');
+    expect(output).toContain('choose(Some(None));');
+    expect(output).toContain('choose(Some(value));');
+  });
+
+  it('refuses a type domain that still collapses null and undefined into one Rust sentinel', () => {
+    const result = lower(
+      'ambiguous-nullish.ts',
+      'export function preserve(value: number | null | undefined): number | null | undefined { return value; }',
+    );
+
+    expect(() => emitIrModuleRust(result.module)).toThrow(
+      'types containing both null and undefined require distinct Rust sentinels',
+    );
   });
 
   it('refuses dynamic and missing calls while erasing fixed extras after their evaluation', () => {
@@ -804,8 +813,8 @@ describe('emitIrModuleRust', () => {
         function fallback(value = 1): number { return value; }
         function optional(value?: number): number { return 0; }
         export function maybe(): number | undefined {
-          fallback(undefined);
-          optional(undefined);
+          fallback((undefined as number | undefined));
+          optional((undefined as number | undefined));
           return undefined;
         }
       `,

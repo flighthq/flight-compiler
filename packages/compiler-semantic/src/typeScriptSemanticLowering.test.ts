@@ -1820,6 +1820,65 @@ describe('lowerTypeScriptSource', () => {
     });
   });
 
+  it('classifies provided default and optional arguments as value, null, or undefined with type evidence', () => {
+    const result = lower(
+      'parameter-argument-values.ts',
+      `
+        function fallback(value: number | null = 1): number | null { return value; }
+        function optional(value?: number | null): number | null | undefined { return value; }
+        export function read(): void {
+          fallback();
+          fallback(1);
+          fallback(null);
+          fallback((undefined as number | undefined));
+          optional();
+          optional(1);
+          optional(null);
+          optional((undefined as number | undefined));
+        }
+        export function readLocal(): void {
+          const undefined: number = 2;
+          fallback(undefined);
+        }
+      `,
+    );
+    const declaration = result.module.declarations.find(
+      (item) => item.kind === 'function' && item.binding.name === 'read',
+    );
+    const local = result.module.declarations.find(
+      (item) => item.kind === 'function' && item.binding.name === 'readLocal',
+    );
+    if (declaration?.kind !== 'function' || local?.kind !== 'function') throw new Error('Expected read functions');
+    const calls = declaration.body.flatMap((statement) =>
+      statement.kind === 'expression' && statement.expression.kind === 'call' ? [statement.expression] : [],
+    );
+
+    expect(calls.slice(0, 4).map((call) => call?.semantics.defaultParameters?.provided[0]?.value)).toEqual([
+      undefined,
+      'value',
+      'null',
+      'undefined',
+    ]);
+    expect(calls.slice(4).map((call) => call?.semantics.optionalParameters?.provided[0]?.value)).toEqual([
+      undefined,
+      'value',
+      'null',
+      'undefined',
+    ]);
+    expect(calls[1]?.semantics.defaultParameters?.provided[0]).toMatchObject({
+      argumentType: { kind: 'primitive', name: 'number' },
+      parameterType: { kind: 'union', types: [{ kind: 'primitive', name: 'number' }, { kind: 'null' }] },
+      position: 0,
+    });
+    const localCall = local.body[1];
+    expect(
+      localCall?.kind === 'expression' && localCall.expression.kind === 'call'
+        ? localCall.expression.semantics.defaultParameters?.provided[0]?.value
+        : undefined,
+    ).toBe('value');
+    expect(result.diagnostics).toEqual([]);
+  });
+
   it('resolves overload typing separately from the local implementation ABI', () => {
     const result = lower(
       'overload-implementation-abi.ts',

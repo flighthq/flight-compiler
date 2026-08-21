@@ -26,6 +26,14 @@ describe('createHaxeCompilerBackend', () => {
 });
 
 describe('emitIrModuleHaxe', () => {
+  it('refuses optional nullable parameters until Haxe preserves distinct null and undefined sentinels', () => {
+    const result = lower('optional-nullable.ts', 'export function choose(value?: number | null): void { value; }');
+
+    expect(() => emitIrModuleHaxe(result.module)).toThrow(
+      'optional nullable parameters require distinct Haxe null and undefined sentinels',
+    );
+  });
+
   it('emits shared traceable provenance with an optional upstream commit', () => {
     const module = lower('value.ts', 'export const value = 1;').module;
     const commit = '0123456789abcdef0123456789abcdef01234567';
@@ -493,7 +501,7 @@ describe('emitIrModuleHaxe', () => {
     const undefinedValue = lower('missing.ts', 'export function missing(): undefined { return undefined; }');
     const explicitDefault = lower(
       'explicit-default.ts',
-      'function fallback(value = 1): number { return value; } export function read(): number { return fallback(undefined); }',
+      'function fallback(value = 1): number { return value; } export function read(): number { return fallback((undefined as number | undefined)); }',
     );
 
     expect(emitIrModuleHaxe(nullable.module).contents).toContain(

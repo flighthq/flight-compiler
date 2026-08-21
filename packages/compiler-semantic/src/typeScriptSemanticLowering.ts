@@ -41,6 +41,7 @@ import type {
   IrOperatorOperandDomains,
   IrOperatorValueDomain,
   IrParameter,
+  IrParameterProvidedArgumentInvocationSemantics,
   IrPostfixUnaryOperator,
   IrPrefixUnaryOperator,
   IrPropertyKeyCoercion,
@@ -1034,7 +1035,7 @@ function lowerInvocationSemantics(
   context: LoweringContext,
 ): IrInvocationSemantics {
   return {
-    ...getTypeScriptDefaultParameterInvocationSemantics(node, signature),
+    ...getTypeScriptDefaultParameterInvocationSemantics(node, signature, context),
     ...getTypeScriptInvocationSignatureSemantics(node, signature),
     ...getTypeScriptOptionalParameterInvocationSemantics(node, signature, context),
     ...getTypeScriptOverloadImplementationInvocationSemantics(signature),
@@ -1058,15 +1059,9 @@ function getTypeScriptOptionalParameterInvocationSemantics(
     : optional.flatMap((position) => {
         const argument = arguments_[position];
         const parameter = parameters[position];
-        if (!argument || !parameter) return [];
-        return [
-          {
-            argumentType:
-              lowerTypeScriptExpressionTypeEvidence(argument, context) ?? inferInitializerType(argument, context),
-            parameterType: lowerFunctionTypeParameter(parameter, context).type,
-            position,
-          },
-        ];
+        return argument && parameter
+          ? [getTypeScriptParameterProvidedArgumentInvocationSemantics(argument, parameter, position, context)]
+          : [];
       });
   return {
     optionalParameters: {
@@ -1082,6 +1077,7 @@ function getTypeScriptOptionalParameterInvocationSemantics(
 function getTypeScriptDefaultParameterInvocationSemantics(
   node: ts.CallExpression | ts.NewExpression,
   signature: Readonly<TypeScriptInvocationSignatureResolution> | undefined,
+  context: LoweringContext,
 ): Pick<IrInvocationSemantics, 'defaultParameters'> {
   const parameters = signature?.implementation.parameters.filter(ts.isParameter) ?? [];
   const defaulted = parameters.flatMap((parameter, index) => (parameter.initializer ? [index] : []));
@@ -1093,9 +1089,52 @@ function getTypeScriptDefaultParameterInvocationSemantics(
       defaulted,
       omitted: dynamic ? [] : defaulted.filter((index) => index >= arguments_.length),
       parameterCount: parameters.length,
+      provided: dynamic
+        ? []
+        : defaulted.flatMap((position) => {
+            const argument = arguments_[position];
+            const parameter = parameters[position];
+            return argument && parameter
+              ? [getTypeScriptParameterProvidedArgumentInvocationSemantics(argument, parameter, position, context)]
+              : [];
+          }),
       providedArgumentCount: dynamic ? 'dynamic' : arguments_.length,
     },
   };
+}
+
+function getTypeScriptParameterProvidedArgumentInvocationSemantics(
+  argument: ts.Expression,
+  parameter: ts.ParameterDeclaration,
+  position: number,
+  context: LoweringContext,
+): IrParameterProvidedArgumentInvocationSemantics {
+  return {
+    argumentType: lowerTypeScriptExpressionTypeEvidence(argument, context) ?? inferInitializerType(argument, context),
+    parameterType: lowerFunctionTypeParameter(parameter, context).type,
+    position,
+    value: getTypeScriptInvocationArgumentValue(argument, context),
+  };
+}
+
+function getTypeScriptInvocationArgumentValue(
+  argument: ts.Expression,
+  context: LoweringContext,
+): 'null' | 'undefined' | 'value' {
+  let value = argument;
+  while (
+    ts.isParenthesizedExpression(value) ||
+    ts.isAsExpression(value) ||
+    ts.isTypeAssertionExpression(value) ||
+    ts.isSatisfiesExpression(value) ||
+    ts.isNonNullExpression(value)
+  ) {
+    value = value.expression;
+  }
+  if (value.kind === ts.SyntaxKind.NullKeyword) return 'null';
+  if (!ts.isIdentifier(value) || value.text !== 'undefined') return 'value';
+  const reference = lowerIdentifierReference(value, context);
+  return reference.kind === 'ambient' && reference.name === 'undefined' ? 'undefined' : 'value';
 }
 
 function getTypeScriptOverloadImplementationInvocationSemantics(

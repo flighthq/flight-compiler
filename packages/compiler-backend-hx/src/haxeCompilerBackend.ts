@@ -348,10 +348,12 @@ function emitCallArgumentsHaxe(
   ) {
     emissionError(context, 'extra JavaScript call arguments require target-neutral erasure lowering');
   }
-  const defaulted = new Set(expression.semantics.defaultParameters?.defaulted ?? []);
+  const defaulted = new Map(
+    expression.semantics.defaultParameters?.provided.map((provided) => [provided.position, provided]) ?? [],
+  );
   return expression.arguments
     .map((argument, index) => {
-      if (argument.kind === 'undefinedValue' && defaulted.has(index)) {
+      if (defaulted.get(index)?.value === 'undefined') {
         emissionError(context, 'explicit undefined default arguments require Haxe omission lowering');
       }
       return emitExpression(argument, context);
@@ -452,6 +454,9 @@ function emitParameters(parameters: readonly IrParameter[], context: EmitContext
       const type = emitType(parameter.type, context);
       if (parameter.rest) return `...${name}:${type}`;
       if (parameter.initializer) return `${name}:${type} = ${emitExpression(parameter.initializer, context)}`;
+      if (parameter.optional && hasIrTypeNullMemberHaxe(parameter.type)) {
+        emissionError(context, 'optional nullable parameters require distinct Haxe null and undefined sentinels');
+      }
       return `${parameter.optional ? '?' : ''}${name}:${type}`;
     })
     .join(', ');
@@ -681,6 +686,9 @@ function emitType(type: Readonly<IrType>, context: EmitContext): string {
       return 'Array<Dynamic>';
     case 'union': {
       const concrete = type.types.filter((item) => item.kind !== 'null' && item.kind !== 'undefined');
+      if (hasIrTypeNullMemberHaxe(type) && hasIrTypeUndefinedMemberHaxe(type)) {
+        emissionError(context, 'types containing both null and undefined require distinct Haxe sentinels');
+      }
       return concrete.length === 1 && concrete.length !== type.types.length
         ? `Null<${emitType(concrete[0]!, context)}>`
         : 'Dynamic';
@@ -688,6 +696,16 @@ function emitType(type: Readonly<IrType>, context: EmitContext): string {
     case 'unknown':
       return 'Dynamic';
   }
+}
+
+function hasIrTypeNullMemberHaxe(type: Readonly<IrType>): boolean {
+  return type.kind === 'null' || (type.kind === 'union' && type.types.some((member) => member.kind === 'null'));
+}
+
+function hasIrTypeUndefinedMemberHaxe(type: Readonly<IrType>): boolean {
+  return (
+    type.kind === 'undefined' || (type.kind === 'union' && type.types.some((member) => member.kind === 'undefined'))
+  );
 }
 
 function emitAnonymousType(properties: readonly IrObjectTypeProperty[], context: EmitContext): string {

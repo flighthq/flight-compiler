@@ -313,6 +313,28 @@ describe('validateIrModuleStructure', () => {
       'function choose(first: number, second = 2): number { return first; } export function read(values: [number]): number { return choose(...values); }',
     );
     expect(validateIrModuleStructure(dynamic)).toEqual({ kind: 'valid' });
+
+    const classified = lower(
+      'classified-default-call.ts',
+      'function choose(value: number | null = 1): number | null { return value; } export function read(): number | null { return choose(null); }',
+    );
+    const classifiedDeclaration = classified.declarations.find(
+      (candidate) => candidate.kind === 'function' && candidate.binding.name === 'read',
+    );
+    const classifiedStatement = classifiedDeclaration?.kind === 'function' ? classifiedDeclaration.body[0] : undefined;
+    const classifiedExpression = classifiedStatement?.kind === 'return' ? classifiedStatement.expression : undefined;
+    if (classifiedExpression?.kind !== 'call' || !classifiedExpression.semantics.defaultParameters?.provided[0]) {
+      throw new Error('Expected classified default call');
+    }
+    (
+      classifiedExpression.semantics.defaultParameters.provided[0] as {
+        value: string;
+      }
+    ).value = 'missing';
+    expect(validateIrModuleStructure(classified)).toMatchObject({
+      failures: [expect.objectContaining({ path: expect.stringContaining('.semantics.defaultParameters') })],
+      kind: 'invalid',
+    });
   });
 
   it('validates exact optional-parameter call arity, ordering, and omissions', () => {

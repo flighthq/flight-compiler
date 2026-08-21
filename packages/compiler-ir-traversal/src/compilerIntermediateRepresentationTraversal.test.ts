@@ -362,6 +362,27 @@ describe('analyzeIrModuleTraversal', () => {
     expect(paths).toEqual([['exports', 0, 'expression', 'semantics', 'extraArguments', 'resultType']]);
   });
 
+  it('visits provided default-argument type evidence at canonical semantic paths', () => {
+    const module = lower(`
+      function choose(value: number | null = 1): number | null { return value; }
+      export default choose(null);
+    `);
+    const paths: Array<readonly (number | string)[]> = [];
+
+    analyzeIrModuleTraversal(module, {
+      type(_type, path) {
+        if (path.includes('defaultParameters')) paths.push(path);
+      },
+    });
+
+    expect(paths).toEqual([
+      ['exports', 0, 'expression', 'semantics', 'defaultParameters', 'provided', 0, 'argumentType'],
+      ['exports', 0, 'expression', 'semantics', 'defaultParameters', 'provided', 0, 'parameterType'],
+      ['exports', 0, 'expression', 'semantics', 'defaultParameters', 'provided', 0, 'parameterType', 'types', 0],
+      ['exports', 0, 'expression', 'semantics', 'defaultParameters', 'provided', 0, 'parameterType', 'types', 1],
+    ]);
+  });
+
   it('visits lowering-only expression carriers and their semantic type evidence', () => {
     const numberType = { kind: 'primitive', name: 'number' } as const satisfies IrType;
     const tupleType = {
@@ -412,7 +433,7 @@ describe('analyzeIrModuleTraversal', () => {
             omitted: [],
             optional: [0],
             parameterCount: 1,
-            provided: [{ argumentType: numberType, parameterType: numberType, position: 0 }],
+            provided: [{ argumentType: numberType, parameterType: numberType, position: 0, value: 'value' }],
             providedArgumentCount: 1,
           },
         },

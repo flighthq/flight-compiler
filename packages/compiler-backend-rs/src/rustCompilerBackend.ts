@@ -465,6 +465,7 @@ function emitCallArgumentsRust(
     emissionError(context, 'extra JavaScript call arguments require Rust ABI erasure lowering');
   }
   const wrapped = new Set([...(defaults?.defaulted ?? []), ...(optionals?.optional ?? [])]);
+  const defaultProvided = new Map(defaults?.provided.map((provided) => [provided.position, provided]) ?? []);
   const optionalProvided = new Map(optionals?.provided.map((provided) => [provided.position, provided]) ?? []);
   return Array.from({ length: plan.parameterCount }, (_, index) => {
     const argument = expression.arguments[index];
@@ -474,9 +475,13 @@ function emitCallArgumentsRust(
       }
       return 'None';
     }
-    if (argument.kind === 'undefinedValue') return 'None';
+    const providedEvidence = defaultProvided.get(index) ?? optionalProvided.get(index);
+    if (providedEvidence?.value === 'undefined' || argument.kind === 'undefinedValue') return 'None';
     const emitted = emitExpression(argument, context);
     const optionalEvidence = optionalProvided.get(index);
+    if (optionalEvidence && hasIrTypeNullMemberRust(optionalEvidence.parameterType)) {
+      return isNullableType(optionalEvidence.argumentType) ? `Some(${emitted})` : `Some(Some(${emitted}))`;
+    }
     if (
       optionalEvidence &&
       isNullableType(optionalEvidence.parameterType) &&
@@ -681,7 +686,14 @@ function emitParameter(parameter: Readonly<IrParameter>, context: EmitContext): 
   }
   if (parameter.optional) {
     const type = emitType(parameter.type, context);
-    return `${getBindingTargetNameRust(parameter.binding, context)}: ${isNullableType(parameter.type) ? type : `Option<${type}>`}`;
+    if (hasIrTypeNullMemberRust(parameter.type) && hasIrTypeUndefinedMemberRust(parameter.type)) {
+      emissionError(context, 'optional parameters containing both null and undefined require distinct Rust sentinels');
+    }
+    const optionalType =
+      hasIrTypeUndefinedMemberRust(parameter.type) && !hasIrTypeNullMemberRust(parameter.type)
+        ? type
+        : `Option<${type}>`;
+    return `${getBindingTargetNameRust(parameter.binding, context)}: ${optionalType}`;
   }
   const name = getBindingTargetNameRust(parameter.binding, context);
   if (parameter.rest) return `${name}: Vec<${emitType(parameter.type, context)}>`;
@@ -894,6 +906,9 @@ function emitType(type: Readonly<IrType>, context: EmitContext): string {
     }
     case 'union': {
       const concrete = type.types.filter((item) => item.kind !== 'null' && item.kind !== 'undefined');
+      if (hasIrTypeNullMemberRust(type) && hasIrTypeUndefinedMemberRust(type)) {
+        emissionError(context, 'types containing both null and undefined require distinct Rust sentinels');
+      }
       if (concrete.length === 1 && concrete.length !== type.types.length)
         return `Option<${emitType(concrete[0]!, context)}>`;
       emissionError(context, 'non-nullable unions require Rust tagged-union lowering');
@@ -1202,6 +1217,16 @@ function isNullableType(type: Readonly<IrType>): boolean {
     type.kind === 'null' ||
     type.kind === 'undefined' ||
     (type.kind === 'union' && type.types.some((member) => member.kind === 'null' || member.kind === 'undefined'))
+  );
+}
+
+function hasIrTypeNullMemberRust(type: Readonly<IrType>): boolean {
+  return type.kind === 'null' || (type.kind === 'union' && type.types.some((member) => member.kind === 'null'));
+}
+
+function hasIrTypeUndefinedMemberRust(type: Readonly<IrType>): boolean {
+  return (
+    type.kind === 'undefined' || (type.kind === 'union' && type.types.some((member) => member.kind === 'undefined'))
   );
 }
 

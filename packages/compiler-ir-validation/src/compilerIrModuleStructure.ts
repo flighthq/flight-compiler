@@ -686,14 +686,31 @@ function validateIrDefaultParameterInvocationEvidence(
   const omittedValid =
     isStrictlyIncreasingIntegerList(evidence.omitted) &&
     evidence.omitted.every((index) => evidence.defaulted.includes(index));
+  const providedPositions = Array.isArray(evidence.provided)
+    ? evidence.provided.map((provided) => provided.position)
+    : [];
+  const providedEvidenceValid =
+    Array.isArray(evidence.provided) &&
+    isStrictlyIncreasingIntegerList(providedPositions) &&
+    evidence.provided.every(
+      (provided) =>
+        evidence.defaulted.includes(provided.position) &&
+        isIrTypeEvidence(provided.argumentType) &&
+        isIrTypeEvidence(provided.parameterType) &&
+        (provided.value === 'null' || provided.value === 'undefined' || provided.value === 'value'),
+    );
   const providedArgumentCount = evidence.providedArgumentCount;
   const providedValid =
     providedArgumentCount === 'dynamic'
-      ? expression.arguments.some((argument) => argument.kind === 'spread') && evidence.omitted.length === 0
+      ? expression.arguments.some((argument) => argument.kind === 'spread') &&
+        evidence.omitted.length === 0 &&
+        providedPositions.length === 0
       : Number.isSafeInteger(providedArgumentCount) &&
         providedArgumentCount >= 0 &&
         providedArgumentCount === expression.arguments.length &&
         !expression.arguments.some((argument) => argument.kind === 'spread') &&
+        JSON.stringify(providedPositions) ===
+          JSON.stringify(evidence.defaulted.filter((index) => index < providedArgumentCount)) &&
         JSON.stringify(evidence.omitted) ===
           JSON.stringify(evidence.defaulted.filter((index) => index >= providedArgumentCount));
   if (
@@ -701,14 +718,29 @@ function validateIrDefaultParameterInvocationEvidence(
     evidence.parameterCount < 0 ||
     !defaultedValid ||
     !omittedValid ||
+    !providedEvidenceValid ||
     !providedValid
   ) {
     addFailure(
       'invalid-node-shape',
       `${path}.semantics.defaultParameters`,
-      'default-parameter invocation evidence must have exact arity, ordered positions, and omission state',
+      'default-parameter invocation evidence must have exact arity, ordered positions, value classifications, types, and omission state',
       state,
     );
+  }
+  if (providedEvidenceValid) {
+    evidence.provided.forEach((provided, index) => {
+      visitType(
+        provided.argumentType,
+        `${path}.semantics.defaultParameters.provided[${String(index)}].argumentType`,
+        state,
+      );
+      visitType(
+        provided.parameterType,
+        `${path}.semantics.defaultParameters.provided[${String(index)}].parameterType`,
+        state,
+      );
+    });
   }
 }
 
@@ -791,7 +823,8 @@ function validateIrOptionalParameterInvocationEvidence(
       (provided) =>
         evidence.optional.includes(provided.position) &&
         isIrTypeEvidence(provided.argumentType) &&
-        isIrTypeEvidence(provided.parameterType),
+        isIrTypeEvidence(provided.parameterType) &&
+        (provided.value === 'null' || provided.value === 'undefined' || provided.value === 'value'),
     );
   const providedValid =
     providedArgumentCount === 'dynamic'
@@ -824,7 +857,7 @@ function validateIrOptionalParameterInvocationEvidence(
     addFailure(
       'invalid-node-shape',
       `${path}.semantics.optionalParameters`,
-      'optional-parameter invocation evidence must have exact arity, ordered positions, distinct defaults, and omission state',
+      'optional-parameter invocation evidence must have exact arity, ordered positions, value classifications, types, distinct defaults, and omission state',
       state,
     );
   }

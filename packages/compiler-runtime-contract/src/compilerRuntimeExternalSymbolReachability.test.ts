@@ -283,7 +283,12 @@ describe('collectIrModulesRuntimeExternalSymbolIdentities', () => {
                 optional: [0],
                 parameterCount: 1,
                 provided: [
-                  { argumentType: named('SemanticArgument'), parameterType: named('SemanticParameter'), position: 0 },
+                  {
+                    argumentType: named('SemanticArgument'),
+                    parameterType: named('SemanticParameter'),
+                    position: 0,
+                    value: 'value',
+                  },
                 ],
                 providedArgumentCount: 1,
               },

@@ -70,14 +70,17 @@ export interface IrOptionalParameterInvocationSemantics {
   readonly omitted: readonly number[];
   readonly optional: readonly number[];
   readonly parameterCount: number;
-  readonly provided: readonly IrOptionalParameterProvidedArgumentInvocationSemantics[];
+  readonly provided: readonly IrParameterProvidedArgumentInvocationSemantics[];
   readonly providedArgumentCount: number | 'dynamic';
 }
 
-export interface IrOptionalParameterProvidedArgumentInvocationSemantics {
+export type IrInvocationArgumentValue = 'null' | 'undefined' | 'value';
+
+export interface IrParameterProvidedArgumentInvocationSemantics {
   readonly argumentType: IrType;
   readonly parameterType: IrType;
   readonly position: number;
+  readonly value: IrInvocationArgumentValue;
 }
 
 export interface IrStatementValueCallSemantics {
@@ -99,5 +102,6 @@ export interface IrDefaultParameterInvocationSemantics {
   readonly defaulted: readonly number[];
   readonly omitted: readonly number[];
   readonly parameterCount: number;
+  readonly provided: readonly IrParameterProvidedArgumentInvocationSemantics[];
   readonly providedArgumentCount: number | 'dynamic';
 }
