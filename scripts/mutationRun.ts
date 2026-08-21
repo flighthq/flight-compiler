@@ -29,6 +29,7 @@ interface FileResult {
   readonly killed: number;
   readonly source: string;
   readonly survivors: readonly Mutant[];
+  readonly timeouts: readonly Mutant[];
 }
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -53,27 +54,40 @@ for (const target of targets) {
   const sourceFile = ts.createSourceFile(target.source, contents, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
   const mutants = collectMutants(sourceFile);
   const survivors: Mutant[] = [];
+  const timeouts: Mutant[] = [];
   let killed = 0;
   process.stdout.write(`\n▶ ${relative(target.source)} (${String(mutants.length)} mutants)\n`);
+  const baseline = measureBaseline(target, contents);
   for (const mutant of mutants) {
     // applyMutant throws when the substitution would not change the text, so a survivor can never be
     // the artefact of an edit that never happened.
     const mutated = applyMutant(contents, mutant);
-    if (runsGreen(target, mutated)) {
+    const outcome = runMutant(target, mutated, baseline.timeoutMs);
+    if (outcome === 'green') {
       survivors.push(mutant);
       process.stdout.write(`  survived ${String(mutant.line)}: ${mutant.description} [${mutant.operator}]\n`);
     } else {
       killed += 1;
+      if (outcome === 'timeout') {
+        timeouts.push(mutant);
+        process.stdout.write(`  timed out ${String(mutant.line)}: ${mutant.description} [${mutant.operator}]\n`);
+      }
     }
   }
-  results.push({ killed, source: target.source, survivors });
+  results.push({ killed, source: target.source, survivors, timeouts });
 }
 
 const mutantCount = results.reduce((total, result) => total + result.killed + result.survivors.length, 0);
 const survivorCount = results.reduce((total, result) => total + result.survivors.length, 0);
+const timeoutCount = results.reduce((total, result) => total + result.timeouts.length, 0);
 process.stdout.write(
   `\n${String(mutantCount)} mutants across ${String(results.length)} files: ${String(mutantCount - survivorCount)} killed, ${String(survivorCount)} survived.\n`,
 );
+if (timeoutCount > 0) {
+  process.stdout.write(
+    `${String(timeoutCount)} of the killed mutants timed out rather than failing an assertion. A timeout usually means the mutant made a loop non-terminating, which is worth reading: the surrounding termination condition is decided by that operator alone.\n`,
+  );
+}
 if (mutantCount === 0) {
   process.stderr.write('No mutants were generated, so this run measured nothing.\n');
   process.exit(1);
@@ -106,7 +120,28 @@ function relative(file: string): string {
   return path.relative(root, file).replaceAll('\\', '/');
 }
 
-function runsGreen(target: Readonly<MutationTarget>, mutated: string): boolean {
+// A mutant can make a loop non-terminating, and without a deadline the run then hangs forever on one
+// mutant rather than reporting it. The deadline is derived from the file's own unmutated run so it
+// travels across machines: generous enough that a slow-but-passing test is never called killed, since
+// a false kill hides a gap where a false survivor only wastes a reading.
+function measureBaseline(target: Readonly<MutationTarget>, contents: string): { timeoutMs: number } {
+  const started = process.hrtime.bigint();
+  const outcome = runMutant(target, contents, undefined);
+  const elapsedMs = Number((process.hrtime.bigint() - started) / 1_000_000n);
+  if (outcome !== 'green') {
+    process.stderr.write(
+      `${relative(target.test)} does not pass against its own unmutated source, so every mutant would be reported killed and the run would measure nothing.\n`,
+    );
+    process.exit(1);
+  }
+  return { timeoutMs: Math.max(30_000, elapsedMs * 10) };
+}
+
+function runMutant(
+  target: Readonly<MutationTarget>,
+  mutated: string,
+  timeoutMs: number | undefined,
+): 'green' | 'red' | 'timeout' {
   const result = spawnSync(vitest, ['run', '--config', 'vitest.config.mutation.ts', relative(target.test)], {
     cwd: root,
     env: {
@@ -115,6 +150,8 @@ function runsGreen(target: Readonly<MutationTarget>, mutated: string): boolean {
       FLIGHT_MUTATION_TARGET: target.source,
     },
     stdio: 'ignore',
+    ...(timeoutMs === undefined ? {} : { killSignal: 'SIGKILL' as const, timeout: timeoutMs }),
   });
-  return result.status === 0;
+  if (result.status === 0) return 'green';
+  return result.signal === 'SIGKILL' || result.error?.name === 'ETIMEDOUT' ? 'timeout' : 'red';
 }
