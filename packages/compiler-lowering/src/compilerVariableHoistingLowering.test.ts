@@ -405,7 +405,7 @@ describe('createCompilerLoweringPassVariableHoisting', () => {
       reason:
         'function-scoped variable value may be read before initialization; undefined-preserving lowering is required',
       source:
-        'export function read(): () => number { const callback = (): number => value; var value: number = 1; return callback; }',
+        'export function read(): number { const callback = (): number => value; var value: number; return callback(); }',
     },
   ])('refuses unsafe or residual variable semantics explicitly: $reason', ({ reason, source }) => {
     const run = () =>

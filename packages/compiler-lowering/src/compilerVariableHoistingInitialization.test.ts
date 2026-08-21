@@ -24,12 +24,11 @@ describe('validateIrFunctionVariableInitialization', () => {
     expect(declaration.body).toEqual(snapshot);
   });
 
-  it('rejects direct, conditional, short-circuit, and early-capture reads before initialization', () => {
+  it('rejects direct, conditional, and short-circuit reads before initialization', () => {
     for (const source of [
       'export function select(): number { return value; var value: number = 1; }',
       'export function select(flag: boolean): number { if (flag) { var value: number = 1; } return value; }',
       'export function select(flag: boolean): number { var value: number; flag && (value = 1); return value; }',
-      'export function select(): () => number { const callback = (): number => value; var value: number = 1; return callback; }',
     ]) {
       const declaration = lowerFunction(source);
 
@@ -43,7 +42,7 @@ describe('validateIrFunctionVariableInitialization', () => {
     }
   });
 
-  it('checks immediate closure captures after call arguments but keeps deferred captures conservative', () => {
+  it('checks immediate and local deferred closure captures at invocation or escape', () => {
     const immediate = lowerFunction(`
       export function select(): number {
         var value: number;
@@ -67,7 +66,74 @@ describe('validateIrFunctionVariableInitialization', () => {
     expect(
       validateIrFunctionVariableInitialization(immediate.body, getFunctionVariables(immediate), immediate.origin),
     ).toBeUndefined();
-    for (const declaration of [tooEarly, deferred]) {
+    expect(() =>
+      validateIrFunctionVariableInitialization(tooEarly.body, getFunctionVariables(tooEarly), tooEarly.origin),
+    ).toThrow('function-scoped variable value may be read before initialization');
+    expect(
+      validateIrFunctionVariableInitialization(deferred.body, getFunctionVariables(deferred), deferred.origin),
+    ).toBeUndefined();
+  });
+
+  it('tracks local deferred closure calls after arguments and rejects premature calls or escapes', () => {
+    const accepted = [
+      `
+        export function select(): number {
+          var value: number;
+          const callback = (): number => value;
+          return callback(value = 1);
+        }
+      `,
+      `
+        export function select(): () => number {
+          const callback = (): number => value;
+          var value: number = 1;
+          return callback;
+        }
+      `,
+      `
+        export function select(): number {
+          const callback = (): number => value;
+          var value: number;
+          value = 1;
+          return callback();
+        }
+      `,
+    ].map(lowerFunction);
+    const rejected = [
+      `
+        export function select(): number {
+          const callback = (): number => value;
+          var value: number;
+          return callback();
+        }
+      `,
+      `
+        export function select(): () => number {
+          const callback = (): number => value;
+          return callback;
+          var value: number = 1;
+        }
+      `,
+      `
+        export function select(consume: (callback: () => number) => number): number {
+          const callback = (): number => value;
+          consume(callback);
+          var value: number = 1;
+          return 0;
+        }
+      `,
+    ].map(lowerFunction);
+
+    for (const declaration of accepted) {
+      expect(
+        validateIrFunctionVariableInitialization(
+          declaration.body,
+          getFunctionVariables(declaration),
+          declaration.origin,
+        ),
+      ).toBeUndefined();
+    }
+    for (const declaration of rejected) {
       expect(() =>
         validateIrFunctionVariableInitialization(
           declaration.body,

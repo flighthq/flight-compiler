@@ -424,6 +424,47 @@ describe('validateIrModuleStructure', () => {
     }
   });
 
+  it('validates object binding keys, defaults, nesting, rest, and leaf identity', () => {
+    const module = lower(
+      'object-pattern.ts',
+      `
+        const key = 'other';
+        export const { value: renamed = 1, nested: { text }, [key]: computed, ...rest }:
+          { value?: number; nested: { text: string }; other: boolean } =
+          { nested: { text: 'flight' }, other: true };
+      `,
+    );
+    const declaration = module.declarations.find(
+      (item) => item.kind === 'variable' && 'pattern' in item && item.pattern.kind === 'object',
+    );
+    if (declaration?.kind !== 'variable' || !('pattern' in declaration) || declaration.pattern.kind !== 'object') {
+      throw new Error('Expected object binding declaration');
+    }
+    const snapshot = structuredClone(module);
+
+    expect(validateIrModuleStructure(module)).toEqual({ kind: 'valid' });
+    expect(module).toEqual(snapshot);
+
+    const emptyKey = {
+      ...declaration.pattern,
+      properties: [
+        { ...declaration.pattern.properties[0]!, key: { kind: 'named' as const, name: '' } },
+        ...declaration.pattern.properties.slice(1),
+      ],
+    };
+    const nestedRest = { ...declaration.pattern, rest: declaration.pattern };
+    for (const pattern of [emptyKey, nestedRest]) {
+      const result = validateIrModuleStructure({
+        ...module,
+        declarations: [{ ...declaration, pattern }],
+      });
+      expect(result.kind).toBe('invalid');
+      if (result.kind === 'invalid') {
+        expect(result.failures.map((failure) => failure.code)).toContain('invalid-node-shape');
+      }
+    }
+  });
+
   it('reports stable identity, origin, reference, cardinality, arity, kind, and shape failures', () => {
     const module = lower('identity.ts', 'export function identity<T>(value: T): T { return value; }');
     const declaration = module.declarations[0];

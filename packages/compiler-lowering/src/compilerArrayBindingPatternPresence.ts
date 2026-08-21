@@ -1,5 +1,6 @@
 import type {
   IrDeclaration,
+  IrBindingPattern,
   IrExpression,
   IrModule,
   IrObjectMember,
@@ -204,7 +205,21 @@ function hasIrStatementArrayBindingPattern(statement: Readonly<IrStatement>): bo
 
 function hasIrVariableArrayBindingPattern(variable: Readonly<IrVariable>): boolean {
   return (
-    'pattern' in variable || (variable.initializer ? hasIrExpressionArrayBindingPattern(variable.initializer) : false)
+    ('pattern' in variable ? hasIrBindingPatternArrayBindingPattern(variable.pattern) : false) ||
+    (variable.initializer ? hasIrExpressionArrayBindingPattern(variable.initializer) : false)
+  );
+}
+
+function hasIrBindingPatternArrayBindingPattern(pattern: Readonly<IrBindingPattern>): boolean {
+  if (pattern.kind === 'binding') return false;
+  if (pattern.kind === 'array') return true;
+  return (
+    pattern.properties.some(
+      (property) =>
+        (property.key.kind === 'computed' && hasIrExpressionArrayBindingPattern(property.key.expression)) ||
+        (property.initializer ? hasIrExpressionArrayBindingPattern(property.initializer) : false) ||
+        hasIrBindingPatternArrayBindingPattern(property.pattern),
+    ) || (pattern.rest ? hasIrBindingPatternArrayBindingPattern(pattern.rest) : false)
   );
 }
 

@@ -224,6 +224,12 @@ function collectBindingPatternTargets(pattern: Readonly<IrBindingPattern>): read
   if (pattern.kind === 'binding') {
     return [{ exportName: pattern.binding.name, patternBinding: pattern.binding }];
   }
+  if (pattern.kind === 'object') {
+    return [
+      ...pattern.properties.flatMap((property) => collectBindingPatternTargets(property.pattern)),
+      ...(pattern.rest ? collectBindingPatternTargets(pattern.rest) : []),
+    ];
+  }
   return [
     ...pattern.elements.flatMap((element) => (element ? collectBindingPatternTargets(element.pattern) : [])),
     ...(pattern.rest ? collectBindingPatternTargets(pattern.rest) : []),

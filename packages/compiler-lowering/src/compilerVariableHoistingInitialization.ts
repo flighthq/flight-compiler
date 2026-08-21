@@ -18,12 +18,18 @@ type CompilerVariableInitializationCompletion = Parameters<
 >[0];
 type CompilerVariableInitializationCompletionKind = keyof CompilerVariableInitializationCompletion;
 
+interface IrVariableInitializationVariables extends Map<string, IrNamedVariable> {
+  deferredClosures?: ReadonlyMap<string, Readonly<Extract<IrExpression, { kind: 'function' }>>>;
+}
+
 export function validateIrFunctionVariableInitialization(
   statements: readonly Readonly<IrStatement>[],
   variables: ReadonlyMap<string, IrNamedVariable>,
   sourceIdentity: Readonly<CompilerSourceIdentity>,
 ): void {
-  analyzeIrStatementListVariableInitialization(statements, new Set(), variables, sourceIdentity);
+  const analysisVariables = new Map(variables) as IrVariableInitializationVariables;
+  analysisVariables.deferredClosures = collectIrDeferredClosureVariableInitialization(statements);
+  analyzeIrStatementListVariableInitialization(statements, new Set(), analysisVariables, sourceIdentity);
 }
 
 function addIrExpressionAssignmentTargetVariableInitialization(
@@ -146,7 +152,11 @@ function analyzeIrExpressionVariableInitialization(
     case 'call':
     case 'new': {
       const immediatelyInvoked = expression.callee.kind === 'function' ? expression.callee : undefined;
-      if (!immediatelyInvoked) {
+      const deferredClosure =
+        expression.callee.kind === 'identifier' && expression.callee.reference.kind === 'binding'
+          ? getIrDeferredClosureVariableInitialization(expression.callee.reference.binding.id, variables)
+          : undefined;
+      if (!immediatelyInvoked && !deferredClosure) {
         analyzeIrExpressionVariableInitialization(
           expression.callee,
           initialized,
@@ -161,6 +171,13 @@ function analyzeIrExpressionVariableInitialization(
       if (immediatelyInvoked) {
         assertIrExpressionFunctionCaptureVariableInitialization(
           immediatelyInvoked,
+          initialized,
+          variables,
+          sourceIdentity,
+        );
+      } else if (deferredClosure) {
+        assertIrExpressionFunctionCaptureVariableInitialization(
+          deferredClosure,
           initialized,
           variables,
           sourceIdentity,
@@ -195,6 +212,15 @@ function analyzeIrExpressionVariableInitialization(
     case 'identifier':
       if (expression.reference.kind === 'binding') {
         assertIrBindingVariableInitialization(expression.reference.binding.id, initialized, variables, sourceIdentity);
+        const deferredClosure = getIrDeferredClosureVariableInitialization(expression.reference.binding.id, variables);
+        if (deferredClosure) {
+          assertIrExpressionFunctionCaptureVariableInitialization(
+            deferredClosure,
+            initialized,
+            variables,
+            sourceIdentity,
+          );
+        }
       }
       return;
     case 'object':
@@ -662,11 +688,82 @@ function analyzeIrVariableVariableInitialization(
   completion: MutableCompilerVariableInitializationCompletion,
 ): void {
   if (variable.initializer) {
-    analyzeIrExpressionVariableInitialization(variable.initializer, initialized, variables, sourceIdentity, completion);
+    const deferredClosure =
+      'binding' in variable ? getIrDeferredClosureVariableInitialization(variable.binding.id, variables) : undefined;
+    if (variable.initializer !== deferredClosure) {
+      analyzeIrExpressionVariableInitialization(
+        variable.initializer,
+        initialized,
+        variables,
+        sourceIdentity,
+        completion,
+      );
+    }
   }
   if (!('pattern' in variable) && variable.initializer && variables.has(variable.binding.id)) {
     initialized.add(variable.binding.id);
   }
+}
+
+function collectIrDeferredClosureVariableInitialization(
+  statements: readonly Readonly<IrStatement>[],
+): ReadonlyMap<string, Readonly<Extract<IrExpression, { kind: 'function' }>>> {
+  const closures = new Map<string, Readonly<Extract<IrExpression, { kind: 'function' }>>>();
+  const visitVariable = (variable: Readonly<IrVariable>): void => {
+    if ('binding' in variable && variable.initializer?.kind === 'function') {
+      closures.set(variable.binding.id, variable.initializer);
+    }
+  };
+  const visitStatement = (statement: Readonly<IrStatement>): void => {
+    switch (statement.kind) {
+      case 'block':
+        statement.statements.forEach(visitStatement);
+        return;
+      case 'do':
+      case 'while':
+        visitStatement(statement.body);
+        return;
+      case 'for':
+        if (Array.isArray(statement.initializer)) statement.initializer.forEach(visitVariable);
+        visitStatement(statement.body);
+        return;
+      case 'forIn':
+      case 'forOf':
+        visitVariable(statement.variable);
+        visitStatement(statement.body);
+        return;
+      case 'if':
+        visitStatement(statement.consequent);
+        if (statement.otherwise) visitStatement(statement.otherwise);
+        return;
+      case 'switch':
+        statement.cases.forEach((switchCase) => switchCase.statements.forEach(visitStatement));
+        return;
+      case 'try':
+        visitStatement(statement.tryBody);
+        if (statement.catchClause) visitStatement(statement.catchClause.body);
+        if (statement.finallyBody) visitStatement(statement.finallyBody);
+        return;
+      case 'variable':
+        statement.declarations.forEach(visitVariable);
+        return;
+      case 'break':
+      case 'continue':
+      case 'expression':
+      case 'return':
+      case 'throw':
+        return;
+    }
+  };
+  statements.forEach(visitStatement);
+  return closures;
+}
+
+function getIrDeferredClosureVariableInitialization(
+  identity: string,
+  variables: ReadonlyMap<string, IrNamedVariable>,
+): Readonly<Extract<IrExpression, { kind: 'function' }>> | undefined {
+  return (variables as IrVariableInitializationVariables).deferredClosures?.get(identity);
 }
 
 function assertIrBindingVariableInitialization(

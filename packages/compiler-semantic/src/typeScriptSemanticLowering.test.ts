@@ -1324,6 +1324,202 @@ describe('lowerTypeScriptSource', () => {
     expect(loops[7]?.variable.type).toBeUndefined();
   });
 
+  it('preserves named, renamed, nested, defaulted, computed, and rest object binding evidence', () => {
+    const result = lower(
+      'object-bindings.ts',
+      `
+        type Box<T> = { value?: T; nested: { text: string }; other: boolean };
+        const key = 'other';
+        export const { value: renamed = 1, nested: { text }, [key]: computed, ...rest }: Box<number> = {
+          nested: { text: 'flight' },
+          other: true,
+        };
+      `,
+    );
+    const declaration = result.module.declarations.find(
+      (item) => item.kind === 'variable' && 'pattern' in item && item.pattern.kind === 'object',
+    );
+    if (declaration?.kind !== 'variable' || !('pattern' in declaration) || declaration.pattern.kind !== 'object') {
+      throw new Error('Expected object binding declaration');
+    }
+
+    expect(result.diagnostics).toEqual([]);
+    expect(declaration.pattern).toMatchObject({
+      kind: 'object',
+      properties: [
+        {
+          initializer: { kind: 'literal', value: 1 },
+          key: { kind: 'named', name: 'value' },
+          pattern: { binding: { name: 'renamed' }, kind: 'binding', type: { kind: 'primitive', name: 'number' } },
+        },
+        {
+          key: { kind: 'named', name: 'nested' },
+          pattern: {
+            kind: 'object',
+            properties: [
+              {
+                key: { kind: 'named', name: 'text' },
+                pattern: { binding: { name: 'text' }, type: { kind: 'primitive', name: 'string' } },
+              },
+            ],
+          },
+        },
+        {
+          key: { expression: { kind: 'identifier' }, kind: 'computed' },
+          pattern: { binding: { name: 'computed' }, kind: 'binding' },
+        },
+      ],
+      rest: {
+        binding: { name: 'rest' },
+        kind: 'binding',
+        type: { kind: 'unknown', source: 'object' },
+      },
+      scope: 'module',
+    });
+  });
+
+  it('lowers destructured parameters to typed carrier parameters and ordered entry bindings', () => {
+    const result = lower(
+      'parameter-bindings.ts',
+      `
+        type Shape = { value?: number; nested: { text: string } };
+        export function read(
+          { value = 1, nested: { text } }: Shape,
+          [first, ...tail]: [number, string],
+        ): string { return text + value + first + tail[0]; }
+        export const concise = ({ value }: { value: number }): number => value + 1;
+      `,
+    );
+    const read = result.module.declarations.find(
+      (declaration) => declaration.kind === 'function' && declaration.binding.name === 'read',
+    );
+    const concise = result.module.declarations.find(
+      (declaration) =>
+        declaration.kind === 'variable' && 'binding' in declaration && declaration.binding.name === 'concise',
+    );
+    if (read?.kind !== 'function' || concise?.kind !== 'variable' || concise.initializer?.kind !== 'function') {
+      throw new Error('Expected destructured parameter functions');
+    }
+
+    expect(result.diagnostics).toEqual([]);
+    expect(read.parameters).toMatchObject([
+      { binding: { kind: 'parameter', name: 'parameterPatternValue' }, type: { kind: 'named' } },
+      { binding: { kind: 'parameter', name: 'parameterPatternValue' }, type: { kind: 'tuple' } },
+    ]);
+    expect(read.parameters[0]?.binding.id).not.toBe(read.parameters[1]?.binding.id);
+    expect(read.body).toMatchObject([
+      {
+        declarations: [
+          {
+            pattern: {
+              kind: 'object',
+              properties: [
+                { key: { name: 'value' }, pattern: { binding: { name: 'value' } } },
+                { key: { name: 'nested' }, pattern: { kind: 'object' } },
+              ],
+              scope: 'function',
+            },
+          },
+        ],
+        kind: 'variable',
+      },
+      {
+        declarations: [{ pattern: { kind: 'array', scope: 'function' } }],
+        kind: 'variable',
+      },
+      { kind: 'return' },
+    ]);
+    expect(concise.initializer.expression).toBeUndefined();
+    expect(concise.initializer.body).toMatchObject([
+      { declarations: [{ pattern: { kind: 'object' } }], kind: 'variable' },
+      { expression: { kind: 'binary' }, kind: 'return' },
+    ]);
+  });
+
+  it('normalizes statement destructuring assignments through single-evaluation projection blocks', () => {
+    const result = lower(
+      'assignment-bindings.ts',
+      `
+        export function assign(
+          tuple: [number, { name?: string }, boolean],
+          record: { count: number },
+        ): string {
+          let first = 0;
+          let name = '';
+          let tail: [boolean] = [false];
+          let count = 0;
+          [first, { name = 'flight' }, ...tail] = tuple;
+          ({ count } = record);
+          return name + first + tail[0] + count;
+        }
+      `,
+    );
+    const declaration = result.module.declarations[0];
+    if (declaration?.kind !== 'function') throw new Error('Expected assignment function');
+    const arrayBlock = declaration.body[4];
+    const objectBlock = declaration.body[5];
+    if (arrayBlock?.kind !== 'block' || objectBlock?.kind !== 'block') {
+      throw new Error('Expected destructuring projection blocks');
+    }
+
+    expect(result.diagnostics).toEqual([]);
+    expect(arrayBlock.statements).toMatchObject([
+      {
+        declarations: [
+          {
+            binding: { name: 'destructuringAssignmentValue' },
+            initializer: { kind: 'identifier' },
+            type: { kind: 'tuple' },
+          },
+        ],
+        kind: 'variable',
+      },
+      { expression: { left: { reference: { binding: { name: 'first' } } }, right: { kind: 'element' } } },
+      { declarations: [{ binding: { name: 'destructuringAssignmentValue' } }], kind: 'variable' },
+      {
+        expression: {
+          left: { reference: { binding: { name: 'name' } } },
+          right: { kind: 'undefinedDefault' },
+        },
+      },
+      { expression: { left: { reference: { binding: { name: 'tail' } } }, right: { kind: 'tupleRest' } } },
+    ]);
+    expect(objectBlock.statements).toMatchObject([
+      { declarations: [{ binding: { name: 'destructuringAssignmentValue' } }], kind: 'variable' },
+      {
+        expression: {
+          left: { reference: { binding: { name: 'count' } } },
+          right: { kind: 'property', name: 'count' },
+        },
+      },
+    ]);
+    expect(
+      new Set(
+        arrayBlock.statements.flatMap((statement) =>
+          statement.kind === 'variable'
+            ? statement.declarations.flatMap((variable) => ('binding' in variable ? [variable.binding.id] : []))
+            : [],
+        ),
+      ).size,
+    ).toBe(2);
+  });
+
+  it('refuses destructuring assignment values until completion values are modeled', () => {
+    const result = lower(
+      'assignment-value.ts',
+      'let value = 0; const tuple: [number] = [1]; export const rejected = ([value] = tuple); export const kept = value;',
+    );
+
+    expect(result.diagnostics.map((diagnostic) => diagnostic.message)).toContain(
+      'destructuring assignment value contexts require completion-value lowering',
+    );
+    expect(result.module.declarations).toMatchObject([
+      { binding: { name: 'value' } },
+      { binding: { name: 'tuple' } },
+      { binding: { name: 'kept' } },
+    ]);
+  });
+
   it('distinguishes contextual fixed tuple expressions from open array expressions', () => {
     const result = lower(
       'tuple-expressions.ts',
@@ -1414,6 +1610,50 @@ describe('lowerTypeScriptSource', () => {
     });
   });
 
+  it('propagates generic tuple return contexts through functions, methods, closures, and async values', () => {
+    const result = lower(
+      'return-context.ts',
+      `
+        type Pair<T> = [T, string];
+        export function direct(): Pair<number> { return [1, 'direct']; }
+        export async function asynchronous(): Promise<Pair<number>> { return [2, 'async']; }
+        export class Factory { create(): Pair<number> { return [3, 'method']; } }
+        export const block = (): Pair<number> => { return [4, 'block']; };
+        export const concise = (): Pair<number> => [5, 'concise'];
+        export const holder = { create(): Pair<number> { return [6, 'object']; } };
+      `,
+    );
+    const initializers = result.module.declarations
+      .filter((declaration) => declaration.kind === 'variable' && 'binding' in declaration)
+      .map((declaration) => declaration.initializer);
+    const direct = result.module.declarations.find(
+      (declaration) => declaration.kind === 'function' && declaration.binding.name === 'direct',
+    );
+    const asynchronous = result.module.declarations.find(
+      (declaration) => declaration.kind === 'function' && declaration.binding.name === 'asynchronous',
+    );
+    const factory = result.module.declarations.find((declaration) => declaration.kind === 'class');
+    if (direct?.kind !== 'function' || asynchronous?.kind !== 'function' || factory?.kind !== 'class') {
+      throw new Error('Expected contextual return declarations');
+    }
+    const block = initializers[0];
+    const concise = initializers[1];
+    const holder = initializers[2];
+    const holderMember = holder?.kind === 'object' ? holder.members[0] : undefined;
+    const holderFunction = holderMember?.kind === 'property' ? holderMember.value : undefined;
+
+    expect(result.diagnostics).toEqual([]);
+    expect(direct.body[0]).toMatchObject({ expression: { kind: 'tuple' }, kind: 'return' });
+    expect(asynchronous.body[0]).toMatchObject({ expression: { kind: 'tuple' }, kind: 'return' });
+    expect(factory.methods[0]?.body[0]).toMatchObject({ expression: { kind: 'tuple' }, kind: 'return' });
+    expect(block).toMatchObject({ body: [{ expression: { kind: 'tuple' }, kind: 'return' }], kind: 'function' });
+    expect(concise).toMatchObject({ expression: { kind: 'tuple' }, kind: 'function' });
+    expect(holderFunction).toMatchObject({
+      body: [{ expression: { kind: 'tuple' }, kind: 'return' }],
+      kind: 'function',
+    });
+  });
+
   it.each([
     ['contextual tuple expression rest at index 1 is not represented yet', '[number, ...number[]]', '[1, 2]'],
     ['contextual tuple expression has more values than its fixed tuple type', '[number]', '[1, 2]'],
@@ -1439,18 +1679,23 @@ describe('lowerTypeScriptSource', () => {
     expect(result.module.declarations).toMatchObject([{ binding: { name: 'values' } }, { binding: { name: 'kept' } }]);
   });
 
-  it('diagnoses object and invalid rest binding patterns while continuing with later declarations', () => {
+  it('accepts object bindings and diagnoses invalid rest patterns while continuing with later declarations', () => {
     const object = lower(
       'object-bindings.ts',
       'const { rejected } = { rejected: 1 }; const [kept] = [2]; export { kept as retained };',
     );
     const rest = lower('rest-binding.ts', 'const [...values = []] = [];');
 
-    expect(object.diagnostics.map((diagnostic) => diagnostic.message)).toEqual([
-      'object binding patterns are not represented in the neutral IR yet',
-    ]);
-    expect(object.module.declarations).toHaveLength(1);
+    expect(object.diagnostics).toEqual([]);
+    expect(object.module.declarations).toHaveLength(2);
     expect(object.module.declarations[0]).toMatchObject({
+      kind: 'variable',
+      pattern: {
+        kind: 'object',
+        properties: [{ key: { name: 'rejected' }, pattern: { binding: { name: 'rejected' } } }],
+      },
+    });
+    expect(object.module.declarations[1]).toMatchObject({
       kind: 'variable',
       pattern: {
         elements: [{ pattern: { binding: { name: 'kept' }, kind: 'binding' } }],

@@ -844,6 +844,28 @@ function visitBindingPattern(
       );
       if (pattern.type) visitType(pattern.type, `${path}.type`, state);
       break;
+    case 'object':
+      validateSourceOrigin(pattern, path, 'invalid-binding-origin', 'binding pattern', state);
+      if (!scopes.includes(pattern.scope)) {
+        addFailure('invalid-binding-introduction', path, `binding pattern scope must be ${scopes.join(' or ')}`, state);
+      }
+      pattern.properties.forEach((property, index) => {
+        const propertyPath = `${path}.properties[${String(index)}]`;
+        if (property.key.kind === 'computed') {
+          visitExpression(property.key.expression, `${propertyPath}.key.expression`, state);
+        } else if (property.key.name.length === 0) {
+          addFailure('invalid-node-shape', `${propertyPath}.key.name`, 'object binding key must be nonempty', state);
+        }
+        visitBindingPattern(property.pattern, `${propertyPath}.pattern`, [pattern.scope], state);
+        if (property.initializer) visitExpression(property.initializer, `${propertyPath}.initializer`, state);
+      });
+      if (pattern.rest) {
+        if (pattern.rest.kind !== 'binding') {
+          addFailure('invalid-node-shape', `${path}.rest`, 'object binding rest must introduce one binding', state);
+        }
+        visitBindingPattern(pattern.rest, `${path}.rest`, [pattern.scope], state);
+      }
+      break;
     default:
       addUnknownKind(pattern, path, state);
   }

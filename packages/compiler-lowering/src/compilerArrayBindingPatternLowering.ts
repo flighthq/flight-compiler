@@ -196,6 +196,14 @@ function lowerIrArrayBindingPattern(
         },
       ];
     }
+    if (element.pattern.kind !== 'array') {
+      throw createCompilerLoweringFailure(
+        'unsupported-ir',
+        compilerLoweringPassNameArrayBindingPattern,
+        element.pattern,
+        'nested object binding requires object binding normalization before array binding normalization',
+      );
+    }
     const temporaryBinding = createIrArrayBindingPatternTemporary(element.pattern, elementPath);
     const temporary: LoweredArrayBindingVariable = {
       synthetic: true,
@@ -254,6 +262,14 @@ function lowerIrArrayBindingPattern(
         },
       },
     ];
+  }
+  if (pattern.rest.kind !== 'array') {
+    throw createCompilerLoweringFailure(
+      'unsupported-ir',
+      compilerLoweringPassNameArrayBindingPattern,
+      pattern.rest,
+      'nested object binding rest requires object binding normalization before array binding normalization',
+    );
   }
   const restPath = `${path}.rest`;
   const temporaryBinding = createIrArrayBindingPatternTemporary(pattern.rest, restPath);

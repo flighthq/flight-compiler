@@ -33,6 +33,7 @@ import type {
   IrInterfaceDeclaration,
   IrIndexedReceiver,
   IrObjectMember,
+  IrObjectBindingPatternProperty,
   IrObjectTypeProperty,
   IrOperatorOperandDomains,
   IrOperatorValueDomain,
@@ -63,6 +64,7 @@ interface LoweringContext {
   checker: ts.TypeChecker;
   diagnostics: CompilerDiagnostic[];
   options: Readonly<LowerTypeScriptSourceOptions>;
+  returnTypes: IrType[];
   sourceFile: ts.SourceFile;
   typeBindings: Map<ts.Symbol, IrTypeBindingIdentity>;
 }
@@ -90,6 +92,7 @@ export function lowerTypeScriptSource(
     checker: analysis.checker,
     diagnostics: [],
     options,
+    returnTypes: [],
     sourceFile: analysis.sourceFile,
     typeBindings: new Map(),
   };
@@ -239,10 +242,18 @@ function lowerClass(node: ts.ClassDeclaration, context: LoweringContext): IrClas
     if (ts.isMethodDeclaration(member)) {
       if (!member.body) unsupported(member, 'class method overloads are not represented yet');
       const signature = lowerFunctionSignature(member, context);
+      const parameterEntries = lowerParameterBindingEntries(member.parameters, signature.parameters, context);
       methods.push({
         ...signature,
         async: hasModifier(member, ts.SyntaxKind.AsyncKeyword),
-        body: lowerStatementList(member.body.statements, context),
+        body: [
+          ...parameterEntries,
+          ...lowerStatementListWithTypeScriptReturnType(
+            member.body.statements,
+            getTypeScriptFunctionReturnValueType(member, signature.returns, context),
+            context,
+          ),
+        ],
         name: propertyName(member.name, context),
         static: hasModifier(member, ts.SyntaxKind.StaticKeyword),
         visibility: visibility(member),
@@ -255,14 +266,18 @@ function lowerClass(node: ts.ClassDeclaration, context: LoweringContext): IrClas
   const implementsClause = node.heritageClauses?.find((clause) => clause.token === ts.SyntaxKind.ImplementsKeyword);
   if (extendsClause && extendsClause.types.length !== 1)
     unsupported(extendsClause, 'classes must extend one base type');
+  const constructorParameters = constructor?.parameters.map((parameter) => lowerParameter(parameter, context));
   return {
     abstract: hasModifier(node, ts.SyntaxKind.AbstractKeyword),
     binding: lowerBindingIdentity(node.name!, context),
     ...(constructor
       ? {
           classConstructor: {
-            body: constructor.body ? lowerStatementList(constructor.body.statements, context) : [],
-            parameters: constructor.parameters.map((parameter) => lowerParameter(parameter, context)),
+            body: [
+              ...lowerParameterBindingEntries(constructor.parameters, constructorParameters!, context),
+              ...(constructor.body ? lowerStatementList(constructor.body.statements, context) : []),
+            ],
+            parameters: constructorParameters!,
           },
         }
       : {}),
@@ -460,6 +475,12 @@ function lowerExpression(
   }
   if (ts.isBinaryExpression(node)) {
     if (isAssignmentOperator(node.operatorToken.kind)) {
+      if (
+        node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+        (ts.isArrayLiteralExpression(node.left) || ts.isObjectLiteralExpression(node.left))
+      ) {
+        unsupported(node, 'destructuring assignment value contexts require completion-value lowering');
+      }
       return {
         kind: 'assignment',
         left: lowerExpression(node.left, context),
@@ -514,11 +535,25 @@ function lowerExpression(
   }
   if (ts.isArrowFunction(node) || ts.isFunctionExpression(node)) {
     const signature = lowerFunctionSignature(node, context);
+    const returnType = getTypeScriptFunctionReturnValueType(node, signature.returns, context);
+    const parameterEntries = lowerParameterBindingEntries(node.parameters, signature.parameters, context);
     return {
       async: hasModifier(node, ts.SyntaxKind.AsyncKeyword),
       ...(ts.isBlock(node.body)
-        ? { body: lowerStatementList(node.body.statements, context) }
-        : { body: [], expression: lowerExpression(node.body, context) }),
+        ? {
+            body: [
+              ...parameterEntries,
+              ...lowerStatementListWithTypeScriptReturnType(node.body.statements, returnType, context),
+            ],
+          }
+        : parameterEntries.length === 0
+          ? { body: [], expression: lowerExpression(node.body, context, returnType) }
+          : {
+              body: [
+                ...parameterEntries,
+                { expression: lowerExpression(node.body, context, returnType), kind: 'return' },
+              ],
+            }),
       kind: 'function',
       ...(node.name ? { binding: lowerBindingIdentity(node.name, context) } : {}),
       ...signature,
@@ -752,15 +787,24 @@ function lowerFunction(
   context: LoweringContext,
 ): IrFunctionDeclaration {
   if (!node.body) unsupported(node, 'function declaration requires a body');
+  const signature = lowerFunctionSignature(node, context);
+  const parameterEntries = lowerParameterBindingEntries(node.parameters, signature.parameters, context);
   return {
     async: hasModifier(node, ts.SyntaxKind.AsyncKeyword),
     binding: lowerBindingIdentity(node.name!, context),
-    body: lowerStatementList(node.body.statements, context),
+    body: [
+      ...parameterEntries,
+      ...lowerStatementListWithTypeScriptReturnType(
+        node.body.statements,
+        getTypeScriptFunctionReturnValueType(node, signature.returns, context),
+        context,
+      ),
+    ],
     exported: isExported(node),
     kind: 'function',
     origin: origin(node, context),
     overloads: [...overloads],
-    ...lowerFunctionSignature(node, context),
+    ...signature,
   };
 }
 
@@ -772,6 +816,21 @@ function lowerFunctionSignature(node: ts.SignatureDeclaration, context: Lowering
     returns: node.type ? lowerType(node.type, context) : { kind: 'unknown', source: 'any' },
     typeParameters: lowerTypeParameters(node.typeParameters, context),
   };
+}
+
+function getTypeScriptFunctionReturnValueType(
+  node: ts.SignatureDeclaration,
+  fallback: Readonly<IrType>,
+  context: LoweringContext,
+): IrType {
+  let type = node.type;
+  if (type && hasModifier(node, ts.SyntaxKind.AsyncKeyword) && ts.isTypeReferenceNode(type)) {
+    const parts = getTypeNameNodeParts(type.typeName);
+    if (parts?.root.text === 'Promise' && parts.path.length === 0 && type.typeArguments?.length === 1) {
+      type = type.typeArguments[0];
+    }
+  }
+  return type ? lowerTypeScriptTypeNodeEvidence(type, context) : fallback;
 }
 
 function lowerFunctionType(
@@ -863,12 +922,20 @@ function lowerObjectMember(node: ts.ObjectLiteralElementLike, context: LoweringC
   if (ts.isMethodDeclaration(node)) {
     if (!node.body) unsupported(node, 'object methods require a body');
     const signature = lowerFunctionSignature(node, context);
+    const parameterEntries = lowerParameterBindingEntries(node.parameters, signature.parameters, context);
     return {
       kind: 'property',
       name: propertyName(node.name, context),
       value: {
         async: hasModifier(node, ts.SyntaxKind.AsyncKeyword),
-        body: lowerStatementList(node.body.statements, context),
+        body: [
+          ...parameterEntries,
+          ...lowerStatementListWithTypeScriptReturnType(
+            node.body.statements,
+            getTypeScriptFunctionReturnValueType(node, signature.returns, context),
+            context,
+          ),
+        ],
         kind: 'function',
         ...signature,
       },
@@ -877,12 +944,57 @@ function lowerObjectMember(node: ts.ObjectLiteralElementLike, context: LoweringC
   unsupported(node, `unsupported object member ${ts.SyntaxKind[node.kind]}`);
 }
 
+function createTypeScriptParameterPatternBinding(
+  node: ts.ParameterDeclaration,
+  context: LoweringContext,
+): IrBindingIdentity {
+  const source = relativeSource(context.sourceFile.fileName, context.options.upstreamDirectory);
+  return {
+    ...origin(node.name, context),
+    id: `binding:${JSON.stringify([context.options.packageName, source, `parameter-pattern:${String(node.name.getStart(context.sourceFile))}`])}`,
+    kind: 'parameter',
+    name: 'parameterPatternValue',
+    scope: 'function',
+    space: 'value',
+  };
+}
+
+function lowerParameterBindingEntries(
+  nodes: readonly ts.ParameterDeclaration[],
+  parameters: readonly IrParameter[],
+  context: LoweringContext,
+): IrStatement[] {
+  const sourceNodes = nodes.filter((parameter) => !isThisParameter(parameter));
+  return sourceNodes.flatMap((node, index): IrStatement[] => {
+    if (ts.isIdentifier(node.name)) return [];
+    const parameter = parameters[index]!;
+    const bindingType = node.type ? lowerTypeScriptTypeNodeEvidence(node.type, context) : parameter.type;
+    return [
+      {
+        declarations: [
+          {
+            initializer: {
+              kind: 'identifier',
+              reference: { binding: parameter.binding, kind: 'binding' },
+            },
+            mutable: false,
+            pattern: lowerBindingPattern(node.name, context, bindingType),
+            type: bindingType,
+          },
+        ],
+        kind: 'variable',
+      },
+    ];
+  });
+}
+
 function lowerParameter(node: ts.ParameterDeclaration, context: LoweringContext): IrParameter {
-  if (!ts.isIdentifier(node.name)) unsupported(node.name, 'destructured parameters are not represented yet');
   const typeParameter = lowerFunctionTypeParameter(node, context);
-  addTypeScriptBindingTypeEvidence(node.name, typeParameter.type, context);
+  if (ts.isIdentifier(node.name)) addTypeScriptBindingTypeEvidence(node.name, typeParameter.type, context);
   const parameter = {
-    binding: lowerBindingIdentity(node.name, context),
+    binding: ts.isIdentifier(node.name)
+      ? lowerBindingIdentity(node.name, context)
+      : createTypeScriptParameterPatternBinding(node, context),
     type: typeParameter.type,
   };
   if (typeParameter.rest) return { ...parameter, optional: false, rest: true };
@@ -898,13 +1010,12 @@ function lowerParameter(node: ts.ParameterDeclaration, context: LoweringContext)
 }
 
 function lowerFunctionTypeParameter(node: ts.ParameterDeclaration, context: LoweringContext): IrFunctionTypeParameter {
-  if (!ts.isIdentifier(node.name)) unsupported(node.name, 'destructured parameters are not represented yet');
   const type: IrType = node.type
     ? lowerType(node.type, context)
     : node.initializer
       ? inferInitializerType(node.initializer, context)
       : { kind: 'unknown', source: 'any' };
-  const value = { name: node.name.text, type };
+  const value = { name: ts.isIdentifier(node.name) ? node.name.text : 'parameterPatternValue', type };
   if (node.dotDotDotToken) {
     if (node.questionToken || node.initializer) unsupported(node, 'rest parameters cannot be optional or defaulted');
     return { ...value, optional: false, rest: true };
@@ -916,10 +1027,16 @@ function lowerFunctionTypeParameter(node: ts.ParameterDeclaration, context: Lowe
 
 function lowerStatement(node: ts.Statement, context: LoweringContext): IrStatement {
   if (ts.isBlock(node)) return { kind: 'block', statements: lowerStatementList(node.statements, context) };
-  if (ts.isExpressionStatement(node))
+  if (ts.isExpressionStatement(node)) {
+    const destructuring = lowerTypeScriptDestructuringAssignmentStatement(node.expression, context);
+    if (destructuring) return destructuring;
     return { expression: lowerExpression(node.expression, context), kind: 'expression' };
+  }
   if (ts.isReturnStatement(node)) {
-    return { ...(node.expression ? { expression: lowerExpression(node.expression, context) } : {}), kind: 'return' };
+    return {
+      ...(node.expression ? { expression: lowerExpression(node.expression, context, context.returnTypes.at(-1)) } : {}),
+      kind: 'return',
+    };
   }
   if (ts.isVariableStatement(node))
     return { declarations: lowerVariables(node.declarationList, context), kind: 'variable' };
@@ -1020,8 +1137,217 @@ function lowerStatement(node: ts.Statement, context: LoweringContext): IrStateme
   unsupported(node, `unsupported statement ${ts.SyntaxKind[node.kind]}`);
 }
 
+function lowerTypeScriptDestructuringAssignmentStatement(
+  expression: ts.Expression,
+  context: LoweringContext,
+): IrStatement | undefined {
+  const unwrapped = unwrapTypeScriptParenthesizedExpression(expression);
+  if (
+    !ts.isBinaryExpression(unwrapped) ||
+    unwrapped.operatorToken.kind !== ts.SyntaxKind.EqualsToken ||
+    (!ts.isArrayLiteralExpression(unwrapped.left) && !ts.isObjectLiteralExpression(unwrapped.left))
+  ) {
+    return undefined;
+  }
+  const sourceType = lowerTypeScriptExpressionTypeEvidence(unwrapped.right, context);
+  return {
+    kind: 'block',
+    statements: lowerTypeScriptDestructuringAssignmentTarget(
+      unwrapped.left,
+      lowerExpression(unwrapped.right, context, sourceType),
+      sourceType,
+      'root',
+      context,
+    ),
+  };
+}
+
+function lowerTypeScriptDestructuringAssignmentTarget(
+  target: ts.Expression,
+  source: IrExpression,
+  sourceType: Readonly<IrType> | undefined,
+  path: string,
+  context: LoweringContext,
+): IrStatement[] {
+  const unwrapped = unwrapTypeScriptParenthesizedExpression(target);
+  if (ts.isBinaryExpression(unwrapped) && unwrapped.operatorToken.kind === ts.SyntaxKind.EqualsToken) {
+    return lowerTypeScriptDestructuringAssignmentTarget(
+      unwrapped.left,
+      {
+        fallback: lowerExpression(unwrapped.right, context, removeIrTypeBindingPatternUndefined(sourceType)),
+        kind: 'undefinedDefault',
+        value: source,
+      },
+      removeIrTypeBindingPatternUndefined(sourceType),
+      `${path}.default`,
+      context,
+    );
+  }
+  if (ts.isArrayLiteralExpression(unwrapped) || ts.isObjectLiteralExpression(unwrapped)) {
+    const binding = createTypeScriptDestructuringAssignmentBinding(unwrapped, path, context);
+    const statements: IrStatement[] = [
+      {
+        declarations: [{ binding, initializer: source, mutable: false, ...(sourceType ? { type: sourceType } : {}) }],
+        kind: 'variable',
+      },
+    ];
+    const object: IrExpression = { kind: 'identifier', reference: { binding, kind: 'binding' } };
+    if (ts.isArrayLiteralExpression(unwrapped)) {
+      unwrapped.elements.forEach((element, index) => {
+        if (ts.isOmittedExpression(element)) return;
+        const elementType = sourceType?.kind === 'tuple' ? sourceType.elements[index]?.type : undefined;
+        if (ts.isSpreadElement(element)) {
+          if (index !== unwrapped.elements.length - 1) {
+            unsupported(element, 'destructuring assignment array rest must be final');
+          }
+          if (sourceType?.kind !== 'tuple') {
+            unsupported(element, 'destructuring assignment array rest requires a statically known tuple');
+          }
+          statements.push(
+            ...lowerTypeScriptDestructuringAssignmentTarget(
+              element.expression,
+              { kind: 'tupleRest', object, start: index },
+              getIrTupleTypeBindingPatternRest(sourceType, index),
+              `${path}.rest`,
+              context,
+            ),
+          );
+          return;
+        }
+        statements.push(
+          ...lowerTypeScriptDestructuringAssignmentTarget(
+            element,
+            {
+              index: { kind: 'literal', value: index },
+              kind: 'element',
+              object,
+              optional: false,
+              semantics: { receivers: [sourceType?.kind === 'tuple' ? 'tuple' : 'unknown'] },
+            },
+            elementType,
+            `${path}.elements[${String(index)}]`,
+            context,
+          ),
+        );
+      });
+      return statements;
+    }
+    unwrapped.properties.forEach((property, index) => {
+      if (ts.isSpreadAssignment(property)) {
+        unsupported(property, 'object rest destructuring assignment requires object-rest lowering');
+      }
+      if (
+        ts.isMethodDeclaration(property) ||
+        ts.isGetAccessorDeclaration(property) ||
+        ts.isSetAccessorDeclaration(property)
+      ) {
+        unsupported(property, 'destructuring assignment cannot contain methods or accessors');
+      }
+      const name = property.name;
+      const keyName = ts.isComputedPropertyName(name) ? undefined : propertyName(name, context);
+      const propertyType = keyName ? getIrObjectTypeBindingPatternProperty(sourceType, keyName) : undefined;
+      const propertySource: IrExpression = ts.isComputedPropertyName(name)
+        ? {
+            index: lowerExpression(name.expression, context),
+            kind: 'element',
+            object,
+            optional: false,
+            semantics: { receivers: ['object'] },
+          }
+        : { kind: 'property', name: keyName!, object, optional: false };
+      if (ts.isShorthandPropertyAssignment(property)) {
+        const value = property.objectAssignmentInitializer
+          ? {
+              fallback: lowerExpression(
+                property.objectAssignmentInitializer,
+                context,
+                removeIrTypeBindingPatternUndefined(propertyType),
+              ),
+              kind: 'undefinedDefault' as const,
+              value: propertySource,
+            }
+          : propertySource;
+        statements.push(
+          ...lowerTypeScriptDestructuringAssignmentTarget(
+            property.name,
+            value,
+            property.objectAssignmentInitializer ? removeIrTypeBindingPatternUndefined(propertyType) : propertyType,
+            `${path}.properties[${String(index)}]`,
+            context,
+          ),
+        );
+        return;
+      }
+      statements.push(
+        ...lowerTypeScriptDestructuringAssignmentTarget(
+          property.initializer,
+          propertySource,
+          propertyType,
+          `${path}.properties[${String(index)}]`,
+          context,
+        ),
+      );
+    });
+    return statements;
+  }
+  return [
+    {
+      expression: {
+        kind: 'assignment',
+        left: lowerExpression(unwrapped, context),
+        operator: '=',
+        right: source,
+        semantics: {
+          left: lowerOperatorOperandDomains(unwrapped, context),
+          result: getIrTypeOperatorValueDomain(sourceType ?? { kind: 'unknown', source: 'unknown' }),
+          right: {
+            declared: getIrTypeOperatorValueDomain(sourceType ?? { kind: 'unknown', source: 'unknown' }),
+            flow: getIrTypeOperatorValueDomain(sourceType ?? { kind: 'unknown', source: 'unknown' }),
+          },
+        },
+      },
+      kind: 'expression',
+    },
+  ];
+}
+
+function createTypeScriptDestructuringAssignmentBinding(
+  node: ts.ArrayLiteralExpression | ts.ObjectLiteralExpression,
+  path: string,
+  context: LoweringContext,
+): IrBindingIdentity {
+  const source = relativeSource(context.sourceFile.fileName, context.options.upstreamDirectory);
+  return {
+    ...origin(node, context),
+    id: `binding:${JSON.stringify([context.options.packageName, source, `destructuring-assignment:${String(node.getStart(context.sourceFile))}:${path}`])}`,
+    kind: 'variable',
+    name: 'destructuringAssignmentValue',
+    scope: 'block',
+    space: 'value',
+  };
+}
+
+function unwrapTypeScriptParenthesizedExpression(expression: ts.Expression): ts.Expression {
+  let current = expression;
+  while (ts.isParenthesizedExpression(current)) current = current.expression;
+  return current;
+}
+
 function lowerStatementList(nodes: readonly ts.Statement[], context: LoweringContext): IrStatement[] {
   return nodes.map((node) => lowerStatement(node, context));
+}
+
+function lowerStatementListWithTypeScriptReturnType(
+  nodes: readonly ts.Statement[],
+  returnType: Readonly<IrType>,
+  context: LoweringContext,
+): IrStatement[] {
+  context.returnTypes.push(returnType);
+  try {
+    return lowerStatementList(nodes, context);
+  } finally {
+    context.returnTypes.pop();
+  }
 }
 
 function lowerType(node: ts.TypeNode, context: LoweringContext): IrType {
@@ -1515,6 +1841,31 @@ function lowerTypeScriptTypeNodeEvidence(
       ? { kind: 'union', types: [types[0]!, types[1]!, ...types.slice(2)] }
       : { kind: 'intersection', types: [types[0]!, types[1]!, ...types.slice(2)] };
   }
+  if (ts.isTypeLiteralNode(type)) {
+    return {
+      kind: 'object',
+      properties: type.members.map((member): IrObjectTypeProperty => {
+        if (ts.isPropertySignature(member)) {
+          if (!member.type) unsupported(member, 'property signature requires a type');
+          return {
+            name: propertyName(member.name, context),
+            optional: member.questionToken !== undefined,
+            readonly: hasModifier(member, ts.SyntaxKind.ReadonlyKeyword),
+            type: lowerTypeScriptTypeNodeEvidence(member.type, context, seen, substitutions),
+          };
+        }
+        if (ts.isMethodSignature(member)) {
+          return {
+            name: propertyName(member.name, context),
+            optional: member.questionToken !== undefined,
+            readonly: false,
+            type: lowerFunctionType(member, context),
+          };
+        }
+        return unsupported(member, 'unsupported object type member');
+      }),
+    };
+  }
   return lowerType(type, context);
 }
 
@@ -1532,7 +1883,48 @@ function lowerBindingPattern(
     };
   }
   if (ts.isObjectBindingPattern(node)) {
-    return unsupported(node, 'object binding patterns are not represented in the neutral IR yet');
+    const properties: IrObjectBindingPatternProperty[] = [];
+    const excludedNames: string[] = [];
+    let hasComputedKey = false;
+    let rest: IrBindingPattern | undefined;
+    node.elements.forEach((element, index) => {
+      if (element.dotDotDotToken) {
+        if (index !== node.elements.length - 1) unsupported(element, 'object binding rest must be the final element');
+        if (element.propertyName) unsupported(element, 'object binding rest cannot have a property name');
+        if (element.initializer) unsupported(element, 'object binding rest cannot have a default initializer');
+        rest = lowerBindingPattern(
+          element.name,
+          context,
+          getIrObjectTypeBindingPatternRest(sourceType, excludedNames, hasComputedKey),
+        );
+        return;
+      }
+      const propertyNode =
+        element.propertyName ??
+        (ts.isIdentifier(element.name)
+          ? element.name
+          : unsupported(element.name, 'nested object binding requires an explicit property name'));
+      const key = ts.isComputedPropertyName(propertyNode)
+        ? { expression: lowerExpression(propertyNode.expression, context), kind: 'computed' as const }
+        : { kind: 'named' as const, name: propertyName(propertyNode, context) };
+      const propertyType =
+        key.kind === 'named' ? getIrObjectTypeBindingPatternProperty(sourceType, key.name) : undefined;
+      if (key.kind === 'named') excludedNames.push(key.name);
+      else hasComputedKey = true;
+      const initializerType = element.initializer ? removeIrTypeBindingPatternUndefined(propertyType) : propertyType;
+      properties.push({
+        ...(element.initializer ? { initializer: lowerExpression(element.initializer, context, initializerType) } : {}),
+        key,
+        pattern: lowerBindingPattern(element.name, context, initializerType),
+      });
+    });
+    return {
+      ...origin(node, context),
+      kind: 'object',
+      properties,
+      ...(rest ? { rest } : {}),
+      scope: bindingPatternScope(node),
+    };
   }
   const elements: Array<IrBindingPatternElement | undefined> = [];
   let rest: IrBindingPattern | undefined;
@@ -1575,6 +1967,39 @@ function getIrTupleTypeBindingPatternRest(sourceType: Readonly<IrType> | undefin
   };
 }
 
+function getIrObjectTypeBindingPatternProperty(
+  sourceType: Readonly<IrType> | undefined,
+  name: string,
+): IrType | undefined {
+  if (sourceType?.kind !== 'object') return undefined;
+  const property = sourceType.properties.find((candidate) => candidate.name === name);
+  if (!property) return undefined;
+  return property.optional ? addIrTypeBindingPatternUndefined(property.type) : property.type;
+}
+
+function getIrObjectTypeBindingPatternRest(
+  sourceType: Readonly<IrType> | undefined,
+  excludedNames: readonly string[],
+  hasComputedKey: boolean,
+): IrType | undefined {
+  if (sourceType?.kind !== 'object') return undefined;
+  if (hasComputedKey) return { kind: 'unknown', source: 'object' };
+  const excluded = new Set(excludedNames);
+  return { kind: 'object', properties: sourceType.properties.filter((property) => !excluded.has(property.name)) };
+}
+
+function addIrTypeBindingPatternUndefined(type: Readonly<IrType>): IrType {
+  if (
+    type.kind === 'undefined' ||
+    (type.kind === 'union' && type.types.some((member) => member.kind === 'undefined'))
+  ) {
+    return type;
+  }
+  return type.kind === 'union'
+    ? { kind: 'union', types: [type.types[0], type.types[1], ...type.types.slice(2), { kind: 'undefined' }] }
+    : { kind: 'union', types: [type, { kind: 'undefined' }] };
+}
+
 function removeIrTypeBindingPatternUndefined(type: Readonly<IrType> | undefined): IrType | undefined {
   if (type?.kind !== 'union') return type;
   const retained = type.types.filter((member) => member.kind !== 'undefined');
@@ -1584,11 +2009,12 @@ function removeIrTypeBindingPatternUndefined(type: Readonly<IrType> | undefined)
     : undefined;
 }
 
-function bindingPatternScope(node: ts.ArrayBindingPattern): IrBindingScope {
+function bindingPatternScope(node: ts.BindingPattern): IrBindingScope {
   for (let parent: ts.Node | undefined = node.parent; parent; parent = parent.parent) {
     if (ts.isVariableDeclaration(parent)) return bindingDeclarationScope(parent);
+    if (ts.isParameter(parent)) return 'function';
   }
-  return unsupported(node, 'array binding pattern has no variable declaration owner');
+  return unsupported(node, 'binding pattern has no variable declaration owner');
 }
 
 function lowerVariableStatement(node: ts.VariableStatement, context: LoweringContext): IrVariableDeclaration[] {

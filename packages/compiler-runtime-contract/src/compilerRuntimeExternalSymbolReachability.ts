@@ -340,6 +340,14 @@ function visitBindingPattern(pattern: Readonly<IrBindingPattern>, add: AddExtern
     case 'binding':
       if (pattern.type) visitType(pattern.type, add);
       break;
+    case 'object':
+      pattern.properties.forEach((property) => {
+        if (property.key.kind === 'computed') visitExpression(property.key.expression, add);
+        visitBindingPattern(property.pattern, add);
+        if (property.initializer) visitExpression(property.initializer, add);
+      });
+      if (pattern.rest) visitBindingPattern(pattern.rest, add);
+      break;
     default:
       return assertNeverIr(pattern);
   }

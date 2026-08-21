@@ -162,7 +162,7 @@ describe('compileTypeScriptModules', () => {
   it('throws a tagged diagnostics failure instead of emitting partial output', () => {
     const sourceFile = parseTypeScriptSource(
       '/flight/packages/math/src/destructure.ts',
-      'export function read({ value }: { value: number }): number { return value; }',
+      'export function read(): void { let rest = {}; ({ ...rest } = { value: 1 }); }',
     );
 
     expect(() =>

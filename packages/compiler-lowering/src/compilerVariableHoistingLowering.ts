@@ -308,6 +308,16 @@ function hasIrVariableVariableHoistingResidual(variable: Readonly<IrVariable>): 
 
 function hasIrBindingPatternVariableHoistingResidual(pattern: Readonly<IrBindingPattern>): boolean {
   if (pattern.kind === 'binding') return pattern.binding.scope === 'function';
+  if (pattern.kind === 'object') {
+    return (
+      pattern.properties.some(
+        (property) =>
+          (property.key.kind === 'computed' && hasIrExpressionVariableHoistingResidual(property.key.expression)) ||
+          hasIrBindingPatternVariableHoistingResidual(property.pattern) ||
+          (property.initializer ? hasIrExpressionVariableHoistingResidual(property.initializer) : false),
+      ) || (pattern.rest ? hasIrBindingPatternVariableHoistingResidual(pattern.rest) : false)
+    );
+  }
   return (
     pattern.elements.some(
       (element) =>
@@ -323,6 +333,26 @@ function lowerIrBindingPatternVariableHoisting(
   analysis: VariableHoistingAnalysis,
 ): IrBindingPattern {
   if (pattern.kind === 'binding') return pattern;
+  if (pattern.kind === 'object') {
+    return {
+      ...pattern,
+      properties: pattern.properties.map((property) => ({
+        ...property,
+        ...(property.initializer
+          ? { initializer: lowerIrExpressionVariableHoisting(property.initializer, analysis) }
+          : {}),
+        key:
+          property.key.kind === 'computed'
+            ? {
+                expression: lowerIrExpressionVariableHoisting(property.key.expression, analysis),
+                kind: 'computed',
+              }
+            : property.key,
+        pattern: lowerIrBindingPatternVariableHoisting(property.pattern, analysis),
+      })),
+      ...(pattern.rest ? { rest: lowerIrBindingPatternVariableHoisting(pattern.rest, analysis) } : {}),
+    };
+  }
   return {
     ...pattern,
     elements: pattern.elements.map((element) =>
@@ -830,7 +860,7 @@ function lowerIrVariableVariableHoisting(
 
 function getIrVariableScopeVariableHoisting(variable: Readonly<IrVariable>): string {
   return 'pattern' in variable
-    ? variable.pattern.kind === 'array'
+    ? variable.pattern.kind !== 'binding'
       ? variable.pattern.scope
       : variable.pattern.binding.scope
     : variable.binding.scope;

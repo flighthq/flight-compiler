@@ -231,6 +231,16 @@ function hasIrBindingPatternCStyleForStatement(pattern: Readonly<IrBindingPatter
   if (pattern.kind === 'binding') {
     return false;
   }
+  if (pattern.kind === 'object') {
+    return (
+      pattern.properties.some(
+        (property) =>
+          (property.key.kind === 'computed' && hasIrExpressionCStyleForStatement(property.key.expression)) ||
+          (property.initializer ? hasIrExpressionCStyleForStatement(property.initializer) : false) ||
+          hasIrBindingPatternCStyleForStatement(property.pattern),
+      ) || (pattern.rest ? hasIrBindingPatternCStyleForStatement(pattern.rest) : false)
+    );
+  }
   return (
     pattern.elements.some(
       (element) =>
@@ -619,6 +629,21 @@ function lowerIrBindingPattern(
 ): IrBindingPattern {
   if (pattern.kind === 'binding') {
     return pattern;
+  }
+  if (pattern.kind === 'object') {
+    return {
+      ...pattern,
+      properties: pattern.properties.map((property) => ({
+        ...property,
+        ...(property.initializer ? { initializer: lowerIrExpression(property.initializer, analysis) } : {}),
+        key:
+          property.key.kind === 'computed'
+            ? { expression: lowerIrExpression(property.key.expression, analysis), kind: 'computed' }
+            : property.key,
+        pattern: lowerIrBindingPattern(property.pattern, analysis),
+      })),
+      ...(pattern.rest ? { rest: lowerIrBindingPattern(pattern.rest, analysis) } : {}),
+    };
   }
   return {
     ...pattern,
