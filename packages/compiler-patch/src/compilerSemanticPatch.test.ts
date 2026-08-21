@@ -7,6 +7,7 @@ import type {
   SemanticPatchFailure,
   SemanticPatchFailureCode,
 } from '../../compiler-types/src/index.js';
+import { fingerprintSourceText } from '../../compiler-provenance/src/index.js';
 import { applySemanticPatchSet, defineSemanticPatchSet, isSemanticPatchFailure } from './compilerSemanticPatch.js';
 
 const packageName = '@flighthq/math';
@@ -204,6 +205,62 @@ describe('applySemanticPatchSet', () => {
         patches: [valid, renamePatch('math.clamp.rename', 'again', { kind: 'neutral' })],
       },
       {
+        code: 'invalid-patch-expectation',
+        patches: [{ ...valid, expect: { ...valid.expect, fingerprint: 'sha256:invalid' } }],
+      },
+      {
+        code: 'invalid-patch-expectation',
+        patches: [{ ...valid, expect: null } as unknown as SemanticPatch],
+      },
+      {
+        code: 'invalid-patch-expectation',
+        patches: [{ ...valid, expect: { ...valid.expect, kind: 'invalid' } } as unknown as SemanticPatch],
+      },
+      {
+        code: 'invalid-patch-id',
+        patches: [{ ...valid, id: ' ' }],
+      },
+      {
+        code: 'invalid-patch-id',
+        patches: [undefined as unknown as SemanticPatch],
+      },
+      {
+        code: 'invalid-patch-operation',
+        patches: [{ ...valid, name: ' ', operation: 'rename' }],
+      },
+      {
+        code: 'invalid-patch-operation',
+        patches: [{ ...valid, body: undefined, operation: 'replaceBody' } as unknown as SemanticPatch],
+      },
+      {
+        code: 'invalid-patch-operation',
+        patches: [{ ...valid, operation: 'replaceType', type: null } as unknown as SemanticPatch],
+      },
+      {
+        code: 'invalid-patch-reason',
+        patches: [{ ...valid, reason: '' }],
+      },
+      {
+        code: 'invalid-patch-scope',
+        patches: [{ ...valid, scope: { backend: '', kind: 'backend' } }],
+      },
+      {
+        code: 'invalid-patch-target',
+        patches: [{ ...valid, target: { ...valid.target, exportName: '' } }],
+      },
+      {
+        code: 'invalid-patch-target',
+        patches: [{ ...valid, target: { ...valid.target, packageName: '' } }],
+      },
+      {
+        code: 'invalid-patch-target',
+        patches: [{ ...valid, target: { ...valid.target, source: '' } }],
+      },
+      {
+        code: 'invalid-patch-target',
+        patches: [{ ...valid, target: null } as unknown as SemanticPatch],
+      },
+      {
         code: 'incompatible-patch-operation',
         patches: [
           {
@@ -215,11 +272,11 @@ describe('applySemanticPatchSet', () => {
       },
       {
         code: 'patch-kind-mismatch',
-        patches: [{ ...valid, expect: { fingerprint: 'sha256:clamp', kind: 'typeAlias' } }],
+        patches: [{ ...valid, expect: { ...valid.expect, kind: 'typeAlias' } }],
       },
       {
         code: 'stale-patch-fingerprint',
-        patches: [{ ...valid, expect: { ...valid.expect, fingerprint: 'sha256:stale' } }],
+        patches: [{ ...valid, expect: { ...valid.expect, fingerprint: fingerprintSourceText('stale') } }],
       },
       {
         code: 'unmatched-patch-target',
@@ -234,7 +291,8 @@ describe('applySemanticPatchSet', () => {
         kind: 'semantic-patch',
         name: 'SemanticPatchError',
       });
-      expect(failure.patchIds.length).toBeGreaterThan(0);
+      if (fixture.code === 'invalid-patch-id') expect(failure.patchIds).toEqual([]);
+      else expect(failure.patchIds.length).toBeGreaterThan(0);
       expect(failure.subject.length).toBeGreaterThan(0);
     }
   });
@@ -306,7 +364,7 @@ function createFunctionDeclaration(name: string): IrFunctionDeclaration {
     async: false,
     binding: {
       column: 1,
-      fingerprint: `sha256:${name}`,
+      fingerprint: fingerprintSourceText(name),
       id: `binding:[${JSON.stringify(packageName)},${JSON.stringify(source)},${JSON.stringify(name)}]`,
       kind: 'function',
       line: 1,
@@ -321,7 +379,7 @@ function createFunctionDeclaration(name: string): IrFunctionDeclaration {
     kind: 'function',
     origin: {
       column: 1,
-      fingerprint: `sha256:${name}`,
+      fingerprint: fingerprintSourceText(name),
       line: 1,
       packageName,
       source,
@@ -352,7 +410,7 @@ function createTypeDeclaration(name: string): IrTypeAliasDeclaration {
   return {
     binding: {
       column: 1,
-      fingerprint: `sha256:${name}`,
+      fingerprint: fingerprintSourceText(name),
       id: `type-binding:[${JSON.stringify(packageName)},${JSON.stringify(source)},${JSON.stringify(name)}]`,
       kind: 'typeAlias',
       line: 1,
@@ -366,7 +424,7 @@ function createTypeDeclaration(name: string): IrTypeAliasDeclaration {
     kind: 'typeAlias',
     origin: {
       column: 1,
-      fingerprint: `sha256:${name}`,
+      fingerprint: fingerprintSourceText(name),
       line: 1,
       packageName,
       source,
@@ -382,7 +440,7 @@ function patchBase(
   kind: SemanticPatch['expect']['kind'],
 ): Pick<SemanticPatch, 'expect' | 'id' | 'reason' | 'scope' | 'target'> {
   return {
-    expect: { fingerprint: `sha256:${exportName}`, kind },
+    expect: { fingerprint: fingerprintSourceText(exportName), kind },
     id,
     reason: 'test',
     scope: { kind: 'neutral' },

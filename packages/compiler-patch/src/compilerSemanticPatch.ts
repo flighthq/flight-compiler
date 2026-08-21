@@ -1,4 +1,5 @@
 import { compareTextCodeUnits } from '../../compiler-canonical-form/src/index.js';
+import { isCompilerSourceFingerprint } from '../../compiler-provenance/src/index.js';
 import type {
   AppliedSemanticPatches,
   IrDeclaration,
@@ -19,6 +20,7 @@ export function applySemanticPatchSet(
   patches: readonly SemanticPatch[],
   backend: string,
 ): AppliedSemanticPatches {
+  validatePatchDefinitions(patches);
   validateUniqueIds(patches);
   validateConflicts(patches);
   let output: readonly IrModule[] = structuredClone(modules);
@@ -235,6 +237,95 @@ function validateActiveRemovals(patches: readonly SemanticPatch[]): void {
   }
 }
 
+function validatePatchDefinitions(patches: readonly SemanticPatch[]): void {
+  patches.forEach((patch, index) => {
+    const value: unknown = patch;
+    const subject = `$[${String(index)}]`;
+    if (!isRecord(value) || !isNonBlankString(value.id)) {
+      throw createSemanticPatchError(
+        'invalid-patch-id',
+        [],
+        subject,
+        `Semantic patch ${subject} requires a nonempty id`,
+      );
+    }
+    const patchIds = [value.id];
+    if (!isNonBlankString(value.reason)) {
+      throw createSemanticPatchError(
+        'invalid-patch-reason',
+        patchIds,
+        value.id,
+        `Semantic patch ${value.id} requires a nonempty reason`,
+      );
+    }
+    if (
+      !isRecord(value.target) ||
+      !isNonBlankString(value.target.packageName) ||
+      !isNonBlankString(value.target.source) ||
+      !isNonBlankString(value.target.exportName)
+    ) {
+      throw createSemanticPatchError(
+        'invalid-patch-target',
+        patchIds,
+        value.id,
+        `Semantic patch ${value.id} requires a complete target identity`,
+      );
+    }
+    const target = {
+      exportName: value.target.exportName,
+      packageName: value.target.packageName,
+      source: value.target.source,
+    } satisfies SemanticPatch['target'];
+    if (
+      !isRecord(value.expect) ||
+      !semanticPatchDeclarationKinds.has(String(value.expect.kind)) ||
+      !isCompilerSourceFingerprint(value.expect.fingerprint)
+    ) {
+      throw createSemanticPatchError(
+        'invalid-patch-expectation',
+        patchIds,
+        targetSubject(target),
+        `Semantic patch ${value.id} requires an exact fingerprint and declaration kind`,
+      );
+    }
+    if (
+      !isRecord(value.scope) ||
+      (value.scope.kind !== 'neutral' && (value.scope.kind !== 'backend' || !isNonBlankString(value.scope.backend)))
+    ) {
+      throw createSemanticPatchError(
+        'invalid-patch-scope',
+        patchIds,
+        targetSubject(target),
+        `Semantic patch ${value.id} requires a neutral or named backend scope`,
+      );
+    }
+    if (
+      (value.operation !== 'remove' &&
+        value.operation !== 'rename' &&
+        value.operation !== 'replaceBody' &&
+        value.operation !== 'replaceType') ||
+      (value.operation === 'rename' && !isNonBlankString(value.name)) ||
+      (value.operation === 'replaceBody' && !Array.isArray(value.body)) ||
+      (value.operation === 'replaceType' && !isRecord(value.type))
+    ) {
+      throw createSemanticPatchError(
+        'invalid-patch-operation',
+        patchIds,
+        targetSubject(target),
+        `Semantic patch ${value.id} has an invalid operation payload`,
+      );
+    }
+  });
+}
+
+function isNonBlankString(value: unknown): value is string {
+  return typeof value === 'string' && value.trim().length > 0;
+}
+
+function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
+  return typeof value === 'object' && value !== null;
+}
+
 function validateConflicts(patches: readonly SemanticPatch[]): void {
   const owners = new Map<string, string>();
   for (const patch of [...patches].sort(comparePatchIdentifiers)) {
@@ -275,13 +366,21 @@ function validateUniqueIds(patches: readonly SemanticPatch[]): void {
 }
 
 const semanticPatchFailureCodes = {
-  'ambiguous-patch-target': true,
-  'conflicting-patch-operation': true,
-  'conflicting-patch-removal': true,
-  'duplicate-patch-id': true,
-  'incompatible-patch-operation': true,
-  'patch-index-desynchronized': true,
-  'patch-kind-mismatch': true,
-  'stale-patch-fingerprint': true,
-  'unmatched-patch-target': true,
-} as const satisfies Readonly<Record<SemanticPatchFailureCode, true>>;
+  'ambiguous-patch-target': null,
+  'conflicting-patch-operation': null,
+  'conflicting-patch-removal': null,
+  'duplicate-patch-id': null,
+  'incompatible-patch-operation': null,
+  'invalid-patch-expectation': null,
+  'invalid-patch-id': null,
+  'invalid-patch-operation': null,
+  'invalid-patch-reason': null,
+  'invalid-patch-scope': null,
+  'invalid-patch-target': null,
+  'patch-index-desynchronized': null,
+  'patch-kind-mismatch': null,
+  'stale-patch-fingerprint': null,
+  'unmatched-patch-target': null,
+} as const satisfies Readonly<Record<SemanticPatchFailureCode, null>>;
+
+const semanticPatchDeclarationKinds = new Set(['class', 'enum', 'function', 'interface', 'typeAlias', 'variable']);

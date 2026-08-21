@@ -11,9 +11,11 @@ compiler-canonical-form + compiler-types
   <- compiler-provenance
 
 compiler-canonical-form + compiler-types
-  <- compiler-patch
   <- compiler-emission
   <- compiler-runtime-contract
+
+compiler-canonical-form + compiler-provenance + compiler-types
+  <- compiler-patch
 
 compiler-provenance + compiler-types
   <- compiler-ir-validation

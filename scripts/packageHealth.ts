@@ -98,7 +98,7 @@ const packageRules: Readonly<Record<string, PackageRule>> = {
     description: 'Deterministic compiler pipeline orchestration',
   },
   'compiler-patch': {
-    dependencies: ['compiler-canonical-form', 'compiler-types'],
+    dependencies: ['compiler-canonical-form', 'compiler-provenance', 'compiler-types'],
     description: 'Identity-based semantic patch application and auditing',
   },
   'compiler-provenance': {

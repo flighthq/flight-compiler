@@ -84,7 +84,7 @@ The dependency floor is deliberate:
 
 - `compiler-types` defines vocabulary and contracts without implementation dependencies.
 - `compiler-provenance` defines deterministic normalization and exact source-fingerprint identity over shared contracts and host-independent canonical form.
-- `compiler-patch` and `compiler-emission` depend only on the contracts they operate over plus shared deterministic canonical form.
+- `compiler-patch` depends on shared contracts, deterministic canonical form, and exact provenance identity; `compiler-emission` depends only on its contracts and canonical form.
 - `compiler-ir-validation` verifies target-neutral IR structure over shared contracts and exact provenance identity.
 - `compiler-runtime-contract` validates reachable external-type decisions over `compiler-types` and shared deterministic canonical form.
 - `compiler-canonical-form` defines deterministic text order and portable path form without importing compiler contracts or domain identity policy.

@@ -19,6 +19,7 @@
   },
   "dependencies": {
     "@flighthq/compiler-canonical-form": "*",
+    "@flighthq/compiler-provenance": "*",
     "@flighthq/compiler-types": "*"
   }
 }
