@@ -16,6 +16,11 @@ interface CStyleForLoweringAnalysis {
   sourceIdentity: Readonly<CompilerSourceIdentity>;
 }
 
+interface CStyleForContinueContext {
+  readonly crossesFinally: boolean;
+  readonly increment: Readonly<IrExpression>;
+}
+
 export function createCompilerLoweringPassCStyleFor(): CompilerLoweringPass {
   return {
     idempotent: true,
@@ -207,9 +212,7 @@ function lowerIrDeclaration(declaration: Readonly<IrDeclaration>, analysis: CSty
           ? {
               classConstructor: {
                 ...declaration.classConstructor,
-                body: declaration.classConstructor.body.map((statement) =>
-                  lowerIrStatement(statement, analysis, undefined, false),
-                ),
+                body: declaration.classConstructor.body.map((statement) => lowerIrStatement(statement, analysis)),
                 parameters: declaration.classConstructor.parameters.map((parameter) =>
                   lowerIrParameter(parameter, analysis),
                 ),
@@ -222,14 +225,14 @@ function lowerIrDeclaration(declaration: Readonly<IrDeclaration>, analysis: CSty
         })),
         methods: declaration.methods.map((method) => ({
           ...method,
-          body: method.body.map((statement) => lowerIrStatement(statement, analysis, undefined, false)),
+          body: method.body.map((statement) => lowerIrStatement(statement, analysis)),
           parameters: method.parameters.map((parameter) => lowerIrParameter(parameter, analysis)),
         })),
       };
     case 'function':
       return {
         ...declaration,
-        body: declaration.body.map((statement) => lowerIrStatement(statement, analysis, undefined, false)),
+        body: declaration.body.map((statement) => lowerIrStatement(statement, analysis)),
         overloads: declaration.overloads.map((overload) => ({
           ...overload,
           parameters: overload.parameters.map((parameter) => lowerIrParameter(parameter, analysis)),
@@ -288,7 +291,7 @@ function lowerIrExpression(expression: Readonly<IrExpression>, analysis: CStyleF
     case 'function':
       return {
         ...expression,
-        body: expression.body.map((statement) => lowerIrStatement(statement, analysis, undefined, false)),
+        body: expression.body.map((statement) => lowerIrStatement(statement, analysis)),
         ...(expression.expression ? { expression: lowerIrExpression(expression.expression, analysis) } : {}),
         parameters: expression.parameters.map((parameter) => lowerIrParameter(parameter, analysis)),
       };
@@ -359,20 +362,17 @@ function lowerIrParameter(parameter: Readonly<IrParameter>, analysis: CStyleForL
 function lowerIrStatement(
   statement: Readonly<IrStatement>,
   analysis: CStyleForLoweringAnalysis,
-  continueIncrement: Readonly<IrExpression> | undefined,
-  crossesFinally: boolean,
+  continueContext?: Readonly<CStyleForContinueContext>,
 ): IrStatement {
   switch (statement.kind) {
     case 'block':
       return {
         ...statement,
-        statements: statement.statements.map((item) =>
-          lowerIrStatement(item, analysis, continueIncrement, crossesFinally),
-        ),
+        statements: statement.statements.map((item) => lowerIrStatement(item, analysis, continueContext)),
       };
     case 'continue':
-      if (!continueIncrement) return statement;
-      if (crossesFinally) {
+      if (!continueContext) return statement;
+      if (continueContext.crossesFinally) {
         throw createCompilerLoweringFailure(
           'unsupported-ir',
           compilerLoweringPassNameCStyleFor,
@@ -382,13 +382,16 @@ function lowerIrStatement(
       }
       return {
         kind: 'block',
-        statements: [{ expression: structuredClone(continueIncrement), kind: 'expression' }, { kind: 'continue' }],
+        statements: [
+          { expression: structuredClone(continueContext.increment), kind: 'expression' },
+          { kind: 'continue' },
+        ],
       };
     case 'do':
     case 'while':
       return {
         ...statement,
-        body: lowerIrStatement(statement.body, analysis, undefined, false),
+        body: lowerIrStatement(statement.body, analysis),
         condition: lowerIrExpression(statement.condition, analysis),
       };
     case 'expression':
@@ -399,14 +402,14 @@ function lowerIrStatement(
     case 'forIn':
       return {
         ...statement,
-        body: lowerIrStatement(statement.body, analysis, undefined, false),
+        body: lowerIrStatement(statement.body, analysis),
         object: lowerIrExpression(statement.object, analysis),
         variable: lowerIrVariable(statement.variable, analysis),
       };
     case 'forOf':
       return {
         ...statement,
-        body: lowerIrStatement(statement.body, analysis, undefined, false),
+        body: lowerIrStatement(statement.body, analysis),
         iterable: lowerIrExpression(statement.iterable, analysis),
         variable: lowerIrVariable(statement.variable, analysis),
       };
@@ -414,10 +417,8 @@ function lowerIrStatement(
       return {
         ...statement,
         condition: lowerIrExpression(statement.condition, analysis),
-        consequent: lowerIrStatement(statement.consequent, analysis, continueIncrement, crossesFinally),
-        ...(statement.otherwise
-          ? { otherwise: lowerIrStatement(statement.otherwise, analysis, continueIncrement, crossesFinally) }
-          : {}),
+        consequent: lowerIrStatement(statement.consequent, analysis, continueContext),
+        ...(statement.otherwise ? { otherwise: lowerIrStatement(statement.otherwise, analysis, continueContext) } : {}),
       };
     case 'return':
       return {
@@ -431,29 +432,31 @@ function lowerIrStatement(
           ...item,
           ...(item.expression ? { expression: lowerIrExpression(item.expression, analysis) } : {}),
           statements: item.statements.map((caseStatement) =>
-            lowerIrStatement(caseStatement, analysis, continueIncrement, crossesFinally),
+            lowerIrStatement(caseStatement, analysis, continueContext),
           ),
         })),
         expression: lowerIrExpression(statement.expression, analysis),
       };
     case 'try': {
-      const exitsThroughFinally = crossesFinally || statement.finallyBody !== undefined;
+      const exitsThroughFinally = continueContext
+        ? { ...continueContext, crossesFinally: continueContext.crossesFinally || statement.finallyBody !== undefined }
+        : undefined;
       return {
         ...statement,
         ...(statement.catchClause
           ? {
               catchClause: {
                 ...statement.catchClause,
-                body: lowerIrStatement(statement.catchClause.body, analysis, continueIncrement, exitsThroughFinally),
+                body: lowerIrStatement(statement.catchClause.body, analysis, exitsThroughFinally),
               },
             }
           : {}),
         ...(statement.finallyBody
           ? {
-              finallyBody: lowerIrStatement(statement.finallyBody, analysis, continueIncrement, crossesFinally),
+              finallyBody: lowerIrStatement(statement.finallyBody, analysis, continueContext),
             }
           : {}),
-        tryBody: lowerIrStatement(statement.tryBody, analysis, continueIncrement, exitsThroughFinally),
+        tryBody: lowerIrStatement(statement.tryBody, analysis, exitsThroughFinally),
       };
     }
     case 'variable':
@@ -486,7 +489,7 @@ function lowerIrStatementCStyleFor(
     : initializer
       ? [{ expression: lowerIrExpression(initializer, analysis), kind: 'expression' }]
       : [];
-  const body = lowerIrStatement(statement.body, analysis, increment, false);
+  const body = lowerIrStatement(statement.body, analysis, increment ? { crossesFinally: false, increment } : undefined);
   return {
     kind: 'block',
     statements: [
