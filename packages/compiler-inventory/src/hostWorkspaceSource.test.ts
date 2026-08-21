@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { compareTextCodeUnits } from '../../compiler-canonical-form/src/index.js';
+import { isCompilerInventoryFailure } from './compilerInventoryFailure.js';
 import { createHostWorkspaceSource } from './hostWorkspaceSource.js';
 
 // The only inventory test that still needs a real directory, because a host source is exactly the
@@ -27,6 +28,36 @@ describe('createHostWorkspaceSource', () => {
         { isDirectory: false, name: 'package.json' },
         { isDirectory: true, name: 'packages' },
       ]);
+    } finally {
+      rmSync(directory, { force: true, recursive: true });
+    }
+  });
+
+  it('refuses a legal POSIX backslash entry before it can collide with a nested source path', () => {
+    if (path.sep !== '/') {
+      expect(path.sep).toBe('\\');
+      return;
+    }
+
+    const directory = mkdtempSync(path.join(os.tmpdir(), 'flight-host-workspace-backslash-'));
+    try {
+      mkdirSync(path.join(directory, 'weird'), { recursive: true });
+      writeFileSync(path.join(directory, 'weird', 'name.ts'), 'export const nested = true;\n');
+      writeFileSync(path.join(directory, 'weird\\name.ts'), 'export const flat = true;\n');
+
+      let failure: unknown;
+      try {
+        createHostWorkspaceSource().listDirectory(directory);
+      } catch (error) {
+        failure = error;
+      }
+
+      expect(isCompilerInventoryFailure(failure)).toBe(true);
+      expect(failure).toMatchObject({
+        code: 'invalid-source-path',
+        kind: 'compiler-inventory',
+        subject: 'weird\\name.ts',
+      });
     } finally {
       rmSync(directory, { force: true, recursive: true });
     }
