@@ -14,8 +14,11 @@ import type { CompilerSourceIdentity } from './compilerSourceIdentity.js';
 describe('compiler backend contracts', () => {
   it('represent backend capabilities, options, and output as plain composable data', () => {
     const module = createModule();
-    const haxeOptions: HaxeCompilerBackendOptions = { rootPackage: 'flighthq' };
-    const rustOptions: RustCompilerBackendOptions = { opaqueHostType: 'FlightHostValue' };
+    const haxeOptions: HaxeCompilerBackendOptions = { rootPackage: 'flighthq', upstreamCommit: 'a'.repeat(40) };
+    const rustOptions: RustCompilerBackendOptions = {
+      opaqueHostType: 'FlightHostValue',
+      upstreamCommit: 'a'.repeat(40),
+    };
     const context: BackendEmitContext<HaxeCompilerBackendOptions> = { modules: [module], options: haxeOptions };
     const file: EmittedFile = { contents: 'value', path: 'Value.hx' };
     const backend: CompilerBackend<HaxeCompilerBackendOptions> = {
@@ -25,7 +28,7 @@ describe('compiler backend contracts', () => {
     const compilation: BackendCompilation = { backend: backend.name, files: [...backend.emitModule(module, context)] };
 
     expect(compilation).toEqual({ backend: 'haxe', files: [file] });
-    expect(rustOptions).toEqual({ opaqueHostType: 'FlightHostValue' });
+    expect(rustOptions).toEqual({ opaqueHostType: 'FlightHostValue', upstreamCommit: 'a'.repeat(40) });
     expectTypeOf<BackendEmissionFailure>().toMatchTypeOf<CompilerSourceIdentity>();
     expectTypeOf<EmittedFile>().toMatchTypeOf<EmittedFileIdentity>();
   });

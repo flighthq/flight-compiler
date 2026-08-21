@@ -39,7 +39,7 @@ export function createCompilerInvariantFailure(
   return failure;
 }
 
-export function encodeEmittedFileContentsUtf8(contents: string): Uint8Array {
+export function convertEmittedFileContentsToUtf8(contents: string): Uint8Array {
   return new TextEncoder().encode(normalizeEmittedFileContents(contents));
 }
 
@@ -122,17 +122,13 @@ function validateEmittedFileContents(contents: string): void {
       'Backend emitted contents with a leading byte-order mark',
     );
   }
-  for (let index = 0; index < contents.length; index += 1) {
-    const codeUnit = contents.charCodeAt(index);
-    if (codeUnit >= 0xd800 && codeUnit <= 0xdbff) {
-      const nextCodeUnit = contents.charCodeAt(index + 1);
-      if (nextCodeUnit >= 0xdc00 && nextCodeUnit <= 0xdfff) {
-        index += 1;
-        continue;
-      }
-      throwUnsafeSurrogate(index);
+  let codeUnitIndex = 0;
+  for (const character of contents) {
+    const codeUnit = character.charCodeAt(0);
+    if (character.length === 1 && codeUnit >= 0xd800 && codeUnit <= 0xdfff) {
+      throwUnsafeSurrogate(codeUnitIndex);
     }
-    if (codeUnit >= 0xdc00 && codeUnit <= 0xdfff) throwUnsafeSurrogate(index);
+    codeUnitIndex += character.length;
   }
 }
 
@@ -153,6 +149,7 @@ const compilerInvariantCodes = {
   'duplicate-emitted-path': true,
   'duplicate-module-identity': true,
   'duplicate-target-name-identity': true,
+  'invalid-generated-file-provenance': true,
   'invalid-target-name-candidate': true,
   'unsafe-emitted-contents': true,
   'unsafe-emitted-path': true,

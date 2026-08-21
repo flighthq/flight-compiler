@@ -1,7 +1,8 @@
+export { createCompilerGeneratedFileHeader } from './compilerGeneratedFileProvenance.js';
 export {
   createBackendEmissionFailure,
   createCompilerInvariantFailure,
-  encodeEmittedFileContentsUtf8,
+  convertEmittedFileContentsToUtf8,
   indentSourceLines,
   isBackendEmissionFailure,
   isCompilerInvariantFailure,

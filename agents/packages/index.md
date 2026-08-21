@@ -8,7 +8,7 @@ A score is a judgement about **domain coverage**, not about code quality. `compi
 | --- | --- | --: | --- |
 | [compiler-canonical-form](compiler-canonical-form/review.md) | mature | 96 | which bytes represent equivalent compiler text and paths across hosts |
 | [compiler-provenance](compiler-provenance/review.md) | near-mature | 88 | are two pieces of source the same thing |
-| [compiler-emission](compiler-emission/review.md) | near-mature | 80 | what may a generated file and a generated name be called |
+| [compiler-emission](compiler-emission/review.md) | mature | 90 | portable generated-file identity, contents, and provenance |
 | [compiler-patch](compiler-patch/review.md) | substantially-mature | 78 | correct upstream semantics without editing upstream |
 | [compiler-types](compiler-types/review.md) | foundational | 72 | the vocabulary everything else speaks |
 | [compiler-runtime-contract](compiler-runtime-contract/review.md) | near-mature | 86 | does every reachable ambient type/value symbol have one target binding decision |

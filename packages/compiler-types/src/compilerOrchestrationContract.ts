@@ -36,6 +36,7 @@ export type CompilerInvariantCode =
   | 'duplicate-emitted-path'
   | 'duplicate-module-identity'
   | 'duplicate-target-name-identity'
+  | 'invalid-generated-file-provenance'
   | 'invalid-target-name-candidate'
   | 'unsafe-emitted-contents'
   | 'unsafe-emitted-path';

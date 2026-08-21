@@ -33,12 +33,12 @@ export interface BackendEmissionFailure extends Error, CompilerSourceIdentity {
 }
 
 export interface HaxeCompilerBackendOptions {
-  readonly generatedHeader?: string | undefined;
   readonly rootPackage?: string | undefined;
   readonly runtimeModule?: string | undefined;
+  readonly upstreamCommit?: string | undefined;
 }
 
 export interface RustCompilerBackendOptions {
-  readonly generatedHeader?: string | undefined;
   readonly opaqueHostType?: string | undefined;
+  readonly upstreamCommit?: string | undefined;
 }

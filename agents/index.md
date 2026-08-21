@@ -23,7 +23,7 @@ Per-package domain surveys following Flight's `agents/packages/<name>/` conventi
 - [compiler-types](packages/compiler-types/review.md): the vocabulary everything else speaks.
 - [compiler-provenance](packages/compiler-provenance/review.md): are two pieces of source the same thing.
 - [compiler-patch](packages/compiler-patch/review.md): correct upstream semantics without editing upstream.
-- [compiler-emission](packages/compiler-emission/review.md): what may a generated file and a generated name be called.
+- [compiler-emission](packages/compiler-emission/review.md): portable generated-file identity, contents, and provenance.
 - [compiler-inventory](packages/compiler-inventory/review.md): what is in this workspace and what does it export.
 - [compiler-ir-validation](packages/compiler-ir-validation/review.md): is a target-neutral IR module structurally trustworthy.
 - [compiler-semantic](packages/compiler-semantic/review.md): TypeScript in, neutral IR out.

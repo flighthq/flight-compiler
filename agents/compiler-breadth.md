@@ -123,7 +123,7 @@ Per package, against the repository's own rule that a package has one irreducibl
 
 **`compiler-backend-hx` / `compiler-backend-rs` — lowering and emission fused, deliberately.** Each is ~840 lines doing both jobs, against an architecture diagram that names them separately. The deferral is documented and its trigger is stated: an explicit target model between them. Missing cell 1 supplies that model, so this split is downstream of that work rather than an independent decision.
 
-**`compiler-emission` — two concerns, one domain.** Path identity and name identity are different mechanisms answering one question: what may a generated thing be called. Cohesive.
+**`compiler-emission` — three concerns, one lifecycle.** Path identity, target-name identity, and generated source contents are different mechanisms answering one portable-output question: what may a backend hand to the target repository. Content normalization, UTF-8 encoding, and generated-file provenance close at the same boundary as portable file names; none has an independent consumer or dependency direction. Cohesive.
 
 **`compiler-provenance`, `compiler-patch`, `compiler-orchestration`, `tool-compiler` — primitive.** Each has one job, states it, and does not reach beyond it. `compiler-provenance` at 130 lines is the model the others are measured against.
 
