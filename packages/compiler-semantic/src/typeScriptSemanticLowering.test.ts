@@ -493,6 +493,126 @@ describe('lowerTypeScriptSource', () => {
     });
   });
 
+  it('preserves named and operator type identity while isolating unsupported type families', () => {
+    const supported = lower(
+      'referenced-types.ts',
+      `
+        export interface Box<T> { value: T; }
+        export const sample = 1;
+        export type Named = Box<number>;
+        export type AmbientQualified = External.Box<string>;
+        export type Key = keyof Box<number>;
+        export type Indexed = Box<number>['value'];
+        export type Query = typeof sample;
+        export type Parenthesized = (((number)));
+        export type NonCanonicalArray = Array<number, string>;
+        export type AnonymousTuple = [number?, ...string[]];
+        export type NamedRequiredTuple = [value: number];
+        export type ReadonlyNamed = readonly Box<number>;
+      `,
+    );
+    const [box, sample, ...aliases] = supported.module.declarations;
+    if (box?.kind !== 'interface' || sample?.kind !== 'variable') {
+      throw new Error('Expected the referenced type and value declarations');
+    }
+    const types = new Map(
+      aliases.map((declaration) => {
+        if (declaration.kind !== 'typeAlias') throw new Error('Expected type-alias declarations');
+        return [declaration.binding.name, declaration.type] as const;
+      }),
+    );
+
+    expect(supported.diagnostics).toEqual([]);
+    expect(types.get('Named')).toMatchObject({
+      kind: 'named',
+      reference: { binding: box.binding, kind: 'binding', path: [] },
+      typeArguments: [{ kind: 'primitive', name: 'number' }],
+    });
+    expect(types.get('AmbientQualified')).toEqual({
+      kind: 'named',
+      reference: { kind: 'ambient', name: 'External.Box' },
+      typeArguments: [{ kind: 'primitive', name: 'string' }],
+    });
+    expect(types.get('Key')).toMatchObject({
+      kind: 'keyof',
+      type: {
+        kind: 'named',
+        reference: { binding: box.binding, kind: 'binding', path: [] },
+        typeArguments: [{ kind: 'primitive', name: 'number' }],
+      },
+    });
+    expect(types.get('Indexed')).toMatchObject({
+      index: { kind: 'literal', value: 'value' },
+      kind: 'indexedAccess',
+      object: {
+        kind: 'named',
+        reference: { binding: box.binding, kind: 'binding', path: [] },
+        typeArguments: [{ kind: 'primitive', name: 'number' }],
+      },
+    });
+    expect(types.get('Query')).toEqual({
+      kind: 'typeOf',
+      reference: { binding: sample.binding, kind: 'binding', path: [] },
+    });
+    expect(types.get('Parenthesized')).toEqual({ kind: 'primitive', name: 'number' });
+    expect(types.get('NonCanonicalArray')).toEqual({
+      kind: 'named',
+      reference: { kind: 'ambient', name: 'Array' },
+      typeArguments: [
+        { kind: 'primitive', name: 'number' },
+        { kind: 'primitive', name: 'string' },
+      ],
+    });
+    expect(types.get('AnonymousTuple')).toEqual({
+      elements: [
+        { optional: true, rest: false, type: { kind: 'primitive', name: 'number' } },
+        {
+          optional: false,
+          rest: true,
+          type: { element: { kind: 'primitive', name: 'string' }, kind: 'array', readonly: false },
+        },
+      ],
+      kind: 'tuple',
+      readonly: false,
+    });
+    expect(types.get('NamedRequiredTuple')).toEqual({
+      elements: [{ optional: false, rest: false, type: { kind: 'primitive', name: 'number' } }],
+      kind: 'tuple',
+      readonly: false,
+    });
+    expect(types.get('ReadonlyNamed')).toEqual(types.get('Named'));
+
+    const rejected = lower(
+      'unsupported-types.ts',
+      `
+        export type BigLiteral = 1n;
+        export type Unique = unique symbol;
+        export type Conditional<T> = T extends string ? true : false;
+        export type Mapped<T> = { [K in keyof T]: T[K] };
+        export type Constructor = new () => object;
+        export type TemplateValue = \`value-${'${string}'}\`;
+        export type CallableMember = { (value: number): number };
+        export type MissingPropertyType = { value };
+        export type ComputedProperty = { ['value']: number };
+        export type Valid = number;
+      `,
+    );
+
+    expect(rejected.module.declarations).toHaveLength(1);
+    expect(rejected.module.declarations[0]).toMatchObject({ binding: { name: 'Valid' }, kind: 'typeAlias' });
+    expect(rejected.diagnostics.map((diagnostic) => diagnostic.message)).toEqual([
+      'unsupported literal type',
+      'unsupported type operator unique',
+      'unsupported type ConditionalType',
+      'unsupported type MappedType',
+      'unsupported type ConstructorType',
+      'unsupported type TemplateLiteralType',
+      'unsupported type member CallSignature',
+      'property signature requires a type',
+      'computed property names require expression-level representation',
+    ]);
+  });
+
   it('separates executable defaults from function types', () => {
     const result = lower('contracts.ts', 'export const callback = (value: number = 1): number => value;');
     const [callback] = result.module.declarations;
