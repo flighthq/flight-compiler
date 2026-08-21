@@ -39,6 +39,53 @@ describe('lowerTypeScriptSource', () => {
     });
   });
 
+  it('attaches ordered overload signatures and diagnoses an orphan overload set', () => {
+    const result = lower(
+      'overloads.ts',
+      `
+        export function convert(value: string): string;
+        export function convert(value: number, radix?: number): number;
+        export function convert(value: string | number, radix = 10): string | number { return value; }
+        export function orphan(value: boolean): boolean;
+      `,
+    );
+    const [convert] = result.module.declarations;
+    if (convert?.kind !== 'function') throw new Error('Expected the implemented overloaded function');
+
+    expect(
+      convert.overloads.map((overload) => ({
+        parameters: overload.parameters.map((parameter) => ({
+          name: parameter.binding.name,
+          optional: parameter.optional,
+          rest: parameter.rest,
+          type: parameter.type,
+        })),
+        returns: overload.returns,
+      })),
+    ).toEqual([
+      {
+        parameters: [{ name: 'value', optional: false, rest: false, type: { kind: 'primitive', name: 'string' } }],
+        returns: { kind: 'primitive', name: 'string' },
+      },
+      {
+        parameters: [
+          { name: 'value', optional: false, rest: false, type: { kind: 'primitive', name: 'number' } },
+          { name: 'radix', optional: true, rest: false, type: { kind: 'primitive', name: 'number' } },
+        ],
+        returns: { kind: 'primitive', name: 'number' },
+      },
+    ]);
+    expect(convert.parameters[1]).toMatchObject({
+      initializer: { kind: 'literal', value: 10 },
+      optional: true,
+      rest: false,
+    });
+    expect(result.module.declarations).toHaveLength(1);
+    expect(result.diagnostics.map((diagnostic) => diagnostic.message)).toEqual([
+      'function overload orphan has no implementation (1 signature(s))',
+    ]);
+  });
+
   it('represents re-exports and default exports instead of silently skipping them', () => {
     const result = lower(
       'barrel.ts',
