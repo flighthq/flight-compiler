@@ -39,6 +39,81 @@ describe('lowerTypeScriptSource', () => {
     });
   });
 
+  it('evaluates the complete supported enum constant algebra and rejects invalid neighbors', () => {
+    const evaluated = lower(
+      'enum-constants.ts',
+      `
+        export enum Operations {
+          Base = 8,
+          Copied = Base,
+          Qualified = Operations.Copied,
+          Parenthesized = (Qualified),
+          Negative = -Base,
+          Positive = +Base,
+          Add = Base + 2,
+          Subtract = Base - 2,
+          Multiply = Base * 2,
+          Divide = Base / 2,
+          Remainder = Base % 3,
+          Power = Base ** 2,
+          LeftShift = Base << 1,
+          RightShift = Base >> 1,
+          UnsignedShift = -1 >>> 1,
+          And = Base & 3,
+          Or = Base | 2,
+          Xor = Base ^ 3,
+          Separated = 1_024,
+          Template = \`template\`,
+        }
+      `,
+    );
+
+    expect(evaluated.diagnostics).toEqual([]);
+    expect(evaluated.module.declarations[0]).toMatchObject({
+      kind: 'enum',
+      members: [
+        { name: 'Base', value: 8 },
+        { name: 'Copied', value: 8 },
+        { name: 'Qualified', value: 8 },
+        { name: 'Parenthesized', value: 8 },
+        { name: 'Negative', value: -8 },
+        { name: 'Positive', value: 8 },
+        { name: 'Add', value: 10 },
+        { name: 'Subtract', value: 6 },
+        { name: 'Multiply', value: 16 },
+        { name: 'Divide', value: 4 },
+        { name: 'Remainder', value: 2 },
+        { name: 'Power', value: 64 },
+        { name: 'LeftShift', value: 16 },
+        { name: 'RightShift', value: 4 },
+        { name: 'UnsignedShift', value: 2_147_483_647 },
+        { name: 'And', value: 0 },
+        { name: 'Or', value: 10 },
+        { name: 'Xor', value: 11 },
+        { name: 'Separated', value: 1_024 },
+        { name: 'Template', value: 'template' },
+      ],
+    });
+
+    const rejected = lower(
+      'invalid-enums.ts',
+      `
+        export enum Text { First = 'first', Missing }
+        export enum Forward { First = Forward.Later, Later = 1 }
+        export enum Call { Value = Number() }
+        export enum Valid { Value = 1 }
+      `,
+    );
+
+    expect(rejected.module.declarations).toHaveLength(1);
+    expect(rejected.module.declarations[0]).toMatchObject({ kind: 'enum', binding: { name: 'Valid' } });
+    expect(rejected.diagnostics.map((diagnostic) => diagnostic.message)).toEqual([
+      'enum member after a string value requires an initializer',
+      'enum initializer must be a constant number, string, or prior member reference',
+      'enum initializer must be a constant number, string, or prior member reference',
+    ]);
+  });
+
   it('attaches ordered overload signatures and diagnoses an orphan overload set', () => {
     const result = lower(
       'overloads.ts',
