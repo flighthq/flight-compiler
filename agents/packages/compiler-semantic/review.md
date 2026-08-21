@@ -1,8 +1,8 @@
 ---
 package: '@flighthq/compiler-semantic'
 status: early
-score: 38
-updated: 2026-08-20
+score: 44
+updated: 2026-08-21
 ingested:
   - source
   - agents/compiler-migration-roadmap.md
@@ -15,7 +15,7 @@ TypeScript-to-neutral lowering: ~3,000 lines across the lowering pass, static-fa
 
 ## Verdict
 
-**early — 38/100.** What exists is built the right way: the TypeScript compiler API rather than pattern matching, binding provenance resolved through a checker, closed operator vocabularies, and structured diagnostics for everything it will not lower. The score is low because the domain is enormous and the covered fraction is small — the roadmap says 20–25% and the refusal list bears that out. Destructuring, namespaces, overloads, parameter properties, generators, decorators and most of the type system are all unrepresented. That is the honest state of a slice deliberately built narrow-and-correct rather than wide-and-approximate, and the refusals are the asset here, not the embarrassment.
+**early — 44/100.** What exists is built the right way: the TypeScript compiler API rather than pattern matching, binding provenance resolved through a checker, closed operator vocabularies, and structured diagnostics for everything it will not lower. The score is low because the domain is enormous and the covered fraction is small — the roadmap says 20–25% and the refusal list bears that out. Destructuring, namespaces, overloads, parameter properties, generators, decorators and most of the type system are all unrepresented. That is the honest state of a slice deliberately built narrow-and-correct rather than wide-and-approximate, and the refusals are the asset here, not the embarrassment.
 
 ## What a fully expressed TypeScript-lowering domain looks like
 
@@ -58,3 +58,13 @@ Measured against the reference, in rough order of how much SDK surface each bloc
 - **Single-file lowering only.** Each source lowers independently; cross-module semantic facts (is this exported type used as a value anywhere, is this function ever awaited) are not available to the lowerer.
 
 - **Labeled `break` and `continue` lose their label silently.** `if (ts.isBreakStatement(node)) return { kind: 'break' }` discards the label, because the neutral IR has no labels. Nothing labeled reaches it today — a `LabeledStatement` has no lowering case and hits the unsupported-statement refusal first — so this is a latent hazard rather than a live defect, and the only thing protecting it is a guard that has nothing to do with labels. Refuse at the drop site instead of relying on that.
+
+## Re-score, 2026-08-21 — 38 to 44, and why only six points
+
+Nine iterations landed here after the original review. The reported measure was unreached arms falling from 331 to 185, and that is the weaker of the two numbers available: this repository's own testing conventions say an arm missing from the untested list was _taken_ by some test, not necessarily _checked_ by one. So I read the assertions instead of the count.
+
+They hold up. `maps every atomic and literal TypeScript type to its neutral domain` enumerates the whole atomic and literal domain and asserts the complete mapping with an exact `toEqual` over a full list, and its siblings pair each domain with the neighbors it must reject — enum constant algebra with invalid neighbors, export topologies with rejected statements, named and operator type identity with unsupported families isolated. That is example-driven specification with counterexamples, which is what the bar here asks for, not coverage decoration.
+
+The score moves only six points because of what the diff actually contains: **`typeScriptSemanticLowering.ts` grew by 26 lines and lost 8, while its tests grew by 572 and the static-fact tests by 146.** Roughly ninety-six percent of the batch is verification of surface that already existed. Two genuine capabilities did arrive — block/function/declaration binding scope classification, and shorthand object values resolving to their lexical bindings rather than their property symbols, which is a real defect fixed rather than a test added.
+
+That distinction is the point. This score measures how much of the domain is _expressed_, and the domain did not grow by ninety-six percent of a batch; its existing slice became far better specified, which is part of maturity but not the same axis. Destructuring, namespaces, generators, decorators and most of the type system remain unrepresented, and porting them is what moves this number materially. A score that jumped on test count would be making exactly the mistake the arm count invites.

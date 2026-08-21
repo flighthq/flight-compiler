@@ -17,7 +17,7 @@ A score is a judgement about **domain coverage**, not about code quality. `compi
 | [tool-compiler](tool-compiler/review.md) | solid | 62 | the one published artifact |
 | [compiler-orchestration](compiler-orchestration/review.md) | solid | 60 | compose the passes deterministically |
 | [compiler-lowering](compiler-lowering/review.md) | early | 48 | verified neutral IR-to-IR transforms elected by targets |
-| [compiler-semantic](compiler-semantic/review.md) | early | 38 | TypeScript in, neutral IR out |
+| [compiler-semantic](compiler-semantic/review.md) | early | 44 | TypeScript in, neutral IR out |
 | [compiler-backend-hx](compiler-backend-hx/review.md) | early | 30 | neutral IR in, idiomatic Haxe out |
 | [compiler-backend-rs](compiler-backend-rs/review.md) | early | 26 | neutral IR in, idiomatic Rust out |
 
@@ -25,7 +25,7 @@ A score is a judgement about **domain coverage**, not about code quality. `compi
 
 The scores fall into the dependency order almost exactly, and that is the intended result of building bedrock-first: the primitives are close to done, the compositions above them are solid, and the two target backends — the packages whose domains are the largest and whose correctness is hardest to establish — are the least expressed. Nothing here is out of order.
 
-The three lowest scores are also the three packages that gate the migration. `compiler-semantic` at 38 bounds both backends: a construct it cannot lower cannot be emitted by either target, so its refusal list is the shared ceiling. Within the backends, the recurring theme is that structure and refusal discipline are ahead of coverage — both have their identity, naming and operator handling settled, and both refuse rather than approximate, which is why the golden fixtures can pin refusals as confidently as output.
+The three lowest scores are also the three packages that gate the migration. `compiler-semantic` at 44 bounds both backends: a construct it cannot lower cannot be emitted by either target, so its refusal list is the shared ceiling. Within the backends, the recurring theme is that structure and refusal discipline are ahead of coverage — both have their identity, naming and operator handling settled, and both refuse rather than approximate, which is why the golden fixtures can pin refusals as confidently as output.
 
 ## Recurring gaps across packages
 
