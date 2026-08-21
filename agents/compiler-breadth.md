@@ -137,10 +137,12 @@ Three things follow from eleven copies:
 - **It generates systematic mutation noise.** Every copy sorts values that are unique by construction, so its equality arm is unreachable and each copy contributes two permanent survivors. Eleven copies, twenty-two survivors that no test can kill, spread across four packages' reports forever.
 - **A shared primitive would be tested once, including the equality arm** that no current caller can reach but a correct total comparator must have.
 
-`compareText` is not the whole of it, and looking only at it is what made my first reading of this wrong. The same shape holds for **portable path form**, which is implemented six times — and in two spellings that disagree:
+`compareText` is not the whole of it, and looking only at it is what made my first reading of this wrong. The same shape holds for **portable path form**, which is implemented ten times across five packages — in two spellings that disagree:
 
 - `value.split(path.sep).join('/')` in five `compiler-inventory` sources and in `compiler-semantic`. This is **host-dependent**: on POSIX `path.sep` is `/`, so a path segment containing a literal backslash is left exactly as it was.
-- `sourcePath.replaceAll('\\', '/')` in `compiler-emission` and in both backends' identity modules. This is **host-independent**: a backslash always becomes a separator.
+- `sourcePath.replaceAll('\\', '/')` in `compiler-emission`, in both backends' identity modules, and in `compiler-inventory`'s own `memoryWorkspaceSource.ts`. This is **host-independent**: a backslash always becomes a separator.
+
+The split runs _through_ `compiler-inventory` rather than between packages: one file there disagrees with its five siblings. I wrote that file, and did not notice I was choosing a spelling.
 
 Feed both the same manifest path containing a backslash on a POSIX host and they produce different answers, so one file has two canonical identities depending on which package looked at it — and the disagreement is a function of the host. That is the exact property the modeling rules forbid ("deterministic outputs contain no ... machine-specific absolute paths") and that the foundations bar names ("callers cannot observe accidental mutation or host-platform differences"). The triggering input is unusual enough that this is a latent identity hazard rather than a live defect today, but nothing in the repository would catch it becoming one. Add Unicode canonical form (`normalize('NFC')`, twice in emission) and content normalization (CRLF collapse and single-final-newline, in emission), and the surface is three primitive families spread across six packages.
 
@@ -155,9 +157,33 @@ It also passes the second half of the bar, which is the decisive part. A new wor
 
 There is no floor below `compiler-types` that carries runtime code, and that absence is the reason for every copy. On mass, the cell would own more than `compiler-provenance` does — provenance is one source file and is a legitimate cell — so "thin placeholder" does not apply either.
 
-### What it would own
+### What it would own, and what it would not
 
-Deterministic text order; portable path form, in one spelling with the host-dependence decided; Unicode canonical form; content normalization; and the canonical serialization boundary listed as a recurring gap in the package portfolio, which currently has nowhere to go. Nothing target-specific, nothing that reads a checkout.
+Only what the duplication evidence actually supports: **deterministic text order** (11 copies across four packages) and **portable path form** (10 sites across five, in two disagreeing spellings, where the move also decides the host-dependence). Nothing target-specific, nothing that reads a checkout.
+
+Deliberately _not_ moved on day one: Unicode canonical form is two copies inside `compiler-emission`, and content normalization is one. Neither meets the bar this analysis applies to everything else — two packages implementing it separately — so both stay where they are until a second package needs them. An earlier draft of this section listed them as cell contents, which would have made the package partly speculative. The canonical serialization boundary joins it when it exists, not before.
+
+### Naming
+
+One package, not several: **`compiler-canonical-form`**, published as `@flighthq/compiler-canonical-form`. Text order and path form share one dependency boundary (zero) and one lifecycle, and splitting primitives that are already irreducible is exactly the overhead the composition rules warn about.
+
+Rejected, with reasons, because the name is the part most likely to go wrong here:
+
+- `compiler-utils`, `compiler-common`, `compiler-shared` — banned by the naming contract, and `common`, `util`, `utils`, and `shared` are literally in `genericSourceConcepts` in the health gate.
+- `compiler-determinism` — overclaims. Determinism is a property the whole compiler owes; a package cannot own it.
+- `compiler-normalization` — collides with `compiler-provenance`, which already owns normalizing TypeScript source for fingerprints and exports `normalizeTypeScriptNode`.
+- `compiler-identity` — same collision, from the other direction.
+- `compiler-collation` — names only the ordering half.
+- `compiler-text` — names a data type rather than a domain.
+
+Sources, both verb-free concept nouns with no basename collision anywhere under `packages/`, and neither beginning with a verb the file-name gate rejects:
+
+- `canonicalTextOrder.ts` — `getCanonicalTextOrder(left, right): number`. Not `compareCanonicalText`: `compare` is **not** in the approved verb list the gate enforces (`analyze|apply|collect|combine|compile|convert|create|define|emit|fingerprint|get|has|indent|is|lower|normalize|parse|read|resolve|validate`), so that name fails `packages:check`. `get` is approved, the style rules already assign `get*` to accessors, and `values.sort(getCanonicalTextOrder)` reads correctly at the call site. Adding `compare` to the verb list is the alternative, and worth it only if a comparator family grows beyond one.
+- `portableSourcePath.ts` — `convertSourcePathToPortableForm(value): string`, mirroring the existing `convertSourcePathToHaxeModuleName` precedent. This is where the two spellings are reconciled, and it must adopt the host-independent one, since host-dependence is the defect rather than an incidental difference.
+
+No new contract types: both signatures are strings and a number, so `compiler-types` is untouched.
+
+One honest cost. `packageHealth` requires every private workspace to appear in the public facade — `checkSet('public facade', 'workspace exports', …)` compares the facade's exports against the full package list — so these two functions become published API the day the package exists, taking the surface from 191 to 193. That is the automatic publication flagged in the `tool-compiler` review, arriving again. It does not block the cell, but it is an argument for the facade-completeness rule gaining a considered exception rather than a further argument against the package.
 
 The drift has already started: `hostWorkspaceSource.test.ts` sorts with `localeCompare` while all eleven production copies sort by code unit. It is only a test's assertion order today, and it is the first spelling of a rule that exists in eleven places and is written down in none.
 
