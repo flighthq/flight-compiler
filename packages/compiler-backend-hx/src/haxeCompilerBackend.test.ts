@@ -114,6 +114,25 @@ describe('emitIrModuleHaxe', () => {
     expect(output).toContain('return choose(1);');
   });
 
+  it('emits one class method overload implementation and calls its native default ABI', () => {
+    const result = lower(
+      'method-overload-default.ts',
+      `
+        export class Picker {
+          choose(value: number): number;
+          choose(value: number, radix?: number): number;
+          choose(value: number, radix = 10): number { return value + radix; }
+        }
+        export function read(picker: Picker): number { return picker.choose(1); }
+      `,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output.match(/function choose/gu)).toHaveLength(1);
+    expect(output).toContain('public function choose(value:Float, radix:Float = 10):Float');
+    expect(output).toContain('return picker.choose(1);');
+  });
+
   it('emits one constructor implementation and calls its native default ABI', () => {
     const result = lower(
       'constructor-overload-default.ts',

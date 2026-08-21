@@ -177,6 +177,25 @@ describe('emitIrModuleRust', () => {
     expect(output).toContain('return choose(1.0, None);');
   });
 
+  it('emits one class method overload implementation and calls its expanded default ABI', () => {
+    const result = lower(
+      'method-overload-default.ts',
+      `
+        export class Picker {
+          choose(value: number): number;
+          choose(value: number, radix?: number): number;
+          choose(value: number, radix = 10): number { return value + radix; }
+        }
+        export function read(picker: Picker): number { return picker.choose(1); }
+      `,
+    );
+    const output = emitIrModuleRust(result.module).contents;
+
+    expect(output.match(/fn choose/gu)).toHaveLength(1);
+    expect(output).toContain('pub fn choose(&mut self, value: f64, radix: Option<f64>) -> f64');
+    expect(output).toContain('return picker.choose(1.0, None);');
+  });
+
   it('refuses an overloaded constructor until Rust initialization lowering owns its ABI', () => {
     const result = lower(
       'constructor-overload-default.ts',

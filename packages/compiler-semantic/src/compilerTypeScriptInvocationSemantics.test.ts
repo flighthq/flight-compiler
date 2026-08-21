@@ -74,6 +74,54 @@ describe('getTypeScriptInvocationSignatureResolution', () => {
     });
   });
 
+  it('pairs a resolved class method overload with its implementation', () => {
+    const { checker, invocation, source } = createInvocationProgram(
+      [
+        'class Value {',
+        '  choose(value: string): string;',
+        '  choose(value: number): number;',
+        '  choose(value: string | number): string | number { return value; }',
+        '}',
+        'new Value().choose(1);',
+      ].join('\n'),
+    );
+    const declaration = source.statements[0];
+    if (!declaration || !ts.isClassDeclaration(declaration)) throw new Error('Expected class declaration');
+    const resolved = declaration.members[1];
+    const implementation = declaration.members[2];
+    if (!resolved || !ts.isMethodDeclaration(resolved) || !implementation || !ts.isMethodDeclaration(implementation)) {
+      throw new Error('Expected method overload declarations');
+    }
+
+    expect(getTypeScriptInvocationSignatureResolution(invocation, checker)).toEqual({
+      implementation,
+      overloadIndex: 1,
+      resolved,
+    });
+  });
+
+  it('retains an interface method overload when no implementation exists', () => {
+    const { checker, invocation, source } = createInvocationProgram(
+      [
+        'interface Value {',
+        '  choose(value: string): string;',
+        '  choose(value: number): number;',
+        '}',
+        'declare const value: Value;',
+        'value.choose(1);',
+      ].join('\n'),
+    );
+    const declaration = source.statements[0];
+    if (!declaration || !ts.isInterfaceDeclaration(declaration)) throw new Error('Expected interface declaration');
+    const resolved = declaration.members[1];
+    if (!resolved || !ts.isMethodSignature(resolved)) throw new Error('Expected interface method overload');
+
+    expect(getTypeScriptInvocationSignatureResolution(invocation, checker)).toEqual({
+      implementation: resolved,
+      resolved,
+    });
+  });
+
   it('retains a declaration-only overload when no implementation exists', () => {
     const { checker, invocation, source } = createInvocationProgram(
       'declare function choose(value: number): number; choose(1);',

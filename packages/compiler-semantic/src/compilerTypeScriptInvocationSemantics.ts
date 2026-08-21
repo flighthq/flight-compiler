@@ -13,6 +13,11 @@ export function getTypeScriptInvocationSignatureResolution(
     const declarations = symbol?.declarations?.filter(ts.isFunctionDeclaration) ?? [];
     return getTypeScriptOverloadSignatureResolution(resolved, declarations);
   }
+  if (ts.isMethodDeclaration(resolved) && !resolved.body) {
+    const symbol = checker.getSymbolAtLocation(resolved.name);
+    const declarations = symbol?.declarations?.filter(ts.isMethodDeclaration) ?? [];
+    return getTypeScriptOverloadSignatureResolution(resolved, declarations);
+  }
   if (
     ts.isConstructorDeclaration(resolved) &&
     !resolved.body &&
@@ -25,7 +30,7 @@ export function getTypeScriptInvocationSignatureResolution(
 }
 
 function getTypeScriptOverloadSignatureResolution<
-  Declaration extends ts.FunctionDeclaration | ts.ConstructorDeclaration,
+  Declaration extends ts.ConstructorDeclaration | ts.FunctionDeclaration | ts.MethodDeclaration,
 >(resolved: Declaration, declarations: readonly Declaration[]): TypeScriptInvocationSignatureResolution {
   const implementation = declarations.find((declaration) => declaration.body !== undefined);
   if (!implementation) return { implementation: resolved, resolved };

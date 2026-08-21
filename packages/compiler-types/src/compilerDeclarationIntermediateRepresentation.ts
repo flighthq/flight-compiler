@@ -94,6 +94,7 @@ export interface IrClassMethod extends IrFunctionSignature {
   readonly async: boolean;
   readonly body: readonly IrStatement[];
   readonly name: string;
+  readonly overloads: readonly IrFunctionSignature[];
   readonly static: boolean;
   readonly visibility: IrClassMemberVisibility;
 }

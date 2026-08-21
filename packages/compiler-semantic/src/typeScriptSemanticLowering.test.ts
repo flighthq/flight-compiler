@@ -252,6 +252,81 @@ describe('lowerTypeScriptSource', () => {
     ]);
   });
 
+  it('models class method implementations and interface method overload sets without duplicate runtime members', () => {
+    const result = lower(
+      'method-overloads.ts',
+      `
+        export interface Chooser {
+          choose(value: string): string;
+          choose(value: number): number;
+        }
+        export class Picker {
+          choose(value: number): number;
+          choose(value: number, radix?: number): number;
+          choose(value: number, radix = 10): number { return value + radix; }
+        }
+        export function read(picker: Picker): number { return picker.choose(1); }
+      `,
+    );
+    const interfaceDeclaration = result.module.declarations.find((declaration) => declaration.kind === 'interface');
+    const classDeclaration = result.module.declarations.find((declaration) => declaration.kind === 'class');
+    const read = result.module.declarations.find(
+      (declaration) => declaration.kind === 'function' && declaration.binding.name === 'read',
+    );
+    if (interfaceDeclaration?.kind !== 'interface' || classDeclaration?.kind !== 'class' || read?.kind !== 'function') {
+      throw new Error('Expected method overload declarations');
+    }
+    const call = read.body[0]?.kind === 'return' ? read.body[0].expression : undefined;
+
+    expect(interfaceDeclaration.properties).toEqual([
+      {
+        name: 'choose',
+        optional: false,
+        readonly: true,
+        type: {
+          kind: 'intersection',
+          types: [
+            expect.objectContaining({ kind: 'function', returns: { kind: 'primitive', name: 'string' } }),
+            expect.objectContaining({ kind: 'function', returns: { kind: 'primitive', name: 'number' } }),
+          ],
+        },
+      },
+    ]);
+    expect(classDeclaration.methods).toHaveLength(1);
+    expect(classDeclaration.methods[0]).toMatchObject({
+      name: 'choose',
+      overloads: [
+        { parameters: [{ binding: { name: 'value' } }], returns: { kind: 'primitive', name: 'number' } },
+        {
+          parameters: [{ binding: { name: 'value' } }, { binding: { name: 'radix' }, optional: true }],
+          returns: { kind: 'primitive', name: 'number' },
+        },
+      ],
+      parameters: [
+        { binding: { name: 'value' } },
+        { binding: { name: 'radix' }, initializer: { kind: 'literal', value: 10 }, optional: true },
+      ],
+    });
+    expect(call).toMatchObject({
+      kind: 'call',
+      semantics: {
+        defaultParameters: { defaulted: [1], omitted: [1], parameterCount: 2, providedArgumentCount: 1 },
+        overloadImplementation: {
+          implementationParameterCount: 2,
+          overloadIndex: 0,
+          resolvedParameterCount: 1,
+        },
+      },
+    });
+    expect(result.diagnostics).toEqual([]);
+
+    const orphan = lower('orphan-method.ts', 'export class Picker { choose(value: number): number; }');
+    expect(orphan.module.declarations).toEqual([]);
+    expect(orphan.diagnostics.map((diagnostic) => diagnostic.message)).toEqual([
+      'class method choose requires one implementation',
+    ]);
+  });
+
   it('represents re-exports and default exports instead of silently skipping them', () => {
     const result = lower(
       'barrel.ts',

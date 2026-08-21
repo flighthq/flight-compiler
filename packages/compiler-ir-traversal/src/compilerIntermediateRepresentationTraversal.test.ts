@@ -383,6 +383,29 @@ describe('analyzeIrModuleTraversal', () => {
     ]);
   });
 
+  it('visits class method overload signatures at canonical semantic paths', () => {
+    const module = lower(`
+      export class Picker {
+        choose(value: number): number;
+        choose(value: number, radix?: number): number;
+        choose(value: number, radix = 10): number { return value + radix; }
+      }
+    `);
+    const paths: Array<readonly (number | string)[]> = [];
+
+    analyzeIrModuleTraversal(module, {
+      functionSignature(_signature, path) {
+        paths.push(path);
+      },
+    });
+
+    expect(paths).toEqual([
+      ['declarations', 0, 'methods', 0],
+      ['declarations', 0, 'methods', 0, 'overloads', 0],
+      ['declarations', 0, 'methods', 0, 'overloads', 1],
+    ]);
+  });
+
   it('visits lowering-only expression carriers and their semantic type evidence', () => {
     const numberType = { kind: 'primitive', name: 'number' } as const satisfies IrType;
     const tupleType = {

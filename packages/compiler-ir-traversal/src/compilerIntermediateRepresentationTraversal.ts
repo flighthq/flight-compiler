@@ -132,6 +132,13 @@ function analyzeIrDeclarationTraversal(
       declaration.methods.forEach((method, index) => {
         const methodPath = createIrTraversalPath(path, 'methods', index);
         analyzeIrFunctionSignatureTraversal(method, observer, methodPath);
+        method.overloads.forEach((overload, overloadIndex) =>
+          analyzeIrFunctionSignatureTraversal(
+            overload,
+            observer,
+            createIrTraversalPath(methodPath, 'overloads', overloadIndex),
+          ),
+        );
         method.body.forEach((statement, statementIndex) =>
           analyzeIrStatementTraversal(statement, observer, createIrTraversalPath(methodPath, 'body', statementIndex)),
         );

@@ -101,6 +101,37 @@ describe('validateIrModuleStructure', () => {
     expect(rich).toEqual(snapshot);
   });
 
+  it('validates class method overload signatures in independent function scopes', () => {
+    const valid = lower(
+      'method-overloads.ts',
+      `
+        export class Picker {
+          choose(value: number): number;
+          choose(value: number, radix?: number): number;
+          choose(value: number, radix = 10): number { return value + radix; }
+        }
+      `,
+    );
+
+    expect(validateIrModuleStructure(valid)).toEqual({ kind: 'valid' });
+
+    const invalid = structuredClone(valid);
+    const declaration = invalid.declarations[0];
+    if (declaration?.kind !== 'class' || !declaration.methods[0]?.overloads[0]) {
+      throw new Error('Expected overloaded class method');
+    }
+    (declaration.methods[0].overloads[0] as { returns: unknown }).returns = { kind: 'future-type' };
+    expect(validateIrModuleStructure(invalid)).toMatchObject({
+      failures: [
+        expect.objectContaining({
+          code: 'unknown-ir-kind',
+          path: expect.stringContaining('.methods[0].overloads[0].returns'),
+        }),
+      ],
+      kind: 'invalid',
+    });
+  });
+
   it('validates fixed tuple-spread segments, widths, and optional positions', () => {
     const valid = lower(
       'tuple-spread.ts',

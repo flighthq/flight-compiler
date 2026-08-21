@@ -311,6 +311,12 @@ function visitDeclaration(declaration: Readonly<IrDeclaration>, path: string, st
             visitFunctionSignature(method, methodPath, state);
             visitStatementList(method.body, `${methodPath}.body`, state);
           });
+          method.overloads.forEach((overload, overloadIndex) => {
+            const overloadPath = `${methodPath}.overloads[${String(overloadIndex)}]`;
+            visitLexicalScope('function', overloadPath, state, () =>
+              visitFunctionSignature(overload, overloadPath, state),
+            );
+          });
         });
       });
       break;

@@ -241,6 +241,20 @@ function lowerClass(node: ts.ClassDeclaration, context: LoweringContext): IrClas
   if (parameterProperty) unsupported(parameterProperty, 'constructor parameter properties require field lowering');
   const fields: IrClassField[] = [];
   const methods: IrClassMethod[] = [];
+  const methodGroups = new Map<string, ts.MethodDeclaration[]>();
+  for (const method of node.members.filter(ts.isMethodDeclaration)) {
+    const name = propertyName(method.name, context);
+    const key = `${hasModifier(method, ts.SyntaxKind.StaticKeyword) ? 'static' : 'instance'}:${name}`;
+    const group = methodGroups.get(key) ?? [];
+    group.push(method);
+    methodGroups.set(key, group);
+  }
+  for (const group of methodGroups.values()) {
+    const implementations = group.filter((method) => method.body !== undefined);
+    if (implementations.length !== 1) {
+      unsupported(group[0]!, `class method ${propertyName(group[0]!.name, context)} requires one implementation`);
+    }
+  }
   for (const member of node.members) {
     if (ts.isConstructorDeclaration(member)) continue;
     if (ts.isPropertyDeclaration(member)) {
@@ -258,9 +272,14 @@ function lowerClass(node: ts.ClassDeclaration, context: LoweringContext): IrClas
       continue;
     }
     if (ts.isMethodDeclaration(member)) {
-      if (!member.body) unsupported(member, 'class method overloads are not represented yet');
+      if (!member.body) continue;
       const signature = lowerFunctionSignature(member, context);
       const parameterEntries = lowerParameterBindingEntries(member.parameters, signature.parameters, context);
+      const name = propertyName(member.name, context);
+      const key = `${hasModifier(member, ts.SyntaxKind.StaticKeyword) ? 'static' : 'instance'}:${name}`;
+      const overloads = (methodGroups.get(key) ?? [])
+        .filter((candidate) => candidate !== member)
+        .map((candidate) => lowerFunctionSignature(candidate, context));
       methods.push({
         ...signature,
         async: hasModifier(member, ts.SyntaxKind.AsyncKeyword),
@@ -273,7 +292,8 @@ function lowerClass(node: ts.ClassDeclaration, context: LoweringContext): IrClas
             context,
           ),
         ],
-        name: propertyName(member.name, context),
+        name,
+        overloads,
         static: hasModifier(member, ts.SyntaxKind.StaticKeyword),
         visibility: visibility(member),
       });
@@ -2074,26 +2094,65 @@ function getTypeNameNodeParts(
 }
 
 function lowerTypeProperties(members: readonly ts.TypeElement[], context: LoweringContext): IrObjectTypeProperty[] {
-  return members.map((member): IrObjectTypeProperty => {
+  return lowerTypeScriptTypeProperties(
+    members,
+    context,
+    (node) => lowerType(node, context),
+    (node) => lowerFunctionType(node, context),
+  );
+}
+
+function lowerTypeScriptTypeProperties(
+  members: readonly ts.TypeElement[],
+  context: LoweringContext,
+  lowerPropertyType: (node: ts.TypeNode) => IrType,
+  lowerMethodType: (node: ts.MethodSignature) => Extract<IrType, { kind: 'function' }>,
+): IrObjectTypeProperty[] {
+  const properties: IrObjectTypeProperty[] = [];
+  const loweredMethods = new Set<ts.MethodSignature>();
+  for (const member of members) {
     if (ts.isPropertySignature(member)) {
       if (!member.type) unsupported(member, 'property signature requires a type');
-      return {
+      const name = propertyName(member.name, context);
+      if (properties.some((property) => property.name === name)) {
+        unsupported(member, `object type property ${name} is declared more than once`);
+      }
+      properties.push({
         name: propertyName(member.name, context),
         optional: member.questionToken !== undefined,
         readonly: hasModifier(member, ts.SyntaxKind.ReadonlyKeyword),
-        type: lowerType(member.type, context),
-      };
+        type: lowerPropertyType(member.type),
+      });
+      continue;
     }
     if (ts.isMethodSignature(member)) {
-      return {
-        name: propertyName(member.name, context),
-        optional: member.questionToken !== undefined,
+      if (loweredMethods.has(member)) continue;
+      const name = propertyName(member.name, context);
+      if (properties.some((property) => property.name === name)) {
+        unsupported(member, `object type member ${name} mixes property and method declarations`);
+      }
+      const overloads = members.filter(
+        (candidate): candidate is ts.MethodSignature =>
+          ts.isMethodSignature(candidate) && propertyName(candidate.name, context) === name,
+      );
+      const optional = member.questionToken !== undefined;
+      if (overloads.some((overload) => (overload.questionToken !== undefined) !== optional)) {
+        unsupported(member, `overloaded object method ${name} must use one optionality`);
+      }
+      overloads.forEach((overload) => loweredMethods.add(overload));
+      const types = overloads.map(lowerMethodType);
+      const [first, second, ...rest] = types;
+      properties.push({
+        name,
+        optional,
         readonly: true,
-        type: lowerFunctionType(member, context),
-      };
+        type: first && second ? { kind: 'intersection', types: [first, second, ...rest] } : first!,
+      });
+      continue;
     }
     unsupported(member, `unsupported type member ${ts.SyntaxKind[member.kind]}`);
-  });
+  }
+  return properties;
 }
 
 function lowerCompoundTypes(
@@ -2331,29 +2390,53 @@ function lowerTypeScriptTypeNodeEvidence(
   if (ts.isTypeLiteralNode(type)) {
     return {
       kind: 'object',
-      properties: type.members.map((member): IrObjectTypeProperty => {
-        if (ts.isPropertySignature(member)) {
-          if (!member.type) unsupported(member, 'property signature requires a type');
-          return {
-            name: propertyName(member.name, context),
-            optional: member.questionToken !== undefined,
-            readonly: hasModifier(member, ts.SyntaxKind.ReadonlyKeyword),
-            type: lowerTypeScriptTypeNodeEvidence(member.type, context, seen, substitutions),
-          };
-        }
-        if (ts.isMethodSignature(member)) {
-          return {
-            name: propertyName(member.name, context),
-            optional: member.questionToken !== undefined,
-            readonly: false,
-            type: lowerFunctionType(member, context),
-          };
-        }
-        return unsupported(member, 'unsupported object type member');
-      }),
+      properties: lowerTypeScriptTypePropertiesEvidence(type.members, context, seen, substitutions),
     };
   }
   return lowerType(type, context);
+}
+
+function lowerTypeScriptFunctionTypeEvidence(
+  node: ts.SignatureDeclaration,
+  context: LoweringContext,
+  seen: ReadonlySet<ts.Symbol>,
+  substitutions: ReadonlyMap<ts.Symbol, ts.TypeNode>,
+): Extract<IrType, { kind: 'function' }> {
+  return {
+    kind: 'function',
+    parameters: node.parameters
+      .filter((parameter) => !isThisParameter(parameter))
+      .map((parameter): IrFunctionTypeParameter => {
+        const type: IrType = parameter.type
+          ? lowerTypeScriptTypeNodeEvidence(parameter.type, context, seen, substitutions)
+          : parameter.initializer
+            ? inferInitializerType(parameter.initializer, context)
+            : { kind: 'unknown', source: 'any' };
+        const value = { name: ts.isIdentifier(parameter.name) ? parameter.name.text : 'parameterPatternValue', type };
+        if (parameter.dotDotDotToken) return { ...value, optional: false, rest: true };
+        return parameter.questionToken || parameter.initializer
+          ? { ...value, optional: true, rest: false }
+          : { ...value, optional: false, rest: false };
+      }),
+    returns: node.type
+      ? lowerTypeScriptTypeNodeEvidence(node.type, context, seen, substitutions)
+      : { kind: 'unknown', source: 'any' },
+    typeParameters: lowerTypeParameters(node.typeParameters, context),
+  };
+}
+
+function lowerTypeScriptTypePropertiesEvidence(
+  members: readonly ts.TypeElement[],
+  context: LoweringContext,
+  seen: ReadonlySet<ts.Symbol>,
+  substitutions: ReadonlyMap<ts.Symbol, ts.TypeNode>,
+): readonly IrObjectTypeProperty[] {
+  return lowerTypeScriptTypeProperties(
+    members,
+    context,
+    (node) => lowerTypeScriptTypeNodeEvidence(node, context, seen, substitutions),
+    (node) => lowerTypeScriptFunctionTypeEvidence(node, context, seen, substitutions),
+  );
 }
 
 function lowerTypeScriptInterfacePropertiesEvidence(
@@ -2401,20 +2484,9 @@ function lowerTypeScriptInterfacePropertiesEvidence(
       );
     }
   }
-  declaration.members.forEach((member) => {
-    if (!ts.isPropertySignature(member) || !member.type) {
-      unsupported(member, 'syntactic interface evidence requires typed properties');
-    }
-    mergeProperty(
-      {
-        name: propertyName(member.name, context),
-        optional: member.questionToken !== undefined,
-        readonly: hasModifier(member, ts.SyntaxKind.ReadonlyKeyword),
-        type: lowerTypeScriptTypeNodeEvidence(member.type, context, seen, substitutions),
-      },
-      member,
-    );
-  });
+  lowerTypeScriptTypePropertiesEvidence(declaration.members, context, seen, substitutions).forEach((property) =>
+    mergeProperty(property, declaration),
+  );
   return properties;
 }
 
