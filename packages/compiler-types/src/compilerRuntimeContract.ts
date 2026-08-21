@@ -40,6 +40,12 @@ export interface CompilerRuntimeExternalSymbolBindingPlan {
   readonly contract: CompilerRuntimeContractVersion;
 }
 
+export interface CompilerRuntimeContractMismatchFailure extends Error {
+  readonly expected: CompilerRuntimeContractVersion;
+  readonly kind: 'runtime-contract-mismatch';
+  readonly received: string;
+}
+
 export type CompilerRuntimeExternalSymbolCompleteness =
   | Readonly<{
       contract: CompilerRuntimeContractVersion;

@@ -1,5 +1,8 @@
 import type { CompilerRuntimeExternalSymbolBindingPlan } from '../../compiler-types/src/index.js';
-import { analyzeCompilerRuntimeExternalSymbolCompleteness } from './compilerRuntimeExternalSymbolCompleteness.js';
+import {
+  analyzeCompilerRuntimeExternalSymbolCompleteness,
+  isCompilerRuntimeContractMismatchFailure,
+} from './compilerRuntimeExternalSymbolCompleteness.js';
 
 describe('analyzeCompilerRuntimeExternalSymbolCompleteness', () => {
   it('keeps type and value decisions for one source symbol distinct', () => {
@@ -101,5 +104,43 @@ describe('analyzeCompilerRuntimeExternalSymbolCompleteness', () => {
       requiredExternalSymbols: [],
       schema: 'flight-runtime-contract-completeness/2',
     });
+  });
+
+  it('refuses a binding plan for a different runtime contract version', () => {
+    const incompatiblePlan = {
+      bindings: [],
+      contract: 'flight-runtime-contract/1',
+    } as unknown as CompilerRuntimeExternalSymbolBindingPlan;
+
+    try {
+      analyzeCompilerRuntimeExternalSymbolCompleteness([], incompatiblePlan);
+      expect.unreachable('Expected the incompatible runtime contract to fail');
+    } catch (error) {
+      expect(isCompilerRuntimeContractMismatchFailure(error)).toBe(true);
+      expect(error).toMatchObject({
+        expected: 'flight-runtime-contract/2',
+        kind: 'runtime-contract-mismatch',
+        message: 'Runtime binding plan uses flight-runtime-contract/1; expected flight-runtime-contract/2',
+        name: 'CompilerRuntimeContractMismatchError',
+        received: 'flight-runtime-contract/1',
+      });
+    }
+  });
+});
+
+describe('isCompilerRuntimeContractMismatchFailure', () => {
+  it('rejects ordinary errors and incomplete lookalikes', () => {
+    const valid = Object.assign(new Error('mismatch'), {
+      expected: 'flight-runtime-contract/2',
+      kind: 'runtime-contract-mismatch',
+      received: 'flight-runtime-contract/1',
+    });
+
+    expect(isCompilerRuntimeContractMismatchFailure(valid)).toBe(true);
+    expect(isCompilerRuntimeContractMismatchFailure(new Error('plain'))).toBe(false);
+    expect(isCompilerRuntimeContractMismatchFailure({ ...valid, expected: 'flight-runtime-contract/1' })).toBe(false);
+    expect(isCompilerRuntimeContractMismatchFailure(Object.assign(new Error('missing'), valid, { received: 1 }))).toBe(
+      false,
+    );
   });
 });

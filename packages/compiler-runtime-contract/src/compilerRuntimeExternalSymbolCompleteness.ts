@@ -1,5 +1,6 @@
 import { compareTextCodeUnits } from '../../compiler-canonical-form/src/index.js';
 import type {
+  CompilerRuntimeContractMismatchFailure,
   CompilerRuntimeExternalSymbolBindingPlan,
   CompilerRuntimeExternalSymbolCompleteness,
   CompilerRuntimeExternalSymbolIdentity,
@@ -9,6 +10,18 @@ export function analyzeCompilerRuntimeExternalSymbolCompleteness(
   requiredExternalSymbols: readonly Readonly<CompilerRuntimeExternalSymbolIdentity>[],
   bindingPlan: Readonly<CompilerRuntimeExternalSymbolBindingPlan>,
 ): CompilerRuntimeExternalSymbolCompleteness {
+  if (bindingPlan.contract !== 'flight-runtime-contract/2') {
+    const failure = Object.assign(
+      new Error(`Runtime binding plan uses ${String(bindingPlan.contract)}; expected flight-runtime-contract/2`),
+      {
+        expected: 'flight-runtime-contract/2' as const,
+        kind: 'runtime-contract-mismatch' as const,
+        received: String(bindingPlan.contract),
+      },
+    );
+    failure.name = 'CompilerRuntimeContractMismatchError';
+    throw failure;
+  }
   const required = createSortedExternalSymbolIdentities(requiredExternalSymbols);
   const bindingCounts = new Map<string, { count: number; identity: CompilerRuntimeExternalSymbolIdentity }>();
   for (const binding of bindingPlan.bindings) {
@@ -39,6 +52,20 @@ export function analyzeCompilerRuntimeExternalSymbolCompleteness(
     kind: 'incomplete',
     missingExternalSymbols,
   };
+}
+
+export function isCompilerRuntimeContractMismatchFailure(
+  value: unknown,
+): value is CompilerRuntimeContractMismatchFailure {
+  return (
+    value instanceof Error &&
+    'kind' in value &&
+    value.kind === 'runtime-contract-mismatch' &&
+    'expected' in value &&
+    value.expected === 'flight-runtime-contract/2' &&
+    'received' in value &&
+    typeof value.received === 'string'
+  );
 }
 
 function compareExternalSymbolIdentities(
