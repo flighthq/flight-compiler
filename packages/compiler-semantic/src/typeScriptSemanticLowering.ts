@@ -1216,8 +1216,9 @@ function lowerBindingPattern(
       return;
     }
     const elementType = sourceType?.kind === 'tuple' ? sourceType.elements[index]?.type : undefined;
+    const initializerType = element.initializer ? removeIrTypeBindingPatternUndefined(elementType) : elementType;
     elements.push({
-      ...(element.initializer ? { initializer: lowerExpression(element.initializer, context, elementType) } : {}),
+      ...(element.initializer ? { initializer: lowerExpression(element.initializer, context, initializerType) } : {}),
       pattern: lowerBindingPattern(element.name, context, elementType),
     });
   });
@@ -1228,6 +1229,15 @@ function lowerBindingPattern(
     ...(rest ? { rest } : {}),
     scope: bindingPatternScope(node),
   };
+}
+
+function removeIrTypeBindingPatternUndefined(type: Readonly<IrType> | undefined): IrType | undefined {
+  if (type?.kind !== 'union') return type;
+  const retained = type.types.filter((member) => member.kind !== 'undefined');
+  if (retained.length === 1) return retained[0];
+  return retained.length >= 2
+    ? { kind: 'union', types: [retained[0]!, retained[1]!, ...retained.slice(2)] }
+    : undefined;
 }
 
 function bindingPatternScope(node: ts.ArrayBindingPattern): IrBindingScope {

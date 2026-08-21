@@ -105,6 +105,10 @@ describe('emitIrModuleRust', () => {
       'tuple-index.ts',
       'export function select(values: [number], index: number): number { return values[index]; }',
     );
+    const nestedDefault = lower(
+      'array-nested-default.ts',
+      'export function select(values: [[number]?]): number { const [[first] = [1]]: [[number]?] = values; return first; }',
+    );
     const output = emitIrModuleRust(fixed.module).contents;
 
     expect(output).toContain('let array_pattern_value: (f64, f64, f64) = values;');
@@ -117,6 +121,7 @@ describe('emitIrModuleRust', () => {
       'let first: f64 = array_pattern_value.0.unwrap_or_else(|| 0.0);',
     );
     expect(emitIrModuleRust(rest.module).contents).toContain('let rest: Vec<f64> = array_pattern_value.1;');
+    expect(emitIrModuleRust(nestedDefault.module).contents).toContain('unwrap_or_else(|| (1.0,))');
     expect(() => emitIrModuleRust(dynamicIndex.module)).toThrow(
       'tuple projection requires one statically known nonnegative integer index',
     );

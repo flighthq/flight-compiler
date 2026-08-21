@@ -24,4 +24,11 @@ class ArrayBinding {
     final values:Array<Dynamic> = [1, null];
     return values;
   }
+
+  public static function selectNestedDefault(values:Array<Dynamic>):Float {
+    final arrayPatternValue:Array<Dynamic> = values;
+    final arrayPatternValue_2:Array<Dynamic> = (arrayPatternValue[0] ?? [1]);
+    final first:Float = arrayPatternValue_2[0];
+    return first;
+  }
 }

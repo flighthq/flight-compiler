@@ -23,3 +23,10 @@ pub fn create_values() -> (f64, Option<f64>) {
   let values: (f64, Option<f64>) = (1.0, None);
   return values;
 }
+
+pub fn select_nested_default(values: (Option<(f64,)>,)) -> f64 {
+  let array_pattern_value: (Option<(f64,)>,) = values;
+  let array_pattern_value_2: (f64,) = array_pattern_value.0.unwrap_or_else(|| (1.0,));
+  let first: f64 = array_pattern_value_2.0;
+  return first;
+}

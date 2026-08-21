@@ -17,3 +17,8 @@ export function createValues(): [number, number?] {
   const values: [number, number?] = [1];
   return values;
 }
+
+export function selectNestedDefault(values: [[number]?]): number {
+  const [[first] = [1]]: [[number]?] = values;
+  return first;
+}

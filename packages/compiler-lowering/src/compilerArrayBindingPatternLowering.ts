@@ -154,14 +154,6 @@ function lowerIrArrayBindingPattern(
         `array binding default at index ${String(index)} requires distinct null and undefined representations`,
       );
     }
-    if (appliesDefault && patternElement.pattern.kind === 'array') {
-      throw createCompilerLoweringFailure(
-        'unsupported-ir',
-        compilerLoweringPassNameArrayBindingPattern,
-        pattern,
-        `nested array binding default at index ${String(index)} requires contextual tuple-expression lowering`,
-      );
-    }
   }
   const variables = pattern.elements.flatMap((element, index): readonly LoweredArrayBindingVariable[] => {
     if (!element) return [];

@@ -206,6 +206,43 @@ describe('createCompilerLoweringPassArrayBindingPattern', () => {
     });
   });
 
+  it('lowers nested tuple defaults through a typed single-evaluation temporary', () => {
+    const output = lowerIrModuleWithCompilerPasses(
+      lower(
+        'nested-default.ts',
+        `
+          export function choose(optional: [[number]?], required: [[number] | undefined]): number {
+            const [[first] = [1]]: [[number]?] = optional;
+            const [[second] = [2]]: [[number] | undefined] = required;
+            return first + second;
+          }
+        `,
+      ),
+      [createCompilerLoweringPassArrayBindingPattern()],
+    );
+    const body = getFunctionDeclaration(output, 'choose').body;
+    const optional = getVariableStatement(body[0]).declarations.map(getNamedVariable);
+    const required = getVariableStatement(body[1]).declarations.map(getNamedVariable);
+
+    expect(optional).toHaveLength(3);
+    expect(optional[1]).toMatchObject({
+      initializer: {
+        fallback: {
+          elements: [{ expression: { value: 1 }, optional: false }],
+          kind: 'tuple',
+        },
+        kind: 'undefinedDefault',
+      },
+      type: { kind: 'tuple' },
+    });
+    expect(optional[2]).toMatchObject({ binding: { name: 'first' }, initializer: { kind: 'element' } });
+    expect(required[1]).toMatchObject({
+      initializer: { fallback: { kind: 'tuple' }, kind: 'undefinedDefault' },
+      type: { kind: 'tuple' },
+    });
+    expect(required[2]).toMatchObject({ binding: { name: 'second' }, initializer: { kind: 'element' } });
+  });
+
   it('lowers an aligned variadic tuple tail without re-evaluating its source', () => {
     const output = lowerIrModuleWithCompilerPasses(
       lower(
@@ -261,10 +298,6 @@ describe('createCompilerLoweringPassArrayBindingPattern', () => {
     {
       reason: 'array binding pattern requires an initializer outside iteration statements',
       source: 'export function read(): void { let [value]: [number]; }',
-    },
-    {
-      reason: 'nested array binding default at index 0 requires contextual tuple-expression lowering',
-      source: 'export const [[value] = [1]]: [[number]?] = [];',
     },
     {
       reason: 'array binding default at index 0 requires distinct null and undefined representations',
