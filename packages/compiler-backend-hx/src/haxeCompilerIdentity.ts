@@ -1,5 +1,7 @@
 import path from 'node:path';
 
+import { normalizePathPortable } from '../../compiler-canonical-form/src/index.js';
+
 export function convertPackageNameToHaxePackageName(packageName: string, rootPackage = 'flighthq'): string {
   if (!/^[a-z_][A-Za-z0-9_]*(?:\.[a-z_][A-Za-z0-9_]*)*$/u.test(rootPackage)) {
     throw new Error(`Cannot map invalid Haxe root package: ${rootPackage}`);
@@ -23,7 +25,7 @@ export function convertPackageNameToHaxePackageName(packageName: string, rootPac
 }
 
 export function convertSourcePathToHaxeModuleName(sourcePath: string): string | undefined {
-  const portableSourcePath = sourcePath.replaceAll('\\', '/');
+  const portableSourcePath = normalizePathPortable(sourcePath);
   const basename = path.posix.basename(portableSourcePath);
   if (!/\.tsx?$/u.test(basename)) throw new Error(`Cannot map non-TypeScript source path: ${sourcePath}`);
   const filename = basename.replace(/\.tsx?$/u, '');

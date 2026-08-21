@@ -31,7 +31,7 @@ compiler-types + compiler-emission + compiler-lowering + compiler-runtime-contra
   <- compiler-backend-hx
   <- compiler-backend-rs
 
-ordering + types + semantic + patch + emission
+canonical form + types + semantic + patch + emission
   <- compiler-orchestration
   <- tool-compiler
 ```
@@ -121,7 +121,7 @@ Status: narrow and near-mature after the current hardening pass.
 
 Strengths:
 
-- It depends only on the shared contract and deterministic-ordering floors.
+- It depends only on the shared contract and deterministic canonical-form floors.
 - SHA-256 identity is explicit and deterministic.
 - TypeScript's parsed syntax tree, rather than text-wide regular expressions, defines node normalization.
 

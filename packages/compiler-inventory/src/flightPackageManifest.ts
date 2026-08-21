@@ -1,6 +1,6 @@
 import path from 'node:path';
 
-import { compareTextCodeUnits } from '../../compiler-canonical-form/src/index.js';
+import { compareTextCodeUnits, normalizePathPortable } from '../../compiler-canonical-form/src/index.js';
 import type {
   FlightPackageManifest,
   PackageBinEntry,
@@ -138,5 +138,5 @@ function relativeUpstreamPath(target: string, upstreamDirectory: string): string
       `Package directory is outside upstream checkout: ${target}`,
     );
   }
-  return relative.split(path.sep).join('/');
+  return normalizePathPortable(relative);
 }

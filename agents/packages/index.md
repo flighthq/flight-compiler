@@ -6,7 +6,7 @@ A score is a judgement about **domain coverage**, not about code quality. `compi
 
 | package | status | score | the domain in one line |
 | --- | --- | --: | --- |
-| [compiler-canonical-form](compiler-canonical-form/review.md) | near-mature | 90 | which bytes represent equivalent compiler text and paths across hosts |
+| [compiler-canonical-form](compiler-canonical-form/review.md) | mature | 96 | which bytes represent equivalent compiler text and paths across hosts |
 | [compiler-provenance](compiler-provenance/review.md) | near-mature | 88 | are two pieces of source the same thing |
 | [compiler-emission](compiler-emission/review.md) | near-mature | 80 | what may a generated file and a generated name be called |
 | [compiler-patch](compiler-patch/review.md) | substantially-mature | 78 | correct upstream semantics without editing upstream |

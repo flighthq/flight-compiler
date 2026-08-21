@@ -1,5 +1,6 @@
 import path from 'node:path';
 
+import { normalizePathPortable } from '../../compiler-canonical-form/src/index.js';
 import type { WorkspaceSource, WorkspaceSourceEntry } from '../../compiler-types/src/index.js';
 
 // A workspace held entirely in memory, keyed by absolute POSIX-style path.
@@ -50,7 +51,7 @@ export function createMemoryWorkspaceSource(files: Readonly<Record<string, strin
 }
 
 function normalize(candidate: string): string {
-  const posix = candidate.replaceAll('\\', '/');
+  const posix = normalizePathPortable(candidate);
   const resolved = path.posix.normalize(posix.startsWith('/') ? posix : `/${posix}`);
   return resolved.length > 1 && resolved.endsWith('/') ? resolved.slice(0, -1) : resolved;
 }

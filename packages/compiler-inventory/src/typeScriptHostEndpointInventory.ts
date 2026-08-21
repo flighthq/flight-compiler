@@ -2,7 +2,7 @@ import path from 'node:path';
 
 import ts from 'typescript';
 
-import { compareTextCodeUnits } from '../../compiler-canonical-form/src/index.js';
+import { compareTextCodeUnits, normalizePathPortable } from '../../compiler-canonical-form/src/index.js';
 import type {
   AnalyzeTypeScriptHostEndpointsOptions,
   CompilerHostEndpointInventory,
@@ -102,7 +102,7 @@ function compareSourceLocations(
 }
 
 function getPortableRelativePath(file: string, upstreamDirectory: string): string {
-  return path.relative(upstreamDirectory, path.resolve(file)).split(path.sep).join('/');
+  return normalizePathPortable(path.relative(upstreamDirectory, path.resolve(file)));
 }
 
 function getSourceFileManifest(

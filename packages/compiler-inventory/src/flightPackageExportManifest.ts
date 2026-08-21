@@ -1,6 +1,6 @@
 import path from 'node:path';
 
-import { compareTextCodeUnits } from '../../compiler-canonical-form/src/index.js';
+import { compareTextCodeUnits, normalizePathPortable } from '../../compiler-canonical-form/src/index.js';
 import type {
   PackageExportCondition,
   PackageExportDescriptor,
@@ -21,7 +21,7 @@ export function readPackageExportManifest(
   const directory = path.resolve(packageDirectory);
   const packageJson = readJson(path.join(directory, 'package.json'), workspace);
   if (typeof packageJson.name !== 'string' || typeof packageJson.version !== 'string') {
-    const subject = portablePath(directory);
+    const subject = normalizePathPortable(directory);
     throw createCompilerInventoryFailure('invalid-package-manifest', subject, `Invalid package metadata: ${subject}`);
   }
   return readPackageExportDescriptors(
@@ -30,10 +30,6 @@ export function readPackageExportManifest(
     packageJson,
     workspace,
   );
-}
-
-function portablePath(value: string): string {
-  return value.split(path.sep).join('/');
 }
 
 function readJson(file: string, workspace: WorkspaceSource): Record<string, unknown> {
@@ -46,8 +42,8 @@ function readJson(file: string, workspace: WorkspaceSource): Record<string, unkn
   } catch (error) {
     throw createCompilerInventoryFailure(
       'invalid-package-manifest',
-      portablePath(file),
-      `Package manifest is not valid JSON: ${portablePath(file)}`,
+      normalizePathPortable(file),
+      `Package manifest is not valid JSON: ${normalizePathPortable(file)}`,
       error,
     );
   }
@@ -136,14 +132,14 @@ function readPackageExportDescriptors(
 function relativeSource(file: string, upstreamDirectory: string): string {
   const relative = path.relative(upstreamDirectory, path.resolve(file));
   if (relative === '' || relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
-    const subject = portablePath(file);
+    const subject = normalizePathPortable(file);
     throw createCompilerInventoryFailure(
       'invalid-source-path',
       subject,
       `Source is outside upstream checkout: ${subject}`,
     );
   }
-  return portablePath(relative);
+  return normalizePathPortable(relative);
 }
 
 function sourceForExportTarget(

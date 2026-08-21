@@ -2,7 +2,7 @@ import path from 'node:path';
 
 import ts from 'typescript';
 
-import { compareTextCodeUnits } from '../../compiler-canonical-form/src/index.js';
+import { compareTextCodeUnits, normalizePathPortable } from '../../compiler-canonical-form/src/index.js';
 import { fingerprintTypeScriptNode } from '../../compiler-provenance/src/index.js';
 import type {
   AnalyzeFlightWorkspaceOptions,
@@ -104,7 +104,7 @@ export function analyzeFlightWorkspace(options: Readonly<AnalyzeFlightWorkspaceO
       const resolved = resolveExports(sourcePath, context);
       const source = project.program.getSourceFile(sourcePath);
       if (!source) {
-        const subject = portablePath(sourcePath);
+        const subject = normalizePathPortable(sourcePath);
         throw createCompilerInventoryFailure(
           'unresolved-source',
           subject,
@@ -393,10 +393,6 @@ function parseSource(file: string, context: AnalysisContext): ParsedSource {
   return parsed;
 }
 
-function portablePath(value: string): string {
-  return value.split(path.sep).join('/');
-}
-
 function readSdkExposures(
   sdk: PackageDescriptor | undefined,
   inventoryByName: ReadonlyMap<string, PackageInventory>,
@@ -454,14 +450,14 @@ function readSdkExposures(
 function relativeSource(file: string, upstreamDirectory: string): string {
   const relative = path.relative(upstreamDirectory, path.resolve(file));
   if (relative === '' || relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
-    const subject = portablePath(file);
+    const subject = normalizePathPortable(file);
     throw createCompilerInventoryFailure(
       'invalid-source-path',
       subject,
       `Source is outside upstream checkout: ${subject}`,
     );
   }
-  return portablePath(relative);
+  return normalizePathPortable(relative);
 }
 
 function resolvePackageExportSource(descriptor: Readonly<PackageExportDescriptor>, upstreamDirectory: string): string {
@@ -684,7 +680,7 @@ function resolveModule(containingFile: string, specifier: string, context: Analy
       throw createCompilerInventoryFailure(
         'unsupported-package-specifier',
         specifier,
-        `Unsupported export module '${specifier}' in ${portablePath(containingFile)}`,
+        `Unsupported export module '${specifier}' in ${normalizePathPortable(containingFile)}`,
       );
     }
     const descriptor = context.packageByName.get(match[1]);
@@ -692,7 +688,7 @@ function resolveModule(containingFile: string, specifier: string, context: Analy
       throw createCompilerInventoryFailure(
         'unknown-package',
         match[1],
-        `Unknown Flight package '${match[1]}' in ${portablePath(containingFile)}`,
+        `Unknown Flight package '${match[1]}' in ${normalizePathPortable(containingFile)}`,
       );
     }
     const exportDescriptor = context.exportDescriptors
@@ -712,8 +708,8 @@ function resolveModule(containingFile: string, specifier: string, context: Analy
   }
   throw createCompilerInventoryFailure(
     'unresolved-source',
-    `${portablePath(containingFile)}#${specifier}`,
-    `Cannot resolve export '${specifier}' from ${portablePath(containingFile)}`,
+    `${normalizePathPortable(containingFile)}#${specifier}`,
+    `Cannot resolve export '${specifier}' from ${normalizePathPortable(containingFile)}`,
   );
 }
 
@@ -732,7 +728,7 @@ function runtimeBindingRecord(
     throw createCompilerInventoryFailure(
       'runtime-export-classification',
       name,
-      `Unsupported runtime binding for ${name} in ${portablePath(declaration.getSourceFile().fileName)}`,
+      `Unsupported runtime binding for ${name} in ${normalizePathPortable(declaration.getSourceFile().fileName)}`,
     );
   }
   const record = makeRecord(name, kind, node, declaration.getSourceFile(), context);

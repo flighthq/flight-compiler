@@ -2,7 +2,7 @@ import path from 'node:path';
 
 import ts from 'typescript';
 
-import { compareTextCodeUnits } from '../../compiler-canonical-form/src/index.js';
+import { compareTextCodeUnits, normalizePathPortable } from '../../compiler-canonical-form/src/index.js';
 import type {
   AnalyzeFlightPackageImportsOptions,
   PackageImportRecord,
@@ -39,7 +39,7 @@ export function analyzeFlightPackageImports(
       true,
       file.endsWith('.tsx') ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
     );
-    const portableSource = path.relative(upstreamDirectory, file).split(path.sep).join('/');
+    const portableSource = normalizePathPortable(path.relative(upstreamDirectory, file));
     const add = (record: Omit<PackageImportRecord, 'source'>): void => {
       const complete = { ...record, source: portableSource };
       records.set(JSON.stringify([complete.source, complete.specifier, complete.kind, complete.typeOnly]), complete);

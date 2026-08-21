@@ -2,6 +2,7 @@ import path from 'node:path';
 
 import ts from 'typescript';
 
+import { normalizePathPortable } from '../../compiler-canonical-form/src/index.js';
 import { fingerprintTypeScriptNode } from '../../compiler-provenance/src/index.js';
 import type {
   CompilerDiagnostic,
@@ -1531,7 +1532,7 @@ function relativeSource(file: string, upstreamDirectory: string): string {
   if (relative === '' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
     throw new Error(`Source is outside upstream checkout: ${file}`);
   }
-  return relative.split(path.sep).join('/');
+  return normalizePathPortable(relative);
 }
 
 function requiredDeclarationName(

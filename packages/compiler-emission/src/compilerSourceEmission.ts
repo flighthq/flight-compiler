@@ -1,3 +1,4 @@
+import { normalizePathPortable } from '../../compiler-canonical-form/src/index.js';
 import type {
   BackendEmissionFailure,
   BackendEmissionFailureCode,
@@ -85,7 +86,7 @@ export function normalizeEmittedFileContents(contents: string): string {
 }
 
 export function normalizeEmittedFilePath(value: string): string {
-  const normalizedPath = value.replaceAll('\\', '/').normalize('NFC');
+  const normalizedPath = normalizePathPortable(value).normalize('NFC');
   if (normalizedPath.split('/').some(isUnsafePortablePathSegment)) {
     throw createCompilerInvariantFailure('unsafe-emitted-path', value, `Backend emitted an unsafe file path: ${value}`);
   }

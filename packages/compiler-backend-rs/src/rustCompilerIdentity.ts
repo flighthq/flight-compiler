@@ -1,5 +1,7 @@
 import path from 'node:path';
 
+import { normalizePathPortable } from '../../compiler-canonical-form/src/index.js';
+
 export function convertPackageNameToRustCrateName(packageName: string): string {
   const scopeSeparator = packageName.indexOf('/');
   const bareName = packageName.startsWith('@')
@@ -18,7 +20,7 @@ export function convertPackageNameToRustCrateName(packageName: string): string {
 }
 
 export function convertSourcePathToRustModuleName(sourcePath: string): string | undefined {
-  const portableSourcePath = sourcePath.replaceAll('\\', '/');
+  const portableSourcePath = normalizePathPortable(sourcePath);
   const basename = path.posix.basename(portableSourcePath);
   if (!/\.tsx?$/u.test(basename)) throw new Error(`Cannot map non-TypeScript source path: ${sourcePath}`);
   const filename = basename.replace(/\.tsx?$/u, '');
