@@ -2,6 +2,7 @@ import path from 'node:path';
 
 import { normalizePathPortable } from '../../compiler-canonical-form/src/index.js';
 import type { WorkspaceSource, WorkspaceSourceEntry } from '../../compiler-types/src/index.js';
+import { createCompilerInventoryFailure } from './compilerInventoryFailure.js';
 
 // A workspace held entirely in memory, keyed by absolute POSIX-style path.
 //
@@ -12,7 +13,18 @@ import type { WorkspaceSource, WorkspaceSourceEntry } from '../../compiler-types
 // directory that contains nothing.
 
 export function createMemoryWorkspaceSource(files: Readonly<Record<string, string>>): WorkspaceSource {
-  const normalized = new Map(Object.entries(files).map(([file, contents]) => [normalize(file), contents]));
+  const normalized = new Map(
+    Object.entries(files).map(([file, contents]) => {
+      if (file.includes('\\')) {
+        throw createCompilerInventoryFailure(
+          'invalid-source-path',
+          file,
+          `Memory workspace file path is not portable: ${JSON.stringify(file)}`,
+        );
+      }
+      return [normalize(file), contents];
+    }),
+  );
   const directories = new Set<string>();
   for (const file of normalized.keys()) {
     for (let parent = path.posix.dirname(file); parent !== '/' && parent !== '.'; parent = path.posix.dirname(parent)) {

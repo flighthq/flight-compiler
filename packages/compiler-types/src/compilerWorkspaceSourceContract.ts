@@ -11,6 +11,8 @@
 
 export interface WorkspaceSourceEntry {
   readonly isDirectory: boolean;
+  // One nonempty portable directory-entry segment. Implementations never return '/' or '\\' here;
+  // path boundaries are represented by listDirectory calls instead.
   readonly name: string;
 }
 

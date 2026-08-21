@@ -1,3 +1,4 @@
+import { isCompilerInventoryFailure } from './compilerInventoryFailure.js';
 import { createMemoryWorkspaceSource } from './memoryWorkspaceSource.js';
 
 const workspace = {
@@ -17,6 +18,25 @@ describe('createMemoryWorkspaceSource', () => {
     expect(source.readTextFile('flight/package.json')).toBe('{ "name": "flight" }');
     expect(source.readTextFile('\\flight\\package.json')).toBe('{ "name": "flight" }');
     expect(source.readTextFile('/flight/packages/../package.json')).toBe('{ "name": "flight" }');
+  });
+
+  it('refuses a backslash-bearing key before it can collide with a nested source path', () => {
+    let failure: unknown;
+    try {
+      createMemoryWorkspaceSource({
+        '/flight/weird/name.ts': 'export const nested = true;\n',
+        '/flight/weird\\name.ts': 'export const flat = true;\n',
+      });
+    } catch (error) {
+      failure = error;
+    }
+
+    expect(isCompilerInventoryFailure(failure)).toBe(true);
+    expect(failure).toMatchObject({
+      code: 'invalid-source-path',
+      kind: 'compiler-inventory',
+      subject: '/flight/weird\\name.ts',
+    });
   });
 
   it('fails loudly for a file the workspace does not hold', () => {
