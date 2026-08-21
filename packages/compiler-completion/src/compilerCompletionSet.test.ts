@@ -119,6 +119,8 @@ describe('createCompilerCompletionSet', () => {
     expect(Object.isFrozen(set)).toBe(true);
     expect(Object.isFrozen(set.completions)).toBe(true);
     expect(set.completions.every(Object.isFrozen)).toBe(true);
+    expect(Object.hasOwn(set.completions[1]!, 'target')).toBe(false);
+    expect(Object.hasOwn(set.completions[4]!, 'target')).toBe(false);
     expect(input).toEqual(snapshot);
   });
 

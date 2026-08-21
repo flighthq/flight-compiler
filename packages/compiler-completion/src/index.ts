@@ -4,6 +4,7 @@ export {
   createCompilerCompletionSet,
   isCompilerCompletionFailure,
 } from './compilerCompletionSet.js';
+export { applyCompilerCompletionSetFinallyReplacement } from './compilerFinallyCompletion.js';
 export {
   createIrStatementValueCallSemantics,
   isIrCallExpressionStatementValueCarrier,
