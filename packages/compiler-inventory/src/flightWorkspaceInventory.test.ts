@@ -25,13 +25,13 @@ describe('analyzeFlightWorkspace', () => {
         exportConflicts: 0,
         exportLanes: 3,
         excludedPackages: 0,
-        exports: 9,
+        exports: 15,
         hostDependencies: 0,
         hostImports: 0,
         packages: 2,
-        productionImports: 5,
-        rootExports: 6,
-        sourceFiles: 6,
+        productionImports: 6,
+        rootExports: 10,
+        sourceFiles: 7,
         testFiles: 1,
       });
       expect(getPackageInventoryRootExportLane(types)).toBe(root);
@@ -52,6 +52,20 @@ describe('analyzeFlightWorkspace', () => {
       // Mode's runtime value is a separate declaration from the exported type, so the binding is carried.
       // createValue is its own runtime declaration, so carrying a binding would only repeat the record:
       // the three-way agreement on fingerprint, kind and source is what decides between the two.
+      // createPublicValue is renamed twice on the way out: once by the import clause and once by the
+      // export clause, so the name reaches the lane through two aliases and matches the declaring
+      // file at neither end. Renaming on both sides is what makes it a real test — an implementation
+      // that ignored either clause could still answer correctly for a name that happened to match.
+      expect(root.exports.find((item) => item.name === 'createPublicValue')).toMatchObject({
+        kind: 'function',
+        runtime: true,
+        source: 'packages/types/src/other.ts',
+      });
+      expect(root.exports.find((item) => item.name === 'createDirectAlias')).toMatchObject({
+        kind: 'function',
+        runtime: true,
+        source: 'packages/types/src/value.ts',
+      });
       const createValueExport = root.exports.find((item) => item.name === 'createValue');
       expect(createValueExport).toMatchObject({ kind: 'function', runtime: true });
       expect(createValueExport?.runtimeBinding).toBeUndefined();
@@ -131,7 +145,9 @@ function createUpstreamFixture(): string {
   write(
     directory,
     'packages/types/src/index.ts',
-    "export { Mode } from './Mode.js';\nexport type { Shape } from './Shape.js';\nexport { createValue } from './value.js';\n",
+    "export { Mode } from './Mode.js';\nexport type { Shape } from './Shape.js';\nexport { createValue } from './value.js';\n" +
+      "import { createOtherValue as createRenamedValue } from './other.js';\nexport { createRenamedValue as createPublicValue };\n" +
+      "export { createValue as createDirectAlias } from './value.js';\n",
   );
   write(directory, 'packages/types/src/contract.ts', "export * from './index.js';\n");
   write(
@@ -148,6 +164,13 @@ function createUpstreamFixture(): string {
   // A declaration file and a colocated test sit beside the sources so the inventory has to exclude
   // both: a .d.ts would otherwise be analyzed as a second declaration of the same symbols, and a test
   // file would be read as public API.
+  // other.ts is reachable only through the renamed local re-export in index.ts, so the module graph
+  // has to follow the import alias to find it at all.
+  write(
+    directory,
+    'packages/types/src/other.ts',
+    'export function createOtherValue(value: number): number { return value; }\n',
+  );
   write(directory, 'packages/types/src/ambient.d.ts', 'export declare const ambient: number;\n');
   write(directory, 'packages/types/src/value.test.ts', 'export const cases: number[] = [];\n');
   write(
