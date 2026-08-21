@@ -2,13 +2,10 @@ import ts from 'typescript';
 
 import { lowerTypeScriptSource } from '../../compiler-semantic/src/index.js';
 import type { IrModule } from '../../compiler-types/src/index.js';
-import {
-  collectIrModulesRuntimeExternalSymbolIdentities,
-  collectIrModulesRuntimeExternalTypeIdentities,
-} from './compilerRuntimeExternalSymbolReachability.js';
+import { collectIrModulesRuntimeExternalSymbolIdentities } from './compilerRuntimeExternalSymbolReachability.js';
 
 describe('collectIrModulesRuntimeExternalSymbolIdentities', () => {
-  it('collects ambient external types through declaration, type, statement, and expression containers', () => {
+  it('collects ambient external symbols through declaration, type, statement, and expression containers', () => {
     const sourceFile = ts.createSourceFile(
       '/flight/packages/runtime/src/contracts.ts',
       `
@@ -241,21 +238,5 @@ describe('collectIrModulesRuntimeExternalSymbolIdentities', () => {
     expect(collectIrModulesRuntimeExternalSymbolIdentities([lowered.module])).toEqual([
       { sourceName: 'Promise', space: 'value' },
     ]);
-  });
-});
-
-describe('collectIrModulesRuntimeExternalTypeIdentities', () => {
-  it('projects only type-space identities', () => {
-    const lowered = lowerTypeScriptSource(
-      ts.createSourceFile(
-        '/flight/packages/runtime/src/transition.ts',
-        'export function use(value: Promise<number>): typeof Promise { Math.max(1, 2); return Promise; }',
-        ts.ScriptTarget.Latest,
-        true,
-      ),
-      { packageName: '@flighthq/runtime', upstreamDirectory: '/flight' },
-    );
-
-    expect(collectIrModulesRuntimeExternalTypeIdentities([lowered.module])).toEqual([{ sourceName: 'Promise' }]);
   });
 });

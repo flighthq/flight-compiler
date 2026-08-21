@@ -107,7 +107,7 @@ const packageRules: Readonly<Record<string, PackageRule>> = {
   },
   'compiler-runtime-contract': {
     dependencies: ['compiler-canonical-form', 'compiler-types'],
-    description: 'Target-neutral runtime binding reachability and completeness',
+    description: 'Target-neutral ambient-symbol reachability and runtime-binding completeness',
     devDependencies: ['compiler-semantic'],
   },
   'compiler-semantic': {

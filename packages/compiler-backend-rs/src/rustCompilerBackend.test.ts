@@ -25,19 +25,33 @@ describe('createRustCompilerBackend', () => {
 });
 
 describe('emitIrModuleRust', () => {
-  it('emits explicit native and runtime external type bindings and rejects an incomplete plan first', () => {
+  it('emits explicit type and value runtime bindings and rejects incomplete symbol spaces first', () => {
     const supported = lower(
       'external-types.ts',
       'export function preserve(values: Map<string, number>, bytes: Uint8Array, task: Promise<number>): Promise<number> { values; bytes; return task; }',
     );
     const missing = lower('external-missing.ts', 'export type fooBar = Date; export type foo_bar = Date;');
+    const missingValue = lower(
+      'external-value-missing.ts',
+      'export function maximum(left: number, right: number): number { return Math.max(left, right); }',
+    );
+    const values = lower(
+      'external-values.ts',
+      'export function create(): Promise<number> { const values = new Map<string, number>(); values; return Promise.resolve(1); }',
+    );
     const output = emitIrModuleRust(supported.module).contents;
+    const valueOutput = emitIrModuleRust(values.module).contents;
 
     expect(output).toContain('values: std::collections::HashMap<String, f64>');
     expect(output).toContain('bytes: Vec<u8>');
     expect(output).toContain('task: FlightTask<f64>');
+    expect(valueOutput).toContain('std::collections::HashMap::new()');
+    expect(valueOutput).toContain('FlightTask::resolve(1.0)');
     expect(() => emitIrModuleRust(missing.module)).toThrow(
-      'runtime external type binding plan is incomplete (missing: Date)',
+      'runtime external symbol binding plan is incomplete (missing: Date[type])',
+    );
+    expect(() => emitIrModuleRust(missingValue.module)).toThrow(
+      'runtime external symbol binding plan is incomplete (missing: Math[value])',
     );
   });
 

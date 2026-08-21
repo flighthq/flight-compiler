@@ -11,8 +11,8 @@ import {
   lowerIrModuleWithCompilerPasses,
 } from '../../compiler-lowering/src/index.js';
 import {
-  analyzeCompilerRuntimeExternalTypeCompleteness,
-  collectIrModulesRuntimeExternalTypeIdentities,
+  analyzeCompilerRuntimeExternalSymbolCompleteness,
+  collectIrModulesRuntimeExternalSymbolIdentities,
 } from '../../compiler-runtime-contract/src/index.js';
 import type { CompilerBackend, EmittedFile, RustCompilerBackendOptions } from '../../compiler-types/src/index.js';
 import type {
@@ -50,9 +50,9 @@ import {
   isRustCompilerKeyword,
 } from './rustCompilerIdentity.js';
 import {
-  createCompilerRuntimeExternalTypeBindingPlanRust,
-  getCompilerRuntimeExternalTypeTargetRust,
-} from './rustRuntimeExternalTypeBinding.js';
+  createCompilerRuntimeExternalSymbolBindingPlanRust,
+  getCompilerRuntimeExternalSymbolTargetRust,
+} from './rustRuntimeExternalSymbolBinding.js';
 
 interface EmitContext {
   module: Readonly<IrModule>;
@@ -76,7 +76,7 @@ export function emitIrModuleRust(
   options: Readonly<RustCompilerBackendOptions> = {},
 ): EmittedFile {
   const module = lowerIrModuleWithCompilerPasses(sourceModule, [createCompilerLoweringPassCStyleFor()]);
-  assertRuntimeExternalTypeBindingsRust(module);
+  assertRuntimeExternalSymbolBindingsRust(module);
   const constantIdentities = new Set(
     module.declarations.flatMap((declaration) =>
       declaration.kind === 'variable' && !declaration.mutable ? [declaration.binding.id] : [],
@@ -253,7 +253,7 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
       emissionError(context, 'anonymous object construction requires Rust structural-type lowering');
     case 'property':
       if (expression.optional) emissionError(context, 'optional property access requires Option-aware lowering');
-      return `${emitExpression(expression.object, context)}.${safeRustValueName(expression.name)}`;
+      return `${emitExpression(expression.object, context)}${isAmbientIdentifier(expression.object) ? '::' : '.'}${safeRustValueName(expression.name)}`;
     case 'regexp':
       emissionError(context, 'regular expressions require a downstream standard-library mapping');
     case 'spread':
@@ -322,9 +322,10 @@ function emitInterface(declaration: Readonly<IrInterfaceDeclaration>, context: E
 
 function emitConstructorReferenceRust(reference: Readonly<IrIdentifierReference>, context: EmitContext): string {
   if (reference.kind === 'this') emissionError(context, 'this cannot be used as a Rust constructor');
-  return reference.kind === 'ambient'
-    ? safeRustTypeName(reference.name)
-    : getBindingTargetNameRust(reference.binding, context);
+  if (reference.kind !== 'ambient') return getBindingTargetNameRust(reference.binding, context);
+  const targetName = getCompilerRuntimeExternalSymbolTargetRust(reference.name, 'value');
+  if (!targetName) emissionError(context, `external constructor ${reference.name} has no Rust binding`);
+  return targetName;
 }
 
 function emitIdentifierReferenceRust(reference: Readonly<IrIdentifierReference>, context: EmitContext): string {
@@ -333,7 +334,9 @@ function emitIdentifierReferenceRust(reference: Readonly<IrIdentifierReference>,
     if (reference.name === 'undefined') {
       emissionError(context, 'undefined expressions require Rust Option-aware lowering');
     }
-    return safeRustValueName(reference.name);
+    const targetName = getCompilerRuntimeExternalSymbolTargetRust(reference.name, 'value');
+    if (!targetName) emissionError(context, `external value ${reference.name} has no Rust binding`);
+    return targetName;
   }
   return getBindingTargetNameRust(reference.binding, context);
 }
@@ -571,7 +574,7 @@ function getPreferredBindingNameRust(
 
 function getTypeReferenceTargetNameRust(type: Readonly<IrTypeReference>, context: EmitContext): string {
   if (type.reference.kind === 'ambient') {
-    const targetName = getCompilerRuntimeExternalTypeTargetRust(type.reference.name);
+    const targetName = getCompilerRuntimeExternalSymbolTargetRust(type.reference.name, 'type');
     if (!targetName) emissionError(context, `external type ${type.reference.name} has no Rust binding`);
     return targetName;
   }
@@ -580,25 +583,33 @@ function getTypeReferenceTargetNameRust(type: Readonly<IrTypeReference>, context
   );
 }
 
-function assertRuntimeExternalTypeBindingsRust(module: Readonly<IrModule>): void {
-  const completeness = analyzeCompilerRuntimeExternalTypeCompleteness(
-    collectIrModulesRuntimeExternalTypeIdentities([module]),
-    createCompilerRuntimeExternalTypeBindingPlanRust(),
+function assertRuntimeExternalSymbolBindingsRust(module: Readonly<IrModule>): void {
+  const completeness = analyzeCompilerRuntimeExternalSymbolCompleteness(
+    collectIrModulesRuntimeExternalSymbolIdentities([module]),
+    createCompilerRuntimeExternalSymbolBindingPlanRust(),
   );
   if (completeness.kind === 'complete') return;
   const problems = [
-    completeness.missingExternalTypes.length > 0
-      ? `missing: ${completeness.missingExternalTypes.map(({ sourceName }) => sourceName).join(', ')}`
+    completeness.missingExternalSymbols.length > 0
+      ? `missing: ${completeness.missingExternalSymbols.map(formatRuntimeExternalSymbolIdentity).join(', ')}`
       : undefined,
-    completeness.duplicateExternalTypes.length > 0
-      ? `duplicate: ${completeness.duplicateExternalTypes.map(({ sourceName }) => sourceName).join(', ')}`
+    completeness.duplicateExternalSymbols.length > 0
+      ? `duplicate: ${completeness.duplicateExternalSymbols.map(formatRuntimeExternalSymbolIdentity).join(', ')}`
       : undefined,
   ].filter((problem): problem is string => problem !== undefined);
   throw createBackendEmissionFailure(
     'rust',
     module,
-    `runtime external type binding plan is incomplete (${problems.join('; ')})`,
+    `runtime external symbol binding plan is incomplete (${problems.join('; ')})`,
   );
+}
+
+function formatRuntimeExternalSymbolIdentity(identity: Readonly<{ sourceName: string; space: string }>): string {
+  return `${identity.sourceName}[${identity.space}]`;
+}
+
+function isAmbientIdentifier(expression: Readonly<IrExpression>): boolean {
+  return expression.kind === 'identifier' && expression.reference.kind === 'ambient';
 }
 
 function emissionError(context: EmitContext, message: string): never {

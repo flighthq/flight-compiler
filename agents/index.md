@@ -29,7 +29,7 @@ Per-package domain surveys following Flight's `agents/packages/<name>/` conventi
 - [compiler-semantic](packages/compiler-semantic/review.md): TypeScript in, neutral IR out.
 - [compiler-lowering](packages/compiler-lowering/review.md): verified neutral IR-to-IR passes elected by backends.
 - [compiler-canonical-form](packages/compiler-canonical-form/review.md): host-independent canonical forms for deterministic compiler data.
-- [compiler-runtime-contract](packages/compiler-runtime-contract/review.md): prove every reachable external type has one target binding decision.
+- [compiler-runtime-contract](packages/compiler-runtime-contract/review.md): prove every reachable ambient type/value symbol has one target binding decision.
 - [compiler-backend-hx](packages/compiler-backend-hx/review.md): neutral IR in, idiomatic Haxe out.
 - [compiler-backend-rs](packages/compiler-backend-rs/review.md): neutral IR in, idiomatic Rust out.
 - [compiler-orchestration](packages/compiler-orchestration/review.md): compose the passes deterministically.

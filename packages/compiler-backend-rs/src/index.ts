@@ -5,6 +5,6 @@ export {
   isRustCompilerKeyword,
 } from './rustCompilerIdentity.js';
 export {
-  createCompilerRuntimeExternalTypeBindingPlanRust,
-  getCompilerRuntimeExternalTypeTargetRust,
-} from './rustRuntimeExternalTypeBinding.js';
+  createCompilerRuntimeExternalSymbolBindingPlanRust,
+  getCompilerRuntimeExternalSymbolTargetRust,
+} from './rustRuntimeExternalSymbolBinding.js';

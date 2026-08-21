@@ -1,7 +1,7 @@
 {
   "name": "@flighthq/compiler-runtime-contract",
   "version": "0.0.0",
-  "description": "Target-neutral runtime binding reachability and completeness",
+  "description": "Target-neutral ambient-symbol reachability and runtime-binding completeness",
   "author": "Joshua Granick and other contributors",
   "license": "MIT",
   "private": true,

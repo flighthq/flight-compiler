@@ -52,7 +52,7 @@ The repository follows Flight's package-per-domain convention. Internal workspac
 - `packages/compiler-inventory/`: read-only package, export-lane, symbol, and runtime-value analysis.
 - `packages/compiler-ir-validation/`: structural integrity checks for target-neutral IR values.
 - `packages/compiler-provenance/`: normalization, provenance, and stable fingerprints.
-- `packages/compiler-runtime-contract/`: target-neutral external-type reachability and binding completeness.
+- `packages/compiler-runtime-contract/`: target-neutral ambient-symbol reachability and runtime-binding completeness.
 - `packages/compiler-semantic/`: TypeScript semantic analysis and neutral lowering.
 - `packages/compiler-patch/`: fingerprinted semantic patch application and audits.
 - `packages/compiler-emission/`: target-neutral backend and output infrastructure.
@@ -86,7 +86,7 @@ The dependency floor is deliberate:
 - `compiler-provenance` defines deterministic normalization and exact source-fingerprint identity over shared contracts and host-independent canonical form.
 - `compiler-patch` depends on shared contracts, deterministic canonical form, and exact provenance identity; `compiler-emission` depends only on its contracts and canonical form.
 - `compiler-ir-validation` verifies target-neutral IR structure over shared contracts and exact provenance identity.
-- `compiler-runtime-contract` validates reachable external-type decisions over `compiler-types` and shared deterministic canonical form.
+- `compiler-runtime-contract` validates reachable ambient type/value symbol decisions over `compiler-types` and shared deterministic canonical form.
 - `compiler-canonical-form` defines deterministic text order and portable path form without importing compiler contracts or domain identity policy.
 - `compiler-lowering` provides verified neutral transforms over `compiler-types`, composing `compiler-ir-validation`; backends elect its passes.
 - inventory, semantic lowering, backends, and orchestration are compositions above that floor.

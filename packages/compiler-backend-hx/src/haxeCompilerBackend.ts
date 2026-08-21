@@ -11,8 +11,8 @@ import {
   lowerIrModuleWithCompilerPasses,
 } from '../../compiler-lowering/src/index.js';
 import {
-  analyzeCompilerRuntimeExternalTypeCompleteness,
-  collectIrModulesRuntimeExternalTypeIdentities,
+  analyzeCompilerRuntimeExternalSymbolCompleteness,
+  collectIrModulesRuntimeExternalSymbolIdentities,
 } from '../../compiler-runtime-contract/src/index.js';
 import type { CompilerBackend, EmittedFile, HaxeCompilerBackendOptions } from '../../compiler-types/src/index.js';
 import type {
@@ -46,9 +46,9 @@ import type {
 } from '../../compiler-types/src/index.js';
 import { convertPackageNameToHaxePackageName, convertSourcePathToHaxeModuleName } from './haxeCompilerIdentity.js';
 import {
-  createCompilerRuntimeExternalTypeBindingPlanHaxe,
-  getCompilerRuntimeExternalTypeTargetHaxe,
-} from './haxeRuntimeExternalTypeBinding.js';
+  createCompilerRuntimeExternalSymbolBindingPlanHaxe,
+  getCompilerRuntimeExternalSymbolTargetHaxe,
+} from './haxeRuntimeExternalSymbolBinding.js';
 
 interface EmitContext {
   module: Readonly<IrModule>;
@@ -71,7 +71,7 @@ export function emitIrModuleHaxe(
   options: Readonly<HaxeCompilerBackendOptions> = {},
 ): EmittedFile {
   const module = lowerIrModuleWithCompilerPasses(sourceModule, [createCompilerLoweringPassCStyleFor()]);
-  assertRuntimeExternalTypeBindingsHaxe(module);
+  assertRuntimeExternalSymbolBindingsHaxe(module);
   const packageName = convertPackageNameToHaxePackageName(module.packageName, options.rootPackage);
   let targetNames: Map<string, string>;
   try {
@@ -313,7 +313,13 @@ function emitIdentifierReferenceHaxe(reference: Readonly<IrIdentifierReference>,
     if (reference.name === 'undefined') {
       emissionError(context, 'undefined expressions require Haxe nullability lowering');
     }
-    return safeHaxeName(reference.name);
+    const targetName = getCompilerRuntimeExternalSymbolTargetHaxe(
+      reference.name,
+      'value',
+      context.options.runtimeModule,
+    );
+    if (!targetName) emissionError(context, `external value ${reference.name} has no Haxe binding`);
+    return targetName;
   }
   return getBindingTargetNameHaxe(reference.binding, context);
 }
@@ -562,8 +568,9 @@ function getBindingTargetNameHaxe(
 
 function getTypeReferenceTargetNameHaxe(type: Readonly<IrTypeReference>, context: EmitContext): string {
   if (type.reference.kind === 'ambient') {
-    const targetName = getCompilerRuntimeExternalTypeTargetHaxe(
+    const targetName = getCompilerRuntimeExternalSymbolTargetHaxe(
       type.reference.name,
+      'type',
       context.options.runtimeModule ?? 'flighthq._internal',
     );
     if (!targetName) emissionError(context, `external type ${type.reference.name} has no Haxe binding`);
@@ -724,25 +731,29 @@ function assertNoSwitchFallthrough(statement: Extract<IrStatement, { kind: 'swit
   });
 }
 
-function assertRuntimeExternalTypeBindingsHaxe(module: Readonly<IrModule>): void {
-  const completeness = analyzeCompilerRuntimeExternalTypeCompleteness(
-    collectIrModulesRuntimeExternalTypeIdentities([module]),
-    createCompilerRuntimeExternalTypeBindingPlanHaxe(),
+function assertRuntimeExternalSymbolBindingsHaxe(module: Readonly<IrModule>): void {
+  const completeness = analyzeCompilerRuntimeExternalSymbolCompleteness(
+    collectIrModulesRuntimeExternalSymbolIdentities([module]),
+    createCompilerRuntimeExternalSymbolBindingPlanHaxe(),
   );
   if (completeness.kind === 'complete') return;
   const problems = [
-    completeness.missingExternalTypes.length > 0
-      ? `missing: ${completeness.missingExternalTypes.map(({ sourceName }) => sourceName).join(', ')}`
+    completeness.missingExternalSymbols.length > 0
+      ? `missing: ${completeness.missingExternalSymbols.map(formatRuntimeExternalSymbolIdentity).join(', ')}`
       : undefined,
-    completeness.duplicateExternalTypes.length > 0
-      ? `duplicate: ${completeness.duplicateExternalTypes.map(({ sourceName }) => sourceName).join(', ')}`
+    completeness.duplicateExternalSymbols.length > 0
+      ? `duplicate: ${completeness.duplicateExternalSymbols.map(formatRuntimeExternalSymbolIdentity).join(', ')}`
       : undefined,
   ].filter((problem): problem is string => problem !== undefined);
   throw createBackendEmissionFailure(
     'haxe',
     module,
-    `runtime external type binding plan is incomplete (${problems.join('; ')})`,
+    `runtime external symbol binding plan is incomplete (${problems.join('; ')})`,
   );
+}
+
+function formatRuntimeExternalSymbolIdentity(identity: Readonly<{ sourceName: string; space: string }>): string {
+  return `${identity.sourceName}[${identity.space}]`;
 }
 
 function pascalCase(value: string): string {

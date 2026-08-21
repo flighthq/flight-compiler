@@ -26,21 +26,35 @@ describe('createHaxeCompilerBackend', () => {
 });
 
 describe('emitIrModuleHaxe', () => {
-  it('emits explicit native and runtime external type bindings and rejects an incomplete plan first', () => {
+  it('emits explicit type and value runtime bindings and rejects incomplete symbol spaces first', () => {
     const supported = lower(
       'external-types.ts',
       'export function preserve(values: Map<string, number>, bytes: Uint8Array, task: Promise<number>): Promise<number> { values; bytes; return task; }',
     );
     const missing = lower('external-missing.ts', 'export type operator = Date; export type operator_ = Date;');
+    const missingValue = lower('external-value-missing.ts', 'export function fail(): void { throw new Error(); }');
+    const values = lower(
+      'external-values.ts',
+      'export function create(): Promise<number> { const values = new Map<string, number>(); values; return Promise.resolve(1); }',
+    );
     const output = emitIrModuleHaxe(supported.module).contents;
     const custom = emitIrModuleHaxe(supported.module, { runtimeModule: 'custom.runtime' }).contents;
+    const valueOutput = emitIrModuleHaxe(values.module).contents;
+    const customValueOutput = emitIrModuleHaxe(values.module, { runtimeModule: 'custom.runtime' }).contents;
 
     expect(output).toContain('values:flighthq._internal._Map<String, Float>');
     expect(output).toContain('bytes:flighthq._internal._UInt8Array');
     expect(output).toContain('task:flighthq._internal._Promise<Float>');
     expect(custom).toContain('task:custom.runtime._Promise<Float>');
+    expect(valueOutput).toContain('new flighthq._internal._Map()');
+    expect(valueOutput).toContain('flighthq._internal._Promise.resolve(1)');
+    expect(customValueOutput).toContain('new custom.runtime._Map()');
+    expect(customValueOutput).toContain('custom.runtime._Promise.resolve(1)');
     expect(() => emitIrModuleHaxe(missing.module)).toThrow(
-      'runtime external type binding plan is incomplete (missing: Date)',
+      'runtime external symbol binding plan is incomplete (missing: Date[type])',
+    );
+    expect(() => emitIrModuleHaxe(missingValue.module)).toThrow(
+      'runtime external symbol binding plan is incomplete (missing: Error[value])',
     );
   });
 

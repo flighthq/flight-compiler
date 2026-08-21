@@ -1,7 +1,6 @@
 import { compareTextCodeUnits } from '../../compiler-canonical-form/src/index.js';
 import type {
   CompilerRuntimeExternalSymbolIdentity,
-  CompilerRuntimeExternalTypeIdentity,
   IrDeclaration,
   IrExpression,
   IrFunctionSignature,
@@ -26,14 +25,6 @@ export function collectIrModulesRuntimeExternalSymbolIdentities(
   };
   for (const module of modules) collectModuleExternalSymbols(module, add);
   return [...identities.values()].sort(compareExternalSymbolIdentities);
-}
-
-export function collectIrModulesRuntimeExternalTypeIdentities(
-  modules: readonly Readonly<IrModule>[],
-): readonly CompilerRuntimeExternalTypeIdentity[] {
-  return collectIrModulesRuntimeExternalSymbolIdentities(modules)
-    .filter(({ space }) => space === 'type')
-    .map(({ sourceName }) => ({ sourceName }));
 }
 
 function collectDeclarationExternalSymbols(declaration: Readonly<IrDeclaration>, add: AddExternalSymbol): void {

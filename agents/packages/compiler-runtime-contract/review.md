@@ -1,8 +1,8 @@
 ---
 package: '@flighthq/compiler-runtime-contract'
-status: solid
-score: 70
-updated: 2026-08-20
+status: near-mature
+score: 86
+updated: 2026-08-21
 ingested:
   - source
   - agents/compiler-foundations.md
@@ -10,29 +10,29 @@ ingested:
 
 # compiler-runtime-contract — Review
 
-The target-neutral seam that identifies reachable ambient source types and proves that a target has made exactly one native-or-runtime binding decision for each one.
+The target-neutral seam that identifies reachable ambient source symbols and proves that a target has made exactly one native-or-runtime decision for each required type/value-space identity.
 
 ## Verdict
 
-**solid — 70/100.** The initial boundary is deliberately small and fully exercised: traversal is exhaustive over the current IR, identities are normalized before using the shared host-independent text order, caller input is unchanged, plans are versioned, and completeness names every missing or duplicate decision. The remaining domain is runtime value reachability and richer diagnostics, not more policy in this package.
+**near-mature — 86/100.** `flight-runtime-contract/2` closes the false equivalence between a source type and its runtime value. Reachability is exhaustive over the current IR, includes constructors, static members, direct values and `typeof` queries, excludes lexical bindings and declared intrinsics, and normalizes exact source identity before host-independent ordering. Completeness independently reports every missing and duplicate type/value decision; mutation kills every generated contract mutant. Remaining work needs new requirement families or diagnostic evidence, not more branches in the ambient-symbol model.
 
-## What a fully expressed runtime contract looks like
+## Present capabilities
 
-- Exact target-neutral identities for source concepts that need an emission decision. Present for ambient named types.
-- An explicit, versioned election between target-native representation and a compiler-owned runtime capability. Present.
-- Complete reachable-IR traversal without importing target naming or downstream runtime implementation details. Present for external types.
-- Deterministic, inspectable completeness that reports every absent or ambiguous election before source generation. Present.
-- Independent package health, typecheck, direct behavior tests, malformed-plan boundaries, input immutability, and zero unvisited implementation arms. Present except an untyped plan parser, which is not yet justified.
-- Equivalent reachability for ambient runtime values, constructors, and static members when backends begin mapping those through the same boundary.
-- Source/module evidence attached to each requirement when downstream diagnostics need more than the exact external identity.
-
-## Ownership boundary
-
-This package owns source-side reachability and plan completeness. `compiler-types` owns the shared contract vocabulary. Each backend owns its election table and emitted target names. `flight-hx` and `flight-rs` continue to own the runtime types and behavior that satisfy elected capabilities.
+- Exact `{ sourceName, space }` identity keeps `Promise[type]` distinct from `Promise[value]`.
+- A versioned native-or-runtime election records a compiler-owned capability only where a downstream implementation is required.
+- Complete declaration, expression, statement, object-member and type traversal collects both ambient spaces without importing target policy.
+- Lexical bindings, including shorthand object values, remain binding identities rather than false ambient requirements; `undefined` and utility type wrappers remain declared compiler intrinsics.
+- NFC normalization, shared code-unit ordering, deduplication, empty identity behavior and caller immutability are direct-tested.
+- Missing-only, duplicate-only and mixed incompleteness are independently observable.
+- Haxe and Rust tables remain backend-owned data, while runtime implementations remain in `flight-hx` and `flight-rs`.
 
 ## Gaps
 
-- Ambient value references such as constructors and static calls are outside the initial external-type contract.
-- Primitive `symbol`, function callbacks, and opaque host values already have capability vocabulary but are not yet represented as completeness requirements.
-- A missing binding reports exact source names but not the modules or declarations that made each type reachable.
-- The in-process typed plan has no parser or tagged invalid-document failure; add those only if plans cross a serialization boundary.
+- Primitive `symbol`, function callbacks and opaque host values have capability vocabulary but no demonstrated completeness identity yet.
+- A missing decision names the exact symbol and space but not the modules or declarations that made it reachable.
+- The in-process typed plan has no untyped document parser or tagged invalid-document failure; add that only if plans cross a serialization boundary.
+- Target tables state the compiler election, not whether a particular downstream runtime release implements the elected contract version; that compatibility handshake belongs at integration time.
+
+## Ownership boundary
+
+This package owns source-side reachability and plan completeness. `compiler-types` owns the shared contract vocabulary. Each backend owns its election table and emitted target names. `flight-hx` and `flight-rs` own runtime types and behavior satisfying elected capabilities.

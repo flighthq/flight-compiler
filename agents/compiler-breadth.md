@@ -62,7 +62,7 @@ It also supplies the precondition the foundations audit named for splitting targ
 
 ## Implemented cell 2 — the target runtime contract
 
-Both emitters previously referenced symbols without a shared contract: Rust carried a private standard-type table, while Haxe passed an unmapped named type verbatim into a `.hx` file. `compiler-runtime-contract` now owns the versioned neutral capability and external-type decision vocabulary plus exhaustive reachable-IR completeness. Flat Haxe and Rust sibling tables elect native or runtime representation independently, and an unmapped type refuses before target-name allocation or source generation.
+Both emitters previously referenced symbols without a shared contract: Rust carried a private standard-type table, while Haxe passed unmapped ambient names into output. `compiler-runtime-contract` now owns the versioned neutral capability and type/value-space ambient-symbol vocabulary plus exhaustive reachable-IR completeness. Flat Haxe and Rust sibling tables elect native or runtime representation independently, and an unmapped symbol refuses before target-name allocation or source generation.
 
 The architecture in [AGENTS.md](../AGENTS.md) already names it, one line per target:
 
@@ -77,9 +77,9 @@ Three concepts per target; one of them is a package.
 
 The downstream design already in use in `flight-hx` sets the right seam: the generator remaps an external type to a runtime library type — `flighthq._internal.*` — and the target repository decides whether that is a typedef onto a system type or a hand-written implementation satisfying the contract. That means **the compiler never needs to know Haxe's standard library.** It needs the contract vocabulary — the named capabilities emitted code may reference — and the per-target naming of them. How a contract is satisfied lives downstream, where the knowledge is.
 
-Mapping is therefore backend-elective in the same way lowering is. A backend may bind an external type directly to a native one where the fidelity is exact, and route the rest through the contract where it is not. The compiler's job is to make sure every external type reachable from the inventory has _some_ decision recorded.
+Mapping is therefore backend-elective in the same way lowering is. A backend may bind an ambient type or value directly to a native symbol where the fidelity is exact, and route the rest through the contract where it is not. Type and value space are separate decisions: a target may support a type without claiming its constructor or static API. The compiler's job is to make sure every reachable ambient symbol has _some_ decision recorded.
 
-That changes what the failure should be. An unmapped external type is **not** a code-level emitter refusal; it is a **contract-completeness failure** — "no runtime contract entry for `Uint8Array`" — checkable before emission begins, and fixed by adding a table entry rather than by changing an emitter. That is a better failure in three ways: it fires earlier, it names the actual missing thing, and it is repaired with data.
+That changes what the failure should be. An unmapped ambient symbol is **not** a code-level emitter refusal; it is a **contract-completeness failure** — for example, `Uint8Array[value]` — checkable before emission begins, and fixed by adding a justified table entry rather than by changing an emitter. That is a better failure in three ways: it fires earlier, it names the exact missing space, and it is repaired with data.
 
 ### Expect this seam to push back
 
@@ -129,7 +129,7 @@ Per package, against the repository's own rule that a package has one irreducibl
 
 ## Recommended order
 
-1. **Extend the runtime contract only from demonstrated reachability.** The external-type vocabulary, completeness check, and target tables are complete. Ambient runtime values, constructors, and static members are the next boundary when corpus evidence requires them.
+1. **Extend the runtime contract only from demonstrated reachability.** Ambient type and value identities, completeness, constructors, static members, and target tables are explicit. Primitive `symbol`, callback, and opaque-host capabilities remain outside completeness until a target path demonstrates their required identity.
 2. **Add neutral lowering passes one demonstrated refusal family at a time.** The pass lifecycle is now proven by C-style control flow; it does not justify a mandatory pre-backend pipeline or speculative transforms.
 3. **Decide whether `compiler-inventory` splits.** The host-access inversion AGENTS.md requires is done — one edge module, every analysis function taking a `WorkspaceSource` — so the boundary is enforced by types rather than asserted, and the split is now a mechanical move rather than a design question. It may also prove unnecessary, which is the cheaper outcome. The inversion's justification was the stated rule and the seam, **not** speed: the temp-directory tests cost 45ms, while every slow test in the package is one that constructs a TypeScript program, which the inversion does not touch.
 4. **Reporting**, as orchestration's own domain rather than a new cell, until a downstream consumer forces the versioning question.
