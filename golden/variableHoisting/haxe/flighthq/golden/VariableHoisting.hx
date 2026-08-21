@@ -34,4 +34,13 @@ class VariableHoisting {
     }
     return second;
   }
+
+  public static function selectFirstValue(values:Array<Float>):Float {
+    var value:Float;
+    for (variableHoistingIterationValue in values) {
+      value = variableHoistingIterationValue;
+      return value;
+    }
+    return 0;
+  }
 }

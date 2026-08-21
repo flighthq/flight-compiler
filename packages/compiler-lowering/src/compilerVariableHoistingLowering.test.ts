@@ -196,6 +196,152 @@ describe('createCompilerLoweringPassVariableHoisting', () => {
     ]);
   });
 
+  it('collects loop initializer declarations before declarations in the loop body', () => {
+    const output = lowerIrModuleWithCompilerPasses(
+      lower(
+        'for-order-hoisting.ts',
+        `
+          export function visit(limit: number): void {
+            for (var index = 0; index < limit; index++) {
+              var current = index;
+              current;
+            }
+          }
+        `,
+      ),
+      [createCompilerLoweringPassArrayBindingPattern(), createCompilerLoweringPassVariableHoisting()],
+    );
+    const body = getFunctionBody(output, 'visit');
+
+    expect(getVariableStatement(body[0]).declarations).toMatchObject([
+      { binding: { name: 'index' } },
+      { binding: { name: 'current' } },
+    ]);
+    expect(body[1]).toMatchObject({ expression: { left: { reference: { binding: { name: 'index' } } } } });
+    expect(body[2]).toMatchObject({
+      body: {
+        statements: [{ expression: { left: { reference: { binding: { name: 'current' } } } } }, { kind: 'expression' }],
+      },
+      kind: 'for',
+    });
+  });
+
+  it('uses distinct block-scoped carriers for function-scoped for-of variables', () => {
+    const output = lowerIrModuleWithCompilerPasses(
+      lower(
+        'for-of-hoisting.ts',
+        `
+          export function visit(first: number[], second: number[]): void {
+            for (var value of first) value;
+            for (var value of second) { value += 1; }
+          }
+        `,
+      ),
+      [createCompilerLoweringPassArrayBindingPattern(), createCompilerLoweringPassVariableHoisting()],
+      { verificationDepth: 'idempotence' },
+    );
+    const body = getFunctionBody(output, 'visit');
+    const firstLoop = getForOfStatement(body[1]);
+    const secondLoop = getForOfStatement(body[2]);
+    const firstCarrier = getNamedVariable(firstLoop.variable);
+    const secondCarrier = getNamedVariable(secondLoop.variable);
+
+    expect(getVariableStatement(body[0]).declarations).toMatchObject([
+      { binding: { name: 'value', scope: 'function' }, mutable: true },
+    ]);
+    expect(firstCarrier).toMatchObject({
+      binding: { name: 'variableHoistingIterationValue', scope: 'block' },
+      mutable: false,
+    });
+    expect(secondCarrier).toMatchObject({
+      binding: { name: 'variableHoistingIterationValue', scope: 'block' },
+      mutable: false,
+    });
+    expect(firstCarrier.binding.id).not.toBe(secondCarrier.binding.id);
+    expect(firstLoop.body).toMatchObject({
+      kind: 'block',
+      statements: [
+        {
+          expression: {
+            kind: 'assignment',
+            left: { reference: { binding: { name: 'value' } } },
+            right: { reference: { binding: firstCarrier.binding } },
+          },
+        },
+        { kind: 'expression' },
+      ],
+    });
+  });
+
+  it('uses a block-scoped carrier for function-scoped for-in variables', () => {
+    const output = lowerIrModuleWithCompilerPasses(
+      lower(
+        'for-in-hoisting.ts',
+        `
+          export function visit(values: Record<string, number>): void {
+            for (var key in values) { key; }
+          }
+        `,
+      ),
+      [createCompilerLoweringPassArrayBindingPattern(), createCompilerLoweringPassVariableHoisting()],
+    );
+    const body = getFunctionBody(output, 'visit');
+    const loop = getForInStatement(body[1]);
+    const carrier = getNamedVariable(loop.variable);
+
+    expect(getVariableStatement(body[0]).declarations).toMatchObject([
+      { binding: { name: 'key', scope: 'function' }, mutable: true },
+    ]);
+    expect(carrier).toMatchObject({
+      binding: { name: 'variableHoistingIterationValue', scope: 'block' },
+      mutable: false,
+    });
+    expect(loop.body).toMatchObject({
+      kind: 'block',
+      statements: [
+        {
+          expression: {
+            kind: 'assignment',
+            left: { reference: { binding: { name: 'key' } } },
+            right: { reference: { binding: carrier.binding } },
+          },
+        },
+        { kind: 'expression' },
+      ],
+    });
+  });
+
+  it('composes iteration carriers with function-scoped array binding leaves', () => {
+    const output = lowerIrModuleWithCompilerPasses(
+      lower(
+        'for-of-pattern-hoisting.ts',
+        `
+          export function visit(values: Array<[number, string]>): void {
+            for (var [first, second] of values) { first; second; }
+          }
+        `,
+      ),
+      [createCompilerLoweringPassArrayBindingPattern(), createCompilerLoweringPassVariableHoisting()],
+    );
+    const body = getFunctionBody(output, 'visit');
+    const loop = getForOfStatement(body[1]);
+
+    expect(getVariableStatement(body[0]).declarations).toMatchObject([
+      { binding: { name: 'first', scope: 'function' } },
+      { binding: { name: 'second', scope: 'function' } },
+    ]);
+    expect(loop.variable).toMatchObject({ binding: { name: 'arrayPatternValue', scope: 'block' } });
+    expect(loop.body).toMatchObject({
+      kind: 'block',
+      statements: [
+        { expression: { kind: 'assignment', left: { reference: { binding: { name: 'first' } } } } },
+        { expression: { kind: 'assignment', left: { reference: { binding: { name: 'second' } } } } },
+        { kind: 'expression' },
+        { kind: 'expression' },
+      ],
+    });
+  });
+
   it('composes after array-pattern lowering without giving destructuring ownership of hoisting', () => {
     const source = lower(
       'pattern-hoisting.ts',
@@ -245,8 +391,15 @@ describe('createCompilerLoweringPassVariableHoisting', () => {
       source: 'export function read(flag: boolean): number { if (flag) { var value: number = 1; } return value; }',
     },
     {
-      reason: 'function-scoped forOf variable requires iteration assignment lowering',
-      source: 'export function read(values: number[]): void { for (var value of values) value; }',
+      reason:
+        'function-scoped variable value may be read before initialization; undefined-preserving lowering is required',
+      source: 'export function read(values: number[]): number { for (var value of values) value; return value; }',
+    },
+    {
+      reason:
+        'function-scoped variable key may be read before initialization; undefined-preserving lowering is required',
+      source:
+        'export function read(values: Record<string, number>): string { for (var key in values) key; return key; }',
     },
     {
       reason:
@@ -285,6 +438,16 @@ function getFunctionBody(module: Readonly<IrModule>, name: string): readonly IrS
   const declaration = module.declarations.find((item) => item.kind === 'function' && item.binding.name === name);
   if (declaration?.kind !== 'function') throw new Error(`Expected ${name} function`);
   return declaration.body;
+}
+
+function getForInStatement(statement: Readonly<IrStatement> | undefined): Extract<IrStatement, { kind: 'forIn' }> {
+  if (statement?.kind !== 'forIn') throw new Error('Expected for-in statement');
+  return statement;
+}
+
+function getForOfStatement(statement: Readonly<IrStatement> | undefined): Extract<IrStatement, { kind: 'forOf' }> {
+  if (statement?.kind !== 'forOf') throw new Error('Expected for-of statement');
+  return statement;
 }
 
 function getNamedVariable(variable: Readonly<IrVariable> | undefined): IrNamedVariable {

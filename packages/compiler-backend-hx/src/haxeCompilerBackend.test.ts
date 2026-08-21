@@ -172,12 +172,23 @@ describe('emitIrModuleHaxe', () => {
       'variable-pattern-hoisting.ts',
       'export function select(values: [number, string]): string { var [first, second]: [number, string] = values; first; return second; }',
     );
+    const iteration = lower(
+      'variable-iteration-hoisting.ts',
+      'export function visit(values: number[]): void { for (var value of values) value; } export function keys(values: { value: number }): void { for (var key in values) key; }',
+    );
     const namedOutput = emitIrModuleHaxe(named.module).contents;
     const patternOutput = emitIrModuleHaxe(pattern.module).contents;
+    const iterationOutput = emitIrModuleHaxe(iteration.module).contents;
 
     expect(namedOutput).toContain('var value:Float;\n    {\n      value = 1;\n    }\n    return value;');
     expect(patternOutput).toContain(
       'var first:Float;\n    var second:String;\n    final arrayPatternValue:Array<Dynamic> = values;\n    first = arrayPatternValue[0];\n    second = arrayPatternValue[1];',
+    );
+    expect(iterationOutput).toContain(
+      'var value:Float;\n    for (variableHoistingIterationValue in values) {\n      value = variableHoistingIterationValue;\n      value;',
+    );
+    expect(iterationOutput).toContain(
+      'var key;\n    for (variableHoistingIterationValue in Reflect.fields(values)) {\n      key = variableHoistingIterationValue;\n      key;',
     );
   });
 

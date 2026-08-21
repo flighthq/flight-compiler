@@ -2,6 +2,7 @@ import type {
   CompilerLoweringPass,
   CompilerSourceIdentity,
   IrBindingPattern,
+  IrBindingIdentity,
   IrDeclaration,
   IrExpression,
   IrModule,
@@ -18,6 +19,7 @@ import { validateIrFunctionVariableInitialization } from './compilerVariableHois
 
 interface VariableHoistingAnalysis {
   readonly hoisted: Map<string, IrNamedVariable>;
+  iterationCarrierCount: number;
   readonly sourceIdentity: Readonly<CompilerSourceIdentity>;
 }
 
@@ -90,6 +92,31 @@ function createIrVariableHoistingAssignment(
       },
     },
     kind: 'expression',
+  };
+}
+
+function createIrVariableHoistingIterationCarrier(
+  variable: Readonly<IrNamedVariable>,
+  analysis: VariableHoistingAnalysis,
+): IrNamedVariable {
+  const index = analysis.iterationCarrierCount;
+  analysis.iterationCarrierCount += 1;
+  const binding: IrBindingIdentity = {
+    ...variable.binding,
+    id: `binding:${JSON.stringify([
+      variable.binding.packageName,
+      variable.binding.source,
+      variable.binding.id,
+      'variable-hoisting-iteration',
+      index,
+    ])}`,
+    name: 'variableHoistingIterationValue',
+    scope: 'block',
+  };
+  return {
+    binding,
+    mutable: false,
+    ...(variable.type ? { type: variable.type } : {}),
   };
 }
 
@@ -334,6 +361,7 @@ function lowerIrDeclarationVariableHoisting(
             ? {
                 initializer: lowerIrExpressionVariableHoisting(field.initializer, {
                   hoisted: new Map(),
+                  iterationCarrierCount: 0,
                   sourceIdentity,
                 }),
               }
@@ -365,6 +393,7 @@ function lowerIrDeclarationVariableHoisting(
             ...declaration,
             initializer: lowerIrExpressionVariableHoisting(declaration.initializer, {
               hoisted: new Map(),
+              iterationCarrierCount: 0,
               sourceIdentity,
             }),
           }
@@ -476,7 +505,7 @@ function lowerIrFunctionBodyVariableHoisting(
   body: readonly Readonly<IrStatement>[],
   sourceIdentity: Readonly<CompilerSourceIdentity>,
 ): readonly IrStatement[] {
-  const analysis: VariableHoistingAnalysis = { hoisted: new Map(), sourceIdentity };
+  const analysis: VariableHoistingAnalysis = { hoisted: new Map(), iterationCarrierCount: 0, sourceIdentity };
   const lowered = body.flatMap((statement) => lowerIrStatementVariableHoisting(statement, analysis));
   if (analysis.hoisted.size === 0) return lowered;
   validateIrFunctionVariableInitialization(lowered, analysis.hoisted, sourceIdentity);
@@ -493,6 +522,7 @@ function lowerIrModuleVariableHoisting(module: Readonly<IrModule>): IrModule {
             ...exported,
             expression: lowerIrExpressionVariableHoisting(exported.expression, {
               hoisted: new Map(),
+              iterationCarrierCount: 0,
               sourceIdentity: module,
             }),
           }
@@ -547,6 +577,7 @@ function lowerIrParameterVariableHoisting(
         ...parameter,
         initializer: lowerIrExpressionVariableHoisting(parameter.initializer, {
           hoisted: new Map(),
+          iterationCarrierCount: 0,
           sourceIdentity,
         }),
       }
@@ -579,6 +610,11 @@ function lowerIrStatementVariableHoisting(
       return [{ ...statement, expression: lowerIrExpressionVariableHoisting(statement.expression, analysis) }];
     case 'for': {
       const initializer = statement.initializer;
+      const initialization =
+        Array.isArray(initializer) &&
+        initializer.some((variable) => getIrVariableScopeVariableHoisting(variable) === 'function')
+          ? initializer.flatMap((variable) => lowerIrVariableStatementVariableHoisting(variable, analysis))
+          : undefined;
       const loweredBody = collapseIrStatementsVariableHoisting(
         lowerIrStatementVariableHoisting(statement.body, analysis),
       );
@@ -598,7 +634,7 @@ function lowerIrStatementVariableHoisting(
           },
         ];
       }
-      if (!initializer.some((variable) => getIrVariableScopeVariableHoisting(variable) === 'function')) {
+      if (!initialization) {
         return [
           {
             ...loweredFor,
@@ -606,36 +642,30 @@ function lowerIrStatementVariableHoisting(
           },
         ];
       }
-      const initialization = initializer.flatMap((variable) =>
-        lowerIrVariableStatementVariableHoisting(variable, analysis),
-      );
       return [...initialization, { ...loweredFor, initializer: undefined }];
     }
-    case 'forIn':
-    case 'forOf':
-      if (getIrVariableScopeVariableHoisting(statement.variable) === 'function') {
-        throw createCompilerLoweringFailure(
-          'unsupported-ir',
-          compilerLoweringPassNameVariableHoisting,
-          analysis.sourceIdentity,
-          `function-scoped ${statement.kind} variable requires iteration assignment lowering`,
-        );
-      }
+    case 'forIn': {
+      const lowered = lowerIrIterationVariableVariableHoisting(statement.variable, statement.body, analysis);
       return [
-        statement.kind === 'forIn'
-          ? {
-              ...statement,
-              body: collapseIrStatementsVariableHoisting(lowerIrStatementVariableHoisting(statement.body, analysis)),
-              object: lowerIrExpressionVariableHoisting(statement.object, analysis),
-              variable: lowerIrVariableVariableHoisting(statement.variable, analysis),
-            }
-          : {
-              ...statement,
-              body: collapseIrStatementsVariableHoisting(lowerIrStatementVariableHoisting(statement.body, analysis)),
-              iterable: lowerIrExpressionVariableHoisting(statement.iterable, analysis),
-              variable: lowerIrVariableVariableHoisting(statement.variable, analysis),
-            },
+        {
+          ...statement,
+          body: lowered.body,
+          object: lowerIrExpressionVariableHoisting(statement.object, analysis),
+          variable: lowered.variable,
+        },
       ];
+    }
+    case 'forOf': {
+      const lowered = lowerIrIterationVariableVariableHoisting(statement.variable, statement.body, analysis);
+      return [
+        {
+          ...statement,
+          body: lowered.body,
+          iterable: lowerIrExpressionVariableHoisting(statement.iterable, analysis),
+          variable: lowered.variable,
+        },
+      ];
+    }
     case 'if':
       return [
         {
@@ -706,6 +736,49 @@ function lowerIrStatementVariableHoisting(
     case 'continue':
       return [statement];
   }
+}
+
+function lowerIrIterationVariableVariableHoisting(
+  variable: Readonly<IrVariable>,
+  body: Readonly<IrStatement>,
+  analysis: VariableHoistingAnalysis,
+): Readonly<{ body: IrStatement; variable: IrVariable }> {
+  if ('pattern' in variable) {
+    throw createCompilerLoweringFailure(
+      'unsupported-ir',
+      compilerLoweringPassNameVariableHoisting,
+      analysis.sourceIdentity,
+      'variable hoisting requires prior binding-pattern normalization',
+    );
+  }
+  if (variable.binding.scope !== 'function') {
+    return {
+      body: collapseIrStatementsVariableHoisting(lowerIrStatementVariableHoisting(body, analysis)),
+      variable: lowerIrVariableVariableHoisting(variable, analysis),
+    };
+  }
+  if (variable.initializer) {
+    throw createCompilerLoweringFailure(
+      'unsupported-ir',
+      compilerLoweringPassNameVariableHoisting,
+      analysis.sourceIdentity,
+      `function-scoped iteration variable ${variable.binding.name} cannot have an initializer`,
+    );
+  }
+  addIrVariableHoistingDeclaration(variable, analysis);
+  const carrier = createIrVariableHoistingIterationCarrier(variable, analysis);
+  const assignment = createIrVariableHoistingAssignment(variable, {
+    kind: 'identifier',
+    reference: { binding: carrier.binding, kind: 'binding' },
+  });
+  const loweredBody = collapseIrStatementsVariableHoisting(lowerIrStatementVariableHoisting(body, analysis));
+  return {
+    body:
+      loweredBody.kind === 'block'
+        ? { ...loweredBody, statements: [assignment, ...loweredBody.statements] }
+        : { kind: 'block', statements: [assignment, loweredBody] },
+    variable: carrier,
+  };
 }
 
 function lowerIrVariableStatementVariableHoisting(

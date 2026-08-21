@@ -16,3 +16,8 @@ export function selectPattern(values: [number, string]): string {
   if (first < 0) return '';
   return second;
 }
+
+export function selectFirstValue(values: number[]): number {
+  for (var value of values) return value;
+  return 0;
+}

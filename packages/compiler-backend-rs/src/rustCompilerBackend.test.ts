@@ -169,12 +169,20 @@ describe('emitIrModuleRust', () => {
       'variable-pattern-hoisting.ts',
       'export function select(values: [number, string]): string { var [first, second]: [number, string] = values; first; return second; }',
     );
+    const iteration = lower(
+      'variable-iteration-hoisting.ts',
+      'export function visit(values: number[]): void { for (var value of values) value; }',
+    );
     const namedOutput = emitIrModuleRust(named.module).contents;
     const patternOutput = emitIrModuleRust(pattern.module).contents;
+    const iterationOutput = emitIrModuleRust(iteration.module).contents;
 
     expect(namedOutput).toContain('let mut value: f64;\n  {\n    value = 1.0;\n  }\n  return value;');
     expect(patternOutput).toContain(
       'let mut first: f64;\n  let mut second: String;\n  let array_pattern_value: (f64, String) = values;\n  first = array_pattern_value.0;\n  second = array_pattern_value.1;',
+    );
+    expect(iterationOutput).toContain(
+      'let mut value: f64;\n  for variable_hoisting_iteration_value in values {\n    value = variable_hoisting_iteration_value;\n    value;',
     );
   });
 

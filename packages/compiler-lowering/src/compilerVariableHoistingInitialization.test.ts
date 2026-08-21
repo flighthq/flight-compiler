@@ -42,6 +42,125 @@ describe('validateIrFunctionVariableInitialization', () => {
       ).toThrow('function-scoped variable value may be read before initialization');
     }
   });
+
+  it('propagates initialization through mandatory loop breaks', () => {
+    for (const source of [
+      `
+        export function select(): number {
+          var value: number;
+          do { value = 1; break; } while (false);
+          return value;
+        }
+      `,
+      `
+        export function select(): number {
+          var value: number;
+          for (;;) { value = 1; break; }
+          return value;
+        }
+      `,
+    ]) {
+      const declaration = lowerFunction(source);
+
+      expect(
+        validateIrFunctionVariableInitialization(
+          declaration.body,
+          getFunctionVariables(declaration),
+          declaration.origin,
+        ),
+      ).toBeUndefined();
+    }
+  });
+
+  it('validates continue back-edges before loop conditions and increments', () => {
+    for (const source of [
+      `
+        export function select(): void {
+          do { continue; var value: number = 1; } while (value > 0);
+        }
+      `,
+      `
+        export function select(): void {
+          for (;; value += 1) { continue; var value: number = 1; }
+        }
+      `,
+    ]) {
+      const declaration = lowerFunction(source);
+
+      expect(() =>
+        validateIrFunctionVariableInitialization(
+          declaration.body,
+          getFunctionVariables(declaration),
+          declaration.origin,
+        ),
+      ).toThrow('function-scoped variable value may be read before initialization');
+    }
+  });
+
+  it('joins switch entry, fallthrough, default, and break initialization', () => {
+    for (const source of [
+      `
+        export function select(mode: number): number {
+          var value: number;
+          switch (mode) {
+            case 0: value = 1; break;
+            case 1: value = 2;
+            default: value = 3;
+          }
+          return value;
+        }
+      `,
+      `
+        export function select(mode: number): number {
+          var value: number;
+          switch (mode) { case (value = 1): break; default: break; }
+          return value;
+        }
+      `,
+    ]) {
+      const declaration = lowerFunction(source);
+
+      expect(
+        validateIrFunctionVariableInitialization(
+          declaration.body,
+          getFunctionVariables(declaration),
+          declaration.origin,
+        ),
+      ).toBeUndefined();
+    }
+  });
+
+  it('rejects switch no-match and direct-entry paths without initialization', () => {
+    for (const source of [
+      `
+        export function select(mode: number): number {
+          var value: number;
+          switch (mode) { case 0: value = 1; break; }
+          return value;
+        }
+      `,
+      `
+        export function select(mode: number): number {
+          var value: number;
+          switch (mode) {
+            case 0: value = 1;
+            case 1: return value;
+            default: return 0;
+          }
+        }
+      `,
+    ]) {
+      const declaration = lowerFunction(source);
+
+      expect(() =>
+        validateIrFunctionVariableInitialization(
+          declaration.body,
+          getFunctionVariables(declaration),
+          declaration.origin,
+        ),
+      ).toThrow('function-scoped variable value may be read before initialization');
+    }
+  });
 });
 
 function getFunctionVariables(declaration: Readonly<IrFunctionDeclaration>): ReadonlyMap<string, IrNamedVariable> {
@@ -56,9 +175,35 @@ function getFunctionVariables(declaration: Readonly<IrFunctionDeclaration>): Rea
         }
       }
       if (statement.kind === 'block') visit(statement.statements);
+      if (statement.kind === 'do' || statement.kind === 'while') visit([statement.body]);
+      if (statement.kind === 'for' || statement.kind === 'forIn' || statement.kind === 'forOf') {
+        if (statement.kind === 'for' && Array.isArray(statement.initializer)) {
+          for (const variable of statement.initializer) {
+            if (!('pattern' in variable) && variable.binding.scope === 'function') {
+              variables.set(variable.binding.id, variable);
+            }
+          }
+        }
+        if (
+          (statement.kind === 'forIn' || statement.kind === 'forOf') &&
+          !('pattern' in statement.variable) &&
+          statement.variable.binding.scope === 'function'
+        ) {
+          variables.set(statement.variable.binding.id, statement.variable);
+        }
+        visit([statement.body]);
+      }
       if (statement.kind === 'if') {
         visit([statement.consequent]);
         if (statement.otherwise) visit([statement.otherwise]);
+      }
+      if (statement.kind === 'switch') {
+        for (const switchCase of statement.cases) visit(switchCase.statements);
+      }
+      if (statement.kind === 'try') {
+        visit([statement.tryBody]);
+        if (statement.catchClause) visit([statement.catchClause.body]);
+        if (statement.finallyBody) visit([statement.finallyBody]);
       }
     }
   };

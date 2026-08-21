@@ -33,3 +33,12 @@ pub fn select_pattern(values: (f64, String)) -> String {
   }
   return second;
 }
+
+pub fn select_first_value(values: Vec<f64>) -> f64 {
+  let mut value: f64;
+  for variable_hoisting_iteration_value in values {
+    value = variable_hoisting_iteration_value;
+    return value;
+  }
+  return 0.0;
+}
