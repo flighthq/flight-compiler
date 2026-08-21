@@ -141,6 +141,10 @@ function isCompilerLoweringPassVerification(value: unknown): value is CompilerLo
   );
 }
 
+function isCompilerLoweringPassIdentity(value: string): boolean {
+  return /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/u.test(value);
+}
+
 function validateCompilerLoweringPassExecutionOptions(
   module: Readonly<IrModule>,
   options: Readonly<CompilerLoweringPassExecutionOptions>,
@@ -165,6 +169,26 @@ function validateCompilerLoweringPassOrder(
 ): void {
   const positions = new Map<string, number>();
   for (const [position, pass] of passes.entries()) {
+    if (!isCompilerLoweringPassIdentity(pass.name)) {
+      throw createCompilerLoweringFailure(
+        'invalid-pass-identity',
+        pass.name,
+        module,
+        `lowering pass names must be nonempty lowercase kebab-case identities: ${pass.name}`,
+      );
+    }
+    const dependencies = new Set<string>();
+    for (const predecessor of pass.runsAfter) {
+      if (!isCompilerLoweringPassIdentity(predecessor) || dependencies.has(predecessor)) {
+        throw createCompilerLoweringFailure(
+          'invalid-pass-identity',
+          pass.name,
+          module,
+          `${pass.name} has an invalid or duplicate predecessor identity: ${predecessor}`,
+        );
+      }
+      dependencies.add(predecessor);
+    }
     if (positions.has(pass.name)) {
       throw createCompilerLoweringFailure(
         'duplicate-pass-name',
@@ -178,7 +202,15 @@ function validateCompilerLoweringPassOrder(
   for (const [position, pass] of passes.entries()) {
     for (const predecessor of pass.runsAfter) {
       const predecessorPosition = positions.get(predecessor);
-      if (predecessor === pass.name || (predecessorPosition !== undefined && predecessorPosition > position)) {
+      if (predecessorPosition === undefined) {
+        throw createCompilerLoweringFailure(
+          'invalid-pass-order',
+          pass.name,
+          module,
+          `${pass.name} requires missing predecessor ${predecessor}`,
+        );
+      }
+      if (predecessor === pass.name || predecessorPosition > position) {
         throw createCompilerLoweringFailure(
           'invalid-pass-order',
           pass.name,
@@ -192,6 +224,7 @@ function validateCompilerLoweringPassOrder(
 
 const compilerLoweringFailureCodes: Readonly<Record<CompilerLoweringFailureCode, true>> = {
   'duplicate-pass-name': true,
+  'invalid-pass-identity': true,
   'invalid-pass-order': true,
   'invalid-verification-depth': true,
   'malformed-ir': true,

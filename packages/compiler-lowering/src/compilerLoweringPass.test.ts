@@ -27,6 +27,7 @@ describe('isCompilerLoweringFailure', () => {
   it('accepts every stable code and rejects unknown or incomplete failures', () => {
     const codes: readonly CompilerLoweringFailureCode[] = [
       'duplicate-pass-name',
+      'invalid-pass-identity',
       'invalid-pass-order',
       'invalid-verification-depth',
       'malformed-ir',
@@ -139,6 +140,21 @@ describe('lowerIrModuleWithCompilerPasses', () => {
     const second = createImportPass('second', 'second', ['first']);
     expectFailure(() => lowerIrModuleWithCompilerPasses(module, [first, first]), 'duplicate-pass-name', 'first');
     expectFailure(
+      () => lowerIrModuleWithCompilerPasses(module, [createImportPass('', 'empty')]),
+      'invalid-pass-identity',
+      '',
+    );
+    expectFailure(
+      () => lowerIrModuleWithCompilerPasses(module, [createImportPass('dependent', 'value', [''])]),
+      'invalid-pass-identity',
+      'dependent',
+    );
+    expectFailure(
+      () => lowerIrModuleWithCompilerPasses(module, [createImportPass('dependent', 'value', ['first', 'first'])]),
+      'invalid-pass-identity',
+      'dependent',
+    );
+    expectFailure(
       () =>
         lowerIrModuleWithCompilerPasses(module, [], {
           verificationDepth: 'unknown',
@@ -147,6 +163,7 @@ describe('lowerIrModuleWithCompilerPasses', () => {
       'lowering-plan',
     );
     expectFailure(() => lowerIrModuleWithCompilerPasses(module, [second, first]), 'invalid-pass-order', 'second');
+    expectFailure(() => lowerIrModuleWithCompilerPasses(module, [second]), 'invalid-pass-order', 'second');
     expectFailure(
       () => lowerIrModuleWithCompilerPasses(module, [createImportPass('self', 'self', ['self'])]),
       'invalid-pass-order',

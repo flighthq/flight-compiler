@@ -21,6 +21,7 @@ export interface CompilerLoweringPass {
 
 export type CompilerLoweringFailureCode =
   | 'duplicate-pass-name'
+  | 'invalid-pass-identity'
   | 'invalid-pass-order'
   | 'invalid-verification-depth'
   | 'malformed-ir'
