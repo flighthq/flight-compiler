@@ -1,10 +1,6 @@
 import path from 'node:path';
 
 import {
-  compareTextCodeUnits,
-  normalizeCompilerStructuralValueCanonical,
-} from '../../compiler-canonical-form/src/index.js';
-import {
   createBackendEmissionFailure,
   createCompilerGeneratedFileHeader,
   createIrModuleTargetNameAllocation,
@@ -26,6 +22,7 @@ import {
   collectIrModulesRuntimeExternalConstructorInvocations,
   collectIrModulesRuntimeExternalSymbolIdentities,
 } from '../../compiler-runtime-contract/src/index.js';
+import { createIrObjectTypeShapeIdentity } from '../../compiler-structural/src/index.js';
 import type { CompilerBackend, EmittedFile, RustCompilerBackendOptions } from '../../compiler-types/src/index.js';
 import type {
   IrAssignmentOperator,
@@ -576,9 +573,7 @@ function emitObjectRestExpressionRust(
   if (expression.type.kind !== 'object') {
     emissionError(context, 'object rest requires closed residual-record type evidence');
   }
-  const shape = normalizeCompilerStructuralValueCanonical(
-    [...expression.type.properties].sort((left, right) => compareTextCodeUnits(left.name, right.name)),
-  );
+  const shape = createIrObjectTypeShapeIdentity(expression.type.properties);
   const existing = context.objectRestRecords.get(shape);
   const recordName = existing?.name ?? getGeneratedTargetNameRust('ObjectRestRecord', context);
   if (!existing) context.objectRestRecords.set(shape, { name: recordName, properties: expression.type.properties });
@@ -669,9 +664,7 @@ function getIrObjectConstructionPropertiesRust(
 }
 
 function getIrObjectTypeTargetNameRust(properties: readonly IrObjectTypeProperty[], context: EmitContext): string {
-  const shape = normalizeCompilerStructuralValueCanonical(
-    [...properties].sort((left, right) => compareTextCodeUnits(left.name, right.name)),
-  );
+  const shape = createIrObjectTypeShapeIdentity(properties);
   const existing = context.anonymousObjectRecords.get(shape);
   if (existing) return existing.name;
   const name = getGeneratedTargetNameRust('AnonymousObjectRecord', context);

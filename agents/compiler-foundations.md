@@ -29,8 +29,13 @@ compiler-canonical-form + compiler-types + compiler-provenance
 compiler-types + compiler-provenance
   <- compiler-semantic
 
+compiler-canonical-form + compiler-ir-traversal + compiler-types
+  <- compiler-structural
+
 compiler-types + compiler-emission + compiler-lowering + compiler-runtime-contract
   <- compiler-backend-hx
+
+compiler-types + compiler-emission + compiler-lowering + compiler-runtime-contract + compiler-structural
   <- compiler-backend-rs
 
 canonical form + types + semantic + patch + emission
@@ -154,6 +159,12 @@ Strengths:
 
 This pass gives path identity its own normalization primitive, canonicalizes separators and Unicode composition idempotently, and rejects POSIX, Windows drive, UNC, traversal, empty-segment, reserved-device, invalid-character, trailing-dot/space, and control-character paths. Content normalization preserves source whitespace while canonicalizing LF transport and one final newline; leading BOMs and unpaired surrogates refuse before exact BOM-free UTF-8 encoding. Backend failures carry a stable code and global package/source identity, guards validate structurally, and orchestration rejects exact, case-only, and Unicode-equivalent path collisions across the complete emitted set. Target names are allocated from stable binding IDs within explicit lexical and target namespaces; preferred spellings are reserved before deterministic suffixing, Unicode-equivalent spellings collide, and input order cannot choose the winner. Fixed public spellings take precedence over renamable internal bindings, two fixed collisions fail through a tagged allocation contract, and invalid or duplicate candidate identities fail through stable invariant codes. Haxe and Rust share a generated-file provenance primitive that always names the global input identity and includes a validated inventory commit when supplied. Emitted-source syntax is parser-injected and per-file: the compiler normalizes and freezes supported files, canonicalizes and orders one-based diagnostics, reports deterministically ordered skipped paths, rejects malformed adapters through stable invariant codes, and lets orchestration enforce syntax before returning output. Downstream target compilation is a separate batch adapter over the complete normalized supported file set, with its own diagnostics, failure identity, and non-vacuity gate; a syntax parser can never satisfy that stronger claim. Haxe and Rust own exact-extension shapes for both adapters. `flight-hx` and `flight-rs` supply the real parser and compiler callbacks and continue to own compiler installation, runtime support, and project assembly.
 
+### `compiler-structural`
+
+Status: narrow and deliberately provisional while structural lowering grows.
+
+The package gives closed anonymous object types a versioned target-neutral identity without putting domain policy into `compiler-canonical-form`. Property and compound-member ordering do not affect identity, while optionality, readonly state, tuple/parameter cardinality, nominal roots, literal code points, and numeric `-0` remain distinct. Locally bound function type parameters are alpha-equivalent; unrelated outer type parameters remain nominal. A deterministic immutable inventory coalesces identical nested shapes across modules and retains every module plus traversal-path occurrence. Duplicate property names, cyclic runtime values, and non-finite numeric literal types fail through a stable tagged contract. Rust anonymous and object-rest record interning now consumes this shared identity. Shared nominal storage emission, generic structural construction, copy/overwrite evaluation, and compatibility diagnostics remain separate later decisions.
+
 ## Package isolation review
 
 Each workspace passes its own strict typecheck and Vitest target. The package boundary remains justified only where the subject and dependency direction are independently useful:
@@ -168,6 +179,7 @@ Each workspace passes its own strict typecheck and Vitest target. The package bo
 | `compiler-ir-validation` | Keep independent as the structural and lexical integrity boundary for target-neutral IR values. | Module and binding identity, legal introduction roles, exact source fingerprints, ancestor-scope reachability across module/declaration/function/block regions, compound-type arity, parameter cardinality, and every discriminated IR family are checked without target policy or mutation. |
 | `compiler-lowering` | Keep independent as the backend-elected library of neutral IR-to-IR transforms. | Pass ordering, shared structural validation, pass-specific postconditions, explicit idempotence verification, module identity, immutability, stable pass-named failures, initializer scope, omitted conditions, discarded numeric updates, and continue-correct nested-loop behavior are direct-tested with zero unreached arms. |
 | `compiler-runtime-contract` | Keep independent as the target-neutral ambient-symbol and constructor-ABI completeness seam. | Exact type/value-space source identities and direct ambient constructor arities are collected across reachable IR. Symbol bindings and constructor ABIs have independent versioned plans; duplicate, invalid, missing, fixed, and dynamic constructor decisions are deterministic, while target names and runtime implementations stay out. |
+| `compiler-structural` | Keep independent as structural type identity and analysis above canonical form. | Closed object identity, every IR type family, property/compound order equivalence, semantic counterexamples, generic alpha-equivalence, tagged malformed-input failures, deterministic cross-module occurrence inventory, immutability, empty input, and Rust interning reuse are covered; shared nominal storage and compatibility policy remain open. |
 | `compiler-inventory` | Keep independent as the first read-only composition above identity. | Package discovery yields validated, portable, deterministically ordered manifest, dependency, bin, production-import, host-module, evidence-backed tooling-exclusion, and checker-resolved production host-endpoint facts; every manifest, project, Git, export-graph, source-resolution, runtime-classification, SDK, endpoint-receiver, and exclusion failure is tagged for message-independent handling. Host receiver classification enters through an explicit neutral capability; target runtime implementation coverage remains downstream. |
 | `compiler-semantic` | Keep together for now; it owns TypeScript-to-neutral lowering and analysis over that neutral model. | Deterministic TypeScript-backed value bindings, declared-versus-flow operator domains, normalized indexed receiver sets, and a versioned immutable static-fact audit cover truthiness, numeric relations and arithmetic, indexed access, typed-array set calls, and mixed-width indexed writes across every IR container; most production Flight semantics remain unported. |
 | `compiler-backend-hx` | Keep together; naming was split into a focused sibling source, not a workspace. | Package/module identity, collision-free value/type binding allocation, keyword and case normalization, ambient-versus-bound references, and direct-versus-coercive operator decisions are direct-tested; production lowering and byte-stable parity remain open. |
@@ -267,9 +279,9 @@ The latest five-iteration compiler ABI batch completed:
 4. Version direct ambient constructor arities independently under `flight-runtime-constructor-abi/1`, with deterministic completeness and target-owned Haxe and Rust plans.
 5. Separate per-file emitted-source syntax parsing from one downstream target compilation smoke over the complete normalized supported file set.
 
-The next ten iterations, subject to recalibration after the first five, are:
+The active ten iterations, subject to recalibration after the first five, are:
 
-1. Give structurally equivalent shapes one canonical identity across module boundaries.
+1. **Complete:** give structurally equivalent shapes one canonical identity across module boundaries.
 2. Model object-spread copy order, overwrite behavior, and effect preservation in neutral lowering.
 3. Preserve generic substitution through structural record construction and emission.
 4. Produce structured structural-compatibility diagnostics rather than target-specific late failures.

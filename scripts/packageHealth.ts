@@ -60,6 +60,7 @@ const packageRules: Readonly<Record<string, PackageRule>> = {
       'compiler-emission',
       'compiler-lowering',
       'compiler-runtime-contract',
+      'compiler-structural',
       'compiler-types',
     ],
     description: 'Rust lowering, naming, and source emission backend',
@@ -118,6 +119,10 @@ const packageRules: Readonly<Record<string, PackageRule>> = {
   'compiler-semantic': {
     dependencies: ['compiler-canonical-form', 'compiler-ir-traversal', 'compiler-provenance', 'compiler-types'],
     description: 'TypeScript semantic analysis and target-neutral lowering',
+  },
+  'compiler-structural': {
+    dependencies: ['compiler-canonical-form', 'compiler-ir-traversal', 'compiler-types'],
+    description: 'Target-neutral structural type identity and analysis',
   },
   'compiler-types': {
     dependencies: [],
