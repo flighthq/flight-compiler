@@ -1,9 +1,12 @@
 import { isDeepStrictEqual } from 'node:util';
 
+import { validateIrModuleStructure } from '../../compiler-ir-validation/src/index.js';
 import type {
   CompilerLoweringFailure,
   CompilerLoweringFailureCode,
   CompilerLoweringPass,
+  CompilerLoweringPassExecutionOptions,
+  CompilerLoweringPassVerification,
   CompilerSourceIdentity,
   IrModule,
 } from '../../compiler-types/src/index.js';
@@ -50,12 +53,14 @@ export function isCompilerLoweringFailure(value: unknown): value is CompilerLowe
 export function lowerIrModuleWithCompilerPasses(
   module: Readonly<IrModule>,
   passes: readonly Readonly<CompilerLoweringPass>[],
+  options: Readonly<CompilerLoweringPassExecutionOptions> = {},
 ): IrModule {
+  validateCompilerLoweringPassExecutionOptions(module, options);
   validateCompilerLoweringPassOrder(module, passes);
   let lowered = structuredClone(module);
   for (const pass of passes) {
     const output = getCompilerLoweringPassOutput(module, lowered, pass);
-    if (pass.idempotent) {
+    if (options.verificationDepth === 'idempotence' && pass.idempotent) {
       const repeated = getCompilerLoweringPassOutput(module, output, pass);
       if (!isDeepStrictEqual(output, repeated)) {
         throw createCompilerLoweringFailure(
@@ -78,7 +83,29 @@ function getCompilerLoweringPassOutput(
 ): IrModule {
   try {
     const output = pass.lowerIrModule(structuredClone(module));
-    const verification = pass.verifyIrModule(structuredClone(output));
+    const structuralValidation = validateIrModuleStructure(output);
+    if (structuralValidation.kind === 'invalid') {
+      throw createCompilerLoweringFailure(
+        'malformed-ir',
+        pass.name,
+        sourceIdentity,
+        structuralValidation.failures
+          .map((failure) => `${failure.code} at ${failure.path}: ${failure.reason}`)
+          .join('; '),
+      );
+    }
+    if (output.name !== module.name || output.packageName !== module.packageName || output.source !== module.source) {
+      throw createCompilerLoweringFailure(
+        'malformed-ir',
+        pass.name,
+        sourceIdentity,
+        'a target-neutral lowering pass must preserve module identity',
+      );
+    }
+    const verification: unknown = pass.verifyIrModule(structuredClone(output));
+    if (!isCompilerLoweringPassVerification(verification)) {
+      throw new TypeError('lowering pass verification must be a valid or invalid tagged result');
+    }
     if (verification.kind === 'invalid') {
       throw createCompilerLoweringFailure('malformed-ir', pass.name, sourceIdentity, verification.reason);
     }
@@ -91,6 +118,34 @@ function getCompilerLoweringPassOutput(
       sourceIdentity,
       error instanceof Error ? error.message : String(error),
       error,
+    );
+  }
+}
+
+function isCompilerLoweringPassVerification(value: unknown): value is CompilerLoweringPassVerification {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    'kind' in value &&
+    (value.kind === 'valid' ||
+      (value.kind === 'invalid' && 'reason' in value && typeof value.reason === 'string' && value.reason.length > 0))
+  );
+}
+
+function validateCompilerLoweringPassExecutionOptions(
+  module: Readonly<IrModule>,
+  options: Readonly<CompilerLoweringPassExecutionOptions>,
+): void {
+  if (
+    options.verificationDepth !== undefined &&
+    options.verificationDepth !== 'idempotence' &&
+    options.verificationDepth !== 'output'
+  ) {
+    throw createCompilerLoweringFailure(
+      'invalid-verification-depth',
+      'lowering-plan',
+      module,
+      `unknown verification depth ${String(options.verificationDepth)}`,
     );
   }
 }
@@ -129,6 +184,7 @@ function validateCompilerLoweringPassOrder(
 const compilerLoweringFailureCodes: Readonly<Record<CompilerLoweringFailureCode, true>> = {
   'duplicate-pass-name': true,
   'invalid-pass-order': true,
+  'invalid-verification-depth': true,
   'malformed-ir': true,
   'non-idempotent-pass': true,
   'pass-execution-failed': true,

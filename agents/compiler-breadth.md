@@ -47,13 +47,13 @@ So the package owns three things:
 
 - **The pass framework**: a pass interface (`IrModule → IrModule`), declared ordering constraints, and composition.
 - **The neutral passes themselves**, each independently testable, added one at a time.
-- **Pass verification**: after a pass runs, the IR still satisfies its invariants, and each pass states whether it is idempotent. A pass that produces malformed IR fails there rather than at emission, where the message would name the wrong stage.
+- **Pass verification**: after a pass runs, shared structural validation and its pass-specific postcondition hold, and each pass states whether it is idempotent. Reapplication is an explicit audit depth rather than an unconditional backend cost. A pass that produces malformed IR fails there rather than at emission, where the message would name the wrong stage.
 
 A third category sits alongside the passes and is worth separating explicitly: **neutral analysis that annotates rather than rewrites.** Narrowing is the example — "after `if (v === undefined) return`, `v` is non-optional" is a target-independent fact, while `Null<T>` versus `Option<T>` is a target-specific representation. That is the pattern the static-facts work already established: compute the fact once, let each backend choose the shape.
 
 ### Against the test
 
-- **Independent dependency boundary.** It depends on `compiler-types` and the semantic facts; it is depended on by both backends. It needs no filesystem, no TypeScript checker, and no target.
+- **Independent dependency boundary.** It depends on `compiler-types` and `compiler-ir-validation`; it is depended on by both backends. It needs no filesystem, no TypeScript checker, and no target.
 - **Independent lifecycle.** Passes arrive one at a time, each with its own regressions and its own golden fixtures converting from pinned refusal to pinned output. That is a different cadence from the emitters, which change when a target's idiom changes.
 
 It also supplies the precondition the foundations audit named for splitting target lowering from target emission: _"do not split target lowering from target emission until an explicit target model exists between them."_ A pass library with a declared IR-to-IR contract is where that model becomes explicit.

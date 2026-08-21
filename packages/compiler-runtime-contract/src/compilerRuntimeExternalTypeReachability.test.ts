@@ -1,7 +1,7 @@
 import ts from 'typescript';
 
-import type { IrModule } from '../../compiler-types/src/index.js';
 import { lowerTypeScriptSource } from '../../compiler-semantic/src/index.js';
+import type { IrModule } from '../../compiler-types/src/index.js';
 import { collectIrModulesRuntimeExternalTypeIdentities } from './compilerRuntimeExternalTypeReachability.js';
 
 describe('collectIrModulesRuntimeExternalTypeIdentities', () => {

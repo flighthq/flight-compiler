@@ -25,12 +25,177 @@ export function createCompilerLoweringPassCStyleFor(): CompilerLoweringPass {
     name: compilerLoweringPassNameCStyleFor,
     runsAfter: [],
     verifyIrModule(module) {
-      const result = lowerIrModuleCStyleFor(module);
-      return result.loweredStatements === 0
-        ? { kind: 'valid' }
-        : { kind: 'invalid', reason: 'C-style for statement remains after normalization' };
+      return hasIrModuleCStyleForStatement(module)
+        ? { kind: 'invalid', reason: 'C-style for statement remains after normalization' }
+        : { kind: 'valid' };
     },
   };
+}
+
+function hasIrDeclarationCStyleForStatement(declaration: Readonly<IrDeclaration>): boolean {
+  switch (declaration.kind) {
+    case 'class':
+      return (
+        declaration.fields.some((field) =>
+          field.initializer ? hasIrExpressionCStyleForStatement(field.initializer) : false,
+        ) ||
+        (declaration.classConstructor
+          ? declaration.classConstructor.parameters.some(hasIrParameterCStyleForStatement) ||
+            declaration.classConstructor.body.some(hasIrStatementCStyleForStatement)
+          : false) ||
+        declaration.methods.some(
+          (method) =>
+            method.parameters.some(hasIrParameterCStyleForStatement) ||
+            method.body.some(hasIrStatementCStyleForStatement),
+        )
+      );
+    case 'function':
+      return (
+        declaration.parameters.some(hasIrParameterCStyleForStatement) ||
+        declaration.overloads.some((overload) => overload.parameters.some(hasIrParameterCStyleForStatement)) ||
+        declaration.body.some(hasIrStatementCStyleForStatement)
+      );
+    case 'variable':
+      return declaration.initializer ? hasIrExpressionCStyleForStatement(declaration.initializer) : false;
+    case 'enum':
+    case 'interface':
+    case 'typeAlias':
+      return false;
+  }
+}
+
+function hasIrExpressionCStyleForStatement(expression: Readonly<IrExpression>): boolean {
+  switch (expression.kind) {
+    case 'array':
+      return expression.elements.some((element) => (element ? hasIrExpressionCStyleForStatement(element) : false));
+    case 'assignment':
+    case 'binary':
+      return hasIrExpressionCStyleForStatement(expression.left) || hasIrExpressionCStyleForStatement(expression.right);
+    case 'await':
+    case 'spread':
+      return hasIrExpressionCStyleForStatement(expression.expression);
+    case 'call':
+    case 'new':
+      return (
+        hasIrExpressionCStyleForStatement(expression.callee) ||
+        expression.arguments.some(hasIrExpressionCStyleForStatement)
+      );
+    case 'cast':
+      return hasIrExpressionCStyleForStatement(expression.expression);
+    case 'conditional':
+      return (
+        hasIrExpressionCStyleForStatement(expression.condition) ||
+        hasIrExpressionCStyleForStatement(expression.whenFalse) ||
+        hasIrExpressionCStyleForStatement(expression.whenTrue)
+      );
+    case 'element':
+      return (
+        hasIrExpressionCStyleForStatement(expression.index) || hasIrExpressionCStyleForStatement(expression.object)
+      );
+    case 'function':
+      return (
+        expression.parameters.some(hasIrParameterCStyleForStatement) ||
+        expression.body.some(hasIrStatementCStyleForStatement) ||
+        (expression.expression ? hasIrExpressionCStyleForStatement(expression.expression) : false)
+      );
+    case 'object':
+      return expression.members.some(hasIrObjectMemberCStyleForStatement);
+    case 'property':
+      return hasIrExpressionCStyleForStatement(expression.object);
+    case 'template':
+      return expression.parts.some((part) =>
+        typeof part === 'string' ? false : hasIrExpressionCStyleForStatement(part),
+      );
+    case 'unary':
+      return hasIrExpressionCStyleForStatement(expression.operand);
+    case 'identifier':
+    case 'literal':
+    case 'regexp':
+      return false;
+  }
+}
+
+function hasIrModuleCStyleForStatement(module: Readonly<IrModule>): boolean {
+  return (
+    module.declarations.some(hasIrDeclarationCStyleForStatement) ||
+    module.exports.some((item) =>
+      item.kind === 'default' ? hasIrExpressionCStyleForStatement(item.expression) : false,
+    )
+  );
+}
+
+function hasIrObjectMemberCStyleForStatement(member: Readonly<IrObjectMember>): boolean {
+  switch (member.kind) {
+    case 'computedProperty':
+      return hasIrExpressionCStyleForStatement(member.key) || hasIrExpressionCStyleForStatement(member.value);
+    case 'property':
+      return hasIrExpressionCStyleForStatement(member.value);
+    case 'spread':
+      return hasIrExpressionCStyleForStatement(member.expression);
+  }
+}
+
+function hasIrParameterCStyleForStatement(parameter: Readonly<IrParameter>): boolean {
+  return parameter.initializer ? hasIrExpressionCStyleForStatement(parameter.initializer) : false;
+}
+
+function hasIrStatementCStyleForStatement(statement: Readonly<IrStatement>): boolean {
+  switch (statement.kind) {
+    case 'block':
+      return statement.statements.some(hasIrStatementCStyleForStatement);
+    case 'do':
+    case 'while':
+      return hasIrStatementCStyleForStatement(statement.body) || hasIrExpressionCStyleForStatement(statement.condition);
+    case 'expression':
+    case 'throw':
+      return hasIrExpressionCStyleForStatement(statement.expression);
+    case 'for':
+      return true;
+    case 'forIn':
+      return (
+        hasIrVariableCStyleForStatement(statement.variable) ||
+        hasIrExpressionCStyleForStatement(statement.object) ||
+        hasIrStatementCStyleForStatement(statement.body)
+      );
+    case 'forOf':
+      return (
+        hasIrVariableCStyleForStatement(statement.variable) ||
+        hasIrExpressionCStyleForStatement(statement.iterable) ||
+        hasIrStatementCStyleForStatement(statement.body)
+      );
+    case 'if':
+      return (
+        hasIrExpressionCStyleForStatement(statement.condition) ||
+        hasIrStatementCStyleForStatement(statement.consequent) ||
+        (statement.otherwise ? hasIrStatementCStyleForStatement(statement.otherwise) : false)
+      );
+    case 'return':
+      return statement.expression ? hasIrExpressionCStyleForStatement(statement.expression) : false;
+    case 'switch':
+      return (
+        hasIrExpressionCStyleForStatement(statement.expression) ||
+        statement.cases.some(
+          (item) =>
+            (item.expression ? hasIrExpressionCStyleForStatement(item.expression) : false) ||
+            item.statements.some(hasIrStatementCStyleForStatement),
+        )
+      );
+    case 'try':
+      return (
+        hasIrStatementCStyleForStatement(statement.tryBody) ||
+        (statement.catchClause ? hasIrStatementCStyleForStatement(statement.catchClause.body) : false) ||
+        (statement.finallyBody ? hasIrStatementCStyleForStatement(statement.finallyBody) : false)
+      );
+    case 'variable':
+      return statement.declarations.some(hasIrVariableCStyleForStatement);
+    case 'break':
+    case 'continue':
+      return false;
+  }
+}
+
+function hasIrVariableCStyleForStatement(variable: Readonly<IrVariable>): boolean {
+  return variable.initializer ? hasIrExpressionCStyleForStatement(variable.initializer) : false;
 }
 
 function lowerIrDeclaration(declaration: Readonly<IrDeclaration>, analysis: CStyleForLoweringAnalysis): IrDeclaration {

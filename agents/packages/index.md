@@ -15,7 +15,7 @@ A score is a judgement about **domain coverage**, not about code quality. `compi
 | [compiler-inventory](compiler-inventory/review.md) | solid | 68 | what is in this workspace and what does it export |
 | [tool-compiler](tool-compiler/review.md) | solid | 62 | the one published artifact |
 | [compiler-orchestration](compiler-orchestration/review.md) | solid | 60 | compose the passes deterministically |
-| [compiler-lowering](compiler-lowering/review.md) | early | 42 | verified neutral IR-to-IR transforms elected by targets |
+| [compiler-lowering](compiler-lowering/review.md) | early | 48 | verified neutral IR-to-IR transforms elected by targets |
 | [compiler-semantic](compiler-semantic/review.md) | early | 38 | TypeScript in, neutral IR out |
 | [compiler-backend-hx](compiler-backend-hx/review.md) | early | 30 | neutral IR in, idiomatic Haxe out |
 | [compiler-backend-rs](compiler-backend-rs/review.md) | early | 26 | neutral IR in, idiomatic Rust out |

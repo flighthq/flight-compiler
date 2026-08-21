@@ -1,7 +1,7 @@
 import ts from 'typescript';
 
-import type { CompilerIrModuleValidationFailureCode, IrModule } from '../../compiler-types/src/index.js';
 import { lowerTypeScriptSource } from '../../compiler-semantic/src/index.js';
+import type { CompilerIrModuleValidationFailureCode, IrModule } from '../../compiler-types/src/index.js';
 import { validateIrModuleStructure } from './compilerIrModuleStructure.js';
 
 function lower(file: string, source: string): IrModule {

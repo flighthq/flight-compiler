@@ -5,6 +5,12 @@ export type CompilerLoweringPassVerification =
   | Readonly<{ kind: 'valid' }>
   | Readonly<{ kind: 'invalid'; reason: string }>;
 
+export type CompilerLoweringPassVerificationDepth = 'idempotence' | 'output';
+
+export interface CompilerLoweringPassExecutionOptions {
+  readonly verificationDepth?: CompilerLoweringPassVerificationDepth;
+}
+
 export interface CompilerLoweringPass {
   readonly idempotent: boolean;
   readonly lowerIrModule: (module: Readonly<IrModule>) => IrModule;
@@ -16,6 +22,7 @@ export interface CompilerLoweringPass {
 export type CompilerLoweringFailureCode =
   | 'duplicate-pass-name'
   | 'invalid-pass-order'
+  | 'invalid-verification-depth'
   | 'malformed-ir'
   | 'non-idempotent-pass'
   | 'pass-execution-failed'

@@ -28,6 +28,7 @@ describe('isCompilerLoweringFailure', () => {
     const codes: readonly CompilerLoweringFailureCode[] = [
       'duplicate-pass-name',
       'invalid-pass-order',
+      'invalid-verification-depth',
       'malformed-ir',
       'non-idempotent-pass',
       'pass-execution-failed',
@@ -88,12 +89,49 @@ describe('lowerIrModuleWithCompilerPasses', () => {
     const pass = createImportPass('non-idempotent', 'once', [], false);
 
     expect(lowerIrModuleWithCompilerPasses(module, [pass]).imports.map((item) => item.specifier)).toEqual(['once']);
+    expect(
+      lowerIrModuleWithCompilerPasses(module, [pass], { verificationDepth: 'idempotence' }).imports.map(
+        (item) => item.specifier,
+      ),
+    ).toEqual(['once']);
   });
 
-  it('rejects duplicate names, impossible order, malformed output, false idempotence, and thrown errors', () => {
+  it('runs one transform and postcondition ordinarily and repeats both only for explicit idempotence verification', () => {
+    let postconditions = 0;
+    let transforms = 0;
+    const pass = createPass(
+      'counted',
+      (value) => {
+        transforms += 1;
+        return structuredClone(value);
+      },
+      () => {
+        postconditions += 1;
+        return { kind: 'valid' };
+      },
+    );
+
+    lowerIrModuleWithCompilerPasses(module, [pass]);
+    expect({ postconditions, transforms }).toEqual({ postconditions: 1, transforms: 1 });
+
+    postconditions = 0;
+    transforms = 0;
+    lowerIrModuleWithCompilerPasses(module, [pass], { verificationDepth: 'idempotence' });
+    expect({ postconditions, transforms }).toEqual({ postconditions: 2, transforms: 2 });
+  });
+
+  it('rejects invalid plans, structural or pass-specific malformation, changed identity, false idempotence, and errors', () => {
     const first = createImportPass('first', 'first');
     const second = createImportPass('second', 'second', ['first']);
     expectFailure(() => lowerIrModuleWithCompilerPasses(module, [first, first]), 'duplicate-pass-name', 'first');
+    expectFailure(
+      () =>
+        lowerIrModuleWithCompilerPasses(module, [], {
+          verificationDepth: 'unknown',
+        } as unknown as Parameters<typeof lowerIrModuleWithCompilerPasses>[2]),
+      'invalid-verification-depth',
+      'lowering-plan',
+    );
     expectFailure(() => lowerIrModuleWithCompilerPasses(module, [second, first]), 'invalid-pass-order', 'second');
     expectFailure(
       () => lowerIrModuleWithCompilerPasses(module, [createImportPass('self', 'self', ['self'])]),
@@ -115,10 +153,38 @@ describe('lowerIrModuleWithCompilerPasses', () => {
     expectFailure(
       () =>
         lowerIrModuleWithCompilerPasses(module, [
-          createPass('claimed-idempotent', (value) => appendImport(value, 'again')),
+          createPass('structurally-malformed', (value) => ({ ...value, name: '' })),
         ]),
+      'malformed-ir',
+      'structurally-malformed',
+    );
+    expectFailure(
+      () =>
+        lowerIrModuleWithCompilerPasses(module, [
+          createPass('changed-identity', (value) => ({ ...value, source: 'src/changed.ts' })),
+        ]),
+      'malformed-ir',
+      'changed-identity',
+    );
+    expectFailure(
+      () =>
+        lowerIrModuleWithCompilerPasses(
+          module,
+          [createPass('claimed-idempotent', (value) => appendImport(value, 'again'))],
+          { verificationDepth: 'idempotence' },
+        ),
       'non-idempotent-pass',
       'claimed-idempotent',
+    );
+    expectFailure(
+      () =>
+        lowerIrModuleWithCompilerPasses(module, [
+          createPass('invalid-verification', (value) => structuredClone(value), (() => ({
+            kind: 'unknown',
+          })) as unknown as CompilerLoweringPass['verifyIrModule']),
+        ]),
+      'pass-execution-failed',
+      'invalid-verification',
     );
     expectFailure(
       () =>

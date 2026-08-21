@@ -86,7 +86,7 @@ The dependency floor is deliberate:
 - `compiler-patch` and `compiler-emission` depend only on the contracts they operate over.
 - `compiler-ir-validation` verifies target-neutral IR structure over `compiler-types` alone.
 - `compiler-runtime-contract` validates reachable external-type decisions over `compiler-types` alone.
-- `compiler-lowering` provides verified neutral transforms over `compiler-types`; backends elect its passes.
+- `compiler-lowering` provides verified neutral transforms over `compiler-types`, composing `compiler-ir-validation`; backends elect its passes.
 - inventory, semantic lowering, backends, and orchestration are compositions above that floor.
 
 Before expanding a higher package, read [the compiler foundations audit](agents/compiler-foundations.md). A foundation is mature only when its boundary is narrow, its vocabulary is worth freezing, deterministic behavior is tested by equivalence and counterexample, failure values are inspectable, and callers cannot observe accidental mutation or host-platform differences.
