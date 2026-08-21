@@ -85,6 +85,19 @@ describe('lowerIrModuleWithCompilerPasses', () => {
     expect(output.imports).not.toBe(module.imports);
   });
 
+  it('refuses malformed input before an empty plan or selected pass can consume it', () => {
+    let transforms = 0;
+    const malformed = { ...module, name: '' };
+    const pass = createPass('must-not-run', (value) => {
+      transforms += 1;
+      return structuredClone(value);
+    });
+
+    expectFailure(() => lowerIrModuleWithCompilerPasses(malformed, []), 'malformed-ir', 'lowering-plan');
+    expectFailure(() => lowerIrModuleWithCompilerPasses(malformed, [pass]), 'malformed-ir', 'lowering-plan');
+    expect(transforms).toBe(0);
+  });
+
   it('allows a pass to declare that it is not idempotent', () => {
     const pass = createImportPass('non-idempotent', 'once', [], false);
 

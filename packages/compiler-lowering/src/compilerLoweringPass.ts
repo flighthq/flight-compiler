@@ -57,6 +57,7 @@ export function lowerIrModuleWithCompilerPasses(
 ): IrModule {
   validateCompilerLoweringPassExecutionOptions(module, options);
   validateCompilerLoweringPassOrder(module, passes);
+  validateCompilerLoweringModule(module, module, 'lowering-plan');
   let lowered = structuredClone(module);
   for (const pass of passes) {
     const output = getCompilerLoweringPassOutput(module, lowered, pass);
@@ -83,17 +84,7 @@ function getCompilerLoweringPassOutput(
 ): IrModule {
   try {
     const output = pass.lowerIrModule(structuredClone(module));
-    const structuralValidation = validateIrModuleStructure(output);
-    if (structuralValidation.kind === 'invalid') {
-      throw createCompilerLoweringFailure(
-        'malformed-ir',
-        pass.name,
-        sourceIdentity,
-        structuralValidation.failures
-          .map((failure) => `${failure.code} at ${failure.path}: ${failure.reason}`)
-          .join('; '),
-      );
-    }
+    validateCompilerLoweringModule(sourceIdentity, output, pass.name);
     if (output.name !== module.name || output.packageName !== module.packageName || output.source !== module.source) {
       throw createCompilerLoweringFailure(
         'malformed-ir',
@@ -118,6 +109,24 @@ function getCompilerLoweringPassOutput(
       sourceIdentity,
       error instanceof Error ? error.message : String(error),
       error,
+    );
+  }
+}
+
+function validateCompilerLoweringModule(
+  sourceIdentity: Readonly<CompilerSourceIdentity>,
+  module: Readonly<IrModule>,
+  pass: string,
+): void {
+  const structuralValidation = validateIrModuleStructure(module);
+  if (structuralValidation.kind === 'invalid') {
+    throw createCompilerLoweringFailure(
+      'malformed-ir',
+      pass,
+      sourceIdentity,
+      structuralValidation.failures
+        .map((failure) => `${failure.code} at ${failure.path}: ${failure.reason}`)
+        .join('; '),
     );
   }
 }
