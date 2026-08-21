@@ -385,6 +385,29 @@ describe('analyzeIrModulesStaticFacts', () => {
     );
   });
 
+  it('analyzes computed object-binding defaults through exhaustive shared traversal', () => {
+    const sourceFile = ts.createSourceFile(
+      '/flight/packages/math/src/object-binding-facts.ts',
+      `
+        export function select(values: number[], key: string): number {
+          const { [key]: selected = values[0] } = { [key]: values[1] };
+          return selected;
+        }
+      `,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const lowered = lowerTypeScriptSource(sourceFile, {
+      packageName: '@flighthq/math',
+      upstreamDirectory: '/flight',
+    });
+
+    expect(lowered.diagnostics).toEqual([]);
+    expect(analyzeIrModulesStaticFacts([lowered.module]).facts).toEqual([
+      { access: 'read', count: 2, kind: 'indexedAccess', receivers: ['array'] },
+    ]);
+  });
+
   it('counts typed-array set calls by normalized receiver set', () => {
     const sourceFile = ts.createSourceFile(
       '/flight/packages/math/src/typed-array-set.ts',

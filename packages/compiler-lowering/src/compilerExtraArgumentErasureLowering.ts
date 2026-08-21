@@ -1,4 +1,4 @@
-import { analyzeIrModuleTraversal } from '../../compiler-ir-traversal/src/index.js';
+import { analyzeIrModuleTraversal, getIrModuleTraversalPathValue } from '../../compiler-ir-traversal/src/index.js';
 import type {
   CompilerIrTraversalPath,
   CompilerLoweringPass,
@@ -103,17 +103,6 @@ function createIrCallSemanticsExtraArgumentErasure(
   };
 }
 
-function getCompilerIrTraversalPathValue(root: unknown, path: CompilerIrTraversalPath): unknown {
-  let value = root;
-  for (const segment of path) {
-    if (!isCompilerIrTraversalContainer(value) || !(segment in value)) {
-      throw new TypeError(`IR traversal path does not resolve at ${JSON.stringify(path)}`);
-    }
-    value = value[segment];
-  }
-  return value;
-}
-
 function hasIrCallExpressionExtraArgumentErasureResidual(
   expression: Readonly<IrExpression>,
 ): expression is Readonly<Extract<IrExpression, { kind: 'call' }>> {
@@ -154,7 +143,7 @@ function lowerIrModuleExtraArgumentErasure(module: Readonly<IrModule>): IrModule
     },
   });
   for (const path of paths.reverse()) {
-    const expression = getCompilerIrTraversalPathValue(lowered, path);
+    const expression = getIrModuleTraversalPathValue(lowered, path);
     if (!isIrCallExpressionExtraArgumentErasureCandidate(expression)) {
       throw createCompilerLoweringFailure(
         'malformed-ir',
@@ -180,10 +169,14 @@ function isIrCallExpressionExtraArgumentErasureCandidate(
   );
 }
 
-function setCompilerIrTraversalPathValue(root: unknown, path: CompilerIrTraversalPath, value: unknown): void {
+function setCompilerIrTraversalPathValue(
+  root: Readonly<IrModule>,
+  path: CompilerIrTraversalPath,
+  value: unknown,
+): void {
   const segment = path.at(-1);
   if (segment === undefined) throw new TypeError('IR traversal replacement path cannot be the module root');
-  const parent = getCompilerIrTraversalPathValue(root, path.slice(0, -1));
+  const parent = getIrModuleTraversalPathValue(root, path.slice(0, -1));
   if (!isCompilerIrTraversalContainer(parent) || !(segment in parent)) {
     throw new TypeError(`IR traversal replacement path does not resolve at ${JSON.stringify(path)}`);
   }

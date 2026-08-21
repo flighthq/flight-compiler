@@ -1,13 +1,13 @@
+import { analyzeIrModuleTraversal, getIrModuleTraversalPathValue } from '../../compiler-ir-traversal/src/index.js';
 import type {
+  CompilerIrTraversalPath,
   CompilerStaticFactAudit,
   CompilerStaticFactCount,
   CompilerStaticIndexedAccessMode,
   CompilerStaticNumericArithmeticFact,
   CompilerStaticTruthinessContext,
-  IrBindingPattern,
   IrBinaryOperator,
   IrBinaryOperatorSemantics,
-  IrDeclaration,
   IrExpression,
   IrIndexedReceiver,
   IrModule,
@@ -16,7 +16,6 @@ import type {
   IrStatement,
   IrTypedArrayElementWidth,
   IrTypedArrayReceiver,
-  IrVariable,
 } from '../../compiler-types/src/index.js';
 import { getCompilerStaticNumericArithmeticFact } from './compilerStaticNumericArithmetic.js';
 
@@ -57,10 +56,14 @@ type StaticFact =
 export function analyzeIrModulesStaticFacts(modules: readonly Readonly<IrModule>[]): CompilerStaticFactAudit {
   const analysis: StaticFactAnalysis = { counts: new Map() };
   for (const module of modules) {
-    for (const declaration of module.declarations) analyzeDeclaration(declaration, analysis);
-    for (const item of module.exports) {
-      if (item.kind === 'default') analyzeExpression(item.expression, analysis, 'read');
-    }
+    analyzeIrModuleTraversal(module, {
+      expression(expression, path) {
+        analyzeIrExpressionStaticFacts(expression, analysis, getIrExpressionIndexedAccessModeStaticFacts(module, path));
+      },
+      statement(statement) {
+        analyzeIrStatementStaticFacts(statement, analysis);
+      },
+    });
   }
   return createStaticFactAudit(analysis, modules.length);
 }
@@ -159,58 +162,19 @@ function addTypedArraySetFact(
   addStaticFact({ kind: 'typedArraySet', receivers: normalized }, analysis);
 }
 
-function analyzeDeclaration(declaration: Readonly<IrDeclaration>, analysis: StaticFactAnalysis): void {
-  switch (declaration.kind) {
-    case 'class':
-      declaration.classConstructor?.parameters.forEach((parameter) => analyzeInitializer(parameter, analysis));
-      declaration.classConstructor?.body.forEach((statement) => analyzeStatement(statement, analysis));
-      declaration.fields.forEach((field) => {
-        if (field.initializer) analyzeExpression(field.initializer, analysis, 'read');
-      });
-      declaration.methods.forEach((method) => {
-        method.parameters.forEach((parameter) => analyzeInitializer(parameter, analysis));
-        method.body.forEach((statement) => analyzeStatement(statement, analysis));
-      });
-      return;
-    case 'function':
-      declaration.parameters.forEach((parameter) => analyzeInitializer(parameter, analysis));
-      declaration.body.forEach((statement) => analyzeStatement(statement, analysis));
-      return;
-    case 'variable':
-      analyzeVariable(declaration, analysis);
-      return;
-    case 'enum':
-    case 'interface':
-    case 'typeAlias':
-      return;
-  }
-}
-
-function analyzeExpression(
+function analyzeIrExpressionStaticFacts(
   expression: Readonly<IrExpression>,
   analysis: StaticFactAnalysis,
   indexedAccess: CompilerStaticIndexedAccessMode | undefined,
 ): void {
   switch (expression.kind) {
-    case 'array':
-      expression.elements.forEach((element) => {
-        if (element) analyzeExpression(element, analysis, 'read');
-      });
-      return;
     case 'assignment': {
       if (expression.operator === '&&=' || expression.operator === '||=') {
         addTruthinessFact('logicalOperand', expression.left, analysis, expression.semantics.left.flow);
       }
       addNumericArithmeticFact(expression, analysis);
-      const leftAccess = expression.operator === '=' ? 'write' : 'readWrite';
-      analyzeExpression(expression.left, analysis, leftAccess);
-      analyzeExpression(expression.right, analysis, 'read');
       return;
     }
-    case 'await':
-    case 'spread':
-      analyzeExpression(expression.expression, analysis, 'read');
-      return;
     case 'binary': {
       if (expression.operator === '&&' || expression.operator === '||') {
         addTruthinessFact('logicalOperand', expression.left, analysis, expression.semantics.left.flow);
@@ -227,192 +191,108 @@ function analyzeExpression(
       ) {
         addNumericRelationFact(expression.semantics.left.flow, analysis);
       }
-      analyzeExpression(expression.left, analysis, 'read');
-      analyzeExpression(expression.right, analysis, 'read');
       return;
     }
     case 'call':
       if (expression.semantics.typedArraySet) {
         addTypedArraySetFact(expression.semantics.typedArraySet.receivers, analysis);
       }
-      analyzeExpression(expression.callee, analysis, 'read');
-      expression.arguments.forEach((argument) => analyzeExpression(argument, analysis, 'read'));
-      return;
-    case 'cast':
-      analyzeExpression(expression.expression, analysis, indexedAccess);
       return;
     case 'conditional':
       addTruthinessFact('conditionalExpression', expression.condition, analysis);
-      analyzeExpression(expression.condition, analysis, 'read');
-      analyzeExpression(expression.whenTrue, analysis, 'read');
-      analyzeExpression(expression.whenFalse, analysis, 'read');
       return;
     case 'element':
       if (indexedAccess) {
         addIndexedAccessFact(indexedAccess, expression.semantics.receivers, analysis);
         addMixedWidthIndexedWriteFact(indexedAccess, expression.semantics.receivers, analysis);
       }
-      analyzeExpression(expression.object, analysis, 'read');
-      analyzeExpression(expression.index, analysis, 'read');
-      return;
-    case 'function':
-      expression.parameters.forEach((parameter) => analyzeInitializer(parameter, analysis));
-      expression.body.forEach((statement) => analyzeStatement(statement, analysis));
-      if (expression.expression) analyzeExpression(expression.expression, analysis, 'read');
-      return;
-    case 'new':
-      analyzeExpression(expression.callee, analysis, 'read');
-      expression.arguments.forEach((argument) => analyzeExpression(argument, analysis, 'read'));
-      return;
-    case 'object':
-      expression.members.forEach((member) => {
-        if (member.kind === 'computedProperty') analyzeExpression(member.key, analysis, 'read');
-        analyzeExpression(member.kind === 'spread' ? member.expression : member.value, analysis, 'read');
-      });
-      return;
-    case 'objectRest':
-      analyzeExpression(expression.object, analysis, 'read');
-      expression.excluded.forEach((key) => {
-        if (key.kind === 'computed') analyzeExpression(key.expression, analysis, 'read');
-      });
-      return;
-    case 'property':
-      analyzeExpression(expression.object, analysis, 'read');
-      return;
-    case 'template':
-      expression.parts.forEach((part) => {
-        if (typeof part !== 'string') analyzeExpression(part, analysis, 'read');
-      });
-      return;
-    case 'tuple':
-      expression.elements.forEach((element) => {
-        if (element.expression) analyzeExpression(element.expression, analysis, 'read');
-      });
-      return;
-    case 'tupleSpread':
-      expression.segments.forEach((segment) => {
-        const value = segment.kind === 'spread' ? segment.expression : segment.element.expression;
-        if (value) analyzeExpression(value, analysis, 'read');
-      });
-      return;
-    case 'tupleRest':
-      analyzeExpression(expression.object, analysis, 'read');
-      return;
-    case 'tupleSuffix':
-      analyzeExpression(expression.object, analysis, 'read');
       return;
     case 'unary':
       if (expression.operator === '!') {
         addTruthinessFact('negationOperand', expression.operand, analysis, expression.semantics.operand.flow);
       }
       addNumericArithmeticFact(expression, analysis);
-      analyzeExpression(
-        expression.operand,
-        analysis,
-        expression.operator === '++' || expression.operator === '--'
-          ? 'readWrite'
-          : expression.operator === 'delete'
-            ? undefined
-            : 'read',
-      );
       return;
-    case 'undefinedDefault':
-      analyzeExpression(expression.fallback, analysis, 'read');
-      analyzeExpression(expression.value, analysis, 'read');
-      return;
+    case 'array':
+    case 'await':
+    case 'cast':
+    case 'function':
     case 'identifier':
     case 'literal':
+    case 'new':
+    case 'object':
+    case 'objectRest':
+    case 'property':
     case 'regexp':
+    case 'spread':
+    case 'template':
+    case 'tuple':
+    case 'tupleRest':
+    case 'tupleSpread':
+    case 'tupleSuffix':
+    case 'undefinedDefault':
+    case 'undefinedValue':
       return;
   }
 }
 
-function analyzeStatement(statement: Readonly<IrStatement>, analysis: StaticFactAnalysis): void {
+function analyzeIrStatementStaticFacts(statement: Readonly<IrStatement>, analysis: StaticFactAnalysis): void {
   switch (statement.kind) {
-    case 'block':
-      statement.statements.forEach((item) => analyzeStatement(item, analysis));
-      return;
     case 'do':
     case 'while':
       addTruthinessFact('controlFlowCondition', statement.condition, analysis);
-      analyzeExpression(statement.condition, analysis, 'read');
-      analyzeStatement(statement.body, analysis);
-      return;
-    case 'expression':
-    case 'throw':
-      analyzeExpression(statement.expression, analysis, 'read');
       return;
     case 'for':
-      if (isVariableList(statement.initializer)) {
-        statement.initializer.forEach((variable) => analyzeVariable(variable, analysis));
-      } else if (statement.initializer) {
-        analyzeExpression(statement.initializer, analysis, 'read');
-      }
       if (statement.condition) {
         addTruthinessFact('controlFlowCondition', statement.condition, analysis);
-        analyzeExpression(statement.condition, analysis, 'read');
       }
-      if (statement.increment) analyzeExpression(statement.increment, analysis, 'read');
-      analyzeStatement(statement.body, analysis);
-      return;
-    case 'forIn':
-      analyzeVariable(statement.variable, analysis);
-      analyzeExpression(statement.object, analysis, 'read');
-      analyzeStatement(statement.body, analysis);
-      return;
-    case 'forOf':
-      analyzeVariable(statement.variable, analysis);
-      analyzeExpression(statement.iterable, analysis, 'read');
-      analyzeStatement(statement.body, analysis);
       return;
     case 'if':
       addTruthinessFact('controlFlowCondition', statement.condition, analysis);
-      analyzeExpression(statement.condition, analysis, 'read');
-      analyzeStatement(statement.consequent, analysis);
-      if (statement.otherwise) analyzeStatement(statement.otherwise, analysis);
       return;
-    case 'return':
-      if (statement.expression) analyzeExpression(statement.expression, analysis, 'read');
-      return;
-    case 'switch':
-      analyzeExpression(statement.expression, analysis, 'read');
-      statement.cases.forEach((item) => {
-        if (item.expression) analyzeExpression(item.expression, analysis, 'read');
-        item.statements.forEach((caseStatement) => analyzeStatement(caseStatement, analysis));
-      });
-      return;
-    case 'try':
-      analyzeStatement(statement.tryBody, analysis);
-      if (statement.catchClause) analyzeStatement(statement.catchClause.body, analysis);
-      if (statement.finallyBody) analyzeStatement(statement.finallyBody, analysis);
-      return;
-    case 'variable':
-      statement.declarations.forEach((variable) => analyzeVariable(variable, analysis));
-      return;
+    case 'block':
     case 'break':
     case 'continue':
+    case 'expression':
+    case 'forIn':
+    case 'forOf':
+    case 'return':
+    case 'switch':
+    case 'throw':
+    case 'try':
+    case 'variable':
       return;
   }
 }
 
-function analyzeVariable(variable: Readonly<IrVariable>, analysis: StaticFactAnalysis): void {
-  if ('pattern' in variable) analyzeBindingPattern(variable.pattern, analysis);
-  analyzeInitializer(variable, analysis);
+function getIrExpressionIndexedAccessModeStaticFacts(
+  module: Readonly<IrModule>,
+  path: CompilerIrTraversalPath,
+): CompilerStaticIndexedAccessMode | undefined {
+  let currentPath = path;
+  while (currentPath.length > 0) {
+    const relation = currentPath.at(-1);
+    const parentPath = currentPath.slice(0, -1);
+    const parent = getIrModuleTraversalPathValue(module, parentPath);
+    if (!isIrExpressionStaticFactParent(parent)) return 'read';
+    if (parent.kind === 'cast' && relation === 'expression') {
+      currentPath = parentPath;
+      continue;
+    }
+    if (parent.kind === 'assignment' && relation === 'left') {
+      return parent.operator === '=' ? 'write' : 'readWrite';
+    }
+    if (parent.kind === 'unary' && relation === 'operand') {
+      if (parent.operator === '++' || parent.operator === '--') return 'readWrite';
+      return parent.operator === 'delete' ? undefined : 'read';
+    }
+    return 'read';
+  }
+  return 'read';
 }
 
-function analyzeBindingPattern(pattern: Readonly<IrBindingPattern>, analysis: StaticFactAnalysis): void {
-  switch (pattern.kind) {
-    case 'array':
-      pattern.elements.forEach((element) => {
-        if (!element) return;
-        analyzeBindingPattern(element.pattern, analysis);
-        if (element.initializer) analyzeExpression(element.initializer, analysis, 'read');
-      });
-      if (pattern.rest) analyzeBindingPattern(pattern.rest, analysis);
-      return;
-    case 'binding':
-      return;
-  }
+function isIrExpressionStaticFactParent(value: unknown): value is Readonly<IrExpression> {
+  return typeof value === 'object' && value !== null && 'kind' in value && typeof value.kind === 'string';
 }
 
 function compareStaticFacts(left: CompilerStaticFactCount, right: CompilerStaticFactCount): number {
@@ -553,19 +433,8 @@ function getStaticFactWithoutCount(fact: CompilerStaticFactCount): StaticFact {
   }
 }
 
-function isVariableList(value: IrExpression | readonly IrVariable[] | undefined): value is readonly IrVariable[] {
-  return Array.isArray(value);
-}
-
 function isIrTypedArrayReceiver(value: IrIndexedReceiver): value is IrTypedArrayReceiver {
   return value !== 'array' && value !== 'object' && value !== 'string' && value !== 'tuple' && value !== 'unknown';
-}
-
-function analyzeInitializer(
-  value: Readonly<{ initializer?: IrExpression | undefined }>,
-  analysis: StaticFactAnalysis,
-): void {
-  if (value.initializer) analyzeExpression(value.initializer, analysis, 'read');
 }
 
 function staticFactIdentity(fact: StaticFact): string {
