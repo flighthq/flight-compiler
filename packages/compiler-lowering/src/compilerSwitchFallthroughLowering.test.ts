@@ -127,6 +127,45 @@ describe('createCompilerLoweringPassSwitchFallthrough', () => {
     });
     expect(createCompilerLoweringPassSwitchFallthrough().verifyIrModule(output)).toEqual({ kind: 'valid' });
   });
+
+  it('exits the state loop before continuing its enclosing loop and keeps multiple machine identities unique', () => {
+    const output = lowerIrModuleWithCompilerPasses(
+      lower(
+        'switch-continue.ts',
+        `
+          export function visit(values: number[]): void {
+            for (const value of values) {
+              switch (value) { case 0: const local = value; local; case 1: continue; default: break; }
+              switch (value) { case 2: const other = value; other; case 3: continue; default: break; }
+            }
+          }
+        `,
+      ),
+      [
+        createCompilerLoweringPassArrayBindingPattern(),
+        createCompilerLoweringPassVariableHoisting(),
+        createCompilerLoweringPassSwitchFallthrough(),
+      ],
+    );
+    const declaration = output.declarations[0];
+    if (declaration?.kind !== 'function' || declaration.body[0]?.kind !== 'forOf') {
+      throw new Error('Expected for-of function');
+    }
+    const body = declaration.body[0].body;
+    if (body.kind !== 'block') throw new Error('Expected loop body');
+    const machines = body.statements.filter((statement) => statement.kind === 'block');
+    const identities = machines.map((machine) => {
+      const declaration = machine.statements[0];
+      if (declaration?.kind !== 'variable' || 'pattern' in declaration.declarations[0]!) {
+        throw new Error('Expected state binding');
+      }
+      return declaration.declarations[0]!.binding.id;
+    });
+
+    expect(new Set(identities).size).toBe(2);
+    expect(machines).toHaveLength(2);
+    expect(machines.every((machine) => machine.statements.at(-1)?.kind === 'if')).toBe(true);
+  });
 });
 
 function getFunctionSwitch(module: Readonly<IrModule>): Extract<IrStatement, { kind: 'switch' }> {

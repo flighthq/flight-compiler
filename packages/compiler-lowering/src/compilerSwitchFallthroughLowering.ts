@@ -659,11 +659,14 @@ function createIrSwitchStateMachineFallthrough(
   selectorCases.push({ statements: [assignState(defaultIndex), { kind: 'break' }] });
   const executionCases = statement.cases.map((switchCase, index): IrSwitchCase => {
     const completion = completions[index]!;
+    const continues = switchCase.statements.at(-1)?.kind === 'continue';
     const statements =
-      completion.kind === 'localBreak' ? switchCase.statements.slice(0, -1) : [...switchCase.statements];
-    if (completion.kind === 'fallthrough' || completion.kind === 'localBreak') {
+      completion.kind === 'localBreak' || continues ? switchCase.statements.slice(0, -1) : [...switchCase.statements];
+    if (completion.kind === 'fallthrough' || completion.kind === 'localBreak' || continues) {
       statements.push(
-        assignState(completion.kind === 'fallthrough' && index + 1 < statement.cases.length ? index + 1 : -1),
+        assignState(
+          continues ? -2 : completion.kind === 'fallthrough' && index + 1 < statement.cases.length ? index + 1 : -1,
+        ),
       );
       statements.push({ kind: 'break' });
     }
@@ -694,8 +697,8 @@ function createIrSwitchStateMachineFallthrough(
         condition: {
           kind: 'binary',
           left: stateReference,
-          operator: '!==',
-          right: { kind: 'literal', value: -1 },
+          operator: '>=',
+          right: { kind: 'literal', value: 0 },
           semantics: {
             left: { declared: 'number', flow: 'number' },
             result: 'boolean',
@@ -704,6 +707,25 @@ function createIrSwitchStateMachineFallthrough(
         },
         kind: 'while',
       },
+      ...(statement.cases.some((switchCase) => switchCase.statements.at(-1)?.kind === 'continue')
+        ? [
+            {
+              condition: {
+                kind: 'binary' as const,
+                left: stateReference,
+                operator: '===' as const,
+                right: { kind: 'literal' as const, value: -2 },
+                semantics: {
+                  left: { declared: 'number' as const, flow: 'number' as const },
+                  result: 'boolean' as const,
+                  right: { declared: 'number' as const, flow: 'number' as const },
+                },
+              },
+              consequent: { kind: 'continue' as const },
+              kind: 'if' as const,
+            },
+          ]
+        : []),
     ],
   };
 }

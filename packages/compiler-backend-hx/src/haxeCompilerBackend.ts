@@ -229,15 +229,16 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
       return `(${left} ${emitBinaryOperatorHaxe(expression.operator, expression.semantics, context)} ${right})`;
     }
     case 'call':
-      if (expression.optional) emissionError(context, 'optional calls require null-safe call lowering');
-      return `${expression.callee.kind === 'function' ? `(${emitExpression(expression.callee, context)})` : emitExpression(expression.callee, context)}(${expression.arguments.map((argument) => emitExpression(argument, context)).join(', ')})`;
+      return `${expression.callee.kind === 'function' ? `(${emitExpression(expression.callee, context)})` : emitExpression(expression.callee, context)}${expression.optional ? '?.' : ''}(${expression.arguments.map((argument) => emitExpression(argument, context)).join(', ')})`;
     case 'cast':
       return `(cast ${emitExpression(expression.expression, context)} : ${emitType(expression.type, context)})`;
     case 'conditional':
       return `(${emitExpression(expression.condition, context)} ? ${emitExpression(expression.whenTrue, context)} : ${emitExpression(expression.whenFalse, context)})`;
     case 'element':
-      if (expression.optional) emissionError(context, 'optional element access requires null-safe access lowering');
       if (expression.semantics.receivers.includes('object')) {
+        if (expression.optional) {
+          emissionError(context, 'optional computed object access requires reflective null-safe lowering');
+        }
         if (expression.semantics.receivers.length !== 1 || expression.semantics.key !== 'string') {
           emissionError(context, 'computed object access requires unresolved JavaScript property-key coercion');
         }
@@ -247,7 +248,7 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
         const index = getElementAccessTupleIndexHaxe(expression, context);
         return `${emitExpression(expression.object, context)}[${String(index)}]`;
       }
-      return `${emitExpression(expression.object, context)}[${emitExpression(expression.index, context)}]`;
+      return `${emitExpression(expression.object, context)}${expression.optional ? '?.' : ''}[${emitExpression(expression.index, context)}]`;
     case 'function':
       if (expression.async) emissionError(context, 'async closures require the Haxe async-lowering pass');
       if (expression.typeParameters.length > 0)
@@ -630,7 +631,7 @@ function emitVariable(variable: Readonly<IrVariable>, context: EmitContext): str
   if ('pattern' in variable)
     emissionError(context, 'binding patterns require destructuring lowering before Haxe emission');
   if (variable.initialValue === 'undefined') {
-    emissionError(context, 'observable undefined function-entry values require Haxe representation lowering');
+    return `var ${getBindingTargetNameHaxe(variable.binding, context)}:Dynamic = null;`;
   }
   const type = variable.type ? `:${emitType(variable.type, context)}` : '';
   const initializer = variable.initializer ? ` = ${emitExpression(variable.initializer, context)}` : '';

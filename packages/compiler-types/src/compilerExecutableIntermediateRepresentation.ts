@@ -1,6 +1,7 @@
 import type {
   IrCallSemantics,
   IrElementAccessSemantics,
+  IrOptionalChainSemantics,
   IrPropertyKeyCoercion,
 } from './compilerAccessSemanticIntermediateRepresentation.js';
 import type { IrBindingIdentity, IrIdentifierReference } from './compilerBindingIntermediateRepresentation.js';
@@ -99,7 +100,13 @@ export type IrExpression =
       object: IrIdentifierExpression;
       type: IrType;
     }>
-  | Readonly<{ kind: 'property'; name: string; object: IrExpression; optional: boolean }>
+  | Readonly<{
+      kind: 'property';
+      name: string;
+      object: IrExpression;
+      optional: boolean;
+      optionalChain?: IrOptionalChainSemantics | undefined;
+    }>
   | Readonly<{ flags: string; kind: 'regexp'; pattern: string }>
   | Readonly<{ expression: IrExpression; kind: 'spread' }>
   | Readonly<{ kind: 'template'; parts: ReadonlyArray<IrExpression | string> }>

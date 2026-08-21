@@ -436,7 +436,7 @@ describe('emitIrModuleRust', () => {
     const output = emitIrModuleRust(result.module).contents;
 
     expect(output).toContain('let mut switch_fallthrough_state: f64 = -1.0;');
-    expect(output).toContain('while (switch_fallthrough_state != -1.0)');
+    expect(output).toContain('while (switch_fallthrough_state >= 0.0)');
     expect(output.match(/let local/g)).toHaveLength(1);
   });
 

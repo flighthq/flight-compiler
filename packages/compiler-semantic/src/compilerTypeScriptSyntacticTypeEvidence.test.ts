@@ -2,6 +2,7 @@ import ts from 'typescript';
 
 import {
   createTypeScriptSyntacticAliasSubstitutions,
+  createTypeScriptSyntacticDeclarationSubstitutions,
   getTypeScriptSyntacticExpressionTypeEvidence,
   getTypeScriptSyntacticTypeSubstitution,
 } from './compilerTypeScriptSyntacticTypeEvidence.js';
@@ -65,6 +66,27 @@ describe('createTypeScriptSyntacticAliasSubstitutions', () => {
     }
 
     expect(createTypeScriptSyntacticAliasSubstitutions(use.type, declaration, checker, new Map())).toBeUndefined();
+  });
+});
+
+describe('createTypeScriptSyntacticDeclarationSubstitutions', () => {
+  it('binds generic interface arguments without consulting flow types', () => {
+    const { checker, source } = createProgram('interface Box<Value> { value: Value } type Result = Box<number>;');
+    const declaration = source.statements[0];
+    const use = source.statements[1];
+    if (
+      !declaration ||
+      !ts.isInterfaceDeclaration(declaration) ||
+      !use ||
+      !ts.isTypeAliasDeclaration(use) ||
+      !ts.isTypeReferenceNode(use.type)
+    ) {
+      throw new Error('Expected interface and alias');
+    }
+
+    const substitutions = createTypeScriptSyntacticDeclarationSubstitutions(use.type, declaration, checker, new Map());
+
+    expect([...substitutions!.values()].map((type) => type.getText(source))).toEqual(['number']);
   });
 });
 

@@ -27,7 +27,7 @@ export function createCompilerLoweringPassVariableHoisting(): CompilerLoweringPa
   return {
     idempotent: true,
     lowerIrModule(module) {
-      return lowerIrModuleVariableHoisting(module);
+      return hasIrModuleVariableHoistingResidual(module) ? lowerIrModuleVariableHoisting(module) : module;
     },
     name: compilerLoweringPassNameVariableHoisting,
     runsAfter: ['array-binding-pattern'],
@@ -178,7 +178,7 @@ function hasIrFunctionBodyVariableHoistingResidual(body: readonly Readonly<IrSta
       (variable) =>
         !('pattern' in variable) &&
         variable.binding.scope === 'function' &&
-        variable.initialValue === 'uninitialized' &&
+        (variable.initialValue === 'uninitialized' || variable.initialValue === 'undefined') &&
         variable.initializer === undefined,
     );
   const statements = validPrefix ? rest : body;

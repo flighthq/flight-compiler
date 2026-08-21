@@ -59,8 +59,10 @@ import type {
   LowerTypeScriptSourceOptions,
 } from '../../compiler-types/src/index.js';
 import { getIrTypeOperatorValueDomain } from './compilerOperatorDomainEvidence.js';
+import { getTypeScriptForInKeyEvidence } from './compilerTypeScriptForInKeyEvidence.js';
 import {
   createTypeScriptSyntacticAliasSubstitutions,
+  createTypeScriptSyntacticDeclarationSubstitutions,
   getTypeScriptSyntacticExpressionTypeEvidence,
   getTypeScriptSyntacticTypeSubstitution,
 } from './compilerTypeScriptSyntacticTypeEvidence.js';
@@ -445,30 +447,40 @@ function lowerExpression(
     return { kind: 'object', members: node.properties.map((member) => lowerObjectMember(member, context)) };
   }
   if (ts.isPropertyAccessExpression(node)) {
+    const optional = node.questionDotToken !== undefined;
     return {
       kind: 'property',
       name: node.name.text,
       object: lowerExpression(node.expression, context),
-      optional: node.questionDotToken !== undefined,
+      optional,
+      ...(optional ? { optionalChain: createTypeScriptOptionalChainSemantics() } : {}),
     };
   }
   if (ts.isElementAccessExpression(node)) {
     if (!node.argumentExpression) unsupported(node, 'element access requires an index');
+    const optional = node.questionDotToken !== undefined;
     return {
       index: lowerExpression(node.argumentExpression, context),
       kind: 'element',
       object: lowerExpression(node.expression, context),
-      optional: node.questionDotToken !== undefined,
-      semantics: lowerElementAccessSemantics(node.expression, node.argumentExpression, context),
+      optional,
+      semantics: {
+        ...lowerElementAccessSemantics(node.expression, node.argumentExpression, context),
+        ...(optional ? { optionalChain: createTypeScriptOptionalChainSemantics() } : {}),
+      },
     };
   }
   if (ts.isCallExpression(node)) {
+    const optional = node.questionDotToken !== undefined;
     return {
       arguments: node.arguments.map((argument) => lowerExpression(argument, context)),
       callee: lowerExpression(node.expression, context),
       kind: 'call',
-      optional: node.questionDotToken !== undefined,
-      semantics: lowerCallSemantics(node, context),
+      optional,
+      semantics: {
+        ...lowerCallSemantics(node, context),
+        ...(optional ? { optionalChain: createTypeScriptOptionalChainSemantics() } : {}),
+      },
       typeArguments: node.typeArguments?.map((type) => lowerType(type, context)) ?? [],
     };
   }
@@ -580,6 +592,10 @@ function lowerExpression(
     return { flags: node.text.slice(lastSlash + 1), kind: 'regexp', pattern: node.text.slice(1, lastSlash) };
   }
   unsupported(node, `unsupported expression ${ts.SyntaxKind[node.kind]}`);
+}
+
+function createTypeScriptOptionalChainSemantics() {
+  return { receiverEvaluation: 'once', result: 'undefined', shortCircuit: 'nullish' } as const;
 }
 
 function lowerTupleExpression(
@@ -1693,112 +1709,10 @@ function getTypeScriptForInKeyPlan(
   expression: ts.Expression,
   context: LoweringContext,
 ): Readonly<{ keyPlan: IrForInKeyPlan }> | undefined {
-  const literal = getTypeScriptForInObjectLiteral(expression);
-  if (!literal) {
-    const closed = getTypeScriptForInClosedRecord(expression, context);
-    return closed
-      ? {
-          keyPlan: {
-            evaluation: 'alreadyEvaluated',
-            keys: orderTypeScriptForInStaticObjectKeys(getTypeScriptForInObjectKeys(closed, context)!),
-            kind: 'closedRecord',
-          },
-        }
-      : undefined;
-  }
-  const keys = getTypeScriptForInObjectKeys(literal, context);
-  if (!keys) return undefined;
-  return {
-    keyPlan: {
-      evaluation: literal.properties.every(
-        (member) => ts.isPropertyAssignment(member) && isTypeScriptForInStaticObjectValue(member.initializer),
-      )
-        ? 'elide'
-        : 'preserve',
-      keys: orderTypeScriptForInStaticObjectKeys(keys),
-      kind: 'objectLiteral',
-    },
-  };
-}
-
-function getTypeScriptForInObjectKeys(
-  expression: ts.ObjectLiteralExpression,
-  context: LoweringContext,
-): readonly string[] | undefined {
-  const keys: string[] = [];
-  for (const member of expression.properties) {
-    if (!ts.isPropertyAssignment(member) || ts.isComputedPropertyName(member.name)) return undefined;
-    const key = propertyName(member.name, context);
-    if (!keys.includes(key)) keys.push(key);
-  }
-  return keys;
-}
-
-function getTypeScriptForInObjectLiteral(expression: ts.Expression): ts.ObjectLiteralExpression | undefined {
-  while (
-    ts.isParenthesizedExpression(expression) ||
-    ts.isAsExpression(expression) ||
-    ts.isSatisfiesExpression(expression) ||
-    ts.isTypeAssertionExpression(expression)
-  ) {
-    expression = expression.expression;
-  }
-  return ts.isObjectLiteralExpression(expression) ? expression : undefined;
-}
-
-function getTypeScriptForInClosedRecord(
-  expression: ts.Expression,
-  context: LoweringContext,
-): ts.ObjectLiteralExpression | undefined {
-  while (ts.isParenthesizedExpression(expression)) expression = expression.expression;
-  if (!ts.isIdentifier(expression)) return undefined;
-  const symbol = context.checker.getSymbolAtLocation(expression);
-  const declaration = symbol?.valueDeclaration;
-  if (!symbol || !declaration || !ts.isVariableDeclaration(declaration) || !ts.isIdentifier(declaration.name)) {
-    return undefined;
-  }
-  const list = declaration.parent;
-  if (!ts.isVariableDeclarationList(list) || (list.flags & ts.NodeFlags.Const) === 0 || !declaration.initializer) {
-    return undefined;
-  }
-  const literal = getTypeScriptForInObjectLiteral(declaration.initializer);
-  if (!literal || !getTypeScriptForInObjectKeys(literal, context)) return undefined;
-  let closed = true;
-  const visit = (node: ts.Node): void => {
-    if (!closed) return;
-    if (ts.isIdentifier(node) && context.checker.getSymbolAtLocation(node) === symbol && node !== declaration.name) {
-      const parent = node.parent;
-      if (!ts.isForInStatement(parent) || parent.expression !== node) closed = false;
-    }
-    ts.forEachChild(node, visit);
-  };
-  visit(context.sourceFile);
-  return closed ? literal : undefined;
-}
-
-function isTypeScriptForInStaticObjectValue(expression: ts.Expression): boolean {
-  return (
-    ts.isNumericLiteral(expression) ||
-    ts.isStringLiteral(expression) ||
-    expression.kind === ts.SyntaxKind.FalseKeyword ||
-    expression.kind === ts.SyntaxKind.NullKeyword ||
-    expression.kind === ts.SyntaxKind.TrueKeyword
+  const keyPlan = getTypeScriptForInKeyEvidence(expression, context.checker, context.sourceFile, (name) =>
+    propertyName(name, context),
   );
-}
-
-function orderTypeScriptForInStaticObjectKeys(keys: readonly string[]): readonly string[] {
-  const indices: Array<{ key: string; value: number }> = [];
-  const names: string[] = [];
-  for (const key of keys) {
-    const value = Number(key);
-    if (Number.isSafeInteger(value) && value >= 0 && value < 4_294_967_295 && String(value) === key) {
-      indices.push({ key, value });
-    } else {
-      names.push(key);
-    }
-  }
-  indices.sort((left, right) => left.value - right.value);
-  return [...indices.map((index) => index.key), ...names];
+  return keyPlan ? { keyPlan } : undefined;
 }
 
 function lowerTypeScriptForOfElementType(expression: ts.Expression, context: LoweringContext): IrType | undefined {
@@ -1890,18 +1804,39 @@ function lowerTypeScriptTypeNodeEvidence(
       };
     }
     const symbol = context.checker.getSymbolAtLocation(type.typeName);
-    const declaration = symbol?.declarations?.find(ts.isTypeAliasDeclaration);
+    const declaration = symbol?.declarations?.find(
+      (candidate): candidate is ts.InterfaceDeclaration | ts.TypeAliasDeclaration =>
+        ts.isInterfaceDeclaration(candidate) || ts.isTypeAliasDeclaration(candidate),
+    );
     if (symbol && declaration && !seen.has(symbol)) {
-      const nextSubstitutions = createTypeScriptSyntacticAliasSubstitutions(
+      const nextSubstitutions = createTypeScriptSyntacticDeclarationSubstitutions(
         type,
         declaration,
         context.checker,
         substitutions,
       );
+      const nextSeen = new Set(seen);
+      nextSeen.add(symbol);
       if (nextSubstitutions) {
-        const nextSeen = new Set(seen);
-        nextSeen.add(symbol);
-        return lowerTypeScriptTypeNodeEvidence(declaration.type, context, nextSeen, nextSubstitutions);
+        if (ts.isTypeAliasDeclaration(declaration)) {
+          return lowerTypeScriptTypeNodeEvidence(declaration.type, context, nextSeen, nextSubstitutions);
+        }
+      }
+      if (ts.isInterfaceDeclaration(declaration) && declaration.heritageClauses === undefined && nextSubstitutions) {
+        return {
+          kind: 'object',
+          properties: declaration.members.map((member): IrObjectTypeProperty => {
+            if (!ts.isPropertySignature(member) || !member.type) {
+              return unsupported(member, 'syntactic interface evidence requires typed properties');
+            }
+            return {
+              name: propertyName(member.name, context),
+              optional: member.questionToken !== undefined,
+              readonly: hasModifier(member, ts.SyntaxKind.ReadonlyKeyword),
+              type: lowerTypeScriptTypeNodeEvidence(member.type, context, nextSeen, nextSubstitutions),
+            };
+          }),
+        };
       }
     }
     return lowerType(type, context);

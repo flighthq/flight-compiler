@@ -272,6 +272,20 @@ describe('emitIrModuleHaxe', () => {
     expect(output).toContain('return value?.read();');
   });
 
+  it('emits neutral optional element and call contracts through Haxe safe navigation', () => {
+    const result = lower(
+      'optional-targets.ts',
+      `
+        export function first(values?: number[]): number | undefined { return values?.[0]; }
+        export function invoke(callback?: () => number): number | undefined { return callback?.(); }
+      `,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('return values?.[0];');
+    expect(output).toContain('return callback?.();');
+  });
+
   it('emits expression-position destructuring with the original aggregate completion value', () => {
     const result = lower(
       'assignment-completion.ts',
@@ -282,6 +296,19 @@ describe('emitIrModuleHaxe', () => {
     expect(output).toContain('(function() {');
     expect(output).toContain('value = destructuringAssignmentValue[0];');
     expect(output).toContain('return destructuringAssignmentValue;');
+  });
+
+  it('represents observable function-entry undefined as a Dynamic null sentinel', () => {
+    const result = lower('entry-undefined.ts', 'export function read(): number { var value: number; return value; }');
+    const declaration = result.module.declarations[0];
+    if (declaration?.kind !== 'function' || declaration.body[0]?.kind !== 'variable') {
+      throw new Error('Expected function variable prefix');
+    }
+    const variable = declaration.body[0].declarations[0];
+    if (!variable || 'pattern' in variable) throw new Error('Expected named variable');
+    (variable as { initialValue?: 'undefined' }).initialValue = 'undefined';
+
+    expect(emitIrModuleHaxe(result.module).contents).toContain('var value:Dynamic = null;');
   });
 
   it('emits fixed tuple spreads with collision-free sequential evaluation carriers', () => {
@@ -372,7 +399,7 @@ describe('emitIrModuleHaxe', () => {
     const output = emitIrModuleHaxe(result.module).contents;
 
     expect(output).toContain('var switchFallthroughState:Float = -1;');
-    expect(output).toContain('while ((switchFallthroughState != -1))');
+    expect(output).toContain('while ((switchFallthroughState >= 0))');
     expect(output.match(/final local/g)).toHaveLength(1);
   });
 

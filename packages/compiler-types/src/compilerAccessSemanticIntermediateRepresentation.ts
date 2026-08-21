@@ -18,6 +18,7 @@ export type IrIndexedReceiver =
 
 export interface IrElementAccessSemantics {
   readonly key: IrPropertyKeyCoercion;
+  readonly optionalChain?: IrOptionalChainSemantics | undefined;
   readonly receivers: readonly [IrIndexedReceiver, ...IrIndexedReceiver[]];
 }
 
@@ -33,7 +34,14 @@ export interface IrTypedArraySetSemantics {
 
 export interface IrCallSemantics {
   readonly defaultParameters?: IrDefaultParameterCallSemantics | undefined;
+  readonly optionalChain?: IrOptionalChainSemantics | undefined;
   readonly typedArraySet?: IrTypedArraySetSemantics | undefined;
+}
+
+export interface IrOptionalChainSemantics {
+  readonly receiverEvaluation: 'once';
+  readonly result: 'undefined';
+  readonly shortCircuit: 'nullish';
 }
 
 export interface IrDefaultParameterCallSemantics {

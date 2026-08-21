@@ -1572,6 +1572,41 @@ describe('lowerTypeScriptSource', () => {
     });
   });
 
+  it('substitutes generic interface evidence through readonly and union property wrappers', () => {
+    const result = lower(
+      'generic-interface-evidence.ts',
+      `
+        interface Box<Value> { readonly value: readonly [Value] | undefined }
+        export function read(box: Box<number>): void {
+          const { value }: Box<number> = box;
+          value;
+        }
+      `,
+    );
+    const declaration = result.module.declarations.find(
+      (item) => item.kind === 'function' && item.binding.name === 'read',
+    );
+    if (declaration?.kind !== 'function' || declaration.body[0]?.kind !== 'variable') {
+      throw new Error('Expected binding declaration');
+    }
+    const variable = declaration.body[0].declarations[0];
+    if (!variable || !('pattern' in variable) || variable.pattern.kind !== 'object') {
+      throw new Error('Expected object pattern');
+    }
+
+    expect(variable.pattern.properties[0]).toMatchObject({
+      pattern: {
+        type: {
+          kind: 'union',
+          types: [
+            { elements: [{ type: { kind: 'primitive', name: 'number' } }], kind: 'tuple', readonly: true },
+            { kind: 'undefined' },
+          ],
+        },
+      },
+    });
+  });
+
   it('distinguishes contextual fixed tuple expressions from open array expressions', () => {
     const result = lower(
       'tuple-expressions.ts',

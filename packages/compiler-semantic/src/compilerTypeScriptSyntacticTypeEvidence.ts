@@ -6,6 +6,15 @@ export function createTypeScriptSyntacticAliasSubstitutions(
   checker: ts.TypeChecker,
   substitutions: ReadonlyMap<ts.Symbol, ts.TypeNode>,
 ): ReadonlyMap<ts.Symbol, ts.TypeNode> | undefined {
+  return createTypeScriptSyntacticDeclarationSubstitutions(reference, declaration, checker, substitutions);
+}
+
+export function createTypeScriptSyntacticDeclarationSubstitutions(
+  reference: ts.TypeReferenceNode,
+  declaration: ts.InterfaceDeclaration | ts.TypeAliasDeclaration,
+  checker: ts.TypeChecker,
+  substitutions: ReadonlyMap<ts.Symbol, ts.TypeNode>,
+): ReadonlyMap<ts.Symbol, ts.TypeNode> | undefined {
   const parameters = declaration.typeParameters ?? [];
   const arguments_ = reference.typeArguments ?? [];
   if (arguments_.length > parameters.length) return undefined;
