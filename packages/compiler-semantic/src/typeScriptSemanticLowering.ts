@@ -2,12 +2,6 @@ import path from 'node:path';
 
 import ts from 'typescript';
 
-import {
-  createTypeScriptSyntacticAliasSubstitutions,
-  getTypeScriptSyntacticExpressionTypeEvidence,
-  getTypeScriptSyntacticTypeSubstitution,
-} from './compilerTypeScriptSyntacticTypeEvidence.js';
-
 import { normalizePathPortable } from '../../compiler-canonical-form/src/index.js';
 import { fingerprintTypeScriptNode } from '../../compiler-provenance/src/index.js';
 import type {
@@ -64,6 +58,11 @@ import type {
   LowerTypeScriptSourceOptions,
 } from '../../compiler-types/src/index.js';
 import { getIrTypeOperatorValueDomain } from './compilerOperatorDomainEvidence.js';
+import {
+  createTypeScriptSyntacticAliasSubstitutions,
+  getTypeScriptSyntacticExpressionTypeEvidence,
+  getTypeScriptSyntacticTypeSubstitution,
+} from './compilerTypeScriptSyntacticTypeEvidence.js';
 
 interface LoweringContext {
   bindingTypes: Map<ts.Symbol, IrType>;

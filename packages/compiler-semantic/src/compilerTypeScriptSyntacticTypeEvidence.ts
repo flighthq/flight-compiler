@@ -1,5 +1,24 @@
 import ts from 'typescript';
 
+export function createTypeScriptSyntacticAliasSubstitutions(
+  reference: ts.TypeReferenceNode,
+  declaration: ts.TypeAliasDeclaration,
+  checker: ts.TypeChecker,
+  substitutions: ReadonlyMap<ts.Symbol, ts.TypeNode>,
+): ReadonlyMap<ts.Symbol, ts.TypeNode> | undefined {
+  const parameters = declaration.typeParameters ?? [];
+  const arguments_ = reference.typeArguments ?? [];
+  if (arguments_.length > parameters.length) return undefined;
+  const next = new Map(substitutions);
+  for (const [index, parameter] of parameters.entries()) {
+    const argument = arguments_[index] ?? parameter.default;
+    const symbol = checker.getSymbolAtLocation(parameter.name);
+    if (!argument || !symbol) return undefined;
+    next.set(symbol, getTypeScriptSyntacticTypeSubstitution(argument, checker, next));
+  }
+  return next;
+}
+
 export function getTypeScriptSyntacticExpressionTypeEvidence(
   expression: ts.Expression,
   checker: ts.TypeChecker,
@@ -32,25 +51,6 @@ export function getTypeScriptSyntacticExpressionTypeEvidence(
     return declaration.type;
   }
   return undefined;
-}
-
-export function createTypeScriptSyntacticAliasSubstitutions(
-  reference: ts.TypeReferenceNode,
-  declaration: ts.TypeAliasDeclaration,
-  checker: ts.TypeChecker,
-  substitutions: ReadonlyMap<ts.Symbol, ts.TypeNode>,
-): ReadonlyMap<ts.Symbol, ts.TypeNode> | undefined {
-  const parameters = declaration.typeParameters ?? [];
-  const arguments_ = reference.typeArguments ?? [];
-  if (arguments_.length > parameters.length) return undefined;
-  const next = new Map(substitutions);
-  for (const [index, parameter] of parameters.entries()) {
-    const argument = arguments_[index] ?? parameter.default;
-    const symbol = checker.getSymbolAtLocation(parameter.name);
-    if (!argument || !symbol) return undefined;
-    next.set(symbol, getTypeScriptSyntacticTypeSubstitution(argument, checker, next));
-  }
-  return next;
 }
 
 export function getTypeScriptSyntacticTypeSubstitution(

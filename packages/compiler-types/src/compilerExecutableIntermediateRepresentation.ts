@@ -12,8 +12,8 @@ import type {
   IrBinaryOperatorSemantics,
   IrUnaryOperatorSemantics,
 } from './compilerOperatorSemanticIntermediateRepresentation.js';
-import type { IrFunctionTypeParameter, IrType, IrTypeParameter } from './compilerTypeIntermediateRepresentation.js';
 import type { CompilerSourceOrigin } from './compilerSourceIdentity.js';
+import type { IrFunctionTypeParameter, IrType, IrTypeParameter } from './compilerTypeIntermediateRepresentation.js';
 
 export type IrParameter = Omit<IrFunctionTypeParameter, 'name'> &
   Readonly<{ binding: IrBindingIdentity }> &
