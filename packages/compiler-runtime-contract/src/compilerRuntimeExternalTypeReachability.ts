@@ -1,3 +1,4 @@
+import { compareTextCodeUnits } from '../../compiler-ordering/src/index.js';
 import type {
   CompilerRuntimeExternalTypeIdentity,
   IrDeclaration,
@@ -20,7 +21,7 @@ export function collectIrModulesRuntimeExternalTypeIdentities(
     if (!compilerIntrinsicTypeNames.has(normalized)) sourceNames.add(normalized);
   };
   for (const module of modules) collectModuleExternalTypes(module, add);
-  return [...sourceNames].sort(compareDistinctText).map((sourceName) => ({ sourceName }));
+  return [...sourceNames].sort(compareTextCodeUnits).map((sourceName) => ({ sourceName }));
 }
 
 function collectDeclarationExternalTypes(declaration: Readonly<IrDeclaration>, add: AddExternalType): void {
@@ -71,10 +72,6 @@ function collectModuleExternalTypes(module: Readonly<IrModule>, add: AddExternal
   module.exports.forEach((exported) => {
     if (exported.kind === 'default') visitExpression(exported.expression, add);
   });
-}
-
-function compareDistinctText(left: string, right: string): number {
-  return left < right ? -1 : 1;
 }
 
 function isIrVariableList(value: IrExpression | readonly IrVariable[] | undefined): value is readonly IrVariable[] {

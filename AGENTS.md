@@ -84,9 +84,9 @@ The dependency floor is deliberate:
 
 - `compiler-types` defines vocabulary and contracts without implementation dependencies.
 - `compiler-provenance` defines deterministic normalization and identity without depending on another compiler package.
-- `compiler-patch` and `compiler-emission` depend only on the contracts they operate over.
+- `compiler-patch` and `compiler-emission` depend only on the contracts they operate over plus shared deterministic ordering.
 - `compiler-ir-validation` verifies target-neutral IR structure over `compiler-types` alone.
-- `compiler-runtime-contract` validates reachable external-type decisions over `compiler-types` alone.
+- `compiler-runtime-contract` validates reachable external-type decisions over `compiler-types` and shared deterministic ordering.
 - `compiler-ordering` defines deterministic text order without importing compiler contracts or identity policy.
 - `compiler-lowering` provides verified neutral transforms over `compiler-types`, composing `compiler-ir-validation`; backends elect its passes.
 - inventory, semantic lowering, backends, and orchestration are compositions above that floor.

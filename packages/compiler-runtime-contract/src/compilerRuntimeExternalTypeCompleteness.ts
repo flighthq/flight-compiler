@@ -1,3 +1,4 @@
+import { compareTextCodeUnits } from '../../compiler-ordering/src/index.js';
 import type {
   CompilerRuntimeExternalTypeBindingPlan,
   CompilerRuntimeExternalTypeCompleteness,
@@ -35,12 +36,8 @@ export function analyzeCompilerRuntimeExternalTypeCompleteness(
   };
 }
 
-function compareDistinctText(left: string, right: string): number {
-  return left < right ? -1 : 1;
-}
-
 function createSortedExternalTypeIdentities(sourceNames: readonly string[]): CompilerRuntimeExternalTypeIdentity[] {
   return [...new Set(sourceNames.map((sourceName) => sourceName.normalize('NFC')))]
-    .sort(compareDistinctText)
+    .sort(compareTextCodeUnits)
     .map((sourceName) => ({ sourceName }));
 }

@@ -9,12 +9,14 @@ This document defines the dependency floor of `@flighthq/tool-compiler` and the 
 ```text
 compiler-types        compiler-ordering        compiler-provenance
 
-compiler-types
+compiler-ordering + compiler-types
   <- compiler-patch
   <- compiler-emission
+  <- compiler-runtime-contract
+
+compiler-types
   <- compiler-ir-validation
   <- compiler-lowering
-  <- compiler-runtime-contract
 
 compiler-types + compiler-provenance
   <- compiler-inventory

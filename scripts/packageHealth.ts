@@ -52,7 +52,7 @@ const packageRules: Readonly<Record<string, PackageRule>> = {
     devDependencies: ['compiler-semantic'],
   },
   'compiler-emission': {
-    dependencies: ['compiler-types'],
+    dependencies: ['compiler-ordering', 'compiler-types'],
     description: 'Target-neutral source-emission infrastructure',
   },
   'compiler-inventory': {
@@ -78,7 +78,7 @@ const packageRules: Readonly<Record<string, PackageRule>> = {
     description: 'Deterministic compiler pipeline orchestration',
   },
   'compiler-patch': {
-    dependencies: ['compiler-types'],
+    dependencies: ['compiler-ordering', 'compiler-types'],
     description: 'Identity-based semantic patch application and auditing',
   },
   'compiler-provenance': {
@@ -86,7 +86,7 @@ const packageRules: Readonly<Record<string, PackageRule>> = {
     description: 'Stable source normalization, provenance, and fingerprints',
   },
   'compiler-runtime-contract': {
-    dependencies: ['compiler-types'],
+    dependencies: ['compiler-ordering', 'compiler-types'],
     description: 'Target-neutral runtime binding reachability and completeness',
     devDependencies: ['compiler-semantic'],
   },

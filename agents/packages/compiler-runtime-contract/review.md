@@ -14,7 +14,7 @@ The target-neutral seam that identifies reachable ambient source types and prove
 
 ## Verdict
 
-**solid — 70/100.** The initial boundary is deliberately small and fully exercised: traversal is exhaustive over the current IR, identities are normalized and sorted without host-locale behavior, caller input is unchanged, plans are versioned, and completeness names every missing or duplicate decision. The remaining domain is runtime value reachability and richer diagnostics, not more policy in this package.
+**solid — 70/100.** The initial boundary is deliberately small and fully exercised: traversal is exhaustive over the current IR, identities are normalized before using the shared host-independent text order, caller input is unchanged, plans are versioned, and completeness names every missing or duplicate decision. The remaining domain is runtime value reachability and richer diagnostics, not more policy in this package.
 
 ## What a fully expressed runtime contract looks like
 

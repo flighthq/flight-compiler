@@ -1,3 +1,4 @@
+import { compareTextCodeUnits } from '../../compiler-ordering/src/index.js';
 import type {
   CompilerTargetNameAllocation,
   CompilerTargetNameAllocationFailure,
@@ -62,7 +63,7 @@ export function createCompilerTargetNameAllocation(
     return { identity: candidate.identity, name, scope: candidate.scope };
   });
 
-  return allocations.sort((left, right) => compareText(left.identity, right.identity));
+  return allocations.sort((left, right) => compareTextCodeUnits(left.identity, right.identity));
 }
 
 export function createIrModuleTargetNameAllocation(
@@ -110,18 +111,14 @@ function compareCandidate(
   // candidates preferring different names cannot change the result; identity is unique by contract
   // and makes this total. Ordering by preferred name would be an unobservable term.
   return (
-    compareText(left.scope, right.scope) ||
+    compareTextCodeUnits(left.scope, right.scope) ||
     compareDisposition(left.disposition, right.disposition) ||
-    compareText(left.identity, right.identity)
+    compareTextCodeUnits(left.identity, right.identity)
   );
 }
 
 function compareDisposition(left: CompilerTargetNameDisposition, right: CompilerTargetNameDisposition): number {
   return left === right ? 0 : left === 'fixed' ? -1 : 1;
-}
-
-function compareText(left: string, right: string): number {
-  return left < right ? -1 : left > right ? 1 : 0;
 }
 
 function normalizeCandidate(candidate: Readonly<CompilerTargetNameCandidate>): CompilerTargetNameCandidate {
@@ -435,7 +432,7 @@ function createTargetNameAllocationFailure(
   first: Readonly<CompilerTargetNameCandidate>,
   second: Readonly<CompilerTargetNameCandidate>,
 ): CompilerTargetNameAllocationFailure {
-  const identities = [first.identity, second.identity].sort(compareText);
+  const identities = [first.identity, second.identity].sort(compareTextCodeUnits);
   const failure = Object.assign(
     new Error(`Fixed target name ${first.preferredName} collides in scope ${first.scope}: ${identities.join(', ')}`),
     {

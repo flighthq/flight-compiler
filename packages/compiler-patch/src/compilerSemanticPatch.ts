@@ -1,3 +1,4 @@
+import { compareTextCodeUnits } from '../../compiler-ordering/src/index.js';
 import type {
   AppliedSemanticPatches,
   IrDeclaration,
@@ -163,15 +164,11 @@ function renameSemanticDeclaration(declaration: Readonly<IrDeclaration>, name: s
 function comparePatchPrecedence(left: Readonly<SemanticPatch>, right: Readonly<SemanticPatch>): number {
   const leftRank = left.scope.kind === 'neutral' ? 0 : 1;
   const rightRank = right.scope.kind === 'neutral' ? 0 : 1;
-  return leftRank - rightRank || compareText(left.id, right.id);
+  return leftRank - rightRank || compareTextCodeUnits(left.id, right.id);
 }
 
 function comparePatchIdentifiers(left: Readonly<SemanticPatch>, right: Readonly<SemanticPatch>): number {
-  return compareText(left.id, right.id);
-}
-
-function compareText(left: string, right: string): number {
-  return left < right ? -1 : left > right ? 1 : 0;
+  return compareTextCodeUnits(left.id, right.id);
 }
 
 export function defineSemanticPatchSet<const Patches extends readonly SemanticPatch[]>(patches: Patches): Patches {
@@ -203,7 +200,7 @@ function createSemanticPatchError(
   const failure = Object.assign(new Error(message), {
     code,
     kind: 'semantic-patch' as const,
-    patchIds: [...patchIds].sort(compareText),
+    patchIds: [...patchIds].sort(compareTextCodeUnits),
     subject,
   });
   failure.name = 'SemanticPatchError';
