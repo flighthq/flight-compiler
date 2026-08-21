@@ -285,6 +285,10 @@ describe('emitIrModuleRust', () => {
       'optional-call.ts',
       'export function invoke(callback: ((value: number) => number) | undefined): number | undefined { return callback?.(1); }',
     );
+    const staticallyPresent = lower(
+      'statically-present-element.ts',
+      'export function first(values: number[]): number { return values?.[0]; }',
+    );
 
     expect(emitIrModuleRust(property.module).contents).toContain(
       'value.as_ref().map(|optional_chain_value| optional_chain_value.count.clone())',
@@ -295,6 +299,7 @@ describe('emitIrModuleRust', () => {
     expect(emitIrModuleRust(call.module).contents).toContain(
       'callback.as_ref().map(|optional_chain_value| optional_chain_value(1.0))',
     );
+    expect(emitIrModuleRust(staticallyPresent.module).contents).toContain('return values[0.0 as usize];');
   });
 
   it('represents observable entry undefined only inside a nullable Rust domain', () => {
