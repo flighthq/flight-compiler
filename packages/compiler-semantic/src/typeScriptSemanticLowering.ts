@@ -909,7 +909,11 @@ function lowerStatement(node: ts.Statement, context: LoweringContext): IrStateme
     if (!ts.isVariableDeclarationList(node.initializer) || node.initializer.declarations.length !== 1) {
       unsupported(node.initializer, 'for bindings must be a single variable declaration');
     }
-    const variable = lowerVariables(node.initializer, context)[0]!;
+    const variable = lowerVariables(
+      node.initializer,
+      context,
+      ts.isForOfStatement(node) ? lowerTypeScriptForOfElementType(node.expression, context) : undefined,
+    )[0]!;
     return ts.isForOfStatement(node)
       ? {
           await: node.awaitModifier !== undefined,
@@ -1165,17 +1169,28 @@ function lowerTypeParameters(
   );
 }
 
-function lowerVariables(node: ts.VariableDeclarationList, context: LoweringContext): IrVariable[] {
+function lowerVariables(
+  node: ts.VariableDeclarationList,
+  context: LoweringContext,
+  contextualType?: Readonly<IrType>,
+): IrVariable[] {
   const mutable = !(node.flags & ts.NodeFlags.Const);
-  return node.declarations.map((declaration) => lowerVariable(declaration, mutable, context));
+  return node.declarations.map((declaration) => lowerVariable(declaration, mutable, context, contextualType));
 }
 
-function lowerVariable(node: ts.VariableDeclaration, mutable: boolean, context: LoweringContext): IrVariable {
+function lowerVariable(
+  node: ts.VariableDeclaration,
+  mutable: boolean,
+  context: LoweringContext,
+  contextualType?: Readonly<IrType>,
+): IrVariable {
   const type = node.type
     ? lowerType(node.type, context)
-    : node.initializer
-      ? inferInitializerType(node.initializer, context)
-      : undefined;
+    : contextualType
+      ? contextualType
+      : node.initializer
+        ? inferInitializerType(node.initializer, context)
+        : undefined;
   return {
     ...(ts.isIdentifier(node.name)
       ? { binding: lowerBindingIdentity(node.name, context) }
@@ -1184,6 +1199,87 @@ function lowerVariable(node: ts.VariableDeclaration, mutable: boolean, context: 
     mutable,
     ...(type ? { type } : {}),
   };
+}
+
+function lowerTypeScriptForOfElementType(expression: ts.Expression, context: LoweringContext): IrType | undefined {
+  const iterableType = getTypeScriptExpressionTypeNodeIterable(expression, context);
+  if (!iterableType) return undefined;
+  const elementType = getTypeScriptTypeNodeIterableElement(iterableType, context, new Set());
+  return elementType ? lowerType(resolveTypeScriptTypeNodeAlias(elementType, context, new Set()), context) : undefined;
+}
+
+function getTypeScriptExpressionTypeNodeIterable(
+  expression: ts.Expression,
+  context: LoweringContext,
+): ts.TypeNode | undefined {
+  if (
+    ts.isParenthesizedExpression(expression) ||
+    ts.isNonNullExpression(expression) ||
+    ts.isSatisfiesExpression(expression)
+  ) {
+    return getTypeScriptExpressionTypeNodeIterable(expression.expression, context);
+  }
+  if (ts.isAsExpression(expression) || ts.isTypeAssertionExpression(expression)) return expression.type;
+  if (ts.isCallExpression(expression)) {
+    const type = context.checker.getResolvedSignature(expression)?.declaration?.type;
+    return type && ts.isTypeNode(type) ? type : undefined;
+  }
+  const symbol = context.checker.getSymbolAtLocation(expression);
+  const declaration = symbol?.valueDeclaration ?? symbol?.declarations?.[0];
+  if (!declaration) return undefined;
+  if (
+    ts.isParameter(declaration) ||
+    ts.isPropertyDeclaration(declaration) ||
+    ts.isPropertySignature(declaration) ||
+    ts.isVariableDeclaration(declaration)
+  ) {
+    return declaration.type;
+  }
+  if (
+    ts.isFunctionDeclaration(declaration) ||
+    ts.isFunctionExpression(declaration) ||
+    ts.isMethodDeclaration(declaration) ||
+    ts.isMethodSignature(declaration)
+  ) {
+    return declaration.type;
+  }
+  return undefined;
+}
+
+function getTypeScriptTypeNodeIterableElement(
+  type: ts.TypeNode,
+  context: LoweringContext,
+  seen: ReadonlySet<ts.Symbol>,
+): ts.TypeNode | undefined {
+  const resolved = resolveTypeScriptTypeNodeAlias(type, context, seen);
+  if (ts.isParenthesizedTypeNode(resolved)) return getTypeScriptTypeNodeIterableElement(resolved.type, context, seen);
+  if (ts.isTypeOperatorNode(resolved) && resolved.operator === ts.SyntaxKind.ReadonlyKeyword) {
+    return getTypeScriptTypeNodeIterableElement(resolved.type, context, seen);
+  }
+  if (ts.isArrayTypeNode(resolved)) return resolved.elementType;
+  if (ts.isTypeReferenceNode(resolved)) {
+    const parts = getTypeNameNodeParts(resolved.typeName);
+    const name = parts ? [parts.root.text, ...parts.path].join('.') : undefined;
+    if ((name === 'Array' || name === 'ReadonlyArray') && resolved.typeArguments?.length === 1) {
+      return resolved.typeArguments[0];
+    }
+  }
+  return undefined;
+}
+
+function resolveTypeScriptTypeNodeAlias(
+  type: ts.TypeNode,
+  context: LoweringContext,
+  seen: ReadonlySet<ts.Symbol>,
+): ts.TypeNode {
+  if (!ts.isTypeReferenceNode(type)) return type;
+  const symbol = context.checker.getSymbolAtLocation(type.typeName);
+  if (!symbol || seen.has(symbol)) return type;
+  const declaration = symbol.declarations?.find(ts.isTypeAliasDeclaration);
+  if (!declaration || declaration.typeParameters?.length) return type;
+  const nextSeen = new Set(seen);
+  nextSeen.add(symbol);
+  return resolveTypeScriptTypeNodeAlias(declaration.type, context, nextSeen);
 }
 
 function lowerBindingPattern(

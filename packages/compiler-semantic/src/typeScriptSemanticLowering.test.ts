@@ -1141,11 +1141,52 @@ describe('lowerTypeScriptSource', () => {
         rest: { binding: { name: 'tail', scope: 'block' }, kind: 'binding' },
         scope: 'block',
       },
+      type: { element: { kind: 'primitive', name: 'number' }, kind: 'array' },
     });
     expect(loopStatement.variable.initializer).toBeUndefined();
     expect(first.pattern.binding.id).not.toBe(nested.pattern.binding.id);
     expect(first.pattern.binding.fingerprint).toMatch(/^sha256:[\da-f]{64}$/u);
     expect(lower('array-bindings.ts', source).module).toEqual(result.module);
+  });
+
+  it('preserves syntactic iterable element-type evidence for for-of bindings', () => {
+    const result = lower(
+      'iterable-evidence.ts',
+      `
+        type Row = [number, string];
+        type Rows = ReadonlyArray<Row>;
+        function createRows(): Rows { throw new Error(); }
+        class Holder { rows: Row[] = []; }
+        export function read(rows: Row[], holder: Holder, mystery: any): void {
+          for (const [first, second] of rows) { first; second; }
+          for (const [first, second] of createRows()) { first; second; }
+          for (const [first, second] of holder.rows) { first; second; }
+          for (const [first, second] of mystery) { first; second; }
+        }
+      `,
+    );
+    const declaration = result.module.declarations.find(
+      (item) => item.kind === 'function' && item.binding.name === 'read',
+    );
+    if (declaration?.kind !== 'function') throw new Error('Expected read function');
+    const loops = declaration.body.filter((statement) => statement.kind === 'forOf');
+
+    expect(result.diagnostics).toEqual([]);
+    expect(loops).toHaveLength(4);
+    for (const loop of loops.slice(0, 3)) {
+      expect(loop.variable.type).toMatchObject({
+        elements: [{ type: { kind: 'primitive', name: 'number' } }, { type: { kind: 'primitive', name: 'string' } }],
+        kind: 'tuple',
+      });
+      if (!('pattern' in loop.variable) || loop.variable.pattern.kind !== 'array') {
+        throw new Error('Expected typed array iteration binding');
+      }
+      expect(loop.variable.pattern.elements).toMatchObject([
+        { pattern: { type: { kind: 'primitive', name: 'number' } } },
+        { pattern: { type: { kind: 'primitive', name: 'string' } } },
+      ]);
+    }
+    expect(loops[3]?.variable.type).toBeUndefined();
   });
 
   it('distinguishes contextual fixed tuple expressions from open array expressions', () => {
