@@ -18,3 +18,8 @@ pub fn select_rest(values: (f64, Vec<f64>)) -> Vec<f64> {
   let rest: Vec<f64> = array_pattern_value.1;
   return rest;
 }
+
+pub fn create_values() -> (f64, Option<f64>) {
+  let values: (f64, Option<f64>) = (1.0, None);
+  return values;
+}

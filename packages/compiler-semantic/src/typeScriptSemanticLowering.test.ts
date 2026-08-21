@@ -1148,6 +1148,58 @@ describe('lowerTypeScriptSource', () => {
     expect(lower('array-bindings.ts', source).module).toEqual(result.module);
   });
 
+  it('distinguishes contextual fixed tuple expressions from open array expressions', () => {
+    const result = lower(
+      'tuple-expressions.ts',
+      `
+        export const required: [number, string] = [1, 'flight'];
+        export const optional: [number, string?] = [2];
+        export const open: number[] = [3];
+        export function read(value: [number] = [4]): [number] { return value; }
+        export class Holder { value: [number] = [5]; }
+      `,
+    );
+    const [required, optional, open, read, holder] = result.module.declarations;
+    if (
+      required?.kind !== 'variable' ||
+      optional?.kind !== 'variable' ||
+      open?.kind !== 'variable' ||
+      read?.kind !== 'function' ||
+      holder?.kind !== 'class'
+    ) {
+      throw new Error('Expected contextual tuple declarations');
+    }
+
+    expect(result.diagnostics).toEqual([]);
+    expect(required.initializer).toMatchObject({
+      elements: [
+        { expression: { value: 1 }, optional: false },
+        { expression: { value: 'flight' }, optional: false },
+      ],
+      kind: 'tuple',
+    });
+    expect(optional.initializer).toEqual({
+      elements: [{ expression: { kind: 'literal', value: 2 }, optional: false }, { optional: true }],
+      kind: 'tuple',
+    });
+    expect(open.initializer).toMatchObject({ kind: 'array' });
+    expect(read.parameters[0]?.initializer).toMatchObject({ kind: 'tuple' });
+    expect(holder.fields[0]?.initializer).toMatchObject({ kind: 'tuple' });
+  });
+
+  it.each([
+    ['contextual tuple expression rest at index 1 is not represented yet', '[number, ...number[]]', '[1, 2]'],
+    ['contextual tuple expression has more values than its fixed tuple type', '[number]', '[1, 2]'],
+    ['contextual tuple expression requires a value at index 0', '[number]', '[]'],
+    ['contextual tuple expression spread is not represented yet', '[number]', '[...values]'],
+  ])('diagnoses invalid contextual tuple expressions: %s', (message, type, value) => {
+    const source = `const values: number[] = [1]; export const rejected: ${type} = ${value}; export const kept = 2;`;
+    const result = lower('invalid-tuple-expression.ts', source);
+
+    expect(result.diagnostics.map((diagnostic) => diagnostic.message)).toContain(message);
+    expect(result.module.declarations).toMatchObject([{ binding: { name: 'values' } }, { binding: { name: 'kept' } }]);
+  });
+
   it('diagnoses object and invalid rest binding patterns while continuing with later declarations', () => {
     const object = lower(
       'object-bindings.ts',

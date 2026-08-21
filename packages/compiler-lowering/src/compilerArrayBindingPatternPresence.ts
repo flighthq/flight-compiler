@@ -92,6 +92,10 @@ function hasIrExpressionArrayBindingPattern(expression: Readonly<IrExpression>):
       return expression.parts.some((part) =>
         typeof part === 'string' ? false : hasIrExpressionArrayBindingPattern(part),
       );
+    case 'tuple':
+      return expression.elements.some(
+        (element) => element.expression && hasIrExpressionArrayBindingPattern(element.expression),
+      );
     case 'tupleRest':
       return hasIrExpressionArrayBindingPattern(expression.object);
     case 'unary':

@@ -19,4 +19,9 @@ class ArrayBinding {
     final rest:Array<Float> = arrayPatternValue.slice(1);
     return rest;
   }
+
+  public static function createValues():Array<Dynamic> {
+    final values:Array<Dynamic> = [1, null];
+    return values;
+  }
 }

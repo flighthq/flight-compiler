@@ -123,6 +123,17 @@ describe('emitIrModuleHaxe', () => {
     );
   });
 
+  it('emits contextual fixed tuple expressions with explicit optional positions', () => {
+    const result = lower(
+      'tuple-expression.ts',
+      "export function create(): [number, string?] { const present: [number, string?] = [1, 'flight']; const value: [number, string?] = [2]; present; return value; }",
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    expect(emitIrModuleHaxe(result.module).contents).toContain('final present:Array<Dynamic> = [1, "flight"];');
+    expect(emitIrModuleHaxe(result.module).contents).toContain('final value:Array<Dynamic> = [2, null];');
+  });
+
   it('reports pass-named failures from the elected lowering plan', () => {
     const result = lower(
       'unsafe-loop.ts',

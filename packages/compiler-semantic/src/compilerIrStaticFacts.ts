@@ -278,6 +278,11 @@ function analyzeExpression(
         if (typeof part !== 'string') analyzeExpression(part, analysis, 'read');
       });
       return;
+    case 'tuple':
+      expression.elements.forEach((element) => {
+        if (element.expression) analyzeExpression(element.expression, analysis, 'read');
+      });
+      return;
     case 'tupleRest':
       analyzeExpression(expression.object, analysis, 'read');
       return;
@@ -422,6 +427,7 @@ function getExpressionValueDomain(expression: Readonly<IrExpression>): IrOperato
     case 'new':
     case 'object':
     case 'regexp':
+    case 'tuple':
       return 'object';
     case 'assignment':
     case 'binary':

@@ -337,6 +337,11 @@ function collectExpressionBindings(
         if (typeof part !== 'string') collectExpressionBindings(part, `${path}:part:${String(index)}`, add);
       });
       break;
+    case 'tuple':
+      expression.elements.forEach((element, index) => {
+        if (element.expression) collectExpressionBindings(element.expression, `${path}:element:${String(index)}`, add);
+      });
+      break;
     case 'tupleRest':
       collectExpressionBindings(expression.object, `${path}:object`, add);
       break;

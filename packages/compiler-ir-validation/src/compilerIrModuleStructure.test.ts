@@ -499,6 +499,23 @@ describe('validateIrModuleStructure', () => {
         },
         'invalid-node-shape',
       ],
+      [
+        {
+          ...module,
+          declarations: [
+            {
+              ...declaration,
+              body: [
+                {
+                  expression: { elements: [{ optional: false }], kind: 'tuple' },
+                  kind: 'return',
+                },
+              ],
+            },
+          ],
+        } as unknown as IrModule,
+        'invalid-node-shape',
+      ],
       [{ ...module, declarations: [invalidKind] } as unknown as IrModule, 'unknown-ir-kind'],
       [{ ...module, exports: [invalidKind] } as unknown as IrModule, 'unknown-ir-kind'],
       [

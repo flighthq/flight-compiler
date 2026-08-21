@@ -221,13 +221,14 @@ function lowerClass(node: ts.ClassDeclaration, context: LoweringContext): IrClas
     if (ts.isConstructorDeclaration(member)) continue;
     if (ts.isPropertyDeclaration(member)) {
       if (!member.type && !member.initializer) unsupported(member, 'class fields require a type or initializer');
+      const type = member.type ? lowerType(member.type, context) : inferInitializerType(member.initializer!, context);
       fields.push({
-        ...(member.initializer ? { initializer: lowerExpression(member.initializer, context) } : {}),
+        ...(member.initializer ? { initializer: lowerExpression(member.initializer, context, type) } : {}),
         name: propertyName(member.name, context),
         optional: member.questionToken !== undefined,
         readonly: hasModifier(member, ts.SyntaxKind.ReadonlyKeyword),
         static: hasModifier(member, ts.SyntaxKind.StaticKeyword),
-        type: member.type ? lowerType(member.type, context) : inferInitializerType(member.initializer!, context),
+        type,
         visibility: visibility(member),
       });
       continue;
@@ -387,12 +388,17 @@ function lowerExport(node: ts.ExportDeclaration | ts.ExportAssignment, context: 
   });
 }
 
-function lowerExpression(node: ts.Expression, context: LoweringContext): IrExpression {
-  if (ts.isParenthesizedExpression(node)) return lowerExpression(node.expression, context);
+function lowerExpression(
+  node: ts.Expression,
+  context: LoweringContext,
+  contextualType?: Readonly<IrType>,
+): IrExpression {
+  if (ts.isParenthesizedExpression(node)) return lowerExpression(node.expression, context, contextualType);
   if (ts.isAsExpression(node) || ts.isTypeAssertionExpression(node) || ts.isSatisfiesExpression(node)) {
-    return { expression: lowerExpression(node.expression, context), kind: 'cast', type: lowerType(node.type, context) };
+    const type = lowerType(node.type, context);
+    return { expression: lowerExpression(node.expression, context, type), kind: 'cast', type };
   }
-  if (ts.isNonNullExpression(node)) return lowerExpression(node.expression, context);
+  if (ts.isNonNullExpression(node)) return lowerExpression(node.expression, context, contextualType);
   if (ts.isIdentifier(node)) return { kind: 'identifier', reference: lowerIdentifierReference(node, context) };
   if (node.kind === ts.SyntaxKind.ThisKeyword) return { kind: 'identifier', reference: { kind: 'this' } };
   if (node.kind === ts.SyntaxKind.TrueKeyword) return { kind: 'literal', value: true };
@@ -402,6 +408,7 @@ function lowerExpression(node: ts.Expression, context: LoweringContext): IrExpre
   if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node))
     return { kind: 'literal', value: node.text };
   if (ts.isArrayLiteralExpression(node)) {
+    if (contextualType?.kind === 'tuple') return lowerTupleExpression(node, contextualType, context);
     return {
       elements: node.elements.map((element) =>
         ts.isOmittedExpression(element) ? undefined : lowerExpression(element, context),
@@ -528,6 +535,37 @@ function lowerExpression(node: ts.Expression, context: LoweringContext): IrExpre
     return { flags: node.text.slice(lastSlash + 1), kind: 'regexp', pattern: node.text.slice(1, lastSlash) };
   }
   unsupported(node, `unsupported expression ${ts.SyntaxKind[node.kind]}`);
+}
+
+function lowerTupleExpression(
+  node: ts.ArrayLiteralExpression,
+  type: Readonly<Extract<IrType, { kind: 'tuple' }>>,
+  context: LoweringContext,
+): IrExpression {
+  const restIndex = type.elements.findIndex((element) => element.rest);
+  if (restIndex >= 0) {
+    return unsupported(node, `contextual tuple expression rest at index ${String(restIndex)} is not represented yet`);
+  }
+  if (node.elements.length > type.elements.length) {
+    return unsupported(node, 'contextual tuple expression has more values than its fixed tuple type');
+  }
+  return {
+    elements: type.elements.map((element, index) => {
+      const value = node.elements[index];
+      if (!value || ts.isOmittedExpression(value)) {
+        if (!element.optional) {
+          return unsupported(node, `contextual tuple expression requires a value at index ${String(index)}`);
+        }
+        return { optional: true };
+      }
+      if (ts.isSpreadElement(value)) {
+        return unsupported(value, 'contextual tuple expression spread is not represented yet');
+      }
+      const expression = lowerExpression(value, context, element.type);
+      return element.optional ? { expression, optional: true } : { expression, optional: false };
+    }),
+    kind: 'tuple',
+  };
 }
 
 function lowerExpressionWithTypeArguments(
@@ -795,7 +833,12 @@ function lowerParameter(node: ts.ParameterDeclaration, context: LoweringContext)
   if (typeParameter.rest) return { ...parameter, optional: false, rest: true };
   if (!typeParameter.optional) return { ...parameter, optional: false, rest: false };
   return node.initializer
-    ? { ...parameter, initializer: lowerExpression(node.initializer, context), optional: true, rest: false }
+    ? {
+        ...parameter,
+        initializer: lowerExpression(node.initializer, context, typeParameter.type),
+        optional: true,
+        rest: false,
+      }
     : { ...parameter, optional: true, rest: false };
 }
 
@@ -1128,23 +1171,32 @@ function lowerVariables(node: ts.VariableDeclarationList, context: LoweringConte
 }
 
 function lowerVariable(node: ts.VariableDeclaration, mutable: boolean, context: LoweringContext): IrVariable {
+  const type = node.type
+    ? lowerType(node.type, context)
+    : node.initializer
+      ? inferInitializerType(node.initializer, context)
+      : undefined;
   return {
     ...(ts.isIdentifier(node.name)
       ? { binding: lowerBindingIdentity(node.name, context) }
-      : { pattern: lowerBindingPattern(node.name, context) }),
-    ...(node.initializer ? { initializer: lowerExpression(node.initializer, context) } : {}),
+      : { pattern: lowerBindingPattern(node.name, context, type) }),
+    ...(node.initializer ? { initializer: lowerExpression(node.initializer, context, type) } : {}),
     mutable,
-    ...(node.type
-      ? { type: lowerType(node.type, context) }
-      : node.initializer
-        ? { type: inferInitializerType(node.initializer, context) }
-        : {}),
+    ...(type ? { type } : {}),
   };
 }
 
-function lowerBindingPattern(node: ts.BindingName, context: LoweringContext): IrBindingPattern {
+function lowerBindingPattern(
+  node: ts.BindingName,
+  context: LoweringContext,
+  sourceType?: Readonly<IrType>,
+): IrBindingPattern {
   if (ts.isIdentifier(node)) {
-    return { binding: lowerBindingIdentity(node, context), kind: 'binding' };
+    return {
+      binding: lowerBindingIdentity(node, context),
+      kind: 'binding',
+      ...(sourceType ? { type: sourceType } : {}),
+    };
   }
   if (ts.isObjectBindingPattern(node)) {
     return unsupported(node, 'object binding patterns are not represented in the neutral IR yet');
@@ -1159,12 +1211,14 @@ function lowerBindingPattern(node: ts.BindingName, context: LoweringContext): Ir
     if (element.dotDotDotToken) {
       if (index !== node.elements.length - 1) unsupported(element, 'array binding rest must be the final element');
       if (element.initializer) unsupported(element, 'array binding rest cannot have a default initializer');
-      rest = lowerBindingPattern(element.name, context);
+      const restType = sourceType?.kind === 'tuple' ? sourceType.elements[index]?.type : undefined;
+      rest = lowerBindingPattern(element.name, context, restType);
       return;
     }
+    const elementType = sourceType?.kind === 'tuple' ? sourceType.elements[index]?.type : undefined;
     elements.push({
-      ...(element.initializer ? { initializer: lowerExpression(element.initializer, context) } : {}),
-      pattern: lowerBindingPattern(element.name, context),
+      ...(element.initializer ? { initializer: lowerExpression(element.initializer, context, elementType) } : {}),
+      pattern: lowerBindingPattern(element.name, context, elementType),
     });
   });
   return {

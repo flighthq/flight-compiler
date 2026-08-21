@@ -190,7 +190,7 @@ function lowerIrArrayBindingPattern(
             binding: element.pattern.binding,
             initializer,
             mutable,
-            type: element.pattern.type ?? elementType,
+            type: appliesDefault ? elementType : (element.pattern.type ?? elementType),
           },
         },
       ];
@@ -432,6 +432,22 @@ function lowerIrExpressionArrayBindingPattern(
           typeof part === 'string'
             ? part
             : lowerIrExpressionArrayBindingPattern(part, `${path}.parts[${String(index)}]`, analysis),
+        ),
+      };
+    case 'tuple':
+      return {
+        ...expression,
+        elements: expression.elements.map((element, index) =>
+          element.expression
+            ? {
+                ...element,
+                expression: lowerIrExpressionArrayBindingPattern(
+                  element.expression,
+                  `${path}.elements[${String(index)}].expression`,
+                  analysis,
+                ),
+              }
+            : element,
         ),
       };
     case 'tupleRest':

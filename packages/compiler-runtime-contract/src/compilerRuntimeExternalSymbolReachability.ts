@@ -156,6 +156,11 @@ function visitExpression(expression: Readonly<IrExpression>, add: AddExternalSym
         if (typeof part !== 'string') visitExpression(part, add);
       });
       break;
+    case 'tuple':
+      expression.elements.forEach((element) => {
+        if (element.expression) visitExpression(element.expression, add);
+      });
+      break;
     case 'tupleRest':
       visitExpression(expression.object, add);
       break;

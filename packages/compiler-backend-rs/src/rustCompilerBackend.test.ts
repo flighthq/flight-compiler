@@ -122,6 +122,19 @@ describe('emitIrModuleRust', () => {
     );
   });
 
+  it('emits contextual fixed tuple expressions with explicit optional positions', () => {
+    const result = lower(
+      'tuple-expression.ts',
+      "export function create(): [number, string?] { const present: [number, string?] = [1, 'flight']; const value: [number, string?] = [2]; present; return value; }",
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    expect(emitIrModuleRust(result.module).contents).toContain(
+      'let present: (f64, Option<String>) = (1.0, Some("flight".to_owned()));',
+    );
+    expect(emitIrModuleRust(result.module).contents).toContain('let value: (f64, Option<String>) = (2.0, None);');
+  });
+
   it('reports pass-named failures from the elected lowering plan', () => {
     const result = lower(
       'unsafe-loop.ts',

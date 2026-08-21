@@ -366,6 +366,18 @@ function visitExpression(expression: Readonly<IrExpression>, path: string, state
         if (typeof part !== 'string') visitExpression(part, `${path}.parts[${String(index)}]`, state);
       });
       break;
+    case 'tuple':
+      expression.elements.forEach((element, index) => {
+        const elementPath = `${path}.elements[${String(index)}]`;
+        if (typeof element.optional !== 'boolean') {
+          addFailure('invalid-node-shape', `${elementPath}.optional`, 'tuple optional flag must be boolean', state);
+        }
+        if (!element.optional && !element.expression) {
+          addFailure('invalid-node-shape', elementPath, 'required tuple expression element must have a value', state);
+        }
+        if (element.expression) visitExpression(element.expression, `${elementPath}.expression`, state);
+      });
+      break;
     case 'tupleRest':
       if (!Number.isSafeInteger(expression.start) || expression.start < 0) {
         addFailure('invalid-node-shape', `${path}.start`, 'tuple rest start must be a nonnegative integer', state);

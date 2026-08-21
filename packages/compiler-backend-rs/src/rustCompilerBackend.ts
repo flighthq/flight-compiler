@@ -275,6 +275,14 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
       );
       return `format!(${JSON.stringify(format)}${values.length > 0 ? `, ${values.join(', ')}` : ''})`;
     }
+    case 'tuple': {
+      const elements = expression.elements.map((element) => {
+        if (!element.expression) return 'None';
+        const emitted = emitExpression(element.expression, context);
+        return element.optional ? `Some(${emitted})` : emitted;
+      });
+      return `(${elements.join(', ')}${elements.length === 1 ? ',' : ''})`;
+    }
     case 'tupleRest':
       return `${emitExpression(expression.object, context)}.${String(expression.start)}`;
     case 'unary': {

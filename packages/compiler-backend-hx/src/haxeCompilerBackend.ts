@@ -264,6 +264,10 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
       return expression.parts
         .map((part) => (typeof part === 'string' ? emitLiteral(part) : `Std.string(${emitExpression(part, context)})`))
         .join(' + ');
+    case 'tuple':
+      return `[${expression.elements
+        .map((element) => (element.expression ? emitExpression(element.expression, context) : 'null'))
+        .join(', ')}]`;
     case 'tupleRest':
       return `${emitExpression(expression.object, context)}.slice(${String(expression.start)})`;
     case 'unary': {

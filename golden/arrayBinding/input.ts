@@ -12,3 +12,8 @@ export function selectRest(values: [number, ...number[]]): number[] {
   const [, ...rest]: [number, ...number[]] = values;
   return rest;
 }
+
+export function createValues(): [number, number?] {
+  const values: [number, number?] = [1];
+  return values;
+}

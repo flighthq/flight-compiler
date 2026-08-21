@@ -75,6 +75,13 @@ export type IrExpression =
   | Readonly<{ flags: string; kind: 'regexp'; pattern: string }>
   | Readonly<{ expression: IrExpression; kind: 'spread' }>
   | Readonly<{ kind: 'template'; parts: ReadonlyArray<IrExpression | string> }>
+  | Readonly<{
+      elements: ReadonlyArray<
+        | Readonly<{ expression: IrExpression; optional: false }>
+        | Readonly<{ expression?: IrExpression; optional: true }>
+      >;
+      kind: 'tuple';
+    }>
   | Readonly<{ kind: 'tupleRest'; object: IrExpression; start: number }>
   | Readonly<{
       kind: 'unary';
