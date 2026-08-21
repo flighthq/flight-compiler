@@ -1,1 +1,1 @@
-rust emission failed for @flighthq/golden/packages/golden/src/nullability.ts: nullable parameter value requires Option-aware Rust control-flow lowering
+rust emission failed for @flighthq/golden/packages/golden/src/nullability.ts: undefined expressions require Rust Option-aware lowering
