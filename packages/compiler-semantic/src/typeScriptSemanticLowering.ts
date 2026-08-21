@@ -4,6 +4,7 @@ import ts from 'typescript';
 
 import { normalizePathPortable } from '../../compiler-canonical-form/src/index.js';
 import { fingerprintTypeScriptNode } from '../../compiler-provenance/src/index.js';
+import { createIrObjectCopySemantics } from '../../compiler-structural/src/index.js';
 import type {
   CompilerDiagnostic,
   CompilerSourceOrigin,
@@ -509,12 +510,19 @@ function lowerExpression(
     const inferredType = inferInitializerType(node, context);
     const memberContext = contextualType?.kind === 'object' ? contextualType : inferredType;
     const memberTarget = getIrTypeConstructionTargetShape(contextualTargetType ?? contextualType, context);
-    return {
+    const members = node.properties.map((member) =>
+      lowerObjectMember(member, context, memberContext, memberTarget ?? memberContext),
+    );
+    const common = {
       kind: 'object',
-      members: node.properties.map((member) =>
-        lowerObjectMember(member, context, memberContext, memberTarget ?? memberContext),
-      ),
+      members,
       type: contextualTargetType ?? contextualType ?? inferredType,
+    } as const;
+    if (members.some((member) => member.kind === 'spread')) {
+      return { ...common, copySemantics: createIrObjectCopySemantics() };
+    }
+    return {
+      ...common,
     };
   }
   if (ts.isPropertyAccessExpression(node)) {

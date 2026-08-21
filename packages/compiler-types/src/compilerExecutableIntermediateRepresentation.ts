@@ -35,6 +35,22 @@ export interface IrControlFlowLabelIdentity extends CompilerSourceOrigin {
   readonly name: string;
 }
 
+export interface IrObjectCopySemantics {
+  readonly evaluation: 'left-to-right-once';
+  readonly nullish: 'skip';
+  readonly overwrite: 'replace-value-preserve-key-position';
+  readonly propertyKeys: 'own-enumerable-string-and-symbol';
+  readonly propertyReads: 'get-once-in-own-key-order';
+  readonly targetWrites: 'create-data-property';
+}
+
+export type IrObjectExpression = Readonly<{
+  kind: 'object';
+  members: readonly IrObjectMember[];
+  type: IrType;
+}> &
+  (Readonly<{ copySemantics?: never }> | Readonly<{ copySemantics: IrObjectCopySemantics }>);
+
 export type IrTupleExpressionElement =
   | Readonly<{ expression: IrExpression; optional: false }>
   | Readonly<{ expression?: IrExpression; optional: true }>;
@@ -100,7 +116,7 @@ export type IrExpression =
       semantics: IrInvocationSemantics;
       typeArguments: readonly IrType[];
     }>
-  | Readonly<{ kind: 'object'; members: readonly IrObjectMember[]; type: IrType }>
+  | IrObjectExpression
   | Readonly<{
       excluded: readonly IrObjectRestKey[];
       kind: 'objectRest';

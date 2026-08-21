@@ -36,4 +36,28 @@ describe('compiler executable intermediate representation contracts', () => {
     expectTypeOf<Extract<IrExpression, { kind: 'unary'; postfix: true }>['operator']>().toEqualTypeOf<'++' | '--'>();
     expectTypeOf<Extract<IrExpression, { kind: 'binary' }>['semantics']>().toHaveProperty('result');
   });
+
+  it('keeps object copy semantics explicit without burdening ordinary object construction', () => {
+    const plain = {
+      kind: 'object',
+      members: [],
+      type: { kind: 'object', properties: [] },
+    } as const satisfies IrExpression;
+    const copied = {
+      copySemantics: {
+        evaluation: 'left-to-right-once',
+        nullish: 'skip',
+        overwrite: 'replace-value-preserve-key-position',
+        propertyKeys: 'own-enumerable-string-and-symbol',
+        propertyReads: 'get-once-in-own-key-order',
+        targetWrites: 'create-data-property',
+      },
+      kind: 'object',
+      members: [{ expression: { kind: 'literal', value: null }, kind: 'spread' }],
+      type: { kind: 'object', properties: [] },
+    } as const satisfies IrExpression;
+
+    expect(plain).not.toHaveProperty('copySemantics');
+    expect(copied.copySemantics.nullish).toBe('skip');
+  });
 });

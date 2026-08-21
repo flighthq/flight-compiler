@@ -487,6 +487,7 @@ function visitExpression(expression: Readonly<IrExpression>, path: string, state
     case 'regexp':
       break;
     case 'object':
+      validateIrObjectCopySemantics(expression, path, state);
       expression.members.forEach((member, index) =>
         visitObjectMember(member, `${path}.members[${String(index)}]`, state),
       );
@@ -625,6 +626,37 @@ function visitExpression(expression: Readonly<IrExpression>, path: string, state
     default:
       addUnknownKind(expression, path, state);
   }
+}
+
+function validateIrObjectCopySemantics(
+  expression: Readonly<Extract<IrExpression, { kind: 'object' }>>,
+  path: string,
+  state: IrModuleValidationState,
+): void {
+  const hasSpread = expression.members.some((member) => member.kind === 'spread');
+  const hasSemantics = Object.hasOwn(expression, 'copySemantics');
+  const semantics = expression.copySemantics;
+  if (!hasSpread && !hasSemantics) return;
+  if (
+    hasSpread &&
+    hasSemantics &&
+    semantics?.evaluation === 'left-to-right-once' &&
+    semantics.nullish === 'skip' &&
+    semantics.overwrite === 'replace-value-preserve-key-position' &&
+    semantics.propertyKeys === 'own-enumerable-string-and-symbol' &&
+    semantics.propertyReads === 'get-once-in-own-key-order' &&
+    semantics.targetWrites === 'create-data-property'
+  ) {
+    return;
+  }
+  addFailure(
+    'invalid-node-shape',
+    `${path}.copySemantics`,
+    hasSpread
+      ? 'object spread requires exact copy semantics'
+      : 'object copy semantics require at least one spread member',
+    state,
+  );
 }
 
 function hasIrTypeUndefinedOptionDomain(type: Readonly<IrType>): boolean {

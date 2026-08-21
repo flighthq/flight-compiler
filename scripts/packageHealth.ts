@@ -117,7 +117,13 @@ const packageRules: Readonly<Record<string, PackageRule>> = {
     devDependencies: ['compiler-semantic'],
   },
   'compiler-semantic': {
-    dependencies: ['compiler-canonical-form', 'compiler-ir-traversal', 'compiler-provenance', 'compiler-types'],
+    dependencies: [
+      'compiler-canonical-form',
+      'compiler-ir-traversal',
+      'compiler-provenance',
+      'compiler-structural',
+      'compiler-types',
+    ],
     description: 'TypeScript semantic analysis and target-neutral lowering',
   },
   'compiler-structural': {

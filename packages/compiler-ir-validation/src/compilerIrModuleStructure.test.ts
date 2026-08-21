@@ -267,6 +267,52 @@ describe('validateIrModuleStructure', () => {
     }
   });
 
+  it('requires exact copy semantics precisely when an object expression contains spread', () => {
+    const valid = lower(
+      'object-copy.ts',
+      'export function copy(source: { value: number }) { return { before: 1, ...source, value: 2 }; }',
+    );
+    expect(validateIrModuleStructure(valid)).toEqual({ kind: 'valid' });
+
+    const missing = structuredClone(valid);
+    const missingDeclaration = missing.declarations[0];
+    const missingReturn = missingDeclaration?.kind === 'function' ? missingDeclaration.body[0] : undefined;
+    const missingExpression = missingReturn?.kind === 'return' ? missingReturn.expression : undefined;
+    if (missingExpression?.kind !== 'object') throw new Error('Expected object copy expression');
+    delete (missingExpression as { copySemantics?: unknown }).copySemantics;
+
+    const malformed = structuredClone(valid);
+    const malformedDeclaration = malformed.declarations[0];
+    const malformedReturn = malformedDeclaration?.kind === 'function' ? malformedDeclaration.body[0] : undefined;
+    const malformedExpression = malformedReturn?.kind === 'return' ? malformedReturn.expression : undefined;
+    if (malformedExpression?.kind !== 'object' || !malformedExpression.copySemantics) {
+      throw new Error('Expected object copy semantics');
+    }
+    (malformedExpression.copySemantics as { targetWrites: unknown }).targetWrites = 'assign';
+
+    const unnecessary = structuredClone(valid);
+    const unnecessaryDeclaration = unnecessary.declarations[0];
+    const unnecessaryReturn = unnecessaryDeclaration?.kind === 'function' ? unnecessaryDeclaration.body[0] : undefined;
+    const unnecessaryExpression = unnecessaryReturn?.kind === 'return' ? unnecessaryReturn.expression : undefined;
+    if (unnecessaryExpression?.kind !== 'object') throw new Error('Expected object copy expression');
+    (unnecessaryExpression as unknown as { members: unknown[] }).members = unnecessaryExpression.members.filter(
+      (member) => member.kind !== 'spread',
+    );
+
+    for (const module of [missing, malformed, unnecessary]) {
+      const result = validateIrModuleStructure(module);
+      expect(result.kind).toBe('invalid');
+      if (result.kind === 'invalid') {
+        expect(result.failures).toContainEqual(
+          expect.objectContaining({
+            code: 'invalid-node-shape',
+            path: expect.stringContaining('.copySemantics'),
+          }),
+        );
+      }
+    }
+  });
+
   it('validates optional-chain and property-key coercion evidence together', () => {
     const valid = lower(
       'optional-element.ts',

@@ -48,6 +48,54 @@ describe('lowerTypeScriptSource', () => {
       kind: 'named',
       reference: { binding: { name: 'Named', space: 'type' }, kind: 'binding', path: [] },
     });
+    expect(returned.expression.copySemantics).toBeUndefined();
+  });
+
+  it('records exact object-spread copy semantics without changing member evaluation order', () => {
+    const result = lower(
+      'object-copy.ts',
+      `
+        function effect(value: string): any { return value; }
+        export function copy(source: { first: number; second?: number }) {
+          return {
+            first: effect('before'),
+            ...source,
+            first: effect('after'),
+            [effect('key')]: effect('computed'),
+          };
+        }
+      `,
+    );
+    const declaration = result.module.declarations[1];
+    const returned = declaration?.kind === 'function' ? declaration.body[0] : undefined;
+    if (returned?.kind !== 'return' || returned.expression?.kind !== 'object') {
+      throw new Error('Expected object copy expression');
+    }
+
+    expect(returned.expression.copySemantics).toEqual({
+      evaluation: 'left-to-right-once',
+      nullish: 'skip',
+      overwrite: 'replace-value-preserve-key-position',
+      propertyKeys: 'own-enumerable-string-and-symbol',
+      propertyReads: 'get-once-in-own-key-order',
+      targetWrites: 'create-data-property',
+    });
+    expect(returned.expression.members.map((member) => member.kind)).toEqual([
+      'property',
+      'spread',
+      'property',
+      'computedProperty',
+    ]);
+    expect(returned.expression.members).toMatchObject([
+      { kind: 'property', name: 'first', value: { arguments: [{ value: 'before' }], kind: 'call' } },
+      { expression: { kind: 'identifier', reference: { binding: { name: 'source' } } }, kind: 'spread' },
+      { kind: 'property', name: 'first', value: { arguments: [{ value: 'after' }], kind: 'call' } },
+      {
+        key: { arguments: [{ value: 'key' }], kind: 'call' },
+        kind: 'computedProperty',
+        value: { arguments: [{ value: 'computed' }], kind: 'call' },
+      },
+    ]);
   });
 
   it('propagates nominal construction targets through records, arrays, tuples, and conditional arms', () => {
