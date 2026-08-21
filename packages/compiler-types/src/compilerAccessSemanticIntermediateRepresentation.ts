@@ -1,3 +1,4 @@
+import type { IrBindingIdentity } from './compilerBindingIntermediateRepresentation.js';
 import type { IrType } from './compilerTypeIntermediateRepresentation.js';
 
 export type IrIndexedReceiver =
@@ -48,9 +49,15 @@ export interface IrInvocationSignatureSemantics {
 }
 
 export interface IrCallSemantics extends IrInvocationSemantics {
+  readonly extraArguments?: IrExtraArgumentErasureSemantics | undefined;
   readonly optionalChain?: IrOptionalChainSemantics | undefined;
   readonly statementValue?: IrStatementValueCallSemantics | undefined;
   readonly typedArraySet?: IrTypedArraySetSemantics | undefined;
+}
+
+export interface IrExtraArgumentErasureSemantics {
+  readonly argumentBindings: readonly IrBindingIdentity[];
+  readonly resultType: IrType;
 }
 
 export interface IrOverloadImplementationInvocationSemantics {

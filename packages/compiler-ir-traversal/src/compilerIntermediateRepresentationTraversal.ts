@@ -209,6 +209,13 @@ function analyzeIrExpressionTraversal(
         observer,
         createIrTraversalPath(path, 'semantics', 'optionalChain'),
       );
+      if (expression.semantics.extraArguments) {
+        analyzeIrTypeTraversal(
+          expression.semantics.extraArguments.resultType,
+          observer,
+          createIrTraversalPath(path, 'semantics', 'extraArguments', 'resultType'),
+        );
+      }
       analyzeIrInvocationSemanticsTraversal(expression.semantics, observer, createIrTraversalPath(path, 'semantics'));
       break;
     case 'cast':

@@ -508,7 +508,7 @@ function lowerExpression(
       },
       typeArguments: node.typeArguments?.map((type) => lowerType(type, context)) ?? [],
     };
-    return lowerTypeScriptExtraArgumentCallExpression(node, expression, context);
+    return addTypeScriptExtraArgumentErasureSemantics(node, expression, context);
   }
   if (ts.isNewExpression(node)) {
     const signature = getTypeScriptInvocationSignatureResolution(node, context);
@@ -639,11 +639,11 @@ function lowerTypeScriptInvocationArguments(
   });
 }
 
-function lowerTypeScriptExtraArgumentCallExpression(
+function addTypeScriptExtraArgumentErasureSemantics(
   node: ts.CallExpression,
   expression: Readonly<Extract<IrExpression, { kind: 'call' }>>,
   context: LoweringContext,
-): IrExpression {
+): Extract<IrExpression, { kind: 'call' }> {
   const signature = expression.semantics.signature;
   if (
     !signature ||
@@ -664,70 +664,21 @@ function lowerTypeScriptExtraArgumentCallExpression(
   ) {
     return expression;
   }
-  const bindings = expression.arguments.map((_, index) => createTypeScriptExtraArgumentBinding(node, index, context));
-  const call: Extract<IrExpression, { kind: 'call' }> = {
+  return {
     ...expression,
-    arguments: bindings.slice(0, signature.parameterCount).map((binding) => ({
-      kind: 'identifier',
-      reference: { binding, kind: 'binding' },
-    })),
     semantics: {
       ...expression.semantics,
-      ...(expression.semantics.defaultParameters
-        ? {
-            defaultParameters: {
-              ...expression.semantics.defaultParameters,
-              omitted: [],
-              providedArgumentCount: signature.parameterCount,
-            },
-          }
-        : {}),
-      ...(expression.semantics.optionalParameters
-        ? {
-            optionalParameters: {
-              ...expression.semantics.optionalParameters,
-              omitted: [],
-              providedArgumentCount: signature.parameterCount,
-            },
-          }
-        : {}),
-      signature: { ...signature, providedArgumentCount: signature.parameterCount },
-    },
-  };
-  return {
-    arguments: [],
-    callee: {
-      async: false,
-      body: [
-        ...bindings.map(
-          (binding, index): IrStatement => ({
-            declarations: [
-              {
-                binding,
-                initializer: expression.arguments[index]!,
-                mutable: false,
-              },
-            ],
-            kind: 'variable',
-          }),
+      extraArguments: {
+        argumentBindings: expression.arguments.map((_, index) =>
+          createTypeScriptCallArgumentBinding(node, index, context),
         ),
-        { expression: call, kind: 'return' },
-      ],
-      kind: 'function',
-      parameters: [],
-      returns: lowerTypeScriptExpressionTypeEvidence(node, context) ?? { kind: 'unknown', source: 'unknown' },
-      typeParameters: [],
+        resultType: lowerTypeScriptExpressionTypeEvidence(node, context) ?? { kind: 'unknown', source: 'unknown' },
+      },
     },
-    kind: 'call',
-    optional: false,
-    semantics: {
-      statementValue: { asyncContext: 'inherit', completion: 'finalReturn', thisBinding: 'lexical' },
-    },
-    typeArguments: [],
   };
 }
 
-function createTypeScriptExtraArgumentBinding(
+function createTypeScriptCallArgumentBinding(
   node: ts.CallExpression,
   index: number,
   context: LoweringContext,
@@ -738,12 +689,12 @@ function createTypeScriptExtraArgumentBinding(
     id: `binding:${JSON.stringify([
       sourceOrigin.packageName,
       sourceOrigin.source,
-      'extra-argument',
+      'call-argument',
       node.getStart(context.sourceFile),
       index,
     ])}`,
     kind: 'variable',
-    name: `extraArgument${String(index)}`,
+    name: `callArgument${String(index)}`,
     scope: 'block',
     space: 'value',
   };

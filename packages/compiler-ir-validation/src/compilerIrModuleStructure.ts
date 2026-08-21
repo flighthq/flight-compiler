@@ -406,6 +406,7 @@ function visitExpression(expression: Readonly<IrExpression>, path: string, state
       validateIrOptionalChainEvidence(expression.optional, expression.semantics.optionalChain, path, state);
       validateIrInvocationSignatureEvidence(expression, path, state);
       validateIrDefaultParameterInvocationEvidence(expression, path, state);
+      validateIrExtraArgumentErasureEvidence(expression, path, state);
       validateIrOptionalParameterInvocationEvidence(expression, path, state);
       validateIrOverloadImplementationInvocationEvidence(expression, path, state);
       if (expression.semantics.statementValue && !isIrCallExpressionStatementValueCarrierValid(expression)) {
@@ -707,6 +708,60 @@ function validateIrDefaultParameterInvocationEvidence(
       state,
     );
   }
+}
+
+function validateIrExtraArgumentErasureEvidence(
+  expression: Readonly<Extract<IrExpression, { kind: 'call' }>>,
+  path: string,
+  state: IrModuleValidationState,
+): void {
+  const evidence = expression.semantics.extraArguments;
+  if (!evidence) return;
+  const signature = expression.semantics.signature;
+  const defaulted = new Set(expression.semantics.defaultParameters?.defaulted ?? []);
+  const bindingsValid =
+    Array.isArray(evidence.argumentBindings) &&
+    evidence.argumentBindings.length === expression.arguments.length &&
+    new Set(evidence.argumentBindings.map((binding) => binding.id)).size === evidence.argumentBindings.length &&
+    evidence.argumentBindings.every(
+      (binding) =>
+        isNonEmptyString(binding.id) &&
+        isNonEmptyString(binding.name) &&
+        binding.kind === 'variable' &&
+        binding.scope === 'block' &&
+        binding.space === 'value',
+    );
+  const eligible =
+    signature !== undefined &&
+    typeof signature.providedArgumentCount === 'number' &&
+    signature.providedArgumentCount > signature.parameterCount &&
+    signature.restParameter === undefined &&
+    !expression.optional &&
+    expression.callee.kind === 'identifier' &&
+    expression.callee.reference.kind !== 'this' &&
+    !expression.arguments
+      .slice(0, signature.parameterCount)
+      .some((argument, index) => argument.kind === 'undefinedValue' && defaulted.has(index)) &&
+    expression.semantics.statementValue === undefined;
+  if (!eligible || !bindingsValid || !isIrTypeEvidence(evidence.resultType)) {
+    addFailure(
+      'invalid-node-shape',
+      `${path}.semantics.extraArguments`,
+      'extra-argument erasure evidence requires a fixed direct call, one distinct block binding per argument, and result type evidence',
+      state,
+    );
+    return;
+  }
+  evidence.argumentBindings.forEach((binding, index) => {
+    validateSourceOrigin(
+      binding,
+      `${path}.semantics.extraArguments.argumentBindings[${String(index)}]`,
+      'invalid-binding-origin',
+      'extra-argument carrier binding',
+      state,
+    );
+  });
+  visitType(evidence.resultType, `${path}.semantics.extraArguments.resultType`, state);
 }
 
 function validateIrOptionalParameterInvocationEvidence(

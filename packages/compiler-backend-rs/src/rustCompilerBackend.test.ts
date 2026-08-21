@@ -712,16 +712,14 @@ describe('emitIrModuleRust', () => {
       'spread calls into optional or default parameters require Rust ABI expansion lowering',
     );
     const output = emitIrModuleRust(extra.module).contents;
-    expect(output).toContain('let extra_argument0 = 1.0;');
-    expect(output).toContain('let extra_argument1 = 2.0;');
-    expect(output).toContain('choose(Some(extra_argument0))');
+    expect(output).toContain('let call_argument0 = 1.0;');
+    expect(output).toContain('let call_argument1 = 2.0;');
+    expect(output).toContain('choose(Some(call_argument0))');
     expect(output).not.toContain('choose(Some(1.0), 2.0)');
-    expect(output.indexOf('extra_argument0 = 1.0')).toBeLessThan(output.indexOf('extra_argument1 = 2.0'));
-    expect(output.indexOf('extra_argument1 = 2.0')).toBeLessThan(output.indexOf('choose(Some(extra_argument0))'));
+    expect(output.indexOf('call_argument0 = 1.0')).toBeLessThan(output.indexOf('call_argument1 = 2.0'));
+    expect(output.indexOf('call_argument1 = 2.0')).toBeLessThan(output.indexOf('choose(Some(call_argument0))'));
     expect(() => emitIrModuleRust(missing.module)).toThrow('missing required call argument at position 0');
-    expect(() => emitIrModuleRust(property.module)).toThrow(
-      'extra JavaScript call arguments require target-neutral erasure lowering',
-    );
+    expect(() => emitIrModuleRust(property.module)).toThrow('fixed extra call arguments remain after erasure');
   });
 
   it('emits contextual undefined option values as Rust None', () => {

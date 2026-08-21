@@ -382,6 +382,63 @@ describe('validateIrModuleStructure', () => {
     });
   });
 
+  it('validates neutral extra-argument erasure carrier identities and result type evidence', () => {
+    const valid = lower(
+      'extra-argument.ts',
+      'function choose(value: number): number { return value; } export function read(): number { return choose(1, 2); }',
+    );
+    expect(validateIrModuleStructure(valid)).toEqual({ kind: 'valid' });
+
+    for (const mutate of [
+      (expression: Extract<IrExpression, { kind: 'call' }>) => {
+        const bindings = expression.semantics.extraArguments?.argumentBindings;
+        if (!bindings) throw new Error('Expected erasure bindings');
+        (expression.semantics.extraArguments as { argumentBindings: unknown }).argumentBindings = [
+          bindings[0],
+          bindings[0],
+        ];
+      },
+      (expression: Extract<IrExpression, { kind: 'call' }>) => {
+        (expression.semantics.extraArguments as { resultType: unknown }).resultType = { kind: 'future-type' };
+      },
+      (expression: Extract<IrExpression, { kind: 'call' }>) => {
+        (expression.semantics as { signature?: unknown }).signature = undefined;
+      },
+    ]) {
+      const invalid = structuredClone(valid);
+      const declaration = invalid.declarations.find(
+        (candidate) => candidate.kind === 'function' && candidate.binding.name === 'read',
+      );
+      const statement = declaration?.kind === 'function' ? declaration.body[0] : undefined;
+      const expression = statement?.kind === 'return' ? statement.expression : undefined;
+      if (expression?.kind !== 'call') throw new Error('Expected extra-argument call');
+      mutate(expression);
+
+      expect(validateIrModuleStructure(invalid)).toMatchObject({
+        failures: expect.arrayContaining([
+          expect.objectContaining({ path: expect.stringContaining('.semantics.extraArguments') }),
+        ]),
+        kind: 'invalid',
+      });
+    }
+
+    const invalidOrigin = structuredClone(valid);
+    const declaration = invalidOrigin.declarations.find(
+      (candidate) => candidate.kind === 'function' && candidate.binding.name === 'read',
+    );
+    const statement = declaration?.kind === 'function' ? declaration.body[0] : undefined;
+    const expression = statement?.kind === 'return' ? statement.expression : undefined;
+    const binding = expression?.kind === 'call' ? expression.semantics.extraArguments?.argumentBindings[0] : undefined;
+    if (!binding) throw new Error('Expected extra-argument carrier binding');
+    (binding as { source: string }).source = 'other.ts';
+    expect(validateIrModuleStructure(invalidOrigin)).toMatchObject({
+      failures: expect.arrayContaining([
+        expect.objectContaining({ code: 'invalid-binding-origin', path: expect.stringContaining('argumentBindings') }),
+      ]),
+      kind: 'invalid',
+    });
+  });
+
   it('validates call and constructor overload source order and resolved-versus-implementation ABI arity', () => {
     const valid = lower(
       'overload-implementation-call.ts',

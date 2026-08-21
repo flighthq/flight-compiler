@@ -14,6 +14,7 @@ import {
 import {
   createCompilerLoweringPassBindingPattern,
   createCompilerLoweringPassCStyleFor,
+  createCompilerLoweringPassExtraArgumentErasure,
   createCompilerLoweringPassInterfaceInheritance,
   createCompilerLoweringPassSwitchFallthrough,
   createCompilerLoweringPassVariableHoisting,
@@ -89,6 +90,7 @@ export function emitIrModuleRust(
   options: Readonly<RustCompilerBackendOptions> = {},
 ): EmittedFile {
   const module = lowerIrModuleWithCompilerPasses(sourceModule, [
+    createCompilerLoweringPassExtraArgumentErasure(),
     createCompilerLoweringPassBindingPattern(),
     createCompilerLoweringPassVariableHoisting(),
     createCompilerLoweringPassCStyleFor(),

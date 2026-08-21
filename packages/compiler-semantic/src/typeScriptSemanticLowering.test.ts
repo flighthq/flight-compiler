@@ -1852,7 +1852,7 @@ describe('lowerTypeScriptSource', () => {
     expect(result.diagnostics).toEqual([]);
   });
 
-  it('erases fixed extra arguments only after preserving their left-to-right evaluation', () => {
+  it('plans stable left-to-right carriers for neutral fixed extra-argument erasure', () => {
     const result = lower(
       'extra-argument-erasure.ts',
       `
@@ -1867,40 +1867,26 @@ describe('lowerTypeScriptSource', () => {
     );
     if (declaration?.kind !== 'function') throw new Error('Expected read function');
     const restCall = declaration.body[0]?.kind === 'expression' ? declaration.body[0].expression : undefined;
-    const wrapper = declaration.body[1]?.kind === 'return' ? declaration.body[1].expression : undefined;
-    if (wrapper?.kind !== 'call' || wrapper.callee.kind !== 'function') {
-      throw new Error('Expected extra-argument statement-value carrier');
-    }
-    const variables = wrapper.callee.body.slice(0, -1);
-    const completion = wrapper.callee.body.at(-1);
+    const call = declaration.body[1]?.kind === 'return' ? declaration.body[1].expression : undefined;
+    if (call?.kind !== 'call') throw new Error('Expected extra-argument call evidence');
 
     expect(restCall).toMatchObject({
       kind: 'call',
       semantics: { signature: { parameterCount: 2, providedArgumentCount: 3, restParameter: 1 } },
     });
-    expect(wrapper).toMatchObject({
-      arguments: [],
-      semantics: { statementValue: { completion: 'finalReturn' } },
-    });
-    expect(variables).toMatchObject([
-      { declarations: [{ binding: { name: 'extraArgument0' }, initializer: { kind: 'call' } }], kind: 'variable' },
-      { declarations: [{ binding: { name: 'extraArgument1' }, initializer: { kind: 'call' } }], kind: 'variable' },
-    ]);
-    expect(completion).toMatchObject({
-      expression: {
-        arguments: [{ reference: { binding: { name: 'extraArgument0' }, kind: 'binding' } }],
-        kind: 'call',
-        semantics: { signature: { parameterCount: 1, providedArgumentCount: 1 } },
+    expect(call).toMatchObject({
+      arguments: [{ kind: 'call' }, { kind: 'call' }],
+      semantics: {
+        extraArguments: {
+          argumentBindings: [{ name: 'callArgument0' }, { name: 'callArgument1' }],
+          resultType: { kind: 'primitive', name: 'number' },
+        },
+        signature: { parameterCount: 1, providedArgumentCount: 2 },
       },
-      kind: 'return',
     });
-    const identities = variables.flatMap((statement) =>
-      statement.kind === 'variable'
-        ? statement.declarations.flatMap((variable) => ('binding' in variable ? [variable.binding.id] : []))
-        : [],
-    );
+    const identities = call.semantics.extraArguments?.argumentBindings.map((binding) => binding.id) ?? [];
     expect(new Set(identities).size).toBe(2);
-    expect(identities.every((identity) => identity.includes('extra-argument'))).toBe(true);
+    expect(identities.every((identity) => identity.includes('call-argument'))).toBe(true);
     expect(result.diagnostics).toEqual([]);
   });
 

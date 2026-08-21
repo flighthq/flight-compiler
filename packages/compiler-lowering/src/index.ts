@@ -2,6 +2,7 @@ export { createCompilerLoweringPassArrayBindingPattern } from './compilerArrayBi
 export { createCompilerLoweringPassBindingPattern } from './compilerBindingPatternLowering.js';
 export { hasIrModuleArrayBindingPattern } from './compilerArrayBindingPatternPresence.js';
 export { createCompilerLoweringPassCStyleFor } from './compilerCStyleForLowering.js';
+export { createCompilerLoweringPassExtraArgumentErasure } from './compilerExtraArgumentErasureLowering.js';
 export { createCompilerLoweringPassInterfaceInheritance } from './compilerInterfaceInheritanceLowering.js';
 export { createCompilerLoweringPassObjectBindingPattern } from './compilerObjectBindingPatternLowering.js';
 export { getIrSwitchCaseCompletion } from './compilerSwitchClauseCompletion.js';

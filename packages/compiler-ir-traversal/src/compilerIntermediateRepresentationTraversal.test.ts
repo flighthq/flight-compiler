@@ -345,6 +345,22 @@ describe('analyzeIrModuleTraversal', () => {
     );
   });
 
+  it('visits neutral extra-argument erasure result evidence at its semantic path', () => {
+    const module = lower(`
+      function choose(value: number): number { return value; }
+      export default choose(1, 2);
+    `);
+    const paths: Array<readonly (number | string)[]> = [];
+
+    analyzeIrModuleTraversal(module, {
+      type(_type, path) {
+        if (path.includes('extraArguments')) paths.push(path);
+      },
+    });
+
+    expect(paths).toEqual([['exports', 0, 'expression', 'semantics', 'extraArguments', 'resultType']]);
+  });
+
   it('visits lowering-only expression carriers and their semantic type evidence', () => {
     const numberType = { kind: 'primitive', name: 'number' } as const satisfies IrType;
     const tupleType = {

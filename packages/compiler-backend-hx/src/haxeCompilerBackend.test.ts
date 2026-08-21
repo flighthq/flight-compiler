@@ -136,15 +136,13 @@ describe('emitIrModuleHaxe', () => {
     );
     const output = emitIrModuleHaxe(result.module).contents;
 
-    expect(output).toContain('final extraArgument0 = effect(1);');
-    expect(output).toContain('final extraArgument1 = effect(2);');
-    expect(output).toContain('choose(extraArgument0);');
+    expect(output).toContain('final callArgument0 = effect(1);');
+    expect(output).toContain('final callArgument1 = effect(2);');
+    expect(output).toContain('choose(callArgument0);');
     expect(output).not.toContain('choose(effect(1), effect(2))');
-    expect(output.indexOf('extraArgument0 = effect(1)')).toBeLessThan(output.indexOf('extraArgument1 = effect(2)'));
-    expect(output.indexOf('extraArgument1 = effect(2)')).toBeLessThan(output.indexOf('choose(extraArgument0)'));
-    expect(() => emitIrModuleHaxe(property.module)).toThrow(
-      'extra JavaScript call arguments require target-neutral erasure lowering',
-    );
+    expect(output.indexOf('callArgument0 = effect(1)')).toBeLessThan(output.indexOf('callArgument1 = effect(2)'));
+    expect(output.indexOf('callArgument1 = effect(2)')).toBeLessThan(output.indexOf('choose(callArgument0)'));
+    expect(() => emitIrModuleHaxe(property.module)).toThrow('fixed extra call arguments remain after erasure');
   });
 
   it('elects fixed array binding lowering and reports residual destructuring semantics', () => {

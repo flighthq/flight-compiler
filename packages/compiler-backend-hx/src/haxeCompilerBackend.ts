@@ -10,6 +10,7 @@ import {
 import {
   createCompilerLoweringPassBindingPattern,
   createCompilerLoweringPassCStyleFor,
+  createCompilerLoweringPassExtraArgumentErasure,
   createCompilerLoweringPassInterfaceInheritance,
   createCompilerLoweringPassSwitchFallthrough,
   createCompilerLoweringPassVariableHoisting,
@@ -87,6 +88,7 @@ export function emitIrModuleHaxe(
   options: Readonly<HaxeCompilerBackendOptions> = {},
 ): EmittedFile {
   const module = lowerIrModuleWithCompilerPasses(sourceModule, [
+    createCompilerLoweringPassExtraArgumentErasure(),
     createCompilerLoweringPassBindingPattern(),
     createCompilerLoweringPassVariableHoisting(),
     createCompilerLoweringPassCStyleFor(),
