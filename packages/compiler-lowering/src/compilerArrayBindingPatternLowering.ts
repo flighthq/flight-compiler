@@ -54,7 +54,7 @@ function createIrArrayBindingPatternTemporary(
     line: pattern.line,
     name: 'arrayPatternValue',
     packageName: pattern.packageName,
-    scope: pattern.scope,
+    scope: pattern.scope === 'function' ? 'block' : pattern.scope,
     source: pattern.source,
     space: 'value',
   };
@@ -119,14 +119,6 @@ function lowerIrArrayBindingPattern(
   path: string,
   analysis: Readonly<ArrayBindingPatternLoweringAnalysis>,
 ): readonly LoweredArrayBindingVariable[] {
-  if (pattern.scope === 'function') {
-    throw createCompilerLoweringFailure(
-      'unsupported-ir',
-      compilerLoweringPassNameArrayBindingPattern,
-      pattern,
-      'function-scoped array binding patterns require variable-hoisting lowering',
-    );
-  }
   if (sourceType.kind !== 'tuple') {
     throw createCompilerLoweringFailure(
       'unsupported-ir',

@@ -10,6 +10,7 @@ import {
 import {
   createCompilerLoweringPassArrayBindingPattern,
   createCompilerLoweringPassCStyleFor,
+  createCompilerLoweringPassVariableHoisting,
   lowerIrModuleWithCompilerPasses,
 } from '../../compiler-lowering/src/index.js';
 import {
@@ -79,6 +80,7 @@ export function emitIrModuleRust(
 ): EmittedFile {
   const module = lowerIrModuleWithCompilerPasses(sourceModule, [
     createCompilerLoweringPassArrayBindingPattern(),
+    createCompilerLoweringPassVariableHoisting(),
     createCompilerLoweringPassCStyleFor(),
   ]);
   assertRuntimeExternalSymbolBindingsRust(module);

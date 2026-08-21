@@ -456,10 +456,6 @@ describe('createCompilerLoweringPassArrayBindingPattern', () => {
       source: 'export function read(values: number[]): number { const [value] = values; return value; }',
     },
     {
-      reason: 'function-scoped array binding patterns require variable-hoisting lowering',
-      source: 'export function read(values: [number]): number { var [value]: [number] = values; return value; }',
-    },
-    {
       reason: 'array binding pattern requires an initializer outside iteration statements',
       source: 'export function read(): void { let [value]: [number]; }',
     },

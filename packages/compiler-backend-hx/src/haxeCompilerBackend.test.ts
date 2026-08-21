@@ -163,6 +163,24 @@ describe('emitIrModuleHaxe', () => {
     );
   });
 
+  it('elects function-scoped variable hoisting after destructuring normalization', () => {
+    const named = lower(
+      'variable-hoisting.ts',
+      'export function select(): number { { var value: number = 1; } return value; }',
+    );
+    const pattern = lower(
+      'variable-pattern-hoisting.ts',
+      'export function select(values: [number, string]): string { var [first, second]: [number, string] = values; first; return second; }',
+    );
+    const namedOutput = emitIrModuleHaxe(named.module).contents;
+    const patternOutput = emitIrModuleHaxe(pattern.module).contents;
+
+    expect(namedOutput).toContain('var value:Float;\n    {\n      value = 1;\n    }\n    return value;');
+    expect(patternOutput).toContain(
+      'var first:Float;\n    var second:String;\n    final arrayPatternValue:Array<Dynamic> = values;\n    first = arrayPatternValue[0];\n    second = arrayPatternValue[1];',
+    );
+  });
+
   it('emits contextual fixed tuple expressions with explicit optional positions', () => {
     const result = lower(
       'tuple-expression.ts',

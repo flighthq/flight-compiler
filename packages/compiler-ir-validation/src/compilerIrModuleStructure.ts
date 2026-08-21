@@ -121,8 +121,10 @@ function addBindingDefinition(
   }
   validateBindingOrigin(binding, path, state);
   validateBindingIntroduction(binding, path, expectation, state);
+  const scope = getBindingIntroductionScope(binding.scope, expectation.scope, state);
   const existing = state.bindings.get(binding.id);
   if (existing) {
+    if (isRepeatedFunctionVariableBinding(existing, binding, scope, expectation)) return;
     addFailure(
       'duplicate-binding-identity',
       path,
@@ -134,8 +136,34 @@ function addBindingDefinition(
   state.bindings.set(binding.id, {
     binding,
     path,
-    scope: getBindingIntroductionScope(binding.scope, expectation.scope, state),
+    scope,
   });
+}
+
+function isRepeatedFunctionVariableBinding(
+  existing: Readonly<BindingDefinition>,
+  binding: Readonly<IrBindingIdentity | IrTypeBindingIdentity>,
+  scope: string,
+  expectation: Readonly<BindingIntroductionExpectation>,
+): boolean {
+  const previous = existing.binding;
+  return (
+    expectation.kind === 'variable' &&
+    expectation.space === 'value' &&
+    binding.kind === 'variable' &&
+    binding.scope === 'function' &&
+    existing.scope === scope &&
+    previous.id === binding.id &&
+    previous.name === binding.name &&
+    previous.kind === binding.kind &&
+    previous.scope === binding.scope &&
+    previous.space === binding.space &&
+    previous.packageName === binding.packageName &&
+    previous.source === binding.source &&
+    previous.line === binding.line &&
+    previous.column === binding.column &&
+    previous.fingerprint === binding.fingerprint
+  );
 }
 
 function addBindingReference(

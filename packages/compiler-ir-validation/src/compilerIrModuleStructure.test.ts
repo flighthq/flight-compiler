@@ -100,6 +100,28 @@ describe('validateIrModuleStructure', () => {
     expect(rich).toEqual(snapshot);
   });
 
+  it('accepts exact repeated function-scoped variable declarations but not other duplicate introductions', () => {
+    const repeated = lower(
+      'repeated-var.ts',
+      'export function choose(): number { var value: number = 1; var value: number; value = 2; return value; }',
+    );
+    const declaration = repeated.declarations[0];
+    if (declaration?.kind !== 'function') throw new Error('Expected function declaration');
+    const first = declaration.body[0];
+    const second = declaration.body[1];
+    if (first?.kind !== 'variable' || second?.kind !== 'variable') {
+      throw new Error('Expected repeated variable declarations');
+    }
+    const firstVariable = first.declarations[0];
+    const secondVariable = second.declarations[0];
+    if (!firstVariable || !secondVariable || 'pattern' in firstVariable || 'pattern' in secondVariable) {
+      throw new Error('Expected named repeated variable declarations');
+    }
+
+    expect(firstVariable).toMatchObject({ binding: secondVariable.binding });
+    expect(validateIrModuleStructure(repeated)).toEqual({ kind: 'valid' });
+  });
+
   it('rejects references that escape sibling functions, nested blocks, catch clauses, or loop scopes', () => {
     const redirectReturn = (statement: Readonly<IrStatement> | undefined, binding: IrBindingIdentity): IrStatement => {
       if (statement?.kind !== 'return' || statement.expression?.kind !== 'identifier') {

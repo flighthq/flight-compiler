@@ -160,6 +160,24 @@ describe('emitIrModuleRust', () => {
     );
   });
 
+  it('elects function-scoped variable hoisting after destructuring normalization', () => {
+    const named = lower(
+      'variable-hoisting.ts',
+      'export function select(): number { { var value: number = 1; } return value; }',
+    );
+    const pattern = lower(
+      'variable-pattern-hoisting.ts',
+      'export function select(values: [number, string]): string { var [first, second]: [number, string] = values; first; return second; }',
+    );
+    const namedOutput = emitIrModuleRust(named.module).contents;
+    const patternOutput = emitIrModuleRust(pattern.module).contents;
+
+    expect(namedOutput).toContain('let mut value: f64;\n  {\n    value = 1.0;\n  }\n  return value;');
+    expect(patternOutput).toContain(
+      'let mut first: f64;\n  let mut second: String;\n  let array_pattern_value: (f64, String) = values;\n  first = array_pattern_value.0;\n  second = array_pattern_value.1;',
+    );
+  });
+
   it('emits contextual fixed tuple expressions with explicit optional positions', () => {
     const result = lower(
       'tuple-expression.ts',
