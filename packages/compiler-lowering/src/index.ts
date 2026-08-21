@@ -1,5 +1,6 @@
 export { createCompilerLoweringPassArrayBindingPattern } from './compilerArrayBindingPatternLowering.js';
 export { createCompilerLoweringPassBindingPattern } from './compilerBindingPatternLowering.js';
+export { createIrClassInitializationPlan, isIrClassInitializationFailure } from './compilerClassInitialization.js';
 export { hasIrModuleArrayBindingPattern } from './compilerArrayBindingPatternPresence.js';
 export { createCompilerLoweringPassCStyleFor } from './compilerCStyleForLowering.js';
 export { createCompilerLoweringPassExtraArgumentErasure } from './compilerExtraArgumentErasureLowering.js';
