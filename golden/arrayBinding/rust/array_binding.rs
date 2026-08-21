@@ -43,3 +43,12 @@ pub fn select_nested_rest(values: (f64, String, bool)) -> String {
   let second: String = array_pattern_value_2.0;
   return second;
 }
+
+pub fn select_rows(rows: Vec<(f64, f64)>) -> f64 {
+  for array_pattern_value in rows {
+    let first: f64 = array_pattern_value.0;
+    let second: f64 = array_pattern_value.1;
+    return first;
+  }
+  return 0.0;
+}

@@ -44,4 +44,13 @@ class ArrayBinding {
     final second:String = arrayPatternValue_2[0];
     return second;
   }
+
+  public static function selectRows(rows:Array<Array<Dynamic>>):Float {
+    for (arrayPatternValue in rows) {
+      final first:Float = arrayPatternValue[0];
+      final second:Float = arrayPatternValue[1];
+      return first;
+    }
+    return 0;
+  }
 }

@@ -32,3 +32,10 @@ export function selectNestedRest(values: [number, string, boolean]): string {
   const [, ...[second]]: [number, string, boolean] = values;
   return second;
 }
+
+export function selectRows(rows: Array<[number, number]>): number {
+  for (const [first, second] of rows) {
+    return first;
+  }
+  return 0;
+}

@@ -116,6 +116,10 @@ describe('emitIrModuleHaxe', () => {
       'array-fixed-rest.ts',
       'export function select(values: [number, string, boolean]): [string, boolean] { const [first, ...rest]: [number, string, boolean] = values; first; return rest; }',
     );
+    const iteration = lower(
+      'array-iteration.ts',
+      'export function visit(rows: Array<[number, number]>): number { for (const [first, second] of rows) { second; return first; } return 0; }',
+    );
     const output = emitIrModuleHaxe(fixed.module).contents;
 
     expect(output).toContain('final arrayPatternValue:Array<Dynamic> = values;');
@@ -129,6 +133,9 @@ describe('emitIrModuleHaxe', () => {
     expect(emitIrModuleHaxe(nestedDefault.module).contents).toContain('(arrayPatternValue[0] ?? [1])');
     expect(emitIrModuleHaxe(fixedRest.module).contents).toContain(
       'final rest:Array<Dynamic> = [arrayPatternValue[1], arrayPatternValue[2]];',
+    );
+    expect(emitIrModuleHaxe(iteration.module).contents).toContain(
+      'for (arrayPatternValue in rows) {\n      final first:Float = arrayPatternValue[0];\n      final second:Float = arrayPatternValue[1];',
     );
     expect(() => emitIrModuleHaxe(dynamicIndex.module)).toThrow(
       'tuple projection requires one statically known nonnegative integer index',

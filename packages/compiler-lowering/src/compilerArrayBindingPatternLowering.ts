@@ -646,12 +646,51 @@ function lowerIrStatementArrayBindingPattern(
       };
     case 'forOf':
       if ('pattern' in statement.variable) {
-        throw createCompilerLoweringFailure(
-          'unsupported-ir',
-          compilerLoweringPassNameArrayBindingPattern,
-          analysis.sourceIdentity,
-          'forOf array bindings require iteration destructuring lowering',
-        );
+        if (statement.await) {
+          throw createCompilerLoweringFailure(
+            'unsupported-ir',
+            compilerLoweringPassNameArrayBindingPattern,
+            analysis.sourceIdentity,
+            'async forOf array bindings require task-aware iteration destructuring lowering',
+          );
+        }
+        if (statement.variable.pattern.kind !== 'array') {
+          throw createCompilerLoweringFailure(
+            'unsupported-ir',
+            compilerLoweringPassNameArrayBindingPattern,
+            analysis.sourceIdentity,
+            'only array binding patterns can be normalized by this pass',
+          );
+        }
+        if (!statement.variable.type) {
+          throw createCompilerLoweringFailure(
+            'unsupported-ir',
+            compilerLoweringPassNameArrayBindingPattern,
+            analysis.sourceIdentity,
+            'forOf array binding lowering requires a statically known element type',
+          );
+        }
+        const variablePath = `${path}.variable`;
+        const temporaryBinding = createIrArrayBindingPatternTemporary(statement.variable.pattern, variablePath);
+        const loweredVariables = lowerIrArrayBindingPattern(
+          statement.variable.pattern,
+          temporaryBinding,
+          statement.variable.type,
+          statement.variable.mutable,
+          variablePath,
+          analysis,
+        ).map((item) => item.variable);
+        const body = lowerIrStatementArrayBindingPattern(statement.body, `${path}.body`, analysis);
+        return {
+          ...statement,
+          body: prependIrStatementArrayBindingPatternVariables(body, loweredVariables),
+          iterable: lowerIrExpressionArrayBindingPattern(statement.iterable, `${path}.iterable`, analysis),
+          variable: {
+            binding: temporaryBinding,
+            mutable: false,
+            type: statement.variable.type,
+          },
+        };
       }
       return {
         ...statement,
@@ -738,6 +777,17 @@ function lowerIrStatementArrayBindingPattern(
     case 'continue':
       return statement;
   }
+}
+
+function prependIrStatementArrayBindingPatternVariables(
+  body: Readonly<IrStatement>,
+  variables: readonly IrNamedVariable[],
+): IrStatement {
+  if (variables.length === 0) return body;
+  const declaration: IrStatement = { declarations: variables, kind: 'variable' };
+  return body.kind === 'block'
+    ? { ...body, statements: [declaration, ...body.statements] }
+    : { kind: 'block', statements: [declaration, body] };
 }
 
 function lowerIrNamedVariableArrayBindingPattern(

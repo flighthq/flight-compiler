@@ -113,6 +113,10 @@ describe('emitIrModuleRust', () => {
       'array-fixed-rest.ts',
       'export function select(values: [number, string, boolean]): [string, boolean] { const [first, ...rest]: [number, string, boolean] = values; first; return rest; }',
     );
+    const iteration = lower(
+      'array-iteration.ts',
+      'export function visit(rows: Array<[number, number]>): number { for (const [first, second] of rows) { second; return first; } return 0; }',
+    );
     const output = emitIrModuleRust(fixed.module).contents;
 
     expect(output).toContain('let array_pattern_value: (f64, f64, f64) = values;');
@@ -128,6 +132,9 @@ describe('emitIrModuleRust', () => {
     expect(emitIrModuleRust(nestedDefault.module).contents).toContain('unwrap_or_else(|| (1.0,))');
     expect(emitIrModuleRust(fixedRest.module).contents).toContain(
       'let rest: (String, bool) = (array_pattern_value.1, array_pattern_value.2);',
+    );
+    expect(emitIrModuleRust(iteration.module).contents).toContain(
+      'for array_pattern_value in rows {\n    let first: f64 = array_pattern_value.0;\n    let second: f64 = array_pattern_value.1;',
     );
     expect(() => emitIrModuleRust(dynamicIndex.module)).toThrow(
       'tuple projection requires one statically known nonnegative integer index',

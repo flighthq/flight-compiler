@@ -311,6 +311,44 @@ describe('createCompilerLoweringPassArrayBindingPattern', () => {
     expect(nested[3]).toMatchObject({ binding: { name: 'third' }, initializer: { index: { value: 1 } } });
   });
 
+  it('lowers synchronous for-of tuple bindings at the start of each iteration body', () => {
+    const pass = createCompilerLoweringPassArrayBindingPattern();
+    const output = lowerIrModuleWithCompilerPasses(
+      lower(
+        'iteration.ts',
+        `
+          export function visit(rows: Array<[number?, ...string[]]>, fixed: [number][]): void {
+            for (const [head = 1, ...tail] of rows) { head; tail; }
+            for (const [value] of fixed) value;
+          }
+        `,
+      ),
+      [pass],
+    );
+    const body = getFunctionDeclaration(output, 'visit').body;
+    const variadic = body[0];
+    const single = body[1];
+    if (variadic?.kind !== 'forOf' || variadic.body.kind !== 'block') {
+      throw new Error('Expected variadic for-of block');
+    }
+    if (single?.kind !== 'forOf' || single.body.kind !== 'block') throw new Error('Expected wrapped for-of block');
+    const variadicBindings = getVariableStatement(variadic.body.statements[0]).declarations.map(getNamedVariable);
+    const singleBindings = getVariableStatement(single.body.statements[0]).declarations.map(getNamedVariable);
+
+    expect(variadic.variable).toMatchObject({
+      binding: { name: 'arrayPatternValue' },
+      mutable: false,
+      type: { elements: [{ optional: true }, { rest: true }], kind: 'tuple' },
+    });
+    expect(variadicBindings).toMatchObject([
+      { binding: { name: 'head' }, initializer: { kind: 'undefinedDefault' } },
+      { binding: { name: 'tail' }, initializer: { kind: 'tupleRest', start: 1 } },
+    ]);
+    expect(singleBindings).toMatchObject([{ binding: { name: 'value' }, initializer: { kind: 'element' } }]);
+    expect(single.body.statements[1]).toMatchObject({ expression: { reference: { binding: { name: 'value' } } } });
+    expect(pass.verifyIrModule(output)).toEqual({ kind: 'valid' });
+  });
+
   it.each([
     {
       reason: 'array binding rest at index 1 requires an aligned variadic tail or fixed required tuple suffix',
@@ -355,8 +393,17 @@ describe('createCompilerLoweringPassArrayBindingPattern', () => {
       source: 'export function read<T>(values: [T]): T { const [value = undefined as T]: [T] = values; return value; }',
     },
     {
-      reason: 'forOf array bindings require iteration destructuring lowering',
+      reason: 'forOf array binding lowering requires a statically known element type',
+      source: 'export function read(values: any): void { for (const [value] of values) value; }',
+    },
+    {
+      reason: 'array binding lowering requires a statically known tuple type',
       source: 'export function read(values: number[][]): void { for (const [value] of values) value; }',
+    },
+    {
+      reason: 'async forOf array bindings require task-aware iteration destructuring lowering',
+      source:
+        'export async function read(values: Array<[number]>): Promise<void> { for await (const [value] of values) value; }',
     },
     {
       reason: 'forIn array bindings require iteration destructuring lowering',
