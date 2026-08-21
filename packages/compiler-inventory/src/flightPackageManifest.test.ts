@@ -116,6 +116,38 @@ describe('readFlightPackageManifests', () => {
         },
       },
       {
+        code: 'invalid-package-manifest',
+        files: {
+          '/flight/packages/math/package.json': manifest({ bin: '', name: '@flighthq/math', version: '0.0.0' }),
+        },
+      },
+      {
+        code: 'invalid-package-manifest',
+        files: {
+          '/flight/packages/math/package.json': manifest({
+            bin: { '': './dist/cli.js' },
+            name: '@flighthq/math',
+            version: '0.0.0',
+          }),
+        },
+      },
+      {
+        code: 'invalid-package-manifest',
+        files: {
+          '/flight/packages/math/package.json': manifest({
+            bin: { cli: '' },
+            name: '@flighthq/math',
+            version: '0.0.0',
+          }),
+        },
+      },
+      {
+        code: 'invalid-package-manifest',
+        files: {
+          '/flight/packages/math/package.json': manifest({ bin: { cli: 5 }, name: '@flighthq/math', version: '0.0.0' }),
+        },
+      },
+      {
         code: 'duplicate-package-name',
         files: {
           '/flight/packages/math-a/package.json': manifest({ name: '@flighthq/math', version: '0.0.0' }),

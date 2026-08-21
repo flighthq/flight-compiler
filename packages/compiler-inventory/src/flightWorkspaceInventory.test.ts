@@ -32,7 +32,7 @@ describe('analyzeFlightWorkspace', () => {
         productionImports: 5,
         rootExports: 6,
         sourceFiles: 6,
-        testFiles: 0,
+        testFiles: 1,
       });
       expect(getPackageInventoryRootExportLane(types)).toBe(root);
       expect(contract.exports).toEqual(root.exports);
@@ -49,6 +49,12 @@ describe('analyzeFlightWorkspace', () => {
           source: 'packages/types/src/Mode.ts',
         },
       });
+      // Mode's runtime value is a separate declaration from the exported type, so the binding is carried.
+      // createValue is its own runtime declaration, so carrying a binding would only repeat the record:
+      // the three-way agreement on fingerprint, kind and source is what decides between the two.
+      const createValueExport = root.exports.find((item) => item.name === 'createValue');
+      expect(createValueExport).toMatchObject({ kind: 'function', runtime: true });
+      expect(createValueExport?.runtimeBinding).toBeUndefined();
       expect(types.sdkExposures).toEqual([{ sdkLane: '@flighthq/sdk', target: '@flighthq/types' }]);
       expect(types.sdkIncluded).toBe(true);
       expectInventoryFailure(
@@ -139,6 +145,11 @@ function createUpstreamFixture(): string {
     'packages/types/src/value.ts',
     'export function createValue(value: number): number { return value; }\n',
   );
+  // A declaration file and a colocated test sit beside the sources so the inventory has to exclude
+  // both: a .d.ts would otherwise be analyzed as a second declaration of the same symbols, and a test
+  // file would be read as public API.
+  write(directory, 'packages/types/src/ambient.d.ts', 'export declare const ambient: number;\n');
+  write(directory, 'packages/types/src/value.test.ts', 'export const cases: number[] = [];\n');
   write(
     directory,
     'packages/sdk/package.json',
