@@ -50,6 +50,59 @@ describe('lowerTypeScriptSource', () => {
     });
   });
 
+  it('propagates nominal construction targets through records, arrays, tuples, and conditional arms', () => {
+    const result = lower(
+      'nested-object-construction.ts',
+      `
+        interface Item { value: number }
+        interface Container { selected: Item; values: Item[]; pair: [Item] }
+        export function create(flag: boolean): Container {
+          return {
+            selected: flag ? { value: 1 } : { value: 2 },
+            values: [{ value: 3 }],
+            pair: [{ value: 4 }],
+          };
+        }
+      `,
+    );
+    const declaration = result.module.declarations[2];
+    const returned = declaration?.kind === 'function' ? declaration.body[0] : undefined;
+    if (returned?.kind !== 'return' || returned.expression?.kind !== 'object') {
+      throw new Error('Expected nested object construction');
+    }
+    const selected = returned.expression.members[0];
+    const values = returned.expression.members[1];
+    const pair = returned.expression.members[2];
+    if (
+      selected?.kind !== 'property' ||
+      selected.value.kind !== 'conditional' ||
+      selected.value.whenTrue.kind !== 'object' ||
+      selected.value.whenFalse.kind !== 'object' ||
+      values?.kind !== 'property' ||
+      values.value.kind !== 'array' ||
+      values.value.elements[0]?.kind !== 'object' ||
+      pair?.kind !== 'property' ||
+      pair.value.kind !== 'tuple' ||
+      pair.value.elements[0]?.expression?.kind !== 'object'
+    ) {
+      throw new Error('Expected nested construction containers');
+    }
+    const objectTypes = [
+      selected.value.whenTrue.type,
+      selected.value.whenFalse.type,
+      values.value.elements[0].type,
+      pair.value.elements[0].expression.type,
+    ];
+    expect(objectTypes).toEqual(
+      objectTypes.map(() =>
+        expect.objectContaining({
+          kind: 'named',
+          reference: expect.objectContaining({ binding: expect.objectContaining({ name: 'Item' }) }),
+        }),
+      ),
+    );
+  });
+
   it('resolves enum auto-increment values after explicit discriminants', () => {
     const result = lower('mode.ts', 'export enum Mode { A = 1, B, C = Mode.A << 3, D }');
 

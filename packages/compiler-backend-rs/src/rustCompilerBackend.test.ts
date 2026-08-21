@@ -41,6 +41,24 @@ describe('emitIrModuleRust', () => {
     expect(output).toContain('return Range { max: (range.max + by), min: (range.min - by), label: None, };');
   });
 
+  it('constructs nested nominal records through conditional and array contexts', () => {
+    const result = lower(
+      'nested-object.ts',
+      `
+        interface Item { value: number }
+        interface Container { selected: Item; values: Item[] }
+        export function create(flag: boolean): Container {
+          return { selected: flag ? { value: 1 } : { value: 2 }, values: [{ value: 3 }] };
+        }
+      `,
+    );
+    const output = emitIrModuleRust(result.module).contents;
+
+    expect(output).toContain(
+      'return Container { selected: if flag { Item { value: 1.0, } } else { Item { value: 2.0, } }, values: vec![Item { value: 3.0, }], };',
+    );
+  });
+
   it('interns anonymous structural types by canonical shape and constructs optional values', () => {
     const result = lower(
       'anonymous-object.ts',

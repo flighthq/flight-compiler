@@ -461,10 +461,25 @@ function lowerExpression(
   if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node))
     return { kind: 'literal', value: node.text };
   if (ts.isArrayLiteralExpression(node)) {
-    if (contextualType?.kind === 'tuple') return lowerTupleExpression(node, contextualType, context);
+    const targetShape = getIrTypeConstructionTargetShape(contextualTargetType ?? contextualType, context);
+    if (contextualType?.kind === 'tuple') {
+      return lowerTupleExpression(
+        node,
+        contextualType,
+        targetShape?.kind === 'tuple' ? targetShape : contextualType,
+        context,
+      );
+    }
     return {
       elements: node.elements.map((element) =>
-        ts.isOmittedExpression(element) ? undefined : lowerExpression(element, context),
+        ts.isOmittedExpression(element)
+          ? undefined
+          : lowerExpression(
+              element,
+              context,
+              contextualType?.kind === 'array' ? contextualType.element : undefined,
+              targetShape?.kind === 'array' ? targetShape.element : undefined,
+            ),
       ),
       kind: 'array',
     };
@@ -472,9 +487,12 @@ function lowerExpression(
   if (ts.isObjectLiteralExpression(node)) {
     const inferredType = inferInitializerType(node, context);
     const memberContext = contextualType?.kind === 'object' ? contextualType : inferredType;
+    const memberTarget = getIrTypeConstructionTargetShape(contextualTargetType ?? contextualType, context);
     return {
       kind: 'object',
-      members: node.properties.map((member) => lowerObjectMember(member, context, memberContext)),
+      members: node.properties.map((member) =>
+        lowerObjectMember(member, context, memberContext, memberTarget ?? memberContext),
+      ),
       type: contextualTargetType ?? contextualType ?? inferredType,
     };
   }
@@ -792,6 +810,7 @@ function getTypeScriptOptionalChainValueTypeEvidence(
 function lowerTupleExpression(
   node: ts.ArrayLiteralExpression,
   type: Readonly<Extract<IrType, { kind: 'tuple' }>>,
+  targetType: Readonly<Extract<IrType, { kind: 'tuple' }>>,
   context: LoweringContext,
 ): IrExpression {
   const restIndex = type.elements.findIndex((element) => element.rest);
@@ -811,7 +830,7 @@ function lowerTupleExpression(
           }
           return { optional: true };
         }
-        const expression = lowerExpression(value, context, element.type);
+        const expression = lowerExpression(value, context, element.type, targetType.elements[index]?.type);
         return element.optional ? { expression, optional: true } : { expression, optional: false };
       }),
       kind: 'tuple',
@@ -853,7 +872,7 @@ function lowerTupleExpression(
       }
       segments.push({ element: { optional: true }, kind: 'element' });
     } else {
-      const expression = lowerExpression(value, context, target.type);
+      const expression = lowerExpression(value, context, target.type, targetType.elements[targetIndex]?.type);
       segments.push({
         element: target.optional ? { expression, optional: true } : { expression, optional: false },
         kind: 'element',
@@ -1233,14 +1252,48 @@ function lowerInterface(node: ts.InterfaceDeclaration, context: LoweringContext)
   };
 }
 
+function getIrTypeConstructionTargetShape(
+  type: Readonly<IrType> | undefined,
+  context: LoweringContext,
+  seen: ReadonlySet<string> = new Set(),
+): IrType | undefined {
+  if (
+    !type ||
+    type.kind !== 'named' ||
+    type.reference.kind !== 'binding' ||
+    type.reference.path.length > 0 ||
+    seen.has(type.reference.binding.id)
+  ) {
+    return type;
+  }
+  const bindingId = type.reference.binding.id;
+  const symbol = [...context.typeBindings].find(([, binding]) => binding.id === bindingId)?.[0];
+  const declaration = symbol?.declarations?.find(
+    (candidate): candidate is ts.InterfaceDeclaration | ts.TypeAliasDeclaration =>
+      ts.isInterfaceDeclaration(candidate) || ts.isTypeAliasDeclaration(candidate),
+  );
+  if (!declaration) return type;
+  const resolved = ts.isInterfaceDeclaration(declaration)
+    ? ({ kind: 'object', properties: lowerTypeProperties(declaration.members, context) } as const)
+    : lowerType(declaration.type, context);
+  const nextSeen = new Set(seen);
+  nextSeen.add(bindingId);
+  return getIrTypeConstructionTargetShape(resolved, context, nextSeen);
+}
+
 function lowerObjectMember(
   node: ts.ObjectLiteralElementLike,
   context: LoweringContext,
   contextualType: Readonly<IrType>,
+  contextualTargetType: Readonly<IrType>,
 ): IrObjectMember {
   const memberType =
     contextualType.kind === 'object' && !ts.isSpreadAssignment(node) && !ts.isComputedPropertyName(node.name)
       ? contextualType.properties.find((property) => property.name === propertyName(node.name, context))?.type
+      : undefined;
+  const memberTargetType =
+    contextualTargetType.kind === 'object' && !ts.isSpreadAssignment(node) && !ts.isComputedPropertyName(node.name)
+      ? contextualTargetType.properties.find((property) => property.name === propertyName(node.name, context))?.type
       : undefined;
   if (ts.isSpreadAssignment(node)) return { expression: lowerExpression(node.expression, context), kind: 'spread' };
   if (ts.isShorthandPropertyAssignment(node)) {
@@ -1261,7 +1314,7 @@ function lowerObjectMember(
     return {
       kind: 'property',
       name: propertyName(node.name, context),
-      value: lowerExpression(node.initializer, context, memberType),
+      value: lowerExpression(node.initializer, context, memberType, memberTargetType),
     };
   }
   if (ts.isMethodDeclaration(node)) {
