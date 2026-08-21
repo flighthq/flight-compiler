@@ -51,3 +51,19 @@ The largest package: 12 implementation sources and ~3,500 lines covering package
 - **Two parse trees for one file.** Package parsing constructs its own `SourceFile` for structural reads while the program holds another for checker work. They agree today because the text is identical; a reference version would read one tree.
 - **Fingerprint granularity for variable statements.** A multi-declarator `export const a = 1, b = 2` gives both records the statement's fingerprint in the IR path; the inventory's own records now derive per-export identity, but the two paths should be stated to agree.
 - **No report versioning story beyond the discriminant.** `flight-compiler-inventory/1` exists; what constitutes a breaking change to it, and what a consumer should do on a bump, is not written down.
+
+## Reviewer follow-up — what mutation says about this package
+
+406 mutants across fourteen files: 273 killed, 133 survived. The distribution is the finding, more than any single survivor.
+
+The small primitives are proven. `flightPackageExportLane`, `hostWorkspaceSource`, `typeScriptProject`, and `gitCheckoutRevision` have **no** survivors at all. `flightWorkspaceInventory` — 766 lines, the orchestrating analysis the whole package exists to produce — has **56 survivors out of 108 mutants**, over half. Verification quality here tracks file size and role in exactly the wrong direction: the pieces that are easy to test are tested, and the piece that decides what the compiler sees is the least checked.
+
+Three real gaps were closed rather than filed:
+
+- **Declaration files and colocated tests were excluded by code no test exercised.** `isSourceFile` rejects `.d.ts` and `*.test.ts`, and nothing in the fixture had either, so both exclusions were unverified. A `.d.ts` admitted as source would be analyzed as a second declaration of the same symbols; a test file admitted would be read as public API. The fixture now carries both and pins `sourceFiles`/`testFiles` against them.
+- **The runtime-binding three-way agreement was unasserted.** Whether an export carries a `runtimeBinding` or drops it as redundant is decided by fingerprint, kind, and source agreeing. The fixture asserted the _carried_ case and never the dropped one, so the agreement itself was free to be wrong.
+- **`bin` refusals stopped at the array case.** An empty-string `bin`, an empty bin name, an empty target, and a non-string target all reach fail-loudly paths that no test entered.
+
+Twenty of the survivors are `compilerInventoryFailure`'s failure-code registry markers — the documented equivalent shape, not a gap. Several more are the `compareText` equality arm, once per copy; those disappear with the shared ordering primitive.
+
+Left open deliberately, and worth naming rather than quietly skipping: the remaining ~50 survivors in `flightWorkspaceInventory` cover declaration merging, import-clause shapes, and SDK-exposure boundaries. They are real questions, not equivalent mutants, and closing them is a larger piece of work than one pass.

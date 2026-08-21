@@ -85,6 +85,8 @@ Three survivor shapes have recurred here, and none of them is a missing test:
 
 A survivor that no test could kill is a claim about the code, so verify it as one. Argument alone is how a real gap gets filed as equivalent: run the differential, or state plainly that you did not.
 
+A mutant can also make a loop non-terminating — `parent !== '/' && parent !== '.'` with `&&` flipped to `||` never exits — so every mutant is bounded by ten times its file's own unmutated run. A timeout counts as killed and is reported separately, because it usually means one operator alone decides a termination condition. The deadline is derived per file rather than fixed so it travels across machines, and it is deliberately generous: a false kill hides a gap, where a false survivor only costs a reading. The same run refuses to start when a file does not pass against its own unmutated source, since every mutant would then be reported killed and the report would read as a perfect score.
+
 The instrument itself must not manufacture these. Mutating a literal in type position produced six guaranteed survivors in `compiler-emission` before `collectMutants` learned to skip type nodes — noise that reads exactly like a real gap on every future run.
 
 ## Coverage ratchets
