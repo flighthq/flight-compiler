@@ -66,7 +66,9 @@ Three real gaps were closed rather than filed:
 
 Twenty of the survivors are `compilerInventoryFailure`'s failure-code registry markers — the documented equivalent shape, not a gap. Several more are the `compareText` equality arm, once per copy; those disappear with the shared ordering primitive.
 
-Left open deliberately, and worth naming rather than quietly skipping: the remaining ~50 survivors in `flightWorkspaceInventory` cover declaration merging, import-clause shapes, and SDK-exposure boundaries. They are real questions, not equivalent mutants, and closing them is a larger piece of work than one pass.
+A fourth gap closed in a second pass: **an export renamed on its way out was resolved by four separate sites and exercised at none of them.** `element.propertyName?.text ?? element.name.text` appears in the import clause, the module-graph walk, the local re-export resolution, and the re-export conflict assertion. The fixture had no rename anywhere, so all four were free to read the wrong half of the alias. It now carries a name renamed twice — once by the import clause, once by the export clause — reaching the lane matching its declaring file at neither end, a second file reachable _only_ through that alias so the graph walk has to follow it, and a renamed re-export through a module specifier. Each of the four sites was then mutated individually and each failed the test.
+
+Left open deliberately, and worth naming rather than quietly skipping: roughly forty-five survivors remain in `flightWorkspaceInventory`, covering declaration merging, SDK-exposure boundaries, and the containment refusal in `relativeSource` for a program file outside the upstream checkout. They are real questions, not equivalent mutants, and closing them is a larger piece of work than one pass.
 
 ## Reviewer note — what the portable path rule merges
 
