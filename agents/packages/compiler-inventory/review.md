@@ -67,3 +67,11 @@ Three real gaps were closed rather than filed:
 Twenty of the survivors are `compilerInventoryFailure`'s failure-code registry markers — the documented equivalent shape, not a gap. Several more are the `compareText` equality arm, once per copy; those disappear with the shared ordering primitive.
 
 Left open deliberately, and worth naming rather than quietly skipping: the remaining ~50 survivors in `flightWorkspaceInventory` cover declaration merging, import-clause shapes, and SDK-exposure boundaries. They are real questions, not equivalent mutants, and closing them is a larger piece of work than one pass.
+
+## Reviewer note — what the portable path rule merges
+
+`normalizePathPortable` converts every backslash to a slash, host-independently. That is the right call: the alternative spelling it replaced was host-dependent, and host-dependent identity is the defect. But the rule is lossy in one direction that this package is the one to notice, because it is the package that turns real filesystem entries into source identities.
+
+A backslash is a legal character in a POSIX filename — POSIX forbids only `/` and NUL. `normalizePathPortable` is applied to `path.relative(upstreamDirectory, file)`, so a real POSIX file named `weird\name.ts` becomes the identity `weird/name.ts`: the identity of a file in a directory that does not exist. Worse, it is a **collision** — a real `weird/name.ts` alongside it maps to the same identity, and source identity is fingerprinted and carried as provenance. Emission refuses colliding emitted paths; nothing refuses two upstream files collapsing into one identity before emission ever sees them.
+
+The fix is not to restore the host-dependent spelling. It is that a backslash inside a single **directory entry name** is unambiguous — it is part of the name, not a separator — while a backslash in a path _assembled by the host's path API_ is a separator on Windows. Refusing a discovered entry whose own name contains a backslash, under the existing `invalid-source-path` code, keeps the determinism and removes the collision. Pathological input, legal input, and currently silent.
