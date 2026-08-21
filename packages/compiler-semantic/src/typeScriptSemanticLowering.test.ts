@@ -292,6 +292,59 @@ describe('lowerTypeScriptSource', () => {
     expect(sign.type.types[0]).toEqual({ kind: 'literal', value: -1 });
   });
 
+  it('maps every atomic and literal TypeScript type to its neutral domain', () => {
+    const result = lower(
+      'atomic-types.ts',
+      `
+        export type AnyValue = any;
+        export type UnknownValue = unknown;
+        export type ObjectValue = object;
+        export type ThisValue = this;
+        export type NeverValue = never;
+        export type UndefinedValue = undefined;
+        export type BooleanValue = boolean;
+        export type NumberValue = number;
+        export type BigIntValue = bigint;
+        export type StringValue = string;
+        export type SymbolValue = symbol;
+        export type VoidValue = void;
+        export type NullValue = null;
+        export type TextValue = 'text';
+        export type NumericValue = 12;
+        export type NegativeValue = -12;
+        export type TrueValue = true;
+        export type FalseValue = false;
+      `,
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    expect(
+      result.module.declarations.map((declaration) => {
+        if (declaration.kind !== 'typeAlias') throw new Error('Expected only type-alias declarations');
+        return [declaration.binding.name, declaration.type];
+      }),
+    ).toEqual([
+      ['AnyValue', { kind: 'unknown', source: 'any' }],
+      ['UnknownValue', { kind: 'unknown', source: 'unknown' }],
+      ['ObjectValue', { kind: 'unknown', source: 'object' }],
+      ['ThisValue', { kind: 'unknown', source: 'this' }],
+      ['NeverValue', { kind: 'never' }],
+      ['UndefinedValue', { kind: 'undefined' }],
+      ['BooleanValue', { kind: 'primitive', name: 'boolean' }],
+      ['NumberValue', { kind: 'primitive', name: 'number' }],
+      ['BigIntValue', { kind: 'primitive', name: 'bigint' }],
+      ['StringValue', { kind: 'primitive', name: 'string' }],
+      ['SymbolValue', { kind: 'primitive', name: 'symbol' }],
+      ['VoidValue', { kind: 'primitive', name: 'void' }],
+      ['NullValue', { kind: 'null' }],
+      ['TextValue', { kind: 'literal', value: 'text' }],
+      ['NumericValue', { kind: 'literal', value: 12 }],
+      ['NegativeValue', { kind: 'literal', value: -12 }],
+      ['TrueValue', { kind: 'literal', value: true }],
+      ['FalseValue', { kind: 'literal', value: false }],
+    ]);
+  });
+
   it('separates executable defaults from function types', () => {
     const result = lower('contracts.ts', 'export const callback = (value: number = 1): number => value;');
     const [callback] = result.module.declarations;
