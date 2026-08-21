@@ -247,6 +247,33 @@ describe('analyzeIrModulesStaticFacts', () => {
     ]);
   });
 
+  it('analyzes variable-list for initializers and alternate branches', () => {
+    const sourceFile = ts.createSourceFile(
+      '/flight/packages/math/src/loop-facts.ts',
+      `
+        export function scan(values: number[], flag: boolean): number {
+          let result = 0;
+          for (let index = values[0]; index < 1; index++) {
+            if (flag) result = index;
+            else result += values[1];
+          }
+          return result;
+        }
+      `,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const lowered = lowerTypeScriptSource(sourceFile, {
+      packageName: '@flighthq/math',
+      upstreamDirectory: '/flight',
+    });
+
+    expect(lowered.diagnostics).toEqual([]);
+    expect(analyzeIrModulesStaticFacts([lowered.module]).facts.filter((fact) => fact.kind === 'indexedAccess')).toEqual(
+      [{ access: 'read', count: 2, kind: 'indexedAccess', receivers: ['array'] }],
+    );
+  });
+
   it('counts typed-array set calls by normalized receiver set', () => {
     const sourceFile = ts.createSourceFile(
       '/flight/packages/math/src/typed-array-set.ts',
