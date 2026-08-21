@@ -238,6 +238,12 @@ The provenance-integrity batch completed three bounded iterations:
 2. Define `CompilerSourceFingerprint` across every fingerprint-bearing contract and an exact lowercase SHA-256 runtime guard in `compiler-provenance`.
 3. Enforce exact source fingerprints in structural IR validation and prove lowering refuses a pass that corrupts provenance before its own postcondition runs.
 
+The canonical-form batch completed three bounded iterations:
+
+1. Rename the single-primitive `compiler-ordering` package to the durable `compiler-canonical-form` domain before more packages depend on it.
+2. Define host-independent portable path separator form, migrate all ten production implementations across five packages, and preserve domain-owned Unicode, validation, and path-resolution policy.
+3. Make package health reject local backslash, regular-expression, and current-host separator conversion; the planted old Haxe implementation fails by the guard's own diagnostic.
+
 ## Freeze rule
 
 “Mature” means the primitive is boring: narrow, unsurprising, and difficult to misuse. It does not mean the file may never change. A mature primitive can gain a new, orthogonal capability when a higher layer proves the need, but existing meaning changes only with an explicit contract review and regression demonstrating why the old meaning was wrong.

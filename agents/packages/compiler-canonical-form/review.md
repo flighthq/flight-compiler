@@ -31,7 +31,7 @@ This package owns only rules needed to make equivalent compiler bytes independen
 
 ## Present adoption
 
-Patch precedence and audits, emitted-name allocation, runtime-contract requirements, inventory facts and reports, and orchestration modules, diagnostics, and files use the shared text order. Inventory, semantic lowering, emitted paths, memory workspaces, and Haxe and Rust source identity use the shared path form. Package health rejects local named text comparators outside this workspace and rejects locale-sensitive `localeCompare` throughout package source.
+Patch precedence and audits, emitted-name allocation, runtime-contract requirements, inventory facts and reports, and orchestration modules, diagnostics, and files use the shared text order. Inventory, semantic lowering, emitted paths, memory workspaces, and Haxe and Rust source identity use the shared path form. Package health rejects local named text comparators, locale-sensitive `localeCompare`, and local backslash or host-separator path conversion outside this workspace.
 
 ## Gaps
 

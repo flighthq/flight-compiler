@@ -10,6 +10,27 @@ export interface CompilerTextOrderingViolation {
   readonly node: ts.Node;
 }
 
+export interface CompilerCanonicalFormViolation {
+  readonly kind: 'local-path-canonical-form';
+  readonly node: ts.Node;
+}
+
+export function collectCompilerCanonicalFormViolations(
+  sourceFile: ts.SourceFile,
+  allowCanonicalForm: boolean,
+): readonly CompilerCanonicalFormViolation[] {
+  if (allowCanonicalForm) return [];
+  const violations: CompilerCanonicalFormViolation[] = [];
+  const visit = (node: ts.Node): void => {
+    if (ts.isCallExpression(node) && (isPortablePathReplacement(node) || isPortablePathSplitJoin(node))) {
+      violations.push({ kind: 'local-path-canonical-form', node });
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sourceFile);
+  return violations;
+}
+
 export function collectCompilerTextOrderingViolations(
   sourceFile: ts.SourceFile,
   allowLocalTextComparator: boolean,
@@ -192,6 +213,53 @@ function hasExportModifier(node: ts.Node): boolean {
     ts.canHaveModifiers(node) &&
     ts.getModifiers(node)?.some((modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword) === true
   );
+}
+
+function isPortablePathReplacement(node: ts.CallExpression): boolean {
+  if (
+    !ts.isPropertyAccessExpression(node.expression) ||
+    (node.expression.name.text !== 'replace' && node.expression.name.text !== 'replaceAll') ||
+    node.arguments.length !== 2 ||
+    !isStringLiteralText(node.arguments[1], '/')
+  ) {
+    return false;
+  }
+  const separator = node.arguments[0];
+  return (
+    isStringLiteralText(separator, '\\') ||
+    (separator !== undefined &&
+      ts.isRegularExpressionLiteral(separator) &&
+      /^\/\\\\\/[dgimsuvy]*$/u.test(separator.text))
+  );
+}
+
+function isPortablePathSplitJoin(node: ts.CallExpression): boolean {
+  if (
+    !ts.isPropertyAccessExpression(node.expression) ||
+    node.expression.name.text !== 'join' ||
+    node.arguments.length !== 1 ||
+    !isStringLiteralText(node.arguments[0], '/')
+  ) {
+    return false;
+  }
+  const split = node.expression.expression;
+  if (
+    !ts.isCallExpression(split) ||
+    !ts.isPropertyAccessExpression(split.expression) ||
+    split.expression.name.text !== 'split' ||
+    split.arguments.length !== 1
+  ) {
+    return false;
+  }
+  const separator = split.arguments[0];
+  return (
+    isStringLiteralText(separator, '\\') ||
+    (separator !== undefined && ts.isPropertyAccessExpression(separator) && separator.name.text === 'sep')
+  );
+}
+
+function isStringLiteralText(node: ts.Expression | undefined, value: string): boolean {
+  return node !== undefined && ts.isStringLiteralLike(node) && node.text === value;
 }
 
 const compilerApiFunctionNamePattern =

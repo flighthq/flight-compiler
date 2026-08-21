@@ -2,6 +2,7 @@ import ts from 'typescript';
 import { describe, expect, it } from 'vitest';
 
 import {
+  collectCompilerCanonicalFormViolations,
   collectCompilerTextOrderingViolations,
   collectDescribeNames,
   collectExportedApiDeclarations,
@@ -14,6 +15,29 @@ import {
 } from './packageHealthAst.js';
 
 describe('package boundary AST analysis', () => {
+  it('finds local portable path form without rejecting the shared primitive', () => {
+    const unsafe = source(`
+      const first = value.replaceAll('\\\\', '/');
+      const second = value.replace(/\\\\/gu, '/');
+      const third = value.split(path.sep).join('/');
+      const fourth = value.split('\\\\').join('/');
+    `);
+    const nearNeighbors = source(`
+      value.replaceAll('\\\\', '-');
+      value.replaceAll('/', '\\\\');
+      value.split(path.delimiter).join('/');
+    `);
+
+    expect(collectCompilerCanonicalFormViolations(unsafe, false).map(({ kind }) => kind)).toEqual([
+      'local-path-canonical-form',
+      'local-path-canonical-form',
+      'local-path-canonical-form',
+      'local-path-canonical-form',
+    ]);
+    expect(collectCompilerCanonicalFormViolations(nearNeighbors, false)).toEqual([]);
+    expect(collectCompilerCanonicalFormViolations(unsafe, true)).toEqual([]);
+  });
+
   it('finds local or locale-sensitive text ordering without rejecting the shared primitive', () => {
     const unsafe = source(`
       function compareDisplayText(left: string, right: string) {

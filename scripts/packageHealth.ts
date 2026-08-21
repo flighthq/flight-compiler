@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import ts from 'typescript';
 
 import {
+  collectCompilerCanonicalFormViolations,
   collectCompilerTextOrderingViolations,
   collectExportedApiDeclarations,
   collectLocalExportNames,
@@ -303,6 +304,14 @@ function checkPackage(packageName: string, rule: Readonly<PackageRule>): void {
       `${relative(file)}: transient work comments do not belong in source`,
     );
     const sourceFile = ts.createSourceFile(file, contents, ts.ScriptTarget.Latest, true);
+    for (const violation of collectCompilerCanonicalFormViolations(
+      sourceFile,
+      packageName === 'compiler-canonical-form',
+    )) {
+      errors.push(
+        `${relative(file)}:${String(lineOf(sourceFile, violation.node))}: local portable path form belongs in compiler-canonical-form; use normalizePathPortable`,
+      );
+    }
     for (const violation of collectCompilerTextOrderingViolations(
       sourceFile,
       packageName === 'compiler-canonical-form',

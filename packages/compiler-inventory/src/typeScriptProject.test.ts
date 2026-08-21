@@ -2,6 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
+import { normalizePathPortable } from '../../compiler-canonical-form/src/index.js';
 import { isCompilerInventoryFailure } from './compilerInventoryFailure.js';
 import { createTypeScriptProject } from './typeScriptProject.js';
 
@@ -39,8 +40,8 @@ describe('createTypeScriptProject', () => {
         const project = createTypeScriptProject(path.join(directory, 'tsconfig.json'));
         const source = project.program.getSourceFile(path.join(directory, 'src', 'value.ts'));
 
-        expect(source?.fileName.replaceAll('\\', '/')).toBe(
-          path.join(directory, 'src', 'value.ts').replaceAll('\\', '/'),
+        expect(source && normalizePathPortable(source.fileName)).toBe(
+          normalizePathPortable(path.join(directory, 'src', 'value.ts')),
         );
         expect(project.checker).toBe(project.program.getTypeChecker());
         expect(project.options.strict).toBe(true);
