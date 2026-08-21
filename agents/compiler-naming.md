@@ -30,7 +30,7 @@ Three environments meet in this compiler and the words for them are not intercha
 
 - **Runtime** names the ambient surface generated code may assume. Use it for capability names, binding plans, and external-symbol identity.
 - **Host** names the environment that embeds and runs the generated program — Capacitor, Electron, Node, Playwright, Tauri. Use it for endpoint inventories, package host facts, and opaque host values.
-- **Machine** names the computer the compiler runs on. Use it for determinism and portability concerns: separators, locale, filesystem order, absolute paths.
+- **Machine** names the computer the compiler runs on. It is the umbrella for what must not be observable in output, and it has three more precise members: **platform** for operating-system class (path separators), **machine** proper for this computer and checkout (absolute paths, filesystem order and case sensitivity), and **locale** for process environment (collation). Name the member when describing what varies, and name the property — portable, deterministic — when describing output that must not vary.
 
 Never spell the third sense "host". `createFileSystemWorkspaceSource` is named for what it reads, not for the computer it reads on, and its sibling is `createMemoryWorkspaceSource` — filesystem versus memory is the real distinction. The TypeScript compiler API spells the machine sense `ts.CompilerHost`; that vocabulary belongs to the API this compiler consumes, not to the names authored here.
 

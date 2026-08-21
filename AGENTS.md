@@ -62,7 +62,7 @@ The repository follows Flight's package-per-domain convention. Internal workspac
 - `packages/compiler-emission/`: target-neutral backend and output infrastructure.
 - `packages/compiler-lowering/`: backend-elected, target-neutral IR-to-IR passes and verification.
 - `packages/compiler-module/`: target-neutral module linking, initialization, temporal access, live bindings, and evaluation order.
-- `packages/compiler-canonical-form/`: dependency-free, machine-independent canonical forms for deterministic compiler data.
+- `packages/compiler-canonical-form/`: dependency-free, portable canonical forms for deterministic compiler data.
 - `packages/compiler-backend-hx/`: Haxe-specific lowering, naming, and source emission.
 - `packages/compiler-backend-rs/`: Rust-specific lowering, naming, and source emission.
 - `packages/compiler-orchestration/`: deterministic pipeline composition.
@@ -89,7 +89,7 @@ The dependency floor is deliberate:
 
 - `compiler-types` defines vocabulary and contracts without implementation dependencies.
 - `compiler-closure` derives representation-free closure obligations over shared IR traversal.
-- `compiler-provenance` defines deterministic normalization and exact source-fingerprint identity over shared contracts and machine-independent canonical form.
+- `compiler-provenance` defines deterministic normalization and exact source-fingerprint identity over shared contracts and portable canonical form.
 - `compiler-patch` depends on shared contracts, deterministic canonical form, and exact provenance identity; `compiler-emission` depends only on its contracts and canonical form.
 - `compiler-ir-validation` verifies target-neutral IR structure over shared contracts and exact provenance identity.
 - `compiler-ir-traversal` provides dependency-floor, read-only IR observation over `compiler-types` without embedding analysis policy.
@@ -100,7 +100,7 @@ The dependency floor is deliberate:
 - `compiler-module` defines graph linking, instantiation, temporal access, live binding cells, and dependency-first evaluation over canonical form, traversal, and shared contracts.
 - inventory, semantic lowering, backends, and orchestration are compositions above that floor. Haxe task emission additionally composes `compiler-task` state-machine analysis with the target runtime-capability election.
 
-Before expanding a higher package, read [the compiler foundations audit](agents/compiler-foundations.md). A foundation is mature only when its boundary is narrow, its vocabulary is worth freezing, deterministic behavior is tested by equivalence and counterexample, failure values are inspectable, and callers cannot observe accidental mutation or machine differences.
+Before expanding a higher package, read [the compiler foundations audit](agents/compiler-foundations.md). A foundation is mature only when its boundary is narrow, its vocabulary is worth freezing, deterministic behavior is tested by equivalence and counterexample, failure values are inspectable, and callers cannot observe accidental mutation, or differences that come from the machine or platform it ran on.
 
 Keep imports side-effect-free. Importing the package must not read a checkout, start work, mutate registries, or write reports. Filesystem work begins only when a caller invokes an explicit function.
 
@@ -114,7 +114,9 @@ Three environments meet in this compiler and only one of them may be called the 
 
 _Proven-total versus discovered-partial_ is the real distinction. Completeness cannot be proven over a set that is discovered, so the two lanes cannot merge.
 
-**Machine** is the computer the compiler itself runs on. Its separator, locale, filesystem order, and absolute paths must never reach output. Use "machine" for this sense — never "host", which this repository reserves for the embedding environment above. Note that the TypeScript compiler API spells this sense `ts.CompilerHost`; the vocabularies deliberately disagree, and ours is the one that applies to names authored here.
+**Machine** is the computer the compiler itself runs on, and it must never be observable in output. Use "machine" for this sense — never "host", which this repository reserves for the embedding environment above. The TypeScript compiler API spells the machine sense `ts.CompilerHost`; the vocabularies deliberately disagree, and ours governs names authored here.
+
+Machine is the umbrella, not the whole answer, because three different things vary underneath it and each has its own precise word. **Platform** is the operating-system class, and it is what varies for path separators — every POSIX machine agrees, and `path.sep` is a platform property. **Machine** proper is this computer and this checkout: absolute paths, filesystem iteration order, filesystem case sensitivity. **Locale** is process environment rather than either, since two processes on one machine can collate differently. Name the specific one when describing what varies, and name the property — **portable**, **deterministic** — when describing the output that must not vary.
 
 ## Modeling Rules
 
@@ -125,7 +127,7 @@ _Proven-total versus discovered-partial_ is the real distinction. Completeness c
 - Every declaration and patch retains stable upstream identity: package name, source path, export name, and normalized SHA-256 fingerprint.
 - Deterministic outputs contain no timestamps, machine-specific absolute paths, or filesystem iteration order.
 - Deterministic package ordering uses `compareTextCodeUnits` from `compiler-canonical-form`; package source does not define local text comparators or call locale-sensitive `localeCompare`.
-- Portable compiler path separator form uses `normalizePathPortable` from `compiler-canonical-form`; package source does not locally translate backslash or the current machine's `path.sep` to slash.
+- Portable compiler path separator form uses `normalizePathPortable` from `compiler-canonical-form`; package source does not locally translate backslash or the current platform's `path.sep` to slash.
 - Expected environmental absence returns a structured result where the API defines one. Invalid compiler configuration, unresolved public exports, ambiguous patches, and stale fingerprints fail loudly.
 - Use small free functions and plain data. Compiler packages do not define classes; tagged diagnostic values and explicit function records provide failure and capability contracts.
 - Exported names must be globally understandable without relying on a deep import path for context.
@@ -185,7 +187,7 @@ Use npm, not pnpm or Yarn. Node.js 22 or newer is required. Script names follow 
 
 Tests should use temporary fixture workspaces and assert both success and fail-loudly behavior. Compiler changes require a focused regression covering the smallest syntax or graph shape that exposes the rule. Tests must not depend on a network checkout.
 
-See [the testing conventions](agents/conventions/testing.md) for test structure, instrument choice, and the named shapes in which a green run proves nothing. Bedrock tests are example-driven specifications, not coverage decoration. Test empty values, boundary values, malformed values, machine path differences, input immutability, deterministic ordering, idempotence where meaningful, and every tagged failure code. For normalization, test formatting-equivalent inputs and meaningfully distinct near-neighbors side by side.
+See [the testing conventions](agents/conventions/testing.md) for test structure, instrument choice, and the named shapes in which a green run proves nothing. Bedrock tests are example-driven specifications, not coverage decoration. Test empty values, boundary values, malformed values, platform path differences, input immutability, deterministic ordering, idempotence where meaningful, and every tagged failure code. For normalization, test formatting-equivalent inputs and meaningfully distinct near-neighbors side by side.
 
 Coverage thresholds are enforced ratchets, not aspirational targets: the current 75% branches, 90% functions, 86% lines, and 83% statements floors sit immediately below the measured baseline so regressions fail promptly. Maintain or raise them as exercised compiler surface grows. Lowering a threshold requires an explicit architectural justification.
 

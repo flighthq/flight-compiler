@@ -14,7 +14,7 @@ import {
 } from './typeScriptRuntimeBinding.js';
 
 describe('analyzeTypeScriptSourceRuntimeExports', () => {
-  it('classifies exports and orders their identities by code unit rather than machine locale', () => {
+  it('classifies exports and orders their identities by code unit rather than locale', () => {
     withProject(({ checker, options, source }) => {
       const decisions = analyzeTypeScriptSourceRuntimeExports(source, checker, options);
 

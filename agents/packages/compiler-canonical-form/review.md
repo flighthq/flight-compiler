@@ -10,7 +10,7 @@ ingested:
 
 # compiler-canonical-form — Review
 
-The dependency-free owner of machine-independent canonical forms used in deterministic compiler output.
+The dependency-free owner of portable canonical forms used in deterministic compiler output.
 
 ## Verdict
 
@@ -21,7 +21,7 @@ The dependency-free owner of machine-independent canonical forms used in determi
 - One exact total order whose result does not depend on host locale, process configuration, or input order. Present for text.
 - Equality returns zero; lower and higher values return stable negative and positive values. Present as the narrow `-1 | 0 | 1` result.
 - Comparator laws are executable specifications rather than assumptions made by callers. Present for representative compiler text.
-- Path separator form treats backslash as a separator on every machine rather than consulting the current machine's `path.sep`. Present.
+- Path separator form treats backslash as a separator on every platform rather than consulting the current platform's `path.sep`. Present.
 - Canonicalization is idempotent and does not silently resolve traversal, validate a path, or normalize Unicode. Present; domain owners compose those policies explicitly.
 - No compiler contracts, filesystem, parser, target, or mutable global state. Present.
 

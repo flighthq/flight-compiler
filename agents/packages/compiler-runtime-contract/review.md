@@ -14,7 +14,7 @@ The target-neutral seam that identifies reachable ambient source symbols and pro
 
 ## Verdict
 
-**near-mature — 86/100.** `flight-runtime-contract/2` closes the false equivalence between a source type and its runtime value. Reachability is exhaustive over the current IR, includes constructors, static members, direct values and `typeof` queries, excludes lexical bindings and declared intrinsics, and normalizes exact source identity before machine-independent ordering. Completeness independently reports every missing and duplicate type/value decision; mutation kills every generated contract mutant. Remaining work needs new requirement families or diagnostic evidence, not more branches in the ambient-symbol model.
+**near-mature — 86/100.** `flight-runtime-contract/2` closes the false equivalence between a source type and its runtime value. Reachability is exhaustive over the current IR, includes constructors, static members, direct values and `typeof` queries, excludes lexical bindings and declared intrinsics, and normalizes exact source identity before locale-independent ordering. Completeness independently reports every missing and duplicate type/value decision; mutation kills every generated contract mutant. Remaining work needs new requirement families or diagnostic evidence, not more branches in the ambient-symbol model.
 
 ## Present capabilities
 
