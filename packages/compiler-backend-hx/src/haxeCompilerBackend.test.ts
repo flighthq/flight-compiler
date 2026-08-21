@@ -271,15 +271,16 @@ describe('emitIrModuleHaxe', () => {
     expect(output).toContain('typedef Alias = LocalType;');
   });
 
-  it('rejects module facades and switch fallthrough without semantic lowering', () => {
+  it('rejects module facades and emits normalized switch fallthrough', () => {
     const barrel = lower('barrel.ts', "export * from './other.js';");
     const fallthrough = lower(
       'switch.ts',
       'export function choose(a: number): number { switch (a) { case 1: case 2: return 2; default: return 0; } }',
     );
+    const output = emitIrModuleHaxe(fallthrough.module).contents;
 
     expect(() => emitIrModuleHaxe(barrel.module)).toThrow('module-facade lowering');
-    expect(() => emitIrModuleHaxe(fallthrough.module)).toThrow('switch fallthrough');
+    expect(output).toContain('case 1:\n        return 2;\n      case 2:\n        return 2;');
   });
 
   it.each([

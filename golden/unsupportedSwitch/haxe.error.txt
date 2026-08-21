@@ -1,1 +1,0 @@
-haxe emission failed for @flighthq/golden/packages/golden/src/unsupportedSwitch.ts: switch fallthrough requires control-flow lowering before Haxe emission

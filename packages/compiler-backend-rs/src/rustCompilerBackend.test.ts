@@ -336,15 +336,17 @@ describe('emitIrModuleRust', () => {
     );
   });
 
-  it('rejects module facades and switch fallthrough without target lowering', () => {
+  it('rejects module facades and emits normalized switch fallthrough', () => {
     const barrel = lower('barrel.ts', "export * from './other.js';");
     const fallthrough = lower(
       'switch.ts',
       'export function choose(a: number): number { switch (a) { case 1: case 2: return 2; default: return 0; } }',
     );
+    const output = emitIrModuleRust(fallthrough.module).contents;
 
     expect(() => emitIrModuleRust(barrel.module)).toThrow('module-facade lowering');
-    expect(() => emitIrModuleRust(fallthrough.module)).toThrow('fallthrough-aware Rust lowering');
+    expect(output).toContain('let switch_value = a;');
+    expect(output).toContain('if switch_value == 1.0 {\n      return 2.0;\n    }\n    else if switch_value == 2.0');
   });
 
   it.each([

@@ -148,6 +148,12 @@ export interface IrSwitchCase {
   readonly statements: readonly IrStatement[];
 }
 
+export type IrSwitchCaseCompletion =
+  | Readonly<{ kind: 'abrupt' }>
+  | Readonly<{ kind: 'fallthrough' }>
+  | Readonly<{ kind: 'localBreak' }>
+  | Readonly<{ kind: 'unsupported'; reason: string }>;
+
 export type IrStatement =
   | Readonly<{ kind: 'block'; statements: readonly IrStatement[] }>
   | Readonly<{ kind: 'break' }>

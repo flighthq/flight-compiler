@@ -10,6 +10,7 @@ import {
 import {
   createCompilerLoweringPassArrayBindingPattern,
   createCompilerLoweringPassCStyleFor,
+  createCompilerLoweringPassSwitchFallthrough,
   createCompilerLoweringPassVariableHoisting,
   lowerIrModuleWithCompilerPasses,
 } from '../../compiler-lowering/src/index.js';
@@ -38,6 +39,7 @@ import type {
   IrPostfixUnaryOperator,
   IrPrefixUnaryOperator,
   IrStatement,
+  IrSwitchCase,
   IrType,
   IrTypeAliasDeclaration,
   IrTypeBindingIdentity,
@@ -83,6 +85,7 @@ export function emitIrModuleRust(
     createCompilerLoweringPassArrayBindingPattern(),
     createCompilerLoweringPassVariableHoisting(),
     createCompilerLoweringPassCStyleFor(),
+    createCompilerLoweringPassSwitchFallthrough(),
   ]);
   assertRuntimeExternalSymbolBindingsRust(module);
   const constantIdentities = new Set(
@@ -462,7 +465,23 @@ function emitStatement(statement: Readonly<IrStatement>, context: EmitContext): 
     case 'return':
       return [`return${statement.expression ? ` ${emitExpression(statement.expression, context)}` : ''};`];
     case 'switch': {
-      emissionError(context, 'switch statements require exhaustive, fallthrough-aware Rust lowering');
+      const name = getGeneratedTargetNameRust('switch_value', context);
+      const cases = statement.cases.filter((switchCase) => switchCase.expression);
+      const otherwise = statement.cases.find((switchCase) => !switchCase.expression);
+      const lines = [`let ${name} = ${emitExpression(statement.expression, context)};`];
+      cases.forEach((switchCase, index) => {
+        lines.push(
+          `${index > 0 ? 'else ' : ''}if ${name} == ${emitExpression(switchCase.expression!, context)} {`,
+          ...indentSourceLines(emitIrSwitchCaseStatementsRust(switchCase, context)),
+          '}',
+        );
+      });
+      if (otherwise) {
+        if (cases.length > 0) lines.push('else {');
+        lines.push(...indentSourceLines(emitIrSwitchCaseStatementsRust(otherwise, context), cases.length > 0 ? 1 : 0));
+        if (cases.length > 0) lines.push('}');
+      }
+      return ['{', ...indentSourceLines(lines), '}'];
     }
     case 'throw':
       return [`panic!("{:?}", ${emitExpression(statement.expression, context)});`];
@@ -477,6 +496,11 @@ function emitStatement(statement: Readonly<IrStatement>, context: EmitContext): 
         '}',
       ];
   }
+}
+
+function emitIrSwitchCaseStatementsRust(switchCase: Readonly<IrSwitchCase>, context: EmitContext): string[] {
+  const last = switchCase.statements.at(-1);
+  return emitStatements(last?.kind === 'break' ? switchCase.statements.slice(0, -1) : switchCase.statements, context);
 }
 
 function emitStatementBody(statement: Readonly<IrStatement>, context: EmitContext): string[] {
