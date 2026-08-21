@@ -1,4 +1,4 @@
-export function select(values: number[]): number {
-  const [, , third]: number[] = values;
+export function select(values: [number, number, number]): number {
+  const [, , third]: [number, number, number] = values;
   return third;
 }

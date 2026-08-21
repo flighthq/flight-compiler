@@ -603,7 +603,8 @@ function getTypeScriptTypeNodeIndexedReceivers(
     );
     return [...new Set(receivers)].sort();
   }
-  if (ts.isArrayTypeNode(node) || ts.isTupleTypeNode(node)) return ['array'];
+  if (ts.isArrayTypeNode(node)) return ['array'];
+  if (ts.isTupleTypeNode(node)) return ['tuple'];
   if (node.kind === ts.SyntaxKind.StringKeyword) return ['string'];
   if (node.kind === ts.SyntaxKind.AnyKeyword || node.kind === ts.SyntaxKind.UnknownKeyword) return ['unknown'];
   if (ts.isTypeLiteralNode(node)) return ['object'];
@@ -646,7 +647,7 @@ function lowerCallSemantics(node: ts.CallExpression, context: LoweringContext): 
 }
 
 function isIrTypedArrayReceiver(value: IrIndexedReceiver): value is IrTypedArrayReceiver {
-  return value !== 'array' && value !== 'object' && value !== 'string' && value !== 'unknown';
+  return value !== 'array' && value !== 'object' && value !== 'string' && value !== 'tuple' && value !== 'unknown';
 }
 
 function lowerExpressionTypeNameReference(expression: ts.Expression, context: LoweringContext): IrTypeNameReference {
@@ -1323,6 +1324,7 @@ function lowerTypeScriptIndexedReceivers(type: ts.Type, checker: ts.TypeChecker)
     const constraint = checker.getBaseConstraintOfType(type);
     return constraint ? lowerTypeScriptIndexedReceivers(constraint, checker) : ['unknown'];
   }
+  if (checker.isTupleType(type)) return ['tuple'];
   const display = checker.typeToString(type, undefined, ts.TypeFormatFlags.NoTruncation);
   const named = typeScriptIndexedReceiverNames[display] ?? getTypeScriptArrayReceiver(display);
   if (named) return [named];
@@ -1333,7 +1335,7 @@ function lowerTypeScriptIndexedReceivers(type: ts.Type, checker: ts.TypeChecker)
   }
   if (type.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown | ts.TypeFlags.Never)) return ['unknown'];
   if (type.flags & ts.TypeFlags.StringLike) return ['string'];
-  if (checker.isArrayType(type) || checker.isTupleType(type)) return ['array'];
+  if (checker.isArrayType(type)) return ['array'];
   if (type.flags & (ts.TypeFlags.NonPrimitive | ts.TypeFlags.Object)) return ['object'];
   return ['unknown'];
 }

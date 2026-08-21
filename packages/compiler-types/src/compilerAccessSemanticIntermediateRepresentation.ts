@@ -9,6 +9,7 @@ export type IrIndexedReceiver =
   | 'int8Array'
   | 'object'
   | 'string'
+  | 'tuple'
   | 'uint16Array'
   | 'uint32Array'
   | 'uint8Array'
@@ -21,7 +22,7 @@ export interface IrElementAccessSemantics {
 
 export type IrTypedArrayElementWidth = 8 | 16 | 32 | 64;
 
-export type IrTypedArrayReceiver = Exclude<IrIndexedReceiver, 'array' | 'object' | 'string' | 'unknown'>;
+export type IrTypedArrayReceiver = Exclude<IrIndexedReceiver, 'array' | 'object' | 'string' | 'tuple' | 'unknown'>;
 
 export interface IrTypedArraySetSemantics {
   readonly receivers: readonly [IrTypedArrayReceiver, ...IrTypedArrayReceiver[]];

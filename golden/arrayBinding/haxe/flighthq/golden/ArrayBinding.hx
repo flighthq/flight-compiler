@@ -2,8 +2,8 @@
 package flighthq.golden;
 
 class ArrayBinding {
-  public static function select(values:Array<Float>):Float {
-    final arrayPatternValue:Array<Float> = values;
+  public static function select(values:Array<Dynamic>):Float {
+    final arrayPatternValue:Array<Dynamic> = values;
     final third:Float = arrayPatternValue[2];
     return third;
   }

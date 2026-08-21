@@ -65,6 +65,23 @@ describe('analyzeIrModulesStaticFacts', () => {
     expect(lowered.module).toEqual(snapshot);
   });
 
+  it('keeps tuple projection distinct from open and fixed-width array access', () => {
+    const sourceFile = ts.createSourceFile(
+      '/flight/packages/math/src/tuple-facts.ts',
+      'export function first(values: [number, string]): number { return values[0]; }',
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const lowered = lowerTypeScriptSource(sourceFile, {
+      packageName: '@flighthq/math',
+      upstreamDirectory: '/flight',
+    });
+
+    expect(analyzeIrModulesStaticFacts([lowered.module]).facts).toEqual([
+      { access: 'read', count: 1, kind: 'indexedAccess', receivers: ['tuple'] },
+    ]);
+  });
+
   it('audits arithmetic operation shape and narrowed storage without target policy', () => {
     const sourceFile = ts.createSourceFile(
       '/flight/packages/math/src/arithmetic.ts',

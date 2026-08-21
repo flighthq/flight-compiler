@@ -87,19 +87,26 @@ describe('emitIrModuleRust', () => {
   it('elects fixed array binding lowering and reports residual destructuring semantics', () => {
     const fixed = lower(
       'array-binding.ts',
-      'export function select(values: number[]): number { const [first, , third]: number[] = values; third; return first; }',
+      'export function select(values: [number, number, number]): number { const [first, , third]: [number, number, number] = values; third; return first; }',
     );
     const rest = lower(
       'array-rest.ts',
-      'export function select(values: number[]): number { const [first, ...rest]: number[] = values; return first + rest.length; }',
+      'export function select(values: [number, ...number[]]): number { const [first, ...rest]: [number, ...number[]] = values; return first + rest.length; }',
+    );
+    const dynamicIndex = lower(
+      'tuple-index.ts',
+      'export function select(values: [number], index: number): number { return values[index]; }',
     );
     const output = emitIrModuleRust(fixed.module).contents;
 
-    expect(output).toContain('let array_pattern_value: Vec<f64> = values;');
-    expect(output).toContain('let first: f64 = array_pattern_value[0.0 as usize];');
-    expect(output).toContain('let third: f64 = array_pattern_value[2.0 as usize];');
+    expect(output).toContain('let array_pattern_value: (f64, f64, f64) = values;');
+    expect(output).toContain('let first: f64 = array_pattern_value.0;');
+    expect(output).toContain('let third: f64 = array_pattern_value.2;');
     expect(() => emitIrModuleRust(rest.module)).toThrow(
       'Compiler lowering pass array-binding-pattern failed for @flighthq/math/packages/math/src/array-rest.ts: array binding rest requires target-neutral slice semantics',
+    );
+    expect(() => emitIrModuleRust(dynamicIndex.module)).toThrow(
+      'tuple projection requires one statically known nonnegative integer index',
     );
   });
 

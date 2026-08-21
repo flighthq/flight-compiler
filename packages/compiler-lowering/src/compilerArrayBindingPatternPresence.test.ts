@@ -11,11 +11,11 @@ describe('hasIrModuleArrayBindingPattern', () => {
     const empty = lower('empty.ts', 'export const value = 1;');
     const declaration = lower(
       'declaration.ts',
-      'export function read(values: number[]): number { const [first]: number[] = values; return first; }',
+      'export function read(values: [number]): number { const [first]: [number] = values; return first; }',
     );
     const expression = lower(
       'expression.ts',
-      'export const read = (values: number[]): number => { const [first]: number[] = values; return first; };',
+      'export const read = (values: [number]): number => { const [first]: [number] = values; return first; };',
     );
     const normalized = lowerIrModuleWithCompilerPasses(declaration, [createCompilerLoweringPassArrayBindingPattern()]);
 

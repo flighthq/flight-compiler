@@ -14,13 +14,13 @@ import { createCompilerLoweringPassArrayBindingPattern } from './compilerArrayBi
 import { isCompilerLoweringFailure, lowerIrModuleWithCompilerPasses } from './compilerLoweringPass.js';
 
 describe('createCompilerLoweringPassArrayBindingPattern', () => {
-  it('lowers fixed and nested array bindings with one deterministic temporary per evaluated array', () => {
+  it('lowers fixed and nested array bindings with one deterministic temporary per required tuple', () => {
     const module = lower(
       'fixed-patterns.ts',
       `
-        export function select(values: number[], matrix: number[][]): number {
-          const [first, , second]: number[] = values;
-          let [[nested]]: number[][] = matrix;
+        export function select(values: [number, number, number], matrix: [[number]]): number {
+          const [first, , second]: [number, number, number] = values;
+          let [[nested]]: [[number]] = matrix;
           return first + second + nested;
         }
       `,
@@ -43,7 +43,7 @@ describe('createCompilerLoweringPassArrayBindingPattern', () => {
         binding: { name: 'arrayPatternValue', scope: 'block' },
         initializer: { kind: 'identifier', reference: { binding: sourceFunction.parameters[0]?.binding } },
         mutable: false,
-        type: { element: { kind: 'primitive', name: 'number' }, kind: 'array' },
+        type: { elements: expect.any(Array), kind: 'tuple' },
       },
       {
         binding: sourceFirst,
@@ -51,7 +51,7 @@ describe('createCompilerLoweringPassArrayBindingPattern', () => {
           index: { kind: 'literal', value: 0 },
           kind: 'element',
           object: { reference: { binding: fixed[0]?.binding } },
-          semantics: { receivers: ['array'] },
+          semantics: { receivers: ['tuple'] },
         },
         mutable: false,
         type: { kind: 'primitive', name: 'number' },
@@ -72,7 +72,7 @@ describe('createCompilerLoweringPassArrayBindingPattern', () => {
         binding: { name: 'arrayPatternValue' },
         initializer: { reference: { binding: sourceFunction.parameters[1]?.binding } },
         mutable: false,
-        type: { element: { kind: 'array' }, kind: 'array' },
+        type: { elements: [{ type: { kind: 'tuple' } }], kind: 'tuple' },
       },
       {
         binding: { name: 'arrayPatternValue' },
@@ -81,7 +81,7 @@ describe('createCompilerLoweringPassArrayBindingPattern', () => {
           object: { reference: { binding: nested[0]?.binding } },
         },
         mutable: false,
-        type: { element: { kind: 'primitive', name: 'number' }, kind: 'array' },
+        type: { elements: [{ type: { kind: 'primitive', name: 'number' } }], kind: 'tuple' },
       },
       {
         binding: sourceNested,
@@ -110,9 +110,9 @@ describe('createCompilerLoweringPassArrayBindingPattern', () => {
       lower(
         'containers.ts',
         `
-          export const [left, right]: number[] = [1, 2];
-          export const choose = (values: number[]): number => {
-            const [first]: number[] = values;
+          export const [left, right]: [number, number] = [1, 2];
+          export const choose = (values: [number]): number => {
+            const [first]: [number] = values;
             return first;
           };
         `,
@@ -137,27 +137,35 @@ describe('createCompilerLoweringPassArrayBindingPattern', () => {
   it.each([
     {
       reason: 'array binding default at index 0 requires target-neutral undefined semantics',
-      source: 'export const [value = 0]: number[] = [];',
+      source: 'export const [value = 0]: [number] = [0];',
     },
     {
       reason: 'array binding rest requires target-neutral slice semantics',
-      source: 'export const [first, ...rest]: number[] = [];',
+      source: 'export const [first, ...rest]: [number, ...number[]] = [1];',
     },
     {
-      reason: 'array binding lowering requires a statically known array type',
-      source: 'export const [value]: [number] = [1];',
+      reason: 'array binding lowering requires a statically known required tuple type',
+      source: 'export const [value]: number[] = [1];',
     },
     {
-      reason: 'array binding lowering requires a statically known array type',
+      reason: 'array binding index 0 requires a statically known required tuple element',
+      source: 'export const [value]: [number?] = [];',
+    },
+    {
+      reason: 'array binding index 1 requires a statically known required tuple element',
+      source: 'export const [first, second]: [number] = [1];',
+    },
+    {
+      reason: 'array binding lowering requires a statically known required tuple type',
       source: 'export function read(values: number[]): number { const [value] = values; return value; }',
     },
     {
       reason: 'function-scoped array binding patterns require variable-hoisting lowering',
-      source: 'export function read(values: number[]): number { var [value]: number[] = values; return value; }',
+      source: 'export function read(values: [number]): number { var [value]: [number] = values; return value; }',
     },
     {
       reason: 'array binding pattern requires an initializer outside iteration statements',
-      source: 'export function read(): void { let [value]: number[]; }',
+      source: 'export function read(): void { let [value]: [number]; }',
     },
     {
       reason: 'forOf array bindings require iteration destructuring lowering',

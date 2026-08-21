@@ -889,7 +889,7 @@ describe('lowerTypeScriptSource', () => {
   it('preserves indexed receiver sets without target policy or union aliases', () => {
     const result = lower(
       'indexed-receivers.ts',
-      'type Values = readonly number[]; type Mixed = Uint32Array | Uint16Array; export function read(array: Values, floats: Float32Array, mixed: Mixed, record: { value: number }, text: string, mystery: any): unknown[] { return [array[0], floats[0], mixed[0], record["value"], text[0], mystery[0]]; }',
+      'type Values = readonly number[]; type Mixed = Uint32Array | Uint16Array; export function read(array: Values, tuple: readonly [number, number], floats: Float32Array, mixed: Mixed, record: { value: number }, text: string, mystery: any): unknown[] { return [array[0], tuple[0], floats[0], mixed[0], record["value"], text[0], mystery[0]]; }',
     );
     const [, , read] = result.module.declarations;
 
@@ -901,7 +901,15 @@ describe('lowerTypeScriptSource', () => {
       read.body[0].expression.elements.map((element) =>
         element?.kind === 'element' ? element.semantics.receivers : undefined,
       ),
-    ).toEqual([['array'], ['float32Array'], ['uint16Array', 'uint32Array'], ['object'], ['string'], ['unknown']]);
+    ).toEqual([
+      ['array'],
+      ['tuple'],
+      ['float32Array'],
+      ['uint16Array', 'uint32Array'],
+      ['object'],
+      ['string'],
+      ['unknown'],
+    ]);
   });
 
   it('identifies typed-array set calls from receiver semantics rather than member spelling', () => {

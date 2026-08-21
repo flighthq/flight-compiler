@@ -66,7 +66,7 @@ function createIrArrayBindingPatternElementAccess(binding: Readonly<IrBindingIde
     kind: 'element',
     object: { kind: 'identifier', reference: { binding, kind: 'binding' } },
     optional: false,
-    semantics: { receivers: ['array'] },
+    semantics: { receivers: ['tuple'] },
   };
 }
 
@@ -102,16 +102,28 @@ function lowerIrArrayBindingPattern(
       `array binding default at index ${String(defaultedIndex)} requires target-neutral undefined semantics`,
     );
   }
-  if (sourceType.kind !== 'array') {
+  if (sourceType.kind !== 'tuple') {
     throw createCompilerLoweringFailure(
       'unsupported-ir',
       compilerLoweringPassNameArrayBindingPattern,
       pattern,
-      'array binding lowering requires a statically known array type',
+      'array binding lowering requires a statically known required tuple type',
     );
+  }
+  for (const index of pattern.elements.keys()) {
+    const tupleElement = sourceType.elements[index];
+    if (!tupleElement || tupleElement.optional || tupleElement.rest) {
+      throw createCompilerLoweringFailure(
+        'unsupported-ir',
+        compilerLoweringPassNameArrayBindingPattern,
+        pattern,
+        `array binding index ${String(index)} requires a statically known required tuple element`,
+      );
+    }
   }
   return pattern.elements.flatMap((element, index): readonly LoweredArrayBindingVariable[] => {
     if (!element) return [];
+    const tupleElement = sourceType.elements[index]!;
     const elementPath = `${path}.elements[${String(index)}]`;
     const initializer = createIrArrayBindingPatternElementAccess(sourceBinding, index);
     if (element.pattern.kind === 'binding') {
@@ -122,7 +134,7 @@ function lowerIrArrayBindingPattern(
             binding: element.pattern.binding,
             initializer,
             mutable,
-            type: element.pattern.type ?? sourceType.element,
+            type: element.pattern.type ?? tupleElement.type,
           },
         },
       ];
@@ -134,12 +146,12 @@ function lowerIrArrayBindingPattern(
         binding: temporaryBinding,
         initializer,
         mutable: false,
-        type: sourceType.element,
+        type: tupleElement.type,
       },
     };
     return [
       temporary,
-      ...lowerIrArrayBindingPattern(element.pattern, temporaryBinding, sourceType.element, mutable, elementPath),
+      ...lowerIrArrayBindingPattern(element.pattern, temporaryBinding, tupleElement.type, mutable, elementPath),
     ];
   });
 }
@@ -616,7 +628,7 @@ function lowerIrVariableArrayBindingPattern(
       'unsupported-ir',
       compilerLoweringPassNameArrayBindingPattern,
       analysis.sourceIdentity,
-      'array binding lowering requires a statically known array type',
+      'array binding lowering requires a statically known required tuple type',
     );
   }
   const temporaryBinding = createIrArrayBindingPatternTemporary(variable.pattern, path);

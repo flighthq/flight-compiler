@@ -90,19 +90,26 @@ describe('emitIrModuleHaxe', () => {
   it('elects fixed array binding lowering and reports residual destructuring semantics', () => {
     const fixed = lower(
       'array-binding.ts',
-      'export function select(values: number[]): number { const [first, , third]: number[] = values; third; return first; }',
+      'export function select(values: [number, number, number]): number { const [first, , third]: [number, number, number] = values; third; return first; }',
     );
     const defaulted = lower(
       'array-default.ts',
-      'export function select(values: number[]): number { const [first = 0]: number[] = values; return first; }',
+      'export function select(values: [number]): number { const [first = 0]: [number] = values; return first; }',
+    );
+    const dynamicIndex = lower(
+      'tuple-index.ts',
+      'export function select(values: [number], index: number): number { return values[index]; }',
     );
     const output = emitIrModuleHaxe(fixed.module).contents;
 
-    expect(output).toContain('final arrayPatternValue:Array<Float> = values;');
+    expect(output).toContain('final arrayPatternValue:Array<Dynamic> = values;');
     expect(output).toContain('final first:Float = arrayPatternValue[0];');
     expect(output).toContain('final third:Float = arrayPatternValue[2];');
     expect(() => emitIrModuleHaxe(defaulted.module)).toThrow(
       'Compiler lowering pass array-binding-pattern failed for @flighthq/math/packages/math/src/array-default.ts: array binding default at index 0 requires target-neutral undefined semantics',
+    );
+    expect(() => emitIrModuleHaxe(dynamicIndex.module)).toThrow(
+      'tuple projection requires one statically known nonnegative integer index',
     );
   });
 

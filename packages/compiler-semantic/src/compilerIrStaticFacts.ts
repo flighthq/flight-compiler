@@ -518,7 +518,7 @@ function isVariableList(value: IrExpression | readonly IrVariable[] | undefined)
 }
 
 function isIrTypedArrayReceiver(value: IrIndexedReceiver): value is IrTypedArrayReceiver {
-  return value !== 'array' && value !== 'object' && value !== 'string' && value !== 'unknown';
+  return value !== 'array' && value !== 'object' && value !== 'string' && value !== 'tuple' && value !== 'unknown';
 }
 
 function analyzeInitializer(

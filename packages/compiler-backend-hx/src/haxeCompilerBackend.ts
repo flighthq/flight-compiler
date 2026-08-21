@@ -226,6 +226,10 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
       return `(${emitExpression(expression.condition, context)} ? ${emitExpression(expression.whenTrue, context)} : ${emitExpression(expression.whenFalse, context)})`;
     case 'element':
       if (expression.optional) emissionError(context, 'optional element access requires null-safe access lowering');
+      if (expression.semantics.receivers.includes('tuple')) {
+        const index = getElementAccessTupleIndexHaxe(expression, context);
+        return `${emitExpression(expression.object, context)}[${String(index)}]`;
+      }
       return `${emitExpression(expression.object, context)}[${emitExpression(expression.index, context)}]`;
     case 'function':
       if (expression.async) emissionError(context, 'async closures require the Haxe async-lowering pass');
@@ -574,6 +578,22 @@ function getBindingTargetNameHaxe(
   const targetName = context.targetNames.get(binding.id);
   if (!targetName) emissionError(context, `binding ${binding.name} has no Haxe target name allocation`);
   return targetName;
+}
+
+function getElementAccessTupleIndexHaxe(
+  expression: Readonly<Extract<IrExpression, { kind: 'element' }>>,
+  context: EmitContext,
+): number {
+  if (
+    expression.semantics.receivers.length !== 1 ||
+    expression.index.kind !== 'literal' ||
+    typeof expression.index.value !== 'number' ||
+    !Number.isSafeInteger(expression.index.value) ||
+    expression.index.value < 0
+  ) {
+    emissionError(context, 'tuple projection requires one statically known nonnegative integer index');
+  }
+  return expression.index.value;
 }
 
 function getTypeReferenceTargetNameHaxe(type: Readonly<IrTypeReference>, context: EmitContext): string {
