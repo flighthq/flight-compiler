@@ -2,7 +2,7 @@ import ts from 'typescript';
 
 import { lowerTypeScriptSource } from '../../compiler-semantic/src/index.js';
 import type { IrModule, IrStatement } from '../../compiler-types/src/index.js';
-import { createCompilerLoweringPassArrayBindingPattern } from './compilerArrayBindingPatternLowering.js';
+import { createCompilerLoweringPassBindingPattern } from './compilerBindingPatternLowering.js';
 import { isCompilerLoweringFailure, lowerIrModuleWithCompilerPasses } from './compilerLoweringPass.js';
 import { createCompilerLoweringPassSwitchFallthrough } from './compilerSwitchFallthroughLowering.js';
 import { createCompilerLoweringPassVariableHoisting } from './compilerVariableHoistingLowering.js';
@@ -23,7 +23,7 @@ describe('createCompilerLoweringPassSwitchFallthrough', () => {
           }
         `,
       ),
-      [createCompilerLoweringPassArrayBindingPattern(), createCompilerLoweringPassVariableHoisting(), pass],
+      [createCompilerLoweringPassBindingPattern(), createCompilerLoweringPassVariableHoisting(), pass],
       { verificationDepth: 'idempotence' },
     );
     const statement = getFunctionSwitch(output);
@@ -59,7 +59,7 @@ describe('createCompilerLoweringPassSwitchFallthrough', () => {
         `,
       ),
       [
-        createCompilerLoweringPassArrayBindingPattern(),
+        createCompilerLoweringPassBindingPattern(),
         createCompilerLoweringPassVariableHoisting(),
         createCompilerLoweringPassSwitchFallthrough(),
       ],
@@ -83,7 +83,7 @@ describe('createCompilerLoweringPassSwitchFallthrough', () => {
     for (const item of cases) {
       const run = (): IrModule =>
         lowerIrModuleWithCompilerPasses(lower('switch-refusal.ts', item.source), [
-          createCompilerLoweringPassArrayBindingPattern(),
+          createCompilerLoweringPassBindingPattern(),
           createCompilerLoweringPassVariableHoisting(),
           createCompilerLoweringPassSwitchFallthrough(),
         ]);
@@ -105,7 +105,7 @@ describe('createCompilerLoweringPassSwitchFallthrough', () => {
         'export function read(value: number): number { switch (value) { case 0: value += 1; case 1: const local = value; return local; default: return 0; } }',
       ),
       [
-        createCompilerLoweringPassArrayBindingPattern(),
+        createCompilerLoweringPassBindingPattern(),
         createCompilerLoweringPassVariableHoisting(),
         createCompilerLoweringPassSwitchFallthrough(),
       ],
@@ -142,7 +142,7 @@ describe('createCompilerLoweringPassSwitchFallthrough', () => {
         `,
       ),
       [
-        createCompilerLoweringPassArrayBindingPattern(),
+        createCompilerLoweringPassBindingPattern(),
         createCompilerLoweringPassVariableHoisting(),
         createCompilerLoweringPassSwitchFallthrough(),
       ],

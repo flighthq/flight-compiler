@@ -1,3 +1,4 @@
+import { normalizeCompilerStructuralValueCanonical } from '../../compiler-canonical-form/src/index.js';
 import type {
   CompilerLoweringPass,
   CompilerSourceIdentity,
@@ -30,7 +31,7 @@ export function createCompilerLoweringPassVariableHoisting(): CompilerLoweringPa
       return hasIrModuleVariableHoistingResidual(module) ? lowerIrModuleVariableHoisting(module) : module;
     },
     name: compilerLoweringPassNameVariableHoisting,
-    runsAfter: ['array-binding-pattern'],
+    runsAfter: ['binding-pattern'],
     verifyIrModule(module) {
       return hasIrModuleVariableHoistingResidual(module)
         ? { kind: 'invalid', reason: 'function-scoped variable declaration remains outside its hoisted prefix' }
@@ -53,7 +54,10 @@ function addIrVariableHoistingDeclaration(
   }
   const existing = analysis.hoisted.get(variable.binding.id);
   if (existing) {
-    if (JSON.stringify(existing.type) !== JSON.stringify(variable.type)) {
+    if (
+      normalizeCompilerStructuralValueCanonical(existing.type) !==
+      normalizeCompilerStructuralValueCanonical(variable.type)
+    ) {
       throw createCompilerLoweringFailure(
         'unsupported-ir',
         compilerLoweringPassNameVariableHoisting,

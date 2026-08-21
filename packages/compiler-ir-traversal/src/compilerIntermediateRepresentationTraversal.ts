@@ -6,6 +6,7 @@ import type {
   IrFunctionSignature,
   IrModule,
   IrObjectMember,
+  IrOptionalChainSemantics,
   IrParameter,
   IrStatement,
   IrType,
@@ -13,22 +14,28 @@ import type {
   IrVariable,
 } from '../../compiler-types/src/index.js';
 
+const compilerIrTraversalStop = Symbol('compiler-ir-traversal-stop');
+
 export function analyzeIrModuleTraversal(
   module: Readonly<IrModule>,
   observer: Readonly<CompilerIrTraversalObserver>,
 ): void {
-  observer.module?.(module);
-  module.declarations.forEach((declaration) => analyzeIrDeclarationTraversal(declaration, observer));
-  module.exports.forEach((exported) => {
-    if (exported.kind === 'default') analyzeIrExpressionTraversal(exported.expression, observer);
-  });
+  try {
+    observeIrTraversalValue(observer.module, module);
+    module.declarations.forEach((declaration) => analyzeIrDeclarationTraversal(declaration, observer));
+    module.exports.forEach((exported) => {
+      if (exported.kind === 'default') analyzeIrExpressionTraversal(exported.expression, observer);
+    });
+  } catch (error) {
+    if (error !== compilerIrTraversalStop) throw error;
+  }
 }
 
 function analyzeIrBindingPatternTraversal(
   pattern: Readonly<IrBindingPattern>,
   observer: Readonly<CompilerIrTraversalObserver>,
 ): void {
-  observer.bindingPattern?.(pattern);
+  observeIrTraversalValue(observer.bindingPattern, pattern);
   if (pattern.type) analyzeIrTypeTraversal(pattern.type, observer);
   if (pattern.kind === 'binding') return;
   if (pattern.kind === 'array') {
@@ -51,7 +58,7 @@ function analyzeIrDeclarationTraversal(
   declaration: Readonly<IrDeclaration>,
   observer: Readonly<CompilerIrTraversalObserver>,
 ): void {
-  observer.declaration?.(declaration);
+  observeIrTraversalValue(observer.declaration, declaration);
   switch (declaration.kind) {
     case 'class':
       declaration.typeParameters.forEach((parameter) => analyzeIrTypeParameterTraversal(parameter, observer));
@@ -91,6 +98,8 @@ function analyzeIrDeclarationTraversal(
       break;
     case 'enum':
       break;
+    default:
+      assertNeverIrTraversal(declaration);
   }
 }
 
@@ -98,7 +107,7 @@ function analyzeIrExpressionTraversal(
   expression: Readonly<IrExpression>,
   observer: Readonly<CompilerIrTraversalObserver>,
 ): void {
-  observer.expression?.(expression);
+  observeIrTraversalValue(observer.expression, expression);
   switch (expression.kind) {
     case 'array':
       expression.elements.forEach((element) => {
@@ -201,6 +210,8 @@ function analyzeIrExpressionTraversal(
     case 'literal':
     case 'regexp':
       break;
+    default:
+      assertNeverIrTraversal(expression);
   }
 }
 
@@ -208,6 +219,7 @@ function analyzeIrFunctionSignatureTraversal(
   signature: Readonly<IrFunctionSignature>,
   observer: Readonly<CompilerIrTraversalObserver>,
 ): void {
+  observeIrTraversalValue(observer.functionSignature, signature);
   signature.typeParameters.forEach((parameter) => analyzeIrTypeParameterTraversal(parameter, observer));
   signature.parameters.forEach((parameter) => analyzeIrParameterTraversal(parameter, observer));
   analyzeIrTypeTraversal(signature.returns, observer);
@@ -217,6 +229,7 @@ function analyzeIrObjectMemberTraversal(
   member: Readonly<IrObjectMember>,
   observer: Readonly<CompilerIrTraversalObserver>,
 ): void {
+  observeIrTraversalValue(observer.objectMember, member);
   switch (member.kind) {
     case 'computedProperty':
       analyzeIrExpressionTraversal(member.key, observer);
@@ -228,14 +241,17 @@ function analyzeIrObjectMemberTraversal(
     case 'spread':
       analyzeIrExpressionTraversal(member.expression, observer);
       break;
+    default:
+      assertNeverIrTraversal(member);
   }
 }
 
 function analyzeIrOptionalChainTraversal(
-  semantics: Readonly<{ receiverType: IrType; valueType: IrType }> | undefined,
+  semantics: Readonly<IrOptionalChainSemantics> | undefined,
   observer: Readonly<CompilerIrTraversalObserver>,
 ): void {
   if (!semantics) return;
+  observeIrTraversalValue(observer.optionalChain, semantics);
   analyzeIrTypeTraversal(semantics.receiverType, observer);
   analyzeIrTypeTraversal(semantics.valueType, observer);
 }
@@ -244,7 +260,7 @@ function analyzeIrParameterTraversal(
   parameter: Readonly<IrParameter>,
   observer: Readonly<CompilerIrTraversalObserver>,
 ): void {
-  observer.parameter?.(parameter);
+  observeIrTraversalValue(observer.parameter, parameter);
   analyzeIrTypeTraversal(parameter.type, observer);
   if (parameter.initializer) analyzeIrExpressionTraversal(parameter.initializer, observer);
 }
@@ -253,7 +269,7 @@ function analyzeIrStatementTraversal(
   statement: Readonly<IrStatement>,
   observer: Readonly<CompilerIrTraversalObserver>,
 ): void {
-  observer.statement?.(statement);
+  observeIrTraversalValue(observer.statement, statement);
   switch (statement.kind) {
     case 'block':
       statement.statements.forEach((child) => analyzeIrStatementTraversal(child, observer));
@@ -313,6 +329,8 @@ function analyzeIrStatementTraversal(
     case 'break':
     case 'continue':
       break;
+    default:
+      assertNeverIrTraversal(statement);
   }
 }
 
@@ -320,12 +338,13 @@ function analyzeIrTypeParameterTraversal(
   parameter: Readonly<IrTypeParameter>,
   observer: Readonly<CompilerIrTraversalObserver>,
 ): void {
+  observeIrTraversalValue(observer.typeParameter, parameter);
   if (parameter.constraint) analyzeIrTypeTraversal(parameter.constraint, observer);
   if (parameter.default) analyzeIrTypeTraversal(parameter.default, observer);
 }
 
 function analyzeIrTypeTraversal(type: Readonly<IrType>, observer: Readonly<CompilerIrTraversalObserver>): void {
-  observer.type?.(type);
+  observeIrTraversalValue(observer.type, type);
   switch (type.kind) {
     case 'array':
       analyzeIrTypeTraversal(type.element, observer);
@@ -363,6 +382,8 @@ function analyzeIrTypeTraversal(type: Readonly<IrType>, observer: Readonly<Compi
     case 'undefined':
     case 'unknown':
       break;
+    default:
+      assertNeverIrTraversal(type);
   }
 }
 
@@ -370,8 +391,20 @@ function analyzeIrVariableTraversal(
   variable: Readonly<IrVariable>,
   observer: Readonly<CompilerIrTraversalObserver>,
 ): void {
-  observer.variable?.(variable);
+  observeIrTraversalValue(observer.variable, variable);
   if (variable.type) analyzeIrTypeTraversal(variable.type, observer);
   if (variable.initializer) analyzeIrExpressionTraversal(variable.initializer, observer);
   if ('pattern' in variable) analyzeIrBindingPatternTraversal(variable.pattern, observer);
+}
+
+function observeIrTraversalValue<Value>(
+  observe: ((value: Readonly<Value>) => boolean | void) | undefined,
+  value: Readonly<Value>,
+): void {
+  if (observe?.(value) === false) throw compilerIrTraversalStop;
+}
+
+function assertNeverIrTraversal(value: never): never {
+  const kind = (value as { kind?: unknown }).kind;
+  throw new TypeError(`Unknown IR traversal kind ${String(kind)}`);
 }

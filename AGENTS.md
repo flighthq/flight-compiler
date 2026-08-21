@@ -90,7 +90,7 @@ The dependency floor is deliberate:
 - `compiler-ir-traversal` provides dependency-floor, read-only IR observation over `compiler-types` without embedding analysis policy.
 - `compiler-runtime-contract` validates reachable ambient type/value symbol decisions over `compiler-types` and shared deterministic canonical form.
 - `compiler-canonical-form` defines deterministic text order and portable path form without importing compiler contracts or domain identity policy.
-- `compiler-lowering` provides verified neutral transforms over `compiler-types`, composing `compiler-ir-traversal` and `compiler-ir-validation`; backends elect its passes.
+- `compiler-lowering` provides verified neutral transforms over `compiler-types`, composing canonical form, `compiler-ir-traversal`, and `compiler-ir-validation`; backends elect its passes.
 - inventory, semantic lowering, backends, and orchestration are compositions above that floor.
 
 Before expanding a higher package, read [the compiler foundations audit](agents/compiler-foundations.md). A foundation is mature only when its boundary is narrow, its vocabulary is worth freezing, deterministic behavior is tested by equivalence and counterexample, failure values are inspectable, and callers cannot observe accidental mutation or host-platform differences.

@@ -10,6 +10,7 @@ import {
 import {
   createCompilerLoweringPassBindingPattern,
   createCompilerLoweringPassCStyleFor,
+  createCompilerLoweringPassInterfaceInheritance,
   createCompilerLoweringPassSwitchFallthrough,
   createCompilerLoweringPassVariableHoisting,
   lowerIrModuleWithCompilerPasses,
@@ -89,6 +90,7 @@ export function emitIrModuleHaxe(
     createCompilerLoweringPassBindingPattern(),
     createCompilerLoweringPassVariableHoisting(),
     createCompilerLoweringPassCStyleFor(),
+    createCompilerLoweringPassInterfaceInheritance(),
     createCompilerLoweringPassSwitchFallthrough(),
   ]);
   assertRuntimeExternalSymbolBindingsHaxe(module);

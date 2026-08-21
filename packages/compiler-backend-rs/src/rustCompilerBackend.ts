@@ -14,6 +14,7 @@ import {
 import {
   createCompilerLoweringPassBindingPattern,
   createCompilerLoweringPassCStyleFor,
+  createCompilerLoweringPassInterfaceInheritance,
   createCompilerLoweringPassSwitchFallthrough,
   createCompilerLoweringPassVariableHoisting,
   lowerIrModuleWithCompilerPasses,
@@ -91,6 +92,7 @@ export function emitIrModuleRust(
     createCompilerLoweringPassBindingPattern(),
     createCompilerLoweringPassVariableHoisting(),
     createCompilerLoweringPassCStyleFor(),
+    createCompilerLoweringPassInterfaceInheritance(),
     createCompilerLoweringPassSwitchFallthrough(),
   ]);
   assertRuntimeExternalSymbolBindingsRust(module);

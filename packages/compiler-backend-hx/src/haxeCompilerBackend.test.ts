@@ -599,4 +599,14 @@ describe('emitIrModuleHaxe', () => {
       'labeled switch done requires Haxe switch completion lowering',
     );
   });
+
+  it('emits structurally flattened generic interface inheritance', () => {
+    const result = lower(
+      'interface-inheritance.ts',
+      'interface Base<Value> { value: Value; } export interface Child extends Base<number> { own: boolean; }',
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('typedef Child = { value:Float, own:Bool };');
+  });
 });

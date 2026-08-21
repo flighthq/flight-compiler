@@ -47,4 +47,4 @@ export function getIrModuleBindingPatternResidualCount(module: Readonly<IrModule
   return residual;
 }
 
-const compilerLoweringPassNameBindingPattern = 'array-binding-pattern';
+const compilerLoweringPassNameBindingPattern = 'binding-pattern';

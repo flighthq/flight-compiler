@@ -687,6 +687,16 @@ describe('emitIrModuleRust', () => {
     expect(output).toContain('return None;');
   });
 
+  it('emits structurally flattened generic interface inheritance', () => {
+    const result = lower(
+      'interface-inheritance.ts',
+      'interface Base<Value> { value: Value; } export interface Child extends Base<number> { own: boolean; }',
+    );
+    const output = emitIrModuleRust(result.module).contents;
+
+    expect(output).toContain('pub struct Child {\n  pub value: f64,\n  pub own: bool,\n}');
+  });
+
   it('emits a local binding named undefined without confusing it with the ambient value', () => {
     const result = lower(
       'local-undefined.ts',

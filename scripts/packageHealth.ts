@@ -84,7 +84,7 @@ const packageRules: Readonly<Record<string, PackageRule>> = {
     devDependencies: ['compiler-semantic'],
   },
   'compiler-lowering': {
-    dependencies: ['compiler-ir-traversal', 'compiler-ir-validation', 'compiler-types'],
+    dependencies: ['compiler-canonical-form', 'compiler-ir-traversal', 'compiler-ir-validation', 'compiler-types'],
     description: 'Backend-elected target-neutral IR lowering passes',
     devDependencies: ['compiler-semantic'],
   },

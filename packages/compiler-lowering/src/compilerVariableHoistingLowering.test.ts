@@ -8,7 +8,7 @@ import type {
   IrStatement,
   IrVariable,
 } from '../../compiler-types/src/index.js';
-import { createCompilerLoweringPassArrayBindingPattern } from './compilerArrayBindingPatternLowering.js';
+import { createCompilerLoweringPassBindingPattern } from './compilerBindingPatternLowering.js';
 import { createCompilerLoweringPassCStyleFor } from './compilerCStyleForLowering.js';
 import { isCompilerLoweringFailure, lowerIrModuleWithCompilerPasses } from './compilerLoweringPass.js';
 import { createCompilerLoweringPassVariableHoisting } from './compilerVariableHoistingLowering.js';
@@ -29,7 +29,7 @@ describe('createCompilerLoweringPassVariableHoisting', () => {
     );
     const snapshot = structuredClone(module);
     const pass = createCompilerLoweringPassVariableHoisting();
-    const output = lowerIrModuleWithCompilerPasses(module, [createCompilerLoweringPassArrayBindingPattern(), pass], {
+    const output = lowerIrModuleWithCompilerPasses(module, [createCompilerLoweringPassBindingPattern(), pass], {
       verificationDepth: 'idempotence',
     });
     const body = getFunctionBody(output, 'select');
@@ -38,7 +38,7 @@ describe('createCompilerLoweringPassVariableHoisting', () => {
     expect(pass).toMatchObject({
       idempotent: true,
       name: 'variable-hoisting',
-      runsAfter: ['array-binding-pattern'],
+      runsAfter: ['binding-pattern'],
     });
     expect(declarations).toMatchObject([
       { binding: { name: 'first', scope: 'function' }, initialValue: 'uninitialized', mutable: true },
@@ -90,7 +90,7 @@ describe('createCompilerLoweringPassVariableHoisting', () => {
           }
         `,
       ),
-      [createCompilerLoweringPassArrayBindingPattern(), createCompilerLoweringPassVariableHoisting()],
+      [createCompilerLoweringPassBindingPattern(), createCompilerLoweringPassVariableHoisting()],
     );
     const body = getFunctionBody(output, 'select');
     const declarations = getVariableStatement(body[0]).declarations.map(getNamedVariable);
@@ -137,7 +137,7 @@ describe('createCompilerLoweringPassVariableHoisting', () => {
           }
         `,
       ),
-      [createCompilerLoweringPassArrayBindingPattern(), createCompilerLoweringPassVariableHoisting()],
+      [createCompilerLoweringPassBindingPattern(), createCompilerLoweringPassVariableHoisting()],
     );
     const body = getFunctionBody(output, 'create');
     const returned = body[2];
@@ -167,7 +167,7 @@ describe('createCompilerLoweringPassVariableHoisting', () => {
       `,
     );
     const hoisted = lowerIrModuleWithCompilerPasses(module, [
-      createCompilerLoweringPassArrayBindingPattern(),
+      createCompilerLoweringPassBindingPattern(),
       createCompilerLoweringPassVariableHoisting(),
     ]);
     const body = getFunctionBody(hoisted, 'total');
@@ -183,7 +183,7 @@ describe('createCompilerLoweringPassVariableHoisting', () => {
     expect(loop).toMatchObject({ initializer: undefined, kind: 'for' });
 
     const lowered = lowerIrModuleWithCompilerPasses(module, [
-      createCompilerLoweringPassArrayBindingPattern(),
+      createCompilerLoweringPassBindingPattern(),
       createCompilerLoweringPassVariableHoisting(),
       createCompilerLoweringPassCStyleFor(),
     ]);
@@ -209,7 +209,7 @@ describe('createCompilerLoweringPassVariableHoisting', () => {
           }
         `,
       ),
-      [createCompilerLoweringPassArrayBindingPattern(), createCompilerLoweringPassVariableHoisting()],
+      [createCompilerLoweringPassBindingPattern(), createCompilerLoweringPassVariableHoisting()],
     );
     const body = getFunctionBody(output, 'visit');
 
@@ -237,7 +237,7 @@ describe('createCompilerLoweringPassVariableHoisting', () => {
           }
         `,
       ),
-      [createCompilerLoweringPassArrayBindingPattern(), createCompilerLoweringPassVariableHoisting()],
+      [createCompilerLoweringPassBindingPattern(), createCompilerLoweringPassVariableHoisting()],
       { verificationDepth: 'idempotence' },
     );
     const body = getFunctionBody(output, 'visit');
@@ -283,7 +283,7 @@ describe('createCompilerLoweringPassVariableHoisting', () => {
           }
         `,
       ),
-      [createCompilerLoweringPassArrayBindingPattern(), createCompilerLoweringPassVariableHoisting()],
+      [createCompilerLoweringPassBindingPattern(), createCompilerLoweringPassVariableHoisting()],
     );
     const body = getFunctionBody(output, 'visit');
     const loop = getForInStatement(body[1]);
@@ -321,7 +321,7 @@ describe('createCompilerLoweringPassVariableHoisting', () => {
           }
         `,
       ),
-      [createCompilerLoweringPassArrayBindingPattern(), createCompilerLoweringPassVariableHoisting()],
+      [createCompilerLoweringPassBindingPattern(), createCompilerLoweringPassVariableHoisting()],
     );
     const body = getFunctionBody(output, 'visit');
     const loop = getForOfStatement(body[1]);
@@ -342,7 +342,7 @@ describe('createCompilerLoweringPassVariableHoisting', () => {
     });
   });
 
-  it('composes after array-pattern lowering without giving destructuring ownership of hoisting', () => {
+  it('composes after binding-pattern lowering without giving destructuring ownership of hoisting', () => {
     const source = lower(
       'pattern-hoisting.ts',
       `
@@ -353,8 +353,8 @@ describe('createCompilerLoweringPassVariableHoisting', () => {
         }
       `,
     );
-    const arrayPass = createCompilerLoweringPassArrayBindingPattern();
-    const patternsLowered = lowerIrModuleWithCompilerPasses(source, [arrayPass]);
+    const bindingPass = createCompilerLoweringPassBindingPattern();
+    const patternsLowered = lowerIrModuleWithCompilerPasses(source, [bindingPass]);
     const patternBody = getFunctionBody(patternsLowered, 'split');
 
     expect(getVariableStatement(patternBody[0]).declarations.map(getNamedVariable)).toMatchObject([
@@ -365,7 +365,7 @@ describe('createCompilerLoweringPassVariableHoisting', () => {
       { binding: { name: 'tail', scope: 'function' } },
     ]);
 
-    const output = lowerIrModuleWithCompilerPasses(source, [arrayPass, createCompilerLoweringPassVariableHoisting()]);
+    const output = lowerIrModuleWithCompilerPasses(source, [bindingPass, createCompilerLoweringPassVariableHoisting()]);
     const body = getFunctionBody(output, 'split');
     const hoisted = getVariableStatement(body[0]).declarations.map(getNamedVariable);
 
@@ -410,12 +410,65 @@ describe('createCompilerLoweringPassVariableHoisting', () => {
   ])('refuses unsafe or residual variable semantics explicitly: $reason', ({ reason, source }) => {
     const run = () =>
       lowerIrModuleWithCompilerPasses(lower('unsupported-hoisting.ts', source), [
-        createCompilerLoweringPassArrayBindingPattern(),
+        createCompilerLoweringPassBindingPattern(),
         createCompilerLoweringPassVariableHoisting(),
       ]);
 
     expectLoweringFailure(run, reason);
     expectLoweringFailure(run, reason);
+  });
+
+  it('compares redeclaration types by canonical structure rather than object key insertion order', () => {
+    const module = lower(
+      'canonical-redeclaration.ts',
+      'export function read(): { value: number } { var result: { value: number } = { value: 1 }; var result: { value: number }; return result; }',
+    );
+    const declaration = module.declarations[0];
+    if (declaration?.kind !== 'function') throw new Error('Expected redeclaration function');
+    const secondStatement = getVariableStatement(declaration.body[1]);
+    const second = getNamedVariable(secondStatement.declarations[0]);
+    if (second.type?.kind !== 'object') throw new Error('Expected object redeclaration type');
+    const reorderedType = { properties: second.type.properties, kind: 'object' } as const;
+    const reordered: IrModule = {
+      ...module,
+      declarations: [
+        {
+          ...declaration,
+          body: [
+            declaration.body[0]!,
+            {
+              ...secondStatement,
+              declarations: [{ ...second, type: reorderedType }],
+            },
+            ...declaration.body.slice(2),
+          ],
+        },
+      ],
+    };
+    const passes = [createCompilerLoweringPassBindingPattern(), createCompilerLoweringPassVariableHoisting()];
+    const output = lowerIrModuleWithCompilerPasses(reordered, passes);
+    const inconsistent: IrModule = {
+      ...reordered,
+      declarations: [
+        {
+          ...declaration,
+          body: [
+            declaration.body[0]!,
+            {
+              ...secondStatement,
+              declarations: [{ ...second, type: { kind: 'primitive', name: 'string' } }],
+            },
+            ...declaration.body.slice(2),
+          ],
+        },
+      ],
+    };
+
+    expect(getVariableStatement(getFunctionBody(output, 'read')[0]).declarations).toHaveLength(1);
+    expectLoweringFailure(
+      () => lowerIrModuleWithCompilerPasses(inconsistent, passes),
+      'has inconsistent redeclaration types',
+    );
   });
 
   it('elects observable undefined entry state only for an undefined-bearing variable domain', () => {
@@ -424,7 +477,7 @@ describe('createCompilerLoweringPassVariableHoisting', () => {
         'undefined-hoisting.ts',
         'export function read(): number | undefined { return value; var value: number | undefined = 1; }',
       ),
-      [createCompilerLoweringPassArrayBindingPattern(), createCompilerLoweringPassVariableHoisting()],
+      [createCompilerLoweringPassBindingPattern(), createCompilerLoweringPassVariableHoisting()],
     );
     const body = getFunctionBody(output, 'read');
 

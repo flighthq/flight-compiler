@@ -2,6 +2,7 @@ import ts from 'typescript';
 
 import { lowerTypeScriptSource } from '../../compiler-semantic/src/index.js';
 import type { IrModule } from '../../compiler-types/src/index.js';
+import { createCompilerLoweringPassArrayBindingPattern } from './compilerArrayBindingPatternLowering.js';
 import {
   createCompilerLoweringPassBindingPattern,
   getIrModuleBindingPatternResidualCount,
@@ -22,8 +23,12 @@ describe('createCompilerLoweringPassBindingPattern', () => {
     const pass = createCompilerLoweringPassBindingPattern();
     const output = lowerIrModuleWithCompilerPasses(module, [pass], { verificationDepth: 'idempotence' });
 
-    expect(pass).toMatchObject({ idempotent: true, name: 'array-binding-pattern', runsAfter: [] });
+    expect(pass).toMatchObject({ idempotent: true, name: 'binding-pattern', runsAfter: [] });
     expect(pass.verifyIrModule(output)).toEqual({ kind: 'valid' });
+    const simple = lower('export const [value]: [number] = [1];');
+    expect(() =>
+      lowerIrModuleWithCompilerPasses(simple, [createCompilerLoweringPassArrayBindingPattern(), pass]),
+    ).not.toThrow();
     const declaration = output.declarations.find((item) => item.kind === 'function' && item.binding.name === 'read');
     expect(declaration?.kind === 'function' ? JSON.stringify(declaration.body) : '').not.toContain('"pattern"');
   });

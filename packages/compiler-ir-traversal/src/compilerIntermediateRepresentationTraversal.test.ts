@@ -42,6 +42,7 @@ describe('analyzeIrModuleTraversal', () => {
         const propertyName = 'value';
         const { [propertyName]: selected = total, ...other } = { value: total };
         total += first + (remaining[0] ?? 0);
+        total += values?.[0] ?? 0;
         { var hoisted: number = total; }
         total += hoisted;
         do { total = total + 1; } while (false);
@@ -76,7 +77,11 @@ describe('analyzeIrModuleTraversal', () => {
     const statements = new Set<string>();
     const types = new Set<string>();
     let modules = 0;
+    let objectMembers = 0;
+    let optionalChains = 0;
     let parameters = 0;
+    let signatures = 0;
+    let typeParameters = 0;
     let variables = 0;
 
     analyzeIrModuleTraversal(module, {
@@ -92,9 +97,21 @@ describe('analyzeIrModuleTraversal', () => {
         expressions.add(expression.kind);
         events.push(`expression:${expression.kind}`);
       },
+      functionSignature() {
+        signatures += 1;
+        events.push('functionSignature');
+      },
       module() {
         modules += 1;
         events.push('module');
+      },
+      objectMember() {
+        objectMembers += 1;
+        events.push('objectMember');
+      },
+      optionalChain() {
+        optionalChains += 1;
+        events.push('optionalChain');
       },
       parameter() {
         parameters += 1;
@@ -108,6 +125,10 @@ describe('analyzeIrModuleTraversal', () => {
         types.add(type.kind);
         events.push(`type:${type.kind}`);
       },
+      typeParameter() {
+        typeParameters += 1;
+        events.push('typeParameter');
+      },
       variable() {
         variables += 1;
         events.push('variable');
@@ -116,6 +137,8 @@ describe('analyzeIrModuleTraversal', () => {
 
     expect(events.slice(0, 2)).toEqual(['module', 'declaration:typeAlias']);
     expect(modules).toBe(1);
+    expect(objectMembers).toBeGreaterThanOrEqual(4);
+    expect(optionalChains).toBe(1);
     expect(declarations).toEqual([
       'typeAlias',
       'typeAlias',
@@ -133,6 +156,8 @@ describe('analyzeIrModuleTraversal', () => {
     ]);
     expect(bindingPatterns).toEqual(expect.arrayContaining(['array', 'binding']));
     expect(parameters).toBe(7);
+    expect(signatures).toBeGreaterThanOrEqual(7);
+    expect(typeParameters).toBe(5);
     expect(variables).toBeGreaterThanOrEqual(10);
     expect(expressions).toEqual(
       expect.objectContaining(
@@ -204,14 +229,42 @@ describe('analyzeIrModuleTraversal', () => {
     expect(module).toEqual(before);
     const firstRun = [...events];
     analyzeIrModuleTraversal(module, {
-      bindingPattern: (pattern) => events.push(`pattern:${pattern.kind}`),
-      declaration: (declaration) => events.push(`declaration:${declaration.kind}`),
-      expression: (expression) => events.push(`expression:${expression.kind}`),
-      module: () => events.push('module'),
-      parameter: () => events.push('parameter'),
-      statement: (statement) => events.push(`statement:${statement.kind}`),
-      type: (type) => events.push(`type:${type.kind}`),
-      variable: () => events.push('variable'),
+      bindingPattern(pattern) {
+        events.push(`pattern:${pattern.kind}`);
+      },
+      declaration(declaration) {
+        events.push(`declaration:${declaration.kind}`);
+      },
+      expression(expression) {
+        events.push(`expression:${expression.kind}`);
+      },
+      functionSignature() {
+        events.push('functionSignature');
+      },
+      module() {
+        events.push('module');
+      },
+      objectMember() {
+        events.push('objectMember');
+      },
+      optionalChain() {
+        events.push('optionalChain');
+      },
+      parameter() {
+        events.push('parameter');
+      },
+      statement(statement) {
+        events.push(`statement:${statement.kind}`);
+      },
+      type(type) {
+        events.push(`type:${type.kind}`);
+      },
+      typeParameter() {
+        events.push('typeParameter');
+      },
+      variable() {
+        events.push('variable');
+      },
     });
     expect(events.slice(firstRun.length)).toEqual(firstRun);
   });
@@ -293,8 +346,12 @@ describe('analyzeIrModuleTraversal', () => {
     const typeKinds = new Set<string>();
 
     analyzeIrModuleTraversal(module, {
-      expression: (expression) => expressionKinds.add(expression.kind),
-      type: (type) => typeKinds.add(type.kind),
+      expression(expression) {
+        expressionKinds.add(expression.kind);
+      },
+      type(type) {
+        typeKinds.add(type.kind);
+      },
     });
 
     expect(expressionKinds).toEqual(
@@ -313,6 +370,74 @@ describe('analyzeIrModuleTraversal', () => {
       ),
     );
     expect(typeKinds).toEqual(expect.objectContaining(new Set(['object', 'primitive', 'tuple', 'undefined', 'union'])));
+  });
+
+  it('stops the whole traversal immediately when an observer returns false', () => {
+    const module = lower('interface Value { count: number } export const value = 1;');
+    const events: string[] = [];
+
+    expect(
+      analyzeIrModuleTraversal(module, {
+        declaration() {
+          events.push('declaration');
+        },
+        module() {
+          events.push('module');
+          return false;
+        },
+      }),
+    ).toBeUndefined();
+    expect(events).toEqual(['module']);
+  });
+
+  it('fails loudly for every unknown runtime discriminated family', () => {
+    const base = lower(
+      'export interface Shape { value: number } export type Value = number; export function read(): number { return 1; }',
+    );
+    const typeAlias = base.declarations.find((declaration) => declaration.kind === 'typeAlias');
+    const functionDeclaration = base.declarations.find((declaration) => declaration.kind === 'function');
+    if (typeAlias?.kind !== 'typeAlias' || functionDeclaration?.kind !== 'function') {
+      throw new Error('Expected traversal failure fixtures');
+    }
+    const subjects = [
+      {
+        kind: 'future-declaration',
+        module: { ...base, declarations: [{ kind: 'future-declaration' }] },
+      },
+      {
+        kind: 'future-expression',
+        module: { ...base, exports: [{ expression: { kind: 'future-expression' }, kind: 'default' }] },
+      },
+      {
+        kind: 'future-object-member',
+        module: {
+          ...base,
+          exports: [
+            {
+              expression: { kind: 'object', members: [{ kind: 'future-object-member' }] },
+              kind: 'default',
+            },
+          ],
+        },
+      },
+      {
+        kind: 'future-statement',
+        module: {
+          ...base,
+          declarations: [{ ...functionDeclaration, body: [{ kind: 'future-statement' }] }],
+        },
+      },
+      {
+        kind: 'future-type',
+        module: { ...base, declarations: [{ ...typeAlias, type: { kind: 'future-type' } }] },
+      },
+    ] as const;
+
+    for (const subject of subjects) {
+      expect(() => analyzeIrModuleTraversal(subject.module as unknown as IrModule, {})).toThrow(
+        `Unknown IR traversal kind ${subject.kind}`,
+      );
+    }
   });
 });
 
