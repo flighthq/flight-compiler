@@ -285,6 +285,14 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
     }
     case 'tupleRest':
       return `${emitExpression(expression.object, context)}.${String(expression.start)}`;
+    case 'tupleSuffix': {
+      const object = emitExpression(expression.object, context);
+      const elements = Array.from(
+        { length: expression.width },
+        (_, offset) => `${object}.${String(expression.start + offset)}`,
+      );
+      return `(${elements.join(', ')}${elements.length === 1 ? ',' : ''})`;
+    }
     case 'unary': {
       const operand = emitExpression(expression.operand, context);
       const operator = expression.postfix

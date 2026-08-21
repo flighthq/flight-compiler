@@ -164,6 +164,9 @@ function visitExpression(expression: Readonly<IrExpression>, add: AddExternalSym
     case 'tupleRest':
       visitExpression(expression.object, add);
       break;
+    case 'tupleSuffix':
+      visitExpression(expression.object, add);
+      break;
     case 'unary':
       visitExpression(expression.operand, add);
       break;

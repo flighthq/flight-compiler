@@ -270,6 +270,8 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
         .join(', ')}]`;
     case 'tupleRest':
       return `${emitExpression(expression.object, context)}.slice(${String(expression.start)})`;
+    case 'tupleSuffix':
+      return `${emitExpression(expression.object, context)}.slice(${String(expression.start)})`;
     case 'unary': {
       const operand = emitExpression(expression.operand, context);
       const operator = expression.postfix

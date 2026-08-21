@@ -384,6 +384,18 @@ function visitExpression(expression: Readonly<IrExpression>, path: string, state
       }
       visitExpression(expression.object, `${path}.object`, state);
       break;
+    case 'tupleSuffix':
+      if (!Number.isSafeInteger(expression.start) || expression.start < 0) {
+        addFailure('invalid-node-shape', `${path}.start`, 'tuple suffix start must be a nonnegative integer', state);
+      }
+      if (!Number.isSafeInteger(expression.width) || expression.width < 0) {
+        addFailure('invalid-node-shape', `${path}.width`, 'tuple suffix width must be a nonnegative integer', state);
+      }
+      if (expression.object.kind !== 'identifier') {
+        addFailure('invalid-node-shape', `${path}.object`, 'tuple suffix receiver must be an identifier', state);
+      }
+      visitExpression(expression.object, `${path}.object`, state);
+      break;
     case 'unary':
       visitExpression(expression.operand, `${path}.operand`, state);
       break;

@@ -44,7 +44,26 @@ pub fn select_nested_rest(values: (f64, String, bool)) -> String {
   return second;
 }
 
-pub fn select_rows(rows: Vec<(f64, f64)>) -> f64 {
+pub fn select_optional_rest(values: (f64, Option<String>)) -> (Option<String>,) {
+  let array_pattern_value: (f64, Option<String>) = values;
+  let rest: (Option<String>,) = (array_pattern_value.1,);
+  return rest;
+}
+
+pub fn select_mixed_rest(values: (f64, String, Vec<bool>)) -> (String, Vec<bool>) {
+  let array_pattern_value: (f64, String, Vec<bool>) = values;
+  let rest: (String, Vec<bool>) = (array_pattern_value.1, array_pattern_value.2);
+  return rest;
+}
+
+pub fn select_nested_mixed_rest(values: (f64, String, Vec<bool>)) -> Vec<bool> {
+  let array_pattern_value: (f64, String, Vec<bool>) = values;
+  let array_pattern_value_2: (String, Vec<bool>) = (array_pattern_value.1, array_pattern_value.2);
+  let tail: Vec<bool> = array_pattern_value_2.1;
+  return tail;
+}
+
+pub fn select_rows(rows: Rows<(f64, f64)>) -> f64 {
   for array_pattern_value in rows {
     let first: f64 = array_pattern_value.0;
     let second: f64 = array_pattern_value.1;
@@ -52,3 +71,5 @@ pub fn select_rows(rows: Vec<(f64, f64)>) -> f64 {
   }
   return 0.0;
 }
+
+type Rows<T> = Vec<T>;

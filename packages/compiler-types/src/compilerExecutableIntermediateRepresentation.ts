@@ -18,6 +18,11 @@ export type IrParameter = Omit<IrFunctionTypeParameter, 'name'> &
   Readonly<{ binding: IrBindingIdentity }> &
   (Readonly<{ initializer?: never; optional: false }> | Readonly<{ initializer?: IrExpression; optional: true }>);
 
+export interface IrIdentifierExpression {
+  readonly kind: 'identifier';
+  readonly reference: IrIdentifierReference;
+}
+
 export type IrExpression =
   | Readonly<{ kind: 'array'; elements: ReadonlyArray<IrExpression | undefined> }>
   | Readonly<{
@@ -62,7 +67,7 @@ export type IrExpression =
       returns: IrType;
       typeParameters: readonly IrTypeParameter[];
     }>
-  | Readonly<{ kind: 'identifier'; reference: IrIdentifierReference }>
+  | IrIdentifierExpression
   | Readonly<{ kind: 'literal'; value: boolean | null | number | string }>
   | Readonly<{
       arguments: readonly IrExpression[];
@@ -83,6 +88,7 @@ export type IrExpression =
       kind: 'tuple';
     }>
   | Readonly<{ kind: 'tupleRest'; object: IrExpression; start: number }>
+  | Readonly<{ kind: 'tupleSuffix'; object: IrIdentifierExpression; start: number; width: number }>
   | Readonly<{
       kind: 'unary';
       operand: IrExpression;

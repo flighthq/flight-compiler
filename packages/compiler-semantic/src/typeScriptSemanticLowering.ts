@@ -1250,21 +1250,66 @@ function getTypeScriptTypeNodeIterableElement(
   type: ts.TypeNode,
   context: LoweringContext,
   seen: ReadonlySet<ts.Symbol>,
+  substitutions: ReadonlyMap<ts.Symbol, ts.TypeNode> = new Map(),
 ): ts.TypeNode | undefined {
-  const resolved = resolveTypeScriptTypeNodeAlias(type, context, seen);
-  if (ts.isParenthesizedTypeNode(resolved)) return getTypeScriptTypeNodeIterableElement(resolved.type, context, seen);
-  if (ts.isTypeOperatorNode(resolved) && resolved.operator === ts.SyntaxKind.ReadonlyKeyword) {
-    return getTypeScriptTypeNodeIterableElement(resolved.type, context, seen);
+  const substituted = getTypeScriptTypeNodeSubstitution(type, context, substitutions);
+  if (substituted !== type) {
+    return getTypeScriptTypeNodeIterableElement(substituted, context, seen, substitutions);
   }
-  if (ts.isArrayTypeNode(resolved)) return resolved.elementType;
-  if (ts.isTypeReferenceNode(resolved)) {
-    const parts = getTypeNameNodeParts(resolved.typeName);
+  if (ts.isParenthesizedTypeNode(type)) {
+    return getTypeScriptTypeNodeIterableElement(type.type, context, seen, substitutions);
+  }
+  if (ts.isTypeOperatorNode(type) && type.operator === ts.SyntaxKind.ReadonlyKeyword) {
+    return getTypeScriptTypeNodeIterableElement(type.type, context, seen, substitutions);
+  }
+  if (ts.isArrayTypeNode(type)) return getTypeScriptTypeNodeSubstitution(type.elementType, context, substitutions);
+  if (ts.isTypeReferenceNode(type)) {
+    const parts = getTypeNameNodeParts(type.typeName);
     const name = parts ? [parts.root.text, ...parts.path].join('.') : undefined;
-    if ((name === 'Array' || name === 'ReadonlyArray') && resolved.typeArguments?.length === 1) {
-      return resolved.typeArguments[0];
+    const element = type.typeArguments?.[0];
+    if ((name === 'Array' || name === 'ReadonlyArray') && type.typeArguments?.length === 1 && element) {
+      return getTypeScriptTypeNodeSubstitution(element, context, substitutions);
     }
+    const symbol = context.checker.getSymbolAtLocation(type.typeName);
+    if (!symbol || seen.has(symbol)) return undefined;
+    const declaration = symbol.declarations?.find(ts.isTypeAliasDeclaration);
+    if (!declaration) return undefined;
+    const nextSubstitutions = createTypeScriptTypeNodeAliasSubstitutions(type, declaration, context, substitutions);
+    if (!nextSubstitutions) return undefined;
+    const nextSeen = new Set(seen);
+    nextSeen.add(symbol);
+    return getTypeScriptTypeNodeIterableElement(declaration.type, context, nextSeen, nextSubstitutions);
   }
   return undefined;
+}
+
+function createTypeScriptTypeNodeAliasSubstitutions(
+  reference: ts.TypeReferenceNode,
+  declaration: ts.TypeAliasDeclaration,
+  context: LoweringContext,
+  substitutions: ReadonlyMap<ts.Symbol, ts.TypeNode>,
+): ReadonlyMap<ts.Symbol, ts.TypeNode> | undefined {
+  const parameters = declaration.typeParameters ?? [];
+  const arguments_ = reference.typeArguments ?? [];
+  if (arguments_.length > parameters.length) return undefined;
+  const next = new Map(substitutions);
+  for (const [index, parameter] of parameters.entries()) {
+    const argument = arguments_[index] ?? parameter.default;
+    const symbol = context.checker.getSymbolAtLocation(parameter.name);
+    if (!argument || !symbol) return undefined;
+    next.set(symbol, getTypeScriptTypeNodeSubstitution(argument, context, next));
+  }
+  return next;
+}
+
+function getTypeScriptTypeNodeSubstitution(
+  type: ts.TypeNode,
+  context: LoweringContext,
+  substitutions: ReadonlyMap<ts.Symbol, ts.TypeNode>,
+): ts.TypeNode {
+  if (!ts.isTypeReferenceNode(type) || type.typeArguments?.length) return type;
+  const symbol = context.checker.getSymbolAtLocation(type.typeName);
+  return (symbol && substitutions.get(symbol)) ?? type;
 }
 
 function resolveTypeScriptTypeNodeAlias(

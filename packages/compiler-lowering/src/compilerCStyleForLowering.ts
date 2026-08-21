@@ -118,6 +118,8 @@ function hasIrExpressionCStyleForStatement(expression: Readonly<IrExpression>): 
       );
     case 'tupleRest':
       return hasIrExpressionCStyleForStatement(expression.object);
+    case 'tupleSuffix':
+      return false;
     case 'unary':
       return hasIrExpressionCStyleForStatement(expression.operand);
     case 'undefinedDefault':
@@ -350,6 +352,8 @@ function lowerIrExpression(expression: Readonly<IrExpression>, analysis: CStyleF
       };
     case 'tupleRest':
       return { ...expression, object: lowerIrExpression(expression.object, analysis) };
+    case 'tupleSuffix':
+      return expression;
     case 'unary':
       return { ...expression, operand: lowerIrExpression(expression.operand, analysis) };
     case 'undefinedDefault':

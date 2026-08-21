@@ -98,16 +98,14 @@ function createIrArrayBindingPatternTupleSuffix(
   sourceBinding: Readonly<IrBindingIdentity>,
   sourceType: Readonly<Extract<IrType, { kind: 'tuple' }>>,
   start: number,
-): Readonly<{ expression: IrExpression; type: Extract<IrType, { kind: 'tuple' }> }> | undefined {
+): Readonly<{ expression: IrExpression; type: Extract<IrType, { kind: 'tuple' }> }> {
   const elements = sourceType.elements.slice(start);
-  if (elements.some((element) => element.optional || element.rest)) return undefined;
   return {
     expression: {
-      elements: elements.map((_, offset) => ({
-        expression: createIrArrayBindingPatternElementAccess(sourceBinding, start + offset),
-        optional: false,
-      })),
-      kind: 'tuple',
+      kind: 'tupleSuffix',
+      object: { kind: 'identifier', reference: { binding: sourceBinding, kind: 'binding' } },
+      start,
+      width: elements.length,
     },
     type: { elements, kind: 'tuple', readonly: false },
   };
@@ -251,14 +249,6 @@ function lowerIrArrayBindingPattern(
     ];
   }
   const suffix = createIrArrayBindingPatternTupleSuffix(sourceBinding, sourceType, restIndex);
-  if (!suffix) {
-    throw createCompilerLoweringFailure(
-      'unsupported-ir',
-      compilerLoweringPassNameArrayBindingPattern,
-      pattern,
-      `array binding rest at index ${String(restIndex)} requires an aligned variadic tail or fixed required tuple suffix`,
-    );
-  }
   if (pattern.rest.kind === 'binding') {
     return [
       ...variables,
@@ -498,6 +488,8 @@ function lowerIrExpressionArrayBindingPattern(
         ...expression,
         object: lowerIrExpressionArrayBindingPattern(expression.object, `${path}.object`, analysis),
       };
+    case 'tupleSuffix':
+      return expression;
     case 'unary':
       return {
         ...expression,

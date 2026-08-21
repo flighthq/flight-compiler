@@ -507,6 +507,72 @@ describe('validateIrModuleStructure', () => {
               ...declaration,
               body: [
                 {
+                  expression: {
+                    kind: 'tupleSuffix',
+                    object: { kind: 'identifier', reference: { binding: parameter.binding, kind: 'binding' } },
+                    start: -1,
+                    width: 0,
+                  },
+                  kind: 'return',
+                },
+              ],
+            },
+          ],
+        } as unknown as IrModule,
+        'invalid-node-shape',
+      ],
+      [
+        {
+          ...module,
+          declarations: [
+            {
+              ...declaration,
+              body: [
+                {
+                  expression: {
+                    kind: 'tupleSuffix',
+                    object: { kind: 'identifier', reference: { binding: parameter.binding, kind: 'binding' } },
+                    start: 0,
+                    width: -1,
+                  },
+                  kind: 'return',
+                },
+              ],
+            },
+          ],
+        } as unknown as IrModule,
+        'invalid-node-shape',
+      ],
+      [
+        {
+          ...module,
+          declarations: [
+            {
+              ...declaration,
+              body: [
+                {
+                  expression: {
+                    kind: 'tupleSuffix',
+                    object: { elements: [], kind: 'array' },
+                    start: 0,
+                    width: 0,
+                  },
+                  kind: 'return',
+                },
+              ],
+            },
+          ],
+        } as unknown as IrModule,
+        'invalid-node-shape',
+      ],
+      [
+        {
+          ...module,
+          declarations: [
+            {
+              ...declaration,
+              body: [
+                {
                   expression: { elements: [{ optional: false }], kind: 'tuple' },
                   kind: 'return',
                 },

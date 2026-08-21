@@ -345,6 +345,9 @@ function collectExpressionBindings(
     case 'tupleRest':
       collectExpressionBindings(expression.object, `${path}:object`, add);
       break;
+    case 'tupleSuffix':
+      collectExpressionBindings(expression.object, `${path}:object`, add);
+      break;
     case 'unary':
       collectExpressionBindings(expression.operand, `${path}:operand`, add);
       break;

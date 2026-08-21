@@ -286,6 +286,9 @@ function analyzeExpression(
     case 'tupleRest':
       analyzeExpression(expression.object, analysis, 'read');
       return;
+    case 'tupleSuffix':
+      analyzeExpression(expression.object, analysis, 'read');
+      return;
     case 'unary':
       if (expression.operator === '!') {
         addTruthinessFact('negationOperand', expression.operand, analysis, expression.semantics.operand.flow);
@@ -452,6 +455,7 @@ function getExpressionValueDomain(expression: Readonly<IrExpression>): IrOperato
     case 'template':
       return 'string';
     case 'tupleRest':
+    case 'tupleSuffix':
       return 'object';
     case 'unary':
       return expression.semantics.result;

@@ -98,6 +98,8 @@ function hasIrExpressionArrayBindingPattern(expression: Readonly<IrExpression>):
       );
     case 'tupleRest':
       return hasIrExpressionArrayBindingPattern(expression.object);
+    case 'tupleSuffix':
+      return false;
     case 'unary':
       return hasIrExpressionArrayBindingPattern(expression.operand);
     case 'undefinedDefault':

@@ -1155,12 +1155,20 @@ describe('lowerTypeScriptSource', () => {
       `
         type Row = [number, string];
         type Rows = ReadonlyArray<Row>;
+        type GenericRows<T> = ReadonlyArray<T>;
+        type ArrayRows<T> = T[];
+        type NestedRows<T> = GenericRows<T>;
+        type DefaultRows<T = Row> = ReadonlyArray<T>;
         function createRows(): Rows { throw new Error(); }
         class Holder { rows: Row[] = []; }
-        export function read(rows: Row[], holder: Holder, mystery: any): void {
+        export function read(rows: Row[], holder: Holder, generic: GenericRows<Row>, arrayRows: ArrayRows<Row>, nested: NestedRows<Row>, defaulted: DefaultRows, mystery: any): void {
           for (const [first, second] of rows) { first; second; }
           for (const [first, second] of createRows()) { first; second; }
           for (const [first, second] of holder.rows) { first; second; }
+          for (const [first, second] of generic) { first; second; }
+          for (const [first, second] of arrayRows) { first; second; }
+          for (const [first, second] of nested) { first; second; }
+          for (const [first, second] of defaulted) { first; second; }
           for (const [first, second] of mystery) { first; second; }
         }
       `,
@@ -1172,8 +1180,8 @@ describe('lowerTypeScriptSource', () => {
     const loops = declaration.body.filter((statement) => statement.kind === 'forOf');
 
     expect(result.diagnostics).toEqual([]);
-    expect(loops).toHaveLength(4);
-    for (const loop of loops.slice(0, 3)) {
+    expect(loops).toHaveLength(8);
+    for (const loop of loops.slice(0, 7)) {
       expect(loop.variable.type).toMatchObject({
         elements: [{ type: { kind: 'primitive', name: 'number' } }, { type: { kind: 'primitive', name: 'string' } }],
         kind: 'tuple',
@@ -1186,7 +1194,7 @@ describe('lowerTypeScriptSource', () => {
         { pattern: { type: { kind: 'primitive', name: 'string' } } },
       ]);
     }
-    expect(loops[3]?.variable.type).toBeUndefined();
+    expect(loops[7]?.variable.type).toBeUndefined();
   });
 
   it('distinguishes contextual fixed tuple expressions from open array expressions', () => {

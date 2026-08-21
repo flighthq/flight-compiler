@@ -293,22 +293,105 @@ describe('createCompilerLoweringPassArrayBindingPattern', () => {
     expect(named[2]).toMatchObject({
       binding: { name: 'tail' },
       initializer: {
-        elements: [
-          { expression: { index: { value: 1 }, kind: 'element' }, optional: false },
-          { expression: { index: { value: 2 }, kind: 'element' }, optional: false },
-        ],
-        kind: 'tuple',
+        kind: 'tupleSuffix',
+        object: { reference: { binding: named[0]?.binding } },
+        start: 1,
+        width: 2,
       },
       type: { elements: [{ type: { name: 'string' } }, { type: { name: 'boolean' } }], kind: 'tuple' },
     });
     expect(nested).toHaveLength(4);
     expect(nested[1]).toMatchObject({
       binding: { name: 'arrayPatternValue' },
-      initializer: { elements: expect.any(Array), kind: 'tuple' },
+      initializer: {
+        kind: 'tupleSuffix',
+        object: { reference: { binding: nested[0]?.binding } },
+        start: 1,
+        width: 2,
+      },
       type: { elements: [{ type: { name: 'string' } }, { type: { name: 'boolean' } }], kind: 'tuple' },
     });
     expect(nested[2]).toMatchObject({ binding: { name: 'second' }, initializer: { index: { value: 0 } } });
     expect(nested[3]).toMatchObject({ binding: { name: 'third' }, initializer: { index: { value: 1 } } });
+  });
+
+  it('lowers optional and mixed fixed-variadic tuple suffixes without re-evaluating their source', () => {
+    const output = lowerIrModuleWithCompilerPasses(
+      lower(
+        'mixed-rest.ts',
+        `
+          export function splitEmpty(values: [number]): [] {
+            const [first, ...tail]: [number] = values;
+            first;
+            return tail;
+          }
+          export function splitOptional(values: [number, string?]): [string?] {
+            const [first, ...tail]: [number, string?] = values;
+            first;
+            return tail;
+          }
+          export function splitMixed(values: [number, string, ...boolean[]]): [string, ...boolean[]] {
+            const [first, ...tail]: [number, string, ...boolean[]] = values;
+            first;
+            return tail;
+          }
+          export function splitNestedMixed(values: [number, string, ...boolean[]]): boolean[] {
+            const [, ...[second, ...tail]]: [number, string, ...boolean[]] = values;
+            second;
+            return tail;
+          }
+        `,
+      ),
+      [createCompilerLoweringPassArrayBindingPattern()],
+    );
+    const empty = getVariableStatement(getFunctionDeclaration(output, 'splitEmpty').body[0]).declarations.map(
+      getNamedVariable,
+    );
+    const optional = getVariableStatement(getFunctionDeclaration(output, 'splitOptional').body[0]).declarations.map(
+      getNamedVariable,
+    );
+    const mixed = getVariableStatement(getFunctionDeclaration(output, 'splitMixed').body[0]).declarations.map(
+      getNamedVariable,
+    );
+    const nested = getVariableStatement(getFunctionDeclaration(output, 'splitNestedMixed').body[0]).declarations.map(
+      getNamedVariable,
+    );
+
+    expect(empty[2]).toMatchObject({
+      binding: { name: 'tail' },
+      initializer: { kind: 'tupleSuffix', start: 1, width: 0 },
+      type: { elements: [], kind: 'tuple' },
+    });
+    expect(optional[2]).toMatchObject({
+      binding: { name: 'tail' },
+      initializer: { kind: 'tupleSuffix', start: 1, width: 1 },
+      type: { elements: [{ optional: true, type: { name: 'string' } }], kind: 'tuple' },
+    });
+    expect(mixed[2]).toMatchObject({
+      binding: { name: 'tail' },
+      initializer: { kind: 'tupleSuffix', start: 1, width: 2 },
+      type: {
+        elements: [
+          { optional: false, rest: false, type: { name: 'string' } },
+          {
+            optional: false,
+            rest: true,
+            type: { element: { name: 'boolean' }, kind: 'array' },
+          },
+        ],
+        kind: 'tuple',
+      },
+    });
+    expect(nested).toMatchObject([
+      { binding: { name: 'arrayPatternValue' }, initializer: { kind: 'identifier' } },
+      {
+        binding: { name: 'arrayPatternValue' },
+        initializer: { kind: 'tupleSuffix', start: 1, width: 2 },
+        type: { elements: [{ rest: false }, { rest: true }], kind: 'tuple' },
+      },
+      { binding: { name: 'second' }, initializer: { kind: 'element' } },
+      { binding: { name: 'tail' }, initializer: { kind: 'tupleRest', start: 1 } },
+    ]);
   });
 
   it('lowers synchronous for-of tuple bindings at the start of each iteration body', () => {
@@ -317,7 +400,8 @@ describe('createCompilerLoweringPassArrayBindingPattern', () => {
       lower(
         'iteration.ts',
         `
-          export function visit(rows: Array<[number?, ...string[]]>, fixed: [number][]): void {
+          type Rows<T> = ReadonlyArray<T>;
+          export function visit(rows: Rows<[number?, ...string[]]>, fixed: [number][]): void {
             for (const [head = 1, ...tail] of rows) { head; tail; }
             for (const [value] of fixed) value;
           }
@@ -350,10 +434,6 @@ describe('createCompilerLoweringPassArrayBindingPattern', () => {
   });
 
   it.each([
-    {
-      reason: 'array binding rest at index 1 requires an aligned variadic tail or fixed required tuple suffix',
-      source: 'export const [first, ...rest]: [number, number?] = [1];',
-    },
     {
       reason: 'nested variadic array binding rest requires variadic tuple-tail destructuring lowering',
       source:

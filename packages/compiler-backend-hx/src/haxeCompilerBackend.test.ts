@@ -116,6 +116,18 @@ describe('emitIrModuleHaxe', () => {
       'array-fixed-rest.ts',
       'export function select(values: [number, string, boolean]): [string, boolean] { const [first, ...rest]: [number, string, boolean] = values; first; return rest; }',
     );
+    const emptyRest = lower(
+      'array-empty-rest.ts',
+      'export function select(values: [number]): [] { const [first, ...rest]: [number] = values; first; return rest; }',
+    );
+    const optionalRest = lower(
+      'array-optional-rest.ts',
+      'export function select(values: [number, string?]): [string?] { const [first, ...rest]: [number, string?] = values; first; return rest; }',
+    );
+    const mixedRest = lower(
+      'array-mixed-rest.ts',
+      'export function select(values: [number, string, ...boolean[]]): [string, ...boolean[]] { const [first, ...rest]: [number, string, ...boolean[]] = values; first; return rest; }',
+    );
     const iteration = lower(
       'array-iteration.ts',
       'export function visit(rows: Array<[number, number]>): number { for (const [first, second] of rows) { second; return first; } return 0; }',
@@ -132,7 +144,16 @@ describe('emitIrModuleHaxe', () => {
     expect(emitIrModuleHaxe(rest.module).contents).toContain('final rest:Array<Float> = arrayPatternValue.slice(1);');
     expect(emitIrModuleHaxe(nestedDefault.module).contents).toContain('(arrayPatternValue[0] ?? [1])');
     expect(emitIrModuleHaxe(fixedRest.module).contents).toContain(
-      'final rest:Array<Dynamic> = [arrayPatternValue[1], arrayPatternValue[2]];',
+      'final rest:Array<Dynamic> = arrayPatternValue.slice(1);',
+    );
+    expect(emitIrModuleHaxe(emptyRest.module).contents).toContain(
+      'final rest:Array<Dynamic> = arrayPatternValue.slice(1);',
+    );
+    expect(emitIrModuleHaxe(optionalRest.module).contents).toContain(
+      'final rest:Array<Dynamic> = arrayPatternValue.slice(1);',
+    );
+    expect(emitIrModuleHaxe(mixedRest.module).contents).toContain(
+      'final rest:Array<Dynamic> = arrayPatternValue.slice(1);',
     );
     expect(emitIrModuleHaxe(iteration.module).contents).toContain(
       'for (arrayPatternValue in rows) {\n      final first:Float = arrayPatternValue[0];\n      final second:Float = arrayPatternValue[1];',
