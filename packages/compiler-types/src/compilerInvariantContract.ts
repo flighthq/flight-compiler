@@ -2,6 +2,7 @@ export type CompilerInvariantCode =
   | 'duplicate-emitted-path'
   | 'duplicate-module-identity'
   | 'duplicate-target-name-identity'
+  | 'insufficient-source-conformance-files'
   | 'invalid-generated-file-provenance'
   | 'invalid-source-conformance-diagnostic'
   | 'invalid-source-conformance-parser'

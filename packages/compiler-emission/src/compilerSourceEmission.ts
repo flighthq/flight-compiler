@@ -149,6 +149,7 @@ const compilerInvariantCodes = {
   'duplicate-emitted-path': true,
   'duplicate-module-identity': true,
   'duplicate-target-name-identity': true,
+  'insufficient-source-conformance-files': true,
   'invalid-generated-file-provenance': true,
   'invalid-source-conformance-diagnostic': true,
   'invalid-source-conformance-parser': true,

@@ -30,7 +30,16 @@ export function compileIrModules<BackendOptions>(
     .map(normalizeEmittedFile)
     .sort(compareEmittedFiles);
   validateEmittedFiles(files);
-  if (options.sourceParser) validateCompilerEmittedSourceConformance(files, options.sourceParser);
+  if (options.sourceParser) {
+    const conformance = validateCompilerEmittedSourceConformance(files, options.sourceParser);
+    if (files.length > 0 && conformance.checkedFiles === 0) {
+      throw createCompilerInvariantFailure(
+        'insufficient-source-conformance-files',
+        conformance.parser,
+        `Emitted-source parser ${conformance.parser} did not support any of ${String(files.length)} emitted file(s)`,
+      );
+    }
+  }
   return {
     compilation: { backend: options.backend.name, files },
     diagnostics: [],

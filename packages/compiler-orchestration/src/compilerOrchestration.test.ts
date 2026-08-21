@@ -166,6 +166,29 @@ describe('compileIrModules', () => {
       });
     }
     expect(seen).toEqual(['Value.txt:@flighthq/math:Value\n']);
+
+    expect(() =>
+      compileIrModules({
+        backend: fixtureBackend,
+        backendOptions: {},
+        modules: [createModule('Value')],
+        sourceParser: { ...sourceParser, supportsEmittedSource: () => false },
+      }),
+    ).toThrow(
+      expect.objectContaining({
+        code: 'insufficient-source-conformance-files',
+        kind: 'compiler-invariant',
+        subject: 'fixture-language-parser',
+      }),
+    );
+    expect(
+      compileIrModules({
+        backend: fixtureBackend,
+        backendOptions: {},
+        modules: [],
+        sourceParser: { ...sourceParser, supportsEmittedSource: () => false },
+      }).compilation.files,
+    ).toEqual([]);
   });
 });
 
