@@ -2,6 +2,7 @@ import path from 'node:path';
 
 import ts from 'typescript';
 
+import { compareTextCodeUnits } from '../../compiler-ordering/src/index.js';
 import type {
   AnalyzeTypeScriptHostEndpointsOptions,
   CompilerHostEndpointInventory,
@@ -29,7 +30,7 @@ export function analyzeTypeScriptHostEndpoints(
   options: Readonly<AnalyzeTypeScriptHostEndpointsOptions>,
 ): CompilerHostEndpointInventory {
   const upstreamDirectory = path.resolve(options.upstreamDirectory);
-  const manifests = [...options.manifests].sort((left, right) => compareText(left.name, right.name));
+  const manifests = [...options.manifests].sort((left, right) => compareTextCodeUnits(left.name, right.name));
   const uses: HostEndpointUse[] = [];
   for (const sourceFile of options.project.program.getSourceFiles()) {
     const manifest = getSourceFileManifest(sourceFile, manifests, upstreamDirectory);
@@ -82,9 +83,9 @@ function compareHostEndpointRecords(
   right: Readonly<CompilerHostEndpointRecord>,
 ): number {
   return (
-    compareText(left.receiver, right.receiver) ||
-    compareText(left.endpoint, right.endpoint) ||
-    compareText(left.operation, right.operation)
+    compareTextCodeUnits(left.receiver, right.receiver) ||
+    compareTextCodeUnits(left.endpoint, right.endpoint) ||
+    compareTextCodeUnits(left.operation, right.operation)
   );
 }
 
@@ -93,15 +94,11 @@ function compareSourceLocations(
   right: Readonly<CompilerSourceLocation>,
 ): number {
   return (
-    compareText(left.packageName, right.packageName) ||
-    compareText(left.source, right.source) ||
+    compareTextCodeUnits(left.packageName, right.packageName) ||
+    compareTextCodeUnits(left.source, right.source) ||
     left.line - right.line ||
     left.column - right.column
   );
-}
-
-function compareText(left: string, right: string): number {
-  return left < right ? -1 : left > right ? 1 : 0;
 }
 
 function getPortableRelativePath(file: string, upstreamDirectory: string): string {

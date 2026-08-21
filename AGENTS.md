@@ -103,6 +103,7 @@ Keep imports side-effect-free. Importing the package must not read a checkout, s
 - Every public export is lowered, patched, or represented by a structured diagnostic. Never silently drop a declaration.
 - Every declaration and patch retains stable upstream identity: package name, source path, export name, and normalized SHA-256 fingerprint.
 - Deterministic outputs contain no timestamps, machine-specific absolute paths, or filesystem iteration order.
+- Deterministic package ordering uses `compareTextCodeUnits` from `compiler-ordering`; package source does not define local text comparators or call locale-sensitive `localeCompare`.
 - Expected environmental absence returns a structured result where the API defines one. Invalid compiler configuration, unresolved public exports, ambiguous patches, and stale fingerprints fail loudly.
 - Use small free functions and plain data. Compiler packages do not define classes; tagged diagnostic values and explicit function records provide failure and capability contracts.
 - Exported names must be globally understandable without relying on a deep import path for context.

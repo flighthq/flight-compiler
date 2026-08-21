@@ -1,3 +1,4 @@
+import { compareTextCodeUnits } from '../../compiler-ordering/src/index.js';
 import type {
   AnalyzeFlightPackageExclusionsOptions,
   PackageExclusion,
@@ -18,7 +19,7 @@ export function analyzeFlightPackageExclusions(
   const claims = options.packages
     .map(createPackageExclusionClaim)
     .filter((claim): claim is PackageExclusionClaim => claim !== undefined)
-    .sort((left, right) => compareText(left.packageName, right.packageName));
+    .sort((left, right) => compareTextCodeUnits(left.packageName, right.packageName));
   const partial = claims.filter((claim) => claim.missing.length > 0);
   if (partial.length > 0) {
     const subject = partial.map((claim) => claim.packageName).join(',');
@@ -33,8 +34,8 @@ export function analyzeFlightPackageExclusions(
 
   const exclusions = new Map(claims.map((claim) => [claim.packageName, claim.exclusion!] as const));
   if (options.expectedPackageNames) {
-    const expected = [...new Set(options.expectedPackageNames)].sort(compareText);
-    const actual = [...exclusions.keys()].sort(compareText);
+    const expected = [...new Set(options.expectedPackageNames)].sort(compareTextCodeUnits);
+    const actual = [...exclusions.keys()].sort(compareTextCodeUnits);
     if (!sameTextLists(expected, actual)) {
       throw createCompilerInventoryFailure(
         'package-exclusion-drift',
@@ -44,10 +45,6 @@ export function analyzeFlightPackageExclusions(
     }
   }
   return exclusions;
-}
-
-function compareText(left: string, right: string): number {
-  return left < right ? -1 : left > right ? 1 : 0;
 }
 
 function createPackageExclusionClaim(item: Readonly<PackageInventory>): PackageExclusionClaim | undefined {
@@ -99,7 +96,7 @@ function createPackageExclusionClaim(item: Readonly<PackageInventory>): PackageE
 function formatHostModules(references: readonly Readonly<PackageHostModuleReference>[]): string {
   return references
     .map((reference) => reference.specifier)
-    .sort(compareText)
+    .sort(compareTextCodeUnits)
     .join(', ');
 }
 

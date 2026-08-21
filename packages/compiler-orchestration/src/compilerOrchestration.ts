@@ -1,6 +1,7 @@
 import ts from 'typescript';
 
 import { createCompilerInvariantFailure, normalizeEmittedFile } from '../../compiler-emission/src/index.js';
+import { compareTextCodeUnits } from '../../compiler-ordering/src/index.js';
 import { applySemanticPatchSet } from '../../compiler-patch/src/index.js';
 import { lowerTypeScriptSource } from '../../compiler-semantic/src/index.js';
 import type {
@@ -90,17 +91,17 @@ export function parseTypeScriptSource(fileName: string, source: string): ts.Sour
 
 function compareDiagnostics(left: Readonly<CompilerDiagnostic>, right: Readonly<CompilerDiagnostic>): number {
   return (
-    compareText(left.packageName, right.packageName) ||
-    compareText(left.source, right.source) ||
+    compareTextCodeUnits(left.packageName, right.packageName) ||
+    compareTextCodeUnits(left.source, right.source) ||
     left.line - right.line ||
     left.column - right.column ||
-    compareText(left.code, right.code) ||
-    compareText(left.message, right.message)
+    compareTextCodeUnits(left.code, right.code) ||
+    compareTextCodeUnits(left.message, right.message)
   );
 }
 
 function compareEmittedFiles(left: Readonly<EmittedFile>, right: Readonly<EmittedFile>): number {
-  return compareText(left.path, right.path);
+  return compareTextCodeUnits(left.path, right.path);
 }
 
 function isCompilerDiagnosticValue(value: unknown): value is CompilerDiagnostic {
@@ -129,14 +130,10 @@ function isCompilerDiagnosticValue(value: unknown): value is CompilerDiagnostic 
 
 function compareModules(left: Readonly<IrModule>, right: Readonly<IrModule>): number {
   return (
-    compareText(left.packageName, right.packageName) ||
-    compareText(left.source, right.source) ||
-    compareText(left.name, right.name)
+    compareTextCodeUnits(left.packageName, right.packageName) ||
+    compareTextCodeUnits(left.source, right.source) ||
+    compareTextCodeUnits(left.name, right.name)
   );
-}
-
-function compareText(left: string, right: string): number {
-  return left < right ? -1 : left > right ? 1 : 0;
 }
 
 function validateEmittedFiles(files: readonly EmittedFile[]): void {

@@ -1,3 +1,4 @@
+import { compareTextCodeUnits } from '../../compiler-ordering/src/index.js';
 import type {
   FlightPackageManifest,
   PackageHostFacts,
@@ -20,11 +21,7 @@ function compareHostModuleReferences(
   left: Readonly<PackageHostModuleReference>,
   right: Readonly<PackageHostModuleReference>,
 ): number {
-  return compareText(left.kind, right.kind) || compareText(left.specifier, right.specifier);
-}
-
-function compareText(left: string, right: string): number {
-  return left < right ? -1 : left > right ? 1 : 0;
+  return compareTextCodeUnits(left.kind, right.kind) || compareTextCodeUnits(left.specifier, right.specifier);
 }
 
 function createHostModuleReferences(specifiers: readonly string[]): PackageHostModuleReference[] {

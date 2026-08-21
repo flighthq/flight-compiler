@@ -1,5 +1,6 @@
 import path from 'node:path';
 
+import { compareTextCodeUnits } from '../../compiler-ordering/src/index.js';
 import type {
   FlightPackageManifest,
   PackageBinEntry,
@@ -30,7 +31,7 @@ export function readFlightPackageManifests(
     .map((entry) => path.join(packagesDirectory, entry.name, 'package.json'))
     .filter((manifestPath) => source.isFile(manifestPath))
     .map((manifestPath) => readFlightPackageManifest(manifestPath, upstreamDirectory, packageScope, source))
-    .sort((left, right) => compareText(left.name, right.name));
+    .sort((left, right) => compareTextCodeUnits(left.name, right.name));
   for (let index = 1; index < manifests.length; index += 1) {
     if (manifests[index - 1]!.name === manifests[index]!.name) {
       throw createCompilerInventoryFailure(
@@ -41,10 +42,6 @@ export function readFlightPackageManifests(
     }
   }
   return manifests;
-}
-
-function compareText(left: string, right: string): number {
-  return left < right ? -1 : left > right ? 1 : 0;
 }
 
 function readFlightPackageManifest(
@@ -106,7 +103,7 @@ function readPackageBins(value: unknown, subject: string): PackageBinEntry[] {
     }
     return { name, target };
   });
-  return bins.sort((left, right) => compareText(left.name, right.name));
+  return bins.sort((left, right) => compareTextCodeUnits(left.name, right.name));
 }
 
 function readPackageDependencies(packageJson: Readonly<Record<string, unknown>>, subject: string): string[] {
@@ -122,7 +119,7 @@ function readPackageDependencies(packageJson: Readonly<Record<string, unknown>>,
       names.add(name);
     }
   }
-  return [...names].sort(compareText);
+  return [...names].sort(compareTextCodeUnits);
 }
 
 function readRequiredString(packageJson: Readonly<Record<string, unknown>>, key: string, subject: string): string {

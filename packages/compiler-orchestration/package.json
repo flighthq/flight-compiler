@@ -19,6 +19,7 @@
   },
   "dependencies": {
     "@flighthq/compiler-emission": "*",
+    "@flighthq/compiler-ordering": "*",
     "@flighthq/compiler-patch": "*",
     "@flighthq/compiler-semantic": "*",
     "@flighthq/compiler-types": "*",

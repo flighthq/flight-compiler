@@ -2,6 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
+import { compareTextCodeUnits } from '../../compiler-ordering/src/index.js';
 import { createHostWorkspaceSource } from './hostWorkspaceSource.js';
 
 // The only inventory test that still needs a real directory, because a host source is exactly the
@@ -20,7 +21,9 @@ describe('createHostWorkspaceSource', () => {
       expect(source.isFile(path.join(directory, 'packages'))).toBe(false);
       expect(source.isDirectory(path.join(directory, 'absent'))).toBe(false);
       expect(source.isFile(path.join(directory, 'absent'))).toBe(false);
-      expect([...source.listDirectory(directory)].sort((left, right) => left.name.localeCompare(right.name))).toEqual([
+      expect(
+        [...source.listDirectory(directory)].sort((left, right) => compareTextCodeUnits(left.name, right.name)),
+      ).toEqual([
         { isDirectory: false, name: 'package.json' },
         { isDirectory: true, name: 'packages' },
       ]);

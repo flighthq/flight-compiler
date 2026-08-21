@@ -2,6 +2,7 @@ import path from 'node:path';
 
 import ts from 'typescript';
 
+import { compareTextCodeUnits } from '../../compiler-ordering/src/index.js';
 import { fingerprintTypeScriptNode } from '../../compiler-provenance/src/index.js';
 import type {
   AnalyzeFlightWorkspaceOptions,
@@ -142,7 +143,9 @@ export function analyzeFlightWorkspace(options: Readonly<AnalyzeFlightWorkspaceO
     };
   });
 
-  const sortedPackageInventories = [...packageInventories].sort((left, right) => compareText(left.name, right.name));
+  const sortedPackageInventories = [...packageInventories].sort((left, right) =>
+    compareTextCodeUnits(left.name, right.name),
+  );
   const inventoryByName = new Map(sortedPackageInventories.map((item) => [item.name, item]));
   const sdkExposures = readSdkExposures(
     context.packageByName.get(sdkPackageName),
@@ -214,11 +217,7 @@ function applyRuntimeExportDecision(
 }
 
 function compareExports(left: Readonly<ExportRecord>, right: Readonly<ExportRecord>): number {
-  return compareText(left.name, right.name) || compareText(left.source, right.source);
-}
-
-function compareText(left: string, right: string): number {
-  return left < right ? -1 : left > right ? 1 : 0;
+  return compareTextCodeUnits(left.name, right.name) || compareTextCodeUnits(left.source, right.source);
 }
 
 function declarationKind(node: ts.Node): ExportKind | undefined {
@@ -253,7 +252,7 @@ function deduplicateExports(exports: readonly ExportRecord[]): {
   return {
     conflicts: [...conflictSources]
       .map(([name, sources]) => ({ name, sources: [...sources].sort() }))
-      .sort((left, right) => compareText(left.name, right.name)),
+      .sort((left, right) => compareTextCodeUnits(left.name, right.name)),
     uniqueExports: [...byName.values()],
   };
 }
@@ -270,7 +269,7 @@ function mergeExportConflicts(
   }
   return [...conflicts]
     .map(([name, sources]) => ({ name, sources: [...sources].sort() }))
-    .sort((left, right) => compareText(left.name, right.name));
+    .sort((left, right) => compareTextCodeUnits(left.name, right.name));
 }
 
 function escapeRegularExpression(value: string): string {
@@ -444,7 +443,8 @@ function readSdkExposures(
     exposures.set(
       packageName,
       [...unique.values()].sort(
-        (left, right) => compareText(left.sdkLane, right.sdkLane) || compareText(left.target, right.target),
+        (left, right) =>
+          compareTextCodeUnits(left.sdkLane, right.sdkLane) || compareTextCodeUnits(left.target, right.target),
       ),
     );
   }

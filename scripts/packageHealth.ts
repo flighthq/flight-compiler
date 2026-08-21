@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import ts from 'typescript';
 
 import {
+  collectCompilerTextOrderingViolations,
   collectExportedApiDeclarations,
   collectLocalExportNames,
   collectModuleSpecifiers,
@@ -56,7 +57,7 @@ const packageRules: Readonly<Record<string, PackageRule>> = {
     description: 'Target-neutral source-emission infrastructure',
   },
   'compiler-inventory': {
-    dependencies: ['compiler-provenance', 'compiler-types'],
+    dependencies: ['compiler-ordering', 'compiler-provenance', 'compiler-types'],
     description: 'Flight package, export-lane, symbol, and runtime-value inventory',
   },
   'compiler-ir-validation': {
@@ -74,7 +75,7 @@ const packageRules: Readonly<Record<string, PackageRule>> = {
     description: 'Host-independent ordering primitives for compiler data',
   },
   'compiler-orchestration': {
-    dependencies: ['compiler-emission', 'compiler-patch', 'compiler-semantic', 'compiler-types'],
+    dependencies: ['compiler-emission', 'compiler-ordering', 'compiler-patch', 'compiler-semantic', 'compiler-types'],
     description: 'Deterministic compiler pipeline orchestration',
   },
   'compiler-patch': {
@@ -284,6 +285,15 @@ function checkPackage(packageName: string, rule: Readonly<PackageRule>): void {
       `${relative(file)}: transient work comments do not belong in source`,
     );
     const sourceFile = ts.createSourceFile(file, contents, ts.ScriptTarget.Latest, true);
+    for (const violation of collectCompilerTextOrderingViolations(sourceFile, packageName === 'compiler-ordering')) {
+      errors.push(
+        `${relative(file)}:${String(lineOf(sourceFile, violation.node))}: ${
+          violation.kind === 'locale-compare'
+            ? 'localeCompare is host-dependent; use compareTextCodeUnits'
+            : 'local text comparators belong in compiler-ordering'
+        }`,
+      );
+    }
     visitSourceFile(sourceFile, packageName);
     const imports = file.endsWith('.test.ts') ? testImports : productionImports;
     for (const specifier of collectModuleSpecifiers(sourceFile)) {

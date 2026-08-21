@@ -28,6 +28,10 @@ The dependency-free owner of host-independent ordering primitives used in determ
 
 This package compares already-decided text identities. It does not decide whether two paths, source nodes, target names, or external types are equivalent; the package that owns that identity normalizes first and then uses this order. Composite record precedence remains with the domain package that understands the fields.
 
+## Present adoption
+
+Patch precedence and audits, emitted-name allocation, runtime-contract requirements, inventory facts and reports, and orchestration modules, diagnostics, and files all use this primitive. Package health rejects local named text comparators outside this workspace and rejects locale-sensitive `localeCompare` throughout package source.
+
 ## Gaps
 
 - Only text ordering is shared. Add another primitive only after multiple packages demonstrate the same non-text order and laws.

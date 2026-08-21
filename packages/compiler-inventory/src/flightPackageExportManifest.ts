@@ -1,5 +1,6 @@
 import path from 'node:path';
 
+import { compareTextCodeUnits } from '../../compiler-ordering/src/index.js';
 import type {
   PackageExportCondition,
   PackageExportDescriptor,
@@ -29,10 +30,6 @@ export function readPackageExportManifest(
     packageJson,
     workspace,
   );
-}
-
-function compareText(left: string, right: string): number {
-  return left < right ? -1 : left > right ? 1 : 0;
 }
 
 function portablePath(value: string): string {
@@ -115,7 +112,7 @@ function readPackageExportDescriptors(
           target,
         };
       })
-      .sort((left, right) => compareText(left.condition, right.condition));
+      .sort((left, right) => compareTextCodeUnits(left.condition, right.condition));
     return {
       conditions,
       entry,
@@ -133,7 +130,7 @@ function readPackageExportDescriptors(
       `Package manifest has no root export lane: ${descriptor.name}`,
     );
   }
-  return descriptors.sort((left, right) => compareText(left.entry, right.entry));
+  return descriptors.sort((left, right) => compareTextCodeUnits(left.entry, right.entry));
 }
 
 function relativeSource(file: string, upstreamDirectory: string): string {

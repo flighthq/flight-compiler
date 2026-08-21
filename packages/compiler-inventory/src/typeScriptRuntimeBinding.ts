@@ -1,5 +1,6 @@
 import ts from 'typescript';
 
+import { compareTextCodeUnits } from '../../compiler-ordering/src/index.js';
 import type { RuntimeExportDecision } from '../../compiler-types/src/index.js';
 import { createCompilerInventoryFailure } from './compilerInventoryFailure.js';
 
@@ -18,7 +19,7 @@ export function analyzeTypeScriptSourceRuntimeExports(
   }
   const decisions = new Map<string, RuntimeExportDecision>();
   const exports = [...checker.getExportsOfModule(module)].sort((left, right) =>
-    compareText(left.getName(), right.getName()),
+    compareTextCodeUnits(left.getName(), right.getName()),
   );
   for (const exported of exports) {
     if (isTypeScriptExportExplicitlyTypeOnly(exported)) {
@@ -85,8 +86,4 @@ function isAmbientDeclaration(declaration: ts.Declaration): boolean {
     if (ts.canHaveModifiers(current) && hasModifier(current, ts.SyntaxKind.DeclareKeyword)) return true;
   }
   return declaration.getSourceFile().isDeclarationFile;
-}
-
-function compareText(left: string, right: string): number {
-  return left < right ? -1 : left > right ? 1 : 0;
 }

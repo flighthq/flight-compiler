@@ -2,6 +2,7 @@ import path from 'node:path';
 
 import ts from 'typescript';
 
+import { compareTextCodeUnits } from '../../compiler-ordering/src/index.js';
 import type {
   AnalyzeFlightPackageImportsOptions,
   PackageImportRecord,
@@ -88,15 +89,11 @@ function comparePackageImportRecords(
   right: Readonly<PackageImportRecord>,
 ): number {
   return (
-    compareText(left.source, right.source) ||
-    compareText(left.specifier, right.specifier) ||
-    compareText(left.kind, right.kind) ||
+    compareTextCodeUnits(left.source, right.source) ||
+    compareTextCodeUnits(left.specifier, right.specifier) ||
+    compareTextCodeUnits(left.kind, right.kind) ||
     Number(left.typeOnly) - Number(right.typeOnly)
   );
-}
-
-function compareText(left: string, right: string): number {
-  return left < right ? -1 : left > right ? 1 : 0;
 }
 
 function walkProductionTypeScriptFiles(directory: string, workspace: WorkspaceSource): string[] {
@@ -114,5 +111,5 @@ function walkProductionTypeScriptFiles(directory: string, workspace: WorkspaceSo
       files.push(target);
     }
   }
-  return files.sort(compareText);
+  return files.sort(compareTextCodeUnits);
 }

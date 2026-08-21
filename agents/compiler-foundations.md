@@ -18,15 +18,17 @@ compiler-types
   <- compiler-ir-validation
   <- compiler-lowering
 
-compiler-types + compiler-provenance
+compiler-ordering + compiler-types + compiler-provenance
   <- compiler-inventory
+
+compiler-types + compiler-provenance
   <- compiler-semantic
 
 compiler-types + compiler-emission + compiler-lowering + compiler-runtime-contract
   <- compiler-backend-hx
   <- compiler-backend-rs
 
-types + semantic + patch + emission
+ordering + types + semantic + patch + emission
   <- compiler-orchestration
   <- tool-compiler
 ```
@@ -153,6 +155,7 @@ Each workspace passes its own strict typecheck and Vitest target. The package bo
 | Package | Isolation conclusion | Current robustness boundary |
 | --- | --- | --- |
 | `compiler-types` | Keep independent as the dependency-free vocabulary floor. | Strict typecheck and focused composition tests cover useful relationships; identity, declaration/type separation and cardinality, closed operator tokens and static value domains, source location, value/type binding provenance, diagnostics/failures, and readonly collection boundaries are explicit, while declaration merging and complete expression/statement coverage remain open. |
+| `compiler-ordering` | Keep independent as the dependency-free host-independent ordering floor. | Exact equality, empty and prefix values, ASCII case, non-ASCII and surrogate text, antisymmetry, transitivity, and caller-owned Unicode normalization are direct-tested; package health prevents local text comparator and locale-sensitive ordering regressions. |
 | `compiler-provenance` | Keep independent as one narrow identity primitive. | Equivalence, counterexample, empty, Unicode, path, line-ending, raw-text, and TypeScript-version behavior are locked. |
 | `compiler-patch` | Keep independent because patch identity and auditing are a separate lifecycle. | All operations and failure codes, deterministic ordering, backend skipping, and caller-input immutability are exercised. |
 | `compiler-emission` | Keep independent as the portable emitted-file and backend-failure seam. | Path/content normalization, host-path rejection, portable path and target-name collision identity, fixed-versus-renamable lexical allocation, indentation boundaries, and tagged failure guards are exercised. |
@@ -219,6 +222,12 @@ The IR-integrity batch completed three bounded iterations:
 1. Make external-type reachability exhaustive at every declaration, expression, object-member, statement, and type discriminant boundary.
 2. Add a dependency-floor structural `IrModule` validator with stable failure codes and paths for identity, provenance, binding references, arity, cardinality, and unknown runtime shapes.
 3. Compose shared structure checks with lowering-pass postconditions, preserve module identity, and move repeated idempotence execution behind an explicit verification depth so ordinary backends transform once.
+
+The deterministic-ordering consolidation batch completed three bounded iterations:
+
+1. Define one dependency-free UTF-16 code-unit text order with executable equality, boundary, Unicode, antisymmetry, transitivity, and normalization-ownership laws.
+2. Replace private ordering copies in patching, emission, and runtime-contract foundations while preserving each domain's normalization policy.
+3. Replace the remaining inventory and orchestration copies, and make package health reject local named text comparators and locale-sensitive `localeCompare` calls.
 
 ## Freeze rule
 

@@ -5,6 +5,37 @@ export interface ExportedApiDeclaration {
   name: string;
 }
 
+export interface CompilerTextOrderingViolation {
+  readonly kind: 'local-text-comparator' | 'locale-compare';
+  readonly node: ts.Node;
+}
+
+export function collectCompilerTextOrderingViolations(
+  sourceFile: ts.SourceFile,
+  allowLocalTextComparator: boolean,
+): readonly CompilerTextOrderingViolation[] {
+  const violations: CompilerTextOrderingViolation[] = [];
+  const visit = (node: ts.Node): void => {
+    const localComparatorName = ts.isFunctionDeclaration(node)
+      ? node.name?.text
+      : ts.isVariableDeclaration(node) &&
+          ts.isIdentifier(node.name) &&
+          node.initializer &&
+          (ts.isArrowFunction(node.initializer) || ts.isFunctionExpression(node.initializer))
+        ? node.name.text
+        : undefined;
+    if (!allowLocalTextComparator && localComparatorName && /^compare.*(?:String|Text)/u.test(localComparatorName)) {
+      violations.push({ kind: 'local-text-comparator', node });
+    }
+    if (ts.isPropertyAccessExpression(node) && node.name.text === 'localeCompare') {
+      violations.push({ kind: 'locale-compare', node });
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sourceFile);
+  return violations;
+}
+
 export function collectDescribeNames(sourceFile: ts.SourceFile): ReadonlySet<string> {
   const names = new Set<string>();
   const visit = (node: ts.Node): void => {

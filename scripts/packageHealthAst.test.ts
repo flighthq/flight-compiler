@@ -2,6 +2,7 @@ import ts from 'typescript';
 import { describe, expect, it } from 'vitest';
 
 import {
+  collectCompilerTextOrderingViolations,
   collectDescribeNames,
   collectExportedApiDeclarations,
   collectLocalExportNames,
@@ -13,6 +14,28 @@ import {
 } from './packageHealthAst.js';
 
 describe('package boundary AST analysis', () => {
+  it('finds local or locale-sensitive text ordering without rejecting the shared primitive', () => {
+    const unsafe = source(`
+      function compareDisplayText(left: string, right: string) {
+        return left.localeCompare(right);
+      }
+      const compareDistinctText = (left: string, right: string) => left < right ? -1 : 1;
+      values.sort(compareDisplayText);
+    `);
+    const primitive = source(`
+      export function compareTextCodeUnits(left: string, right: string) {
+        return left < right ? -1 : left > right ? 1 : 0;
+      }
+    `);
+
+    expect(collectCompilerTextOrderingViolations(unsafe, false).map(({ kind }) => kind)).toEqual([
+      'local-text-comparator',
+      'locale-compare',
+      'local-text-comparator',
+    ]);
+    expect(collectCompilerTextOrderingViolations(primitive, true)).toEqual([]);
+  });
+
   it('finds exact describe names without accepting skipped or dynamically named suites', () => {
     const sourceFile = source(`
       describe('createWidget', () => {});
