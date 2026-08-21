@@ -34,9 +34,17 @@ export interface PatchAuditRecord {
   readonly target: SemanticPatchTarget;
 }
 
+export type PatchAuditSkipReason = 'backend-mismatch';
+
+export interface PatchAuditSkippedRecord extends PatchAuditRecord {
+  readonly skipReason: PatchAuditSkipReason;
+}
+
 export interface PatchAudit {
   readonly applied: readonly PatchAuditRecord[];
-  readonly schema: 'flight-compiler-patch-audit/1';
+  readonly backend: string;
+  readonly schema: 'flight-compiler-patch-audit/2';
+  readonly skipped: readonly PatchAuditSkippedRecord[];
   readonly summary: {
     readonly applied: number;
     readonly skipped: number;
@@ -54,6 +62,7 @@ export type SemanticPatchFailureCode =
   | 'conflicting-patch-removal'
   | 'duplicate-patch-id'
   | 'incompatible-patch-operation'
+  | 'invalid-patch-backend'
   | 'invalid-patch-expectation'
   | 'invalid-patch-id'
   | 'invalid-patch-operation'

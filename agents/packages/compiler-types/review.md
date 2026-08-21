@@ -35,7 +35,7 @@ The vocabulary package: 18 contract sources and one barrel, ~1,600 lines, no imp
 - **Narrowed structural states.** Compound-type cardinality, class heritage, constructor shape and type-parameter families reject invalid combinations at the type level rather than in an emitter guard.
 - **Identity is shared, not re-declared.** `CompilerSourceIdentity`, `CompilerModuleIdentity`, `CompilerExportIdentity` and `CompilerSourceOrigin` are one family that the IR, patches and inventory all extend, so "where did this come from" has a single answer.
 - **Tagged failure contracts.** Backend emission, compiler invariants, semantic patches, inventory and target-name allocation each carry a code union and a guard, and the codes are bound to their runtime registries by `satisfies Record<Code, …>` so an added code fails to compile until the guard learns it.
-- **Schema discriminants where interchange already exists** — `flight-compiler-report/1`, `flight-compiler-inventory/1`, `flight-compiler-patch-audit/1`.
+- **Schema discriminants where interchange already exists** — `flight-compiler-report/1`, `flight-compiler-inventory/1`, `flight-compiler-patch-audit/2`.
 - **Readonly by default.** Public collections are `readonly`, and the immutability that follows is exercised by the consumers' caller-input tests.
 
 ## Gaps

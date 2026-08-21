@@ -26,7 +26,13 @@ describe('compiler orchestration contracts', () => {
     const result: CompileIrModulesResult = {
       compilation: { backend: 'fixture', files: [] },
       diagnostics: [],
-      patchAudit: { applied: [], schema: 'flight-compiler-patch-audit/1', summary: { applied: 0, skipped: 0 } },
+      patchAudit: {
+        applied: [],
+        backend: 'haxe',
+        schema: 'flight-compiler-patch-audit/2',
+        skipped: [],
+        summary: { applied: 0, skipped: 0 },
+      },
       report,
     };
     const diagnostic: CompilerDiagnostic = {

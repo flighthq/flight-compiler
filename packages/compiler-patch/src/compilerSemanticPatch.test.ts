@@ -26,6 +26,21 @@ describe('applySemanticPatchSet', () => {
     expect(rust.modules[0]?.declarations[0]).toMatchObject({ binding: { name: 'rustName' } });
     expect(rust.audit.applied.map((record) => record.id)).toEqual(['zzz-neutral', 'aaa-rust']);
     expect(haxe.modules[0]?.declarations[0]).toMatchObject({ binding: { name: 'neutralName' } });
+    expect(haxe.audit).toMatchObject({
+      backend: 'haxe',
+      schema: 'flight-compiler-patch-audit/2',
+      skipped: [
+        {
+          fingerprint: patches[1].expect.fingerprint,
+          id: 'aaa-rust',
+          operation: 'rename',
+          reason: 'test',
+          scope: { backend: 'rust', kind: 'backend' },
+          skipReason: 'backend-mismatch',
+          target: patches[1].target,
+        },
+      ],
+    });
     expect(haxe.audit.summary).toEqual({ applied: 1, skipped: 1 });
   });
 
@@ -43,8 +58,10 @@ describe('applySemanticPatchSet', () => {
 
     expect(rust.modules[0]?.declarations[0]).toMatchObject({ binding: { name: 'rustName' } });
     expect(rust.audit.summary).toEqual({ applied: 1, skipped: 1 });
+    expect(rust.audit.skipped.map((record) => record.id)).toEqual(['haxe-rename']);
     expect(haxe.modules[0]?.declarations[0]).toMatchObject({ binding: { name: 'haxeName' } });
     expect(haxe.audit.summary).toEqual({ applied: 1, skipped: 1 });
+    expect(haxe.audit.skipped.map((record) => record.id)).toEqual(['rust-rename']);
   });
 
   it('applies every operation deterministically without mutating caller-owned input', () => {
@@ -82,6 +99,7 @@ describe('applySemanticPatchSet', () => {
     expect(declarations?.[1]).toMatchObject({ kind: 'typeAlias', type: { kind: 'primitive', name: 'string' } });
     expect(result.audit.applied.map((record) => record.id)).toEqual(['01-body', '02-rename', '03-remove', '04-type']);
     expect(result.audit.summary).toEqual({ applied: 4, skipped: 0 });
+    expect(result.audit.skipped).toEqual([]);
     const bodyPatch = patches.find((patch) => patch.id === '01-body');
     expect(result.audit.applied[0]?.scope).not.toBe(bodyPatch?.scope);
     expect(result.audit.applied[0]?.target).not.toBe(bodyPatch?.target);
@@ -106,6 +124,28 @@ describe('applySemanticPatchSet', () => {
       'secondPatched',
       'thirdPatched',
     ]);
+  });
+
+  it('records skipped patches deterministically without retaining caller-owned records', () => {
+    const patches: SemanticPatch[] = [
+      {
+        ...patchBase('é-range', 'Range', 'typeAlias'),
+        name: 'Span',
+        operation: 'rename',
+        scope: { backend: 'rust', kind: 'backend' },
+      },
+      renamePatch('Z-clamp', 'bounded', { backend: 'rust', kind: 'backend' }),
+    ];
+    const snapshot = structuredClone(patches);
+    const forward = applySemanticPatchSet([createModule()], patches, 'haxe');
+    const reverse = applySemanticPatchSet([createModule()], [...patches].reverse(), 'haxe');
+
+    expect(forward.audit.skipped.map((record) => record.id)).toEqual(['Z-clamp', 'é-range']);
+    expect(reverse.audit.skipped).toEqual(forward.audit.skipped);
+    expect(forward.audit.summary).toEqual({ applied: 0, skipped: 2 });
+    expect(forward.audit.skipped[0]?.scope).not.toBe(patches[1]?.scope);
+    expect(forward.audit.skipped[0]?.target).not.toBe(patches[1]?.target);
+    expect(patches).toEqual(snapshot);
   });
 
   it('renames a binding introduction without rewriting source-backed reference identity', () => {
@@ -177,6 +217,7 @@ describe('applySemanticPatchSet', () => {
   it('returns a tagged failure for every invalid identity or operation state', () => {
     const valid = renamePatch('math.clamp.rename', 'renamed', { kind: 'neutral' });
     const cases: Array<{
+      backend?: string;
       code: SemanticPatchFailureCode;
       modules?: IrModule[];
       patches: SemanticPatch[];
@@ -207,6 +248,11 @@ describe('applySemanticPatchSet', () => {
       {
         code: 'invalid-patch-expectation',
         patches: [{ ...valid, expect: { ...valid.expect, fingerprint: 'sha256:invalid' } }],
+      },
+      {
+        backend: ' ',
+        code: 'invalid-patch-backend',
+        patches: [valid],
       },
       {
         code: 'invalid-patch-expectation',
@@ -285,14 +331,15 @@ describe('applySemanticPatchSet', () => {
     ];
 
     for (const fixture of cases) {
-      const failure = captureFailure(fixture.modules ?? [createModule()], fixture.patches);
+      const failure = captureFailure(fixture.modules ?? [createModule()], fixture.patches, fixture.backend);
       expect(failure).toMatchObject({
         code: fixture.code,
         kind: 'semantic-patch',
         name: 'SemanticPatchError',
       });
-      if (fixture.code === 'invalid-patch-id') expect(failure.patchIds).toEqual([]);
-      else expect(failure.patchIds.length).toBeGreaterThan(0);
+      if (fixture.code === 'invalid-patch-backend' || fixture.code === 'invalid-patch-id') {
+        expect(failure.patchIds).toEqual([]);
+      } else expect(failure.patchIds.length).toBeGreaterThan(0);
       expect(failure.subject.length).toBeGreaterThan(0);
     }
   });
@@ -349,9 +396,9 @@ describe('isSemanticPatchFailure', () => {
   });
 });
 
-function captureFailure(modules: IrModule[], patches: SemanticPatch[]): SemanticPatchFailure {
+function captureFailure(modules: IrModule[], patches: SemanticPatch[], backend = 'haxe'): SemanticPatchFailure {
   try {
-    applySemanticPatchSet(modules, patches, 'haxe');
+    applySemanticPatchSet(modules, patches, backend);
     throw new Error('Expected semantic patch application to fail');
   } catch (error) {
     if (!isSemanticPatchFailure(error)) throw error;

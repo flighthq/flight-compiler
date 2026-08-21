@@ -5,6 +5,7 @@ import type {
   IrDeclaration,
   IrModule,
   PatchAuditRecord,
+  PatchAuditSkippedRecord,
   SemanticPatch,
   SemanticPatchFailure,
   SemanticPatchFailureCode,
@@ -20,6 +21,7 @@ export function applySemanticPatchSet(
   patches: readonly SemanticPatch[],
   backend: string,
 ): AppliedSemanticPatches {
+  validatePatchBackend(backend);
   validatePatchDefinitions(patches);
   validateUniqueIds(patches);
   validateConflicts(patches);
@@ -27,6 +29,10 @@ export function applySemanticPatchSet(
   const active = patches.filter(
     (patch) => patch.scope.kind === 'neutral' || (patch.scope.kind === 'backend' && patch.scope.backend === backend),
   );
+  const skipped: PatchAuditSkippedRecord[] = patches
+    .filter((patch) => patch.scope.kind === 'backend' && patch.scope.backend !== backend)
+    .sort(comparePatchPrecedence)
+    .map((patch) => ({ ...createPatchAuditRecord(patch), skipReason: 'backend-mismatch' }));
   validateActiveRemovals(active);
   const applied: PatchAuditRecord[] = [];
   const declarationIndex = new Map<string, IndexedDeclaration[]>();
@@ -126,23 +132,29 @@ export function applySemanticPatchSet(
     output = output.map((item, index) => (index === match.moduleIndex ? { ...module, declarations } : item));
     if (updatedDeclaration) match.declaration = updatedDeclaration;
     else declarationIndex.delete(targetKey(patch.target));
-    applied.push({
-      fingerprint: declaration.origin.fingerprint,
-      id: patch.id,
-      operation: patch.operation,
-      reason: patch.reason,
-      scope: structuredClone(patch.scope),
-      target: structuredClone(patch.target),
-    });
+    applied.push(createPatchAuditRecord(patch));
   }
 
   return {
     audit: {
       applied,
-      schema: 'flight-compiler-patch-audit/1',
-      summary: { applied: applied.length, skipped: patches.length - active.length },
+      backend,
+      schema: 'flight-compiler-patch-audit/2',
+      skipped,
+      summary: { applied: applied.length, skipped: skipped.length },
     },
     modules: output,
+  };
+}
+
+function createPatchAuditRecord(patch: Readonly<SemanticPatch>): PatchAuditRecord {
+  return {
+    fingerprint: patch.expect.fingerprint,
+    id: patch.id,
+    operation: patch.operation,
+    reason: patch.reason,
+    scope: structuredClone(patch.scope),
+    target: structuredClone(patch.target),
   };
 }
 
@@ -234,6 +246,17 @@ function validateActiveRemovals(patches: readonly SemanticPatch[]): void {
         `Remove patch conflicts with another active patch: ${targetPatches.map((patch) => patch.id).join(', ')}`,
       );
     }
+  }
+}
+
+function validatePatchBackend(backend: string): void {
+  if (!isNonBlankString(backend)) {
+    throw createSemanticPatchError(
+      'invalid-patch-backend',
+      [],
+      backend,
+      'Semantic patch application requires a named backend',
+    );
   }
 }
 
@@ -371,6 +394,7 @@ const semanticPatchFailureCodes = {
   'conflicting-patch-removal': null,
   'duplicate-patch-id': null,
   'incompatible-patch-operation': null,
+  'invalid-patch-backend': null,
   'invalid-patch-expectation': null,
   'invalid-patch-id': null,
   'invalid-patch-operation': null,
