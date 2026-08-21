@@ -71,6 +71,7 @@ describe('package boundary AST analysis', () => {
 
   it('recognizes verb-first API names with a complete PascalCase type segment', () => {
     expect(isCompilerApiFunctionName('combineCompilerStaticFactAudits')).toBe(true);
+    expect(isCompilerApiFunctionName('compareTextCodeUnits')).toBe(true);
     expect(isCompilerApiFunctionName('createHaxeCompilerBackend')).toBe(true);
     expect(isCompilerApiFunctionName('getPackageInventoryRootExportLane')).toBe(true);
     expect(isCompilerApiFunctionName('packageRootExportLane')).toBe(false);
@@ -79,6 +80,7 @@ describe('package boundary AST analysis', () => {
 
   it('recognizes concept-noun TypeScript file names and rejects function or generic names', () => {
     expect(isDomainTypeScriptFileName('compilerSemanticPatch.ts')).toBe(true);
+    expect(isDomainTypeScriptFileName('compareTextCodeUnits.ts')).toBe(false);
     expect(isDomainTypeScriptFileName('sourceFingerprint.test.ts')).toBe(true);
     expect(isDomainTypeScriptFileName('applySemanticPatchSet.ts')).toBe(false);
     expect(isDomainTypeScriptFileName('utils.ts')).toBe(false);

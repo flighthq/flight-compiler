@@ -7,7 +7,7 @@ This document defines the dependency floor of `@flighthq/tool-compiler` and the 
 ## Dependency floor
 
 ```text
-compiler-types        compiler-provenance
+compiler-types        compiler-ordering        compiler-provenance
 
 compiler-types
   <- compiler-patch
@@ -29,12 +29,13 @@ types + semantic + patch + emission
   <- tool-compiler
 ```
 
-The first four packages are the bedrock review set:
+The first five packages are the bedrock review set:
 
 1. `compiler-types` is the vocabulary, not an implementation utility package.
-2. `compiler-provenance` answers whether two source identities are the same.
-3. `compiler-patch` applies explicit, fingerprint-bound changes and records what happened.
-4. `compiler-emission` defines portable output and inspectable backend/invariant failures.
+2. `compiler-ordering` defines one host-independent total order without owning identity policy.
+3. `compiler-provenance` answers whether two source identities are the same.
+4. `compiler-patch` applies explicit, fingerprint-bound changes and records what happened.
+5. `compiler-emission` defines portable output and inspectable backend/invariant failures.
 
 Inventory and semantic lowering are fundamental compiler capabilities, but they are not dependency-floor primitives. They consume source identity and the shared vocabulary, and should be reviewed only after those inputs are trustworthy.
 

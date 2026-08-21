@@ -57,6 +57,7 @@ The repository follows Flight's package-per-domain convention. Internal workspac
 - `packages/compiler-patch/`: fingerprinted semantic patch application and audits.
 - `packages/compiler-emission/`: target-neutral backend and output infrastructure.
 - `packages/compiler-lowering/`: backend-elected, target-neutral IR-to-IR passes and verification.
+- `packages/compiler-ordering/`: dependency-free, host-independent ordering primitives for deterministic compiler data.
 - `packages/compiler-backend-hx/`: Haxe-specific lowering, naming, and source emission.
 - `packages/compiler-backend-rs/`: Rust-specific lowering, naming, and source emission.
 - `packages/compiler-orchestration/`: deterministic pipeline composition.
@@ -86,6 +87,7 @@ The dependency floor is deliberate:
 - `compiler-patch` and `compiler-emission` depend only on the contracts they operate over.
 - `compiler-ir-validation` verifies target-neutral IR structure over `compiler-types` alone.
 - `compiler-runtime-contract` validates reachable external-type decisions over `compiler-types` alone.
+- `compiler-ordering` defines deterministic text order without importing compiler contracts or identity policy.
 - `compiler-lowering` provides verified neutral transforms over `compiler-types`, composing `compiler-ir-validation`; backends elect its passes.
 - inventory, semantic lowering, backends, and orchestration are compositions above that floor.
 

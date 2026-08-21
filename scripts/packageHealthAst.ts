@@ -164,7 +164,7 @@ function hasExportModifier(node: ts.Node): boolean {
 }
 
 const compilerApiFunctionNamePattern =
-  /^(?:analyze|apply|collect|combine|compile|convert|create|define|emit|fingerprint|get|has|indent|is|lower|normalize|parse|read|resolve|validate)[A-Z][A-Za-z0-9]*$/u;
+  /^(?:analyze|apply|collect|combine|compare|compile|convert|create|define|emit|fingerprint|get|has|indent|is|lower|normalize|parse|read|resolve|validate)[A-Z][A-Za-z0-9]*$/u;
 const genericSourceConcepts = new Set(['common', 'helper', 'helpers', 'internal', 'shared', 'util', 'utils']);
 const sourceVerbPrefixPattern =
-  /^(?:analyze|apply|collect|combine|compile|convert|create|define|emit|fingerprint|get|has|indent|is|lower|normalize|parse|read|resolve|validate)(?:$|[A-Z])/u;
+  /^(?:analyze|apply|collect|combine|compare|compile|convert|create|define|emit|fingerprint|get|has|indent|is|lower|normalize|parse|read|resolve|validate)(?:$|[A-Z])/u;

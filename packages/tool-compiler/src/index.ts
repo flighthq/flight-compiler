@@ -4,6 +4,7 @@ export * from '../../compiler-emission/src/index.js';
 export * from '../../compiler-inventory/src/index.js';
 export * from '../../compiler-ir-validation/src/index.js';
 export * from '../../compiler-lowering/src/index.js';
+export * from '../../compiler-ordering/src/index.js';
 export * from '../../compiler-orchestration/src/index.js';
 export * from '../../compiler-patch/src/index.js';
 export * from '../../compiler-provenance/src/index.js';
