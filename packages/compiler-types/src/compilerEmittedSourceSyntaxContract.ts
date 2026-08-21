@@ -9,7 +9,7 @@ export interface CompilerEmittedSourceParserDiagnostic {
   readonly message: string;
 }
 
-export interface CompilerEmittedSourceConformanceDiagnostic
+export interface CompilerEmittedSourceSyntaxDiagnostic
   extends CompilerEmittedSourceParserDiagnostic, EmittedFileIdentity {}
 
 export interface CompilerEmittedSourceParser {
@@ -19,14 +19,14 @@ export interface CompilerEmittedSourceParser {
   readonly supportsEmittedSource: (file: Readonly<EmittedFileIdentity>) => boolean;
 }
 
-export interface CompilerEmittedSourceConformanceReport {
+export interface CompilerEmittedSourceSyntaxReport {
   readonly checkedFiles: number;
   readonly parser: string;
   readonly skippedFiles: readonly string[];
 }
 
-export interface CompilerEmittedSourceConformanceFailure extends Error {
-  readonly diagnostics: readonly CompilerEmittedSourceConformanceDiagnostic[];
-  readonly kind: 'emitted-source-conformance';
+export interface CompilerEmittedSourceSyntaxFailure extends Error {
+  readonly diagnostics: readonly CompilerEmittedSourceSyntaxDiagnostic[];
+  readonly kind: 'emitted-source-syntax';
   readonly parser: string;
 }

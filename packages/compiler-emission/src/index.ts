@@ -1,8 +1,12 @@
 export { createCompilerGeneratedFileHeader } from './compilerGeneratedFileProvenance.js';
 export {
-  isCompilerEmittedSourceConformanceFailure,
-  validateCompilerEmittedSourceConformance,
-} from './compilerEmittedSourceConformance.js';
+  isCompilerEmittedSourceSyntaxFailure,
+  validateCompilerEmittedSourceSyntax,
+} from './compilerEmittedSourceSyntax.js';
+export {
+  isCompilerTargetCompilationSmokeFailure,
+  validateCompilerTargetCompilationSmoke,
+} from './compilerTargetCompilationSmoke.js';
 export {
   createBackendEmissionFailure,
   createCompilerInvariantFailure,

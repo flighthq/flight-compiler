@@ -1,12 +1,12 @@
 import ts from 'typescript';
 
-import { validateCompilerEmittedSourceConformance } from '../../compiler-emission/src/index.js';
+import { validateCompilerEmittedSourceSyntax } from '../../compiler-emission/src/index.js';
 import { lowerTypeScriptSource } from '../../compiler-semantic/src/index.js';
 import { emitIrModuleHaxe } from './haxeCompilerBackend.js';
-import { createHaxeCompilerEmittedSourceParser } from './haxeCompilerEmittedSourceConformance.js';
+import { createHaxeCompilerEmittedSourceParser } from './haxeCompilerEmittedSourceSyntax.js';
 
 describe('createHaxeCompilerEmittedSourceParser', () => {
-  it('adapts a parser callback to exact Haxe emitted-file selection and conformance reporting', () => {
+  it('adapts a parser callback to exact Haxe emitted-file selection and syntax reporting', () => {
     const seen: string[] = [];
     const parser = createHaxeCompilerEmittedSourceParser((file) => {
       seen.push(file.path);
@@ -25,7 +25,7 @@ describe('createHaxeCompilerEmittedSourceParser', () => {
 
     expect(parser.name).toBe('haxe');
     expect(
-      validateCompilerEmittedSourceConformance(
+      validateCompilerEmittedSourceSyntax(
         [
           emitted,
           { contents: 'class Upper {}', path: 'flight/Upper.HX' },

@@ -1,36 +1,34 @@
 import { compareTextCodeUnits } from '../../compiler-canonical-form/src/index.js';
 import type {
-  CompilerEmittedSourceConformanceDiagnostic,
-  CompilerEmittedSourceConformanceFailure,
-  CompilerEmittedSourceConformanceReport,
   CompilerEmittedSourceParser,
   CompilerEmittedSourceParserDiagnostic,
+  CompilerEmittedSourceSyntaxDiagnostic,
+  CompilerEmittedSourceSyntaxFailure,
+  CompilerEmittedSourceSyntaxReport,
   EmittedFile,
 } from '../../compiler-types/src/index.js';
 import { createCompilerInvariantFailure, normalizeEmittedFile } from './compilerSourceEmission.js';
 
-export function isCompilerEmittedSourceConformanceFailure(
-  value: unknown,
-): value is CompilerEmittedSourceConformanceFailure {
+export function isCompilerEmittedSourceSyntaxFailure(value: unknown): value is CompilerEmittedSourceSyntaxFailure {
   return (
     value instanceof Error &&
     'kind' in value &&
-    value.kind === 'emitted-source-conformance' &&
+    value.kind === 'emitted-source-syntax' &&
     'parser' in value &&
     typeof value.parser === 'string' &&
     value.parser.length > 0 &&
     'diagnostics' in value &&
     Array.isArray(value.diagnostics) &&
-    value.diagnostics.every(isCompilerEmittedSourceConformanceDiagnostic)
+    value.diagnostics.every(isCompilerEmittedSourceSyntaxDiagnostic)
   );
 }
 
-export function validateCompilerEmittedSourceConformance(
+export function validateCompilerEmittedSourceSyntax(
   files: readonly Readonly<EmittedFile>[],
   parser: Readonly<CompilerEmittedSourceParser>,
-): CompilerEmittedSourceConformanceReport {
+): CompilerEmittedSourceSyntaxReport {
   const parserName = validateCompilerEmittedSourceParserName(parser.name);
-  const diagnostics: CompilerEmittedSourceConformanceDiagnostic[] = [];
+  const diagnostics: CompilerEmittedSourceSyntaxDiagnostic[] = [];
   const skippedFiles: string[] = [];
   let checkedFiles = 0;
   for (const input of files) {
@@ -38,7 +36,7 @@ export function validateCompilerEmittedSourceConformance(
     const supported = parser.supportsEmittedSource(file);
     if (typeof supported !== 'boolean') {
       throw createCompilerInvariantFailure(
-        'invalid-source-conformance-parser',
+        'invalid-emitted-source-parser',
         parserName,
         `Emitted-source parser ${parserName} returned a non-boolean support decision for ${file.path}`,
       );
@@ -51,7 +49,7 @@ export function validateCompilerEmittedSourceConformance(
     const parsed = parser.parseEmittedSource(file);
     if (!Array.isArray(parsed)) {
       throw createCompilerInvariantFailure(
-        'invalid-source-conformance-parser',
+        'invalid-emitted-source-parser',
         parserName,
         `Emitted-source parser ${parserName} returned a non-array diagnostic result for ${file.path}`,
       );
@@ -60,15 +58,15 @@ export function validateCompilerEmittedSourceConformance(
       diagnostics.push(normalizeCompilerEmittedSourceParserDiagnostic(diagnostic, file.path, index, parserName));
     });
   }
-  diagnostics.sort(compareCompilerEmittedSourceConformanceDiagnostics);
-  if (diagnostics.length > 0) throw createCompilerEmittedSourceConformanceFailure(parserName, diagnostics);
+  diagnostics.sort(compareCompilerEmittedSourceSyntaxDiagnostics);
+  if (diagnostics.length > 0) throw createCompilerEmittedSourceSyntaxFailure(parserName, diagnostics);
   skippedFiles.sort(compareTextCodeUnits);
   return { checkedFiles, parser: parserName, skippedFiles };
 }
 
-function compareCompilerEmittedSourceConformanceDiagnostics(
-  left: Readonly<CompilerEmittedSourceConformanceDiagnostic>,
-  right: Readonly<CompilerEmittedSourceConformanceDiagnostic>,
+function compareCompilerEmittedSourceSyntaxDiagnostics(
+  left: Readonly<CompilerEmittedSourceSyntaxDiagnostic>,
+  right: Readonly<CompilerEmittedSourceSyntaxDiagnostic>,
 ): number {
   return (
     compareTextCodeUnits(left.path, right.path) ||
@@ -79,10 +77,10 @@ function compareCompilerEmittedSourceConformanceDiagnostics(
   );
 }
 
-function createCompilerEmittedSourceConformanceFailure(
+function createCompilerEmittedSourceSyntaxFailure(
   parser: string,
-  diagnostics: readonly Readonly<CompilerEmittedSourceConformanceDiagnostic>[],
-): CompilerEmittedSourceConformanceFailure {
+  diagnostics: readonly Readonly<CompilerEmittedSourceSyntaxDiagnostic>[],
+): CompilerEmittedSourceSyntaxFailure {
   const captured = diagnostics.map((diagnostic) => Object.freeze({ ...diagnostic }));
   const message = `Emitted-source parser ${parser} produced ${String(captured.length)} diagnostic(s):\n${captured
     .map(
@@ -92,16 +90,14 @@ function createCompilerEmittedSourceConformanceFailure(
     .join('\n')}`;
   const failure = Object.assign(new Error(message), {
     diagnostics: Object.freeze(captured),
-    kind: 'emitted-source-conformance' as const,
+    kind: 'emitted-source-syntax' as const,
     parser,
   });
-  failure.name = 'CompilerEmittedSourceConformanceError';
+  failure.name = 'CompilerEmittedSourceSyntaxError';
   return failure;
 }
 
-function isCompilerEmittedSourceConformanceDiagnostic(
-  value: unknown,
-): value is CompilerEmittedSourceConformanceDiagnostic {
+function isCompilerEmittedSourceSyntaxDiagnostic(value: unknown): value is CompilerEmittedSourceSyntaxDiagnostic {
   return (
     typeof value === 'object' &&
     value !== null &&
@@ -130,11 +126,11 @@ function normalizeCompilerEmittedSourceParserDiagnostic(
   path: string,
   index: number,
   parser: string,
-): CompilerEmittedSourceConformanceDiagnostic {
+): CompilerEmittedSourceSyntaxDiagnostic {
   if (!isCompilerEmittedSourceParserDiagnostic(value)) {
     const subject = `${parser}/${path}#${String(index)}`;
     throw createCompilerInvariantFailure(
-      'invalid-source-conformance-diagnostic',
+      'invalid-emitted-source-syntax-diagnostic',
       subject,
       `Emitted-source parser ${parser} returned an invalid diagnostic for ${path} at index ${String(index)}`,
     );
@@ -172,7 +168,7 @@ function isCompilerEmittedSourceParserDiagnostic(value: unknown): value is Compi
 function validateCompilerEmittedSourceParserName(value: unknown): string {
   if (typeof value !== 'string' || value.length === 0 || value.trim() !== value || /[\n\r\u2028\u2029]/u.test(value)) {
     throw createCompilerInvariantFailure(
-      'invalid-source-conformance-parser',
+      'invalid-emitted-source-parser',
       typeof value === 'string' ? value : '<non-string>',
       'Emitted-source parser names must be nonempty, unpadded, and single-line',
     );

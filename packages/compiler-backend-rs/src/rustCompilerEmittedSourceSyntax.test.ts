@@ -1,12 +1,12 @@
 import ts from 'typescript';
 
-import { validateCompilerEmittedSourceConformance } from '../../compiler-emission/src/index.js';
+import { validateCompilerEmittedSourceSyntax } from '../../compiler-emission/src/index.js';
 import { lowerTypeScriptSource } from '../../compiler-semantic/src/index.js';
 import { emitIrModuleRust } from './rustCompilerBackend.js';
-import { createRustCompilerEmittedSourceParser } from './rustCompilerEmittedSourceConformance.js';
+import { createRustCompilerEmittedSourceParser } from './rustCompilerEmittedSourceSyntax.js';
 
 describe('createRustCompilerEmittedSourceParser', () => {
-  it('adapts a parser callback to exact Rust emitted-file selection and conformance reporting', () => {
+  it('adapts a parser callback to exact Rust emitted-file selection and syntax reporting', () => {
     const seen: string[] = [];
     const parser = createRustCompilerEmittedSourceParser((file) => {
       seen.push(file.path);
@@ -25,7 +25,7 @@ describe('createRustCompilerEmittedSourceParser', () => {
 
     expect(parser.name).toBe('rust');
     expect(
-      validateCompilerEmittedSourceConformance(
+      validateCompilerEmittedSourceSyntax(
         [
           emitted,
           { contents: 'pub struct Upper {}', path: 'flight/upper.RS' },

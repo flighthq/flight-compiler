@@ -52,7 +52,7 @@ Move tests whose subject is compiler behavior:
 Keep tests downstream when their subject is the target ecosystem:
 
 - Haxe runtime and standard-library behavior, Haxelib layout, host integration, examples, and end-to-end projects;
-- Rust runtime and standard-library behavior, Cargo layout, ownership exercised by the runtime, WASM or native-host integration, examples, and conformance execution;
+- Rust runtime and standard-library behavior, Cargo layout, ownership exercised by the runtime, WASM or native-host integration, examples, and the real parser and batch target-compiler callbacks used by compiler-owned conformance contracts;
 - installation and release behavior belonging specifically to `flight-hx` or `flight-rs`.
 
 Do not copy every downstream test preemptively. Move a compiler-owned test with the production behavior it protects, preserve its fixture provenance, and keep a downstream integration seam until adoption is complete. The earlier inventory found 12 generator-focused Haxe test files; they are candidates for migration, not a claim that all Haxe tests belong here.

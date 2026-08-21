@@ -1,8 +1,9 @@
 import ts from 'typescript';
 
 import {
-  isCompilerEmittedSourceConformanceFailure,
+  isCompilerEmittedSourceSyntaxFailure,
   isCompilerInvariantFailure,
+  isCompilerTargetCompilationSmokeFailure,
 } from '../../compiler-emission/src/index.js';
 import type { CompilerBackend, CompilerDiagnostic, IrModule } from '../../compiler-types/src/index.js';
 import {
@@ -156,12 +157,12 @@ describe('compileIrModules', () => {
         modules: [createModule('Value')],
         sourceParser,
       });
-      expect.unreachable('Expected parser conformance to reject emitted output');
+      expect.unreachable('Expected parser syntax to reject emitted output');
     } catch (error) {
-      expect(isCompilerEmittedSourceConformanceFailure(error)).toBe(true);
+      expect(isCompilerEmittedSourceSyntaxFailure(error)).toBe(true);
       expect(error).toMatchObject({
         diagnostics: [{ code: 'syntax', path: 'Value.txt' }],
-        kind: 'emitted-source-conformance',
+        kind: 'emitted-source-syntax',
         parser: 'fixture-language-parser',
       });
     }
@@ -176,7 +177,7 @@ describe('compileIrModules', () => {
       }),
     ).toThrow(
       expect.objectContaining({
-        code: 'insufficient-source-conformance-files',
+        code: 'insufficient-emitted-source-syntax-files',
         kind: 'compiler-invariant',
         subject: 'fixture-language-parser',
       }),
@@ -190,11 +191,74 @@ describe('compileIrModules', () => {
       }).compilation.files,
     ).toEqual([]);
   });
+
+  it('distinguishes syntax parsing from one downstream target compilation smoke', () => {
+    const events: string[] = [];
+    const sourceParser = {
+      name: 'fixture-parser',
+      parseEmittedSource(file: Readonly<{ path: string }>) {
+        events.push(`parse:${file.path}`);
+        return [];
+      },
+      supportsEmittedSource: (file: Readonly<{ path: string }>) => file.path.endsWith('.txt'),
+    };
+    const targetCompilationSmoke = {
+      compileEmittedSources(files: readonly Readonly<{ contents: string; path: string }>[]) {
+        events.push(`compile:${files.map((file) => file.path).join(',')}`);
+        return [{ code: 'type', column: 1, line: 1, message: 'unknown value', path: 'Value.txt' }];
+      },
+      name: 'fixture-compiler',
+      supportsEmittedSource: (file: Readonly<{ path: string }>) => file.path.endsWith('.txt'),
+    };
+
+    try {
+      compileIrModules({
+        backend: fixtureBackend,
+        backendOptions: {},
+        modules: [createModule('Value')],
+        sourceParser,
+        targetCompilationSmoke,
+      });
+      expect.unreachable('Expected target compilation smoke to reject emitted output');
+    } catch (error) {
+      expect(isCompilerTargetCompilationSmokeFailure(error)).toBe(true);
+      expect(error).toMatchObject({
+        compiler: 'fixture-compiler',
+        diagnostics: [{ code: 'type', path: 'Value.txt' }],
+        kind: 'target-compilation-smoke',
+      });
+    }
+    expect(events).toEqual(['parse:Value.txt', 'compile:Value.txt']);
+
+    expect(() =>
+      compileIrModules({
+        backend: fixtureBackend,
+        backendOptions: {},
+        modules: [createModule('Value')],
+        targetCompilationSmoke: { ...targetCompilationSmoke, supportsEmittedSource: () => false },
+      }),
+    ).toThrow(
+      expect.objectContaining({
+        code: 'insufficient-target-compilation-smoke-files',
+        kind: 'compiler-invariant',
+        subject: 'fixture-compiler',
+      }),
+    );
+    expect(
+      compileIrModules({
+        backend: fixtureBackend,
+        backendOptions: {},
+        modules: [],
+        targetCompilationSmoke: { ...targetCompilationSmoke, supportsEmittedSource: () => false },
+      }).compilation.files,
+    ).toEqual([]);
+  });
 });
 
 describe('compileTypeScriptModules', () => {
   it('lowers TypeScript sources through the same deterministic backend path', () => {
     const parsedPaths: string[] = [];
+    const compiledPaths: string[][] = [];
     const result = compileTypeScriptModules({
       backend: fixtureBackend,
       backendOptions: {},
@@ -204,6 +268,14 @@ describe('compileTypeScriptModules', () => {
           parsedPaths.push(file.path);
           return [];
         },
+        supportsEmittedSource: () => true,
+      },
+      targetCompilationSmoke: {
+        compileEmittedSources(files) {
+          compiledPaths.push(files.map((file) => file.path));
+          return [];
+        },
+        name: 'fixture-compiler',
         supportsEmittedSource: () => true,
       },
       sources: [
@@ -223,6 +295,7 @@ describe('compileTypeScriptModules', () => {
     expect(result.compilation.files.map((file) => file.path)).toEqual(['Alpha.txt', 'Zeta.txt']);
     expect(result.diagnostics).toEqual([]);
     expect(parsedPaths).toEqual(['Alpha.txt', 'Zeta.txt']);
+    expect(compiledPaths).toEqual([['Alpha.txt', 'Zeta.txt']]);
   });
 
   it('throws a tagged diagnostics failure instead of emitting partial output', () => {

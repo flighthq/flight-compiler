@@ -4,7 +4,8 @@ import { compareTextCodeUnits } from '../../compiler-canonical-form/src/index.js
 import {
   createCompilerInvariantFailure,
   normalizeEmittedFile,
-  validateCompilerEmittedSourceConformance,
+  validateCompilerEmittedSourceSyntax,
+  validateCompilerTargetCompilationSmoke,
 } from '../../compiler-emission/src/index.js';
 import { applySemanticPatchSet } from '../../compiler-patch/src/index.js';
 import { lowerTypeScriptSource } from '../../compiler-semantic/src/index.js';
@@ -31,12 +32,22 @@ export function compileIrModules<BackendOptions>(
     .sort(compareEmittedFiles);
   validateEmittedFiles(files);
   if (options.sourceParser) {
-    const conformance = validateCompilerEmittedSourceConformance(files, options.sourceParser);
-    if (files.length > 0 && conformance.checkedFiles === 0) {
+    const syntax = validateCompilerEmittedSourceSyntax(files, options.sourceParser);
+    if (files.length > 0 && syntax.checkedFiles === 0) {
       throw createCompilerInvariantFailure(
-        'insufficient-source-conformance-files',
-        conformance.parser,
-        `Emitted-source parser ${conformance.parser} did not support any of ${String(files.length)} emitted file(s)`,
+        'insufficient-emitted-source-syntax-files',
+        syntax.parser,
+        `Emitted-source parser ${syntax.parser} did not support any of ${String(files.length)} emitted file(s)`,
+      );
+    }
+  }
+  if (options.targetCompilationSmoke) {
+    const smoke = validateCompilerTargetCompilationSmoke(files, options.targetCompilationSmoke);
+    if (files.length > 0 && smoke.checkedFiles === 0) {
+      throw createCompilerInvariantFailure(
+        'insufficient-target-compilation-smoke-files',
+        smoke.compiler,
+        `Target compiler ${smoke.compiler} did not support any of ${String(files.length)} emitted file(s)`,
       );
     }
   }
@@ -67,6 +78,7 @@ export function compileTypeScriptModules<BackendOptions>(
     modules: lowered.map((result) => result.module),
     ...(options.patches ? { patches: options.patches } : {}),
     ...(options.sourceParser ? { sourceParser: options.sourceParser } : {}),
+    ...(options.targetCompilationSmoke ? { targetCompilationSmoke: options.targetCompilationSmoke } : {}),
   });
 }
 

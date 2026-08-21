@@ -2,9 +2,10 @@ import type ts from 'typescript';
 
 import type { BackendCompilation, CompilerBackend } from './compilerBackendContract.js';
 import type { CompilerDiagnostic } from './compilerDiagnosticContract.js';
-import type { CompilerEmittedSourceParser } from './compilerEmittedSourceConformanceContract.js';
+import type { CompilerEmittedSourceParser } from './compilerEmittedSourceSyntaxContract.js';
 import type { IrModule } from './compilerModuleIntermediateRepresentation.js';
 import type { PatchAudit, SemanticPatch } from './compilerSemanticPatchContract.js';
+import type { CompilerTargetCompilationSmoke } from './compilerTargetCompilationSmokeContract.js';
 import type { LowerTypeScriptSourceOptions } from './compilerTypeScriptContract.js';
 
 export interface CompileIrModulesOptions<BackendOptions> {
@@ -12,8 +13,10 @@ export interface CompileIrModulesOptions<BackendOptions> {
   readonly backendOptions: Readonly<BackendOptions>;
   readonly modules: readonly IrModule[];
   readonly patches?: readonly SemanticPatch[] | undefined;
-  /** Optional syntax-only conformance parser over normalized emitted files. */
+  /** Optional syntax-only parser over normalized emitted files. */
   readonly sourceParser?: Readonly<CompilerEmittedSourceParser> | undefined;
+  /** Optional downstream target compiler over the complete normalized emitted file set. */
+  readonly targetCompilationSmoke?: Readonly<CompilerTargetCompilationSmoke> | undefined;
 }
 
 export interface CompilerReport {

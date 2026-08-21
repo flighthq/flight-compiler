@@ -4,12 +4,12 @@ import type {
   EmittedFile,
 } from '../../compiler-types/src/index.js';
 import {
-  isCompilerEmittedSourceConformanceFailure,
-  validateCompilerEmittedSourceConformance,
-} from './compilerEmittedSourceConformance.js';
+  isCompilerEmittedSourceSyntaxFailure,
+  validateCompilerEmittedSourceSyntax,
+} from './compilerEmittedSourceSyntax.js';
 import { isCompilerInvariantFailure } from './compilerSourceEmission.js';
 
-describe('isCompilerEmittedSourceConformanceFailure', () => {
+describe('isCompilerEmittedSourceSyntaxFailure', () => {
   it('accepts complete produced failures and rejects lookalikes with malformed diagnostics', () => {
     const failure = captureFailure(
       [{ contents: 'invalid', path: 'Value.rs' }],
@@ -17,24 +17,24 @@ describe('isCompilerEmittedSourceConformanceFailure', () => {
     );
     const malformed = Object.assign(new Error('forged'), {
       diagnostics: [{ code: 'syntax', column: 0, line: 1, message: 'bad', path: 'Value.rs' }],
-      kind: 'emitted-source-conformance',
+      kind: 'emitted-source-syntax',
       parser: 'fixture-parser',
     });
 
-    expect(isCompilerEmittedSourceConformanceFailure(failure)).toBe(true);
-    expect(isCompilerEmittedSourceConformanceFailure(malformed)).toBe(false);
-    expect(isCompilerEmittedSourceConformanceFailure(new Error('plain'))).toBe(false);
+    expect(isCompilerEmittedSourceSyntaxFailure(failure)).toBe(true);
+    expect(isCompilerEmittedSourceSyntaxFailure(malformed)).toBe(false);
+    expect(isCompilerEmittedSourceSyntaxFailure(new Error('plain'))).toBe(false);
     expect(
-      isCompilerEmittedSourceConformanceFailure({
+      isCompilerEmittedSourceSyntaxFailure({
         diagnostics: [],
-        kind: 'emitted-source-conformance',
+        kind: 'emitted-source-syntax',
         parser: 'fixture-parser',
       }),
     ).toBe(false);
   });
 });
 
-describe('validateCompilerEmittedSourceConformance', () => {
+describe('validateCompilerEmittedSourceSyntax', () => {
   it('normalizes and freezes supported Haxe and Rust files while leaving caller values unchanged', () => {
     const files = [
       { contents: 'class Value {}\r\n\r\n', path: 'generated\\Value.hx' },
@@ -50,7 +50,7 @@ describe('validateCompilerEmittedSourceConformance', () => {
       return [];
     });
 
-    expect(validateCompilerEmittedSourceConformance(files, parser)).toEqual({
+    expect(validateCompilerEmittedSourceSyntax(files, parser)).toEqual({
       checkedFiles: 2,
       parser: 'fixture-parser',
       skippedFiles: ['generated/value.txt'],
@@ -60,7 +60,7 @@ describe('validateCompilerEmittedSourceConformance', () => {
       { contents: 'pub struct Value {}\n', path: 'generated/value.rs' },
     ]);
     expect(files).toEqual(snapshot);
-    expect(validateCompilerEmittedSourceConformance([{ contents: '', path: 'metadata.txt' }], parser)).toEqual({
+    expect(validateCompilerEmittedSourceSyntax([{ contents: '', path: 'metadata.txt' }], parser)).toEqual({
       checkedFiles: 0,
       parser: 'fixture-parser',
       skippedFiles: ['metadata.txt'],
@@ -90,8 +90,8 @@ describe('validateCompilerEmittedSourceConformance', () => {
 
     expect(failure).toBeInstanceOf(Error);
     expect(failure).toMatchObject({
-      kind: 'emitted-source-conformance',
-      name: 'CompilerEmittedSourceConformanceError',
+      kind: 'emitted-source-syntax',
+      name: 'CompilerEmittedSourceSyntaxError',
       parser: 'fixture-parser',
     });
     expect(failure.diagnostics).toEqual([
@@ -121,8 +121,8 @@ describe('validateCompilerEmittedSourceConformance', () => {
     ];
 
     for (const parser of invalidParsers) {
-      expect(() => validateCompilerEmittedSourceConformance(file, parser)).toThrow(
-        expect.objectContaining({ code: 'invalid-source-conformance-parser', kind: 'compiler-invariant' }),
+      expect(() => validateCompilerEmittedSourceSyntax(file, parser)).toThrow(
+        expect.objectContaining({ code: 'invalid-emitted-source-parser', kind: 'compiler-invariant' }),
       );
     }
 
@@ -133,7 +133,7 @@ describe('validateCompilerEmittedSourceConformance', () => {
       { code: 'syntax', column: 1, line: 1, message: '' },
     ]) {
       try {
-        validateCompilerEmittedSourceConformance(
+        validateCompilerEmittedSourceSyntax(
           file,
           createParser(() => [diagnostic]),
         );
@@ -141,7 +141,7 @@ describe('validateCompilerEmittedSourceConformance', () => {
       } catch (error) {
         expect(isCompilerInvariantFailure(error)).toBe(true);
         expect(error).toMatchObject({
-          code: 'invalid-source-conformance-diagnostic',
+          code: 'invalid-emitted-source-syntax-diagnostic',
           kind: 'compiler-invariant',
           subject: 'fixture-parser/Value.rs#0',
         });
@@ -152,10 +152,10 @@ describe('validateCompilerEmittedSourceConformance', () => {
 
 function captureFailure(files: readonly EmittedFile[], parser: Readonly<CompilerEmittedSourceParser>) {
   try {
-    validateCompilerEmittedSourceConformance(files, parser);
-    throw new Error('Expected emitted-source conformance to fail');
+    validateCompilerEmittedSourceSyntax(files, parser);
+    throw new Error('Expected emitted-source syntax to fail');
   } catch (error) {
-    if (!isCompilerEmittedSourceConformanceFailure(error)) throw error;
+    if (!isCompilerEmittedSourceSyntaxFailure(error)) throw error;
     return error;
   }
 }
