@@ -33,4 +33,5 @@ export type IrValueNameReference =
 export type IrIdentifierReference =
   | Readonly<{ binding: IrBindingIdentity; kind: 'binding' }>
   | Readonly<{ kind: 'ambient'; name: string }>
+  | Readonly<{ kind: 'super' }>
   | Readonly<{ kind: 'this' }>;

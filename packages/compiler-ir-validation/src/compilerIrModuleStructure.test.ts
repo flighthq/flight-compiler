@@ -132,6 +132,49 @@ describe('validateIrModuleStructure', () => {
     });
   });
 
+  it('validates parameter-property identity against its constructor layout', () => {
+    const module = lower(
+      'parameter-property.ts',
+      'export class Value { constructor(public readonly value: number, protected label: string) {} }',
+    );
+    const declaration = module.declarations[0];
+    if (declaration?.kind !== 'class' || !declaration.fields[0]?.parameterProperty) {
+      throw new Error('Expected parameter property');
+    }
+    const field = declaration.fields[0];
+    const variants: IrModule[] = [
+      {
+        ...module,
+        declarations: [
+          {
+            ...declaration,
+            fields: [{ ...field, parameterProperty: { parameterIndex: 99 } }],
+          },
+        ],
+      },
+      {
+        ...module,
+        declarations: [{ ...declaration, fields: [{ ...field, static: true }] }],
+      },
+      {
+        ...module,
+        declarations: [{ ...declaration, fields: [{ ...field, name: 'other' }] }],
+      },
+      {
+        ...module,
+        declarations: [{ ...declaration, fields: [field, field] }],
+      },
+    ];
+
+    expect(validateIrModuleStructure(module)).toEqual({ kind: 'valid' });
+    for (const variant of variants) {
+      expect(validateIrModuleStructure(variant)).toMatchObject({
+        failures: [expect.objectContaining({ code: 'invalid-node-shape' })],
+        kind: 'invalid',
+      });
+    }
+  });
+
   it('validates fixed tuple-spread segments, widths, and optional positions', () => {
     const valid = lower(
       'tuple-spread.ts',

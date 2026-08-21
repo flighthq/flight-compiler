@@ -3,11 +3,18 @@ export type IrClassConstructorInitialization =
   | Readonly<{ kind: 'implicit-base' }>
   | Readonly<{ argumentForwarding: 'all'; kind: 'implicit-derived' }>;
 
-export interface IrClassFieldInitialization {
-  readonly fieldIndex: number;
-  readonly timing: 'base-instance-binding' | 'class-evaluation' | 'derived-super-return';
-  readonly value: 'initializer' | 'undefined';
-}
+export type IrClassFieldInitialization = Readonly<{ fieldIndex: number }> &
+  (
+    | Readonly<{
+        timing: 'base-instance-binding' | 'class-evaluation' | 'derived-super-return';
+        value: 'initializer' | 'undefined';
+      }>
+    | Readonly<{
+        parameterIndex: number;
+        timing: 'base-constructor-body-entry' | 'derived-super-return-after-fields';
+        value: 'parameter';
+      }>
+  );
 
 export interface IrClassInitializationPlan {
   readonly constructor: IrClassConstructorInitialization;
@@ -15,7 +22,10 @@ export interface IrClassInitializationPlan {
   readonly schema: 'flight-compiler-class-initialization/1';
 }
 
-export type IrClassInitializationFailureCode = 'invalid-class-declaration' | 'invalid-class-field';
+export type IrClassInitializationFailureCode =
+  | 'invalid-class-declaration'
+  | 'invalid-class-field'
+  | 'invalid-parameter-property';
 
 export interface IrClassInitializationFailure extends Error {
   readonly code: IrClassInitializationFailureCode;

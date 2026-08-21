@@ -91,6 +91,57 @@ describe('createIrClassInitializationPlan', () => {
     });
   });
 
+  it('orders parameter-property storage after ordinary fields at the constructor-specific boundary', () => {
+    const sourceFile = ts.createSourceFile(
+      '/flight/packages/test/src/parameter-properties.ts',
+      `
+        class Base {
+          first = 1;
+          constructor(public base: number) {}
+        }
+        export class Derived extends Base {
+          child = 2;
+          constructor(base: number, readonly label: string) { super(base); }
+        }
+      `,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const result = lowerTypeScriptSource(sourceFile, {
+      packageName: '@flighthq/test',
+      upstreamDirectory: '/flight',
+    });
+    const [base, derived] = result.module.declarations;
+    if (base?.kind !== 'class' || derived?.kind !== 'class') throw new Error('Expected class declarations');
+
+    expect(result.diagnostics).toEqual([]);
+    expect(createIrClassInitializationPlan(base).fields).toEqual([
+      { fieldIndex: 0, timing: 'base-instance-binding', value: 'initializer' },
+      {
+        fieldIndex: 1,
+        parameterIndex: 0,
+        timing: 'base-constructor-body-entry',
+        value: 'parameter',
+      },
+    ]);
+    expect(createIrClassInitializationPlan(derived).fields).toEqual([
+      { fieldIndex: 0, timing: 'derived-super-return', value: 'initializer' },
+      {
+        fieldIndex: 1,
+        parameterIndex: 1,
+        timing: 'derived-super-return-after-fields',
+        value: 'parameter',
+      },
+    ]);
+    expect(derived.classConstructor?.body).toContainEqual({
+      expression: expect.objectContaining({
+        callee: { kind: 'identifier', reference: { kind: 'super' } },
+        kind: 'call',
+      }),
+      kind: 'expression',
+    });
+  });
+
   it('returns deeply frozen data without changing the class declaration', () => {
     const declaration = createClass([createField('value', false)]);
     const snapshot = structuredClone(declaration);
@@ -105,6 +156,10 @@ describe('createIrClassInitializationPlan', () => {
   });
 
   it('rejects malformed declarations, heritage, constructors, and fields through stable paths', () => {
+    const invalidParameterProperty = createClass(
+      [{ ...createField('value', false), parameterProperty: { parameterIndex: 0 } } as never],
+      { explicitConstructor: true },
+    );
     const fixtures = [
       { code: 'invalid-class-declaration', path: ['declaration'], value: null },
       { code: 'invalid-class-declaration', path: ['declaration'], value: [] },
@@ -130,6 +185,11 @@ describe('createIrClassInitializationPlan', () => {
         path: ['declaration', 'fields', 0],
         value: { fields: [{}], kind: 'class' },
       },
+      {
+        code: 'invalid-parameter-property',
+        path: ['declaration', 'fields', 0, 'parameterProperty'],
+        value: invalidParameterProperty,
+      },
     ];
 
     for (const fixture of fixtures) {
@@ -143,7 +203,11 @@ describe('createIrClassInitializationPlan', () => {
 describe('isIrClassInitializationFailure', () => {
   it('accepts every stable failure code and rejects ordinary and malformed errors', () => {
     const failures: unknown[] = [];
-    for (const value of [null, { fields: [{}], kind: 'class' }]) {
+    const invalidParameterProperty = createClass(
+      [{ ...createField('value', false), parameterProperty: { parameterIndex: 0 } } as never],
+      { explicitConstructor: true },
+    );
+    for (const value of [null, { fields: [{}], kind: 'class' }, invalidParameterProperty]) {
       try {
         createIrClassInitializationPlan(value as never);
       } catch (error) {
@@ -151,7 +215,7 @@ describe('isIrClassInitializationFailure', () => {
       }
     }
 
-    expect(failures).toHaveLength(2);
+    expect(failures).toHaveLength(3);
     expect(failures.every(isIrClassInitializationFailure)).toBe(true);
     expect(isIrClassInitializationFailure(new Error('ordinary'))).toBe(false);
     expect(

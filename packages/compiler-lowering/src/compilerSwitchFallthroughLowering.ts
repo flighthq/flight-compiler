@@ -252,12 +252,16 @@ function lowerIrDeclarationSwitchFallthrough(
               },
             }
           : {}),
-        fields: declaration.fields.map((field) => ({
-          ...field,
-          ...(field.initializer
-            ? { initializer: lowerIrExpressionSwitchFallthrough(field.initializer, sourceIdentity) }
-            : {}),
-        })),
+        fields: declaration.fields.map((field) =>
+          field.parameterProperty
+            ? field
+            : {
+                ...field,
+                ...(field.initializer
+                  ? { initializer: lowerIrExpressionSwitchFallthrough(field.initializer, sourceIdentity) }
+                  : {}),
+              },
+        ),
         methods: declaration.methods.map((method) => ({
           ...method,
           body: method.body.map((statement) => lowerIrStatementSwitchFallthrough(statement, sourceIdentity)),

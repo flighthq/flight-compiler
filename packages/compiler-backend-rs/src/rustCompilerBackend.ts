@@ -405,6 +405,7 @@ function emitInterface(declaration: Readonly<IrInterfaceDeclaration>, context: E
 }
 
 function emitConstructorReferenceRust(reference: Readonly<IrIdentifierReference>, context: EmitContext): string {
+  if (reference.kind === 'super') emissionError(context, 'super cannot be used as a Rust constructor value');
   if (reference.kind === 'this') emissionError(context, 'this cannot be used as a Rust constructor');
   if (reference.kind !== 'ambient') return getBindingTargetNameRust(reference.binding, context);
   const targetName = getCompilerRuntimeExternalSymbolTargetRust(reference.name, 'value');
@@ -421,6 +422,7 @@ function assertIrConstructorInvocationAbiRust(
 }
 
 function emitIdentifierReferenceRust(reference: Readonly<IrIdentifierReference>, context: EmitContext): string {
+  if (reference.kind === 'super') emissionError(context, 'super requires Rust inheritance lowering');
   if (reference.kind === 'this') return 'self';
   if (reference.kind === 'ambient') {
     if (reference.name === 'undefined') {

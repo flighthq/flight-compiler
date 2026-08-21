@@ -523,7 +523,7 @@ describe('lowerTypeScriptSource', () => {
     ]);
   });
 
-  it('attaches constructor overloads and diagnoses parameter properties without partial class IR', () => {
+  it('attaches constructor overloads and parameter properties to one class layout', () => {
     const overloads = lower(
       'point.ts',
       'export class Point { constructor(a: number); constructor(a: string); constructor(x: number | string) {} }',
@@ -543,8 +543,62 @@ describe('lowerTypeScriptSource', () => {
       kind: 'class',
     });
     expect(overloads.diagnostics).toEqual([]);
-    expect(parameterProperty.module.declarations).toEqual([]);
-    expect(parameterProperty.diagnostics[0]?.message).toContain('parameter properties');
+    expect(parameterProperty.module.declarations[0]).toMatchObject({
+      classConstructor: {
+        parameters: [{ binding: { name: 'value' }, type: { kind: 'primitive', name: 'number' } }],
+      },
+      fields: [
+        {
+          name: 'value',
+          parameterProperty: { parameterIndex: 0 },
+          readonly: true,
+          static: false,
+          type: { kind: 'primitive', name: 'number' },
+          visibility: 'public',
+        },
+      ],
+      kind: 'class',
+    });
+    expect(parameterProperty.diagnostics).toEqual([]);
+  });
+
+  it('preserves super identity and rejects ambiguous or unrepresentable class member storage', () => {
+    const derived = lower(
+      'timeout.ts',
+      `
+        export class Timeout extends Error {
+          constructor(readonly channel: string) {
+            super(channel);
+          }
+        }
+      `,
+    );
+    const conflicts = [
+      'class Value { field = 1; field(): number { return 1; } }',
+      'class Value { field = 1; constructor(public field: number) {} }',
+      'class Value { #field = 1; }',
+      'abstract class Value { abstract field: number; }',
+      'class Value { declare field: number; }',
+    ].map((source, index) => lower(`class-conflict-${String(index)}.ts`, source));
+    const declaration = derived.module.declarations[0];
+    if (declaration?.kind !== 'class') throw new Error('Expected derived class declaration');
+    const superCall = declaration.classConstructor?.body.find(
+      (statement) => statement.kind === 'expression' && statement.expression.kind === 'call',
+    );
+
+    expect(derived.diagnostics).toEqual([]);
+    expect(superCall).toMatchObject({
+      expression: { callee: { kind: 'identifier', reference: { kind: 'super' } }, kind: 'call' },
+      kind: 'expression',
+    });
+    expect(conflicts.map((result) => result.module.declarations)).toEqual([[], [], [], [], []]);
+    expect(conflicts.map((result) => result.diagnostics[0]?.message)).toEqual([
+      'class runtime member field has conflicting field and method storage',
+      'class runtime member field has conflicting parameter-property storage',
+      'ECMAScript private fields require branded member identity',
+      'declare and abstract class fields require type-only layout representation',
+      'declare and abstract class fields require type-only layout representation',
+    ]);
   });
 
   it('returns stable globally identified one-based diagnostics', () => {

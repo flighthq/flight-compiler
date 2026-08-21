@@ -24,10 +24,11 @@ describe('compiler binding intermediate representation contracts', () => {
     const references: readonly IrIdentifierReference[] = [
       { binding, kind: 'binding' },
       { kind: 'ambient', name: 'Error' },
+      { kind: 'super' },
       { kind: 'this' },
     ];
 
-    expect(references.map((reference) => reference.kind)).toEqual(['binding', 'ambient', 'this']);
+    expect(references.map((reference) => reference.kind)).toEqual(['binding', 'ambient', 'super', 'this']);
     expectTypeOf(binding).toMatchTypeOf<CompilerSourceOrigin>();
     expectTypeOf<IrBindingIdentity['kind']>().toEqualTypeOf<
       'catch' | 'class' | 'enum' | 'function' | 'import' | 'parameter' | 'variable'

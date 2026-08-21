@@ -20,6 +20,7 @@
   "dependencies": {
     "@flighthq/compiler-canonical-form": "*",
     "@flighthq/compiler-emission": "*",
+    "@flighthq/compiler-ir-traversal": "*",
     "@flighthq/compiler-lowering": "*",
     "@flighthq/compiler-runtime-contract": "*",
     "@flighthq/compiler-structural": "*",

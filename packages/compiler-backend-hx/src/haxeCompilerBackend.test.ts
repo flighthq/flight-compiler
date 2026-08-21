@@ -208,6 +208,93 @@ describe('emitIrModuleHaxe', () => {
     expect(output).toContain('return new Box(1);');
   });
 
+  it('emits parameter-property storage at base and derived initialization boundaries', () => {
+    const base = lower(
+      'reader.ts',
+      'export class Reader { constructor(readonly source: string, public position: number) { position; } }',
+    );
+    const derived = lower(
+      'derived.ts',
+      `
+        class Base { constructor(value: string) { value; } }
+        export class Derived extends Base {
+          code = 1;
+          constructor(value: string, readonly label: string) {
+            value;
+            super(value);
+            label;
+          }
+        }
+      `,
+    );
+    const baseOutput = emitIrModuleHaxe(base.module).contents;
+    const derivedOutput = emitIrModuleHaxe(derived.module).contents;
+
+    expect(base.diagnostics).toEqual([]);
+    expect(baseOutput).toContain('final source:String;');
+    expect(baseOutput).toContain('public var position:Float;');
+    expect(baseOutput).toContain(
+      'public function new(source:String, position:Float) {\n    this.source = source;\n    this.position = position;\n    position;\n  }',
+    );
+    expect(derived.diagnostics).toEqual([]);
+    expect(derivedOutput).toContain('var code:Float;');
+    expect(derivedOutput).toContain(
+      'value;\n    super(value);\n    this.code = 1;\n    this.label = label;\n    label;',
+    );
+    expect(derivedOutput.indexOf('super(value)')).toBeLessThan(derivedOutput.indexOf('this.code = 1'));
+    expect(derivedOutput.indexOf('this.code = 1')).toBeLessThan(derivedOutput.indexOf('this.label = label'));
+  });
+
+  it('refuses derived constructor shapes whose field timing cannot be preserved', () => {
+    const implicit = lower('implicit-derived.ts', 'class Base {} export class Derived extends Base {}');
+    const conditional = lower(
+      'conditional-super.ts',
+      'class Base {} export class Derived extends Base { value = 1; constructor(flag: boolean) { if (flag) super(); else super(); } }',
+    );
+    const repeated = lower(
+      'repeated-super.ts',
+      'class Base {} export class Derived extends Base { constructor(flag: boolean) { super(); if (flag) super(); } }',
+    );
+    const base = lower('base-super.ts', 'export class Base { constructor() { super(); } }');
+
+    expect(() => emitIrModuleHaxe(implicit.module)).toThrow(
+      'class Derived implicit derived constructor requires inherited-ABI forwarding',
+    );
+    expect(() => emitIrModuleHaxe(conditional.module)).toThrow(
+      'super constructor calls require a direct derived-constructor statement in Haxe',
+    );
+    expect(() => emitIrModuleHaxe(repeated.module)).toThrow(
+      'super constructor calls require a direct derived-constructor statement in Haxe',
+    );
+    expect(() => emitIrModuleHaxe(base.module)).toThrow(
+      'super constructor calls require a direct derived-constructor statement in Haxe',
+    );
+  });
+
+  it('maps ambient Error inheritance to Haxe exception storage', () => {
+    const result = lower(
+      'timeout.ts',
+      `
+        export class Timeout extends Error {
+          readonly channel: string;
+          constructor(channel: string) {
+            super(channel);
+            this.name = 'Timeout';
+            this.channel = channel;
+          }
+        }
+      `,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(result.diagnostics).toEqual([]);
+    expect(output).toContain('class Timeout extends haxe.Exception {');
+    expect(output).toContain('public var name:String;');
+    expect(output).toContain(
+      'super(channel);\n    this.name = "Error";\n    this.name = "Timeout";\n    this.channel = channel;',
+    );
+  });
+
   it('evaluates fixed extra arguments before erasing them from a Haxe call', () => {
     const result = lower(
       'extra-argument.ts',

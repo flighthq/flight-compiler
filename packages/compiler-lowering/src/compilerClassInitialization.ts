@@ -10,14 +10,21 @@ export function createIrClassInitializationPlan(declaration: Readonly<IrClassDec
   validateIrClassInitializationDeclaration(declaration);
   const derived = declaration.extends !== undefined;
   const instanceTiming = derived ? 'derived-super-return' : 'base-instance-binding';
-  const fields = declaration.fields.map(
-    (field, fieldIndex): IrClassFieldInitialization =>
-      Object.freeze({
+  const fields = declaration.fields.map((field, fieldIndex): IrClassFieldInitialization => {
+    if (field.parameterProperty) {
+      return Object.freeze({
         fieldIndex,
-        timing: field.static ? 'class-evaluation' : instanceTiming,
-        value: field.initializer === undefined ? 'undefined' : 'initializer',
-      }),
-  );
+        parameterIndex: field.parameterProperty.parameterIndex,
+        timing: derived ? 'derived-super-return-after-fields' : 'base-constructor-body-entry',
+        value: 'parameter',
+      });
+    }
+    return Object.freeze({
+      fieldIndex,
+      timing: field.static ? 'class-evaluation' : instanceTiming,
+      value: field.initializer === undefined ? 'undefined' : 'initializer',
+    });
+  });
   const constructor = declaration.classConstructor
     ? Object.freeze({ kind: 'explicit' as const })
     : derived
@@ -77,6 +84,7 @@ function validateIrClassInitializationDeclaration(declaration: Readonly<IrClassD
       'Explicit class constructor data must contain body, overload, and parameter lists',
     );
   }
+  const parameterPropertyIndexes = new Set<number>();
   declaration.fields.forEach((field, fieldIndex) => {
     if (!isRecord(field) || typeof field.static !== 'boolean') {
       throw createIrClassInitializationFailure(
@@ -85,6 +93,31 @@ function validateIrClassInitializationDeclaration(declaration: Readonly<IrClassD
         'Class fields must declare whether their storage is static',
       );
     }
+    if (field.parameterProperty === undefined) return;
+    const parameterProperty = field.parameterProperty;
+    const parameterIndex = isRecord(parameterProperty) ? parameterProperty.parameterIndex : undefined;
+    const parameter =
+      typeof parameterIndex === 'number' ? declaration.classConstructor?.parameters[parameterIndex] : undefined;
+    const binding = isRecord(parameter) ? parameter.binding : undefined;
+    if (
+      !isRecord(parameterProperty) ||
+      typeof parameterIndex !== 'number' ||
+      !Number.isInteger(parameterIndex) ||
+      parameterIndex < 0 ||
+      !isRecord(parameter) ||
+      !isRecord(binding) ||
+      binding.name !== field.name ||
+      field.static ||
+      field.initializer !== undefined ||
+      parameterPropertyIndexes.has(parameterIndex)
+    ) {
+      throw createIrClassInitializationFailure(
+        'invalid-parameter-property',
+        ['declaration', 'fields', fieldIndex, 'parameterProperty'],
+        'Parameter property must uniquely reference its same-named constructor parameter and cannot be static or independently initialized',
+      );
+    }
+    parameterPropertyIndexes.add(parameterIndex);
   });
 }
 
@@ -109,4 +142,5 @@ function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
 const irClassInitializationFailureCodes = new Set<IrClassInitializationFailureCode>([
   'invalid-class-declaration',
   'invalid-class-field',
+  'invalid-parameter-property',
 ]);

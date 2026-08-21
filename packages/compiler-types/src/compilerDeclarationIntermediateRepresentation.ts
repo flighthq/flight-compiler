@@ -80,15 +80,30 @@ export interface IrClassConstructorSignature {
   readonly parameters: readonly IrParameter[];
 }
 
-export interface IrClassField {
-  readonly initializer?: IrExpression | undefined;
+export interface IrClassParameterProperty {
+  readonly parameterIndex: number;
+}
+
+type IrClassFieldCommon = Readonly<{
   readonly name: string;
   readonly optional: boolean;
   readonly readonly: boolean;
   readonly static: boolean;
   readonly type: IrType;
   readonly visibility: IrClassMemberVisibility;
-}
+}>;
+
+export type IrClassField = IrClassFieldCommon &
+  (
+    | Readonly<{
+        readonly initializer?: IrExpression | undefined;
+        readonly parameterProperty?: never;
+      }>
+    | Readonly<{
+        readonly initializer?: never;
+        readonly parameterProperty: IrClassParameterProperty;
+      }>
+  );
 
 export interface IrClassMethod extends IrFunctionSignature {
   readonly async: boolean;

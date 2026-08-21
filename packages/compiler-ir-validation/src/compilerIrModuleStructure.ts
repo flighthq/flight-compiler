@@ -288,10 +288,33 @@ function visitDeclaration(declaration: Readonly<IrDeclaration>, path: string, st
         visitTypeParameters(declaration.typeParameters, `${path}.typeParameters`, 'declaration', state);
         if (declaration.extends) visitType(declaration.extends, `${path}.extends`, state);
         declaration.implements.forEach((type, index) => visitType(type, `${path}.implements[${String(index)}]`, state));
+        const parameterPropertyIndexes = new Set<number>();
         declaration.fields.forEach((field, index) => {
           const fieldPath = `${path}.fields[${String(index)}]`;
           visitType(field.type, `${fieldPath}.type`, state);
           if (field.initializer) visitExpression(field.initializer, `${fieldPath}.initializer`, state);
+          const parameterProperty = field.parameterProperty;
+          if (!parameterProperty) return;
+          const parameterIndex = parameterProperty.parameterIndex;
+          const constructorParameter = declaration.classConstructor?.parameters[parameterIndex];
+          if (
+            !Number.isInteger(parameterIndex) ||
+            parameterIndex < 0 ||
+            !constructorParameter ||
+            field.static ||
+            field.initializer !== undefined ||
+            constructorParameter.binding.name !== field.name ||
+            parameterPropertyIndexes.has(parameterIndex)
+          ) {
+            addFailure(
+              'invalid-node-shape',
+              `${fieldPath}.parameterProperty`,
+              'parameter property must uniquely reference its same-named constructor parameter and cannot be static or independently initialized',
+              state,
+            );
+            return;
+          }
+          parameterPropertyIndexes.add(parameterIndex);
         });
         const classConstructor = declaration.classConstructor;
         if (classConstructor) {
@@ -811,6 +834,7 @@ function validateIrExtraArgumentErasureEvidence(
     signature.restParameter === undefined &&
     !expression.optional &&
     expression.callee.kind === 'identifier' &&
+    expression.callee.reference.kind !== 'super' &&
     expression.callee.reference.kind !== 'this' &&
     !expression.arguments
       .slice(0, signature.parameterCount)

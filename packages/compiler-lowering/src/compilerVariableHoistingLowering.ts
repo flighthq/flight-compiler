@@ -401,18 +401,22 @@ function lowerIrDeclarationVariableHoisting(
               },
             }
           : {}),
-        fields: declaration.fields.map((field) => ({
-          ...field,
-          ...(field.initializer
-            ? {
-                initializer: lowerIrExpressionVariableHoisting(field.initializer, {
-                  hoisted: new Map(),
-                  iterationCarrierCount: 0,
-                  sourceIdentity,
-                }),
-              }
-            : {}),
-        })),
+        fields: declaration.fields.map((field) =>
+          field.parameterProperty
+            ? field
+            : {
+                ...field,
+                ...(field.initializer
+                  ? {
+                      initializer: lowerIrExpressionVariableHoisting(field.initializer, {
+                        hoisted: new Map(),
+                        iterationCarrierCount: 0,
+                        sourceIdentity,
+                      }),
+                    }
+                  : {}),
+              },
+        ),
         methods: declaration.methods.map((method) => ({
           ...method,
           body: lowerIrFunctionBodyVariableHoisting(method.body, sourceIdentity),

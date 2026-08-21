@@ -236,19 +236,13 @@ function lowerClass(node: ts.ClassDeclaration, context: LoweringContext): IrClas
   }
   const constructor = constructorImplementations[0] ?? constructors[0];
   const constructorOverloads = constructors.filter((candidate) => candidate !== constructor);
-  const parameterProperty = constructor?.parameters.find((parameter) =>
-    [
-      ts.SyntaxKind.PrivateKeyword,
-      ts.SyntaxKind.ProtectedKeyword,
-      ts.SyntaxKind.PublicKeyword,
-      ts.SyntaxKind.ReadonlyKeyword,
-    ].some((kind) => hasModifier(parameter, kind)),
-  );
-  if (parameterProperty) unsupported(parameterProperty, 'constructor parameter properties require field lowering');
   const fields: IrClassField[] = [];
   const methods: IrClassMethod[] = [];
   const methodGroups = new Map<string, ts.MethodDeclaration[]>();
   for (const method of node.members.filter(ts.isMethodDeclaration)) {
+    if (ts.isPrivateIdentifier(method.name)) {
+      unsupported(method.name, 'ECMAScript private methods require branded member identity');
+    }
     const name = propertyName(method.name, context);
     const key = `${hasModifier(method, ts.SyntaxKind.StaticKeyword) ? 'static' : 'instance'}:${name}`;
     const group = methodGroups.get(key) ?? [];
@@ -261,14 +255,27 @@ function lowerClass(node: ts.ClassDeclaration, context: LoweringContext): IrClas
       unsupported(group[0]!, `class method ${propertyName(group[0]!.name, context)} requires one implementation`);
     }
   }
+  const fieldSlots = new Set<string>();
   for (const member of node.members) {
     if (ts.isConstructorDeclaration(member)) continue;
     if (ts.isPropertyDeclaration(member)) {
+      if (ts.isPrivateIdentifier(member.name)) {
+        unsupported(member.name, 'ECMAScript private fields require branded member identity');
+      }
+      if (hasModifier(member, ts.SyntaxKind.DeclareKeyword) || hasModifier(member, ts.SyntaxKind.AbstractKeyword)) {
+        unsupported(member, 'declare and abstract class fields require type-only layout representation');
+      }
       if (!member.type && !member.initializer) unsupported(member, 'class fields require a type or initializer');
       const type = member.type ? lowerType(member.type, context) : inferInitializerType(member.initializer!, context);
+      const name = propertyName(member.name, context);
+      const key = `${hasModifier(member, ts.SyntaxKind.StaticKeyword) ? 'static' : 'instance'}:${name}`;
+      if (fieldSlots.has(key) || methodGroups.has(key)) {
+        unsupported(member, `class runtime member ${name} has conflicting field and method storage`);
+      }
+      fieldSlots.add(key);
       fields.push({
         ...(member.initializer ? { initializer: lowerExpression(member.initializer, context, type) } : {}),
-        name: propertyName(member.name, context),
+        name,
         optional: member.questionToken !== undefined,
         readonly: hasModifier(member, ts.SyntaxKind.ReadonlyKeyword),
         static: hasModifier(member, ts.SyntaxKind.StaticKeyword),
@@ -311,7 +318,27 @@ function lowerClass(node: ts.ClassDeclaration, context: LoweringContext): IrClas
   const implementsClause = node.heritageClauses?.find((clause) => clause.token === ts.SyntaxKind.ImplementsKeyword);
   if (extendsClause && extendsClause.types.length !== 1)
     unsupported(extendsClause, 'classes must extend one base type');
-  const constructorParameters = constructor?.parameters.map((parameter) => lowerParameter(parameter, context));
+  const constructorParameters = constructor?.parameters.map((parameter) => lowerParameter(parameter, context)) ?? [];
+  constructor?.parameters.forEach((parameter, parameterIndex) => {
+    if (!isTypeScriptParameterProperty(parameter)) return;
+    if (!ts.isIdentifier(parameter.name) || parameter.dotDotDotToken) {
+      unsupported(parameter, 'constructor parameter properties require a named non-rest parameter');
+    }
+    const key = `instance:${parameter.name.text}`;
+    if (fieldSlots.has(key) || methodGroups.has(key)) {
+      unsupported(parameter, `class runtime member ${parameter.name.text} has conflicting parameter-property storage`);
+    }
+    fieldSlots.add(key);
+    fields.push({
+      name: parameter.name.text,
+      optional: parameter.questionToken !== undefined,
+      parameterProperty: { parameterIndex },
+      readonly: hasModifier(parameter, ts.SyntaxKind.ReadonlyKeyword),
+      static: false,
+      type: constructorParameters[parameterIndex]!.type,
+      visibility: visibility(parameter),
+    });
+  });
   return {
     abstract: hasModifier(node, ts.SyntaxKind.AbstractKeyword),
     binding: lowerBindingIdentity(node.name!, context),
@@ -319,13 +346,13 @@ function lowerClass(node: ts.ClassDeclaration, context: LoweringContext): IrClas
       ? {
           classConstructor: {
             body: [
-              ...lowerParameterBindingEntries(constructor.parameters, constructorParameters!, context),
+              ...lowerParameterBindingEntries(constructor.parameters, constructorParameters, context),
               ...(constructor.body ? lowerStatementList(constructor.body.statements, context) : []),
             ],
             overloads: constructorOverloads.map((overload) => ({
               parameters: overload.parameters.map((parameter) => lowerParameter(parameter, context)),
             })),
-            parameters: constructorParameters!,
+            parameters: constructorParameters,
           },
         }
       : {}),
@@ -481,6 +508,7 @@ function lowerExpression(
     return { kind: 'identifier', reference };
   }
   if (node.kind === ts.SyntaxKind.ThisKeyword) return { kind: 'identifier', reference: { kind: 'this' } };
+  if (node.kind === ts.SyntaxKind.SuperKeyword) return { kind: 'identifier', reference: { kind: 'super' } };
   if (node.kind === ts.SyntaxKind.TrueKeyword) return { kind: 'literal', value: true };
   if (node.kind === ts.SyntaxKind.FalseKeyword) return { kind: 'literal', value: false };
   if (node.kind === ts.SyntaxKind.NullKeyword) return { kind: 'literal', value: null };
@@ -721,7 +749,12 @@ function addTypeScriptExtraArgumentErasureSemantics(
   ) {
     return expression;
   }
-  if (expression.optional || expression.callee.kind !== 'identifier' || expression.callee.reference.kind === 'this') {
+  if (
+    expression.optional ||
+    expression.callee.kind !== 'identifier' ||
+    expression.callee.reference.kind === 'super' ||
+    expression.callee.reference.kind === 'this'
+  ) {
     return expression;
   }
   const defaulted = new Set(expression.semantics.defaultParameters?.defaulted ?? []);
@@ -2887,6 +2920,16 @@ function lowerUnaryOperatorSemantics(
 
 function isThisParameter(node: ts.ParameterDeclaration): boolean {
   return ts.isIdentifier(node.name) && node.name.text === 'this';
+}
+
+function isTypeScriptParameterProperty(node: ts.ParameterDeclaration): boolean {
+  return [
+    ts.SyntaxKind.OverrideKeyword,
+    ts.SyntaxKind.PrivateKeyword,
+    ts.SyntaxKind.ProtectedKeyword,
+    ts.SyntaxKind.PublicKeyword,
+    ts.SyntaxKind.ReadonlyKeyword,
+  ].some((kind) => hasModifier(node, kind));
 }
 
 function createTypeScriptAnalysis(sourceFile: ts.SourceFile): TypeScriptAnalysis {

@@ -338,7 +338,7 @@ function getExpressionValueDomain(expression: Readonly<IrExpression>): IrOperato
     case 'identifier':
       return expression.reference.kind === 'ambient' && expression.reference.name === 'undefined'
         ? 'undefined'
-        : expression.reference.kind === 'this'
+        : expression.reference.kind === 'super' || expression.reference.kind === 'this'
           ? 'object'
           : 'unknown';
     case 'literal':

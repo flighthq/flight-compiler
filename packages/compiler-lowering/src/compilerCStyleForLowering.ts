@@ -277,10 +277,14 @@ function lowerIrDeclaration(declaration: Readonly<IrDeclaration>, analysis: CSty
               },
             }
           : {}),
-        fields: declaration.fields.map((field) => ({
-          ...field,
-          ...(field.initializer ? { initializer: lowerIrExpression(field.initializer, analysis) } : {}),
-        })),
+        fields: declaration.fields.map((field) =>
+          field.parameterProperty
+            ? field
+            : {
+                ...field,
+                ...(field.initializer ? { initializer: lowerIrExpression(field.initializer, analysis) } : {}),
+              },
+        ),
         methods: declaration.methods.map((method) => ({
           ...method,
           body: method.body.map((statement) => lowerIrStatement(statement, analysis)),

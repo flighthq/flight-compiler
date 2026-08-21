@@ -330,18 +330,22 @@ function lowerIrDeclarationArrayBindingPattern(
                 },
               }
             : {}),
-          fields: declaration.fields.map((field, index) => ({
-            ...field,
-            ...(field.initializer
-              ? {
-                  initializer: lowerIrExpressionArrayBindingPattern(
-                    field.initializer,
-                    `${path}.fields[${String(index)}].initializer`,
-                    analysis,
-                  ),
-                }
-              : {}),
-          })),
+          fields: declaration.fields.map((field, index) =>
+            field.parameterProperty
+              ? field
+              : {
+                  ...field,
+                  ...(field.initializer
+                    ? {
+                        initializer: lowerIrExpressionArrayBindingPattern(
+                          field.initializer,
+                          `${path}.fields[${String(index)}].initializer`,
+                          analysis,
+                        ),
+                      }
+                    : {}),
+                },
+          ),
           methods: declaration.methods.map((method, methodIndex) => ({
             ...method,
             body: method.body.map((statement, statementIndex) =>

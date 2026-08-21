@@ -7,6 +7,7 @@ import {
   indentSourceLines,
   isCompilerTargetNameAllocationFailure,
 } from '../../compiler-emission/src/index.js';
+import { analyzeIrModuleTraversal } from '../../compiler-ir-traversal/src/index.js';
 import {
   createCompilerLoweringPassBindingPattern,
   createCompilerLoweringPassCStyleFor,
@@ -14,6 +15,7 @@ import {
   createCompilerLoweringPassInterfaceInheritance,
   createCompilerLoweringPassSwitchFallthrough,
   createCompilerLoweringPassVariableHoisting,
+  createIrClassInitializationPlan,
   lowerIrModuleWithCompilerPasses,
 } from '../../compiler-lowering/src/index.js';
 import {
@@ -133,6 +135,7 @@ export function emitIrModuleHaxe(
     packageName,
     targetNames,
   };
+  assertIrModuleSuperConstructorCallShapeHaxe(module, context);
   if (module.exports.length > 0) {
     emissionError(context, 're-exports and export assignments require Haxe module-facade lowering');
   }
@@ -166,6 +169,28 @@ export function emitIrModuleHaxe(
   };
 }
 
+function assertIrModuleSuperConstructorCallShapeHaxe(module: Readonly<IrModule>, context: EmitContext): void {
+  analyzeIrModuleTraversal(module, {
+    expression(expression, path) {
+      if (!isIrExpressionSuperConstructorCallHaxe(expression)) return;
+      const declarationIndex = path[1];
+      const declaration = typeof declarationIndex === 'number' ? module.declarations[declarationIndex] : undefined;
+      const directDerivedConstructorCall =
+        path.length === 6 &&
+        path[0] === 'declarations' &&
+        path[2] === 'classConstructor' &&
+        path[3] === 'body' &&
+        typeof path[4] === 'number' &&
+        path[5] === 'expression' &&
+        declaration?.kind === 'class' &&
+        declaration.extends !== undefined;
+      if (!directDerivedConstructorCall) {
+        emissionError(context, 'super constructor calls require a direct derived-constructor statement in Haxe');
+      }
+    },
+  });
+}
+
 function emitClass(declaration: Readonly<IrClassDeclaration>, context: EmitContext): string[] {
   if (declaration.implements.length > 0) {
     emissionError(
@@ -176,15 +201,39 @@ function emitClass(declaration: Readonly<IrClassDeclaration>, context: EmitConte
   const parameters = emitTypeParameters(declaration.typeParameters, context);
   const extendsType = declaration.extends ? ` extends ${emitType(declaration.extends, context)}` : '';
   const abstract = declaration.abstract ? 'abstract ' : '';
+  const initialization = createIrClassInitializationPlan(declaration);
+  const requiresErrorNameStorage =
+    isIrClassErrorSubclassHaxe(declaration) &&
+    !declaration.fields.some((field) => !field.static && field.name === 'name');
+  if (initialization.constructor.kind === 'implicit-derived') {
+    emissionError(
+      context,
+      `class ${declaration.binding.name} implicit derived constructor requires inherited-ABI forwarding`,
+    );
+  }
+  const directSuperCalls = declaration.classConstructor?.body.filter(isIrStatementSuperConstructorCall) ?? [];
+  if (declaration.extends && declaration.classConstructor && directSuperCalls.length !== 1) {
+    emissionError(
+      context,
+      `class ${declaration.binding.name} requires one direct super constructor call for Haxe initialization`,
+    );
+  }
   const lines = [
     `${declaration.exported ? '' : 'private '}${abstract}class ${getBindingTargetNameHaxe(declaration.binding, context)}${parameters}${extendsType} {`,
   ];
+  if (requiresErrorNameStorage) {
+    lines.push('  public var name:String;');
+  }
   declaration.fields.forEach((field, index) => {
-    if (index > 0) lines.push('');
+    if (index > 0 || lines.length > 1) lines.push('');
     const visibility = field.visibility === 'public' ? 'public ' : field.visibility === 'private' ? 'private ' : '';
     const storage = field.readonly ? 'final' : 'var';
     const static_ = field.static ? 'static ' : '';
-    const initializer = field.initializer ? ` = ${emitExpression(field.initializer, context)}` : '';
+    const fieldInitialization = initialization.fields[index]!;
+    const initializer =
+      field.initializer && fieldInitialization.timing !== 'derived-super-return'
+        ? ` = ${emitExpression(field.initializer, context)}`
+        : '';
     lines.push(
       `  ${visibility}${static_}${storage} ${safeHaxeName(field.name)}:${emitType(field.type, context)}${initializer};`,
     );
@@ -193,9 +242,28 @@ function emitClass(declaration: Readonly<IrClassDeclaration>, context: EmitConte
     declaration.classConstructor &&
     (declaration.classConstructor.parameters.length > 0 || declaration.classConstructor.body.length > 0)
   ) {
-    if (declaration.fields.length > 0) lines.push('');
+    if (declaration.fields.length > 0 || requiresErrorNameStorage) lines.push('');
     lines.push(`  public function new(${emitParameters(declaration.classConstructor.parameters, context)}) {`);
-    lines.push(...indentSourceLines(emitStatements(declaration.classConstructor.body, context), 2), '  }');
+    const body: string[] = [];
+    body.push(
+      ...emitIrClassFieldInitializationsHaxe(declaration, initialization, 'base-constructor-body-entry', context),
+    );
+    for (const statement of declaration.classConstructor.body) {
+      body.push(...emitStatements([statement], context));
+      if (isIrStatementSuperConstructorCall(statement)) {
+        if (requiresErrorNameStorage) body.push('this.name = "Error";');
+        body.push(...emitIrClassFieldInitializationsHaxe(declaration, initialization, 'derived-super-return', context));
+        body.push(
+          ...emitIrClassFieldInitializationsHaxe(
+            declaration,
+            initialization,
+            'derived-super-return-after-fields',
+            context,
+          ),
+        );
+      }
+    }
+    lines.push(...indentSourceLines(body, 2), '  }');
   }
   declaration.methods.forEach((method) => {
     if (lines.length > 1) lines.push('');
@@ -425,6 +493,7 @@ function emitInterface(declaration: Readonly<IrInterfaceDeclaration>, context: E
 }
 
 function emitIdentifierReferenceHaxe(reference: Readonly<IrIdentifierReference>, context: EmitContext): string {
+  if (reference.kind === 'super') return 'super';
   if (reference.kind === 'this') return 'this';
   if (reference.kind === 'ambient') {
     if (reference.name === 'undefined') {
@@ -439,6 +508,43 @@ function emitIdentifierReferenceHaxe(reference: Readonly<IrIdentifierReference>,
     return targetName;
   }
   return getBindingTargetNameHaxe(reference.binding, context);
+}
+
+function emitIrClassFieldInitializationsHaxe(
+  declaration: Readonly<IrClassDeclaration>,
+  initialization: ReturnType<typeof createIrClassInitializationPlan>,
+  timing: 'base-constructor-body-entry' | 'derived-super-return' | 'derived-super-return-after-fields',
+  context: EmitContext,
+): string[] {
+  return initialization.fields.flatMap((fieldInitialization) => {
+    if (fieldInitialization.timing !== timing) return [];
+    const field = declaration.fields[fieldInitialization.fieldIndex]!;
+    const target = `this.${safeHaxeName(field.name)}`;
+    if (fieldInitialization.value === 'initializer') {
+      return [`${target} = ${emitExpression(field.initializer!, context)};`];
+    }
+    if (fieldInitialization.value === 'parameter') {
+      const parameter = declaration.classConstructor!.parameters[fieldInitialization.parameterIndex]!;
+      return [`${target} = ${getBindingTargetNameHaxe(parameter.binding, context)};`];
+    }
+    return [];
+  });
+}
+
+function isIrClassErrorSubclassHaxe(declaration: Readonly<IrClassDeclaration>): boolean {
+  return declaration.extends?.reference.kind === 'ambient' && declaration.extends.reference.name === 'Error';
+}
+
+function isIrExpressionSuperConstructorCallHaxe(expression: Readonly<IrExpression>): boolean {
+  return (
+    expression.kind === 'call' &&
+    expression.callee.kind === 'identifier' &&
+    expression.callee.reference.kind === 'super'
+  );
+}
+
+function isIrStatementSuperConstructorCall(statement: Readonly<IrStatement>): boolean {
+  return statement.kind === 'expression' && isIrExpressionSuperConstructorCallHaxe(statement.expression);
 }
 
 function emitLiteral(value: boolean | null | number | string): string {
