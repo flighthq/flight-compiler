@@ -87,6 +87,25 @@ describe('emitIrModuleHaxe', () => {
     expect(emitIrModuleHaxe(defaults.module).contents).toContain('factor:Float = 2');
   });
 
+  it('elects fixed array binding lowering and reports residual destructuring semantics', () => {
+    const fixed = lower(
+      'array-binding.ts',
+      'export function select(values: number[]): number { const [first, , third]: number[] = values; third; return first; }',
+    );
+    const defaulted = lower(
+      'array-default.ts',
+      'export function select(values: number[]): number { const [first = 0]: number[] = values; return first; }',
+    );
+    const output = emitIrModuleHaxe(fixed.module).contents;
+
+    expect(output).toContain('final arrayPatternValue:Array<Float> = values;');
+    expect(output).toContain('final first:Float = arrayPatternValue[0];');
+    expect(output).toContain('final third:Float = arrayPatternValue[2];');
+    expect(() => emitIrModuleHaxe(defaulted.module)).toThrow(
+      'Compiler lowering pass array-binding-pattern failed for @flighthq/math/packages/math/src/array-default.ts: array binding default at index 0 requires target-neutral undefined semantics',
+    );
+  });
+
   it('reports pass-named failures from the elected lowering plan', () => {
     const result = lower(
       'unsafe-loop.ts',

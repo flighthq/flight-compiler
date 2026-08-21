@@ -4,6 +4,7 @@ import type {
   IrFunctionDeclaration,
   IrModule,
   IrTypeAliasDeclaration,
+  IrVariableDeclaration,
   SemanticPatch,
   SemanticPatchFailure,
   SemanticPatchFailureCode,
@@ -138,6 +139,56 @@ describe('applySemanticPatchSet', () => {
     expect(haxe.modules[0]?.declarations[0]).toMatchObject({ binding: { name: 'haxeName' } });
     expect(haxe.audit.summary).toEqual({ applied: 1, skipped: 1 });
     expect(haxe.audit.skipped.map((record) => record.id)).toEqual(['rust-rename']);
+  });
+
+  it('identifies binding-pattern leaves but refuses to patch a declaration with multiple semantic targets', () => {
+    const fingerprint = fingerprintSourceText('const [value] = values;');
+    const origin = { column: 1, fingerprint, line: 1, packageName, source };
+    const declaration: IrVariableDeclaration = {
+      exported: true,
+      initializer: { elements: [], kind: 'array' },
+      kind: 'variable',
+      mutable: false,
+      origin,
+      pattern: {
+        ...origin,
+        elements: [
+          {
+            pattern: {
+              binding: {
+                ...origin,
+                id: 'binding:value',
+                kind: 'variable',
+                name: 'value',
+                scope: 'module',
+                space: 'value',
+              },
+              kind: 'binding',
+            },
+          },
+        ],
+        kind: 'array',
+        scope: 'module',
+      },
+      type: { element: { kind: 'primitive', name: 'number' }, kind: 'array', readonly: false },
+    };
+    const module = createModule([declaration]);
+    const patch: SemanticPatch = {
+      ...patchBase('pattern-rename', 'value', 'variable'),
+      expect: { fingerprint, kind: 'variable' },
+      name: 'renamed',
+      operation: 'rename',
+    };
+    const failure = captureFailure([module], [patch]);
+
+    expect(failure).toMatchObject({
+      code: 'incompatible-patch-operation',
+      message: expect.stringContaining(
+        'targets binding-pattern leaf value; apply destructuring lowering before semantic patches',
+      ),
+      patchIds: ['pattern-rename'],
+    });
+    expect(applySemanticPatchSet([module], [], 'haxe').modules).toEqual([module]);
   });
 
   it('applies every operation deterministically without mutating caller-owned input', () => {

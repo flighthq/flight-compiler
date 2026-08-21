@@ -8,6 +8,7 @@ import {
   isCompilerTargetNameAllocationFailure,
 } from '../../compiler-emission/src/index.js';
 import {
+  createCompilerLoweringPassArrayBindingPattern,
   createCompilerLoweringPassCStyleFor,
   lowerIrModuleWithCompilerPasses,
 } from '../../compiler-lowering/src/index.js';
@@ -71,7 +72,10 @@ export function emitIrModuleHaxe(
   sourceModule: Readonly<IrModule>,
   options: Readonly<HaxeCompilerBackendOptions> = {},
 ): EmittedFile {
-  const module = lowerIrModuleWithCompilerPasses(sourceModule, [createCompilerLoweringPassCStyleFor()]);
+  const module = lowerIrModuleWithCompilerPasses(sourceModule, [
+    createCompilerLoweringPassArrayBindingPattern(),
+    createCompilerLoweringPassCStyleFor(),
+  ]);
   assertRuntimeExternalSymbolBindingsHaxe(module);
   const packageName = convertPackageNameToHaxePackageName(module.packageName, options.rootPackage);
   let targetNames: Map<string, string>;

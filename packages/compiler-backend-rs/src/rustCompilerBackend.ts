@@ -8,6 +8,7 @@ import {
   isCompilerTargetNameAllocationFailure,
 } from '../../compiler-emission/src/index.js';
 import {
+  createCompilerLoweringPassArrayBindingPattern,
   createCompilerLoweringPassCStyleFor,
   lowerIrModuleWithCompilerPasses,
 } from '../../compiler-lowering/src/index.js';
@@ -76,7 +77,10 @@ export function emitIrModuleRust(
   sourceModule: Readonly<IrModule>,
   options: Readonly<RustCompilerBackendOptions> = {},
 ): EmittedFile {
-  const module = lowerIrModuleWithCompilerPasses(sourceModule, [createCompilerLoweringPassCStyleFor()]);
+  const module = lowerIrModuleWithCompilerPasses(sourceModule, [
+    createCompilerLoweringPassArrayBindingPattern(),
+    createCompilerLoweringPassCStyleFor(),
+  ]);
   assertRuntimeExternalSymbolBindingsRust(module);
   const constantIdentities = new Set(
     module.declarations.flatMap((declaration) =>

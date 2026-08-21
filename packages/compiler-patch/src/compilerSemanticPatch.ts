@@ -2,6 +2,8 @@ import { compareTextCodeUnits } from '../../compiler-canonical-form/src/index.js
 import { isCompilerSourceFingerprint } from '../../compiler-provenance/src/index.js';
 import type {
   AppliedSemanticPatches,
+  IrBindingIdentity,
+  IrBindingPattern,
   IrDeclaration,
   IrModule,
   PatchAuditRecord,
@@ -16,6 +18,12 @@ import type {
 interface IndexedDeclaration {
   declaration: IrDeclaration;
   readonly moduleIndex: number;
+  readonly patternBinding?: IrBindingIdentity | undefined;
+}
+
+interface SemanticDeclarationTarget {
+  readonly exportName: string;
+  readonly patternBinding?: IrBindingIdentity | undefined;
 }
 
 interface ExecutedSemanticPatchSet extends AppliedSemanticPatches {
@@ -63,16 +71,20 @@ function executeSemanticPatchSet(
   const declarationIndex = new Map<string, IndexedDeclaration[]>();
   for (const [moduleIndex, module] of output.entries()) {
     for (const declaration of module.declarations) {
-      const exportName = declarationSemanticName(declaration);
-      if (exportName === undefined) continue;
-      const key = targetKey({
-        exportName,
-        packageName: declaration.origin.packageName,
-        source: declaration.origin.source,
-      });
-      const indexed = declarationIndex.get(key) ?? [];
-      indexed.push({ declaration, moduleIndex });
-      declarationIndex.set(key, indexed);
+      for (const target of declarationSemanticTargets(declaration)) {
+        const key = targetKey({
+          exportName: target.exportName,
+          packageName: declaration.origin.packageName,
+          source: declaration.origin.source,
+        });
+        const indexed = declarationIndex.get(key) ?? [];
+        indexed.push({
+          declaration,
+          moduleIndex,
+          ...(target.patternBinding ? { patternBinding: target.patternBinding } : {}),
+        });
+        declarationIndex.set(key, indexed);
+      }
     }
   }
 
@@ -109,6 +121,14 @@ function executeSemanticPatchSet(
         [patch.id],
         targetSubject(patch.target),
         `Stale semantic patch ${patch.id}: expected ${patch.expect.fingerprint}, received ${declaration.origin.fingerprint}`,
+      );
+    }
+    if (match.patternBinding) {
+      throw createSemanticPatchError(
+        'incompatible-patch-operation',
+        [patch.id],
+        targetSubject(patch.target),
+        `Semantic patch ${patch.id} targets binding-pattern leaf ${match.patternBinding.name}; apply destructuring lowering before semantic patches`,
       );
     }
 
@@ -193,9 +213,21 @@ function createPatchAuditRecord(patch: Readonly<SemanticPatch>): PatchAuditRecor
   };
 }
 
-function declarationSemanticName(declaration: Readonly<IrDeclaration>): string | undefined {
-  if (declaration.kind === 'variable' && 'pattern' in declaration) return undefined;
-  return declaration.binding.name;
+function declarationSemanticTargets(declaration: Readonly<IrDeclaration>): readonly SemanticDeclarationTarget[] {
+  if (declaration.kind === 'variable' && 'pattern' in declaration) {
+    return collectBindingPatternTargets(declaration.pattern);
+  }
+  return [{ exportName: declaration.binding.name }];
+}
+
+function collectBindingPatternTargets(pattern: Readonly<IrBindingPattern>): readonly SemanticDeclarationTarget[] {
+  if (pattern.kind === 'binding') {
+    return [{ exportName: pattern.binding.name, patternBinding: pattern.binding }];
+  }
+  return [
+    ...pattern.elements.flatMap((element) => (element ? collectBindingPatternTargets(element.pattern) : [])),
+    ...(pattern.rest ? collectBindingPatternTargets(pattern.rest) : []),
+  ];
 }
 
 function renameSemanticDeclaration(declaration: Readonly<IrDeclaration>, name: string): IrDeclaration {

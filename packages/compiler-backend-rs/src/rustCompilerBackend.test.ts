@@ -84,6 +84,25 @@ describe('emitIrModuleRust', () => {
     expect(() => emitIrModuleRust(defaults.module)).toThrow('default parameter factor requires call-site lowering');
   });
 
+  it('elects fixed array binding lowering and reports residual destructuring semantics', () => {
+    const fixed = lower(
+      'array-binding.ts',
+      'export function select(values: number[]): number { const [first, , third]: number[] = values; third; return first; }',
+    );
+    const rest = lower(
+      'array-rest.ts',
+      'export function select(values: number[]): number { const [first, ...rest]: number[] = values; return first + rest.length; }',
+    );
+    const output = emitIrModuleRust(fixed.module).contents;
+
+    expect(output).toContain('let array_pattern_value: Vec<f64> = values;');
+    expect(output).toContain('let first: f64 = array_pattern_value[0.0 as usize];');
+    expect(output).toContain('let third: f64 = array_pattern_value[2.0 as usize];');
+    expect(() => emitIrModuleRust(rest.module)).toThrow(
+      'Compiler lowering pass array-binding-pattern failed for @flighthq/math/packages/math/src/array-rest.ts: array binding rest requires target-neutral slice semantics',
+    );
+  });
+
   it('reports pass-named failures from the elected lowering plan', () => {
     const result = lower(
       'unsafe-loop.ts',
