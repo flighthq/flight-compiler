@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
+import { normalizePathPortable } from '../../compiler-canonical-form/src/index.js';
 import type { CompilerInventoryFailureCode } from '../../compiler-types/src/index.js';
 import { isCompilerInventoryFailure } from './compilerInventoryFailure.js';
 import { getPackageInventoryRootExportLane, resolvePackageExportLane } from './flightPackageExportLane.js';
@@ -107,10 +108,9 @@ describe('analyzeFlightWorkspace', () => {
         path.join(outside, 'escaped.ts'),
         'export function createEscaped(value: number): number { return value; }\n',
       );
-      const specifier = path
-        .relative(path.join(upstream, 'packages', 'types', 'src'), path.join(outside, 'escaped.js'))
-        .split(path.sep)
-        .join('/');
+      const specifier = normalizePathPortable(
+        path.relative(path.join(upstream, 'packages', 'types', 'src'), path.join(outside, 'escaped.js')),
+      );
       write(
         upstream,
         'packages/types/src/value.ts',
