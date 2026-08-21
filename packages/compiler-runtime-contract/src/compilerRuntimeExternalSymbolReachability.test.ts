@@ -2,9 +2,12 @@ import ts from 'typescript';
 
 import { lowerTypeScriptSource } from '../../compiler-semantic/src/index.js';
 import type { IrModule } from '../../compiler-types/src/index.js';
-import { collectIrModulesRuntimeExternalTypeIdentities } from './compilerRuntimeExternalTypeReachability.js';
+import {
+  collectIrModulesRuntimeExternalSymbolIdentities,
+  collectIrModulesRuntimeExternalTypeIdentities,
+} from './compilerRuntimeExternalSymbolReachability.js';
 
-describe('collectIrModulesRuntimeExternalTypeIdentities', () => {
+describe('collectIrModulesRuntimeExternalSymbolIdentities', () => {
   it('collects ambient external types through declaration, type, statement, and expression containers', () => {
     const sourceFile = ts.createSourceFile(
       '/flight/packages/runtime/src/contracts.ts',
@@ -76,27 +79,32 @@ describe('collectIrModulesRuntimeExternalTypeIdentities', () => {
     });
     const snapshot = structuredClone(lowered.module);
 
-    expect(collectIrModulesRuntimeExternalTypeIdentities([lowered.module])).toEqual([
-      { sourceName: 'BigInt64Array' },
-      { sourceName: 'BigUint64Array' },
-      { sourceName: 'DataView' },
-      { sourceName: 'Date' },
-      { sourceName: 'Error' },
-      { sourceName: 'Float32Array' },
-      { sourceName: 'Float64Array' },
-      { sourceName: 'Int16Array' },
-      { sourceName: 'Int32Array' },
-      { sourceName: 'Iterable' },
-      { sourceName: 'Map' },
-      { sourceName: 'Promise' },
-      { sourceName: 'PromiseLike' },
-      { sourceName: 'Record' },
-      { sourceName: 'RegExp' },
-      { sourceName: 'Set' },
-      { sourceName: 'Uint16Array' },
-      { sourceName: 'Uint32Array' },
-      { sourceName: 'Uint8Array' },
-      { sourceName: 'WeakMap' },
+    expect(collectIrModulesRuntimeExternalSymbolIdentities([lowered.module])).toEqual([
+      { sourceName: 'Array', space: 'value' },
+      { sourceName: 'BigInt64Array', space: 'type' },
+      { sourceName: 'BigInt64Array', space: 'value' },
+      { sourceName: 'BigUint64Array', space: 'type' },
+      { sourceName: 'DataView', space: 'type' },
+      { sourceName: 'Date', space: 'type' },
+      { sourceName: 'Date', space: 'value' },
+      { sourceName: 'Error', space: 'type' },
+      { sourceName: 'Error', space: 'value' },
+      { sourceName: 'Float32Array', space: 'type' },
+      { sourceName: 'Float64Array', space: 'type' },
+      { sourceName: 'Int16Array', space: 'type' },
+      { sourceName: 'Int32Array', space: 'type' },
+      { sourceName: 'Iterable', space: 'type' },
+      { sourceName: 'Map', space: 'type' },
+      { sourceName: 'Promise', space: 'type' },
+      { sourceName: 'Promise', space: 'value' },
+      { sourceName: 'PromiseLike', space: 'type' },
+      { sourceName: 'Record', space: 'type' },
+      { sourceName: 'RegExp', space: 'type' },
+      { sourceName: 'Set', space: 'type' },
+      { sourceName: 'Uint16Array', space: 'type' },
+      { sourceName: 'Uint32Array', space: 'type' },
+      { sourceName: 'Uint8Array', space: 'type' },
+      { sourceName: 'WeakMap', space: 'type' },
     ]);
     expect(lowered.module).toEqual(snapshot);
   });
@@ -121,14 +129,14 @@ describe('collectIrModulesRuntimeExternalTypeIdentities', () => {
       { packageName: '@flighthq/runtime', upstreamDirectory: '/flight' },
     ).module;
 
-    expect(collectIrModulesRuntimeExternalTypeIdentities([second, first])).toEqual([
-      { sourceName: 'Alpha' },
-      { sourceName: 'Promise' },
-      { sourceName: 'Zed' },
-      { sourceName: '\u00c9xternal' },
+    expect(collectIrModulesRuntimeExternalSymbolIdentities([second, first])).toEqual([
+      { sourceName: 'Alpha', space: 'type' },
+      { sourceName: 'Promise', space: 'type' },
+      { sourceName: 'Zed', space: 'type' },
+      { sourceName: '\u00c9xternal', space: 'type' },
     ]);
-    expect(collectIrModulesRuntimeExternalTypeIdentities([first, second])).toEqual(
-      collectIrModulesRuntimeExternalTypeIdentities([second, first]),
+    expect(collectIrModulesRuntimeExternalSymbolIdentities([first, second])).toEqual(
+      collectIrModulesRuntimeExternalSymbolIdentities([second, first]),
     );
   });
 
@@ -143,8 +151,8 @@ describe('collectIrModulesRuntimeExternalTypeIdentities', () => {
       { packageName: '@flighthq/runtime', upstreamDirectory: '/flight' },
     );
 
-    expect(collectIrModulesRuntimeExternalTypeIdentities([])).toEqual([]);
-    expect(collectIrModulesRuntimeExternalTypeIdentities([lowered.module])).toEqual([]);
+    expect(collectIrModulesRuntimeExternalSymbolIdentities([])).toEqual([]);
+    expect(collectIrModulesRuntimeExternalSymbolIdentities([lowered.module])).toEqual([]);
   });
 
   it('fails defensively for forged declaration, expression, member, statement, and type kinds', () => {
@@ -185,9 +193,69 @@ describe('collectIrModulesRuntimeExternalTypeIdentities', () => {
     ] as unknown as readonly IrModule[];
 
     for (const malformed of malformedModules) {
-      expect(() => collectIrModulesRuntimeExternalTypeIdentities([malformed])).toThrow(
+      expect(() => collectIrModulesRuntimeExternalSymbolIdentities([malformed])).toThrow(
         'Unexpected neutral IR kind invalid',
       );
     }
+  });
+
+  it('collects constructor, static, typeof, and direct ambient values without confusing bound names or intrinsics', () => {
+    const lowered = lowerTypeScriptSource(
+      ts.createSourceFile(
+        '/flight/packages/runtime/src/values.ts',
+        `
+          const Map = (): number => 1;
+          export function use(): typeof Promise {
+            Map();
+            Math.max(1, 2);
+            Promise.resolve(1);
+            new Date();
+            undefined;
+            return Promise;
+          }
+        `,
+        ts.ScriptTarget.Latest,
+        true,
+      ),
+      { packageName: '@flighthq/runtime', upstreamDirectory: '/flight' },
+    );
+
+    expect(collectIrModulesRuntimeExternalSymbolIdentities([lowered.module])).toEqual([
+      { sourceName: 'Date', space: 'value' },
+      { sourceName: 'Math', space: 'value' },
+      { sourceName: 'Promise', space: 'value' },
+    ]);
+  });
+
+  it('collects an ambient value referenced only from a type query', () => {
+    const lowered = lowerTypeScriptSource(
+      ts.createSourceFile(
+        '/flight/packages/runtime/src/query.ts',
+        'export type Factory = typeof Promise;',
+        ts.ScriptTarget.Latest,
+        true,
+      ),
+      { packageName: '@flighthq/runtime', upstreamDirectory: '/flight' },
+    );
+
+    expect(collectIrModulesRuntimeExternalSymbolIdentities([lowered.module])).toEqual([
+      { sourceName: 'Promise', space: 'value' },
+    ]);
+  });
+});
+
+describe('collectIrModulesRuntimeExternalTypeIdentities', () => {
+  it('projects only type-space identities', () => {
+    const lowered = lowerTypeScriptSource(
+      ts.createSourceFile(
+        '/flight/packages/runtime/src/transition.ts',
+        'export function use(value: Promise<number>): typeof Promise { Math.max(1, 2); return Promise; }',
+        ts.ScriptTarget.Latest,
+        true,
+      ),
+      { packageName: '@flighthq/runtime', upstreamDirectory: '/flight' },
+    );
+
+    expect(collectIrModulesRuntimeExternalTypeIdentities([lowered.module])).toEqual([{ sourceName: 'Promise' }]);
   });
 });

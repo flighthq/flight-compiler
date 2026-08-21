@@ -1341,7 +1341,10 @@ function createTypeScriptAnalysis(sourceFile: ts.SourceFile): TypeScriptAnalysis
 }
 
 function lowerIdentifierReference(node: ts.Identifier, context: LoweringContext): IrIdentifierReference {
-  const symbol = context.checker.getSymbolAtLocation(node);
+  const symbol =
+    ts.isShorthandPropertyAssignment(node.parent) && node.parent.name === node
+      ? context.checker.getShorthandAssignmentValueSymbol(node.parent)
+      : context.checker.getSymbolAtLocation(node);
   return symbol?.declarations?.some(isValueBindingDeclaration)
     ? { binding: lowerBindingSymbol(symbol, node, context), kind: 'binding' }
     : { kind: 'ambient', name: node.text };

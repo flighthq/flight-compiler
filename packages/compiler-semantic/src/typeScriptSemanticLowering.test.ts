@@ -620,6 +620,26 @@ describe('lowerTypeScriptSource', () => {
     expect(snapshot()).toEqual(unbound);
   });
 
+  it('resolves shorthand object values to their lexical bindings rather than their property symbols', () => {
+    const result = lower(
+      'shorthand.ts',
+      'export function create(value: number): object { const output = value; return { value, output }; }',
+    );
+    const declaration = result.module.declarations[0];
+    if (declaration?.kind !== 'function') throw new Error('Expected function declaration');
+    const local = declaration.body[0];
+    const returned = declaration.body[1];
+    if (local?.kind !== 'variable' || returned?.kind !== 'return' || returned.expression?.kind !== 'object') {
+      throw new Error('Expected local and shorthand object return');
+    }
+
+    expect(result.diagnostics).toEqual([]);
+    expect(returned.expression.members).toMatchObject([
+      { kind: 'property', name: 'value', value: { reference: { binding: declaration.parameters[0]?.binding } } },
+      { kind: 'property', name: 'output', value: { reference: { binding: local.declarations[0]?.binding } } },
+    ]);
+  });
+
   it('diagnoses optional rest parameters instead of constructing invalid IR', () => {
     const parameter = lower('parameter.ts', 'export function invalid(...values?: number[]): void {}');
 

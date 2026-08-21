@@ -60,6 +60,31 @@ describe('analyzeCompilerRuntimeExternalTypeCompleteness', () => {
     });
   });
 
+  it('reports missing-only and duplicate-only decisions independently', () => {
+    const missing = analyzeCompilerRuntimeExternalTypeCompleteness([{ sourceName: 'Map' }], {
+      bindings: [],
+      contract: 'flight-runtime-contract/1',
+    });
+    const duplicate = analyzeCompilerRuntimeExternalTypeCompleteness([], {
+      bindings: [
+        { externalType: { sourceName: 'Map' }, kind: 'native' },
+        { externalType: { sourceName: 'Map' }, capability: 'map', kind: 'runtime' },
+      ],
+      contract: 'flight-runtime-contract/1',
+    });
+
+    expect(missing).toMatchObject({
+      duplicateExternalTypes: [],
+      kind: 'incomplete',
+      missingExternalTypes: [{ sourceName: 'Map' }],
+    });
+    expect(duplicate).toMatchObject({
+      duplicateExternalTypes: [{ sourceName: 'Map' }],
+      kind: 'incomplete',
+      missingExternalTypes: [],
+    });
+  });
+
   it('treats an empty reachable set and empty binding plan as complete', () => {
     expect(
       analyzeCompilerRuntimeExternalTypeCompleteness([], {
