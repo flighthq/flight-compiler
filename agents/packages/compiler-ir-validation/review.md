@@ -1,8 +1,8 @@
 ---
 package: '@flighthq/compiler-ir-validation'
 status: near-mature
-score: 84
-updated: 2026-08-20
+score: 86
+updated: 2026-08-21
 ingested:
   - source
   - agents/compiler-foundations.md
@@ -14,7 +14,7 @@ The dependency-floor integrity boundary for in-process target-neutral IR values 
 
 ## Verdict
 
-**near-mature — 84/100.** The validator is exhaustive over every current IR family, deterministic, non-mutating, and strict about module identity, declaration and binding source provenance, introduction-site legality, lexical reachability, exact SHA-256 fingerprints, compound-type arity, and parameter cardinality. Its scope graph distinguishes module, declaration, function, and block ownership: closures and function-hoisted variables remain valid, while sibling-function, sibling-block, escaped catch, and escaped loop references fail with a stable code. Lowering applies validation before pass-specific postconditions, so a pass cannot disguise corrupt provenance as valid output. The package deliberately validates structure rather than claiming semantic equivalence between an input and transformed output.
+**near-mature — 86/100.** The validator is exhaustive over every current IR family, deterministic, non-mutating, and strict about module identity, declaration and binding source provenance, introduction-site legality, lexical reachability, exact SHA-256 fingerprints, compound-type arity, and parameter cardinality. Its scope graph distinguishes module, declaration, function, and block ownership: closures and function-hoisted variables remain valid, while sibling-function, sibling-block, escaped catch, and escaped loop references fail with a stable code. Lowering applies validation before pass-specific postconditions, so a pass cannot disguise corrupt provenance as valid output. The package deliberately validates structure rather than claiming semantic equivalence between an input and transformed output.
 
 ## What a fully expressed IR validator looks like
 
@@ -24,6 +24,9 @@ The dependency-floor integrity boundary for in-process target-neutral IR values 
 - Runtime cardinality checks for invariants expressed statically by tuple contracts. Present for compound types, executable/function parameters, and tuple elements.
 - No target syntax, target policy, filesystem access, TypeScript checker dependency, or mutation. Present.
 - Cross-module import/export binding validation and semantic before/after preservation checks.
+
+- **Control-flow labels are validated, not merely carried.** The walk maintains a label stack distinguishing continuable from non-continuable targets, checks each label's source origin, and rejects a `break`/`continue` whose target is not an enclosing label. The vocabulary arrived and the validator covers it in the same batch, which is the order this package should always be in.
+- **The binding-pattern and tuple families are covered as they land.** Array and object patterns, tuple suffixes and residual value plans each validate structurally, so the neutral pass library cannot hand a half-normalized pattern to a backend and have it read as valid.
 
 ## Ownership boundary
 

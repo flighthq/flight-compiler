@@ -1,8 +1,8 @@
 ---
 package: '@flighthq/compiler-backend-hx'
 status: early
-score: 30
-updated: 2026-08-20
+score: 38
+updated: 2026-08-21
 ingested:
   - source
   - agents/compiler-migration-roadmap.md
@@ -11,11 +11,11 @@ ingested:
 
 # compiler-backend-hx — Review
 
-Haxe lowering, naming and source emission: ~1,180 lines across the emitter and the identity primitive. Haxe is the first integration target and defines the initial compatibility bar, so this package's readiness is the migration's readiness.
+Haxe lowering, naming and source emission: ~1,270 lines across the emitter, the identity primitive and the ambient-symbol binding table. 71 tests. Haxe is the first integration target and defines the initial compatibility bar, so this package's readiness is the migration's readiness.
 
 ## Verdict
 
-**early — 30/100.** The identity half is in good shape — package, module and target-name mapping are separated, tested directly, and consistent between what the emitter names a file and what an import refers to. The emission half handles a real but narrow slice: functions, classes, typedefs, enum abstracts, control flow, operators from a closed set. Everything else refuses, by name, which is the correct interim behaviour and is what makes the fixtures meaningful. The roadmap puts Haxe parity at 10–15%; I would score the _package_ a little higher than the parity number because its structure and refusal discipline are ahead of its coverage.
+**early — 38/100.** Up six points on the destructuring, tuple and control-flow batches: binding patterns now arrive pre-lowered from the neutral pass library, fixed tuples project and spread, computed access routes through `Reflect`, object rest emits, and nullish coalescing lowers to `??`. Two shapes that previously emitted _wrong_ Haxe now refuse instead — a class with an `implements` clause, and a labeled `break`/`continue` — which is the single most valuable kind of change this package can make, because an emitted-invalid case is worse than an unemitted one. The identity half remains in good shape. The score stays in the thirties because the domain's largest cells are untouched: async, nullability beyond `??`, a real number model, and module facades.
 
 ## What a fully expressed Haxe backend looks like
 
@@ -38,15 +38,19 @@ Haxe lowering, naming and source emission: ~1,180 lines across the emitter and t
 - **Structural typedefs for interfaces and type aliases**, anonymous structures for object types, and `Null<T>` for optional-plus-null unions.
 - **Explicit ambient-symbol election.** A versioned table independently routes type and value-space collections, tasks, typed arrays, and native values. Constructors and static members use the elected `flighthq._internal` target, while every unknown ambient symbol refuses before target-name allocation. The runtime module prefix remains configurable without moving runtime implementation ownership into the compiler.
 - **Control flow.** Blocks, if/else, while, do-while, for-in over `Reflect.fields`, for-of, switch, try/catch, break/continue, throw — with C-style `for`, switch fallthrough and `finally` refused rather than approximated.
+- **Destructuring arrives lowered, not handled.** The emitter refuses any residual binding pattern with "requires destructuring lowering before Haxe emission", so the neutral `array-binding-pattern` pass owns the shape and the backend owns only the result. The same boundary now holds for switch fallthrough.
+- **Fixed tuples project and spread.** A statically known index emits `name[i]`, a rest emits `.slice(n)`, and a tuple spread builds its elements in an immediately-invoked function so evaluation order is preserved. A non-static index refuses.
+- **Computed and optional access.** Computed object access emits `Reflect.field`, for-in iterates a key plan or `Reflect.fields`, and object rest binds its source once before excluding keys. Optional computed access refuses rather than approximating null-safety.
+- **Labeled control flow refuses by name.** `break outer`, `continue outer` and a labeled statement each refuse with "requires Haxe completion-state lowering". Labels are now first-class in the neutral IR, so this is an explicit unmet case rather than the silent label drop that existed before.
 - **Golden-pinned output.** Six fixtures pin emitted Haxe byte-for-byte and three pin refusals, so any change to lowering is a reviewable diff rather than an assertion about a substring.
 
 ## Gaps
 
 - **No async lowering.** `await`, async functions, async methods, async closures and async iteration all refuse. The SDK is full of them.
-- **No nullability lowering.** `undefined` in expression position refuses, and optional property/element/call access all refuse, because the neutral model has no narrowing facts to lower from.
-- **Interfaces emit as typedefs, which cannot be `implements`ed.** A class whose IR carries an `implements` clause emits `class X implements Y` where `Y` is a structural typedef — not valid Haxe. Interface inheritance refuses, but the simple case emits.
+- **Nullability is one operator deep.** `??` lowers now, but `undefined` in expression position still refuses and optional computed access refuses, because the neutral model still carries no narrowing facts to lower from.
+- **Interfaces emit as typedefs, and nominal implementation is unmodelled.** A class carrying an `implements` clause now refuses with "requires nominal Haxe lowering" instead of emitting `class X implements Y` against a structural typedef, which was invalid Haxe. The refusal is correct; what is still missing is the Haxe interface representation that would let it emit.
 - **No module facade for re-exports.** A barrel refuses; Haxe's own module and import semantics are not modelled.
-- **No spread, no object spread, no computed properties, no generic function expressions.**
+- **No object spread, no computed properties, no generic function expressions.** Fixed-tuple spread emits; the general spread does not.
 - **No `abstract` class representation**, no accessors, no static blocks.
 - **Number representation is a single choice.** Every numeric maps to `Float`; Haxe's `Int` is never produced, so array indices and enum discriminants are Floats in emitted code.
 - **No output verification.** Nothing checks that emitted Haxe parses. The golden fixtures pin _bytes_, not validity, so a fixture can happily pin invalid Haxe — which has already happened once, with `this_.step`. Compiling the output belongs downstream in `flight-hx`, but a parse-level check here would have caught it.

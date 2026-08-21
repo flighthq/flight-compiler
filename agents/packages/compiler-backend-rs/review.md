@@ -1,8 +1,8 @@
 ---
 package: '@flighthq/compiler-backend-rs'
 status: early
-score: 26
-updated: 2026-08-20
+score: 34
+updated: 2026-08-21
 ingested:
   - source
   - agents/compiler-migration-roadmap.md
@@ -11,11 +11,11 @@ ingested:
 
 # compiler-backend-rs — Review
 
-Rust lowering, naming and source emission: ~1,280 lines across the emitter, the identity primitive and the Rust keyword model. Rust follows Haxe over the same neutral IR, and it is the harder target because ownership, borrowing and exhaustive matching have no counterpart in the source language.
+Rust lowering, naming and source emission: ~1,410 lines across the emitter, the identity primitive and the ambient-symbol binding table. 77 tests. Rust follows Haxe over the same neutral IR, and it is the harder target because ownership, borrowing and exhaustive matching have no counterpart in the source language.
 
 ## Verdict
 
-**early — 26/100.** Slightly behind the Haxe backend, which is the expected order and matches the roadmap's 5–10% parity estimate. Its refusal surface is the broadest in the repository — thirty-odd named refusals — and that is the package working as designed: nearly every construct that would require an ownership decision refuses rather than guessing. The identity and naming half is sound. What does not yet exist is the thing that makes a Rust backend a Rust backend: a model of ownership.
+**early — 34/100.** The largest single-batch movement in the repository: optional chains now project through `as_ref().map(...)`/`and_then(...)` instead of refusing, nullable parameters emit as `Option<T>` rather than being turned away at the door, switch statements emit, labeled loops emit with real Rust labels, fixed tuples project and spread, and object-key iteration emits when the key set is closed evidence rather than a guess. Its refusal surface is still the broadest in the repository — around thirty-eight named refusals — and that remains the package working as designed. The score moves eight points and no further because the thing that makes a Rust backend a Rust backend is still absent: there is no ownership model, and every gain above is a gain in _what can be expressed_, not in _how values are owned_.
 
 ## What a fully expressed Rust backend looks like
 
@@ -40,6 +40,11 @@ Rust lowering, naming and source emission: ~1,280 lines across the emitter, the 
 - **Structs from interfaces and object type aliases**, `Option<T>` for optional-plus-null unions, `Vec<T>` for arrays, and tuples.
 - **Explicit ambient-symbol election.** A versioned table independently maps type and value-space collections and typed arrays to native Rust representations, routes `Promise` through the downstream task capability, and rejects every unknown ambient symbol before target-name allocation. Constructors use elected type paths and static members use Rust associated-item syntax.
 - **Correct `panic!` formatting.** `panic!("{:?}", …)` — the earlier over-escaped `"{{:?}}"` form was a hard compile error on every `throw`.
+- **Optional chains as Option projections.** An optional property, element or call emits `receiver.as_ref().map(...)` or `.and_then(...)` over a bound `optional_chain_value`, so the chain short-circuits the way the source does. Each form refuses when the neutral optional-chain evidence is missing, so the projection is never guessed from syntax alone.
+- **Nullable parameters emit.** A parameter whose neutral type is nullable becomes `Option<T>`; what still refuses is an _observable undefined_ entry value, which needs a nullable Rust type domain rather than an Option wrapper.
+- **Switch emits, labels emit.** A switch binds its subject once and emits its cases against that binding; labeled `loop`/`while`/block emit real Rust labels, and `break`/`continue` carry their target. This is one of the few places where a Rust construct is a closer fit for the source than the Haxe one, and it is exploited rather than flattened.
+- **Closed-evidence object iteration.** `for (const k in o)` emits only when the neutral key plan is closed evidence; an open key set, an effectful subject, or a computed rest each refuse by name rather than iterating a guess.
+- **Destructuring arrives lowered.** Residual binding patterns refuse with "requires destructuring lowering before Rust emission", keeping pattern normalization in the neutral pass library.
 - **Golden-pinned output and refusals**, including the name-collision refusal and the nullability refusals.
 
 ## Gaps
@@ -50,8 +55,8 @@ Rust lowering, naming and source emission: ~1,280 lines across the emitter, the 
 - **No task lowering.** Async functions, methods, closures, `await` and async iteration all refuse; `FlightTask` is named in the type table but nothing produces one.
 - **No error lowering.** `throw` becomes `panic!`, uniformly, with no `Result` path — so a recoverable upstream error becomes an abort.
 - **`try`/`catch`/`finally` refuses entirely.**
-- **No exhaustiveness story for `match`.** Switch statements refuse, correctly, because the source language's non-exhaustive switch has no sound Rust form yet.
-- **Non-nullable unions, intersections, anonymous object types and construction, `Partial<T>`, object-key iteration and default parameters all refuse.**
+- **Switch emits as a bound-subject case chain, not as `match`.** That is sound for a non-exhaustive source switch, but it leaves Rust's exhaustiveness checking — one of the target's strongest correctness tools — entirely unused. A `match` path for the shapes that are provably exhaustive is a real gap, not a stylistic one.
+- **Non-nullable unions, intersections, anonymous object types and construction, `Partial<T>` and default parameters all refuse.** Object-key iteration no longer belongs on this list; spread calls into default parameters now refuse specifically, naming ABI expansion as the missing work.
 - **Integer width is unmodelled.** Every numeric is `f64`; array indices are cast `as usize` at use. Rust's integer types are where a large part of target correctness lives.
 - **Callback, opaque-host, and primitive-symbol requirements are not completeness-checked.** Their neutral capability names exist, but no demonstrated target path yet supplies a stable requirement identity for them.
 - **No output verification and no byte-parity harness** against `flight-rs`, same as the Haxe backend.

@@ -2,39 +2,40 @@
 
 One folder per package, following Flight's convention. Each `review.md` is a survey of source that answers one question: what would a reference, fully expressed version of this package's domain look like, and how much of that exists today.
 
-A score is a judgement about **domain coverage**, not about code quality. `compiler-backend-rs` scores 26 and is well built; it simply has a very large domain and has expressed a small part of it. `compiler-provenance` scores 82 with 130 lines, because its domain is genuinely small and it has most of it. Read the score against the reference section in each file, never on its own.
+A score is a judgement about **domain coverage**, not about code quality. `compiler-backend-rs` scores 34 and is well built; it simply has a very large domain and has expressed a small part of it. `compiler-provenance` scores 88 with 130 lines, because its domain is genuinely small and it has most of it. Read the score against the reference section in each file, never on its own.
 
 | package | status | score | the domain in one line |
 | --- | --- | --: | --- |
 | [compiler-canonical-form](compiler-canonical-form/review.md) | mature | 96 | which bytes represent equivalent compiler text and paths across hosts |
-| [compiler-provenance](compiler-provenance/review.md) | near-mature | 88 | are two pieces of source the same thing |
 | [compiler-emission](compiler-emission/review.md) | mature | 90 | portable generated-file identity, contents, and provenance |
 | [compiler-patch](compiler-patch/review.md) | near-mature | 90 | correct upstream semantics without editing upstream |
-| [compiler-types](compiler-types/review.md) | foundational | 72 | the vocabulary everything else speaks |
+| [compiler-provenance](compiler-provenance/review.md) | near-mature | 88 | are two pieces of source the same thing |
 | [compiler-runtime-contract](compiler-runtime-contract/review.md) | near-mature | 86 | does every reachable ambient type/value symbol have one target binding decision |
-| [compiler-ir-validation](compiler-ir-validation/review.md) | near-mature | 84 | is a target-neutral IR module structurally trustworthy |
+| [compiler-ir-validation](compiler-ir-validation/review.md) | near-mature | 86 | is a target-neutral IR module structurally trustworthy |
+| [compiler-types](compiler-types/review.md) | foundational | 74 | the vocabulary everything else speaks |
 | [compiler-inventory](compiler-inventory/review.md) | solid | 68 | what is in this workspace and what does it export |
+| [compiler-lowering](compiler-lowering/review.md) | solid | 64 | verified neutral IR-to-IR transforms elected by targets |
 | [tool-compiler](tool-compiler/review.md) | solid | 62 | the one published artifact |
 | [compiler-orchestration](compiler-orchestration/review.md) | solid | 60 | compose the passes deterministically |
-| [compiler-lowering](compiler-lowering/review.md) | early | 48 | verified neutral IR-to-IR transforms elected by targets |
-| [compiler-semantic](compiler-semantic/review.md) | early | 44 | TypeScript in, neutral IR out |
-| [compiler-backend-hx](compiler-backend-hx/review.md) | early | 30 | neutral IR in, idiomatic Haxe out |
-| [compiler-backend-rs](compiler-backend-rs/review.md) | early | 26 | neutral IR in, idiomatic Rust out |
+| [compiler-semantic](compiler-semantic/review.md) | early | 50 | TypeScript in, neutral IR out |
+| [compiler-backend-hx](compiler-backend-hx/review.md) | early | 38 | neutral IR in, idiomatic Haxe out |
+| [compiler-backend-rs](compiler-backend-rs/review.md) | early | 34 | neutral IR in, idiomatic Rust out |
 
-Two scores are older than the source they measure. `compiler-lowering` (48) and the two backend reviews (30, 26) were written before the destructuring, switch-fallthrough, hoisting, tuple and nullable batches landed on 2026-08-21; the lowering review in particular still reads "only one transform exists", which is no longer true. Read those three against their `updated:` date until they are re-scored.
+Every review was re-read against the merged tree at base `68eb388` on 2026-08-21. Six moved: lowering 48 to 64, semantic 44 to 50, backend-hx 30 to 38, backend-rs 26 to 34, ir-validation 84 to 86, types 72 to 74. Work delivered after that base is not measured here.
 
 ## What the shape says
 
 The scores fall into the dependency order almost exactly, and that is the intended result of building bedrock-first: the primitives are close to done, the compositions above them are solid, and the two target backends — the packages whose domains are the largest and whose correctness is hardest to establish — are the least expressed. Nothing here is out of order.
 
-The three lowest scores are also the three packages that gate the migration. `compiler-semantic` at 44 bounds both backends: a construct it cannot lower cannot be emitted by either target, so its refusal list is the shared ceiling. Within the backends, the recurring theme is that structure and refusal discipline are ahead of coverage — both have their identity, naming and operator handling settled, and both refuse rather than approximate, which is why the golden fixtures can pin refusals as confidently as output.
+The three lowest scores are also the three packages that gate the migration. `compiler-semantic` at 50 bounds both backends: a construct it cannot lower cannot be emitted by either target, so its refusal list is the shared ceiling. Within the backends, the recurring theme is that structure and refusal discipline are ahead of coverage — both have their identity, naming and operator handling settled, and both refuse rather than approximate, which is why the golden fixtures can pin refusals as confidently as output.
 
 ## Recurring gaps across packages
 
-Five gaps appear in more than one review and are worth reading as one problem each rather than as several:
+Six gaps appear in more than one review and are worth reading as one problem each rather than as several:
 
 - **No serialization boundary anywhere.** The IR, the inventory report and the patch set are all in-process typed values. Nothing can cross a process, be cached, or be diffed by a tool that is not this compiler — which the oracle-vector and drift-tracking plans both eventually need.
 - **No incrementality.** Inventory and orchestration both re-do whole-checkout work every run, and provenance re-walks every tree. Acceptable at present scale, and named before it is not.
 - **Reporting is thinner than the work performed.** Orchestration counts files, inventory counts exports, and neither can say which declarations refused and why — which is the number the migration most needs and the one nothing currently produces.
-- **The neutral pass library is no longer a single transform, but its second half is still absent.** `compiler-lowering` now elects six passes — C-style `for`, switch fallthrough, array and object binding patterns, the shared binding-pattern entry, and function-scoped variable hoisting — each validated structurally and by its own postcondition. Async and task meaning, call-site and spread lowering, structural-copy, option-aware access, and target ownership remain unwritten, and every one of them is named by a refusal a golden fixture already pins. [The breadth analysis](../compiler-breadth.md) separates neutral reusable passes from target representation.
+- **The neutral pass library is no longer a single transform, but its second half is still absent.** `compiler-lowering` now elects four passes — the composite binding-pattern entry over array and object patterns, function-scoped variable hoisting with definite-assignment analysis, C-style `for`, and switch fallthrough — each validated structurally and by an independent residual postcondition. Every transform so far is a statement-shape transform; the expression side — async and task meaning, call-site and spread lowering, structural copy, general optional access, and target ownership — is unwritten, and every one of them is named by a refusal a golden fixture already pins. [The breadth analysis](../compiler-breadth.md) separates neutral reusable passes from target representation.
+- **Election is a mechanism nothing diverges on yet.** Both backends elect the identical four lowering passes in the identical order, and `runsAfter` is now a hard requirement rather than a hint, so an elected set must be dependency-closed. The design claim that a target keeps native semantics where lowering would cost idiom is carried today only by the default-parameter asymmetry outside `compiler-lowering`. The first genuinely divergent election is what would prove the model.
 - **No emitted-output verification.** The golden fixtures pin bytes, not validity. A fixture can pin invalid target source, and once did. Compiling emitted Haxe and Rust belongs downstream, but a parse-level check here would close the gap between "the bytes did not change" and "the bytes are correct".

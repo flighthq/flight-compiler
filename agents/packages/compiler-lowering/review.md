@@ -1,8 +1,8 @@
 ---
 package: '@flighthq/compiler-lowering'
-status: early
-score: 48
-updated: 2026-08-20
+status: solid
+score: 64
+updated: 2026-08-21
 ingested:
   - source
   - agents/compiler-breadth.md
@@ -11,50 +11,42 @@ ingested:
 
 # compiler-lowering — Review
 
-The backend-elected library for pure target-neutral IR-to-IR transforms. Its first implementation is intentionally narrow: a verified pass lifecycle and C-style `for` normalization used explicitly by both current targets.
+The backend-elected library for pure target-neutral IR-to-IR transforms. It is no longer a lifecycle with one example in it: ~5,900 lines across four elected passes, two of them composites, plus a definite-assignment analysis and two shared completion primitives. 130 tests.
 
 ## Verdict
 
-**early — 48/100.** The framework is stronger than the score: pass identity and order are explicit, input is isolated, every output receives shared structural validation plus a pass-specific postcondition, module identity is preserved, and every branch is exercised. Declared idempotence is an explicit deep-verification mode rather than a production-time second transform. The domain is nevertheless early because only one of the neutral transformations already named by backend refusals exists.
+**solid — 64/100.** The framework is settled and the second wave of transforms landed: binding patterns (array and object, recursively), function-scoped variable hoisting with a real definite-assignment analysis, switch fallthrough, and C-style `for`. Each pass declares idempotence, verifies its own postcondition as an independent residual check rather than by re-running itself, and refuses by name with a stable code. What holds the score at 64 is that every transform so far is a _statement-shape_ transform. The expression side of the domain — call sites, spread, optional access, structural copy, async suspension — is entirely absent, and each of those is named by a refusal a golden fixture already pins.
 
 ## What a fully expressed lowering library looks like
 
 - Plain `IrModule`-to-`IrModule` pass records with stable identity and dependency order. Present.
-- Backend election, so a target keeps native semantics when lowering would make its output less idiomatic. Present for C-style `for`; default-parameter asymmetry proves the boundary.
+- Backend election, so a target keeps native semantics when lowering would make its output less idiomatic. Present as a mechanism; see the gap below — both backends currently elect the same four passes in the same order, so nothing exercises divergence.
 - Structural and pass-specific verification after every transform, with declared idempotence available as an explicit audit. Present.
-- Stable pass-named failures for malformed input, unsupported semantics, invalid order, execution failure, and false idempotence claims. Present.
-- One focused, target-neutral source and matching direct test per transform. Present structurally; only one transform exists.
-- Control-flow transforms that preserve completion behavior across `break`, `continue`, `return`, `throw`, nested loops, switches, and `finally`.
-- Expression and call-site transforms that preserve evaluation order, receiver identity, aliasing, and value-versus-discarded context.
+- Stable pass-named failures for malformed input, unsupported semantics, invalid order, execution failure, and false idempotence claims. Present; 33 distinct `unsupported-ir` refusals across the passes.
+- One focused, target-neutral source and matching direct test per transform. Present.
+- Control-flow transforms that preserve completion behavior across `break`, `continue`, `return`, `throw`, nested loops, switches, and `finally`. Substantially present for `continue` ownership, switch completion and hoisted initialization; `finally` still refuses and labeled targets are refused by both backends rather than lowered here.
+- Expression and call-site transforms that preserve evaluation order, receiver identity, aliasing, and value-versus-discarded context. **Absent.** This is the missing half of the domain.
 - No filesystem, TypeScript checker, target syntax, runtime implementation, or mandatory orchestration stage. Present.
 
 ## Present capabilities
 
-- **Verified pass execution.** Duplicate names, reversed declared order, and unknown verification depth fail before work begins. Each output passes the target-neutral structural validator and its pass-specific postcondition, and every pass must preserve module identity.
-- **Explicit verification cost.** Ordinary backend execution transforms once. An explicit idempotence depth reapplies a pass that declares idempotence, validates both outputs, and compares them structurally. A malformed verifier result fails as pass execution rather than being mistaken for success.
-- **Caller isolation and determinism.** The runner and concrete pass clone caller input. Repeated plans yield equivalent output, including failure identity and message.
-- **Continue-correct C-style loops.** Initializers remain scoped inside a block, an omitted condition becomes `true`, and discarded numeric increment/decrement updates become compound assignment usable by both targets.
-- **Loop ownership.** A continue targeting the transformed loop runs the update first; a continue owned by a nested `while`, `do`, `for-in`, `for-of`, or nested C-style loop does not acquire the outer update. Switch-contained continues retain the surrounding loop target.
-- **Completion safety.** A continue crossing `finally` refuses with a pass-named unsupported-IR failure instead of silently changing observable order. A nested loop inside the same try body remains independent.
-- **Explicit target election.** Haxe and Rust call the pass library themselves. Haxe continues to emit native default parameters while Rust keeps its call-site-lowering refusal.
+- **Four elected passes, dependency-ordered.** `array-binding-pattern` (the composite), `variable-hoisting` (runs after it), `c-style-for`, and `switch-fallthrough` (runs after hoisting). Both backends run the same plan through `lowerIrModuleWithCompilerPasses`.
+- **Postconditions are independent residual checks now.** Each `verifyIrModule` asks whether the construct it removes is still present — `hasIrModuleSwitchFallthrough`, `hasIrModuleCStyleForStatement`, `hasIrModuleVariableHoistingResidual` — rather than re-running the transform and comparing. The earlier "the verifier is the transform" shape is gone, and with it the doubled traversal cost: an ordinary pass now costs one lowering, one validating walk, and one residual walk.
+- **Structural validation is a real validator.** `compiler-ir-validation` runs before each pass-specific postcondition, so a pass that drops a statement or corrupts a binding reference fails with a stable code attributed to the responsible pass rather than verifying as valid.
+- **`runsAfter` is a hard requirement, not a hint.** A predecessor absent from the plan now fails `invalid-pass-order` with "requires missing predecessor". The earlier silent-satisfaction gap is closed — at the cost noted under Gaps.
+- **Recursive binding normalization with a termination proof.** The composite pass alternates the object and array lowerings until the structural pattern residual reaches zero, and refuses with `unsupported-ir` if a round fails to decrease it. Nested, defaulted, rest and tuple-typed patterns all normalize; defaults refuse when null and undefined are not distinctly represented or undefined membership is unresolved.
+- **Hoisting with definite assignment.** `validateIrFunctionVariableInitialization` (~990 lines) walks statements tracking initialization state through branches, loops, switches, try bodies and deferred closures, so a hoisted introduction read before any assignment is refused here rather than emitted as a Rust `let mut` the borrow checker will reject. This is the constraint the previous review predicted would need a Rust-side refusal; it landed as a neutral analysis instead, which is the better boundary.
+- **Function-scoped variable contracts.** A hoisted variable must be mutable, must not carry an initializer when it is an iteration variable, and must agree on type across redeclarations — each a named refusal rather than a silent merge.
+- **Caller isolation and determinism.** The runner clones caller input, clones again per pass, and preserves module identity; repeated plans yield equivalent output including failure identity and message.
 
 ## Gaps
 
-- Only C-style `for` normalization exists. Switch fallthrough, destructuring, spread, default arguments, optional access, async suspension, and structural-copy transforms remain absent.
-- The loop pass refuses a continue that crosses `finally`; completion-record lowering must exist before that source shape can be emitted.
-- BigInt update expressions remain as unary updates because the neutral IR cannot yet express a BigInt literal operand for a compound assignment. Rust therefore still needs value/domain-aware lowering for that case.
-- Pass order is validated from direct `runsAfter` names but has no separate reusable plan artifact or explanation report. Add one only when multiple elected passes make plan inspection useful.
-- The public facade exposes the concrete pass and generic runner before a downstream consumer exists. Their shapes should remain provisional until Haxe adoption exercises selection and diagnostics through the packed artifact.
-- Structural validity and a pass postcondition cannot prove general before/after semantic equivalence. Each new transform still needs construct-specific preservation tests and target parity evidence.
-
-## Reviewer findings — the lexical-integrity batch
-
-Read from the delivered diff; I could not execute either point, because the binding-scope vocabulary it rests on is newer than my tree.
-
-- **A function-scoped declaration inside a block has no pass that makes it emittable.** `IrBindingScope` now carries `block | declaration | function | module`, and semantic lowering classifies `var` as `function` and `let`/`const` as `block` from `ts.NodeFlags.BlockScoped`. The validator uses that correctly: a `var` declared inside a block and referenced after it is _valid_ IR, because it is valid JavaScript. But `binding.scope` is read only by the validator that checks it and the lowering that produces it — **neither backend consumes it**. Haxe and Rust have no `var`: a declaration emitted inside a block is block-scoped in both, so the later reference is out of scope in the emitted source. The validator's own fixture is exactly this shape (`{ var hoisted = total; } total += hoisted;`), so it is representable, accepted, and emittable today. The general fix is a neutral pass that hoists function-scoped declarations to their owning function — precisely this package's job, and a sibling of the C-style `for` pass, which _creates_ this shape by wrapping a loop initializer in a block. Until that exists, a backend refusal on a `function`-scoped binding introduced inside a block matches the posture used everywhere else here: refuse rather than emit something the target cannot mean.
-
-- **Two constraints the hoisting pass will meet, recorded before it is written.** The declaration hoists but the _initializer_ does not: `{ var x = compute(); } use(x)` must become an introduction at function scope plus an assignment left where the declaration stood, or the value becomes visible early and the initializer's side effects run early. And hoisting alone does not make the result emittable in Rust — a hoisted introduction assigned inside a conditional block and read afterwards is the definite-assignment problem, which `let mut x;` only survives when assignment before use is provable. The honest shape is likely a neutral hoisting pass plus a Rust-side refusal for the not-definitely-assigned case, which is an argument for the election model rather than against it.
-
-- **A re-declared `var` is already a latent refusal, independent of hoisting.** `lowerBindingSymbol` caches by `ts.Symbol` and derives the identity from the first supported declaration, so `var x = 1; … var x = 2;` in one function is one binding identity appearing in two variable statements, and the validator's `duplicate-binding-identity` check fires on the second. That is a false refusal on legal TypeScript today, and the hoisting pass's collision semantics run straight into it. Sibling-block collisions, by contrast, need no new machinery: distinct symbols give distinct identities, and target-name allocation already renames by scope once the pass assigns the function scope.
-
-- **Structural validation is unconditional per pass, while the idempotence audit is opt-in.** That asymmetry is defensible — validation is the only guard against a pass corrupting the IR, and running it per pass is what lets the failure name the responsible pass. The cost is worth stating as a curve rather than a defect: it is one full validating walk _per pass, per module, per target_, and every intermediate module is validated although only the last is emitted. With one elected pass that is negligible. The roadmap in this review names seven more (switch fallthrough, destructuring, spread, default arguments, optional access, async suspension, structural copy), and both backends run the plan, so the same invariants over the same module get re-proved on the order of fifteen times. Attribution is what that buys; if it ever stops being worth it, validating once after the plan and once on input is the cheaper shape that keeps the guarantee and loses only the pass name.
+- **The expression half of the domain does not exist.** Spread, call-site lowering, optional access, structural copy, and async suspension are all still refused by one or both backends with no pass to elect. `spreadCall`, `shapes`, `nullability` and the async refusals in both emitters are the pinned evidence.
+- **Election is uniform in practice, so the model is untested where it matters.** Haxe and Rust elect the identical four passes in the identical order. The design claim — that a target with native semantics keeps idiomatic output while another elects a lowering — is currently carried only by the default-parameter asymmetry outside this package. The first genuinely divergent election is what would prove the mechanism.
+- **`runsAfter` as a hard requirement narrows election.** Because a missing predecessor is now an error rather than a no-op, an elected set must be dependency-closed: a backend that wants `switch-fallthrough` must also take `variable-hoisting`. That is the safe direction to have chosen, but it means "elect the passes you need" is really "elect a closed subset", and no contract states which passes form a legal minimal set.
+- **The composite pass reports a name that is neither accurate nor unique.** `createCompilerLoweringPassBindingPattern` returns `name: 'array-binding-pattern'` — the same identity the inner array pass declares, while the composite also lowers object patterns. Two consequences: an object-pattern refusal is attributed to `array-binding-pattern`, and a plan electing both the composite and the array pass is rejected as a duplicate name although it is a legal composition. The exported `object-binding-pattern` pass is reachable only through the composite today, so nothing surfaces the mismatch.
+- **Redeclaration type agreement compares with `JSON.stringify`.** `addIrVariableHoistingDeclaration` decides "inconsistent redeclaration types" by string equality of serialized types, which is property-order sensitive; the runner's own idempotence check uses `isDeepStrictEqual`, which is not. Two structurally identical types built in different property order would refuse a legal `var` redeclaration. Not reachable through the current single lowering path, where key order is stable — but it is a canonical-shape-identity question, and `compiler-canonical-form` is where that answer belongs.
+- **Hidden state rides on a `Map` subtype.** `IrVariableInitializationVariables extends Map<...>` with an optional `deferredClosures` property, populated by cast. The package's own posture — explicit data, plain records, no objects with hidden behavior — argues for passing the deferred-closure map as its own parameter.
+- **No plan artifact or explanation report.** Order is validated from direct `runsAfter` names; nothing can print the resolved plan or say why a pass ran where it did. With four passes and two dependency edges that is still cheap to read from source, and it stops being cheap at eight.
+- **Structural validity and a residual postcondition cannot prove semantic equivalence.** A pass that removes every C-style `for` by deleting it verifies. Each transform still needs construct-specific preservation tests and target parity evidence; the current tests do carry that weight, but nothing in the framework requires it.
+- **Validation cost is one full walk per pass, per module, per target.** Every intermediate module is validated although only the last is emitted, so the same invariants are re-proved four times per module per backend today. Attribution is what that buys. If the pass count doubles, validating once on input and once after the plan keeps the guarantee and loses only the pass name.

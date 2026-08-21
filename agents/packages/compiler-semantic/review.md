@@ -1,7 +1,7 @@
 ---
 package: '@flighthq/compiler-semantic'
 status: early
-score: 44
+score: 50
 updated: 2026-08-21
 ingested:
   - source
@@ -15,7 +15,7 @@ TypeScript-to-neutral lowering: ~3,000 lines across the lowering pass, static-fa
 
 ## Verdict
 
-**early — 44/100.** What exists is built the right way: the TypeScript compiler API rather than pattern matching, binding provenance resolved through a checker, closed operator vocabularies, and structured diagnostics for everything it will not lower. The score is low because the domain is enormous and the covered fraction is small — the roadmap says 20–25% and the refusal list bears that out. Destructuring, namespaces, overloads, parameter properties, generators, decorators and most of the type system are all unrepresented. That is the honest state of a slice deliberately built narrow-and-correct rather than wide-and-approximate, and the refusals are the asset here, not the embarrassment.
+**early — 50/100.** What exists is built the right way: the TypeScript compiler API rather than pattern matching, binding provenance resolved through a checker, closed operator vocabularies, and structured diagnostics for everything it will not lower. The score is low because the domain is enormous and the covered fraction is small — the roadmap says 20–25% and the refusal list bears that out. Namespaces, overloads, parameter properties, generators, decorators and most of the type system are all unrepresented; destructuring, which was on that list, is now in. That is the honest state of a slice deliberately built narrow-and-correct rather than wide-and-approximate, and the refusals are the asset here, not the embarrassment.
 
 ## What a fully expressed TypeScript-lowering domain looks like
 
@@ -44,7 +44,7 @@ TypeScript-to-neutral lowering: ~3,000 lines across the lowering pass, static-fa
 
 Measured against the reference, in rough order of how much SDK surface each blocks:
 
-- **Destructuring, everywhere.** Parameters, variables and catch bindings all refuse. This is ordinary idiomatic TypeScript and appears throughout any real codebase.
+- **Destructuring is represented; the remaining hole is catch.** Variable and parameter binding patterns now lower to `IrBindingPattern` — nested, defaulted, rest and tuple-typed — and the neutral pass library normalizes them for both targets. A destructured catch binding still refuses. This gap moved from "blocks any real codebase" to "one construct", and it is the clearest single example of what porting a construct vertically looks like here.
 - **Function and method overloads.** Declaration overloads are collected but class method overloads and constructor overloads refuse outright. Overload sets are how the SDK expresses optional-argument APIs.
 - **Parameter properties.** `constructor(private readonly x: number)` refuses. It is the common TypeScript class idiom.
 - **Namespaces and `export =`.** Unrepresented in the IR at all.
@@ -57,8 +57,6 @@ Measured against the reference, in rough order of how much SDK surface each bloc
 - **No coverage report.** There is no way to point the lowerer at the SDK and ask what fraction of its declarations lower today. The counters that once purported to do this were removed for being ambiguous, correctly, but nothing replaced them — and this is the number the migration most needs.
 - **Single-file lowering only.** Each source lowers independently; cross-module semantic facts (is this exported type used as a value anywhere, is this function ever awaited) are not available to the lowerer.
 
-- **Labeled `break` and `continue` lose their label silently.** `if (ts.isBreakStatement(node)) return { kind: 'break' }` discards the label, because the neutral IR has no labels. Nothing labeled reaches it today — a `LabeledStatement` has no lowering case and hits the unsupported-statement refusal first — so this is a latent hazard rather than a live defect, and the only thing protecting it is a guard that has nothing to do with labels. Refuse at the drop site instead of relying on that.
-
 ## Re-score, 2026-08-21 — 38 to 44, and why only six points
 
 Nine iterations landed here after the original review. The reported measure was unreached arms falling from 331 to 185, and that is the weaker of the two numbers available: this repository's own testing conventions say an arm missing from the untested list was _taken_ by some test, not necessarily _checked_ by one. So I read the assertions instead of the count.
@@ -68,3 +66,13 @@ They hold up. `maps every atomic and literal TypeScript type to its neutral doma
 The score moves only six points because of what the diff actually contains: **`typeScriptSemanticLowering.ts` grew by 26 lines and lost 8, while its tests grew by 572 and the static-fact tests by 146.** Roughly ninety-six percent of the batch is verification of surface that already existed. Two genuine capabilities did arrive — block/function/declaration binding scope classification, and shorthand object values resolving to their lexical bindings rather than their property symbols, which is a real defect fixed rather than a test added.
 
 That distinction is the point. This score measures how much of the domain is _expressed_, and the domain did not grow by ninety-six percent of a batch; its existing slice became far better specified, which is part of maturity but not the same axis. Destructuring, namespaces, generators, decorators and most of the type system remain unrepresented, and porting them is what moves this number materially. A score that jumped on test count would be making exactly the mistake the arm count invites.
+
+## Closed since the re-score
+
+- **Labeled `break` and `continue` no longer lose their label.** The neutral IR carries `IrControlFlowLabelIdentity`; a labeled statement lowers to a labeled block or labeled loop, `break`/`continue` carry a resolved `target`, and a label that cannot be resolved refuses by name. The earlier unconditional label drop — and the unrelated unsupported-statement guard that was the only thing hiding it — are both gone. Rust emits real labels; Haxe refuses them explicitly pending completion-state lowering.
+
+## Amendment, same day — 44 to 50
+
+The re-score above listed destructuring among the unrepresented constructs. That was already wrong when written: variable and parameter binding patterns lower to `IrBindingPattern` with nested, defaulted, rest and tuple-typed forms, and only a destructured catch binding still refuses. Destructuring is the single most common of the constructs this package was missing, so crediting it moves the score six points on its own — this is domain expressed, not tests added, which is the axis the re-score argued for.
+
+The correction matters more than the six points. A review that reads a diff for what it _verifies_ can miss what it _adds_; the destructuring work arrived spread across ten commits titled for lowering and tuples rather than one titled for destructuring, and the summary judgement inherited the old shape of the gap list instead of re-reading the refusals. Re-derive the refusal list from source on every re-score.

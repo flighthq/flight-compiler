@@ -1,8 +1,8 @@
 ---
 package: '@flighthq/compiler-types'
 status: foundational
-score: 72
-updated: 2026-08-20
+score: 74
+updated: 2026-08-21
 ingested:
   - source
   - agents/compiler-foundations.md
@@ -14,7 +14,7 @@ The vocabulary package: 18 contract sources and one barrel, ~1,600 lines, no imp
 
 ## Verdict
 
-**foundational — 72/100.** This is the right shape for a vocabulary package and the recent splits made it navigable: the omnibus IR became declaration, type, executable, module, operator, binding and access families, each with a compile-time composition test. Closed operator vocabularies are the standout — drift between the contract and either consumer is now a type error, verified by planting drift in both directions. What keeps the score in the seventies is that a vocabulary is judged by whether it can express its domain, and several families are still coverage-driven rather than designed: the type IR has no story for conditional, mapped or template-literal types, and there is no serialization boundary at all.
+**foundational — 74/100.** This is the right shape for a vocabulary package and the recent splits made it navigable: the omnibus IR became declaration, type, executable, module, operator, binding and access families, each with a compile-time composition test. Closed operator vocabularies are the standout — drift between the contract and either consumer is now a type error, verified by planting drift in both directions. Since then the vocabulary has taken on binding patterns, tuple suffixes and residual value plans, control-flow label identity, and the IR-validation and lowering contracts — each added with the consumer that needed it rather than in anticipation, which is the right discipline for a contract package. What keeps the score in the seventies is that a vocabulary is judged by whether it can express its domain, and several families are still coverage-driven rather than designed: the type IR has no story for conditional, mapped or template-literal types, and there is no serialization boundary at all.
 
 ## What a fully expressed compiler-vocabulary domain looks like
 
