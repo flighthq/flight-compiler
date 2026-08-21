@@ -189,14 +189,20 @@ describe('lowerIrModuleWithCompilerPasses', () => {
       'malformed-ir',
       'structurally-malformed',
     );
-    expectFailure(
-      () =>
-        lowerIrModuleWithCompilerPasses(module, [
-          createPass('changed-identity', (value) => ({ ...value, source: 'src/changed.ts' })),
-        ]),
-      'malformed-ir',
-      'changed-identity',
-    );
+    for (const [passName, changedIdentity] of [
+      ['changed-name', { name: 'changed' }],
+      ['changed-package', { packageName: '@flighthq/changed' }],
+      ['changed-source', { source: 'src/changed.ts' }],
+    ] as const) {
+      expectFailure(
+        () =>
+          lowerIrModuleWithCompilerPasses(module, [
+            createPass(passName, (value) => ({ ...value, ...changedIdentity })),
+          ]),
+        'malformed-ir',
+        passName,
+      );
+    }
     expectFailure(
       () =>
         lowerIrModuleWithCompilerPasses(moduleWithBinding, [
@@ -219,16 +225,28 @@ describe('lowerIrModuleWithCompilerPasses', () => {
       'non-idempotent-pass',
       'claimed-idempotent',
     );
-    expectFailure(
-      () =>
-        lowerIrModuleWithCompilerPasses(module, [
-          createPass('invalid-verification', (value) => structuredClone(value), (() => ({
-            kind: 'unknown',
-          })) as unknown as CompilerLoweringPass['verifyIrModule']),
-        ]),
-      'pass-execution-failed',
-      'invalid-verification',
-    );
+    for (const [passName, verification] of [
+      ['verification-null', null],
+      ['verification-nonobject', 'valid'],
+      ['verification-no-kind', {}],
+      ['verification-unknown-kind', { kind: 'unknown' }],
+      ['verification-no-reason', { kind: 'invalid' }],
+      ['verification-nonstring-reason', { kind: 'invalid', reason: 1 }],
+      ['verification-empty-reason', { kind: 'invalid', reason: '' }],
+    ] as const) {
+      expectFailure(
+        () =>
+          lowerIrModuleWithCompilerPasses(module, [
+            createPass(
+              passName,
+              (value) => structuredClone(value),
+              (() => verification) as unknown as CompilerLoweringPass['verifyIrModule'],
+            ),
+          ]),
+        'pass-execution-failed',
+        passName,
+      );
+    }
     expectFailure(
       () =>
         lowerIrModuleWithCompilerPasses(module, [

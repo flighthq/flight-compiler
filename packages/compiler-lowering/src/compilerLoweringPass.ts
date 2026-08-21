@@ -210,7 +210,7 @@ function validateCompilerLoweringPassOrder(
           `${pass.name} requires missing predecessor ${predecessor}`,
         );
       }
-      if (predecessor === pass.name || predecessorPosition > position) {
+      if (predecessorPosition >= position) {
         throw createCompilerLoweringFailure(
           'invalid-pass-order',
           pass.name,
