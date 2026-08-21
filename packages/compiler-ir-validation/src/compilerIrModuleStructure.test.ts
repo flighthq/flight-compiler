@@ -1,7 +1,12 @@
 import ts from 'typescript';
 
 import { lowerTypeScriptSource } from '../../compiler-semantic/src/index.js';
-import type { CompilerIrModuleValidationFailureCode, IrModule } from '../../compiler-types/src/index.js';
+import type {
+  CompilerIrModuleValidationFailureCode,
+  IrBindingIdentity,
+  IrModule,
+  IrStatement,
+} from '../../compiler-types/src/index.js';
 import { validateIrModuleStructure } from './compilerIrModuleStructure.js';
 
 function lower(file: string, source: string): IrModule {
@@ -54,6 +59,8 @@ describe('validateIrModuleStructure', () => {
         export type ExternalValueType = typeof externalValue;
         export async function containers(values: number[]): Promise<number> {
           let total: number = [1, , 2][0]!;
+          { var hoisted: number = total; }
+          total += hoisted;
           do { total = total + 1; } while (false);
           while (total < 2) { total++; break; }
           for (let index: number = 0; index < 1; index++) {
@@ -89,6 +96,102 @@ describe('validateIrModuleStructure', () => {
     expect(rich).toEqual(snapshot);
   });
 
+  it('rejects references that escape sibling functions, nested blocks, catch clauses, or loop scopes', () => {
+    const redirectReturn = (statement: Readonly<IrStatement> | undefined, binding: IrBindingIdentity): IrStatement => {
+      if (statement?.kind !== 'return' || statement.expression?.kind !== 'identifier') {
+        throw new Error('Expected identifier return');
+      }
+      return { ...statement, expression: { ...statement.expression, reference: { binding, kind: 'binding' } } };
+    };
+    const expectOutOfScope = (value: IrModule) => {
+      const result = validateIrModuleStructure(value);
+      expect(result.kind).toBe('invalid');
+      if (result.kind === 'invalid') {
+        expect(result.failures.map((failure) => failure.code)).toContain('out-of-scope-binding-reference');
+      }
+    };
+
+    const functions = lower(
+      'sibling-functions.ts',
+      `
+        export function first(value: number): number { return value; }
+        export function second(value: number): number { return value; }
+      `,
+    );
+    const [first, second] = functions.declarations;
+    if (first?.kind !== 'function' || second?.kind !== 'function' || !first.parameters[0]) {
+      throw new Error('Expected sibling functions');
+    }
+    expectOutOfScope({
+      ...functions,
+      declarations: [first, { ...second, body: [redirectReturn(second.body[0], first.parameters[0].binding)] }],
+    });
+
+    const blocks = lower(
+      'nested-block.ts',
+      `
+        export function block(): number {
+          { const hidden = 1; hidden; }
+          const visible = 2;
+          return visible;
+        }
+      `,
+    );
+    const blockFunction = blocks.declarations[0];
+    if (blockFunction?.kind !== 'function' || blockFunction.body[0]?.kind !== 'block') {
+      throw new Error('Expected block function');
+    }
+    const hiddenStatement = blockFunction.body[0].statements[0];
+    if (hiddenStatement?.kind !== 'variable' || !hiddenStatement.declarations[0]) {
+      throw new Error('Expected hidden block binding');
+    }
+    expectOutOfScope({
+      ...blocks,
+      declarations: [
+        {
+          ...blockFunction,
+          body: [
+            blockFunction.body[0],
+            blockFunction.body[1]!,
+            redirectReturn(blockFunction.body[2], hiddenStatement.declarations[0].binding),
+          ],
+        },
+      ],
+    });
+
+    const controls = lower(
+      'control-scopes.ts',
+      `
+        export function control(values: number[]): number {
+          for (const value of values) { value; }
+          try { throw 1; } catch (error) { error; }
+          const fallback = 1;
+          return fallback;
+        }
+      `,
+    );
+    const control = controls.declarations[0];
+    if (
+      control?.kind !== 'function' ||
+      control.body[0]?.kind !== 'forOf' ||
+      control.body[1]?.kind !== 'try' ||
+      !control.body[1].catchClause?.binding
+    ) {
+      throw new Error('Expected loop and catch bindings');
+    }
+    for (const binding of [control.body[0].variable.binding, control.body[1].catchClause.binding]) {
+      expectOutOfScope({
+        ...controls,
+        declarations: [
+          {
+            ...control,
+            body: [control.body[0], control.body[1], control.body[2]!, redirectReturn(control.body[3], binding)],
+          },
+        ],
+      });
+    }
+  });
+
   it('reports stable identity, origin, reference, cardinality, arity, kind, and shape failures', () => {
     const module = lower('identity.ts', 'export function identity<T>(value: T): T { return value; }');
     const declaration = module.declarations[0];
@@ -98,8 +201,36 @@ describe('validateIrModuleStructure', () => {
     if (returned?.kind !== 'return' || returned.expression?.kind !== 'identifier') {
       throw new Error('Expected returned identifier');
     }
-    if (returned.expression.reference.kind !== 'binding') throw new Error('Expected binding reference');
-    const bindingReference = returned.expression.reference;
+    const returnedExpression = returned.expression;
+    if (returnedExpression.reference.kind !== 'binding') throw new Error('Expected binding reference');
+    const bindingReference = returnedExpression.reference;
+    const withReferenceBinding = (binding: IrBindingIdentity): IrModule => ({
+      ...module,
+      declarations: [
+        {
+          ...declaration,
+          body: [
+            {
+              ...returned,
+              expression: {
+                ...returnedExpression,
+                reference: { ...bindingReference, binding },
+              },
+            },
+          ],
+        },
+      ],
+    });
+    const inconsistentReferences: readonly IrBindingIdentity[] = [
+      { ...bindingReference.binding, space: 'type' } as unknown as IrBindingIdentity,
+      { ...bindingReference.binding, kind: 'variable' },
+      { ...bindingReference.binding, scope: 'module' },
+      { ...bindingReference.binding, packageName: '@flighthq/other' },
+      { ...bindingReference.binding, source: `${bindingReference.binding.source}.other` },
+      { ...bindingReference.binding, line: bindingReference.binding.line + 1 },
+      { ...bindingReference.binding, column: bindingReference.binding.column + 1 },
+      { ...bindingReference.binding, fingerprint: `${bindingReference.binding.fingerprint}:changed` },
+    ];
     const typeModule = lower('compound.ts', 'export type Compound = string | number;');
     const typeDeclaration = typeModule.declarations[0];
     if (typeDeclaration?.kind !== 'typeAlias' || typeDeclaration.type.kind !== 'union') {
@@ -119,8 +250,11 @@ describe('validateIrModuleStructure', () => {
         throw failure;
       },
     };
+    expect(validateIrModuleStructure(module)).toEqual({ kind: 'valid' });
     const malformed: readonly [IrModule, CompilerIrModuleValidationFailureCode][] = [
       [{ ...module, name: '' }, 'invalid-module-identity'],
+      [{ ...module, packageName: '' }, 'invalid-module-identity'],
+      [{ ...module, source: '' }, 'invalid-module-identity'],
       [
         {
           ...module,
@@ -180,50 +314,47 @@ describe('validateIrModuleStructure', () => {
         },
         'invalid-declaration-origin',
       ],
+      [
+        {
+          ...module,
+          declarations: [{ ...declaration, origin: { ...declaration.origin, source: 'other.ts' } }],
+        },
+        'invalid-declaration-origin',
+      ],
+      [
+        {
+          ...module,
+          declarations: [{ ...declaration, origin: { ...declaration.origin, line: 0 } }],
+        },
+        'invalid-declaration-origin',
+      ],
+      [
+        {
+          ...module,
+          declarations: [{ ...declaration, origin: { ...declaration.origin, line: 1.5 } }],
+        },
+        'invalid-declaration-origin',
+      ],
+      [
+        {
+          ...module,
+          declarations: [{ ...declaration, origin: { ...declaration.origin, column: 0 } }],
+        },
+        'invalid-declaration-origin',
+      ],
+      [
+        {
+          ...module,
+          declarations: [{ ...declaration, origin: { ...declaration.origin, column: 1.5 } }],
+        },
+        'invalid-declaration-origin',
+      ],
       [{ ...module, declarations: [declaration, declaration] }, 'duplicate-binding-identity'],
-      [
-        {
-          ...module,
-          declarations: [
-            {
-              ...declaration,
-              body: [
-                {
-                  ...returned,
-                  expression: {
-                    ...returned.expression,
-                    reference: { ...bindingReference, binding: { ...bindingReference.binding, id: 'missing' } },
-                  },
-                },
-              ],
-            },
-          ],
-        },
-        'dangling-binding-reference',
-      ],
-      [
-        {
-          ...module,
-          declarations: [
-            {
-              ...declaration,
-              body: [
-                {
-                  ...returned,
-                  expression: {
-                    ...returned.expression,
-                    reference: {
-                      ...bindingReference,
-                      binding: { ...bindingReference.binding, scope: 'module' },
-                    },
-                  },
-                },
-              ],
-            },
-          ],
-        },
+      [withReferenceBinding({ ...bindingReference.binding, id: 'missing' }), 'dangling-binding-reference'],
+      ...inconsistentReferences.map((binding): [IrModule, CompilerIrModuleValidationFailureCode] => [
+        withReferenceBinding(binding),
         'inconsistent-binding-reference',
-      ],
+      ]),
       [
         {
           ...module,

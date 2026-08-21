@@ -10,6 +10,7 @@ export type CompilerIrModuleValidationFailureCode =
   | 'invalid-module-identity'
   | 'invalid-node-shape'
   | 'invalid-parameter-cardinality'
+  | 'out-of-scope-binding-reference'
   | 'unknown-ir-kind';
 
 export interface CompilerIrModuleValidationFailure {

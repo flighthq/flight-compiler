@@ -24,6 +24,7 @@ import type {
 interface BindingDefinition {
   readonly binding: Readonly<IrBindingIdentity | IrTypeBindingIdentity>;
   readonly path: string;
+  readonly scope: string;
 }
 
 interface BindingIntroductionExpectation {
@@ -35,6 +36,12 @@ interface BindingIntroductionExpectation {
 interface BindingReference {
   readonly binding: Readonly<IrBindingIdentity | IrTypeBindingIdentity>;
   readonly path: string;
+  readonly scope: string;
+}
+
+interface IrLexicalScope {
+  readonly id: string;
+  readonly kind: IrBindingScope;
 }
 
 interface IrModuleValidationState {
@@ -42,6 +49,8 @@ interface IrModuleValidationState {
   readonly failures: CompilerIrModuleValidationFailure[];
   readonly module: Readonly<IrModule>;
   readonly references: BindingReference[];
+  readonly scopeParents: Map<string, string | undefined>;
+  readonly scopes: IrLexicalScope[];
 }
 
 interface ParameterCardinality {
@@ -51,11 +60,14 @@ interface ParameterCardinality {
 }
 
 export function validateIrModuleStructure(module: Readonly<IrModule>): CompilerIrModuleValidation {
+  const moduleScope: IrLexicalScope = { id: '$#module', kind: 'module' };
   const state: IrModuleValidationState = {
     bindings: new Map(),
     failures: [],
     module,
     references: [],
+    scopeParents: new Map([[moduleScope.id, undefined]]),
+    scopes: [moduleScope],
   };
   try {
     validateModuleIdentity(module, state);
@@ -118,7 +130,11 @@ function addBindingDefinition(
     );
     return;
   }
-  state.bindings.set(binding.id, { binding, path });
+  state.bindings.set(binding.id, {
+    binding,
+    path,
+    scope: getBindingIntroductionScope(binding.scope, expectation.scope, state),
+  });
 }
 
 function addBindingReference(
@@ -126,7 +142,7 @@ function addBindingReference(
   path: string,
   state: IrModuleValidationState,
 ): void {
-  state.references.push({ binding, path });
+  state.references.push({ binding, path, scope: getCurrentLexicalScope(state).id });
 }
 
 function addFailure(
@@ -151,6 +167,20 @@ function isPositiveInteger(value: unknown): value is number {
   return typeof value === 'number' && Number.isInteger(value) && value >= 1;
 }
 
+function getBindingIntroductionScope(
+  received: IrBindingScope,
+  expected: IrBindingScope | readonly IrBindingScope[],
+  state: IrModuleValidationState,
+): string {
+  const expectedScopes = typeof expected === 'string' ? [expected] : expected;
+  const kind = expectedScopes.includes(received) ? received : expectedScopes[0]!;
+  return [...state.scopes].reverse().find((scope) => scope.kind === kind)!.id;
+}
+
+function getCurrentLexicalScope(state: IrModuleValidationState): IrLexicalScope {
+  return state.scopes[state.scopes.length - 1]!;
+}
+
 function visitDeclaration(declaration: Readonly<IrDeclaration>, path: string, state: IrModuleValidationState): void {
   switch (declaration.kind) {
     case 'class':
@@ -161,26 +191,29 @@ function visitDeclaration(declaration: Readonly<IrDeclaration>, path: string, st
         { kind: 'class', scope: 'module', space: 'value' },
         state,
       );
-      visitTypeParameters(declaration.typeParameters, `${path}.typeParameters`, 'declaration', state);
-      if (declaration.extends) visitType(declaration.extends, `${path}.extends`, state);
-      declaration.implements.forEach((type, index) => visitType(type, `${path}.implements[${String(index)}]`, state));
-      declaration.fields.forEach((field, index) => {
-        const fieldPath = `${path}.fields[${String(index)}]`;
-        visitType(field.type, `${fieldPath}.type`, state);
-        if (field.initializer) visitExpression(field.initializer, `${fieldPath}.initializer`, state);
-      });
-      if (declaration.classConstructor) {
-        visitParameters(declaration.classConstructor.parameters, `${path}.classConstructor.parameters`, state);
-        declaration.classConstructor.body.forEach((statement, index) =>
-          visitStatement(statement, `${path}.classConstructor.body[${String(index)}]`, state),
-        );
-      }
-      declaration.methods.forEach((method, index) => {
-        const methodPath = `${path}.methods[${String(index)}]`;
-        visitFunctionSignature(method, methodPath, state);
-        method.body.forEach((statement, statementIndex) =>
-          visitStatement(statement, `${methodPath}.body[${String(statementIndex)}]`, state),
-        );
+      visitLexicalScope('declaration', path, state, () => {
+        visitTypeParameters(declaration.typeParameters, `${path}.typeParameters`, 'declaration', state);
+        if (declaration.extends) visitType(declaration.extends, `${path}.extends`, state);
+        declaration.implements.forEach((type, index) => visitType(type, `${path}.implements[${String(index)}]`, state));
+        declaration.fields.forEach((field, index) => {
+          const fieldPath = `${path}.fields[${String(index)}]`;
+          visitType(field.type, `${fieldPath}.type`, state);
+          if (field.initializer) visitExpression(field.initializer, `${fieldPath}.initializer`, state);
+        });
+        const classConstructor = declaration.classConstructor;
+        if (classConstructor) {
+          visitLexicalScope('function', `${path}.classConstructor`, state, () => {
+            visitParameters(classConstructor.parameters, `${path}.classConstructor.parameters`, state);
+            visitStatementList(classConstructor.body, `${path}.classConstructor.body`, state);
+          });
+        }
+        declaration.methods.forEach((method, index) => {
+          const methodPath = `${path}.methods[${String(index)}]`;
+          visitLexicalScope('function', methodPath, state, () => {
+            visitFunctionSignature(method, methodPath, state);
+            visitStatementList(method.body, `${methodPath}.body`, state);
+          });
+        });
       });
       break;
     case 'enum':
@@ -200,13 +233,14 @@ function visitDeclaration(declaration: Readonly<IrDeclaration>, path: string, st
         { kind: 'function', scope: 'module', space: 'value' },
         state,
       );
-      visitFunctionSignature(declaration, path, state);
-      declaration.overloads.forEach((overload, index) =>
-        visitFunctionSignature(overload, `${path}.overloads[${String(index)}]`, state),
-      );
-      declaration.body.forEach((statement, index) =>
-        visitStatement(statement, `${path}.body[${String(index)}]`, state),
-      );
+      visitLexicalScope('function', path, state, () => {
+        visitFunctionSignature(declaration, path, state);
+        visitStatementList(declaration.body, `${path}.body`, state);
+      });
+      declaration.overloads.forEach((overload, index) => {
+        const overloadPath = `${path}.overloads[${String(index)}]`;
+        visitLexicalScope('function', overloadPath, state, () => visitFunctionSignature(overload, overloadPath, state));
+      });
       break;
     case 'interface':
       validateDeclarationOrigin(declaration, path, state);
@@ -216,11 +250,13 @@ function visitDeclaration(declaration: Readonly<IrDeclaration>, path: string, st
         { kind: 'interface', scope: 'module', space: 'type' },
         state,
       );
-      visitTypeParameters(declaration.typeParameters, `${path}.typeParameters`, 'declaration', state);
-      declaration.extends.forEach((type, index) => visitType(type, `${path}.extends[${String(index)}]`, state));
-      declaration.properties.forEach((property, index) =>
-        visitType(property.type, `${path}.properties[${String(index)}].type`, state),
-      );
+      visitLexicalScope('declaration', path, state, () => {
+        visitTypeParameters(declaration.typeParameters, `${path}.typeParameters`, 'declaration', state);
+        declaration.extends.forEach((type, index) => visitType(type, `${path}.extends[${String(index)}]`, state));
+        declaration.properties.forEach((property, index) =>
+          visitType(property.type, `${path}.properties[${String(index)}].type`, state),
+        );
+      });
       break;
     case 'typeAlias':
       validateDeclarationOrigin(declaration, path, state);
@@ -230,8 +266,10 @@ function visitDeclaration(declaration: Readonly<IrDeclaration>, path: string, st
         { kind: 'typeAlias', scope: 'module', space: 'type' },
         state,
       );
-      visitTypeParameters(declaration.typeParameters, `${path}.typeParameters`, 'declaration', state);
-      visitType(declaration.type, `${path}.type`, state);
+      visitLexicalScope('declaration', path, state, () => {
+        visitTypeParameters(declaration.typeParameters, `${path}.typeParameters`, 'declaration', state);
+        visitType(declaration.type, `${path}.type`, state);
+      });
       break;
     case 'variable':
       validateDeclarationOrigin(declaration, path, state);
@@ -290,19 +328,21 @@ function visitExpression(expression: Readonly<IrExpression>, path: string, state
       visitExpression(expression.object, `${path}.object`, state);
       break;
     case 'function':
-      if (expression.binding) {
-        addBindingDefinition(
-          expression.binding,
-          `${path}.binding`,
-          { kind: 'function', scope: 'function', space: 'value' },
-          state,
-        );
-      }
-      visitParameters(expression.parameters, `${path}.parameters`, state);
-      visitType(expression.returns, `${path}.returns`, state);
-      visitTypeParameters(expression.typeParameters, `${path}.typeParameters`, 'function', state);
-      expression.body.forEach((statement, index) => visitStatement(statement, `${path}.body[${String(index)}]`, state));
-      if (expression.expression) visitExpression(expression.expression, `${path}.expression`, state);
+      visitLexicalScope('function', path, state, () => {
+        if (expression.binding) {
+          addBindingDefinition(
+            expression.binding,
+            `${path}.binding`,
+            { kind: 'function', scope: 'function', space: 'value' },
+            state,
+          );
+        }
+        visitParameters(expression.parameters, `${path}.parameters`, state);
+        visitType(expression.returns, `${path}.returns`, state);
+        visitTypeParameters(expression.typeParameters, `${path}.typeParameters`, 'function', state);
+        visitStatementList(expression.body, `${path}.body`, state);
+        if (expression.expression) visitExpression(expression.expression, `${path}.expression`, state);
+      });
       break;
     case 'identifier':
       if (expression.reference.kind === 'binding') {
@@ -382,9 +422,7 @@ function visitParameters(
 function visitStatement(statement: Readonly<IrStatement>, path: string, state: IrModuleValidationState): void {
   switch (statement.kind) {
     case 'block':
-      statement.statements.forEach((child, index) =>
-        visitStatement(child, `${path}.statements[${String(index)}]`, state),
-      );
+      visitStatementList(statement.statements, `${path}.statements`, state);
       break;
     case 'break':
     case 'continue':
@@ -399,26 +437,32 @@ function visitStatement(statement: Readonly<IrStatement>, path: string, state: I
       visitExpression(statement.expression, `${path}.expression`, state);
       break;
     case 'for':
-      if (Array.isArray(statement.initializer)) {
-        statement.initializer.forEach((variable, index) =>
-          visitVariable(variable, `${path}.initializer[${String(index)}]`, ['block', 'function'], state),
-        );
-      } else if (statement.initializer) {
-        visitExpression(statement.initializer as IrExpression, `${path}.initializer`, state);
-      }
-      if (statement.condition) visitExpression(statement.condition, `${path}.condition`, state);
-      if (statement.increment) visitExpression(statement.increment, `${path}.increment`, state);
-      visitStatement(statement.body, `${path}.body`, state);
+      visitLexicalScope('block', path, state, () => {
+        if (Array.isArray(statement.initializer)) {
+          statement.initializer.forEach((variable, index) =>
+            visitVariable(variable, `${path}.initializer[${String(index)}]`, ['block', 'function'], state),
+          );
+        } else if (statement.initializer) {
+          visitExpression(statement.initializer as IrExpression, `${path}.initializer`, state);
+        }
+        if (statement.condition) visitExpression(statement.condition, `${path}.condition`, state);
+        if (statement.increment) visitExpression(statement.increment, `${path}.increment`, state);
+        visitStatement(statement.body, `${path}.body`, state);
+      });
       break;
     case 'forIn':
-      visitVariable(statement.variable, `${path}.variable`, ['block', 'function'], state);
       visitExpression(statement.object, `${path}.object`, state);
-      visitStatement(statement.body, `${path}.body`, state);
+      visitLexicalScope('block', path, state, () => {
+        visitVariable(statement.variable, `${path}.variable`, ['block', 'function'], state);
+        visitStatement(statement.body, `${path}.body`, state);
+      });
       break;
     case 'forOf':
-      visitVariable(statement.variable, `${path}.variable`, ['block', 'function'], state);
       visitExpression(statement.iterable, `${path}.iterable`, state);
-      visitStatement(statement.body, `${path}.body`, state);
+      visitLexicalScope('block', path, state, () => {
+        visitVariable(statement.variable, `${path}.variable`, ['block', 'function'], state);
+        visitStatement(statement.body, `${path}.body`, state);
+      });
       break;
     case 'if':
       visitExpression(statement.condition, `${path}.condition`, state);
@@ -430,26 +474,31 @@ function visitStatement(statement: Readonly<IrStatement>, path: string, state: I
       break;
     case 'switch':
       visitExpression(statement.expression, `${path}.expression`, state);
-      statement.cases.forEach((switchCase, index) => {
-        const casePath = `${path}.cases[${String(index)}]`;
-        if (switchCase.expression) visitExpression(switchCase.expression, `${casePath}.expression`, state);
-        switchCase.statements.forEach((child, statementIndex) =>
-          visitStatement(child, `${casePath}.statements[${String(statementIndex)}]`, state),
-        );
+      visitLexicalScope('block', `${path}.cases`, state, () => {
+        statement.cases.forEach((switchCase, index) => {
+          const casePath = `${path}.cases[${String(index)}]`;
+          if (switchCase.expression) visitExpression(switchCase.expression, `${casePath}.expression`, state);
+          switchCase.statements.forEach((child, statementIndex) =>
+            visitStatement(child, `${casePath}.statements[${String(statementIndex)}]`, state),
+          );
+        });
       });
       break;
     case 'try':
       visitStatement(statement.tryBody, `${path}.tryBody`, state);
-      if (statement.catchClause) {
-        if (statement.catchClause.binding) {
-          addBindingDefinition(
-            statement.catchClause.binding,
-            `${path}.catchClause.binding`,
-            { kind: 'catch', scope: 'block', space: 'value' },
-            state,
-          );
-        }
-        visitStatement(statement.catchClause.body, `${path}.catchClause.body`, state);
+      const catchClause = statement.catchClause;
+      if (catchClause) {
+        visitLexicalScope('block', `${path}.catchClause`, state, () => {
+          if (catchClause.binding) {
+            addBindingDefinition(
+              catchClause.binding,
+              `${path}.catchClause.binding`,
+              { kind: 'catch', scope: 'block', space: 'value' },
+              state,
+            );
+          }
+          visitStatement(catchClause.body, `${path}.catchClause.body`, state);
+        });
       }
       if (statement.finallyBody) visitStatement(statement.finallyBody, `${path}.finallyBody`, state);
       break;
@@ -463,18 +512,30 @@ function visitStatement(statement: Readonly<IrStatement>, path: string, state: I
   }
 }
 
+function visitStatementList(
+  statements: readonly Readonly<IrStatement>[],
+  path: string,
+  state: IrModuleValidationState,
+): void {
+  visitLexicalScope('block', path, state, () => {
+    statements.forEach((statement, index) => visitStatement(statement, `${path}[${String(index)}]`, state));
+  });
+}
+
 function visitType(type: Readonly<IrType>, path: string, state: IrModuleValidationState): void {
   switch (type.kind) {
     case 'array':
       visitType(type.element, `${path}.element`, state);
       break;
     case 'function':
-      validateParameterCardinality(type.parameters, `${path}.parameters`, state);
-      type.parameters.forEach((parameter, index) =>
-        visitType(parameter.type, `${path}.parameters[${String(index)}].type`, state),
-      );
-      visitType(type.returns, `${path}.returns`, state);
-      visitTypeParameters(type.typeParameters, `${path}.typeParameters`, 'function', state);
+      visitLexicalScope('function', path, state, () => {
+        validateParameterCardinality(type.parameters, `${path}.parameters`, state);
+        type.parameters.forEach((parameter, index) =>
+          visitType(parameter.type, `${path}.parameters[${String(index)}].type`, state),
+        );
+        visitType(type.returns, `${path}.returns`, state);
+        visitTypeParameters(type.typeParameters, `${path}.typeParameters`, 'function', state);
+      });
       break;
     case 'indexedAccess':
       visitType(type.index, `${path}.index`, state);
@@ -635,7 +696,28 @@ function validateBindingReferences(state: IrModuleValidationState): void {
         state,
       );
     }
+    if (!isLexicalScopeAncestor(definition.scope, reference.scope, state.scopeParents)) {
+      addFailure(
+        'out-of-scope-binding-reference',
+        reference.path,
+        `binding ${received.id} is introduced outside the reference's lexical scope at ${definition.path}`,
+        state,
+      );
+    }
   }
+}
+
+function isLexicalScopeAncestor(
+  expected: string,
+  received: string,
+  parents: ReadonlyMap<string, string | undefined>,
+): boolean {
+  let scope: string | undefined = received;
+  while (scope !== undefined) {
+    if (scope === expected) return true;
+    scope = parents.get(scope);
+  }
+  return false;
 }
 
 function validateModuleIdentity(module: Readonly<IrModule>, state: IrModuleValidationState): void {
@@ -651,7 +733,7 @@ function validateParameterCardinality(
 ): void {
   parameters.forEach((parameter, index) => {
     if (
-      (parameter.rest && (parameter.optional || parameter.initializer !== undefined)) ||
+      (parameter.rest && parameter.optional) ||
       (parameter.initializer !== undefined && !parameter.optional) ||
       (parameter.rest && index !== parameters.length - 1)
     ) {
@@ -663,4 +745,21 @@ function validateParameterCardinality(
       );
     }
   });
+}
+
+function visitLexicalScope(
+  kind: IrBindingScope,
+  path: string,
+  state: IrModuleValidationState,
+  visit: () => void,
+): void {
+  const parent = getCurrentLexicalScope(state).id;
+  const scope: IrLexicalScope = { id: `${path}#${kind}`, kind };
+  state.scopeParents.set(scope.id, parent);
+  state.scopes.push(scope);
+  try {
+    visit();
+  } finally {
+    state.scopes.pop();
+  }
 }
