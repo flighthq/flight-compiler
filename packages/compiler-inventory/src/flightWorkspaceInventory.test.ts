@@ -98,6 +98,31 @@ describe('analyzeFlightWorkspace', () => {
       rmSync(upstream, { force: true, recursive: true });
     }
   });
+
+  it('refuses a program file that resolves outside the upstream checkout', () => {
+    const upstream = createUpstreamFixture();
+    const outside = mkdtempSync(path.join(os.tmpdir(), 'flight-compiler-outside-'));
+    try {
+      writeFileSync(
+        path.join(outside, 'escaped.ts'),
+        'export function createEscaped(value: number): number { return value; }\n',
+      );
+      const specifier = path
+        .relative(path.join(upstream, 'packages', 'types', 'src'), path.join(outside, 'escaped.js'))
+        .split(path.sep)
+        .join('/');
+      write(
+        upstream,
+        'packages/types/src/value.ts',
+        `export function createValue(value: number): number { return value; }\nexport { createEscaped } from '${specifier}';\n`,
+      );
+
+      expectInventoryFailure(() => analyzeFlightWorkspace({ upstreamDirectory: upstream }), 'invalid-source-path');
+    } finally {
+      rmSync(outside, { force: true, recursive: true });
+      rmSync(upstream, { force: true, recursive: true });
+    }
+  });
 });
 
 function expectInventoryFailure(run: () => unknown, code: CompilerInventoryFailureCode): void {
