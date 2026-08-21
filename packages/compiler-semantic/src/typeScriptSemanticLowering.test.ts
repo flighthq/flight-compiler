@@ -1311,11 +1311,16 @@ describe('lowerTypeScriptSource', () => {
       (declaration) =>
         declaration.kind === 'variable' && 'binding' in declaration && declaration.binding.name === 'optionalCombined',
     );
-    if (combined?.kind !== 'variable' || optional?.kind !== 'variable') {
+    const pair = result.module.declarations.find(
+      (declaration) =>
+        declaration.kind === 'variable' && 'binding' in declaration && declaration.binding.name === 'pair',
+    );
+    if (combined?.kind !== 'variable' || optional?.kind !== 'variable' || pair?.kind !== 'variable') {
       throw new Error('Expected tuple spread declarations');
     }
 
     expect(result.diagnostics).toEqual([]);
+    expect(pair.initializer).toMatchObject({ kind: 'tuple' });
     expect(combined.initializer).toMatchObject({
       kind: 'tupleSpread',
       segments: [

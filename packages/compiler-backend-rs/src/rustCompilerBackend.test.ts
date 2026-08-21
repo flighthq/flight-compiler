@@ -199,6 +199,39 @@ describe('emitIrModuleRust', () => {
     expect(emitIrModuleRust(result.module).contents).toContain('let value: (f64, Option<String>) = (2.0, None);');
   });
 
+  it('clones fixed tuple spread fields through collision-free sequential evaluation carriers', () => {
+    const result = lower(
+      'tuple-spread.ts',
+      `
+        function marker(value: number): number { return value; }
+        function optional(): [boolean?] { return []; }
+        export function combine(tupleSpreadElement: number, tupleSpreadValue: [number, string]): [number, number, string, boolean?] {
+          const output: [number, number, string, boolean?] = [marker(tupleSpreadElement), ...tupleSpreadValue, ...optional()];
+          marker(tupleSpreadValue[0]);
+          return output;
+        }
+      `,
+    );
+    const output = emitIrModuleRust(result.module).contents;
+
+    expect(result.diagnostics).toEqual([]);
+    expect(output).toContain(
+      '({ let tuple_spread_element_2 = marker(tuple_spread_element); let tuple_spread_value_2 = &(tuple_spread_value); let tuple_spread_value_3 = &(optional()); (tuple_spread_element_2, tuple_spread_value_2.0.clone(), tuple_spread_value_2.1.clone(), tuple_spread_value_3.0.clone()) })',
+    );
+    expect(output).toContain('marker(tuple_spread_value.0);');
+  });
+
+  it('refuses tuple spread fields without clone-safe Rust ownership evidence', () => {
+    const result = lower(
+      'tuple-spread-object.ts',
+      'type Item = { value: number }; export function copy(values: [Item]): [Item] { const copied: [Item] = [...values]; return copied; }',
+    );
+
+    expect(() => emitIrModuleRust(result.module)).toThrow(
+      'fixed tuple spread source index 0 lacks clone-safe Rust ownership evidence',
+    );
+  });
+
   it('reports pass-named failures from the elected lowering plan', () => {
     const result = lower(
       'unsafe-loop.ts',

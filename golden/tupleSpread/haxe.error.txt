@@ -1,1 +1,0 @@
-haxe emission failed for @flighthq/golden/packages/golden/src/tupleSpread.ts: fixed tuple spread requires Haxe tuple-construction lowering

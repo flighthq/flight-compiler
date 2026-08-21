@@ -1246,13 +1246,16 @@ function lowerVariable(
       : node.initializer
         ? inferInitializerType(node.initializer, context)
         : undefined;
+  const valueType = node.type
+    ? lowerType(resolveTypeScriptTypeNodeAlias(node.type, context, new Set()), context)
+    : type;
   const target = ts.isIdentifier(node.name)
     ? { binding: lowerBindingIdentity(node.name, context) }
-    : { pattern: lowerBindingPattern(node.name, context, type) };
-  if (ts.isIdentifier(node.name) && type) addTypeScriptBindingTypeEvidence(node.name, type, context);
+    : { pattern: lowerBindingPattern(node.name, context, valueType) };
+  if (ts.isIdentifier(node.name) && valueType) addTypeScriptBindingTypeEvidence(node.name, valueType, context);
   return {
     ...target,
-    ...(node.initializer ? { initializer: lowerExpression(node.initializer, context, type) } : {}),
+    ...(node.initializer ? { initializer: lowerExpression(node.initializer, context, valueType) } : {}),
     mutable,
     ...(type ? { type } : {}),
   };

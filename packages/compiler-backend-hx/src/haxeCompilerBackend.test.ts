@@ -203,6 +203,27 @@ describe('emitIrModuleHaxe', () => {
     expect(emitIrModuleHaxe(result.module).contents).toContain('final value:Array<Dynamic> = [2, null];');
   });
 
+  it('emits fixed tuple spreads with collision-free sequential evaluation carriers', () => {
+    const result = lower(
+      'tuple-spread.ts',
+      `
+        function marker(value: number): number { return value; }
+        function optional(): [boolean?] { return []; }
+        export function combine(tupleSpreadElement: number, tupleSpreadValue: [number, string]): [number, number, string, boolean?] {
+          const output: [number, number, string, boolean?] = [marker(tupleSpreadElement), ...tupleSpreadValue, ...optional()];
+          marker(tupleSpreadValue[0]);
+          return output;
+        }
+      `,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(result.diagnostics).toEqual([]);
+    expect(output).toContain(
+      '(function() { final tupleSpreadElement_2 = marker(tupleSpreadElement); final tupleSpreadValue_2 = tupleSpreadValue; final tupleSpreadValue_3 = optional(); return [tupleSpreadElement_2, tupleSpreadValue_2[0], tupleSpreadValue_2[1], tupleSpreadValue_3[0]]; })()',
+    );
+  });
+
   it('reports pass-named failures from the elected lowering plan', () => {
     const result = lower(
       'unsafe-loop.ts',

@@ -54,6 +54,7 @@ import {
 } from './haxeRuntimeExternalSymbolBinding.js';
 
 interface EmitContext {
+  generatedNames: Set<string>;
   module: Readonly<IrModule>;
   options: Readonly<HaxeCompilerBackendOptions>;
   packageName: string;
@@ -101,7 +102,13 @@ export function emitIrModuleHaxe(
     }
     throw error;
   }
-  const context: EmitContext = { module, options, packageName, targetNames };
+  const context: EmitContext = {
+    generatedNames: new Set(targetNames.values()),
+    module,
+    options,
+    packageName,
+    targetNames,
+  };
   if (module.exports.length > 0) {
     emissionError(context, 're-exports and export assignments require Haxe module-facade lowering');
   }
@@ -271,7 +278,7 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
         .map((element) => (element.expression ? emitExpression(element.expression, context) : 'null'))
         .join(', ')}]`;
     case 'tupleSpread':
-      emissionError(context, 'fixed tuple spread requires Haxe tuple-construction lowering');
+      return emitTupleSpreadExpressionHaxe(expression, context);
     case 'tupleRest':
       return `${emitExpression(expression.object, context)}.slice(${String(expression.start)})`;
     case 'tupleSuffix':
@@ -554,6 +561,30 @@ function emitTypeAlias(declaration: Readonly<IrTypeAliasDeclaration>, context: E
   ];
 }
 
+function emitTupleSpreadExpressionHaxe(
+  expression: Readonly<Extract<IrExpression, { kind: 'tupleSpread' }>>,
+  context: EmitContext,
+): string {
+  const declarations: string[] = [];
+  const elements: string[] = [];
+  for (const segment of expression.segments) {
+    if (segment.kind === 'element') {
+      if (!segment.element.expression) {
+        elements.push('null');
+        continue;
+      }
+      const name = getGeneratedTargetNameHaxe('tupleSpreadElement', context);
+      declarations.push(`final ${name} = ${emitExpression(segment.element.expression, context)};`);
+      elements.push(name);
+      continue;
+    }
+    const name = getGeneratedTargetNameHaxe('tupleSpreadValue', context);
+    declarations.push(`final ${name} = ${emitExpression(segment.expression, context)};`);
+    segment.type.elements.forEach((_, index) => elements.push(`${name}[${String(index)}]`));
+  }
+  return `(function() { ${declarations.join(' ')} return [${elements.join(', ')}]; })()`;
+}
+
 function emitTypeParameters(parameters: readonly IrTypeParameter[], context: EmitContext): string {
   if (parameters.length === 0) return '';
   return `<${parameters
@@ -592,6 +623,13 @@ function getBindingTargetNameHaxe(
   const targetName = context.targetNames.get(binding.id);
   if (!targetName) emissionError(context, `binding ${binding.name} has no Haxe target name allocation`);
   return targetName;
+}
+
+function getGeneratedTargetNameHaxe(preferredName: string, context: EmitContext): string {
+  let name = preferredName;
+  for (let suffix = 2; context.generatedNames.has(name); suffix += 1) name = `${preferredName}_${String(suffix)}`;
+  context.generatedNames.add(name);
+  return name;
 }
 
 function getElementAccessTupleIndexHaxe(

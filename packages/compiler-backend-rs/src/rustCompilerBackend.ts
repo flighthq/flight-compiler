@@ -58,6 +58,7 @@ import {
 } from './rustRuntimeExternalSymbolBinding.js';
 
 interface EmitContext {
+  generatedNames: Set<string>;
   module: Readonly<IrModule>;
   options: Readonly<RustCompilerBackendOptions>;
   targetNames: ReadonlyMap<string, string>;
@@ -109,7 +110,12 @@ export function emitIrModuleRust(
     }
     throw error;
   }
-  const context: EmitContext = { module, options, targetNames };
+  const context: EmitContext = {
+    generatedNames: new Set(targetNames.values()),
+    module,
+    options,
+    targetNames,
+  };
   if (module.exports.length > 0) {
     emissionError(context, 're-exports and export assignments require Rust module-facade lowering');
   }
@@ -286,7 +292,7 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
       return `(${elements.join(', ')}${elements.length === 1 ? ',' : ''})`;
     }
     case 'tupleSpread':
-      emissionError(context, 'fixed tuple spread requires Rust tuple-construction lowering');
+      return emitTupleSpreadExpressionRust(expression, context);
     case 'tupleRest':
       return `${emitExpression(expression.object, context)}.${String(expression.start)}`;
     case 'tupleSuffix': {
@@ -554,6 +560,47 @@ function emitTypeAlias(declaration: Readonly<IrTypeAliasDeclaration>, context: E
   ];
 }
 
+function emitTupleSpreadExpressionRust(
+  expression: Readonly<Extract<IrExpression, { kind: 'tupleSpread' }>>,
+  context: EmitContext,
+): string {
+  const declarations: string[] = [];
+  const elements: string[] = [];
+  let resultIndex = 0;
+  for (const segment of expression.segments) {
+    if (segment.kind === 'element') {
+      const target = expression.type.elements[resultIndex]!;
+      if (!segment.element.expression) {
+        elements.push('None');
+      } else {
+        const name = getGeneratedTargetNameRust('tuple_spread_element', context);
+        declarations.push(`let ${name} = ${emitExpression(segment.element.expression, context)};`);
+        elements.push(target.optional ? `Some(${name})` : name);
+      }
+      resultIndex += 1;
+      continue;
+    }
+    segment.type.elements.forEach((element, offset) => {
+      if (!isIrTypeCloneSafeRust(element.type)) {
+        emissionError(
+          context,
+          `fixed tuple spread source index ${String(offset)} lacks clone-safe Rust ownership evidence`,
+        );
+      }
+    });
+    const name = getGeneratedTargetNameRust('tuple_spread_value', context);
+    declarations.push(`let ${name} = &(${emitExpression(segment.expression, context)});`);
+    segment.type.elements.forEach((element, offset) => {
+      const value = `${name}.${String(offset)}.clone()`;
+      const target = expression.type.elements[resultIndex + offset]!;
+      elements.push(target.optional && !element.optional ? `Some(${value})` : value);
+    });
+    resultIndex += segment.type.elements.length;
+  }
+  const tuple = `(${elements.join(', ')}${elements.length === 1 ? ',' : ''})`;
+  return `({ ${declarations.join(' ')} ${tuple} })`;
+}
+
 function emitTypeArguments(parameters: readonly IrTypeParameter[], context: EmitContext): string {
   return parameters.length === 0
     ? ''
@@ -598,6 +645,13 @@ function getBindingTargetNameRust(
   const targetName = context.targetNames.get(binding.id);
   if (!targetName) emissionError(context, `binding ${binding.name} has no Rust target name allocation`);
   return targetName;
+}
+
+function getGeneratedTargetNameRust(preferredName: string, context: EmitContext): string {
+  let name = preferredName;
+  for (let suffix = 2; context.generatedNames.has(name); suffix += 1) name = `${preferredName}_${String(suffix)}`;
+  context.generatedNames.add(name);
+  return name;
 }
 
 function getElementAccessTupleIndexRust(
@@ -782,6 +836,32 @@ function isNullableType(type: Readonly<IrType>): boolean {
     type.kind === 'undefined' ||
     (type.kind === 'union' && type.types.some((member) => member.kind === 'null' || member.kind === 'undefined'))
   );
+}
+
+function isIrTypeCloneSafeRust(type: Readonly<IrType>): boolean {
+  switch (type.kind) {
+    case 'array':
+      return isIrTypeCloneSafeRust(type.element);
+    case 'literal':
+    case 'never':
+    case 'null':
+    case 'primitive':
+    case 'undefined':
+      return true;
+    case 'tuple':
+      return type.elements.every((element) => isIrTypeCloneSafeRust(element.type));
+    case 'union':
+      return type.types.every(isIrTypeCloneSafeRust);
+    case 'function':
+    case 'indexedAccess':
+    case 'intersection':
+    case 'keyof':
+    case 'named':
+    case 'object':
+    case 'typeOf':
+    case 'unknown':
+      return false;
+  }
 }
 
 function opaqueHostType(context: EmitContext): string {
