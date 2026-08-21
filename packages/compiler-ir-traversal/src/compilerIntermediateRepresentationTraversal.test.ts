@@ -26,6 +26,7 @@ describe('analyzeIrModuleTraversal', () => {
       export class ExternalError extends Error {}
       export class ExternalBox<T extends Error = Error> implements ExternalShape {
         field: Promise<T> = Promise.resolve(new Error());
+        constructor(input: ReadonlyArray<Int32Array>);
         constructor(input: ReadonlyArray<Int32Array> = []) { input as unknown as Float64Array; }
         method<U extends WeakMap<object, object>>(value: U): Partial<Record<string, Uint32Array>> {
           const output: Array<Uint16Array> = new Array<Uint16Array>();
@@ -155,7 +156,7 @@ describe('analyzeIrModuleTraversal', () => {
       'function',
     ]);
     expect(bindingPatterns).toEqual(expect.arrayContaining(['array', 'binding']));
-    expect(parameters).toBe(7);
+    expect(parameters).toBe(8);
     expect(signatures).toBeGreaterThanOrEqual(7);
     expect(typeParameters).toBe(5);
     expect(variables).toBeGreaterThanOrEqual(10);
@@ -335,6 +336,7 @@ describe('analyzeIrModuleTraversal', () => {
         arguments: [{ kind: 'literal', value: 1 }],
         callee: identifier,
         kind: 'new',
+        semantics: {},
         typeArguments: [numberType],
       },
     ];

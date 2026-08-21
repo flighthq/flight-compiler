@@ -24,6 +24,7 @@ describe('collectIrModulesRuntimeExternalSymbolIdentities', () => {
         export class ExternalError extends Error {}
         export class ExternalBox<T extends Error = Error> implements ExternalShape {
           field: Promise<T> = Promise.resolve(new Error());
+          constructor(input: ArrayBuffer);
           constructor(input: ReadonlyArray<Int32Array> = []) { input as unknown as Float64Array; }
           method<U extends WeakMap<object, object>>(value: U): Partial<Record<string, Uint32Array>> {
             const output: Array<Uint16Array> = new Array<Uint16Array>();
@@ -80,6 +81,7 @@ describe('collectIrModulesRuntimeExternalSymbolIdentities', () => {
 
     expect(collectIrModulesRuntimeExternalSymbolIdentities([lowered.module])).toEqual([
       { sourceName: 'Array', space: 'value' },
+      { sourceName: 'ArrayBuffer', space: 'type' },
       { sourceName: 'BigInt64Array', space: 'type' },
       { sourceName: 'BigInt64Array', space: 'value' },
       { sourceName: 'BigUint64Array', space: 'type' },

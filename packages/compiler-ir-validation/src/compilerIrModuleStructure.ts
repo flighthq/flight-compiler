@@ -42,6 +42,8 @@ interface BindingReference {
   readonly scope: string;
 }
 
+type IrInvocationExpression = Extract<IrExpression, { kind: 'call' | 'new' }>;
+
 interface IrLexicalScope {
   readonly id: string;
   readonly kind: IrBindingScope;
@@ -296,6 +298,12 @@ function visitDeclaration(declaration: Readonly<IrDeclaration>, path: string, st
             visitParameters(classConstructor.parameters, `${path}.classConstructor.parameters`, state);
             visitStatementList(classConstructor.body, `${path}.classConstructor.body`, state);
           });
+          classConstructor.overloads.forEach((overload, index) => {
+            const overloadPath = `${path}.classConstructor.overloads[${String(index)}]`;
+            visitLexicalScope('function', overloadPath, state, () =>
+              visitParameters(overload.parameters, `${overloadPath}.parameters`, state),
+            );
+          });
         }
         declaration.methods.forEach((method, index) => {
           const methodPath = `${path}.methods[${String(index)}]`;
@@ -396,9 +404,9 @@ function visitExpression(expression: Readonly<IrExpression>, path: string, state
       break;
     case 'call':
       validateIrOptionalChainEvidence(expression.optional, expression.semantics.optionalChain, path, state);
-      validateIrDefaultParameterCallEvidence(expression, path, state);
-      validateIrOptionalParameterCallEvidence(expression, path, state);
-      validateIrOverloadImplementationCallEvidence(expression, path, state);
+      validateIrDefaultParameterInvocationEvidence(expression, path, state);
+      validateIrOptionalParameterInvocationEvidence(expression, path, state);
+      validateIrOverloadImplementationInvocationEvidence(expression, path, state);
       if (expression.semantics.statementValue && !isIrCallExpressionStatementValueCarrierValid(expression)) {
         addFailure(
           'invalid-node-shape',
@@ -416,6 +424,10 @@ function visitExpression(expression: Readonly<IrExpression>, path: string, state
       );
       break;
     case 'new':
+      validateIrConstructorInvocationEvidence(expression, path, state);
+      validateIrDefaultParameterInvocationEvidence(expression, path, state);
+      validateIrOptionalParameterInvocationEvidence(expression, path, state);
+      validateIrOverloadImplementationInvocationEvidence(expression, path, state);
       visitExpression(expression.callee, `${path}.callee`, state);
       expression.arguments.forEach((argument, index) =>
         visitExpression(argument, `${path}.arguments[${String(index)}]`, state),
@@ -610,8 +622,40 @@ function hasIrTypeUndefinedOptionDomain(type: Readonly<IrType>): boolean {
   return type.types.some((member) => member.kind !== 'null' && member.kind !== 'undefined');
 }
 
-function validateIrDefaultParameterCallEvidence(
-  expression: Readonly<Extract<IrExpression, { kind: 'call' }>>,
+function validateIrConstructorInvocationEvidence(
+  expression: Readonly<Extract<IrExpression, { kind: 'new' }>>,
+  path: string,
+  state: IrModuleValidationState,
+): void {
+  const evidence = expression.semantics.constructorSignature;
+  if (!evidence) return;
+  const providedValid =
+    evidence.providedArgumentCount === 'dynamic'
+      ? expression.arguments.some((argument) => argument.kind === 'spread')
+      : Number.isSafeInteger(evidence.providedArgumentCount) &&
+        evidence.providedArgumentCount >= 0 &&
+        evidence.providedArgumentCount === expression.arguments.length &&
+        !expression.arguments.some((argument) => argument.kind === 'spread');
+  const overloadValid =
+    !expression.semantics.overloadImplementation ||
+    expression.semantics.overloadImplementation.implementationParameterCount === evidence.parameterCount;
+  if (
+    !Number.isSafeInteger(evidence.parameterCount) ||
+    evidence.parameterCount < 0 ||
+    !providedValid ||
+    !overloadValid
+  ) {
+    addFailure(
+      'invalid-node-shape',
+      `${path}.semantics.constructorSignature`,
+      'constructor invocation evidence must have exact argument state and implementation ABI arity',
+      state,
+    );
+  }
+}
+
+function validateIrDefaultParameterInvocationEvidence(
+  expression: Readonly<IrInvocationExpression>,
   path: string,
   state: IrModuleValidationState,
 ): void {
@@ -644,14 +688,14 @@ function validateIrDefaultParameterCallEvidence(
     addFailure(
       'invalid-node-shape',
       `${path}.semantics.defaultParameters`,
-      'default-parameter call evidence must have exact arity, ordered positions, and omission state',
+      'default-parameter invocation evidence must have exact arity, ordered positions, and omission state',
       state,
     );
   }
 }
 
-function validateIrOptionalParameterCallEvidence(
-  expression: Readonly<Extract<IrExpression, { kind: 'call' }>>,
+function validateIrOptionalParameterInvocationEvidence(
+  expression: Readonly<IrInvocationExpression>,
   path: string,
   state: IrModuleValidationState,
 ): void {
@@ -708,7 +752,7 @@ function validateIrOptionalParameterCallEvidence(
     addFailure(
       'invalid-node-shape',
       `${path}.semantics.optionalParameters`,
-      'optional-parameter call evidence must have exact arity, ordered positions, distinct defaults, and omission state',
+      'optional-parameter invocation evidence must have exact arity, ordered positions, distinct defaults, and omission state',
       state,
     );
   }
@@ -728,8 +772,8 @@ function validateIrOptionalParameterCallEvidence(
   }
 }
 
-function validateIrOverloadImplementationCallEvidence(
-  expression: Readonly<Extract<IrExpression, { kind: 'call' }>>,
+function validateIrOverloadImplementationInvocationEvidence(
+  expression: Readonly<IrInvocationExpression>,
   path: string,
   state: IrModuleValidationState,
 ): void {

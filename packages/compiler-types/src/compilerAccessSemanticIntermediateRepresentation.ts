@@ -34,30 +34,42 @@ export interface IrTypedArraySetSemantics {
   readonly receivers: readonly [IrTypedArrayReceiver, ...IrTypedArrayReceiver[]];
 }
 
-export interface IrCallSemantics {
-  readonly defaultParameters?: IrDefaultParameterCallSemantics | undefined;
-  readonly optionalParameters?: IrOptionalParameterCallSemantics | undefined;
+export interface IrInvocationSemantics {
+  readonly defaultParameters?: IrDefaultParameterInvocationSemantics | undefined;
+  readonly optionalParameters?: IrOptionalParameterInvocationSemantics | undefined;
+  readonly overloadImplementation?: IrOverloadImplementationInvocationSemantics | undefined;
+}
+
+export interface IrConstructorInvocationSemantics {
+  readonly parameterCount: number;
+  readonly providedArgumentCount: number | 'dynamic';
+}
+
+export interface IrNewSemantics extends IrInvocationSemantics {
+  readonly constructorSignature?: IrConstructorInvocationSemantics | undefined;
+}
+
+export interface IrCallSemantics extends IrInvocationSemantics {
   readonly optionalChain?: IrOptionalChainSemantics | undefined;
-  readonly overloadImplementation?: IrOverloadImplementationCallSemantics | undefined;
   readonly statementValue?: IrStatementValueCallSemantics | undefined;
   readonly typedArraySet?: IrTypedArraySetSemantics | undefined;
 }
 
-export interface IrOverloadImplementationCallSemantics {
+export interface IrOverloadImplementationInvocationSemantics {
   readonly implementationParameterCount: number;
   readonly overloadIndex: number;
   readonly resolvedParameterCount: number;
 }
 
-export interface IrOptionalParameterCallSemantics {
+export interface IrOptionalParameterInvocationSemantics {
   readonly omitted: readonly number[];
   readonly optional: readonly number[];
   readonly parameterCount: number;
-  readonly provided: readonly IrOptionalParameterProvidedArgumentSemantics[];
+  readonly provided: readonly IrOptionalParameterProvidedArgumentInvocationSemantics[];
   readonly providedArgumentCount: number | 'dynamic';
 }
 
-export interface IrOptionalParameterProvidedArgumentSemantics {
+export interface IrOptionalParameterProvidedArgumentInvocationSemantics {
   readonly argumentType: IrType;
   readonly parameterType: IrType;
   readonly position: number;
@@ -78,9 +90,17 @@ export interface IrOptionalChainSemantics {
   readonly valueType: IrType;
 }
 
-export interface IrDefaultParameterCallSemantics {
+export interface IrDefaultParameterInvocationSemantics {
   readonly defaulted: readonly number[];
   readonly omitted: readonly number[];
   readonly parameterCount: number;
   readonly providedArgumentCount: number | 'dynamic';
 }
+
+export type IrDefaultParameterCallSemantics = IrDefaultParameterInvocationSemantics;
+
+export type IrOptionalParameterCallSemantics = IrOptionalParameterInvocationSemantics;
+
+export type IrOptionalParameterProvidedArgumentSemantics = IrOptionalParameterProvidedArgumentInvocationSemantics;
+
+export type IrOverloadImplementationCallSemantics = IrOverloadImplementationInvocationSemantics;

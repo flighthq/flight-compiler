@@ -40,7 +40,7 @@ describe('compiler declaration intermediate representation contracts', () => {
         scope: 'module',
         space: 'value',
       },
-      classConstructor: { body: [], parameters: [] },
+      classConstructor: { body: [], overloads: [], parameters: [] },
       exported: true,
       fields: [],
       implements: [],
@@ -52,7 +52,7 @@ describe('compiler declaration intermediate representation contracts', () => {
     const declarations: readonly IrDeclaration[] = [alias, classDeclaration];
 
     expect(declarations.map((declaration) => declaration.kind)).toEqual(['typeAlias', 'class']);
-    expect(classDeclaration.classConstructor).toEqual({ body: [], parameters: [] });
+    expect(classDeclaration.classConstructor).toEqual({ body: [], overloads: [], parameters: [] });
     expectTypeOf<IrClassDeclaration['extends']>().toEqualTypeOf<IrTypeReference | undefined>();
   });
 });

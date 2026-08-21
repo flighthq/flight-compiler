@@ -40,6 +40,7 @@ function collectDeclarationExternalSymbols(declaration: Readonly<IrDeclaration>,
       });
       if (declaration.classConstructor) {
         visitParameters(declaration.classConstructor.parameters, add);
+        declaration.classConstructor.overloads.forEach((overload) => visitParameters(overload.parameters, add));
         declaration.classConstructor.body.forEach((statement) => visitStatement(statement, add));
       }
       declaration.methods.forEach((method) => {

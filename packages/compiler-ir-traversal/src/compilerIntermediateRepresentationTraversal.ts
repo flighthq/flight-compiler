@@ -72,6 +72,9 @@ function analyzeIrDeclarationTraversal(
         declaration.classConstructor.parameters.forEach((parameter) =>
           analyzeIrParameterTraversal(parameter, observer),
         );
+        declaration.classConstructor.overloads.forEach((overload) =>
+          overload.parameters.forEach((parameter) => analyzeIrParameterTraversal(parameter, observer)),
+        );
         declaration.classConstructor.body.forEach((statement) => analyzeIrStatementTraversal(statement, observer));
       }
       declaration.methods.forEach((method) => {

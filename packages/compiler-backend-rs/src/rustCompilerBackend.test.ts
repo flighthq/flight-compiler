@@ -102,6 +102,35 @@ describe('emitIrModuleRust', () => {
     expect(output).toContain('return choose(1.0, None);');
   });
 
+  it('refuses an overloaded constructor until Rust initialization lowering owns its ABI', () => {
+    const result = lower(
+      'constructor-overload-default.ts',
+      `
+        export class Box {
+          constructor(value: number);
+          constructor(value: number, radix?: number);
+          constructor(value: number, radix = 10) { value; radix; }
+        }
+        export function create(): Box { return new Box(1); }
+      `,
+    );
+
+    expect(() => emitIrModuleRust(result.module)).toThrow(
+      'class Box constructor requires Rust initialization lowering',
+    );
+  });
+
+  it('refuses runtime constructor arguments without an explicit Rust target ABI', () => {
+    const result = lower(
+      'runtime-constructor-argument.ts',
+      'export function create(): Uint8Array { return new Uint8Array(3); }',
+    );
+
+    expect(() => emitIrModuleRust(result.module)).toThrow(
+      'constructor arguments require explicit Rust target ABI lowering',
+    );
+  });
+
   it('elects fixed array binding lowering and reports residual destructuring semantics', () => {
     const fixed = lower(
       'array-binding.ts',
@@ -458,14 +487,13 @@ describe('emitIrModuleRust', () => {
   it('keeps local bindings distinct from same-named module constants', () => {
     const result = lower(
       'guard.ts',
-      'export const limit: number = 4; export function check(value: number): number { const limit: number = 9; if (value > limit) throw new Error("too big"); return limit; }',
+      'export const limit: number = 4; export function check(value: number): number { const limit: number = 9; if (value > limit) throw "too big"; return limit; }',
     );
     const output = emitIrModuleRust(result.module).contents;
 
     expect(output).toContain('const LIMIT: f64 = 4.0;');
     expect(output).toContain('let limit: f64 = 9.0;');
     expect(output).toContain('(value > limit)');
-    expect(output).toContain('Error::new("too big".to_owned())');
     expect(output).toContain('panic!("{:?}",');
     expect(output).not.toContain('panic!("{{:?}}"');
   });

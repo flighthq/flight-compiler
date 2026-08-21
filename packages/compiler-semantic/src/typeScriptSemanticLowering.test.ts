@@ -254,15 +254,26 @@ describe('lowerTypeScriptSource', () => {
     ]);
   });
 
-  it('diagnoses constructor overloads and parameter properties without partial class IR', () => {
+  it('attaches constructor overloads and diagnoses parameter properties without partial class IR', () => {
     const overloads = lower(
       'point.ts',
       'export class Point { constructor(a: number); constructor(a: string); constructor(x: number | string) {} }',
     );
     const parameterProperty = lower('value.ts', 'export class Value { constructor(public readonly value: number) {} }');
+    const point = overloads.module.declarations[0];
 
-    expect(overloads.module.declarations).toEqual([]);
-    expect(overloads.diagnostics[0]?.message).toContain('constructor overloads');
+    expect(point).toMatchObject({
+      binding: { name: 'Point' },
+      classConstructor: {
+        overloads: [
+          { parameters: [{ binding: { name: 'a' }, type: { kind: 'primitive', name: 'number' } }] },
+          { parameters: [{ binding: { name: 'a' }, type: { kind: 'primitive', name: 'string' } }] },
+        ],
+        parameters: [{ binding: { name: 'x' }, type: { kind: 'union' } }],
+      },
+      kind: 'class',
+    });
+    expect(overloads.diagnostics).toEqual([]);
     expect(parameterProperty.module.declarations).toEqual([]);
     expect(parameterProperty.diagnostics[0]?.message).toContain('parameter properties');
   });
@@ -641,7 +652,7 @@ describe('lowerTypeScriptSource', () => {
     expect(implicit).not.toHaveProperty('classConstructor');
     expect(explicit).toMatchObject({
       binding: { name: 'Explicit' },
-      classConstructor: { body: [], parameters: [] },
+      classConstructor: { body: [], overloads: [], parameters: [] },
       kind: 'class',
     });
   });
@@ -1799,6 +1810,45 @@ describe('lowerTypeScriptSource', () => {
         },
       },
     ]);
+    expect(result.diagnostics).toEqual([]);
+  });
+
+  it('resolves constructor overload typing separately from the local implementation ABI', () => {
+    const result = lower(
+      'constructor-implementation-abi.ts',
+      `
+        class Box {
+          constructor(value: number);
+          constructor(value: number, radix?: number);
+          constructor(value: number, radix = 10) { value; radix; }
+        }
+        export function create(): Box { return new Box(1); }
+      `,
+    );
+    const declaration = result.module.declarations.find(
+      (item) => item.kind === 'function' && item.binding.name === 'create',
+    );
+    const statement = declaration?.kind === 'function' ? declaration.body[0] : undefined;
+    const expression = statement?.kind === 'return' ? statement.expression : undefined;
+
+    expect(expression).toMatchObject({
+      arguments: [{ kind: 'literal', value: 1 }],
+      kind: 'new',
+      semantics: {
+        constructorSignature: { parameterCount: 2, providedArgumentCount: 1 },
+        defaultParameters: {
+          defaulted: [1],
+          omitted: [1],
+          parameterCount: 2,
+          providedArgumentCount: 1,
+        },
+        overloadImplementation: {
+          implementationParameterCount: 2,
+          overloadIndex: 0,
+          resolvedParameterCount: 1,
+        },
+      },
+    });
     expect(result.diagnostics).toEqual([]);
   });
 

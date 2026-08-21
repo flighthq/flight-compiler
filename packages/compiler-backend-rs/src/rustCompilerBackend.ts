@@ -282,6 +282,7 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
       if (expression.callee.kind !== 'identifier') {
         emissionError(context, 'qualified constructors require Rust type-path lowering');
       }
+      assertIrConstructorInvocationAbiRust(expression, context);
       return `${emitConstructorReferenceRust(expression.callee.reference, context)}::new(${expression.arguments.map((argument) => emitExpression(argument, context)).join(', ')})`;
     case 'object':
       emissionError(context, 'anonymous object construction requires Rust structural-type lowering');
@@ -396,6 +397,19 @@ function emitConstructorReferenceRust(reference: Readonly<IrIdentifierReference>
   const targetName = getCompilerRuntimeExternalSymbolTargetRust(reference.name, 'value');
   if (!targetName) emissionError(context, `external constructor ${reference.name} has no Rust binding`);
   return targetName;
+}
+
+function assertIrConstructorInvocationAbiRust(
+  expression: Readonly<Extract<IrExpression, { kind: 'new' }>>,
+  context: EmitContext,
+): void {
+  if (
+    expression.arguments.length > 0 ||
+    expression.semantics.overloadImplementation ||
+    expression.semantics.constructorSignature?.providedArgumentCount === 'dynamic'
+  ) {
+    emissionError(context, 'constructor arguments require explicit Rust target ABI lowering');
+  }
 }
 
 function emitIdentifierReferenceRust(reference: Readonly<IrIdentifierReference>, context: EmitContext): string {

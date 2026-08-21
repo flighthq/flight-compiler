@@ -34,6 +34,8 @@ import type {
   IrIdentifierReference,
   IrInterfaceDeclaration,
   IrIndexedReceiver,
+  IrInvocationSemantics,
+  IrNewSemantics,
   IrObjectMember,
   IrObjectBindingPatternProperty,
   IrObjectTypeProperty,
@@ -84,7 +86,7 @@ interface TypeScriptAnalysis {
   sourceFile: ts.SourceFile;
 }
 
-interface TypeScriptCallSignatureResolution {
+interface TypeScriptInvocationSignatureResolution {
   readonly implementation: ts.SignatureDeclaration | ts.JSDocSignature;
   readonly overloadIndex?: number | undefined;
   readonly resolved: ts.SignatureDeclaration | ts.JSDocSignature;
@@ -224,10 +226,12 @@ function isExported(node: ts.Node): boolean {
 function lowerClass(node: ts.ClassDeclaration, context: LoweringContext): IrClassDeclaration {
   requiredDeclarationName(node, context);
   const constructors = node.members.filter(ts.isConstructorDeclaration);
-  if (constructors.length > 1) {
+  const constructorImplementations = constructors.filter((constructor) => constructor.body !== undefined);
+  if (constructors.length > 1 && constructorImplementations.length !== 1) {
     unsupported(node, `class ${requiredDeclarationName(node, context)} has constructor overloads`);
   }
-  const constructor = constructors[0];
+  const constructor = constructorImplementations[0] ?? constructors[0];
+  const constructorOverloads = constructors.filter((candidate) => candidate !== constructor);
   const parameterProperty = constructor?.parameters.find((parameter) =>
     [
       ts.SyntaxKind.PrivateKeyword,
@@ -293,6 +297,9 @@ function lowerClass(node: ts.ClassDeclaration, context: LoweringContext): IrClas
               ...lowerParameterBindingEntries(constructor.parameters, constructorParameters!, context),
               ...(constructor.body ? lowerStatementList(constructor.body.statements, context) : []),
             ],
+            overloads: constructorOverloads.map((overload) => ({
+              parameters: overload.parameters.map((parameter) => lowerParameter(parameter, context)),
+            })),
             parameters: constructorParameters!,
           },
         }
@@ -490,9 +497,9 @@ function lowerExpression(
   }
   if (ts.isCallExpression(node)) {
     const optional = node.questionDotToken !== undefined;
-    const signature = getTypeScriptCallSignatureResolution(node, context);
+    const signature = getTypeScriptInvocationSignatureResolution(node, context);
     return {
-      arguments: lowerTypeScriptCallArguments(node, signature, context),
+      arguments: lowerTypeScriptInvocationArguments(node, signature, context),
       callee: lowerExpression(node.expression, context),
       kind: 'call',
       optional,
@@ -504,10 +511,15 @@ function lowerExpression(
     };
   }
   if (ts.isNewExpression(node)) {
+    const signature = getTypeScriptInvocationSignatureResolution(node, context);
     return {
-      arguments: node.arguments?.map((argument) => lowerExpression(argument, context)) ?? [],
+      arguments: lowerTypeScriptInvocationArguments(node, signature, context),
       callee: lowerExpression(node.expression, context),
       kind: 'new',
+      semantics: {
+        ...lowerInvocationSemantics(node, signature, context),
+        ...getTypeScriptConstructorInvocationSemantics(node, signature),
+      },
       typeArguments: node.typeArguments?.map((type) => lowerType(type, context)) ?? [],
     };
   }
@@ -613,13 +625,13 @@ function lowerExpression(
   unsupported(node, `unsupported expression ${ts.SyntaxKind[node.kind]}`);
 }
 
-function lowerTypeScriptCallArguments(
-  node: ts.CallExpression,
-  signature: Readonly<TypeScriptCallSignatureResolution> | undefined,
+function lowerTypeScriptInvocationArguments(
+  node: ts.CallExpression | ts.NewExpression,
+  signature: Readonly<TypeScriptInvocationSignatureResolution> | undefined,
   context: LoweringContext,
 ): IrExpression[] {
   const parameters = signature?.resolved.parameters.filter(ts.isParameter) ?? [];
-  return node.arguments.map((argument, index) => {
+  return (node.arguments ?? []).map((argument, index) => {
     if (ts.isSpreadElement(argument)) return lowerExpression(argument, context);
     const parameter = parameters[index];
     if (!parameter) return lowerExpression(argument, context);
@@ -896,13 +908,11 @@ function getTypeScriptTypeNodeIndexedReceivers(
 
 function lowerCallSemantics(
   node: ts.CallExpression,
-  signature: Readonly<TypeScriptCallSignatureResolution> | undefined,
+  signature: Readonly<TypeScriptInvocationSignatureResolution> | undefined,
   context: LoweringContext,
 ): IrCallSemantics {
   const semantics: IrCallSemantics = {
-    ...getTypeScriptDefaultParameterCallSemantics(node, signature),
-    ...getTypeScriptOptionalParameterCallSemantics(node, signature, context),
-    ...getTypeScriptOverloadImplementationCallSemantics(signature),
+    ...lowerInvocationSemantics(node, signature, context),
   };
   const access = node.expression;
   const receiver = ts.isPropertyAccessExpression(access)
@@ -925,21 +935,34 @@ function lowerCallSemantics(
   };
 }
 
-function getTypeScriptOptionalParameterCallSemantics(
-  node: ts.CallExpression,
-  signature: Readonly<TypeScriptCallSignatureResolution> | undefined,
+function lowerInvocationSemantics(
+  node: ts.CallExpression | ts.NewExpression,
+  signature: Readonly<TypeScriptInvocationSignatureResolution> | undefined,
   context: LoweringContext,
-): Pick<IrCallSemantics, 'optionalParameters'> {
+): IrInvocationSemantics {
+  return {
+    ...getTypeScriptDefaultParameterInvocationSemantics(node, signature),
+    ...getTypeScriptOptionalParameterInvocationSemantics(node, signature, context),
+    ...getTypeScriptOverloadImplementationInvocationSemantics(signature),
+  };
+}
+
+function getTypeScriptOptionalParameterInvocationSemantics(
+  node: ts.CallExpression | ts.NewExpression,
+  signature: Readonly<TypeScriptInvocationSignatureResolution> | undefined,
+  context: LoweringContext,
+): Pick<IrInvocationSemantics, 'optionalParameters'> {
   const parameters = signature?.implementation.parameters.filter(ts.isParameter) ?? [];
   const optional = parameters.flatMap((parameter, index) =>
     parameter.questionToken && !parameter.initializer ? [index] : [],
   );
   if (optional.length === 0) return {};
-  const dynamic = node.arguments.some(ts.isSpreadElement);
+  const arguments_ = node.arguments ?? [];
+  const dynamic = arguments_.some(ts.isSpreadElement);
   const provided = dynamic
     ? []
     : optional.flatMap((position) => {
-        const argument = node.arguments[position];
+        const argument = arguments_[position];
         const parameter = parameters[position];
         if (!argument || !parameter) return [];
         return [
@@ -953,44 +976,59 @@ function getTypeScriptOptionalParameterCallSemantics(
       });
   return {
     optionalParameters: {
-      omitted: dynamic ? [] : optional.filter((index) => index >= node.arguments.length),
+      omitted: dynamic ? [] : optional.filter((index) => index >= arguments_.length),
       optional,
       parameterCount: parameters.length,
       provided,
-      providedArgumentCount: dynamic ? 'dynamic' : node.arguments.length,
+      providedArgumentCount: dynamic ? 'dynamic' : arguments_.length,
     },
   };
 }
 
-function getTypeScriptDefaultParameterCallSemantics(
-  node: ts.CallExpression,
-  signature: Readonly<TypeScriptCallSignatureResolution> | undefined,
-): Pick<IrCallSemantics, 'defaultParameters'> {
+function getTypeScriptDefaultParameterInvocationSemantics(
+  node: ts.CallExpression | ts.NewExpression,
+  signature: Readonly<TypeScriptInvocationSignatureResolution> | undefined,
+): Pick<IrInvocationSemantics, 'defaultParameters'> {
   const parameters = signature?.implementation.parameters.filter(ts.isParameter) ?? [];
   const defaulted = parameters.flatMap((parameter, index) => (parameter.initializer ? [index] : []));
   if (defaulted.length === 0) return {};
-  const dynamic = node.arguments.some(ts.isSpreadElement);
+  const arguments_ = node.arguments ?? [];
+  const dynamic = arguments_.some(ts.isSpreadElement);
   return {
     defaultParameters: {
       defaulted,
-      omitted: dynamic ? [] : defaulted.filter((index) => index >= node.arguments.length),
+      omitted: dynamic ? [] : defaulted.filter((index) => index >= arguments_.length),
       parameterCount: parameters.length,
-      providedArgumentCount: dynamic ? 'dynamic' : node.arguments.length,
+      providedArgumentCount: dynamic ? 'dynamic' : arguments_.length,
     },
   };
 }
 
-function getTypeScriptCallSignatureResolution(
-  node: ts.CallExpression,
+function getTypeScriptInvocationSignatureResolution(
+  node: ts.CallExpression | ts.NewExpression,
   context: LoweringContext,
-): TypeScriptCallSignatureResolution | undefined {
+): TypeScriptInvocationSignatureResolution | undefined {
   const resolved = context.checker.getResolvedSignature(node)?.declaration;
   if (!resolved) return undefined;
-  if (!ts.isFunctionDeclaration(resolved) || resolved.body || !resolved.name) {
-    return { implementation: resolved, resolved };
+  if (ts.isFunctionDeclaration(resolved) && !resolved.body && resolved.name) {
+    const symbol = context.checker.getSymbolAtLocation(resolved.name);
+    const declarations = symbol?.declarations?.filter(ts.isFunctionDeclaration) ?? [];
+    return getTypeScriptOverloadSignatureResolution(resolved, declarations);
   }
-  const symbol = context.checker.getSymbolAtLocation(resolved.name);
-  const declarations = symbol?.declarations?.filter(ts.isFunctionDeclaration) ?? [];
+  if (
+    ts.isConstructorDeclaration(resolved) &&
+    !resolved.body &&
+    (ts.isClassDeclaration(resolved.parent) || ts.isClassExpression(resolved.parent))
+  ) {
+    const declarations = resolved.parent.members.filter(ts.isConstructorDeclaration);
+    return getTypeScriptOverloadSignatureResolution(resolved, declarations);
+  }
+  return { implementation: resolved, resolved };
+}
+
+function getTypeScriptOverloadSignatureResolution<
+  Declaration extends ts.FunctionDeclaration | ts.ConstructorDeclaration,
+>(resolved: Declaration, declarations: readonly Declaration[]): TypeScriptInvocationSignatureResolution {
   const implementation = declarations.find((declaration) => declaration.body !== undefined);
   if (!implementation) {
     return { implementation: resolved, resolved };
@@ -999,15 +1037,29 @@ function getTypeScriptCallSignatureResolution(
   return overloadIndex < 0 ? { implementation: resolved, resolved } : { implementation, overloadIndex, resolved };
 }
 
-function getTypeScriptOverloadImplementationCallSemantics(
-  signature: Readonly<TypeScriptCallSignatureResolution> | undefined,
-): Pick<IrCallSemantics, 'overloadImplementation'> {
+function getTypeScriptOverloadImplementationInvocationSemantics(
+  signature: Readonly<TypeScriptInvocationSignatureResolution> | undefined,
+): Pick<IrInvocationSemantics, 'overloadImplementation'> {
   if (!signature || signature.overloadIndex === undefined) return {};
   return {
     overloadImplementation: {
       implementationParameterCount: signature.implementation.parameters.filter(ts.isParameter).length,
       overloadIndex: signature.overloadIndex,
       resolvedParameterCount: signature.resolved.parameters.filter(ts.isParameter).length,
+    },
+  };
+}
+
+function getTypeScriptConstructorInvocationSemantics(
+  node: ts.NewExpression,
+  signature: Readonly<TypeScriptInvocationSignatureResolution> | undefined,
+): Pick<IrNewSemantics, 'constructorSignature'> {
+  if (!signature) return {};
+  const arguments_ = node.arguments ?? [];
+  return {
+    constructorSignature: {
+      parameterCount: signature.implementation.parameters.filter(ts.isParameter).length,
+      providedArgumentCount: arguments_.some(ts.isSpreadElement) ? 'dynamic' : arguments_.length,
     },
   };
 }

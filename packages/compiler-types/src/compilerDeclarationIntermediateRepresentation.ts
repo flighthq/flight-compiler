@@ -72,6 +72,11 @@ export type IrClassMemberVisibility = 'private' | 'protected' | 'public';
 
 export interface IrClassConstructor {
   readonly body: readonly IrStatement[];
+  readonly overloads: readonly IrClassConstructorSignature[];
+  readonly parameters: readonly IrParameter[];
+}
+
+export interface IrClassConstructorSignature {
   readonly parameters: readonly IrParameter[];
 }
 

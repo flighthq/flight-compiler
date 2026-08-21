@@ -1,6 +1,7 @@
 import type {
   IrCallSemantics,
   IrElementAccessSemantics,
+  IrNewSemantics,
   IrOptionalChainSemantics,
   IrPropertyKeyCoercion,
 } from './compilerAccessSemanticIntermediateRepresentation.js';
@@ -96,6 +97,7 @@ export type IrExpression =
       arguments: readonly IrExpression[];
       callee: IrExpression;
       kind: 'new';
+      semantics: IrNewSemantics;
       typeArguments: readonly IrType[];
     }>
   | Readonly<{ kind: 'object'; members: readonly IrObjectMember[] }>

@@ -382,7 +382,7 @@ describe('validateIrModuleStructure', () => {
     });
   });
 
-  it('validates overload source order and resolved-versus-implementation ABI arity', () => {
+  it('validates call and constructor overload source order and resolved-versus-implementation ABI arity', () => {
     const valid = lower(
       'overload-implementation-call.ts',
       'function choose(value: number): number; function choose(value: number, radix?: number): number; function choose(value: number, radix = 10): number { return value; } export function read(): number { return choose(1); }',
@@ -407,6 +407,50 @@ describe('validateIrModuleStructure', () => {
 
       expect(validateIrModuleStructure(invalid)).toMatchObject({
         failures: [expect.objectContaining({ path: expect.stringContaining('.overloadImplementation') })],
+        kind: 'invalid',
+      });
+    }
+
+    const constructor = lower(
+      'overload-constructor-call.ts',
+      'class Box { constructor(value: number); constructor(value: number, radix?: number); constructor(value: number, radix = 10) {} } export function create(): Box { return new Box(1); }',
+    );
+    expect(validateIrModuleStructure(constructor)).toEqual({ kind: 'valid' });
+    const invalidConstructor = structuredClone(constructor);
+    const create = invalidConstructor.declarations.find(
+      (candidate) => candidate.kind === 'function' && candidate.binding.name === 'create',
+    );
+    const createStatement = create?.kind === 'function' ? create.body[0] : undefined;
+    const newExpression = createStatement?.kind === 'return' ? createStatement.expression : undefined;
+    if (newExpression?.kind !== 'new') throw new Error('Expected overloaded constructor call');
+    (newExpression.semantics as { overloadImplementation?: unknown }).overloadImplementation = {
+      implementationParameterCount: 1,
+      overloadIndex: 0,
+      resolvedParameterCount: 1,
+    };
+    expect(validateIrModuleStructure(invalidConstructor)).toMatchObject({
+      failures: expect.arrayContaining([
+        expect.objectContaining({ path: expect.stringContaining('.overloadImplementation') }),
+      ]),
+      kind: 'invalid',
+    });
+
+    for (const replacement of [
+      { parameterCount: -1, providedArgumentCount: 1 },
+      { parameterCount: 2, providedArgumentCount: 0 },
+      { parameterCount: 2, providedArgumentCount: 'dynamic' as const },
+    ]) {
+      const invalid = structuredClone(constructor);
+      const declaration = invalid.declarations.find(
+        (candidate) => candidate.kind === 'function' && candidate.binding.name === 'create',
+      );
+      const statement = declaration?.kind === 'function' ? declaration.body[0] : undefined;
+      const expression = statement?.kind === 'return' ? statement.expression : undefined;
+      if (expression?.kind !== 'new') throw new Error('Expected overloaded constructor call');
+      (expression.semantics as { constructorSignature?: unknown }).constructorSignature = replacement;
+
+      expect(validateIrModuleStructure(invalid)).toMatchObject({
+        failures: [expect.objectContaining({ path: expect.stringContaining('.constructorSignature') })],
         kind: 'invalid',
       });
     }

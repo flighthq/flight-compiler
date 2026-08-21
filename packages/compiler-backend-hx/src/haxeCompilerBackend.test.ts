@@ -47,7 +47,7 @@ describe('emitIrModuleHaxe', () => {
     const missingValue = lower('external-value-missing.ts', 'export function fail(): void { throw new Error(); }');
     const values = lower(
       'external-values.ts',
-      'export function create(): Promise<number> { const values = new Map<string, number>(); values; return Promise.resolve(1); }',
+      'export function create(): Promise<number> { const values = new Map<string, number>(); const bytes = new Uint8Array(3); values; bytes; return Promise.resolve(1); }',
     );
     const output = emitIrModuleHaxe(supported.module).contents;
     const custom = emitIrModuleHaxe(supported.module, { runtimeModule: 'custom.runtime' }).contents;
@@ -59,7 +59,9 @@ describe('emitIrModuleHaxe', () => {
     expect(output).toContain('task:flighthq._internal._Promise<Float>');
     expect(custom).toContain('task:custom.runtime._Promise<Float>');
     expect(valueOutput).toContain('new flighthq._internal._Map()');
+    expect(valueOutput).toContain('new flighthq._internal._UInt8Array(3)');
     expect(valueOutput).toContain('flighthq._internal._Promise.resolve(1)');
+    expect(customValueOutput).toContain('new custom.runtime._UInt8Array(3)');
     expect(customValueOutput).toContain('new custom.runtime._Map()');
     expect(customValueOutput).toContain('custom.runtime._Promise.resolve(1)');
     expect(() => emitIrModuleHaxe(missing.module)).toThrow(
@@ -102,6 +104,25 @@ describe('emitIrModuleHaxe', () => {
     expect(output.match(/static function choose/gu)).toHaveLength(1);
     expect(output).toContain('static function choose(value:Float, radix:Float = 10):Float');
     expect(output).toContain('return choose(1);');
+  });
+
+  it('emits one constructor implementation and calls its native default ABI', () => {
+    const result = lower(
+      'constructor-overload-default.ts',
+      `
+        export class Box {
+          constructor(value: number);
+          constructor(value: number, radix?: number);
+          constructor(value: number, radix = 10) { value; radix; }
+        }
+        export function create(): Box { return new Box(1); }
+      `,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output.match(/public function new/gu)).toHaveLength(1);
+    expect(output).toContain('public function new(value:Float, radix:Float = 10)');
+    expect(output).toContain('return new Box(1);');
   });
 
   it('elects fixed array binding lowering and reports residual destructuring semantics', () => {
