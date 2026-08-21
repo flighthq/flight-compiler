@@ -236,6 +236,29 @@ describe('validateIrModuleStructure', () => {
     }
   });
 
+  it('validates optional-chain and property-key coercion evidence together', () => {
+    const valid = lower(
+      'optional-element.ts',
+      'export function first(values?: number[]): number | undefined { return values?.[0]; }',
+    );
+    expect(validateIrModuleStructure(valid)).toEqual({ kind: 'valid' });
+    const invalid = structuredClone(valid);
+    const declaration = invalid.declarations[0];
+    const statement = declaration?.kind === 'function' ? declaration.body[0] : undefined;
+    const expression = statement?.kind === 'return' ? statement.expression : undefined;
+    if (expression?.kind !== 'element') throw new Error('Expected optional element expression');
+    (expression.semantics as { key?: unknown; optionalChain?: unknown }).key = 'coerceEventually';
+    delete (expression.semantics as { optionalChain?: unknown }).optionalChain;
+
+    const result = validateIrModuleStructure(invalid);
+    expect(result.kind).toBe('invalid');
+    if (result.kind === 'invalid') {
+      expect(result.failures.map((failure) => failure.path)).toEqual(
+        expect.arrayContaining([expect.stringContaining('.semantics.key'), expect.stringContaining('.optionalChain')]),
+      );
+    }
+  });
+
   it('accepts exact repeated function-scoped variable declarations but not other duplicate introductions', () => {
     const repeated = lower(
       'repeated-var.ts',

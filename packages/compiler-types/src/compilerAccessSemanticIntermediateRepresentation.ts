@@ -35,7 +35,14 @@ export interface IrTypedArraySetSemantics {
 export interface IrCallSemantics {
   readonly defaultParameters?: IrDefaultParameterCallSemantics | undefined;
   readonly optionalChain?: IrOptionalChainSemantics | undefined;
+  readonly statementValue?: IrStatementValueCallSemantics | undefined;
   readonly typedArraySet?: IrTypedArraySetSemantics | undefined;
+}
+
+export interface IrStatementValueCallSemantics {
+  readonly asyncContext: 'inherit';
+  readonly completion: 'finalReturn';
+  readonly thisBinding: 'lexical';
 }
 
 export interface IrOptionalChainSemantics {

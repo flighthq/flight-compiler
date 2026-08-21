@@ -62,6 +62,7 @@ import {
 interface EmitContext {
   generatedNames: Set<string>;
   module: Readonly<IrModule>;
+  objectRestRecords: Map<string, Readonly<{ name: string; properties: readonly IrObjectTypeProperty[] }>>;
   options: Readonly<RustCompilerBackendOptions>;
   targetNames: ReadonlyMap<string, string>;
 }
@@ -116,6 +117,7 @@ export function emitIrModuleRust(
   const context: EmitContext = {
     generatedNames: new Set(targetNames.values()),
     module,
+    objectRestRecords: new Map(),
     options,
     targetNames,
   };
@@ -125,9 +127,11 @@ export function emitIrModuleRust(
   const lines = [createCompilerGeneratedFileHeader(module, '//', options.upstreamCommit), '#![forbid(unsafe_code)]'];
   const imports = emitImports(module.imports, context);
   if (imports.length > 0) lines.push('', ...imports);
-  module.declarations.forEach((declaration) => {
-    lines.push('', ...emitDeclaration(declaration, context));
+  const declarations = module.declarations.map((declaration) => emitDeclaration(declaration, context));
+  context.objectRestRecords.forEach((record) => {
+    lines.push('', ...emitRecord(record.name, record.properties, [], false, context));
   });
+  declarations.forEach((declaration) => lines.push('', ...declaration));
   return {
     contents: lines.join('\n'),
     path: `${convertSourcePathToRustModuleName(module.source) ?? `_internal_${snakeCase(module.name)}`}.rs`,
@@ -241,7 +245,8 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
     }
     case 'call':
       if (expression.optional) emissionError(context, 'optional calls require Option-aware lowering');
-      return `${expression.callee.kind === 'function' ? `(${emitExpression(expression.callee, context)})` : emitExpression(expression.callee, context)}(${expression.arguments.map((argument) => emitExpression(argument, context)).join(', ')})`;
+      if (expression.semantics.statementValue) return emitStatementValueExpressionRust(expression, context);
+      return `${expression.callee.kind === 'function' ? `(${emitExpression(expression.callee, context)})` : emitExpression(expression.callee, context)}(${emitCallArgumentsRust(expression, context).join(', ')})`;
     case 'cast':
       return `(${emitExpression(expression.expression, context)} as ${emitType(expression.type, context)})`;
     case 'conditional':
@@ -328,7 +333,16 @@ function emitFunction(declaration: Readonly<IrFunctionDeclaration>, context: Emi
     emissionError(context, `async function ${declaration.binding.name} requires Flight task lowering`);
   return [
     `${declaration.exported ? 'pub ' : ''}fn ${getBindingTargetNameRust(declaration.binding, context)}${emitTypeParameters(declaration.typeParameters, context)}(${declaration.parameters.map((parameter) => emitParameter(parameter, context)).join(', ')}) -> ${emitType(declaration.returns, context)} {`,
-    ...indentSourceLines(emitStatements(declaration.body, context)),
+    ...indentSourceLines([
+      ...declaration.parameters.flatMap((parameter) =>
+        parameter.initializer
+          ? [
+              `let ${getBindingTargetNameRust(parameter.binding, context)} = ${getBindingTargetNameRust(parameter.binding, context)}.unwrap_or_else(|| ${emitExpression(parameter.initializer, context)});`,
+            ]
+          : [],
+      ),
+      ...emitStatements(declaration.body, context),
+    ]),
     '}',
   ];
 }
@@ -394,6 +408,24 @@ function emitLiteral(value: boolean | null | number | string): string {
   return String(value);
 }
 
+function emitCallArgumentsRust(
+  expression: Readonly<Extract<IrExpression, { kind: 'call' }>>,
+  context: EmitContext,
+): string[] {
+  const plan = expression.semantics.defaultParameters;
+  if (!plan) return expression.arguments.map((argument) => emitExpression(argument, context));
+  if (plan.providedArgumentCount === 'dynamic') {
+    emissionError(context, 'spread calls into default parameters require Rust ABI expansion lowering');
+  }
+  const defaulted = new Set(plan.defaulted);
+  return Array.from({ length: plan.parameterCount }, (_, index) => {
+    const argument = expression.arguments[index];
+    if (!argument) return 'None';
+    const emitted = emitExpression(argument, context);
+    return defaulted.has(index) ? `Some(${emitted})` : emitted;
+  });
+}
+
 function emitObjectRestExpressionRust(
   expression: Readonly<Extract<IrExpression, { kind: 'objectRest' }>>,
   context: EmitContext,
@@ -404,22 +436,24 @@ function emitObjectRestExpressionRust(
   if (expression.type.kind !== 'object') {
     emissionError(context, 'object rest requires closed residual-record type evidence');
   }
-  const recordName = getGeneratedTargetNameRust('ObjectRestRecord', context);
+  const shape = JSON.stringify(expression.type.properties);
+  const existing = context.objectRestRecords.get(shape);
+  const recordName = existing?.name ?? getGeneratedTargetNameRust('ObjectRestRecord', context);
+  if (!existing) context.objectRestRecords.set(shape, { name: recordName, properties: expression.type.properties });
   const object = emitExpression(expression.object, context);
   const fields = expression.type.properties.map((property) => {
     const name = safeRustValueName(property.name);
-    const type = emitType(property.type, context);
     return {
-      declaration: `${name}: ${property.optional ? `Option<${type}>` : type},`,
       initializer: `${name}: ${object}.${name}.clone(),`,
     };
   });
-  return `({ #[derive(Clone, Debug)] struct ${recordName} { ${fields.map((field) => field.declaration).join(' ')} } ${recordName} { ${fields.map((field) => field.initializer).join(' ')} } })`;
+  return `${recordName} { ${fields.map((field) => field.initializer).join(' ')} }`;
 }
 
 function emitParameter(parameter: Readonly<IrParameter>, context: EmitContext): string {
-  if (parameter.initializer)
-    emissionError(context, `default parameter ${parameter.binding.name} requires call-site lowering`);
+  if (parameter.initializer) {
+    return `${getBindingTargetNameRust(parameter.binding, context)}: Option<${emitType(parameter.type, context)}>`;
+  }
   if (parameter.optional || isNullableType(parameter.type)) {
     emissionError(
       context,
@@ -448,6 +482,21 @@ function emitRecord(
   }
   lines.push('}');
   return lines;
+}
+
+function emitStatementValueExpressionRust(
+  expression: Readonly<Extract<IrExpression, { kind: 'call' }>>,
+  context: EmitContext,
+): string {
+  if (expression.callee.kind !== 'function' || expression.arguments.length > 0) {
+    emissionError(context, 'statement-value call requires a zero-argument function carrier');
+  }
+  const completion = expression.callee.body.at(-1);
+  if (completion?.kind !== 'return' || !completion.expression) {
+    emissionError(context, 'statement-value call requires a final value return');
+  }
+  const statements = emitStatements(expression.callee.body.slice(0, -1), context);
+  return `({ ${[...statements, emitExpression(completion.expression, context)].join(' ')} })`;
 }
 
 function emitStatement(statement: Readonly<IrStatement>, context: EmitContext): string[] {

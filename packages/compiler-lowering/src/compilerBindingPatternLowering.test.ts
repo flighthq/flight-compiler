@@ -35,6 +35,13 @@ describe('createCompilerLoweringPassBindingPattern', () => {
 
     expect(createCompilerLoweringPassBindingPattern().verifyIrModule(output)).toEqual({ kind: 'valid' });
   });
+
+  it('does not mistake user strings containing serialized pattern text for structural residuals', () => {
+    const module = lower('export const text = \'"pattern":{"kind":"array"}\';');
+    const pass = createCompilerLoweringPassBindingPattern();
+
+    expect(pass.lowerIrModule(module)).toBe(module);
+  });
 });
 
 function lower(source: string): IrModule {

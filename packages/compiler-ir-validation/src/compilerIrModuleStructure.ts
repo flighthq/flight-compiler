@@ -13,6 +13,7 @@ import type {
   IrFunctionSignature,
   IrModule,
   IrObjectMember,
+  IrOptionalChainSemantics,
   IrParameter,
   IrStatement,
   IrType,
@@ -52,6 +53,24 @@ interface IrModuleValidationState {
   readonly references: BindingReference[];
   readonly scopeParents: Map<string, string | undefined>;
   readonly scopes: IrLexicalScope[];
+}
+
+function validateIrOptionalChainEvidence(
+  optional: boolean,
+  evidence: Readonly<IrOptionalChainSemantics> | undefined,
+  path: string,
+  state: IrModuleValidationState,
+): void {
+  const valid =
+    evidence?.receiverEvaluation === 'once' && evidence.result === 'undefined' && evidence.shortCircuit === 'nullish';
+  if ((optional && !valid) || (!optional && evidence !== undefined)) {
+    addFailure(
+      'invalid-node-shape',
+      `${path}.optionalChain`,
+      'optional-chain evidence must exactly match an optional access target',
+      state,
+    );
+  }
 }
 
 interface ParameterCardinality {
@@ -334,6 +353,28 @@ function visitExpression(expression: Readonly<IrExpression>, path: string, state
       visitExpression(expression.expression, `${path}.expression`, state);
       break;
     case 'call':
+      validateIrOptionalChainEvidence(expression.optional, expression.semantics.optionalChain, path, state);
+      if (
+        expression.semantics.statementValue &&
+        (expression.callee.kind !== 'function' ||
+          expression.arguments.length > 0 ||
+          expression.callee.body.at(-1)?.kind !== 'return')
+      ) {
+        addFailure(
+          'invalid-node-shape',
+          `${path}.semantics.statementValue`,
+          'statement-value evidence requires a zero-argument function carrier with a final return',
+          state,
+        );
+      }
+      visitExpression(expression.callee, `${path}.callee`, state);
+      expression.arguments.forEach((argument, index) =>
+        visitExpression(argument, `${path}.arguments[${String(index)}]`, state),
+      );
+      expression.typeArguments.forEach((type, index) =>
+        visitType(type, `${path}.typeArguments[${String(index)}]`, state),
+      );
+      break;
     case 'new':
       visitExpression(expression.callee, `${path}.callee`, state);
       expression.arguments.forEach((argument, index) =>
@@ -353,6 +394,10 @@ function visitExpression(expression: Readonly<IrExpression>, path: string, state
       visitExpression(expression.whenTrue, `${path}.whenTrue`, state);
       break;
     case 'element':
+      if (!compilerIrPropertyKeyCoercions.has(expression.semantics.key)) {
+        addFailure('invalid-node-shape', `${path}.semantics.key`, 'element access key coercion is invalid', state);
+      }
+      validateIrOptionalChainEvidence(expression.optional, expression.semantics.optionalChain, path, state);
       visitExpression(expression.index, `${path}.index`, state);
       visitExpression(expression.object, `${path}.object`, state);
       break;
@@ -387,16 +432,22 @@ function visitExpression(expression: Readonly<IrExpression>, path: string, state
       );
       break;
     case 'objectRest':
+      visitType(expression.type, `${path}.type`, state);
       visitExpression(expression.object, `${path}.object`, state);
       expression.excluded.forEach((key, index) => {
         const keyPath = `${path}.excluded[${String(index)}]`;
-        if (key.kind === 'computed') visitExpression(key.expression, `${keyPath}.expression`, state);
-        else if (key.name.length === 0) {
+        if (key.kind === 'computed') {
+          if (!compilerIrPropertyKeyCoercions.has(key.coercion)) {
+            addFailure('invalid-node-shape', `${keyPath}.coercion`, 'object rest key coercion is invalid', state);
+          }
+          visitExpression(key.expression, `${keyPath}.expression`, state);
+        } else if (key.name.length === 0) {
           addFailure('invalid-node-shape', `${keyPath}.name`, 'object rest exclusion key must be nonempty', state);
         }
       });
       break;
     case 'property':
+      validateIrOptionalChainEvidence(expression.optional, expression.optionalChain, path, state);
       visitExpression(expression.object, `${path}.object`, state);
       break;
     case 'template':
@@ -800,6 +851,8 @@ function orderIrStaticForInKeys(keys: readonly string[]): readonly string[] {
   indices.sort((left, right) => left.value - right.value);
   return [...indices.map((index) => index.key), ...names];
 }
+
+const compilerIrPropertyKeyCoercions = new Set(['number', 'string', 'symbol', 'toPropertyKey']);
 
 function visitVariable(
   variable: Readonly<IrVariable>,

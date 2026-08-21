@@ -67,7 +67,7 @@ describe('emitIrModuleRust', () => {
     );
   });
 
-  it('elects C-style for lowering while preserving Rust default-parameter refusal', () => {
+  it('elects C-style for lowering and default-parameter declaration expansion', () => {
     const loop = lower(
       'loop.ts',
       'export function total(limit: number): number { let total = 0; for (let index = 0; index < limit; index++) { total += index; } return total; }',
@@ -81,7 +81,7 @@ describe('emitIrModuleRust', () => {
     expect(output).toContain('let mut index: f64 = 0.0;');
     expect(output).toContain('while (index < limit)');
     expect(output).toContain('index += 1.0;');
-    expect(() => emitIrModuleRust(defaults.module)).toThrow('default parameter factor requires call-site lowering');
+    expect(emitIrModuleRust(defaults.module).contents).toContain('factor: Option<f64>');
   });
 
   it('elects fixed array binding lowering and reports residual destructuring semantics', () => {
@@ -187,8 +187,23 @@ describe('emitIrModuleRust', () => {
     expect(output).toContain('let object_pattern_value: Shape = source;');
     expect(output).toContain('let value: f64 = object_pattern_value.value;');
     const restOutput = emitIrModuleRust(rest.module).contents;
-    expect(restOutput).toContain('struct ObjectRestRecord { other: bool, }');
+    expect(restOutput).toContain('struct ObjectRestRecord {\n  pub other: bool,\n}');
     expect(restOutput).toContain('ObjectRestRecord { other: object_pattern_value.other.clone(), }');
+  });
+
+  it('interns identical object-rest residual shapes once at module scope', () => {
+    const result = lower(
+      'object-rest-interning.ts',
+      `
+        type Shape = { value: number; other: boolean };
+        function first(source: Shape): void { const { value, ...rest }: Shape = source; rest.other; }
+        function second(source: Shape): void { const { value, ...rest }: Shape = source; rest.other; }
+      `,
+    );
+    const output = emitIrModuleRust(result.module).contents;
+
+    expect(output.match(/struct ObjectRestRecord/g)).toHaveLength(1);
+    expect(output.match(/ObjectRestRecord \{/g)).toHaveLength(3);
   });
 
   it('elects function-scoped variable hoisting after destructuring normalization', () => {
@@ -275,7 +290,7 @@ describe('emitIrModuleRust', () => {
 
     expect(output).toContain('let destructuring_assignment_value: (f64,) = tuple;');
     expect(output).toContain('value = destructuring_assignment_value.0;');
-    expect(output).toContain('return destructuring_assignment_value;');
+    expect(output).toContain('destructuring_assignment_value })');
   });
 
   it('clones fixed tuple spread fields through collision-free sequential evaluation carriers', () => {
@@ -582,11 +597,17 @@ describe('emitIrModuleRust', () => {
     expect(() => emitIrModuleRust(result.module)).toThrow('public declarations share fixed Rust target name FooBar');
   });
 
-  it('rejects class state and default parameters that would otherwise be dropped', () => {
+  it('rejects class state and expands default-parameter ABI at declarations and calls', () => {
     const staticField = lower('config.ts', 'export class Config { static limit: number = 3; value: number = 1; }');
-    const defaultParameter = lower('default.ts', 'export function read(value: number = 1): number { return value; }');
+    const defaultParameter = lower(
+      'default.ts',
+      'function choose(first: number, second: number = first + 1): number { return second; } export function read(): number { return choose(1); }',
+    );
 
     expect(() => emitIrModuleRust(staticField.module)).toThrow('static fields require associated-item lowering');
-    expect(() => emitIrModuleRust(defaultParameter.module)).toThrow('default parameter value');
+    const output = emitIrModuleRust(defaultParameter.module).contents;
+    expect(output).toContain('fn choose(first: f64, second: Option<f64>)');
+    expect(output).toContain('let second = second.unwrap_or_else(|| (first + 1.0));');
+    expect(output).toContain('return choose(1.0, None);');
   });
 });

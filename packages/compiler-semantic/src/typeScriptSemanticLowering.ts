@@ -1266,7 +1266,9 @@ function lowerTypeScriptDestructuringAssignmentExpression(
     },
     kind: 'call',
     optional: false,
-    semantics: {},
+    semantics: {
+      statementValue: { asyncContext: 'inherit', completion: 'finalReturn', thisBinding: 'lexical' },
+    },
     typeArguments: [],
   };
 }

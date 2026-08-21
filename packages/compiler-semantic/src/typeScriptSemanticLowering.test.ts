@@ -1538,6 +1538,9 @@ describe('lowerTypeScriptSource', () => {
         kind: 'function',
       },
       kind: 'call',
+      semantics: {
+        statementValue: { asyncContext: 'inherit', completion: 'finalReturn', thisBinding: 'lexical' },
+      },
     });
   });
 

@@ -10,20 +10,21 @@ export function createCompilerLoweringPassBindingPattern(): CompilerLoweringPass
     idempotent: true,
     lowerIrModule(module) {
       let lowered: IrModule = module;
-      for (let iteration = 0; iteration < compilerBindingPatternLoweringIterationLimit; iteration += 1) {
-        const before = JSON.stringify(lowered);
+      let residual = countIrModuleBindingPatternResidual(lowered);
+      while (residual > 0) {
         lowered = array.lowerIrModule(object.lowerIrModule(lowered));
-        if (JSON.stringify(lowered) === before) return lowered;
-        if (array.verifyIrModule(lowered).kind === 'valid' && object.verifyIrModule(lowered).kind === 'valid') {
-          return lowered;
+        const nextResidual = countIrModuleBindingPatternResidual(lowered);
+        if (nextResidual >= residual) {
+          throw createCompilerLoweringFailure(
+            'unsupported-ir',
+            compilerLoweringPassNameBindingPattern,
+            module,
+            `recursive binding normalization did not decrease its structural residual from ${String(residual)}`,
+          );
         }
+        residual = nextResidual;
       }
-      throw createCompilerLoweringFailure(
-        'unsupported-ir',
-        compilerLoweringPassNameBindingPattern,
-        module,
-        'recursive binding normalization did not reach a fixed point',
-      );
+      return lowered;
     },
     name: compilerLoweringPassNameBindingPattern,
     runsAfter: [],
@@ -35,5 +36,25 @@ export function createCompilerLoweringPassBindingPattern(): CompilerLoweringPass
   };
 }
 
-const compilerBindingPatternLoweringIterationLimit = 64;
+function countIrModuleBindingPatternResidual(module: Readonly<IrModule>): number {
+  let residual = 0;
+  const visit = (value: unknown, property?: string): void => {
+    if (!value || typeof value !== 'object') return;
+    if (
+      property === 'pattern' &&
+      'kind' in value &&
+      (value.kind === 'array' || value.kind === 'binding' || value.kind === 'object')
+    ) {
+      residual += 1;
+    }
+    if (Array.isArray(value)) {
+      value.forEach((item) => visit(item));
+      return;
+    }
+    Object.entries(value).forEach(([key, item]) => visit(item, key));
+  };
+  visit(module);
+  return residual;
+}
+
 const compilerLoweringPassNameBindingPattern = 'array-binding-pattern';
