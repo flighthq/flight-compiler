@@ -36,6 +36,7 @@ A reference implementation of this domain would provide:
 - **Equivalence pinned in the same file.** Compact versus formatted source with comments, CRLF versus LF, single versus double quotes, and differing source paths all produce one identity.
 - **Explicit hash identity.** `fingerprintSourceText` returns a `sha256:`-prefixed digest, and an exact expected digest for a known input is asserted, so the algorithm cannot change silently.
 - **Exact runtime identity.** `CompilerSourceFingerprint` gives fingerprint-bearing contracts one vocabulary, and `isCompilerSourceFingerprint` accepts only the lowercase 64-hex SHA-256 representation produced here.
+- **Structural enforcement.** `compiler-ir-validation` consumes the guard, so malformed in-process lowering output cannot carry a provenance-looking placeholder past the shared integrity boundary.
 - **No compiler dependency.** It sits on the dependency floor with only `typescript`, which is what lets everything above it depend on identity without a cycle.
 
 ## Gaps

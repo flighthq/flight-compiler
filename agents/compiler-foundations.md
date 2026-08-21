@@ -15,8 +15,10 @@ compiler-ordering + compiler-types
   <- compiler-emission
   <- compiler-runtime-contract
 
-compiler-types
+compiler-provenance + compiler-types
   <- compiler-ir-validation
+
+compiler-ir-validation + compiler-types
   <- compiler-lowering
 
 compiler-ordering + compiler-types + compiler-provenance
@@ -119,11 +121,11 @@ Status: narrow and near-mature after the current hardening pass.
 
 Strengths:
 
-- It has no internal compiler dependency.
+- It depends only on the shared contract and deterministic-ordering floors.
 - SHA-256 identity is explicit and deterministic.
 - TypeScript's parsed syntax tree, rather than text-wide regular expressions, defines node normalization.
 
-This pass locks down an explicit normalization schema and TypeScript-version boundary, comment/format equivalence, literal and regular-expression counterexamples, source-path and line-ending independence, node fingerprint stability, and raw-text sensitivity. A TypeScript compiler upgrade deliberately changes the normalized identity prefix and therefore requires a patch-fingerprint review. Further expansion should happen only when inventory demonstrates another identity primitive is necessary.
+The current schema locks canonical syntax-kind names, compatibility aliases, comment/format equivalence, literal and regular-expression counterexamples, source-path and line-ending independence, node fingerprint stability, raw-text sensitivity, and exact lowercase SHA-256 runtime shape. TypeScript package versions and numeric enum values do not enter identity; a deliberate normalization change requires a schema bump and patch-fingerprint review. Further expansion should happen only when inventory demonstrates another identity primitive is necessary.
 
 ### `compiler-patch`
 
@@ -160,7 +162,7 @@ Each workspace passes its own strict typecheck and Vitest target. The package bo
 | `compiler-provenance` | Keep independent as one narrow identity primitive. | Equivalence, counterexample, empty, Unicode, path, line-ending, raw-text, and TypeScript-version behavior are locked. |
 | `compiler-patch` | Keep independent because patch identity and auditing are a separate lifecycle. | All operations and failure codes, deterministic ordering, backend skipping, and caller-input immutability are exercised. |
 | `compiler-emission` | Keep independent as the portable emitted-file and backend-failure seam. | Path/content normalization, host-path rejection, portable path and target-name collision identity, fixed-versus-renamable lexical allocation, indentation boundaries, and tagged failure guards are exercised. |
-| `compiler-ir-validation` | Keep independent as the structural integrity boundary for target-neutral IR values. | Module and binding identity, binding provenance and reference consistency, compound-type arity, parameter cardinality, and every discriminated IR family are checked without target policy or mutation. |
+| `compiler-ir-validation` | Keep independent as the structural integrity boundary for target-neutral IR values. | Module and binding identity, exact source fingerprints, binding provenance and reference consistency, compound-type arity, parameter cardinality, and every discriminated IR family are checked without target policy or mutation. |
 | `compiler-lowering` | Keep independent as the backend-elected library of neutral IR-to-IR transforms. | Pass ordering, shared structural validation, pass-specific postconditions, explicit idempotence verification, module identity, immutability, stable pass-named failures, initializer scope, omitted conditions, discarded numeric updates, and continue-correct nested-loop behavior are direct-tested with zero unreached arms. |
 | `compiler-runtime-contract` | Keep independent as the target-neutral external-type binding completeness seam. | Exact ambient source identities are collected across reachable IR and compared deterministically with a versioned native-or-runtime binding plan; target names and runtime implementations stay out. |
 | `compiler-inventory` | Keep independent as the first read-only composition above identity. | Package discovery yields validated, portable, deterministically ordered manifest, dependency, bin, production-import, host-module, evidence-backed tooling-exclusion, and checker-resolved production host-endpoint facts; every manifest, project, Git, export-graph, source-resolution, runtime-classification, SDK, endpoint-receiver, and exclusion failure is tagged for message-independent handling. Host receiver classification enters through an explicit neutral capability; target runtime implementation coverage remains downstream. |
@@ -229,6 +231,12 @@ The deterministic-ordering consolidation batch completed three bounded iteration
 1. Define one dependency-free UTF-16 code-unit text order with executable equality, boundary, Unicode, antisymmetry, transitivity, and normalization-ownership laws.
 2. Replace private ordering copies in patching, emission, and runtime-contract foundations while preserving each domain's normalization policy.
 3. Replace the remaining inventory and orchestration copies, and make package health reject local named text comparators and locale-sensitive `localeCompare` calls.
+
+The provenance-integrity batch completed three bounded iterations:
+
+1. Move TypeScript node identity to canonical syntax-kind names under schema 2, excluding parser version, numeric enum values, range aliases, and renamed compatibility aliases from fingerprints.
+2. Define `CompilerSourceFingerprint` across every fingerprint-bearing contract and an exact lowercase SHA-256 runtime guard in `compiler-provenance`.
+3. Enforce exact source fingerprints in structural IR validation and prove lowering refuses a pass that corrupts provenance before its own postcondition runs.
 
 ## Freeze rule
 

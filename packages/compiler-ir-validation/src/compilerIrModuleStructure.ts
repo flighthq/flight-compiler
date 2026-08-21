@@ -1,7 +1,9 @@
+import { isCompilerSourceFingerprint } from '../../compiler-provenance/src/index.js';
 import type {
   CompilerIrModuleValidation,
   CompilerIrModuleValidationFailure,
   CompilerIrModuleValidationFailureCode,
+  CompilerSourceOrigin,
   IrBindingIdentity,
   IrDeclaration,
   IrExpression,
@@ -136,6 +138,7 @@ function isPositiveInteger(value: unknown): value is number {
 function visitDeclaration(declaration: Readonly<IrDeclaration>, path: string, state: IrModuleValidationState): void {
   switch (declaration.kind) {
     case 'class':
+      validateDeclarationOrigin(declaration, path, state);
       addBindingDefinition(declaration.binding, `${path}.binding`, state);
       visitTypeParameters(declaration.typeParameters, `${path}.typeParameters`, state);
       if (declaration.extends) visitType(declaration.extends, `${path}.extends`, state);
@@ -160,9 +163,11 @@ function visitDeclaration(declaration: Readonly<IrDeclaration>, path: string, st
       });
       break;
     case 'enum':
+      validateDeclarationOrigin(declaration, path, state);
       addBindingDefinition(declaration.binding, `${path}.binding`, state);
       break;
     case 'function':
+      validateDeclarationOrigin(declaration, path, state);
       addBindingDefinition(declaration.binding, `${path}.binding`, state);
       visitFunctionSignature(declaration, path, state);
       declaration.overloads.forEach((overload, index) =>
@@ -173,6 +178,7 @@ function visitDeclaration(declaration: Readonly<IrDeclaration>, path: string, st
       );
       break;
     case 'interface':
+      validateDeclarationOrigin(declaration, path, state);
       addBindingDefinition(declaration.binding, `${path}.binding`, state);
       visitTypeParameters(declaration.typeParameters, `${path}.typeParameters`, state);
       declaration.extends.forEach((type, index) => visitType(type, `${path}.extends[${String(index)}]`, state));
@@ -181,16 +187,26 @@ function visitDeclaration(declaration: Readonly<IrDeclaration>, path: string, st
       );
       break;
     case 'typeAlias':
+      validateDeclarationOrigin(declaration, path, state);
       addBindingDefinition(declaration.binding, `${path}.binding`, state);
       visitTypeParameters(declaration.typeParameters, `${path}.typeParameters`, state);
       visitType(declaration.type, `${path}.type`, state);
       break;
     case 'variable':
+      validateDeclarationOrigin(declaration, path, state);
       visitVariable(declaration, path, state);
       break;
     default:
       addUnknownKind(declaration, path, state);
   }
+}
+
+function validateDeclarationOrigin(
+  declaration: Readonly<IrDeclaration>,
+  path: string,
+  state: IrModuleValidationState,
+): void {
+  validateSourceOrigin(declaration.origin, `${path}.origin`, 'invalid-declaration-origin', 'declaration', state);
 }
 
 function visitExpression(expression: Readonly<IrExpression>, path: string, state: IrModuleValidationState): void {
@@ -476,17 +492,27 @@ function validateBindingOrigin(
   path: string,
   state: IrModuleValidationState,
 ): void {
+  validateSourceOrigin(binding, path, 'invalid-binding-origin', 'binding', state);
+}
+
+function validateSourceOrigin(
+  origin: Readonly<CompilerSourceOrigin>,
+  path: string,
+  code: Extract<CompilerIrModuleValidationFailureCode, 'invalid-binding-origin' | 'invalid-declaration-origin'>,
+  subject: string,
+  state: IrModuleValidationState,
+): void {
   if (
-    binding.packageName !== state.module.packageName ||
-    binding.source !== state.module.source ||
-    !isPositiveInteger(binding.line) ||
-    !isPositiveInteger(binding.column) ||
-    !isNonEmptyString(binding.fingerprint)
+    origin.packageName !== state.module.packageName ||
+    origin.source !== state.module.source ||
+    !isPositiveInteger(origin.line) ||
+    !isPositiveInteger(origin.column) ||
+    !isCompilerSourceFingerprint(origin.fingerprint)
   ) {
     addFailure(
-      'invalid-binding-origin',
+      code,
       path,
-      'binding origin must identify a positive source location in its containing module',
+      `${subject} origin must identify a positive source location in its containing module and an exact SHA-256 fingerprint`,
       state,
     );
   }

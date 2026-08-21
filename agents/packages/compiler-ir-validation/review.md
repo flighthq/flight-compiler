@@ -1,7 +1,7 @@
 ---
 package: '@flighthq/compiler-ir-validation'
 status: solid
-score: 69
+score: 72
 updated: 2026-08-20
 ingested:
   - source
@@ -14,13 +14,13 @@ The dependency-floor integrity boundary for in-process target-neutral IR values 
 
 ## Verdict
 
-**solid — 69/100.** The initial validator is exhaustive over every current IR family, deterministic, non-mutating, and strict about module identity, binding introduction/reference consistency, source provenance, compound-type arity, and parameter cardinality. It deliberately validates structure rather than claiming semantic equivalence between an input and transformed output.
+**solid — 72/100.** The validator is exhaustive over every current IR family, deterministic, non-mutating, and strict about module identity, declaration and binding source provenance, binding introduction/reference consistency, exact SHA-256 fingerprints, compound-type arity, and parameter cardinality. Lowering applies it before pass-specific postconditions, so a pass cannot disguise corrupt provenance as valid output. It deliberately validates structure rather than claiming semantic equivalence between an input and transformed output.
 
 ## What a fully expressed IR validator looks like
 
 - A compiler-checked exhaustive walk over every declaration, export, expression, object member, statement, and type family. Present.
 - Stable inspectable failure codes and precise structural paths rather than message-driven control flow. Present.
-- Binding introductions are unique and valid, and every bound reference resolves to consistent introduction metadata. Present within one module.
+- Binding introductions carry exact source fingerprints, are unique and valid, and every bound reference resolves to consistent introduction metadata. Present within one module.
 - Runtime cardinality checks for invariants expressed statically by tuple contracts. Present for compound types, executable/function parameters, and tuple elements.
 - No target syntax, target policy, filesystem access, TypeScript checker dependency, or mutation. Present.
 - Lexical scope validation, cross-module import/export binding validation, and semantic before/after preservation checks.

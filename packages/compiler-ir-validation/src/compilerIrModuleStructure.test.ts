@@ -135,6 +135,20 @@ describe('validateIrModuleStructure', () => {
         },
         'invalid-binding-origin',
       ],
+      [
+        {
+          ...module,
+          declarations: [{ ...declaration, binding: { ...declaration.binding, fingerprint: 'sha256:invalid' } }],
+        },
+        'invalid-binding-origin',
+      ],
+      [
+        {
+          ...module,
+          declarations: [{ ...declaration, origin: { ...declaration.origin, fingerprint: 'sha256:invalid' } }],
+        },
+        'invalid-declaration-origin',
+      ],
       [{ ...module, declarations: [declaration, declaration] }, 'duplicate-binding-identity'],
       [
         {

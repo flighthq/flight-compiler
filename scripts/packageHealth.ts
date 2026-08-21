@@ -61,7 +61,7 @@ const packageRules: Readonly<Record<string, PackageRule>> = {
     description: 'Flight package, export-lane, symbol, and runtime-value inventory',
   },
   'compiler-ir-validation': {
-    dependencies: ['compiler-types'],
+    dependencies: ['compiler-provenance', 'compiler-types'],
     description: 'Target-neutral intermediate-representation structural validation',
     devDependencies: ['compiler-semantic'],
   },

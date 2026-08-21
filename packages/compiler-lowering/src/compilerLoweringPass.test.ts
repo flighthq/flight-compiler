@@ -121,6 +121,7 @@ describe('lowerIrModuleWithCompilerPasses', () => {
   });
 
   it('rejects invalid plans, structural or pass-specific malformation, changed identity, false idempotence, and errors', () => {
+    let corruptProvenancePostconditions = 0;
     const first = createImportPass('first', 'first');
     const second = createImportPass('second', 'second', ['first']);
     expectFailure(() => lowerIrModuleWithCompilerPasses(module, [first, first]), 'duplicate-pass-name', 'first');
@@ -166,6 +167,18 @@ describe('lowerIrModuleWithCompilerPasses', () => {
       'malformed-ir',
       'changed-identity',
     );
+    expectFailure(
+      () =>
+        lowerIrModuleWithCompilerPasses(moduleWithBinding, [
+          createPass('corrupts-provenance', corruptModuleBindingFingerprint, () => {
+            corruptProvenancePostconditions += 1;
+            return { kind: 'valid' };
+          }),
+        ]),
+      'malformed-ir',
+      'corrupts-provenance',
+    );
+    expect(corruptProvenancePostconditions).toBe(0);
     expectFailure(
       () =>
         lowerIrModuleWithCompilerPasses(
@@ -242,6 +255,20 @@ function createPass(
   return { idempotent, lowerIrModule, name, runsAfter, verifyIrModule };
 }
 
+function corruptModuleBindingFingerprint(moduleValue: Readonly<IrModule>): IrModule {
+  const declaration = moduleValue.declarations[0];
+  if (declaration?.kind !== 'variable') throw new Error('Expected variable declaration fixture');
+  return {
+    ...moduleValue,
+    declarations: [
+      {
+        ...declaration,
+        binding: { ...declaration.binding, fingerprint: 'sha256:invalid' },
+      },
+    ],
+  };
+}
+
 function expectFailure(run: () => unknown, code: CompilerLoweringFailureCode, pass: string): void {
   try {
     run();
@@ -259,4 +286,34 @@ const module: IrModule = {
   name: 'value',
   packageName: '@flighthq/math',
   source: 'src/value.ts',
+};
+
+const moduleWithBinding: IrModule = {
+  ...module,
+  declarations: [
+    {
+      binding: {
+        column: 1,
+        fingerprint: `sha256:${'0'.repeat(64)}`,
+        id: 'binding:value',
+        kind: 'variable',
+        line: 1,
+        name: 'value',
+        packageName: module.packageName,
+        scope: 'module',
+        source: module.source,
+        space: 'value',
+      },
+      exported: true,
+      kind: 'variable',
+      mutable: false,
+      origin: {
+        column: 1,
+        fingerprint: `sha256:${'0'.repeat(64)}`,
+        line: 1,
+        packageName: module.packageName,
+        source: module.source,
+      },
+    },
+  ],
 };

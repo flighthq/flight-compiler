@@ -5,6 +5,7 @@ export type CompilerIrModuleValidationFailureCode =
   | 'invalid-binding-identity'
   | 'invalid-binding-origin'
   | 'invalid-compound-type-arity'
+  | 'invalid-declaration-origin'
   | 'invalid-module-identity'
   | 'invalid-node-shape'
   | 'invalid-parameter-cardinality'
