@@ -887,7 +887,7 @@ describe('lowerTypeScriptSource', () => {
     ]);
   });
 
-  it('records exact JavaScript key order only for pure fixed for-in object expressions', () => {
+  it('classifies exact key order and object evaluation for literal and closed-record for-in sources', () => {
     const result = lower(
       'for-in-keys.ts',
       `
@@ -899,6 +899,10 @@ describe('lowerTypeScriptSource', () => {
           for (const key in values) key;
           for (const key in { value: callback() }) key;
         }
+        export function closed(): void {
+          const values = { second: 2, first: 1 } as const;
+          for (const key in values) key;
+        }
       `,
     );
     const fixed = result.module.declarations.find(
@@ -907,16 +911,24 @@ describe('lowerTypeScriptSource', () => {
     const dynamic = result.module.declarations.find(
       (declaration) => declaration.kind === 'function' && declaration.binding.name === 'dynamic',
     );
-    if (fixed?.kind !== 'function' || dynamic?.kind !== 'function') throw new Error('Expected for-in functions');
+    const closed = result.module.declarations.find(
+      (declaration) => declaration.kind === 'function' && declaration.binding.name === 'closed',
+    );
+    if (fixed?.kind !== 'function' || dynamic?.kind !== 'function' || closed?.kind !== 'function')
+      throw new Error('Expected for-in functions');
     const fixedLoop = fixed.body[0];
 
     expect(result.diagnostics).toEqual([]);
-    expect(fixedLoop).toMatchObject({ keyPlan: { keys: ['2', '10', 'second', 'first'], kind: 'staticObject' } });
-    expect(
-      dynamic.body
-        .filter((statement) => statement.kind === 'forIn')
-        .every((statement) => statement.keyPlan === undefined),
-    ).toBe(true);
+    expect(fixedLoop).toMatchObject({
+      keyPlan: { evaluation: 'elide', keys: ['2', '10', 'second', 'first'], kind: 'objectLiteral' },
+    });
+    expect(dynamic.body[0]?.kind === 'forIn' ? dynamic.body[0].keyPlan : 'not-for-in').toBeUndefined();
+    expect(dynamic.body[1]).toMatchObject({
+      keyPlan: { evaluation: 'preserve', keys: ['value'], kind: 'objectLiteral' },
+    });
+    expect(closed.body[1]).toMatchObject({
+      keyPlan: { evaluation: 'alreadyEvaluated', keys: ['second', 'first'], kind: 'closedRecord' },
+    });
   });
 
   it('substitutes generic alias evidence through iteration, destructuring, operators, and tuple spreads', () => {

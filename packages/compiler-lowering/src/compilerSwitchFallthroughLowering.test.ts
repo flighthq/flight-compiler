@@ -72,17 +72,12 @@ describe('createCompilerLoweringPassSwitchFallthrough', () => {
     expect(statement.cases[3]?.statements.at(-1)).toMatchObject({ kind: 'return' });
   });
 
-  it('refuses conditional local breaks and duplicated binding identities explicitly', () => {
+  it('refuses conditional local breaks explicitly', () => {
     const cases = [
       {
         message: 'switch-local break must be the final direct statement of its clause',
         source:
           'export function read(value: number): number { switch (value) { case 0: if (value) break; return 1; default: return 0; } }',
-      },
-      {
-        message: 'switch fallthrough across binding introductions requires identity-preserving state-machine lowering',
-        source:
-          'export function read(value: number): number { switch (value) { case 0: value += 1; case 1: const local = value; return local; default: return 0; } }',
       },
     ];
     for (const item of cases) {
@@ -101,6 +96,36 @@ describe('createCompilerLoweringPassSwitchFallthrough', () => {
         expect(error).toMatchObject({ code: 'unsupported-ir', message: expect.stringContaining(item.message) });
       }
     }
+  });
+
+  it('uses a state machine to preserve one binding identity across fallthrough execution', () => {
+    const output = lowerIrModuleWithCompilerPasses(
+      lower(
+        'switch-binding-state.ts',
+        'export function read(value: number): number { switch (value) { case 0: value += 1; case 1: const local = value; return local; default: return 0; } }',
+      ),
+      [
+        createCompilerLoweringPassArrayBindingPattern(),
+        createCompilerLoweringPassVariableHoisting(),
+        createCompilerLoweringPassSwitchFallthrough(),
+      ],
+    );
+    const declaration = output.declarations[0];
+    if (declaration?.kind !== 'function' || declaration.body[0]?.kind !== 'block') {
+      throw new Error('Expected state-machine block');
+    }
+    const [stateDeclaration, selector, machine] = declaration.body[0].statements;
+
+    expect(stateDeclaration).toMatchObject({
+      declarations: [{ binding: { name: 'switchFallthroughState', scope: 'block' }, initializer: { value: -1 } }],
+      kind: 'variable',
+    });
+    expect(selector).toMatchObject({ kind: 'switch' });
+    expect(machine).toMatchObject({
+      body: { cases: [{ expression: { value: 0 } }, { expression: { value: 1 } }, { expression: { value: 2 } }] },
+      kind: 'while',
+    });
+    expect(createCompilerLoweringPassSwitchFallthrough().verifyIrModule(output)).toEqual({ kind: 'valid' });
   });
 });
 

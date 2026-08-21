@@ -41,9 +41,9 @@ describe('createCompilerLoweringPassVariableHoisting', () => {
       runsAfter: ['array-binding-pattern'],
     });
     expect(declarations).toMatchObject([
-      { binding: { name: 'first', scope: 'function' }, initialValue: 'undefined', mutable: true },
-      { binding: { name: 'second', scope: 'function' }, initialValue: 'undefined', mutable: true },
-      { binding: { name: 'pending', scope: 'function' }, initialValue: 'undefined', mutable: true },
+      { binding: { name: 'first', scope: 'function' }, initialValue: 'uninitialized', mutable: true },
+      { binding: { name: 'second', scope: 'function' }, initialValue: 'uninitialized', mutable: true },
+      { binding: { name: 'pending', scope: 'function' }, initialValue: 'uninitialized', mutable: true },
     ]);
     expect(declarations.every((variable) => variable.initializer === undefined)).toBe(true);
     expect(body.slice(1, 4)).toMatchObject([

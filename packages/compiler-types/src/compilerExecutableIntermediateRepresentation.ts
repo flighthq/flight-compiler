@@ -13,6 +13,7 @@ import type {
   IrUnaryOperatorSemantics,
 } from './compilerOperatorSemanticIntermediateRepresentation.js';
 import type { IrFunctionTypeParameter, IrType, IrTypeParameter } from './compilerTypeIntermediateRepresentation.js';
+import type { CompilerSourceOrigin } from './compilerSourceIdentity.js';
 
 export type IrParameter = Omit<IrFunctionTypeParameter, 'name'> &
   Readonly<{ binding: IrBindingIdentity }> &
@@ -132,7 +133,7 @@ export type IrObjectRestKey =
 
 export interface IrNamedVariable {
   readonly binding: IrBindingIdentity;
-  readonly initialValue?: 'undefined' | undefined;
+  readonly initialValue?: 'undefined' | 'uninitialized' | undefined;
   readonly initializer?: IrExpression | undefined;
   readonly mutable: boolean;
   readonly type?: IrType | undefined;
@@ -157,10 +158,9 @@ export interface IrSwitchCase {
   readonly statements: readonly IrStatement[];
 }
 
-export interface IrForInKeyPlan {
-  readonly keys: readonly string[];
-  readonly kind: 'staticObject';
-}
+export type IrForInKeyPlan =
+  | Readonly<{ evaluation: 'elide' | 'preserve'; keys: readonly string[]; kind: 'objectLiteral' }>
+  | Readonly<{ evaluation: 'alreadyEvaluated'; keys: readonly string[]; kind: 'closedRecord' }>;
 
 export type IrSwitchCaseCompletion =
   | Readonly<{ kind: 'abrupt' }>
@@ -196,7 +196,12 @@ export type IrStatement =
       otherwise?: IrStatement | undefined;
     }>
   | Readonly<{ expression?: IrExpression | undefined; kind: 'return' }>
-  | Readonly<{ cases: readonly IrSwitchCase[]; expression: IrExpression; kind: 'switch' }>
+  | Readonly<{
+      cases: readonly IrSwitchCase[];
+      expression: IrExpression;
+      kind: 'switch';
+      origin?: CompilerSourceOrigin | undefined;
+    }>
   | Readonly<{ expression: IrExpression; kind: 'throw' }>
   | Readonly<{
       catchClause?: IrCatchClause | undefined;

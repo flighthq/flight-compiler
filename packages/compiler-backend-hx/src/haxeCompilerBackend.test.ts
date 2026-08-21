@@ -246,6 +246,32 @@ describe('emitIrModuleHaxe', () => {
     expect(emitIrModuleHaxe(result.module).contents).toContain('for (key in ["2", "10", "second", "first"])');
   });
 
+  it('preserves effectful object construction before iterating its closed keys', () => {
+    const result = lower(
+      'effectful-for-in.ts',
+      'function mark(): number { return 1; } export function visit(): void { for (const key in { value: mark() }) key; }',
+    );
+
+    const output = emitIrModuleHaxe(result.module).contents;
+    expect(output).toContain('final forInObjectValue = { value: mark() };');
+    expect(output).toContain('for (key in ["value"])');
+  });
+
+  it('emits target-native optional property and method targets without duplicating receiver evaluation', () => {
+    const result = lower(
+      'optional-property.ts',
+      `
+        interface Value { count: number; read(): number }
+        export function count(value?: Value): number | undefined { return value?.count; }
+        export function read(value?: Value): number | undefined { return value?.read(); }
+      `,
+    );
+
+    const output = emitIrModuleHaxe(result.module).contents;
+    expect(output).toContain('return value?.count;');
+    expect(output).toContain('return value?.read();');
+  });
+
   it('emits fixed tuple spreads with collision-free sequential evaluation carriers', () => {
     const result = lower(
       'tuple-spread.ts',
@@ -324,6 +350,18 @@ describe('emitIrModuleHaxe', () => {
 
     expect(() => emitIrModuleHaxe(barrel.module)).toThrow('module-facade lowering');
     expect(output).toContain('case 1:\n        return 2;\n      case 2:\n        return 2;');
+  });
+
+  it('emits binding-sensitive switch fallthrough through an identity-safe state loop', () => {
+    const result = lower(
+      'switch-binding-state.ts',
+      'function mark(): void {} export function choose(a: number): number { switch (a) { case 1: mark(); case 2: const local: number = a; return local; default: return 0; } }',
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('var switchFallthroughState:Float = -1;');
+    expect(output).toContain('while ((switchFallthroughState != -1))');
+    expect(output.match(/final local/g)).toHaveLength(1);
   });
 
   it.each([

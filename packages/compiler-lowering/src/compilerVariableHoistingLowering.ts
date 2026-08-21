@@ -65,7 +65,7 @@ function addIrVariableHoistingDeclaration(
   }
   analysis.hoisted.set(variable.binding.id, {
     binding: variable.binding,
-    initialValue: 'undefined',
+    initialValue: 'uninitialized',
     mutable: true,
     ...(variable.type ? { type: variable.type } : {}),
   });
@@ -178,7 +178,7 @@ function hasIrFunctionBodyVariableHoistingResidual(body: readonly Readonly<IrSta
       (variable) =>
         !('pattern' in variable) &&
         variable.binding.scope === 'function' &&
-        variable.initialValue === 'undefined' &&
+        variable.initialValue === 'uninitialized' &&
         variable.initializer === undefined,
     );
   const statements = validPrefix ? rest : body;

@@ -243,9 +243,27 @@ describe('emitIrModuleRust', () => {
     expect(emitIrModuleRust(fixed.module).contents).toContain(
       'for key in ["2".to_owned(), "10".to_owned(), "second".to_owned(), "first".to_owned()]',
     );
-    expect(() => emitIrModuleRust(dynamic.module)).toThrow(
-      'object key iteration requires static pure-object key evidence',
+    expect(() => emitIrModuleRust(dynamic.module)).toThrow('object key iteration requires closed key evidence');
+  });
+
+  it('refuses effectful static-key object iteration until structural-object evaluation is elected', () => {
+    const result = lower(
+      'effectful-for-in.ts',
+      'function mark(): number { return 1; } export function visit(): void { for (const key in { value: mark() }) key; }',
     );
+
+    expect(() => emitIrModuleRust(result.module)).toThrow(
+      'effectful object key iteration requires Rust structural-object evaluation lowering',
+    );
+  });
+
+  it('refuses optional property targets until Option projection lowering is elected', () => {
+    const result = lower(
+      'optional-property.ts',
+      'interface Value { count: number } export function count(value: Value): number { return value?.count; }',
+    );
+
+    expect(() => emitIrModuleRust(result.module)).toThrow('optional property access requires Option-aware lowering');
   });
 
   it('clones fixed tuple spread fields through collision-free sequential evaluation carriers', () => {
@@ -396,6 +414,18 @@ describe('emitIrModuleRust', () => {
     expect(() => emitIrModuleRust(barrel.module)).toThrow('module-facade lowering');
     expect(output).toContain('let switch_value = a;');
     expect(output).toContain('if switch_value == 1.0 {\n      return 2.0;\n    }\n    else if switch_value == 2.0');
+  });
+
+  it('emits binding-sensitive switch fallthrough through an identity-safe state loop', () => {
+    const result = lower(
+      'switch-binding-state.ts',
+      'function mark(): void {} export function choose(a: number): number { switch (a) { case 1: mark(); case 2: const local: number = a; return local; default: return 0; } }',
+    );
+    const output = emitIrModuleRust(result.module).contents;
+
+    expect(output).toContain('let mut switch_fallthrough_state: f64 = -1.0;');
+    expect(output).toContain('while (switch_fallthrough_state != -1.0)');
+    expect(output.match(/let local/g)).toHaveLength(1);
   });
 
   it.each([

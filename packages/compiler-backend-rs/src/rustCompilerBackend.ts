@@ -452,7 +452,10 @@ function emitStatement(statement: Readonly<IrStatement>, context: EmitContext): 
       if ('pattern' in statement.variable)
         emissionError(context, 'binding patterns require destructuring lowering before Rust emission');
       if (!statement.keyPlan) {
-        emissionError(context, 'object key iteration requires static pure-object key evidence');
+        emissionError(context, 'object key iteration requires closed key evidence');
+      }
+      if (statement.keyPlan.evaluation === 'preserve') {
+        emissionError(context, 'effectful object key iteration requires Rust structural-object evaluation lowering');
       }
       return [
         `for ${statement.variable.mutable ? 'mut ' : ''}${getBindingTargetNameRust(statement.variable.binding, context)} in [${statement.keyPlan.keys.map((key) => `${JSON.stringify(key)}.to_owned()`).join(', ')}] {`,
@@ -663,8 +666,8 @@ function emitVariable(variable: Readonly<IrVariable>, context: EmitContext): str
   if (variable.initializer?.kind === 'objectRest') {
     emissionError(context, 'object rest requires Rust record ownership and projection lowering');
   }
-  if (variable.initialValue === 'undefined' && variable.initializer) {
-    emissionError(context, 'undefined function-entry values require separate Rust assignment lowering');
+  if (variable.initialValue === 'undefined') {
+    emissionError(context, 'observable undefined function-entry values require Rust representation lowering');
   }
   const type = variable.type ? `: ${emitType(variable.type, context)}` : '';
   const initializer = variable.initializer ? ` = ${emitExpression(variable.initializer, context)}` : '';

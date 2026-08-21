@@ -1,6 +1,7 @@
 import type {
   CompilerLoweringPass,
   CompilerSourceIdentity,
+  IrBindingIdentity,
   IrDeclaration,
   IrExpression,
   IrModule,
@@ -526,11 +527,15 @@ function lowerIrStatementSwitchFallthrough(
           : {}),
         statements: switchCase.statements.map((item) => lowerIrStatementSwitchFallthrough(item, sourceIdentity)),
       }));
-      return {
-        cases: lowerIrSwitchCasesFallthrough(cases, sourceIdentity),
-        expression: lowerIrExpressionSwitchFallthrough(statement.expression, sourceIdentity),
-        kind: 'switch',
-      };
+      const expression = lowerIrExpressionSwitchFallthrough(statement.expression, sourceIdentity);
+      const completions = cases.map(getIrSwitchCaseCompletion);
+      if (
+        completions.some((completion) => completion.kind === 'fallthrough') &&
+        cases.some((switchCase) => switchCase.statements.some(hasIrStatementBindingIntroductionSwitchFallthrough))
+      ) {
+        return createIrSwitchStateMachineFallthrough({ ...statement, cases, expression }, completions, sourceIdentity);
+      }
+      return { ...statement, cases: lowerIrSwitchCasesFallthrough(cases, sourceIdentity), expression };
     }
     case 'try':
       return {
@@ -575,17 +580,6 @@ function lowerIrSwitchCasesFallthrough(
       unsupported.reason,
     );
   }
-  if (
-    completions.some((completion) => completion.kind === 'fallthrough') &&
-    cases.some((switchCase) => switchCase.statements.some(hasIrStatementBindingIntroductionSwitchFallthrough))
-  ) {
-    throw createCompilerLoweringFailure(
-      'unsupported-ir',
-      compilerLoweringPassNameSwitchFallthrough,
-      sourceIdentity,
-      'switch fallthrough across binding introductions requires identity-preserving state-machine lowering',
-    );
-  }
   return cases.map((switchCase, start) => {
     const statements: IrStatement[] = [];
     for (let index = start; index < cases.length; index += 1) {
@@ -600,6 +594,118 @@ function lowerIrSwitchCasesFallthrough(
     }
     return { ...switchCase, statements };
   });
+}
+
+function createIrSwitchStateMachineFallthrough(
+  statement: Readonly<Extract<IrStatement, { kind: 'switch' }>>,
+  completions: readonly ReturnType<typeof getIrSwitchCaseCompletion>[],
+  sourceIdentity: Readonly<CompilerSourceIdentity>,
+): IrStatement {
+  if (!statement.origin) {
+    throw createCompilerLoweringFailure(
+      'unsupported-ir',
+      compilerLoweringPassNameSwitchFallthrough,
+      sourceIdentity,
+      'binding-sensitive switch fallthrough requires switch source identity',
+    );
+  }
+  const unsupported = completions.find((completion) => completion.kind === 'unsupported');
+  if (unsupported?.kind === 'unsupported') {
+    throw createCompilerLoweringFailure(
+      'unsupported-ir',
+      compilerLoweringPassNameSwitchFallthrough,
+      sourceIdentity,
+      unsupported.reason,
+    );
+  }
+  const state: IrBindingIdentity = {
+    ...statement.origin,
+    id: `binding:${JSON.stringify([
+      statement.origin.packageName,
+      statement.origin.source,
+      statement.origin.line,
+      statement.origin.column,
+      'switch-fallthrough-state',
+    ])}`,
+    kind: 'variable',
+    name: 'switchFallthroughState',
+    scope: 'block',
+    space: 'value',
+  };
+  const stateReference: IrExpression = {
+    kind: 'identifier',
+    reference: { binding: state, kind: 'binding' },
+  };
+  const assignState = (value: number): IrStatement => ({
+    expression: {
+      kind: 'assignment',
+      left: stateReference,
+      operator: '=',
+      right: { kind: 'literal', value },
+      semantics: {
+        left: { declared: 'number', flow: 'number' },
+        result: 'number',
+        right: { declared: 'number', flow: 'number' },
+      },
+    },
+    kind: 'expression',
+  });
+  const defaultIndex = statement.cases.findIndex((switchCase) => switchCase.expression === undefined);
+  const selectorCases: IrSwitchCase[] = statement.cases.flatMap((switchCase, index) =>
+    switchCase.expression
+      ? [{ expression: switchCase.expression, statements: [assignState(index), { kind: 'break' }] }]
+      : [],
+  );
+  selectorCases.push({ statements: [assignState(defaultIndex), { kind: 'break' }] });
+  const executionCases = statement.cases.map((switchCase, index): IrSwitchCase => {
+    const completion = completions[index]!;
+    const statements =
+      completion.kind === 'localBreak' ? switchCase.statements.slice(0, -1) : [...switchCase.statements];
+    if (completion.kind === 'fallthrough' || completion.kind === 'localBreak') {
+      statements.push(
+        assignState(completion.kind === 'fallthrough' && index + 1 < statement.cases.length ? index + 1 : -1),
+      );
+      statements.push({ kind: 'break' });
+    }
+    return { expression: { kind: 'literal', value: index }, statements };
+  });
+  return {
+    kind: 'block',
+    statements: [
+      {
+        declarations: [
+          {
+            binding: state,
+            initializer: { kind: 'literal', value: -1 },
+            mutable: true,
+            type: { kind: 'primitive', name: 'number' },
+          },
+        ],
+        kind: 'variable',
+      },
+      { cases: selectorCases, expression: statement.expression, kind: 'switch', origin: statement.origin },
+      {
+        body: {
+          cases: executionCases,
+          expression: stateReference,
+          kind: 'switch',
+          origin: statement.origin,
+        },
+        condition: {
+          kind: 'binary',
+          left: stateReference,
+          operator: '!==',
+          right: { kind: 'literal', value: -1 },
+          semantics: {
+            left: { declared: 'number', flow: 'number' },
+            result: 'boolean',
+            right: { declared: 'number', flow: 'number' },
+          },
+        },
+        kind: 'while',
+      },
+    ],
+  };
 }
 
 function lowerIrVariableSwitchFallthrough(

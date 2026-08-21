@@ -584,17 +584,33 @@ function visitStatement(statement: Readonly<IrStatement>, path: string, state: I
       visitExpression(statement.object, `${path}.object`, state);
       if (statement.keyPlan) {
         const keys = getIrExpressionStaticForInKeys(statement.object);
-        if (statement.keyPlan.kind !== 'staticObject' || !keys) {
+        const validSource =
+          statement.keyPlan.kind === 'objectLiteral'
+            ? statement.object.kind === 'object' &&
+              keys !== undefined &&
+              statement.keyPlan.evaluation ===
+                (statement.object.members.every(
+                  (member) => member.kind === 'property' && member.value.kind === 'literal',
+                )
+                  ? 'elide'
+                  : 'preserve')
+            : statement.keyPlan.kind === 'closedRecord' &&
+              statement.keyPlan.evaluation === 'alreadyEvaluated' &&
+              statement.object.kind === 'identifier';
+        if (!validSource) {
           addFailure(
             'invalid-node-shape',
             `${path}.keyPlan`,
-            'static for-in keys require a pure fixed object expression',
+            'for-in key plan source and evaluation classification must match its object expression',
             state,
           );
         } else if (
           statement.keyPlan.keys.some((key) => typeof key !== 'string') ||
           new Set(statement.keyPlan.keys).size !== statement.keyPlan.keys.length ||
-          JSON.stringify(statement.keyPlan.keys) !== JSON.stringify(keys)
+          JSON.stringify(statement.keyPlan.keys) !==
+            JSON.stringify(
+              statement.keyPlan.kind === 'objectLiteral' ? keys : orderIrStaticForInKeys(statement.keyPlan.keys),
+            )
         ) {
           addFailure(
             'invalid-node-shape',
@@ -760,16 +776,17 @@ function visitTypeParameters(
 }
 
 function getIrExpressionStaticForInKeys(expression: Readonly<IrExpression>): readonly string[] | undefined {
-  if (
-    expression.kind !== 'object' ||
-    expression.members.some((member) => member.kind !== 'property' || member.value.kind !== 'literal')
-  ) {
+  if (expression.kind !== 'object' || expression.members.some((member) => member.kind !== 'property')) {
     return undefined;
   }
   const keys: string[] = [];
   expression.members.forEach((member) => {
     if (member.kind === 'property' && !keys.includes(member.name)) keys.push(member.name);
   });
+  return orderIrStaticForInKeys(keys);
+}
+
+function orderIrStaticForInKeys(keys: readonly string[]): readonly string[] {
   const indices: Array<{ key: string; value: number }> = [];
   const names: string[] = [];
   for (const key of keys) {
@@ -800,14 +817,19 @@ function visitVariable(
       state,
     );
     if (variable.initialValue !== undefined) {
-      if (variable.initialValue !== 'undefined') {
-        addFailure('invalid-node-shape', `${path}.initialValue`, 'variable initial value must be undefined', state);
+      if (variable.initialValue !== 'undefined' && variable.initialValue !== 'uninitialized') {
+        addFailure(
+          'invalid-node-shape',
+          `${path}.initialValue`,
+          'variable initial value must be undefined or proven uninitialized',
+          state,
+        );
       }
       if (variable.binding.scope !== 'function') {
         addFailure(
           'invalid-node-shape',
           `${path}.initialValue`,
-          'only function-scoped variables may have an undefined entry value',
+          'only function-scoped variables may have an entry-value classification',
           state,
         );
       }
@@ -815,7 +837,7 @@ function visitVariable(
         addFailure(
           'invalid-node-shape',
           `${path}.initialValue`,
-          'an undefined entry value cannot share a declaration with an initializer',
+          'an entry-value classification cannot share a declaration with an initializer',
           state,
         );
       }

@@ -280,8 +280,7 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
       return `(function() { final ${name} = Reflect.copy(${emitExpression(expression.object, context)}); ${exclusions} return ${name}; })()`;
     }
     case 'property':
-      if (expression.optional) emissionError(context, 'optional property access requires null-safe access lowering');
-      return `${emitExpression(expression.object, context)}.${safeHaxeName(expression.name)}`;
+      return `${emitExpression(expression.object, context)}${expression.optional ? '?.' : '.'}${safeHaxeName(expression.name)}`;
     case 'regexp':
       return `~/${expression.pattern}/${expression.flags}`;
     case 'spread':
@@ -416,6 +415,17 @@ function emitStatement(statement: Readonly<IrStatement>, context: EmitContext): 
     case 'forIn':
       if ('pattern' in statement.variable)
         emissionError(context, 'binding patterns require destructuring lowering before Haxe emission');
+      if (statement.keyPlan?.evaluation === 'preserve') {
+        const objectName = getGeneratedTargetNameHaxe('forInObjectValue', context);
+        return [
+          '{',
+          `  final ${objectName} = ${emitExpression(statement.object, context)};`,
+          `  for (${getBindingTargetNameHaxe(statement.variable.binding, context)} in [${statement.keyPlan.keys.map((key) => JSON.stringify(key)).join(', ')}]) {`,
+          ...indentSourceLines(emitStatementBody(statement.body, context), 2),
+          '  }',
+          '}',
+        ];
+      }
       return [
         `for (${getBindingTargetNameHaxe(statement.variable.binding, context)} in ${statement.keyPlan ? `[${statement.keyPlan.keys.map((key) => JSON.stringify(key)).join(', ')}]` : `Reflect.fields(${emitExpression(statement.object, context)})`}) {`,
         ...indentSourceLines(emitStatementBody(statement.body, context)),
@@ -615,8 +625,8 @@ function emitTypeParameters(parameters: readonly IrTypeParameter[], context: Emi
 function emitVariable(variable: Readonly<IrVariable>, context: EmitContext): string {
   if ('pattern' in variable)
     emissionError(context, 'binding patterns require destructuring lowering before Haxe emission');
-  if (variable.initialValue === 'undefined' && variable.initializer) {
-    emissionError(context, 'undefined function-entry values require separate Haxe assignment lowering');
+  if (variable.initialValue === 'undefined') {
+    emissionError(context, 'observable undefined function-entry values require Haxe representation lowering');
   }
   const type = variable.type ? `:${emitType(variable.type, context)}` : '';
   const initializer = variable.initializer ? ` = ${emitExpression(variable.initializer, context)}` : '';

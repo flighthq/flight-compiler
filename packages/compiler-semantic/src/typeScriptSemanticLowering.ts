@@ -2,6 +2,12 @@ import path from 'node:path';
 
 import ts from 'typescript';
 
+import {
+  createTypeScriptSyntacticAliasSubstitutions,
+  getTypeScriptSyntacticExpressionTypeEvidence,
+  getTypeScriptSyntacticTypeSubstitution,
+} from './compilerTypeScriptSyntacticTypeEvidence.js';
+
 import { normalizePathPortable } from '../../compiler-canonical-form/src/index.js';
 import { fingerprintTypeScriptNode } from '../../compiler-provenance/src/index.js';
 import type {
@@ -27,6 +33,7 @@ import type {
   IrFunctionDeclaration,
   IrFunctionSignature,
   IrFunctionTypeParameter,
+  IrForInKeyPlan,
   IrImport,
   IrImportBinding,
   IrIdentifierReference,
@@ -1110,6 +1117,7 @@ function lowerStatement(node: ts.Statement, context: LoweringContext): IrStateme
       })),
       expression: lowerExpression(node.expression, context),
       kind: 'switch',
+      origin: origin(node, context),
     };
   }
   if (ts.isBreakStatement(node)) return { kind: 'break' };
@@ -1150,7 +1158,7 @@ function lowerTypeScriptDestructuringAssignmentStatement(
     return undefined;
   }
   const sourceType = lowerTypeScriptExpressionTypeEvidence(unwrapped.right, context);
-  const sourceTypeNode = getTypeScriptExpressionTypeNodeEvidence(unwrapped.right, context);
+  const sourceTypeNode = getTypeScriptSyntacticExpressionTypeEvidence(unwrapped.right, context.checker);
   const storageType = sourceTypeNode ? lowerType(sourceTypeNode, context) : sourceType;
   return {
     kind: 'block',
@@ -1596,21 +1604,88 @@ function lowerVariable(
 function getTypeScriptForInKeyPlan(
   expression: ts.Expression,
   context: LoweringContext,
-): Readonly<{ keyPlan: { keys: readonly string[]; kind: 'staticObject' } }> | undefined {
-  if (!ts.isObjectLiteralExpression(expression)) return undefined;
+): Readonly<{ keyPlan: IrForInKeyPlan }> | undefined {
+  const literal = getTypeScriptForInObjectLiteral(expression);
+  if (!literal) {
+    const closed = getTypeScriptForInClosedRecord(expression, context);
+    return closed
+      ? {
+          keyPlan: {
+            evaluation: 'alreadyEvaluated',
+            keys: orderTypeScriptForInStaticObjectKeys(getTypeScriptForInObjectKeys(closed, context)!),
+            kind: 'closedRecord',
+          },
+        }
+      : undefined;
+  }
+  const keys = getTypeScriptForInObjectKeys(literal, context);
+  if (!keys) return undefined;
+  return {
+    keyPlan: {
+      evaluation: literal.properties.every(
+        (member) => ts.isPropertyAssignment(member) && isTypeScriptForInStaticObjectValue(member.initializer),
+      )
+        ? 'elide'
+        : 'preserve',
+      keys: orderTypeScriptForInStaticObjectKeys(keys),
+      kind: 'objectLiteral',
+    },
+  };
+}
+
+function getTypeScriptForInObjectKeys(
+  expression: ts.ObjectLiteralExpression,
+  context: LoweringContext,
+): readonly string[] | undefined {
   const keys: string[] = [];
   for (const member of expression.properties) {
-    if (
-      !ts.isPropertyAssignment(member) ||
-      ts.isComputedPropertyName(member.name) ||
-      !isTypeScriptForInStaticObjectValue(member.initializer)
-    ) {
-      return undefined;
-    }
+    if (!ts.isPropertyAssignment(member) || ts.isComputedPropertyName(member.name)) return undefined;
     const key = propertyName(member.name, context);
     if (!keys.includes(key)) keys.push(key);
   }
-  return { keyPlan: { keys: orderTypeScriptForInStaticObjectKeys(keys), kind: 'staticObject' } };
+  return keys;
+}
+
+function getTypeScriptForInObjectLiteral(expression: ts.Expression): ts.ObjectLiteralExpression | undefined {
+  while (
+    ts.isParenthesizedExpression(expression) ||
+    ts.isAsExpression(expression) ||
+    ts.isSatisfiesExpression(expression) ||
+    ts.isTypeAssertionExpression(expression)
+  ) {
+    expression = expression.expression;
+  }
+  return ts.isObjectLiteralExpression(expression) ? expression : undefined;
+}
+
+function getTypeScriptForInClosedRecord(
+  expression: ts.Expression,
+  context: LoweringContext,
+): ts.ObjectLiteralExpression | undefined {
+  while (ts.isParenthesizedExpression(expression)) expression = expression.expression;
+  if (!ts.isIdentifier(expression)) return undefined;
+  const symbol = context.checker.getSymbolAtLocation(expression);
+  const declaration = symbol?.valueDeclaration;
+  if (!symbol || !declaration || !ts.isVariableDeclaration(declaration) || !ts.isIdentifier(declaration.name)) {
+    return undefined;
+  }
+  const list = declaration.parent;
+  if (!ts.isVariableDeclarationList(list) || (list.flags & ts.NodeFlags.Const) === 0 || !declaration.initializer) {
+    return undefined;
+  }
+  const literal = getTypeScriptForInObjectLiteral(declaration.initializer);
+  if (!literal || !getTypeScriptForInObjectKeys(literal, context)) return undefined;
+  let closed = true;
+  const visit = (node: ts.Node): void => {
+    if (!closed) return;
+    if (ts.isIdentifier(node) && context.checker.getSymbolAtLocation(node) === symbol && node !== declaration.name) {
+      const parent = node.parent;
+      if (!ts.isForInStatement(parent) || parent.expression !== node) closed = false;
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(context.sourceFile);
+  return closed ? literal : undefined;
 }
 
 function isTypeScriptForInStaticObjectValue(expression: ts.Expression): boolean {
@@ -1639,7 +1714,7 @@ function orderTypeScriptForInStaticObjectKeys(keys: readonly string[]): readonly
 }
 
 function lowerTypeScriptForOfElementType(expression: ts.Expression, context: LoweringContext): IrType | undefined {
-  const iterableType = getTypeScriptExpressionTypeNodeEvidence(expression, context);
+  const iterableType = getTypeScriptSyntacticExpressionTypeEvidence(expression, context.checker);
   if (!iterableType) return undefined;
   const element = getTypeScriptTypeNodeIterableElementEvidence(iterableType, context, new Set());
   return element ? lowerTypeScriptTypeNodeEvidence(element.type, context, new Set(), element.substitutions) : undefined;
@@ -1649,46 +1724,8 @@ function lowerTypeScriptExpressionTypeEvidence(
   expression: ts.Expression,
   context: LoweringContext,
 ): IrType | undefined {
-  const type = getTypeScriptExpressionTypeNodeEvidence(expression, context);
+  const type = getTypeScriptSyntacticExpressionTypeEvidence(expression, context.checker);
   return type ? lowerTypeScriptTypeNodeEvidence(type, context) : undefined;
-}
-
-function getTypeScriptExpressionTypeNodeEvidence(
-  expression: ts.Expression,
-  context: LoweringContext,
-): ts.TypeNode | undefined {
-  if (
-    ts.isParenthesizedExpression(expression) ||
-    ts.isNonNullExpression(expression) ||
-    ts.isSatisfiesExpression(expression)
-  ) {
-    return getTypeScriptExpressionTypeNodeEvidence(expression.expression, context);
-  }
-  if (ts.isAsExpression(expression) || ts.isTypeAssertionExpression(expression)) return expression.type;
-  if (ts.isCallExpression(expression)) {
-    const type = context.checker.getResolvedSignature(expression)?.declaration?.type;
-    return type && ts.isTypeNode(type) ? type : undefined;
-  }
-  const symbol = context.checker.getSymbolAtLocation(expression);
-  const declaration = symbol?.valueDeclaration ?? symbol?.declarations?.[0];
-  if (!declaration) return undefined;
-  if (
-    ts.isParameter(declaration) ||
-    ts.isPropertyDeclaration(declaration) ||
-    ts.isPropertySignature(declaration) ||
-    ts.isVariableDeclaration(declaration)
-  ) {
-    return declaration.type;
-  }
-  if (
-    ts.isFunctionDeclaration(declaration) ||
-    ts.isFunctionExpression(declaration) ||
-    ts.isMethodDeclaration(declaration) ||
-    ts.isMethodSignature(declaration)
-  ) {
-    return declaration.type;
-  }
-  return undefined;
 }
 
 interface TypeScriptTypeNodeEvidence {
@@ -1702,7 +1739,7 @@ function getTypeScriptTypeNodeIterableElementEvidence(
   seen: ReadonlySet<ts.Symbol>,
   substitutions: ReadonlyMap<ts.Symbol, ts.TypeNode> = new Map(),
 ): TypeScriptTypeNodeEvidence | undefined {
-  const substituted = getTypeScriptTypeNodeSubstitution(type, context, substitutions);
+  const substituted = getTypeScriptSyntacticTypeSubstitution(type, context.checker, substitutions);
   if (substituted !== type) {
     return getTypeScriptTypeNodeIterableElementEvidence(substituted, context, seen, substitutions);
   }
@@ -1724,7 +1761,12 @@ function getTypeScriptTypeNodeIterableElementEvidence(
     if (!symbol || seen.has(symbol)) return undefined;
     const declaration = symbol.declarations?.find(ts.isTypeAliasDeclaration);
     if (!declaration) return undefined;
-    const nextSubstitutions = createTypeScriptTypeNodeAliasSubstitutions(type, declaration, context, substitutions);
+    const nextSubstitutions = createTypeScriptSyntacticAliasSubstitutions(
+      type,
+      declaration,
+      context.checker,
+      substitutions,
+    );
     if (!nextSubstitutions) return undefined;
     const nextSeen = new Set(seen);
     nextSeen.add(symbol);
@@ -1733,42 +1775,13 @@ function getTypeScriptTypeNodeIterableElementEvidence(
   return undefined;
 }
 
-function createTypeScriptTypeNodeAliasSubstitutions(
-  reference: ts.TypeReferenceNode,
-  declaration: ts.TypeAliasDeclaration,
-  context: LoweringContext,
-  substitutions: ReadonlyMap<ts.Symbol, ts.TypeNode>,
-): ReadonlyMap<ts.Symbol, ts.TypeNode> | undefined {
-  const parameters = declaration.typeParameters ?? [];
-  const arguments_ = reference.typeArguments ?? [];
-  if (arguments_.length > parameters.length) return undefined;
-  const next = new Map(substitutions);
-  for (const [index, parameter] of parameters.entries()) {
-    const argument = arguments_[index] ?? parameter.default;
-    const symbol = context.checker.getSymbolAtLocation(parameter.name);
-    if (!argument || !symbol) return undefined;
-    next.set(symbol, getTypeScriptTypeNodeSubstitution(argument, context, next));
-  }
-  return next;
-}
-
-function getTypeScriptTypeNodeSubstitution(
-  type: ts.TypeNode,
-  context: LoweringContext,
-  substitutions: ReadonlyMap<ts.Symbol, ts.TypeNode>,
-): ts.TypeNode {
-  if (!ts.isTypeReferenceNode(type) || type.typeArguments?.length) return type;
-  const symbol = context.checker.getSymbolAtLocation(type.typeName);
-  return (symbol && substitutions.get(symbol)) ?? type;
-}
-
 function lowerTypeScriptTypeNodeEvidence(
   type: ts.TypeNode,
   context: LoweringContext,
   seen: ReadonlySet<ts.Symbol> = new Set(),
   substitutions: ReadonlyMap<ts.Symbol, ts.TypeNode> = new Map(),
 ): IrType {
-  const substituted = getTypeScriptTypeNodeSubstitution(type, context, substitutions);
+  const substituted = getTypeScriptSyntacticTypeSubstitution(type, context.checker, substitutions);
   if (substituted !== type) return lowerTypeScriptTypeNodeEvidence(substituted, context, seen, substitutions);
   if (ts.isParenthesizedTypeNode(type)) {
     return lowerTypeScriptTypeNodeEvidence(type.type, context, seen, substitutions);
@@ -1791,7 +1804,12 @@ function lowerTypeScriptTypeNodeEvidence(
     const symbol = context.checker.getSymbolAtLocation(type.typeName);
     const declaration = symbol?.declarations?.find(ts.isTypeAliasDeclaration);
     if (symbol && declaration && !seen.has(symbol)) {
-      const nextSubstitutions = createTypeScriptTypeNodeAliasSubstitutions(type, declaration, context, substitutions);
+      const nextSubstitutions = createTypeScriptSyntacticAliasSubstitutions(
+        type,
+        declaration,
+        context.checker,
+        substitutions,
+      );
       if (nextSubstitutions) {
         const nextSeen = new Set(seen);
         nextSeen.add(symbol);

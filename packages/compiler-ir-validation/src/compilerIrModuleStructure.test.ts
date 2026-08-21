@@ -167,7 +167,7 @@ describe('validateIrModuleStructure', () => {
     }
   });
 
-  it('validates explicit undefined function-entry variable values', () => {
+  it('validates observable undefined separately from proven-uninitialized function entry', () => {
     const valid = lower('variable-entry.ts', 'export function read(): void { var value: number; }');
     const declaration = valid.declarations[0];
     if (declaration?.kind !== 'function' || declaration.body[0]?.kind !== 'variable') {
@@ -177,6 +177,8 @@ describe('validateIrModuleStructure', () => {
     if (!variable || 'pattern' in variable) throw new Error('Expected named variable');
     (variable as { initialValue?: unknown }).initialValue = 'undefined';
 
+    expect(validateIrModuleStructure(valid)).toEqual({ kind: 'valid' });
+    (variable as { initialValue?: unknown }).initialValue = 'uninitialized';
     expect(validateIrModuleStructure(valid)).toEqual({ kind: 'valid' });
 
     const invalidValue = structuredClone(valid);
@@ -217,9 +219,12 @@ describe('validateIrModuleStructure', () => {
     if (declaration?.kind !== 'function' || declaration.body[0]?.kind !== 'forIn') {
       throw new Error('Expected static for-in statement');
     }
-    (declaration.body[0] as { keyPlan?: { keys: readonly string[]; kind: 'staticObject' } }).keyPlan = {
+    (
+      declaration.body[0] as { keyPlan?: { evaluation: 'elide'; keys: readonly string[]; kind: 'objectLiteral' } }
+    ).keyPlan = {
+      evaluation: 'elide',
       keys: ['second', '2', '10'],
-      kind: 'staticObject',
+      kind: 'objectLiteral',
     };
     const result = validateIrModuleStructure(invalid);
 
