@@ -1051,6 +1051,72 @@ describe('lowerTypeScriptSource', () => {
     ]);
   });
 
+  it('records optional-chain receiver and projected value type evidence', () => {
+    const result = lower(
+      'optional-chain-evidence.ts',
+      'interface Value { count: number } export function read(value: Value | undefined, values: number[] | undefined, callback: ((value: number) => number) | undefined): Array<number | undefined> { return [value?.count, values?.[0], callback?.(1)]; }',
+    );
+    const read = result.module.declarations[1];
+    if (read?.kind !== 'function' || read.body[0]?.kind !== 'return' || read.body[0].expression?.kind !== 'array') {
+      throw new Error('Expected optional-chain array result');
+    }
+
+    expect(
+      read.body[0].expression.elements.map((element) => {
+        if (element?.kind === 'property') return element.optionalChain;
+        if (element?.kind === 'element' || element?.kind === 'call') return element.semantics.optionalChain;
+        return undefined;
+      }),
+    ).toMatchObject([
+      {
+        receiverEvaluation: 'once',
+        receiverType: {
+          kind: 'union',
+          types: [
+            { kind: 'named', reference: { binding: { name: 'Value' }, kind: 'binding', path: [] }, typeArguments: [] },
+            { kind: 'undefined' },
+          ],
+        },
+        result: 'undefined',
+        shortCircuit: 'nullish',
+        valueType: { kind: 'primitive', name: 'number' },
+      },
+      {
+        receiverEvaluation: 'once',
+        receiverType: {
+          kind: 'union',
+          types: [
+            { element: { kind: 'primitive', name: 'number' }, kind: 'array', readonly: false },
+            { kind: 'undefined' },
+          ],
+        },
+        result: 'undefined',
+        shortCircuit: 'nullish',
+        valueType: { kind: 'primitive', name: 'number' },
+      },
+      {
+        receiverEvaluation: 'once',
+        receiverType: {
+          kind: 'union',
+          types: [
+            {
+              kind: 'function',
+              parameters: [
+                { name: 'value', optional: false, rest: false, type: { kind: 'primitive', name: 'number' } },
+              ],
+              returns: { kind: 'primitive', name: 'number' },
+              typeParameters: [],
+            },
+            { kind: 'undefined' },
+          ],
+        },
+        result: 'undefined',
+        shortCircuit: 'nullish',
+        valueType: { kind: 'primitive', name: 'number' },
+      },
+    ]);
+  });
+
   it('identifies typed-array set calls from receiver semantics rather than member spelling', () => {
     const result = lower(
       'typed-array-set.ts',
@@ -1182,6 +1248,23 @@ describe('lowerTypeScriptSource', () => {
     expect(bindingReference(method.body[0].expression).id).toBe(method.parameters[0]?.binding.id);
     expect(method.body[1].expression).toEqual({ kind: 'identifier', reference: { kind: 'this' } });
     expect(lower('bindings.ts', source).module).toEqual(result.module);
+  });
+
+  it('resolves labeled break and continue references to one control-flow identity', () => {
+    const result = lower(
+      'labeled-flow.ts',
+      'export function scan(): void { outer: for (let index = 0; index < 2; index++) { switch (index) { case 0: continue outer; default: break outer; } } }',
+    );
+    const declaration = result.module.declarations[0];
+    const loop = declaration?.kind === 'function' ? declaration.body[0] : undefined;
+    const body = loop?.kind === 'for' && loop.body.kind === 'block' ? loop.body.statements[0] : undefined;
+    if (loop?.kind !== 'for' || body?.kind !== 'switch') throw new Error('Expected labeled loop and nested switch');
+    const continued = body.cases[0]?.statements[0];
+    const broken = body.cases[1]?.statements[0];
+
+    expect(loop.label).toMatchObject({ id: expect.stringContaining('control-flow-label:'), name: 'outer' });
+    expect(continued).toMatchObject({ kind: 'continue', target: { id: loop.label?.id, name: 'outer' } });
+    expect(broken).toMatchObject({ kind: 'break', target: { id: loop.label?.id, name: 'outer' } });
   });
 
   it('preserves fixed, omitted, nested, defaulted, rest, hoisted, and iteration array bindings', () => {
@@ -1608,6 +1691,62 @@ describe('lowerTypeScriptSource', () => {
         },
       },
     });
+  });
+
+  it('flattens inherited generic interface evidence and diagnoses incompatible diamonds', () => {
+    const inherited = lower(
+      'inherited-interface-evidence.ts',
+      `
+        interface Base<Value> { readonly base: Value }
+        interface Middle<Value> extends Base<readonly [Value]> { middle: Value | undefined }
+        interface Leaf<Value> extends Middle<Value> { leaf: boolean }
+        export function read(value: Leaf<number>): void {
+          const { base, middle, leaf }: Leaf<number> = value;
+          base; middle; leaf;
+        }
+      `,
+    );
+    const declaration = inherited.module.declarations.find(
+      (item) => item.kind === 'function' && item.binding.name === 'read',
+    );
+    const variable =
+      declaration?.kind === 'function' && declaration.body[0]?.kind === 'variable'
+        ? declaration.body[0].declarations[0]
+        : undefined;
+    if (!variable || !('pattern' in variable) || variable.pattern.kind !== 'object') {
+      throw new Error('Expected inherited object pattern evidence');
+    }
+
+    expect(variable.pattern.properties).toMatchObject([
+      {
+        pattern: {
+          binding: { name: 'base' },
+          type: {
+            elements: [{ type: { kind: 'primitive', name: 'number' } }],
+            kind: 'tuple',
+            readonly: true,
+          },
+        },
+      },
+      {
+        pattern: {
+          binding: { name: 'middle' },
+          type: {
+            kind: 'union',
+            types: [{ kind: 'primitive', name: 'number' }, { kind: 'undefined' }],
+          },
+        },
+      },
+      { pattern: { binding: { name: 'leaf' }, type: { kind: 'primitive', name: 'boolean' } } },
+    ]);
+
+    const conflict = lower(
+      'incompatible-interface-evidence.ts',
+      'interface Left { value: number } interface Right { value: string } interface Combined extends Left, Right {} export function read(input: Combined): void { const { value }: Combined = input; value; }',
+    );
+    expect(conflict.diagnostics).toContainEqual(
+      expect.objectContaining({ message: 'interface Combined inherits incompatible property value' }),
+    );
   });
 
   it('distinguishes contextual fixed tuple expressions from open array expressions', () => {

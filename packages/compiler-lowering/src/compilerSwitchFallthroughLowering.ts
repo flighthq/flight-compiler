@@ -528,14 +528,18 @@ function lowerIrStatementSwitchFallthrough(
         statements: switchCase.statements.map((item) => lowerIrStatementSwitchFallthrough(item, sourceIdentity)),
       }));
       const expression = lowerIrExpressionSwitchFallthrough(statement.expression, sourceIdentity);
-      const completions = cases.map(getIrSwitchCaseCompletion);
+      const completions = cases.map((switchCase) => getIrSwitchCaseCompletion(switchCase, statement.label?.id));
       if (
         completions.some((completion) => completion.kind === 'fallthrough') &&
         cases.some((switchCase) => switchCase.statements.some(hasIrStatementBindingIntroductionSwitchFallthrough))
       ) {
         return createIrSwitchStateMachineFallthrough({ ...statement, cases, expression }, completions, sourceIdentity);
       }
-      return { ...statement, cases: lowerIrSwitchCasesFallthrough(cases, sourceIdentity), expression };
+      return {
+        ...statement,
+        cases: lowerIrSwitchCasesFallthrough(cases, sourceIdentity, statement.label?.id),
+        expression,
+      };
     }
     case 'try':
       return {
@@ -569,8 +573,9 @@ function lowerIrStatementSwitchFallthrough(
 function lowerIrSwitchCasesFallthrough(
   cases: readonly Readonly<IrSwitchCase>[],
   sourceIdentity: Readonly<CompilerSourceIdentity>,
+  switchLabel?: string,
 ): readonly IrSwitchCase[] {
-  const completions = cases.map(getIrSwitchCaseCompletion);
+  const completions = cases.map((switchCase) => getIrSwitchCaseCompletion(switchCase, switchLabel));
   const unsupported = completions.find((completion) => completion.kind === 'unsupported');
   if (unsupported?.kind === 'unsupported') {
     throw createCompilerLoweringFailure(
@@ -659,7 +664,8 @@ function createIrSwitchStateMachineFallthrough(
   selectorCases.push({ statements: [assignState(defaultIndex), { kind: 'break' }] });
   const executionCases = statement.cases.map((switchCase, index): IrSwitchCase => {
     const completion = completions[index]!;
-    const continues = switchCase.statements.at(-1)?.kind === 'continue';
+    const last = switchCase.statements.at(-1);
+    const continues = last?.kind === 'continue' && !last.target;
     const statements =
       completion.kind === 'localBreak' || continues ? switchCase.statements.slice(0, -1) : [...switchCase.statements];
     if (completion.kind === 'fallthrough' || completion.kind === 'localBreak' || continues) {
@@ -674,6 +680,7 @@ function createIrSwitchStateMachineFallthrough(
   });
   return {
     kind: 'block',
+    ...(statement.label ? { label: statement.label } : {}),
     statements: [
       {
         declarations: [
@@ -707,7 +714,10 @@ function createIrSwitchStateMachineFallthrough(
         },
         kind: 'while',
       },
-      ...(statement.cases.some((switchCase) => switchCase.statements.at(-1)?.kind === 'continue')
+      ...(statement.cases.some((switchCase) => {
+        const last = switchCase.statements.at(-1);
+        return last?.kind === 'continue' && !last.target;
+      })
         ? [
             {
               condition: {

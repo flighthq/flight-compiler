@@ -1,3 +1,5 @@
+import type { IrType } from './compilerTypeIntermediateRepresentation.js';
+
 export type IrIndexedReceiver =
   | 'array'
   | 'bigInt64Array'
@@ -47,8 +49,10 @@ export interface IrStatementValueCallSemantics {
 
 export interface IrOptionalChainSemantics {
   readonly receiverEvaluation: 'once';
+  readonly receiverType: IrType;
   readonly result: 'undefined';
   readonly shortCircuit: 'nullish';
+  readonly valueType: IrType;
 }
 
 export interface IrDefaultParameterCallSemantics {

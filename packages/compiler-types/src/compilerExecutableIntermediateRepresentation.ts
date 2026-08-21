@@ -29,6 +29,11 @@ export interface IrIdentifierExpression {
   readonly reference: IrIdentifierReference;
 }
 
+export interface IrControlFlowLabelIdentity extends CompilerSourceOrigin {
+  readonly id: string;
+  readonly name: string;
+}
+
 export type IrTupleExpressionElement =
   | Readonly<{ expression: IrExpression; optional: false }>
   | Readonly<{ expression?: IrExpression; optional: true }>;
@@ -181,10 +186,15 @@ export type IrSwitchCaseCompletion =
   | Readonly<{ kind: 'unsupported'; reason: string }>;
 
 export type IrStatement =
-  | Readonly<{ kind: 'block'; statements: readonly IrStatement[] }>
-  | Readonly<{ kind: 'break' }>
-  | Readonly<{ kind: 'continue' }>
-  | Readonly<{ body: IrStatement; condition: IrExpression; kind: 'do' }>
+  | Readonly<{ kind: 'block'; label?: IrControlFlowLabelIdentity | undefined; statements: readonly IrStatement[] }>
+  | Readonly<{ kind: 'break'; target?: IrControlFlowLabelIdentity | undefined }>
+  | Readonly<{ kind: 'continue'; target?: IrControlFlowLabelIdentity | undefined }>
+  | Readonly<{
+      body: IrStatement;
+      condition: IrExpression;
+      kind: 'do';
+      label?: IrControlFlowLabelIdentity | undefined;
+    }>
   | Readonly<{ expression: IrExpression; kind: 'expression' }>
   | Readonly<{
       body: IrStatement;
@@ -192,12 +202,21 @@ export type IrStatement =
       increment?: IrExpression | undefined;
       initializer?: IrExpression | readonly IrVariable[] | undefined;
       kind: 'for';
+      label?: IrControlFlowLabelIdentity | undefined;
     }>
-  | Readonly<{ await: boolean; body: IrStatement; iterable: IrExpression; kind: 'forOf'; variable: IrVariable }>
+  | Readonly<{
+      await: boolean;
+      body: IrStatement;
+      iterable: IrExpression;
+      kind: 'forOf';
+      label?: IrControlFlowLabelIdentity | undefined;
+      variable: IrVariable;
+    }>
   | Readonly<{
       body: IrStatement;
       keyPlan?: IrForInKeyPlan | undefined;
       kind: 'forIn';
+      label?: IrControlFlowLabelIdentity | undefined;
       object: IrExpression;
       variable: IrVariable;
     }>
@@ -212,6 +231,7 @@ export type IrStatement =
       cases: readonly IrSwitchCase[];
       expression: IrExpression;
       kind: 'switch';
+      label?: IrControlFlowLabelIdentity | undefined;
       origin?: CompilerSourceOrigin | undefined;
     }>
   | Readonly<{ expression: IrExpression; kind: 'throw' }>
@@ -222,4 +242,9 @@ export type IrStatement =
       tryBody: IrStatement;
     }>
   | Readonly<{ declarations: readonly IrVariable[]; kind: 'variable' }>
-  | Readonly<{ body: IrStatement; condition: IrExpression; kind: 'while' }>;
+  | Readonly<{
+      body: IrStatement;
+      condition: IrExpression;
+      kind: 'while';
+      label?: IrControlFlowLabelIdentity | undefined;
+    }>;

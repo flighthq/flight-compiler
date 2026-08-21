@@ -259,6 +259,33 @@ describe('validateIrModuleStructure', () => {
     }
   });
 
+  it('validates labeled control-flow targets against active and continuable identities', () => {
+    const valid = lower(
+      'labeled-flow.ts',
+      'export function scan(): void { outer: while (true) { if (true) continue outer; break outer; } }',
+    );
+    expect(validateIrModuleStructure(valid)).toEqual({ kind: 'valid' });
+
+    const dangling = structuredClone(valid);
+    const declaration = dangling.declarations[0];
+    const loop = declaration?.kind === 'function' ? declaration.body[0] : undefined;
+    const first = loop?.kind === 'while' && loop.body.kind === 'block' ? loop.body.statements[0] : undefined;
+    const continued = first?.kind === 'if' ? first.consequent : undefined;
+    if (continued?.kind !== 'continue' || !continued.target) throw new Error('Expected labeled continue target');
+    (continued.target as { id: string }).id = 'control-flow-label:missing';
+
+    const nonLoop = lower('labeled-block.ts', 'export function scan(): void { outer: { continue outer; } }');
+    for (const module of [dangling, nonLoop]) {
+      const result = validateIrModuleStructure(module);
+      expect(result.kind).toBe('invalid');
+      if (result.kind === 'invalid') {
+        expect(result.failures).toContainEqual(
+          expect.objectContaining({ code: 'invalid-node-shape', path: expect.stringContaining('.target') }),
+        );
+      }
+    }
+  });
+
   it('accepts exact repeated function-scoped variable declarations but not other duplicate introductions', () => {
     const repeated = lower(
       'repeated-var.ts',

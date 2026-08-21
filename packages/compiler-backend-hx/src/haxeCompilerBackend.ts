@@ -400,12 +400,21 @@ function emitParameters(parameters: readonly IrParameter[], context: EmitContext
 }
 
 function emitStatement(statement: Readonly<IrStatement>, context: EmitContext): string[] {
+  if ('label' in statement && statement.label) {
+    emissionError(context, `control-flow label ${statement.label.name} requires Haxe completion-state lowering`);
+  }
   switch (statement.kind) {
     case 'block':
       return ['{', ...indentSourceLines(emitStatements(statement.statements, context)), '}'];
     case 'break':
+      if (statement.target) {
+        emissionError(context, `break target ${statement.target.name} requires Haxe completion-state lowering`);
+      }
       return ['break;'];
     case 'continue':
+      if (statement.target) {
+        emissionError(context, `continue target ${statement.target.name} requires Haxe completion-state lowering`);
+      }
       return ['continue;'];
     case 'do':
       return [

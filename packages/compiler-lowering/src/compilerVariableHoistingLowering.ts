@@ -65,10 +65,18 @@ function addIrVariableHoistingDeclaration(
   }
   analysis.hoisted.set(variable.binding.id, {
     binding: variable.binding,
-    initialValue: 'uninitialized',
+    initialValue: hasIrTypeUndefinedVariableHoisting(variable.type) ? 'undefined' : 'uninitialized',
     mutable: true,
     ...(variable.type ? { type: variable.type } : {}),
   });
+}
+
+function hasIrTypeUndefinedVariableHoisting(type: Readonly<IrType> | undefined): boolean {
+  return (
+    type?.kind === 'undefined' ||
+    (type?.kind === 'primitive' && type.name === 'void') ||
+    (type?.kind === 'union' && type.types.some(hasIrTypeUndefinedVariableHoisting))
+  );
 }
 
 function collapseIrStatementsVariableHoisting(statements: readonly IrStatement[]): IrStatement {

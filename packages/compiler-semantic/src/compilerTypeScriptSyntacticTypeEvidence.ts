@@ -10,7 +10,7 @@ export function createTypeScriptSyntacticAliasSubstitutions(
 }
 
 export function createTypeScriptSyntacticDeclarationSubstitutions(
-  reference: ts.TypeReferenceNode,
+  reference: Readonly<{ typeArguments?: readonly ts.TypeNode[] | undefined }>,
   declaration: ts.InterfaceDeclaration | ts.TypeAliasDeclaration,
   checker: ts.TypeChecker,
   substitutions: ReadonlyMap<ts.Symbol, ts.TypeNode>,

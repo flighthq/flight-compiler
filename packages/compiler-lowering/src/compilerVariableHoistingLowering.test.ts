@@ -417,6 +417,23 @@ describe('createCompilerLoweringPassVariableHoisting', () => {
     expectLoweringFailure(run, reason);
     expectLoweringFailure(run, reason);
   });
+
+  it('elects observable undefined entry state only for an undefined-bearing variable domain', () => {
+    const output = lowerIrModuleWithCompilerPasses(
+      lower(
+        'undefined-hoisting.ts',
+        'export function read(): number | undefined { return value; var value: number | undefined = 1; }',
+      ),
+      [createCompilerLoweringPassArrayBindingPattern(), createCompilerLoweringPassVariableHoisting()],
+    );
+    const body = getFunctionBody(output, 'read');
+
+    expect(getNamedVariable(getVariableStatement(body[0]).declarations[0])).toMatchObject({
+      binding: { name: 'value' },
+      initialValue: 'undefined',
+      type: { kind: 'union', types: [{ kind: 'primitive', name: 'number' }, { kind: 'undefined' }] },
+    });
+  });
 });
 
 function expectLoweringFailure(run: () => unknown, reason: string): void {

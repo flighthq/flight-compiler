@@ -53,12 +53,44 @@ function getTypeScriptForInClosedRecord(
     if (!closed) return;
     if (ts.isIdentifier(node) && checker.getSymbolAtLocation(node) === symbol && node !== declaration.name) {
       const parent = node.parent;
-      if (!ts.isForInStatement(parent) || parent.expression !== node) closed = false;
+      if (
+        (!ts.isForInStatement(parent) || parent.expression !== node) &&
+        !isTypeScriptForInReadOnlyPropertyObservation(node)
+      ) {
+        closed = false;
+      }
     }
     ts.forEachChild(node, visit);
   };
   visit(sourceFile);
   return closed ? literal : undefined;
+}
+
+function isTypeScriptForInReadOnlyPropertyObservation(reference: ts.Identifier): boolean {
+  const access = reference.parent;
+  if (
+    (!ts.isPropertyAccessExpression(access) && !ts.isElementAccessExpression(access)) ||
+    access.expression !== reference
+  ) {
+    return false;
+  }
+  const use = access.parent;
+  if (ts.isDeleteExpression(use) && use.expression === access) return false;
+  if (
+    (ts.isPrefixUnaryExpression(use) || ts.isPostfixUnaryExpression(use)) &&
+    (use.operator === ts.SyntaxKind.PlusPlusToken || use.operator === ts.SyntaxKind.MinusMinusToken)
+  ) {
+    return false;
+  }
+  if (
+    ts.isBinaryExpression(use) &&
+    use.left === access &&
+    use.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
+    use.operatorToken.kind <= ts.SyntaxKind.LastAssignment
+  ) {
+    return false;
+  }
+  return !ts.isCallExpression(use) || use.expression !== access;
 }
 
 function getTypeScriptForInObjectKeys(

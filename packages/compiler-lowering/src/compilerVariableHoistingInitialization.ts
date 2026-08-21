@@ -29,7 +29,10 @@ export function validateIrFunctionVariableInitialization(
 ): void {
   const analysisVariables = new Map(variables) as IrVariableInitializationVariables;
   analysisVariables.deferredClosures = collectIrDeferredClosureVariableInitialization(statements);
-  analyzeIrStatementListVariableInitialization(statements, new Set(), analysisVariables, sourceIdentity);
+  const initialized = new Set(
+    [...variables].flatMap(([identity, variable]) => (variable.initialValue === 'undefined' ? [identity] : [])),
+  );
+  analyzeIrStatementListVariableInitialization(statements, initialized, analysisVariables, sourceIdentity);
 }
 
 function addIrExpressionAssignmentTargetVariableInitialization(

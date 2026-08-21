@@ -1,48 +1,66 @@
 import type { IrStatement, IrSwitchCase, IrSwitchCaseCompletion } from '../../compiler-types/src/index.js';
 
-export function getIrSwitchCaseCompletion(switchCase: Readonly<IrSwitchCase>): IrSwitchCaseCompletion {
+export function getIrSwitchCaseCompletion(
+  switchCase: Readonly<IrSwitchCase>,
+  switchLabel?: string,
+): IrSwitchCaseCompletion {
   const last = switchCase.statements.at(-1);
   const preceding = last ? switchCase.statements.slice(0, -1) : switchCase.statements;
-  if (preceding.some(hasIrStatementSwitchTargetBreak)) {
+  if (preceding.some((statement) => hasIrStatementSwitchTargetBreak(statement, switchLabel))) {
     return {
       kind: 'unsupported',
       reason: 'switch-local break must be the final direct statement of its clause',
     };
   }
-  if (last?.kind === 'break') return { kind: 'localBreak' };
-  if (last && hasIrStatementSwitchTargetBreak(last)) {
+  if (last?.kind === 'break') {
+    return !last.target || last.target.id === switchLabel ? { kind: 'localBreak' } : { kind: 'abrupt' };
+  }
+  if (last && hasIrStatementAbruptCompletion(last)) return { kind: 'abrupt' };
+  if (last && hasIrStatementSwitchTargetBreak(last, switchLabel)) {
     return {
       kind: 'unsupported',
       reason: 'switch-local break must be the final direct statement of its clause',
     };
   }
-  return last?.kind === 'return' || last?.kind === 'throw' ? { kind: 'abrupt' } : { kind: 'fallthrough' };
+  return { kind: 'fallthrough' };
 }
 
-function hasIrStatementSwitchTargetBreak(statement: Readonly<IrStatement>): boolean {
+function hasIrStatementAbruptCompletion(statement: Readonly<IrStatement>): boolean {
+  if (statement.kind === 'continue' || statement.kind === 'return' || statement.kind === 'throw') return true;
+  if (statement.kind !== 'block') return false;
+  const last = statement.statements.at(-1);
+  return last ? hasIrStatementAbruptCompletion(last) : false;
+}
+
+function hasIrStatementSwitchTargetBreak(statement: Readonly<IrStatement>, switchLabel?: string): boolean {
   switch (statement.kind) {
     case 'block':
-      return statement.statements.some(hasIrStatementSwitchTargetBreak);
+      return statement.statements.some((child) => hasIrStatementSwitchTargetBreak(child, switchLabel));
     case 'if':
       return (
-        hasIrStatementSwitchTargetBreak(statement.consequent) ||
-        (statement.otherwise ? hasIrStatementSwitchTargetBreak(statement.otherwise) : false)
+        hasIrStatementSwitchTargetBreak(statement.consequent, switchLabel) ||
+        (statement.otherwise ? hasIrStatementSwitchTargetBreak(statement.otherwise, switchLabel) : false)
       );
     case 'try':
       return (
-        hasIrStatementSwitchTargetBreak(statement.tryBody) ||
-        (statement.catchClause ? hasIrStatementSwitchTargetBreak(statement.catchClause.body) : false) ||
-        (statement.finallyBody ? hasIrStatementSwitchTargetBreak(statement.finallyBody) : false)
+        hasIrStatementSwitchTargetBreak(statement.tryBody, switchLabel) ||
+        (statement.catchClause ? hasIrStatementSwitchTargetBreak(statement.catchClause.body, switchLabel) : false) ||
+        (statement.finallyBody ? hasIrStatementSwitchTargetBreak(statement.finallyBody, switchLabel) : false)
       );
     case 'break':
-      return true;
+      return statement.target ? statement.target.id === switchLabel : true;
     case 'do':
     case 'for':
     case 'forIn':
     case 'forOf':
-    case 'switch':
     case 'while':
-      return false;
+      return switchLabel ? hasIrStatementSwitchTargetBreak(statement.body, switchLabel) : false;
+    case 'switch':
+      return switchLabel
+        ? statement.cases.some((switchCase) =>
+            switchCase.statements.some((child) => hasIrStatementSwitchTargetBreak(child, switchLabel)),
+          )
+        : false;
     case 'continue':
     case 'expression':
     case 'return':

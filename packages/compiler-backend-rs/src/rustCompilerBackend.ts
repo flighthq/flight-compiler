@@ -26,6 +26,7 @@ import type {
   IrBinaryOperatorSemantics,
   IrBindingIdentity,
   IrClassDeclaration,
+  IrControlFlowLabelIdentity,
   IrDeclaration,
   IrEnumDeclaration,
   IrExpression,
@@ -244,15 +245,15 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
       return `(${left} ${emitBinaryOperatorRust(expression.operator, expression.semantics, context)} ${right})`;
     }
     case 'call':
-      if (expression.optional) emissionError(context, 'optional calls require Option-aware lowering');
       if (expression.semantics.statementValue) return emitStatementValueExpressionRust(expression, context);
+      if (expression.optional) return emitOptionalCallExpressionRust(expression, context);
       return `${expression.callee.kind === 'function' ? `(${emitExpression(expression.callee, context)})` : emitExpression(expression.callee, context)}(${emitCallArgumentsRust(expression, context).join(', ')})`;
     case 'cast':
       return `(${emitExpression(expression.expression, context)} as ${emitType(expression.type, context)})`;
     case 'conditional':
       return `if ${emitExpression(expression.condition, context)} { ${emitExpression(expression.whenTrue, context)} } else { ${emitExpression(expression.whenFalse, context)} }`;
     case 'element':
-      if (expression.optional) emissionError(context, 'optional element access requires Option-aware lowering');
+      if (expression.optional) return emitOptionalElementExpressionRust(expression, context);
       if (expression.semantics.receivers.includes('object')) {
         emissionError(context, 'computed object access requires JavaScript property-key coercion lowering');
       }
@@ -281,7 +282,7 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
     case 'objectRest':
       return emitObjectRestExpressionRust(expression, context);
     case 'property':
-      if (expression.optional) emissionError(context, 'optional property access requires Option-aware lowering');
+      if (expression.optional) return emitOptionalPropertyExpressionRust(expression, context);
       return `${emitExpression(expression.object, context)}${isAmbientIdentifier(expression.object) ? '::' : '.'}${safeRustValueName(expression.name)}`;
     case 'regexp':
       emissionError(context, 'regular expressions require a downstream standard-library mapping');
@@ -426,6 +427,88 @@ function emitCallArgumentsRust(
   });
 }
 
+function emitOptionalCallExpressionRust(
+  expression: Readonly<Extract<IrExpression, { kind: 'call' }>>,
+  context: EmitContext,
+): string {
+  const semantics = expression.semantics.optionalChain;
+  if (!semantics) emissionError(context, 'optional call lacks neutral optional-chain evidence');
+  const arguments_ = emitCallArgumentsRust(expression, context).join(', ');
+  const callee = emitExpression(expression.callee, context);
+  if (!hasIrTypeNullishMemberRust(semantics.receiverType)) return `${callee}(${arguments_})`;
+  getIrTypeOptionalPayloadRust(semantics.receiverType, 'optional call receiver', context);
+  const operation = isNullableType(semantics.valueType) ? 'and_then' : 'map';
+  return `${callee}.as_ref().${operation}(|optional_chain_value| optional_chain_value(${arguments_}))`;
+}
+
+function emitOptionalElementExpressionRust(
+  expression: Readonly<Extract<IrExpression, { kind: 'element' }>>,
+  context: EmitContext,
+): string {
+  const semantics = expression.semantics.optionalChain;
+  if (!semantics) emissionError(context, 'optional element access lacks neutral optional-chain evidence');
+  if (!hasIrTypeNullishMemberRust(semantics.receiverType)) {
+    return emitRequiredElementExpressionRust(expression, context);
+  }
+  const receiver = getIrTypeOptionalPayloadRust(semantics.receiverType, 'optional element receiver', context);
+  const object = emitExpression(expression.object, context);
+  const value = 'optional_chain_value';
+  if (receiver.kind === 'tuple') {
+    const index = getElementAccessTupleIndexRust(expression, context);
+    const operation = receiver.elements[index]?.optional ? 'and_then' : 'map';
+    return `${object}.as_ref().${operation}(|${value}| ${value}.${String(index)}.clone())`;
+  }
+  if (receiver.kind === 'array') {
+    return `${object}.as_ref().and_then(|${value}| ${value}.get(${emitExpression(expression.index, context)} as usize).cloned())`;
+  }
+  emissionError(context, 'optional element access requires array or fixed-tuple receiver evidence');
+}
+
+function emitOptionalPropertyExpressionRust(
+  expression: Readonly<Extract<IrExpression, { kind: 'property' }>>,
+  context: EmitContext,
+): string {
+  const semantics = expression.optionalChain;
+  if (!semantics) emissionError(context, 'optional property access lacks neutral optional-chain evidence');
+  const object = emitExpression(expression.object, context);
+  const property = safeRustValueName(expression.name);
+  if (!hasIrTypeNullishMemberRust(semantics.receiverType)) {
+    return `${object}${isAmbientIdentifier(expression.object) ? '::' : '.'}${property}`;
+  }
+  getIrTypeOptionalPayloadRust(semantics.receiverType, 'optional property receiver', context);
+  const operation = isNullableType(semantics.valueType) ? 'and_then' : 'map';
+  return `${object}.as_ref().${operation}(|optional_chain_value| optional_chain_value.${property}.clone())`;
+}
+
+function emitRequiredElementExpressionRust(
+  expression: Readonly<Extract<IrExpression, { kind: 'element' }>>,
+  context: EmitContext,
+): string {
+  if (expression.semantics.receivers.includes('object')) {
+    emissionError(context, 'computed object access requires JavaScript property-key coercion lowering');
+  }
+  if (expression.semantics.receivers.includes('tuple')) {
+    const index = getElementAccessTupleIndexRust(expression, context);
+    return `${emitExpression(expression.object, context)}.${String(index)}`;
+  }
+  return `${emitExpression(expression.object, context)}[${emitExpression(expression.index, context)} as usize]`;
+}
+
+function getIrTypeOptionalPayloadRust(type: Readonly<IrType>, subject: string, context: EmitContext): Readonly<IrType> {
+  if (type.kind !== 'union') emissionError(context, `${subject} requires one concrete Rust Option payload`);
+  const concrete = type.types.filter((member) => member.kind !== 'null' && member.kind !== 'undefined');
+  if (concrete.length !== 1) emissionError(context, `${subject} requires one concrete Rust Option payload`);
+  return concrete[0]!;
+}
+
+function hasIrTypeNullishMemberRust(type: Readonly<IrType>): boolean {
+  return (
+    type.kind === 'null' ||
+    type.kind === 'undefined' ||
+    (type.kind === 'union' && type.types.some((member) => member.kind === 'null' || member.kind === 'undefined'))
+  );
+}
+
 function emitObjectRestExpressionRust(
   expression: Readonly<Extract<IrExpression, { kind: 'objectRest' }>>,
   context: EmitContext,
@@ -454,7 +537,7 @@ function emitParameter(parameter: Readonly<IrParameter>, context: EmitContext): 
   if (parameter.initializer) {
     return `${getBindingTargetNameRust(parameter.binding, context)}: Option<${emitType(parameter.type, context)}>`;
   }
-  if (parameter.optional || isNullableType(parameter.type)) {
+  if (parameter.optional) {
     emissionError(
       context,
       `nullable parameter ${parameter.binding.name} requires Option-aware Rust control-flow lowering`,
@@ -502,14 +585,18 @@ function emitStatementValueExpressionRust(
 function emitStatement(statement: Readonly<IrStatement>, context: EmitContext): string[] {
   switch (statement.kind) {
     case 'block':
-      return ['{', ...indentSourceLines(emitStatements(statement.statements, context)), '}'];
+      return [
+        `${emitControlFlowLabelRust(statement.label)}{`,
+        ...indentSourceLines(emitStatements(statement.statements, context)),
+        '}',
+      ];
     case 'break':
-      return ['break;'];
+      return [`break${statement.target ? ` ${emitControlFlowTargetRust(statement.target)}` : ''};`];
     case 'continue':
-      return ['continue;'];
+      return [`continue${statement.target ? ` ${emitControlFlowTargetRust(statement.target)}` : ''};`];
     case 'do':
       return [
-        'loop {',
+        `${emitControlFlowLabelRust(statement.label)}loop {`,
         ...indentSourceLines(emitStatementBody(statement.body, context)),
         `  if !(${emitExpression(statement.condition, context)}) { break; }`,
         '}',
@@ -528,7 +615,7 @@ function emitStatement(statement: Readonly<IrStatement>, context: EmitContext): 
         emissionError(context, 'effectful object key iteration requires Rust structural-object evaluation lowering');
       }
       return [
-        `for ${statement.variable.mutable ? 'mut ' : ''}${getBindingTargetNameRust(statement.variable.binding, context)} in [${statement.keyPlan.keys.map((key) => `${JSON.stringify(key)}.to_owned()`).join(', ')}] {`,
+        `${emitControlFlowLabelRust(statement.label)}for ${statement.variable.mutable ? 'mut ' : ''}${getBindingTargetNameRust(statement.variable.binding, context)} in [${statement.keyPlan.keys.map((key) => `${JSON.stringify(key)}.to_owned()`).join(', ')}] {`,
         ...indentSourceLines(emitStatementBody(statement.body, context)),
         '}',
       ];
@@ -537,7 +624,7 @@ function emitStatement(statement: Readonly<IrStatement>, context: EmitContext): 
       if ('pattern' in statement.variable)
         emissionError(context, 'binding patterns require destructuring lowering before Rust emission');
       return [
-        `for ${statement.variable.mutable ? 'mut ' : ''}${getBindingTargetNameRust(statement.variable.binding, context)} in ${emitExpression(statement.iterable, context)} {`,
+        `${emitControlFlowLabelRust(statement.label)}for ${statement.variable.mutable ? 'mut ' : ''}${getBindingTargetNameRust(statement.variable.binding, context)} in ${emitExpression(statement.iterable, context)} {`,
         ...indentSourceLines(emitStatementBody(statement.body, context)),
         '}',
       ];
@@ -561,16 +648,21 @@ function emitStatement(statement: Readonly<IrStatement>, context: EmitContext): 
       cases.forEach((switchCase, index) => {
         lines.push(
           `${index > 0 ? 'else ' : ''}if ${name} == ${emitExpression(switchCase.expression!, context)} {`,
-          ...indentSourceLines(emitIrSwitchCaseStatementsRust(switchCase, context)),
+          ...indentSourceLines(emitIrSwitchCaseStatementsRust(switchCase, statement.label, context)),
           '}',
         );
       });
       if (otherwise) {
         if (cases.length > 0) lines.push('else {');
-        lines.push(...indentSourceLines(emitIrSwitchCaseStatementsRust(otherwise, context), cases.length > 0 ? 1 : 0));
+        lines.push(
+          ...indentSourceLines(
+            emitIrSwitchCaseStatementsRust(otherwise, statement.label, context),
+            cases.length > 0 ? 1 : 0,
+          ),
+        );
         if (cases.length > 0) lines.push('}');
       }
-      return ['{', ...indentSourceLines(lines), '}'];
+      return [`${emitControlFlowLabelRust(statement.label)}{`, ...indentSourceLines(lines), '}'];
     }
     case 'throw':
       return [`panic!("{:?}", ${emitExpression(statement.expression, context)});`];
@@ -580,16 +672,29 @@ function emitStatement(statement: Readonly<IrStatement>, context: EmitContext): 
       return statement.declarations.map((variable) => emitVariable(variable, context));
     case 'while':
       return [
-        `while ${emitExpression(statement.condition, context)} {`,
+        `${emitControlFlowLabelRust(statement.label)}while ${emitExpression(statement.condition, context)} {`,
         ...indentSourceLines(emitStatementBody(statement.body, context)),
         '}',
       ];
   }
 }
 
-function emitIrSwitchCaseStatementsRust(switchCase: Readonly<IrSwitchCase>, context: EmitContext): string[] {
+function emitIrSwitchCaseStatementsRust(
+  switchCase: Readonly<IrSwitchCase>,
+  switchLabel: Readonly<IrControlFlowLabelIdentity> | undefined,
+  context: EmitContext,
+): string[] {
   const last = switchCase.statements.at(-1);
-  return emitStatements(last?.kind === 'break' ? switchCase.statements.slice(0, -1) : switchCase.statements, context);
+  const localBreak = last?.kind === 'break' && (!last.target || (switchLabel && last.target.id === switchLabel.id));
+  return emitStatements(localBreak ? switchCase.statements.slice(0, -1) : switchCase.statements, context);
+}
+
+function emitControlFlowLabelRust(label: Readonly<IrControlFlowLabelIdentity> | undefined): string {
+  return label ? `${emitControlFlowTargetRust(label)}: ` : '';
+}
+
+function emitControlFlowTargetRust(label: Readonly<IrControlFlowLabelIdentity>): string {
+  return `'${safeRustValueName(label.name)}`;
 }
 
 function emitStatementBody(statement: Readonly<IrStatement>, context: EmitContext): string[] {
@@ -734,7 +839,10 @@ function emitVariable(variable: Readonly<IrVariable>, context: EmitContext): str
   if ('pattern' in variable)
     emissionError(context, 'binding patterns require destructuring lowering before Rust emission');
   if (variable.initialValue === 'undefined') {
-    emissionError(context, 'observable undefined function-entry values require Rust representation lowering');
+    if (!variable.type || !isNullableType(variable.type)) {
+      emissionError(context, 'observable undefined function-entry value requires a nullable Rust type domain');
+    }
+    return `let ${variable.mutable ? 'mut ' : ''}${getBindingTargetNameRust(variable.binding, context)}: ${emitType(variable.type, context)} = None;`;
   }
   const type =
     variable.type && !(variable.initializer?.kind === 'objectRest' && variable.type.kind === 'object')

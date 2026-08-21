@@ -17,12 +17,25 @@ describe('getTypeScriptForInKeyEvidence', () => {
     });
   });
 
-  it('proves a const record closed only while every reference is a for-in source', () => {
-    const closed = createProgram('const values = { first: 1 }; for (const key in values) key;');
-    const escaped = createProgram('const values = { first: 1 }; values.first; for (const key in values) key;');
-    const closedLoop = closed.source.statements[1];
-    const escapedLoop = escaped.source.statements[2];
-    if (!closedLoop || !ts.isForInStatement(closedLoop) || !escapedLoop || !ts.isForInStatement(escapedLoop)) {
+  it('proves a const record closed across property reads but not mutation or escape', () => {
+    const closed = createProgram(
+      'const values = { first: 1 }; values.first; values["first"]; for (const key in values) key;',
+    );
+    const escaped = createProgram(
+      'declare function consume(value: unknown): void; const values = { first: 1 }; consume(values); for (const key in values) key;',
+    );
+    const mutated = createProgram('const values = { first: 1 }; values.first = 2; for (const key in values) key;');
+    const closedLoop = closed.source.statements[3];
+    const escapedLoop = escaped.source.statements[3];
+    const mutatedLoop = mutated.source.statements[2];
+    if (
+      !closedLoop ||
+      !ts.isForInStatement(closedLoop) ||
+      !escapedLoop ||
+      !ts.isForInStatement(escapedLoop) ||
+      !mutatedLoop ||
+      !ts.isForInStatement(mutatedLoop)
+    ) {
       throw new Error('Expected for-in statements');
     }
 
@@ -35,6 +48,9 @@ describe('getTypeScriptForInKeyEvidence', () => {
     });
     expect(
       getTypeScriptForInKeyEvidence(escapedLoop.expression, escaped.checker, escaped.source, getPropertyName),
+    ).toBeUndefined();
+    expect(
+      getTypeScriptForInKeyEvidence(mutatedLoop.expression, mutated.checker, mutated.source, getPropertyName),
     ).toBeUndefined();
   });
 });

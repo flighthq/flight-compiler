@@ -20,6 +20,7 @@ import type {
   IrClassField,
   IrClassMethod,
   IrCallSemantics,
+  IrControlFlowLabelIdentity,
   IrDeclaration,
   IrEnumDeclaration,
   IrExpression,
@@ -453,7 +454,7 @@ function lowerExpression(
       name: node.name.text,
       object: lowerExpression(node.expression, context),
       optional,
-      ...(optional ? { optionalChain: createTypeScriptOptionalChainSemantics() } : {}),
+      ...(optional ? { optionalChain: createTypeScriptOptionalChainSemantics(node.expression, node, context) } : {}),
     };
   }
   if (ts.isElementAccessExpression(node)) {
@@ -466,7 +467,7 @@ function lowerExpression(
       optional,
       semantics: {
         ...lowerElementAccessSemantics(node.expression, node.argumentExpression, context),
-        ...(optional ? { optionalChain: createTypeScriptOptionalChainSemantics() } : {}),
+        ...(optional ? { optionalChain: createTypeScriptOptionalChainSemantics(node.expression, node, context) } : {}),
       },
     };
   }
@@ -479,7 +480,7 @@ function lowerExpression(
       optional,
       semantics: {
         ...lowerCallSemantics(node, context),
-        ...(optional ? { optionalChain: createTypeScriptOptionalChainSemantics() } : {}),
+        ...(optional ? { optionalChain: createTypeScriptOptionalChainSemantics(node.expression, node, context) } : {}),
       },
       typeArguments: node.typeArguments?.map((type) => lowerType(type, context)) ?? [],
     };
@@ -594,8 +595,49 @@ function lowerExpression(
   unsupported(node, `unsupported expression ${ts.SyntaxKind[node.kind]}`);
 }
 
-function createTypeScriptOptionalChainSemantics() {
-  return { receiverEvaluation: 'once', result: 'undefined', shortCircuit: 'nullish' } as const;
+function createTypeScriptOptionalChainSemantics(
+  receiver: ts.Expression,
+  value: ts.Expression,
+  context: LoweringContext,
+) {
+  const receiverType = getTypeScriptOptionalChainTypeEvidence(receiver, context);
+  return {
+    receiverEvaluation: 'once',
+    receiverType,
+    result: 'undefined',
+    shortCircuit: 'nullish',
+    valueType: getTypeScriptOptionalChainValueTypeEvidence(value, receiverType, context),
+  } as const;
+}
+
+function getTypeScriptOptionalChainTypeEvidence(expression: ts.Expression, context: LoweringContext): IrType {
+  const evidence = getTypeScriptSyntacticExpressionTypeEvidence(expression, context.checker);
+  return evidence ? lowerType(evidence, context) : { kind: 'unknown', source: 'unknown' };
+}
+
+function getTypeScriptOptionalChainValueTypeEvidence(
+  expression: ts.Expression,
+  receiverType: Readonly<IrType>,
+  context: LoweringContext,
+): IrType {
+  const evidence = getTypeScriptSyntacticExpressionTypeEvidence(expression, context.checker);
+  if (evidence) return lowerType(evidence, context);
+  if (!ts.isElementAccessExpression(expression)) return { kind: 'unknown', source: 'unknown' };
+  const concrete =
+    receiverType.kind === 'union'
+      ? receiverType.types.filter((type) => type.kind !== 'null' && type.kind !== 'undefined')
+      : [receiverType];
+  if (concrete.length !== 1) return { kind: 'unknown', source: 'unknown' };
+  const indexed = concrete[0]!;
+  if (indexed.kind === 'array') return indexed.element;
+  if (indexed.kind === 'tuple' && expression.argumentExpression && ts.isNumericLiteral(expression.argumentExpression)) {
+    return (
+      indexed.elements[Number(expression.argumentExpression.text)]?.type ?? {
+        kind: 'undefined',
+      }
+    );
+  }
+  return { kind: 'unknown', source: 'unknown' };
 }
 
 function lowerTupleExpression(
@@ -1087,6 +1129,22 @@ function lowerFunctionTypeParameter(node: ts.ParameterDeclaration, context: Lowe
 }
 
 function lowerStatement(node: ts.Statement, context: LoweringContext): IrStatement {
+  if (ts.isLabeledStatement(node)) {
+    const label = createTypeScriptControlFlowLabelIdentity(node.label, context);
+    const statement = lowerStatement(node.statement, context);
+    if (
+      statement.kind === 'block' ||
+      statement.kind === 'do' ||
+      statement.kind === 'for' ||
+      statement.kind === 'forIn' ||
+      statement.kind === 'forOf' ||
+      statement.kind === 'switch' ||
+      statement.kind === 'while'
+    ) {
+      return { ...statement, label };
+    }
+    return { kind: 'block', label, statements: [statement] };
+  }
   if (ts.isBlock(node)) return { kind: 'block', statements: lowerStatementList(node.statements, context) };
   if (ts.isExpressionStatement(node)) {
     const destructuring = lowerTypeScriptDestructuringAssignmentStatement(node.expression, context);
@@ -1174,8 +1232,18 @@ function lowerStatement(node: ts.Statement, context: LoweringContext): IrStateme
       origin: origin(node, context),
     };
   }
-  if (ts.isBreakStatement(node)) return { kind: 'break' };
-  if (ts.isContinueStatement(node)) return { kind: 'continue' };
+  if (ts.isBreakStatement(node)) {
+    return {
+      kind: 'break',
+      ...(node.label ? { target: resolveTypeScriptControlFlowLabelIdentity(node.label, context) } : {}),
+    };
+  }
+  if (ts.isContinueStatement(node)) {
+    return {
+      kind: 'continue',
+      ...(node.label ? { target: resolveTypeScriptControlFlowLabelIdentity(node.label, context) } : {}),
+    };
+  }
   if (ts.isThrowStatement(node)) return { expression: lowerExpression(node.expression, context), kind: 'throw' };
   if (ts.isTryStatement(node)) {
     const catchName = node.catchClause?.variableDeclaration?.name;
@@ -1197,6 +1265,30 @@ function lowerStatement(node: ts.Statement, context: LoweringContext): IrStateme
   }
   if (ts.isEmptyStatement(node)) return { kind: 'block', statements: [] };
   unsupported(node, `unsupported statement ${ts.SyntaxKind[node.kind]}`);
+}
+
+function resolveTypeScriptControlFlowLabelIdentity(
+  reference: ts.Identifier,
+  context: LoweringContext,
+): IrControlFlowLabelIdentity {
+  for (let current: ts.Node | undefined = reference.parent; current; current = current.parent) {
+    if (ts.isLabeledStatement(current) && current.label.text === reference.text) {
+      return createTypeScriptControlFlowLabelIdentity(current.label, context);
+    }
+  }
+  return unsupported(reference, `control-flow label ${reference.text} cannot be resolved`);
+}
+
+function createTypeScriptControlFlowLabelIdentity(
+  declaration: ts.Identifier,
+  context: LoweringContext,
+): IrControlFlowLabelIdentity {
+  const source = relativeSource(context.sourceFile.fileName, context.options.upstreamDirectory);
+  return {
+    ...origin(declaration, context),
+    id: `control-flow-label:${JSON.stringify([context.options.packageName, source, declaration.getStart(context.sourceFile)])}`,
+    name: declaration.text,
+  };
 }
 
 function lowerTypeScriptDestructuringAssignmentStatement(
@@ -1824,20 +1916,10 @@ function lowerTypeScriptTypeNodeEvidence(
           return lowerTypeScriptTypeNodeEvidence(declaration.type, context, nextSeen, nextSubstitutions);
         }
       }
-      if (ts.isInterfaceDeclaration(declaration) && declaration.heritageClauses === undefined && nextSubstitutions) {
+      if (ts.isInterfaceDeclaration(declaration) && nextSubstitutions) {
         return {
           kind: 'object',
-          properties: declaration.members.map((member): IrObjectTypeProperty => {
-            if (!ts.isPropertySignature(member) || !member.type) {
-              return unsupported(member, 'syntactic interface evidence requires typed properties');
-            }
-            return {
-              name: propertyName(member.name, context),
-              optional: member.questionToken !== undefined,
-              readonly: hasModifier(member, ts.SyntaxKind.ReadonlyKeyword),
-              type: lowerTypeScriptTypeNodeEvidence(member.type, context, nextSeen, nextSubstitutions),
-            };
-          }),
+          properties: lowerTypeScriptInterfacePropertiesEvidence(declaration, context, nextSeen, nextSubstitutions),
         };
       }
     }
@@ -1917,6 +1999,68 @@ function lowerTypeScriptTypeNodeEvidence(
     };
   }
   return lowerType(type, context);
+}
+
+function lowerTypeScriptInterfacePropertiesEvidence(
+  declaration: ts.InterfaceDeclaration,
+  context: LoweringContext,
+  seen: ReadonlySet<ts.Symbol>,
+  substitutions: ReadonlyMap<ts.Symbol, ts.TypeNode>,
+): readonly IrObjectTypeProperty[] {
+  const properties: IrObjectTypeProperty[] = [];
+  const mergeProperty = (property: IrObjectTypeProperty, node: ts.Node): void => {
+    const index = properties.findIndex((candidate) => candidate.name === property.name);
+    if (index < 0) {
+      properties.push(property);
+      return;
+    }
+    if (JSON.stringify(properties[index]) !== JSON.stringify(property)) {
+      unsupported(node, `interface ${declaration.name.text} inherits incompatible property ${property.name}`);
+    }
+    properties[index] = property;
+  };
+  for (const clause of declaration.heritageClauses ?? []) {
+    if (clause.token !== ts.SyntaxKind.ExtendsKeyword) continue;
+    for (const heritage of clause.types) {
+      const unresolved = context.checker.getSymbolAtLocation(heritage.expression);
+      const symbol =
+        unresolved?.flags && unresolved.flags & ts.SymbolFlags.Alias
+          ? context.checker.getAliasedSymbol(unresolved)
+          : unresolved;
+      const base = symbol?.declarations?.find(ts.isInterfaceDeclaration);
+      if (!symbol || !base) unsupported(heritage, 'syntactic interface heritage requires an interface reference');
+      if (seen.has(symbol)) unsupported(heritage, `interface ${declaration.name.text} has cyclic heritage`);
+      const nextSubstitutions = createTypeScriptSyntacticDeclarationSubstitutions(
+        heritage,
+        base,
+        context.checker,
+        substitutions,
+      );
+      if (!nextSubstitutions) {
+        unsupported(heritage, `interface ${base.name.text} heritage type arguments cannot be substituted`);
+      }
+      const nextSeen = new Set(seen);
+      nextSeen.add(symbol);
+      lowerTypeScriptInterfacePropertiesEvidence(base, context, nextSeen, nextSubstitutions).forEach((property) =>
+        mergeProperty(property, heritage),
+      );
+    }
+  }
+  declaration.members.forEach((member) => {
+    if (!ts.isPropertySignature(member) || !member.type) {
+      unsupported(member, 'syntactic interface evidence requires typed properties');
+    }
+    mergeProperty(
+      {
+        name: propertyName(member.name, context),
+        optional: member.questionToken !== undefined,
+        readonly: hasModifier(member, ts.SyntaxKind.ReadonlyKeyword),
+        type: lowerTypeScriptTypeNodeEvidence(member.type, context, seen, substitutions),
+      },
+      member,
+    );
+  });
+  return properties;
 }
 
 function lowerBindingPattern(

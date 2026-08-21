@@ -564,4 +564,12 @@ describe('emitIrModuleHaxe', () => {
       });
     }
   });
+
+  it('refuses labeled exits until Haxe completion-state lowering is elected', () => {
+    const result = lower('labeled-flow.ts', 'export function scan(): void { outer: while (true) { break outer; } }');
+
+    expect(() => emitIrModuleHaxe(result.module)).toThrow(
+      'control-flow label outer requires Haxe completion-state lowering',
+    );
+  });
 });

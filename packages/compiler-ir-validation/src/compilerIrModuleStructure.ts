@@ -8,6 +8,7 @@ import type {
   IrBindingIdentity,
   IrBindingKind,
   IrBindingScope,
+  IrControlFlowLabelIdentity,
   IrDeclaration,
   IrExpression,
   IrFunctionSignature,
@@ -53,6 +54,7 @@ interface IrModuleValidationState {
   readonly references: BindingReference[];
   readonly scopeParents: Map<string, string | undefined>;
   readonly scopes: IrLexicalScope[];
+  readonly controlFlowLabels: Array<Readonly<{ continuable: boolean; label: Readonly<IrControlFlowLabelIdentity> }>>;
 }
 
 function validateIrOptionalChainEvidence(
@@ -61,8 +63,14 @@ function validateIrOptionalChainEvidence(
   path: string,
   state: IrModuleValidationState,
 ): void {
+  const receiverType = evidence?.receiverType;
+  const valueType = evidence?.valueType;
   const valid =
-    evidence?.receiverEvaluation === 'once' && evidence.result === 'undefined' && evidence.shortCircuit === 'nullish';
+    evidence?.receiverEvaluation === 'once' &&
+    evidence.result === 'undefined' &&
+    evidence.shortCircuit === 'nullish' &&
+    isIrTypeEvidence(receiverType) &&
+    isIrTypeEvidence(valueType);
   if ((optional && !valid) || (!optional && evidence !== undefined)) {
     addFailure(
       'invalid-node-shape',
@@ -71,6 +79,14 @@ function validateIrOptionalChainEvidence(
       state,
     );
   }
+  if (valid) {
+    visitType(receiverType, `${path}.optionalChain.receiverType`, state);
+    visitType(valueType, `${path}.optionalChain.valueType`, state);
+  }
+}
+
+function isIrTypeEvidence(value: unknown): value is IrType {
+  return typeof value === 'object' && value !== null && 'kind' in value && typeof value.kind === 'string';
 }
 
 interface ParameterCardinality {
@@ -83,6 +99,7 @@ export function validateIrModuleStructure(module: Readonly<IrModule>): CompilerI
   const moduleScope: IrLexicalScope = { id: '$#module', kind: 'module' };
   const state: IrModuleValidationState = {
     bindings: new Map(),
+    controlFlowLabels: [],
     failures: [],
     module,
     references: [],
@@ -601,134 +618,190 @@ function visitParameters(
 }
 
 function visitStatement(statement: Readonly<IrStatement>, path: string, state: IrModuleValidationState): void {
-  switch (statement.kind) {
-    case 'block':
-      visitStatementList(statement.statements, `${path}.statements`, state);
-      break;
-    case 'break':
-    case 'continue':
-      break;
-    case 'do':
-    case 'while':
-      visitStatement(statement.body, `${path}.body`, state);
-      visitExpression(statement.condition, `${path}.condition`, state);
-      break;
-    case 'expression':
-    case 'throw':
-      visitExpression(statement.expression, `${path}.expression`, state);
-      break;
-    case 'for':
-      visitLexicalScope('block', path, state, () => {
-        if (Array.isArray(statement.initializer)) {
-          statement.initializer.forEach((variable, index) =>
-            visitVariable(variable, `${path}.initializer[${String(index)}]`, ['block', 'function'], state),
-          );
-        } else if (statement.initializer) {
-          visitExpression(statement.initializer as IrExpression, `${path}.initializer`, state);
-        }
-        if (statement.condition) visitExpression(statement.condition, `${path}.condition`, state);
-        if (statement.increment) visitExpression(statement.increment, `${path}.increment`, state);
+  const label = 'label' in statement ? statement.label : undefined;
+  if (label) {
+    validateControlFlowLabel(label, `${path}.label`, state);
+    state.controlFlowLabels.push({
+      continuable:
+        statement.kind === 'do' ||
+        statement.kind === 'for' ||
+        statement.kind === 'forIn' ||
+        statement.kind === 'forOf' ||
+        statement.kind === 'while',
+      label,
+    });
+  }
+  try {
+    switch (statement.kind) {
+      case 'block':
+        visitStatementList(statement.statements, `${path}.statements`, state);
+        break;
+      case 'break':
+        if (statement.target) validateControlFlowTarget(statement.target, false, `${path}.target`, state);
+        break;
+      case 'continue':
+        if (statement.target) validateControlFlowTarget(statement.target, true, `${path}.target`, state);
+        break;
+      case 'do':
+      case 'while':
         visitStatement(statement.body, `${path}.body`, state);
-      });
-      break;
-    case 'forIn': {
-      visitExpression(statement.object, `${path}.object`, state);
-      if (statement.keyPlan) {
-        const keys = getIrExpressionStaticForInKeys(statement.object);
-        const validSource =
-          statement.keyPlan.kind === 'objectLiteral'
-            ? statement.object.kind === 'object' &&
-              keys !== undefined &&
-              statement.keyPlan.evaluation ===
-                (statement.object.members.every(
-                  (member) => member.kind === 'property' && member.value.kind === 'literal',
-                )
-                  ? 'elide'
-                  : 'preserve')
-            : statement.keyPlan.kind === 'closedRecord' &&
-              statement.keyPlan.evaluation === 'alreadyEvaluated' &&
-              statement.object.kind === 'identifier';
-        if (!validSource) {
-          addFailure(
-            'invalid-node-shape',
-            `${path}.keyPlan`,
-            'for-in key plan source and evaluation classification must match its object expression',
-            state,
-          );
-        } else if (
-          statement.keyPlan.keys.some((key) => typeof key !== 'string') ||
-          new Set(statement.keyPlan.keys).size !== statement.keyPlan.keys.length ||
-          JSON.stringify(statement.keyPlan.keys) !==
-            JSON.stringify(
-              statement.keyPlan.kind === 'objectLiteral' ? keys : orderIrStaticForInKeys(statement.keyPlan.keys),
-            )
-        ) {
-          addFailure(
-            'invalid-node-shape',
-            `${path}.keyPlan.keys`,
-            'static for-in keys must exactly match JavaScript object enumeration order',
-            state,
-          );
-        }
-      }
-      visitLexicalScope('block', path, state, () => {
-        visitVariable(statement.variable, `${path}.variable`, ['block', 'function'], state);
-        visitStatement(statement.body, `${path}.body`, state);
-      });
-      break;
-    }
-    case 'forOf':
-      visitExpression(statement.iterable, `${path}.iterable`, state);
-      visitLexicalScope('block', path, state, () => {
-        visitVariable(statement.variable, `${path}.variable`, ['block', 'function'], state);
-        visitStatement(statement.body, `${path}.body`, state);
-      });
-      break;
-    case 'if':
-      visitExpression(statement.condition, `${path}.condition`, state);
-      visitStatement(statement.consequent, `${path}.consequent`, state);
-      if (statement.otherwise) visitStatement(statement.otherwise, `${path}.otherwise`, state);
-      break;
-    case 'return':
-      if (statement.expression) visitExpression(statement.expression, `${path}.expression`, state);
-      break;
-    case 'switch':
-      visitExpression(statement.expression, `${path}.expression`, state);
-      visitLexicalScope('block', `${path}.cases`, state, () => {
-        statement.cases.forEach((switchCase, index) => {
-          const casePath = `${path}.cases[${String(index)}]`;
-          if (switchCase.expression) visitExpression(switchCase.expression, `${casePath}.expression`, state);
-          switchCase.statements.forEach((child, statementIndex) =>
-            visitStatement(child, `${casePath}.statements[${String(statementIndex)}]`, state),
-          );
+        visitExpression(statement.condition, `${path}.condition`, state);
+        break;
+      case 'expression':
+      case 'throw':
+        visitExpression(statement.expression, `${path}.expression`, state);
+        break;
+      case 'for':
+        visitLexicalScope('block', path, state, () => {
+          if (Array.isArray(statement.initializer)) {
+            statement.initializer.forEach((variable, index) =>
+              visitVariable(variable, `${path}.initializer[${String(index)}]`, ['block', 'function'], state),
+            );
+          } else if (statement.initializer) {
+            visitExpression(statement.initializer as IrExpression, `${path}.initializer`, state);
+          }
+          if (statement.condition) visitExpression(statement.condition, `${path}.condition`, state);
+          if (statement.increment) visitExpression(statement.increment, `${path}.increment`, state);
+          visitStatement(statement.body, `${path}.body`, state);
         });
-      });
-      break;
-    case 'try':
-      visitStatement(statement.tryBody, `${path}.tryBody`, state);
-      const catchClause = statement.catchClause;
-      if (catchClause) {
-        visitLexicalScope('block', `${path}.catchClause`, state, () => {
-          if (catchClause.binding) {
-            addBindingDefinition(
-              catchClause.binding,
-              `${path}.catchClause.binding`,
-              { kind: 'catch', scope: 'block', space: 'value' },
+        break;
+      case 'forIn': {
+        visitExpression(statement.object, `${path}.object`, state);
+        if (statement.keyPlan) {
+          const keys = getIrExpressionStaticForInKeys(statement.object);
+          const validSource =
+            statement.keyPlan.kind === 'objectLiteral'
+              ? statement.object.kind === 'object' &&
+                keys !== undefined &&
+                statement.keyPlan.evaluation ===
+                  (statement.object.members.every(
+                    (member) => member.kind === 'property' && member.value.kind === 'literal',
+                  )
+                    ? 'elide'
+                    : 'preserve')
+              : statement.keyPlan.kind === 'closedRecord' &&
+                statement.keyPlan.evaluation === 'alreadyEvaluated' &&
+                statement.object.kind === 'identifier';
+          if (!validSource) {
+            addFailure(
+              'invalid-node-shape',
+              `${path}.keyPlan`,
+              'for-in key plan source and evaluation classification must match its object expression',
+              state,
+            );
+          } else if (
+            statement.keyPlan.keys.some((key) => typeof key !== 'string') ||
+            new Set(statement.keyPlan.keys).size !== statement.keyPlan.keys.length ||
+            JSON.stringify(statement.keyPlan.keys) !==
+              JSON.stringify(
+                statement.keyPlan.kind === 'objectLiteral' ? keys : orderIrStaticForInKeys(statement.keyPlan.keys),
+              )
+          ) {
+            addFailure(
+              'invalid-node-shape',
+              `${path}.keyPlan.keys`,
+              'static for-in keys must exactly match JavaScript object enumeration order',
               state,
             );
           }
-          visitStatement(catchClause.body, `${path}.catchClause.body`, state);
+        }
+        visitLexicalScope('block', path, state, () => {
+          visitVariable(statement.variable, `${path}.variable`, ['block', 'function'], state);
+          visitStatement(statement.body, `${path}.body`, state);
         });
+        break;
       }
-      if (statement.finallyBody) visitStatement(statement.finallyBody, `${path}.finallyBody`, state);
+      case 'forOf':
+        visitExpression(statement.iterable, `${path}.iterable`, state);
+        visitLexicalScope('block', path, state, () => {
+          visitVariable(statement.variable, `${path}.variable`, ['block', 'function'], state);
+          visitStatement(statement.body, `${path}.body`, state);
+        });
+        break;
+      case 'if':
+        visitExpression(statement.condition, `${path}.condition`, state);
+        visitStatement(statement.consequent, `${path}.consequent`, state);
+        if (statement.otherwise) visitStatement(statement.otherwise, `${path}.otherwise`, state);
+        break;
+      case 'return':
+        if (statement.expression) visitExpression(statement.expression, `${path}.expression`, state);
+        break;
+      case 'switch':
+        visitExpression(statement.expression, `${path}.expression`, state);
+        visitLexicalScope('block', `${path}.cases`, state, () => {
+          statement.cases.forEach((switchCase, index) => {
+            const casePath = `${path}.cases[${String(index)}]`;
+            if (switchCase.expression) visitExpression(switchCase.expression, `${casePath}.expression`, state);
+            switchCase.statements.forEach((child, statementIndex) =>
+              visitStatement(child, `${casePath}.statements[${String(statementIndex)}]`, state),
+            );
+          });
+        });
+        break;
+      case 'try':
+        visitStatement(statement.tryBody, `${path}.tryBody`, state);
+        const catchClause = statement.catchClause;
+        if (catchClause) {
+          visitLexicalScope('block', `${path}.catchClause`, state, () => {
+            if (catchClause.binding) {
+              addBindingDefinition(
+                catchClause.binding,
+                `${path}.catchClause.binding`,
+                { kind: 'catch', scope: 'block', space: 'value' },
+                state,
+              );
+            }
+            visitStatement(catchClause.body, `${path}.catchClause.body`, state);
+          });
+        }
+        if (statement.finallyBody) visitStatement(statement.finallyBody, `${path}.finallyBody`, state);
+        break;
+      case 'variable':
+        statement.declarations.forEach((variable, index) =>
+          visitVariable(variable, `${path}.declarations[${String(index)}]`, ['block', 'function'], state),
+        );
+        break;
+      default:
+        addUnknownKind(statement, path, state);
+    }
+  } finally {
+    if (label) state.controlFlowLabels.pop();
+  }
+}
+
+function validateControlFlowLabel(
+  label: Readonly<IrControlFlowLabelIdentity>,
+  path: string,
+  state: IrModuleValidationState,
+): void {
+  validateSourceOrigin(label, path, 'invalid-node-shape', 'control-flow label', state);
+  if (!isNonEmptyString(label.id) || !isNonEmptyString(label.name)) {
+    addFailure('invalid-node-shape', path, 'control-flow label identity and name must be nonempty', state);
+  }
+  if (state.controlFlowLabels.some((definition) => definition.label.id === label.id)) {
+    addFailure('invalid-node-shape', path, `control-flow label ${label.id} is already active`, state);
+  }
+}
+
+function validateControlFlowTarget(
+  target: Readonly<IrControlFlowLabelIdentity>,
+  continuable: boolean,
+  path: string,
+  state: IrModuleValidationState,
+): void {
+  validateSourceOrigin(target, path, 'invalid-node-shape', 'control-flow target', state);
+  let definition: (typeof state.controlFlowLabels)[number] | undefined;
+  for (let index = state.controlFlowLabels.length - 1; index >= 0; index -= 1) {
+    const candidate = state.controlFlowLabels[index]!;
+    if (candidate.label.id === target.id) {
+      definition = candidate;
       break;
-    case 'variable':
-      statement.declarations.forEach((variable, index) =>
-        visitVariable(variable, `${path}.declarations[${String(index)}]`, ['block', 'function'], state),
-      );
-      break;
-    default:
-      addUnknownKind(statement, path, state);
+    }
+  }
+  if (!definition || definition.label.name !== target.name) {
+    addFailure('invalid-node-shape', path, `control-flow target ${target.id} is not an active label`, state);
+  } else if (continuable && !definition.continuable) {
+    addFailure('invalid-node-shape', path, `continue target ${target.id} is not a loop label`, state);
   }
 }
 
@@ -986,7 +1059,10 @@ function validateBindingIntroduction(
 function validateSourceOrigin(
   origin: Readonly<CompilerSourceOrigin>,
   path: string,
-  code: Extract<CompilerIrModuleValidationFailureCode, 'invalid-binding-origin' | 'invalid-declaration-origin'>,
+  code: Extract<
+    CompilerIrModuleValidationFailureCode,
+    'invalid-binding-origin' | 'invalid-declaration-origin' | 'invalid-node-shape'
+  >,
   subject: string,
   state: IrModuleValidationState,
 ): void {

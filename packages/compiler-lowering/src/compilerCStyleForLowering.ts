@@ -19,7 +19,9 @@ interface CStyleForLoweringAnalysis {
 
 interface CStyleForContinueContext {
   readonly crossesFinally: boolean;
-  readonly increment: Readonly<IrExpression>;
+  readonly increment?: Readonly<IrExpression> | undefined;
+  readonly outer?: Readonly<CStyleForContinueContext> | undefined;
+  readonly target?: string | undefined;
 }
 
 export function createCompilerLoweringPassCStyleFor(): CompilerLoweringPass {
@@ -465,8 +467,9 @@ function lowerIrStatement(
         statements: statement.statements.map((item) => lowerIrStatement(item, analysis, continueContext)),
       };
     case 'continue':
-      if (!continueContext) return statement;
-      if (continueContext.crossesFinally) {
+      const elected = getIrContinueContextCStyleFor(statement, continueContext);
+      if (!elected?.increment) return statement;
+      if (elected.crossesFinally) {
         throw createCompilerLoweringFailure(
           'unsupported-ir',
           compilerLoweringPassNameCStyleFor,
@@ -477,33 +480,45 @@ function lowerIrStatement(
       return {
         kind: 'block',
         statements: [
-          { expression: structuredClone(continueContext.increment), kind: 'expression' },
-          { kind: 'continue' },
+          { expression: structuredClone(elected.increment), kind: 'expression' },
+          { kind: 'continue', ...(statement.target ? { target: statement.target } : {}) },
         ],
       };
     case 'do':
     case 'while':
       return {
         ...statement,
-        body: lowerIrStatement(statement.body, analysis),
+        body: lowerIrStatement(statement.body, analysis, {
+          crossesFinally: false,
+          outer: continueContext,
+          ...(statement.label ? { target: statement.label.id } : {}),
+        }),
         condition: lowerIrExpression(statement.condition, analysis),
       };
     case 'expression':
     case 'throw':
       return { ...statement, expression: lowerIrExpression(statement.expression, analysis) };
     case 'for':
-      return lowerIrStatementCStyleFor(statement, analysis);
+      return lowerIrStatementCStyleFor(statement, analysis, continueContext);
     case 'forIn':
       return {
         ...statement,
-        body: lowerIrStatement(statement.body, analysis),
+        body: lowerIrStatement(statement.body, analysis, {
+          crossesFinally: false,
+          outer: continueContext,
+          ...(statement.label ? { target: statement.label.id } : {}),
+        }),
         object: lowerIrExpression(statement.object, analysis),
         variable: lowerIrVariable(statement.variable, analysis),
       };
     case 'forOf':
       return {
         ...statement,
-        body: lowerIrStatement(statement.body, analysis),
+        body: lowerIrStatement(statement.body, analysis, {
+          crossesFinally: false,
+          outer: continueContext,
+          ...(statement.label ? { target: statement.label.id } : {}),
+        }),
         iterable: lowerIrExpression(statement.iterable, analysis),
         variable: lowerIrVariable(statement.variable, analysis),
       };
@@ -532,9 +547,9 @@ function lowerIrStatement(
         expression: lowerIrExpression(statement.expression, analysis),
       };
     case 'try': {
-      const exitsThroughFinally = continueContext
-        ? { ...continueContext, crossesFinally: continueContext.crossesFinally || statement.finallyBody !== undefined }
-        : undefined;
+      const exitsThroughFinally = statement.finallyBody
+        ? markIrContinueContextsFinallyCStyleFor(continueContext)
+        : continueContext;
       return {
         ...statement,
         ...(statement.catchClause
@@ -566,6 +581,7 @@ function lowerIrStatement(
 function lowerIrStatementCStyleFor(
   statement: Readonly<Extract<IrStatement, { kind: 'for' }>>,
   analysis: CStyleForLoweringAnalysis,
+  outerContinueContext?: Readonly<CStyleForContinueContext>,
 ): IrStatement {
   analysis.loweredStatements += 1;
   const increment = statement.increment ? lowerIrDiscardedUpdateCStyleFor(statement.increment, analysis) : undefined;
@@ -583,7 +599,12 @@ function lowerIrStatementCStyleFor(
     : initializer
       ? [{ expression: lowerIrExpression(initializer, analysis), kind: 'expression' }]
       : [];
-  const body = lowerIrStatement(statement.body, analysis, increment ? { crossesFinally: false, increment } : undefined);
+  const body = lowerIrStatement(statement.body, analysis, {
+    crossesFinally: false,
+    ...(increment ? { increment } : {}),
+    outer: outerContinueContext,
+    ...(statement.label ? { target: statement.label.id } : {}),
+  });
   return {
     kind: 'block',
     statements: [
@@ -600,9 +621,33 @@ function lowerIrStatementCStyleFor(
           ? lowerIrExpression(statement.condition, analysis)
           : { kind: 'literal', value: true },
         kind: 'while',
+        ...(statement.label ? { label: statement.label } : {}),
       },
     ],
   };
+}
+
+function getIrContinueContextCStyleFor(
+  statement: Readonly<Extract<IrStatement, { kind: 'continue' }>>,
+  context: Readonly<CStyleForContinueContext> | undefined,
+): Readonly<CStyleForContinueContext> | undefined {
+  if (!statement.target) return context;
+  for (let current = context; current; current = current.outer) {
+    if (current.target === statement.target.id) return current;
+  }
+  return undefined;
+}
+
+function markIrContinueContextsFinallyCStyleFor(
+  context: Readonly<CStyleForContinueContext> | undefined,
+): Readonly<CStyleForContinueContext> | undefined {
+  return context
+    ? {
+        ...context,
+        crossesFinally: true,
+        ...(context.outer ? { outer: markIrContinueContextsFinallyCStyleFor(context.outer) } : {}),
+      }
+    : undefined;
 }
 
 function lowerIrDiscardedUpdateCStyleFor(

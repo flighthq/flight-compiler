@@ -272,13 +272,45 @@ describe('emitIrModuleRust', () => {
     );
   });
 
-  it('refuses optional property targets until Option projection lowering is elected', () => {
-    const result = lower(
+  it('emits optional property, element, and call projections from neutral type evidence', () => {
+    const property = lower(
       'optional-property.ts',
-      'interface Value { count: number } export function count(value: Value): number { return value?.count; }',
+      'interface Value { count: number } export function count(value: Value | undefined): number | undefined { return value?.count; }',
+    );
+    const element = lower(
+      'optional-element.ts',
+      'export function first(values: number[] | undefined, index: number): number | undefined { return values?.[index]; }',
+    );
+    const call = lower(
+      'optional-call.ts',
+      'export function invoke(callback: ((value: number) => number) | undefined): number | undefined { return callback?.(1); }',
     );
 
-    expect(() => emitIrModuleRust(result.module)).toThrow('optional property access requires Option-aware lowering');
+    expect(emitIrModuleRust(property.module).contents).toContain(
+      'value.as_ref().map(|optional_chain_value| optional_chain_value.count.clone())',
+    );
+    expect(emitIrModuleRust(element.module).contents).toContain(
+      'values.as_ref().and_then(|optional_chain_value| optional_chain_value.get(index as usize).cloned())',
+    );
+    expect(emitIrModuleRust(call.module).contents).toContain(
+      'callback.as_ref().map(|optional_chain_value| optional_chain_value(1.0))',
+    );
+  });
+
+  it('represents observable entry undefined only inside a nullable Rust domain', () => {
+    const nullable = lower(
+      'nullable-entry.ts',
+      'export function read(): number | undefined { var value: number | undefined; return value; }',
+    );
+    const nonnullable = lower(
+      'nonnullable-entry.ts',
+      'export function read(): number { var value: number; return value; }',
+    );
+
+    expect(emitIrModuleRust(nullable.module).contents).toContain('let mut value: Option<f64> = None;');
+    expect(() => emitIrModuleRust(nonnullable.module)).toThrow(
+      'function-scoped variable value may be read before initialization; undefined-preserving lowering is required',
+    );
   });
 
   it('emits expression-position destructuring with the original aggregate completion value', () => {
@@ -335,6 +367,34 @@ describe('emitIrModuleRust', () => {
     expect(() => emitIrModuleRust(result.module)).toThrow(
       'Compiler lowering pass c-style-for failed for @flighthq/math/packages/math/src/unsafe-loop.ts: continue across a finally block requires completion-record lowering',
     );
+  });
+
+  it('preserves labeled exits through C-style loops and switch state machines', () => {
+    const loop = lower(
+      'labeled-for.ts',
+      'export function scan(): void { outer: for (let index = 0; index < 2; index++) { switch (index) { case 0: continue outer; default: break outer; } } }',
+    );
+    const stateMachine = lower(
+      'labeled-switch-state.ts',
+      'export function scan(running: boolean, choice: number): void { outer: while (running) { switch (choice) { case 0: { const local = choice; local; } case 1: continue outer; default: break outer; } } }',
+    );
+    const nested = lower(
+      'nested-labeled-for.ts',
+      'export function scan(): void { outer: for (let index = 0; index < 2; index++) { for (let inner = 0; inner < 2; inner++) { continue outer; } } }',
+    );
+    const loopOutput = emitIrModuleRust(loop.module).contents;
+    const stateOutput = emitIrModuleRust(stateMachine.module).contents;
+    const nestedOutput = emitIrModuleRust(nested.module).contents;
+
+    expect(loopOutput).toContain("'outer: while (index < 2.0)");
+    expect(loopOutput).toMatch(/index \+= 1\.0;\s+continue 'outer;/u);
+    expect(loopOutput).toContain("break 'outer;");
+    expect(stateOutput).toContain('switch_fallthrough_state');
+    expect(stateOutput).toContain("'outer: while running");
+    expect(stateOutput).toContain("continue 'outer;");
+    expect(stateOutput).toContain("break 'outer;");
+    expect(nestedOutput).toMatch(/index \+= 1\.0;\s+continue 'outer;/u);
+    expect(nestedOutput).not.toMatch(/inner \+= 1\.0;\s+continue 'outer;/u);
   });
 
   it('emits numeric enums and rejects string enum representation', () => {
@@ -492,7 +552,7 @@ describe('emitIrModuleRust', () => {
     expect(() => emitIrModuleRust(result.module)).toThrow(message);
   });
 
-  it('rejects nullable parameters and undefined expressions without Option-aware lowering', () => {
+  it('emits nullable parameters but rejects optional parameters and bare undefined expressions', () => {
     const nullable = lower(
       'nullable.ts',
       'export function nullable(value: number | null): number | null { return value; }',
@@ -508,14 +568,12 @@ describe('emitIrModuleRust', () => {
     );
     const undefinedValue = lower('missing.ts', 'export function missing(): undefined { return undefined; }');
 
-    expect(() => emitIrModuleRust(nullable.module)).toThrow(
-      'nullable parameter value requires Option-aware Rust control-flow lowering',
-    );
+    expect(emitIrModuleRust(nullable.module).contents).toContain('pub fn nullable(value: Option<f64>) -> Option<f64>');
     expect(() => emitIrModuleRust(optional.module)).toThrow(
       'nullable parameter value requires Option-aware Rust control-flow lowering',
     );
-    expect(() => emitIrModuleRust(undefinedNullable.module)).toThrow(
-      'nullable parameter value requires Option-aware Rust control-flow lowering',
+    expect(emitIrModuleRust(undefinedNullable.module).contents).toContain(
+      'pub fn undefined_nullable(value: Option<f64>) -> f64',
     );
     expect(emitIrModuleRust(nullableReturn.module).contents).toContain(
       'pub fn nullable_return() -> Option<f64> {\n  return None;',
