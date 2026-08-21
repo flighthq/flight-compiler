@@ -50,6 +50,23 @@ describe('createCompilerLoweringPassBindingPattern', () => {
 
     expect(pass.lowerIrModule(module)).toBe(module);
   });
+
+  it('normalizes rest-only array and object shapes through the stronger structural residual guard', () => {
+    const module = lower(`
+      interface Shape { value: number; other: string }
+      export function split(values: [number, number], shape: Shape): number {
+        const [...arrayRest]: [number, number] = values;
+        const { ...objectRest }: Shape = shape;
+        return arrayRest.length + objectRest.value;
+      }
+    `);
+    const pass = createCompilerLoweringPassBindingPattern();
+    const output = lowerIrModuleWithCompilerPasses(module, [pass], { verificationDepth: 'idempotence' });
+
+    expect(getIrModuleBindingPatternResidualCount(module)).toBe(4);
+    expect(getIrModuleBindingPatternResidualCount(output)).toBe(0);
+    expect(pass.verifyIrModule(output)).toEqual({ kind: 'valid' });
+  });
 });
 
 describe('getIrModuleBindingPatternResidualCount', () => {

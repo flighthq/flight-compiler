@@ -1,7 +1,11 @@
 import ts from 'typescript';
 
 import { compareTextCodeUnits } from '../../compiler-canonical-form/src/index.js';
-import { createCompilerInvariantFailure, normalizeEmittedFile } from '../../compiler-emission/src/index.js';
+import {
+  createCompilerInvariantFailure,
+  normalizeEmittedFile,
+  validateCompilerEmittedSourceConformance,
+} from '../../compiler-emission/src/index.js';
 import { applySemanticPatchSet } from '../../compiler-patch/src/index.js';
 import { lowerTypeScriptSource } from '../../compiler-semantic/src/index.js';
 import type {
@@ -26,6 +30,7 @@ export function compileIrModules<BackendOptions>(
     .map(normalizeEmittedFile)
     .sort(compareEmittedFiles);
   validateEmittedFiles(files);
+  if (options.sourceParser) validateCompilerEmittedSourceConformance(files, options.sourceParser);
   return {
     compilation: { backend: options.backend.name, files },
     diagnostics: [],
@@ -52,6 +57,7 @@ export function compileTypeScriptModules<BackendOptions>(
     backendOptions: options.backendOptions,
     modules: lowered.map((result) => result.module),
     ...(options.patches ? { patches: options.patches } : {}),
+    ...(options.sourceParser ? { sourceParser: options.sourceParser } : {}),
   });
 }
 

@@ -1,5 +1,9 @@
 export { createCompilerGeneratedFileHeader } from './compilerGeneratedFileProvenance.js';
 export {
+  isCompilerEmittedSourceConformanceFailure,
+  validateCompilerEmittedSourceConformance,
+} from './compilerEmittedSourceConformance.js';
+export {
   createBackendEmissionFailure,
   createCompilerInvariantFailure,
   convertEmittedFileContentsToUtf8,

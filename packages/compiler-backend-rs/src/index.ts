@@ -1,4 +1,5 @@
 export { createRustCompilerBackend, emitIrModuleRust } from './rustCompilerBackend.js';
+export { createRustCompilerEmittedSourceParser } from './rustCompilerEmittedSourceConformance.js';
 export {
   convertPackageNameToRustCrateName,
   convertSourcePathToRustModuleName,

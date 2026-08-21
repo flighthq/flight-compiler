@@ -1,6 +1,9 @@
 import ts from 'typescript';
 
-import { isCompilerInvariantFailure } from '../../compiler-emission/src/index.js';
+import {
+  isCompilerEmittedSourceConformanceFailure,
+  isCompilerInvariantFailure,
+} from '../../compiler-emission/src/index.js';
 import type { CompilerBackend, CompilerDiagnostic, IrModule } from '../../compiler-types/src/index.js';
 import {
   compileIrModules,
@@ -134,13 +137,52 @@ describe('compileIrModules', () => {
       }
     }
   });
+
+  it('optionally rejects normalized backend output through an emitted-source parser', () => {
+    const seen: string[] = [];
+    const sourceParser = {
+      name: 'fixture-language-parser',
+      parseEmittedSource(file: Readonly<{ contents: string; path: string }>) {
+        seen.push(`${file.path}:${file.contents}`);
+        return [{ code: 'syntax', column: 2, line: 1, message: 'expected declaration' }];
+      },
+      supportsEmittedSource: (file: Readonly<{ path: string }>) => file.path.endsWith('.txt'),
+    };
+
+    try {
+      compileIrModules({
+        backend: fixtureBackend,
+        backendOptions: {},
+        modules: [createModule('Value')],
+        sourceParser,
+      });
+      expect.unreachable('Expected parser conformance to reject emitted output');
+    } catch (error) {
+      expect(isCompilerEmittedSourceConformanceFailure(error)).toBe(true);
+      expect(error).toMatchObject({
+        diagnostics: [{ code: 'syntax', path: 'Value.txt' }],
+        kind: 'emitted-source-conformance',
+        parser: 'fixture-language-parser',
+      });
+    }
+    expect(seen).toEqual(['Value.txt:@flighthq/math:Value\n']);
+  });
 });
 
 describe('compileTypeScriptModules', () => {
   it('lowers TypeScript sources through the same deterministic backend path', () => {
+    const parsedPaths: string[] = [];
     const result = compileTypeScriptModules({
       backend: fixtureBackend,
       backendOptions: {},
+      sourceParser: {
+        name: 'fixture-language-parser',
+        parseEmittedSource(file) {
+          parsedPaths.push(file.path);
+          return [];
+        },
+        supportsEmittedSource: () => true,
+      },
       sources: [
         {
           packageName: '@flighthq/math',
@@ -157,6 +199,7 @@ describe('compileTypeScriptModules', () => {
 
     expect(result.compilation.files.map((file) => file.path)).toEqual(['Alpha.txt', 'Zeta.txt']);
     expect(result.diagnostics).toEqual([]);
+    expect(parsedPaths).toEqual(['Alpha.txt', 'Zeta.txt']);
   });
 
   it('throws a tagged diagnostics failure instead of emitting partial output', () => {
