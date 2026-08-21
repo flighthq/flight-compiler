@@ -61,6 +61,8 @@ describe('validateIrModuleStructure', () => {
         export type ExternalValueType = typeof externalValue;
         export async function containers(values: number[]): Promise<number> {
           let total: number = [1, , 2][0]!;
+          const [first = 0, , ...remaining] = values;
+          total += first + (remaining[0] ?? 0);
           { var hoisted: number = total; }
           total += hoisted;
           do { total = total + 1; } while (false);

@@ -1037,6 +1037,141 @@ describe('lowerTypeScriptSource', () => {
     expect(lower('bindings.ts', source).module).toEqual(result.module);
   });
 
+  it('preserves fixed, omitted, nested, defaulted, rest, hoisted, and iteration array bindings', () => {
+    const source = `
+      export function unpack(
+        input: [number | undefined, string, [number | undefined], ...boolean[]],
+        rows: number[][],
+        fallback: number,
+      ): number {
+        const [first = fallback, , [nested = first], ...rest]: [
+          number | undefined,
+          string,
+          [number | undefined],
+          ...boolean[],
+        ] = input;
+        var [hoisted] = input;
+        for (const [head, ...tail] of rows) { return head + tail.length; }
+        return nested + hoisted + rest.length;
+      }
+    `;
+    const result = lower('array-bindings.ts', source);
+    const declaration = result.module.declarations[0];
+    if (declaration?.kind !== 'function') throw new Error('Expected function declaration');
+    const [fixedStatement, hoistedStatement, loopStatement] = declaration.body;
+    if (
+      fixedStatement?.kind !== 'variable' ||
+      hoistedStatement?.kind !== 'variable' ||
+      loopStatement?.kind !== 'forOf'
+    ) {
+      throw new Error('Expected fixed, hoisted, and iteration bindings');
+    }
+    const fixed = fixedStatement.declarations[0];
+    const hoisted = hoistedStatement.declarations[0];
+    if (!fixed || !('pattern' in fixed) || !hoisted || !('pattern' in hoisted)) {
+      throw new Error('Expected array binding patterns');
+    }
+    if (!('pattern' in loopStatement.variable)) throw new Error('Expected iteration binding pattern');
+    const first = fixed.pattern.kind === 'array' ? fixed.pattern.elements[0] : undefined;
+    const nestedPattern = fixed.pattern.kind === 'array' ? fixed.pattern.elements[2]?.pattern : undefined;
+    const nested = nestedPattern?.kind === 'array' ? nestedPattern.elements[0] : undefined;
+    if (first?.pattern.kind !== 'binding' || nested?.pattern.kind !== 'binding') {
+      throw new Error('Expected named fixed and nested binding leaves');
+    }
+    const fallback = declaration.parameters[2]?.binding;
+
+    expect(result.diagnostics).toEqual([]);
+    expect(fixed).toMatchObject({
+      initializer: { kind: 'identifier', reference: { binding: declaration.parameters[0]?.binding, kind: 'binding' } },
+      mutable: false,
+      pattern: {
+        elements: [
+          {
+            initializer: { kind: 'identifier', reference: { binding: fallback, kind: 'binding' } },
+            pattern: { binding: { kind: 'variable', name: 'first', scope: 'block' }, kind: 'binding' },
+          },
+          undefined,
+          {
+            pattern: {
+              elements: [
+                {
+                  initializer: {
+                    kind: 'identifier',
+                    reference: { binding: first.pattern.binding, kind: 'binding' },
+                  },
+                  pattern: { binding: { kind: 'variable', name: 'nested', scope: 'block' }, kind: 'binding' },
+                },
+              ],
+              kind: 'array',
+              scope: 'block',
+            },
+          },
+        ],
+        kind: 'array',
+        rest: { binding: { kind: 'variable', name: 'rest', scope: 'block' }, kind: 'binding' },
+        scope: 'block',
+      },
+      type: { elements: expect.any(Array), kind: 'tuple', readonly: false },
+    });
+    expect(nested.initializer).toMatchObject({
+      kind: 'identifier',
+      reference: { binding: first.pattern.binding, kind: 'binding' },
+    });
+    expect(hoisted).toMatchObject({
+      mutable: true,
+      pattern: {
+        elements: [{ pattern: { binding: { name: 'hoisted', scope: 'function' }, kind: 'binding' } }],
+        kind: 'array',
+        scope: 'function',
+      },
+    });
+    expect(loopStatement.variable).toMatchObject({
+      mutable: false,
+      pattern: {
+        elements: [{ pattern: { binding: { name: 'head', scope: 'block' }, kind: 'binding' } }],
+        kind: 'array',
+        rest: { binding: { name: 'tail', scope: 'block' }, kind: 'binding' },
+        scope: 'block',
+      },
+    });
+    expect(loopStatement.variable.initializer).toBeUndefined();
+    expect(first.pattern.binding.id).not.toBe(nested.pattern.binding.id);
+    expect(first.pattern.binding.fingerprint).toMatch(/^sha256:[\da-f]{64}$/u);
+    expect(lower('array-bindings.ts', source).module).toEqual(result.module);
+  });
+
+  it('diagnoses object and invalid rest binding patterns while continuing with later declarations', () => {
+    const object = lower(
+      'object-bindings.ts',
+      'const { rejected } = { rejected: 1 }; const [kept] = [2]; export { kept as retained };',
+    );
+    const rest = lower('rest-binding.ts', 'const [...values = []] = [];');
+
+    expect(object.diagnostics.map((diagnostic) => diagnostic.message)).toEqual([
+      'object binding patterns are not represented in the neutral IR yet',
+    ]);
+    expect(object.module.declarations).toHaveLength(1);
+    expect(object.module.declarations[0]).toMatchObject({
+      kind: 'variable',
+      pattern: {
+        elements: [{ pattern: { binding: { name: 'kept' }, kind: 'binding' } }],
+        kind: 'array',
+      },
+    });
+    expect(object.module.exports).toMatchObject([
+      {
+        binding: { name: 'kept', scope: 'module' },
+        exported: 'retained',
+        kind: 'local',
+        typeOnly: false,
+      },
+    ]);
+    expect(rest.module.declarations).toEqual([]);
+    expect(rest.diagnostics.map((diagnostic) => diagnostic.message)).toEqual([
+      'array binding rest cannot have a default initializer',
+    ]);
+  });
+
   it('classifies module, declaration, function, and block binding scopes without collapsing hoisted variables', () => {
     const result = lower(
       'scopes.ts',

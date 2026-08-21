@@ -43,6 +43,8 @@ describe('collectIrModulesRuntimeExternalSymbolIdentities', () => {
         }
         export async function containers(values: number[]): Promise<number> {
           let total: number = [1, , 2][0]!;
+          const [selected = new URL('https://example.test')] = [];
+          selected;
           do { total = total + 1; } while (false);
           while (total < 2) { total++; break; }
           for (let index: number = 0; index < 1; index++) {
@@ -98,6 +100,7 @@ describe('collectIrModulesRuntimeExternalSymbolIdentities', () => {
       { sourceName: 'Record', space: 'type' },
       { sourceName: 'RegExp', space: 'type' },
       { sourceName: 'Set', space: 'type' },
+      { sourceName: 'URL', space: 'value' },
       { sourceName: 'Uint16Array', space: 'type' },
       { sourceName: 'Uint32Array', space: 'type' },
       { sourceName: 'Uint8Array', space: 'type' },

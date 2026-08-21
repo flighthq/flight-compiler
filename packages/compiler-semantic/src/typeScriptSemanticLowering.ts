@@ -9,6 +9,8 @@ import type {
   CompilerSourceOrigin,
   IrAssignmentOperator,
   IrAssignmentOperatorSemantics,
+  IrBindingPattern,
+  IrBindingPatternElement,
   IrBindingIdentity,
   IrBindingKind,
   IrBindingScope,
@@ -1125,9 +1127,10 @@ function lowerVariables(node: ts.VariableDeclarationList, context: LoweringConte
 }
 
 function lowerVariable(node: ts.VariableDeclaration, mutable: boolean, context: LoweringContext): IrVariable {
-  if (!ts.isIdentifier(node.name)) unsupported(node.name, 'destructured variables are not represented yet');
   return {
-    binding: lowerBindingIdentity(node.name, context),
+    ...(ts.isIdentifier(node.name)
+      ? { binding: lowerBindingIdentity(node.name, context) }
+      : { pattern: lowerBindingPattern(node.name, context) }),
     ...(node.initializer ? { initializer: lowerExpression(node.initializer, context) } : {}),
     mutable,
     ...(node.type
@@ -1136,6 +1139,47 @@ function lowerVariable(node: ts.VariableDeclaration, mutable: boolean, context: 
         ? { type: inferInitializerType(node.initializer, context) }
         : {}),
   };
+}
+
+function lowerBindingPattern(node: ts.BindingName, context: LoweringContext): IrBindingPattern {
+  if (ts.isIdentifier(node)) {
+    return { binding: lowerBindingIdentity(node, context), kind: 'binding' };
+  }
+  if (ts.isObjectBindingPattern(node)) {
+    return unsupported(node, 'object binding patterns are not represented in the neutral IR yet');
+  }
+  const elements: Array<IrBindingPatternElement | undefined> = [];
+  let rest: IrBindingPattern | undefined;
+  node.elements.forEach((element, index) => {
+    if (ts.isOmittedExpression(element)) {
+      elements.push(undefined);
+      return;
+    }
+    if (element.dotDotDotToken) {
+      if (index !== node.elements.length - 1) unsupported(element, 'array binding rest must be the final element');
+      if (element.initializer) unsupported(element, 'array binding rest cannot have a default initializer');
+      rest = lowerBindingPattern(element.name, context);
+      return;
+    }
+    elements.push({
+      ...(element.initializer ? { initializer: lowerExpression(element.initializer, context) } : {}),
+      pattern: lowerBindingPattern(element.name, context),
+    });
+  });
+  return {
+    ...origin(node, context),
+    elements,
+    kind: 'array',
+    ...(rest ? { rest } : {}),
+    scope: bindingPatternScope(node),
+  };
+}
+
+function bindingPatternScope(node: ts.ArrayBindingPattern): IrBindingScope {
+  for (let parent: ts.Node | undefined = node.parent; parent; parent = parent.parent) {
+    if (ts.isVariableDeclaration(parent)) return bindingDeclarationScope(parent);
+  }
+  return unsupported(node, 'array binding pattern has no variable declaration owner');
 }
 
 function lowerVariableStatement(node: ts.VariableStatement, context: LoweringContext): IrVariableDeclaration[] {
@@ -1388,6 +1432,7 @@ function lowerBindingSymbol(symbol: ts.Symbol, node: ts.Identifier, context: Low
 }
 
 type TypeScriptBindingDeclaration =
+  | ts.BindingElement
   | ts.ClassDeclaration
   | ts.EnumDeclaration
   | ts.FunctionDeclaration
@@ -1401,6 +1446,7 @@ type TypeScriptBindingDeclaration =
 function isValueBindingDeclaration(node: ts.Declaration): node is TypeScriptBindingDeclaration {
   return (
     ts.isClassDeclaration(node) ||
+    ts.isBindingElement(node) ||
     ts.isEnumDeclaration(node) ||
     ts.isFunctionDeclaration(node) ||
     ts.isFunctionExpression(node) ||
@@ -1500,13 +1546,27 @@ function bindingDeclarationScope(node: TypeScriptBindingDeclaration): IrBindingS
   if (ts.isImportClause(node) || ts.isImportSpecifier(node) || ts.isNamespaceImport(node)) return 'module';
   if (ts.isFunctionExpression(node) || ts.isParameter(node)) return 'function';
   if (ts.isCatchClause(node.parent)) return 'block';
+  const variableDeclaration = ts.isBindingElement(node)
+    ? findVariableDeclarationOwner(node)
+    : ts.isVariableDeclaration(node)
+      ? node
+      : undefined;
   for (let parent: ts.Node | undefined = node.parent; parent; parent = parent.parent) {
     if (ts.isFunctionLike(parent)) {
-      return ts.isVariableDeclaration(node) && !(node.parent.flags & ts.NodeFlags.BlockScoped) ? 'function' : 'block';
+      return variableDeclaration && !(variableDeclaration.parent.flags & ts.NodeFlags.BlockScoped)
+        ? 'function'
+        : 'block';
     }
     if (ts.isSourceFile(parent)) return 'module';
   }
   return 'block';
+}
+
+function findVariableDeclarationOwner(node: ts.BindingElement): ts.VariableDeclaration | undefined {
+  for (let parent: ts.Node | undefined = node.parent; parent; parent = parent.parent) {
+    if (ts.isVariableDeclaration(parent)) return parent;
+  }
+  return undefined;
 }
 
 function typeBindingDeclarationScope(node: TypeScriptTypeBindingDeclaration): IrBindingScope {

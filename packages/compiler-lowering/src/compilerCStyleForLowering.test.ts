@@ -216,6 +216,7 @@ describe('createCompilerLoweringPassCStyleFor', () => {
           constructor(callback = () => { for (;;) { break; } }) { for (;;) { break; } }
           method(callback = () => 1): unknown {
             let uninitialized: unknown;
+            const [pattern = () => { for (;;) { break; } }] = [];
             const values = [1, , ...[2]];
             const record = ({ ...{ callback }, [values[0]]: callback } as object);
             const chosen = callback ? values[0] : values[1];
@@ -315,6 +316,10 @@ describe('createCompilerLoweringPassCStyleFor', () => {
     [
       'statement variable initializer',
       'export function fixture(): void { const value = () => { for (;;) { break; } }; value; }',
+    ],
+    [
+      'array binding default initializer',
+      'export function fixture(): void { const [value = () => { for (;;) { break; } }] = []; value; }',
     ],
   ])('detects a residual C-style loop in an isolated %s', (name, source) => {
     const module = lower(`residual-${name.replaceAll(' ', '-')}.ts`, source);

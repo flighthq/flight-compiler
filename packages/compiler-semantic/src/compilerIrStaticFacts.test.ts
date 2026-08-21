@@ -280,6 +280,8 @@ describe('analyzeIrModulesStaticFacts', () => {
           constructor(value: number = 1) { do { value; } while (false); }
           method(values: number[]): unknown {
             let total: number = 0;
+            const [selected = values[1]] = values;
+            selected;
             for (total = 0; total < 1; total++) { if (total) continue; }
             for (const value of values) { value; }
             for (const key in { a: 1 }) { key; }
@@ -304,7 +306,7 @@ describe('analyzeIrModulesStaticFacts', () => {
     expect(lowered.diagnostics).toEqual([]);
     expect(analyzeIrModulesStaticFacts([lowered.module]).facts).toEqual(
       expect.arrayContaining([
-        { access: 'read', count: 2, kind: 'indexedAccess', receivers: ['array'] },
+        { access: 'read', count: 3, kind: 'indexedAccess', receivers: ['array'] },
         { count: 1, domain: 'number', kind: 'numericRelation' },
         { context: 'conditionalExpression', count: 1, domain: 'boolean', kind: 'truthiness' },
         { context: 'controlFlowCondition', count: 2, domain: 'boolean', kind: 'truthiness' },
