@@ -1,4 +1,5 @@
 import type {
+  CompilerCompletionKind,
   CompilerSourceIdentity,
   IrExpression,
   IrNamedVariable,
@@ -995,7 +996,7 @@ const variableInitializationCompletionKinds: readonly CompilerVariableInitializa
   'normal',
   'return',
   'throw',
-];
+] satisfies readonly CompilerCompletionKind[];
 
 type MutableCompilerVariableInitializationCompletion = {
   -readonly [Kind in CompilerVariableInitializationCompletionKind]?: Set<string>;

@@ -68,7 +68,7 @@ const packageRules: Readonly<Record<string, PackageRule>> = {
     devDependencies: ['compiler-semantic'],
   },
   'compiler-completion': {
-    dependencies: ['compiler-types'],
+    dependencies: ['compiler-canonical-form', 'compiler-types'],
     description: 'Target-neutral statement and expression completion semantics',
   },
   'compiler-emission': {

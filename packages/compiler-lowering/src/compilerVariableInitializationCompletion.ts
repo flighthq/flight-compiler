@@ -1,10 +1,6 @@
-interface CompilerVariableInitializationCompletion {
-  readonly break?: ReadonlySet<string>;
-  readonly continue?: ReadonlySet<string>;
-  readonly normal?: ReadonlySet<string>;
-  readonly return?: ReadonlySet<string>;
-  readonly throw?: ReadonlySet<string>;
-}
+import type { CompilerCompletionKind } from '../../compiler-types/src/index.js';
+
+type CompilerVariableInitializationCompletion = Partial<Readonly<Record<CompilerCompletionKind, ReadonlySet<string>>>>;
 
 type CompilerVariableInitializationCompletionKind = keyof CompilerVariableInitializationCompletion;
 

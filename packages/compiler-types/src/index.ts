@@ -2,6 +2,7 @@ export type * from './compilerAccessSemanticIntermediateRepresentation.js';
 export type * from './compilerBackendContract.js';
 export type * from './compilerBindingIntermediateRepresentation.js';
 export type * from './compilerBindingPatternIntermediateRepresentation.js';
+export type * from './compilerCompletionContract.js';
 export type * from './compilerDeclarationIntermediateRepresentation.js';
 export type * from './compilerDiagnosticContract.js';
 export type * from './compilerExecutableIntermediateRepresentation.js';
