@@ -25,6 +25,7 @@ Per-package domain surveys following Flight's `agents/packages/<name>/` conventi
 - [compiler-patch](packages/compiler-patch/review.md): correct upstream semantics without editing upstream.
 - [compiler-emission](packages/compiler-emission/review.md): what may a generated file and a generated name be called.
 - [compiler-inventory](packages/compiler-inventory/review.md): what is in this workspace and what does it export.
+- [compiler-ir-validation](packages/compiler-ir-validation/review.md): is a target-neutral IR module structurally trustworthy.
 - [compiler-semantic](packages/compiler-semantic/review.md): TypeScript in, neutral IR out.
 - [compiler-lowering](packages/compiler-lowering/review.md): verified neutral IR-to-IR passes elected by backends.
 - [compiler-runtime-contract](packages/compiler-runtime-contract/review.md): prove every reachable external type has one target binding decision.

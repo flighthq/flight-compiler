@@ -11,6 +11,7 @@ A score is a judgement about **domain coverage**, not about code quality. `compi
 | [compiler-patch](compiler-patch/review.md) | substantially-mature | 78 | correct upstream semantics without editing upstream |
 | [compiler-types](compiler-types/review.md) | foundational | 72 | the vocabulary everything else speaks |
 | [compiler-runtime-contract](compiler-runtime-contract/review.md) | solid | 70 | does every reachable external type have one target binding decision |
+| [compiler-ir-validation](compiler-ir-validation/review.md) | solid | 69 | is a target-neutral IR module structurally trustworthy |
 | [compiler-inventory](compiler-inventory/review.md) | solid | 68 | what is in this workspace and what does it export |
 | [tool-compiler](tool-compiler/review.md) | solid | 62 | the one published artifact |
 | [compiler-orchestration](compiler-orchestration/review.md) | solid | 60 | compose the passes deterministically |
