@@ -345,6 +345,154 @@ describe('lowerTypeScriptSource', () => {
     ]);
   });
 
+  it('preserves composite type cardinality, readonly state, and function structure', () => {
+    const result = lower(
+      'composite-types.ts',
+      `
+        export type MutableArray = number[];
+        export type GenericArray = Array<string>;
+        export type ReadonlyGenericArray = ReadonlyArray<boolean>;
+        export type MutableTuple = [number, label?: string, ...values: boolean[]];
+        export type ReadonlyTuple = readonly [number, string];
+        export type UnionValue = number | string | boolean;
+        export type IntersectionValue = { left: number } & { right: string };
+        export type Callback = <T extends string | number = string>(
+          this: object,
+          value: T,
+          optional?: number,
+          ...flags: boolean[]
+        ) => T;
+        export type Shape = {
+          readonly value?: number;
+          convert<T>(input: T): T;
+        };
+      `,
+    );
+    const types = new Map(
+      result.module.declarations.map((declaration) => {
+        if (declaration.kind !== 'typeAlias') throw new Error('Expected only type-alias declarations');
+        return [declaration.binding.name, declaration.type] as const;
+      }),
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    expect(types.get('MutableArray')).toEqual({
+      element: { kind: 'primitive', name: 'number' },
+      kind: 'array',
+      readonly: false,
+    });
+    expect(types.get('GenericArray')).toEqual({
+      element: { kind: 'primitive', name: 'string' },
+      kind: 'array',
+      readonly: false,
+    });
+    expect(types.get('ReadonlyGenericArray')).toEqual({
+      element: { kind: 'primitive', name: 'boolean' },
+      kind: 'array',
+      readonly: true,
+    });
+    expect(types.get('MutableTuple')).toEqual({
+      elements: [
+        { optional: false, rest: false, type: { kind: 'primitive', name: 'number' } },
+        { optional: true, rest: false, type: { kind: 'primitive', name: 'string' } },
+        {
+          optional: false,
+          rest: true,
+          type: { element: { kind: 'primitive', name: 'boolean' }, kind: 'array', readonly: false },
+        },
+      ],
+      kind: 'tuple',
+      readonly: false,
+    });
+    expect(types.get('ReadonlyTuple')).toEqual({
+      elements: [
+        { optional: false, rest: false, type: { kind: 'primitive', name: 'number' } },
+        { optional: false, rest: false, type: { kind: 'primitive', name: 'string' } },
+      ],
+      kind: 'tuple',
+      readonly: true,
+    });
+    expect(types.get('UnionValue')).toEqual({
+      kind: 'union',
+      types: [
+        { kind: 'primitive', name: 'number' },
+        { kind: 'primitive', name: 'string' },
+        { kind: 'primitive', name: 'boolean' },
+      ],
+    });
+    expect(types.get('IntersectionValue')).toEqual({
+      kind: 'intersection',
+      types: [
+        {
+          kind: 'object',
+          properties: [{ name: 'left', optional: false, readonly: false, type: { kind: 'primitive', name: 'number' } }],
+        },
+        {
+          kind: 'object',
+          properties: [
+            { name: 'right', optional: false, readonly: false, type: { kind: 'primitive', name: 'string' } },
+          ],
+        },
+      ],
+    });
+    expect(types.get('Callback')).toMatchObject({
+      kind: 'function',
+      parameters: [
+        {
+          name: 'value',
+          optional: false,
+          rest: false,
+          type: { kind: 'named', reference: { binding: { name: 'T', space: 'type' }, kind: 'binding', path: [] } },
+        },
+        { name: 'optional', optional: true, rest: false, type: { kind: 'primitive', name: 'number' } },
+        {
+          name: 'flags',
+          optional: false,
+          rest: true,
+          type: { element: { kind: 'primitive', name: 'boolean' }, kind: 'array', readonly: false },
+        },
+      ],
+      returns: { kind: 'named', reference: { binding: { name: 'T', space: 'type' }, kind: 'binding', path: [] } },
+      typeParameters: [
+        {
+          binding: { name: 'T', space: 'type' },
+          constraint: {
+            kind: 'union',
+            types: [
+              { kind: 'primitive', name: 'string' },
+              { kind: 'primitive', name: 'number' },
+            ],
+          },
+          default: { kind: 'primitive', name: 'string' },
+        },
+      ],
+    });
+    expect(types.get('Shape')).toMatchObject({
+      kind: 'object',
+      properties: [
+        { name: 'value', optional: true, readonly: true, type: { kind: 'primitive', name: 'number' } },
+        {
+          name: 'convert',
+          optional: false,
+          readonly: true,
+          type: {
+            kind: 'function',
+            parameters: [
+              {
+                name: 'input',
+                optional: false,
+                rest: false,
+                type: { kind: 'named', reference: { binding: { name: 'T' }, kind: 'binding', path: [] } },
+              },
+            ],
+            returns: { kind: 'named', reference: { binding: { name: 'T' }, kind: 'binding', path: [] } },
+            typeParameters: [{ binding: { name: 'T', space: 'type' } }],
+          },
+        },
+      ],
+    });
+  });
+
   it('separates executable defaults from function types', () => {
     const result = lower('contracts.ts', 'export const callback = (value: number = 1): number => value;');
     const [callback] = result.module.declarations;
