@@ -1,14 +1,14 @@
 {
-  "name": "@flighthq/compiler-ordering",
+  "name": "@flighthq/compiler-canonical-form",
   "version": "0.0.0",
-  "description": "Host-independent ordering primitives for compiler data",
+  "description": "Host-independent canonical forms for deterministic compiler data",
   "author": "Joshua Granick and other contributors",
   "license": "MIT",
   "private": true,
   "repository": {
     "type": "git",
     "url": "https://github.com/flighthq/flight-compiler.git",
-    "directory": "packages/compiler-ordering"
+    "directory": "packages/compiler-canonical-form"
   },
   "type": "module",
   "sideEffects": false,

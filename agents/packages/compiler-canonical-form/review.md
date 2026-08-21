@@ -1,5 +1,5 @@
 ---
-package: '@flighthq/compiler-ordering'
+package: '@flighthq/compiler-canonical-form'
 status: near-mature
 score: 90
 updated: 2026-08-20
@@ -8,9 +8,9 @@ ingested:
   - agents/compiler-foundations.md
 ---
 
-# compiler-ordering — Review
+# compiler-canonical-form — Review
 
-The dependency-free owner of host-independent ordering primitives used in deterministic compiler output.
+The dependency-free owner of host-independent canonical forms used in deterministic compiler output.
 
 ## Verdict
 

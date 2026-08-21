@@ -1,4 +1,4 @@
-import { compareTextCodeUnits } from '../../compiler-ordering/src/index.js';
+import { compareTextCodeUnits } from '../../compiler-canonical-form/src/index.js';
 import type {
   AnalyzeFlightPackageExclusionsOptions,
   PackageExclusion,

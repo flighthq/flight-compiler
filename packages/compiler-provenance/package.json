@@ -18,7 +18,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@flighthq/compiler-ordering": "*",
+    "@flighthq/compiler-canonical-form": "*",
     "@flighthq/compiler-types": "*",
     "typescript": "5.9.3"
   }

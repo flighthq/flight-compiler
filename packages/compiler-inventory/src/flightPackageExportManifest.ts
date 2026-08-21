@@ -1,6 +1,6 @@
 import path from 'node:path';
 
-import { compareTextCodeUnits } from '../../compiler-ordering/src/index.js';
+import { compareTextCodeUnits } from '../../compiler-canonical-form/src/index.js';
 import type {
   PackageExportCondition,
   PackageExportDescriptor,

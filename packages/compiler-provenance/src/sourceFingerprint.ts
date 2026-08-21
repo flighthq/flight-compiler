@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 
 import ts from 'typescript';
 
-import { compareTextCodeUnits } from '../../compiler-ordering/src/index.js';
+import { compareTextCodeUnits } from '../../compiler-canonical-form/src/index.js';
 import type { CompilerSourceFingerprint } from '../../compiler-types/src/index.js';
 
 export function fingerprintSourceText(value: string): CompilerSourceFingerprint {

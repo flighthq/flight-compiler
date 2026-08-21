@@ -53,11 +53,11 @@ const packageRules: Readonly<Record<string, PackageRule>> = {
     devDependencies: ['compiler-semantic'],
   },
   'compiler-emission': {
-    dependencies: ['compiler-ordering', 'compiler-types'],
+    dependencies: ['compiler-canonical-form', 'compiler-types'],
     description: 'Target-neutral source-emission infrastructure',
   },
   'compiler-inventory': {
-    dependencies: ['compiler-ordering', 'compiler-provenance', 'compiler-types'],
+    dependencies: ['compiler-canonical-form', 'compiler-provenance', 'compiler-types'],
     description: 'Flight package, export-lane, symbol, and runtime-value inventory',
   },
   'compiler-ir-validation': {
@@ -70,24 +70,30 @@ const packageRules: Readonly<Record<string, PackageRule>> = {
     description: 'Backend-elected target-neutral IR lowering passes',
     devDependencies: ['compiler-semantic'],
   },
-  'compiler-ordering': {
+  'compiler-canonical-form': {
     dependencies: [],
-    description: 'Host-independent ordering primitives for compiler data',
+    description: 'Host-independent canonical forms for deterministic compiler data',
   },
   'compiler-orchestration': {
-    dependencies: ['compiler-emission', 'compiler-ordering', 'compiler-patch', 'compiler-semantic', 'compiler-types'],
+    dependencies: [
+      'compiler-canonical-form',
+      'compiler-emission',
+      'compiler-patch',
+      'compiler-semantic',
+      'compiler-types',
+    ],
     description: 'Deterministic compiler pipeline orchestration',
   },
   'compiler-patch': {
-    dependencies: ['compiler-ordering', 'compiler-types'],
+    dependencies: ['compiler-canonical-form', 'compiler-types'],
     description: 'Identity-based semantic patch application and auditing',
   },
   'compiler-provenance': {
-    dependencies: ['compiler-ordering', 'compiler-types'],
+    dependencies: ['compiler-canonical-form', 'compiler-types'],
     description: 'Stable source normalization, provenance, and fingerprints',
   },
   'compiler-runtime-contract': {
-    dependencies: ['compiler-ordering', 'compiler-types'],
+    dependencies: ['compiler-canonical-form', 'compiler-types'],
     description: 'Target-neutral runtime binding reachability and completeness',
     devDependencies: ['compiler-semantic'],
   },
@@ -285,12 +291,15 @@ function checkPackage(packageName: string, rule: Readonly<PackageRule>): void {
       `${relative(file)}: transient work comments do not belong in source`,
     );
     const sourceFile = ts.createSourceFile(file, contents, ts.ScriptTarget.Latest, true);
-    for (const violation of collectCompilerTextOrderingViolations(sourceFile, packageName === 'compiler-ordering')) {
+    for (const violation of collectCompilerTextOrderingViolations(
+      sourceFile,
+      packageName === 'compiler-canonical-form',
+    )) {
       errors.push(
         `${relative(file)}:${String(lineOf(sourceFile, violation.node))}: ${
           violation.kind === 'locale-compare'
             ? 'localeCompare is host-dependent; use compareTextCodeUnits'
-            : 'local text comparators belong in compiler-ordering'
+            : 'local text comparators belong in compiler-canonical-form'
         }`,
       );
     }

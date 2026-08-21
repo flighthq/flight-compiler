@@ -28,7 +28,7 @@ Per-package domain surveys following Flight's `agents/packages/<name>/` conventi
 - [compiler-ir-validation](packages/compiler-ir-validation/review.md): is a target-neutral IR module structurally trustworthy.
 - [compiler-semantic](packages/compiler-semantic/review.md): TypeScript in, neutral IR out.
 - [compiler-lowering](packages/compiler-lowering/review.md): verified neutral IR-to-IR passes elected by backends.
-- [compiler-ordering](packages/compiler-ordering/review.md): host-independent ordering primitives for deterministic compiler data.
+- [compiler-canonical-form](packages/compiler-canonical-form/review.md): host-independent canonical forms for deterministic compiler data.
 - [compiler-runtime-contract](packages/compiler-runtime-contract/review.md): prove every reachable external type has one target binding decision.
 - [compiler-backend-hx](packages/compiler-backend-hx/review.md): neutral IR in, idiomatic Haxe out.
 - [compiler-backend-rs](packages/compiler-backend-rs/review.md): neutral IR in, idiomatic Rust out.

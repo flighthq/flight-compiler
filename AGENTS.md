@@ -57,7 +57,7 @@ The repository follows Flight's package-per-domain convention. Internal workspac
 - `packages/compiler-patch/`: fingerprinted semantic patch application and audits.
 - `packages/compiler-emission/`: target-neutral backend and output infrastructure.
 - `packages/compiler-lowering/`: backend-elected, target-neutral IR-to-IR passes and verification.
-- `packages/compiler-ordering/`: dependency-free, host-independent ordering primitives for deterministic compiler data.
+- `packages/compiler-canonical-form/`: dependency-free, host-independent canonical forms for deterministic compiler data.
 - `packages/compiler-backend-hx/`: Haxe-specific lowering, naming, and source emission.
 - `packages/compiler-backend-rs/`: Rust-specific lowering, naming, and source emission.
 - `packages/compiler-orchestration/`: deterministic pipeline composition.
@@ -83,11 +83,11 @@ Complexity usually means a unit is hiding smaller primitives. Decompose until ea
 The dependency floor is deliberate:
 
 - `compiler-types` defines vocabulary and contracts without implementation dependencies.
-- `compiler-provenance` defines deterministic normalization and exact source-fingerprint identity over shared contracts and host-independent ordering.
-- `compiler-patch` and `compiler-emission` depend only on the contracts they operate over plus shared deterministic ordering.
+- `compiler-provenance` defines deterministic normalization and exact source-fingerprint identity over shared contracts and host-independent canonical form.
+- `compiler-patch` and `compiler-emission` depend only on the contracts they operate over plus shared deterministic canonical form.
 - `compiler-ir-validation` verifies target-neutral IR structure over shared contracts and exact provenance identity.
-- `compiler-runtime-contract` validates reachable external-type decisions over `compiler-types` and shared deterministic ordering.
-- `compiler-ordering` defines deterministic text order without importing compiler contracts or identity policy.
+- `compiler-runtime-contract` validates reachable external-type decisions over `compiler-types` and shared deterministic canonical form.
+- `compiler-canonical-form` defines deterministic text order and portable path form without importing compiler contracts or domain identity policy.
 - `compiler-lowering` provides verified neutral transforms over `compiler-types`, composing `compiler-ir-validation`; backends elect its passes.
 - inventory, semantic lowering, backends, and orchestration are compositions above that floor.
 
@@ -103,7 +103,7 @@ Keep imports side-effect-free. Importing the package must not read a checkout, s
 - Every public export is lowered, patched, or represented by a structured diagnostic. Never silently drop a declaration.
 - Every declaration and patch retains stable upstream identity: package name, source path, export name, and normalized SHA-256 fingerprint.
 - Deterministic outputs contain no timestamps, machine-specific absolute paths, or filesystem iteration order.
-- Deterministic package ordering uses `compareTextCodeUnits` from `compiler-ordering`; package source does not define local text comparators or call locale-sensitive `localeCompare`.
+- Deterministic package ordering uses `compareTextCodeUnits` from `compiler-canonical-form`; package source does not define local text comparators or call locale-sensitive `localeCompare`.
 - Expected environmental absence returns a structured result where the API defines one. Invalid compiler configuration, unresolved public exports, ambiguous patches, and stale fingerprints fail loudly.
 - Use small free functions and plain data. Compiler packages do not define classes; tagged diagnostic values and explicit function records provide failure and capability contracts.
 - Exported names must be globally understandable without relying on a deep import path for context.

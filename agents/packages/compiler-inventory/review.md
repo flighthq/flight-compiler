@@ -37,7 +37,7 @@ The largest package: 12 implementation sources and ~3,500 lines covering package
 - **Runtime binding classification.** Const enums under `preserveConstEnums`/`isolatedModules`, ambient declarations, alias resolution and explicit `export type` are each handled, and the record carries the binding's own fingerprint when it differs from the export's.
 - **Failure identity.** `compilerInventoryFailure.ts` gives the package tagged failures with codes and guards rather than bare `Error`s, matching the house contract.
 - **Exclusions, host facts and host endpoints** are modelled as their own primitives with colocated tests, which is the right decomposition even though the content is early.
-- **Portable, deterministic output.** Sorted package, lane and export lists; relative POSIX paths; no absolute host paths; the shared `compiler-ordering` code-unit primitive prevents a host locale from reordering a report.
+- **Portable, deterministic output.** Sorted package, lane and export lists; relative POSIX paths; no absolute host paths; the shared `compiler-canonical-form` primitives prevent host path and locale differences from changing a report.
 - **Checkout identity.** `gitCheckoutRevision` pins the upstream commit into the report, which is what makes an inventory comparable across runs.
 - **`.tsx` handled by extension** rather than parsed as `.ts`, closing an earlier defect where JSX would silently misparse.
 

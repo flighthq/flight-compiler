@@ -1,6 +1,6 @@
 import ts from 'typescript';
 
-import { compareTextCodeUnits } from '../../compiler-ordering/src/index.js';
+import { compareTextCodeUnits } from '../../compiler-canonical-form/src/index.js';
 import type { RuntimeExportDecision } from '../../compiler-types/src/index.js';
 import { createCompilerInventoryFailure } from './compilerInventoryFailure.js';
 

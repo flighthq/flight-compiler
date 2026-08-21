@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { compareTextCodeUnits } from '../../compiler-ordering/src/index.js';
+import { compareTextCodeUnits } from '../../compiler-canonical-form/src/index.js';
 import { createHostWorkspaceSource } from './hostWorkspaceSource.js';
 
 // The only inventory test that still needs a real directory, because a host source is exactly the

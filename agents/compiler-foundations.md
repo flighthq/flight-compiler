@@ -7,10 +7,10 @@ This document defines the dependency floor of `@flighthq/tool-compiler` and the 
 ## Dependency floor
 
 ```text
-compiler-ordering + compiler-types
+compiler-canonical-form + compiler-types
   <- compiler-provenance
 
-compiler-ordering + compiler-types
+compiler-canonical-form + compiler-types
   <- compiler-patch
   <- compiler-emission
   <- compiler-runtime-contract
@@ -21,7 +21,7 @@ compiler-provenance + compiler-types
 compiler-ir-validation + compiler-types
   <- compiler-lowering
 
-compiler-ordering + compiler-types + compiler-provenance
+compiler-canonical-form + compiler-types + compiler-provenance
   <- compiler-inventory
 
 compiler-types + compiler-provenance
@@ -39,7 +39,7 @@ ordering + types + semantic + patch + emission
 The first five packages are the bedrock review set:
 
 1. `compiler-types` is the vocabulary, not an implementation utility package.
-2. `compiler-ordering` defines one host-independent total order without owning identity policy.
+2. `compiler-canonical-form` defines host-independent text order and portable path form without owning domain identity policy.
 3. `compiler-provenance` answers whether two source identities are the same.
 4. `compiler-patch` applies explicit, fingerprint-bound changes and records what happened.
 5. `compiler-emission` defines portable output and inspectable backend/invariant failures.
@@ -158,7 +158,7 @@ Each workspace passes its own strict typecheck and Vitest target. The package bo
 | Package | Isolation conclusion | Current robustness boundary |
 | --- | --- | --- |
 | `compiler-types` | Keep independent as the dependency-free vocabulary floor. | Strict typecheck and focused composition tests cover useful relationships; identity, declaration/type separation and cardinality, closed operator tokens and static value domains, source location, value/type binding provenance, diagnostics/failures, and readonly collection boundaries are explicit, while declaration merging and complete expression/statement coverage remain open. |
-| `compiler-ordering` | Keep independent as the dependency-free host-independent ordering floor. | Exact equality, empty and prefix values, ASCII case, non-ASCII and surrogate text, antisymmetry, transitivity, and caller-owned Unicode normalization are direct-tested; package health prevents local text comparator and locale-sensitive ordering regressions. |
+| `compiler-canonical-form` | Keep independent as the dependency-free host-independent canonical-form floor. | Exact text equality and order, empty and prefix values, ASCII case, non-ASCII and surrogate text, antisymmetry, transitivity, caller-owned Unicode normalization, and portable separator form are direct-tested; package health prevents local comparator, locale-sensitive ordering, and path-form regressions. |
 | `compiler-provenance` | Keep independent as one narrow identity primitive. | Equivalence, counterexample, empty, Unicode, path, line-ending, raw-text, and TypeScript-version behavior are locked. |
 | `compiler-patch` | Keep independent because patch identity and auditing are a separate lifecycle. | All operations and failure codes, deterministic ordering, backend skipping, and caller-input immutability are exercised. |
 | `compiler-emission` | Keep independent as the portable emitted-file and backend-failure seam. | Path/content normalization, host-path rejection, portable path and target-name collision identity, fixed-versus-renamable lexical allocation, indentation boundaries, and tagged failure guards are exercised. |

@@ -34,7 +34,7 @@ Fingerprinted semantic patching: ~670 lines across one implementation source and
 - **Scope precedence is explicit.** Neutral patches run before backend patches, and IDs only order within a scope, so the winner of an overlap is decided by layering rather than by an alphabetical accident. This was a real defect earlier — precedence used to fall out of `id.localeCompare`, and renaming a patch id silently changed generated output.
 - **A versioned audit.** `flight-compiler-patch-audit/1` records applied patches with fingerprint, operation, reason, scope and target, and reports skipped backend-scoped patches as visible rather than absent.
 - **Conflict rejection.** Duplicate ids, two patches of the same operation on one target in one scope, and a remove combined with any other active patch on the same target are all refused up front.
-- **Deterministic ordering.** Application order is stable and host-locale independent through the shared `compiler-ordering` primitive; the audit is reproducible.
+- **Deterministic ordering.** Application order is stable and host-locale independent through the shared `compiler-canonical-form` primitive; the audit is reproducible.
 
 ## Gaps
 
