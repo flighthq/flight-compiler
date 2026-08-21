@@ -496,7 +496,7 @@ describe('lowerTypeScriptSource', () => {
     expect(bindingReference(loopStatement.body.statements[0].expression).id).toBe(loopStatement.variable.binding.id);
 
     const undefinedVariable = undefinedStatement.declarations[0]!;
-    expect(undefinedVariable.binding).toMatchObject({ kind: 'variable', name: 'undefined', scope: 'local' });
+    expect(undefinedVariable.binding).toMatchObject({ kind: 'variable', name: 'undefined', scope: 'block' });
     expect(bindingReference(undefinedVariable.initializer).id).toBe(local.binding.id);
     if (!tryStatement.catchClause || tryStatement.catchClause.body.kind !== 'block') {
       throw new Error('Expected catch clause');
@@ -522,6 +522,46 @@ describe('lowerTypeScriptSource', () => {
     expect(lower('bindings.ts', source).module).toEqual(result.module);
   });
 
+  it('classifies module, declaration, function, and block binding scopes without collapsing hoisted variables', () => {
+    const result = lower(
+      'scopes.ts',
+      `
+        export function scopes<T>(input: T): T {
+          {
+            var lifted = input;
+            let block = input;
+            const fixed = block;
+          }
+          return lifted;
+        }
+        export class Box<T> {
+          read<U>(value: U): T { return value as unknown as T; }
+        }
+      `,
+    );
+    const [scopes, box] = result.module.declarations;
+    if (scopes?.kind !== 'function' || box?.kind !== 'class') throw new Error('Expected function and class');
+    const nested = scopes.body[0];
+    if (nested?.kind !== 'block') throw new Error('Expected nested block');
+    const variables = nested.statements.flatMap((statement) =>
+      statement.kind === 'variable' ? statement.declarations : [],
+    );
+    const method = box.methods[0];
+    if (!method) throw new Error('Expected class method');
+
+    expect(scopes.binding.scope).toBe('module');
+    expect(scopes.typeParameters[0]?.binding.scope).toBe('function');
+    expect(scopes.parameters[0]?.binding.scope).toBe('function');
+    expect(variables.map((variable) => [variable.binding.name, variable.binding.scope])).toEqual([
+      ['lifted', 'function'],
+      ['block', 'block'],
+      ['fixed', 'block'],
+    ]);
+    expect(box.typeParameters[0]?.binding.scope).toBe('declaration');
+    expect(method.typeParameters[0]?.binding.scope).toBe('function');
+    expect(method.parameters[0]?.binding.scope).toBe('function');
+  });
+
   it('keeps a named function-expression binding distinct from its same-named owner', () => {
     const result = lower('recursion.ts', 'export const recurse = function recurse(): number { return recurse(); };');
     const [owner] = result.module.declarations;
@@ -533,7 +573,7 @@ describe('lowerTypeScriptSource', () => {
     if (returned?.kind !== 'return' || returned.expression?.kind !== 'call') {
       throw new Error('Expected recursive call');
     }
-    expect(owner.initializer.binding).toMatchObject({ kind: 'function', name: 'recurse', scope: 'local' });
+    expect(owner.initializer.binding).toMatchObject({ kind: 'function', name: 'recurse', scope: 'function' });
     expect(owner.initializer.binding.id).not.toBe(owner.binding.id);
     expect(bindingReference(returned.expression.callee).id).toBe(owner.initializer.binding.id);
   });

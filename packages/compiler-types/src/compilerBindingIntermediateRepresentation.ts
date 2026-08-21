@@ -2,7 +2,7 @@ import type { CompilerSourceOrigin } from './compilerSourceIdentity.js';
 
 export type IrBindingKind = 'catch' | 'class' | 'enum' | 'function' | 'import' | 'parameter' | 'variable';
 
-export type IrBindingScope = 'local' | 'module';
+export type IrBindingScope = 'block' | 'declaration' | 'function' | 'module';
 
 export interface IrBindingIdentity extends CompilerSourceOrigin {
   readonly id: string;

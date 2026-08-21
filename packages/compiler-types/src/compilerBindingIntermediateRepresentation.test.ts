@@ -17,7 +17,7 @@ describe('compiler binding intermediate representation contracts', () => {
       line: 1,
       name: 'value',
       packageName: '@flighthq/math',
-      scope: 'local',
+      scope: 'function',
       space: 'value',
       source: 'packages/math/src/value.ts',
     };
@@ -32,7 +32,7 @@ describe('compiler binding intermediate representation contracts', () => {
     expectTypeOf<IrBindingIdentity['kind']>().toEqualTypeOf<
       'catch' | 'class' | 'enum' | 'function' | 'import' | 'parameter' | 'variable'
     >();
-    expectTypeOf<IrBindingIdentity['scope']>().toEqualTypeOf<'local' | 'module'>();
+    expectTypeOf<IrBindingIdentity['scope']>().toEqualTypeOf<'block' | 'declaration' | 'function' | 'module'>();
     expectTypeOf<Extract<IrIdentifierReference, { kind: 'binding' }>['binding']>().toEqualTypeOf<IrBindingIdentity>();
   });
 
@@ -45,7 +45,7 @@ describe('compiler binding intermediate representation contracts', () => {
       line: 1,
       name: 'Value',
       packageName: '@flighthq/math',
-      scope: 'local',
+      scope: 'declaration',
       source: 'value.ts',
       space: 'type',
     };

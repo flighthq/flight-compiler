@@ -17,7 +17,7 @@ describe('compiler executable intermediate representation contracts', () => {
         id: 'binding:["@flighthq/math","packages/math/src/value.ts",0]',
         kind: 'parameter',
         name: 'value',
-        scope: 'local',
+        scope: 'function',
         space: 'value',
       },
       initializer: expression,

@@ -182,7 +182,7 @@ describe('createIrModuleTargetNameAllocation', () => {
       line: 1,
       name,
       packageName: '@flighthq/math',
-      scope: 'local' as const,
+      scope: 'function' as const,
       space: 'value' as const,
       source: 'value.ts',
     });
@@ -247,7 +247,7 @@ describe('createIrModuleTargetNameAllocation', () => {
       line: 1,
       name: 'value',
       packageName: '@flighthq/math',
-      scope: 'local' as const,
+      scope: 'function' as const,
       space: 'value' as const,
       source: 'value.ts',
     });

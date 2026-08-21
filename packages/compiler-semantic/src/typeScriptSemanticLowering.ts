@@ -1473,7 +1473,7 @@ function lowerTypeBindingSymbol(
     id: `type-binding:${JSON.stringify([context.options.packageName, source, name.getStart(context.sourceFile)])}`,
     kind: typeBindingDeclarationKind(declaration),
     name: name.text,
-    scope: ts.isTypeParameterDeclaration(declaration) ? 'local' : 'module',
+    scope: typeBindingDeclarationScope(declaration),
     space: 'type',
   };
   context.typeBindings.set(symbol, binding);
@@ -1495,12 +1495,26 @@ function typeBindingDeclarationName(declaration: TypeScriptTypeBindingDeclaratio
 
 function bindingDeclarationScope(node: TypeScriptBindingDeclaration): IrBindingScope {
   if (ts.isImportClause(node) || ts.isImportSpecifier(node) || ts.isNamespaceImport(node)) return 'module';
-  if (ts.isFunctionExpression(node) || ts.isParameter(node) || ts.isCatchClause(node.parent)) return 'local';
-  for (let parent = node.parent; parent; parent = parent.parent) {
-    if (ts.isFunctionLike(parent)) return 'local';
+  if (ts.isFunctionExpression(node) || ts.isParameter(node)) return 'function';
+  if (ts.isCatchClause(node.parent)) return 'block';
+  for (let parent: ts.Node | undefined = node.parent; parent; parent = parent.parent) {
+    if (ts.isFunctionLike(parent)) {
+      return ts.isVariableDeclaration(node) && !(node.parent.flags & ts.NodeFlags.BlockScoped) ? 'function' : 'block';
+    }
     if (ts.isSourceFile(parent)) return 'module';
   }
-  return 'local';
+  return 'block';
+}
+
+function typeBindingDeclarationScope(node: TypeScriptTypeBindingDeclaration): IrBindingScope {
+  if (!ts.isTypeParameterDeclaration(node)) return 'module';
+  for (let parent: ts.Node | undefined = node.parent; parent; parent = parent.parent) {
+    if (ts.isFunctionLike(parent)) return 'function';
+    if (ts.isClassLike(parent) || ts.isInterfaceDeclaration(parent) || ts.isTypeAliasDeclaration(parent)) {
+      return 'declaration';
+    }
+  }
+  return 'declaration';
 }
 
 function moduleNameFromSource(file: string): string {
