@@ -163,6 +163,40 @@ describe('emitIrModuleHaxe', () => {
     );
   });
 
+  it('elects object binding lowering with named rest copies and computed-key refusal', () => {
+    const named = lower(
+      'object-binding.ts',
+      `
+        type Shape = { value?: number; other: boolean };
+        export function select(source: Shape): number {
+          const { value = 1, ...rest }: Shape = source;
+          rest.other;
+          return value;
+        }
+      `,
+    );
+    const computed = lower(
+      'object-computed.ts',
+      `
+        type Shape = { value: number; other: boolean };
+        export function select(source: Shape, key: string): object {
+          const { [key]: value, ...rest }: Shape = source;
+          value;
+          return rest;
+        }
+      `,
+    );
+    const output = emitIrModuleHaxe(named.module).contents;
+
+    expect(output).toContain('final objectPatternValue:Shape = source;');
+    expect(output).toContain('final value:Float = (objectPatternValue.value ?? 1);');
+    expect(output).toContain('Reflect.copy(objectPatternValue)');
+    expect(output).toContain('Reflect.deleteField(objectRestValue, "value")');
+    expect(() => emitIrModuleHaxe(computed.module)).toThrow(
+      'computed object access requires JavaScript property-key coercion lowering',
+    );
+  });
+
   it('elects function-scoped variable hoisting after destructuring normalization', () => {
     const named = lower(
       'variable-hoisting.ts',

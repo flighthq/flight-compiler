@@ -329,6 +329,14 @@ function collectExpressionBindings(
         else collectExpressionBindings(member.value, `${memberPath}:value`, add);
       });
       break;
+    case 'objectRest':
+      collectExpressionBindings(expression.object, `${path}:object`, add);
+      expression.excluded.forEach((key, index) => {
+        if (key.kind === 'computed') {
+          collectExpressionBindings(key.expression, `${path}:excluded:${String(index)}`, add);
+        }
+      });
+      break;
     case 'property':
       collectExpressionBindings(expression.object, `${path}:object`, add);
       break;

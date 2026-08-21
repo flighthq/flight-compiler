@@ -10,6 +10,7 @@ import {
 import {
   createCompilerLoweringPassArrayBindingPattern,
   createCompilerLoweringPassCStyleFor,
+  createCompilerLoweringPassObjectBindingPattern,
   createCompilerLoweringPassSwitchFallthrough,
   createCompilerLoweringPassVariableHoisting,
   lowerIrModuleWithCompilerPasses,
@@ -76,6 +77,7 @@ export function emitIrModuleHaxe(
   options: Readonly<HaxeCompilerBackendOptions> = {},
 ): EmittedFile {
   const module = lowerIrModuleWithCompilerPasses(sourceModule, [
+    createCompilerLoweringPassObjectBindingPattern(),
     createCompilerLoweringPassArrayBindingPattern(),
     createCompilerLoweringPassVariableHoisting(),
     createCompilerLoweringPassCStyleFor(),
@@ -237,6 +239,9 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
       return `(${emitExpression(expression.condition, context)} ? ${emitExpression(expression.whenTrue, context)} : ${emitExpression(expression.whenFalse, context)})`;
     case 'element':
       if (expression.optional) emissionError(context, 'optional element access requires null-safe access lowering');
+      if (expression.semantics.receivers.includes('object')) {
+        emissionError(context, 'computed object access requires JavaScript property-key coercion lowering');
+      }
       if (expression.semantics.receivers.includes('tuple')) {
         const index = getElementAccessTupleIndexHaxe(expression, context);
         return `${emitExpression(expression.object, context)}[${String(index)}]`;
@@ -264,6 +269,16 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
           return `${safeHaxeName(member.name)}: ${emitExpression(member.value, context)}`;
         })
         .join(', ')} }`;
+    case 'objectRest': {
+      if (expression.excluded.some((key) => key.kind === 'computed')) {
+        emissionError(context, 'computed object-rest exclusions require JavaScript property-key coercion lowering');
+      }
+      const name = getGeneratedTargetNameHaxe('objectRestValue', context);
+      const exclusions = expression.excluded
+        .map((key) => `Reflect.deleteField(${name}, ${JSON.stringify(key.kind === 'named' ? key.name : '')});`)
+        .join(' ');
+      return `(function() { final ${name} = Reflect.copy(${emitExpression(expression.object, context)}); ${exclusions} return ${name}; })()`;
+    }
     case 'property':
       if (expression.optional) emissionError(context, 'optional property access requires null-safe access lowering');
       return `${emitExpression(expression.object, context)}.${safeHaxeName(expression.name)}`;

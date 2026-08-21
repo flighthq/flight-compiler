@@ -228,6 +228,15 @@ function analyzeIrExpressionVariableInitialization(
         analyzeIrObjectMemberVariableInitialization(member, initialized, variables, sourceIdentity, completion),
       );
       return;
+    case 'objectRest':
+      analyzeIrExpressionVariableInitialization(expression.object, initialized, variables, sourceIdentity, completion);
+      expression.excluded.forEach((key) => {
+        if (key.kind === 'computed') {
+          analyzeIrExpressionVariableInitialization(key.expression, initialized, variables, sourceIdentity, completion);
+        }
+      });
+      addIrVariableInitializationCompletion(completion, 'throw', initialized);
+      return;
     case 'property':
       analyzeIrExpressionVariableInitialization(expression.object, initialized, variables, sourceIdentity, completion);
       addIrVariableInitializationCompletion(completion, 'throw', initialized);
@@ -849,6 +858,12 @@ function visitIrExpressionChildrenVariableInitialization(
         if (member.kind === 'computedProperty') visit(member.key);
         if (member.kind === 'spread') visit(member.expression);
         else visit(member.value);
+      });
+      return;
+    case 'objectRest':
+      visit(expression.object);
+      expression.excluded.forEach((key) => {
+        if (key.kind === 'computed') visit(key.expression);
       });
       return;
     case 'property':

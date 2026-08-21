@@ -87,6 +87,13 @@ function hasIrExpressionArrayBindingPattern(expression: Readonly<IrExpression>):
       );
     case 'object':
       return expression.members.some(hasIrObjectMemberArrayBindingPattern);
+    case 'objectRest':
+      return (
+        hasIrExpressionArrayBindingPattern(expression.object) ||
+        expression.excluded.some((key) =>
+          key.kind === 'computed' ? hasIrExpressionArrayBindingPattern(key.expression) : false,
+        )
+      );
     case 'property':
       return hasIrExpressionArrayBindingPattern(expression.object);
     case 'template':

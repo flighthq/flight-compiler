@@ -148,6 +148,12 @@ function visitExpression(expression: Readonly<IrExpression>, add: AddExternalSym
         }
       });
       break;
+    case 'objectRest':
+      visitExpression(expression.object, add);
+      expression.excluded.forEach((key) => {
+        if (key.kind === 'computed') visitExpression(key.expression, add);
+      });
+      break;
     case 'property':
       visitExpression(expression.object, add);
       break;
@@ -336,6 +342,7 @@ function visitBindingPattern(pattern: Readonly<IrBindingPattern>, add: AddExtern
         if (element.initializer) visitExpression(element.initializer, add);
       });
       if (pattern.rest) visitBindingPattern(pattern.rest, add);
+      if (pattern.type) visitType(pattern.type, add);
       break;
     case 'binding':
       if (pattern.type) visitType(pattern.type, add);
@@ -347,6 +354,7 @@ function visitBindingPattern(pattern: Readonly<IrBindingPattern>, add: AddExtern
         if (property.initializer) visitExpression(property.initializer, add);
       });
       if (pattern.rest) visitBindingPattern(pattern.rest, add);
+      if (pattern.type) visitType(pattern.type, add);
       break;
     default:
       return assertNeverIr(pattern);

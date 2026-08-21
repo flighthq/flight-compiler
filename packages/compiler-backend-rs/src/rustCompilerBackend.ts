@@ -10,6 +10,7 @@ import {
 import {
   createCompilerLoweringPassArrayBindingPattern,
   createCompilerLoweringPassCStyleFor,
+  createCompilerLoweringPassObjectBindingPattern,
   createCompilerLoweringPassSwitchFallthrough,
   createCompilerLoweringPassVariableHoisting,
   lowerIrModuleWithCompilerPasses,
@@ -82,6 +83,7 @@ export function emitIrModuleRust(
   options: Readonly<RustCompilerBackendOptions> = {},
 ): EmittedFile {
   const module = lowerIrModuleWithCompilerPasses(sourceModule, [
+    createCompilerLoweringPassObjectBindingPattern(),
     createCompilerLoweringPassArrayBindingPattern(),
     createCompilerLoweringPassVariableHoisting(),
     createCompilerLoweringPassCStyleFor(),
@@ -248,6 +250,9 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
       return `if ${emitExpression(expression.condition, context)} { ${emitExpression(expression.whenTrue, context)} } else { ${emitExpression(expression.whenFalse, context)} }`;
     case 'element':
       if (expression.optional) emissionError(context, 'optional element access requires Option-aware lowering');
+      if (expression.semantics.receivers.includes('object')) {
+        emissionError(context, 'computed object access requires JavaScript property-key coercion lowering');
+      }
       if (expression.semantics.receivers.includes('tuple')) {
         const index = getElementAccessTupleIndexRust(expression, context);
         return `${emitExpression(expression.object, context)}.${String(index)}`;
@@ -270,6 +275,8 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
       return `${emitConstructorReferenceRust(expression.callee.reference, context)}::new(${expression.arguments.map((argument) => emitExpression(argument, context)).join(', ')})`;
     case 'object':
       emissionError(context, 'anonymous object construction requires Rust structural-type lowering');
+    case 'objectRest':
+      emissionError(context, 'object rest requires Rust record ownership and projection lowering');
     case 'property':
       if (expression.optional) emissionError(context, 'optional property access requires Option-aware lowering');
       return `${emitExpression(expression.object, context)}${isAmbientIdentifier(expression.object) ? '::' : '.'}${safeRustValueName(expression.name)}`;
@@ -653,6 +660,9 @@ function emitTypeParameters(parameters: readonly IrTypeParameter[], context: Emi
 function emitVariable(variable: Readonly<IrVariable>, context: EmitContext): string {
   if ('pattern' in variable)
     emissionError(context, 'binding patterns require destructuring lowering before Rust emission');
+  if (variable.initializer?.kind === 'objectRest') {
+    emissionError(context, 'object rest requires Rust record ownership and projection lowering');
+  }
   if (variable.initialValue === 'undefined' && variable.initializer) {
     emissionError(context, 'undefined function-entry values require separate Rust assignment lowering');
   }

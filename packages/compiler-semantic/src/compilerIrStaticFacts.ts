@@ -270,6 +270,12 @@ function analyzeExpression(
         analyzeExpression(member.kind === 'spread' ? member.expression : member.value, analysis, 'read');
       });
       return;
+    case 'objectRest':
+      analyzeExpression(expression.object, analysis, 'read');
+      expression.excluded.forEach((key) => {
+        if (key.kind === 'computed') analyzeExpression(key.expression, analysis, 'read');
+      });
+      return;
     case 'property':
       analyzeExpression(expression.object, analysis, 'read');
       return;
@@ -435,6 +441,7 @@ function getExpressionValueDomain(expression: Readonly<IrExpression>): IrOperato
     case 'function':
     case 'new':
     case 'object':
+    case 'objectRest':
     case 'regexp':
     case 'tuple':
     case 'tupleSpread':

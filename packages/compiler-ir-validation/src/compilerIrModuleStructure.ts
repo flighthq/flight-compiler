@@ -386,6 +386,16 @@ function visitExpression(expression: Readonly<IrExpression>, path: string, state
         visitObjectMember(member, `${path}.members[${String(index)}]`, state),
       );
       break;
+    case 'objectRest':
+      visitExpression(expression.object, `${path}.object`, state);
+      expression.excluded.forEach((key, index) => {
+        const keyPath = `${path}.excluded[${String(index)}]`;
+        if (key.kind === 'computed') visitExpression(key.expression, `${keyPath}.expression`, state);
+        else if (key.name.length === 0) {
+          addFailure('invalid-node-shape', `${keyPath}.name`, 'object rest exclusion key must be nonempty', state);
+        }
+      });
+      break;
     case 'property':
       visitExpression(expression.object, `${path}.object`, state);
       break;
@@ -834,6 +844,7 @@ function visitBindingPattern(
         if (element.initializer) visitExpression(element.initializer, `${elementPath}.initializer`, state);
       });
       if (pattern.rest) visitBindingPattern(pattern.rest, `${path}.rest`, [pattern.scope], state);
+      if (pattern.type) visitType(pattern.type, `${path}.type`, state);
       break;
     case 'binding':
       addBindingDefinition(
@@ -865,6 +876,7 @@ function visitBindingPattern(
         }
         visitBindingPattern(pattern.rest, `${path}.rest`, [pattern.scope], state);
       }
+      if (pattern.type) visitType(pattern.type, `${path}.type`, state);
       break;
     default:
       addUnknownKind(pattern, path, state);

@@ -461,6 +461,23 @@ function lowerIrExpressionArrayBindingPattern(
           lowerIrObjectMemberArrayBindingPattern(member, `${path}.members[${String(index)}]`, analysis),
         ),
       };
+    case 'objectRest':
+      return {
+        ...expression,
+        excluded: expression.excluded.map((key, index) =>
+          key.kind === 'computed'
+            ? {
+                expression: lowerIrExpressionArrayBindingPattern(
+                  key.expression,
+                  `${path}.excluded[${String(index)}].expression`,
+                  analysis,
+                ),
+                kind: 'computed',
+              }
+            : key,
+        ),
+        object: expression.object,
+      };
     case 'property':
       return {
         ...expression,
@@ -690,7 +707,8 @@ function lowerIrStatementArrayBindingPattern(
             'only array binding patterns can be normalized by this pass',
           );
         }
-        if (!statement.variable.type) {
+        const sourceType = statement.variable.pattern.type ?? statement.variable.type;
+        if (!sourceType) {
           throw createCompilerLoweringFailure(
             'unsupported-ir',
             compilerLoweringPassNameArrayBindingPattern,
@@ -703,7 +721,7 @@ function lowerIrStatementArrayBindingPattern(
         const loweredVariables = lowerIrArrayBindingPattern(
           statement.variable.pattern,
           temporaryBinding,
-          statement.variable.type,
+          sourceType,
           statement.variable.mutable,
           variablePath,
           analysis,
@@ -716,7 +734,7 @@ function lowerIrStatementArrayBindingPattern(
           variable: {
             binding: temporaryBinding,
             mutable: false,
-            type: statement.variable.type,
+            type: statement.variable.type ?? sourceType,
           },
         };
       }
@@ -862,7 +880,8 @@ function lowerIrVariableArrayBindingPattern(
       'array binding pattern requires an initializer outside iteration statements',
     );
   }
-  if (!variable.type) {
+  const sourceType = variable.pattern.type ?? variable.type;
+  if (!sourceType) {
     throw createCompilerLoweringFailure(
       'unsupported-ir',
       compilerLoweringPassNameArrayBindingPattern,
@@ -878,10 +897,10 @@ function lowerIrVariableArrayBindingPattern(
         binding: temporaryBinding,
         initializer: lowerIrExpressionArrayBindingPattern(variable.initializer, `${path}.initializer`, analysis),
         mutable: false,
-        type: variable.type,
+        type: variable.type ?? sourceType,
       },
     },
-    ...lowerIrArrayBindingPattern(variable.pattern, temporaryBinding, variable.type, variable.mutable, path, analysis),
+    ...lowerIrArrayBindingPattern(variable.pattern, temporaryBinding, sourceType, variable.mutable, path, analysis),
   ];
 }
 

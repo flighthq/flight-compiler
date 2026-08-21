@@ -346,6 +346,19 @@ function lowerIrExpressionSwitchFallthrough(
         ...expression,
         members: expression.members.map((member) => lowerIrObjectMemberSwitchFallthrough(member, sourceIdentity)),
       };
+    case 'objectRest':
+      return {
+        ...expression,
+        excluded: expression.excluded.map((key) =>
+          key.kind === 'computed'
+            ? {
+                expression: lowerIrExpressionSwitchFallthrough(key.expression, sourceIdentity),
+                kind: 'computed',
+              }
+            : key,
+        ),
+        object: expression.object,
+      };
     case 'property':
       return { ...expression, object: lowerIrExpressionSwitchFallthrough(expression.object, sourceIdentity) };
     case 'template':

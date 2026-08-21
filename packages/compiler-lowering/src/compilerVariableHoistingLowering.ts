@@ -498,6 +498,16 @@ function lowerIrExpressionVariableHoisting(
         ...expression,
         members: expression.members.map((member) => lowerIrObjectMemberVariableHoisting(member, analysis)),
       };
+    case 'objectRest':
+      return {
+        ...expression,
+        excluded: expression.excluded.map((key) =>
+          key.kind === 'computed'
+            ? { expression: lowerIrExpressionVariableHoisting(key.expression, analysis), kind: 'computed' }
+            : key,
+        ),
+        object: expression.object,
+      };
     case 'property':
       return { ...expression, object: lowerIrExpressionVariableHoisting(expression.object, analysis) };
     case 'template':
@@ -874,6 +884,12 @@ function visitIrExpressionChildrenVariableHoisting(
     case 'array':
       expression.elements.forEach((element) => {
         if (element) visit(element);
+      });
+      return;
+    case 'objectRest':
+      visit(expression.object);
+      expression.excluded.forEach((key) => {
+        if (key.kind === 'computed') visit(key.expression);
       });
       return;
     case 'assignment':

@@ -977,9 +977,9 @@ function lowerParameterBindingEntries(
               kind: 'identifier',
               reference: { binding: parameter.binding, kind: 'binding' },
             },
-            mutable: false,
+            mutable: true,
             pattern: lowerBindingPattern(node.name, context, bindingType),
-            type: bindingType,
+            type: parameter.type,
           },
         ],
         kind: 'variable',
@@ -1150,6 +1150,8 @@ function lowerTypeScriptDestructuringAssignmentStatement(
     return undefined;
   }
   const sourceType = lowerTypeScriptExpressionTypeEvidence(unwrapped.right, context);
+  const sourceTypeNode = getTypeScriptExpressionTypeNodeEvidence(unwrapped.right, context);
+  const storageType = sourceTypeNode ? lowerType(sourceTypeNode, context) : sourceType;
   return {
     kind: 'block',
     statements: lowerTypeScriptDestructuringAssignmentTarget(
@@ -1158,6 +1160,7 @@ function lowerTypeScriptDestructuringAssignmentStatement(
       sourceType,
       'root',
       context,
+      storageType,
     ),
   };
 }
@@ -1168,6 +1171,7 @@ function lowerTypeScriptDestructuringAssignmentTarget(
   sourceType: Readonly<IrType> | undefined,
   path: string,
   context: LoweringContext,
+  storageType?: Readonly<IrType>,
 ): IrStatement[] {
   const unwrapped = unwrapTypeScriptParenthesizedExpression(target);
   if (ts.isBinaryExpression(unwrapped) && unwrapped.operatorToken.kind === ts.SyntaxKind.EqualsToken) {
@@ -1185,9 +1189,12 @@ function lowerTypeScriptDestructuringAssignmentTarget(
   }
   if (ts.isArrayLiteralExpression(unwrapped) || ts.isObjectLiteralExpression(unwrapped)) {
     const binding = createTypeScriptDestructuringAssignmentBinding(unwrapped, path, context);
+    const temporaryType = storageType ?? sourceType;
     const statements: IrStatement[] = [
       {
-        declarations: [{ binding, initializer: source, mutable: false, ...(sourceType ? { type: sourceType } : {}) }],
+        declarations: [
+          { binding, initializer: source, mutable: false, ...(temporaryType ? { type: temporaryType } : {}) },
+        ],
         kind: 'variable',
       },
     ];
@@ -1924,6 +1931,7 @@ function lowerBindingPattern(
       properties,
       ...(rest ? { rest } : {}),
       scope: bindingPatternScope(node),
+      ...(sourceType ? { type: sourceType } : {}),
     };
   }
   const elements: Array<IrBindingPatternElement | undefined> = [];
@@ -1953,6 +1961,7 @@ function lowerBindingPattern(
     kind: 'array',
     ...(rest ? { rest } : {}),
     scope: bindingPatternScope(node),
+    ...(sourceType ? { type: sourceType } : {}),
   };
 }
 
@@ -2412,6 +2421,12 @@ function typeBindingDeclarationName(declaration: TypeScriptTypeBindingDeclaratio
 function bindingDeclarationScope(node: TypeScriptBindingDeclaration): IrBindingScope {
   if (ts.isImportClause(node) || ts.isImportSpecifier(node) || ts.isNamespaceImport(node)) return 'module';
   if (ts.isFunctionExpression(node) || ts.isParameter(node)) return 'function';
+  if (ts.isBindingElement(node)) {
+    for (let parent: ts.Node | undefined = node.parent; parent; parent = parent.parent) {
+      if (ts.isParameter(parent)) return 'function';
+      if (ts.isVariableDeclaration(parent)) break;
+    }
+  }
   if (ts.isCatchClause(node.parent)) return 'block';
   const variableDeclaration = ts.isBindingElement(node)
     ? findVariableDeclarationOwner(node)

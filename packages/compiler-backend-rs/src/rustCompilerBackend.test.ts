@@ -160,6 +160,37 @@ describe('emitIrModuleRust', () => {
     );
   });
 
+  it('elects flat object binding lowering and refuses object-rest ownership', () => {
+    const flat = lower(
+      'object-binding.ts',
+      `
+        type Shape = { value: number; other: boolean };
+        export function select(source: Shape): number {
+          const { value }: Shape = source;
+          return value;
+        }
+      `,
+    );
+    const rest = lower(
+      'object-rest.ts',
+      `
+        type Shape = { value: number; other: boolean };
+        export function select(source: Shape): object {
+          const { value, ...rest }: Shape = source;
+          value;
+          return rest;
+        }
+      `,
+    );
+    const output = emitIrModuleRust(flat.module).contents;
+
+    expect(output).toContain('let object_pattern_value: Shape = source;');
+    expect(output).toContain('let value: f64 = object_pattern_value.value;');
+    expect(() => emitIrModuleRust(rest.module)).toThrow(
+      'object rest requires Rust record ownership and projection lowering',
+    );
+  });
+
   it('elects function-scoped variable hoisting after destructuring normalization', () => {
     const named = lower(
       'variable-hoisting.ts',

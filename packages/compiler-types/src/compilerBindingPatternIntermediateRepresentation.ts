@@ -8,6 +8,7 @@ export interface IrArrayBindingPattern extends CompilerSourceOrigin {
   readonly kind: 'array';
   readonly rest?: IrBindingPattern | undefined;
   readonly scope: IrBindingScope;
+  readonly type?: IrType | undefined;
 }
 
 export type IrBindingPattern = IrArrayBindingPattern | IrBindingPatternBinding | IrObjectBindingPattern;
@@ -28,6 +29,7 @@ export interface IrObjectBindingPattern extends CompilerSourceOrigin {
   readonly properties: readonly IrObjectBindingPatternProperty[];
   readonly rest?: IrBindingPattern | undefined;
   readonly scope: IrBindingScope;
+  readonly type?: IrType | undefined;
 }
 
 export type IrObjectBindingPatternKey =

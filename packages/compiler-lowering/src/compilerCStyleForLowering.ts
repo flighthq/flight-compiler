@@ -106,6 +106,13 @@ function hasIrExpressionCStyleForStatement(expression: Readonly<IrExpression>): 
       );
     case 'object':
       return expression.members.some(hasIrObjectMemberCStyleForStatement);
+    case 'objectRest':
+      return (
+        hasIrExpressionCStyleForStatement(expression.object) ||
+        expression.excluded.some((key) =>
+          key.kind === 'computed' ? hasIrExpressionCStyleForStatement(key.expression) : false,
+        )
+      );
     case 'property':
       return hasIrExpressionCStyleForStatement(expression.object);
     case 'template':
@@ -353,6 +360,14 @@ function lowerIrExpression(expression: Readonly<IrExpression>, analysis: CStyleF
       return {
         ...expression,
         members: expression.members.map((member) => lowerIrObjectMember(member, analysis)),
+      };
+    case 'objectRest':
+      return {
+        ...expression,
+        excluded: expression.excluded.map((key) =>
+          key.kind === 'computed' ? { expression: lowerIrExpression(key.expression, analysis), kind: 'computed' } : key,
+        ),
+        object: expression.object,
       };
     case 'property':
       return { ...expression, object: lowerIrExpression(expression.object, analysis) };

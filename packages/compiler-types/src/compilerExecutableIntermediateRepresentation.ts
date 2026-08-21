@@ -88,6 +88,11 @@ export type IrExpression =
       typeArguments: readonly IrType[];
     }>
   | Readonly<{ kind: 'object'; members: readonly IrObjectMember[] }>
+  | Readonly<{
+      excluded: readonly IrObjectRestKey[];
+      kind: 'objectRest';
+      object: IrIdentifierExpression;
+    }>
   | Readonly<{ kind: 'property'; name: string; object: IrExpression; optional: boolean }>
   | Readonly<{ flags: string; kind: 'regexp'; pattern: string }>
   | Readonly<{ expression: IrExpression; kind: 'spread' }>
@@ -120,6 +125,10 @@ export type IrObjectMember =
   | Readonly<{ key: IrExpression; kind: 'computedProperty'; value: IrExpression }>
   | Readonly<{ kind: 'property'; name: string; value: IrExpression }>
   | Readonly<{ expression: IrExpression; kind: 'spread' }>;
+
+export type IrObjectRestKey =
+  | Readonly<{ kind: 'computed'; expression: IrExpression }>
+  | Readonly<{ kind: 'named'; name: string }>;
 
 export interface IrNamedVariable {
   readonly binding: IrBindingIdentity;

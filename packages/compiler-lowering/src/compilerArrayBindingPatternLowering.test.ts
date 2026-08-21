@@ -129,6 +129,30 @@ describe('createCompilerLoweringPassArrayBindingPattern', () => {
     expect(lowerIrModuleWithCompilerPasses(module, [pass])).toEqual(output);
   });
 
+  it('uses aggregate pattern evidence while preserving named alias storage', () => {
+    const module = lower(
+      'alias-pattern.ts',
+      `
+        type Pair = [number, string];
+        export function select(source: Pair): string {
+          const [first, second]: Pair = source;
+          first;
+          return second;
+        }
+      `,
+    );
+    const output = lowerIrModuleWithCompilerPasses(module, [createCompilerLoweringPassArrayBindingPattern()]);
+    const variables = getVariableStatement(getFunctionDeclaration(output, 'select').body[0]).declarations.map(
+      getNamedVariable,
+    );
+
+    expect(variables).toMatchObject([
+      { binding: { name: 'arrayPatternValue' }, type: { kind: 'named' } },
+      { binding: { name: 'first' }, type: { kind: 'primitive', name: 'number' } },
+      { binding: { name: 'second' }, type: { kind: 'primitive', name: 'string' } },
+    ]);
+  });
+
   it('lowers module and expression-function patterns without exporting synthetic temporaries', () => {
     const output = lowerIrModuleWithCompilerPasses(
       lower(
