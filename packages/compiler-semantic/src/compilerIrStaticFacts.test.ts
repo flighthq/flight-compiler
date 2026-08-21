@@ -222,6 +222,31 @@ describe('analyzeIrModulesStaticFacts', () => {
     expect(lowered.module).toEqual(snapshot);
   });
 
+  it('analyzes nested function statement bodies and every new-expression argument', () => {
+    const sourceFile = ts.createSourceFile(
+      '/flight/packages/math/src/nested-facts.ts',
+      `
+        class Holder { constructor(value: number) { value; } }
+        export function create(flag: boolean, values: number[]): Holder {
+          const nested = (): number => { if (flag) return values[0]; return 0; };
+          return new Holder(values[1] + nested());
+        }
+      `,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const lowered = lowerTypeScriptSource(sourceFile, {
+      packageName: '@flighthq/math',
+      upstreamDirectory: '/flight',
+    });
+
+    expect(lowered.diagnostics).toEqual([]);
+    expect(analyzeIrModulesStaticFacts([lowered.module]).facts).toEqual([
+      { access: 'read', count: 2, kind: 'indexedAccess', receivers: ['array'] },
+      { context: 'controlFlowCondition', count: 1, domain: 'unknown', kind: 'truthiness' },
+    ]);
+  });
+
   it('counts typed-array set calls by normalized receiver set', () => {
     const sourceFile = ts.createSourceFile(
       '/flight/packages/math/src/typed-array-set.ts',
