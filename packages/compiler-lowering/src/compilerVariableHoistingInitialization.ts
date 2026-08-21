@@ -144,13 +144,31 @@ function analyzeIrExpressionVariableInitialization(
       }
       return;
     case 'call':
-    case 'new':
-      analyzeIrExpressionVariableInitialization(expression.callee, initialized, variables, sourceIdentity, completion);
+    case 'new': {
+      const immediatelyInvoked = expression.callee.kind === 'function' ? expression.callee : undefined;
+      if (!immediatelyInvoked) {
+        analyzeIrExpressionVariableInitialization(
+          expression.callee,
+          initialized,
+          variables,
+          sourceIdentity,
+          completion,
+        );
+      }
       expression.arguments.forEach((argument) =>
         analyzeIrExpressionVariableInitialization(argument, initialized, variables, sourceIdentity, completion),
       );
+      if (immediatelyInvoked) {
+        assertIrExpressionFunctionCaptureVariableInitialization(
+          immediatelyInvoked,
+          initialized,
+          variables,
+          sourceIdentity,
+        );
+      }
       addIrVariableInitializationCompletion(completion, 'throw', initialized);
       return;
+    }
     case 'conditional': {
       analyzeIrExpressionVariableInitialization(
         expression.condition,

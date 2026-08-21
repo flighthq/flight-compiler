@@ -43,6 +43,41 @@ describe('validateIrFunctionVariableInitialization', () => {
     }
   });
 
+  it('checks immediate closure captures after call arguments but keeps deferred captures conservative', () => {
+    const immediate = lowerFunction(`
+      export function select(): number {
+        var value: number;
+        return ((input: number): number => value)(value = 1);
+      }
+    `);
+    const tooEarly = lowerFunction(`
+      export function select(): number {
+        return ((): number => value)();
+        var value: number = 1;
+      }
+    `);
+    const deferred = lowerFunction(`
+      export function select(): () => number {
+        const callback = (): number => value;
+        var value: number = 1;
+        return callback;
+      }
+    `);
+
+    expect(
+      validateIrFunctionVariableInitialization(immediate.body, getFunctionVariables(immediate), immediate.origin),
+    ).toBeUndefined();
+    for (const declaration of [tooEarly, deferred]) {
+      expect(() =>
+        validateIrFunctionVariableInitialization(
+          declaration.body,
+          getFunctionVariables(declaration),
+          declaration.origin,
+        ),
+      ).toThrow('function-scoped variable value may be read before initialization');
+    }
+  });
+
   it('propagates initialization through mandatory loop breaks', () => {
     for (const source of [
       `

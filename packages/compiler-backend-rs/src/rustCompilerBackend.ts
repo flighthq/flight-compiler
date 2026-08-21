@@ -620,6 +620,9 @@ function emitTypeParameters(parameters: readonly IrTypeParameter[], context: Emi
 function emitVariable(variable: Readonly<IrVariable>, context: EmitContext): string {
   if ('pattern' in variable)
     emissionError(context, 'binding patterns require destructuring lowering before Rust emission');
+  if (variable.initialValue === 'undefined' && variable.initializer) {
+    emissionError(context, 'undefined function-entry values require separate Rust assignment lowering');
+  }
   const type = variable.type ? `: ${emitType(variable.type, context)}` : '';
   const initializer = variable.initializer ? ` = ${emitExpression(variable.initializer, context)}` : '';
   return `let ${variable.mutable ? 'mut ' : ''}${getBindingTargetNameRust(variable.binding, context)}${type}${initializer};`;

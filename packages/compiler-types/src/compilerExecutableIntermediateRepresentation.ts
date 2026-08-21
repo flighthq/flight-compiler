@@ -123,6 +123,7 @@ export type IrObjectMember =
 
 export interface IrNamedVariable {
   readonly binding: IrBindingIdentity;
+  readonly initialValue?: 'undefined' | undefined;
   readonly initializer?: IrExpression | undefined;
   readonly mutable: boolean;
   readonly type?: IrType | undefined;

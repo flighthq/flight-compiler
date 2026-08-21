@@ -167,6 +167,43 @@ describe('validateIrModuleStructure', () => {
     }
   });
 
+  it('validates explicit undefined function-entry variable values', () => {
+    const valid = lower('variable-entry.ts', 'export function read(): void { var value: number; }');
+    const declaration = valid.declarations[0];
+    if (declaration?.kind !== 'function' || declaration.body[0]?.kind !== 'variable') {
+      throw new Error('Expected function-scoped variable');
+    }
+    const variable = declaration.body[0].declarations[0];
+    if (!variable || 'pattern' in variable) throw new Error('Expected named variable');
+    (variable as { initialValue?: unknown }).initialValue = 'undefined';
+
+    expect(validateIrModuleStructure(valid)).toEqual({ kind: 'valid' });
+
+    const invalidValue = structuredClone(valid);
+    const invalidFunction = invalidValue.declarations[0];
+    if (invalidFunction?.kind !== 'function' || invalidFunction.body[0]?.kind !== 'variable') {
+      throw new Error('Expected cloned function-scoped variable');
+    }
+    const invalidVariable = invalidFunction.body[0].declarations[0];
+    if (!invalidVariable || 'pattern' in invalidVariable) throw new Error('Expected cloned named variable');
+    (invalidVariable as { initialValue?: unknown }).initialValue = 'missing';
+
+    const moduleVariable = lower('module-entry.ts', 'export const value: number = 1;');
+    const moduleDeclaration = moduleVariable.declarations[0];
+    if (moduleDeclaration?.kind !== 'variable' || 'pattern' in moduleDeclaration) {
+      throw new Error('Expected module variable');
+    }
+    (moduleDeclaration as { initialValue?: unknown }).initialValue = 'undefined';
+
+    for (const module of [invalidValue, moduleVariable]) {
+      const result = validateIrModuleStructure(module);
+      expect(result.kind).toBe('invalid');
+      if (result.kind === 'invalid') {
+        expect(result.failures.map((failure) => failure.code)).toContain('invalid-node-shape');
+      }
+    }
+  });
+
   it('accepts exact repeated function-scoped variable declarations but not other duplicate introductions', () => {
     const repeated = lower(
       'repeated-var.ts',

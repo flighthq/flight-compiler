@@ -741,6 +741,27 @@ function visitVariable(
       { kind: 'variable', scope: scopes, space: 'value' },
       state,
     );
+    if (variable.initialValue !== undefined) {
+      if (variable.initialValue !== 'undefined') {
+        addFailure('invalid-node-shape', `${path}.initialValue`, 'variable initial value must be undefined', state);
+      }
+      if (variable.binding.scope !== 'function') {
+        addFailure(
+          'invalid-node-shape',
+          `${path}.initialValue`,
+          'only function-scoped variables may have an undefined entry value',
+          state,
+        );
+      }
+      if (variable.initializer) {
+        addFailure(
+          'invalid-node-shape',
+          `${path}.initialValue`,
+          'an undefined entry value cannot share a declaration with an initializer',
+          state,
+        );
+      }
+    }
   }
   if (variable.type) visitType(variable.type, `${path}.type`, state);
   if (variable.initializer) visitExpression(variable.initializer, `${path}.initializer`, state);
