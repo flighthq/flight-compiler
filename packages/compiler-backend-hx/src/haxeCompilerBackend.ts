@@ -17,7 +17,9 @@ import {
   lowerIrModuleWithCompilerPasses,
 } from '../../compiler-lowering/src/index.js';
 import {
+  analyzeCompilerRuntimeExternalConstructorAbiCompleteness,
   analyzeCompilerRuntimeExternalSymbolCompleteness,
+  collectIrModulesRuntimeExternalConstructorInvocations,
   collectIrModulesRuntimeExternalSymbolIdentities,
 } from '../../compiler-runtime-contract/src/index.js';
 import type { CompilerBackend, EmittedFile, HaxeCompilerBackendOptions } from '../../compiler-types/src/index.js';
@@ -52,6 +54,7 @@ import type {
   IrVariableDeclaration,
 } from '../../compiler-types/src/index.js';
 import { convertPackageNameToHaxePackageName, convertSourcePathToHaxeModuleName } from './haxeCompilerIdentity.js';
+import { createCompilerRuntimeExternalConstructorAbiPlanHaxe } from './haxeRuntimeExternalConstructorAbi.js';
 import {
   createCompilerRuntimeExternalSymbolBindingPlanHaxe,
   getCompilerRuntimeExternalSymbolTargetHaxe,
@@ -96,6 +99,7 @@ export function emitIrModuleHaxe(
     createCompilerLoweringPassSwitchFallthrough(),
   ]);
   assertRuntimeExternalSymbolBindingsHaxe(module);
+  assertRuntimeExternalConstructorAbiHaxe(module);
   const packageName = convertPackageNameToHaxePackageName(module.packageName, options.rootPackage);
   let targetNames: Map<string, string>;
   try {
@@ -278,6 +282,9 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
     case 'literal':
       return emitLiteral(expression.value);
     case 'new':
+      if (expression.callee.kind !== 'identifier') {
+        emissionError(context, 'qualified constructors require Haxe type-path lowering');
+      }
       return `new ${emitExpression(expression.callee, context)}(${expression.arguments.map((argument) => emitExpression(argument, context)).join(', ')})`;
     case 'object':
       return `{ ${expression.members
@@ -1011,6 +1018,39 @@ function assertRuntimeExternalSymbolBindingsHaxe(module: Readonly<IrModule>): vo
     module,
     `runtime external symbol binding plan is incomplete (${problems.join('; ')})`,
   );
+}
+
+function assertRuntimeExternalConstructorAbiHaxe(module: Readonly<IrModule>): void {
+  const completeness = analyzeCompilerRuntimeExternalConstructorAbiCompleteness(
+    collectIrModulesRuntimeExternalConstructorInvocations([module]),
+    createCompilerRuntimeExternalConstructorAbiPlanHaxe(),
+  );
+  if (completeness.kind === 'complete') return;
+  const problems = [
+    completeness.missingExternalConstructors.length > 0
+      ? `missing: ${completeness.missingExternalConstructors.map(formatRuntimeExternalConstructorInvocation).join(', ')}`
+      : undefined,
+    completeness.duplicateExternalConstructors.length > 0
+      ? `duplicate: ${completeness.duplicateExternalConstructors.map(formatRuntimeExternalSymbolIdentity).join(', ')}`
+      : undefined,
+    completeness.invalidExternalConstructors.length > 0
+      ? `invalid: ${completeness.invalidExternalConstructors.map(formatRuntimeExternalSymbolIdentity).join(', ')}`
+      : undefined,
+  ].filter((problem): problem is string => problem !== undefined);
+  throw createBackendEmissionFailure(
+    'haxe',
+    module,
+    `runtime external constructor ABI plan is incomplete (${problems.join('; ')})`,
+  );
+}
+
+function formatRuntimeExternalConstructorInvocation(
+  invocation: Readonly<{
+    externalSymbol: { sourceName: string; space: string };
+    providedArgumentCount: number | 'dynamic';
+  }>,
+): string {
+  return `${formatRuntimeExternalSymbolIdentity(invocation.externalSymbol)}(${invocation.providedArgumentCount === 'dynamic' ? '...' : String(invocation.providedArgumentCount)})`;
 }
 
 function formatRuntimeExternalSymbolIdentity(identity: Readonly<{ sourceName: string; space: string }>): string {

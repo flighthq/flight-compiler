@@ -87,7 +87,7 @@ This is where the neutral model meets each target's reality, so it is where the 
 
 Against the test, the contract's **lifecycle is genuinely independent**: its counterpart is implemented downstream, so it versions against `flight-hx` and `flight-rs` rather than against the emitter. Each downstream should declare which contract version it implements, so a compiler upgrade that adds a required symbol is detectable rather than a broken build.
 
-**Implemented shape:** a neutral `compiler-runtime-contract` cell owns the contract vocabulary, versioning, reachability, and completeness check. Each backend's binding table remains a flat sibling inside that backend's existing cell, so target data does not invert the dependency. Runtime implementations remain downstream.
+**Implemented shape:** a neutral `compiler-runtime-contract` cell owns the contract vocabulary, versioning, reachability, and completeness checks. Symbol representation remains under `flight-runtime-contract/2`; direct ambient construction has an independent `flight-runtime-constructor-abi/1` lifecycle that records exact fixed arities and whether dynamic spreads are supported. Each backend's symbol and constructor tables remain flat siblings inside that backend's existing cell, so target data does not invert the dependency. Runtime implementations remain downstream.
 
 ## Missing cell 3 — reporting and coverage
 

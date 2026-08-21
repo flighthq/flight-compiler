@@ -80,6 +80,30 @@ describe('emitIrModuleHaxe', () => {
     );
   });
 
+  it('refuses runtime constructor arities absent from the versioned Haxe ABI plan', () => {
+    const fixed = lower('array-constructor.ts', 'export function create(): number[] { return new Array<number>(3); }');
+    const dynamic = lower(
+      'map-constructor-spread.ts',
+      'export function create(values: []): Map<string, number> { return new Map<string, number>(...values); }',
+    );
+
+    expect(() => emitIrModuleHaxe(fixed.module)).toThrow(
+      'runtime external constructor ABI plan is incomplete (missing: Array[value](1))',
+    );
+    expect(() => emitIrModuleHaxe(dynamic.module)).toThrow(
+      'runtime external constructor ABI plan is incomplete (missing: Map[value](...))',
+    );
+  });
+
+  it('refuses qualified constructors outside direct ambient ABI identity', () => {
+    const result = lower(
+      'qualified-constructor.ts',
+      'class Value {} export function create(namespace: { Value: typeof Value }): Value { return new namespace.Value(); }',
+    );
+
+    expect(() => emitIrModuleHaxe(result.module)).toThrow('qualified constructors require Haxe type-path lowering');
+  });
+
   it('elects C-style for lowering without lowering native Haxe default parameters', () => {
     const loop = lower(
       'loop.ts',

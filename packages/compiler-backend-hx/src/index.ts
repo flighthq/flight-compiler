@@ -1,6 +1,7 @@
 export { createHaxeCompilerBackend, emitIrModuleHaxe } from './haxeCompilerBackend.js';
 export { createHaxeCompilerEmittedSourceParser } from './haxeCompilerEmittedSourceConformance.js';
 export { convertPackageNameToHaxePackageName, convertSourcePathToHaxeModuleName } from './haxeCompilerIdentity.js';
+export { createCompilerRuntimeExternalConstructorAbiPlanHaxe } from './haxeRuntimeExternalConstructorAbi.js';
 export {
   createCompilerRuntimeExternalSymbolBindingPlanHaxe,
   getCompilerRuntimeExternalSymbolTargetHaxe,

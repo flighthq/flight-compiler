@@ -214,14 +214,25 @@ describe('emitIrModuleRust', () => {
     );
   });
 
-  it('refuses runtime constructor arguments without an explicit Rust target ABI', () => {
+  it('refuses local constructor calls until Rust initialization lowering owns the factory', () => {
+    const result = lower(
+      'local-constructor.ts',
+      'export class Box {} export function create(): Box { return new Box(); }',
+    );
+
+    expect(() => emitIrModuleRust(result.module)).toThrow(
+      'class constructor calls require Rust initialization lowering',
+    );
+  });
+
+  it('refuses runtime constructor arities absent from the versioned Rust ABI plan', () => {
     const result = lower(
       'runtime-constructor-argument.ts',
       'export function create(): Uint8Array { return new Uint8Array(3); }',
     );
 
     expect(() => emitIrModuleRust(result.module)).toThrow(
-      'constructor arguments require explicit Rust target ABI lowering',
+      'runtime external constructor ABI plan is incomplete (missing: Uint8Array[value](1))',
     );
   });
 

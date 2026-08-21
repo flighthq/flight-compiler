@@ -21,7 +21,9 @@ import {
   lowerIrModuleWithCompilerPasses,
 } from '../../compiler-lowering/src/index.js';
 import {
+  analyzeCompilerRuntimeExternalConstructorAbiCompleteness,
   analyzeCompilerRuntimeExternalSymbolCompleteness,
+  collectIrModulesRuntimeExternalConstructorInvocations,
   collectIrModulesRuntimeExternalSymbolIdentities,
 } from '../../compiler-runtime-contract/src/index.js';
 import type { CompilerBackend, EmittedFile, RustCompilerBackendOptions } from '../../compiler-types/src/index.js';
@@ -62,6 +64,7 @@ import {
   convertSourcePathToRustModuleName,
   isRustCompilerKeyword,
 } from './rustCompilerIdentity.js';
+import { createCompilerRuntimeExternalConstructorAbiPlanRust } from './rustRuntimeExternalConstructorAbi.js';
 import {
   createCompilerRuntimeExternalSymbolBindingPlanRust,
   getCompilerRuntimeExternalSymbolTargetRust,
@@ -100,6 +103,7 @@ export function emitIrModuleRust(
     createCompilerLoweringPassSwitchFallthrough(),
   ]);
   assertRuntimeExternalSymbolBindingsRust(module);
+  assertRuntimeExternalConstructorAbiRust(module);
   const constantIdentities = new Set(
     module.declarations.flatMap((declaration) =>
       declaration.kind === 'variable' && !declaration.mutable && !('pattern' in declaration)
@@ -411,13 +415,8 @@ function assertIrConstructorInvocationAbiRust(
   expression: Readonly<Extract<IrExpression, { kind: 'new' }>>,
   context: EmitContext,
 ): void {
-  if (
-    expression.arguments.length > 0 ||
-    expression.semantics.overloadImplementation ||
-    expression.semantics.signature?.providedArgumentCount === 'dynamic'
-  ) {
-    emissionError(context, 'constructor arguments require explicit Rust target ABI lowering');
-  }
+  if (expression.callee.kind === 'identifier' && expression.callee.reference.kind === 'ambient') return;
+  emissionError(context, 'class constructor calls require Rust initialization lowering');
 }
 
 function emitIdentifierReferenceRust(reference: Readonly<IrIdentifierReference>, context: EmitContext): string {
@@ -1095,6 +1094,39 @@ function assertRuntimeExternalSymbolBindingsRust(module: Readonly<IrModule>): vo
     module,
     `runtime external symbol binding plan is incomplete (${problems.join('; ')})`,
   );
+}
+
+function assertRuntimeExternalConstructorAbiRust(module: Readonly<IrModule>): void {
+  const completeness = analyzeCompilerRuntimeExternalConstructorAbiCompleteness(
+    collectIrModulesRuntimeExternalConstructorInvocations([module]),
+    createCompilerRuntimeExternalConstructorAbiPlanRust(),
+  );
+  if (completeness.kind === 'complete') return;
+  const problems = [
+    completeness.missingExternalConstructors.length > 0
+      ? `missing: ${completeness.missingExternalConstructors.map(formatRuntimeExternalConstructorInvocation).join(', ')}`
+      : undefined,
+    completeness.duplicateExternalConstructors.length > 0
+      ? `duplicate: ${completeness.duplicateExternalConstructors.map(formatRuntimeExternalSymbolIdentity).join(', ')}`
+      : undefined,
+    completeness.invalidExternalConstructors.length > 0
+      ? `invalid: ${completeness.invalidExternalConstructors.map(formatRuntimeExternalSymbolIdentity).join(', ')}`
+      : undefined,
+  ].filter((problem): problem is string => problem !== undefined);
+  throw createBackendEmissionFailure(
+    'rust',
+    module,
+    `runtime external constructor ABI plan is incomplete (${problems.join('; ')})`,
+  );
+}
+
+function formatRuntimeExternalConstructorInvocation(
+  invocation: Readonly<{
+    externalSymbol: { sourceName: string; space: string };
+    providedArgumentCount: number | 'dynamic';
+  }>,
+): string {
+  return `${formatRuntimeExternalSymbolIdentity(invocation.externalSymbol)}(${invocation.providedArgumentCount === 'dynamic' ? '...' : String(invocation.providedArgumentCount)})`;
 }
 
 function formatRuntimeExternalSymbolIdentity(identity: Readonly<{ sourceName: string; space: string }>): string {

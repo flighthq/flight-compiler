@@ -5,6 +5,7 @@ export {
   convertSourcePathToRustModuleName,
   isRustCompilerKeyword,
 } from './rustCompilerIdentity.js';
+export { createCompilerRuntimeExternalConstructorAbiPlanRust } from './rustRuntimeExternalConstructorAbi.js';
 export {
   createCompilerRuntimeExternalSymbolBindingPlanRust,
   getCompilerRuntimeExternalSymbolTargetRust,
