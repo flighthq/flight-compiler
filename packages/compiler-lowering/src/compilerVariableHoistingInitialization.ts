@@ -8,7 +8,6 @@ import type {
 } from '../../compiler-types/src/index.js';
 import { createCompilerLoweringFailure } from './compilerLoweringPass.js';
 import {
-  combineCompilerVariableInitializationCompletionStates,
   combineCompilerVariableInitializationSets,
   createCompilerVariableInitializationCompletionAlternative,
   createCompilerVariableInitializationCompletionWithState,
@@ -46,18 +45,21 @@ function analyzeIrExpressionAssignmentTargetVariableInitialization(
   initialized: Set<string>,
   variables: ReadonlyMap<string, IrNamedVariable>,
   sourceIdentity: Readonly<CompilerSourceIdentity>,
+  completion: MutableCompilerVariableInitializationCompletion,
 ): void {
   if (expression.kind === 'identifier') return;
   if (expression.kind === 'property') {
-    analyzeIrExpressionVariableInitialization(expression.object, initialized, variables, sourceIdentity);
+    analyzeIrExpressionVariableInitialization(expression.object, initialized, variables, sourceIdentity, completion);
+    addIrVariableInitializationCompletion(completion, 'throw', initialized);
     return;
   }
   if (expression.kind === 'element') {
-    analyzeIrExpressionVariableInitialization(expression.object, initialized, variables, sourceIdentity);
-    analyzeIrExpressionVariableInitialization(expression.index, initialized, variables, sourceIdentity);
+    analyzeIrExpressionVariableInitialization(expression.object, initialized, variables, sourceIdentity, completion);
+    analyzeIrExpressionVariableInitialization(expression.index, initialized, variables, sourceIdentity, completion);
+    addIrVariableInitializationCompletion(completion, 'throw', initialized);
     return;
   }
-  analyzeIrExpressionVariableInitialization(expression, initialized, variables, sourceIdentity);
+  analyzeIrExpressionVariableInitialization(expression, initialized, variables, sourceIdentity, completion);
 }
 
 function analyzeIrExpressionVariableInitialization(
@@ -65,11 +67,14 @@ function analyzeIrExpressionVariableInitialization(
   initialized: Set<string>,
   variables: ReadonlyMap<string, IrNamedVariable>,
   sourceIdentity: Readonly<CompilerSourceIdentity>,
+  completion: MutableCompilerVariableInitializationCompletion,
 ): void {
   switch (expression.kind) {
     case 'array':
       expression.elements.forEach((element) => {
-        if (element) analyzeIrExpressionVariableInitialization(element, initialized, variables, sourceIdentity);
+        if (element) {
+          analyzeIrExpressionVariableInitialization(element, initialized, variables, sourceIdentity, completion);
+        }
       });
       return;
     case 'assignment':
@@ -79,20 +84,45 @@ function analyzeIrExpressionVariableInitialization(
           initialized,
           variables,
           sourceIdentity,
+          completion,
         );
       } else {
-        analyzeIrExpressionVariableInitialization(expression.left, initialized, variables, sourceIdentity);
+        analyzeIrExpressionVariableInitialization(expression.left, initialized, variables, sourceIdentity, completion);
       }
-      analyzeIrExpressionVariableInitialization(expression.right, initialized, variables, sourceIdentity);
+      analyzeIrExpressionVariableInitialization(expression.right, initialized, variables, sourceIdentity, completion);
+      if (
+        expression.left.kind !== 'identifier' ||
+        (expression.operator !== '=' &&
+          expression.operator !== '&&=' &&
+          expression.operator !== '||=' &&
+          expression.operator !== '??=')
+      ) {
+        addIrVariableInitializationCompletion(completion, 'throw', initialized);
+      }
       addIrExpressionAssignmentTargetVariableInitialization(expression.left, initialized, variables);
       return;
     case 'await':
-    case 'cast':
     case 'spread':
-      analyzeIrExpressionVariableInitialization(expression.expression, initialized, variables, sourceIdentity);
+      analyzeIrExpressionVariableInitialization(
+        expression.expression,
+        initialized,
+        variables,
+        sourceIdentity,
+        completion,
+      );
+      addIrVariableInitializationCompletion(completion, 'throw', initialized);
+      return;
+    case 'cast':
+      analyzeIrExpressionVariableInitialization(
+        expression.expression,
+        initialized,
+        variables,
+        sourceIdentity,
+        completion,
+      );
       return;
     case 'binary':
-      analyzeIrExpressionVariableInitialization(expression.left, initialized, variables, sourceIdentity);
+      analyzeIrExpressionVariableInitialization(expression.left, initialized, variables, sourceIdentity, completion);
       analyzeIrExpressionVariableInitialization(
         expression.right,
         expression.operator === '&&' || expression.operator === '||' || expression.operator === '??'
@@ -100,27 +130,46 @@ function analyzeIrExpressionVariableInitialization(
           : initialized,
         variables,
         sourceIdentity,
+        completion,
       );
+      if (
+        expression.operator !== ',' &&
+        expression.operator !== '&&' &&
+        expression.operator !== '||' &&
+        expression.operator !== '??' &&
+        expression.operator !== '===' &&
+        expression.operator !== '!=='
+      ) {
+        addIrVariableInitializationCompletion(completion, 'throw', initialized);
+      }
       return;
     case 'call':
     case 'new':
-      analyzeIrExpressionVariableInitialization(expression.callee, initialized, variables, sourceIdentity);
+      analyzeIrExpressionVariableInitialization(expression.callee, initialized, variables, sourceIdentity, completion);
       expression.arguments.forEach((argument) =>
-        analyzeIrExpressionVariableInitialization(argument, initialized, variables, sourceIdentity),
+        analyzeIrExpressionVariableInitialization(argument, initialized, variables, sourceIdentity, completion),
       );
+      addIrVariableInitializationCompletion(completion, 'throw', initialized);
       return;
     case 'conditional': {
-      analyzeIrExpressionVariableInitialization(expression.condition, initialized, variables, sourceIdentity);
+      analyzeIrExpressionVariableInitialization(
+        expression.condition,
+        initialized,
+        variables,
+        sourceIdentity,
+        completion,
+      );
       const whenTrue = new Set(initialized);
       const whenFalse = new Set(initialized);
-      analyzeIrExpressionVariableInitialization(expression.whenTrue, whenTrue, variables, sourceIdentity);
-      analyzeIrExpressionVariableInitialization(expression.whenFalse, whenFalse, variables, sourceIdentity);
+      analyzeIrExpressionVariableInitialization(expression.whenTrue, whenTrue, variables, sourceIdentity, completion);
+      analyzeIrExpressionVariableInitialization(expression.whenFalse, whenFalse, variables, sourceIdentity, completion);
       replaceIrVariableInitializationSet(initialized, combineCompilerVariableInitializationSets(whenTrue, whenFalse)!);
       return;
     }
     case 'element':
-      analyzeIrExpressionVariableInitialization(expression.object, initialized, variables, sourceIdentity);
-      analyzeIrExpressionVariableInitialization(expression.index, initialized, variables, sourceIdentity);
+      analyzeIrExpressionVariableInitialization(expression.object, initialized, variables, sourceIdentity, completion);
+      analyzeIrExpressionVariableInitialization(expression.index, initialized, variables, sourceIdentity, completion);
+      addIrVariableInitializationCompletion(completion, 'throw', initialized);
       return;
     case 'function':
       assertIrExpressionFunctionCaptureVariableInitialization(expression, initialized, variables, sourceIdentity);
@@ -132,39 +181,66 @@ function analyzeIrExpressionVariableInitialization(
       return;
     case 'object':
       expression.members.forEach((member) =>
-        analyzeIrObjectMemberVariableInitialization(member, initialized, variables, sourceIdentity),
+        analyzeIrObjectMemberVariableInitialization(member, initialized, variables, sourceIdentity, completion),
       );
       return;
     case 'property':
-      analyzeIrExpressionVariableInitialization(expression.object, initialized, variables, sourceIdentity);
+      analyzeIrExpressionVariableInitialization(expression.object, initialized, variables, sourceIdentity, completion);
+      addIrVariableInitializationCompletion(completion, 'throw', initialized);
       return;
     case 'template':
       expression.parts.forEach((part) => {
         if (typeof part !== 'string') {
-          analyzeIrExpressionVariableInitialization(part, initialized, variables, sourceIdentity);
+          analyzeIrExpressionVariableInitialization(part, initialized, variables, sourceIdentity, completion);
+          addIrVariableInitializationCompletion(completion, 'throw', initialized);
         }
       });
       return;
     case 'tuple':
       expression.elements.forEach((element) => {
         if (element.expression) {
-          analyzeIrExpressionVariableInitialization(element.expression, initialized, variables, sourceIdentity);
+          analyzeIrExpressionVariableInitialization(
+            element.expression,
+            initialized,
+            variables,
+            sourceIdentity,
+            completion,
+          );
         }
+      });
+      return;
+    case 'tupleSpread':
+      expression.segments.forEach((segment) => {
+        const value = segment.kind === 'spread' ? segment.expression : segment.element.expression;
+        if (value) {
+          analyzeIrExpressionVariableInitialization(value, initialized, variables, sourceIdentity, completion);
+        }
+        if (segment.kind === 'spread') addIrVariableInitializationCompletion(completion, 'throw', initialized);
       });
       return;
     case 'tupleRest':
     case 'tupleSuffix':
-      analyzeIrExpressionVariableInitialization(expression.object, initialized, variables, sourceIdentity);
+      analyzeIrExpressionVariableInitialization(expression.object, initialized, variables, sourceIdentity, completion);
+      addIrVariableInitializationCompletion(completion, 'throw', initialized);
       return;
     case 'unary':
-      analyzeIrExpressionVariableInitialization(expression.operand, initialized, variables, sourceIdentity);
+      analyzeIrExpressionVariableInitialization(expression.operand, initialized, variables, sourceIdentity, completion);
+      if (expression.operator !== '!' && expression.operator !== 'typeof' && expression.operator !== 'void') {
+        addIrVariableInitializationCompletion(completion, 'throw', initialized);
+      }
       if (expression.operator === '++' || expression.operator === '--') {
         addIrExpressionAssignmentTargetVariableInitialization(expression.operand, initialized, variables);
       }
       return;
     case 'undefinedDefault':
-      analyzeIrExpressionVariableInitialization(expression.value, initialized, variables, sourceIdentity);
-      analyzeIrExpressionVariableInitialization(expression.fallback, new Set(initialized), variables, sourceIdentity);
+      analyzeIrExpressionVariableInitialization(expression.value, initialized, variables, sourceIdentity, completion);
+      analyzeIrExpressionVariableInitialization(
+        expression.fallback,
+        new Set(initialized),
+        variables,
+        sourceIdentity,
+        completion,
+      );
       return;
     case 'literal':
     case 'regexp':
@@ -177,17 +253,20 @@ function analyzeIrObjectMemberVariableInitialization(
   initialized: Set<string>,
   variables: ReadonlyMap<string, IrNamedVariable>,
   sourceIdentity: Readonly<CompilerSourceIdentity>,
+  completion: MutableCompilerVariableInitializationCompletion,
 ): void {
   switch (member.kind) {
     case 'computedProperty':
-      analyzeIrExpressionVariableInitialization(member.key, initialized, variables, sourceIdentity);
-      analyzeIrExpressionVariableInitialization(member.value, initialized, variables, sourceIdentity);
+      analyzeIrExpressionVariableInitialization(member.key, initialized, variables, sourceIdentity, completion);
+      addIrVariableInitializationCompletion(completion, 'throw', initialized);
+      analyzeIrExpressionVariableInitialization(member.value, initialized, variables, sourceIdentity, completion);
       return;
     case 'property':
-      analyzeIrExpressionVariableInitialization(member.value, initialized, variables, sourceIdentity);
+      analyzeIrExpressionVariableInitialization(member.value, initialized, variables, sourceIdentity, completion);
       return;
     case 'spread':
-      analyzeIrExpressionVariableInitialization(member.expression, initialized, variables, sourceIdentity);
+      analyzeIrExpressionVariableInitialization(member.expression, initialized, variables, sourceIdentity, completion);
+      addIrVariableInitializationCompletion(completion, 'throw', initialized);
       return;
   }
 }
@@ -230,19 +309,29 @@ function analyzeIrStatementVariableInitialization(
       const completion = getIrVariableInitializationAbruptLoopCompletions(body);
       const backEdge = combineCompilerVariableInitializationSets(body.normal, body.continue);
       if (backEdge) {
-        analyzeIrExpressionVariableInitialization(statement.condition, backEdge, variables, sourceIdentity);
+        analyzeIrExpressionVariableInitialization(statement.condition, backEdge, variables, sourceIdentity, completion);
         addIrVariableInitializationCompletion(completion, 'normal', backEdge);
       }
       addIrVariableInitializationCompletion(completion, 'normal', body.break);
       return completion;
     }
-    case 'expression':
-      analyzeIrExpressionVariableInitialization(statement.expression, initialized, variables, sourceIdentity);
-      return { normal: initialized };
+    case 'expression': {
+      const completion: MutableCompilerVariableInitializationCompletion = {};
+      analyzeIrExpressionVariableInitialization(
+        statement.expression,
+        initialized,
+        variables,
+        sourceIdentity,
+        completion,
+      );
+      addIrVariableInitializationCompletion(completion, 'normal', initialized);
+      return completion;
+    }
     case 'for': {
+      const completion: MutableCompilerVariableInitializationCompletion = {};
       if (Array.isArray(statement.initializer)) {
         statement.initializer.forEach((variable) =>
-          analyzeIrVariableVariableInitialization(variable, initialized, variables, sourceIdentity),
+          analyzeIrVariableVariableInitialization(variable, initialized, variables, sourceIdentity, completion),
         );
       } else if (statement.initializer) {
         analyzeIrExpressionVariableInitialization(
@@ -250,10 +339,17 @@ function analyzeIrStatementVariableInitialization(
           initialized,
           variables,
           sourceIdentity,
+          completion,
         );
       }
       if (statement.condition) {
-        analyzeIrExpressionVariableInitialization(statement.condition, initialized, variables, sourceIdentity);
+        analyzeIrExpressionVariableInitialization(
+          statement.condition,
+          initialized,
+          variables,
+          sourceIdentity,
+          completion,
+        );
       }
       const body = analyzeIrStatementVariableInitialization(
         statement.body,
@@ -264,39 +360,62 @@ function analyzeIrStatementVariableInitialization(
       const backEdge = combineCompilerVariableInitializationSets(body.normal, body.continue);
       if (backEdge) {
         if (statement.increment) {
-          analyzeIrExpressionVariableInitialization(statement.increment, backEdge, variables, sourceIdentity);
+          analyzeIrExpressionVariableInitialization(
+            statement.increment,
+            backEdge,
+            variables,
+            sourceIdentity,
+            completion,
+          );
         }
         if (statement.condition) {
-          analyzeIrExpressionVariableInitialization(statement.condition, backEdge, variables, sourceIdentity);
+          analyzeIrExpressionVariableInitialization(
+            statement.condition,
+            backEdge,
+            variables,
+            sourceIdentity,
+            completion,
+          );
         }
       }
-      const completion = getIrVariableInitializationAbruptLoopCompletions(body);
+      mergeIrVariableInitializationCompletions(completion, getIrVariableInitializationAbruptLoopCompletions(body));
       if (statement.condition) addIrVariableInitializationCompletion(completion, 'normal', initialized);
       addIrVariableInitializationCompletion(completion, 'normal', body.break);
       return completion;
     }
     case 'forIn': {
-      analyzeIrExpressionVariableInitialization(statement.object, initialized, variables, sourceIdentity);
+      const completion: MutableCompilerVariableInitializationCompletion = {};
+      analyzeIrExpressionVariableInitialization(statement.object, initialized, variables, sourceIdentity, completion);
+      addIrVariableInitializationCompletion(completion, 'throw', initialized);
       const bodyState = new Set(initialized);
       addIrIterationVariableVariableInitialization(statement.variable, bodyState, variables);
       const body = analyzeIrStatementVariableInitialization(statement.body, bodyState, variables, sourceIdentity);
-      const completion = getIrVariableInitializationAbruptLoopCompletions(body);
+      mergeIrVariableInitializationCompletions(completion, getIrVariableInitializationAbruptLoopCompletions(body));
       addIrVariableInitializationCompletion(completion, 'normal', initialized);
       addIrVariableInitializationCompletion(completion, 'normal', body.break);
       return completion;
     }
     case 'forOf': {
-      analyzeIrExpressionVariableInitialization(statement.iterable, initialized, variables, sourceIdentity);
+      const completion: MutableCompilerVariableInitializationCompletion = {};
+      analyzeIrExpressionVariableInitialization(statement.iterable, initialized, variables, sourceIdentity, completion);
+      addIrVariableInitializationCompletion(completion, 'throw', initialized);
       const bodyState = new Set(initialized);
       addIrIterationVariableVariableInitialization(statement.variable, bodyState, variables);
       const body = analyzeIrStatementVariableInitialization(statement.body, bodyState, variables, sourceIdentity);
-      const completion = getIrVariableInitializationAbruptLoopCompletions(body);
+      mergeIrVariableInitializationCompletions(completion, getIrVariableInitializationAbruptLoopCompletions(body));
       addIrVariableInitializationCompletion(completion, 'normal', initialized);
       addIrVariableInitializationCompletion(completion, 'normal', body.break);
       return completion;
     }
     case 'if': {
-      analyzeIrExpressionVariableInitialization(statement.condition, initialized, variables, sourceIdentity);
+      const completion: MutableCompilerVariableInitializationCompletion = {};
+      analyzeIrExpressionVariableInitialization(
+        statement.condition,
+        initialized,
+        variables,
+        sourceIdentity,
+        completion,
+      );
       const consequent = analyzeIrStatementVariableInitialization(
         statement.consequent,
         new Set(initialized),
@@ -306,28 +425,53 @@ function analyzeIrStatementVariableInitialization(
       const otherwise = statement.otherwise
         ? analyzeIrStatementVariableInitialization(statement.otherwise, new Set(initialized), variables, sourceIdentity)
         : { normal: new Set(initialized) };
-      return createCompilerVariableInitializationCompletionAlternative(consequent, otherwise);
+      mergeIrVariableInitializationCompletions(
+        completion,
+        createCompilerVariableInitializationCompletionAlternative(consequent, otherwise),
+      );
+      return completion;
     }
-    case 'return':
+    case 'return': {
+      const completion: MutableCompilerVariableInitializationCompletion = {};
       if (statement.expression) {
-        analyzeIrExpressionVariableInitialization(statement.expression, initialized, variables, sourceIdentity);
+        analyzeIrExpressionVariableInitialization(
+          statement.expression,
+          initialized,
+          variables,
+          sourceIdentity,
+          completion,
+        );
       }
-      return { return: initialized };
+      addIrVariableInitializationCompletion(completion, 'return', initialized);
+      return completion;
+    }
     case 'switch': {
-      analyzeIrExpressionVariableInitialization(statement.expression, initialized, variables, sourceIdentity);
+      const completion: MutableCompilerVariableInitializationCompletion = {};
+      analyzeIrExpressionVariableInitialization(
+        statement.expression,
+        initialized,
+        variables,
+        sourceIdentity,
+        completion,
+      );
       const directEntries: Array<Set<string> | undefined> = [];
       let defaultIndex: number | undefined;
       const selectionState = new Set(initialized);
       statement.cases.forEach((switchCase, index) => {
         if (switchCase.expression) {
-          analyzeIrExpressionVariableInitialization(switchCase.expression, selectionState, variables, sourceIdentity);
+          analyzeIrExpressionVariableInitialization(
+            switchCase.expression,
+            selectionState,
+            variables,
+            sourceIdentity,
+            completion,
+          );
           directEntries[index] = new Set(selectionState);
         } else {
           defaultIndex = index;
         }
       });
       if (defaultIndex !== undefined) directEntries[defaultIndex] = new Set(selectionState);
-      const completion: MutableCompilerVariableInitializationCompletion = {};
       if (defaultIndex === undefined) {
         addIrVariableInitializationCompletion(completion, 'normal', selectionState);
       }
@@ -350,9 +494,18 @@ function analyzeIrStatementVariableInitialization(
       addIrVariableInitializationCompletion(completion, 'normal', fallthrough);
       return completion;
     }
-    case 'throw':
-      analyzeIrExpressionVariableInitialization(statement.expression, initialized, variables, sourceIdentity);
-      return { throw: initialized };
+    case 'throw': {
+      const completion: MutableCompilerVariableInitializationCompletion = {};
+      analyzeIrExpressionVariableInitialization(
+        statement.expression,
+        initialized,
+        variables,
+        sourceIdentity,
+        completion,
+      );
+      addIrVariableInitializationCompletion(completion, 'throw', initialized);
+      return completion;
+    }
     case 'try': {
       const tryCompletion = analyzeIrStatementVariableInitialization(
         statement.tryBody,
@@ -360,50 +513,59 @@ function analyzeIrStatementVariableInitialization(
         variables,
         sourceIdentity,
       );
-      const completion = statement.catchClause
-        ? analyzeIrStatementVariableInitialization(
-            statement.catchClause.body,
-            new Set(initialized),
-            variables,
-            sourceIdentity,
-          )
-        : undefined;
-      const combined = completion
+      const catchCompletion =
+        statement.catchClause && tryCompletion.throw
+          ? analyzeIrStatementVariableInitialization(
+              statement.catchClause.body,
+              new Set(tryCompletion.throw),
+              variables,
+              sourceIdentity,
+            )
+          : undefined;
+      const combined = catchCompletion
         ? createCompilerVariableInitializationCompletionAlternative(
             getIrVariableInitializationNonThrowCompletions(tryCompletion),
-            completion,
+            catchCompletion,
           )
-        : tryCompletion;
+        : statement.catchClause
+          ? getIrVariableInitializationNonThrowCompletions(tryCompletion)
+          : tryCompletion;
       if (!statement.finallyBody) return combined;
-      const finallyEntry = combineCompilerVariableInitializationCompletionStates(combined);
-      if (!finallyEntry) return combined;
-      const finallyCompletion = analyzeIrStatementVariableInitialization(
-        statement.finallyBody,
-        finallyEntry,
-        variables,
-        sourceIdentity,
-      );
       const afterFinally: MutableCompilerVariableInitializationCompletion = {};
-      if (finallyCompletion.normal) {
-        for (const kind of variableInitializationCompletionKinds) {
-          if (combined[kind]) {
-            addIrVariableInitializationCompletion(afterFinally, kind, finallyCompletion.normal);
-          }
-        }
+      for (const kind of variableInitializationCompletionKinds) {
+        const state = combined[kind];
+        if (!state) continue;
+        const finallyCompletion = analyzeIrStatementVariableInitialization(
+          statement.finallyBody,
+          new Set(state),
+          variables,
+          sourceIdentity,
+        );
+        addIrVariableInitializationCompletion(afterFinally, kind, finallyCompletion.normal);
+        addIrVariableInitializationCompletion(afterFinally, 'break', finallyCompletion.break);
+        addIrVariableInitializationCompletion(afterFinally, 'continue', finallyCompletion.continue);
+        addIrVariableInitializationCompletion(afterFinally, 'return', finallyCompletion.return);
+        addIrVariableInitializationCompletion(afterFinally, 'throw', finallyCompletion.throw);
       }
-      addIrVariableInitializationCompletion(afterFinally, 'break', finallyCompletion.break);
-      addIrVariableInitializationCompletion(afterFinally, 'continue', finallyCompletion.continue);
-      addIrVariableInitializationCompletion(afterFinally, 'return', finallyCompletion.return);
-      addIrVariableInitializationCompletion(afterFinally, 'throw', finallyCompletion.throw);
       return afterFinally;
     }
-    case 'variable':
+    case 'variable': {
+      const completion: MutableCompilerVariableInitializationCompletion = {};
       statement.declarations.forEach((variable) =>
-        analyzeIrVariableVariableInitialization(variable, initialized, variables, sourceIdentity),
+        analyzeIrVariableVariableInitialization(variable, initialized, variables, sourceIdentity, completion),
       );
-      return { normal: initialized };
+      addIrVariableInitializationCompletion(completion, 'normal', initialized);
+      return completion;
+    }
     case 'while': {
-      analyzeIrExpressionVariableInitialization(statement.condition, initialized, variables, sourceIdentity);
+      const completion: MutableCompilerVariableInitializationCompletion = {};
+      analyzeIrExpressionVariableInitialization(
+        statement.condition,
+        initialized,
+        variables,
+        sourceIdentity,
+        completion,
+      );
       const body = analyzeIrStatementVariableInitialization(
         statement.body,
         new Set(initialized),
@@ -412,9 +574,9 @@ function analyzeIrStatementVariableInitialization(
       );
       const backEdge = combineCompilerVariableInitializationSets(body.normal, body.continue);
       if (backEdge) {
-        analyzeIrExpressionVariableInitialization(statement.condition, backEdge, variables, sourceIdentity);
+        analyzeIrExpressionVariableInitialization(statement.condition, backEdge, variables, sourceIdentity, completion);
       }
-      const completion = getIrVariableInitializationAbruptLoopCompletions(body);
+      mergeIrVariableInitializationCompletions(completion, getIrVariableInitializationAbruptLoopCompletions(body));
       addIrVariableInitializationCompletion(completion, 'normal', initialized);
       addIrVariableInitializationCompletion(completion, 'normal', body.break);
       return completion;
@@ -479,9 +641,10 @@ function analyzeIrVariableVariableInitialization(
   initialized: Set<string>,
   variables: ReadonlyMap<string, IrNamedVariable>,
   sourceIdentity: Readonly<CompilerSourceIdentity>,
+  completion: MutableCompilerVariableInitializationCompletion,
 ): void {
   if (variable.initializer) {
-    analyzeIrExpressionVariableInitialization(variable.initializer, initialized, variables, sourceIdentity);
+    analyzeIrExpressionVariableInitialization(variable.initializer, initialized, variables, sourceIdentity, completion);
   }
   if (!('pattern' in variable) && variable.initializer && variables.has(variable.binding.id)) {
     initialized.add(variable.binding.id);
@@ -584,6 +747,12 @@ function visitIrExpressionChildrenVariableInitialization(
     case 'tuple':
       expression.elements.forEach((element) => {
         if (element.expression) visit(element.expression);
+      });
+      return;
+    case 'tupleSpread':
+      expression.segments.forEach((segment) => {
+        const value = segment.kind === 'spread' ? segment.expression : segment.element.expression;
+        if (value) visit(value);
       });
       return;
     case 'tupleRest':

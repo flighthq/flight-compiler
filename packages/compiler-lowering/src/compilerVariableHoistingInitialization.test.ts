@@ -161,6 +161,87 @@ describe('validateIrFunctionVariableInitialization', () => {
       ).toThrow('function-scoped variable value may be read before initialization');
     }
   });
+
+  it('transfers explicit throw initialization into catch and applies finally on every completion', () => {
+    for (const source of [
+      `
+        export function select(): number {
+          var value: number;
+          try { value = 1; throw 0; }
+          catch { value += 1; }
+          return value;
+        }
+      `,
+      `
+        export function select(flag: boolean): number {
+          var value: number;
+          try {
+            value = 1;
+            if (flag) return value;
+            throw 0;
+          } finally { value += 1; }
+        }
+      `,
+    ]) {
+      const declaration = lowerFunction(source);
+
+      expect(
+        validateIrFunctionVariableInitialization(
+          declaration.body,
+          getFunctionVariables(declaration),
+          declaration.origin,
+        ),
+      ).toBeUndefined();
+    }
+  });
+
+  it('includes implicit expression failures in catch entry initialization', () => {
+    const declaration = lowerFunction(`
+      export function select(callback: () => void): number {
+        var value: number;
+        try { callback(); value = 1; throw 0; }
+        catch { return value; }
+      }
+    `);
+
+    expect(() =>
+      validateIrFunctionVariableInitialization(declaration.body, getFunctionVariables(declaration), declaration.origin),
+    ).toThrow('function-scoped variable value may be read before initialization');
+  });
+
+  it('does not invent catch entries for nonthrowing operators', () => {
+    const declaration = lowerFunction(`
+      export function select(): number {
+        var value: number;
+        try {
+          let local = true;
+          0 === 0;
+          local &&= true;
+          value = 1;
+        } catch { return value; }
+        return value;
+      }
+    `);
+
+    expect(
+      validateIrFunctionVariableInitialization(declaration.body, getFunctionVariables(declaration), declaration.origin),
+    ).toBeUndefined();
+  });
+
+  it('includes iteration protocol failures in catch entry initialization', () => {
+    const declaration = lowerFunction(`
+      export function select(values: number[]): number {
+        var value: number;
+        try { for (const item of values) value = item; }
+        catch { return value; }
+        return value;
+      }
+    `);
+
+    expect(() =>
+      validateIrFunctionVariableInitialization(declaration.body, getFunctionVariables(declaration), declaration.origin),
+    ).toThrow('function-scoped variable value may be read before initialization');
+  });
 });
 
 function getFunctionVariables(declaration: Readonly<IrFunctionDeclaration>): ReadonlyMap<string, IrNamedVariable> {

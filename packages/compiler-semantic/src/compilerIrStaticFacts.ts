@@ -283,6 +283,12 @@ function analyzeExpression(
         if (element.expression) analyzeExpression(element.expression, analysis, 'read');
       });
       return;
+    case 'tupleSpread':
+      expression.segments.forEach((segment) => {
+        const value = segment.kind === 'spread' ? segment.expression : segment.element.expression;
+        if (value) analyzeExpression(value, analysis, 'read');
+      });
+      return;
     case 'tupleRest':
       analyzeExpression(expression.object, analysis, 'read');
       return;
@@ -431,6 +437,7 @@ function getExpressionValueDomain(expression: Readonly<IrExpression>): IrOperato
     case 'object':
     case 'regexp':
     case 'tuple':
+    case 'tupleSpread':
       return 'object';
     case 'assignment':
     case 'binary':

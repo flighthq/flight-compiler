@@ -161,6 +161,17 @@ function visitExpression(expression: Readonly<IrExpression>, add: AddExternalSym
         if (element.expression) visitExpression(element.expression, add);
       });
       break;
+    case 'tupleSpread':
+      visitType(expression.type, add);
+      expression.segments.forEach((segment) => {
+        if (segment.kind === 'spread') {
+          visitExpression(segment.expression, add);
+          visitType(segment.type, add);
+        } else if (segment.element.expression) {
+          visitExpression(segment.element.expression, add);
+        }
+      });
+      break;
     case 'tupleRest':
       visitExpression(expression.object, add);
       break;

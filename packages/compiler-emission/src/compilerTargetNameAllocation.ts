@@ -342,6 +342,12 @@ function collectExpressionBindings(
         if (element.expression) collectExpressionBindings(element.expression, `${path}:element:${String(index)}`, add);
       });
       break;
+    case 'tupleSpread':
+      expression.segments.forEach((segment, index) => {
+        const value = segment.kind === 'spread' ? segment.expression : segment.element.expression;
+        if (value) collectExpressionBindings(value, `${path}:segment:${String(index)}`, add);
+      });
+      break;
     case 'tupleRest':
       collectExpressionBindings(expression.object, `${path}:object`, add);
       break;

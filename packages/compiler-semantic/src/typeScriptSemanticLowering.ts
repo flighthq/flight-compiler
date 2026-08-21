@@ -55,8 +55,10 @@ import type {
   TypeScriptLoweringResult,
   LowerTypeScriptSourceOptions,
 } from '../../compiler-types/src/index.js';
+import { getIrTypeOperatorValueDomain } from './compilerOperatorDomainEvidence.js';
 
 interface LoweringContext {
+  bindingTypes: Map<ts.Symbol, IrType>;
   bindings: Map<ts.Symbol, IrBindingIdentity>;
   checker: ts.TypeChecker;
   diagnostics: CompilerDiagnostic[];
@@ -83,6 +85,7 @@ export function lowerTypeScriptSource(
 ): TypeScriptLoweringResult {
   const analysis = createTypeScriptAnalysis(sourceFile);
   const context: LoweringContext = {
+    bindingTypes: new Map(),
     bindings: new Map(),
     checker: analysis.checker,
     diagnostics: [],
@@ -546,26 +549,77 @@ function lowerTupleExpression(
   if (restIndex >= 0) {
     return unsupported(node, `contextual tuple expression rest at index ${String(restIndex)} is not represented yet`);
   }
-  if (node.elements.length > type.elements.length) {
-    return unsupported(node, 'contextual tuple expression has more values than its fixed tuple type');
-  }
-  return {
-    elements: type.elements.map((element, index) => {
-      const value = node.elements[index];
-      if (!value || ts.isOmittedExpression(value)) {
-        if (!element.optional) {
-          return unsupported(node, `contextual tuple expression requires a value at index ${String(index)}`);
+  if (!node.elements.some(ts.isSpreadElement)) {
+    if (node.elements.length > type.elements.length) {
+      return unsupported(node, 'contextual tuple expression has more values than its fixed tuple type');
+    }
+    return {
+      elements: type.elements.map((element, index) => {
+        const value = node.elements[index];
+        if (!value || ts.isOmittedExpression(value)) {
+          if (!element.optional) {
+            return unsupported(node, `contextual tuple expression requires a value at index ${String(index)}`);
+          }
+          return { optional: true };
         }
-        return { optional: true };
+        const expression = lowerExpression(value, context, element.type);
+        return element.optional ? { expression, optional: true } : { expression, optional: false };
+      }),
+      kind: 'tuple',
+    };
+  }
+  const segments: Array<Extract<IrExpression, { kind: 'tupleSpread' }>['segments'][number]> = [];
+  let targetIndex = 0;
+  for (const value of node.elements) {
+    if (ts.isSpreadElement(value)) {
+      const spreadType = lowerTypeScriptExpressionTypeEvidence(value.expression, context);
+      if (spreadType?.kind !== 'tuple' || spreadType.elements.some((element) => element.rest)) {
+        return unsupported(value, 'contextual tuple expression spread requires a statically known fixed tuple');
       }
-      if (ts.isSpreadElement(value)) {
-        return unsupported(value, 'contextual tuple expression spread is not represented yet');
+      if (targetIndex + spreadType.elements.length > type.elements.length) {
+        return unsupported(value, 'contextual tuple expression spread exceeds its fixed tuple type');
       }
-      const expression = lowerExpression(value, context, element.type);
-      return element.optional ? { expression, optional: true } : { expression, optional: false };
-    }),
-    kind: 'tuple',
-  };
+      spreadType.elements.forEach((element, index) => {
+        const target = type.elements[targetIndex + index]!;
+        if (element.optional && !target.optional) {
+          unsupported(
+            value,
+            `optional tuple spread value cannot initialize required index ${String(targetIndex + index)}`,
+          );
+        }
+      });
+      segments.push({
+        expression: lowerExpression(value.expression, context, spreadType),
+        kind: 'spread',
+        type: spreadType,
+      });
+      targetIndex += spreadType.elements.length;
+      continue;
+    }
+    const target = type.elements[targetIndex];
+    if (!target) return unsupported(value, 'contextual tuple expression has more values than its fixed tuple type');
+    if (ts.isOmittedExpression(value)) {
+      if (!target.optional) {
+        return unsupported(value, `contextual tuple expression requires a value at index ${String(targetIndex)}`);
+      }
+      segments.push({ element: { optional: true }, kind: 'element' });
+    } else {
+      const expression = lowerExpression(value, context, target.type);
+      segments.push({
+        element: target.optional ? { expression, optional: true } : { expression, optional: false },
+        kind: 'element',
+      });
+    }
+    targetIndex += 1;
+  }
+  for (; targetIndex < type.elements.length; targetIndex += 1) {
+    const target = type.elements[targetIndex]!;
+    if (!target.optional) {
+      return unsupported(node, `contextual tuple expression requires a value at index ${String(targetIndex)}`);
+    }
+    segments.push({ element: { optional: true }, kind: 'element' });
+  }
+  return { kind: 'tupleSpread', segments, type };
 }
 
 function lowerExpressionWithTypeArguments(
@@ -826,6 +880,7 @@ function lowerObjectMember(node: ts.ObjectLiteralElementLike, context: LoweringC
 function lowerParameter(node: ts.ParameterDeclaration, context: LoweringContext): IrParameter {
   if (!ts.isIdentifier(node.name)) unsupported(node.name, 'destructured parameters are not represented yet');
   const typeParameter = lowerFunctionTypeParameter(node, context);
+  addTypeScriptBindingTypeEvidence(node.name, typeParameter.type, context);
   const parameter = {
     binding: lowerBindingIdentity(node.name, context),
     type: typeParameter.type,
@@ -1191,10 +1246,12 @@ function lowerVariable(
       : node.initializer
         ? inferInitializerType(node.initializer, context)
         : undefined;
+  const target = ts.isIdentifier(node.name)
+    ? { binding: lowerBindingIdentity(node.name, context) }
+    : { pattern: lowerBindingPattern(node.name, context, type) };
+  if (ts.isIdentifier(node.name) && type) addTypeScriptBindingTypeEvidence(node.name, type, context);
   return {
-    ...(ts.isIdentifier(node.name)
-      ? { binding: lowerBindingIdentity(node.name, context) }
-      : { pattern: lowerBindingPattern(node.name, context, type) }),
+    ...target,
     ...(node.initializer ? { initializer: lowerExpression(node.initializer, context, type) } : {}),
     mutable,
     ...(type ? { type } : {}),
@@ -1202,13 +1259,21 @@ function lowerVariable(
 }
 
 function lowerTypeScriptForOfElementType(expression: ts.Expression, context: LoweringContext): IrType | undefined {
-  const iterableType = getTypeScriptExpressionTypeNodeIterable(expression, context);
+  const iterableType = getTypeScriptExpressionTypeNodeEvidence(expression, context);
   if (!iterableType) return undefined;
   const elementType = getTypeScriptTypeNodeIterableElement(iterableType, context, new Set());
   return elementType ? lowerType(resolveTypeScriptTypeNodeAlias(elementType, context, new Set()), context) : undefined;
 }
 
-function getTypeScriptExpressionTypeNodeIterable(
+function lowerTypeScriptExpressionTypeEvidence(
+  expression: ts.Expression,
+  context: LoweringContext,
+): IrType | undefined {
+  const type = getTypeScriptExpressionTypeNodeEvidence(expression, context);
+  return type ? lowerType(resolveTypeScriptTypeNodeAlias(type, context, new Set()), context) : undefined;
+}
+
+function getTypeScriptExpressionTypeNodeEvidence(
   expression: ts.Expression,
   context: LoweringContext,
 ): ts.TypeNode | undefined {
@@ -1217,7 +1282,7 @@ function getTypeScriptExpressionTypeNodeIterable(
     ts.isNonNullExpression(expression) ||
     ts.isSatisfiesExpression(expression)
   ) {
-    return getTypeScriptExpressionTypeNodeIterable(expression.expression, context);
+    return getTypeScriptExpressionTypeNodeEvidence(expression.expression, context);
   }
   if (ts.isAsExpression(expression) || ts.isTypeAssertionExpression(expression)) return expression.type;
   if (ts.isCallExpression(expression)) {
@@ -1333,6 +1398,7 @@ function lowerBindingPattern(
   sourceType?: Readonly<IrType>,
 ): IrBindingPattern {
   if (ts.isIdentifier(node)) {
+    if (sourceType) addTypeScriptBindingTypeEvidence(node, sourceType, context);
     return {
       binding: lowerBindingIdentity(node, context),
       kind: 'binding',
@@ -1352,7 +1418,7 @@ function lowerBindingPattern(
     if (element.dotDotDotToken) {
       if (index !== node.elements.length - 1) unsupported(element, 'array binding rest must be the final element');
       if (element.initializer) unsupported(element, 'array binding rest cannot have a default initializer');
-      const restType = sourceType?.kind === 'tuple' ? sourceType.elements[index]?.type : undefined;
+      const restType = getIrTupleTypeBindingPatternRest(sourceType, index);
       rest = lowerBindingPattern(element.name, context, restType);
       return;
     }
@@ -1360,7 +1426,7 @@ function lowerBindingPattern(
     const initializerType = element.initializer ? removeIrTypeBindingPatternUndefined(elementType) : elementType;
     elements.push({
       ...(element.initializer ? { initializer: lowerExpression(element.initializer, context, initializerType) } : {}),
-      pattern: lowerBindingPattern(element.name, context, elementType),
+      pattern: lowerBindingPattern(element.name, context, initializerType),
     });
   });
   return {
@@ -1369,6 +1435,17 @@ function lowerBindingPattern(
     kind: 'array',
     ...(rest ? { rest } : {}),
     scope: bindingPatternScope(node),
+  };
+}
+
+function getIrTupleTypeBindingPatternRest(sourceType: Readonly<IrType> | undefined, index: number): IrType | undefined {
+  if (sourceType?.kind !== 'tuple') return undefined;
+  const element = sourceType.elements[index];
+  if (element?.rest) return element.type;
+  return {
+    elements: sourceType.elements.slice(index),
+    kind: 'tuple',
+    readonly: false,
   };
 }
 
@@ -1441,10 +1518,14 @@ function lowerAssignmentOperatorSemantics(
   node: ts.BinaryExpression,
   context: LoweringContext,
 ): IrAssignmentOperatorSemantics {
+  const left = lowerOperatorOperandDomains(node.left, context);
+  const right = lowerOperatorOperandDomains(node.right, context);
+  const result = lowerOperatorValueDomain(node, context);
   return {
-    left: lowerOperatorOperandDomains(node.left, context),
-    result: lowerOperatorValueDomain(node, context),
-    right: lowerOperatorOperandDomains(node.right, context),
+    left,
+    result:
+      result === 'unknown' ? (node.operatorToken.kind === ts.SyntaxKind.EqualsToken ? right.flow : left.flow) : result,
+    right,
   };
 }
 
@@ -1463,9 +1544,13 @@ function lowerBinaryOperatorSemantics(node: ts.BinaryExpression, context: Loweri
 function lowerOperatorOperandDomains(node: ts.Expression, context: LoweringContext): IrOperatorOperandDomains {
   const flowType = context.checker.getTypeAtLocation(node);
   const declaredType = getTypeScriptExpressionDeclaredType(node, context) ?? flowType;
+  const evidence = getTypeScriptExpressionBindingTypeEvidence(node, context);
+  const evidenceDomain = getIrTypeOperatorValueDomain(evidence);
+  const declared = lowerTypeScriptTypeOperatorValueDomain(declaredType, context.checker);
+  const flow = lowerTypeScriptTypeOperatorValueDomain(flowType, context.checker);
   return {
-    declared: lowerTypeScriptTypeOperatorValueDomain(declaredType, context.checker),
-    flow: lowerTypeScriptTypeOperatorValueDomain(flowType, context.checker),
+    declared: declared === 'unknown' ? evidenceDomain : declared,
+    flow: flow === 'unknown' ? evidenceDomain : flow,
   };
 }
 
@@ -1519,6 +1604,24 @@ function getTypeScriptExpressionDeclaredType(expression: ts.Expression, context:
       : unresolved;
   const declaration = symbol?.valueDeclaration ?? symbol?.declarations?.[0];
   return symbol && declaration ? context.checker.getTypeOfSymbolAtLocation(symbol, declaration) : undefined;
+}
+
+function getTypeScriptExpressionBindingTypeEvidence(
+  expression: ts.Expression,
+  context: LoweringContext,
+): Readonly<IrType> | undefined {
+  if (
+    ts.isParenthesizedExpression(expression) ||
+    ts.isAsExpression(expression) ||
+    ts.isTypeAssertionExpression(expression) ||
+    ts.isSatisfiesExpression(expression) ||
+    ts.isNonNullExpression(expression)
+  ) {
+    return getTypeScriptExpressionBindingTypeEvidence(expression.expression, context);
+  }
+  if (!ts.isIdentifier(expression)) return undefined;
+  const symbol = context.checker.getSymbolAtLocation(expression);
+  return symbol ? context.bindingTypes.get(symbol) : undefined;
 }
 
 function lowerTypeScriptIndexedReceivers(type: ts.Type, checker: ts.TypeChecker): IrIndexedReceiver[] {
@@ -1599,6 +1702,11 @@ function lowerIdentifierReference(node: ts.Identifier, context: LoweringContext)
   return symbol?.declarations?.some(isValueBindingDeclaration)
     ? { binding: lowerBindingSymbol(symbol, node, context), kind: 'binding' }
     : { kind: 'ambient', name: node.text };
+}
+
+function addTypeScriptBindingTypeEvidence(node: ts.Identifier, type: Readonly<IrType>, context: LoweringContext): void {
+  const symbol = context.checker.getSymbolAtLocation(node);
+  if (symbol) context.bindingTypes.set(symbol, type);
 }
 
 function lowerExportBindingIdentity(

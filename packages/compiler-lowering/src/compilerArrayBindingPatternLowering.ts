@@ -475,6 +475,34 @@ function lowerIrExpressionArrayBindingPattern(
             : element,
         ),
       };
+    case 'tupleSpread':
+      return {
+        ...expression,
+        segments: expression.segments.map((segment, index) =>
+          segment.kind === 'spread'
+            ? {
+                ...segment,
+                expression: lowerIrExpressionArrayBindingPattern(
+                  segment.expression,
+                  `${path}.segments[${String(index)}].expression`,
+                  analysis,
+                ),
+              }
+            : segment.element.expression
+              ? {
+                  ...segment,
+                  element: {
+                    ...segment.element,
+                    expression: lowerIrExpressionArrayBindingPattern(
+                      segment.element.expression,
+                      `${path}.segments[${String(index)}].element.expression`,
+                      analysis,
+                    ),
+                  },
+                }
+              : segment,
+        ),
+      };
     case 'tupleRest':
       return {
         ...expression,

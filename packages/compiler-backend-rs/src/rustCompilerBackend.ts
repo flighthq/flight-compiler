@@ -285,6 +285,8 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
       });
       return `(${elements.join(', ')}${elements.length === 1 ? ',' : ''})`;
     }
+    case 'tupleSpread':
+      emissionError(context, 'fixed tuple spread requires Rust tuple-construction lowering');
     case 'tupleRest':
       return `${emitExpression(expression.object, context)}.${String(expression.start)}`;
     case 'tupleSuffix': {

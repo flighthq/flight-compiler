@@ -35,12 +35,11 @@ class VariableHoisting {
     return second;
   }
 
-  public static function selectFirstValue(values:Array<Float>):Float {
+  public static function incrementValues(values:Array<Float>):Void {
     var value:Float;
     for (variableHoistingIterationValue in values) {
       value = variableHoistingIterationValue;
-      return value;
+      value += 1;
     }
-    return 0;
   }
 }

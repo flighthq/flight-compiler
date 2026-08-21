@@ -34,11 +34,10 @@ pub fn select_pattern(values: (f64, String)) -> String {
   return second;
 }
 
-pub fn select_first_value(values: Vec<f64>) -> f64 {
+pub fn increment_values(values: Vec<f64>) -> () {
   let mut value: f64;
   for variable_hoisting_iteration_value in values {
     value = variable_hoisting_iteration_value;
-    return value;
+    value += 1.0;
   }
-  return 0.0;
 }

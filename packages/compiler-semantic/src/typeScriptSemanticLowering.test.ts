@@ -1,6 +1,6 @@
 import ts from 'typescript';
 
-import type { IrBindingIdentity, IrExpression } from '../../compiler-types/src/index.js';
+import type { IrBindingIdentity, IrExpression, IrStatement } from '../../compiler-types/src/index.js';
 import { lowerTypeScriptSource } from './typeScriptSemanticLowering.js';
 
 function lower(file: string, source: string) {
@@ -831,6 +831,62 @@ describe('lowerTypeScriptSource', () => {
     });
   });
 
+  it('retains iteration and destructuring type evidence for operator domains', () => {
+    const result = lower(
+      'binding-operator-domains.ts',
+      `
+        export function calculate(
+          values: number[],
+          rows: Array<[number, string]>,
+          optional: [number?],
+          nested: [[number, string]],
+          suffix: [boolean, number, string],
+          variadic: [number, ...string[]],
+        ): void {
+          for (var value of values) value += 1;
+          for (var [rowNumber, rowText] of rows) { rowNumber += 1; rowText += '!'; }
+          const [fallback = 0]: [number?] = optional;
+          fallback += 1;
+          const [[nestedNumber, nestedText]]: [[number, string]] = nested;
+          nestedNumber += 1; nestedText += '!';
+          const [, ...[suffixNumber, suffixText]]: [boolean, number, string] = suffix;
+          suffixNumber += 1; suffixText += '!';
+          const [head, ...tail]: [number, ...string[]] = variadic;
+          head += 1; tail;
+        }
+      `,
+    );
+    const declaration = result.module.declarations.find(
+      (item) => item.kind === 'function' && item.binding.name === 'calculate',
+    );
+    if (declaration?.kind !== 'function') throw new Error('Expected calculate function');
+    const assignments = collectAssignmentExpressions(declaration.body);
+
+    expect(result.diagnostics).toEqual([]);
+    expect(assignments.map((assignment) => assignment.semantics.left)).toEqual([
+      { declared: 'number', flow: 'number' },
+      { declared: 'number', flow: 'number' },
+      { declared: 'string', flow: 'string' },
+      { declared: 'number', flow: 'number' },
+      { declared: 'number', flow: 'number' },
+      { declared: 'string', flow: 'string' },
+      { declared: 'number', flow: 'number' },
+      { declared: 'string', flow: 'string' },
+      { declared: 'number', flow: 'number' },
+    ]);
+    expect(assignments.map((assignment) => assignment.semantics.result)).toEqual([
+      'number',
+      'number',
+      'string',
+      'number',
+      'number',
+      'string',
+      'number',
+      'string',
+      'number',
+    ]);
+  });
+
   it('distinguishes declared operand domains from flow-narrowed checker domains', () => {
     const result = lower(
       'operator-narrowing.ts',
@@ -1236,16 +1292,74 @@ describe('lowerTypeScriptSource', () => {
     expect(holder.fields[0]?.initializer).toMatchObject({ kind: 'tuple' });
   });
 
+  it('represents fixed tuple spread construction with source and result layouts', () => {
+    const result = lower(
+      'tuple-spread.ts',
+      `
+        type Pair = [number, string];
+        const pair: Pair = [1, 'flight'];
+        export const combined: [boolean, number, string, boolean?] = [true, ...pair];
+        const optionalPair: [number, string?] = [2];
+        export const optionalCombined: [number, string?] = [...optionalPair];
+      `,
+    );
+    const combined = result.module.declarations.find(
+      (declaration) =>
+        declaration.kind === 'variable' && 'binding' in declaration && declaration.binding.name === 'combined',
+    );
+    const optional = result.module.declarations.find(
+      (declaration) =>
+        declaration.kind === 'variable' && 'binding' in declaration && declaration.binding.name === 'optionalCombined',
+    );
+    if (combined?.kind !== 'variable' || optional?.kind !== 'variable') {
+      throw new Error('Expected tuple spread declarations');
+    }
+
+    expect(result.diagnostics).toEqual([]);
+    expect(combined.initializer).toMatchObject({
+      kind: 'tupleSpread',
+      segments: [
+        { element: { expression: { value: true }, optional: false }, kind: 'element' },
+        {
+          expression: { kind: 'identifier' },
+          kind: 'spread',
+          type: {
+            elements: [{ optional: false }, { optional: false }],
+            kind: 'tuple',
+          },
+        },
+        { element: { optional: true }, kind: 'element' },
+      ],
+      type: { elements: [{ optional: false }, { optional: false }, { optional: false }, { optional: true }] },
+    });
+    expect(optional.initializer).toMatchObject({
+      kind: 'tupleSpread',
+      segments: [{ kind: 'spread', type: { elements: [{ optional: false }, { optional: true }] } }],
+    });
+  });
+
   it.each([
     ['contextual tuple expression rest at index 1 is not represented yet', '[number, ...number[]]', '[1, 2]'],
     ['contextual tuple expression has more values than its fixed tuple type', '[number]', '[1, 2]'],
     ['contextual tuple expression requires a value at index 0', '[number]', '[]'],
-    ['contextual tuple expression spread is not represented yet', '[number]', '[...values]'],
+    ['contextual tuple expression spread requires a statically known fixed tuple', '[number]', '[...values]'],
   ])('diagnoses invalid contextual tuple expressions: %s', (message, type, value) => {
     const source = `const values: number[] = [1]; export const rejected: ${type} = ${value}; export const kept = 2;`;
     const result = lower('invalid-tuple-expression.ts', source);
 
     expect(result.diagnostics.map((diagnostic) => diagnostic.message)).toContain(message);
+    expect(result.module.declarations).toMatchObject([{ binding: { name: 'values' } }, { binding: { name: 'kept' } }]);
+  });
+
+  it('rejects optional tuple spread values at required result positions', () => {
+    const result = lower(
+      'invalid-optional-tuple-spread.ts',
+      'const values: [number?] = []; export const rejected: [number] = [...values]; export const kept = 2;',
+    );
+
+    expect(result.diagnostics.map((diagnostic) => diagnostic.message)).toContain(
+      'optional tuple spread value cannot initialize required index 0',
+    );
     expect(result.module.declarations).toMatchObject([{ binding: { name: 'values' } }, { binding: { name: 'kept' } }]);
   });
 
@@ -1439,6 +1553,32 @@ function bindingReference(expression: Readonly<IrExpression> | undefined): IrBin
     throw new Error('Expected a bound identifier reference');
   }
   return expression.reference.binding;
+}
+
+function collectAssignmentExpressions(
+  statements: readonly Readonly<IrStatement>[],
+): Array<Extract<IrExpression, { kind: 'assignment' }>> {
+  const assignments: Array<Extract<IrExpression, { kind: 'assignment' }>> = [];
+  const visit = (statement: Readonly<IrStatement>): void => {
+    if (statement.kind === 'expression' && statement.expression.kind === 'assignment') {
+      assignments.push(statement.expression);
+    }
+    if (statement.kind === 'block') statement.statements.forEach(visit);
+    if (statement.kind === 'do' || statement.kind === 'while') visit(statement.body);
+    if (statement.kind === 'for' || statement.kind === 'forIn' || statement.kind === 'forOf') visit(statement.body);
+    if (statement.kind === 'if') {
+      visit(statement.consequent);
+      if (statement.otherwise) visit(statement.otherwise);
+    }
+    if (statement.kind === 'switch') statement.cases.forEach((switchCase) => switchCase.statements.forEach(visit));
+    if (statement.kind === 'try') {
+      visit(statement.tryBody);
+      if (statement.catchClause) visit(statement.catchClause.body);
+      if (statement.finallyBody) visit(statement.finallyBody);
+    }
+  };
+  statements.forEach(visit);
+  return assignments;
 }
 
 function getVariableBinding(value: unknown): IrBindingIdentity {

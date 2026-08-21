@@ -1,0 +1,1 @@
+rust emission failed for @flighthq/golden/packages/golden/src/tupleSpread.ts: fixed tuple spread requires Rust tuple-construction lowering

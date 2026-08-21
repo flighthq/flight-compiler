@@ -17,7 +17,6 @@ export function selectPattern(values: [number, string]): string {
   return second;
 }
 
-export function selectFirstValue(values: number[]): number {
-  for (var value of values) return value;
-  return 0;
+export function incrementValues(values: number[]): void {
+  for (var value of values) value += 1;
 }

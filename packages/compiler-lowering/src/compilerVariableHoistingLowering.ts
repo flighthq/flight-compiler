@@ -483,6 +483,23 @@ function lowerIrExpressionVariableHoisting(
             : {}),
         })),
       };
+    case 'tupleSpread':
+      return {
+        ...expression,
+        segments: expression.segments.map((segment) =>
+          segment.kind === 'spread'
+            ? { ...segment, expression: lowerIrExpressionVariableHoisting(segment.expression, analysis) }
+            : segment.element.expression
+              ? {
+                  ...segment,
+                  element: {
+                    ...segment.element,
+                    expression: lowerIrExpressionVariableHoisting(segment.element.expression, analysis),
+                  },
+                }
+              : segment,
+        ),
+      };
     case 'tupleRest':
       return { ...expression, object: lowerIrExpressionVariableHoisting(expression.object, analysis) };
     case 'unary':
@@ -869,6 +886,12 @@ function visitIrExpressionChildrenVariableHoisting(
     case 'tuple':
       expression.elements.forEach((element) => {
         if (element.expression) visit(element.expression);
+      });
+      return;
+    case 'tupleSpread':
+      expression.segments.forEach((segment) => {
+        const value = segment.kind === 'spread' ? segment.expression : segment.element.expression;
+        if (value) visit(value);
       });
       return;
     case 'tupleRest':

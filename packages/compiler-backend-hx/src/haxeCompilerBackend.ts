@@ -270,6 +270,8 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
       return `[${expression.elements
         .map((element) => (element.expression ? emitExpression(element.expression, context) : 'null'))
         .join(', ')}]`;
+    case 'tupleSpread':
+      emissionError(context, 'fixed tuple spread requires Haxe tuple-construction lowering');
     case 'tupleRest':
       return `${emitExpression(expression.object, context)}.slice(${String(expression.start)})`;
     case 'tupleSuffix':

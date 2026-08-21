@@ -5,6 +5,7 @@ import type {
   CompilerIrModuleValidationFailureCode,
   IrArrayBindingPattern,
   IrBindingIdentity,
+  IrExpression,
   IrModule,
   IrStatement,
   IrVariableDeclaration,
@@ -98,6 +99,72 @@ describe('validateIrModuleStructure', () => {
     expect(validateIrModuleStructure(rich)).toEqual({ kind: 'valid' });
     expect(validateIrModuleStructure(rich)).toEqual(validateIrModuleStructure(rich));
     expect(rich).toEqual(snapshot);
+  });
+
+  it('validates fixed tuple-spread segments, widths, and optional positions', () => {
+    const valid = lower(
+      'tuple-spread.ts',
+      "type Pair = [number, string]; const pair: Pair = [1, 'flight']; export const value: [boolean, number, string] = [true, ...pair];",
+    );
+    const declaration = valid.declarations.find(
+      (item) => item.kind === 'variable' && 'binding' in item && item.binding.name === 'value',
+    );
+    if (declaration?.kind !== 'variable' || declaration.initializer?.kind !== 'tupleSpread') {
+      throw new Error('Expected tuple spread variable');
+    }
+    const expression = declaration.initializer;
+    const spread = expression.segments.find((segment) => segment.kind === 'spread');
+    if (spread?.kind !== 'spread') throw new Error('Expected tuple spread segment');
+    const replacements = [
+      { ...expression, segments: expression.segments.filter((segment) => segment.kind !== 'spread') },
+      {
+        ...expression,
+        segments: expression.segments.map((segment) =>
+          segment.kind === 'spread'
+            ? {
+                ...segment,
+                type: {
+                  ...segment.type,
+                  elements: [{ optional: false, rest: true, type: { kind: 'primitive', name: 'number' } }],
+                },
+              }
+            : segment,
+        ),
+      },
+      { ...expression, segments: expression.segments.slice(1) },
+      {
+        ...expression,
+        segments: expression.segments.map((segment) =>
+          segment.kind === 'spread'
+            ? {
+                ...segment,
+                type: {
+                  ...segment.type,
+                  elements: segment.type.elements.map((element, index) =>
+                    index === 0 ? { ...element, optional: true } : element,
+                  ),
+                },
+              }
+            : segment,
+        ),
+      },
+    ];
+
+    expect(validateIrModuleStructure(valid)).toEqual({ kind: 'valid' });
+    for (const replacement of replacements) {
+      const module = structuredClone(valid);
+      const item = module.declarations.find(
+        (candidate) => candidate.kind === 'variable' && 'binding' in candidate && candidate.binding.name === 'value',
+      );
+      if (item?.kind !== 'variable') throw new Error('Expected cloned tuple spread variable');
+      (item as { initializer?: IrExpression }).initializer = replacement as IrExpression;
+      const result = validateIrModuleStructure(module);
+
+      expect(result.kind).toBe('invalid');
+      if (result.kind === 'invalid') {
+        expect(result.failures.map((failure) => failure.code)).toContain('invalid-node-shape');
+      }
+    }
   });
 
   it('accepts exact repeated function-scoped variable declarations but not other duplicate introductions', () => {

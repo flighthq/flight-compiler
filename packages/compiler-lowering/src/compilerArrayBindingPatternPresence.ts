@@ -96,6 +96,14 @@ function hasIrExpressionArrayBindingPattern(expression: Readonly<IrExpression>):
       return expression.elements.some(
         (element) => element.expression && hasIrExpressionArrayBindingPattern(element.expression),
       );
+    case 'tupleSpread':
+      return expression.segments.some((segment) =>
+        segment.kind === 'spread'
+          ? hasIrExpressionArrayBindingPattern(segment.expression)
+          : segment.element.expression
+            ? hasIrExpressionArrayBindingPattern(segment.element.expression)
+            : false,
+      );
     case 'tupleRest':
       return hasIrExpressionArrayBindingPattern(expression.object);
     case 'tupleSuffix':

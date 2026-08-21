@@ -406,6 +406,63 @@ function visitExpression(expression: Readonly<IrExpression>, path: string, state
         if (element.expression) visitExpression(element.expression, `${elementPath}.expression`, state);
       });
       break;
+    case 'tupleSpread': {
+      visitType(expression.type, `${path}.type`, state);
+      if (expression.type.elements.some((element) => element.rest)) {
+        addFailure('invalid-node-shape', `${path}.type`, 'tuple spread result type must have fixed width', state);
+      }
+      if (!expression.segments.some((segment) => segment.kind === 'spread')) {
+        addFailure('invalid-node-shape', `${path}.segments`, 'tuple spread requires a spread segment', state);
+      }
+      const optional: boolean[] = [];
+      expression.segments.forEach((segment, index) => {
+        const segmentPath = `${path}.segments[${String(index)}]`;
+        if (segment.kind === 'element') {
+          if (typeof segment.element.optional !== 'boolean') {
+            addFailure(
+              'invalid-node-shape',
+              `${segmentPath}.element.optional`,
+              'tuple optional flag must be boolean',
+              state,
+            );
+          }
+          if (!segment.element.optional && !segment.element.expression) {
+            addFailure(
+              'invalid-node-shape',
+              `${segmentPath}.element`,
+              'required tuple expression element must have a value',
+              state,
+            );
+          }
+          if (segment.element.expression) {
+            visitExpression(segment.element.expression, `${segmentPath}.element.expression`, state);
+          }
+          optional.push(segment.element.optional);
+          return;
+        }
+        visitExpression(segment.expression, `${segmentPath}.expression`, state);
+        visitType(segment.type, `${segmentPath}.type`, state);
+        if (segment.type.elements.some((element) => element.rest)) {
+          addFailure('invalid-node-shape', `${segmentPath}.type`, 'tuple spread segment must have fixed width', state);
+        }
+        optional.push(...segment.type.elements.map((element) => element.optional));
+      });
+      if (optional.length !== expression.type.elements.length) {
+        addFailure('invalid-node-shape', `${path}.segments`, 'tuple spread width must match its result type', state);
+      }
+      optional.forEach((value, index) => {
+        const target = expression.type.elements[index];
+        if (value && target && !target.optional) {
+          addFailure(
+            'invalid-node-shape',
+            `${path}.segments`,
+            `optional tuple spread value cannot initialize required index ${String(index)}`,
+            state,
+          );
+        }
+      });
+      break;
+    }
     case 'tupleRest':
       if (!Number.isSafeInteger(expression.start) || expression.start < 0) {
         addFailure('invalid-node-shape', `${path}.start`, 'tuple rest start must be a nonnegative integer', state);

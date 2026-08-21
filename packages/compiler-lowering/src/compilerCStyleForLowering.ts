@@ -116,6 +116,14 @@ function hasIrExpressionCStyleForStatement(expression: Readonly<IrExpression>): 
       return expression.elements.some(
         (element) => element.expression && hasIrExpressionCStyleForStatement(element.expression),
       );
+    case 'tupleSpread':
+      return expression.segments.some((segment) =>
+        segment.kind === 'spread'
+          ? hasIrExpressionCStyleForStatement(segment.expression)
+          : segment.element.expression
+            ? hasIrExpressionCStyleForStatement(segment.element.expression)
+            : false,
+      );
     case 'tupleRest':
       return hasIrExpressionCStyleForStatement(expression.object);
     case 'tupleSuffix':
@@ -348,6 +356,20 @@ function lowerIrExpression(expression: Readonly<IrExpression>, analysis: CStyleF
         ...expression,
         elements: expression.elements.map((element) =>
           element.expression ? { ...element, expression: lowerIrExpression(element.expression, analysis) } : element,
+        ),
+      };
+    case 'tupleSpread':
+      return {
+        ...expression,
+        segments: expression.segments.map((segment) =>
+          segment.kind === 'spread'
+            ? { ...segment, expression: lowerIrExpression(segment.expression, analysis) }
+            : segment.element.expression
+              ? {
+                  ...segment,
+                  element: { ...segment.element, expression: lowerIrExpression(segment.element.expression, analysis) },
+                }
+              : segment,
         ),
       };
     case 'tupleRest':
