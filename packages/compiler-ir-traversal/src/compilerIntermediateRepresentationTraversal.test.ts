@@ -340,6 +340,7 @@ describe('analyzeIrModuleTraversal', () => {
         ['variable', ['declarations', 0, 'body', 0, 'declarations', 0]],
         ['bindingPattern', ['declarations', 0, 'body', 0, 'declarations', 0, 'pattern']],
         ['objectMember', ['declarations', 0, 'body', 0, 'declarations', 0, 'initializer', 'right', 'members', 0]],
+        ['type', ['declarations', 0, 'body', 0, 'declarations', 0, 'initializer', 'right', 'type']],
         ['optionalChain', ['declarations', 0, 'body', 1, 'expression', 'left', 'optionalChain']],
       ]),
     );
@@ -501,7 +502,11 @@ describe('analyzeIrModuleTraversal', () => {
           ...base,
           exports: [
             {
-              expression: { kind: 'object', members: [{ kind: 'future-object-member' }] },
+              expression: {
+                kind: 'object',
+                members: [{ kind: 'future-object-member' }],
+                type: { kind: 'unknown', source: 'object' },
+              },
               kind: 'default',
             },
           ],

@@ -1,1 +1,0 @@
-rust emission failed for @flighthq/golden/packages/golden/src/shapes.ts: anonymous object construction requires Rust structural-type lowering

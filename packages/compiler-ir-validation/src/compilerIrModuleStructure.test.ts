@@ -1159,7 +1159,19 @@ describe('validateIrModuleStructure', () => {
       [
         {
           ...module,
-          exports: [{ expression: { kind: 'object', members: [invalidKind] }, kind: 'default' }],
+          exports: [{ expression: { kind: 'object', members: [] }, kind: 'default' }],
+        } as unknown as IrModule,
+        'invalid-node-shape',
+      ],
+      [
+        {
+          ...module,
+          exports: [
+            {
+              expression: { kind: 'object', members: [invalidKind], type: { kind: 'unknown', source: 'object' } },
+              kind: 'default',
+            },
+          ],
         } as unknown as IrModule,
         'unknown-ir-kind',
       ],
@@ -1176,6 +1188,24 @@ describe('validateIrModuleStructure', () => {
           declarations: [{ ...typeDeclaration, type: invalidKind }],
         } as unknown as IrModule,
         'unknown-ir-kind',
+      ],
+      [
+        {
+          ...typeModule,
+          declarations: [
+            {
+              ...typeDeclaration,
+              type: {
+                kind: 'object',
+                properties: [
+                  { name: 'value', optional: false, readonly: false, type: { kind: 'primitive', name: 'number' } },
+                  { name: 'value', optional: false, readonly: false, type: { kind: 'primitive', name: 'number' } },
+                ],
+              },
+            },
+          ],
+        } as unknown as IrModule,
+        'invalid-node-shape',
       ],
     ];
 

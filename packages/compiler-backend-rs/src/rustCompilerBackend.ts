@@ -41,6 +41,7 @@ import type {
   IrImport,
   IrInterfaceDeclaration,
   IrModule,
+  IrObjectMember,
   IrObjectTypeProperty,
   IrParameter,
   IrPostfixUnaryOperator,
@@ -67,6 +68,7 @@ import {
 } from './rustRuntimeExternalSymbolBinding.js';
 
 interface EmitContext {
+  anonymousObjectRecords: Map<string, Readonly<{ name: string; properties: readonly IrObjectTypeProperty[] }>>;
   generatedNames: Set<string>;
   module: Readonly<IrModule>;
   objectRestRecords: Map<string, Readonly<{ name: string; properties: readonly IrObjectTypeProperty[] }>>;
@@ -124,6 +126,7 @@ export function emitIrModuleRust(
     throw error;
   }
   const context: EmitContext = {
+    anonymousObjectRecords: new Map(),
     generatedNames: new Set(targetNames.values()),
     module,
     objectRestRecords: new Map(),
@@ -137,6 +140,9 @@ export function emitIrModuleRust(
   const imports = emitImports(module.imports, context);
   if (imports.length > 0) lines.push('', ...imports);
   const declarations = module.declarations.map((declaration) => emitDeclaration(declaration, context));
+  context.anonymousObjectRecords.forEach((record) => {
+    lines.push('', ...emitRecord(record.name, record.properties, [], false, context));
+  });
   context.objectRestRecords.forEach((record) => {
     lines.push('', ...emitRecord(record.name, record.properties, [], false, context));
   });
@@ -287,7 +293,7 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
       assertIrConstructorInvocationAbiRust(expression, context);
       return `${emitConstructorReferenceRust(expression.callee.reference, context)}::new(${expression.arguments.map((argument) => emitExpression(argument, context)).join(', ')})`;
     case 'object':
-      emissionError(context, 'anonymous object construction requires Rust structural-type lowering');
+      return emitObjectExpressionRust(expression, context);
     case 'objectRest':
       return emitObjectRestExpressionRust(expression, context);
     case 'property':
@@ -582,6 +588,93 @@ function emitObjectRestExpressionRust(
   return `${recordName} { ${fields.map((field) => field.initializer).join(' ')} }`;
 }
 
+function emitObjectExpressionRust(
+  expression: Readonly<Extract<IrExpression, { kind: 'object' }>>,
+  context: EmitContext,
+): string {
+  if (expression.members.some((member) => member.kind === 'spread')) {
+    emissionError(context, 'object spread requires structural-copy lowering');
+  }
+  if (expression.members.some((member) => member.kind === 'computedProperty')) {
+    emissionError(context, 'computed object properties require Rust property-key lowering');
+  }
+  if (expression.type.kind === 'named' && expression.type.typeArguments.length > 0) {
+    emissionError(context, 'generic structural construction requires Rust type-argument lowering');
+  }
+  if (expression.type.kind !== 'named' && expression.type.kind !== 'object') {
+    emissionError(context, 'object construction requires closed target-type evidence');
+  }
+  const target = emitType(expression.type, context);
+  const properties = getIrObjectConstructionPropertiesRust(expression.type, context);
+  const localBindingId =
+    expression.type.kind === 'named' &&
+    expression.type.reference.kind === 'binding' &&
+    expression.type.reference.path.length === 0
+      ? expression.type.reference.binding.id
+      : undefined;
+  if (
+    localBindingId &&
+    context.module.declarations.some(
+      (declaration) => 'binding' in declaration && declaration.binding.id === localBindingId,
+    ) &&
+    !properties
+  ) {
+    emissionError(context, 'object construction target is not a local structural record');
+  }
+  const members = expression.members.filter(
+    (member): member is Extract<IrObjectMember, { kind: 'property' }> => member.kind === 'property',
+  );
+  const names = new Set<string>();
+  const fields = members.map((member) => {
+    if (names.has(member.name)) {
+      emissionError(context, `duplicate object property ${member.name} requires evaluation-preserving normalization`);
+    }
+    names.add(member.name);
+    const property = properties?.find((candidate) => candidate.name === member.name);
+    if (properties && !property) {
+      emissionError(context, `object property ${member.name} is absent from its closed construction type`);
+    }
+    const value = emitExpression(member.value, context);
+    return `${safeRustValueName(member.name)}: ${property?.optional ? `Some(${value})` : value},`;
+  });
+  for (const property of properties ?? []) {
+    if (names.has(property.name)) continue;
+    if (!property.optional) {
+      emissionError(context, `required object property ${property.name} is absent from its construction`);
+    }
+    fields.push(`${safeRustValueName(property.name)}: None,`);
+  }
+  return `${target} { ${fields.join(' ')} }`;
+}
+
+function getIrObjectConstructionPropertiesRust(
+  type: Readonly<IrType>,
+  context: EmitContext,
+): readonly IrObjectTypeProperty[] | undefined {
+  if (type.kind === 'object') return type.properties;
+  if (type.kind !== 'named' || type.reference.kind !== 'binding' || type.reference.path.length > 0) return undefined;
+  const bindingId = type.reference.binding.id;
+  const declaration = context.module.declarations.find(
+    (candidate) =>
+      (candidate.kind === 'interface' || candidate.kind === 'typeAlias') && candidate.binding.id === bindingId,
+  );
+  if (declaration?.kind === 'interface') return declaration.properties;
+  return declaration?.kind === 'typeAlias' && declaration.type.kind === 'object'
+    ? declaration.type.properties
+    : undefined;
+}
+
+function getIrObjectTypeTargetNameRust(properties: readonly IrObjectTypeProperty[], context: EmitContext): string {
+  const shape = normalizeCompilerStructuralValueCanonical(
+    [...properties].sort((left, right) => compareTextCodeUnits(left.name, right.name)),
+  );
+  const existing = context.anonymousObjectRecords.get(shape);
+  if (existing) return existing.name;
+  const name = getGeneratedTargetNameRust('AnonymousObjectRecord', context);
+  context.anonymousObjectRecords.set(shape, { name, properties });
+  return name;
+}
+
 function emitParameter(parameter: Readonly<IrParameter>, context: EmitContext): string {
   if (parameter.initializer) {
     return `${getBindingTargetNameRust(parameter.binding, context)}: Option<${emitType(parameter.type, context)}>`;
@@ -787,7 +880,7 @@ function emitType(type: Readonly<IrType>, context: EmitContext): string {
     case 'undefined':
       return '()';
     case 'object':
-      emissionError(context, 'anonymous object types require Rust record interning');
+      return getIrObjectTypeTargetNameRust(type.properties, context);
     case 'primitive':
       return { bigint: 'i64', boolean: 'bool', number: 'f64', string: 'String', symbol: 'FlightSymbol', void: '()' }[
         type.name

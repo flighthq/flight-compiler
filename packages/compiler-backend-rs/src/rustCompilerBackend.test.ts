@@ -25,6 +25,63 @@ describe('createRustCompilerBackend', () => {
 });
 
 describe('emitIrModuleRust', () => {
+  it('constructs named structural records and fills optional fields explicitly', () => {
+    const result = lower(
+      'named-object.ts',
+      `
+        export interface Range { readonly max: number; readonly min: number; label?: string }
+        export function widen(range: Range, by: number): Range {
+          return { max: range.max + by, min: range.min - by };
+        }
+      `,
+    );
+    const output = emitIrModuleRust(result.module).contents;
+
+    expect(output).toContain('struct Range {\n  pub max: f64,\n  pub min: f64,\n  pub label: Option<String>,\n}');
+    expect(output).toContain('return Range { max: (range.max + by), min: (range.min - by), label: None, };');
+  });
+
+  it('interns anonymous structural types by canonical shape and constructs optional values', () => {
+    const result = lower(
+      'anonymous-object.ts',
+      `
+        function first(): { value: number; label?: string } { return { value: 1, label: 'first' }; }
+        function second(): { label?: string; value: number } { return { value: 2 }; }
+      `,
+    );
+    const output = emitIrModuleRust(result.module).contents;
+
+    expect(output.match(/struct AnonymousObjectRecord/gu)).toHaveLength(1);
+    expect(output).not.toContain('struct AnonymousObjectRecord_2');
+    expect(output).toContain('return AnonymousObjectRecord { value: 1.0, label: Some("first".to_owned()), };');
+    expect(output).toContain('return AnonymousObjectRecord { value: 2.0, label: None, };');
+  });
+
+  it('refuses object construction without a closed, normalized structural target', () => {
+    const computed = lower(
+      'computed-object.ts',
+      'export function create(key: string): object { return { [key]: 1 }; }',
+    );
+    const spread = lower(
+      'spread-object.ts',
+      'export function create(value: { count: number }): { count: number } { return { ...value }; }',
+    );
+    const open = lower('open-object.ts', 'export function create(): object { return { value: 1 }; }');
+    const duplicate = lower(
+      'duplicate-object.ts',
+      'export function create(): { value: number } { return { value: 1, value: 2 }; }',
+    );
+
+    expect(() => emitIrModuleRust(computed.module)).toThrow(
+      'computed object properties require Rust property-key lowering',
+    );
+    expect(() => emitIrModuleRust(spread.module)).toThrow('object spread requires structural-copy lowering');
+    expect(() => emitIrModuleRust(open.module)).toThrow('object construction requires closed target-type evidence');
+    expect(() => emitIrModuleRust(duplicate.module)).toThrow(
+      'duplicate object property value requires evaluation-preserving normalization',
+    );
+  });
+
   it('emits shared traceable provenance with an optional upstream commit', () => {
     const module = lower('value.ts', 'export const value = 1;').module;
     const commit = '0123456789abcdef0123456789abcdef01234567';

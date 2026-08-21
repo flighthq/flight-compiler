@@ -484,6 +484,8 @@ function visitExpression(expression: Readonly<IrExpression>, path: string, state
       expression.members.forEach((member, index) =>
         visitObjectMember(member, `${path}.members[${String(index)}]`, state),
       );
+      if (isIrTypeEvidence(expression.type)) visitType(expression.type, `${path}.type`, state);
+      else addFailure('invalid-node-shape', `${path}.type`, 'object construction type evidence is required', state);
       break;
     case 'objectRest':
       visitType(expression.type, `${path}.type`, state);
@@ -1122,6 +1124,10 @@ function visitStatementList(
 }
 
 function visitType(type: Readonly<IrType>, path: string, state: IrModuleValidationState): void {
+  if (!isIrTypeEvidence(type)) {
+    addFailure('invalid-node-shape', path, 'type evidence requires a discriminated type value', state);
+    return;
+  }
   switch (type.kind) {
     case 'array':
       visitType(type.element, `${path}.element`, state);
@@ -1166,9 +1172,35 @@ function visitType(type: Readonly<IrType>, path: string, state: IrModuleValidati
       );
       break;
     case 'object':
-      type.properties.forEach((property, index) =>
-        visitType(property.type, `${path}.properties[${String(index)}].type`, state),
-      );
+      {
+        const propertyNames = new Set<string>();
+        type.properties.forEach((property, index) => {
+          const propertyPath = `${path}.properties[${String(index)}]`;
+          if (property.name.length === 0) {
+            addFailure('invalid-node-shape', `${propertyPath}.name`, 'object property name must be nonempty', state);
+          } else if (propertyNames.has(property.name)) {
+            addFailure('invalid-node-shape', `${propertyPath}.name`, 'object property names must be unique', state);
+          }
+          propertyNames.add(property.name);
+          if (typeof property.optional !== 'boolean') {
+            addFailure(
+              'invalid-node-shape',
+              `${propertyPath}.optional`,
+              'object optional marker must be boolean',
+              state,
+            );
+          }
+          if (typeof property.readonly !== 'boolean') {
+            addFailure(
+              'invalid-node-shape',
+              `${propertyPath}.readonly`,
+              'object readonly marker must be boolean',
+              state,
+            );
+          }
+          visitType(property.type, `${propertyPath}.type`, state);
+        });
+      }
       break;
     case 'tuple':
       validateParameterCardinality(type.elements, `${path}.elements`, state);

@@ -259,6 +259,7 @@ function analyzeIrExpressionTraversal(
       expression.members.forEach((member, index) =>
         analyzeIrObjectMemberTraversal(member, observer, createIrTraversalPath(path, 'members', index)),
       );
+      analyzeIrTypeTraversal(expression.type, observer, createIrTraversalPath(path, 'type'));
       break;
     case 'objectRest':
       analyzeIrExpressionTraversal(expression.object, observer, createIrTraversalPath(path, 'object'));

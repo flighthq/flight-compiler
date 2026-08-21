@@ -100,7 +100,7 @@ export type IrExpression =
       semantics: IrInvocationSemantics;
       typeArguments: readonly IrType[];
     }>
-  | Readonly<{ kind: 'object'; members: readonly IrObjectMember[] }>
+  | Readonly<{ kind: 'object'; members: readonly IrObjectMember[]; type: IrType }>
   | Readonly<{
       excluded: readonly IrObjectRestKey[];
       kind: 'objectRest';

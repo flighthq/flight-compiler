@@ -12,6 +12,44 @@ function lower(file: string, source: string) {
 }
 
 describe('lowerTypeScriptSource', () => {
+  it('records nominal object construction targets and closed inferred anonymous shapes', () => {
+    const result = lower(
+      'object-construction.ts',
+      `
+        interface Named { value: number }
+        export function create(): Named {
+          const anonymous = { value: 1, label: 'flight' };
+          anonymous;
+          return { value: 2 };
+        }
+      `,
+    );
+    const declaration = result.module.declarations[1];
+    if (declaration?.kind !== 'function') throw new Error('Expected function declaration');
+    const variable = declaration.body[0];
+    const returned = declaration.body[2];
+    if (
+      variable?.kind !== 'variable' ||
+      variable.declarations[0]?.initializer?.kind !== 'object' ||
+      returned?.kind !== 'return' ||
+      returned.expression?.kind !== 'object'
+    ) {
+      throw new Error('Expected object constructions');
+    }
+
+    expect(variable.declarations[0].initializer.type).toEqual({
+      kind: 'object',
+      properties: [
+        { name: 'value', optional: false, readonly: false, type: { kind: 'primitive', name: 'number' } },
+        { name: 'label', optional: false, readonly: false, type: { kind: 'primitive', name: 'string' } },
+      ],
+    });
+    expect(returned.expression.type).toMatchObject({
+      kind: 'named',
+      reference: { binding: { name: 'Named', space: 'type' }, kind: 'binding', path: [] },
+    });
+  });
+
   it('resolves enum auto-increment values after explicit discriminants', () => {
     const result = lower('mode.ts', 'export enum Mode { A = 1, B, C = Mode.A << 3, D }');
 

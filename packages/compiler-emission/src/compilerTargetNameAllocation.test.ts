@@ -277,6 +277,7 @@ describe('createIrModuleTargetNameAllocation', () => {
                 value: { kind: 'template' as const, parts: ['prefix', introducer('templatePart')] },
               },
             ],
+            type: { kind: 'unknown' as const, source: 'object' as const },
           },
           kind: 'variable' as const,
           mutable: false,

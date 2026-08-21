@@ -188,7 +188,12 @@ describe('collectIrModulesRuntimeExternalSymbolIdentities', () => {
       { ...empty, exports: [{ expression: invalidKind, kind: 'default' }] },
       {
         ...empty,
-        exports: [{ expression: { kind: 'object', members: [invalidKind] }, kind: 'default' }],
+        exports: [
+          {
+            expression: { kind: 'object', members: [invalidKind], type: { kind: 'unknown', source: 'object' } },
+            kind: 'default',
+          },
+        ],
       },
       { ...functionModule, declarations: [{ ...functionDeclaration, body: [invalidKind] }] },
       { ...typeModule, declarations: [{ ...typeDeclaration, type: invalidKind }] },

@@ -77,6 +77,7 @@ interface LoweringContext {
   checker: ts.TypeChecker;
   diagnostics: CompilerDiagnostic[];
   options: Readonly<LowerTypeScriptSourceOptions>;
+  returnTargetTypes: IrType[];
   returnTypes: IrType[];
   sourceFile: ts.SourceFile;
   typeBindings: Map<ts.Symbol, IrTypeBindingIdentity>;
@@ -105,6 +106,7 @@ export function lowerTypeScriptSource(
     checker: analysis.checker,
     diagnostics: [],
     options,
+    returnTargetTypes: [],
     returnTypes: [],
     sourceFile: analysis.sourceFile,
     typeBindings: new Map(),
@@ -266,6 +268,7 @@ function lowerClass(node: ts.ClassDeclaration, context: LoweringContext): IrClas
           ...lowerStatementListWithTypeScriptReturnType(
             member.body.statements,
             getTypeScriptFunctionReturnValueType(member, signature.returns, context),
+            signature.returns,
             context,
           ),
         ],
@@ -428,13 +431,16 @@ function lowerExpression(
   node: ts.Expression,
   context: LoweringContext,
   contextualType?: Readonly<IrType>,
+  contextualTargetType?: Readonly<IrType>,
 ): IrExpression {
-  if (ts.isParenthesizedExpression(node)) return lowerExpression(node.expression, context, contextualType);
+  if (ts.isParenthesizedExpression(node))
+    return lowerExpression(node.expression, context, contextualType, contextualTargetType);
   if (ts.isAsExpression(node) || ts.isTypeAssertionExpression(node) || ts.isSatisfiesExpression(node)) {
     const type = lowerType(node.type, context);
     return { expression: lowerExpression(node.expression, context, type), kind: 'cast', type };
   }
-  if (ts.isNonNullExpression(node)) return lowerExpression(node.expression, context, contextualType);
+  if (ts.isNonNullExpression(node))
+    return lowerExpression(node.expression, context, contextualType, contextualTargetType);
   if (ts.isIdentifier(node)) {
     const reference = lowerIdentifierReference(node, context);
     if (
@@ -464,7 +470,13 @@ function lowerExpression(
     };
   }
   if (ts.isObjectLiteralExpression(node)) {
-    return { kind: 'object', members: node.properties.map((member) => lowerObjectMember(member, context)) };
+    const inferredType = inferInitializerType(node, context);
+    const memberContext = contextualType?.kind === 'object' ? contextualType : inferredType;
+    return {
+      kind: 'object',
+      members: node.properties.map((member) => lowerObjectMember(member, context, memberContext)),
+      type: contextualTargetType ?? contextualType ?? inferredType,
+    };
   }
   if (ts.isPropertyAccessExpression(node)) {
     const optional = node.questionDotToken !== undefined;
@@ -572,8 +584,8 @@ function lowerExpression(
     return {
       condition: lowerExpression(node.condition, context),
       kind: 'conditional',
-      whenFalse: lowerExpression(node.whenFalse, context),
-      whenTrue: lowerExpression(node.whenTrue, context),
+      whenFalse: lowerExpression(node.whenFalse, context, contextualType, contextualTargetType),
+      whenTrue: lowerExpression(node.whenTrue, context, contextualType, contextualTargetType),
     };
   }
   if (ts.isArrowFunction(node) || ts.isFunctionExpression(node)) {
@@ -586,15 +598,23 @@ function lowerExpression(
         ? {
             body: [
               ...parameterEntries,
-              ...lowerStatementListWithTypeScriptReturnType(node.body.statements, returnType, context),
+              ...lowerStatementListWithTypeScriptReturnType(
+                node.body.statements,
+                returnType,
+                signature.returns,
+                context,
+              ),
             ],
           }
         : parameterEntries.length === 0
-          ? { body: [], expression: lowerExpression(node.body, context, returnType) }
+          ? { body: [], expression: lowerExpression(node.body, context, returnType, signature.returns) }
           : {
               body: [
                 ...parameterEntries,
-                { expression: lowerExpression(node.body, context, returnType), kind: 'return' },
+                {
+                  expression: lowerExpression(node.body, context, returnType, signature.returns),
+                  kind: 'return',
+                },
               ],
             }),
       kind: 'function',
@@ -1113,6 +1133,7 @@ function lowerFunction(
       ...lowerStatementListWithTypeScriptReturnType(
         node.body.statements,
         getTypeScriptFunctionReturnValueType(node, signature.returns, context),
+        signature.returns,
         context,
       ),
     ],
@@ -1212,7 +1233,15 @@ function lowerInterface(node: ts.InterfaceDeclaration, context: LoweringContext)
   };
 }
 
-function lowerObjectMember(node: ts.ObjectLiteralElementLike, context: LoweringContext): IrObjectMember {
+function lowerObjectMember(
+  node: ts.ObjectLiteralElementLike,
+  context: LoweringContext,
+  contextualType: Readonly<IrType>,
+): IrObjectMember {
+  const memberType =
+    contextualType.kind === 'object' && !ts.isSpreadAssignment(node) && !ts.isComputedPropertyName(node.name)
+      ? contextualType.properties.find((property) => property.name === propertyName(node.name, context))?.type
+      : undefined;
   if (ts.isSpreadAssignment(node)) return { expression: lowerExpression(node.expression, context), kind: 'spread' };
   if (ts.isShorthandPropertyAssignment(node)) {
     return {
@@ -1232,7 +1261,7 @@ function lowerObjectMember(node: ts.ObjectLiteralElementLike, context: LoweringC
     return {
       kind: 'property',
       name: propertyName(node.name, context),
-      value: lowerExpression(node.initializer, context),
+      value: lowerExpression(node.initializer, context, memberType),
     };
   }
   if (ts.isMethodDeclaration(node)) {
@@ -1249,6 +1278,7 @@ function lowerObjectMember(node: ts.ObjectLiteralElementLike, context: LoweringC
           ...lowerStatementListWithTypeScriptReturnType(
             node.body.statements,
             getTypeScriptFunctionReturnValueType(node, signature.returns, context),
+            signature.returns,
             context,
           ),
         ],
@@ -1374,7 +1404,16 @@ function lowerStatement(node: ts.Statement, context: LoweringContext): IrStateme
   }
   if (ts.isReturnStatement(node)) {
     return {
-      ...(node.expression ? { expression: lowerExpression(node.expression, context, context.returnTypes.at(-1)) } : {}),
+      ...(node.expression
+        ? {
+            expression: lowerExpression(
+              node.expression,
+              context,
+              context.returnTypes.at(-1),
+              context.returnTargetTypes.at(-1),
+            ),
+          }
+        : {}),
       kind: 'return',
     };
   }
@@ -1774,12 +1813,15 @@ function lowerStatementList(nodes: readonly ts.Statement[], context: LoweringCon
 function lowerStatementListWithTypeScriptReturnType(
   nodes: readonly ts.Statement[],
   returnType: Readonly<IrType>,
+  returnTargetType: Readonly<IrType>,
   context: LoweringContext,
 ): IrStatement[] {
+  context.returnTargetTypes.push(returnTargetType);
   context.returnTypes.push(returnType);
   try {
     return lowerStatementList(nodes, context);
   } finally {
+    context.returnTargetTypes.pop();
     context.returnTypes.pop();
   }
 }
@@ -2014,7 +2056,7 @@ function lowerVariable(
   if (ts.isIdentifier(node.name) && valueType) addTypeScriptBindingTypeEvidence(node.name, valueType, context);
   return {
     ...target,
-    ...(node.initializer ? { initializer: lowerExpression(node.initializer, context, valueType) } : {}),
+    ...(node.initializer ? { initializer: lowerExpression(node.initializer, context, valueType, type) } : {}),
     mutable,
     ...(type ? { type } : {}),
   };
@@ -2468,10 +2510,30 @@ function inferInitializerType(node: ts.Expression, context: LoweringContext): Ir
       readonly: false,
     };
   }
+  if (ts.isObjectLiteralExpression(node)) {
+    const properties = new Map<string, IrObjectTypeProperty>();
+    for (const member of node.properties) {
+      if (ts.isSpreadAssignment(member) || ts.isComputedPropertyName(member.name)) {
+        return { kind: 'unknown', source: 'object' };
+      }
+      const name = propertyName(member.name, context);
+      const type = ts.isShorthandPropertyAssignment(member)
+        ? (lowerTypeScriptExpressionTypeEvidence(member.name, context) ?? inferInitializerType(member.name, context))
+        : ts.isPropertyAssignment(member)
+          ? (lowerTypeScriptExpressionTypeEvidence(member.initializer, context) ??
+            inferInitializerType(member.initializer, context))
+          : ts.isMethodDeclaration(member)
+            ? lowerFunctionType(member, context)
+            : undefined;
+      if (!type) return { kind: 'unknown', source: 'object' };
+      properties.set(name, { name, optional: false, readonly: false, type });
+    }
+    return { kind: 'object', properties: [...properties.values()] };
+  }
   if (ts.isArrowFunction(node) || ts.isFunctionExpression(node)) {
     return lowerFunctionType(node, context);
   }
-  return { kind: 'unknown', source: 'any' };
+  return lowerTypeScriptExpressionTypeEvidence(node, context) ?? { kind: 'unknown', source: 'any' };
 }
 
 function commonType(types: readonly [IrType, ...IrType[]]): IrType {
