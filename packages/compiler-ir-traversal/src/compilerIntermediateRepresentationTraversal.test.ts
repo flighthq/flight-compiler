@@ -276,6 +276,75 @@ describe('analyzeIrModuleTraversal', () => {
     expect(analyzeIrModuleTraversal(module, {})).toBeUndefined();
   });
 
+  it('reports frozen portable paths from the module root for every observer family', () => {
+    const module = lower(`
+      export function read<Value extends number>(input?: { value: Value }): number {
+        const { value = 0 } = input ?? { value: 1 as Value };
+        return input?.value ?? value;
+      }
+    `);
+    const paths: Array<readonly [string, readonly (number | string)[]]> = [];
+    const addPath = (family: string, path: readonly (number | string)[]) => {
+      expect(Object.isFrozen(path)).toBe(true);
+      paths.push([family, path]);
+    };
+
+    analyzeIrModuleTraversal(module, {
+      bindingPattern(_pattern, path) {
+        addPath('bindingPattern', path);
+      },
+      declaration(_declaration, path) {
+        addPath('declaration', path);
+      },
+      expression(_expression, path) {
+        addPath('expression', path);
+      },
+      functionSignature(_signature, path) {
+        addPath('functionSignature', path);
+      },
+      module(_module, path) {
+        addPath('module', path);
+      },
+      objectMember(_member, path) {
+        addPath('objectMember', path);
+      },
+      optionalChain(_semantics, path) {
+        addPath('optionalChain', path);
+      },
+      parameter(_parameter, path) {
+        addPath('parameter', path);
+      },
+      statement(_statement, path) {
+        addPath('statement', path);
+      },
+      type(_type, path) {
+        addPath('type', path);
+      },
+      typeParameter(_parameter, path) {
+        addPath('typeParameter', path);
+      },
+      variable(_variable, path) {
+        addPath('variable', path);
+      },
+    });
+
+    expect(paths).toEqual(
+      expect.arrayContaining([
+        ['module', []],
+        ['declaration', ['declarations', 0]],
+        ['functionSignature', ['declarations', 0]],
+        ['typeParameter', ['declarations', 0, 'typeParameters', 0]],
+        ['parameter', ['declarations', 0, 'parameters', 0]],
+        ['type', ['declarations', 0, 'parameters', 0, 'type']],
+        ['statement', ['declarations', 0, 'body', 0]],
+        ['variable', ['declarations', 0, 'body', 0, 'declarations', 0]],
+        ['bindingPattern', ['declarations', 0, 'body', 0, 'declarations', 0, 'pattern']],
+        ['objectMember', ['declarations', 0, 'body', 0, 'declarations', 0, 'initializer', 'right', 'members', 0]],
+        ['optionalChain', ['declarations', 0, 'body', 1, 'expression', 'left', 'optionalChain']],
+      ]),
+    );
+  });
+
   it('visits lowering-only expression carriers and their semantic type evidence', () => {
     const numberType = { kind: 'primitive', name: 'number' } as const satisfies IrType;
     const tupleType = {

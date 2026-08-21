@@ -14,21 +14,28 @@ import type { IrType, IrTypeParameter } from './compilerTypeIntermediateRepresen
 /** Returning false from any observer stops the whole traversal immediately. */
 export type CompilerIrTraversalObserverResult = boolean | void;
 
+/**
+ * A portable route from the module root to an observed IR value.
+ * Strings select object properties and numbers select array elements.
+ */
+export type CompilerIrTraversalPath = readonly (number | string)[];
+
+export type CompilerIrTraversalCallback<Value> = (
+  value: Readonly<Value>,
+  path: CompilerIrTraversalPath,
+) => CompilerIrTraversalObserverResult;
+
 export interface CompilerIrTraversalObserver {
-  readonly bindingPattern?: ((pattern: Readonly<IrBindingPattern>) => CompilerIrTraversalObserverResult) | undefined;
-  readonly declaration?: ((declaration: Readonly<IrDeclaration>) => CompilerIrTraversalObserverResult) | undefined;
-  readonly expression?: ((expression: Readonly<IrExpression>) => CompilerIrTraversalObserverResult) | undefined;
-  readonly functionSignature?:
-    | ((signature: Readonly<IrFunctionSignature>) => CompilerIrTraversalObserverResult)
-    | undefined;
-  readonly module?: ((module: Readonly<IrModule>) => CompilerIrTraversalObserverResult) | undefined;
-  readonly objectMember?: ((member: Readonly<IrObjectMember>) => CompilerIrTraversalObserverResult) | undefined;
-  readonly optionalChain?:
-    | ((semantics: Readonly<IrOptionalChainSemantics>) => CompilerIrTraversalObserverResult)
-    | undefined;
-  readonly parameter?: ((parameter: Readonly<IrParameter>) => CompilerIrTraversalObserverResult) | undefined;
-  readonly statement?: ((statement: Readonly<IrStatement>) => CompilerIrTraversalObserverResult) | undefined;
-  readonly type?: ((type: Readonly<IrType>) => CompilerIrTraversalObserverResult) | undefined;
-  readonly typeParameter?: ((parameter: Readonly<IrTypeParameter>) => CompilerIrTraversalObserverResult) | undefined;
-  readonly variable?: ((variable: Readonly<IrVariable>) => CompilerIrTraversalObserverResult) | undefined;
+  readonly bindingPattern?: CompilerIrTraversalCallback<IrBindingPattern> | undefined;
+  readonly declaration?: CompilerIrTraversalCallback<IrDeclaration> | undefined;
+  readonly expression?: CompilerIrTraversalCallback<IrExpression> | undefined;
+  readonly functionSignature?: CompilerIrTraversalCallback<IrFunctionSignature> | undefined;
+  readonly module?: CompilerIrTraversalCallback<IrModule> | undefined;
+  readonly objectMember?: CompilerIrTraversalCallback<IrObjectMember> | undefined;
+  readonly optionalChain?: CompilerIrTraversalCallback<IrOptionalChainSemantics> | undefined;
+  readonly parameter?: CompilerIrTraversalCallback<IrParameter> | undefined;
+  readonly statement?: CompilerIrTraversalCallback<IrStatement> | undefined;
+  readonly type?: CompilerIrTraversalCallback<IrType> | undefined;
+  readonly typeParameter?: CompilerIrTraversalCallback<IrTypeParameter> | undefined;
+  readonly variable?: CompilerIrTraversalCallback<IrVariable> | undefined;
 }
