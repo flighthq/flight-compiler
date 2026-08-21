@@ -22,3 +22,13 @@ export function selectNestedDefault(values: [[number]?]): number {
   const [[first] = [1]]: [[number]?] = values;
   return first;
 }
+
+export function selectFixedRest(values: [number, string, boolean]): [string, boolean] {
+  const [, ...rest]: [number, string, boolean] = values;
+  return rest;
+}
+
+export function selectNestedRest(values: [number, string, boolean]): string {
+  const [, ...[second]]: [number, string, boolean] = values;
+  return second;
+}

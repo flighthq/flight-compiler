@@ -112,6 +112,10 @@ describe('emitIrModuleHaxe', () => {
       'array-nested-default.ts',
       'export function select(values: [[number]?]): number { const [[first] = [1]]: [[number]?] = values; return first; }',
     );
+    const fixedRest = lower(
+      'array-fixed-rest.ts',
+      'export function select(values: [number, string, boolean]): [string, boolean] { const [first, ...rest]: [number, string, boolean] = values; first; return rest; }',
+    );
     const output = emitIrModuleHaxe(fixed.module).contents;
 
     expect(output).toContain('final arrayPatternValue:Array<Dynamic> = values;');
@@ -123,6 +127,9 @@ describe('emitIrModuleHaxe', () => {
     );
     expect(emitIrModuleHaxe(rest.module).contents).toContain('final rest:Array<Float> = arrayPatternValue.slice(1);');
     expect(emitIrModuleHaxe(nestedDefault.module).contents).toContain('(arrayPatternValue[0] ?? [1])');
+    expect(emitIrModuleHaxe(fixedRest.module).contents).toContain(
+      'final rest:Array<Dynamic> = [arrayPatternValue[1], arrayPatternValue[2]];',
+    );
     expect(() => emitIrModuleHaxe(dynamicIndex.module)).toThrow(
       'tuple projection requires one statically known nonnegative integer index',
     );

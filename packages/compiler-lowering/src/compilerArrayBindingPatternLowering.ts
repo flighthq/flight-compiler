@@ -94,6 +94,25 @@ function removeIrTypeArrayBindingPatternUndefined(type: Readonly<IrType>): IrTyp
   return { kind: 'never' };
 }
 
+function createIrArrayBindingPatternTupleSuffix(
+  sourceBinding: Readonly<IrBindingIdentity>,
+  sourceType: Readonly<Extract<IrType, { kind: 'tuple' }>>,
+  start: number,
+): Readonly<{ expression: IrExpression; type: Extract<IrType, { kind: 'tuple' }> }> | undefined {
+  const elements = sourceType.elements.slice(start);
+  if (elements.some((element) => element.optional || element.rest)) return undefined;
+  return {
+    expression: {
+      elements: elements.map((_, offset) => ({
+        expression: createIrArrayBindingPatternElementAccess(sourceBinding, start + offset),
+        optional: false,
+      })),
+      kind: 'tuple',
+    },
+    type: { elements, kind: 'tuple', readonly: false },
+  };
+}
+
 function lowerIrArrayBindingPattern(
   pattern: Readonly<IrArrayBindingPattern>,
   sourceBinding: Readonly<IrBindingIdentity>,
@@ -203,39 +222,71 @@ function lowerIrArrayBindingPattern(
     ];
   });
   if (!pattern.rest) return variables;
-  if (pattern.rest.kind !== 'binding') {
-    throw createCompilerLoweringFailure(
-      'unsupported-ir',
-      compilerLoweringPassNameArrayBindingPattern,
-      pattern,
-      'nested array binding rest requires tuple-tail destructuring lowering',
-    );
-  }
   const restIndex = pattern.elements.length;
   const tupleRest = sourceType.elements[restIndex];
-  if (!tupleRest?.rest) {
+  if (tupleRest?.rest) {
+    if (pattern.rest.kind !== 'binding') {
+      throw createCompilerLoweringFailure(
+        'unsupported-ir',
+        compilerLoweringPassNameArrayBindingPattern,
+        pattern,
+        'nested variadic array binding rest requires variadic tuple-tail destructuring lowering',
+      );
+    }
+    return [
+      ...variables,
+      {
+        synthetic: false,
+        variable: {
+          binding: pattern.rest.binding,
+          initializer: {
+            kind: 'tupleRest',
+            object: { kind: 'identifier', reference: { binding: sourceBinding, kind: 'binding' } },
+            start: restIndex,
+          },
+          mutable,
+          type: pattern.rest.type ?? tupleRest.type,
+        },
+      },
+    ];
+  }
+  const suffix = createIrArrayBindingPatternTupleSuffix(sourceBinding, sourceType, restIndex);
+  if (!suffix) {
     throw createCompilerLoweringFailure(
       'unsupported-ir',
       compilerLoweringPassNameArrayBindingPattern,
       pattern,
-      `array binding rest at index ${String(restIndex)} requires an aligned variadic tuple tail`,
+      `array binding rest at index ${String(restIndex)} requires an aligned variadic tail or fixed required tuple suffix`,
     );
   }
+  if (pattern.rest.kind === 'binding') {
+    return [
+      ...variables,
+      {
+        synthetic: false,
+        variable: {
+          binding: pattern.rest.binding,
+          initializer: suffix.expression,
+          mutable,
+          type: suffix.type,
+        },
+      },
+    ];
+  }
+  const restPath = `${path}.rest`;
+  const temporaryBinding = createIrArrayBindingPatternTemporary(pattern.rest, restPath);
   return [
     ...variables,
     {
-      synthetic: false,
+      synthetic: true,
       variable: {
-        binding: pattern.rest.binding,
-        initializer: {
-          kind: 'tupleRest',
-          object: { kind: 'identifier', reference: { binding: sourceBinding, kind: 'binding' } },
-          start: restIndex,
-        },
-        mutable,
-        type: pattern.rest.type ?? tupleRest.type,
+        binding: temporaryBinding,
+        initializer: suffix.expression,
+        mutable: false,
+        type: suffix.type,
       },
     },
+    ...lowerIrArrayBindingPattern(pattern.rest, temporaryBinding, suffix.type, mutable, restPath, analysis),
   ];
 }
 

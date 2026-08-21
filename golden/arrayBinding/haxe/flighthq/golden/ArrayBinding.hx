@@ -31,4 +31,17 @@ class ArrayBinding {
     final first:Float = arrayPatternValue_2[0];
     return first;
   }
+
+  public static function selectFixedRest(values:Array<Dynamic>):Array<Dynamic> {
+    final arrayPatternValue:Array<Dynamic> = values;
+    final rest:Array<Dynamic> = [arrayPatternValue[1], arrayPatternValue[2]];
+    return rest;
+  }
+
+  public static function selectNestedRest(values:Array<Dynamic>):String {
+    final arrayPatternValue:Array<Dynamic> = values;
+    final arrayPatternValue_2:Array<Dynamic> = [arrayPatternValue[1], arrayPatternValue[2]];
+    final second:String = arrayPatternValue_2[0];
+    return second;
+  }
 }

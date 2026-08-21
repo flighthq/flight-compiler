@@ -109,6 +109,10 @@ describe('emitIrModuleRust', () => {
       'array-nested-default.ts',
       'export function select(values: [[number]?]): number { const [[first] = [1]]: [[number]?] = values; return first; }',
     );
+    const fixedRest = lower(
+      'array-fixed-rest.ts',
+      'export function select(values: [number, string, boolean]): [string, boolean] { const [first, ...rest]: [number, string, boolean] = values; first; return rest; }',
+    );
     const output = emitIrModuleRust(fixed.module).contents;
 
     expect(output).toContain('let array_pattern_value: (f64, f64, f64) = values;');
@@ -122,6 +126,9 @@ describe('emitIrModuleRust', () => {
     );
     expect(emitIrModuleRust(rest.module).contents).toContain('let rest: Vec<f64> = array_pattern_value.1;');
     expect(emitIrModuleRust(nestedDefault.module).contents).toContain('unwrap_or_else(|| (1.0,))');
+    expect(emitIrModuleRust(fixedRest.module).contents).toContain(
+      'let rest: (String, bool) = (array_pattern_value.1, array_pattern_value.2);',
+    );
     expect(() => emitIrModuleRust(dynamicIndex.module)).toThrow(
       'tuple projection requires one statically known nonnegative integer index',
     );

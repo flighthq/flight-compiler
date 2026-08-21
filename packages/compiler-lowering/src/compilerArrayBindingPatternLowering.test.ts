@@ -270,10 +270,56 @@ describe('createCompilerLoweringPassArrayBindingPattern', () => {
     ]);
   });
 
+  it('lowers named and nested fixed required tuple suffixes without re-evaluating their source', () => {
+    const output = lowerIrModuleWithCompilerPasses(
+      lower(
+        'fixed-rest.ts',
+        `
+          export function split(values: [number, string, boolean]): string {
+            const [first, ...tail]: [number, string, boolean] = values;
+            const [, ...[second, third]]: [number, string, boolean] = values;
+            first; tail; third;
+            return second;
+          }
+        `,
+      ),
+      [createCompilerLoweringPassArrayBindingPattern()],
+    );
+    const body = getFunctionDeclaration(output, 'split').body;
+    const named = getVariableStatement(body[0]).declarations.map(getNamedVariable);
+    const nested = getVariableStatement(body[1]).declarations.map(getNamedVariable);
+
+    expect(named).toHaveLength(3);
+    expect(named[2]).toMatchObject({
+      binding: { name: 'tail' },
+      initializer: {
+        elements: [
+          { expression: { index: { value: 1 }, kind: 'element' }, optional: false },
+          { expression: { index: { value: 2 }, kind: 'element' }, optional: false },
+        ],
+        kind: 'tuple',
+      },
+      type: { elements: [{ type: { name: 'string' } }, { type: { name: 'boolean' } }], kind: 'tuple' },
+    });
+    expect(nested).toHaveLength(4);
+    expect(nested[1]).toMatchObject({
+      binding: { name: 'arrayPatternValue' },
+      initializer: { elements: expect.any(Array), kind: 'tuple' },
+      type: { elements: [{ type: { name: 'string' } }, { type: { name: 'boolean' } }], kind: 'tuple' },
+    });
+    expect(nested[2]).toMatchObject({ binding: { name: 'second' }, initializer: { index: { value: 0 } } });
+    expect(nested[3]).toMatchObject({ binding: { name: 'third' }, initializer: { index: { value: 1 } } });
+  });
+
   it.each([
     {
-      reason: 'array binding rest at index 1 requires an aligned variadic tuple tail',
-      source: 'export const [first, ...rest]: [number, number] = [1, 2];',
+      reason: 'array binding rest at index 1 requires an aligned variadic tail or fixed required tuple suffix',
+      source: 'export const [first, ...rest]: [number, number?] = [1];',
+    },
+    {
+      reason: 'nested variadic array binding rest requires variadic tuple-tail destructuring lowering',
+      source:
+        'export function split(values: [number, ...number[]]): number { const [first, ...[second]]: [number, ...number[]] = values; first; return second; }',
     },
     {
       reason: 'array binding lowering requires a statically known tuple type',

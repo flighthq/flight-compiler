@@ -30,3 +30,16 @@ pub fn select_nested_default(values: (Option<(f64,)>,)) -> f64 {
   let first: f64 = array_pattern_value_2.0;
   return first;
 }
+
+pub fn select_fixed_rest(values: (f64, String, bool)) -> (String, bool) {
+  let array_pattern_value: (f64, String, bool) = values;
+  let rest: (String, bool) = (array_pattern_value.1, array_pattern_value.2);
+  return rest;
+}
+
+pub fn select_nested_rest(values: (f64, String, bool)) -> String {
+  let array_pattern_value: (f64, String, bool) = values;
+  let array_pattern_value_2: (String, bool) = (array_pattern_value.1, array_pattern_value.2);
+  let second: String = array_pattern_value_2.0;
+  return second;
+}
