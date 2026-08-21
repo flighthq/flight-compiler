@@ -515,6 +515,7 @@ function createFunctionDeclaration(name: string): IrFunctionDeclaration {
 }
 
 function declarationName(declaration: Readonly<IrDeclaration>): string {
+  if (declaration.kind === 'variable' && 'pattern' in declaration) throw new TypeError('expected a named declaration');
   return declaration.binding.name;
 }
 

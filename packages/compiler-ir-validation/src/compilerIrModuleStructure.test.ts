@@ -3,9 +3,11 @@ import ts from 'typescript';
 import { lowerTypeScriptSource } from '../../compiler-semantic/src/index.js';
 import type {
   CompilerIrModuleValidationFailureCode,
+  IrArrayBindingPattern,
   IrBindingIdentity,
   IrModule,
   IrStatement,
+  IrVariableDeclaration,
 } from '../../compiler-types/src/index.js';
 import { validateIrModuleStructure } from './compilerIrModuleStructure.js';
 
@@ -145,6 +147,7 @@ describe('validateIrModuleStructure', () => {
     if (hiddenStatement?.kind !== 'variable' || !hiddenStatement.declarations[0]) {
       throw new Error('Expected hidden block binding');
     }
+    if ('pattern' in hiddenStatement.declarations[0]) throw new Error('Expected named hidden block binding');
     expectOutOfScope({
       ...blocks,
       declarations: [
@@ -179,6 +182,7 @@ describe('validateIrModuleStructure', () => {
     ) {
       throw new Error('Expected loop and catch bindings');
     }
+    if ('pattern' in control.body[0].variable) throw new Error('Expected named loop binding');
     for (const binding of [control.body[0].variable.binding, control.body[1].catchClause.binding]) {
       expectOutOfScope({
         ...controls,
@@ -189,6 +193,79 @@ describe('validateIrModuleStructure', () => {
           },
         ],
       });
+    }
+  });
+
+  it('validates array binding pattern origins, scopes, nesting, defaults, rest, and leaf identity', () => {
+    const module = lower('patterns.ts', 'export const values: number[] = [1, 2, 3];');
+    const declaration = module.declarations[0];
+    if (declaration?.kind !== 'variable' || 'pattern' in declaration) {
+      throw new Error('Expected named variable declaration');
+    }
+    const nestedBinding: IrBindingIdentity = {
+      ...declaration.binding,
+      id: `${declaration.binding.id}:nested`,
+      name: 'nested',
+    };
+    const restBinding: IrBindingIdentity = {
+      ...declaration.binding,
+      id: `${declaration.binding.id}:rest`,
+      name: 'remaining',
+    };
+    const pattern: IrArrayBindingPattern = {
+      ...declaration.origin,
+      elements: [
+        undefined,
+        {
+          initializer: { kind: 'literal', value: 0 },
+          pattern: {
+            binding: declaration.binding,
+            kind: 'binding',
+            type: { kind: 'primitive', name: 'number' },
+          },
+        },
+        {
+          pattern: {
+            ...declaration.origin,
+            elements: [{ pattern: { binding: nestedBinding, kind: 'binding' } }],
+            kind: 'array',
+            scope: 'module',
+          },
+        },
+      ],
+      kind: 'array',
+      rest: { binding: restBinding, kind: 'binding' },
+      scope: 'module',
+    };
+    const patternedDeclaration: IrVariableDeclaration = {
+      exported: declaration.exported,
+      initializer: declaration.initializer,
+      kind: 'variable',
+      mutable: declaration.mutable,
+      origin: declaration.origin,
+      pattern,
+      type: declaration.type,
+    };
+    const patternedModule: IrModule = { ...module, declarations: [patternedDeclaration] };
+    const snapshot = structuredClone(patternedModule);
+
+    expect(validateIrModuleStructure(patternedModule)).toEqual({ kind: 'valid' });
+    expect(validateIrModuleStructure(patternedModule)).toEqual(validateIrModuleStructure(patternedModule));
+    expect(patternedModule).toEqual(snapshot);
+
+    const invalidPatterns: readonly [IrArrayBindingPattern, CompilerIrModuleValidationFailureCode][] = [
+      [{ ...pattern, fingerprint: 'sha256:invalid' }, 'invalid-binding-origin'],
+      [{ ...pattern, scope: 'block' }, 'invalid-binding-introduction'],
+      [{ ...pattern, rest: { binding: declaration.binding, kind: 'binding' } }, 'duplicate-binding-identity'],
+      [{ ...pattern, elements: [{ pattern: { kind: 'invalid' } as never }] }, 'unknown-ir-kind'],
+    ];
+    for (const [invalidPattern, code] of invalidPatterns) {
+      const result = validateIrModuleStructure({
+        ...patternedModule,
+        declarations: [{ ...patternedDeclaration, pattern: invalidPattern }],
+      });
+      expect(result.kind).toBe('invalid');
+      if (result.kind === 'invalid') expect(result.failures.map((failure) => failure.code)).toContain(code);
     }
   });
 

@@ -63,8 +63,10 @@ function executeSemanticPatchSet(
   const declarationIndex = new Map<string, IndexedDeclaration[]>();
   for (const [moduleIndex, module] of output.entries()) {
     for (const declaration of module.declarations) {
+      const exportName = declarationSemanticName(declaration);
+      if (exportName === undefined) continue;
       const key = targetKey({
-        exportName: declarationSemanticName(declaration),
+        exportName,
         packageName: declaration.origin.packageName,
         source: declaration.origin.source,
       });
@@ -191,7 +193,8 @@ function createPatchAuditRecord(patch: Readonly<SemanticPatch>): PatchAuditRecor
   };
 }
 
-function declarationSemanticName(declaration: Readonly<IrDeclaration>): string {
+function declarationSemanticName(declaration: Readonly<IrDeclaration>): string | undefined {
+  if (declaration.kind === 'variable' && 'pattern' in declaration) return undefined;
   return declaration.binding.name;
 }
 
@@ -200,7 +203,10 @@ function renameSemanticDeclaration(declaration: Readonly<IrDeclaration>, name: s
     case 'class':
     case 'enum':
     case 'function':
+      return { ...declaration, binding: { ...declaration.binding, name } };
     case 'variable':
+      if ('pattern' in declaration)
+        throw new TypeError('binding-pattern declarations cannot be renamed before destructuring lowering');
       return { ...declaration, binding: { ...declaration.binding, name } };
     case 'interface':
     case 'typeAlias':

@@ -4,6 +4,7 @@ import type {
   CompilerStaticIndexedAccessMode,
   CompilerStaticNumericArithmeticFact,
   CompilerStaticTruthinessContext,
+  IrBindingPattern,
   IrBinaryOperator,
   IrBinaryOperatorSemantics,
   IrDeclaration,
@@ -368,7 +369,23 @@ function analyzeStatement(statement: Readonly<IrStatement>, analysis: StaticFact
 }
 
 function analyzeVariable(variable: Readonly<IrVariable>, analysis: StaticFactAnalysis): void {
+  if ('pattern' in variable) analyzeBindingPattern(variable.pattern, analysis);
   analyzeInitializer(variable, analysis);
+}
+
+function analyzeBindingPattern(pattern: Readonly<IrBindingPattern>, analysis: StaticFactAnalysis): void {
+  switch (pattern.kind) {
+    case 'array':
+      pattern.elements.forEach((element) => {
+        if (!element) return;
+        analyzeBindingPattern(element.pattern, analysis);
+        if (element.initializer) analyzeExpression(element.initializer, analysis, 'read');
+      });
+      if (pattern.rest) analyzeBindingPattern(pattern.rest, analysis);
+      return;
+    case 'binding':
+      return;
+  }
 }
 
 function compareStaticFacts(left: CompilerStaticFactCount, right: CompilerStaticFactCount): number {

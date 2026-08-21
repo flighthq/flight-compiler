@@ -80,7 +80,9 @@ export function emitIrModuleRust(
   assertRuntimeExternalSymbolBindingsRust(module);
   const constantIdentities = new Set(
     module.declarations.flatMap((declaration) =>
-      declaration.kind === 'variable' && !declaration.mutable ? [declaration.binding.id] : [],
+      declaration.kind === 'variable' && !declaration.mutable && !('pattern' in declaration)
+        ? [declaration.binding.id]
+        : [],
     ),
   );
   let targetNames: Map<string, string>;
@@ -402,6 +404,8 @@ function emitStatement(statement: Readonly<IrStatement>, context: EmitContext): 
       emissionError(context, 'object key iteration requires record or host-object lowering');
     case 'forOf':
       if (statement.await) emissionError(context, 'async iteration requires Flight task lowering');
+      if ('pattern' in statement.variable)
+        emissionError(context, 'binding patterns require destructuring lowering before Rust emission');
       return [
         `for ${statement.variable.mutable ? 'mut ' : ''}${getBindingTargetNameRust(statement.variable.binding, context)} in ${emitExpression(statement.iterable, context)} {`,
         ...indentSourceLines(emitStatementBody(statement.body, context)),
@@ -532,12 +536,16 @@ function emitTypeParameters(parameters: readonly IrTypeParameter[], context: Emi
 }
 
 function emitVariable(variable: Readonly<IrVariable>, context: EmitContext): string {
+  if ('pattern' in variable)
+    emissionError(context, 'binding patterns require destructuring lowering before Rust emission');
   const type = variable.type ? `: ${emitType(variable.type, context)}` : '';
   const initializer = variable.initializer ? ` = ${emitExpression(variable.initializer, context)}` : '';
   return `let ${variable.mutable ? 'mut ' : ''}${getBindingTargetNameRust(variable.binding, context)}${type}${initializer};`;
 }
 
 function emitVariableDeclaration(declaration: Readonly<IrVariableDeclaration>, context: EmitContext): string[] {
+  if ('pattern' in declaration)
+    emissionError(context, 'binding patterns require destructuring lowering before Rust emission');
   if (!declaration.initializer || !declaration.type) {
     emissionError(context, `module variable ${declaration.binding.name} requires an initializer and type`);
   }

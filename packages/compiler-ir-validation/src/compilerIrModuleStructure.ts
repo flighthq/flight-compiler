@@ -4,6 +4,7 @@ import type {
   CompilerIrModuleValidationFailure,
   CompilerIrModuleValidationFailureCode,
   CompilerSourceOrigin,
+  IrBindingPattern,
   IrBindingIdentity,
   IrBindingKind,
   IrBindingScope,
@@ -612,9 +613,52 @@ function visitVariable(
   scopes: readonly IrBindingScope[],
   state: IrModuleValidationState,
 ): void {
-  addBindingDefinition(variable.binding, `${path}.binding`, { kind: 'variable', scope: scopes, space: 'value' }, state);
+  if ('pattern' in variable) {
+    visitBindingPattern(variable.pattern, `${path}.pattern`, scopes, state);
+  } else {
+    addBindingDefinition(
+      variable.binding,
+      `${path}.binding`,
+      { kind: 'variable', scope: scopes, space: 'value' },
+      state,
+    );
+  }
   if (variable.type) visitType(variable.type, `${path}.type`, state);
   if (variable.initializer) visitExpression(variable.initializer, `${path}.initializer`, state);
+}
+
+function visitBindingPattern(
+  pattern: Readonly<IrBindingPattern>,
+  path: string,
+  scopes: readonly IrBindingScope[],
+  state: IrModuleValidationState,
+): void {
+  switch (pattern.kind) {
+    case 'array':
+      validateSourceOrigin(pattern, path, 'invalid-binding-origin', 'binding pattern', state);
+      if (!scopes.includes(pattern.scope)) {
+        addFailure('invalid-binding-introduction', path, `binding pattern scope must be ${scopes.join(' or ')}`, state);
+      }
+      pattern.elements.forEach((element, index) => {
+        if (!element) return;
+        const elementPath = `${path}.elements[${String(index)}]`;
+        visitBindingPattern(element.pattern, `${elementPath}.pattern`, [pattern.scope], state);
+        if (element.initializer) visitExpression(element.initializer, `${elementPath}.initializer`, state);
+      });
+      if (pattern.rest) visitBindingPattern(pattern.rest, `${path}.rest`, [pattern.scope], state);
+      break;
+    case 'binding':
+      addBindingDefinition(
+        pattern.binding,
+        `${path}.binding`,
+        { kind: 'variable', scope: scopes, space: 'value' },
+        state,
+      );
+      if (pattern.type) visitType(pattern.type, `${path}.type`, state);
+      break;
+    default:
+      addUnknownKind(pattern, path, state);
+  }
 }
 
 function validateBindingOrigin(

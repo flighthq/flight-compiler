@@ -1,5 +1,6 @@
 import type { IrCallSemantics, IrElementAccessSemantics } from './compilerAccessSemanticIntermediateRepresentation.js';
 import type { IrBindingIdentity, IrIdentifierReference } from './compilerBindingIntermediateRepresentation.js';
+import type { IrBindingPattern } from './compilerBindingPatternIntermediateRepresentation.js';
 import type {
   IrAssignmentOperator,
   IrBinaryOperator,
@@ -94,12 +95,21 @@ export type IrObjectMember =
   | Readonly<{ kind: 'property'; name: string; value: IrExpression }>
   | Readonly<{ expression: IrExpression; kind: 'spread' }>;
 
-export interface IrVariable {
+export interface IrNamedVariable {
   readonly binding: IrBindingIdentity;
   readonly initializer?: IrExpression | undefined;
   readonly mutable: boolean;
   readonly type?: IrType | undefined;
 }
+
+export interface IrPatternVariable {
+  readonly initializer?: IrExpression | undefined;
+  readonly mutable: boolean;
+  readonly pattern: IrBindingPattern;
+  readonly type?: IrType | undefined;
+}
+
+export type IrVariable = IrNamedVariable | IrPatternVariable;
 
 export interface IrCatchClause {
   readonly binding?: IrBindingIdentity | undefined;

@@ -5,6 +5,7 @@ import type {
   CompilerTargetNameCandidate,
   CompilerTargetNameDisposition,
   CompilerTargetNamePreference,
+  IrBindingPattern,
   IrBindingIdentity,
   IrExpression,
   IrModule,
@@ -247,7 +248,13 @@ function getIrModuleBindingIntroductions(module: Readonly<IrModule>): IrBindingI
         declaration.typeParameters.forEach((parameter) => add(parameter.binding, `type:${declaration.binding.id}`));
         break;
       case 'variable':
-        add(declaration.binding, 'module', declaration.exported ? 'fixed' : 'renamable');
+        if ('pattern' in declaration) {
+          collectBindingPatternBindings(declaration.pattern, 'module', `${declarationPath}:pattern`, (binding, scope) =>
+            add(binding, scope, declaration.exported ? 'fixed' : 'renamable'),
+          );
+        } else {
+          add(declaration.binding, 'module', declaration.exported ? 'fixed' : 'renamable');
+        }
         if (declaration.initializer) {
           collectExpressionBindings(declaration.initializer, `${declarationPath}:initializer`, add);
         }
@@ -424,8 +431,31 @@ function collectVariableBindings(
   path: string,
   add: (binding: Readonly<IrBindingIdentity | IrTypeBindingIdentity>, scope: string) => void,
 ): void {
-  add(variable.binding, scope);
+  if ('pattern' in variable) collectBindingPatternBindings(variable.pattern, scope, `${path}:pattern`, add);
+  else add(variable.binding, scope);
   if (variable.initializer) collectExpressionBindings(variable.initializer, `${path}:initializer`, add);
+}
+
+function collectBindingPatternBindings(
+  pattern: Readonly<IrBindingPattern>,
+  scope: string,
+  path: string,
+  add: (binding: Readonly<IrBindingIdentity | IrTypeBindingIdentity>, scope: string) => void,
+): void {
+  switch (pattern.kind) {
+    case 'array':
+      pattern.elements.forEach((element, index) => {
+        if (!element) return;
+        const elementPath = `${path}:element:${String(index)}`;
+        collectBindingPatternBindings(element.pattern, scope, `${elementPath}:pattern`, add);
+        if (element.initializer) collectExpressionBindings(element.initializer, `${elementPath}:initializer`, add);
+      });
+      if (pattern.rest) collectBindingPatternBindings(pattern.rest, scope, `${path}:rest`, add);
+      break;
+    case 'binding':
+      add(pattern.binding, scope);
+      break;
+  }
 }
 
 function createTargetNameAllocationFailure(

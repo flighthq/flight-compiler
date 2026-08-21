@@ -1,6 +1,7 @@
 import { compareTextCodeUnits } from '../../compiler-canonical-form/src/index.js';
 import type {
   CompilerRuntimeExternalSymbolIdentity,
+  IrBindingPattern,
   IrDeclaration,
   IrExpression,
   IrFunctionSignature,
@@ -295,8 +296,27 @@ function visitTypeParameters(parameters: readonly Readonly<IrTypeParameter>[], a
 }
 
 function visitVariable(variable: Readonly<IrVariable>, add: AddExternalSymbol): void {
+  if ('pattern' in variable) visitBindingPattern(variable.pattern, add);
   if (variable.type) visitType(variable.type, add);
   if (variable.initializer) visitExpression(variable.initializer, add);
+}
+
+function visitBindingPattern(pattern: Readonly<IrBindingPattern>, add: AddExternalSymbol): void {
+  switch (pattern.kind) {
+    case 'array':
+      pattern.elements.forEach((element) => {
+        if (!element) return;
+        visitBindingPattern(element.pattern, add);
+        if (element.initializer) visitExpression(element.initializer, add);
+      });
+      if (pattern.rest) visitBindingPattern(pattern.rest, add);
+      break;
+    case 'binding':
+      if (pattern.type) visitType(pattern.type, add);
+      break;
+    default:
+      return assertNeverIr(pattern);
+  }
 }
 
 type AddExternalSymbol = (sourceName: string, space: CompilerRuntimeExternalSymbolIdentity['space']) => void;

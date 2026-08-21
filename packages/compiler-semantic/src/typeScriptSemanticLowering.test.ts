@@ -233,7 +233,7 @@ describe('lowerTypeScriptSource', () => {
       {
         expression: {
           kind: 'identifier',
-          reference: { binding: rejected.module.declarations[0]?.binding, kind: 'binding' },
+          reference: { binding: getVariableBinding(rejected.module.declarations[0]), kind: 'binding' },
         },
         kind: 'default',
       },
@@ -552,7 +552,7 @@ describe('lowerTypeScriptSource', () => {
     });
     expect(types.get('Query')).toEqual({
       kind: 'typeOf',
-      reference: { binding: sample.binding, kind: 'binding', path: [] },
+      reference: { binding: getVariableBinding(sample), kind: 'binding', path: [] },
     });
     expect(types.get('Parenthesized')).toEqual({ kind: 'primitive', name: 'number' });
     expect(types.get('NonCanonicalArray')).toEqual({
@@ -752,7 +752,7 @@ describe('lowerTypeScriptSource', () => {
       path: ['Value'],
     });
     expect(sampleType.type.reference).toMatchObject({
-      binding: { id: sample.binding.id, space: 'value' },
+      binding: { id: getVariableBinding(sample).id, space: 'value' },
       kind: 'binding',
       path: [],
     });
@@ -958,18 +958,18 @@ describe('lowerTypeScriptSource', () => {
     const localExport = result.module.exports[0];
     expect(imported).toMatchObject({ kind: 'import', name: 'imported', scope: 'module' });
     expect(localExport).toMatchObject({
-      binding: { id: moduleValue.binding.id },
+      binding: { id: getVariableBinding(moduleValue).id },
       exported: 'exportedValue',
       kind: 'local',
     });
-    expect(moduleValue.binding).toMatchObject({
+    expect(getVariableBinding(moduleValue)).toMatchObject({
       kind: 'variable',
       name: 'value',
       packageName: '@flighthq/math',
       scope: 'module',
       source: 'packages/math/src/bindings.ts',
     });
-    expect(read.binding.id).not.toBe(moduleValue.binding.id);
+    expect(read.binding.id).not.toBe(getVariableBinding(moduleValue).id);
 
     const [valueParameter, valuesParameter] = read.parameters;
     const [localStatement, nestedStatement, loopStatement, undefinedStatement, tryStatement] = read.body;
@@ -993,20 +993,26 @@ describe('lowerTypeScriptSource', () => {
     }
     const shadow = shadowStatement.declarations[0]!;
     const closure = closureStatement.declarations[0]?.initializer;
-    expect(bindingReference(shadow.initializer).id).toBe(local.binding.id);
-    expect(shadow.binding.id).not.toBe(valueParameter.binding.id);
+    expect(bindingReference(shadow.initializer).id).toBe(getVariableBinding(local).id);
+    expect(getVariableBinding(shadow).id).not.toBe(valueParameter.binding.id);
     if (closure?.kind !== 'function' || !closure.expression) throw new Error('Expected expression-bodied closure');
-    expect(bindingReference(closure.expression).id).toBe(shadow.binding.id);
+    expect(bindingReference(closure.expression).id).toBe(getVariableBinding(shadow).id);
 
     expect(bindingReference(loopStatement.iterable).id).toBe(valuesParameter.binding.id);
     if (loopStatement.body.kind !== 'block' || loopStatement.body.statements[0]?.kind !== 'expression') {
       throw new Error('Expected loop expression body');
     }
-    expect(bindingReference(loopStatement.body.statements[0].expression).id).toBe(loopStatement.variable.binding.id);
+    expect(bindingReference(loopStatement.body.statements[0].expression).id).toBe(
+      getVariableBinding(loopStatement.variable).id,
+    );
 
     const undefinedVariable = undefinedStatement.declarations[0]!;
-    expect(undefinedVariable.binding).toMatchObject({ kind: 'variable', name: 'undefined', scope: 'block' });
-    expect(bindingReference(undefinedVariable.initializer).id).toBe(local.binding.id);
+    expect(getVariableBinding(undefinedVariable)).toMatchObject({
+      kind: 'variable',
+      name: 'undefined',
+      scope: 'block',
+    });
+    expect(bindingReference(undefinedVariable.initializer).id).toBe(getVariableBinding(local).id);
     if (!tryStatement.catchClause || tryStatement.catchClause.body.kind !== 'block') {
       throw new Error('Expected catch clause');
     }
@@ -1020,7 +1026,7 @@ describe('lowerTypeScriptSource', () => {
     }
     expect(bindingReference(returned.expression.condition).id).toBe(tryStatement.catchClause.binding?.id);
     expect(bindingReference(returned.expression.whenTrue).id).toBe(imported?.id);
-    expect(bindingReference(returned.expression.whenFalse).id).toBe(undefinedVariable.binding.id);
+    expect(bindingReference(returned.expression.whenFalse).id).toBe(getVariableBinding(undefinedVariable).id);
 
     const method = holder.methods[0];
     if (!method || method.body[0]?.kind !== 'expression' || method.body[1]?.kind !== 'return') {
@@ -1061,7 +1067,9 @@ describe('lowerTypeScriptSource', () => {
     expect(scopes.binding.scope).toBe('module');
     expect(scopes.typeParameters[0]?.binding.scope).toBe('function');
     expect(scopes.parameters[0]?.binding.scope).toBe('function');
-    expect(variables.map((variable) => [variable.binding.name, variable.binding.scope])).toEqual([
+    expect(
+      variables.map((variable) => [getVariableBinding(variable).name, getVariableBinding(variable).scope]),
+    ).toEqual([
       ['lifted', 'function'],
       ['block', 'block'],
       ['fixed', 'block'],
@@ -1083,7 +1091,7 @@ describe('lowerTypeScriptSource', () => {
       throw new Error('Expected recursive call');
     }
     expect(owner.initializer.binding).toMatchObject({ kind: 'function', name: 'recurse', scope: 'function' });
-    expect(owner.initializer.binding.id).not.toBe(owner.binding.id);
+    expect(owner.initializer.binding.id).not.toBe(getVariableBinding(owner).id);
     expect(bindingReference(returned.expression.callee).id).toBe(owner.initializer.binding.id);
   });
 
@@ -1145,7 +1153,11 @@ describe('lowerTypeScriptSource', () => {
     expect(result.diagnostics).toEqual([]);
     expect(returned.expression.members).toMatchObject([
       { kind: 'property', name: 'value', value: { reference: { binding: declaration.parameters[0]?.binding } } },
-      { kind: 'property', name: 'output', value: { reference: { binding: local.declarations[0]?.binding } } },
+      {
+        kind: 'property',
+        name: 'output',
+        value: { reference: { binding: getVariableBinding(local.declarations[0]) } },
+      },
     ]);
   });
 
@@ -1183,4 +1195,11 @@ function bindingReference(expression: Readonly<IrExpression> | undefined): IrBin
     throw new Error('Expected a bound identifier reference');
   }
   return expression.reference.binding;
+}
+
+function getVariableBinding(value: unknown): IrBindingIdentity {
+  if (typeof value !== 'object' || value === null || !('binding' in value)) {
+    throw new Error('Expected named variable');
+  }
+  return (value as { readonly binding: IrBindingIdentity }).binding;
 }

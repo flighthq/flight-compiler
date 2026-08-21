@@ -29,11 +29,12 @@ export interface IrFunctionDeclaration extends IrFunctionSignature {
   readonly overloads: readonly IrFunctionSignature[];
 }
 
-export interface IrVariableDeclaration extends IrVariable {
-  readonly exported: boolean;
-  readonly kind: 'variable';
-  readonly origin: CompilerSourceOrigin;
-}
+export type IrVariableDeclaration = IrVariable &
+  Readonly<{
+    readonly exported: boolean;
+    readonly kind: 'variable';
+    readonly origin: CompilerSourceOrigin;
+  }>;
 
 export interface IrTypeAliasDeclaration {
   readonly binding: IrTypeBindingIdentity;

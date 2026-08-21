@@ -368,6 +368,8 @@ function emitStatement(statement: Readonly<IrStatement>, context: EmitContext): 
     case 'for':
       emissionError(context, 'C-style for loops require control-flow lowering before Haxe emission');
     case 'forIn':
+      if ('pattern' in statement.variable)
+        emissionError(context, 'binding patterns require destructuring lowering before Haxe emission');
       return [
         `for (${getBindingTargetNameHaxe(statement.variable.binding, context)} in Reflect.fields(${emitExpression(statement.object, context)})) {`,
         ...indentSourceLines(emitStatementBody(statement.body, context)),
@@ -375,6 +377,8 @@ function emitStatement(statement: Readonly<IrStatement>, context: EmitContext): 
       ];
     case 'forOf':
       if (statement.await) emissionError(context, 'async iteration requires the Haxe async-lowering pass');
+      if ('pattern' in statement.variable)
+        emissionError(context, 'binding patterns require destructuring lowering before Haxe emission');
       return [
         `for (${getBindingTargetNameHaxe(statement.variable.binding, context)} in ${emitExpression(statement.iterable, context)}) {`,
         ...indentSourceLines(emitStatementBody(statement.body, context)),
@@ -518,7 +522,7 @@ function emitTypeDeclaration(declaration: Readonly<IrDeclaration>, context: Emit
     case 'typeAlias':
       return emitTypeAlias(declaration, context);
     default:
-      emissionError(context, `unexpected value declaration ${declaration.binding.name} in type emission`);
+      emissionError(context, `unexpected ${declaration.kind} declaration in type emission`);
   }
 }
 
@@ -539,12 +543,16 @@ function emitTypeParameters(parameters: readonly IrTypeParameter[], context: Emi
 }
 
 function emitVariable(variable: Readonly<IrVariable>, context: EmitContext): string {
+  if ('pattern' in variable)
+    emissionError(context, 'binding patterns require destructuring lowering before Haxe emission');
   const type = variable.type ? `:${emitType(variable.type, context)}` : '';
   const initializer = variable.initializer ? ` = ${emitExpression(variable.initializer, context)}` : '';
   return `${variable.mutable ? 'var' : 'final'} ${getBindingTargetNameHaxe(variable.binding, context)}${type}${initializer};`;
 }
 
 function emitVariableDeclaration(declaration: Readonly<IrVariableDeclaration>, context: EmitContext): string[] {
+  if ('pattern' in declaration)
+    emissionError(context, 'binding patterns require destructuring lowering before Haxe emission');
   if (!declaration.initializer)
     emissionError(context, `module variable ${declaration.binding.name} requires an initializer`);
   const access = declaration.exported ? 'public ' : 'private ';

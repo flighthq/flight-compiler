@@ -306,6 +306,7 @@ function createPass(
 function corruptModuleBindingFingerprint(moduleValue: Readonly<IrModule>): IrModule {
   const declaration = moduleValue.declarations[0];
   if (declaration?.kind !== 'variable') throw new Error('Expected variable declaration fixture');
+  if ('pattern' in declaration) throw new Error('Expected named variable declaration fixture');
   return {
     ...moduleValue,
     declarations: [

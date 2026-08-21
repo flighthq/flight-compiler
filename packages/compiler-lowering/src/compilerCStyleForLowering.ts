@@ -1,6 +1,7 @@
 import type {
   CompilerLoweringPass,
   CompilerSourceIdentity,
+  IrBindingPattern,
   IrDeclaration,
   IrExpression,
   IrModule,
@@ -200,7 +201,24 @@ function hasIrStatementCStyleForStatement(statement: Readonly<IrStatement>): boo
 }
 
 function hasIrVariableCStyleForStatement(variable: Readonly<IrVariable>): boolean {
-  return variable.initializer ? hasIrExpressionCStyleForStatement(variable.initializer) : false;
+  return (
+    (variable.initializer ? hasIrExpressionCStyleForStatement(variable.initializer) : false) ||
+    ('pattern' in variable ? hasIrBindingPatternCStyleForStatement(variable.pattern) : false)
+  );
+}
+
+function hasIrBindingPatternCStyleForStatement(pattern: Readonly<IrBindingPattern>): boolean {
+  if (pattern.kind === 'binding') {
+    return false;
+  }
+  return (
+    pattern.elements.some(
+      (element) =>
+        element !== undefined &&
+        ((element.initializer ? hasIrExpressionCStyleForStatement(element.initializer) : false) ||
+          hasIrBindingPatternCStyleForStatement(element.pattern)),
+    ) || (pattern.rest ? hasIrBindingPatternCStyleForStatement(pattern.rest) : false)
+  );
 }
 
 function lowerIrDeclaration(declaration: Readonly<IrDeclaration>, analysis: CStyleForLoweringAnalysis): IrDeclaration {
@@ -537,9 +555,33 @@ function lowerIrDiscardedUpdateCStyleFor(
 }
 
 function lowerIrVariable(variable: Readonly<IrVariable>, analysis: CStyleForLoweringAnalysis): IrVariable {
-  return variable.initializer
-    ? { ...variable, initializer: lowerIrExpression(variable.initializer, analysis) }
-    : variable;
+  return {
+    ...variable,
+    ...(variable.initializer ? { initializer: lowerIrExpression(variable.initializer, analysis) } : {}),
+    ...('pattern' in variable ? { pattern: lowerIrBindingPattern(variable.pattern, analysis) } : {}),
+  };
+}
+
+function lowerIrBindingPattern(
+  pattern: Readonly<IrBindingPattern>,
+  analysis: CStyleForLoweringAnalysis,
+): IrBindingPattern {
+  if (pattern.kind === 'binding') {
+    return pattern;
+  }
+  return {
+    ...pattern,
+    elements: pattern.elements.map((element) =>
+      element
+        ? {
+            ...element,
+            ...(element.initializer ? { initializer: lowerIrExpression(element.initializer, analysis) } : {}),
+            pattern: lowerIrBindingPattern(element.pattern, analysis),
+          }
+        : undefined,
+    ),
+    ...(pattern.rest ? { rest: lowerIrBindingPattern(pattern.rest, analysis) } : {}),
+  };
 }
 
 function isIrVariableList(value: IrExpression | readonly IrVariable[] | undefined): value is readonly IrVariable[] {

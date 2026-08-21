@@ -303,4 +303,78 @@ describe('createIrModuleTargetNameAllocation', () => {
       { identity: 'templatePart', name: 'value', scope: 'value\0function:templatePart' },
     ]);
   });
+
+  it('collects every array pattern leaf and default-expression binding in its lexical target scope', () => {
+    const binding = (id: string, name: string): IrBindingIdentity => ({
+      column: 1,
+      fingerprint: `sha256:${'0'.repeat(64)}`,
+      id,
+      kind: 'variable',
+      line: 1,
+      name,
+      packageName: '@flighthq/math',
+      scope: 'module',
+      space: 'value',
+      source: 'pattern.ts',
+    });
+    const first = binding('first', 'first');
+    const nested = binding('nested', 'nested');
+    const rest = binding('rest', 'rest');
+    const defaultBinding = { ...binding('default', 'fallback'), kind: 'function' as const };
+    const module = {
+      declarations: [
+        {
+          exported: true,
+          initializer: { kind: 'array' as const, elements: [] },
+          kind: 'variable' as const,
+          mutable: false,
+          origin: first,
+          pattern: {
+            ...first,
+            elements: [
+              { pattern: { binding: first, kind: 'binding' as const } },
+              undefined,
+              {
+                initializer: {
+                  async: false,
+                  binding: defaultBinding,
+                  body: [],
+                  kind: 'function' as const,
+                  parameters: [],
+                  returns: { kind: 'primitive' as const, name: 'void' as const },
+                  typeParameters: [],
+                },
+                pattern: {
+                  ...nested,
+                  elements: [{ pattern: { binding: nested, kind: 'binding' as const } }],
+                  kind: 'array' as const,
+                  scope: 'module' as const,
+                },
+              },
+            ],
+            kind: 'array' as const,
+            rest: { binding: rest, kind: 'binding' as const },
+            scope: 'module' as const,
+          },
+        },
+      ],
+      exports: [],
+      imports: [],
+      name: 'Pattern',
+      packageName: '@flighthq/math',
+      source: 'pattern.ts',
+    };
+
+    expect(
+      createIrModuleTargetNameAllocation(module, (candidate) => ({
+        namespace: 'value',
+        preferredName: candidate.name,
+      })),
+    ).toEqual([
+      { identity: 'default', name: 'fallback', scope: 'value\0function:default' },
+      { identity: 'first', name: 'first', scope: 'value\0module' },
+      { identity: 'nested', name: 'nested', scope: 'value\0module' },
+      { identity: 'rest', name: 'rest', scope: 'value\0module' },
+    ]);
+  });
 });
