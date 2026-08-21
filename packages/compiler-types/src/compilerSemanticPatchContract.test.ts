@@ -8,7 +8,7 @@ describe('compiler semantic patch contracts', () => {
     const body: IrStatement[] = [{ expression: { kind: 'literal', value: 1 }, kind: 'return' }];
     const type: IrType = { kind: 'primitive', name: 'string' };
     const common = {
-      expect: { fingerprint: 'sha256:value', kind: 'function' as const },
+      expect: { fingerprint: 'sha256:value' as const, kind: 'function' as const },
       reason: 'contract fixture',
       scope: { kind: 'neutral' as const },
       target: {

@@ -1,5 +1,6 @@
 import type { IrStatement } from './compilerExecutableIntermediateRepresentation.js';
 import type { IrModule } from './compilerModuleIntermediateRepresentation.js';
+import type { CompilerSourceFingerprint } from './compilerSourceFingerprint.js';
 import type { CompilerExportIdentity } from './compilerSourceIdentity.js';
 import type { IrType } from './compilerTypeIntermediateRepresentation.js';
 
@@ -9,7 +10,7 @@ export type PatchScope = { readonly kind: 'neutral' } | { readonly backend: stri
 
 interface BasePatch {
   readonly expect: {
-    readonly fingerprint: string;
+    readonly fingerprint: CompilerSourceFingerprint;
     readonly kind: 'class' | 'enum' | 'function' | 'interface' | 'typeAlias' | 'variable';
   };
   readonly id: string;
@@ -25,7 +26,7 @@ export type SemanticPatch =
   | (BasePatch & { readonly operation: 'replaceType'; readonly type: IrType });
 
 export interface PatchAuditRecord {
-  readonly fingerprint: string;
+  readonly fingerprint: CompilerSourceFingerprint;
   readonly id: string;
   readonly operation: SemanticPatch['operation'];
   readonly reason: string;

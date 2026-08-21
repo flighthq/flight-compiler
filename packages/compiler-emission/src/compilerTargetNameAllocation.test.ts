@@ -1,3 +1,4 @@
+import type { IrBindingIdentity } from '../../compiler-types/src/index.js';
 import { isCompilerInvariantFailure } from './compilerSourceEmission.js';
 import {
   createCompilerTargetNameAllocation,
@@ -173,9 +174,9 @@ describe('isCompilerTargetNameAllocationFailure', () => {
 
 describe('createIrModuleTargetNameAllocation', () => {
   it('collects module and nested binding introductions without treating references as new candidates', () => {
-    const binding = (id: string, name: string) => ({
+    const binding = (id: string, name: string): IrBindingIdentity => ({
       column: 1,
-      fingerprint: id.repeat(64).slice(0, 64),
+      fingerprint: `sha256:${'0'.repeat(64)}`,
       id,
       kind: 'variable' as const,
       line: 1,
@@ -238,9 +239,9 @@ describe('createIrModuleTargetNameAllocation', () => {
   });
 
   it('collects bindings introduced in computed keys, spread members, and template parts', () => {
-    const binding = (id: string) => ({
+    const binding = (id: string): IrBindingIdentity => ({
       column: 1,
-      fingerprint: id.repeat(64).slice(0, 64),
+      fingerprint: `sha256:${'0'.repeat(64)}`,
       id,
       kind: 'variable' as const,
       line: 1,

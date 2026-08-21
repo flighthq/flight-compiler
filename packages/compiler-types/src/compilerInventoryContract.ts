@@ -1,15 +1,16 @@
+import type { CompilerSourceFingerprint } from './compilerSourceFingerprint.js';
 import type { WorkspaceSource } from './compilerWorkspaceSourceContract.js';
 
 export type ExportKind = 'class' | 'default' | 'enum' | 'function' | 'interface' | 'namespace' | 'type' | 'variable';
 
 export interface RuntimeBindingRecord {
-  readonly fingerprint: string;
+  readonly fingerprint: CompilerSourceFingerprint;
   readonly kind: ExportKind;
   readonly source: string;
 }
 
 export interface ExportRecord {
-  readonly fingerprint: string;
+  readonly fingerprint: CompilerSourceFingerprint;
   readonly kind: ExportKind;
   readonly name: string;
   readonly runtime: boolean;

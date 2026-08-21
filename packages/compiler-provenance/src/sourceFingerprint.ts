@@ -3,13 +3,18 @@ import { createHash } from 'node:crypto';
 import ts from 'typescript';
 
 import { compareTextCodeUnits } from '../../compiler-ordering/src/index.js';
+import type { CompilerSourceFingerprint } from '../../compiler-types/src/index.js';
 
-export function fingerprintSourceText(value: string): string {
+export function fingerprintSourceText(value: string): CompilerSourceFingerprint {
   return `sha256:${createHash('sha256').update(value).digest('hex')}`;
 }
 
-export function fingerprintTypeScriptNode(node: ts.Node, sourceFile: ts.SourceFile): string {
+export function fingerprintTypeScriptNode(node: ts.Node, sourceFile: ts.SourceFile): CompilerSourceFingerprint {
   return fingerprintSourceText(normalizeTypeScriptNode(node, sourceFile));
+}
+
+export function isCompilerSourceFingerprint(value: unknown): value is CompilerSourceFingerprint {
+  return typeof value === 'string' && /^sha256:[0-9a-f]{64}$/u.test(value);
 }
 
 export function normalizeTypeScriptNode(node: ts.Node, sourceFile: ts.SourceFile): string {

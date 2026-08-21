@@ -19,5 +19,6 @@ export interface CompilerSourceLocation extends CompilerSourceIdentity {
 }
 
 export interface CompilerSourceOrigin extends CompilerSourceLocation {
-  readonly fingerprint: string;
+  readonly fingerprint: CompilerSourceFingerprint;
 }
+import type { CompilerSourceFingerprint } from './compilerSourceFingerprint.js';

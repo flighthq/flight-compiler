@@ -1,7 +1,7 @@
 ---
 package: '@flighthq/compiler-provenance'
 status: near-mature
-score: 86
+score: 88
 updated: 2026-08-20
 ingested:
   - source
@@ -14,7 +14,7 @@ The narrowest package in the repository: 130 lines across one implementation sou
 
 ## Verdict
 
-**near-mature — 86/100.** The domain is genuinely small and this package has most of it. Normalization is structural rather than textual, the schema is declared in the hashed string, and the equivalence/counterexample pairs the maturity standard asks for are all present and pinned. Canonical syntax-kind names now separate source identity from TypeScript patch releases while the schema tag retains deliberate invalidation. What holds it below the nineties is the absence of any identity beyond a single node and of reverse lookup or incremental composition.
+**near-mature — 88/100.** The domain is genuinely small and this package has most of it. Normalization is structural rather than textual, the schema is declared in the hashed string, and the equivalence/counterexample pairs the maturity standard asks for are all present and pinned. Canonical syntax-kind names separate source identity from TypeScript patch releases, while one shared fingerprint type and exact lowercase SHA-256 guard prevent provenance-looking placeholders from crossing runtime boundaries. What holds it below the nineties is the absence of identity beyond a single node and of reverse lookup or incremental composition.
 
 ## What a fully expressed source-identity domain looks like
 
@@ -35,12 +35,13 @@ A reference implementation of this domain would provide:
 - **Real counterexamples, pinned.** The test asserts that `"a b"` and `"a  b"` differ, and the same for `/a b/` versus `/a  b/`. This is not decoration: the previous printer-based normalization collapsed all whitespace and merged those pairs, which meant two different programs shared a fingerprint and a stale patch could apply silently to changed code. That defect was found by mutation-adjacent review and closed here.
 - **Equivalence pinned in the same file.** Compact versus formatted source with comments, CRLF versus LF, single versus double quotes, and differing source paths all produce one identity.
 - **Explicit hash identity.** `fingerprintSourceText` returns a `sha256:`-prefixed digest, and an exact expected digest for a known input is asserted, so the algorithm cannot change silently.
+- **Exact runtime identity.** `CompilerSourceFingerprint` gives fingerprint-bearing contracts one vocabulary, and `isCompilerSourceFingerprint` accepts only the lowercase 64-hex SHA-256 representation produced here.
 - **No compiler dependency.** It sits on the dependency floor with only `typescript`, which is what lets everything above it depend on identity without a cycle.
 
 ## Gaps
 
 - **One granularity only.** There is a node fingerprint and nothing else. A file, module, package or checkout identity is either re-derived by each caller or absent; `compiler-inventory` computes its own record fingerprints and `gitCheckoutRevision` answers checkout identity separately. A reference version would define the composition rule once here.
 - **No reverse lookup.** A fingerprint names something but cannot produce it. A stale patch can therefore say "expected `sha256:ab…`, received `sha256:cd…`" and nothing more; with a content-addressed manifest it could show what it expected.
-- **No collision statement.** SHA-256 is the obvious choice and the risk is negligible, but the package does not say so, and "obvious" is what a foundational contract is supposed to write down.
+- **No collision workflow.** SHA-256 collision risk is negligible for this corpus, but a distinct normalized input producing an existing digest would still be indistinguishable without a reverse manifest.
 - **No incremental path.** Every fingerprint is computed from a full subtree walk on every run. Nothing caches by file identity, so a large checkout re-walks everything each time. Not yet a problem at current scale, and worth naming before it is.
 - **Unicode normalization is untested at this seam.** Emitted paths get NFC canonicalization in `compiler-emission`; source text identity does not state whether two canonically-equivalent identifiers are the same declaration. The answer is probably "TypeScript already decided", but the package should say which.

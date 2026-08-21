@@ -1,6 +1,11 @@
 import ts from 'typescript';
 
-import { fingerprintSourceText, fingerprintTypeScriptNode, normalizeTypeScriptNode } from './sourceFingerprint.js';
+import {
+  fingerprintSourceText,
+  fingerprintTypeScriptNode,
+  isCompilerSourceFingerprint,
+  normalizeTypeScriptNode,
+} from './sourceFingerprint.js';
 
 describe('fingerprintSourceText', () => {
   it('uses an explicit deterministic SHA-256 identity for empty, ASCII, and Unicode text', () => {
@@ -51,6 +56,23 @@ describe('fingerprintTypeScriptNode', () => {
     expect(fingerprintTypeScriptNode(regexpSingle.node, regexpSingle.source)).not.toBe(
       fingerprintTypeScriptNode(regexpDouble.node, regexpDouble.source),
     );
+  });
+});
+
+describe('isCompilerSourceFingerprint', () => {
+  it('accepts exact lowercase SHA-256 identities and rejects malformed or differently encoded values', () => {
+    const valid = fingerprintSourceText('');
+
+    expect(isCompilerSourceFingerprint(valid)).toBe(true);
+    expect(isCompilerSourceFingerprint(`sha256:${'0'.repeat(64)}`)).toBe(true);
+    expect(isCompilerSourceFingerprint(undefined)).toBe(false);
+    expect(isCompilerSourceFingerprint('')).toBe(false);
+    expect(isCompilerSourceFingerprint('sha256:')).toBe(false);
+    expect(isCompilerSourceFingerprint(`sha256:${'0'.repeat(63)}`)).toBe(false);
+    expect(isCompilerSourceFingerprint(`sha256:${'0'.repeat(65)}`)).toBe(false);
+    expect(isCompilerSourceFingerprint(`sha256:${'A'.repeat(64)}`)).toBe(false);
+    expect(isCompilerSourceFingerprint(`sha256:${'g'.repeat(64)}`)).toBe(false);
+    expect(isCompilerSourceFingerprint(`sha512:${'0'.repeat(64)}`)).toBe(false);
   });
 });
 
