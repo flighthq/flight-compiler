@@ -31,6 +31,7 @@ export function validateCompilerEmittedSourceConformance(
 ): CompilerEmittedSourceConformanceReport {
   const parserName = validateCompilerEmittedSourceParserName(parser.name);
   const diagnostics: CompilerEmittedSourceConformanceDiagnostic[] = [];
+  const skippedFiles: string[] = [];
   let checkedFiles = 0;
   for (const input of files) {
     const file = Object.freeze(normalizeEmittedFile(input));
@@ -42,7 +43,10 @@ export function validateCompilerEmittedSourceConformance(
         `Emitted-source parser ${parserName} returned a non-boolean support decision for ${file.path}`,
       );
     }
-    if (!supported) continue;
+    if (!supported) {
+      skippedFiles.push(file.path);
+      continue;
+    }
     checkedFiles += 1;
     const parsed = parser.parseEmittedSource(file);
     if (!Array.isArray(parsed)) {
@@ -58,7 +62,8 @@ export function validateCompilerEmittedSourceConformance(
   }
   diagnostics.sort(compareCompilerEmittedSourceConformanceDiagnostics);
   if (diagnostics.length > 0) throw createCompilerEmittedSourceConformanceFailure(parserName, diagnostics);
-  return { checkedFiles, parser: parserName };
+  skippedFiles.sort(compareTextCodeUnits);
+  return { checkedFiles, parser: parserName, skippedFiles };
 }
 
 function compareCompilerEmittedSourceConformanceDiagnostics(

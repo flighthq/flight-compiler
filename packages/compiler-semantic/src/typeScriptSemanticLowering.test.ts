@@ -1718,6 +1718,90 @@ describe('lowerTypeScriptSource', () => {
     });
   });
 
+  it('resolves overload typing separately from the local implementation ABI', () => {
+    const result = lower(
+      'overload-implementation-abi.ts',
+      `
+        function choose(value: number): number;
+        function choose(value: number, radix?: number): number;
+        function choose(value: number, radix = 10): number { return value + radix; }
+        function maybe(value: number): number;
+        function maybe(value: number, enabled?: boolean): number;
+        function maybe(value: number, enabled?: boolean): number { return enabled ? value : 0; }
+        export function read(): number { choose(1); choose(1, 2); maybe(1); return maybe(1, true); }
+      `,
+    );
+    const declaration = result.module.declarations.find(
+      (item) => item.kind === 'function' && item.binding.name === 'read',
+    );
+    if (declaration?.kind !== 'function') throw new Error('Expected read function');
+    const calls = declaration.body.map((statement) =>
+      statement.kind === 'expression' || statement.kind === 'return' ? statement.expression : undefined,
+    );
+
+    expect(calls).toMatchObject([
+      {
+        semantics: {
+          defaultParameters: { defaulted: [1], omitted: [1], parameterCount: 2, providedArgumentCount: 1 },
+          overloadImplementation: {
+            implementationParameterCount: 2,
+            overloadIndex: 0,
+            resolvedParameterCount: 1,
+          },
+        },
+      },
+      {
+        semantics: {
+          defaultParameters: { defaulted: [1], omitted: [], parameterCount: 2, providedArgumentCount: 2 },
+          overloadImplementation: {
+            implementationParameterCount: 2,
+            overloadIndex: 1,
+            resolvedParameterCount: 2,
+          },
+        },
+      },
+      {
+        semantics: {
+          optionalParameters: {
+            omitted: [1],
+            optional: [1],
+            parameterCount: 2,
+            provided: [],
+            providedArgumentCount: 1,
+          },
+          overloadImplementation: {
+            implementationParameterCount: 2,
+            overloadIndex: 0,
+            resolvedParameterCount: 1,
+          },
+        },
+      },
+      {
+        semantics: {
+          optionalParameters: {
+            omitted: [],
+            optional: [1],
+            parameterCount: 2,
+            provided: [
+              {
+                argumentType: { kind: 'primitive', name: 'boolean' },
+                parameterType: { kind: 'primitive', name: 'boolean' },
+                position: 1,
+              },
+            ],
+            providedArgumentCount: 2,
+          },
+          overloadImplementation: {
+            implementationParameterCount: 2,
+            overloadIndex: 1,
+            resolvedParameterCount: 2,
+          },
+        },
+      },
+    ]);
+    expect(result.diagnostics).toEqual([]);
+  });
+
   it('represents undefined as an option value only when contextual type evidence permits it', () => {
     const result = lower(
       'contextual-undefined.ts',

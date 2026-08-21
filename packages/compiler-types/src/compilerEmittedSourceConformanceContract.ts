@@ -22,6 +22,7 @@ export interface CompilerEmittedSourceParser {
 export interface CompilerEmittedSourceConformanceReport {
   readonly checkedFiles: number;
   readonly parser: string;
+  readonly skippedFiles: readonly string[];
 }
 
 export interface CompilerEmittedSourceConformanceFailure extends Error {

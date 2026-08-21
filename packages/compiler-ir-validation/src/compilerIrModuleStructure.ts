@@ -398,6 +398,7 @@ function visitExpression(expression: Readonly<IrExpression>, path: string, state
       validateIrOptionalChainEvidence(expression.optional, expression.semantics.optionalChain, path, state);
       validateIrDefaultParameterCallEvidence(expression, path, state);
       validateIrOptionalParameterCallEvidence(expression, path, state);
+      validateIrOverloadImplementationCallEvidence(expression, path, state);
       if (expression.semantics.statementValue && !isIrCallExpressionStatementValueCarrierValid(expression)) {
         addFailure(
           'invalid-node-shape',
@@ -724,6 +725,35 @@ function validateIrOptionalParameterCallEvidence(
         state,
       );
     });
+  }
+}
+
+function validateIrOverloadImplementationCallEvidence(
+  expression: Readonly<Extract<IrExpression, { kind: 'call' }>>,
+  path: string,
+  state: IrModuleValidationState,
+): void {
+  const evidence = expression.semantics.overloadImplementation;
+  if (!evidence) return;
+  const countsValid =
+    Number.isSafeInteger(evidence.implementationParameterCount) &&
+    evidence.implementationParameterCount >= 0 &&
+    Number.isSafeInteger(evidence.resolvedParameterCount) &&
+    evidence.resolvedParameterCount >= 0;
+  const indexValid = Number.isSafeInteger(evidence.overloadIndex) && evidence.overloadIndex >= 0;
+  const defaultsValid =
+    !expression.semantics.defaultParameters ||
+    expression.semantics.defaultParameters.parameterCount === evidence.implementationParameterCount;
+  const optionalsValid =
+    !expression.semantics.optionalParameters ||
+    expression.semantics.optionalParameters.parameterCount === evidence.implementationParameterCount;
+  if (!countsValid || !indexValid || !defaultsValid || !optionalsValid) {
+    addFailure(
+      'invalid-node-shape',
+      `${path}.semantics.overloadImplementation`,
+      'overload implementation evidence must identify nonnegative signature arities, source order, and implementation ABI carriers',
+      state,
+    );
   }
 }
 

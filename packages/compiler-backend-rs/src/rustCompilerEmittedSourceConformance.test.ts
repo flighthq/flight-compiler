@@ -33,7 +33,7 @@ describe('createRustCompilerEmittedSourceParser', () => {
         ],
         parser,
       ),
-    ).toEqual({ checkedFiles: 1, parser: 'rust' });
+    ).toEqual({ checkedFiles: 1, parser: 'rust', skippedFiles: ['flight/Value.hx', 'flight/upper.RS'] });
     expect(seen).toEqual(['value.rs']);
   });
 });

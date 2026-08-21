@@ -38,8 +38,15 @@ export interface IrCallSemantics {
   readonly defaultParameters?: IrDefaultParameterCallSemantics | undefined;
   readonly optionalParameters?: IrOptionalParameterCallSemantics | undefined;
   readonly optionalChain?: IrOptionalChainSemantics | undefined;
+  readonly overloadImplementation?: IrOverloadImplementationCallSemantics | undefined;
   readonly statementValue?: IrStatementValueCallSemantics | undefined;
   readonly typedArraySet?: IrTypedArraySetSemantics | undefined;
+}
+
+export interface IrOverloadImplementationCallSemantics {
+  readonly implementationParameterCount: number;
+  readonly overloadIndex: number;
+  readonly resolvedParameterCount: number;
 }
 
 export interface IrOptionalParameterCallSemantics {

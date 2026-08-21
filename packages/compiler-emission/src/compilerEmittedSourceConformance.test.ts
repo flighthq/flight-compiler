@@ -53,6 +53,7 @@ describe('validateCompilerEmittedSourceConformance', () => {
     expect(validateCompilerEmittedSourceConformance(files, parser)).toEqual({
       checkedFiles: 2,
       parser: 'fixture-parser',
+      skippedFiles: ['generated/value.txt'],
     });
     expect(seen).toEqual([
       { contents: 'class Value {}\n', path: 'generated/Value.hx' },
@@ -62,6 +63,7 @@ describe('validateCompilerEmittedSourceConformance', () => {
     expect(validateCompilerEmittedSourceConformance([{ contents: '', path: 'metadata.txt' }], parser)).toEqual({
       checkedFiles: 0,
       parser: 'fixture-parser',
+      skippedFiles: ['metadata.txt'],
     });
   });
 

@@ -87,6 +87,23 @@ describe('emitIrModuleHaxe', () => {
     expect(emitIrModuleHaxe(defaults.module).contents).toContain('factor:Float = 2');
   });
 
+  it('emits one overload implementation and calls its native default ABI', () => {
+    const result = lower(
+      'overload-default.ts',
+      `
+        function choose(value: number): number;
+        function choose(value: number, radix?: number): number;
+        function choose(value: number, radix = 10): number { return value + radix; }
+        export function read(): number { return choose(1); }
+      `,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output.match(/static function choose/gu)).toHaveLength(1);
+    expect(output).toContain('static function choose(value:Float, radix:Float = 10):Float');
+    expect(output).toContain('return choose(1);');
+  });
+
   it('elects fixed array binding lowering and reports residual destructuring semantics', () => {
     const fixed = lower(
       'array-binding.ts',

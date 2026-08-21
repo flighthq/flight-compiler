@@ -382,6 +382,36 @@ describe('validateIrModuleStructure', () => {
     });
   });
 
+  it('validates overload source order and resolved-versus-implementation ABI arity', () => {
+    const valid = lower(
+      'overload-implementation-call.ts',
+      'function choose(value: number): number; function choose(value: number, radix?: number): number; function choose(value: number, radix = 10): number { return value; } export function read(): number { return choose(1); }',
+    );
+    expect(validateIrModuleStructure(valid)).toEqual({ kind: 'valid' });
+
+    for (const replacement of [
+      { implementationParameterCount: -1, overloadIndex: 0, resolvedParameterCount: 1 },
+      { implementationParameterCount: 2, overloadIndex: -1, resolvedParameterCount: 1 },
+      { implementationParameterCount: 2, overloadIndex: 0, resolvedParameterCount: -1 },
+      { implementationParameterCount: 2.5, overloadIndex: 0, resolvedParameterCount: 1 },
+      { implementationParameterCount: 3, overloadIndex: 0, resolvedParameterCount: 1 },
+    ]) {
+      const invalid = structuredClone(valid);
+      const declaration = invalid.declarations.find(
+        (candidate) => candidate.kind === 'function' && candidate.binding.name === 'read',
+      );
+      const statement = declaration?.kind === 'function' ? declaration.body[0] : undefined;
+      const expression = statement?.kind === 'return' ? statement.expression : undefined;
+      if (expression?.kind !== 'call') throw new Error('Expected overloaded call');
+      (expression.semantics as { overloadImplementation?: unknown }).overloadImplementation = replacement;
+
+      expect(validateIrModuleStructure(invalid)).toMatchObject({
+        failures: [expect.objectContaining({ path: expect.stringContaining('.overloadImplementation') })],
+        kind: 'invalid',
+      });
+    }
+  });
+
   it('validates contextual undefined option-value type evidence', () => {
     const valid = lower('contextual-undefined.ts', 'export function maybe(): number | undefined { return undefined; }');
     expect(validateIrModuleStructure(valid)).toEqual({ kind: 'valid' });

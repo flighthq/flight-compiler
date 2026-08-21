@@ -33,7 +33,7 @@ describe('createHaxeCompilerEmittedSourceParser', () => {
         ],
         parser,
       ),
-    ).toEqual({ checkedFiles: 1, parser: 'haxe' });
+    ).toEqual({ checkedFiles: 1, parser: 'haxe', skippedFiles: ['flight/Upper.HX', 'flight/value.rs'] });
     expect(seen).toEqual(['flighthq/math/Value.hx']);
   });
 });

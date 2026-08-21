@@ -84,6 +84,12 @@ interface TypeScriptAnalysis {
   sourceFile: ts.SourceFile;
 }
 
+interface TypeScriptCallSignatureResolution {
+  readonly implementation: ts.SignatureDeclaration | ts.JSDocSignature;
+  readonly overloadIndex?: number | undefined;
+  readonly resolved: ts.SignatureDeclaration | ts.JSDocSignature;
+}
+
 interface UnsupportedSyntaxFailure extends Error {
   kind: 'unsupported-syntax';
   node: ts.Node;
@@ -484,13 +490,14 @@ function lowerExpression(
   }
   if (ts.isCallExpression(node)) {
     const optional = node.questionDotToken !== undefined;
+    const signature = getTypeScriptCallSignatureResolution(node, context);
     return {
-      arguments: lowerTypeScriptCallArguments(node, context),
+      arguments: lowerTypeScriptCallArguments(node, signature, context),
       callee: lowerExpression(node.expression, context),
       kind: 'call',
       optional,
       semantics: {
-        ...lowerCallSemantics(node, context),
+        ...lowerCallSemantics(node, signature, context),
         ...(optional ? { optionalChain: createTypeScriptOptionalChainSemantics(node.expression, node, context) } : {}),
       },
       typeArguments: node.typeArguments?.map((type) => lowerType(type, context)) ?? [],
@@ -606,9 +613,12 @@ function lowerExpression(
   unsupported(node, `unsupported expression ${ts.SyntaxKind[node.kind]}`);
 }
 
-function lowerTypeScriptCallArguments(node: ts.CallExpression, context: LoweringContext): IrExpression[] {
-  const declaration = context.checker.getResolvedSignature(node)?.declaration;
-  const parameters = declaration && 'parameters' in declaration ? declaration.parameters.filter(ts.isParameter) : [];
+function lowerTypeScriptCallArguments(
+  node: ts.CallExpression,
+  signature: Readonly<TypeScriptCallSignatureResolution> | undefined,
+  context: LoweringContext,
+): IrExpression[] {
+  const parameters = signature?.resolved.parameters.filter(ts.isParameter) ?? [];
   return node.arguments.map((argument, index) => {
     if (ts.isSpreadElement(argument)) return lowerExpression(argument, context);
     const parameter = parameters[index];
@@ -884,10 +894,15 @@ function getTypeScriptTypeNodeIndexedReceivers(
   return undefined;
 }
 
-function lowerCallSemantics(node: ts.CallExpression, context: LoweringContext): IrCallSemantics {
+function lowerCallSemantics(
+  node: ts.CallExpression,
+  signature: Readonly<TypeScriptCallSignatureResolution> | undefined,
+  context: LoweringContext,
+): IrCallSemantics {
   const semantics: IrCallSemantics = {
-    ...getTypeScriptDefaultParameterCallSemantics(node, context),
-    ...getTypeScriptOptionalParameterCallSemantics(node, context),
+    ...getTypeScriptDefaultParameterCallSemantics(node, signature),
+    ...getTypeScriptOptionalParameterCallSemantics(node, signature, context),
+    ...getTypeScriptOverloadImplementationCallSemantics(signature),
   };
   const access = node.expression;
   const receiver = ts.isPropertyAccessExpression(access)
@@ -912,11 +927,10 @@ function lowerCallSemantics(node: ts.CallExpression, context: LoweringContext): 
 
 function getTypeScriptOptionalParameterCallSemantics(
   node: ts.CallExpression,
+  signature: Readonly<TypeScriptCallSignatureResolution> | undefined,
   context: LoweringContext,
 ): Pick<IrCallSemantics, 'optionalParameters'> {
-  const declaration = context.checker.getResolvedSignature(node)?.declaration;
-  if (!declaration || !('parameters' in declaration)) return {};
-  const parameters = declaration.parameters.filter(ts.isParameter);
+  const parameters = signature?.implementation.parameters.filter(ts.isParameter) ?? [];
   const optional = parameters.flatMap((parameter, index) =>
     parameter.questionToken && !parameter.initializer ? [index] : [],
   );
@@ -950,11 +964,9 @@ function getTypeScriptOptionalParameterCallSemantics(
 
 function getTypeScriptDefaultParameterCallSemantics(
   node: ts.CallExpression,
-  context: LoweringContext,
+  signature: Readonly<TypeScriptCallSignatureResolution> | undefined,
 ): Pick<IrCallSemantics, 'defaultParameters'> {
-  const declaration = context.checker.getResolvedSignature(node)?.declaration;
-  if (!declaration || !('parameters' in declaration)) return {};
-  const parameters = declaration.parameters.filter(ts.isParameter);
+  const parameters = signature?.implementation.parameters.filter(ts.isParameter) ?? [];
   const defaulted = parameters.flatMap((parameter, index) => (parameter.initializer ? [index] : []));
   if (defaulted.length === 0) return {};
   const dynamic = node.arguments.some(ts.isSpreadElement);
@@ -964,6 +976,38 @@ function getTypeScriptDefaultParameterCallSemantics(
       omitted: dynamic ? [] : defaulted.filter((index) => index >= node.arguments.length),
       parameterCount: parameters.length,
       providedArgumentCount: dynamic ? 'dynamic' : node.arguments.length,
+    },
+  };
+}
+
+function getTypeScriptCallSignatureResolution(
+  node: ts.CallExpression,
+  context: LoweringContext,
+): TypeScriptCallSignatureResolution | undefined {
+  const resolved = context.checker.getResolvedSignature(node)?.declaration;
+  if (!resolved) return undefined;
+  if (!ts.isFunctionDeclaration(resolved) || resolved.body || !resolved.name) {
+    return { implementation: resolved, resolved };
+  }
+  const symbol = context.checker.getSymbolAtLocation(resolved.name);
+  const declarations = symbol?.declarations?.filter(ts.isFunctionDeclaration) ?? [];
+  const implementation = declarations.find((declaration) => declaration.body !== undefined);
+  if (!implementation) {
+    return { implementation: resolved, resolved };
+  }
+  const overloadIndex = declarations.filter((declaration) => !declaration.body).indexOf(resolved);
+  return overloadIndex < 0 ? { implementation: resolved, resolved } : { implementation, overloadIndex, resolved };
+}
+
+function getTypeScriptOverloadImplementationCallSemantics(
+  signature: Readonly<TypeScriptCallSignatureResolution> | undefined,
+): Pick<IrCallSemantics, 'overloadImplementation'> {
+  if (!signature || signature.overloadIndex === undefined) return {};
+  return {
+    overloadImplementation: {
+      implementationParameterCount: signature.implementation.parameters.filter(ts.isParameter).length,
+      overloadIndex: signature.overloadIndex,
+      resolvedParameterCount: signature.resolved.parameters.filter(ts.isParameter).length,
     },
   };
 }

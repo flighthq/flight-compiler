@@ -84,6 +84,24 @@ describe('emitIrModuleRust', () => {
     expect(emitIrModuleRust(defaults.module).contents).toContain('factor: Option<f64>');
   });
 
+  it('emits one overload implementation and calls its expanded default ABI', () => {
+    const result = lower(
+      'overload-default.ts',
+      `
+        function choose(value: number): number;
+        function choose(value: number, radix?: number): number;
+        function choose(value: number, radix = 10): number { return value + radix; }
+        export function read(): number { return choose(1); }
+      `,
+    );
+    const output = emitIrModuleRust(result.module).contents;
+
+    expect(output.match(/fn choose/gu)).toHaveLength(1);
+    expect(output).toContain('fn choose(value: f64, radix: Option<f64>) -> f64');
+    expect(output).toContain('let radix = radix.unwrap_or_else(|| 10.0);');
+    expect(output).toContain('return choose(1.0, None);');
+  });
+
   it('elects fixed array binding lowering and reports residual destructuring semantics', () => {
     const fixed = lower(
       'array-binding.ts',
