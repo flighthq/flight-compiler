@@ -1,3 +1,4 @@
+import { createIrStatementValueCallSemantics } from '../../compiler-completion/src/index.js';
 import { analyzeIrModuleTraversal, getIrModuleTraversalPathValue } from '../../compiler-ir-traversal/src/index.js';
 import type {
   CompilerIrTraversalPath,
@@ -67,7 +68,7 @@ function createIrCallExpressionExtraArgumentErasure(
     kind: 'call',
     optional: false,
     semantics: {
-      statementValue: { asyncContext: 'inherit', completion: 'finalReturn', thisBinding: 'lexical' },
+      statementValue: createIrStatementValueCallSemantics(),
     },
     typeArguments: [],
   };

@@ -1913,7 +1913,12 @@ describe('lowerTypeScriptSource', () => {
       },
       kind: 'call',
       semantics: {
-        statementValue: { asyncContext: 'inherit', completion: 'finalReturn', thisBinding: 'lexical' },
+        statementValue: {
+          abruptCompletion: 'propagate',
+          asyncContext: 'inherit',
+          normalCompletion: 'final-return-value',
+          thisBinding: 'lexical',
+        },
       },
     });
   });

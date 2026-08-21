@@ -52,6 +52,7 @@ The repository follows Flight's package-per-domain convention. Internal workspac
 - `packages/compiler-inventory/`: read-only package, export-lane, symbol, and runtime-value analysis.
 - `packages/compiler-ir-traversal/`: typed, target-neutral structural traversal over IR modules and their nested node families.
 - `packages/compiler-ir-validation/`: structural integrity checks for target-neutral IR values.
+- `packages/compiler-completion/`: exact target-neutral normal and abrupt completion semantics.
 - `packages/compiler-provenance/`: normalization, provenance, and stable fingerprints.
 - `packages/compiler-runtime-contract/`: target-neutral ambient-symbol reachability and runtime-binding completeness.
 - `packages/compiler-semantic/`: TypeScript semantic analysis and neutral lowering.

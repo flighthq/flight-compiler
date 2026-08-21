@@ -3,6 +3,7 @@ import path from 'node:path';
 import ts from 'typescript';
 
 import { normalizePathPortable } from '../../compiler-canonical-form/src/index.js';
+import { createIrStatementValueCallSemantics } from '../../compiler-completion/src/index.js';
 import { fingerprintTypeScriptNode } from '../../compiler-provenance/src/index.js';
 import {
   createIrObjectCopySemantics,
@@ -1747,7 +1748,7 @@ function lowerTypeScriptDestructuringAssignmentExpression(
     kind: 'call',
     optional: false,
     semantics: {
-      statementValue: { asyncContext: 'inherit', completion: 'finalReturn', thisBinding: 'lexical' },
+      statementValue: createIrStatementValueCallSemantics(),
     },
     typeArguments: [],
   };

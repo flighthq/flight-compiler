@@ -67,6 +67,10 @@ const packageRules: Readonly<Record<string, PackageRule>> = {
     description: 'Rust lowering, naming, and source emission backend',
     devDependencies: ['compiler-semantic'],
   },
+  'compiler-completion': {
+    dependencies: ['compiler-types'],
+    description: 'Target-neutral statement and expression completion semantics',
+  },
   'compiler-emission': {
     dependencies: ['compiler-canonical-form', 'compiler-types'],
     description: 'Target-neutral source-emission infrastructure',
@@ -81,13 +85,14 @@ const packageRules: Readonly<Record<string, PackageRule>> = {
     devDependencies: ['compiler-semantic'],
   },
   'compiler-ir-validation': {
-    dependencies: ['compiler-provenance', 'compiler-types'],
+    dependencies: ['compiler-completion', 'compiler-provenance', 'compiler-types'],
     description: 'Target-neutral intermediate-representation structural validation',
     devDependencies: ['compiler-semantic'],
   },
   'compiler-lowering': {
     dependencies: [
       'compiler-canonical-form',
+      'compiler-completion',
       'compiler-ir-traversal',
       'compiler-ir-validation',
       'compiler-structural',
@@ -126,6 +131,7 @@ const packageRules: Readonly<Record<string, PackageRule>> = {
   'compiler-semantic': {
     dependencies: [
       'compiler-canonical-form',
+      'compiler-completion',
       'compiler-ir-traversal',
       'compiler-provenance',
       'compiler-structural',

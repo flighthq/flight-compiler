@@ -1,14 +1,14 @@
 {
-  "name": "@flighthq/compiler-semantic",
+  "name": "@flighthq/compiler-completion",
   "version": "0.0.0",
-  "description": "TypeScript semantic analysis and target-neutral lowering",
+  "description": "Target-neutral statement and expression completion semantics",
   "author": "Joshua Granick and other contributors",
   "license": "MIT",
   "private": true,
   "repository": {
     "type": "git",
     "url": "https://github.com/flighthq/flight-compiler.git",
-    "directory": "packages/compiler-semantic"
+    "directory": "packages/compiler-completion"
   },
   "type": "module",
   "sideEffects": false,
@@ -18,12 +18,6 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@flighthq/compiler-canonical-form": "*",
-    "@flighthq/compiler-completion": "*",
-    "@flighthq/compiler-ir-traversal": "*",
-    "@flighthq/compiler-provenance": "*",
-    "@flighthq/compiler-structural": "*",
-    "@flighthq/compiler-types": "*",
-    "typescript": "5.9.3"
+    "@flighthq/compiler-types": "*"
   }
 }

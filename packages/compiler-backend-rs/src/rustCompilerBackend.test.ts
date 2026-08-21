@@ -2,6 +2,7 @@ import ts from 'typescript';
 
 import { isBackendEmissionFailure } from '../../compiler-emission/src/index.js';
 import { lowerTypeScriptSource } from '../../compiler-semantic/src/index.js';
+import type { IrStatement } from '../../compiler-types/src/index.js';
 import { createRustCompilerBackend, emitIrModuleRust } from './rustCompilerBackend.js';
 
 function lower(file: string, source: string) {
@@ -513,7 +514,39 @@ describe('emitIrModuleRust', () => {
 
     expect(output).toContain('let destructuring_assignment_value: (f64,) = tuple;');
     expect(output).toContain('value = destructuring_assignment_value.0;');
-    expect(output).toContain('destructuring_assignment_value })');
+    expect(output).toContain('destructuring_assignment_value }');
+    expect(output).not.toContain('({ let destructuring_assignment_value');
+  });
+
+  it('propagates abrupt completion from an idiomatic Rust statement-value block', () => {
+    const result = lower(
+      'assignment-abrupt-completion.ts',
+      'export function assign(tuple: [number]): [number] { let value = 0; return ([value] = tuple); }',
+    );
+    const declaration = result.module.declarations[0];
+    const returned = declaration?.kind === 'function' ? declaration.body[1] : undefined;
+    const carrier = returned?.kind === 'return' ? returned.expression : undefined;
+    if (carrier?.kind !== 'call' || carrier.callee.kind !== 'function') {
+      throw new Error('Expected statement-value carrier');
+    }
+    const body = carrier.callee.body as IrStatement[];
+    body.unshift({
+      condition: { kind: 'literal', value: true },
+      consequent: {
+        expression: {
+          elements: [{ expression: { kind: 'literal', value: 7 }, optional: false }],
+          kind: 'tuple',
+        },
+        kind: 'return',
+      },
+      kind: 'if',
+    });
+
+    const output = emitIrModuleRust(result.module).contents;
+
+    expect(output).toContain('return { if true {');
+    expect(output).toContain('return (7.0,);');
+    expect(output).not.toContain('(|');
   });
 
   it('clones fixed tuple spread fields through collision-free sequential evaluation carriers', () => {

@@ -691,7 +691,7 @@ function emitStatementValueExpressionRust(
     emissionError(context, 'statement-value call requires a final value return');
   }
   const statements = emitStatements(expression.callee.body.slice(0, -1), context);
-  return `({ ${[...statements, emitExpression(completion.expression, context)].join(' ')} })`;
+  return `{ ${[...statements, emitExpression(completion.expression, context)].join(' ')} }`;
 }
 
 function emitStatement(statement: Readonly<IrStatement>, context: EmitContext): string[] {

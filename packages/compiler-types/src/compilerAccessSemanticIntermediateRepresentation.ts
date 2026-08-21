@@ -84,8 +84,9 @@ export interface IrParameterProvidedArgumentInvocationSemantics {
 }
 
 export interface IrStatementValueCallSemantics {
+  readonly abruptCompletion: 'propagate';
   readonly asyncContext: 'inherit';
-  readonly completion: 'finalReturn';
+  readonly normalCompletion: 'final-return-value';
   readonly thisBinding: 'lexical';
 }
 

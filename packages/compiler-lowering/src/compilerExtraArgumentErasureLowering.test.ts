@@ -105,7 +105,12 @@ function expectIrCallExpressionStatementValueCarrier(expression: Readonly<IrExpr
   }
   expect(expression.arguments).toEqual([]);
   expect(expression.semantics).toEqual({
-    statementValue: { asyncContext: 'inherit', completion: 'finalReturn', thisBinding: 'lexical' },
+    statementValue: {
+      abruptCompletion: 'propagate',
+      asyncContext: 'inherit',
+      normalCompletion: 'final-return-value',
+      thisBinding: 'lexical',
+    },
   });
   expect(expression.callee.body.slice(0, -1)).toHaveLength(2);
   expect(expression.callee.body.at(-1)?.kind).toBe('return');

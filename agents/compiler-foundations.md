@@ -14,19 +14,22 @@ compiler-canonical-form + compiler-types
   <- compiler-emission
   <- compiler-runtime-contract
 
+compiler-types
+  <- compiler-completion
+
 compiler-canonical-form + compiler-provenance + compiler-types
   <- compiler-patch
 
-compiler-provenance + compiler-types
+compiler-completion + compiler-provenance + compiler-types
   <- compiler-ir-validation
 
-compiler-ir-validation + compiler-structural + compiler-types
+compiler-completion + compiler-ir-validation + compiler-structural + compiler-types
   <- compiler-lowering
 
 compiler-canonical-form + compiler-types + compiler-provenance
   <- compiler-inventory
 
-compiler-canonical-form + compiler-ir-traversal + compiler-provenance + compiler-structural + compiler-types
+compiler-canonical-form + compiler-completion + compiler-ir-traversal + compiler-provenance + compiler-structural + compiler-types
   <- compiler-semantic
 
 compiler-canonical-form + compiler-ir-traversal + compiler-types
@@ -43,13 +46,14 @@ canonical form + types + semantic + patch + emission
   <- tool-compiler
 ```
 
-The first five packages are the bedrock review set:
+The bedrock review set is:
 
 1. `compiler-types` is the vocabulary, not an implementation utility package.
 2. `compiler-canonical-form` defines host-independent text order and portable path form without owning domain identity policy.
 3. `compiler-provenance` answers whether two source identities are the same.
 4. `compiler-patch` applies explicit, fingerprint-bound changes and records what happened.
 5. `compiler-emission` defines portable output and inspectable backend/invariant failures.
+6. `compiler-completion` defines how neutral normal and abrupt completion survive expression carriers and, incrementally, statement composition.
 
 Inventory and semantic lowering are fundamental compiler capabilities, but they are not dependency-floor primitives. They consume source identity and the shared vocabulary, and should be reviewed only after those inputs are trustworthy.
 
@@ -95,6 +99,7 @@ Strengths:
 - Object expressions preserve ordered members and distinguish ordinary construction from spread-bearing construction through an exact target-neutral copy-semantics contract.
 - Class constructors distinguish absence from an explicit empty constructor; class and interface heritage accepts named type references rather than arbitrary types.
 - Class constructors retain ordered overload signatures separately from one executable implementation, while every resolved invocation distinguishes selected overload arity, implementation ABI arity, final rest position, and exact static-or-dynamic argument count. Fixed extra arguments on direct calls are evaluated left-to-right into source-identified carriers before target-neutral erasure; receiver-bearing, optional-chain, spread, and explicit-undefined default cases remain explicit refusals until a semantics-preserving transform owns them.
+- Statement-value calls carry exact immutable evidence that their artificial function is a lexical, synchronous-context block: normal completion uses the final return value and `break`, `continue`, `return`, and `throw` propagate rather than being captured by a target closure.
 - Previously anonymous constructor, enum-member, function-type-parameter, tuple-element, visibility, type-alias, and type-reference contracts have stable domain names for focused testing and reuse.
 - Assignment, binary, prefix-unary, and postfix-unary operators have closed target-neutral vocabularies in a focused flat contract; postfix position cannot carry a prefix-only operator.
 - TypeScript token normalization and both target emission decisions are exhaustive over those vocabularies, so a TypeScript upgrade or IR addition fails typecheck until every producer and backend chooses emit or refuse.
@@ -170,6 +175,12 @@ Generic structural application uses one versioned substitution plan across seman
 
 Structural object construction has one versioned module analysis before either backend emits source. It resolves closed anonymous types, interfaces, generic aliases, and sequential defaults; reports computed and spread membership, duplicate writes, missing and unknown properties, open or unavailable names, invalid applications, non-record targets, and alias cycles through stable codes, dispositions, and exact IR paths; and keeps reports deeply immutable. Incompatible, indeterminate, and requires-lowering evidence remain distinct so target capability does not leak into the analysis. Haxe and Rust consume the same report at their preflight boundary, while imported targets that need future cross-module resolution remain explicitly indeterminate rather than falsely incompatible.
 
+### `compiler-completion`
+
+Status: narrow bedrock with its first expression-carrier contract locked.
+
+The package constructs and recognizes statement-value semantics without importing semantic lowering, target emission, or TypeScript. Its exact record distinguishes normal final-return value selection from abrupt-completion propagation, inherited async context, and lexical `this`; its shared carrier guard rejects optional, generic, parameterized, bound, expression-bodied, argument-bearing, mixed-semantics, non-final, and valueless-return lookalikes. Semantic destructuring and lowering-time extra-argument erasure use the one immutable constructor, structural IR validation uses the guard, and Rust emits a native block tail expression so propagated `return` is not trapped in a closure. General statement-list completion and `finally` replacement remain the next primitives.
+
 Spread-bearing object expressions carry an independently constructed immutable copy-semantics record. It locks JavaScript's left-to-right single evaluation, nullish skipping, own enumerable string-and-symbol key set, one `Get` per key in own-key order, `CreateDataProperty` target writes, and later-value replacement without changing an existing key position. Semantic lowering retains the ordered source operations—including duplicate writes and computed key-before-value effects—and structural IR validation requires exact semantics if and only if an object contains spread. Both backends continue to refuse source emission until they can implement the complete contract; shared nominal storage, target copy representation, and compatibility diagnostics remain separate decisions.
 
 ## Package isolation review
@@ -179,12 +190,13 @@ Each workspace passes its own strict typecheck and Vitest target. The package bo
 | Package | Isolation conclusion | Current robustness boundary |
 | --- | --- | --- |
 | `compiler-types` | Keep independent as the dependency-free vocabulary floor. | Strict typecheck and focused composition tests cover useful relationships; identity, declaration/type separation and cardinality, closed operator tokens and static value domains, source location, value/type binding provenance, diagnostics/failures, and readonly collection boundaries are explicit, while declaration merging and complete expression/statement coverage remain open. |
+| `compiler-completion` | Keep independent as the target-neutral normal/abrupt completion floor. | Exact immutable statement-value semantics, all carrier-shape counterexamples, propagated abrupt completion, final normal value identity, malformed values, input independence, and zero unreached arms are covered; general statement composition and `finally` replacement remain open. |
 | `compiler-canonical-form` | Keep independent as the dependency-free host-independent canonical-form floor. | Exact text equality and order, empty and prefix values, ASCII case, non-ASCII and surrogate text, antisymmetry, transitivity, caller-owned Unicode normalization, and portable separator form are direct-tested; package health prevents local comparator, locale-sensitive ordering, and path-form regressions. |
 | `compiler-provenance` | Keep independent as one narrow identity primitive. | Equivalence, counterexample, empty, Unicode, path, line-ending, raw-text, and TypeScript-version behavior are locked. |
 | `compiler-patch` | Keep independent because patch identity and auditing are a separate lifecycle. | All operations and failure codes, deterministic ordering, backend skipping, and caller-input immutability are exercised. |
 | `compiler-emission` | Keep independent as the portable emitted-file and backend-failure seam. | Path/content normalization, host-path rejection, portable path and target-name collision identity, fixed-versus-renamable lexical allocation, per-file parser syntax checks, batch target compilation smoke checks, indentation boundaries, and tagged failure guards are exercised. |
-| `compiler-ir-validation` | Keep independent as the structural and lexical integrity boundary for target-neutral IR values. | Module and binding identity, legal introduction roles, exact source fingerprints, ancestor-scope reachability across module/declaration/function/block regions, compound-type arity, parameter cardinality, and every discriminated IR family are checked without target policy or mutation. |
-| `compiler-lowering` | Keep independent as the backend-elected library of neutral IR-to-IR transforms. | Pass ordering, shared structural validation and generic substitution, pass-specific postconditions, explicit idempotence verification, module identity, immutability, stable pass-named failures, initializer scope, omitted conditions, discarded numeric updates, and continue-correct nested-loop behavior are direct-tested with zero unreached arms. |
+| `compiler-ir-validation` | Keep independent as the structural and lexical integrity boundary for target-neutral IR values. | Module and binding identity, legal introduction roles, exact source fingerprints, shared statement-value carrier validity, ancestor-scope reachability across module/declaration/function/block regions, compound-type arity, parameter cardinality, and every discriminated IR family are checked without target policy or mutation. |
+| `compiler-lowering` | Keep independent as the backend-elected library of neutral IR-to-IR transforms. | Pass ordering, shared structural validation, generic substitution and statement-value semantics, pass-specific postconditions, explicit idempotence verification, module identity, immutability, stable pass-named failures, initializer scope, omitted conditions, discarded numeric updates, and continue-correct nested-loop behavior are direct-tested with zero unreached arms. |
 | `compiler-runtime-contract` | Keep independent as the target-neutral ambient-symbol and constructor-ABI completeness seam. | Exact type/value-space source identities and direct ambient constructor arities are collected across reachable IR. Symbol bindings and constructor ABIs have independent versioned plans; duplicate, invalid, missing, fixed, and dynamic constructor decisions are deterministic, while target names and runtime implementations stay out. |
 | `compiler-structural` | Keep independent as structural type identity and analysis above canonical form. | Closed object identity, every IR type family, property/compound order equivalence, semantic counterexamples, generic alpha-equivalence and application, sequential defaults, nested shadowing, tagged malformed-input failures, deterministic cross-module occurrence inventory, immutable object-copy semantics, path-addressed construction compatibility, empty input, and Rust interning reuse are covered; shared nominal storage, target copy representation, cross-module target resolution, and value-type assignability remain open. |
 | `compiler-inventory` | Keep independent as the first read-only composition above identity. | Package discovery yields validated, portable, deterministically ordered manifest, dependency, bin, production-import, host-module, evidence-backed tooling-exclusion, and checker-resolved production host-endpoint facts; every manifest, project, Git, export-graph, source-resolution, runtime-classification, SDK, endpoint-receiver, and exclusion failure is tagged for message-independent handling. Host receiver classification enters through an explicit neutral capability; target runtime implementation coverage remains downstream. |
@@ -286,18 +298,26 @@ The latest five-iteration compiler ABI batch completed:
 4. Version direct ambient constructor arities independently under `flight-runtime-constructor-abi/1`, with deterministic completeness and target-owned Haxe and Rust plans.
 5. Separate per-file emitted-source syntax parsing from one downstream target compilation smoke over the complete normalized supported file set.
 
-The active ten iterations, subject to recalibration after the first five, are:
+The latest five-iteration structural-construction and completion batch completed:
 
 1. **Complete:** give structurally equivalent shapes one canonical identity across module boundaries.
 2. **Complete:** model object-spread copy order, overwrite behavior, and effect preservation in neutral lowering.
 3. **Complete:** preserve generic substitution through structural record construction and emission.
 4. **Complete:** produce structured structural-compatibility diagnostics rather than target-specific late failures.
-5. Emit idiomatic Rust statement-value carriers without changing JavaScript completion semantics.
-6. Model class field and constructor initialization order as a target-neutral plan.
-7. Deepen class layout, inheritance, and implementation semantics from demonstrated source shapes.
-8. Define async task completion and `await` semantics before either backend chooses runtime syntax.
-9. Define thrown values, catch bindings, and `finally` completion replacement across targets.
-10. Give module facades and re-export emission stable cross-module identity.
+5. **Complete:** emit idiomatic Rust statement-value carriers without changing JavaScript completion semantics.
+
+The recalibrated next ten iterations are:
+
+1. Define a shared normal, break, continue, return, and throw completion algebra with statement-list composition.
+2. Define `finally` completion replacement over that algebra before any target lowers exception control flow.
+3. Model class field and constructor initialization order as a target-neutral plan.
+4. Deepen class layout, inheritance, and implementation semantics from demonstrated source shapes.
+5. Define async task completion and `await` semantics before either backend chooses runtime syntax.
+6. Define thrown values and catch bindings on the shared completion floor.
+7. Give module facades and re-export emission stable cross-module identity.
+8. Resolve imported structural construction targets across an explicit module set.
+9. Add target-neutral structural value-type assignability diagnostics above field-set compatibility.
+10. Define Rust ownership evidence for values that cross generated carriers, records, and closures.
 
 ## Freeze rule
 

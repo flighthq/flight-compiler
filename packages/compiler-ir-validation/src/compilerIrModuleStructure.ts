@@ -1,3 +1,4 @@
+import { isIrCallExpressionStatementValueCarrier } from '../../compiler-completion/src/index.js';
 import { isCompilerSourceFingerprint } from '../../compiler-provenance/src/index.js';
 import type {
   CompilerIrModuleValidation,
@@ -415,7 +416,7 @@ function visitExpression(expression: Readonly<IrExpression>, path: string, state
       validateIrExtraArgumentErasureEvidence(expression, path, state);
       validateIrOptionalParameterInvocationEvidence(expression, path, state);
       validateIrOverloadImplementationInvocationEvidence(expression, path, state);
-      if (expression.semantics.statementValue && !isIrCallExpressionStatementValueCarrierValid(expression)) {
+      if (expression.semantics.statementValue && !isIrCallExpressionStatementValueCarrier(expression)) {
         addFailure(
           'invalid-node-shape',
           `${path}.semantics.statementValue`,
@@ -1335,26 +1336,6 @@ function orderIrStaticForInKeys(keys: readonly string[]): readonly string[] {
 }
 
 const compilerIrPropertyKeyCoercions = new Set(['number', 'string', 'symbol', 'toPropertyKey']);
-
-function isIrCallExpressionStatementValueCarrierValid(
-  expression: Readonly<Extract<IrExpression, { kind: 'call' }>>,
-): boolean {
-  if (
-    expression.callee.kind !== 'function' ||
-    expression.callee.async ||
-    expression.callee.binding !== undefined ||
-    expression.callee.expression !== undefined ||
-    expression.callee.parameters.length > 0 ||
-    expression.callee.typeParameters.length > 0 ||
-    expression.arguments.length > 0 ||
-    expression.optional ||
-    expression.typeArguments.length > 0
-  ) {
-    return false;
-  }
-  const completion = expression.callee.body.at(-1);
-  return completion?.kind === 'return' && completion.expression !== undefined;
-}
 
 function visitVariable(
   variable: Readonly<IrVariable>,
