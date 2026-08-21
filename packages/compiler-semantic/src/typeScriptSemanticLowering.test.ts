@@ -99,6 +99,72 @@ describe('lowerTypeScriptSource', () => {
     ]);
   });
 
+  it('represents every export topology and isolates rejected export statements', () => {
+    const topology = lower(
+      'export-topology.ts',
+      `
+        export type { Remote as PublicRemote } from './remote.js';
+        export * as namespace from './namespace.js';
+        export type * from './types.js';
+      `,
+    );
+
+    expect(topology.diagnostics).toEqual([]);
+    expect(topology.module.exports).toEqual([
+      {
+        exported: 'PublicRemote',
+        imported: 'Remote',
+        kind: 'reexport',
+        specifier: './remote.js',
+        typeOnly: true,
+      },
+      { exported: 'namespace', kind: 'namespace', specifier: './namespace.js', typeOnly: false },
+      { kind: 'all', specifier: './types.js', typeOnly: true },
+    ]);
+
+    const defaultFunction = lower('default-function.ts', 'export default function create(): number { return 1; }');
+    const functionDeclaration = defaultFunction.module.declarations[0];
+    if (functionDeclaration?.kind !== 'function') throw new Error('Expected a default function declaration');
+    expect(defaultFunction.module.exports).toEqual([
+      {
+        binding: functionDeclaration.binding,
+        exported: 'default',
+        kind: 'local',
+        typeOnly: false,
+      },
+    ]);
+
+    const defaultClass = lower('default-class.ts', 'export default class Box {}');
+    const classDeclaration = defaultClass.module.declarations[0];
+    if (classDeclaration?.kind !== 'class') throw new Error('Expected a default class declaration');
+    expect(defaultClass.module.exports).toEqual([
+      {
+        binding: classDeclaration.binding,
+        exported: 'default',
+        kind: 'local',
+        typeOnly: false,
+      },
+    ]);
+
+    const rejected = lower(
+      'rejected-exports.ts',
+      'const value = 1; export = value; export { missing }; export default value;',
+    );
+    expect(rejected.diagnostics.map((diagnostic) => diagnostic.message)).toEqual([
+      'export = assignments are not ECMAScript exports',
+      'export binding missing cannot be resolved',
+    ]);
+    expect(rejected.module.exports).toEqual([
+      {
+        expression: {
+          kind: 'identifier',
+          reference: { binding: rejected.module.declarations[0]?.binding, kind: 'binding' },
+        },
+        kind: 'default',
+      },
+    ]);
+  });
+
   it('links type-only local exports to their source-backed declaration identity', () => {
     const result = lower('types.ts', 'type Value = number; export type { Value };');
 
