@@ -597,9 +597,6 @@ function emitObjectExpressionRust(
   if (expression.members.some((member) => member.kind === 'computedProperty')) {
     emissionError(context, 'computed object properties require Rust property-key lowering');
   }
-  if (expression.type.kind === 'named' && expression.type.typeArguments.length > 0) {
-    emissionError(context, 'generic structural construction requires Rust type-argument lowering');
-  }
   if (expression.type.kind !== 'named' && expression.type.kind !== 'object') {
     emissionError(context, 'object construction requires closed target-type evidence');
   }

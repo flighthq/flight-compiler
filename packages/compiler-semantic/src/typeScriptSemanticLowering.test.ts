@@ -151,6 +151,61 @@ describe('lowerTypeScriptSource', () => {
     );
   });
 
+  it('substitutes generic interfaces, aliases, and defaults through nested construction targets', () => {
+    const result = lower(
+      'generic-object-construction.ts',
+      `
+        interface Item { label: string }
+        interface Box<Value> { value: Value }
+        interface DefaultBox<Value = Item> { value: Value }
+        type Envelope<Value> = { box: Box<Value> };
+        export function create(): Envelope<Item> {
+          return { box: { value: { label: 'nested' } } };
+        }
+        export function createDefault(): DefaultBox {
+          return { value: { label: 'defaulted' } };
+        }
+      `,
+    );
+    const constructions = result.module.declarations
+      .filter((declaration) => declaration.kind === 'function')
+      .map((declaration) => declaration.body[0])
+      .map((statement) => (statement?.kind === 'return' ? statement.expression : undefined));
+    const envelope = constructions[0];
+    const defaultBox = constructions[1];
+    if (envelope?.kind !== 'object' || defaultBox?.kind !== 'object') {
+      throw new Error('Expected generic object constructions');
+    }
+    const box = envelope.members[0];
+    const defaultValue = defaultBox.members[0];
+    if (
+      box?.kind !== 'property' ||
+      box.value.kind !== 'object' ||
+      box.value.members[0]?.kind !== 'property' ||
+      box.value.members[0].value.kind !== 'object' ||
+      defaultValue?.kind !== 'property' ||
+      defaultValue.value.kind !== 'object'
+    ) {
+      throw new Error('Expected substituted nested record values');
+    }
+
+    expect(box.value.type).toMatchObject({
+      kind: 'named',
+      reference: { binding: { name: 'Box' } },
+      typeArguments: [{ reference: { binding: { name: 'Item' } } }],
+    });
+    expect(box.value.members[0].value.type).toMatchObject({
+      kind: 'named',
+      reference: { binding: { name: 'Item' } },
+      typeArguments: [],
+    });
+    expect(defaultValue.value.type).toMatchObject({
+      kind: 'named',
+      reference: { binding: { name: 'Item' } },
+      typeArguments: [],
+    });
+  });
+
   it('resolves enum auto-increment values after explicit discriminants', () => {
     const result = lower('mode.ts', 'export enum Mode { A = 1, B, C = Mode.A << 3, D }');
 

@@ -26,6 +26,22 @@ describe('createHaxeCompilerBackend', () => {
 });
 
 describe('emitIrModuleHaxe', () => {
+  it('constructs generic structural records with substituted nested target types', () => {
+    const result = lower(
+      'generic-object.ts',
+      `
+        interface Item { label: string }
+        interface Box<Value> { value: Value; optional?: Value }
+        export function create(): Box<Item> { return { value: { label: 'flight' } }; }
+      `,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('typedef Box<Value> = { value:Value, ?optional:Value };');
+    expect(output).toContain('public static function create():Box<Item>');
+    expect(output).toContain('return { value: { label: "flight" } };');
+  });
+
   it('refuses optional nullable parameters until Haxe preserves distinct null and undefined sentinels', () => {
     const result = lower('optional-nullable.ts', 'export function choose(value?: number | null): void { value; }');
 

@@ -1,14 +1,19 @@
 import { isDeepStrictEqual } from 'node:util';
 
 import { analyzeIrModuleTraversal } from '../../compiler-ir-traversal/src/index.js';
+import {
+  createIrTypeParameterSubstitutionPlan,
+  isCompilerStructuralTypeSubstitutionFailure,
+  resolveIrTypeStructuralSubstitution,
+} from '../../compiler-structural/src/index.js';
 import type {
   CompilerLoweringPass,
+  CompilerStructuralTypeSubstitutionPlan,
   IrInterfaceDeclaration,
   IrModule,
   IrObjectTypeProperty,
   IrType,
   IrTypeBindingIdentity,
-  IrTypeParameter,
   IrTypeReference,
 } from '../../compiler-types/src/index.js';
 import { createCompilerLoweringFailure } from './compilerLoweringPass.js';
@@ -60,7 +65,12 @@ function lowerIrInterfaceDeclarationInheritance(
   context: InterfaceInheritanceLoweringContext,
 ): IrInterfaceDeclaration {
   const inherited = declaration.extends.length > 0;
-  const properties = getIrInterfaceDeclarationPropertiesFlattened(declaration, new Map(), new Set(), context);
+  const properties = getIrInterfaceDeclarationPropertiesFlattened(
+    declaration,
+    createIrTypeParameterSubstitutionPlan([], []),
+    new Set(),
+    context,
+  );
   return {
     ...declaration,
     extends: [],
@@ -72,7 +82,7 @@ function lowerIrInterfaceDeclarationInheritance(
 
 function getIrInterfaceDeclarationPropertiesFlattened(
   declaration: Readonly<IrInterfaceDeclaration>,
-  substitutions: ReadonlyMap<string, Readonly<IrType>>,
+  substitutions: Readonly<CompilerStructuralTypeSubstitutionPlan>,
   ancestors: ReadonlySet<string>,
   context: InterfaceInheritanceLoweringContext,
 ): readonly IrObjectTypeProperty[] {
@@ -86,7 +96,7 @@ function getIrInterfaceDeclarationPropertiesFlattened(
   const properties: IrObjectTypeProperty[] = [];
   for (const reference of declaration.extends) {
     const base = getIrInterfaceDeclarationBase(reference, declaration, context);
-    const baseSubstitutions = getIrInterfaceTypeSubstitutions(reference, base, substitutions, context);
+    const baseSubstitutions = getIrInterfaceTypeSubstitutionPlan(reference, base, substitutions, context);
     for (const property of getIrInterfaceDeclarationPropertiesFlattened(
       base,
       baseSubstitutions,
@@ -98,7 +108,7 @@ function getIrInterfaceDeclarationPropertiesFlattened(
   }
   for (const property of declaration.properties) {
     addIrInterfacePropertyFlattened(
-      { ...property, type: substituteIrTypeInterfaceInheritance(property.type, substitutions) },
+      { ...property, type: resolveIrTypeStructuralSubstitution(property.type, substitutions) },
       declaration,
       properties,
       context,
@@ -128,34 +138,36 @@ function getIrInterfaceDeclarationBase(
   return base;
 }
 
-function getIrInterfaceTypeSubstitutions(
+function getIrInterfaceTypeSubstitutionPlan(
   reference: Readonly<IrTypeReference>,
   declaration: Readonly<IrInterfaceDeclaration>,
-  outerSubstitutions: ReadonlyMap<string, Readonly<IrType>>,
+  outerSubstitutions: Readonly<CompilerStructuralTypeSubstitutionPlan>,
   context: InterfaceInheritanceLoweringContext,
-): ReadonlyMap<string, Readonly<IrType>> {
-  if (reference.typeArguments.length > declaration.typeParameters.length) {
-    return failIrInterfaceInheritanceLowering(
-      context.module,
-      `interface ${declaration.binding.name} receives too many heritage type arguments`,
+): CompilerStructuralTypeSubstitutionPlan {
+  try {
+    return createIrTypeParameterSubstitutionPlan(
+      declaration.typeParameters,
+      reference.typeArguments.map((argument) => resolveIrTypeStructuralSubstitution(argument, outerSubstitutions)),
     );
+  } catch (error) {
+    if (isCompilerStructuralTypeSubstitutionFailure(error)) {
+      if (error.code === 'too-many-type-arguments') {
+        return failIrInterfaceInheritanceLowering(
+          context.module,
+          `interface ${declaration.binding.name} receives too many heritage type arguments`,
+        );
+      }
+      if (error.code === 'missing-type-argument') {
+        const index = typeof error.path[1] === 'number' ? error.path[1] : -1;
+        const parameter = declaration.typeParameters[index];
+        return failIrInterfaceInheritanceLowering(
+          context.module,
+          `interface ${declaration.binding.name} requires heritage type argument ${parameter?.binding.name ?? 'unknown'}`,
+        );
+      }
+    }
+    throw error;
   }
-  const substitutions = new Map<string, Readonly<IrType>>();
-  declaration.typeParameters.forEach((parameter, index) => {
-    const argument = reference.typeArguments[index];
-    if (argument) {
-      substitutions.set(parameter.binding.id, substituteIrTypeInterfaceInheritance(argument, outerSubstitutions));
-      return;
-    }
-    if (!parameter.default) {
-      failIrInterfaceInheritanceLowering(
-        context.module,
-        `interface ${declaration.binding.name} requires heritage type argument ${parameter.binding.name}`,
-      );
-    }
-    substitutions.set(parameter.binding.id, substituteIrTypeInterfaceInheritance(parameter.default, substitutions));
-  });
-  return substitutions;
 }
 
 function addIrInterfacePropertyFlattened(
@@ -175,97 +187,6 @@ function addIrInterfacePropertyFlattened(
       `interface ${declaration.binding.name} inherits incompatible property ${property.name}`,
     );
   }
-}
-
-function substituteIrTypeInterfaceInheritance(
-  type: Readonly<IrType>,
-  substitutions: ReadonlyMap<string, Readonly<IrType>>,
-): IrType {
-  if (
-    type.kind === 'named' &&
-    type.reference.kind === 'binding' &&
-    type.reference.path.length === 0 &&
-    type.reference.binding.kind === 'typeParameter'
-  ) {
-    const substitution = substitutions.get(type.reference.binding.id);
-    if (substitution) return structuredClone(substitution);
-  }
-  switch (type.kind) {
-    case 'array':
-      return { ...type, element: substituteIrTypeInterfaceInheritance(type.element, substitutions) };
-    case 'function':
-      return {
-        ...type,
-        parameters: type.parameters.map((parameter) => ({
-          ...parameter,
-          type: substituteIrTypeInterfaceInheritance(parameter.type, substitutions),
-        })),
-        returns: substituteIrTypeInterfaceInheritance(type.returns, substitutions),
-        typeParameters: type.typeParameters.map((parameter) =>
-          substituteIrTypeParameterInterfaceInheritance(parameter, substitutions),
-        ),
-      };
-    case 'indexedAccess':
-      return {
-        ...type,
-        index: substituteIrTypeInterfaceInheritance(type.index, substitutions),
-        object: substituteIrTypeInterfaceInheritance(type.object, substitutions),
-      };
-    case 'intersection': {
-      const types = type.types.map((member) => substituteIrTypeInterfaceInheritance(member, substitutions));
-      return { ...type, types: [types[0]!, types[1]!, ...types.slice(2)] };
-    }
-    case 'keyof':
-      return { ...type, type: substituteIrTypeInterfaceInheritance(type.type, substitutions) };
-    case 'named':
-      return {
-        ...type,
-        typeArguments: type.typeArguments.map((argument) =>
-          substituteIrTypeInterfaceInheritance(argument, substitutions),
-        ),
-      };
-    case 'object':
-      return {
-        ...type,
-        properties: type.properties.map((property) => ({
-          ...property,
-          type: substituteIrTypeInterfaceInheritance(property.type, substitutions),
-        })),
-      };
-    case 'tuple':
-      return {
-        ...type,
-        elements: type.elements.map((element) => ({
-          ...element,
-          type: substituteIrTypeInterfaceInheritance(element.type, substitutions),
-        })),
-      };
-    case 'union': {
-      const types = type.types.map((member) => substituteIrTypeInterfaceInheritance(member, substitutions));
-      return { ...type, types: [types[0]!, types[1]!, ...types.slice(2)] };
-    }
-    case 'literal':
-    case 'never':
-    case 'null':
-    case 'primitive':
-    case 'typeOf':
-    case 'undefined':
-    case 'unknown':
-      return type;
-  }
-}
-
-function substituteIrTypeParameterInterfaceInheritance(
-  parameter: Readonly<IrTypeParameter>,
-  substitutions: ReadonlyMap<string, Readonly<IrType>>,
-): IrTypeParameter {
-  return {
-    ...parameter,
-    ...(parameter.constraint
-      ? { constraint: substituteIrTypeInterfaceInheritance(parameter.constraint, substitutions) }
-      : {}),
-    ...(parameter.default ? { default: substituteIrTypeInterfaceInheritance(parameter.default, substitutions) } : {}),
-  };
 }
 
 function rebindIrInterfacePropertyTypeParameters(

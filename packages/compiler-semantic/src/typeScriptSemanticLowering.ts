@@ -4,7 +4,11 @@ import ts from 'typescript';
 
 import { normalizePathPortable } from '../../compiler-canonical-form/src/index.js';
 import { fingerprintTypeScriptNode } from '../../compiler-provenance/src/index.js';
-import { createIrObjectCopySemantics } from '../../compiler-structural/src/index.js';
+import {
+  createIrObjectCopySemantics,
+  createIrTypeParameterSubstitutionPlan,
+  resolveIrTypeStructuralSubstitution,
+} from '../../compiler-structural/src/index.js';
 import type {
   CompilerDiagnostic,
   CompilerSourceOrigin,
@@ -1340,9 +1344,13 @@ function getIrTypeConstructionTargetShape(
       ts.isInterfaceDeclaration(candidate) || ts.isTypeAliasDeclaration(candidate),
   );
   if (!declaration) return type;
-  const resolved = ts.isInterfaceDeclaration(declaration)
+  const unresolved = ts.isInterfaceDeclaration(declaration)
     ? ({ kind: 'object', properties: lowerTypeProperties(declaration.members, context) } as const)
     : lowerType(declaration.type, context);
+  const resolved = resolveIrTypeStructuralSubstitution(
+    unresolved,
+    createIrTypeParameterSubstitutionPlan(lowerTypeParameters(declaration.typeParameters, context), type.typeArguments),
+  );
   const nextSeen = new Set(seen);
   nextSeen.add(bindingId);
   return getIrTypeConstructionTargetShape(resolved, context, nextSeen);

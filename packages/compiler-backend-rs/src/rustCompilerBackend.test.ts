@@ -59,6 +59,22 @@ describe('emitIrModuleRust', () => {
     );
   });
 
+  it('constructs generic structural records with substituted nested target types', () => {
+    const result = lower(
+      'generic-object.ts',
+      `
+        interface Item { label: string }
+        interface Box<Value> { value: Value; optional?: Value }
+        export function create(): Box<Item> { return { value: { label: 'flight' } }; }
+      `,
+    );
+    const output = emitIrModuleRust(result.module).contents;
+
+    expect(output).toContain('struct Box<Value> {\n  pub value: Value,\n  pub optional: Option<Value>,\n}');
+    expect(output).toContain('pub fn create() -> Box<Item>');
+    expect(output).toContain('return Box<Item> { value: Item { label: "flight".to_owned(), }, optional: None, };');
+  });
+
   it('interns anonymous structural types by canonical shape and constructs optional values', () => {
     const result = lower(
       'anonymous-object.ts',
