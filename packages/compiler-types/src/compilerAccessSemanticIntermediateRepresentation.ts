@@ -96,11 +96,3 @@ export interface IrDefaultParameterInvocationSemantics {
   readonly parameterCount: number;
   readonly providedArgumentCount: number | 'dynamic';
 }
-
-export type IrDefaultParameterCallSemantics = IrDefaultParameterInvocationSemantics;
-
-export type IrOptionalParameterCallSemantics = IrOptionalParameterInvocationSemantics;
-
-export type IrOptionalParameterProvidedArgumentSemantics = IrOptionalParameterProvidedArgumentInvocationSemantics;
-
-export type IrOverloadImplementationCallSemantics = IrOverloadImplementationInvocationSemantics;
