@@ -4,6 +4,7 @@ import { lowerTypeScriptSource } from '../../compiler-semantic/src/index.js';
 import type {
   CompilerLoweringFailureCode,
   IrDeclaration,
+  IrExpression,
   IrModule,
   IrStatement,
 } from '../../compiler-types/src/index.js';
@@ -131,6 +132,74 @@ describe('createCompilerLoweringPassCStyleFor', () => {
     expect(getBlock(innerWhile.body).statements[1]).toMatchObject({
       expression: { kind: 'assignment', left: { reference: { binding: { name: 'inner' } } } },
       kind: 'expression',
+    });
+  });
+
+  it('normalizes only numeric update increments and preserves other discarded expressions', () => {
+    const module = lower(
+      'increment-boundaries.ts',
+      `
+        export function update(): void {
+          let index = 0;
+          for (; index < 2; index += 2) { break; }
+          for (; index < 2; +index) { break; }
+          for (; index > 0; --index) { break; }
+          for (; index < 2; index++) { break; }
+        }
+      `,
+    );
+    const declaration = getFunctionDeclaration(module, 'update');
+    const numericUpdate = declaration.body[4];
+    if (numericUpdate?.kind !== 'for' || numericUpdate.increment?.kind !== 'unary') {
+      throw new Error('Expected numeric update loop');
+    }
+    const bigintModule: IrModule = {
+      ...module,
+      declarations: [
+        {
+          ...declaration,
+          body: [
+            ...declaration.body.slice(0, 4),
+            {
+              ...numericUpdate,
+              increment: {
+                ...numericUpdate.increment,
+                semantics: {
+                  operand: { declared: 'bigint', flow: 'bigint' },
+                  result: 'bigint',
+                },
+              },
+            },
+          ],
+        },
+      ],
+    };
+    const pass = createCompilerLoweringPassCStyleFor();
+    const output = pass.lowerIrModule(module);
+    const bigintOutput = pass.lowerIrModule(bigintModule);
+
+    expect(getLoopIncrement(getFunctionBody(output, 'update')[1])).toMatchObject({
+      kind: 'assignment',
+      operator: '+=',
+      right: { kind: 'literal', value: 2 },
+    });
+    expect(getLoopIncrement(getFunctionBody(output, 'update')[2])).toMatchObject({
+      kind: 'unary',
+      operator: '+',
+      semantics: { result: 'number' },
+    });
+    expect(getLoopIncrement(getFunctionBody(output, 'update')[3])).toMatchObject({
+      kind: 'assignment',
+      operator: '-=',
+    });
+    expect(getLoopIncrement(getFunctionBody(output, 'update')[4])).toMatchObject({
+      kind: 'assignment',
+      operator: '+=',
+    });
+    expect(getLoopIncrement(getFunctionBody(bigintOutput, 'update')[4])).toMatchObject({
+      kind: 'unary',
+      operator: '++',
+      semantics: { result: 'bigint' },
     });
   });
 
@@ -320,6 +389,15 @@ function getFunctionDeclaration(
 function getIf(statement: IrStatement | undefined): Extract<IrStatement, { kind: 'if' }> {
   if (statement?.kind !== 'if') throw new Error('Expected if statement');
   return statement;
+}
+
+function getLoopIncrement(statement: IrStatement | undefined): IrExpression {
+  const block = getBlock(statement);
+  const loop = getWhile(block.statements.at(-1));
+  const body = getBlock(loop.body);
+  const increment = body.statements.at(-1);
+  if (increment?.kind !== 'expression') throw new Error('Expected loop increment expression');
+  return increment.expression;
 }
 
 function getSwitch(statement: IrStatement | undefined): Extract<IrStatement, { kind: 'switch' }> {
