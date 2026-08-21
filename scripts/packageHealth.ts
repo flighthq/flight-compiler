@@ -111,7 +111,7 @@ const packageRules: Readonly<Record<string, PackageRule>> = {
     description: 'Stable source normalization, provenance, and fingerprints',
   },
   'compiler-runtime-contract': {
-    dependencies: ['compiler-canonical-form', 'compiler-types'],
+    dependencies: ['compiler-canonical-form', 'compiler-ir-traversal', 'compiler-types'],
     description: 'Target-neutral ambient-symbol reachability and runtime-binding completeness',
     devDependencies: ['compiler-semantic'],
   },

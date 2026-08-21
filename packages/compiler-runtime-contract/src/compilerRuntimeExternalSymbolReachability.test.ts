@@ -196,7 +196,7 @@ describe('collectIrModulesRuntimeExternalSymbolIdentities', () => {
 
     for (const malformed of malformedModules) {
       expect(() => collectIrModulesRuntimeExternalSymbolIdentities([malformed])).toThrow(
-        'Unexpected neutral IR kind invalid',
+        'Unknown IR traversal kind invalid',
       );
     }
   });
@@ -242,6 +242,61 @@ describe('collectIrModulesRuntimeExternalSymbolIdentities', () => {
 
     expect(collectIrModulesRuntimeExternalSymbolIdentities([lowered.module])).toEqual([
       { sourceName: 'Promise', space: 'value' },
+    ]);
+  });
+
+  it('collects external types carried only by target-neutral semantic evidence', () => {
+    const module = lowerTypeScriptSource(
+      ts.createSourceFile('/flight/packages/runtime/src/evidence.ts', '', ts.ScriptTarget.Latest, true),
+      { packageName: '@flighthq/runtime', upstreamDirectory: '/flight' },
+    ).module;
+    const named = (name: string) => ({
+      kind: 'named' as const,
+      reference: { kind: 'ambient' as const, name },
+      typeArguments: [],
+    });
+    const evidence = {
+      ...module,
+      exports: [
+        {
+          expression: {
+            arguments: [{ kind: 'literal', value: 1 }],
+            callee: { kind: 'identifier', reference: { kind: 'ambient', name: 'invoke' } },
+            kind: 'call',
+            optional: true,
+            semantics: {
+              optionalChain: {
+                receiverEvaluation: 'once',
+                receiverNullish: 'possible',
+                receiverType: named('SemanticReceiver'),
+                result: 'undefined',
+                shortCircuit: 'nullish',
+                valueType: named('SemanticValue'),
+              },
+              optionalParameters: {
+                omitted: [],
+                optional: [0],
+                parameterCount: 1,
+                provided: [
+                  { argumentType: named('SemanticArgument'), parameterType: named('SemanticParameter'), position: 0 },
+                ],
+                providedArgumentCount: 1,
+              },
+              signature: { parameterCount: 1, providedArgumentCount: 1 },
+            },
+            typeArguments: [],
+          },
+          kind: 'default',
+        },
+      ],
+    } as const satisfies IrModule;
+
+    expect(collectIrModulesRuntimeExternalSymbolIdentities([evidence])).toEqual([
+      { sourceName: 'SemanticArgument', space: 'type' },
+      { sourceName: 'SemanticParameter', space: 'type' },
+      { sourceName: 'SemanticReceiver', space: 'type' },
+      { sourceName: 'SemanticValue', space: 'type' },
+      { sourceName: 'invoke', space: 'value' },
     ]);
   });
 });
