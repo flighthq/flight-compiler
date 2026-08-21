@@ -183,6 +183,79 @@ describe('createCompilerLoweringPassCStyleFor', () => {
     expect(module).not.toEqual(output);
   });
 
+  it.each([
+    ['class field', 'export class Fixture { value = () => { for (;;) { break; } }; }'],
+    ['constructor parameter', 'export class Fixture { constructor(callback = () => { for (;;) { break; } }) {} }'],
+    ['constructor body', 'export class Fixture { constructor() { for (;;) { break; } } }'],
+    ['method parameter', 'export class Fixture { method(callback = () => { for (;;) { break; } }): void {} }'],
+    ['method body', 'export class Fixture { method(): void { for (;;) { break; } } }'],
+    ['function parameter', 'export function fixture(callback = () => { for (;;) { break; } }): void {}'],
+    ['function body', 'export function fixture(): void { for (;;) { break; } }'],
+    ['variable initializer', 'export const fixture = () => { for (;;) { break; } };'],
+    ['array element', 'export const fixture = [() => { for (;;) { break; } }];'],
+    ['binary left', 'export const fixture = (() => { for (;;) { break; } }) || (() => undefined);'],
+    ['binary right', 'export const fixture = (() => undefined) || (() => { for (;;) { break; } });'],
+    ['call callee', 'export const fixture = (() => { for (;;) { break; } })();'],
+    ['call argument', 'export const fixture = ((value: unknown) => value)(() => { for (;;) { break; } });'],
+    ['cast expression', 'export const fixture = (() => { for (;;) { break; } }) as unknown;'],
+    ['conditional condition', 'export const fixture = (() => { for (;;) { break; } }) ? 1 : 0;'],
+    ['conditional false branch', 'export const fixture = true ? 1 : (() => { for (;;) { break; } });'],
+    ['conditional true branch', 'export const fixture = true ? (() => { for (;;) { break; } }) : 0;'],
+    ['element index', 'export const fixture = [0][(() => { for (;;) { break; } }) as unknown as number];'],
+    ['element object', 'export const fixture = [() => { for (;;) { break; } }][0];'],
+    ['nested function parameter', 'export const fixture = (callback = () => { for (;;) { break; } }): void => {};'],
+    ['nested function body', 'export const fixture = (): void => { for (;;) { break; } };'],
+    ['nested function expression', 'export const fixture = () => (() => { for (;;) { break; } });'],
+    ['computed object key', 'export const fixture = { [(() => { for (;;) { break; } }) as unknown as string]: 0 };'],
+    ['computed object value', 'export const fixture = { ["value"]: () => { for (;;) { break; } } };'],
+    ['object property', 'export const fixture = { value: () => { for (;;) { break; } } };'],
+    ['object spread', 'export const fixture = { ...{ value: () => { for (;;) { break; } } } };'],
+    ['property object', 'export const fixture = (() => { for (;;) { break; } }).name;'],
+    ['template part', 'export const fixture = `${() => { for (;;) { break; } }}`;'],
+    ['unary operand', 'export const fixture = !(() => { for (;;) { break; } });'],
+    ['do condition', 'export function fixture(): void { do {} while ((() => { for (;;) { break; } })()); }'],
+    ['do body', 'export function fixture(): void { do { for (;;) { break; } } while (false); }'],
+    ['while condition', 'export function fixture(): void { while ((() => { for (;;) { break; } })()) {} }'],
+    ['while body', 'export function fixture(): void { while (false) { for (;;) { break; } } }'],
+    [
+      'for-in object',
+      'export function fixture(): void { for (const key in (() => { for (;;) { break; } })()) { key; } }',
+    ],
+    ['for-in body', 'export function fixture(): void { for (const key in {}) { key; for (;;) { break; } } }'],
+    [
+      'for-of iterable',
+      'export function fixture(): void { for (const value of [() => { for (;;) { break; } }]) { value; } }',
+    ],
+    ['for-of body', 'export function fixture(): void { for (const value of []) { value; for (;;) { break; } } }'],
+    ['if condition', 'export function fixture(): void { if ((() => { for (;;) { break; } })()) {} }'],
+    ['if consequent', 'export function fixture(): void { if (true) { for (;;) { break; } } }'],
+    ['if otherwise', 'export function fixture(): void { if (true) {} else { for (;;) { break; } } }'],
+    ['return expression', 'export function fixture(): unknown { return () => { for (;;) { break; } }; }'],
+    [
+      'switch expression',
+      'export function fixture(): void { switch ((() => { for (;;) { break; } })()) { default: break; } }',
+    ],
+    [
+      'switch case expression',
+      'export function fixture(value: unknown): void { switch (value) { case (() => { for (;;) { break; } })(): break; } }',
+    ],
+    ['switch case statement', 'export function fixture(): void { switch (0) { default: for (;;) { break; } } }'],
+    ['try body', 'export function fixture(): void { try { for (;;) { break; } } finally {} }'],
+    ['catch body', 'export function fixture(): void { try { throw 1; } catch (error) { for (;;) { break; } } }'],
+    ['finally body', 'export function fixture(): void { try {} finally { for (;;) { break; } } }'],
+    [
+      'statement variable initializer',
+      'export function fixture(): void { const value = () => { for (;;) { break; } }; value; }',
+    ],
+  ])('detects a residual C-style loop in an isolated %s', (name, source) => {
+    const module = lower(`residual-${name.replaceAll(' ', '-')}.ts`, source);
+
+    expect(createCompilerLoweringPassCStyleFor().verifyIrModule(module)).toEqual({
+      kind: 'invalid',
+      reason: 'C-style for statement remains after normalization',
+    });
+  });
+
   it('fails deterministically for empty declaration lists and continues crossing finally', () => {
     const source = lower('malformed.ts', 'export function loop(): void { for (;;) { break; } }');
     const declaration = getFunctionDeclaration(source, 'loop');
