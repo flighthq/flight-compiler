@@ -410,6 +410,7 @@ function lowerIrExpressionSwitchFallthrough(
     case 'literal':
     case 'regexp':
     case 'tupleSuffix':
+    case 'undefinedValue':
       return expression;
   }
 }
@@ -825,6 +826,7 @@ function visitIrExpressionChildrenSwitchFallthrough(
     case 'identifier':
     case 'literal':
     case 'regexp':
+    case 'undefinedValue':
       return;
   }
 }

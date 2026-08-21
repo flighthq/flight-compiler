@@ -1658,6 +1658,61 @@ describe('lowerTypeScriptSource', () => {
     });
   });
 
+  it('records optional-parameter ABI positions and fixed call-site omissions independently of syntax', () => {
+    const result = lower(
+      'optional-parameter-abi.ts',
+      `
+        function choose(first: number, second?: number, third?: number): number { return first; }
+        export function read(): number { choose(1); return choose(1, 2); }
+      `,
+    );
+    const declaration = result.module.declarations.find(
+      (item) => item.kind === 'function' && item.binding.name === 'read',
+    );
+    if (declaration?.kind !== 'function') throw new Error('Expected read function');
+    const first = declaration.body[0];
+    const second = declaration.body[1];
+
+    expect(first).toMatchObject({
+      expression: {
+        semantics: {
+          optionalParameters: { omitted: [1, 2], optional: [1, 2], parameterCount: 3, providedArgumentCount: 1 },
+        },
+      },
+    });
+    expect(second).toMatchObject({
+      expression: {
+        semantics: {
+          optionalParameters: { omitted: [2], optional: [1, 2], parameterCount: 3, providedArgumentCount: 2 },
+        },
+      },
+    });
+  });
+
+  it('represents undefined as an option value only when contextual type evidence permits it', () => {
+    const result = lower(
+      'contextual-undefined.ts',
+      `
+        function fallback(value = 1): number { return value; }
+        function optional(value?: number): number { return 0; }
+        export function maybe(): number | undefined { fallback(undefined); optional(undefined); return undefined; }
+        export function bare(): undefined { return undefined; }
+      `,
+    );
+    const maybe = result.module.declarations.find((item) => item.kind === 'function' && item.binding.name === 'maybe');
+    const bare = result.module.declarations.find((item) => item.kind === 'function' && item.binding.name === 'bare');
+    if (maybe?.kind !== 'function' || bare?.kind !== 'function') throw new Error('Expected contextual functions');
+
+    expect(maybe.body).toMatchObject([
+      { expression: { arguments: [{ kind: 'undefinedValue', type: { kind: 'union' } }] } },
+      { expression: { arguments: [{ kind: 'undefinedValue', type: { kind: 'union' } }] } },
+      { expression: { kind: 'undefinedValue', type: { kind: 'union' } }, kind: 'return' },
+    ]);
+    expect(bare.body).toMatchObject([
+      { expression: { kind: 'identifier', reference: { kind: 'ambient', name: 'undefined' } }, kind: 'return' },
+    ]);
+  });
+
   it('substitutes generic interface evidence through readonly and union property wrappers', () => {
     const result = lower(
       'generic-interface-evidence.ts',

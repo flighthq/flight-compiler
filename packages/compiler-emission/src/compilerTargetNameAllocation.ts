@@ -320,6 +320,7 @@ function collectExpressionBindings(
     case 'identifier':
     case 'literal':
     case 'regexp':
+    case 'undefinedValue':
       break;
     case 'object':
       expression.members.forEach((member, index) => {

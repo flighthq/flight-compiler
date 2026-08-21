@@ -125,6 +125,7 @@ function hasIrExpressionArrayBindingPattern(expression: Readonly<IrExpression>):
     case 'identifier':
     case 'literal':
     case 'regexp':
+    case 'undefinedValue':
       return false;
   }
 }

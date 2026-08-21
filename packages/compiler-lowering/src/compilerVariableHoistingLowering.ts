@@ -566,6 +566,7 @@ function lowerIrExpressionVariableHoisting(
     case 'literal':
     case 'regexp':
     case 'tupleSuffix':
+    case 'undefinedValue':
       return expression;
   }
 }
@@ -966,6 +967,7 @@ function visitIrExpressionChildrenVariableHoisting(
     case 'identifier':
     case 'literal':
     case 'regexp':
+    case 'undefinedValue':
       return;
   }
 }

@@ -206,6 +206,22 @@ describe('emitIrModuleRust', () => {
     expect(output.match(/ObjectRestRecord \{/g)).toHaveLength(3);
   });
 
+  it('interns residual record shapes independently of source property order', () => {
+    const result = lower(
+      'object-rest-order.ts',
+      `
+        type First = { removed: number; alpha: boolean; beta: string };
+        type Second = { removed: number; beta: string; alpha: boolean };
+        function first(source: First): void { const { removed, ...rest }: First = source; removed; rest.alpha; }
+        function second(source: Second): void { const { removed, ...rest }: Second = source; removed; rest.beta; }
+      `,
+    );
+    const output = emitIrModuleRust(result.module).contents;
+
+    expect(output.match(/struct ObjectRestRecord/g)).toHaveLength(1);
+    expect(output).not.toContain('struct ObjectRestRecord_2');
+  });
+
   it('elects function-scoped variable hoisting after destructuring normalization', () => {
     const named = lower(
       'variable-hoisting.ts',
@@ -557,7 +573,7 @@ describe('emitIrModuleRust', () => {
     expect(() => emitIrModuleRust(result.module)).toThrow(message);
   });
 
-  it('emits nullable parameters but rejects optional parameters and bare undefined expressions', () => {
+  it('emits nullable and optional parameters but rejects bare undefined expressions', () => {
     const nullable = lower(
       'nullable.ts',
       'export function nullable(value: number | null): number | null { return value; }',
@@ -574,9 +590,7 @@ describe('emitIrModuleRust', () => {
     const undefinedValue = lower('missing.ts', 'export function missing(): undefined { return undefined; }');
 
     expect(emitIrModuleRust(nullable.module).contents).toContain('pub fn nullable(value: Option<f64>) -> Option<f64>');
-    expect(() => emitIrModuleRust(optional.module)).toThrow(
-      'nullable parameter value requires Option-aware Rust control-flow lowering',
-    );
+    expect(emitIrModuleRust(optional.module).contents).toContain('pub fn optional(value: Option<f64>) -> f64');
     expect(emitIrModuleRust(undefinedNullable.module).contents).toContain(
       'pub fn undefined_nullable(value: Option<f64>) -> f64',
     );
@@ -586,6 +600,72 @@ describe('emitIrModuleRust', () => {
     expect(() => emitIrModuleRust(undefinedValue.module)).toThrow(
       'undefined expressions require Rust Option-aware lowering',
     );
+  });
+
+  it('emits fixed optional-parameter call carriers as Rust Some and None', () => {
+    const result = lower(
+      'optional-call.ts',
+      'function choose(value?: number): number { return 0; } export function read(): number { choose(); return choose(1); }',
+    );
+    const output = emitIrModuleRust(result.module).contents;
+
+    expect(output).toContain('fn choose(value: Option<f64>) -> f64');
+    expect(output).toContain('choose(None);');
+    expect(output).toContain('return choose(Some(1.0));');
+  });
+
+  it('combines distinct optional and default Rust call carriers', () => {
+    const result = lower(
+      'mixed-call.ts',
+      'function choose(first?: number, second = 2): number { return second; } export function read(): number { return choose(); }',
+    );
+    const output = emitIrModuleRust(result.module).contents;
+
+    expect(output).toContain('fn choose(first: Option<f64>, second: Option<f64>) -> f64');
+    expect(output).toContain('return choose(None, None);');
+  });
+
+  it('refuses optional and default calls whose JavaScript arity needs another Rust lowering', () => {
+    const spread = lower(
+      'spread-call.ts',
+      'function choose(first: number, second?: number): number { return first; } export function read(values: [number]): number { return choose(...values); }',
+    );
+    const extra = lower(
+      'extra-call.ts',
+      'function choose(first?: number): number { return 0; } export function read(): number { return choose(1, 2); }',
+    );
+    const missing = lower(
+      'missing-call.ts',
+      'function choose(first: number, second?: number): number { return first; } export function read(): number { return choose(); }',
+    );
+
+    expect(() => emitIrModuleRust(spread.module)).toThrow(
+      'spread calls into optional or default parameters require Rust ABI expansion lowering',
+    );
+    expect(() => emitIrModuleRust(extra.module)).toThrow(
+      'extra JavaScript call arguments require Rust ABI erasure lowering',
+    );
+    expect(() => emitIrModuleRust(missing.module)).toThrow('missing required call argument at position 0');
+  });
+
+  it('emits contextual undefined option values as Rust None', () => {
+    const result = lower(
+      'contextual-undefined.ts',
+      `
+        function fallback(value = 1): number { return value; }
+        function optional(value?: number): number { return 0; }
+        export function maybe(): number | undefined {
+          fallback(undefined);
+          optional(undefined);
+          return undefined;
+        }
+      `,
+    );
+    const output = emitIrModuleRust(result.module).contents;
+
+    expect(output).toContain('fallback(None);');
+    expect(output).toContain('optional(None);');
+    expect(output).toContain('return None;');
   });
 
   it('emits a local binding named undefined without confusing it with the ambient value', () => {

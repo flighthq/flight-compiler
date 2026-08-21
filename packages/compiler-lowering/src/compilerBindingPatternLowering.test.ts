@@ -2,7 +2,10 @@ import ts from 'typescript';
 
 import { lowerTypeScriptSource } from '../../compiler-semantic/src/index.js';
 import type { IrModule } from '../../compiler-types/src/index.js';
-import { createCompilerLoweringPassBindingPattern } from './compilerBindingPatternLowering.js';
+import {
+  createCompilerLoweringPassBindingPattern,
+  getIrModuleBindingPatternResidualCount,
+} from './compilerBindingPatternLowering.js';
 import { lowerIrModuleWithCompilerPasses } from './compilerLoweringPass.js';
 
 describe('createCompilerLoweringPassBindingPattern', () => {
@@ -41,6 +44,41 @@ describe('createCompilerLoweringPassBindingPattern', () => {
     const pass = createCompilerLoweringPassBindingPattern();
 
     expect(pass.lowerIrModule(module)).toBe(module);
+  });
+});
+
+describe('getIrModuleBindingPatternResidualCount', () => {
+  it('counts typed nested pattern nodes without inspecting serialized user values', () => {
+    const module = lower(`
+      interface Leaf { value: number }
+      export function read(input: [{ rows: [{ leaf: Leaf }] }]): number {
+        const [{ rows: [{ leaf: { value } }] }]: [{ rows: [{ leaf: Leaf }] }] = input;
+        return value;
+      }
+      export const text = '"pattern":{"kind":"array"}';
+    `);
+    const lowered = createCompilerLoweringPassBindingPattern().lowerIrModule(module);
+
+    expect(getIrModuleBindingPatternResidualCount(module)).toBe(6);
+    expect(getIrModuleBindingPatternResidualCount(lowered)).toBe(0);
+  });
+
+  it('traverses declaration, closure, class-member, and default-export containers', () => {
+    const module = lower(`
+      class Holder {
+        field = () => { const [field]: [number] = [1]; return field; };
+        constructor() { const [constructed]: [number] = [1]; constructed; }
+        method(): number { const [method]: [number] = [1]; return method; }
+      }
+      function declared(): number { const [value]: [number] = [1]; return value; }
+      const closure = () => { const [value]: [number] = [1]; return value; };
+      export default () => { const [value]: [number] = [1]; return value; };
+    `);
+
+    expect(getIrModuleBindingPatternResidualCount(module)).toBe(12);
+    expect(
+      getIrModuleBindingPatternResidualCount(createCompilerLoweringPassBindingPattern().lowerIrModule(module)),
+    ).toBe(0);
   });
 });
 

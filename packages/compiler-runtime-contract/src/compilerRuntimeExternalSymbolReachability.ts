@@ -130,6 +130,9 @@ function visitExpression(expression: Readonly<IrExpression>, add: AddExternalSym
     case 'literal':
     case 'regexp':
       break;
+    case 'undefinedValue':
+      visitType(expression.type, add);
+      break;
     case 'object':
       expression.members.forEach((member) => {
         switch (member.kind) {

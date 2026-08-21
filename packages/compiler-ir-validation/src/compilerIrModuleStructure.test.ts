@@ -259,6 +259,135 @@ describe('validateIrModuleStructure', () => {
     }
   });
 
+  it('validates exact default-parameter call arity, ordering, and omissions', () => {
+    const valid = lower(
+      'default-call.ts',
+      'function choose(first: number, second = 2, third = 3): number { return first; } export function read(): number { return choose(1); }',
+    );
+    expect(validateIrModuleStructure(valid)).toEqual({ kind: 'valid' });
+
+    const replacements = [
+      { defaulted: [2, 1], omitted: [1, 2], parameterCount: 3, providedArgumentCount: 1 },
+      { defaulted: [1, 2], omitted: [1], parameterCount: 3, providedArgumentCount: 1 },
+      { defaulted: [1, 2], omitted: [1, 2], parameterCount: 2, providedArgumentCount: 1 },
+      { defaulted: [1, 2], omitted: [1, 2], parameterCount: 3, providedArgumentCount: 2 },
+      { defaulted: [1, 2], omitted: [], parameterCount: 3, providedArgumentCount: 'dynamic' },
+    ] as const;
+    for (const replacement of replacements) {
+      const invalid = structuredClone(valid);
+      const declaration = invalid.declarations.find(
+        (candidate) => candidate.kind === 'function' && candidate.binding.name === 'read',
+      );
+      const statement = declaration?.kind === 'function' ? declaration.body[0] : undefined;
+      const expression = statement?.kind === 'return' ? statement.expression : undefined;
+      if (expression?.kind !== 'call') throw new Error('Expected default-parameter call');
+      (expression.semantics as { defaultParameters?: unknown }).defaultParameters = replacement;
+
+      const result = validateIrModuleStructure(invalid);
+      expect(result.kind).toBe('invalid');
+      if (result.kind === 'invalid') {
+        expect(result.failures).toContainEqual(
+          expect.objectContaining({
+            code: 'invalid-node-shape',
+            path: expect.stringContaining('.semantics.defaultParameters'),
+          }),
+        );
+      }
+    }
+
+    const dynamic = lower(
+      'spread-default-call.ts',
+      'function choose(first: number, second = 2): number { return first; } export function read(values: [number]): number { return choose(...values); }',
+    );
+    expect(validateIrModuleStructure(dynamic)).toEqual({ kind: 'valid' });
+  });
+
+  it('validates exact optional-parameter call arity, ordering, and omissions', () => {
+    const valid = lower(
+      'optional-call.ts',
+      'function choose(first: number, second?: number, third?: number): number { return first; } export function read(): number { return choose(1); }',
+    );
+    expect(validateIrModuleStructure(valid)).toEqual({ kind: 'valid' });
+
+    const replacements = [
+      { omitted: [1, 2], optional: [2, 1], parameterCount: 3, providedArgumentCount: 1 },
+      { omitted: [1], optional: [1, 2], parameterCount: 3, providedArgumentCount: 1 },
+      { omitted: [1, 2], optional: [1, 2], parameterCount: 2, providedArgumentCount: 1 },
+      { omitted: [1, 2], optional: [1, 2], parameterCount: 3, providedArgumentCount: 2 },
+      { omitted: [], optional: [1, 2], parameterCount: 3, providedArgumentCount: 'dynamic' },
+    ] as const;
+    for (const replacement of replacements) {
+      const invalid = structuredClone(valid);
+      const declaration = invalid.declarations.find(
+        (candidate) => candidate.kind === 'function' && candidate.binding.name === 'read',
+      );
+      const statement = declaration?.kind === 'function' ? declaration.body[0] : undefined;
+      const expression = statement?.kind === 'return' ? statement.expression : undefined;
+      if (expression?.kind !== 'call') throw new Error('Expected optional-parameter call');
+      (expression.semantics as { optionalParameters?: unknown }).optionalParameters = replacement;
+
+      const result = validateIrModuleStructure(invalid);
+      expect(result.kind).toBe('invalid');
+      if (result.kind === 'invalid') {
+        expect(result.failures).toContainEqual(
+          expect.objectContaining({
+            code: 'invalid-node-shape',
+            path: expect.stringContaining('.semantics.optionalParameters'),
+          }),
+        );
+      }
+    }
+
+    const dynamic = lower(
+      'spread-optional-call.ts',
+      'function choose(first: number, second?: number): number { return first; } export function read(values: [number]): number { return choose(...values); }',
+    );
+    expect(validateIrModuleStructure(dynamic)).toEqual({ kind: 'valid' });
+
+    const mixed = lower(
+      'mixed-optional-call.ts',
+      'function choose(first?: number, second = 2): number { return second; } export function read(): number { return choose(); }',
+    );
+    expect(validateIrModuleStructure(mixed)).toEqual({ kind: 'valid' });
+    const overlapping = structuredClone(mixed);
+    const mixedDeclaration = overlapping.declarations.find(
+      (candidate) => candidate.kind === 'function' && candidate.binding.name === 'read',
+    );
+    const mixedStatement = mixedDeclaration?.kind === 'function' ? mixedDeclaration.body[0] : undefined;
+    const mixedExpression = mixedStatement?.kind === 'return' ? mixedStatement.expression : undefined;
+    if (mixedExpression?.kind !== 'call') throw new Error('Expected mixed-cardinality call');
+    (mixedExpression.semantics as { optionalParameters?: unknown }).optionalParameters = {
+      omitted: [0, 1],
+      optional: [0, 1],
+      parameterCount: 2,
+      providedArgumentCount: 0,
+    };
+    expect(validateIrModuleStructure(overlapping)).toMatchObject({
+      failures: [expect.objectContaining({ path: expect.stringContaining('.semantics.optionalParameters') })],
+      kind: 'invalid',
+    });
+  });
+
+  it('validates contextual undefined option-value type evidence', () => {
+    const valid = lower('contextual-undefined.ts', 'export function maybe(): number | undefined { return undefined; }');
+    expect(validateIrModuleStructure(valid)).toEqual({ kind: 'valid' });
+
+    const invalid = structuredClone(valid);
+    const declaration = invalid.declarations[0];
+    const statement = declaration?.kind === 'function' ? declaration.body[0] : undefined;
+    const expression = statement?.kind === 'return' ? statement.expression : undefined;
+    if (expression?.kind !== 'undefinedValue') throw new Error('Expected contextual undefined value');
+    (expression as { type: unknown }).type = { kind: 'primitive', name: 'number' };
+
+    const result = validateIrModuleStructure(invalid);
+    expect(result.kind).toBe('invalid');
+    if (result.kind === 'invalid') {
+      expect(result.failures).toContainEqual(
+        expect.objectContaining({ code: 'invalid-node-shape', path: expect.stringContaining('.type') }),
+      );
+    }
+  });
+
   it('validates labeled control-flow targets against active and continuable identities', () => {
     const valid = lower(
       'labeled-flow.ts',

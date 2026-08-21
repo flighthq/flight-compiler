@@ -568,6 +568,7 @@ function lowerIrExpressionArrayBindingPattern(
     case 'identifier':
     case 'literal':
     case 'regexp':
+    case 'undefinedValue':
       return expression;
   }
 }

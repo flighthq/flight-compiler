@@ -427,7 +427,18 @@ function lowerExpression(
     return { expression: lowerExpression(node.expression, context, type), kind: 'cast', type };
   }
   if (ts.isNonNullExpression(node)) return lowerExpression(node.expression, context, contextualType);
-  if (ts.isIdentifier(node)) return { kind: 'identifier', reference: lowerIdentifierReference(node, context) };
+  if (ts.isIdentifier(node)) {
+    const reference = lowerIdentifierReference(node, context);
+    if (
+      reference.kind === 'ambient' &&
+      reference.name === 'undefined' &&
+      contextualType &&
+      hasIrTypeContextualUndefinedOption(contextualType)
+    ) {
+      return { kind: 'undefinedValue', type: contextualType };
+    }
+    return { kind: 'identifier', reference };
+  }
   if (node.kind === ts.SyntaxKind.ThisKeyword) return { kind: 'identifier', reference: { kind: 'this' } };
   if (node.kind === ts.SyntaxKind.TrueKeyword) return { kind: 'literal', value: true };
   if (node.kind === ts.SyntaxKind.FalseKeyword) return { kind: 'literal', value: false };
@@ -474,7 +485,7 @@ function lowerExpression(
   if (ts.isCallExpression(node)) {
     const optional = node.questionDotToken !== undefined;
     return {
-      arguments: node.arguments.map((argument) => lowerExpression(argument, context)),
+      arguments: lowerTypeScriptCallArguments(node, context),
       callee: lowerExpression(node.expression, context),
       kind: 'call',
       optional,
@@ -593,6 +604,25 @@ function lowerExpression(
     return { flags: node.text.slice(lastSlash + 1), kind: 'regexp', pattern: node.text.slice(1, lastSlash) };
   }
   unsupported(node, `unsupported expression ${ts.SyntaxKind[node.kind]}`);
+}
+
+function lowerTypeScriptCallArguments(node: ts.CallExpression, context: LoweringContext): IrExpression[] {
+  const declaration = context.checker.getResolvedSignature(node)?.declaration;
+  const parameters = declaration && 'parameters' in declaration ? declaration.parameters.filter(ts.isParameter) : [];
+  return node.arguments.map((argument, index) => {
+    if (ts.isSpreadElement(argument)) return lowerExpression(argument, context);
+    const parameter = parameters[index];
+    if (!parameter) return lowerExpression(argument, context);
+    const type = lowerFunctionTypeParameter(parameter, context).type;
+    const contextualType =
+      parameter.questionToken || parameter.initializer ? addIrTypeBindingPatternUndefined(type) : type;
+    return lowerExpression(argument, context, contextualType);
+  });
+}
+
+function hasIrTypeContextualUndefinedOption(type: Readonly<IrType>): boolean {
+  if (type.kind !== 'union' || !type.types.some((member) => member.kind === 'undefined')) return false;
+  return type.types.some((member) => member.kind !== 'null' && member.kind !== 'undefined');
 }
 
 function createTypeScriptOptionalChainSemantics(
@@ -834,6 +864,7 @@ function getTypeScriptTypeNodeIndexedReceivers(
 function lowerCallSemantics(node: ts.CallExpression, context: LoweringContext): IrCallSemantics {
   const semantics: IrCallSemantics = {
     ...getTypeScriptDefaultParameterCallSemantics(node, context),
+    ...getTypeScriptOptionalParameterCallSemantics(node, context),
   };
   const access = node.expression;
   const receiver = ts.isPropertyAccessExpression(access)
@@ -853,6 +884,28 @@ function lowerCallSemantics(node: ts.CallExpression, context: LoweringContext): 
   return {
     ...semantics,
     typedArraySet: { receivers: receivers as [IrTypedArrayReceiver, ...IrTypedArrayReceiver[]] },
+  };
+}
+
+function getTypeScriptOptionalParameterCallSemantics(
+  node: ts.CallExpression,
+  context: LoweringContext,
+): Pick<IrCallSemantics, 'optionalParameters'> {
+  const declaration = context.checker.getResolvedSignature(node)?.declaration;
+  if (!declaration || !('parameters' in declaration)) return {};
+  const parameters = declaration.parameters.filter(ts.isParameter);
+  const optional = parameters.flatMap((parameter, index) =>
+    parameter.questionToken && !parameter.initializer ? [index] : [],
+  );
+  if (optional.length === 0) return {};
+  const dynamic = node.arguments.some(ts.isSpreadElement);
+  return {
+    optionalParameters: {
+      omitted: dynamic ? [] : optional.filter((index) => index >= node.arguments.length),
+      optional,
+      parameterCount: parameters.length,
+      providedArgumentCount: dynamic ? 'dynamic' : node.arguments.length,
+    },
   };
 }
 

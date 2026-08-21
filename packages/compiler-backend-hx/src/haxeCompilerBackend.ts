@@ -229,7 +229,7 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
       return `(${left} ${emitBinaryOperatorHaxe(expression.operator, expression.semantics, context)} ${right})`;
     }
     case 'call':
-      return `${expression.callee.kind === 'function' ? `(${emitExpression(expression.callee, context)})` : emitExpression(expression.callee, context)}${expression.optional ? '?.' : ''}(${expression.arguments.map((argument) => emitExpression(argument, context)).join(', ')})`;
+      return `${expression.callee.kind === 'function' ? `(${emitExpression(expression.callee, context)})` : emitExpression(expression.callee, context)}${expression.optional ? '?.' : ''}(${emitCallArgumentsHaxe(expression, context)})`;
     case 'cast':
       return `(cast ${emitExpression(expression.expression, context)} : ${emitType(expression.type, context)})`;
     case 'conditional':
@@ -311,9 +311,26 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
         : emitPrefixUnaryOperatorHaxe(expression.operator, expression.semantics, context);
       return expression.postfix ? `${operand}${operator}` : `${operator} ${operand}`;
     }
+    case 'undefinedValue':
+      return 'null';
     case 'undefinedDefault':
       return `(${emitExpression(expression.value, context)} ?? ${emitExpression(expression.fallback, context)})`;
   }
+}
+
+function emitCallArgumentsHaxe(
+  expression: Readonly<Extract<IrExpression, { kind: 'call' }>>,
+  context: EmitContext,
+): string {
+  const defaulted = new Set(expression.semantics.defaultParameters?.defaulted ?? []);
+  return expression.arguments
+    .map((argument, index) => {
+      if (argument.kind === 'undefinedValue' && defaulted.has(index)) {
+        emissionError(context, 'explicit undefined default arguments require Haxe omission lowering');
+      }
+      return emitExpression(argument, context);
+    })
+    .join(', ');
 }
 
 function emitFunction(declaration: Readonly<IrFunctionDeclaration>, context: EmitContext): string[] {

@@ -137,6 +137,7 @@ export type IrExpression =
       postfix: false;
       semantics: IrUnaryOperatorSemantics;
     }>
+  | Readonly<{ kind: 'undefinedValue'; type: IrType }>
   | Readonly<{ fallback: IrExpression; kind: 'undefinedDefault'; value: IrExpression }>;
 
 export type IrObjectMember =

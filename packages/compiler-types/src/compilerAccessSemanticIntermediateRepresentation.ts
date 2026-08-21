@@ -36,9 +36,17 @@ export interface IrTypedArraySetSemantics {
 
 export interface IrCallSemantics {
   readonly defaultParameters?: IrDefaultParameterCallSemantics | undefined;
+  readonly optionalParameters?: IrOptionalParameterCallSemantics | undefined;
   readonly optionalChain?: IrOptionalChainSemantics | undefined;
   readonly statementValue?: IrStatementValueCallSemantics | undefined;
   readonly typedArraySet?: IrTypedArraySetSemantics | undefined;
+}
+
+export interface IrOptionalParameterCallSemantics {
+  readonly omitted: readonly number[];
+  readonly optional: readonly number[];
+  readonly parameterCount: number;
+  readonly providedArgumentCount: number | 'dynamic';
 }
 
 export interface IrStatementValueCallSemantics {

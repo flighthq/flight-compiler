@@ -473,6 +473,8 @@ function getExpressionValueDomain(expression: Readonly<IrExpression>): IrOperato
       return 'object';
     case 'unary':
       return expression.semantics.result;
+    case 'undefinedValue':
+      return 'undefined';
     case 'undefinedDefault': {
       const fallback = getExpressionValueDomain(expression.fallback);
       const value = getExpressionValueDomain(expression.value);

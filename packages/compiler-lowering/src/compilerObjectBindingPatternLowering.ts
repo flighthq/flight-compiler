@@ -768,6 +768,7 @@ function lowerIrExpressionObjectBindingPattern(
     case 'literal':
     case 'regexp':
     case 'tupleSuffix':
+    case 'undefinedValue':
       return expression;
   }
 }

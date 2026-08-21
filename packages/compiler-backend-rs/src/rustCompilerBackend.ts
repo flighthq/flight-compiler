@@ -1,6 +1,10 @@
 import path from 'node:path';
 
 import {
+  compareTextCodeUnits,
+  normalizeCompilerStructuralValueCanonical,
+} from '../../compiler-canonical-form/src/index.js';
+import {
   createBackendEmissionFailure,
   createCompilerGeneratedFileHeader,
   createIrModuleTargetNameAllocation,
@@ -324,6 +328,9 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
         : emitPrefixUnaryOperatorRust(expression.operator, expression.semantics, context);
       return expression.postfix ? `${operand}${operator}` : `${operator}${operand}`;
     }
+    case 'undefinedValue':
+      getIrTypeOptionalPayloadRust(expression.type, 'contextual undefined value', context);
+      return 'None';
     case 'undefinedDefault':
       return `${emitExpression(expression.value, context)}.unwrap_or_else(|| ${emitExpression(expression.fallback, context)})`;
   }
@@ -413,17 +420,28 @@ function emitCallArgumentsRust(
   expression: Readonly<Extract<IrExpression, { kind: 'call' }>>,
   context: EmitContext,
 ): string[] {
-  const plan = expression.semantics.defaultParameters;
+  const defaults = expression.semantics.defaultParameters;
+  const optionals = expression.semantics.optionalParameters;
+  const plan = defaults ?? optionals;
   if (!plan) return expression.arguments.map((argument) => emitExpression(argument, context));
   if (plan.providedArgumentCount === 'dynamic') {
-    emissionError(context, 'spread calls into default parameters require Rust ABI expansion lowering');
+    emissionError(context, 'spread calls into optional or default parameters require Rust ABI expansion lowering');
   }
-  const defaulted = new Set(plan.defaulted);
+  if (expression.arguments.length > plan.parameterCount) {
+    emissionError(context, 'extra JavaScript call arguments require Rust ABI erasure lowering');
+  }
+  const wrapped = new Set([...(defaults?.defaulted ?? []), ...(optionals?.optional ?? [])]);
   return Array.from({ length: plan.parameterCount }, (_, index) => {
     const argument = expression.arguments[index];
-    if (!argument) return 'None';
+    if (!argument) {
+      if (!wrapped.has(index)) {
+        emissionError(context, `missing required call argument at position ${String(index)}`);
+      }
+      return 'None';
+    }
+    if (argument.kind === 'undefinedValue') return 'None';
     const emitted = emitExpression(argument, context);
-    return defaulted.has(index) ? `Some(${emitted})` : emitted;
+    return wrapped.has(index) ? `Some(${emitted})` : emitted;
   });
 }
 
@@ -519,7 +537,9 @@ function emitObjectRestExpressionRust(
   if (expression.type.kind !== 'object') {
     emissionError(context, 'object rest requires closed residual-record type evidence');
   }
-  const shape = JSON.stringify(expression.type.properties);
+  const shape = normalizeCompilerStructuralValueCanonical(
+    [...expression.type.properties].sort((left, right) => compareTextCodeUnits(left.name, right.name)),
+  );
   const existing = context.objectRestRecords.get(shape);
   const recordName = existing?.name ?? getGeneratedTargetNameRust('ObjectRestRecord', context);
   if (!existing) context.objectRestRecords.set(shape, { name: recordName, properties: expression.type.properties });
@@ -538,10 +558,10 @@ function emitParameter(parameter: Readonly<IrParameter>, context: EmitContext): 
     return `${getBindingTargetNameRust(parameter.binding, context)}: Option<${emitType(parameter.type, context)}>`;
   }
   if (parameter.optional) {
-    emissionError(
-      context,
-      `nullable parameter ${parameter.binding.name} requires Option-aware Rust control-flow lowering`,
-    );
+    if (isNullableType(parameter.type)) {
+      emissionError(context, `optional nullable parameter ${parameter.binding.name} requires Rust carrier lowering`);
+    }
+    return `${getBindingTargetNameRust(parameter.binding, context)}: Option<${emitType(parameter.type, context)}>`;
   }
   const name = getBindingTargetNameRust(parameter.binding, context);
   if (parameter.rest) return `${name}: Vec<${emitType(parameter.type, context)}>`;

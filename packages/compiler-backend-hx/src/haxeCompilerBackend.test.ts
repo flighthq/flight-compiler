@@ -425,15 +425,27 @@ describe('emitIrModuleHaxe', () => {
     expect(() => emitIrModuleHaxe(result.module)).toThrow(message);
   });
 
-  it('rejects undefined expressions without Haxe nullability lowering', () => {
+  it('emits contextual undefined as null but rejects unrepresentable undefined expressions', () => {
     const nullable = lower('nullable.ts', 'export function nullable(): string | null { return null; }');
+    const undefinedNullable = lower(
+      'undefined-nullable.ts',
+      'export function undefinedNullable(): number | undefined { return undefined; }',
+    );
     const undefinedValue = lower('missing.ts', 'export function missing(): undefined { return undefined; }');
+    const explicitDefault = lower(
+      'explicit-default.ts',
+      'function fallback(value = 1): number { return value; } export function read(): number { return fallback(undefined); }',
+    );
 
     expect(emitIrModuleHaxe(nullable.module).contents).toContain(
       'static function nullable():Null<String> {\n    return null;',
     );
     expect(() => emitIrModuleHaxe(undefinedValue.module)).toThrow(
       'undefined expressions require Haxe nullability lowering',
+    );
+    expect(emitIrModuleHaxe(undefinedNullable.module).contents).toContain('return null;');
+    expect(() => emitIrModuleHaxe(explicitDefault.module)).toThrow(
+      'explicit undefined default arguments require Haxe omission lowering',
     );
   });
 

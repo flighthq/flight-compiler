@@ -300,6 +300,7 @@ function analyzeIrExpressionVariableInitialization(
       return;
     case 'literal':
     case 'regexp':
+    case 'undefinedValue':
       return;
   }
 }
@@ -902,6 +903,7 @@ function visitIrExpressionChildrenVariableInitialization(
     case 'identifier':
     case 'literal':
     case 'regexp':
+    case 'undefinedValue':
       return;
   }
 }
