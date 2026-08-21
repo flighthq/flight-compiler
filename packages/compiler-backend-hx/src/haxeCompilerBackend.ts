@@ -22,6 +22,7 @@ import {
   collectIrModulesRuntimeExternalConstructorInvocations,
   collectIrModulesRuntimeExternalSymbolIdentities,
 } from '../../compiler-runtime-contract/src/index.js';
+import { analyzeIrModuleStructuralObjectCompatibility } from '../../compiler-structural/src/index.js';
 import type { CompilerBackend, EmittedFile, HaxeCompilerBackendOptions } from '../../compiler-types/src/index.js';
 import type {
   IrAssignmentOperator,
@@ -98,6 +99,7 @@ export function emitIrModuleHaxe(
     createCompilerLoweringPassInterfaceInheritance(),
     createCompilerLoweringPassSwitchFallthrough(),
   ]);
+  assertStructuralObjectCompatibilityHaxe(module);
   assertRuntimeExternalSymbolBindingsHaxe(module);
   assertRuntimeExternalConstructorAbiHaxe(module);
   const packageName = convertPackageNameToHaxePackageName(module.packageName, options.rootPackage);
@@ -289,9 +291,9 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
     case 'object':
       return `{ ${expression.members
         .map((member) => {
-          if (member.kind === 'spread') emissionError(context, 'object spread requires structural-copy lowering');
-          if (member.kind === 'computedProperty')
-            emissionError(context, 'computed object properties require runtime lowering');
+          if (member.kind !== 'property') {
+            emissionError(context, 'structural object compatibility preflight accepted an unresolved member');
+          }
           return `${safeHaxeName(member.name)}: ${emitExpression(member.value, context)}`;
         })
         .join(', ')} }`;
@@ -997,6 +999,20 @@ function assertNoSwitchFallthrough(statement: Extract<IrStatement, { kind: 'swit
       emissionError(context, 'switch fallthrough requires control-flow lowering before Haxe emission');
     }
   });
+}
+
+function assertStructuralObjectCompatibilityHaxe(module: Readonly<IrModule>): void {
+  const diagnostic = analyzeIrModuleStructuralObjectCompatibility(module).diagnostics.find(
+    (candidate) =>
+      candidate.code !== 'open-construction-target' && candidate.code !== 'unresolved-named-construction-target',
+  );
+  if (diagnostic) {
+    throw createBackendEmissionFailure(
+      'haxe',
+      module,
+      `structural object compatibility ${diagnostic.code} at ${JSON.stringify(diagnostic.path)}: ${diagnostic.message}`,
+    );
+  }
 }
 
 function assertRuntimeExternalSymbolBindingsHaxe(module: Readonly<IrModule>): void {

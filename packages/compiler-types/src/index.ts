@@ -20,6 +20,7 @@ export type * from './compilerSemanticPatchContract.js';
 export type * from './compilerSourceFingerprint.js';
 export type * from './compilerSourceIdentity.js';
 export type * from './compilerStaticFactContract.js';
+export type * from './compilerStructuralObjectCompatibilityContract.js';
 export type * from './compilerStructuralTypeShapeContract.js';
 export type * from './compilerStructuralTypeSubstitutionContract.js';
 export type * from './compilerTargetCompilationSmokeContract.js';

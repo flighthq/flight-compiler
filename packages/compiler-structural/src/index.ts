@@ -1,4 +1,5 @@
 export { createIrObjectCopySemantics } from './compilerStructuralObjectCopySemantics.js';
+export { analyzeIrModuleStructuralObjectCompatibility } from './compilerStructuralObjectCompatibility.js';
 export {
   createIrObjectTypeShapeIdentity,
   isCompilerStructuralTypeShapeFailure,

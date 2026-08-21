@@ -22,7 +22,10 @@ import {
   collectIrModulesRuntimeExternalConstructorInvocations,
   collectIrModulesRuntimeExternalSymbolIdentities,
 } from '../../compiler-runtime-contract/src/index.js';
-import { createIrObjectTypeShapeIdentity } from '../../compiler-structural/src/index.js';
+import {
+  analyzeIrModuleStructuralObjectCompatibility,
+  createIrObjectTypeShapeIdentity,
+} from '../../compiler-structural/src/index.js';
 import type { CompilerBackend, EmittedFile, RustCompilerBackendOptions } from '../../compiler-types/src/index.js';
 import type {
   IrAssignmentOperator,
@@ -99,6 +102,7 @@ export function emitIrModuleRust(
     createCompilerLoweringPassInterfaceInheritance(),
     createCompilerLoweringPassSwitchFallthrough(),
   ]);
+  assertStructuralObjectCompatibilityRust(module);
   assertRuntimeExternalSymbolBindingsRust(module);
   assertRuntimeExternalConstructorAbiRust(module);
   const constantIdentities = new Set(
@@ -591,53 +595,20 @@ function emitObjectExpressionRust(
   expression: Readonly<Extract<IrExpression, { kind: 'object' }>>,
   context: EmitContext,
 ): string {
-  if (expression.members.some((member) => member.kind === 'spread')) {
-    emissionError(context, 'object spread requires structural-copy lowering');
-  }
-  if (expression.members.some((member) => member.kind === 'computedProperty')) {
-    emissionError(context, 'computed object properties require Rust property-key lowering');
-  }
-  if (expression.type.kind !== 'named' && expression.type.kind !== 'object') {
-    emissionError(context, 'object construction requires closed target-type evidence');
-  }
   const target = emitType(expression.type, context);
   const properties = getIrObjectConstructionPropertiesRust(expression.type, context);
-  const localBindingId =
-    expression.type.kind === 'named' &&
-    expression.type.reference.kind === 'binding' &&
-    expression.type.reference.path.length === 0
-      ? expression.type.reference.binding.id
-      : undefined;
-  if (
-    localBindingId &&
-    context.module.declarations.some(
-      (declaration) => 'binding' in declaration && declaration.binding.id === localBindingId,
-    ) &&
-    !properties
-  ) {
-    emissionError(context, 'object construction target is not a local structural record');
-  }
   const members = expression.members.filter(
     (member): member is Extract<IrObjectMember, { kind: 'property' }> => member.kind === 'property',
   );
   const names = new Set<string>();
   const fields = members.map((member) => {
-    if (names.has(member.name)) {
-      emissionError(context, `duplicate object property ${member.name} requires evaluation-preserving normalization`);
-    }
     names.add(member.name);
     const property = properties?.find((candidate) => candidate.name === member.name);
-    if (properties && !property) {
-      emissionError(context, `object property ${member.name} is absent from its closed construction type`);
-    }
     const value = emitExpression(member.value, context);
     return `${safeRustValueName(member.name)}: ${property?.optional ? `Some(${value})` : value},`;
   });
   for (const property of properties ?? []) {
     if (names.has(property.name)) continue;
-    if (!property.optional) {
-      emissionError(context, `required object property ${property.name} is absent from its construction`);
-    }
     fields.push(`${safeRustValueName(property.name)}: None,`);
   }
   return `${target} { ${fields.join(' ')} }`;
@@ -1063,6 +1034,20 @@ function getTypeReferenceTargetNameRust(type: Readonly<IrTypeReference>, context
   return [getBindingTargetNameRust(type.reference.binding, context), ...type.reference.path.map(safeRustTypeName)].join(
     '::',
   );
+}
+
+function assertStructuralObjectCompatibilityRust(module: Readonly<IrModule>): void {
+  const diagnostics = analyzeIrModuleStructuralObjectCompatibility(module).diagnostics;
+  const diagnostic =
+    diagnostics.find((candidate) => candidate.disposition !== 'indeterminate') ??
+    diagnostics.find((candidate) => candidate.code !== 'unresolved-named-construction-target');
+  if (diagnostic) {
+    throw createBackendEmissionFailure(
+      'rust',
+      module,
+      `structural object compatibility ${diagnostic.code} at ${JSON.stringify(diagnostic.path)}: ${diagnostic.message}`,
+    );
+  }
 }
 
 function assertRuntimeExternalSymbolBindingsRust(module: Readonly<IrModule>): void {

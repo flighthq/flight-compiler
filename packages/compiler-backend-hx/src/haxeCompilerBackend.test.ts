@@ -26,6 +26,22 @@ describe('createHaxeCompilerBackend', () => {
 });
 
 describe('emitIrModuleHaxe', () => {
+  it('reports structural object incompatibility before Haxe source emission', () => {
+    const result = lower(
+      'duplicate-object.ts',
+      'export function create(): { value: number } { return { value: 1, value: 2 }; }',
+    );
+
+    expect(() => emitIrModuleHaxe(result.module)).toThrow(
+      'structural object compatibility duplicate-property-requires-normalization',
+    );
+    try {
+      emitIrModuleHaxe(result.module);
+    } catch (error) {
+      expect(isBackendEmissionFailure(error)).toBe(true);
+    }
+  });
+
   it('constructs generic structural records with substituted nested target types', () => {
     const result = lower(
       'generic-object.ts',

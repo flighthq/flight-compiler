@@ -49,6 +49,7 @@ const packageRules: Readonly<Record<string, PackageRule>> = {
       'compiler-emission',
       'compiler-lowering',
       'compiler-runtime-contract',
+      'compiler-structural',
       'compiler-types',
     ],
     description: 'Haxe lowering, naming, and source emission backend',

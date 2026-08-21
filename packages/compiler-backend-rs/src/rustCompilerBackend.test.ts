@@ -107,12 +107,14 @@ describe('emitIrModuleRust', () => {
     );
 
     expect(() => emitIrModuleRust(computed.module)).toThrow(
-      'computed object properties require Rust property-key lowering',
+      'structural object compatibility computed-property-indeterminate',
     );
-    expect(() => emitIrModuleRust(spread.module)).toThrow('object spread requires structural-copy lowering');
-    expect(() => emitIrModuleRust(open.module)).toThrow('object construction requires closed target-type evidence');
+    expect(() => emitIrModuleRust(spread.module)).toThrow(
+      'structural object compatibility spread-membership-indeterminate',
+    );
+    expect(() => emitIrModuleRust(open.module)).toThrow('structural object compatibility open-construction-target');
     expect(() => emitIrModuleRust(duplicate.module)).toThrow(
-      'duplicate object property value requires evaluation-preserving normalization',
+      'structural object compatibility duplicate-property-requires-normalization',
     );
   });
 
