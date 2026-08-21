@@ -37,6 +37,7 @@ export type CompilerInvariantCode =
   | 'duplicate-module-identity'
   | 'duplicate-target-name-identity'
   | 'invalid-target-name-candidate'
+  | 'unsafe-emitted-contents'
   | 'unsafe-emitted-path';
 
 export interface CompilerInvariantFailure extends Error {

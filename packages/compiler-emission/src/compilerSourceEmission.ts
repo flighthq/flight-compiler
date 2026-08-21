@@ -39,6 +39,10 @@ export function createCompilerInvariantFailure(
   return failure;
 }
 
+export function encodeEmittedFileContentsUtf8(contents: string): Uint8Array {
+  return new TextEncoder().encode(normalizeEmittedFileContents(contents));
+}
+
 export function indentSourceLines(lines: readonly string[], depth = 1): string[] {
   const prefix = '  '.repeat(depth);
   return lines.map((line) => (line.length === 0 ? '' : `${prefix}${line}`));
@@ -82,6 +86,7 @@ export function normalizeEmittedFile(file: Readonly<EmittedFile>): EmittedFile {
 }
 
 export function normalizeEmittedFileContents(contents: string): string {
+  validateEmittedFileContents(contents);
   const lineNormalized = contents.replaceAll('\r\n', '\n').replaceAll('\r', '\n');
   return `${lineNormalized.replace(/\n+$/u, '')}\n`;
 }
@@ -109,6 +114,37 @@ function isUnsafePortablePathSegment(segment: string): boolean {
   );
 }
 
+function validateEmittedFileContents(contents: string): void {
+  if (contents.startsWith('\uFEFF')) {
+    throw createCompilerInvariantFailure(
+      'unsafe-emitted-contents',
+      'byte-order-mark',
+      'Backend emitted contents with a leading byte-order mark',
+    );
+  }
+  for (let index = 0; index < contents.length; index += 1) {
+    const codeUnit = contents.charCodeAt(index);
+    if (codeUnit >= 0xd800 && codeUnit <= 0xdbff) {
+      const nextCodeUnit = contents.charCodeAt(index + 1);
+      if (nextCodeUnit >= 0xdc00 && nextCodeUnit <= 0xdfff) {
+        index += 1;
+        continue;
+      }
+      throwUnsafeSurrogate(index);
+    }
+    if (codeUnit >= 0xdc00 && codeUnit <= 0xdfff) throwUnsafeSurrogate(index);
+  }
+}
+
+function throwUnsafeSurrogate(index: number): never {
+  const subject = `unicode-code-unit:${String(index)}`;
+  throw createCompilerInvariantFailure(
+    'unsafe-emitted-contents',
+    subject,
+    `Backend emitted contents with an unpaired Unicode surrogate at code-unit index ${String(index)}`,
+  );
+}
+
 const backendEmissionFailureCodes = {
   'unsupported-ir': true,
 } as const satisfies Readonly<Record<BackendEmissionFailureCode, true>>;
@@ -118,5 +154,6 @@ const compilerInvariantCodes = {
   'duplicate-module-identity': true,
   'duplicate-target-name-identity': true,
   'invalid-target-name-candidate': true,
+  'unsafe-emitted-contents': true,
   'unsafe-emitted-path': true,
 } as const satisfies Readonly<Record<CompilerInvariantCode, true>>;

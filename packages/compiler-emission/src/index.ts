@@ -1,6 +1,7 @@
 export {
   createBackendEmissionFailure,
   createCompilerInvariantFailure,
+  encodeEmittedFileContentsUtf8,
   indentSourceLines,
   isBackendEmissionFailure,
   isCompilerInvariantFailure,

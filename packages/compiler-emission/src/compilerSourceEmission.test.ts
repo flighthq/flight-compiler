@@ -1,6 +1,7 @@
 import {
   createBackendEmissionFailure,
   createCompilerInvariantFailure,
+  encodeEmittedFileContentsUtf8,
   indentSourceLines,
   isBackendEmissionFailure,
   isCompilerInvariantFailure,
@@ -42,6 +43,14 @@ describe('createCompilerInvariantFailure', () => {
       name: 'CompilerInvariantError',
       subject: 'Value.hx',
     });
+  });
+});
+
+describe('encodeEmittedFileContentsUtf8', () => {
+  it('encodes normalized non-ASCII source as BOM-free UTF-8 bytes', () => {
+    expect([...encodeEmittedFileContentsUtf8('const café = "😀";\r\n\r\n')]).toEqual([
+      ...new TextEncoder().encode('const café = "😀";\n'),
+    ]);
   });
 });
 
@@ -143,6 +152,30 @@ describe('normalizeEmittedFileContents', () => {
     expect(normalizeEmittedFileContents('')).toBe('\n');
     expect(normalizeEmittedFileContents('\n')).toBe('\n');
     expect(normalizeEmittedFileContents(normalizeEmittedFileContents('value\r\n'))).toBe('value\n');
+  });
+
+  it('accepts Unicode scalar values and refuses text that UTF-8 encoding would replace or reinterpret', () => {
+    expect(normalizeEmittedFileContents('const emoji = "😀";')).toBe('const emoji = "😀";\n');
+    expect(normalizeEmittedFileContents('const interior = "one\uFEFFtwo";')).toBe('const interior = "one\uFEFFtwo";\n');
+
+    for (const [contents, subject] of [
+      ['\uFEFFconst value = 1;', 'byte-order-mark'],
+      ['const value = "\ud800";', 'unicode-code-unit:15'],
+      ['const value = "\udc00";', 'unicode-code-unit:15'],
+    ] as const) {
+      try {
+        normalizeEmittedFileContents(contents);
+        expect.unreachable('Expected unsafe emitted contents to fail');
+      } catch (error) {
+        expect(isCompilerInvariantFailure(error)).toBe(true);
+        expect(error).toMatchObject({
+          code: 'unsafe-emitted-contents',
+          kind: 'compiler-invariant',
+          name: 'CompilerInvariantError',
+          subject,
+        });
+      }
+    }
   });
 });
 
