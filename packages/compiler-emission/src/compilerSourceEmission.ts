@@ -8,6 +8,10 @@ import type {
   EmittedFile,
 } from '../../compiler-types/src/index.js';
 
+export function convertEmittedFileContentsToUtf8(contents: string): Uint8Array {
+  return new TextEncoder().encode(normalizeEmittedFileContents(contents));
+}
+
 export function createBackendEmissionFailure(
   backend: string,
   sourceIdentity: Readonly<CompilerSourceIdentity>,
@@ -37,10 +41,6 @@ export function createCompilerInvariantFailure(
   });
   failure.name = 'CompilerInvariantError';
   return failure;
-}
-
-export function convertEmittedFileContentsToUtf8(contents: string): Uint8Array {
-  return new TextEncoder().encode(normalizeEmittedFileContents(contents));
 }
 
 export function indentSourceLines(lines: readonly string[], depth = 1): string[] {

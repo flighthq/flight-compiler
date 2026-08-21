@@ -1,5 +1,5 @@
-import { isCompilerInvariantFailure } from './compilerSourceEmission.js';
 import { createCompilerGeneratedFileHeader } from './compilerGeneratedFileProvenance.js';
+import { isCompilerInvariantFailure } from './compilerSourceEmission.js';
 
 describe('createCompilerGeneratedFileHeader', () => {
   it('renders the complete input identity without retaining or changing caller data', () => {
