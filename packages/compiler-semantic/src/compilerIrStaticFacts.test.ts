@@ -1,6 +1,6 @@
 import ts from 'typescript';
 
-import type { CompilerStaticFactAudit } from '../../compiler-types/src/index.js';
+import type { CompilerStaticFactAudit, IrModule } from '../../compiler-types/src/index.js';
 import { analyzeIrModulesStaticFacts, combineCompilerStaticFactAudits } from './compilerIrStaticFacts.js';
 import { lowerTypeScriptSource } from './typeScriptSemanticLowering.js';
 
@@ -174,6 +174,98 @@ describe('analyzeIrModulesStaticFacts', () => {
       modules: 0,
       schema: 'flight-compiler-static-facts/5',
     });
+  });
+
+  it('characterizes every neutral expression value domain used by control flow', () => {
+    const sourceFile = ts.createSourceFile(
+      '/flight/packages/math/src/value-domains.ts',
+      `
+        class Box {
+          inspect(value: boolean): void { if (this) value; }
+        }
+        export async function classify(value: boolean, values: boolean[]): Promise<void> {
+          let numeric = 0;
+          if ([]) {}
+          if (() => 1) {}
+          if (new Box()) {}
+          if ({}) {}
+          if (/x/) {}
+          if ((numeric = 1)) {}
+          if (1 + 2) {}
+          if ((1 as unknown)) {}
+          if (value ? 1 : 2) {}
+          if (1) {}
+          if (value ? 1 : 'x') {}
+          if (value) {}
+          if (await Promise.resolve(value)) {}
+          if (Boolean(value)) {}
+          if (values[0]) {}
+          if ({ value }.value) {}
+          if (undefined) {}
+          if (null) {}
+          if (true) {}
+          if (!value) {}
+          if ('x') {}
+          if (\`x${'${value}'}\`) {}
+        }
+      `,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const lowered = lowerTypeScriptSource(sourceFile, {
+      packageName: '@flighthq/math',
+      upstreamDirectory: '/flight',
+    });
+    const controlFlowFacts = analyzeIrModulesStaticFacts([lowered.module]).facts.filter(
+      (fact) => fact.kind === 'truthiness' && fact.context === 'controlFlowCondition',
+    );
+
+    expect(lowered.diagnostics).toEqual([]);
+    expect(controlFlowFacts).toEqual([
+      { context: 'controlFlowCondition', count: 2, domain: 'boolean', kind: 'truthiness' },
+      { context: 'controlFlowCondition', count: 1, domain: 'null', kind: 'truthiness' },
+      { context: 'controlFlowCondition', count: 5, domain: 'number', kind: 'truthiness' },
+      { context: 'controlFlowCondition', count: 6, domain: 'object', kind: 'truthiness' },
+      { context: 'controlFlowCondition', count: 2, domain: 'string', kind: 'truthiness' },
+      { context: 'controlFlowCondition', count: 1, domain: 'undefined', kind: 'truthiness' },
+      { context: 'controlFlowCondition', count: 6, domain: 'unknown', kind: 'truthiness' },
+    ]);
+
+    const spreadSource = ts.createSourceFile(
+      '/flight/packages/math/src/spread-domain.ts',
+      'export function inspect(): void { if (true) {} }',
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const spreadLowered = lowerTypeScriptSource(spreadSource, {
+      packageName: '@flighthq/math',
+      upstreamDirectory: '/flight',
+    });
+    const declaration = spreadLowered.module.declarations[0];
+    if (declaration?.kind !== 'function' || declaration.body[0]?.kind !== 'if') {
+      throw new Error('Expected the fixture to lower to a function containing an if statement');
+    }
+    const statement = declaration.body[0];
+    const moduleWithSpreadCondition: IrModule = {
+      ...spreadLowered.module,
+      declarations: [
+        {
+          ...declaration,
+          body: [
+            {
+              ...statement,
+              condition: { expression: statement.condition, kind: 'spread' },
+            },
+          ],
+        },
+      ],
+    };
+
+    expect(
+      analyzeIrModulesStaticFacts([moduleWithSpreadCondition]).facts.filter(
+        (fact) => fact.kind === 'truthiness' && fact.context === 'controlFlowCondition',
+      ),
+    ).toEqual([{ context: 'controlFlowCondition', count: 1, domain: 'unknown', kind: 'truthiness' }]);
   });
 
   it('walks declaration, statement, expression, and default-export containers without changing them', () => {
