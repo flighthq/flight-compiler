@@ -46,7 +46,14 @@ export interface IrOptionalParameterCallSemantics {
   readonly omitted: readonly number[];
   readonly optional: readonly number[];
   readonly parameterCount: number;
+  readonly provided: readonly IrOptionalParameterProvidedArgumentSemantics[];
   readonly providedArgumentCount: number | 'dynamic';
+}
+
+export interface IrOptionalParameterProvidedArgumentSemantics {
+  readonly argumentType: IrType;
+  readonly parameterType: IrType;
+  readonly position: number;
 }
 
 export interface IrStatementValueCallSemantics {
@@ -57,6 +64,7 @@ export interface IrStatementValueCallSemantics {
 
 export interface IrOptionalChainSemantics {
   readonly receiverEvaluation: 'once';
+  readonly receiverNullish: 'excluded' | 'possible';
   readonly receiverType: IrType;
   readonly result: 'undefined';
   readonly shortCircuit: 'nullish';

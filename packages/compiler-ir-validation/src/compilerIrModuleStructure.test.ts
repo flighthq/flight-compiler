@@ -257,6 +257,19 @@ describe('validateIrModuleStructure', () => {
         expect.arrayContaining([expect.stringContaining('.semantics.key'), expect.stringContaining('.optionalChain')]),
       );
     }
+
+    const incoherent = structuredClone(valid);
+    const incoherentDeclaration = incoherent.declarations[0];
+    const incoherentStatement = incoherentDeclaration?.kind === 'function' ? incoherentDeclaration.body[0] : undefined;
+    const incoherentExpression = incoherentStatement?.kind === 'return' ? incoherentStatement.expression : undefined;
+    if (incoherentExpression?.kind !== 'element' || !incoherentExpression.semantics.optionalChain) {
+      throw new Error('Expected optional element evidence');
+    }
+    (incoherentExpression.semantics.optionalChain as { receiverNullish: string }).receiverNullish = 'excluded';
+    expect(validateIrModuleStructure(incoherent)).toMatchObject({
+      failures: [expect.objectContaining({ path: expect.stringContaining('.optionalChain') })],
+      kind: 'invalid',
+    });
   });
 
   it('validates exact default-parameter call arity, ordering, and omissions', () => {
@@ -310,11 +323,11 @@ describe('validateIrModuleStructure', () => {
     expect(validateIrModuleStructure(valid)).toEqual({ kind: 'valid' });
 
     const replacements = [
-      { omitted: [1, 2], optional: [2, 1], parameterCount: 3, providedArgumentCount: 1 },
-      { omitted: [1], optional: [1, 2], parameterCount: 3, providedArgumentCount: 1 },
-      { omitted: [1, 2], optional: [1, 2], parameterCount: 2, providedArgumentCount: 1 },
-      { omitted: [1, 2], optional: [1, 2], parameterCount: 3, providedArgumentCount: 2 },
-      { omitted: [], optional: [1, 2], parameterCount: 3, providedArgumentCount: 'dynamic' },
+      { omitted: [1, 2], optional: [2, 1], parameterCount: 3, provided: [], providedArgumentCount: 1 },
+      { omitted: [1], optional: [1, 2], parameterCount: 3, provided: [], providedArgumentCount: 1 },
+      { omitted: [1, 2], optional: [1, 2], parameterCount: 2, provided: [], providedArgumentCount: 1 },
+      { omitted: [1, 2], optional: [1, 2], parameterCount: 3, provided: [], providedArgumentCount: 2 },
+      { omitted: [], optional: [1, 2], parameterCount: 3, provided: [], providedArgumentCount: 'dynamic' },
     ] as const;
     for (const replacement of replacements) {
       const invalid = structuredClone(valid);
@@ -360,6 +373,7 @@ describe('validateIrModuleStructure', () => {
       omitted: [0, 1],
       optional: [0, 1],
       parameterCount: 2,
+      provided: [],
       providedArgumentCount: 0,
     };
     expect(validateIrModuleStructure(overlapping)).toMatchObject({
@@ -386,6 +400,43 @@ describe('validateIrModuleStructure', () => {
         expect.objectContaining({ code: 'invalid-node-shape', path: expect.stringContaining('.type') }),
       );
     }
+  });
+
+  it('validates statement-value carriers through their final value completion', () => {
+    const module = lower(
+      'statement-value.ts',
+      'export function assign(tuple: [number]): [number] { let value = 0; return ([value] = tuple); }',
+    );
+    const declaration = module.declarations[0];
+    const returnStatement = declaration?.kind === 'function' ? declaration.body[1] : undefined;
+    const expression = returnStatement?.kind === 'return' ? returnStatement.expression : undefined;
+    if (declaration?.kind !== 'function' || expression?.kind !== 'call' || expression.callee.kind !== 'function') {
+      throw new Error('Expected statement-value carrier');
+    }
+    const completion = expression.callee.body.at(-1);
+    if (completion?.kind !== 'return') throw new Error('Expected statement-value completion');
+    const invalidExpression = {
+      ...expression,
+      callee: {
+        ...expression.callee,
+        body: [...expression.callee.body.slice(0, -1), { ...completion, expression: undefined }],
+      },
+    };
+    const invalid = {
+      ...module,
+      declarations: [
+        {
+          ...declaration,
+          body: [declaration.body[0]!, { ...returnStatement, expression: invalidExpression }],
+        },
+      ],
+    } as IrModule;
+
+    expect(validateIrModuleStructure(module)).toEqual({ kind: 'valid' });
+    expect(validateIrModuleStructure(invalid)).toMatchObject({
+      failures: [{ code: 'invalid-node-shape', path: expect.stringContaining('statementValue') }],
+      kind: 'invalid',
+    });
   });
 
   it('validates labeled control-flow targets against active and continuable identities', () => {

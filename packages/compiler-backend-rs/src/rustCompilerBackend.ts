@@ -422,6 +422,7 @@ function emitCallArgumentsRust(
 ): string[] {
   const defaults = expression.semantics.defaultParameters;
   const optionals = expression.semantics.optionalParameters;
+  if (!defaults && !optionals) return expression.arguments.map((argument) => emitExpression(argument, context));
   const plan = defaults ?? optionals;
   if (!plan) return expression.arguments.map((argument) => emitExpression(argument, context));
   if (plan.providedArgumentCount === 'dynamic') {
@@ -431,6 +432,7 @@ function emitCallArgumentsRust(
     emissionError(context, 'extra JavaScript call arguments require Rust ABI erasure lowering');
   }
   const wrapped = new Set([...(defaults?.defaulted ?? []), ...(optionals?.optional ?? [])]);
+  const optionalProvided = new Map(optionals?.provided.map((provided) => [provided.position, provided]) ?? []);
   return Array.from({ length: plan.parameterCount }, (_, index) => {
     const argument = expression.arguments[index];
     if (!argument) {
@@ -441,6 +443,14 @@ function emitCallArgumentsRust(
     }
     if (argument.kind === 'undefinedValue') return 'None';
     const emitted = emitExpression(argument, context);
+    const optionalEvidence = optionalProvided.get(index);
+    if (
+      optionalEvidence &&
+      isNullableType(optionalEvidence.parameterType) &&
+      isNullableType(optionalEvidence.argumentType)
+    ) {
+      return emitted;
+    }
     return wrapped.has(index) ? `Some(${emitted})` : emitted;
   });
 }
@@ -453,7 +463,7 @@ function emitOptionalCallExpressionRust(
   if (!semantics) emissionError(context, 'optional call lacks neutral optional-chain evidence');
   const arguments_ = emitCallArgumentsRust(expression, context).join(', ');
   const callee = emitExpression(expression.callee, context);
-  if (!hasIrTypeNullishMemberRust(semantics.receiverType)) return `${callee}(${arguments_})`;
+  if (semantics.receiverNullish === 'excluded') return `${callee}(${arguments_})`;
   getIrTypeOptionalPayloadRust(semantics.receiverType, 'optional call receiver', context);
   const operation = isNullableType(semantics.valueType) ? 'and_then' : 'map';
   return `${callee}.as_ref().${operation}(|optional_chain_value| optional_chain_value(${arguments_}))`;
@@ -465,7 +475,7 @@ function emitOptionalElementExpressionRust(
 ): string {
   const semantics = expression.semantics.optionalChain;
   if (!semantics) emissionError(context, 'optional element access lacks neutral optional-chain evidence');
-  if (!hasIrTypeNullishMemberRust(semantics.receiverType)) {
+  if (semantics.receiverNullish === 'excluded') {
     return emitRequiredElementExpressionRust(expression, context);
   }
   const receiver = getIrTypeOptionalPayloadRust(semantics.receiverType, 'optional element receiver', context);
@@ -490,7 +500,7 @@ function emitOptionalPropertyExpressionRust(
   if (!semantics) emissionError(context, 'optional property access lacks neutral optional-chain evidence');
   const object = emitExpression(expression.object, context);
   const property = safeRustValueName(expression.name);
-  if (!hasIrTypeNullishMemberRust(semantics.receiverType)) {
+  if (semantics.receiverNullish === 'excluded') {
     return `${object}${isAmbientIdentifier(expression.object) ? '::' : '.'}${property}`;
   }
   getIrTypeOptionalPayloadRust(semantics.receiverType, 'optional property receiver', context);
@@ -517,14 +527,6 @@ function getIrTypeOptionalPayloadRust(type: Readonly<IrType>, subject: string, c
   const concrete = type.types.filter((member) => member.kind !== 'null' && member.kind !== 'undefined');
   if (concrete.length !== 1) emissionError(context, `${subject} requires one concrete Rust Option payload`);
   return concrete[0]!;
-}
-
-function hasIrTypeNullishMemberRust(type: Readonly<IrType>): boolean {
-  return (
-    type.kind === 'null' ||
-    type.kind === 'undefined' ||
-    (type.kind === 'union' && type.types.some((member) => member.kind === 'null' || member.kind === 'undefined'))
-  );
 }
 
 function emitObjectRestExpressionRust(
@@ -558,10 +560,8 @@ function emitParameter(parameter: Readonly<IrParameter>, context: EmitContext): 
     return `${getBindingTargetNameRust(parameter.binding, context)}: Option<${emitType(parameter.type, context)}>`;
   }
   if (parameter.optional) {
-    if (isNullableType(parameter.type)) {
-      emissionError(context, `optional nullable parameter ${parameter.binding.name} requires Rust carrier lowering`);
-    }
-    return `${getBindingTargetNameRust(parameter.binding, context)}: Option<${emitType(parameter.type, context)}>`;
+    const type = emitType(parameter.type, context);
+    return `${getBindingTargetNameRust(parameter.binding, context)}: ${isNullableType(parameter.type) ? type : `Option<${type}>`}`;
   }
   const name = getBindingTargetNameRust(parameter.binding, context);
   if (parameter.rest) return `${name}: Vec<${emitType(parameter.type, context)}>`;

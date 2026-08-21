@@ -50,6 +50,7 @@ The repository follows Flight's package-per-domain convention. Internal workspac
 
 - `packages/compiler-types/`: every shared compiler contract, diagnostic shape, and target-neutral IR type.
 - `packages/compiler-inventory/`: read-only package, export-lane, symbol, and runtime-value analysis.
+- `packages/compiler-ir-traversal/`: typed, target-neutral structural traversal over IR modules and their nested node families.
 - `packages/compiler-ir-validation/`: structural integrity checks for target-neutral IR values.
 - `packages/compiler-provenance/`: normalization, provenance, and stable fingerprints.
 - `packages/compiler-runtime-contract/`: target-neutral ambient-symbol reachability and runtime-binding completeness.
@@ -86,9 +87,10 @@ The dependency floor is deliberate:
 - `compiler-provenance` defines deterministic normalization and exact source-fingerprint identity over shared contracts and host-independent canonical form.
 - `compiler-patch` depends on shared contracts, deterministic canonical form, and exact provenance identity; `compiler-emission` depends only on its contracts and canonical form.
 - `compiler-ir-validation` verifies target-neutral IR structure over shared contracts and exact provenance identity.
+- `compiler-ir-traversal` provides dependency-floor, read-only IR observation over `compiler-types` without embedding analysis policy.
 - `compiler-runtime-contract` validates reachable ambient type/value symbol decisions over `compiler-types` and shared deterministic canonical form.
 - `compiler-canonical-form` defines deterministic text order and portable path form without importing compiler contracts or domain identity policy.
-- `compiler-lowering` provides verified neutral transforms over `compiler-types`, composing `compiler-ir-validation`; backends elect its passes.
+- `compiler-lowering` provides verified neutral transforms over `compiler-types`, composing `compiler-ir-traversal` and `compiler-ir-validation`; backends elect its passes.
 - inventory, semantic lowering, backends, and orchestration are compositions above that floor.
 
 Before expanding a higher package, read [the compiler foundations audit](agents/compiler-foundations.md). A foundation is mature only when its boundary is narrow, its vocabulary is worth freezing, deterministic behavior is tested by equivalence and counterexample, failure values are inspectable, and callers cannot observe accidental mutation or host-platform differences.

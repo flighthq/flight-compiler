@@ -2,6 +2,7 @@ export * from '../../compiler-backend-hx/src/index.js';
 export * from '../../compiler-backend-rs/src/index.js';
 export * from '../../compiler-emission/src/index.js';
 export * from '../../compiler-inventory/src/index.js';
+export * from '../../compiler-ir-traversal/src/index.js';
 export * from '../../compiler-ir-validation/src/index.js';
 export * from '../../compiler-lowering/src/index.js';
 export * from '../../compiler-canonical-form/src/index.js';

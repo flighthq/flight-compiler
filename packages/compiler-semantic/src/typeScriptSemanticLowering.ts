@@ -633,6 +633,7 @@ function createTypeScriptOptionalChainSemantics(
   const receiverType = getTypeScriptOptionalChainTypeEvidence(receiver, context);
   return {
     receiverEvaluation: 'once',
+    receiverNullish: getTypeScriptOptionalChainReceiverNullish(receiver, context),
     receiverType,
     result: 'undefined',
     shortCircuit: 'nullish',
@@ -640,7 +641,29 @@ function createTypeScriptOptionalChainSemantics(
   } as const;
 }
 
+function getTypeScriptOptionalChainReceiverNullish(
+  expression: ts.Expression,
+  context: LoweringContext,
+): 'excluded' | 'possible' {
+  const type = context.checker.getTypeAtLocation(expression);
+  const members = type.isUnion() ? type.types : [type];
+  return members.some(
+    (member) =>
+      (member.flags &
+        (ts.TypeFlags.Any |
+          ts.TypeFlags.Null |
+          ts.TypeFlags.TypeParameter |
+          ts.TypeFlags.Undefined |
+          ts.TypeFlags.Unknown)) !==
+      0,
+  )
+    ? 'possible'
+    : 'excluded';
+}
+
 function getTypeScriptOptionalChainTypeEvidence(expression: ts.Expression, context: LoweringContext): IrType {
+  const binding = getTypeScriptExpressionBindingTypeEvidence(expression, context);
+  if (binding) return binding;
   const evidence = getTypeScriptSyntacticExpressionTypeEvidence(expression, context.checker);
   return evidence ? lowerType(evidence, context) : { kind: 'unknown', source: 'unknown' };
 }
@@ -899,11 +922,27 @@ function getTypeScriptOptionalParameterCallSemantics(
   );
   if (optional.length === 0) return {};
   const dynamic = node.arguments.some(ts.isSpreadElement);
+  const provided = dynamic
+    ? []
+    : optional.flatMap((position) => {
+        const argument = node.arguments[position];
+        const parameter = parameters[position];
+        if (!argument || !parameter) return [];
+        return [
+          {
+            argumentType:
+              lowerTypeScriptExpressionTypeEvidence(argument, context) ?? inferInitializerType(argument, context),
+            parameterType: lowerFunctionTypeParameter(parameter, context).type,
+            position,
+          },
+        ];
+      });
   return {
     optionalParameters: {
       omitted: dynamic ? [] : optional.filter((index) => index >= node.arguments.length),
       optional,
       parameterCount: parameters.length,
+      provided,
       providedArgumentCount: dynamic ? 'dynamic' : node.arguments.length,
     },
   };
@@ -1146,7 +1185,15 @@ function lowerParameterBindingEntries(
 
 function lowerParameter(node: ts.ParameterDeclaration, context: LoweringContext): IrParameter {
   const typeParameter = lowerFunctionTypeParameter(node, context);
-  if (ts.isIdentifier(node.name)) addTypeScriptBindingTypeEvidence(node.name, typeParameter.type, context);
+  if (ts.isIdentifier(node.name)) {
+    addTypeScriptBindingTypeEvidence(
+      node.name,
+      typeParameter.optional && !node.initializer
+        ? addIrTypeBindingPatternUndefined(typeParameter.type)
+        : typeParameter.type,
+      context,
+    );
+  }
   const parameter = {
     binding: ts.isIdentifier(node.name)
       ? lowerBindingIdentity(node.name, context)
@@ -2284,6 +2331,7 @@ function inferInitializerType(node: ts.Expression, context: LoweringContext): Ir
     return { kind: 'primitive', name: 'boolean' };
   }
   if (ts.isNumericLiteral(node)) return { kind: 'primitive', name: 'number' };
+  if (node.kind === ts.SyntaxKind.NullKeyword) return { kind: 'null' };
   if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node))
     return { kind: 'primitive', name: 'string' };
   if (ts.isArrayLiteralExpression(node)) {

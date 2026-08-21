@@ -26,6 +26,7 @@ import type {
   IrBinaryOperatorSemantics,
   IrBindingIdentity,
   IrClassDeclaration,
+  IrControlFlowLabelIdentity,
   IrDeclaration,
   IrEnumDeclaration,
   IrExpression,
@@ -55,11 +56,20 @@ import {
 } from './haxeRuntimeExternalSymbolBinding.js';
 
 interface EmitContext {
+  breakableDepth: number;
+  controlFlowLabels: HaxeControlFlowLabel[];
   generatedNames: Set<string>;
   module: Readonly<IrModule>;
   options: Readonly<HaxeCompilerBackendOptions>;
   packageName: string;
   targetNames: ReadonlyMap<string, string>;
+}
+
+interface HaxeControlFlowLabel {
+  readonly continuable: boolean;
+  readonly depth: number;
+  readonly identity: Readonly<IrControlFlowLabelIdentity>;
+  readonly stateName: string;
 }
 
 export function createHaxeCompilerBackend(): CompilerBackend<HaxeCompilerBackendOptions> {
@@ -105,6 +115,8 @@ export function emitIrModuleHaxe(
     throw error;
   }
   const context: EmitContext = {
+    breakableDepth: 0,
+    controlFlowLabels: [],
     generatedNames: new Set(targetNames.values()),
     module,
     options,
@@ -229,6 +241,7 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
       return `(${left} ${emitBinaryOperatorHaxe(expression.operator, expression.semantics, context)} ${right})`;
     }
     case 'call':
+      if (expression.semantics.statementValue) return emitStatementValueExpressionHaxe(expression, context);
       return `${expression.callee.kind === 'function' ? `(${emitExpression(expression.callee, context)})` : emitExpression(expression.callee, context)}${expression.optional ? '?.' : ''}(${emitCallArgumentsHaxe(expression, context)})`;
     case 'cast':
       return `(cast ${emitExpression(expression.expression, context)} : ${emitType(expression.type, context)})`;
@@ -333,6 +346,21 @@ function emitCallArgumentsHaxe(
     .join(', ');
 }
 
+function emitStatementValueExpressionHaxe(
+  expression: Readonly<Extract<IrExpression, { kind: 'call' }>>,
+  context: EmitContext,
+): string {
+  if (expression.callee.kind !== 'function' || expression.arguments.length > 0) {
+    emissionError(context, 'statement-value call requires a zero-argument function carrier');
+  }
+  const completion = expression.callee.body.at(-1);
+  if (completion?.kind !== 'return' || !completion.expression) {
+    emissionError(context, 'statement-value call requires a final value return');
+  }
+  const statements = emitStatements(expression.callee.body.slice(0, -1), context);
+  return `({ ${[...statements, `${emitExpression(completion.expression, context)};`].join(' ')} })`;
+}
+
 function emitFunction(declaration: Readonly<IrFunctionDeclaration>, context: EmitContext): string[] {
   if (declaration.async)
     emissionError(context, `async function ${declaration.binding.name} requires the Haxe async-lowering pass`);
@@ -417,28 +445,24 @@ function emitParameters(parameters: readonly IrParameter[], context: EmitContext
 }
 
 function emitStatement(statement: Readonly<IrStatement>, context: EmitContext): string[] {
-  if ('label' in statement && statement.label) {
-    emissionError(context, `control-flow label ${statement.label.name} requires Haxe completion-state lowering`);
-  }
   switch (statement.kind) {
     case 'block':
-      return ['{', ...indentSourceLines(emitStatements(statement.statements, context)), '}'];
+      if (!statement.label) return ['{', ...indentSourceLines(emitStatements(statement.statements, context)), '}'];
+      return emitControlFlowBoundaryHaxe(statement.label, false, context, () => [
+        'do {',
+        ...indentSourceLines(emitStatements(statement.statements, context)),
+        '} while (false);',
+      ]);
     case 'break':
-      if (statement.target) {
-        emissionError(context, `break target ${statement.target.name} requires Haxe completion-state lowering`);
-      }
-      return ['break;'];
+      return statement.target ? emitControlFlowExitHaxe(statement.target, false, context) : ['break;'];
     case 'continue':
-      if (statement.target) {
-        emissionError(context, `continue target ${statement.target.name} requires Haxe completion-state lowering`);
-      }
-      return ['continue;'];
+      return statement.target ? emitControlFlowExitHaxe(statement.target, true, context) : ['continue;'];
     case 'do':
-      return [
+      return emitControlFlowBoundaryHaxe(statement.label, true, context, () => [
         'do {',
         ...indentSourceLines(emitStatementBody(statement.body, context)),
         `} while (${emitExpression(statement.condition, context)});`,
-      ];
+      ]);
     case 'expression':
       return [`${emitExpression(statement.expression, context)};`];
     case 'for':
@@ -446,31 +470,34 @@ function emitStatement(statement: Readonly<IrStatement>, context: EmitContext): 
     case 'forIn':
       if ('pattern' in statement.variable)
         emissionError(context, 'binding patterns require destructuring lowering before Haxe emission');
-      if (statement.keyPlan?.evaluation === 'preserve') {
+      const forInBinding = statement.variable.binding;
+      const forInKeyPlan = statement.keyPlan;
+      if (forInKeyPlan?.evaluation === 'preserve') {
         const objectName = getGeneratedTargetNameHaxe('forInObjectValue', context);
-        return [
+        return emitControlFlowBoundaryHaxe(statement.label, true, context, () => [
           '{',
           `  final ${objectName} = ${emitExpression(statement.object, context)};`,
-          `  for (${getBindingTargetNameHaxe(statement.variable.binding, context)} in [${statement.keyPlan.keys.map((key) => JSON.stringify(key)).join(', ')}]) {`,
+          `  for (${getBindingTargetNameHaxe(forInBinding, context)} in [${forInKeyPlan.keys.map((key) => JSON.stringify(key)).join(', ')}]) {`,
           ...indentSourceLines(emitStatementBody(statement.body, context), 2),
           '  }',
           '}',
-        ];
+        ]);
       }
-      return [
-        `for (${getBindingTargetNameHaxe(statement.variable.binding, context)} in ${statement.keyPlan ? `[${statement.keyPlan.keys.map((key) => JSON.stringify(key)).join(', ')}]` : `Reflect.fields(${emitExpression(statement.object, context)})`}) {`,
+      return emitControlFlowBoundaryHaxe(statement.label, true, context, () => [
+        `for (${getBindingTargetNameHaxe(forInBinding, context)} in ${forInKeyPlan ? `[${forInKeyPlan.keys.map((key) => JSON.stringify(key)).join(', ')}]` : `Reflect.fields(${emitExpression(statement.object, context)})`}) {`,
         ...indentSourceLines(emitStatementBody(statement.body, context)),
         '}',
-      ];
+      ]);
     case 'forOf':
       if (statement.await) emissionError(context, 'async iteration requires the Haxe async-lowering pass');
       if ('pattern' in statement.variable)
         emissionError(context, 'binding patterns require destructuring lowering before Haxe emission');
-      return [
-        `for (${getBindingTargetNameHaxe(statement.variable.binding, context)} in ${emitExpression(statement.iterable, context)}) {`,
+      const forOfBinding = statement.variable.binding;
+      return emitControlFlowBoundaryHaxe(statement.label, true, context, () => [
+        `for (${getBindingTargetNameHaxe(forOfBinding, context)} in ${emitExpression(statement.iterable, context)}) {`,
         ...indentSourceLines(emitStatementBody(statement.body, context)),
         '}',
-      ];
+      ]);
     case 'if': {
       const lines = [
         `if (${emitExpression(statement.condition, context)}) {`,
@@ -484,6 +511,9 @@ function emitStatement(statement: Readonly<IrStatement>, context: EmitContext): 
     case 'return':
       return [`return${statement.expression ? ` ${emitExpression(statement.expression, context)}` : ''};`];
     case 'switch': {
+      if (statement.label) {
+        emissionError(context, `labeled switch ${statement.label.name} requires Haxe switch completion lowering`);
+      }
       assertNoSwitchFallthrough(statement, context);
       const lines = [`switch (${emitExpression(statement.expression, context)}) {`];
       for (const clause of statement.cases) {
@@ -520,12 +550,69 @@ function emitStatement(statement: Readonly<IrStatement>, context: EmitContext): 
     case 'variable':
       return statement.declarations.map((variable) => emitVariable(variable, context));
     case 'while':
-      return [
+      return emitControlFlowBoundaryHaxe(statement.label, true, context, () => [
         `while (${emitExpression(statement.condition, context)}) {`,
         ...indentSourceLines(emitStatementBody(statement.body, context)),
         '}',
-      ];
+      ]);
   }
+}
+
+function emitControlFlowBoundaryHaxe(
+  label: Readonly<IrControlFlowLabelIdentity> | undefined,
+  continuable: boolean,
+  context: EmitContext,
+  emit: () => string[],
+): string[] {
+  context.breakableDepth += 1;
+  const controlFlowLabel = label
+    ? {
+        continuable,
+        depth: context.breakableDepth,
+        identity: label,
+        stateName: getGeneratedTargetNameHaxe(`${label.name}ControlFlowState`, context),
+      }
+    : undefined;
+  if (controlFlowLabel) context.controlFlowLabels.push(controlFlowLabel);
+  const lines = emit();
+  if (controlFlowLabel) context.controlFlowLabels.pop();
+  context.breakableDepth -= 1;
+  return [
+    ...(controlFlowLabel ? [`var ${controlFlowLabel.stateName}:Int = 0;`] : []),
+    ...lines,
+    ...emitControlFlowPropagationHaxe(context),
+  ];
+}
+
+function emitControlFlowExitHaxe(
+  target: Readonly<IrControlFlowLabelIdentity>,
+  continuing: boolean,
+  context: EmitContext,
+): string[] {
+  const label = [...context.controlFlowLabels].reverse().find((candidate) => candidate.identity.id === target.id);
+  if (!label) emissionError(context, `control-flow target ${target.name} is not active during Haxe emission`);
+  if (continuing && !label.continuable) {
+    emissionError(context, `continue target ${target.name} is not a Haxe loop boundary`);
+  }
+  if (label.depth === context.breakableDepth) return [continuing ? 'continue;' : 'break;'];
+  return [`${label.stateName} = ${continuing ? '2' : '1'};`, 'break;'];
+}
+
+function emitControlFlowPropagationHaxe(context: EmitContext): string[] {
+  const lines: string[] = [];
+  for (const label of [...context.controlFlowLabels].reverse()) {
+    if (label.depth === context.breakableDepth) {
+      lines.push(`if (${label.stateName} == 1) { ${label.stateName} = 0; break; }`);
+      if (label.continuable) {
+        lines.push(`if (${label.stateName} == 2) { ${label.stateName} = 0; continue; }`);
+      }
+      continue;
+    }
+    if (label.depth < context.breakableDepth) {
+      lines.push(`if (${label.stateName} != 0) { break; }`);
+    }
+  }
+  return lines;
 }
 
 function emitStatementBody(statement: Readonly<IrStatement>, context: EmitContext): string[] {

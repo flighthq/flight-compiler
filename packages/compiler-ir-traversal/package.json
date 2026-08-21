@@ -1,14 +1,14 @@
 {
-  "name": "@flighthq/compiler-lowering",
+  "name": "@flighthq/compiler-ir-traversal",
   "version": "0.0.0",
-  "description": "Backend-elected target-neutral IR lowering passes",
+  "description": "Target-neutral intermediate-representation structural traversal",
   "author": "Joshua Granick and other contributors",
   "license": "MIT",
   "private": true,
   "repository": {
     "type": "git",
     "url": "https://github.com/flighthq/flight-compiler.git",
-    "directory": "packages/compiler-lowering"
+    "directory": "packages/compiler-ir-traversal"
   },
   "type": "module",
   "sideEffects": false,
@@ -18,8 +18,6 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@flighthq/compiler-ir-traversal": "*",
-    "@flighthq/compiler-ir-validation": "*",
     "@flighthq/compiler-types": "*"
   },
   "devDependencies": {

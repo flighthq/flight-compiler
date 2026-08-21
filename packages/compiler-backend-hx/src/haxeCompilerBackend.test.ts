@@ -293,9 +293,10 @@ describe('emitIrModuleHaxe', () => {
     );
     const output = emitIrModuleHaxe(result.module).contents;
 
-    expect(output).toContain('(function() {');
+    expect(output).toContain('return ({ final destructuringAssignmentValue:Array<Dynamic> = tuple;');
     expect(output).toContain('value = destructuringAssignmentValue[0];');
-    expect(output).toContain('return destructuringAssignmentValue;');
+    expect(output).toContain('destructuringAssignmentValue; })');
+    expect(output).not.toContain('(function()');
   });
 
   it('represents observable function-entry undefined as a Dynamic null sentinel', () => {
@@ -577,11 +578,25 @@ describe('emitIrModuleHaxe', () => {
     }
   });
 
-  it('refuses labeled exits until Haxe completion-state lowering is elected', () => {
-    const result = lower('labeled-flow.ts', 'export function scan(): void { outer: while (true) { break outer; } }');
+  it('emits nested labeled exits through Haxe completion state', () => {
+    const result = lower(
+      'labeled-flow.ts',
+      'export function scan(limit: number): number { let count = 0; outer: while (count < limit) { while (true) { count += 1; if (count < limit) continue outer; break outer; } } done: { if (count < 0) break done; } return count; }',
+    );
+    const labeledSwitch = lower(
+      'labeled-switch.ts',
+      'export function scan(value: number): void { done: switch (value) { case 1: break done; } }',
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
 
-    expect(() => emitIrModuleHaxe(result.module)).toThrow(
-      'control-flow label outer requires Haxe completion-state lowering',
+    expect(output).toContain('var outerControlFlowState:Int = 0;');
+    expect(output).toContain('outerControlFlowState = 2;');
+    expect(output).toContain('outerControlFlowState = 1;');
+    expect(output).toContain('if (outerControlFlowState == 2) { outerControlFlowState = 0; continue; }');
+    expect(output).toContain('var doneControlFlowState:Int = 0;');
+    expect(output).toContain('do {\n      if ((count < 0))');
+    expect(() => emitIrModuleHaxe(labeledSwitch.module)).toThrow(
+      'labeled switch done requires Haxe switch completion lowering',
     );
   });
 });

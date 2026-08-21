@@ -73,13 +73,18 @@ const packageRules: Readonly<Record<string, PackageRule>> = {
     dependencies: ['compiler-canonical-form', 'compiler-provenance', 'compiler-types'],
     description: 'Flight package, export-lane, symbol, and runtime-value inventory',
   },
+  'compiler-ir-traversal': {
+    dependencies: ['compiler-types'],
+    description: 'Target-neutral intermediate-representation structural traversal',
+    devDependencies: ['compiler-semantic'],
+  },
   'compiler-ir-validation': {
     dependencies: ['compiler-provenance', 'compiler-types'],
     description: 'Target-neutral intermediate-representation structural validation',
     devDependencies: ['compiler-semantic'],
   },
   'compiler-lowering': {
-    dependencies: ['compiler-ir-validation', 'compiler-types'],
+    dependencies: ['compiler-ir-traversal', 'compiler-ir-validation', 'compiler-types'],
     description: 'Backend-elected target-neutral IR lowering passes',
     devDependencies: ['compiler-semantic'],
   },

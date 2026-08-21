@@ -1054,7 +1054,7 @@ describe('lowerTypeScriptSource', () => {
   it('records optional-chain receiver and projected value type evidence', () => {
     const result = lower(
       'optional-chain-evidence.ts',
-      'interface Value { count: number } export function read(value: Value | undefined, values: number[] | undefined, callback: ((value: number) => number) | undefined): Array<number | undefined> { return [value?.count, values?.[0], callback?.(1)]; }',
+      'interface Value { count: number } export function read(value: Value | undefined, values: number[] | undefined, callback: ((value: number) => number) | undefined, present: number[]): Array<number | undefined> { return [value?.count, values?.[0], callback?.(1), present?.[0]]; }',
     );
     const read = result.module.declarations[1];
     if (read?.kind !== 'function' || read.body[0]?.kind !== 'return' || read.body[0].expression?.kind !== 'array') {
@@ -1070,6 +1070,7 @@ describe('lowerTypeScriptSource', () => {
     ).toMatchObject([
       {
         receiverEvaluation: 'once',
+        receiverNullish: 'possible',
         receiverType: {
           kind: 'union',
           types: [
@@ -1083,6 +1084,7 @@ describe('lowerTypeScriptSource', () => {
       },
       {
         receiverEvaluation: 'once',
+        receiverNullish: 'possible',
         receiverType: {
           kind: 'union',
           types: [
@@ -1096,6 +1098,7 @@ describe('lowerTypeScriptSource', () => {
       },
       {
         receiverEvaluation: 'once',
+        receiverNullish: 'possible',
         receiverType: {
           kind: 'union',
           types: [
@@ -1110,6 +1113,14 @@ describe('lowerTypeScriptSource', () => {
             { kind: 'undefined' },
           ],
         },
+        result: 'undefined',
+        shortCircuit: 'nullish',
+        valueType: { kind: 'primitive', name: 'number' },
+      },
+      {
+        receiverEvaluation: 'once',
+        receiverNullish: 'excluded',
+        receiverType: { element: { kind: 'primitive', name: 'number' }, kind: 'array', readonly: false },
         result: 'undefined',
         shortCircuit: 'nullish',
         valueType: { kind: 'primitive', name: 'number' },
@@ -1676,14 +1687,32 @@ describe('lowerTypeScriptSource', () => {
     expect(first).toMatchObject({
       expression: {
         semantics: {
-          optionalParameters: { omitted: [1, 2], optional: [1, 2], parameterCount: 3, providedArgumentCount: 1 },
+          optionalParameters: {
+            omitted: [1, 2],
+            optional: [1, 2],
+            parameterCount: 3,
+            provided: [],
+            providedArgumentCount: 1,
+          },
         },
       },
     });
     expect(second).toMatchObject({
       expression: {
         semantics: {
-          optionalParameters: { omitted: [2], optional: [1, 2], parameterCount: 3, providedArgumentCount: 2 },
+          optionalParameters: {
+            omitted: [2],
+            optional: [1, 2],
+            parameterCount: 3,
+            provided: [
+              {
+                argumentType: { kind: 'primitive', name: 'number' },
+                parameterType: { kind: 'primitive', name: 'number' },
+                position: 1,
+              },
+            ],
+            providedArgumentCount: 2,
+          },
         },
       },
     });

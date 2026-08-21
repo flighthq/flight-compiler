@@ -625,6 +625,25 @@ describe('emitIrModuleRust', () => {
     expect(output).toContain('return choose(None, None);');
   });
 
+  it('reuses a nullable Rust carrier for optional nullable parameters and arguments', () => {
+    const result = lower(
+      'optional-nullable.ts',
+      `
+        function choose(value?: number | null): number | null | undefined { return value; }
+        export function omitted(): number | null | undefined { return choose(); }
+        export function present(): number | null | undefined { return choose(1); }
+        export function empty(): number | null | undefined { return choose(null); }
+        export function forward(value: number | null | undefined): number | null | undefined { return choose(value); }
+      `,
+    );
+    const output = emitIrModuleRust(result.module).contents;
+
+    expect(output).toContain('fn choose(value: Option<f64>) -> Option<f64>');
+    expect(output).toContain('return choose(Some(1.0));');
+    expect(output.match(/return choose\(None\);/gu)).toHaveLength(2);
+    expect(output).toContain('return choose(value);');
+  });
+
   it('refuses optional and default calls whose JavaScript arity needs another Rust lowering', () => {
     const spread = lower(
       'spread-call.ts',

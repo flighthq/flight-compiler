@@ -65,12 +65,15 @@ function validateIrOptionalChainEvidence(
 ): void {
   const receiverType = evidence?.receiverType;
   const valueType = evidence?.valueType;
+  const receiverNullish = evidence?.receiverNullish;
   const valid =
     evidence?.receiverEvaluation === 'once' &&
+    (receiverNullish === 'excluded' || receiverNullish === 'possible') &&
     evidence.result === 'undefined' &&
     evidence.shortCircuit === 'nullish' &&
     isIrTypeEvidence(receiverType) &&
-    isIrTypeEvidence(valueType);
+    isIrTypeEvidence(valueType) &&
+    isIrOptionalChainReceiverNullishCoherent(receiverType, receiverNullish);
   if ((optional && !valid) || (!optional && evidence !== undefined)) {
     addFailure(
       'invalid-node-shape',
@@ -83,6 +86,28 @@ function validateIrOptionalChainEvidence(
     visitType(receiverType, `${path}.optionalChain.receiverType`, state);
     visitType(valueType, `${path}.optionalChain.valueType`, state);
   }
+}
+
+function isIrOptionalChainReceiverNullishCoherent(
+  type: Readonly<IrType>,
+  receiverNullish: 'excluded' | 'possible',
+): boolean {
+  if (type.kind === 'null' || type.kind === 'undefined') return receiverNullish === 'possible';
+  if (type.kind === 'union' && type.types.some((member) => member.kind === 'null' || member.kind === 'undefined')) {
+    return receiverNullish === 'possible';
+  }
+  if (
+    type.kind === 'array' ||
+    type.kind === 'function' ||
+    type.kind === 'literal' ||
+    type.kind === 'never' ||
+    type.kind === 'object' ||
+    type.kind === 'primitive' ||
+    type.kind === 'tuple'
+  ) {
+    return receiverNullish === 'excluded';
+  }
+  return true;
 }
 
 function isIrTypeEvidence(value: unknown): value is IrType {
@@ -373,12 +398,7 @@ function visitExpression(expression: Readonly<IrExpression>, path: string, state
       validateIrOptionalChainEvidence(expression.optional, expression.semantics.optionalChain, path, state);
       validateIrDefaultParameterCallEvidence(expression, path, state);
       validateIrOptionalParameterCallEvidence(expression, path, state);
-      if (
-        expression.semantics.statementValue &&
-        (expression.callee.kind !== 'function' ||
-          expression.arguments.length > 0 ||
-          expression.callee.body.at(-1)?.kind !== 'return')
-      ) {
+      if (expression.semantics.statementValue && !isIrCallExpressionStatementValueCarrierValid(expression)) {
         addFailure(
           'invalid-node-shape',
           `${path}.semantics.statementValue`,
@@ -644,13 +664,29 @@ function validateIrOptionalParameterCallEvidence(
     isStrictlyIncreasingIntegerList(evidence.omitted) &&
     evidence.omitted.every((index) => evidence.optional.includes(index));
   const providedArgumentCount = evidence.providedArgumentCount;
+  const providedPositions = Array.isArray(evidence.provided)
+    ? evidence.provided.map((provided) => provided.position)
+    : [];
+  const providedEvidenceValid =
+    Array.isArray(evidence.provided) &&
+    isStrictlyIncreasingIntegerList(providedPositions) &&
+    evidence.provided.every(
+      (provided) =>
+        evidence.optional.includes(provided.position) &&
+        isIrTypeEvidence(provided.argumentType) &&
+        isIrTypeEvidence(provided.parameterType),
+    );
   const providedValid =
     providedArgumentCount === 'dynamic'
-      ? expression.arguments.some((argument) => argument.kind === 'spread') && evidence.omitted.length === 0
+      ? expression.arguments.some((argument) => argument.kind === 'spread') &&
+        evidence.omitted.length === 0 &&
+        providedPositions.length === 0
       : Number.isSafeInteger(providedArgumentCount) &&
         providedArgumentCount >= 0 &&
         providedArgumentCount === expression.arguments.length &&
         !expression.arguments.some((argument) => argument.kind === 'spread') &&
+        JSON.stringify(providedPositions) ===
+          JSON.stringify(evidence.optional.filter((index) => index < providedArgumentCount)) &&
         JSON.stringify(evidence.omitted) ===
           JSON.stringify(evidence.optional.filter((index) => index >= providedArgumentCount));
   const defaults = expression.semantics.defaultParameters;
@@ -664,6 +700,7 @@ function validateIrOptionalParameterCallEvidence(
     evidence.parameterCount < 0 ||
     !optionalValid ||
     !omittedValid ||
+    !providedEvidenceValid ||
     !providedValid ||
     !compatibleWithDefaults
   ) {
@@ -673,6 +710,20 @@ function validateIrOptionalParameterCallEvidence(
       'optional-parameter call evidence must have exact arity, ordered positions, distinct defaults, and omission state',
       state,
     );
+  }
+  if (providedEvidenceValid) {
+    evidence.provided.forEach((provided, index) => {
+      visitType(
+        provided.argumentType,
+        `${path}.semantics.optionalParameters.provided[${String(index)}].argumentType`,
+        state,
+      );
+      visitType(
+        provided.parameterType,
+        `${path}.semantics.optionalParameters.provided[${String(index)}].parameterType`,
+        state,
+      );
+    });
   }
 }
 
@@ -1037,6 +1088,26 @@ function orderIrStaticForInKeys(keys: readonly string[]): readonly string[] {
 }
 
 const compilerIrPropertyKeyCoercions = new Set(['number', 'string', 'symbol', 'toPropertyKey']);
+
+function isIrCallExpressionStatementValueCarrierValid(
+  expression: Readonly<Extract<IrExpression, { kind: 'call' }>>,
+): boolean {
+  if (
+    expression.callee.kind !== 'function' ||
+    expression.callee.async ||
+    expression.callee.binding !== undefined ||
+    expression.callee.expression !== undefined ||
+    expression.callee.parameters.length > 0 ||
+    expression.callee.typeParameters.length > 0 ||
+    expression.arguments.length > 0 ||
+    expression.optional ||
+    expression.typeArguments.length > 0
+  ) {
+    return false;
+  }
+  const completion = expression.callee.body.at(-1);
+  return completion?.kind === 'return' && completion.expression !== undefined;
+}
 
 function visitVariable(
   variable: Readonly<IrVariable>,
