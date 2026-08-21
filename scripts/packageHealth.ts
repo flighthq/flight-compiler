@@ -83,7 +83,7 @@ const packageRules: Readonly<Record<string, PackageRule>> = {
     description: 'Identity-based semantic patch application and auditing',
   },
   'compiler-provenance': {
-    dependencies: [],
+    dependencies: ['compiler-ordering'],
     description: 'Stable source normalization, provenance, and fingerprints',
   },
   'compiler-runtime-contract': {

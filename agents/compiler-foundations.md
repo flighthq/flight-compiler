@@ -7,7 +7,7 @@ This document defines the dependency floor of `@flighthq/tool-compiler` and the 
 ## Dependency floor
 
 ```text
-compiler-types        compiler-ordering        compiler-provenance
+compiler-types        compiler-ordering <- compiler-provenance
 
 compiler-ordering + compiler-types
   <- compiler-patch

@@ -19,6 +19,14 @@ describe('fingerprintSourceText', () => {
 });
 
 describe('fingerprintTypeScriptNode', () => {
+  it('pins the canonical named-kind schema to an exact SHA-256 identity', () => {
+    const fixture = declaration('/value.ts', 'export const value = 1;');
+
+    expect(fingerprintTypeScriptNode(fixture.node, fixture.source)).toBe(
+      'sha256:612dffd48e306ba30331f6176171a9001ef4371cc5b649617b778ba28eea3934',
+    );
+  });
+
   it('shares fingerprints for structurally equivalent nodes independent of source path and formatting', () => {
     const compact = declaration('/first.ts', 'export const value={count:1};');
     const formatted = declaration(
@@ -47,7 +55,7 @@ describe('fingerprintTypeScriptNode', () => {
 });
 
 describe('normalizeTypeScriptNode', () => {
-  it('declares its schema and TypeScript-version identity while omitting comments and source paths', () => {
+  it('declares a canonical named-kind schema independent of TypeScript patch identity, comments, and paths', () => {
     const compact = declaration('/first.ts', 'export const value={count:1};');
     const formatted = declaration(
       '/second.ts',
@@ -56,7 +64,10 @@ describe('normalizeTypeScriptNode', () => {
     const normalized = normalizeTypeScriptNode(compact.node, compact.source);
 
     expect(normalized).toBe(normalizeTypeScriptNode(formatted.node, formatted.source));
-    expect(normalized).toMatch(/^flight-typescript-node\/1;typescript=5\.9\.3:/u);
+    expect(normalized).toMatch(/^flight-typescript-node\/2;VariableStatement\[/u);
+    expect(normalized).toContain('Identifier:5:value');
+    expect(normalized).not.toContain('FirstStatement');
+    expect(normalized).not.toContain('typescript=');
     expect(normalized).not.toContain('/first.ts');
     expect(normalizeTypeScriptNode(formatted.node, formatted.source)).not.toContain('comment');
   });
@@ -73,6 +84,24 @@ describe('normalizeTypeScriptNode', () => {
     expect(normalizeTypeScriptNode(templateLf.node, templateLf.source)).toBe(
       normalizeTypeScriptNode(templateCrLf.node, templateCrLf.source),
     );
+  });
+
+  it('canonicalizes TypeScript compatibility aliases and refuses unknown syntax kinds', () => {
+    const source = ts.createSourceFile(
+      '/attribute.ts',
+      'import value from "./value.json" with { type: "json" };',
+      ts.ScriptTarget.Latest,
+      true,
+      ts.ScriptKind.TS,
+    );
+    const imported = source.statements[0];
+    if (!imported) throw new Error('Expected import declaration fixture');
+    const normalized = normalizeTypeScriptNode(imported, source);
+    const unknownNode = { kind: -1 } as unknown as ts.Node;
+
+    expect(normalized).toContain('ImportAttributes[');
+    expect(normalized).not.toContain('AssertClause');
+    expect(() => normalizeTypeScriptNode(unknownNode, source)).toThrow('syntax kind -1 has no canonical name');
   });
 
   it('preserves semantic whitespace inside literals and regular expressions', () => {
@@ -92,8 +121,8 @@ describe('normalizeTypeScriptNode', () => {
 
     const normalized = normalizeTypeScriptNode(fixture.node, fixture.source);
 
-    expect(normalized).toContain(`${String(ts.SyntaxKind.Identifier)}:5:value`);
-    expect(normalized).not.toContain(`${String(ts.SyntaxKind.Identifier)}:undefined:42`);
+    expect(normalized).toContain('Identifier:5:value');
+    expect(normalized).not.toContain('Identifier:undefined:42');
   });
 });
 
