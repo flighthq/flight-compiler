@@ -58,8 +58,16 @@ interface AsyncStateMachineDraft {
   readonly completionPaths: CompilerValueCompletionPath[];
   currentIdentity: CompilerAsyncStateMachineStateIdentity;
   currentSteps: CompilerAsyncStateMachineStep[];
+  // The innermost suspending loop, if any: `break` leaves through its join and `continue` re-enters
+  // its header. An unlabelled jump can only mean the innermost one, which is why a stack is enough.
+  loops: AsyncStateMachineLoopTargets[];
   readonly states: CompilerAsyncStateMachineState[];
   terminal: boolean;
+}
+
+interface AsyncStateMachineLoopTargets {
+  readonly continueTarget: CompilerAsyncStateMachineStateIdentity;
+  readonly breakTarget: CompilerAsyncStateMachineStateIdentity;
 }
 
 export function analyzeIrModuleAsyncStateMachines(module: Readonly<IrModule>): CompilerAsyncStateMachineAnalysis {
@@ -269,6 +277,7 @@ function createCompilerAsyncStateMachine(
   const draft: AsyncStateMachineDraft = {
     completionPaths: [],
     currentIdentity: { kind: 'entry' },
+    loops: [],
     currentSteps: [],
     states: [],
     terminal: false,
@@ -429,8 +438,19 @@ function createIrStatementListAsyncStateMachine(
         break;
       }
       case 'break':
-      case 'continue':
-        return createCompilerAsyncStateMachineRefusal('escaping-control-flow', path, scope.path);
+      case 'continue': {
+        const loop = draft.loops.at(-1);
+        if (statement.target || !loop) {
+          return createCompilerAsyncStateMachineRefusal('escaping-control-flow', path, scope.path);
+        }
+        draft.currentSteps.push({
+          kind: 'goto',
+          path,
+          target: statement.kind === 'break' ? loop.breakTarget : loop.continueTarget,
+        });
+        draft.terminal = true;
+        break;
+      }
       case 'block':
       case 'do':
       case 'for':
@@ -439,12 +459,18 @@ function createIrStatementListAsyncStateMachine(
       case 'if':
       case 'switch':
       case 'try':
-      case 'while':
-        if (!isIrStatementAsyncStateMachineOpaque(statement)) {
-          return createCompilerAsyncStateMachineRefusal('unsupported-control-flow', path, scope.path);
+      case 'while': {
+        if (isIrStatementAsyncStateMachineOpaque(statement)) {
+          addCompilerAsyncStateMachineExecuteStep(statement, path, draft);
+          break;
         }
-        addCompilerAsyncStateMachineExecuteStep(statement, path, draft);
+        // Control leaves this statement, so it cannot run inside one state even though nothing in it
+        // suspends. The structured handlers own those routes; anything they do not model refuses
+        // there rather than here.
+        const refusal = createIrStatementSuspensionAsyncStateMachine(scope, statement, path, [], draft);
+        if (refusal) return refusal;
         break;
+      }
     }
   }
   return undefined;
@@ -572,7 +598,9 @@ function createIrLoopStatementAsyncStateMachine(
     draft.currentIdentity = body;
     draft.currentSteps = [];
   }
+  draft.loops.push({ breakTarget: join, continueTarget: header });
   const refusal = createIrStatementArmAsyncStateMachine(scope, statement.body, [...path, 'body'], suspensions, draft);
+  draft.loops.pop();
   if (refusal) return refusal;
   if (!draft.terminal) {
     if (statement.kind === 'do') draft.currentSteps.push(branch());

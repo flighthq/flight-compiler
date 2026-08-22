@@ -454,6 +454,55 @@ describe('analyzeIrModuleAsyncStateMachines', () => {
     });
   });
 
+  it('sends break to the loop join and continue to the loop header', () => {
+    const analysis = analyzeIrModuleAsyncStateMachines(
+      lower(`
+        export async function drain(task: Promise<number>, stop: boolean, skip: boolean): Promise<number> {
+          let last: number = 0;
+          while (true) {
+            last = await task;
+            if (skip) { continue; }
+            if (stop) { break; }
+          }
+          return last;
+        }
+      `),
+    );
+    const machine = analysis.machines[0];
+    const loopPath = ['declarations', 0, 'body', 1];
+    const gotos = (machine?.states.flatMap((state) => state.steps) ?? []).filter((step) => step.kind === 'goto');
+
+    expect(analysis.refusals).toEqual([]);
+    expect(gotos.map((step) => step.kind === 'goto' && step.target)).toEqual([
+      { kind: 'loopHeader', path: loopPath },
+      { kind: 'join', path: loopPath },
+      { kind: 'loopHeader', path: loopPath },
+    ]);
+  });
+
+  it('still refuses a labelled jump and a jump with no suspending loop around it', () => {
+    const labelled = analyzeIrModuleAsyncStateMachines(
+      lower(`
+        export async function drain(task: Promise<number>, stop: boolean): Promise<number> {
+          let last: number = 0;
+          outer: while (true) { last = await task; if (stop) { break outer; } }
+          return last;
+        }
+      `),
+    );
+    const bare = analyzeIrModuleAsyncStateMachines(
+      lower(`
+        export async function drain(task: Promise<number>): Promise<number> {
+          const last = await task;
+          break;
+        }
+      `),
+    );
+
+    expect(labelled.refusals.map((refusal) => refusal.code)).toEqual(['unsupported-control-flow']);
+    expect(bare.refusals.map((refusal) => refusal.code)).toEqual(['escaping-control-flow']);
+  });
+
   it('is deterministic, deeply immutable, and vacuous for a module without async scopes', () => {
     const module = lower('export function read(value: number): number { return value; }');
     const first = analyzeIrModuleAsyncStateMachines(module);
