@@ -54,7 +54,7 @@ const packageRules: Readonly<Record<string, PackageRule>> = {
       'compiler-types',
     ],
     description: 'Haxe lowering, naming, and source emission backend',
-    devDependencies: ['compiler-semantic'],
+    devDependencies: ['compiler-semantic', 'compiler-task'],
   },
   'compiler-backend-rs': {
     dependencies: [
