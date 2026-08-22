@@ -2,6 +2,7 @@ import { compareTextCodeUnits, normalizePathPortable } from '../../compiler-cano
 import { analyzeIrModuleTraversal } from '../../compiler-ir-traversal/src/index.js';
 import type {
   CompilerIrTraversalPath,
+  CompilerModuleResolutionPlan,
   CompilerStructuralObjectCompatibilityDiagnostic,
   CompilerStructuralObjectCompatibilityDisposition,
   CompilerStructuralObjectCompatibilityReport,
@@ -42,6 +43,7 @@ interface StructuralModuleRecord {
 
 interface StructuralModuleSet {
   readonly modules: readonly StructuralModuleRecord[];
+  readonly resolution: Readonly<CompilerModuleResolutionPlan>;
 }
 
 type StructuralBindingTypeReference = Readonly<
@@ -66,14 +68,18 @@ type StructuralTargetResolution =
 export function analyzeIrModuleStructuralObjectCompatibility(
   module: Readonly<IrModule>,
 ): CompilerStructuralObjectCompatibilityReport {
-  return analyzeIrModuleStructuralObjectCompatibilityAcrossModules(module, [module]);
+  return analyzeIrModuleStructuralObjectCompatibilityAcrossModules(module, [module], compilerEmptyModuleResolutionPlan);
 }
 
 export function analyzeIrModuleStructuralObjectCompatibilityAcrossModules(
   module: Readonly<IrModule>,
   modules: readonly Readonly<IrModule>[],
+  resolution?: Readonly<CompilerModuleResolutionPlan> | undefined,
 ): CompilerStructuralObjectCompatibilityReport {
-  const moduleSet = createStructuralModuleSet(modules);
+  const moduleSet = createStructuralModuleSet(
+    modules,
+    resolution === undefined ? compilerEmptyModuleResolutionPlan : resolution,
+  );
   const subject = getStructuralModuleRecord(module, moduleSet);
   if (!subject) throw new TypeError('Structural compatibility subject must belong to the explicit module set');
   const diagnostics: CompilerStructuralObjectCompatibilityDiagnostic[] = [];
@@ -401,8 +407,13 @@ function getStructuralSpecifierModules(
   moduleSet: Readonly<StructuralModuleSet>,
 ): readonly StructuralModuleRecord[] {
   const candidates = getStructuralSpecifierSourceCandidates(from.source, specifier);
+  const resolutionTargets = moduleSet.resolution.edges
+    .filter((edge) => edge.specifier === specifier)
+    .map((edge) => `${edge.target.packageName}\0${normalizePathPortable(edge.target.source)}`);
   return moduleSet.modules.filter(
-    (candidate) => candidate.module.packageName === from.module.packageName && candidates.has(candidate.source),
+    (candidate) =>
+      (candidate.module.packageName === from.module.packageName && candidates.has(candidate.source)) ||
+      resolutionTargets.includes(`${candidate.module.packageName}\0${candidate.source}`),
   );
 }
 
@@ -440,13 +451,40 @@ function getStructuralSpecifierSourceCandidates(source: string, specifier: strin
   return candidates;
 }
 
-function createStructuralModuleSet(modules: readonly Readonly<IrModule>[]): StructuralModuleSet {
+function createStructuralModuleSet(
+  modules: readonly Readonly<IrModule>[],
+  resolution: Readonly<CompilerModuleResolutionPlan>,
+): StructuralModuleSet {
   if (!Array.isArray(modules)) throw new TypeError('Structural module set must be an array');
+  validateCompilerModuleResolutionPlan(resolution);
   const records = modules.map(createStructuralModuleRecord).sort(compareStructuralModuleRecords);
   if (records.some((record, index) => index > 0 && record.identity === records[index - 1]!.identity)) {
     throw new TypeError('Structural module set contains a duplicate module identity');
   }
-  return { modules: records };
+  return { modules: records, resolution };
+}
+
+function validateCompilerModuleResolutionPlan(resolution: Readonly<CompilerModuleResolutionPlan>): void {
+  if (!resolution || resolution.schema !== 'flight-compiler-module-resolution/1' || !Array.isArray(resolution.edges)) {
+    throw new TypeError('Structural module resolution plan is invalid');
+  }
+  const specifiers = new Set<string>();
+  for (const edge of resolution.edges) {
+    if (
+      !edge ||
+      typeof edge.specifier !== 'string' ||
+      edge.specifier.length === 0 ||
+      !edge.target ||
+      typeof edge.target.packageName !== 'string' ||
+      edge.target.packageName.length === 0 ||
+      typeof edge.target.source !== 'string' ||
+      edge.target.source.length === 0 ||
+      specifiers.has(edge.specifier)
+    ) {
+      throw new TypeError('Structural module resolution plan contains an invalid or duplicate edge');
+    }
+    specifiers.add(edge.specifier);
+  }
 }
 
 function createStructuralModuleRecord(module: Readonly<IrModule>): StructuralModuleRecord {
@@ -533,3 +571,8 @@ function getCompilerStructuralObjectCompatibilityStatus(
   if (diagnostics.some((diagnostic) => diagnostic.disposition === 'incompatible')) return 'incompatible';
   return diagnostics.length === 0 ? 'compatible' : 'indeterminate';
 }
+
+const compilerEmptyModuleResolutionPlan: CompilerModuleResolutionPlan = Object.freeze({
+  edges: Object.freeze([]),
+  schema: 'flight-compiler-module-resolution/1',
+});

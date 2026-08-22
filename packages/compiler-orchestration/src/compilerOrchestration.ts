@@ -27,7 +27,13 @@ export function compileIrModules<BackendOptions>(
   const patched = applySemanticPatchSet(options.modules, options.patches ?? [], options.backend.name);
   const modules = [...patched.modules].sort(compareModules);
   const files = modules
-    .flatMap((module) => options.backend.emitModule(module, { modules, options: options.backendOptions }))
+    .flatMap((module) =>
+      options.backend.emitModule(module, {
+        modules,
+        options: options.backendOptions,
+        ...(options.moduleResolution ? { moduleResolution: options.moduleResolution } : {}),
+      }),
+    )
     .map(normalizeEmittedFile)
     .sort(compareEmittedFiles);
   validateEmittedFiles(files);
@@ -75,6 +81,7 @@ export function compileTypeScriptModules<BackendOptions>(
   return compileIrModules({
     backend: options.backend,
     backendOptions: options.backendOptions,
+    ...(options.moduleResolution ? { moduleResolution: options.moduleResolution } : {}),
     modules: lowered.map((result) => result.module),
     ...(options.patches ? { patches: options.patches } : {}),
     ...(options.sourceParser ? { sourceParser: options.sourceParser } : {}),

@@ -23,10 +23,15 @@ import {
   collectIrModulesRuntimeExternalSymbolIdentities,
 } from '../../compiler-runtime-contract/src/index.js';
 import {
-  analyzeIrModuleStructuralObjectCompatibility,
+  analyzeIrModuleStructuralObjectCompatibilityAcrossModules,
   createIrObjectTypeShapeIdentity,
 } from '../../compiler-structural/src/index.js';
-import type { CompilerBackend, EmittedFile, RustCompilerBackendOptions } from '../../compiler-types/src/index.js';
+import type {
+  CompilerBackend,
+  CompilerModuleResolutionPlan,
+  EmittedFile,
+  RustCompilerBackendOptions,
+} from '../../compiler-types/src/index.js';
 import type {
   IrAssignmentOperator,
   IrAssignmentOperatorSemantics,
@@ -83,8 +88,8 @@ type OperatorEmissionDecision = Readonly<{ emitted: string }> | Readonly<{ refus
 
 export function createRustCompilerBackend(): CompilerBackend<RustCompilerBackendOptions> {
   return {
-    emitModule(module, { options }) {
-      return [emitIrModuleRust(module, options)];
+    emitModule(module, { moduleResolution, modules, options }) {
+      return [emitIrModuleRustWithContext(module, modules, moduleResolution, options)];
     },
     name: 'rust',
   };
@@ -94,6 +99,15 @@ export function emitIrModuleRust(
   sourceModule: Readonly<IrModule>,
   options: Readonly<RustCompilerBackendOptions> = {},
 ): EmittedFile {
+  return emitIrModuleRustWithContext(sourceModule, [sourceModule], undefined, options);
+}
+
+function emitIrModuleRustWithContext(
+  sourceModule: Readonly<IrModule>,
+  sourceModules: readonly Readonly<IrModule>[],
+  moduleResolution: Readonly<CompilerModuleResolutionPlan> | undefined,
+  options: Readonly<RustCompilerBackendOptions>,
+): EmittedFile {
   const module = lowerIrModuleWithCompilerPasses(sourceModule, [
     createCompilerLoweringPassExtraArgumentErasure(),
     createCompilerLoweringPassBindingPattern(),
@@ -102,7 +116,11 @@ export function emitIrModuleRust(
     createCompilerLoweringPassInterfaceInheritance(),
     createCompilerLoweringPassSwitchFallthrough(),
   ]);
-  assertStructuralObjectCompatibilityRust(module);
+  assertStructuralObjectCompatibilityRust(
+    module,
+    replaceIrModuleBackendContext(sourceModules, module),
+    moduleResolution,
+  );
   assertRuntimeExternalSymbolBindingsRust(module);
   assertRuntimeExternalConstructorAbiRust(module);
   const constantIdentities = new Set(
@@ -1038,8 +1056,16 @@ function getTypeReferenceTargetNameRust(type: Readonly<IrTypeReference>, context
   );
 }
 
-function assertStructuralObjectCompatibilityRust(module: Readonly<IrModule>): void {
-  const diagnostics = analyzeIrModuleStructuralObjectCompatibility(module).diagnostics;
+function assertStructuralObjectCompatibilityRust(
+  module: Readonly<IrModule>,
+  modules: readonly Readonly<IrModule>[],
+  resolution: Readonly<CompilerModuleResolutionPlan> | undefined,
+): void {
+  const diagnostics = analyzeIrModuleStructuralObjectCompatibilityAcrossModules(
+    module,
+    modules,
+    resolution,
+  ).diagnostics;
   const diagnostic =
     diagnostics.find((candidate) => candidate.disposition !== 'indeterminate') ??
     diagnostics.find((candidate) => candidate.code !== 'unresolved-named-construction-target');
@@ -1050,6 +1076,19 @@ function assertStructuralObjectCompatibilityRust(module: Readonly<IrModule>): vo
       `structural object compatibility ${diagnostic.code} at ${JSON.stringify(diagnostic.path)}: ${diagnostic.message}`,
     );
   }
+}
+
+function replaceIrModuleBackendContext(
+  modules: readonly Readonly<IrModule>[],
+  replacement: Readonly<IrModule>,
+): readonly Readonly<IrModule>[] {
+  return modules.map((module) =>
+    module.packageName === replacement.packageName &&
+    module.source === replacement.source &&
+    module.name === replacement.name
+      ? replacement
+      : module,
+  );
 }
 
 function assertRuntimeExternalSymbolBindingsRust(module: Readonly<IrModule>): void {

@@ -24,8 +24,13 @@ import {
   collectIrModulesRuntimeExternalConstructorInvocations,
   collectIrModulesRuntimeExternalSymbolIdentities,
 } from '../../compiler-runtime-contract/src/index.js';
-import { analyzeIrModuleStructuralObjectCompatibility } from '../../compiler-structural/src/index.js';
-import type { CompilerBackend, EmittedFile, HaxeCompilerBackendOptions } from '../../compiler-types/src/index.js';
+import { analyzeIrModuleStructuralObjectCompatibilityAcrossModules } from '../../compiler-structural/src/index.js';
+import type {
+  CompilerBackend,
+  CompilerModuleResolutionPlan,
+  EmittedFile,
+  HaxeCompilerBackendOptions,
+} from '../../compiler-types/src/index.js';
 import type {
   IrAssignmentOperator,
   IrAssignmentOperatorSemantics,
@@ -82,8 +87,8 @@ interface HaxeControlFlowLabel {
 
 export function createHaxeCompilerBackend(): CompilerBackend<HaxeCompilerBackendOptions> {
   return {
-    emitModule(module, { options }) {
-      return [emitIrModuleHaxe(module, options)];
+    emitModule(module, { moduleResolution, modules, options }) {
+      return [emitIrModuleHaxeWithContext(module, modules, moduleResolution, options)];
     },
     name: 'haxe',
   };
@@ -93,6 +98,15 @@ export function emitIrModuleHaxe(
   sourceModule: Readonly<IrModule>,
   options: Readonly<HaxeCompilerBackendOptions> = {},
 ): EmittedFile {
+  return emitIrModuleHaxeWithContext(sourceModule, [sourceModule], undefined, options);
+}
+
+function emitIrModuleHaxeWithContext(
+  sourceModule: Readonly<IrModule>,
+  sourceModules: readonly Readonly<IrModule>[],
+  moduleResolution: Readonly<CompilerModuleResolutionPlan> | undefined,
+  options: Readonly<HaxeCompilerBackendOptions>,
+): EmittedFile {
   const module = lowerIrModuleWithCompilerPasses(sourceModule, [
     createCompilerLoweringPassExtraArgumentErasure(),
     createCompilerLoweringPassBindingPattern(),
@@ -101,7 +115,11 @@ export function emitIrModuleHaxe(
     createCompilerLoweringPassInterfaceInheritance(),
     createCompilerLoweringPassSwitchFallthrough(),
   ]);
-  assertStructuralObjectCompatibilityHaxe(module);
+  assertStructuralObjectCompatibilityHaxe(
+    module,
+    replaceIrModuleBackendContext(sourceModules, module),
+    moduleResolution,
+  );
   assertRuntimeExternalSymbolBindingsHaxe(module);
   assertRuntimeExternalConstructorAbiHaxe(module);
   const packageName = convertPackageNameToHaxePackageName(module.packageName, options.rootPackage);
@@ -1107,8 +1125,16 @@ function assertNoSwitchFallthrough(statement: Extract<IrStatement, { kind: 'swit
   });
 }
 
-function assertStructuralObjectCompatibilityHaxe(module: Readonly<IrModule>): void {
-  const diagnostic = analyzeIrModuleStructuralObjectCompatibility(module).diagnostics.find(
+function assertStructuralObjectCompatibilityHaxe(
+  module: Readonly<IrModule>,
+  modules: readonly Readonly<IrModule>[],
+  resolution: Readonly<CompilerModuleResolutionPlan> | undefined,
+): void {
+  const diagnostic = analyzeIrModuleStructuralObjectCompatibilityAcrossModules(
+    module,
+    modules,
+    resolution,
+  ).diagnostics.find(
     (candidate) =>
       candidate.code !== 'open-construction-target' && candidate.code !== 'unresolved-named-construction-target',
   );
@@ -1119,6 +1145,19 @@ function assertStructuralObjectCompatibilityHaxe(module: Readonly<IrModule>): vo
       `structural object compatibility ${diagnostic.code} at ${JSON.stringify(diagnostic.path)}: ${diagnostic.message}`,
     );
   }
+}
+
+function replaceIrModuleBackendContext(
+  modules: readonly Readonly<IrModule>[],
+  replacement: Readonly<IrModule>,
+): readonly Readonly<IrModule>[] {
+  return modules.map((module) =>
+    module.packageName === replacement.packageName &&
+    module.source === replacement.source &&
+    module.name === replacement.name
+      ? replacement
+      : module,
+  );
 }
 
 function assertRuntimeExternalSymbolBindingsHaxe(module: Readonly<IrModule>): void {

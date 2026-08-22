@@ -1,4 +1,5 @@
 import type { IrModule } from './compilerModuleIntermediateRepresentation.js';
+import type { CompilerModuleResolutionPlan } from './compilerModuleResolutionContract.js';
 import type { CompilerSourceIdentity } from './compilerSourceIdentity.js';
 
 export interface EmittedFileIdentity {
@@ -10,6 +11,7 @@ export interface EmittedFile extends EmittedFileIdentity {
 }
 
 export interface BackendEmitContext<Options> {
+  readonly moduleResolution?: Readonly<CompilerModuleResolutionPlan> | undefined;
   readonly modules: readonly IrModule[];
   readonly options: Readonly<Options>;
 }

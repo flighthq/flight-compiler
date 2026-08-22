@@ -18,6 +18,7 @@ export type * from './compilerIrValidationContract.js';
 export type * from './compilerLoweringContract.js';
 export type * from './compilerModuleFacadeContract.js';
 export type * from './compilerModuleIntermediateRepresentation.js';
+export type * from './compilerModuleResolutionContract.js';
 export type * from './compilerOperatorIntermediateRepresentation.js';
 export type * from './compilerOperatorSemanticIntermediateRepresentation.js';
 export type * from './compilerOrchestrationContract.js';

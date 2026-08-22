@@ -49,6 +49,31 @@ describe('compileIrModules', () => {
     expect(modules).toEqual([zeta, alpha]);
   });
 
+  it('forwards explicit module-resolution evidence to every backend module context', () => {
+    const module = createModule('Value');
+    const resolution = {
+      edges: [
+        {
+          specifier: '@flighthq/types',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/index.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    } as const;
+    const contexts: unknown[] = [];
+    const backend: CompilerBackend = {
+      emitModule: (subject, context) => {
+        contexts.push(context);
+        return [{ contents: '', path: `${subject.name}.txt` }];
+      },
+      name: 'resolution-fixture',
+    };
+
+    compileIrModules({ backend, backendOptions: {}, moduleResolution: resolution, modules: [module] });
+
+    expect(contexts).toEqual([{ moduleResolution: resolution, modules: [module], options: {} }]);
+  });
+
   it('orders module and emitted-path identities by code unit rather than host locale', () => {
     const modules = ['éclair', 'alpha', 'Zulu'].map((name) => ({
       ...createModule(name),
@@ -262,6 +287,7 @@ describe('compileTypeScriptModules', () => {
     const result = compileTypeScriptModules({
       backend: fixtureBackend,
       backendOptions: {},
+      moduleResolution: { edges: [], schema: 'flight-compiler-module-resolution/1' },
       sourceParser: {
         name: 'fixture-language-parser',
         parseEmittedSource(file) {

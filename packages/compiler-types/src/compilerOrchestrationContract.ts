@@ -4,6 +4,7 @@ import type { BackendCompilation, CompilerBackend } from './compilerBackendContr
 import type { CompilerDiagnostic } from './compilerDiagnosticContract.js';
 import type { CompilerEmittedSourceParser } from './compilerEmittedSourceSyntaxContract.js';
 import type { IrModule } from './compilerModuleIntermediateRepresentation.js';
+import type { CompilerModuleResolutionPlan } from './compilerModuleResolutionContract.js';
 import type { PatchAudit, SemanticPatch } from './compilerSemanticPatchContract.js';
 import type { CompilerTargetCompilationSmoke } from './compilerTargetCompilationSmokeContract.js';
 import type { LowerTypeScriptSourceOptions } from './compilerTypeScriptContract.js';
@@ -11,6 +12,7 @@ import type { LowerTypeScriptSourceOptions } from './compilerTypeScriptContract.
 export interface CompileIrModulesOptions<BackendOptions> {
   readonly backend: CompilerBackend<BackendOptions>;
   readonly backendOptions: Readonly<BackendOptions>;
+  readonly moduleResolution?: Readonly<CompilerModuleResolutionPlan> | undefined;
   readonly modules: readonly IrModule[];
   readonly patches?: readonly SemanticPatch[] | undefined;
   /** Optional syntax-only parser over normalized emitted files. */

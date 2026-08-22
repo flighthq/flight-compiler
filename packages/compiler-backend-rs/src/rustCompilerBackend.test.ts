@@ -6,9 +6,19 @@ import type { IrStatement } from '../../compiler-types/src/index.js';
 import { createRustCompilerBackend, emitIrModuleRust } from './rustCompilerBackend.js';
 
 function lower(file: string, source: string) {
-  const sourceFile = ts.createSourceFile(`/flight/packages/math/src/${file}`, source, ts.ScriptTarget.Latest, true);
+  return lowerPackage('@flighthq/math', file, source);
+}
+
+function lowerPackage(packageName: string, file: string, source: string) {
+  const packageDirectory = packageName.slice(packageName.lastIndexOf('/') + 1);
+  const sourceFile = ts.createSourceFile(
+    `/flight/packages/${packageDirectory}/src/${file}`,
+    source,
+    ts.ScriptTarget.Latest,
+    true,
+  );
   return lowerTypeScriptSource(sourceFile, {
-    packageName: '@flighthq/math',
+    packageName,
     upstreamDirectory: '/flight',
   });
 }
@@ -21,7 +31,34 @@ describe('createRustCompilerBackend', () => {
 
     expect(first).not.toBe(second);
     expect(first.name).toBe('rust');
-    expect(first.emitModule(module, { modules: [], options: {} })).toEqual([emitIrModuleRust(module)]);
+    expect(first.emitModule(module, { modules: [module], options: {} })).toEqual([emitIrModuleRust(module)]);
+  });
+
+  it('uses explicit package-export resolution from the complete backend module context', () => {
+    const target = lowerPackage('@flighthq/types', 'public.ts', 'export interface Box { value: number }').module;
+    const subject = lowerPackage(
+      '@flighthq/core',
+      'use.ts',
+      "import type { Box } from '@flighthq/types/public'; export const box: Box = {};",
+    ).module;
+    const backend = createRustCompilerBackend();
+
+    expect(() => backend.emitModule(subject, { modules: [subject, target], options: {} })).not.toThrow();
+    expect(() =>
+      backend.emitModule(subject, {
+        moduleResolution: {
+          edges: [
+            {
+              specifier: '@flighthq/types/public',
+              target: { packageName: '@flighthq/types', source: target.source },
+            },
+          ],
+          schema: 'flight-compiler-module-resolution/1',
+        },
+        modules: [subject, target],
+        options: {},
+      }),
+    ).toThrow('structural object compatibility missing-required-property');
   });
 });
 

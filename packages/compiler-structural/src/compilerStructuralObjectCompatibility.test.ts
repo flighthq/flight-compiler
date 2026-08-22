@@ -420,6 +420,46 @@ describe('analyzeIrModuleStructuralObjectCompatibilityAcrossModules', () => {
     ]);
   });
 
+  it('resolves bare package exports only through explicit inventory-owned edges', () => {
+    const box = { ...interfaceDeclaration('type:package-box', 'Box', []), exported: true };
+    const target = createModule([box], [], {
+      name: 'types-public',
+      packageName: '@flighthq/types',
+      source: 'packages/types/src/public.ts',
+    });
+    const imported = typeBinding('type:package-import', 'Box', 'import');
+    const subject = createModule([], [objectExpression(typeReference(imported), [])], {
+      imports: [
+        {
+          bindings: [{ binding: imported, imported: 'Box', typeOnly: true }],
+          specifier: '@flighthq/types/public',
+        },
+      ],
+      name: 'package-use',
+      packageName: '@flighthq/core',
+      source: 'packages/core/src/use.ts',
+    });
+    const resolution = {
+      edges: [
+        {
+          specifier: '@flighthq/types/public',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/public.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    } as const;
+    const snapshot = structuredClone([subject, target, resolution]);
+
+    expect(analyzeIrModuleStructuralObjectCompatibilityAcrossModules(subject, [subject, target])).toMatchObject({
+      diagnostics: [{ code: 'unresolved-named-construction-target' }],
+      status: 'indeterminate',
+    });
+    expect(
+      analyzeIrModuleStructuralObjectCompatibilityAcrossModules(subject, [subject, target], resolution),
+    ).toMatchObject({ diagnostics: [], status: 'compatible' });
+    expect([subject, target, resolution]).toEqual(snapshot);
+  });
+
   it('rejects a non-array explicit module set instead of consulting ambient state', () => {
     const subject = createModule([], []);
 
@@ -431,6 +471,40 @@ describe('analyzeIrModuleStructuralObjectCompatibilityAcrossModules', () => {
     const duplicate = interfaceDeclaration('type:duplicate', 'Duplicate', []);
     const malformed = createModule([duplicate, { ...duplicate }], []);
     expect(() => analyzeIrModuleStructuralObjectCompatibilityAcrossModules(malformed, [malformed])).toThrow(TypeError);
+    const invalidResolutions = [
+      null,
+      { edges: [], schema: 'invalid' },
+      { edges: null, schema: 'flight-compiler-module-resolution/1' },
+      { edges: [null], schema: 'flight-compiler-module-resolution/1' },
+      {
+        edges: [{ specifier: '', target: { packageName: '@flighthq/types', source: 'index.ts' } }],
+        schema: 'flight-compiler-module-resolution/1',
+      },
+      {
+        edges: [{ specifier: '@flighthq/types', target: null }],
+        schema: 'flight-compiler-module-resolution/1',
+      },
+      {
+        edges: [{ specifier: '@flighthq/types', target: { packageName: '', source: 'index.ts' } }],
+        schema: 'flight-compiler-module-resolution/1',
+      },
+      {
+        edges: [{ specifier: '@flighthq/types', target: { packageName: '@flighthq/types', source: '' } }],
+        schema: 'flight-compiler-module-resolution/1',
+      },
+      {
+        edges: [
+          { specifier: '@flighthq/types', target: { packageName: '@flighthq/types', source: 'index.ts' } },
+          { specifier: '@flighthq/types', target: { packageName: '@flighthq/types', source: 'other.ts' } },
+        ],
+        schema: 'flight-compiler-module-resolution/1',
+      },
+    ];
+    for (const resolution of invalidResolutions) {
+      expect(() =>
+        analyzeIrModuleStructuralObjectCompatibilityAcrossModules(subject, [subject], resolution as never),
+      ).toThrow(TypeError);
+    }
   });
 });
 

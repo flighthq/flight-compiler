@@ -1,4 +1,5 @@
 export { createCompilerInventoryFailure, isCompilerInventoryFailure } from './compilerInventoryFailure.js';
+export { createCompilerModuleResolutionPlan, isCompilerModuleResolutionFailure } from './compilerModuleResolution.js';
 export { analyzeFlightPackageExclusions } from './flightPackageExclusion.js';
 export { getPackageInventoryRootExportLane, resolvePackageExportLane } from './flightPackageExportLane.js';
 export { readPackageExportManifest } from './flightPackageExportManifest.js';
