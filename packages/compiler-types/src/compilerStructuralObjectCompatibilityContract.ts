@@ -10,6 +10,7 @@ export type CompilerStructuralObjectCompatibilityDiagnostic = Readonly<{
 }>;
 
 export type CompilerStructuralObjectCompatibilityDiagnosticCode =
+  | 'ambiguous-named-construction-target'
   | 'computed-property-indeterminate'
   | 'cyclic-construction-target'
   | 'duplicate-property-requires-normalization'

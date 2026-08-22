@@ -10,7 +10,10 @@ import type {
   IrTypeBindingIdentity,
   IrTypeParameter,
 } from '../../compiler-types/src/index.js';
-import { analyzeIrModuleStructuralObjectCompatibility } from './compilerStructuralObjectCompatibility.js';
+import {
+  analyzeIrModuleStructuralObjectCompatibility,
+  analyzeIrModuleStructuralObjectCompatibilityAcrossModules,
+} from './compilerStructuralObjectCompatibility.js';
 
 const numberType = { kind: 'primitive', name: 'number' } as const satisfies IrType;
 const stringType = { kind: 'primitive', name: 'string' } as const satisfies IrType;
@@ -181,6 +184,256 @@ describe('analyzeIrModuleStructuralObjectCompatibility', () => {
   });
 });
 
+describe('analyzeIrModuleStructuralObjectCompatibilityAcrossModules', () => {
+  it('resolves imported generic structural targets from an explicit immutable module set', () => {
+    const value = typeBinding('type-parameter:value', 'Value', 'typeParameter');
+    const box = {
+      ...interfaceDeclaration('type:box', 'Box', [property('value', typeReference(value))], [{ binding: value }]),
+      exported: true,
+    };
+    const model = createModule([box], [], { name: 'model', source: 'packages/structural/src/model.ts' });
+    const imported = typeBinding('type:imported-box', 'Box', 'import');
+    const expression = objectExpression(typeReference(imported, [numberType]), [
+      { kind: 'property', name: 'value', value: { kind: 'literal', value: 1 } },
+    ]);
+    const subject = createModule([], [expression], {
+      imports: [{ bindings: [{ binding: imported, imported: 'Box', typeOnly: true }], specifier: './model.js' }],
+      name: 'use-model',
+      source: 'packages/structural/src/use-model.ts',
+    });
+    const modules = [model, subject];
+    const snapshot = structuredClone(modules);
+
+    const report = analyzeIrModuleStructuralObjectCompatibilityAcrossModules(subject, modules);
+
+    expect(report.status).toBe('compatible');
+    expect(report.diagnostics).toEqual([]);
+    expect(analyzeIrModuleStructuralObjectCompatibilityAcrossModules(subject, [...modules].reverse())).toEqual(report);
+    expect(modules).toEqual(snapshot);
+  });
+
+  it('follows local, named, star, and namespace export routes without filesystem access', () => {
+    const box = interfaceDeclaration('type:box', 'Box', []);
+    const model = createModule([box], [], {
+      exports: [{ binding: box.binding, exported: 'Box', kind: 'local', typeOnly: true }],
+      name: 'model',
+      source: 'packages/structural/src/model.ts',
+    });
+    const namedBarrel = createModule([], [], {
+      exports: [
+        { exported: 'Box', imported: 'Box', kind: 'reexport', specifier: './model.js', typeOnly: true },
+        { exported: 'Models', kind: 'namespace', specifier: './model.js', typeOnly: true },
+        { expression: { kind: 'literal', value: 1 }, kind: 'default' },
+      ],
+      name: 'named',
+      source: 'packages/structural/src/named.ts',
+    });
+    const starBarrel = createModule([], [], {
+      exports: [{ kind: 'all', specifier: './named.js', typeOnly: true }],
+      name: 'star',
+      source: 'packages/structural/src/star.ts',
+    });
+    const namedImport = typeBinding('type:named-import', 'NamedBox', 'import');
+    const namespaceImport = typeBinding('type:namespace-import', 'Models', 'import');
+    const subject = createModule(
+      [],
+      [
+        objectExpression(typeReference(namedImport), []),
+        objectExpression(
+          { kind: 'named', reference: { binding: namespaceImport, kind: 'binding', path: ['Box'] }, typeArguments: [] },
+          [],
+        ),
+      ],
+      {
+        imports: [
+          { bindings: [{ binding: namedImport, imported: 'Box', typeOnly: true }], specifier: './star.js' },
+          { bindings: [{ binding: namespaceImport, imported: '*', typeOnly: true }], specifier: './model.js' },
+        ],
+        name: 'routes',
+        source: 'packages/structural/src/routes.ts',
+      },
+    );
+
+    const report = analyzeIrModuleStructuralObjectCompatibilityAcrossModules(subject, [
+      starBarrel,
+      subject,
+      model,
+      namedBarrel,
+    ]);
+
+    expect(report.status).toBe('compatible');
+    expect(report.diagnostics).toEqual([]);
+  });
+
+  it('resolves parent-relative and extensionless index specifiers portably', () => {
+    const parentBox = { ...interfaceDeclaration('type:parent-box', 'ParentBox', []), exported: true };
+    const indexBox = { ...interfaceDeclaration('type:index-box', 'IndexBox', []), exported: true };
+    const parent = createModule([parentBox], [], {
+      name: 'parent-model',
+      source: 'packages/structural/src/parent-model.ts',
+    });
+    const index = createModule([indexBox], [], {
+      name: 'directory-index',
+      source: 'packages/structural/src/directory/index.ts',
+    });
+    const parentImport = typeBinding('type:parent-import', 'ParentBox', 'import');
+    const indexImport = typeBinding('type:index-import', 'IndexBox', 'import');
+    const subject = createModule(
+      [],
+      [objectExpression(typeReference(parentImport), []), objectExpression(typeReference(indexImport), [])],
+      {
+        imports: [
+          {
+            bindings: [{ binding: parentImport, imported: 'ParentBox', typeOnly: true }],
+            specifier: '../parent-model.js',
+          },
+          { bindings: [{ binding: indexImport, imported: 'IndexBox', typeOnly: true }], specifier: '../directory' },
+        ],
+        name: 'portable-use',
+        source: 'packages/structural/src/nested/portable-use.ts',
+      },
+    );
+
+    expect(analyzeIrModuleStructuralObjectCompatibilityAcrossModules(subject, [index, subject, parent])).toMatchObject({
+      diagnostics: [],
+      status: 'compatible',
+    });
+  });
+
+  it('reports deterministic ambiguity across competing star exports', () => {
+    const firstBox = { ...interfaceDeclaration('type:first-box', 'Box', []), exported: true };
+    const secondBox = { ...interfaceDeclaration('type:second-box', 'Box', []), exported: true };
+    const first = createModule([firstBox], [], {
+      name: 'first',
+      source: 'packages/structural/src/first.ts',
+    });
+    const second = createModule([secondBox], [], {
+      name: 'second',
+      source: 'packages/structural/src/second.ts',
+    });
+    const barrel = createModule([], [], {
+      exports: [
+        { kind: 'all', specifier: './first.js', typeOnly: true },
+        { kind: 'all', specifier: './second.js', typeOnly: true },
+      ],
+      name: 'ambiguous',
+      source: 'packages/structural/src/ambiguous.ts',
+    });
+    const imported = typeBinding('type:ambiguous-import', 'Box', 'import');
+    const subject = createModule([], [objectExpression(typeReference(imported), [])], {
+      imports: [{ bindings: [{ binding: imported, imported: 'Box', typeOnly: true }], specifier: './ambiguous.js' }],
+      name: 'ambiguity-use',
+      source: 'packages/structural/src/ambiguity-use.ts',
+    });
+
+    const report = analyzeIrModuleStructuralObjectCompatibilityAcrossModules(subject, [subject, second, barrel, first]);
+
+    expect(report.status).toBe('indeterminate');
+    expect(report.diagnostics).toMatchObject([
+      {
+        code: 'ambiguous-named-construction-target',
+        disposition: 'indeterminate',
+        path: ['exports', 0, 'expression'],
+      },
+    ]);
+    expect(
+      analyzeIrModuleStructuralObjectCompatibilityAcrossModules(subject, [first, barrel, second, subject]),
+    ).toEqual(report);
+  });
+
+  it('distinguishes cyclic re-export routes from unavailable modules', () => {
+    const first = createModule([], [], {
+      exports: [{ exported: 'Box', imported: 'Box', kind: 'reexport', specifier: './second.js', typeOnly: true }],
+      name: 'first-cycle',
+      source: 'packages/structural/src/first-cycle.ts',
+    });
+    const second = createModule([], [], {
+      exports: [{ exported: 'Box', imported: 'Box', kind: 'reexport', specifier: './first-cycle.js', typeOnly: true }],
+      name: 'second',
+      source: 'packages/structural/src/second.ts',
+    });
+    const cyclicImport = typeBinding('type:cyclic-import', 'Box', 'import');
+    const missingImport = typeBinding('type:missing-import', 'Missing', 'import');
+    const subject = createModule(
+      [],
+      [objectExpression(typeReference(cyclicImport), []), objectExpression(typeReference(missingImport), [])],
+      {
+        imports: [
+          { bindings: [{ binding: cyclicImport, imported: 'Box', typeOnly: true }], specifier: './first-cycle.js' },
+          {
+            bindings: [{ binding: missingImport, imported: 'Missing', typeOnly: true }],
+            specifier: '@flighthq/missing',
+          },
+        ],
+        name: 'cycle-use',
+        source: 'packages/structural/src/cycle-use.ts',
+      },
+    );
+
+    const report = analyzeIrModuleStructuralObjectCompatibilityAcrossModules(subject, [subject, first, second]);
+
+    expect(report.status).toBe('incompatible');
+    expect(report.diagnostics.map((diagnostic) => diagnostic.code)).toEqual([
+      'cyclic-construction-target',
+      'unresolved-named-construction-target',
+    ]);
+  });
+
+  it('keeps unsupported qualified and root-escaping routes explicitly unresolved', () => {
+    const local = interfaceDeclaration('type:local', 'Local', []);
+    const namespaceImport = typeBinding('type:namespace-self', 'Models', 'import');
+    const escapeImport = typeBinding('type:escape', 'Escape', 'import');
+    const subject = createModule(
+      [local],
+      [
+        objectExpression(
+          {
+            kind: 'named',
+            reference: { binding: local.binding, kind: 'binding', path: ['Nested'] },
+            typeArguments: [],
+          },
+          [],
+        ),
+        objectExpression(typeReference(namespaceImport), []),
+        objectExpression(typeReference(escapeImport), []),
+      ],
+      {
+        imports: [
+          { bindings: [{ binding: namespaceImport, imported: '*', typeOnly: true }], specifier: './models.js' },
+          {
+            bindings: [{ binding: escapeImport, imported: 'Escape', typeOnly: true }],
+            specifier: '../../../../outside.js',
+          },
+        ],
+        name: 'unresolved-routes',
+        source: 'packages/structural/src/unresolved-routes.ts',
+      },
+    );
+
+    const report = analyzeIrModuleStructuralObjectCompatibilityAcrossModules(subject, [subject]);
+
+    expect(report.status).toBe('indeterminate');
+    expect(report.diagnostics.map((diagnostic) => diagnostic.code)).toEqual([
+      'unresolved-named-construction-target',
+      'unresolved-named-construction-target',
+      'unresolved-named-construction-target',
+    ]);
+  });
+
+  it('rejects a non-array explicit module set instead of consulting ambient state', () => {
+    const subject = createModule([], []);
+
+    expect(() => analyzeIrModuleStructuralObjectCompatibilityAcrossModules(subject, null as never)).toThrow(TypeError);
+    expect(() => analyzeIrModuleStructuralObjectCompatibilityAcrossModules(subject, [])).toThrow(TypeError);
+    expect(() => analyzeIrModuleStructuralObjectCompatibilityAcrossModules(subject, [subject, { ...subject }])).toThrow(
+      TypeError,
+    );
+    const duplicate = interfaceDeclaration('type:duplicate', 'Duplicate', []);
+    const malformed = createModule([duplicate, { ...duplicate }], []);
+    expect(() => analyzeIrModuleStructuralObjectCompatibilityAcrossModules(malformed, [malformed])).toThrow(TypeError);
+  });
+});
+
 function aliasDeclaration(
   id: string,
   name: string,
@@ -197,7 +450,11 @@ function aliasDeclaration(
   };
 }
 
-function createModule(declarations: IrModule['declarations'], expressions: readonly IrExpression[]): IrModule {
+function createModule(
+  declarations: IrModule['declarations'],
+  expressions: readonly IrExpression[],
+  changes: Partial<IrModule> = {},
+): IrModule {
   return {
     declarations: [
       ...declarations,
@@ -214,6 +471,7 @@ function createModule(declarations: IrModule['declarations'], expressions: reado
     name: 'compatibility',
     packageName: '@flighthq/structural',
     source: 'packages/structural/src/compatibility.ts',
+    ...changes,
   };
 }
 
@@ -266,7 +524,7 @@ function sourceOrigin() {
 function typeBinding(
   id: string,
   name: string,
-  kind: 'interface' | 'typeAlias' | 'typeParameter',
+  kind: 'import' | 'interface' | 'typeAlias' | 'typeParameter',
 ): IrTypeBindingIdentity {
   return {
     ...sourceOrigin(),
