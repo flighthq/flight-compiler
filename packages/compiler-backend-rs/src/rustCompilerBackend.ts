@@ -460,7 +460,7 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
         if (!isIrExpressionOptionShapedRust(expression.left)) {
           emissionError(context, 'operator ?? requires an Option-shaped left operand for Rust');
         }
-        return `${emitExpression(expression.left, context)}.unwrap_or_else(|| ${emitExpression(expression.right, context)})`;
+        return `${emitOptionShapedOperandRust(expression.left, context)}.unwrap_or_else(|| ${emitExpression(expression.right, context)})`;
       }
       const left = emitExpression(expression.left, context);
       const right = emitExpression(expression.right, context);
@@ -512,6 +512,11 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
       return emitObjectRestExpressionRust(expression, context);
     case 'property': {
       if (expression.optional) return emitOptionalPropertyExpressionRust(expression, context);
+      // Rust spells a collection's length `len()`, and it counts in `usize` while the neutral numeric
+      // domain is one type. The cast is what keeps the comparison it feeds well typed.
+      if (expression.member === 'arrayLength') {
+        return `(${emitExpression(expression.object, context)}.len() as f64)`;
+      }
       // A namespace-like ambient symbol has no target name of its own, so the member decides the
       // whole spelling: `Math.max` is `f64::max`, not `Math::max`.
       if (expression.object.kind === 'identifier' && expression.object.reference.kind === 'ambient') {
@@ -1579,10 +1584,21 @@ function isAssignmentOperatorDirectRust(
 // Which expressions the Rust emitter renders as an `Option`. An optional chain projects into one; an
 // ordinary value does not, and wrapping it would claim a nullability the emitted type does not have.
 function isIrExpressionOptionShapedRust(expression: Readonly<IrExpression>): boolean {
-  if (expression.kind === 'call' || expression.kind === 'element' || expression.kind === 'property') {
-    return expression.optional;
+  if (expression.kind === 'call' || expression.kind === 'property') return expression.optional;
+  // An array index is absent-admitting in the source language whatever the index is, which is why
+  // `values[index] ?? fallback` is ordinary code. Rust's `[]` panics instead, so the coalesce reads
+  // through `get`, which is both the Option the operator needs and the faithful behaviour.
+  if (expression.kind === 'element') {
+    return expression.optional || (expression.semantics.receivers.includes('array') && !expression.optional);
   }
   return expression.kind === 'undefinedDefault';
+}
+
+function emitOptionShapedOperandRust(expression: Readonly<IrExpression>, context: EmitContext): string {
+  if (expression.kind === 'element' && !expression.optional && expression.semantics.receivers.includes('array')) {
+    return `${emitExpression(expression.object, context)}.get(${emitExpression(expression.index, context)} as usize).cloned()`;
+  }
+  return emitExpression(expression, context);
 }
 
 function isBinaryOperatorDirectRust(

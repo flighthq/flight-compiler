@@ -1203,10 +1203,11 @@ describe('emitIrModuleRust', () => {
     );
     const plain = lower(
       'plain-coalesce.ts',
-      'export function read(values: number[], index: number): number { return values[index] ?? 0; }',
+      'export function read(first: number, second: number): number { return first ?? second; }',
     );
 
     expect(emitIrModuleRust(optional.module).contents).toContain('.unwrap_or_else(|| 0.0)');
+    // An operand that cannot be absent has no Option to open, so coalescing it means nothing.
     expect(() => emitIrModuleRust(plain.module)).toThrow('requires an Option-shaped left operand for Rust');
   });
 
@@ -1222,5 +1223,19 @@ describe('emitIrModuleRust', () => {
     expect(output).toContain('return value.unwrap();');
     // Unwrapping without the proof is a panic waiting to happen, so it refuses instead.
     expect(() => emitIrModuleRust(open.module)).toThrow('requires Rust narrowing evidence');
+  });
+
+  it('reads an array length as len and an indexed element through get', () => {
+    // Rust spells a collection's length `len()` and counts in `usize`, and its `[]` panics where the
+    // source language returns undefined. Emitting `.length` and `[]` produced Rust that neither
+    // compiles nor means the same thing.
+    const module = lower(
+      'array-access.ts',
+      'export function size(values: readonly number[]): number { return values.length; } export function at(values: readonly number[], index: number): number { return values[index] ?? 0; }',
+    );
+    const output = emitIrModuleRust(module.module).contents;
+
+    expect(output).toContain('(values.len() as f64)');
+    expect(output).toContain('values.get(index as usize).cloned().unwrap_or_else(|| 0.0)');
   });
 });

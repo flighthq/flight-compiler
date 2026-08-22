@@ -133,6 +133,10 @@ export type IrExpression =
     }>
   | Readonly<{
       kind: 'property';
+      // Which built-in member the written type resolved this to, where the targets spell it
+      // differently. An array's length is `length` in one target and `len()` in another, and the
+      // property name alone cannot tell an array's length from a field that happens to be called one.
+      member?: 'arrayLength' | undefined;
       name: string;
       object: IrExpression;
       optional: boolean;

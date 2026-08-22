@@ -566,8 +566,14 @@ function lowerExpression(
   }
   if (ts.isPropertyAccessExpression(node)) {
     const optional = node.questionDotToken !== undefined;
+    const receiver = getTypeScriptExpressionBindingTypeEvidence(node.expression, context);
+    const member =
+      node.name.text === 'length' && (receiver?.kind === 'array' || receiver?.kind === 'tuple')
+        ? ({ member: 'arrayLength' } as const)
+        : {};
     return {
       kind: 'property',
+      ...member,
       name: node.name.text,
       object: lowerExpression(node.expression, context),
       optional,

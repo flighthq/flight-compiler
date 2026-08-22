@@ -8,7 +8,7 @@ struct AnonymousObjectRecord {
 }
 
 pub fn is_empty(values: Vec<f64>) -> bool {
-  return (values.length < 1.0);
+  return ((values.len() as f64) < 1.0);
 }
 
 pub fn width_of(shape: AnonymousObjectRecord) -> f64 {

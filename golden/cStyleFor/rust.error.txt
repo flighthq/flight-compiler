@@ -1,1 +1,0 @@
-rust emission failed for @flighthq/golden/packages/golden/src/cStyleFor.ts: operator ?? requires an Option-shaped left operand for Rust
