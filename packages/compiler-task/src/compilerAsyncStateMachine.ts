@@ -640,19 +640,28 @@ function createIrTryStatementAsyncStateMachine(
   draft: AsyncStateMachineDraft,
 ): CompilerAsyncStateMachineRefusal | undefined {
   const catchClause = statement.catchClause;
-  if (statement.finallyBody || !catchClause) {
-    // `finally` runs on every route out of the block, including ones the machine represents as
-    // separate states, so it needs the completion algebra's replacement rather than a handler state.
+  const finallyBody = statement.finallyBody;
+  if (catchClause && finallyBody) {
+    // `try`/`catch`/`finally` needs the cleanup to run after the handler as well as instead of it,
+    // which is a third route rather than a second handler.
     return createCompilerAsyncStateMachineRefusal('unsupported-control-flow', path, scope.path);
   }
-  const handlerPath = [...path, 'catchClause', 'body'];
+  if (!catchClause && !finallyBody) {
+    return createCompilerAsyncStateMachineRefusal('unsupported-control-flow', path, scope.path);
+  }
+  const handlerPath = catchClause ? [...path, 'catchClause', 'body'] : [...path, 'finallyBody'];
   const body: CompilerAsyncStateMachineStateIdentity = { arm: 'whenTrue', kind: 'branchArm', path };
   const handler: CompilerAsyncStateMachineStateIdentity = { kind: 'catch', path };
+  const cleanup: CompilerAsyncStateMachineStateIdentity = { arm: 'whenFalse', kind: 'branchArm', path };
   const join: CompilerAsyncStateMachineStateIdentity = { kind: 'join', path };
   draft.currentSteps.push({ body, catchState: handler, join, kind: 'guard', path });
   addCompilerAsyncStateMachineState(draft);
 
-  draft.guards.push({ ...(catchClause.binding ? { catchBinding: catchClause.binding } : {}), catchState: handler });
+  draft.guards.push({
+    ...(catchClause?.binding ? { catchBinding: catchClause.binding } : {}),
+    catchState: handler,
+    ...(finallyBody ? { rethrow: true } : {}),
+  });
   draft.currentIdentity = body;
   draft.currentSteps = [];
   draft.terminal = false;
@@ -664,24 +673,43 @@ function createIrTryStatementAsyncStateMachine(
     draft,
   );
   if (tryRefusal) return tryRefusal;
-  if (!draft.terminal) draft.currentSteps.push({ kind: 'goto', path: [...path, 'tryBody'], target: join });
+  const bodyTerminal = draft.terminal;
+  if (!bodyTerminal) {
+    draft.currentSteps.push({ kind: 'goto', path: [...path, 'tryBody'], target: finallyBody ? cleanup : join });
+  }
   addCompilerAsyncStateMachineState(draft);
   draft.guards.pop();
+
+  if (finallyBody) {
+    // A route that leaves the body normally still owes the cleanup, so the cleanup is reached twice:
+    // once here, and once from the rejection route that ends by re-raising.
+    if (bodyTerminal) {
+      return createCompilerAsyncStateMachineRefusal('unsupported-control-flow', [...path, 'tryBody'], scope.path);
+    }
+    draft.currentIdentity = cleanup;
+    draft.currentSteps = [];
+    draft.terminal = false;
+    const normalRefusal = createIrStatementArmAsyncStateMachine(scope, finallyBody, handlerPath, [], draft);
+    if (normalRefusal) return normalRefusal;
+    if (draft.terminal) {
+      return createCompilerAsyncStateMachineRefusal('unsupported-control-flow', handlerPath, scope.path);
+    }
+    draft.currentSteps.push({ kind: 'goto', path: handlerPath, target: join });
+    addCompilerAsyncStateMachineState(draft);
+  }
 
   draft.currentIdentity = handler;
   draft.currentSteps = [];
   draft.terminal = false;
-  // A handler may suspend too. It runs outside the region it handles, so its own rejections settle
-  // the task rather than re-entering the handler that produced them.
   const handlerRefusal = createIrStatementArmAsyncStateMachine(
     scope,
-    catchClause.body,
+    catchClause ? catchClause.body : finallyBody!,
     handlerPath,
-    suspensions,
+    catchClause ? suspensions : [],
     draft,
   );
   if (handlerRefusal) return handlerRefusal;
-  if (!draft.terminal) draft.currentSteps.push({ kind: 'goto', path: handlerPath, target: join });
+  if (!draft.terminal && catchClause) draft.currentSteps.push({ kind: 'goto', path: handlerPath, target: join });
   addCompilerAsyncStateMachineState(draft);
 
   draft.currentIdentity = join;

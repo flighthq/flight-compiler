@@ -571,18 +571,60 @@ describe('analyzeIrModuleAsyncStateMachines', () => {
     ]);
   });
 
-  it('refuses a finally around a suspension', () => {
-    const cleanup = analyzeIrModuleAsyncStateMachines(
+  it('runs a finally on both the normal route and the rejection route, then re-raises', () => {
+    const analysis = analyzeIrModuleAsyncStateMachines(
       lower(`
         export async function attempt(task: Promise<number>): Promise<number> {
           let result: number = 0;
-          try { result = await task; } finally { result = 1; }
+          let done: boolean = false;
+          try { result = await task; } finally { done = true; }
+          return done ? result : result;
+        }
+      `),
+    );
+    const machine = analysis.machines[0];
+    const tryPath = ['declarations', 0, 'body', 2];
+
+    expect(analysis.refusals).toEqual([]);
+    // Cleanup is reached twice on purpose: once when the body completes and once from the rejection
+    // route, which re-raises afterwards rather than consuming the rejection the way `catch` does.
+    expect(machine?.states.map((state) => state.identity)).toEqual([
+      { kind: 'entry' },
+      { arm: 'whenTrue', kind: 'branchArm', path: tryPath },
+      { kind: 'resume', suspensionPath: [...tryPath, 'tryBody', 'statements', 0, 'expression', 'right'] },
+      { arm: 'whenFalse', kind: 'branchArm', path: tryPath },
+      { kind: 'catch', path: tryPath },
+      { kind: 'join', path: tryPath },
+    ]);
+    expect(machine?.states.filter((state) => state.guard?.rethrow).map((state) => state.identity)).toEqual([
+      { arm: 'whenTrue', kind: 'branchArm', path: tryPath },
+      { kind: 'resume', suspensionPath: [...tryPath, 'tryBody', 'statements', 0, 'expression', 'right'] },
+    ]);
+  });
+
+  it('refuses the routes a finally cannot yet cover', () => {
+    // A body that leaves through `return` owes the cleanup on that route too, and `catch` plus
+    // `finally` together need the cleanup after the handler as well as instead of it.
+    const returned = analyzeIrModuleAsyncStateMachines(
+      lower(`
+        export async function attempt(task: Promise<number>): Promise<number> {
+          let done: boolean = false;
+          try { return await task; } finally { done = true; }
+        }
+      `),
+    );
+    const both = analyzeIrModuleAsyncStateMachines(
+      lower(`
+        export async function attempt(task: Promise<number>): Promise<number> {
+          let result: number = 0;
+          try { result = await task; } catch { result = 1; } finally { result = result; }
           return result;
         }
       `),
     );
 
-    expect(cleanup.refusals.map((refusal) => refusal.code)).toEqual(['unsupported-control-flow']);
+    expect(returned.refusals.map((refusal) => refusal.code)).toEqual(['unsupported-control-flow']);
+    expect(both.refusals.map((refusal) => refusal.code)).toEqual(['unsupported-control-flow']);
   });
 
   it('retains only the bindings that outlive a suspension, not the ones each iteration recreates', () => {

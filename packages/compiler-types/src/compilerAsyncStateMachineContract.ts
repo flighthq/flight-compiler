@@ -80,6 +80,9 @@ export interface CompilerAsyncStateMachineSuspendStep {
 export interface CompilerAsyncStateMachineGuardedState {
   readonly catchBinding?: IrBindingIdentity | undefined;
   readonly catchState: CompilerAsyncStateMachineStateIdentity;
+  // A `finally` handler does not consume the rejection it runs on: it runs and then lets the same
+  // rejection continue. A `catch` handler does consume it.
+  readonly rethrow?: boolean | undefined;
 }
 
 export interface CompilerAsyncStateMachineSettleStep {

@@ -133,6 +133,9 @@ function emitCompilerHaxeTaskEmissionRejectionRoute(
   return [
     ...(guard.catchBinding ? [`var ${capabilities.getBindingName(guard.catchBinding)} = ${errorName};`] : []),
     ...emitCompilerHaxeTaskLoweringState(handler, functionPlan, runtime, module, capabilities, names, ancestors, joins),
+    // A cleanup handler runs and then lets the same rejection continue, which is what separates
+    // `finally` from `catch`.
+    ...(guard.rethrow ? [`${names.reject}(${errorName});`] : []),
   ];
 }
 
@@ -220,7 +223,38 @@ function emitCompilerHaxeTaskLoweringStep(
       );
       if (!bodyState) capabilities.fail(`Haxe task guard at ${JSON.stringify(step.path)} has no body state`);
       const joinName = capabilities.getGeneratedName('taskJoin');
-      const nextJoins = new Map([...joins, [joinIdentity, joinName]]);
+      const nextJoins = new Map<string, string>([...joins, [joinIdentity, joinName]]);
+      // A cleanup arm is reached from the body and from the rejection route, so it is named for the
+      // same reason the join is: a continuation with two callers is a function, not an inlining.
+      const cleanupIdentity = getCompilerHaxeTaskEmissionIdentityKey({
+        arm: 'whenFalse',
+        kind: 'branchArm',
+        path: step.path,
+      });
+      const cleanupState = functionPlan.states.find(
+        (candidate) => getCompilerHaxeTaskEmissionIdentityKey(candidate.identity) === cleanupIdentity,
+      );
+      const cleanupLines: string[] = [];
+      if (cleanupState) {
+        const cleanupName = capabilities.getGeneratedName('taskCleanup');
+        nextJoins.set(cleanupIdentity, cleanupName);
+        cleanupLines.push(
+          `var ${cleanupName} = function() {`,
+          ...indentSourceLines(
+            emitCompilerHaxeTaskLoweringState(
+              cleanupState,
+              functionPlan,
+              runtime,
+              module,
+              capabilities,
+              names,
+              ancestors,
+              nextJoins,
+            ),
+          ),
+          '};',
+        );
+      }
       return [
         `var ${joinName} = function() {`,
         ...indentSourceLines(
@@ -236,6 +270,7 @@ function emitCompilerHaxeTaskLoweringStep(
           ),
         ),
         '};',
+        ...cleanupLines,
         ...emitCompilerHaxeTaskLoweringState(
           bodyState,
           functionPlan,
