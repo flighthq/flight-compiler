@@ -469,20 +469,26 @@ describe('emitIrModuleRust', () => {
     expect(emitIrModuleRust(result.module).contents).toContain('let value: (f64, Option<String>) = (2.0, None);');
   });
 
-  it('emits statically ordered pure-object for-in keys and refuses dynamic shapes', () => {
+  it('emits statically ordered for-in keys, from a literal or from a written closed shape', () => {
     const fixed = lower(
       'static-for-in.ts',
       "export function first(): string { for (const key in { second: 2, 10: 10, 2: 2, first: 1 }) return key; return ''; }",
     );
-    const dynamic = lower(
-      'dynamic-for-in.ts',
+    const declared = lower(
+      'declared-for-in.ts',
       "interface Values { value: number } export function first(values: Values): string { for (const key in values) return key; return ''; }",
+    );
+    const open = lower(
+      'open-for-in.ts',
+      "interface Values { value?: number } export function first(values: Values): string { for (const key in values) return key; return ''; }",
     );
 
     expect(emitIrModuleRust(fixed.module).contents).toContain(
       'for key in ["2".to_owned(), "10".to_owned(), "second".to_owned(), "first".to_owned()]',
     );
-    expect(() => emitIrModuleRust(dynamic.module)).toThrow('object key iteration requires closed key evidence');
+    expect(emitIrModuleRust(declared.module).contents).toContain('for key in ["value".to_owned()]');
+    // An optional property means a key that may not be present, so the shape is not closed.
+    expect(() => emitIrModuleRust(open.module)).toThrow('object key iteration requires closed key evidence');
   });
 
   it('refuses effectful static-key object iteration until structural-object evaluation is elected', () => {

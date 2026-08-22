@@ -485,8 +485,10 @@ describe('emitIrModuleHaxe', () => {
     expect(iterationOutput).toContain(
       'var value:Float;\n    for (variableHoistingIterationValue in values) {\n      value = variableHoistingIterationValue;\n      value += 1;',
     );
+    // A written shape has a known key set, so iteration is over that set rather than over whatever
+    // reflection reports at runtime.
     expect(iterationOutput).toContain(
-      'var key;\n    for (variableHoistingIterationValue in Reflect.fields(values)) {\n      key = variableHoistingIterationValue;\n      key;',
+      'var key;\n    for (variableHoistingIterationValue in ["value"]) {\n      key = variableHoistingIterationValue;\n      key;',
     );
   });
 
