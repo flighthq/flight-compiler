@@ -319,7 +319,11 @@ function classifyCompilerClosureValueUses(
     if (
       context.value.kind === 'return' &&
       context.value.expression &&
-      isCompilerClosurePathWithin(path, [...context.path, 'expression'])
+      isCompilerClosurePathWithin(path, [...context.path, 'expression']) &&
+      // Returning the RESULT of calling a closure does not return the closure. Reading a reference
+      // under a return statement as an escape is the over-approximation that costs a borrow the
+      // source never needed, and nothing downstream can detect it because the output still compiles.
+      !isCompilerClosureInvokedCallee(path, ownerPath, draft)
     ) {
       add('returned', context.path);
     }
@@ -600,6 +604,22 @@ function getIrExpressionCompilerClosureMutationTarget(
     return target ? { ...target, kind: 'referentMutation' } : undefined;
   }
   return undefined;
+}
+
+// Whether every reference at this path is the callee of a call, which is the one position where a
+// closure value is consumed rather than carried.
+function isCompilerClosureInvokedCallee(
+  path: CompilerIrTraversalPath,
+  ownerPath: CompilerIrTraversalPath | undefined,
+  draft: Readonly<ClosureTraversalDraft>,
+): boolean {
+  return draft.expressions.some(
+    (context) =>
+      isCompilerClosureContextOwner(context.ownerPath, ownerPath) &&
+      context.path.length < path.length &&
+      (context.value.kind === 'call' || context.value.kind === 'new') &&
+      isCompilerClosurePathWithin(path, [...context.path, 'callee']),
+  );
 }
 
 function isCompilerClosureContextOwner(

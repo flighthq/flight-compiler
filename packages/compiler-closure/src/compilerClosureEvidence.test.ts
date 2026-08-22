@@ -268,6 +268,44 @@ describe('analyzeIrModuleClosureEvidence', () => {
     ).not.toContain('iteration');
     expect(both).toBeDefined();
   });
+  it('does not over-report escape, mutation, or lifetime for closures that do none of it', () => {
+    // The near-neighbours matter more than the positive cases here. Rust ownership will be elected
+    // from this evidence, and an over-reported escape or mutation costs a borrow that the source
+    // never needed — a cost nothing downstream can detect, because the output still compiles.
+    const evidence = analyzeIrModuleClosureEvidence(
+      lower(`
+        export function contained(seed: number): number {
+          const read: number = seed;
+          let written: number = seed;
+          const observer = (): number => read;
+          const writer = (): number => {
+            written = read;
+            return written;
+          };
+          return observer() + writer();
+        }
+      `),
+    );
+    const observer = evidence.closures.find(
+      (candidate) =>
+        candidate.captures.some((capture) => capture.binding.name === 'read') &&
+        !candidate.captures.some((capture) => capture.binding.name === 'written'),
+    );
+    const writer = evidence.closures.find((candidate) =>
+      candidate.captures.some((capture) => capture.binding.name === 'written'),
+    );
+    const read = observer?.captures.find((capture) => capture.binding.name === 'read');
+    const written = writer?.captures.find((capture) => capture.binding.name === 'written');
+
+    expect(observer).toMatchObject({ async: false, escape: 'knownNonEscaping', suspensions: [] });
+    expect(writer).toMatchObject({ async: false, escape: 'knownNonEscaping' });
+    // A capture that is only read is not a mutation, and nothing here outlives its frame.
+    expect(read).toMatchObject({ mutation: 'none', outsideMutations: [] });
+    expect(read?.lifetimeBoundaries).toEqual([]);
+    // A capture the closure writes is a rebinding of the binding, not a mutation of a referent.
+    expect(written).toMatchObject({ mutation: 'bindingReassigned', outsideMutations: [] });
+    expect(written?.lifetimeBoundaries).toEqual([]);
+  });
 });
 
 function hasValueUse(
