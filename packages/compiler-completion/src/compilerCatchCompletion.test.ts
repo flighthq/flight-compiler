@@ -149,6 +149,12 @@ describe('isCompilerCatchCompletionFailure', () => {
     expect(isCompilerCatchCompletionFailure(Object.assign(new Error('lookalike'), lookalike, { path: null }))).toBe(
       false,
     );
+    expect(isCompilerCatchCompletionFailure(Object.assign(new Error('lookalike'), lookalike, { path: [0] }))).toBe(
+      true,
+    );
+    expect(isCompilerCatchCompletionFailure(Object.assign(new Error('lookalike'), lookalike, { path: [true] }))).toBe(
+      false,
+    );
   });
 });
 

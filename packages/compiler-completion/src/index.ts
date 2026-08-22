@@ -18,6 +18,10 @@ export {
 } from './compilerCompletionSet.js';
 export { applyCompilerCompletionSetFinallyReplacement } from './compilerFinallyCompletion.js';
 export {
+  getIrStatementListCompletionSet,
+  isCompilerStatementCompletionFailure,
+} from './compilerStatementCompletion.js';
+export {
   createIrStatementValueCallSemantics,
   isIrCallExpressionStatementValueCarrier,
   isIrStatementValueCallSemantics,
