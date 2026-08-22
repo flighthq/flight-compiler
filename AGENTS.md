@@ -55,7 +55,7 @@ The repository follows Flight's package-per-domain convention. Internal workspac
 - `packages/compiler-ir-validation/`: structural integrity checks for target-neutral IR values.
 - `packages/compiler-completion/`: exact target-neutral normal and abrupt completion semantics.
 - `packages/compiler-provenance/`: normalization, provenance, and stable fingerprints.
-- `packages/compiler-runtime-contract/`: target-neutral ambient-symbol reachability and runtime-binding completeness.
+- `packages/compiler-runtime-contract/`: target-neutral ambient-symbol reachability plus external-constructor and runtime-capability ABI completeness.
 - `packages/compiler-task/`: target-neutral asynchronous task inventory and composition semantics.
 - `packages/compiler-semantic/`: TypeScript semantic analysis and neutral lowering.
 - `packages/compiler-patch/`: fingerprinted semantic patch application and audits.
@@ -92,7 +92,7 @@ The dependency floor is deliberate:
 - `compiler-patch` depends on shared contracts, deterministic canonical form, and exact provenance identity; `compiler-emission` depends only on its contracts and canonical form.
 - `compiler-ir-validation` verifies target-neutral IR structure over shared contracts and exact provenance identity.
 - `compiler-ir-traversal` provides dependency-floor, read-only IR observation over `compiler-types` without embedding analysis policy.
-- `compiler-runtime-contract` validates reachable ambient type/value symbol decisions over `compiler-types` and shared deterministic canonical form.
+- `compiler-runtime-contract` validates reachable ambient type/value symbol decisions and versioned runtime capability ABIs over `compiler-types` and shared deterministic canonical form.
 - `compiler-task` inventories asynchronous scopes and task operations, then derives completion-preserving state-machine plans from closure, completion, and traversal evidence without choosing a target runtime.
 - `compiler-canonical-form` defines deterministic text order and portable path form without importing compiler contracts or domain identity policy.
 - `compiler-lowering` provides verified neutral transforms over `compiler-types`, composing canonical form, `compiler-ir-traversal`, and `compiler-ir-validation`; backends elect its passes.

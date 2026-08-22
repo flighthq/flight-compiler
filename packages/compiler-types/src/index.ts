@@ -25,6 +25,7 @@ export type * from './compilerOperatorIntermediateRepresentation.js';
 export type * from './compilerOperatorSemanticIntermediateRepresentation.js';
 export type * from './compilerOrchestrationContract.js';
 export type * from './compilerRuntimeContract.js';
+export type * from './compilerRuntimeTaskCapabilityContract.js';
 export type * from './compilerRustOwnershipContract.js';
 export type * from './compilerSemanticPatchContract.js';
 export type * from './compilerSourceFingerprint.js';
