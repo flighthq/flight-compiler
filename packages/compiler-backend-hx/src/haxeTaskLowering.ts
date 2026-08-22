@@ -237,6 +237,8 @@ function lowerCompilerAsyncStateMachineStepHaxe(
       };
     case 'goto':
       return { kind: 'continueState', path: step.path, target: step.target };
+    case 'loop':
+      return { header: step.header, kind: 'loopState', path: step.path };
     case 'execute':
       return {
         abruptValues: step.abruptValues,

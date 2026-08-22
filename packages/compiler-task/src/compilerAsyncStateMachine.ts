@@ -530,6 +530,56 @@ function createIrIfStatementAsyncStateMachine(
   return undefined;
 }
 
+function createIrWhileStatementAsyncStateMachine(
+  scope: Readonly<CompilerAsyncTaskScope>,
+  statement: Readonly<Extract<IrStatement, { kind: 'while' }>>,
+  path: CompilerIrTraversalPath,
+  suspensions: readonly Readonly<CompilerAsyncTaskSuspensionSite>[],
+  draft: AsyncStateMachineDraft,
+): CompilerAsyncStateMachineRefusal | undefined {
+  if (statement.label) {
+    return createCompilerAsyncStateMachineRefusal('unsupported-control-flow', path, scope.path);
+  }
+  const conditionPath = [...path, 'condition'];
+  if (suspensions.some((suspension) => isCompilerAsyncStateMachinePathWithin(suspension.path, conditionPath))) {
+    return createCompilerAsyncStateMachineRefusal('unsupported-suspension-expression', conditionPath, scope.path);
+  }
+  const header: CompilerAsyncStateMachineStateIdentity = { kind: 'loopHeader', path };
+  const body: CompilerAsyncStateMachineStateIdentity = { arm: 'whenTrue', kind: 'branchArm', path };
+  const join: CompilerAsyncStateMachineStateIdentity = { kind: 'join', path };
+  draft.currentSteps.push({ header, kind: 'loop', path });
+  addCompilerAsyncStateMachineState(draft);
+
+  draft.currentIdentity = header;
+  draft.currentSteps = [
+    {
+      conditionPath,
+      evaluationRejection: addCompilerAsyncStateMachineAbruptCompletion(conditionPath, draft),
+      kind: 'branch',
+      path,
+      whenFalse: join,
+      whenTrue: body,
+    },
+  ];
+  addCompilerAsyncStateMachineState(draft);
+
+  draft.currentIdentity = body;
+  draft.currentSteps = [];
+  draft.terminal = false;
+  const refusal = createIrStatementArmAsyncStateMachine(scope, statement.body, [...path, 'body'], suspensions, draft);
+  if (refusal) return refusal;
+  // The back edge is what makes this a loop rather than a branch: a body that did not leave the
+  // function re-enters the header, so the condition is evaluated again.
+  if (!draft.terminal) draft.currentSteps.push({ kind: 'goto', path: [...path, 'body'], target: header });
+  addCompilerAsyncStateMachineState(draft);
+
+  draft.currentIdentity = join;
+  draft.currentSteps = [];
+  // A `while` may run its body zero times, so the statement after it is always reachable.
+  draft.terminal = false;
+  return undefined;
+}
+
 function createIrStatementArmAsyncStateMachine(
   scope: Readonly<CompilerAsyncTaskScope>,
   statement: Readonly<IrStatement>,
@@ -583,6 +633,9 @@ function createIrStatementSuspensionAsyncStateMachine(
   }
   if (statement.kind === 'if') {
     return createIrIfStatementAsyncStateMachine(scope, statement, path, suspensions, draft);
+  }
+  if (statement.kind === 'while') {
+    return createIrWhileStatementAsyncStateMachine(scope, statement, path, suspensions, draft);
   }
   if (suspensions.length !== 1) {
     return createCompilerAsyncStateMachineRefusal('unsupported-suspension-expression', path, scope.path);

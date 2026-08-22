@@ -12,6 +12,7 @@ export type CompilerAsyncStateMachineStateIdentity =
   | Readonly<{ arm: 'whenFalse' | 'whenTrue'; kind: 'branchArm'; path: CompilerIrTraversalPath }>
   | Readonly<{ kind: 'entry' }>
   | Readonly<{ kind: 'join'; path: CompilerIrTraversalPath }>
+  | Readonly<{ kind: 'loopHeader'; path: CompilerIrTraversalPath }>
   | Readonly<{ kind: 'resume'; suspensionPath: CompilerIrTraversalPath }>;
 
 // States otherwise fall through to the one after them, the way basic blocks are laid out in order.
@@ -30,6 +31,14 @@ export interface CompilerAsyncStateMachineGotoStep {
   readonly kind: 'goto';
   readonly path: CompilerIrTraversalPath;
   readonly target: CompilerAsyncStateMachineStateIdentity;
+}
+
+// A loop is the one shape whose continuation runs more than once, so its header is named where the
+// loop begins and re-entered by the back edge at the end of the body.
+export interface CompilerAsyncStateMachineLoopStep {
+  readonly header: CompilerAsyncStateMachineStateIdentity;
+  readonly kind: 'loop';
+  readonly path: CompilerIrTraversalPath;
 }
 
 export interface CompilerAsyncStateMachineExecuteStep {
@@ -64,6 +73,7 @@ export type CompilerAsyncStateMachineStep =
   | CompilerAsyncStateMachineBranchStep
   | CompilerAsyncStateMachineExecuteStep
   | CompilerAsyncStateMachineGotoStep
+  | CompilerAsyncStateMachineLoopStep
   | CompilerAsyncStateMachineSettleStep
   | CompilerAsyncStateMachineSuspendStep;
 

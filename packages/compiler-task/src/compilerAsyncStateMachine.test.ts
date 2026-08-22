@@ -356,6 +356,69 @@ describe('analyzeIrModuleAsyncStateMachines', () => {
     expect(analysis.refusals.map((refusal) => refusal.code)).toEqual(['unsupported-suspension-expression']);
   });
 
+  it('names a loop header and re-enters it from the back edge of a suspending body', () => {
+    const analysis = analyzeIrModuleAsyncStateMachines(
+      lower(`
+        export async function drain(task: Promise<number>, again: boolean): Promise<number> {
+          let last: number = 0;
+          let pending: boolean = true;
+          while (pending) {
+            last = await task;
+            pending = again;
+          }
+          return last;
+        }
+      `),
+    );
+    const machine = analysis.machines[0];
+    const loopPath = ['declarations', 0, 'body', 2];
+
+    expect(analysis.refusals).toEqual([]);
+    expect(machine?.states.map((state) => state.identity)).toEqual([
+      { kind: 'entry' },
+      { kind: 'loopHeader', path: loopPath },
+      { arm: 'whenTrue', kind: 'branchArm', path: loopPath },
+      { kind: 'resume', suspensionPath: [...loopPath, 'body', 'statements', 0, 'expression', 'right'] },
+      { kind: 'join', path: loopPath },
+    ]);
+    expect(machine?.states[0]?.steps.at(-1)).toEqual({
+      header: { kind: 'loopHeader', path: loopPath },
+      kind: 'loop',
+      path: loopPath,
+    });
+    // The back edge is what separates a loop from a branch: the resumed body returns to the header
+    // so the condition is evaluated again, rather than falling through to the join.
+    expect(machine?.states[3]?.steps.at(-1)).toEqual({
+      kind: 'goto',
+      path: [...loopPath, 'body'],
+      target: { kind: 'loopHeader', path: loopPath },
+    });
+  });
+
+  it('refuses a labelled loop and a suspension in a loop condition', () => {
+    const labelled = analyzeIrModuleAsyncStateMachines(
+      lower(`
+        export async function labelled(task: Promise<number>, again: boolean): Promise<number> {
+          let last: number = 0;
+          outer: while (again) { last = await task; again = false; }
+          return last;
+        }
+      `),
+    );
+    const condition = analyzeIrModuleAsyncStateMachines(
+      lower(`
+        export async function decide(task: Promise<boolean>): Promise<number> {
+          let total: number = 0;
+          while (await task) { total = 1; }
+          return total;
+        }
+      `),
+    );
+
+    expect(labelled.refusals.map((refusal) => refusal.code)).toEqual(['unsupported-control-flow']);
+    expect(condition.refusals.map((refusal) => refusal.code)).toEqual(['unsupported-suspension-expression']);
+  });
+
   it('is deterministic, deeply immutable, and vacuous for a module without async scopes', () => {
     const module = lower('export function read(value: number): number { return value; }');
     const first = analyzeIrModuleAsyncStateMachines(module);

@@ -106,6 +106,43 @@ describe('emitCompilerHaxeTaskLoweringFunction', () => {
     expect(source).toContain('resolveTask(total);');
   });
 
+  it('emits a loop header as a named local function the back edge can re-enter', () => {
+    const sourceFile = ts.createSourceFile(
+      '/flight/packages/task/src/Task.ts',
+      'export async function drain(task: Promise<number>, again: boolean): Promise<number> { let last: number = 0; let pending: boolean = true; while (pending) { last = await task; pending = again; } return last; }',
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const module = lowerTypeScriptSource(sourceFile, {
+      packageName: '@flighthq/task',
+      upstreamDirectory: '/flight',
+    }).module;
+    const lowering = lowerCompilerAsyncStateMachinesHaxe(
+      analyzeIrModuleAsyncStateMachines(module),
+      createCompilerRuntimeTaskCapabilityPlanHaxe(),
+    );
+    const names = new Map<string, number>();
+    const source = emitCompilerHaxeTaskLoweringFunction(lowering.functions[0]!, lowering.runtime, module, {
+      emitExpression: emitExpression,
+      emitStatement: emitStatement,
+      fail(message): never {
+        throw new Error(message);
+      },
+      getBindingName: (binding) => binding.name,
+      getGeneratedName(preferredName) {
+        const count = (names.get(preferredName) ?? 0) + 1;
+        names.set(preferredName, count);
+        return count === 1 ? preferredName : `${preferredName}_${String(count)}`;
+      },
+    }).join('\n');
+
+    // A named local function, not a variable holding a closure: the back edge calls it from inside
+    // its own body, which a variable initializer cannot see.
+    expect(source).toContain('function taskLoop() {');
+    expect(source.match(/taskLoop\(\);/gu)).toHaveLength(2);
+    expect(source).toContain('if (pending) {');
+  });
+
   it('emits execute, rebind, discard, rejection, and implicit resolution actions', () => {
     const { lowering, module } = createFixture(`
       export async function actions(input: Promise<number>): Promise<number> {

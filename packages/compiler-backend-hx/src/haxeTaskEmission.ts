@@ -167,6 +167,35 @@ function emitCompilerHaxeTaskLoweringStep(
         'return;',
       ];
     }
+    case 'loopState': {
+      const headerIdentity = getCompilerHaxeTaskEmissionIdentityKey(step.header);
+      const headerState = functionPlan.states.find(
+        (candidate) => getCompilerHaxeTaskEmissionIdentityKey(candidate.identity) === headerIdentity,
+      );
+      if (!headerState) capabilities.fail(`Haxe task loop at ${JSON.stringify(step.path)} has no header state`);
+      const headerName = capabilities.getGeneratedName('taskLoop');
+      const nextJoins = new Map([...joins, [headerIdentity, headerName]]);
+      return [
+        // A named local function, not a `var` holding a closure: the back edge calls it from inside
+        // its own body, which a variable initializer cannot see.
+        `function ${headerName}() {`,
+        ...indentSourceLines(
+          emitCompilerHaxeTaskLoweringState(
+            headerState,
+            functionPlan,
+            runtime,
+            module,
+            capabilities,
+            names,
+            ancestors,
+            nextJoins,
+          ),
+        ),
+        '}',
+        `${headerName}();`,
+        'return;',
+      ];
+    }
     case 'continueState': {
       const target = getCompilerHaxeTaskEmissionIdentityKey(step.target);
       const joinName = joins.get(target);
@@ -326,6 +355,8 @@ function getCompilerHaxeTaskEmissionIdentityKey(identity: Readonly<CompilerAsync
       return 'entry';
     case 'join':
       return `join:${JSON.stringify(identity.path)}`;
+    case 'loopHeader':
+      return `loopHeader:${JSON.stringify(identity.path)}`;
     case 'resume':
       return JSON.stringify(identity.suspensionPath);
   }

@@ -70,6 +70,11 @@ export type CompilerHaxeTaskLoweringStep =
       kind: 'continueState';
       path: CompilerIrTraversalPath;
       target: CompilerAsyncStateMachineStateIdentity;
+    }>
+  | Readonly<{
+      header: CompilerAsyncStateMachineStateIdentity;
+      kind: 'loopState';
+      path: CompilerIrTraversalPath;
     }>;
 
 export interface CompilerHaxeTaskLoweringState {
