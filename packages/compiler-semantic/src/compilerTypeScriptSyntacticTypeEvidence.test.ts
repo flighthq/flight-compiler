@@ -29,6 +29,38 @@ describe('getTypeScriptSyntacticExpressionTypeEvidence', () => {
   });
 });
 
+it('reads the awaited type out of a written Promise type argument', () => {
+  // The analysis checker has no library types, so `Promise<number>` never resolves and the checker
+  // calls the awaited value unknown. The type argument is written in the source, which is evidence.
+  const { checker, source } = createProgram('declare const task: Promise<number>; await task;');
+  const statement = source.statements[1];
+  if (!statement || !ts.isExpressionStatement(statement)) throw new Error('Expected expression statement');
+
+  expect(getTypeScriptSyntacticExpressionTypeEvidence(statement.expression, checker)?.getText(source)).toBe('number');
+});
+
+it('follows an inferred const to its initializer, and stops at a self-referential one', () => {
+  const { checker, source } = createProgram('declare const task: Promise<string>; const value = await task; value;');
+  const statement = source.statements[2];
+  if (!statement || !ts.isExpressionStatement(statement)) throw new Error('Expected expression statement');
+
+  expect(getTypeScriptSyntacticExpressionTypeEvidence(statement.expression, checker)?.getText(source)).toBe('string');
+
+  const cyclic = createProgram('const loop = loop; loop;');
+  const cyclicStatement = cyclic.source.statements[1];
+  if (!cyclicStatement || !ts.isExpressionStatement(cyclicStatement)) throw new Error('Expected statement');
+
+  expect(getTypeScriptSyntacticExpressionTypeEvidence(cyclicStatement.expression, cyclic.checker)).toBeUndefined();
+});
+
+it('claims nothing for an await of something that is not a written task type', () => {
+  const { checker, source } = createProgram('declare const value: number; await value;');
+  const statement = source.statements[1];
+  if (!statement || !ts.isExpressionStatement(statement)) throw new Error('Expected expression statement');
+
+  expect(getTypeScriptSyntacticExpressionTypeEvidence(statement.expression, checker)).toBeUndefined();
+});
+
 describe('createTypeScriptSyntacticAliasSubstitutions', () => {
   it('binds written arguments and trailing defaults by symbol identity', () => {
     const { checker, source } = createProgram(

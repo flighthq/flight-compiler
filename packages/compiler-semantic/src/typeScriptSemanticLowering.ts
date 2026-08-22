@@ -72,7 +72,7 @@ import type {
   TypeScriptInvocationSignatureResolution,
   LowerTypeScriptSourceOptions,
 } from '../../compiler-types/src/index.js';
-import { getIrTypeOperatorValueDomain } from './compilerOperatorDomainEvidence.js';
+import { getIrBinaryOperatorResultDomain, getIrTypeOperatorValueDomain } from './compilerOperatorDomainEvidence.js';
 import { getTypeScriptForInKeyEvidence } from './compilerTypeScriptForInKeyEvidence.js';
 import { getTypeScriptInvocationSignatureResolution } from './compilerTypeScriptInvocationSemantics.js';
 import {
@@ -2807,10 +2807,23 @@ function lowerBinaryOperator(kind: TypeScriptBinaryOperator): IrBinaryOperator {
 }
 
 function lowerBinaryOperatorSemantics(node: ts.BinaryExpression, context: LoweringContext): IrBinaryOperatorSemantics {
+  const left = lowerOperatorOperandDomains(node.left, context);
+  const right = lowerOperatorOperandDomains(node.right, context);
+  const result = lowerOperatorValueDomain(node, context);
   return {
-    left: lowerOperatorOperandDomains(node.left, context),
-    result: lowerOperatorValueDomain(node, context),
-    right: lowerOperatorOperandDomains(node.right, context),
+    left,
+    // A checker with no library types often cannot type the whole expression even when it typed both
+    // operands, so the operator's own rule stands in rather than reporting an unknown result and
+    // refusing an operation whose domains are decided.
+    result:
+      result === 'unknown'
+        ? getIrBinaryOperatorResultDomain(
+            lowerBinaryOperator(node.operatorToken.kind as TypeScriptBinaryOperator),
+            left.flow,
+            right.flow,
+          )
+        : result,
+    right,
   };
 }
 

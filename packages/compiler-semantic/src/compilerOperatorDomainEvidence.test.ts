@@ -1,5 +1,5 @@
 import type { IrType } from '../../compiler-types/src/index.js';
-import { getIrTypeOperatorValueDomain } from './compilerOperatorDomainEvidence.js';
+import { getIrBinaryOperatorResultDomain, getIrTypeOperatorValueDomain } from './compilerOperatorDomainEvidence.js';
 
 describe('getIrTypeOperatorValueDomain', () => {
   it('classifies primitive, literal, reference, nullish, and absent evidence', () => {
@@ -43,5 +43,30 @@ describe('getIrTypeOperatorValueDomain', () => {
         ],
       }),
     ).toBe('unknown');
+  });
+});
+
+describe('getIrBinaryOperatorResultDomain', () => {
+  it('derives a result only where the operator and both operand domains decide one', () => {
+    expect(getIrBinaryOperatorResultDomain('+', 'number', 'number')).toBe('number');
+    expect(getIrBinaryOperatorResultDomain('+', 'string', 'string')).toBe('string');
+    expect(getIrBinaryOperatorResultDomain('+', 'bigint', 'bigint')).toBe('bigint');
+    expect(getIrBinaryOperatorResultDomain('-', 'number', 'number')).toBe('number');
+    expect(getIrBinaryOperatorResultDomain('<', 'number', 'number')).toBe('boolean');
+    expect(getIrBinaryOperatorResultDomain('&&', 'boolean', 'boolean')).toBe('boolean');
+    expect(getIrBinaryOperatorResultDomain('|', 'number', 'number')).toBe('number');
+    expect(getIrBinaryOperatorResultDomain('in', 'string', 'object')).toBe('boolean');
+    expect(getIrBinaryOperatorResultDomain(',', 'number', 'string')).toBe('string');
+  });
+
+  it('reports unknown wherever the source language does not decide, rather than guessing', () => {
+    // `+` over mixed domains is the coercion case a target must lower deliberately, and `??` depends
+    // on nullability the domain vocabulary does not carry.
+    expect(getIrBinaryOperatorResultDomain('+', 'number', 'string')).toBe('unknown');
+    expect(getIrBinaryOperatorResultDomain('+', 'object', 'object')).toBe('unknown');
+    expect(getIrBinaryOperatorResultDomain('-', 'string', 'string')).toBe('unknown');
+    expect(getIrBinaryOperatorResultDomain('<', 'unknown', 'unknown')).toBe('unknown');
+    expect(getIrBinaryOperatorResultDomain('|', 'bigint', 'bigint')).toBe('unknown');
+    expect(getIrBinaryOperatorResultDomain('??', 'number', 'number')).toBe('unknown');
   });
 });

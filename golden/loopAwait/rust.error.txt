@@ -1,1 +1,1 @@
-rust emission failed for @flighthq/golden/packages/golden/src/loopAwait.ts: async function drain requires Flight task lowering
+rust emission failed for @flighthq/golden/packages/golden/src/loopAwait.ts: async function total requires Flight task lowering

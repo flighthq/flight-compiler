@@ -2,16 +2,16 @@
 package flighthq.golden;
 
 class LoopAwait {
-  public static function drain(task:flighthq._internal._Promise<Float>, again:Bool):flighthq._internal._Promise<Float> {
+  public static function total(task:flighthq._internal._Promise<Float>, again:Bool):flighthq._internal._Promise<Float> {
     return new flighthq._internal._Promise(function(resolveTask, rejectTask) {
       try {
-        var last:Float = 0;
+        var sum:Float = 0;
         var pending:Bool = true;
         function taskLoop() {
           try {
             var taskJoin = function() {
               try {
-                resolveTask(last);
+                resolveTask(sum);
                 return;
               } catch (taskError_3:Dynamic) {
                 rejectTask(taskError_3);
@@ -21,8 +21,9 @@ class LoopAwait {
               try {
                 flighthq._internal._Promise.resolve(task).then(
                   function(awaitValue) {
-                    last = awaitValue;
+                    var value = awaitValue;
                     try {
+                      sum = (sum + value);
                       pending = again;
                       again = false;
                       taskLoop();

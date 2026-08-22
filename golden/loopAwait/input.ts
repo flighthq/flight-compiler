@@ -1,10 +1,11 @@
-export async function drain(task: Promise<number>, again: boolean): Promise<number> {
-  let last: number = 0;
+export async function total(task: Promise<number>, again: boolean): Promise<number> {
+  let sum: number = 0;
   let pending: boolean = true;
   while (pending) {
-    last = await task;
+    const value = await task;
+    sum = sum + value;
     pending = again;
     again = false;
   }
-  return last;
+  return sum;
 }
