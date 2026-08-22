@@ -4,6 +4,10 @@ export {
   analyzeIrModuleStructuralObjectCompatibilityAcrossModules,
 } from './compilerStructuralObjectCompatibility.js';
 export {
+  analyzeIrTypeStructuralAssignability,
+  isCompilerStructuralTypeAssignabilityFailure,
+} from './compilerStructuralTypeAssignability.js';
+export {
   createIrObjectTypeShapeIdentity,
   isCompilerStructuralTypeShapeFailure,
 } from './compilerStructuralTypeShapeIdentity.js';
