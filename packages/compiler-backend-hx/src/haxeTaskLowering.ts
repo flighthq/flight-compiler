@@ -66,7 +66,7 @@ export function lowerCompilerAsyncStateMachinesHaxe(
   }
   const runtime = createCompilerHaxeTaskLoweringRuntime(completeness, analysis.module, options);
   return cloneCompilerHaxeTaskLoweringValue({
-    functions: analysis.machines.map(lowerCompilerAsyncStateMachineFunctionHaxe),
+    functions: analysis.machines.map((machine) => lowerCompilerAsyncStateMachineFunctionHaxe(machine, analysis.module)),
     module: analysis.module,
     refusals: analysis.refusals.map((refusal) => ({
       code: refusal.code,
@@ -202,6 +202,7 @@ function isCompilerHaxeTaskLoweringQualifiedNameValid(value: string): boolean {
 
 function lowerCompilerAsyncStateMachineFunctionHaxe(
   machine: Readonly<CompilerAsyncStateMachineAnalysis['machines'][number]>,
+  module: Readonly<CompilerModuleIdentity>,
 ): CompilerHaxeTaskLoweringFunction {
   return {
     completionPaths: machine.completionPaths,
@@ -217,15 +218,26 @@ function lowerCompilerAsyncStateMachineFunctionHaxe(
     })),
     states: machine.states.map((state) => ({
       identity: state.identity,
-      steps: state.steps.map(lowerCompilerAsyncStateMachineStepHaxe),
+      steps: state.steps.map((step) => lowerCompilerAsyncStateMachineStepHaxe(step, module)),
     })),
   };
 }
 
 function lowerCompilerAsyncStateMachineStepHaxe(
   step: Readonly<CompilerAsyncStateMachineStep>,
+  module: Readonly<CompilerModuleIdentity>,
 ): CompilerHaxeTaskLoweringStep {
   switch (step.kind) {
+    case 'branch':
+    case 'goto':
+      // Neutral branching states exist; the Haxe state dispatcher does not render them yet. Refusing
+      // by name keeps a conditional suspension from emitting a machine with a missing transition.
+      throw createCompilerHaxeTaskLoweringFailure(
+        'unrepresentable-step',
+        module,
+        `Haxe task lowering cannot represent a ${step.kind} step yet`,
+        { received: step.kind },
+      );
     case 'execute':
       return {
         abruptValues: step.abruptValues,
@@ -257,6 +269,7 @@ const compilerHaxeTaskLoweringFailureCodes = new Set<CompilerHaxeTaskLoweringFai
   'runtime-capability-incomplete',
   'runtime-member-name',
   'runtime-task-type-name',
+  'unrepresentable-step',
 ]);
 
 const compilerHaxeTaskLoweringCapabilityOrder: readonly CompilerRuntimeTaskCapabilityName[] = [

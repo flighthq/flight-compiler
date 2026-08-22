@@ -271,6 +271,91 @@ describe('analyzeIrModuleAsyncStateMachines', () => {
     expect(analysis.refusals.map((refusal) => refusal.code)).toEqual(['unsupported-control-flow']);
   });
 
+  it('branches into arm states when a suspension is inside one arm and joins after both', () => {
+    const analysis = analyzeIrModuleAsyncStateMachines(
+      lower(`
+        export async function choose(task: Promise<number>, flag: boolean): Promise<number> {
+          let total: number = 0;
+          if (flag) {
+            total = await task;
+          } else {
+            total = 1;
+          }
+          return total;
+        }
+      `),
+    );
+    const machine = analysis.machines[0];
+    const branchPath = ['declarations', 0, 'body', 1];
+
+    expect(analysis.refusals).toEqual([]);
+    expect(machine?.states.map((state) => state.identity)).toEqual([
+      { kind: 'entry' },
+      { arm: 'whenTrue', kind: 'branchArm', path: branchPath },
+      { kind: 'resume', suspensionPath: [...branchPath, 'consequent', 'statements', 0, 'expression', 'right'] },
+      { arm: 'whenFalse', kind: 'branchArm', path: branchPath },
+      { kind: 'join', path: branchPath },
+    ]);
+    expect(machine?.states[0]?.steps.at(-1)).toMatchObject({
+      conditionPath: [...branchPath, 'condition'],
+      kind: 'branch',
+      whenFalse: { arm: 'whenFalse', kind: 'branchArm', path: branchPath },
+      whenTrue: { arm: 'whenTrue', kind: 'branchArm', path: branchPath },
+    });
+    // The resumed consequent and the else arm both fall to the join rather than into each other.
+    expect(machine?.states[2]?.steps.at(-1)).toEqual({
+      kind: 'goto',
+      path: [...branchPath, 'consequent'],
+      target: { kind: 'join', path: branchPath },
+    });
+    expect(machine?.states[3]?.steps.at(-1)).toEqual({
+      kind: 'goto',
+      path: [...branchPath, 'otherwise'],
+      target: { kind: 'join', path: branchPath },
+    });
+  });
+
+  it('sends the false route straight to the join when the branch has no else', () => {
+    const analysis = analyzeIrModuleAsyncStateMachines(
+      lower(`
+        export async function guard(task: Promise<number>, flag: boolean): Promise<number> {
+          let total: number = 0;
+          if (flag) total = await task;
+          return total;
+        }
+      `),
+    );
+    const machine = analysis.machines[0];
+    const branchPath = ['declarations', 0, 'body', 1];
+
+    expect(analysis.refusals).toEqual([]);
+    expect(machine?.states.map((state) => state.identity)).toEqual([
+      { kind: 'entry' },
+      { arm: 'whenTrue', kind: 'branchArm', path: branchPath },
+      { kind: 'resume', suspensionPath: [...branchPath, 'consequent', 'expression', 'right'] },
+      { kind: 'join', path: branchPath },
+    ]);
+    expect(machine?.states[0]?.steps.at(-1)).toMatchObject({
+      kind: 'branch',
+      whenFalse: { kind: 'join', path: branchPath },
+    });
+  });
+
+  it('refuses a suspension in the condition, which has to settle before the branch is decided', () => {
+    const analysis = analyzeIrModuleAsyncStateMachines(
+      lower(`
+        export async function decide(task: Promise<boolean>): Promise<number> {
+          let total: number = 0;
+          if (await task) { total = 1; }
+          return total;
+        }
+      `),
+    );
+
+    expect(analysis.machines).toEqual([]);
+    expect(analysis.refusals.map((refusal) => refusal.code)).toEqual(['unsupported-suspension-expression']);
+  });
+
   it('is deterministic, deeply immutable, and vacuous for a module without async scopes', () => {
     const module = lower('export function read(value: number): number { return value; }');
     const first = analyzeIrModuleAsyncStateMachines(module);

@@ -161,6 +161,32 @@ describe('lowerCompilerAsyncStateMachinesHaxe', () => {
       expect(error).toMatchObject({ code: 'runtime-task-type-name', received: 'invalid-module._Promise' });
     }
   });
+
+  it('refuses a branching machine by name rather than lowering a state with no transition', () => {
+    // Neutral branching exists ahead of the Haxe state dispatcher that renders it. Refusing here is
+    // what stops a conditional suspension from emitting a machine whose arms have nowhere to go.
+    const analysis = analyzeIrModuleAsyncStateMachines(
+      lower(`
+        export async function choose(task: Promise<number>, flag: boolean): Promise<number> {
+          let total: number = 0;
+          if (flag) { total = await task; }
+          return total;
+        }
+      `),
+    );
+
+    expect(analysis.refusals).toEqual([]);
+    expect(() => lowerCompilerAsyncStateMachinesHaxe(analysis, createCompilerRuntimeTaskCapabilityPlanHaxe())).toThrow(
+      'Haxe task lowering cannot represent a branch step yet',
+    );
+    try {
+      lowerCompilerAsyncStateMachinesHaxe(analysis, createCompilerRuntimeTaskCapabilityPlanHaxe());
+    } catch (error) {
+      expect(isCompilerHaxeTaskLoweringFailure(error)).toBe(true);
+      expect(isCompilerHaxeTaskLoweringFailure(error) && error.code).toBe('unrepresentable-step');
+      expect(isCompilerHaxeTaskLoweringFailure(error) && error.received).toBe('branch');
+    }
+  });
 });
 
 function isDeeplyFrozen(value: unknown, seen: WeakSet<object>): boolean {

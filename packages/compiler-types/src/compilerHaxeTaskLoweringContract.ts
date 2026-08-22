@@ -102,7 +102,8 @@ export interface CompilerHaxeTaskLowering {
 export type CompilerHaxeTaskLoweringFailureCode =
   | 'runtime-capability-incomplete'
   | 'runtime-member-name'
-  | 'runtime-task-type-name';
+  | 'runtime-task-type-name'
+  | 'unrepresentable-step';
 
 export interface CompilerHaxeTaskLoweringFailure extends Error {
   readonly capability?: CompilerRuntimeTaskCapabilityName | undefined;

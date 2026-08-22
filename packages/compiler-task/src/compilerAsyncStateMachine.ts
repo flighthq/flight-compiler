@@ -463,6 +463,102 @@ function completeIrStatementBodyAsyncStateMachine(
   }
 }
 
+function createIrIfStatementAsyncStateMachine(
+  scope: Readonly<CompilerAsyncTaskScope>,
+  statement: Readonly<Extract<IrStatement, { kind: 'if' }>>,
+  path: CompilerIrTraversalPath,
+  suspensions: readonly Readonly<CompilerAsyncTaskSuspensionSite>[],
+  draft: AsyncStateMachineDraft,
+): CompilerAsyncStateMachineRefusal | undefined {
+  const conditionPath = [...path, 'condition'];
+  if (suspensions.some((suspension) => isCompilerAsyncStateMachinePathWithin(suspension.path, conditionPath))) {
+    // A suspension in the condition has to settle before the branch is even decided, which is a
+    // different state shape from a suspension in an arm. Refused until it has one.
+    return createCompilerAsyncStateMachineRefusal('unsupported-suspension-expression', conditionPath, scope.path);
+  }
+  const whenTrue: CompilerAsyncStateMachineStateIdentity = { arm: 'whenTrue', kind: 'branchArm', path };
+  const whenFalse: CompilerAsyncStateMachineStateIdentity = { arm: 'whenFalse', kind: 'branchArm', path };
+  const join: CompilerAsyncStateMachineStateIdentity = { kind: 'join', path };
+  draft.currentSteps.push({
+    conditionPath,
+    evaluationRejection: addCompilerAsyncStateMachineAbruptCompletion(conditionPath, draft),
+    kind: 'branch',
+    path,
+    whenFalse: statement.otherwise ? whenFalse : join,
+    whenTrue,
+  });
+  addCompilerAsyncStateMachineState(draft);
+
+  draft.currentIdentity = whenTrue;
+  draft.currentSteps = [];
+  draft.terminal = false;
+  const consequent = createIrStatementArmAsyncStateMachine(
+    scope,
+    statement.consequent,
+    [...path, 'consequent'],
+    suspensions,
+    draft,
+  );
+  if (consequent) return consequent;
+  const trueTerminal = draft.terminal;
+  if (!trueTerminal) draft.currentSteps.push({ kind: 'goto', path: [...path, 'consequent'], target: join });
+  addCompilerAsyncStateMachineState(draft);
+
+  let falseTerminal = false;
+  if (statement.otherwise) {
+    draft.currentIdentity = whenFalse;
+    draft.currentSteps = [];
+    draft.terminal = false;
+    const otherwise = createIrStatementArmAsyncStateMachine(
+      scope,
+      statement.otherwise,
+      [...path, 'otherwise'],
+      suspensions,
+      draft,
+    );
+    if (otherwise) return otherwise;
+    falseTerminal = draft.terminal;
+    if (!falseTerminal) draft.currentSteps.push({ kind: 'goto', path: [...path, 'otherwise'], target: join });
+    addCompilerAsyncStateMachineState(draft);
+  }
+
+  draft.currentIdentity = join;
+  draft.currentSteps = [];
+  // The statement after the branch is reachable unless every arm left, and an `if` with no `else`
+  // always has a route that skips the consequent entirely.
+  draft.terminal = Boolean(statement.otherwise) && trueTerminal && falseTerminal;
+  return undefined;
+}
+
+function createIrStatementArmAsyncStateMachine(
+  scope: Readonly<CompilerAsyncTaskScope>,
+  statement: Readonly<IrStatement>,
+  path: CompilerIrTraversalPath,
+  suspensions: readonly Readonly<CompilerAsyncTaskSuspensionSite>[],
+  draft: AsyncStateMachineDraft,
+): CompilerAsyncStateMachineRefusal | undefined {
+  const armSuspensions = suspensions.filter((suspension) =>
+    isCompilerAsyncStateMachinePathWithin(suspension.path, path),
+  );
+  if (statement.kind === 'block' && !statement.label) {
+    return createIrStatementListAsyncStateMachine(
+      scope,
+      statement.statements,
+      [...path, 'statements'],
+      armSuspensions,
+      draft,
+    );
+  }
+  if (armSuspensions.length > 0) {
+    return createIrStatementSuspensionAsyncStateMachine(scope, statement, path, armSuspensions, draft);
+  }
+  if (!isIrStatementAsyncStateMachineOpaque(statement)) {
+    return createCompilerAsyncStateMachineRefusal('unsupported-control-flow', path, scope.path);
+  }
+  addCompilerAsyncStateMachineExecuteStep(statement, path, draft);
+  return undefined;
+}
+
 function createIrStatementSuspensionAsyncStateMachine(
   scope: Readonly<CompilerAsyncTaskScope>,
   statement: Readonly<IrStatement>,
@@ -484,6 +580,9 @@ function createIrStatementSuspensionAsyncStateMachine(
       suspensions,
       draft,
     );
+  }
+  if (statement.kind === 'if') {
+    return createIrIfStatementAsyncStateMachine(scope, statement, path, suspensions, draft);
   }
   if (suspensions.length !== 1) {
     return createCompilerAsyncStateMachineRefusal('unsupported-suspension-expression', path, scope.path);

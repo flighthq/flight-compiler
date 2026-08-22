@@ -9,8 +9,28 @@ import type {
 } from './compilerValueCompletionContract.js';
 
 export type CompilerAsyncStateMachineStateIdentity =
+  | Readonly<{ arm: 'whenFalse' | 'whenTrue'; kind: 'branchArm'; path: CompilerIrTraversalPath }>
   | Readonly<{ kind: 'entry' }>
+  | Readonly<{ kind: 'join'; path: CompilerIrTraversalPath }>
   | Readonly<{ kind: 'resume'; suspensionPath: CompilerIrTraversalPath }>;
+
+// States otherwise fall through to the one after them, the way basic blocks are laid out in order.
+// A branch ends its state with two named successors, and a `goto` ends one with a single named
+// successor, which is what lets an arm skip the arm laid out after it.
+export interface CompilerAsyncStateMachineBranchStep {
+  readonly conditionPath: CompilerIrTraversalPath;
+  readonly evaluationRejection: CompilerCompletionValueSource;
+  readonly kind: 'branch';
+  readonly path: CompilerIrTraversalPath;
+  readonly whenFalse: CompilerAsyncStateMachineStateIdentity;
+  readonly whenTrue: CompilerAsyncStateMachineStateIdentity;
+}
+
+export interface CompilerAsyncStateMachineGotoStep {
+  readonly kind: 'goto';
+  readonly path: CompilerIrTraversalPath;
+  readonly target: CompilerAsyncStateMachineStateIdentity;
+}
 
 export interface CompilerAsyncStateMachineExecuteStep {
   readonly abruptValues: readonly CompilerCompletionValueSource[];
@@ -41,7 +61,9 @@ export interface CompilerAsyncStateMachineSettleStep {
 }
 
 export type CompilerAsyncStateMachineStep =
+  | CompilerAsyncStateMachineBranchStep
   | CompilerAsyncStateMachineExecuteStep
+  | CompilerAsyncStateMachineGotoStep
   | CompilerAsyncStateMachineSettleStep
   | CompilerAsyncStateMachineSuspendStep;
 
