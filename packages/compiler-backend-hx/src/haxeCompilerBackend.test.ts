@@ -975,4 +975,19 @@ describe('emitIrModuleHaxe', () => {
       'types containing both null and undefined require distinct Haxe sentinels',
     );
   });
+
+  it('narrows a computed array index to Int, and leaves an integer literal alone', () => {
+    // Haxe indexes arrays with `Int` while the neutral numeric domain has only `number`, so every
+    // index arrives as `Float`. Emitting it directly produced Haxe that does not compile, which
+    // pinning bytes cannot catch.
+    const result = lower(
+      'array-index.ts',
+      'export function at(values: number[], index: number): number { return values[index] ?? values[0] ?? 0; }',
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('values[Std.int(index)]');
+    expect(output).toContain('values[0]');
+    expect(output).not.toContain('Std.int(0)');
+  });
 });

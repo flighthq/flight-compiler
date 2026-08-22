@@ -445,7 +445,12 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
         const index = getElementAccessTupleIndexHaxe(expression, context);
         return `${emitExpression(expression.object, context)}[${String(index)}]`;
       }
-      return `${emitExpression(expression.object, context)}${expression.optional ? '?.' : ''}[${emitExpression(expression.index, context)}]`;
+      // Haxe indexes arrays with `Int`, and the neutral numeric domain has only `number`, so every
+      // index arrives as `Float` and `values[index]` does not compile. A literal integer is already
+      // an `Int` to Haxe; anything else is narrowed here. `Std.int` truncates, which matches the
+      // source for an integral index and differs for a fractional one — where the source itself
+      // produces `undefined`, so such an index is a defect in either language.
+      return `${emitExpression(expression.object, context)}${expression.optional ? '?.' : ''}[${emitArrayIndexHaxe(expression.index, context)}]`;
     case 'function':
       if (expression.typeParameters.length > 0)
         emissionError(context, 'generic function expressions are not valid Haxe values');
@@ -972,6 +977,13 @@ function hasIrTypeUndefinedMemberHaxe(type: Readonly<IrType>): boolean {
   return (
     type.kind === 'undefined' || (type.kind === 'union' && type.types.some((member) => member.kind === 'undefined'))
   );
+}
+
+function emitArrayIndexHaxe(index: Readonly<IrExpression>, context: EmitContext): string {
+  const emitted = emitExpression(index, context);
+  return index.kind === 'literal' && typeof index.value === 'number' && Number.isInteger(index.value)
+    ? emitted
+    : `Std.int(${emitted})`;
 }
 
 function emitAnonymousType(properties: readonly IrObjectTypeProperty[], context: EmitContext): string {
