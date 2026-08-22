@@ -827,12 +827,25 @@ function visitIrExpressionChildrenSwitchFallthrough(
       visit(expression.value);
       visit(expression.fallback);
       return;
+    case 'objectRest':
+      visit(expression.object);
+      expression.excluded.forEach((key) => {
+        if (key.kind === 'computed') visit(key.expression);
+      });
+      return;
     case 'identifier':
     case 'literal':
     case 'regexp':
     case 'undefinedValue':
       return;
+    default:
+      assertNeverSwitchFallthrough(expression);
   }
 }
 
 const compilerLoweringPassNameSwitchFallthrough = 'switch-fallthrough';
+
+function assertNeverSwitchFallthrough(value: never): never {
+  const kind = (value as { readonly kind?: unknown }).kind;
+  throw new TypeError(`Unknown neutral IR kind ${String(kind)}`);
+}

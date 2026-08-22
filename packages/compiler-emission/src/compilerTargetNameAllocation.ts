@@ -259,6 +259,8 @@ function getIrModuleBindingIntroductions(module: Readonly<IrModule>): IrBindingI
           collectExpressionBindings(declaration.initializer, `${declarationPath}:initializer`, add);
         }
         break;
+      default:
+        assertNeverTargetNameAllocation(declaration);
     }
   });
   return bindings;
@@ -370,6 +372,8 @@ function collectExpressionBindings(
       collectExpressionBindings(expression.fallback, `${path}:fallback`, add);
       collectExpressionBindings(expression.value, `${path}:value`, add);
       break;
+    default:
+      assertNeverTargetNameAllocation(expression);
   }
 }
 
@@ -448,6 +452,8 @@ function collectStatementBindings(
         collectVariableBindings(variable, scope, `${path}:variable:${String(index)}`, add),
       );
       break;
+    default:
+      assertNeverTargetNameAllocation(statement);
   }
 }
 
@@ -485,6 +491,19 @@ function collectBindingPatternBindings(
     case 'binding':
       add(pattern.binding, scope);
       break;
+    case 'object':
+      pattern.properties.forEach((property, index) => {
+        const propertyPath = `${path}:property:${String(index)}`;
+        if (property.key.kind === 'computed') {
+          collectExpressionBindings(property.key.expression, `${propertyPath}:key`, add);
+        }
+        collectBindingPatternBindings(property.pattern, scope, `${propertyPath}:pattern`, add);
+        if (property.initializer) collectExpressionBindings(property.initializer, `${propertyPath}:initializer`, add);
+      });
+      if (pattern.rest) collectBindingPatternBindings(pattern.rest, scope, `${path}:rest`, add);
+      break;
+    default:
+      assertNeverTargetNameAllocation(pattern);
   }
 }
 
@@ -505,4 +524,9 @@ function createTargetNameAllocationFailure(
   );
   failure.name = 'CompilerTargetNameAllocationError';
   return failure;
+}
+
+function assertNeverTargetNameAllocation(value: never): never {
+  const kind = (value as { readonly kind?: unknown }).kind;
+  throw new TypeError(`Unknown neutral IR kind ${String(kind)}`);
 }

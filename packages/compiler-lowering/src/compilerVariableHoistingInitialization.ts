@@ -315,6 +315,8 @@ function analyzeIrExpressionVariableInitialization(
     case 'regexp':
     case 'undefinedValue':
       return;
+    default:
+      assertNeverVariableHoistingInitialization(expression);
   }
 }
 
@@ -338,6 +340,8 @@ function analyzeIrObjectMemberVariableInitialization(
       analyzeIrExpressionVariableInitialization(member.expression, initialized, variables, sourceIdentity, completion);
       addIrVariableInitializationCompletion(completion, 'throw', initialized);
       return;
+    default:
+      assertNeverVariableHoistingInitialization(member);
   }
 }
 
@@ -779,6 +783,8 @@ function collectIrDeferredClosureVariableInitialization(
       case 'return':
       case 'throw':
         return;
+      default:
+        assertNeverVariableHoistingInitialization(statement);
     }
   };
   statements.forEach(visitStatement);
@@ -918,6 +924,8 @@ function visitIrExpressionChildrenVariableInitialization(
     case 'regexp':
     case 'undefinedValue':
       return;
+    default:
+      assertNeverVariableHoistingInitialization(expression);
   }
 }
 
@@ -986,6 +994,8 @@ function visitIrStatementExpressionsVariableInitialization(
     case 'break':
     case 'continue':
       return;
+    default:
+      assertNeverVariableHoistingInitialization(statement);
   }
 }
 
@@ -1001,3 +1011,8 @@ const variableInitializationCompletionKinds: readonly CompilerVariableInitializa
 type MutableCompilerVariableInitializationCompletion = {
   -readonly [Kind in CompilerVariableInitializationCompletionKind]?: Set<string>;
 };
+
+function assertNeverVariableHoistingInitialization(value: never): never {
+  const kind = (value as { readonly kind?: unknown }).kind;
+  throw new TypeError(`Unknown neutral IR kind ${String(kind)}`);
+}

@@ -233,6 +233,8 @@ function analyzeIrExpressionStaticFacts(
     case 'undefinedDefault':
     case 'undefinedValue':
       return;
+    default:
+      assertNeverIrStaticFacts(expression);
   }
 }
 
@@ -262,6 +264,8 @@ function analyzeIrStatementStaticFacts(statement: Readonly<IrStatement>, analysi
     case 'try':
     case 'variable':
       return;
+    default:
+      assertNeverIrStaticFacts(statement);
   }
 }
 
@@ -492,3 +496,8 @@ const typedArrayElementWidths: Readonly<Record<IrTypedArrayReceiver, IrTypedArra
   uint8Array: 8,
   uint8ClampedArray: 8,
 };
+
+function assertNeverIrStaticFacts(value: never): never {
+  const kind = (value as { readonly kind?: unknown }).kind;
+  throw new TypeError(`Unknown neutral IR kind ${String(kind)}`);
+}

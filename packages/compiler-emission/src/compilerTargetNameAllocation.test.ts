@@ -384,4 +384,103 @@ describe('createIrModuleTargetNameAllocation', () => {
       { identity: 'rest', name: 'rest', scope: 'value\0module' },
     ]);
   });
+
+  it('collects every object pattern leaf, computed key, and rest binding in its lexical target scope', () => {
+    const binding = (id: string, name: string): IrBindingIdentity => ({
+      column: 1,
+      fingerprint: `sha256:${'0'.repeat(64)}`,
+      id,
+      kind: 'variable',
+      line: 1,
+      name,
+      packageName: '@flighthq/math',
+      scope: 'module',
+      space: 'value',
+      source: 'pattern.ts',
+    });
+    const named = binding('named', 'named');
+    const nested = binding('nested', 'nested');
+    const rest = binding('rest', 'rest');
+    const key = binding('key', 'key');
+    const fallback = { ...binding('fallback', 'fallback'), kind: 'function' as const };
+    const module = {
+      declarations: [
+        {
+          declarationKind: 'const' as const,
+          exported: true,
+          initializer: { kind: 'array' as const, elements: [] },
+          kind: 'variable' as const,
+          mutable: false,
+          origin: named,
+          pattern: {
+            ...named,
+            kind: 'object' as const,
+            properties: [
+              { key: { kind: 'named' as const, name: 'named' }, pattern: { binding: named, kind: 'binding' as const } },
+              {
+                initializer: {
+                  async: false,
+                  binding: fallback,
+                  body: [],
+                  kind: 'function' as const,
+                  parameters: [],
+                  returns: { kind: 'primitive' as const, name: 'void' as const },
+                  thisMode: 'lexical' as const,
+                  typeParameters: [],
+                },
+                key: {
+                  coercion: 'string' as const,
+                  expression: {
+                    async: false,
+                    binding: key,
+                    body: [],
+                    kind: 'function' as const,
+                    parameters: [],
+                    returns: { kind: 'primitive' as const, name: 'void' as const },
+                    thisMode: 'lexical' as const,
+                    typeParameters: [],
+                  },
+                  kind: 'computed' as const,
+                },
+                pattern: {
+                  ...nested,
+                  kind: 'object' as const,
+                  properties: [
+                    {
+                      key: { kind: 'named' as const, name: 'nested' },
+                      pattern: { binding: nested, kind: 'binding' as const },
+                    },
+                  ],
+                  scope: 'module' as const,
+                },
+              },
+            ],
+            rest: { binding: rest, kind: 'binding' as const },
+            scope: 'module' as const,
+          },
+        },
+      ],
+      exports: [],
+      imports: [],
+      name: 'Pattern',
+      packageName: '@flighthq/math',
+      source: 'pattern.ts',
+    };
+
+    // Every leaf a destructuring pattern introduces is a binding the target must be able to name.
+    // Object patterns were previously walked as if they introduced none, so their leaves reached
+    // emission with no allocated name and no collision protection.
+    expect(
+      createIrModuleTargetNameAllocation(module, (candidate) => ({
+        namespace: 'value',
+        preferredName: candidate.name,
+      })),
+    ).toEqual([
+      { identity: 'fallback', name: 'fallback', scope: 'value\0function:fallback' },
+      { identity: 'key', name: 'key', scope: 'value\0function:key' },
+      { identity: 'named', name: 'named', scope: 'value\0module' },
+      { identity: 'nested', name: 'nested', scope: 'value\0module' },
+      { identity: 'rest', name: 'rest', scope: 'value\0module' },
+    ]);
+  });
 });

@@ -450,6 +450,8 @@ function addCompilerModuleEvaluationDeclaration(
     case 'interface':
     case 'typeAlias':
       return;
+    default:
+      assertNeverModuleEvaluation(declaration);
   }
 }
 
@@ -679,3 +681,8 @@ const compilerModuleEvaluationFailureCodes = new Set<CompilerModuleEvaluationFai
 ]);
 
 const compilerModuleEvaluationVariableDeclarationKinds = new Set(['const', 'let', 'var']);
+
+function assertNeverModuleEvaluation(value: never): never {
+  const kind = (value as { readonly kind?: unknown }).kind;
+  throw new TypeError(`Unknown neutral IR kind ${String(kind)}`);
+}

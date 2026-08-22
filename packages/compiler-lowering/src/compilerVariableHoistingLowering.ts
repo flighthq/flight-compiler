@@ -977,7 +977,14 @@ function visitIrExpressionChildrenVariableHoisting(
     case 'regexp':
     case 'undefinedValue':
       return;
+    default:
+      assertNeverVariableHoistingLowering(expression);
   }
 }
 
 const compilerLoweringPassNameVariableHoisting = 'variable-hoisting';
+
+function assertNeverVariableHoistingLowering(value: never): never {
+  const kind = (value as { readonly kind?: unknown }).kind;
+  throw new TypeError(`Unknown neutral IR kind ${String(kind)}`);
+}
