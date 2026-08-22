@@ -1200,6 +1200,9 @@ function isBinaryOperatorDirectHaxe(
   if (operator === '&&' || operator === '||') {
     return hasMatchingOperatorDomains(semantics, ['boolean']);
   }
+  // `??` selects between its operands rather than combining them, so no coercion can differ between
+  // the two languages. Haxe's own `??` has the same short-circuit and the same null result.
+  if (operator === '??') return true;
   if (operator === '===' || operator === '!==') {
     return (
       semantics.left.flow === semantics.right.flow &&
@@ -1442,7 +1445,7 @@ const haxeBinaryOperatorEmission = {
   '>=': '>=',
   '>>': '>>',
   '>>>': undefined,
-  '??': undefined,
+  '??': '??',
   '^': '^',
   in: undefined,
   instanceof: undefined,

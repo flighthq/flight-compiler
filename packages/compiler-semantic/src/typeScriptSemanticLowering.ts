@@ -72,6 +72,7 @@ import type {
   TypeScriptInvocationSignatureResolution,
   LowerTypeScriptSourceOptions,
 } from '../../compiler-types/src/index.js';
+import { getIrTypeMemberEvidence } from './compilerIrTypeMemberEvidence.js';
 import { getIrBinaryOperatorResultDomain, getIrTypeOperatorValueDomain } from './compilerOperatorDomainEvidence.js';
 import { getTypeScriptForInKeyEvidence } from './compilerTypeScriptForInKeyEvidence.js';
 import { getTypeScriptInvocationSignatureResolution } from './compilerTypeScriptInvocationSemantics.js';
@@ -2906,6 +2907,12 @@ function getTypeScriptExpressionBindingTypeEvidence(
     ts.isNonNullExpression(expression)
   ) {
     return getTypeScriptExpressionBindingTypeEvidence(expression.expression, context);
+  }
+  if (ts.isPropertyAccessExpression(expression)) {
+    return getIrTypeMemberEvidence(
+      getTypeScriptExpressionBindingTypeEvidence(expression.expression, context),
+      expression.name.text,
+    );
   }
   if (!ts.isIdentifier(expression)) return undefined;
   const symbol = context.checker.getSymbolAtLocation(expression);

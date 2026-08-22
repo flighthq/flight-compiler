@@ -1,1 +1,1 @@
-haxe emission failed for @flighthq/golden/packages/golden/src/cStyleFor.ts: operator < on number and unknown requires Haxe type-directed lowering
+haxe emission failed for @flighthq/golden/packages/golden/src/cStyleFor.ts: operator += on number and unknown requires Haxe type-directed lowering
