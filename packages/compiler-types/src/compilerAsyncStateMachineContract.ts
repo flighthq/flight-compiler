@@ -34,10 +34,22 @@ export interface CompilerAsyncStateMachineGotoStep {
   readonly target: CompilerAsyncStateMachineStateIdentity;
 }
 
+// A route that owes cleanup before it settles puts its value here first, so the cleanup can run and
+// the settlement can still name what the route was carrying.
+export interface CompilerAsyncStateMachineCarryStep {
+  readonly binding: IrBindingIdentity;
+  readonly kind: 'carry';
+  readonly path: CompilerIrTraversalPath;
+  readonly value: CompilerCompletionValueSource;
+}
+
 // A guarded region: its body runs with a handler in scope, and both the body and the handler leave
 // through the same join.
 export interface CompilerAsyncStateMachineGuardStep {
   readonly body: CompilerAsyncStateMachineStateIdentity;
+  // The binding a route that owes cleanup leaves its value in. It is declared where the region opens
+  // rather than where the route writes it, because the cleanup reads it from outside that route.
+  readonly carrier?: IrBindingIdentity | undefined;
   readonly catchState: CompilerAsyncStateMachineStateIdentity;
   readonly join: CompilerAsyncStateMachineStateIdentity;
   readonly kind: 'guard';
@@ -94,6 +106,7 @@ export interface CompilerAsyncStateMachineSettleStep {
 
 export type CompilerAsyncStateMachineStep =
   | CompilerAsyncStateMachineBranchStep
+  | CompilerAsyncStateMachineCarryStep
   | CompilerAsyncStateMachineExecuteStep
   | CompilerAsyncStateMachineGotoStep
   | CompilerAsyncStateMachineGuardStep

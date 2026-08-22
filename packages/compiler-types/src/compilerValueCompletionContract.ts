@@ -1,7 +1,12 @@
+import type { IrBindingIdentity } from './compilerBindingIntermediateRepresentation.js';
 import type { CompilerCompletionKind } from './compilerCompletionContract.js';
 import type { CompilerIrTraversalPath } from './compilerTraversalObserverContract.js';
 
 export type CompilerCompletionValueSource =
+  // A value the machine itself is holding, rather than one it can point at in the source. A route
+  // that must run cleanup before it settles has to put its value somewhere first, and the place is a
+  // binding the machine introduced.
+  | Readonly<{ binding: IrBindingIdentity; kind: 'carried' }>
   | Readonly<{ kind: 'empty' }>
   | Readonly<{
       kind: 'expression';

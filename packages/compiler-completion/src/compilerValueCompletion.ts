@@ -1,5 +1,6 @@
 import { compareTextCodeUnits } from '../../compiler-canonical-form/src/index.js';
 import type {
+  IrBindingIdentity,
   CompilerCompletionKind,
   CompilerCompletionValueSource,
   CompilerValueCompletionCatchReplacement,
@@ -150,6 +151,18 @@ function getCompilerValueCompletionPathIdentity(completion: Readonly<CompilerVal
   return JSON.stringify(completion);
 }
 
+function isCompilerValueCompletionCarriedBinding(value: unknown): value is IrBindingIdentity {
+  return (
+    !!value &&
+    typeof value === 'object' &&
+    'id' in value &&
+    typeof value.id === 'string' &&
+    value.id.length > 0 &&
+    'name' in value &&
+    typeof value.name === 'string'
+  );
+}
+
 function isCompilerValueCompletionTraversalPath(value: unknown): value is readonly (number | string)[] {
   return (
     Array.isArray(value) &&
@@ -177,6 +190,18 @@ function normalizeCompilerCompletionValueSource(
       );
     }
     return Object.freeze({ kind: value.kind });
+  }
+  if (value.kind === 'carried') {
+    // A carried value names a binding the machine introduced rather than a place in the source, so
+    // it has an identity to check instead of a path.
+    if (Object.keys(value).length !== 2 || !isCompilerValueCompletionCarriedBinding(value.binding)) {
+      throw createCompilerValueCompletionFailure(
+        'invalid-completion-value',
+        path,
+        'Carried values require exactly one binding identity',
+      );
+    }
+    return Object.freeze({ binding: value.binding, kind: 'carried' });
   }
   if (
     value.kind !== 'expression' ||

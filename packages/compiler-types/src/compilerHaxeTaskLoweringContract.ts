@@ -80,10 +80,17 @@ export type CompilerHaxeTaskLoweringStep =
     }>
   | Readonly<{
       body: CompilerAsyncStateMachineStateIdentity;
+      carrier?: IrBindingIdentity | undefined;
       catchState: CompilerAsyncStateMachineStateIdentity;
       join: CompilerAsyncStateMachineStateIdentity;
       kind: 'guardState';
       path: CompilerIrTraversalPath;
+    }>
+  | Readonly<{
+      binding: IrBindingIdentity;
+      kind: 'carryValue';
+      path: CompilerIrTraversalPath;
+      value: CompilerCompletionValueSource;
     }>;
 
 export interface CompilerHaxeTaskLoweringState {

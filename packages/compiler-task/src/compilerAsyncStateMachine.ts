@@ -19,6 +19,7 @@ import type {
   CompilerAsyncTaskSuspensionSite,
   CompilerCompletionValueSource,
   CompilerIrTraversalPath,
+  CompilerSourceOrigin,
   CompilerValueCompletionPath,
   IrBindingIdentity,
   IrExpression,
@@ -61,10 +62,17 @@ interface AsyncStateMachineDraft {
   currentSteps: CompilerAsyncStateMachineStep[];
   // The innermost suspending loop, if any: `break` leaves through its join and `continue` re-enters
   // its header. An unlabelled jump can only mean the innermost one, which is why a stack is enough.
+  cleanups: AsyncStateMachineCleanupTargets[];
+  readonly moduleOrigin: CompilerSourceOrigin;
   guards: CompilerAsyncStateMachineGuardedState[];
   loops: AsyncStateMachineLoopTargets[];
   readonly states: CompilerAsyncStateMachineState[];
   terminal: boolean;
+}
+
+interface AsyncStateMachineCleanupTargets {
+  readonly carrier: Readonly<IrBindingIdentity>;
+  readonly target: CompilerAsyncStateMachineStateIdentity;
 }
 
 interface AsyncStateMachineLoopTargets {
@@ -94,6 +102,7 @@ export function analyzeIrModuleAsyncStateMachines(module: Readonly<IrModule>): C
         .find((closure) => isCompilerAsyncStateMachinePathEqual(closure.path, scope.path))!
         .captures.filter((capture) => capture.lifetimeBoundaries.includes('suspension')),
       bindingAnalysis.retainedByScope.get(getCompilerAsyncStateMachinePathIdentity(scope.path)) ?? [],
+      getIrModuleAsyncStateMachineOrigin(module),
     ),
   );
   return cloneCompilerAsyncStateMachineValue({
@@ -267,12 +276,28 @@ function analyzeIrModuleAsyncStateMachineBindings(
   return { retainedByScope };
 }
 
+// A stable origin for bindings the machine introduces. The module's first declaration carries real
+// source coordinates; a module with none introduces no bindings either.
+function getIrModuleAsyncStateMachineOrigin(module: Readonly<IrModule>): CompilerSourceOrigin {
+  const declaration = module.declarations[0];
+  return (
+    declaration?.origin ?? {
+      column: 1,
+      fingerprint: `sha256:${'0'.repeat(64)}`,
+      line: 1,
+      packageName: module.packageName,
+      source: module.source,
+    }
+  );
+}
+
 function createCompilerAsyncStateMachine(
   scope: Readonly<CompilerAsyncTaskScope>,
   body: Readonly<AsyncStateMachineBodyDraft>,
   suspensions: readonly Readonly<CompilerAsyncTaskSuspensionSite>[],
   retainedCaptures: CompilerAsyncStateMachine['retainedCaptures'],
   retainedBindings: readonly CompilerAsyncStateMachineRetainedBinding[],
+  moduleOrigin: Readonly<CompilerSourceOrigin>,
 ): AsyncStateMachineBuildResult {
   // `for await` is not a control-flow gap. Its loop shape is the one already compiled here; what it
   // lacks is an async-iterator protocol in the runtime contract — how a target obtains an iterator
@@ -286,7 +311,9 @@ function createCompilerAsyncStateMachine(
   }
   const draft: AsyncStateMachineDraft = {
     completionPaths: [],
+    cleanups: [],
     currentIdentity: { kind: 'entry' },
+    moduleOrigin,
     guards: [],
     loops: [],
     currentSteps: [],
@@ -424,6 +451,15 @@ function createIrStatementListAsyncStateMachine(
         const value = statement.expression
           ? createCompilerAsyncStateMachineExpressionValue([...path, 'expression'], 'result')
           : ({ kind: 'implicitUndefined' } as const);
+        const cleanup = draft.cleanups.at(-1);
+        if (cleanup) {
+          // The cleanup owes this route too, so the value waits in the carrier while the cleanup runs
+          // and the cleanup performs the settlement.
+          draft.currentSteps.push({ binding: cleanup.carrier, kind: 'carry', path, value });
+          draft.currentSteps.push({ kind: 'goto', path, target: cleanup.target });
+          draft.terminal = true;
+          break;
+        }
         draft.currentSteps.push({
           ...(statement.expression
             ? { evaluationRejection: addCompilerAsyncStateMachineAbruptCompletion([...path, 'expression'], draft) }
@@ -654,14 +690,35 @@ function createIrTryStatementAsyncStateMachine(
   const handler: CompilerAsyncStateMachineStateIdentity = { kind: 'catch', path };
   const cleanup: CompilerAsyncStateMachineStateIdentity = { arm: 'whenFalse', kind: 'branchArm', path };
   const join: CompilerAsyncStateMachineStateIdentity = { kind: 'join', path };
-  draft.currentSteps.push({ body, catchState: handler, join, kind: 'guard', path });
+  // The carrier is addressed by the try statement's own path, which is unique within the module and
+  // stable across runs, so two cleanups in one function never share one.
+  const carrier: Readonly<IrBindingIdentity> | undefined = finallyBody
+    ? {
+        ...draft.moduleOrigin,
+        id: `binding:${JSON.stringify([draft.moduleOrigin.packageName, draft.moduleOrigin.source, path, 'cleanup-value'])}`,
+        kind: 'variable',
+        name: 'cleanupValue',
+        scope: 'block',
+        space: 'value',
+      }
+    : undefined;
+  // The guard step belongs to the state that opens the region, and that state is not itself guarded:
+  // its own throws happen before the handler is in scope.
+  draft.currentSteps.push({
+    body,
+    ...(carrier ? { carrier } : {}),
+    catchState: handler,
+    join,
+    kind: 'guard',
+    path,
+  });
   addCompilerAsyncStateMachineState(draft);
-
   draft.guards.push({
     ...(catchClause?.binding ? { catchBinding: catchClause.binding } : {}),
     catchState: handler,
     ...(finallyBody ? { rethrow: true } : {}),
   });
+  if (carrier) draft.cleanups.push({ carrier, target: cleanup });
   draft.currentIdentity = body;
   draft.currentSteps = [];
   draft.terminal = false;
@@ -679,13 +736,11 @@ function createIrTryStatementAsyncStateMachine(
   }
   addCompilerAsyncStateMachineState(draft);
   draft.guards.pop();
+  if (carrier) draft.cleanups.pop();
 
   if (finallyBody) {
     // A route that leaves the body normally still owes the cleanup, so the cleanup is reached twice:
     // once here, and once from the rejection route that ends by re-raising.
-    if (bodyTerminal) {
-      return createCompilerAsyncStateMachineRefusal('unsupported-control-flow', [...path, 'tryBody'], scope.path);
-    }
     draft.currentIdentity = cleanup;
     draft.currentSteps = [];
     draft.terminal = false;
@@ -694,7 +749,16 @@ function createIrTryStatementAsyncStateMachine(
     if (draft.terminal) {
       return createCompilerAsyncStateMachineRefusal('unsupported-control-flow', handlerPath, scope.path);
     }
-    draft.currentSteps.push({ kind: 'goto', path: handlerPath, target: join });
+    if (bodyTerminal && carrier) {
+      // The body left through a route that owed the cleanup, so the cleanup performs its settlement
+      // from the value the route carried here.
+      const value = { binding: carrier, kind: 'carried' } as const;
+      draft.currentSteps.push({ kind: 'resolve', path: handlerPath, value });
+      draft.completionPaths.push({ kind: 'return', path: handlerPath, value });
+      draft.terminal = true;
+    } else {
+      draft.currentSteps.push({ kind: 'goto', path: handlerPath, target: join });
+    }
     addCompilerAsyncStateMachineState(draft);
   }
 
@@ -784,6 +848,15 @@ function createIrStatementSuspensionAsyncStateMachine(
   if (statement.kind === 'return' && statement.expression?.kind === 'await') {
     const awaitPath = [...path, 'expression'];
     const value = createCompilerAsyncStateMachineExpressionValue(awaitPath, 'result');
+    const cleanup = draft.cleanups.at(-1);
+    if (cleanup) {
+      // The cleanup owes this route too, so the settled value is carried through it rather than
+      // resolving the task the moment the suspension fulfills.
+      addCompilerAsyncStateMachineSuspension(awaitPath, { binding: cleanup.carrier, kind: 'rebind' }, false, draft);
+      draft.currentSteps.push({ kind: 'goto', path, target: cleanup.target });
+      draft.terminal = true;
+      return undefined;
+    }
     addCompilerAsyncStateMachineSuspension(awaitPath, { kind: 'resolve', value }, true, draft);
     draft.completionPaths.push({ kind: 'return', path, value });
     return undefined;

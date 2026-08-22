@@ -241,11 +241,14 @@ function lowerCompilerAsyncStateMachineStepHaxe(
     case 'guard':
       return {
         body: step.body,
+        ...(step.carrier ? { carrier: step.carrier } : {}),
         catchState: step.catchState,
         join: step.join,
         kind: 'guardState',
         path: step.path,
       };
+    case 'carry':
+      return { binding: step.binding, kind: 'carryValue', path: step.path, value: step.value };
     case 'loop':
       return { header: step.header, kind: 'loopState', path: step.path };
     case 'execute':

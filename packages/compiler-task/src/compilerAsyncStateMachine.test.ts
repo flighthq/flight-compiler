@@ -602,17 +602,30 @@ describe('analyzeIrModuleAsyncStateMachines', () => {
     ]);
   });
 
-  it('refuses the routes a finally cannot yet cover', () => {
-    // A body that leaves through `return` owes the cleanup on that route too, and `catch` plus
-    // `finally` together need the cleanup after the handler as well as instead of it.
-    const returned = analyzeIrModuleAsyncStateMachines(
+  it('carries a returned value through the cleanup that owes it', () => {
+    const analysis = analyzeIrModuleAsyncStateMachines(
       lower(`
-        export async function attempt(task: Promise<number>): Promise<number> {
-          let done: boolean = false;
+        export async function attempt(task: Promise<number>, done: boolean): Promise<number> {
           try { return await task; } finally { done = true; }
         }
       `),
     );
+    const steps = (analysis.machines[0]?.states ?? []).flatMap((state) => state.steps);
+
+    expect(analysis.refusals).toEqual([]);
+    // The route does not settle when the suspension fulfills: it leaves the value in the carrier the
+    // region declared, jumps to the cleanup, and the cleanup settles from what it finds there.
+    expect(steps.filter((step) => step.kind === 'suspend')).toMatchObject([
+      { fulfillment: { binding: { name: 'cleanupValue' }, kind: 'rebind' } },
+    ]);
+    // The cleanup settles from the carrier; the join settles the route that fell out of the region.
+    expect(steps.filter((step) => step.kind === 'resolve')[0]).toMatchObject({
+      value: { binding: { name: 'cleanupValue' }, kind: 'carried' },
+    });
+    expect(steps.filter((step) => step.kind === 'guard')).toMatchObject([{ carrier: { name: 'cleanupValue' } }]);
+  });
+
+  it('refuses a catch and finally together, which need a third route', () => {
     const both = analyzeIrModuleAsyncStateMachines(
       lower(`
         export async function attempt(task: Promise<number>): Promise<number> {
@@ -623,7 +636,6 @@ describe('analyzeIrModuleAsyncStateMachines', () => {
       `),
     );
 
-    expect(returned.refusals.map((refusal) => refusal.code)).toEqual(['unsupported-control-flow']);
     expect(both.refusals.map((refusal) => refusal.code)).toEqual(['unsupported-control-flow']);
   });
 

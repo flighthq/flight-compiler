@@ -82,6 +82,7 @@ interface EmitContext {
   breakableDepth: number;
   controlFlowLabels: HaxeControlFlowLabel[];
   generatedNames: Set<string>;
+  machineNames: Map<string, string>;
   module: Readonly<IrModule>;
   nullableBindingIds: ReadonlySet<string>;
   options: Readonly<HaxeCompilerBackendOptions>;
@@ -177,6 +178,7 @@ function emitIrModuleHaxeWithContext(
     breakableDepth: 0,
     controlFlowLabels: [],
     generatedNames: new Set(targetNames.values()),
+    machineNames: new Map(),
     module,
     nullableBindingIds: collectIrModuleNullableBindingIds(module),
     options,
@@ -1137,8 +1139,16 @@ function getBindingTargetNameHaxe(
   binding: Readonly<IrBindingIdentity | IrTypeBindingIdentity>,
   context: EmitContext,
 ): string {
+  const remembered = context.machineNames.get(binding.id);
+  if (remembered) return remembered;
   const targetName = context.targetNames.get(binding.id);
-  if (!targetName) emissionError(context, `binding ${binding.name} has no Haxe target name allocation`);
+  // A binding the task machine introduced is not in the module the allocator walked, so it is named
+  // on first use and remembered, which keeps every later reference to it spelled the same way.
+  if (!targetName) {
+    const generated = getGeneratedTargetNameHaxe(binding.name, context);
+    context.machineNames.set(binding.id, generated);
+    return generated;
+  }
   return targetName;
 }
 

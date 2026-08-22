@@ -58,6 +58,10 @@ function emitCompilerHaxeTaskCompletionValue(
   awaitValue: Readonly<{ name: string; path: CompilerIrTraversalPath }> | undefined,
 ): string {
   switch (value.kind) {
+    case 'carried':
+      // The machine is holding this value in a binding it introduced, which is how a route that owes
+      // cleanup carries its result past the cleanup to the settlement.
+      return capabilities.getBindingName(value.binding);
     case 'empty':
       return capabilities.fail('Haxe task settlement cannot emit an empty completion value');
     case 'implicitUndefined':
@@ -235,6 +239,9 @@ function emitCompilerHaxeTaskLoweringStep(
         (candidate) => getCompilerHaxeTaskEmissionIdentityKey(candidate.identity) === cleanupIdentity,
       );
       const cleanupLines: string[] = [];
+      // The carrier is declared where the region opens so the cleanup, which is a sibling closure,
+      // can read what a route left in it.
+      if (step.carrier) cleanupLines.push(`var ${capabilities.getBindingName(step.carrier)};`);
       if (cleanupState) {
         const cleanupName = capabilities.getGeneratedName('taskCleanup');
         nextJoins.set(cleanupIdentity, cleanupName);
@@ -313,6 +320,11 @@ function emitCompilerHaxeTaskLoweringStep(
         'return;',
       ];
     }
+    case 'carryValue':
+      // The route settles after the cleanup, so its value waits in a binding the region declared.
+      return [
+        `${capabilities.getBindingName(step.binding)} = ${emitCompilerHaxeTaskCompletionValue(step.value, module, capabilities, undefined)};`,
+      ];
     case 'continueState': {
       const target = getCompilerHaxeTaskEmissionIdentityKey(step.target);
       const joinName = joins.get(target);
