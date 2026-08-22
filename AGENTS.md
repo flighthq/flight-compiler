@@ -96,7 +96,7 @@ The dependency floor is deliberate:
 - `compiler-task` inventories asynchronous scopes and task operations, then derives completion-preserving state-machine plans from closure, completion, and traversal evidence without choosing a target runtime.
 - `compiler-canonical-form` defines deterministic text order and portable path form without importing compiler contracts or domain identity policy.
 - `compiler-lowering` provides verified neutral transforms over `compiler-types`, composing canonical form, `compiler-ir-traversal`, and `compiler-ir-validation`; backends elect its passes.
-- inventory, semantic lowering, backends, and orchestration are compositions above that floor.
+- inventory, semantic lowering, backends, and orchestration are compositions above that floor. Haxe task emission additionally composes `compiler-task` state-machine analysis with the target runtime-capability election.
 
 Before expanding a higher package, read [the compiler foundations audit](agents/compiler-foundations.md). A foundation is mature only when its boundary is narrow, its vocabulary is worth freezing, deterministic behavior is tested by equivalence and counterexample, failure values are inspectable, and callers cannot observe accidental mutation or host-platform differences.
 

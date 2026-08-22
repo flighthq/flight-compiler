@@ -7,7 +7,7 @@ import {
   indentSourceLines,
   isCompilerTargetNameAllocationFailure,
 } from '../../compiler-emission/src/index.js';
-import { analyzeIrModuleTraversal } from '../../compiler-ir-traversal/src/index.js';
+import { analyzeIrModuleTraversal, getIrModuleTraversalPathValue } from '../../compiler-ir-traversal/src/index.js';
 import {
   createCompilerLoweringPassBindingPattern,
   createCompilerLoweringPassCStyleFor,
@@ -25,8 +25,11 @@ import {
   collectIrModulesRuntimeExternalSymbolIdentities,
 } from '../../compiler-runtime-contract/src/index.js';
 import { analyzeIrModuleStructuralObjectCompatibilityAcrossModules } from '../../compiler-structural/src/index.js';
+import { analyzeIrModuleAsyncStateMachines } from '../../compiler-task/src/index.js';
 import type {
   CompilerBackend,
+  CompilerHaxeTaskLowering,
+  CompilerHaxeTaskLoweringFunction,
   CompilerModuleResolutionPlan,
   EmittedFile,
   HaxeCompilerBackendOptions,
@@ -67,6 +70,9 @@ import {
   createCompilerRuntimeExternalSymbolBindingPlanHaxe,
   getCompilerRuntimeExternalSymbolTargetHaxe,
 } from './haxeRuntimeExternalSymbolBinding.js';
+import { createCompilerRuntimeTaskCapabilityPlanHaxe } from './haxeRuntimeTaskCapability.js';
+import { emitCompilerHaxeTaskLoweringFunction } from './haxeTaskEmission.js';
+import { isCompilerHaxeTaskLoweringFailure, lowerCompilerAsyncStateMachinesHaxe } from './haxeTaskLowering.js';
 
 interface EmitContext {
   breakableDepth: number;
@@ -76,6 +82,8 @@ interface EmitContext {
   options: Readonly<HaxeCompilerBackendOptions>;
   packageName: string;
   targetNames: ReadonlyMap<string, string>;
+  taskFunctions: WeakMap<object, CompilerHaxeTaskLoweringFunction>;
+  taskLowering: Readonly<CompilerHaxeTaskLowering>;
 }
 
 interface HaxeControlFlowLabel {
@@ -122,6 +130,19 @@ function emitIrModuleHaxeWithContext(
   );
   assertRuntimeExternalSymbolBindingsHaxe(module);
   assertRuntimeExternalConstructorAbiHaxe(module);
+  let taskLowering: CompilerHaxeTaskLowering;
+  try {
+    taskLowering = lowerCompilerAsyncStateMachinesHaxe(
+      analyzeIrModuleAsyncStateMachines(module),
+      createCompilerRuntimeTaskCapabilityPlanHaxe(),
+      { runtimeModule: options.runtimeModule },
+    );
+  } catch (error) {
+    if (isCompilerHaxeTaskLoweringFailure(error)) {
+      throw createBackendEmissionFailure('haxe', module, error.message);
+    }
+    throw error;
+  }
   const packageName = convertPackageNameToHaxePackageName(module.packageName, options.rootPackage);
   let targetNames: Map<string, string>;
   try {
@@ -152,7 +173,23 @@ function emitIrModuleHaxeWithContext(
     options,
     packageName,
     targetNames,
+    taskFunctions: new WeakMap(),
+    taskLowering,
   };
+  for (const functionPlan of taskLowering.functions) {
+    const source = getIrModuleTraversalPathValue(module, functionPlan.path);
+    if (!source || typeof source !== 'object') {
+      emissionError(context, `Haxe task function source path does not exist: ${JSON.stringify(functionPlan.path)}`);
+    }
+    context.taskFunctions.set(source, functionPlan);
+  }
+  if (taskLowering.refusals.length > 0) {
+    const refusal = taskLowering.refusals[0]!;
+    emissionError(
+      context,
+      `async state machine ${refusal.code} at ${JSON.stringify(refusal.path)} in ${JSON.stringify(refusal.scopePath)}`,
+    );
+  }
   assertIrModuleSuperConstructorCallShapeHaxe(module, context);
   if (module.exports.length > 0) {
     emissionError(context, 're-exports and export assignments require Haxe module-facade lowering');
@@ -285,12 +322,14 @@ function emitClass(declaration: Readonly<IrClassDeclaration>, context: EmitConte
   }
   declaration.methods.forEach((method) => {
     if (lines.length > 1) lines.push('');
-    if (method.async) emissionError(context, `async method ${method.name} requires the Haxe async-lowering pass`);
     const visibility = method.visibility === 'public' ? 'public ' : method.visibility === 'private' ? 'private ' : '';
     const static_ = method.static ? 'static ' : '';
     lines.push(
       `  ${visibility}${static_}function ${safeHaxeName(method.name)}${emitTypeParameters(method.typeParameters, context)}(${emitParameters(method.parameters, context)}):${emitType(method.returns, context)} {`,
-      ...indentSourceLines(emitStatements(method.body, context), 2),
+      ...indentSourceLines(
+        method.async ? emitCompilerHaxeTaskFunctionBody(method, context) : emitStatements(method.body, context),
+        2,
+      ),
       '  }',
     );
   });
@@ -318,6 +357,18 @@ function emitEnum(declaration: Readonly<IrEnumDeclaration>, context: EmitContext
   });
   lines.push('}');
   return lines;
+}
+
+function emitCompilerHaxeTaskFunctionBody(source: object, context: EmitContext): readonly string[] {
+  const functionPlan = context.taskFunctions.get(source);
+  if (!functionPlan) emissionError(context, 'async function has no Haxe task lowering plan');
+  return emitCompilerHaxeTaskLoweringFunction(functionPlan, context.taskLowering.runtime, context.module, {
+    emitExpression: (expression) => emitExpression(expression, context),
+    emitStatement: (statement) => emitStatement(statement, context),
+    fail: (message) => emissionError(context, message),
+    getBindingName: (binding) => getBindingTargetNameHaxe(binding, context),
+    getGeneratedName: (preferredName) => getGeneratedTargetNameHaxe(preferredName, context),
+  });
 }
 
 function emitExpression(expression: Readonly<IrExpression>, context: EmitContext): string {
@@ -359,9 +410,13 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
       }
       return `${emitExpression(expression.object, context)}${expression.optional ? '?.' : ''}[${emitExpression(expression.index, context)}]`;
     case 'function':
-      if (expression.async) emissionError(context, 'async closures require the Haxe async-lowering pass');
       if (expression.typeParameters.length > 0)
         emissionError(context, 'generic function expressions are not valid Haxe values');
+      if (expression.async) {
+        return `function(${emitParameters(expression.parameters, context)}) {\n${indentSourceLines(
+          emitCompilerHaxeTaskFunctionBody(expression, context),
+        ).join('\n')}\n}`;
+      }
       return expression.expression
         ? `function(${emitParameters(expression.parameters, context)}) return ${emitExpression(expression.expression, context)}`
         : `function(${emitParameters(expression.parameters, context)}) {\n${indentSourceLines(emitStatements(expression.body, context)).join('\n')}\n}`;
@@ -472,12 +527,14 @@ function emitStatementValueExpressionHaxe(
 }
 
 function emitFunction(declaration: Readonly<IrFunctionDeclaration>, context: EmitContext): string[] {
-  if (declaration.async)
-    emissionError(context, `async function ${declaration.binding.name} requires the Haxe async-lowering pass`);
   const access = declaration.exported ? 'public ' : 'private ';
   return [
     `${access}static function ${getBindingTargetNameHaxe(declaration.binding, context)}${emitTypeParameters(declaration.typeParameters, context)}(${emitParameters(declaration.parameters, context)}):${emitType(declaration.returns, context)} {`,
-    ...indentSourceLines(emitStatements(declaration.body, context)),
+    ...indentSourceLines(
+      declaration.async
+        ? emitCompilerHaxeTaskFunctionBody(declaration, context)
+        : emitStatements(declaration.body, context),
+    ),
     '}',
   ];
 }

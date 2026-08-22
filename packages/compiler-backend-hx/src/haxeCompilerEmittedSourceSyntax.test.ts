@@ -36,4 +36,29 @@ describe('createHaxeCompilerEmittedSourceParser', () => {
     ).toEqual({ checkedFiles: 1, parser: 'haxe', skippedFiles: ['flight/Upper.HX', 'flight/value.rs'] });
     expect(seen).toEqual(['flighthq/math/Value.hx']);
   });
+
+  it('passes emitted task callback syntax to the injected Haxe parser', () => {
+    const module = lowerTypeScriptSource(
+      ts.createSourceFile(
+        '/flight/packages/task/src/task.ts',
+        'export async function task(input: Promise<number>): Promise<number> { return await input; }',
+        ts.ScriptTarget.Latest,
+        true,
+      ),
+      { packageName: '@flighthq/task', upstreamDirectory: '/flight' },
+    ).module;
+    const emitted = emitIrModuleHaxe(module);
+    const parser = createHaxeCompilerEmittedSourceParser((file) => {
+      expect(file.contents).toContain('new flighthq._internal._Promise(function(resolveTask, rejectTask)');
+      expect(file.contents).toContain('.resolve(input).then(');
+      expect(file.contents).not.toContain('await ');
+      return [];
+    });
+
+    expect(validateCompilerEmittedSourceSyntax([emitted], parser)).toEqual({
+      checkedFiles: 1,
+      parser: 'haxe',
+      skippedFiles: [],
+    });
+  });
 });

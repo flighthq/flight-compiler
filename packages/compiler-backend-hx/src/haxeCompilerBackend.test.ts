@@ -823,8 +823,61 @@ describe('emitIrModuleHaxe', () => {
     );
   });
 
+  it('emits completion-preserving async functions through the Haxe task runtime ABI', () => {
+    const result = lower(
+      'task.ts',
+      'export async function read(input: Promise<number>): Promise<number> { const value = await input; return await Promise.resolve(value); }',
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('return new flighthq._internal._Promise(function(resolveTask, rejectTask)');
+    expect(output).toContain('flighthq._internal._Promise.resolve(input).then(');
+    expect(output).toContain('value = awaitValue;');
+    expect(output).toContain('resolveTask(awaitValue_2);');
+    expect(output).toContain('rejectTask(awaitError);');
+    expect(output).not.toContain('await ');
+  });
+
+  it('emits completion-preserving async methods and closures through the same task plan', () => {
+    const result = lower(
+      'task-values.ts',
+      `
+        export class Reader {
+          async read(input: Promise<number>): Promise<number> { return await input; }
+        }
+        export const read = async (input: Promise<number>): Promise<number> => await input;
+      `,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output.match(/return new flighthq\._internal\._Promise\(/gu)).toHaveLength(2);
+    expect(output.match(/flighthq\._internal\._Promise\.resolve\(input\)\.then\(/gu)).toHaveLength(2);
+    expect(output).not.toContain('await ');
+  });
+
+  it('converts invalid task-runtime configuration to a tagged backend failure', () => {
+    const result = lower('task-runtime.ts', 'export async function read(): Promise<number> { return 1; }');
+
+    try {
+      emitIrModuleHaxe(result.module, { runtimeModule: 'invalid-module' });
+      expect.unreachable('Expected Haxe emission to fail');
+    } catch (error) {
+      expect(isBackendEmissionFailure(error)).toBe(true);
+      expect(error).toMatchObject({
+        backend: 'haxe',
+        code: 'unsupported-ir',
+        kind: 'backend-emission',
+        packageName: '@flighthq/math',
+        source: 'packages/math/src/task-runtime.ts',
+      });
+    }
+  });
+
   it('returns a tagged emission failure', () => {
-    const result = lower('unsupported.ts', 'export async function read(): Promise<number> { return 1; }');
+    const result = lower(
+      'unsupported.ts',
+      'export async function read(value: boolean): Promise<number> { if (value) return 1; return 0; }',
+    );
 
     try {
       emitIrModuleHaxe(result.module);
