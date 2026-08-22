@@ -658,12 +658,10 @@ describe('emitIrModuleRust', () => {
     expect(nestedOutput).not.toMatch(/inner \+= 1\.0;\s+continue 'outer;/u);
   });
 
-  it('emits numeric enums and rejects string enum representation', () => {
+  it('emits numeric enums with their computed discriminants', () => {
     const numeric = lower('mode.ts', 'export enum Mode { A = 1, B, C = Mode.A << 3, D }');
-    const strings = lower('kind.ts', "export enum Kind { A = 'a', B = 'b' }");
 
     expect(emitIrModuleRust(numeric.module).contents).toContain('D = 9,');
-    expect(() => emitIrModuleRust(strings.module)).toThrow('requires integer discriminants for Rust');
   });
 
   it('emits type-only imports and their references from one type-space identity', () => {
@@ -1079,5 +1077,23 @@ describe('emitIrModuleRust', () => {
     expect(output).toContain('pub fn bump(&mut self) -> () {');
     // A mutation nested inside control flow is still a mutation.
     expect(output).toContain('pub fn nested(&mut self) -> () {');
+  });
+
+  it('emits a string enum as unit variants carrying their source values both ways', () => {
+    const module = lower('lane.ts', "export enum Lane { Fast = 'fast', Safe = 'safe' }");
+    const output = emitIrModuleRust(module.module).contents;
+
+    expect(output).toContain('pub enum Lane {');
+    expect(output).toContain('      Lane::Fast => "fast",');
+    expect(output).toContain('      "safe" => Some(Lane::Safe),');
+    // The source language treats the value as the enum, so both directions are emitted.
+    expect(output).toContain("pub fn as_str(&self) -> &'static str {");
+    expect(output).toContain('pub fn from_str(value: &str) -> Option<Self> {');
+  });
+
+  it('refuses an enum whose members do not share one discriminant domain', () => {
+    const module = lower('mixed.ts', "export enum Mixed { First = 1, Second = 'second' }");
+
+    expect(() => emitIrModuleRust(module.module)).toThrow('requires one discriminant domain for Rust');
   });
 });

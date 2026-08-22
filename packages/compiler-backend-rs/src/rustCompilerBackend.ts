@@ -249,12 +249,12 @@ function emitDeclaration(declaration: Readonly<IrDeclaration>, context: EmitCont
 }
 
 function emitEnum(declaration: Readonly<IrEnumDeclaration>, context: EmitContext): string[] {
-  if (declaration.members.some((member) => typeof member.value !== 'number' || !Number.isInteger(member.value))) {
-    emissionError(context, `enum ${declaration.binding.name} requires integer discriminants for Rust`);
+  const values = declaration.members.map((member) => member.value);
+  if (values.every((value) => typeof value === 'string')) return emitStringEnumRust(declaration, context);
+  if (values.some((value) => typeof value !== 'number' || !Number.isInteger(value))) {
+    emissionError(context, `enum ${declaration.binding.name} requires one discriminant domain for Rust`);
   }
-  if (
-    declaration.members.some((member) => Number(member.value) < -2_147_483_648 || Number(member.value) > 2_147_483_647)
-  ) {
+  if (values.some((value) => Number(value) < -2_147_483_648 || Number(value) > 2_147_483_647)) {
     emissionError(context, `enum ${declaration.binding.name} has a discriminant outside the Rust i32 range`);
   }
   const lines = [
@@ -267,6 +267,39 @@ function emitEnum(declaration: Readonly<IrEnumDeclaration>, context: EmitContext
   });
   lines.push('}');
   return lines;
+}
+
+// Rust discriminants are integers, so a string enum keeps unit variants and carries its source
+// values as an explicit mapping. Both directions are emitted because the source language treats the
+// value as the enum: code compares against it and constructs from it.
+function emitStringEnumRust(declaration: Readonly<IrEnumDeclaration>, context: EmitContext): string[] {
+  const name = getBindingTargetNameRust(declaration.binding, context);
+  const visibility = declaration.exported ? 'pub ' : '';
+  return [
+    '#[derive(Clone, Copy, Debug, PartialEq, Eq)]',
+    `${visibility}enum ${name} {`,
+    ...declaration.members.map((member) => `  ${safeRustTypeName(member.name)},`),
+    '}',
+    '',
+    `impl ${name} {`,
+    `  ${visibility}fn as_str(&self) -> &'static str {`,
+    '    match self {',
+    ...declaration.members.map(
+      (member) => `      ${name}::${safeRustTypeName(member.name)} => ${JSON.stringify(String(member.value))},`,
+    ),
+    '    }',
+    '  }',
+    '',
+    `  ${visibility}fn from_str(value: &str) -> Option<Self> {`,
+    '    match value {',
+    ...declaration.members.map(
+      (member) => `      ${JSON.stringify(String(member.value))} => Some(${name}::${safeRustTypeName(member.name)}),`,
+    ),
+    '      _ => None,',
+    '    }',
+    '  }',
+    '}',
+  ];
 }
 
 function emitExpression(expression: Readonly<IrExpression>, context: EmitContext): string {
