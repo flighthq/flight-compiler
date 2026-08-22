@@ -1,4 +1,5 @@
 export type * from './compilerAccessSemanticIntermediateRepresentation.js';
+export type * from './compilerAsyncStateMachineContract.js';
 export type * from './compilerAsyncTaskCompletionContract.js';
 export type * from './compilerAsyncTaskInventoryContract.js';
 export type * from './compilerBackendContract.js';

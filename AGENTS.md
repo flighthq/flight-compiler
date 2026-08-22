@@ -93,7 +93,7 @@ The dependency floor is deliberate:
 - `compiler-ir-validation` verifies target-neutral IR structure over shared contracts and exact provenance identity.
 - `compiler-ir-traversal` provides dependency-floor, read-only IR observation over `compiler-types` without embedding analysis policy.
 - `compiler-runtime-contract` validates reachable ambient type/value symbol decisions over `compiler-types` and shared deterministic canonical form.
-- `compiler-task` inventories asynchronous scopes, suspensions, and task operations over shared IR traversal without choosing a target runtime.
+- `compiler-task` inventories asynchronous scopes and task operations, then derives completion-preserving state-machine plans from closure, completion, and traversal evidence without choosing a target runtime.
 - `compiler-canonical-form` defines deterministic text order and portable path form without importing compiler contracts or domain identity policy.
 - `compiler-lowering` provides verified neutral transforms over `compiler-types`, composing canonical form, `compiler-ir-traversal`, and `compiler-ir-validation`; backends elect its passes.
 - inventory, semantic lowering, backends, and orchestration are compositions above that floor.

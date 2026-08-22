@@ -18,6 +18,8 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
+    "@flighthq/compiler-closure": "*",
+    "@flighthq/compiler-completion": "*",
     "@flighthq/compiler-ir-traversal": "*",
     "@flighthq/compiler-types": "*"
   },
