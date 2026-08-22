@@ -405,6 +405,14 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
     case 'await':
       return `${emitExpression(expression.expression, context)}.await`;
     case 'binary': {
+      if (expression.operator === '??') {
+        // Rust has no `??`. The shape is `Option::unwrap_or_else`, which needs the left operand to
+        // already be an Option — an optional chain produces one, an ordinary value does not.
+        if (!isIrExpressionOptionShapedRust(expression.left)) {
+          emissionError(context, 'operator ?? requires an Option-shaped left operand for Rust');
+        }
+        return `${emitExpression(expression.left, context)}.unwrap_or_else(|| ${emitExpression(expression.right, context)})`;
+      }
       const left = emitExpression(expression.left, context);
       const right = emitExpression(expression.right, context);
       return `(${left} ${emitBinaryOperatorRust(expression.operator, expression.semantics, context)} ${right})`;
@@ -1484,6 +1492,15 @@ function isAssignmentOperatorDirectRust(
   return false;
 }
 
+// Which expressions the Rust emitter renders as an `Option`. An optional chain projects into one; an
+// ordinary value does not, and wrapping it would claim a nullability the emitted type does not have.
+function isIrExpressionOptionShapedRust(expression: Readonly<IrExpression>): boolean {
+  if (expression.kind === 'call' || expression.kind === 'element' || expression.kind === 'property') {
+    return expression.optional;
+  }
+  return expression.kind === 'undefinedDefault';
+}
+
 function isBinaryOperatorDirectRust(
   operator: IrBinaryOperator,
   semantics: Readonly<IrBinaryOperatorSemantics>,
@@ -1664,7 +1681,7 @@ const rustBinaryOperatorEmission = {
   '>=': '>=',
   '>>': '>>',
   '>>>': undefined,
-  '??': undefined,
+  '??': '??',
   '^': '^',
   in: undefined,
   instanceof: undefined,

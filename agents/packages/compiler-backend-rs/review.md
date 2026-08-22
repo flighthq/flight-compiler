@@ -60,3 +60,11 @@ Rust lowering, naming and source emission: ~1,410 lines across the emitter, the 
 - **Integer width is unmodelled.** Every numeric is `f64`; array indices are cast `as usize` at use. Rust's integer types are where a large part of target correctness lives.
 - **Callback, opaque-host, and primitive-symbol requirements are not completeness-checked.** Their neutral capability names exist, but no demonstrated target path yet supplies a stable requirement identity for them.
 - **No output verification and no byte-parity harness** against `flight-rs`, same as the Haxe backend.
+
+## An indexing-semantics gap, recorded 2026-08-22
+
+`values[index]` emits as `values[index as usize]`, which **panics** when the index is out of range. The source language returns `undefined` there, which is why `values[index] ?? 0` is ordinary code. So the emitted program aborts where the source would take the fallback.
+
+Faithful lowering means an element access produces an `Option` — `values.get(index as usize).copied()` — and every consumer then handles the absent case. That is invasive rather than difficult: it changes the type of every indexed read, and the neutral IR already distinguishes the two through the source's own `noUncheckedIndexedAccess` typing.
+
+Until it is done, `??` over an indexed read refuses rather than emitting a coalesce over a value that cannot be absent, which at least keeps the wrong program from being emitted quietly.

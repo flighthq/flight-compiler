@@ -1,1 +1,1 @@
-rust emission failed for @flighthq/golden/packages/golden/src/arrayIndex.ts: operator ?? requires Rust semantic lowering
+rust emission failed for @flighthq/golden/packages/golden/src/arrayIndex.ts: operator ?? requires an Option-shaped left operand for Rust

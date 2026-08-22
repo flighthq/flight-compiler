@@ -1179,4 +1179,20 @@ describe('emitIrModuleRust', () => {
 
     expect(() => emitIrModuleRust(module.module)).toThrow('requires Rust accessor lowering');
   });
+
+  it('coalesces an Option-shaped operand and refuses one that is not', () => {
+    // Rust has no `??`; the shape is `unwrap_or_else`, which needs an Option. An optional chain
+    // produces one. Wrapping an ordinary value would claim a nullability the emitted type lacks.
+    const optional = lower(
+      'coalesce.ts',
+      'export interface Holder { value: number } export function read(holder: Holder | undefined): number { return holder?.value ?? 0; }',
+    );
+    const plain = lower(
+      'plain-coalesce.ts',
+      'export function read(values: number[], index: number): number { return values[index] ?? 0; }',
+    );
+
+    expect(emitIrModuleRust(optional.module).contents).toContain('.unwrap_or_else(|| 0.0)');
+    expect(() => emitIrModuleRust(plain.module)).toThrow('requires an Option-shaped left operand for Rust');
+  });
 });
