@@ -40,6 +40,7 @@
     "pack:check": "npm run build --silent && node ./.script-build/packageArtifactHealth.js",
     "smoke": "npm run _scripts:build --silent && node ./.script-build/consumerSmoke.js",
     "packages:check": "npm run _scripts:build --silent && node ./.script-build/packageHealth.js",
+    "readiness": "npm run _scripts:build --silent && node ./.script-build/readinessReport.js",
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",
     "test:packages": "npm run _scripts:build --silent && node ./.script-build/isolatedPackageTest.js",

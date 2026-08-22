@@ -178,6 +178,7 @@ Use npm, not pnpm or Yarn. Node.js 22 or newer is required. Script names follow 
 - `npm run api`: rewrite `api/tool-compiler.api.md`, the committed record of the published export surface.
 - `npm run api:check`: fail when the committed API report no longer matches the facade, naming the exports that entered or left.
 - `npm run license:check`: fail on licensed text — a license body, grant, SPDX identifier, reservation of rights, or foreign copyright notice — outside the named exemptions it prints on every run.
+- `npm run readiness`: report what fraction of the golden corpus each target emits, which fixtures diverge between targets, and which refusal rules block the most fixtures. A reporting instrument over the committed pins that `golden:check` keeps current; nothing gates on it.
 - `npm run untested -- <package>`: list the branch and statement arms in one package that no test took. A location list, not a score, and nothing gates on it.
 - `npm run typecheck`: run the root and every workspace's strict no-emit check, collecting failures.
 - `npm run packages:check`: enforce manifests, flat source trees, dependency declarations and acyclicity, centralized contracts, class-free implementation, globally unique domain filenames and APIs, verb-first function names, transient-comment absence, tests, and public-facade completeness.
