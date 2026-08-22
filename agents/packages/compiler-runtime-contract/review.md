@@ -28,7 +28,7 @@ The target-neutral seam that identifies reachable ambient source symbols and pro
 
 ## Gaps
 
-- Primitive `symbol` and function callbacks have capability vocabulary but no demonstrated completeness identity yet: nothing binds them and nothing consumes them. The third orphan, `host-value`, was removed — an opaque host value is a host concern, and its target representation is already a backend option (`opaqueHostType`) rather than a runtime capability.
+- The capability vocabulary now contains only names a backend actually binds. `callback`, `symbol` and `host-value` were declared and elected by nothing; a capability no target binds cannot distinguish "unsupported" from "merely unmet", so they were removed rather than left as aspirational vocabulary. Returning one is a union member plus a binding-table entry, which is the right price for a demonstrated target path.
 - A missing decision names the exact symbol and space but not the modules or declarations that made it reachable.
 - The in-process typed plan has no untyped document parser or tagged invalid-document failure; add that only if plans cross a serialization boundary.
 - Target tables state the compiler election, not whether a particular downstream runtime release implements the elected contract version; that compatibility handshake belongs at integration time.

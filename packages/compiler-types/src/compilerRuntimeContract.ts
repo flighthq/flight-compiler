@@ -1,8 +1,11 @@
 // Runtime capabilities name what the ambient runtime surface must provide. Host concerns do not
 // belong here: the host lane is discovered and registered explicitly, and a target's representation
 // for an opaque host value is a backend option (`opaqueHostType`), not a runtime capability.
+//
+// Every name here is elected by at least one backend binding table. A capability no target binds
+// cannot say whether a symbol is unsupported or merely unmet, which is the ambiguity the foundations
+// audit warns about, so aspirational names are removed until a demonstrated target path returns them.
 export type CompilerRuntimeCapabilityName =
-  | 'callback'
   | 'float32-array'
   | 'float64-array'
   | 'int8-array'
@@ -10,7 +13,6 @@ export type CompilerRuntimeCapabilityName =
   | 'int32-array'
   | 'map'
   | 'set'
-  | 'symbol'
   | 'task'
   | 'uint8-array'
   | 'uint8-clamped-array'
