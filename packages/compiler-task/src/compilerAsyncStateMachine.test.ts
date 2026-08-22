@@ -564,6 +564,35 @@ describe('analyzeIrModuleAsyncStateMachines', () => {
     expect(handler.refusals.map((refusal) => refusal.code)).toEqual(['unsupported-control-flow']);
   });
 
+  it('retains only the bindings that outlive a suspension, not the ones each iteration recreates', () => {
+    // A binding the suspension itself initializes lives in the state resumed after it, so it is
+    // recreated on every iteration and must not be hoisted into shared storage. Getting this wrong
+    // is how a loop ends up with one shared variable where the source had one per iteration.
+    const analysis = analyzeIrModuleAsyncStateMachines(
+      lower(`
+        export async function drain(task: Promise<number>, again: boolean): Promise<number> {
+          let total: number = 0;
+          while (again) {
+            const value = await task;
+            total = value;
+            again = false;
+          }
+          return total;
+        }
+      `),
+    );
+    const machine = analysis.machines[0];
+
+    expect(analysis.refusals).toEqual([]);
+    expect(machine?.retainedBindings.map((retained) => retained.binding.name).sort()).toEqual(['again', 'total']);
+    expect(
+      machine?.states
+        .flatMap((state) => state.steps)
+        .filter((step) => step.kind === 'suspend')
+        .map((step) => step.kind === 'suspend' && step.fulfillment.kind),
+    ).toEqual(['initializeBinding']);
+  });
+
   it('is deterministic, deeply immutable, and vacuous for a module without async scopes', () => {
     const module = lower('export function read(value: number): number { return value; }');
     const first = analyzeIrModuleAsyncStateMachines(module);
