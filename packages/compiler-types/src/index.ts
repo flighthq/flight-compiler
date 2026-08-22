@@ -33,6 +33,7 @@ export type * from './compilerStructuralTypeShapeContract.js';
 export type * from './compilerStructuralTypeSubstitutionContract.js';
 export type * from './compilerTargetCompilationSmokeContract.js';
 export type * from './compilerTargetNamingContract.js';
+export type * from './compilerTaskOperationSemanticsContract.js';
 export type * from './compilerTraversalObserverContract.js';
 export type * from './compilerTypeIntermediateRepresentation.js';
 export type * from './compilerTypeScriptContract.js';
