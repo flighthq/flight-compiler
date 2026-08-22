@@ -2825,7 +2825,9 @@ function lowerBinaryOperatorSemantics(node: ts.BinaryExpression, context: Loweri
       result === 'unknown'
         ? getIrBinaryOperatorResultDomain(
             lowerBinaryOperator(node.operatorToken.kind as TypeScriptBinaryOperator),
-            left.flow,
+            node.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken
+              ? (getTypeScriptPresentValueDomain(node.left, context) ?? left.flow)
+              : left.flow,
             right.flow,
           )
         : result,
@@ -2836,6 +2838,25 @@ function lowerBinaryOperatorSemantics(node: ts.BinaryExpression, context: Loweri
 // One side of an equality being `null` or `undefined` makes the other side's absent-value membership
 // the only thing a single-absent-value target needs to decide the comparison. The membership comes
 // from the written type, because the checker without a library cannot narrow the union either.
+// The domain of an operand once its absent values are removed, which is what `??` actually yields on
+// the left-hand route. A written array element type answers the indexed case, where the checker
+// reports `T | undefined` under checked indexed access but the element type is the one that survives.
+function getTypeScriptPresentValueDomain(
+  expression: ts.Expression,
+  context: LoweringContext,
+): IrOperatorValueDomain | undefined {
+  if (ts.isElementAccessExpression(expression)) {
+    const object = getTypeScriptExpressionBindingTypeEvidence(expression.expression, context);
+    if (object?.kind === 'array') return getIrTypeOperatorValueDomain(object.element);
+    return undefined;
+  }
+  const type = getTypeScriptExpressionBindingTypeEvidence(expression, context);
+  if (type?.kind !== 'union') return undefined;
+  const present = type.types.filter((member) => member.kind !== 'null' && member.kind !== 'undefined');
+  const domains = new Set(present.map((member) => getIrTypeOperatorValueDomain(member)));
+  return domains.size === 1 ? [...domains][0] : undefined;
+}
+
 function getTypeScriptNullishComparisonEvidence(
   node: ts.BinaryExpression,
   context: LoweringContext,
@@ -2872,10 +2893,34 @@ function lowerOperatorOperandDomains(node: ts.Expression, context: LoweringConte
   const evidenceDomain = getIrTypeOperatorValueDomain(evidence);
   const declared = lowerTypeScriptTypeOperatorValueDomain(declaredType, context.checker);
   const flow = lowerTypeScriptTypeOperatorValueDomain(flowType, context.checker);
+  // An operand that is itself an operator expression has a domain the operator's own rule decides,
+  // and the checker cannot see it for the same reason it could not see the inner one: no library.
+  const operator =
+    evidenceDomain === 'unknown' && ts.isBinaryExpression(node) && (declared === 'unknown' || flow === 'unknown')
+      ? getTypeScriptBinaryExpressionResultDomain(node, context)
+      : 'unknown';
+  const fallback = evidenceDomain === 'unknown' ? operator : evidenceDomain;
   return {
-    declared: declared === 'unknown' ? evidenceDomain : declared,
-    flow: flow === 'unknown' ? evidenceDomain : flow,
+    declared: declared === 'unknown' ? fallback : declared,
+    flow: flow === 'unknown' ? fallback : flow,
   };
+}
+
+function getTypeScriptBinaryExpressionResultDomain(
+  node: ts.BinaryExpression,
+  context: LoweringContext,
+): IrOperatorValueDomain {
+  const operator = typeScriptBinaryOperators[node.operatorToken.kind as TypeScriptBinaryOperator];
+  if (!operator) return 'unknown';
+  const left = lowerOperatorOperandDomains(node.left, context);
+  const right = lowerOperatorOperandDomains(node.right, context);
+  return getIrBinaryOperatorResultDomain(
+    operator,
+    node.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken
+      ? (getTypeScriptPresentValueDomain(node.left, context) ?? left.flow)
+      : left.flow,
+    right.flow,
+  );
 }
 
 function lowerOperatorValueDomain(node: ts.Node, context: LoweringContext): IrOperatorValueDomain {

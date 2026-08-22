@@ -57,6 +57,7 @@ describe('getIrBinaryOperatorResultDomain', () => {
     expect(getIrBinaryOperatorResultDomain('|', 'number', 'number')).toBe('number');
     expect(getIrBinaryOperatorResultDomain('in', 'string', 'object')).toBe('boolean');
     expect(getIrBinaryOperatorResultDomain(',', 'number', 'string')).toBe('string');
+    expect(getIrBinaryOperatorResultDomain('??', 'number', 'number')).toBe('number');
   });
 
   it('reports unknown wherever the source language does not decide, rather than guessing', () => {
@@ -67,6 +68,8 @@ describe('getIrBinaryOperatorResultDomain', () => {
     expect(getIrBinaryOperatorResultDomain('-', 'string', 'string')).toBe('unknown');
     expect(getIrBinaryOperatorResultDomain('<', 'unknown', 'unknown')).toBe('unknown');
     expect(getIrBinaryOperatorResultDomain('|', 'bigint', 'bigint')).toBe('unknown');
-    expect(getIrBinaryOperatorResultDomain('??', 'number', 'number')).toBe('unknown');
+    // `??` over operands that agree does decide: the caller passes the left operand's present-value
+    // domain, so agreement means both routes produce the same domain.
+    expect(getIrBinaryOperatorResultDomain('??', 'number', 'string')).toBe('unknown');
   });
 });

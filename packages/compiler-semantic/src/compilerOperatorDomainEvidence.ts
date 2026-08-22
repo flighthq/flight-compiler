@@ -42,7 +42,9 @@ export function getIrBinaryOperatorResultDomain(
     case ',':
       return right;
     case '??':
-      return 'unknown';
+      // `a ?? b` yields `a` with its absent values removed, or `b`. Where those agree, so does the
+      // result; the caller supplies the left operand's present-value domain.
+      return left === right ? left : 'unknown';
   }
 }
 
