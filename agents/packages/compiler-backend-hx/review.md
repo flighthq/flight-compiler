@@ -55,3 +55,11 @@ Haxe lowering, naming and source emission: ~1,270 lines across the emitter, the 
 - **Number representation is a single choice.** Every numeric maps to `Float`; Haxe's `Int` is never produced, so array indices and enum discriminants are Floats in emitted code.
 - **No output verification.** Nothing checks that emitted Haxe parses. The golden fixtures pin _bytes_, not validity, so a fixture can happily pin invalid Haxe — which has already happened once, with `this_.step`. Compiling the output belongs downstream in `flight-hx`, but a parse-level check here would have caught it.
 - **No byte-parity harness against `flight-hx`.** The acceptance criterion for this package is matching the existing generator, and there is no pinned old-versus-new comparison yet. The roadmap names it as the next milestone.
+
+## Emitted-source claims this repository cannot check, recorded 2026-08-22
+
+Three defects in emitted Haxe were found by reading output rather than by any gate, because the golden fixtures pin bytes and no Haxe compiler runs here. Two are fixed; the third is a claim I could not settle, and it is exactly what the parser-adapter seam in `compiler-emission` exists to settle.
+
+- **Fixed: a computed array index emitted as `Float`.** Haxe indexes with `Int`, and the neutral numeric domain has only `number`, so `values[index]` did not compile. Indices are narrowed with `Std.int` now, and an integer literal is left alone.
+- **Fixed elsewhere: `x === undefined` had no lowering.** It is `x == null` where the operand admits only one absent value, and a refusal where it admits both.
+- **Unsettled: `values?.[index]`.** The emitter produces Haxe's safe-navigation operator in array position and a test pins it. Haxe's `?.` is documented for field access; whether it also reaches array access is a question about another language's grammar that nothing in this repository can answer. Emitting it is either correct or it is source that cannot parse, and the only thing that can decide is a real Haxe parser through the conformance adapter. Recorded rather than changed, because flipping committed behaviour on an unverified belief about a grammar is the worse error.
