@@ -540,7 +540,31 @@ describe('analyzeIrModuleAsyncStateMachines', () => {
     ]);
   });
 
-  it('refuses a finally around a suspension and a suspension inside a handler', () => {
+  it('suspends inside a handler, whose own rejection settles the task rather than re-entering it', () => {
+    const analysis = analyzeIrModuleAsyncStateMachines(
+      lower(`
+        export async function attempt(task: Promise<number>, other: Promise<number>): Promise<number> {
+          let result: number = 0;
+          try { result = await task; } catch (error) { result = await other; }
+          return result;
+        }
+      `),
+    );
+    const tryPath = ['declarations', 0, 'body', 1];
+    const suspends = (analysis.machines[0]?.states.flatMap((state) => state.steps) ?? []).filter(
+      (step) => step.kind === 'suspend',
+    );
+
+    expect(analysis.refusals).toEqual([]);
+    // The guarded suspension names the handler; the handler's own suspension names nothing, because
+    // a handler runs outside the region it handles.
+    expect(suspends.map((step) => (step.kind === 'suspend' ? step.rejectState : undefined))).toEqual([
+      { kind: 'catch', path: tryPath },
+      undefined,
+    ]);
+  });
+
+  it('refuses a finally around a suspension', () => {
     const cleanup = analyzeIrModuleAsyncStateMachines(
       lower(`
         export async function attempt(task: Promise<number>): Promise<number> {
@@ -550,18 +574,8 @@ describe('analyzeIrModuleAsyncStateMachines', () => {
         }
       `),
     );
-    const handler = analyzeIrModuleAsyncStateMachines(
-      lower(`
-        export async function attempt(task: Promise<number>, other: Promise<number>): Promise<number> {
-          let result: number = 0;
-          try { result = 1; } catch (error) { result = await other; }
-          return result;
-        }
-      `),
-    );
 
     expect(cleanup.refusals.map((refusal) => refusal.code)).toEqual(['unsupported-control-flow']);
-    expect(handler.refusals.map((refusal) => refusal.code)).toEqual(['unsupported-control-flow']);
   });
 
   it('retains only the bindings that outlive a suspension, not the ones each iteration recreates', () => {

@@ -639,9 +639,6 @@ function createIrTryStatementAsyncStateMachine(
     return createCompilerAsyncStateMachineRefusal('unsupported-control-flow', path, scope.path);
   }
   const handlerPath = [...path, 'catchClause', 'body'];
-  if (suspensions.some((suspension) => isCompilerAsyncStateMachinePathWithin(suspension.path, handlerPath))) {
-    return createCompilerAsyncStateMachineRefusal('unsupported-control-flow', handlerPath, scope.path);
-  }
   const body: CompilerAsyncStateMachineStateIdentity = { arm: 'whenTrue', kind: 'branchArm', path };
   const handler: CompilerAsyncStateMachineStateIdentity = { kind: 'catch', path };
   const join: CompilerAsyncStateMachineStateIdentity = { kind: 'join', path };
@@ -667,7 +664,15 @@ function createIrTryStatementAsyncStateMachine(
   draft.currentIdentity = handler;
   draft.currentSteps = [];
   draft.terminal = false;
-  const handlerRefusal = createIrStatementArmAsyncStateMachine(scope, catchClause.body, handlerPath, [], draft);
+  // A handler may suspend too. It runs outside the region it handles, so its own rejections settle
+  // the task rather than re-entering the handler that produced them.
+  const handlerRefusal = createIrStatementArmAsyncStateMachine(
+    scope,
+    catchClause.body,
+    handlerPath,
+    suspensions,
+    draft,
+  );
   if (handlerRefusal) return handlerRefusal;
   if (!draft.terminal) draft.currentSteps.push({ kind: 'goto', path: handlerPath, target: join });
   addCompilerAsyncStateMachineState(draft);
