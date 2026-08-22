@@ -1138,7 +1138,10 @@ function emitStatement(statement: Readonly<IrStatement>, context: EmitContext): 
     case 'throw':
       return [`panic!("{:?}", ${emitExpression(statement.expression, context)});`];
     case 'try':
-      emissionError(context, 'try/catch/finally requires Flight rejection lowering');
+      // Rust has no exceptions. The faithful shape is `Result` propagation, which means the runtime
+      // contract has to say that a task settles with a rejection rather than yielding its value
+      // directly — a runtime-surface decision, not a lowering this compiler can pick on its own.
+      emissionError(context, 'try/catch/finally requires a Rust task settlement that carries rejection');
     case 'variable':
       return statement.declarations.map((variable) => emitVariable(variable, context));
     case 'while':

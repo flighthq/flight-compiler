@@ -45,3 +45,12 @@ So the contract has a shape gap rather than a coverage gap: it can say _which_ s
 ## Ownership boundary
 
 This package owns source-side reachability and plan completeness. `compiler-types` owns the shared contract vocabulary. Each backend owns its election table and emitted target names. `flight-hx` and `flight-rs` own runtime types and behavior satisfying elected capabilities.
+
+## Two refusals that are runtime-surface decisions, recorded 2026-08-22
+
+Both are named here because they read as compiler work and are not.
+
+- **`for await`.** Its loop shape is already compiled by `compiler-task`. What is missing is an async-iterator protocol: how a target obtains an iterator and what a settled iteration result looks like. Nothing in the compiler can choose that without the runtime saying so.
+- **`try`/`catch` in Rust.** Rust has no exceptions, so the faithful shape is `Result` propagation — which requires the contract to say a task settles _with_ a rejection rather than yielding its value directly. Haxe needs no such decision because its runtime has exceptions, which is why the same source compiles there and refuses here.
+
+Both refusals now name the runtime decision rather than a lowering, so the readiness report separates "work this compiler owes" from "a decision the runtime owes".

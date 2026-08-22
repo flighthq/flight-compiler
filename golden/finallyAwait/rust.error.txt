@@ -1,1 +1,1 @@
-rust emission failed for @flighthq/golden/packages/golden/src/finallyAwait.ts: try/catch/finally requires Flight rejection lowering
+rust emission failed for @flighthq/golden/packages/golden/src/finallyAwait.ts: try/catch/finally requires a Rust task settlement that carries rejection
