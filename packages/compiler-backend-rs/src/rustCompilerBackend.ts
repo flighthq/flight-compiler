@@ -194,9 +194,27 @@ function emitIrModuleRustWithContext(
 }
 
 function emitClass(declaration: Readonly<IrClassDeclaration>, context: EmitContext): string[] {
-  if (declaration.extends || declaration.implements.length > 0) {
+  if (declaration.extends) {
     emissionError(context, `class ${declaration.binding.name} inheritance requires Rust ownership lowering`);
   }
+  const implementedTraits = declaration.implements.map((reference) => {
+    if (reference.kind !== 'named' || reference.reference.kind !== 'binding') {
+      return emissionError(context, `class ${declaration.binding.name} implements a type with no Rust trait`);
+    }
+    const target = context.module.declarations.find(
+      (candidate) =>
+        candidate.kind === 'interface' &&
+        reference.reference.kind === 'binding' &&
+        candidate.binding.id === reference.reference.binding.id,
+    );
+    if (!target) {
+      return emissionError(
+        context,
+        `class ${declaration.binding.name} implements an interface declared outside this module`,
+      );
+    }
+    return emitType(reference, context);
+  });
   if (
     declaration.classConstructor &&
     (declaration.classConstructor.parameters.length > 0 || declaration.classConstructor.body.length > 0)
@@ -250,13 +268,51 @@ function emitClass(declaration: Readonly<IrClassDeclaration>, context: EmitConte
       '  }',
     );
   }
-  if (declaration.methods.length > 0 || associated.length > 0) {
+  // A trait's methods belong in its `impl` block, not in the inherent one, so the two are split by
+  // which trait declares each method name.
+  const traitMethodNames = new Map<string, string>();
+  for (const reference of declaration.implements) {
+    if (reference.kind !== 'named' || reference.reference.kind !== 'binding') continue;
+    const target = context.module.declarations.find(
+      (candidate) =>
+        candidate.kind === 'interface' &&
+        reference.reference.kind === 'binding' &&
+        candidate.binding.id === reference.reference.binding.id,
+    );
+    if (target?.kind !== 'interface') continue;
+    for (const property of target.properties) traitMethodNames.set(property.name, emitType(reference, context));
+  }
+  const inherentMethods = declaration.methods.filter((method) => !traitMethodNames.has(method.name));
+  const emitMethodLines = (method: (typeof declaration.methods)[number]): string[] => {
+    const parameters = [
+      ...(method.static ? [] : [hasIrFunctionSignatureThisMutationRust(method) ? '&mut self' : '&self']),
+      ...method.parameters.map((parameter) => emitParameter(parameter, context)),
+    ].join(', ');
+    return [
+      `  ${method.visibility === 'public' && !traitMethodNames.has(method.name) ? 'pub ' : ''}fn ${safeRustValueName(method.name)}${emitTypeParameters(method.typeParameters, context)}(${parameters}) -> ${emitType(method.returns, context)} {`,
+      ...indentSourceLines(emitStatements(method.body, context), 2),
+      '  }',
+    ];
+  };
+  for (const trait of implementedTraits) {
+    const traitMethods = declaration.methods.filter((method) => traitMethodNames.get(method.name) === trait);
+    lines.push(
+      '',
+      `impl${emitTypeParameters(declaration.typeParameters, context)} ${trait} for ${getBindingTargetNameRust(declaration.binding, context)}${emitTypeArguments(declaration.typeParameters, context)} {`,
+    );
+    traitMethods.forEach((method, index) => {
+      if (index > 0) lines.push('');
+      lines.push(...emitMethodLines(method));
+    });
+    lines.push('}');
+  }
+  if (inherentMethods.length > 0 || associated.length > 0) {
     lines.push(
       '',
       `impl${emitTypeParameters(declaration.typeParameters, context)} ${getBindingTargetNameRust(declaration.binding, context)}${emitTypeArguments(declaration.typeParameters, context)} {`,
       ...associated,
     );
-    declaration.methods.forEach((method, index) => {
+    inherentMethods.forEach((method, index) => {
       if (index > 0 || associated.length > 0) lines.push('');
 
       const parameters = [
@@ -538,12 +594,57 @@ function emitImports(imports: readonly IrImport[], context: EmitContext): string
 function emitInterface(declaration: Readonly<IrInterfaceDeclaration>, context: EmitContext): string[] {
   if (declaration.extends.length > 0)
     emissionError(context, `interface ${declaration.binding.name} inheritance requires record flattening`);
+  // A shape a class implements is a contract on behaviour, which Rust spells as a trait. A shape
+  // nothing implements is data, which Rust spells as a struct — and emitting the second as the first
+  // would make an ordinary object type unconstructible.
+  if (hasIrModuleClassImplementingRust(declaration, context)) {
+    return emitTraitRust(declaration, context);
+  }
   return emitRecord(
     getBindingTargetNameRust(declaration.binding, context),
     declaration.properties,
     declaration.typeParameters,
     declaration.exported,
     context,
+  );
+}
+
+function emitTraitRust(declaration: Readonly<IrInterfaceDeclaration>, context: EmitContext): string[] {
+  const visibility = declaration.exported ? 'pub ' : '';
+  return [
+    `${visibility}trait ${getBindingTargetNameRust(declaration.binding, context)}${emitTypeParameters(declaration.typeParameters, context)} {`,
+    ...declaration.properties.map((property) => {
+      if (property.type.kind !== 'function') {
+        return emissionError(
+          context,
+          `interface ${declaration.binding.name} property ${property.name} requires Rust accessor lowering`,
+        );
+      }
+      const parameters = property.type.parameters
+        .map(
+          (parameter, index) =>
+            `${safeRustValueName(parameter.name ?? `argument${String(index)}`)}: ${emitType(parameter.type, context)}`,
+        )
+        .join(', ');
+      return `  fn ${safeRustValueName(property.name)}(&self${parameters ? `, ${parameters}` : ''}) -> ${emitType(property.type.returns, context)};`;
+    }),
+    '}',
+  ];
+}
+
+function hasIrModuleClassImplementingRust(
+  declaration: Readonly<IrInterfaceDeclaration>,
+  context: EmitContext,
+): boolean {
+  return context.module.declarations.some(
+    (candidate) =>
+      candidate.kind === 'class' &&
+      candidate.implements.some(
+        (implemented) =>
+          implemented.kind === 'named' &&
+          implemented.reference.kind === 'binding' &&
+          implemented.reference.binding.id === declaration.binding.id,
+      ),
   );
 }
 

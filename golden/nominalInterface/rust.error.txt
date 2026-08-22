@@ -1,1 +1,1 @@
-rust emission failed for @flighthq/golden/packages/golden/src/nominalInterface.ts: class Counter inheritance requires Rust ownership lowering
+rust emission failed for @flighthq/golden/packages/golden/src/nominalInterface.ts: interface Advancer property step requires Rust accessor lowering

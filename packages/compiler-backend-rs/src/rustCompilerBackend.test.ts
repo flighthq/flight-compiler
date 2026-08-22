@@ -1141,4 +1141,31 @@ describe('emitIrModuleRust', () => {
 
     expect(output).toContain('pub fn drain(mut again: bool, kept: f64) -> f64 {');
   });
+
+  it('emits an implemented shape as a trait and puts its methods in the impl block', () => {
+    // A shape a class implements is a contract on behaviour, which Rust spells as a trait. A shape
+    // nothing implements is data, which stays a struct — emitting that as a trait would make an
+    // ordinary object type unconstructible.
+    const module = lower(
+      'trait.ts',
+      'export interface Advancer { advance(by: number): number; } export class Counter implements Advancer { step: number = 1; advance(by: number): number { return by + this.step; } reset(): void { this.step = 1; } }',
+    );
+    const output = emitIrModuleRust(module.module).contents;
+
+    expect(output).toContain('pub trait Advancer {');
+    expect(output).toContain('  fn advance(&self, by: f64) -> f64;');
+    expect(output).toContain('impl Advancer for Counter {');
+    // The trait's method is in the trait impl and the class's own method is in the inherent one.
+    expect(output).toContain('impl Counter {');
+    expect(output).toContain('  pub fn reset(&mut self) -> () {');
+  });
+
+  it('refuses a trait with a data property, which Rust traits cannot hold', () => {
+    const module = lower(
+      'data-trait.ts',
+      'export interface Advancer { step: number; } export class Counter implements Advancer { step: number = 1; }',
+    );
+
+    expect(() => emitIrModuleRust(module.module)).toThrow('requires Rust accessor lowering');
+  });
 });
