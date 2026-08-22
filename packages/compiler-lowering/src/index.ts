@@ -1,3 +1,4 @@
+export { createCompilerLoweringPassAwaitConditionHoisting } from './compilerAwaitConditionHoistingLowering.js';
 export { createCompilerLoweringPassArrayBindingPattern } from './compilerArrayBindingPatternLowering.js';
 export { createCompilerLoweringPassBindingPattern } from './compilerBindingPatternLowering.js';
 export { createIrClassInitializationPlan, isIrClassInitializationFailure } from './compilerClassInitialization.js';

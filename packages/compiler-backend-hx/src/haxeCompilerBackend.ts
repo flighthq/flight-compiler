@@ -9,6 +9,7 @@ import {
 } from '../../compiler-emission/src/index.js';
 import { analyzeIrModuleTraversal, getIrModuleTraversalPathValue } from '../../compiler-ir-traversal/src/index.js';
 import {
+  createCompilerLoweringPassAwaitConditionHoisting,
   createCompilerLoweringPassBindingPattern,
   createCompilerLoweringPassCStyleFor,
   createCompilerLoweringPassExtraArgumentErasure,
@@ -117,6 +118,7 @@ function emitIrModuleHaxeWithContext(
 ): EmittedFile {
   const module = lowerIrModuleWithCompilerPasses(sourceModule, [
     createCompilerLoweringPassExtraArgumentErasure(),
+    createCompilerLoweringPassAwaitConditionHoisting(),
     createCompilerLoweringPassBindingPattern(),
     createCompilerLoweringPassVariableHoisting(),
     createCompilerLoweringPassCStyleFor(),

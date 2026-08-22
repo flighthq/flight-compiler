@@ -8,6 +8,7 @@ import {
   isCompilerTargetNameAllocationFailure,
 } from '../../compiler-emission/src/index.js';
 import {
+  createCompilerLoweringPassAwaitConditionHoisting,
   createCompilerLoweringPassBindingPattern,
   createCompilerLoweringPassCStyleFor,
   createCompilerLoweringPassExtraArgumentErasure,
@@ -110,6 +111,7 @@ function emitIrModuleRustWithContext(
 ): EmittedFile {
   const module = lowerIrModuleWithCompilerPasses(sourceModule, [
     createCompilerLoweringPassExtraArgumentErasure(),
+    createCompilerLoweringPassAwaitConditionHoisting(),
     createCompilerLoweringPassBindingPattern(),
     createCompilerLoweringPassVariableHoisting(),
     createCompilerLoweringPassCStyleFor(),

@@ -247,6 +247,7 @@ export type IrStatement =
       condition: IrExpression;
       consequent: IrStatement;
       kind: 'if';
+      origin?: CompilerSourceOrigin | undefined;
       otherwise?: IrStatement | undefined;
     }>
   | Readonly<{ expression?: IrExpression | undefined; kind: 'return' }>

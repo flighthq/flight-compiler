@@ -1598,6 +1598,7 @@ function lowerStatement(node: ts.Statement, context: LoweringContext): IrStateme
       condition: lowerExpression(node.expression, context),
       consequent: lowerStatement(node.thenStatement, context),
       kind: 'if',
+      origin: origin(node, context),
       ...(node.elseStatement ? { otherwise: lowerStatement(node.elseStatement, context) } : {}),
     };
   }
