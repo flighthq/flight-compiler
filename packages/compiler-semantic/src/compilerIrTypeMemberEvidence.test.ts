@@ -9,6 +9,7 @@ describe('getIrTypeMemberEvidence', () => {
     const tuple: IrType = {
       elements: [{ optional: false, rest: false, type: { kind: 'primitive', name: 'number' } }],
       kind: 'tuple',
+      readonly: false,
     };
 
     expect(getIrTypeMemberEvidence(array, 'length')).toEqual({ kind: 'primitive', name: 'number' });
