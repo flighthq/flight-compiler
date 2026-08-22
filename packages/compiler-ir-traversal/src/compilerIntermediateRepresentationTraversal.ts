@@ -20,6 +20,21 @@ import type {
 const compilerIrTraversalRootPath: CompilerIrTraversalPath = Object.freeze([]);
 const compilerIrTraversalStop = Symbol('compiler-ir-traversal-stop');
 
+// Walking one subtree, for a caller that already has the node rather than the module around it. The
+// stop signal is caught here too, so an observer can end a subtree walk the same way it ends a
+// module walk.
+export function analyzeIrExpressionSubtreeTraversal(
+  expression: Readonly<IrExpression>,
+  observer: Readonly<CompilerIrTraversalObserver>,
+  path: CompilerIrTraversalPath = [],
+): void {
+  try {
+    analyzeIrExpressionTraversal(expression, observer, path);
+  } catch (error) {
+    if (error !== compilerIrTraversalStop) throw error;
+  }
+}
+
 export function analyzeIrModuleTraversal(
   module: Readonly<IrModule>,
   observer: Readonly<CompilerIrTraversalObserver>,
@@ -177,21 +192,6 @@ function analyzeIrDeclarationTraversal(
       break;
     default:
       assertNeverIrTraversal(declaration);
-  }
-}
-
-// Walking one subtree, for a caller that already has the node rather than the module around it. The
-// stop signal is caught here too, so an observer can end a subtree walk the same way it ends a
-// module walk.
-export function analyzeIrExpressionSubtreeTraversal(
-  expression: Readonly<IrExpression>,
-  observer: Readonly<CompilerIrTraversalObserver>,
-  path: CompilerIrTraversalPath = [],
-): void {
-  try {
-    analyzeIrExpressionTraversal(expression, observer, path);
-  } catch (error) {
-    if (error !== compilerIrTraversalStop) throw error;
   }
 }
 
