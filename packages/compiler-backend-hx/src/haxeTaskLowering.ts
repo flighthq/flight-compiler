@@ -216,6 +216,7 @@ function lowerCompilerAsyncStateMachineFunctionHaxe(
       storage: 'lexicalClosure' as const,
     })),
     states: machine.states.map((state) => ({
+      ...(state.guard ? { guard: state.guard } : {}),
       identity: state.identity,
       steps: state.steps.map(lowerCompilerAsyncStateMachineStepHaxe),
     })),
@@ -237,6 +238,14 @@ function lowerCompilerAsyncStateMachineStepHaxe(
       };
     case 'goto':
       return { kind: 'continueState', path: step.path, target: step.target };
+    case 'guard':
+      return {
+        body: step.body,
+        catchState: step.catchState,
+        join: step.join,
+        kind: 'guardState',
+        path: step.path,
+      };
     case 'loop':
       return { header: step.header, kind: 'loopState', path: step.path };
     case 'execute':
@@ -260,6 +269,7 @@ function lowerCompilerAsyncStateMachineStepHaxe(
         kind: 'awaitRuntime',
         operandPath: step.operandPath,
         path: step.path,
+        ...(step.rejectState ? { rejectState: step.rejectState } : {}),
         rejection: step.rejection,
         ...(step.resumeState ? { resumeState: step.resumeState } : {}),
       };

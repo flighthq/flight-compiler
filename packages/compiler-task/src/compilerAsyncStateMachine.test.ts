@@ -503,6 +503,67 @@ describe('analyzeIrModuleAsyncStateMachines', () => {
     expect(bare.refusals.map((refusal) => refusal.code)).toEqual(['escaping-control-flow']);
   });
 
+  it('routes a suspension rejection into the source handler instead of settling the task', () => {
+    const analysis = analyzeIrModuleAsyncStateMachines(
+      lower(`
+        export async function attempt(task: Promise<number>, fallback: number): Promise<number> {
+          let result: number = 0;
+          try {
+            result = await task;
+          } catch (error) {
+            result = fallback;
+          }
+          return result;
+        }
+      `),
+    );
+    const machine = analysis.machines[0];
+    const tryPath = ['declarations', 0, 'body', 1];
+    const steps = machine?.states.flatMap((state) => state.steps) ?? [];
+
+    expect(analysis.refusals).toEqual([]);
+    expect(steps.filter((step) => step.kind === 'guard')).toMatchObject([
+      {
+        body: { arm: 'whenTrue', kind: 'branchArm', path: tryPath },
+        catchState: { kind: 'catch', path: tryPath },
+        join: { kind: 'join', path: tryPath },
+      },
+    ]);
+    // The suspension inside the guarded body names the handler, so a rejected task enters the source
+    // `catch` rather than settling the whole function.
+    expect(steps.filter((step) => step.kind === 'suspend')).toMatchObject([
+      { rejectState: { kind: 'catch', path: tryPath } },
+    ]);
+    expect(machine?.states.filter((state) => state.guard).map((state) => state.identity)).toEqual([
+      { arm: 'whenTrue', kind: 'branchArm', path: tryPath },
+      { kind: 'resume', suspensionPath: [...tryPath, 'tryBody', 'statements', 0, 'expression', 'right'] },
+    ]);
+  });
+
+  it('refuses a finally around a suspension and a suspension inside a handler', () => {
+    const cleanup = analyzeIrModuleAsyncStateMachines(
+      lower(`
+        export async function attempt(task: Promise<number>): Promise<number> {
+          let result: number = 0;
+          try { result = await task; } finally { result = 1; }
+          return result;
+        }
+      `),
+    );
+    const handler = analyzeIrModuleAsyncStateMachines(
+      lower(`
+        export async function attempt(task: Promise<number>, other: Promise<number>): Promise<number> {
+          let result: number = 0;
+          try { result = 1; } catch (error) { result = await other; }
+          return result;
+        }
+      `),
+    );
+
+    expect(cleanup.refusals.map((refusal) => refusal.code)).toEqual(['unsupported-control-flow']);
+    expect(handler.refusals.map((refusal) => refusal.code)).toEqual(['unsupported-control-flow']);
+  });
+
   it('is deterministic, deeply immutable, and vacuous for a module without async scopes', () => {
     const module = lower('export function read(value: number): number { return value; }');
     const first = analyzeIrModuleAsyncStateMachines(module);

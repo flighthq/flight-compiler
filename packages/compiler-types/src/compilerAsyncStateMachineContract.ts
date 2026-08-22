@@ -11,6 +11,7 @@ import type {
 export type CompilerAsyncStateMachineStateIdentity =
   | Readonly<{ arm: 'whenFalse' | 'whenTrue'; kind: 'branchArm'; path: CompilerIrTraversalPath }>
   | Readonly<{ kind: 'entry' }>
+  | Readonly<{ kind: 'catch'; path: CompilerIrTraversalPath }>
   | Readonly<{ kind: 'join'; path: CompilerIrTraversalPath }>
   | Readonly<{ kind: 'loopHeader'; path: CompilerIrTraversalPath }>
   | Readonly<{ kind: 'resume'; suspensionPath: CompilerIrTraversalPath }>;
@@ -31,6 +32,16 @@ export interface CompilerAsyncStateMachineGotoStep {
   readonly kind: 'goto';
   readonly path: CompilerIrTraversalPath;
   readonly target: CompilerAsyncStateMachineStateIdentity;
+}
+
+// A guarded region: its body runs with a handler in scope, and both the body and the handler leave
+// through the same join.
+export interface CompilerAsyncStateMachineGuardStep {
+  readonly body: CompilerAsyncStateMachineStateIdentity;
+  readonly catchState: CompilerAsyncStateMachineStateIdentity;
+  readonly join: CompilerAsyncStateMachineStateIdentity;
+  readonly kind: 'guard';
+  readonly path: CompilerIrTraversalPath;
 }
 
 // A loop is the one shape whose continuation runs more than once, so its header is named where the
@@ -59,7 +70,16 @@ export interface CompilerAsyncStateMachineSuspendStep {
   readonly operandPath: CompilerIrTraversalPath;
   readonly path: CompilerIrTraversalPath;
   readonly rejection: CompilerCompletionValueSource;
+  // Where a rejection goes. Absent, it settles the task; present, it enters a source-level handler,
+  // which is what a `try` around the suspension means.
+  readonly rejectState?: CompilerAsyncStateMachineStateIdentity | undefined;
   readonly resumeState?: CompilerAsyncStateMachineStateIdentity | undefined;
+}
+
+// A state whose synchronous throws belong to a source handler rather than to the task settlement.
+export interface CompilerAsyncStateMachineGuardedState {
+  readonly catchBinding?: IrBindingIdentity | undefined;
+  readonly catchState: CompilerAsyncStateMachineStateIdentity;
 }
 
 export interface CompilerAsyncStateMachineSettleStep {
@@ -73,11 +93,13 @@ export type CompilerAsyncStateMachineStep =
   | CompilerAsyncStateMachineBranchStep
   | CompilerAsyncStateMachineExecuteStep
   | CompilerAsyncStateMachineGotoStep
+  | CompilerAsyncStateMachineGuardStep
   | CompilerAsyncStateMachineLoopStep
   | CompilerAsyncStateMachineSettleStep
   | CompilerAsyncStateMachineSuspendStep;
 
 export interface CompilerAsyncStateMachineState {
+  readonly guard?: CompilerAsyncStateMachineGuardedState | undefined;
   readonly identity: CompilerAsyncStateMachineStateIdentity;
   readonly steps: readonly CompilerAsyncStateMachineStep[];
 }

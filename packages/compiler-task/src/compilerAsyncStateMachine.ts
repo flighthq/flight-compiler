@@ -8,6 +8,7 @@ import type {
   CompilerAsyncStateMachine,
   CompilerAsyncStateMachineAnalysis,
   CompilerAsyncStateMachineFulfillment,
+  CompilerAsyncStateMachineGuardedState,
   CompilerAsyncStateMachineRefusal,
   CompilerAsyncStateMachineRefusalCode,
   CompilerAsyncStateMachineRetainedBinding,
@@ -60,6 +61,7 @@ interface AsyncStateMachineDraft {
   currentSteps: CompilerAsyncStateMachineStep[];
   // The innermost suspending loop, if any: `break` leaves through its join and `continue` re-enters
   // its header. An unlabelled jump can only mean the innermost one, which is why a stack is enough.
+  guards: CompilerAsyncStateMachineGuardedState[];
   loops: AsyncStateMachineLoopTargets[];
   readonly states: CompilerAsyncStateMachineState[];
   terminal: boolean;
@@ -122,7 +124,8 @@ function addCompilerAsyncStateMachineExecuteStep(
 }
 
 function addCompilerAsyncStateMachineState(draft: AsyncStateMachineDraft): void {
-  draft.states.push({ identity: draft.currentIdentity, steps: draft.currentSteps });
+  const guard = draft.guards.at(-1);
+  draft.states.push({ ...(guard ? { guard } : {}), identity: draft.currentIdentity, steps: draft.currentSteps });
 }
 
 function addCompilerAsyncStateMachineSuspension(
@@ -134,12 +137,14 @@ function addCompilerAsyncStateMachineSuspension(
   const rejection = addCompilerAsyncStateMachineAbruptCompletion(awaitPath, draft);
   addCompilerAsyncStateMachineAbruptCompletion([...awaitPath, 'expression'], draft);
   const resumeState: CompilerAsyncStateMachineStateIdentity = { kind: 'resume', suspensionPath: awaitPath };
+  const guard = draft.guards.at(-1);
   draft.currentSteps.push({
     fulfillment,
     kind: 'suspend',
     operandPath: [...awaitPath, 'expression'],
     path: awaitPath,
     rejection,
+    ...(guard ? { rejectState: guard.catchState } : {}),
     ...(terminal ? {} : { resumeState }),
   });
   if (terminal) {
@@ -277,6 +282,7 @@ function createCompilerAsyncStateMachine(
   const draft: AsyncStateMachineDraft = {
     completionPaths: [],
     currentIdentity: { kind: 'entry' },
+    guards: [],
     loops: [],
     currentSteps: [],
     states: [],
@@ -615,6 +621,58 @@ function createIrLoopStatementAsyncStateMachine(
   return undefined;
 }
 
+function createIrTryStatementAsyncStateMachine(
+  scope: Readonly<CompilerAsyncTaskScope>,
+  statement: Readonly<Extract<IrStatement, { kind: 'try' }>>,
+  path: CompilerIrTraversalPath,
+  suspensions: readonly Readonly<CompilerAsyncTaskSuspensionSite>[],
+  draft: AsyncStateMachineDraft,
+): CompilerAsyncStateMachineRefusal | undefined {
+  const catchClause = statement.catchClause;
+  if (statement.finallyBody || !catchClause) {
+    // `finally` runs on every route out of the block, including ones the machine represents as
+    // separate states, so it needs the completion algebra's replacement rather than a handler state.
+    return createCompilerAsyncStateMachineRefusal('unsupported-control-flow', path, scope.path);
+  }
+  const handlerPath = [...path, 'catchClause', 'body'];
+  if (suspensions.some((suspension) => isCompilerAsyncStateMachinePathWithin(suspension.path, handlerPath))) {
+    return createCompilerAsyncStateMachineRefusal('unsupported-control-flow', handlerPath, scope.path);
+  }
+  const body: CompilerAsyncStateMachineStateIdentity = { arm: 'whenTrue', kind: 'branchArm', path };
+  const handler: CompilerAsyncStateMachineStateIdentity = { kind: 'catch', path };
+  const join: CompilerAsyncStateMachineStateIdentity = { kind: 'join', path };
+  draft.currentSteps.push({ body, catchState: handler, join, kind: 'guard', path });
+  addCompilerAsyncStateMachineState(draft);
+
+  draft.guards.push({ ...(catchClause.binding ? { catchBinding: catchClause.binding } : {}), catchState: handler });
+  draft.currentIdentity = body;
+  draft.currentSteps = [];
+  draft.terminal = false;
+  const tryRefusal = createIrStatementArmAsyncStateMachine(
+    scope,
+    statement.tryBody,
+    [...path, 'tryBody'],
+    suspensions,
+    draft,
+  );
+  if (tryRefusal) return tryRefusal;
+  if (!draft.terminal) draft.currentSteps.push({ kind: 'goto', path: [...path, 'tryBody'], target: join });
+  addCompilerAsyncStateMachineState(draft);
+  draft.guards.pop();
+
+  draft.currentIdentity = handler;
+  draft.currentSteps = [];
+  draft.terminal = false;
+  const handlerRefusal = createIrStatementArmAsyncStateMachine(scope, catchClause.body, handlerPath, [], draft);
+  if (handlerRefusal) return handlerRefusal;
+  if (!draft.terminal) draft.currentSteps.push({ kind: 'goto', path: handlerPath, target: join });
+  addCompilerAsyncStateMachineState(draft);
+
+  draft.currentIdentity = join;
+  draft.currentSteps = [];
+  draft.terminal = false;
+  return undefined;
+}
 function createIrStatementArmAsyncStateMachine(
   scope: Readonly<CompilerAsyncTaskScope>,
   statement: Readonly<IrStatement>,
@@ -668,6 +726,9 @@ function createIrStatementSuspensionAsyncStateMachine(
   }
   if (statement.kind === 'if') {
     return createIrIfStatementAsyncStateMachine(scope, statement, path, suspensions, draft);
+  }
+  if (statement.kind === 'try') {
+    return createIrTryStatementAsyncStateMachine(scope, statement, path, suspensions, draft);
   }
   if (statement.kind === 'do' || statement.kind === 'while') {
     return createIrLoopStatementAsyncStateMachine(scope, statement, path, suspensions, draft);

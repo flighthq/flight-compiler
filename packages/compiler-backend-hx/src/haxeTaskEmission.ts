@@ -1,6 +1,7 @@
 import { indentSourceLines } from '../../compiler-emission/src/index.js';
 import { getIrModuleTraversalPathValue } from '../../compiler-ir-traversal/src/index.js';
 import type {
+  CompilerAsyncStateMachineGuardedState,
   CompilerAsyncStateMachineStateIdentity,
   CompilerCompletionValueSource,
   CompilerHaxeTaskEmissionCapabilities,
@@ -9,6 +10,7 @@ import type {
   CompilerHaxeTaskLoweringState,
   CompilerHaxeTaskLoweringStep,
   CompilerIrTraversalPath,
+  IrBindingIdentity,
   IrExpression,
   IrModule,
   IrStatement,
@@ -92,8 +94,45 @@ function emitCompilerHaxeTaskLoweringState(
     'try {',
     ...indentSourceLines(body),
     `} catch (${errorName}:Dynamic) {`,
-    `  ${names.reject}(${errorName});`,
+    ...indentSourceLines(
+      emitCompilerHaxeTaskEmissionRejectionRoute(
+        state.guard,
+        errorName,
+        functionPlan,
+        runtime,
+        module,
+        capabilities,
+        names,
+        nextAncestors,
+        joins,
+      ),
+    ),
     '}',
+  ];
+}
+
+// A rejection settles the task unless a source-level handler is in scope, in which case it enters
+// that handler with the caught value bound the way the source binds it.
+function emitCompilerHaxeTaskEmissionRejectionRoute(
+  guard: Readonly<CompilerAsyncStateMachineGuardedState> | undefined,
+  errorName: string,
+  functionPlan: Readonly<CompilerHaxeTaskLoweringFunction>,
+  runtime: Readonly<CompilerHaxeTaskLoweringRuntime>,
+  module: Readonly<IrModule>,
+  capabilities: Readonly<CompilerHaxeTaskEmissionCapabilities>,
+  names: Readonly<HaxeTaskEmissionNames>,
+  ancestors: ReadonlySet<string>,
+  joins: ReadonlyMap<string, string>,
+): string[] {
+  if (!guard) return [`${names.reject}(${errorName});`];
+  const key = getCompilerHaxeTaskEmissionIdentityKey(guard.catchState);
+  const handler = functionPlan.states.find(
+    (candidate) => getCompilerHaxeTaskEmissionIdentityKey(candidate.identity) === key,
+  );
+  if (!handler) capabilities.fail(`Haxe task guard ${key} has no handler state`);
+  return [
+    ...(guard.catchBinding ? [`var ${capabilities.getBindingName(guard.catchBinding)} = ${errorName};`] : []),
+    ...emitCompilerHaxeTaskLoweringState(handler, functionPlan, runtime, module, capabilities, names, ancestors, joins),
   ];
 }
 
@@ -167,6 +206,49 @@ function emitCompilerHaxeTaskLoweringStep(
         'return;',
       ];
     }
+    case 'guardState': {
+      // The guarded body and its handler both leave through the same join, so the join is a local
+      // function here for the same reason it is one for a branch.
+      const joinIdentity = getCompilerHaxeTaskEmissionIdentityKey(step.join);
+      const joinState = functionPlan.states.find(
+        (candidate) => getCompilerHaxeTaskEmissionIdentityKey(candidate.identity) === joinIdentity,
+      );
+      if (!joinState) capabilities.fail(`Haxe task guard at ${JSON.stringify(step.path)} has no join state`);
+      const bodyIdentity = getCompilerHaxeTaskEmissionIdentityKey(step.body);
+      const bodyState = functionPlan.states.find(
+        (candidate) => getCompilerHaxeTaskEmissionIdentityKey(candidate.identity) === bodyIdentity,
+      );
+      if (!bodyState) capabilities.fail(`Haxe task guard at ${JSON.stringify(step.path)} has no body state`);
+      const joinName = capabilities.getGeneratedName('taskJoin');
+      const nextJoins = new Map([...joins, [joinIdentity, joinName]]);
+      return [
+        `var ${joinName} = function() {`,
+        ...indentSourceLines(
+          emitCompilerHaxeTaskLoweringState(
+            joinState,
+            functionPlan,
+            runtime,
+            module,
+            capabilities,
+            names,
+            ancestors,
+            joins,
+          ),
+        ),
+        '};',
+        ...emitCompilerHaxeTaskLoweringState(
+          bodyState,
+          functionPlan,
+          runtime,
+          module,
+          capabilities,
+          names,
+          ancestors,
+          nextJoins,
+        ),
+        'return;',
+      ];
+    }
     case 'loopState': {
       const headerIdentity = getCompilerHaxeTaskEmissionIdentityKey(step.header);
       const headerState = functionPlan.states.find(
@@ -236,7 +318,25 @@ function emitCompilerHaxeTaskLoweringStep(
         ...indentSourceLines(fulfillment, 2),
         '  },',
         `  function(${awaitErrorName}) {`,
-        `    ${names.reject}(${awaitErrorName});`,
+        ...indentSourceLines(
+          emitCompilerHaxeTaskEmissionRejectionRoute(
+            step.rejectState
+              ? {
+                  catchState: step.rejectState,
+                  ...getCompilerHaxeTaskEmissionGuardBinding(functionPlan, step.rejectState),
+                }
+              : undefined,
+            awaitErrorName,
+            functionPlan,
+            runtime,
+            module,
+            capabilities,
+            names,
+            ancestors,
+            joins,
+          ),
+          2,
+        ),
         '  }',
         ');',
         'return;',
@@ -347,12 +447,25 @@ function getCompilerHaxeTaskEmissionSourceValue<Value>(
   return value as Readonly<Value>;
 }
 
+function getCompilerHaxeTaskEmissionGuardBinding(
+  functionPlan: Readonly<CompilerHaxeTaskLoweringFunction>,
+  catchState: Readonly<CompilerAsyncStateMachineStateIdentity>,
+): { catchBinding?: IrBindingIdentity } {
+  const key = getCompilerHaxeTaskEmissionIdentityKey(catchState);
+  const guarded = functionPlan.states.find(
+    (state) => state.guard && getCompilerHaxeTaskEmissionIdentityKey(state.guard.catchState) === key,
+  );
+  return guarded?.guard?.catchBinding ? { catchBinding: guarded.guard.catchBinding } : {};
+}
+
 function getCompilerHaxeTaskEmissionIdentityKey(identity: Readonly<CompilerAsyncStateMachineStateIdentity>): string {
   switch (identity.kind) {
     case 'branchArm':
       return `branchArm:${identity.arm}:${JSON.stringify(identity.path)}`;
     case 'entry':
       return 'entry';
+    case 'catch':
+      return `catch:${JSON.stringify(identity.path)}`;
     case 'join':
       return `join:${JSON.stringify(identity.path)}`;
     case 'loopHeader':

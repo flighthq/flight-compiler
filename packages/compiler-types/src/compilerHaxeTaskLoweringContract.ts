@@ -1,5 +1,6 @@
 import type {
   CompilerAsyncStateMachineFulfillment,
+  CompilerAsyncStateMachineGuardedState,
   CompilerAsyncStateMachineRefusal,
   CompilerAsyncStateMachineStateIdentity,
 } from './compilerAsyncStateMachineContract.js';
@@ -49,6 +50,7 @@ export type CompilerHaxeTaskLoweringStep =
       kind: 'awaitRuntime';
       operandPath: CompilerIrTraversalPath;
       path: CompilerIrTraversalPath;
+      rejectState?: CompilerAsyncStateMachineStateIdentity | undefined;
       rejection: CompilerCompletionValueSource;
       resumeState?: CompilerAsyncStateMachineStateIdentity | undefined;
     }>
@@ -75,9 +77,17 @@ export type CompilerHaxeTaskLoweringStep =
       header: CompilerAsyncStateMachineStateIdentity;
       kind: 'loopState';
       path: CompilerIrTraversalPath;
+    }>
+  | Readonly<{
+      body: CompilerAsyncStateMachineStateIdentity;
+      catchState: CompilerAsyncStateMachineStateIdentity;
+      join: CompilerAsyncStateMachineStateIdentity;
+      kind: 'guardState';
+      path: CompilerIrTraversalPath;
     }>;
 
 export interface CompilerHaxeTaskLoweringState {
+  readonly guard?: CompilerAsyncStateMachineGuardedState | undefined;
   readonly identity: CompilerAsyncStateMachineStateIdentity;
   readonly steps: readonly CompilerHaxeTaskLoweringStep[];
 }
