@@ -1,1 +1,1 @@
-rust emission failed for @flighthq/golden/packages/golden/src/tryAwait.ts: async function attempt requires Flight task lowering
+rust emission failed for @flighthq/golden/packages/golden/src/tryAwait.ts: try/catch/finally requires Flight rejection lowering

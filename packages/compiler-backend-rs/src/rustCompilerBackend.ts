@@ -215,7 +215,7 @@ function emitClass(declaration: Readonly<IrClassDeclaration>, context: EmitConte
     );
     declaration.methods.forEach((method, index) => {
       if (index > 0) lines.push('');
-      if (method.async) emissionError(context, `async method ${method.name} requires Flight task lowering`);
+
       const parameters = [
         ...(method.static ? [] : ['&mut self']),
         ...method.parameters.map((parameter) => emitParameter(parameter, context)),
@@ -279,7 +279,7 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
       return `${left} ${emitAssignmentOperatorRust(expression.operator, expression.semantics, context)} ${right}`;
     }
     case 'await':
-      emissionError(context, 'await requires Flight task lowering');
+      return `${emitExpression(expression.expression, context)}.await`;
     case 'binary': {
       const left = emitExpression(expression.left, context);
       const right = emitExpression(expression.right, context);
@@ -374,11 +374,25 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
   }
 }
 
+// `Promise<T>` in the return position of an `async fn` is the future Rust already builds, so the
+// emitted signature carries `T`. Anywhere else the task type has no native spelling yet.
+function getIrTaskAwaitedTypeRust(type: Readonly<IrType>, context: EmitContext): Readonly<IrType> {
+  if (type.kind !== 'named' || type.reference.kind !== 'ambient' || type.reference.name !== 'Promise') {
+    emissionError(context, 'an async function must return a task type');
+  }
+  const awaited = type.typeArguments[0];
+  if (type.typeArguments.length !== 1 || !awaited) {
+    emissionError(context, 'a task type requires one awaited type argument');
+  }
+  return awaited;
+}
+
 function emitFunction(declaration: Readonly<IrFunctionDeclaration>, context: EmitContext): string[] {
-  if (declaration.async)
-    emissionError(context, `async function ${declaration.binding.name} requires Flight task lowering`);
+  // Rust has native suspension, so it declines the neutral state-machine lowering that Haxe elects
+  // and emits `async fn` instead. The awaited type of an async function is its return type: the
+  // future is implied by `async`, so the task wrapper is dropped rather than named.
   return [
-    `${declaration.exported ? 'pub ' : ''}fn ${getBindingTargetNameRust(declaration.binding, context)}${emitTypeParameters(declaration.typeParameters, context)}(${declaration.parameters.map((parameter) => emitParameter(parameter, context)).join(', ')}) -> ${emitType(declaration.returns, context)} {`,
+    `${declaration.exported ? 'pub ' : ''}${declaration.async ? 'async ' : ''}fn ${getBindingTargetNameRust(declaration.binding, context)}${emitTypeParameters(declaration.typeParameters, context)}(${declaration.parameters.map((parameter) => emitParameter(parameter, context)).join(', ')}) -> ${emitType(declaration.async ? getIrTaskAwaitedTypeRust(declaration.returns, context) : declaration.returns, context)} {`,
     ...indentSourceLines([
       ...declaration.parameters.flatMap((parameter) =>
         parameter.initializer

@@ -1039,4 +1039,30 @@ describe('emitIrModuleRust', () => {
     expect(output).toContain('let second = second.unwrap_or_else(|| (first + 1.0));');
     expect(output).toContain('return choose(1.0, None);');
   });
+
+  it('declines the neutral task lowering and emits native async instead', () => {
+    // The state-machine lowering exists for a target with no suspension of its own. Rust has one, so
+    // it emits `async fn` and `.await` and lets rustc build the machine. This is the first place the
+    // backend-elected pass library actually diverges between targets.
+    const module = lower(
+      'drain.ts',
+      'export async function drain(task: Promise<number>, again: boolean): Promise<number> { let last: number = 0; while (again) { last = await task; again = false; } return last; }',
+    );
+    const output = emitIrModuleRust(module.module).contents;
+
+    expect(output).toContain('pub async fn drain(task: FlightTask<f64>, again: bool) -> f64 {');
+    expect(output).toContain('last = task.await;');
+  });
+
+  it('refuses an async function whose declared return is not a task type', () => {
+    const module = lower('broken.ts', 'export async function broken(value: number): Promise<number> { return value; }');
+    const declaration = module.module.declarations[0];
+    if (declaration?.kind !== 'function') throw new Error('Expected a function declaration');
+    const rewritten = {
+      ...module.module,
+      declarations: [{ ...declaration, returns: { kind: 'primitive' as const, name: 'number' as const } }],
+    };
+
+    expect(() => emitIrModuleRust(rewritten)).toThrow('an async function must return a task type');
+  });
 });
