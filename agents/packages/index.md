@@ -16,6 +16,7 @@ A score is a judgement about **domain coverage**, not about code quality. `compi
 | [compiler-completion](compiler-completion/review.md) | solid | 78 | how a statement finishes, and carrying what |
 | [compiler-types](compiler-types/review.md) | foundational | 74 | the vocabulary everything else speaks |
 | [compiler-structural](compiler-structural/review.md) | solid | 72 | when two shapes are the same, and what follows |
+| [compiler-task](compiler-task/review.md) | solid | 72 | what suspends, and what a target must supply to run it |
 | [compiler-closure](compiler-closure/review.md) | solid | 70 | what a closure captures and how long it must live |
 | [compiler-inventory](compiler-inventory/review.md) | solid | 68 | what is in this workspace and what does it export |
 | [compiler-lowering](compiler-lowering/review.md) | solid | 64 | verified neutral IR-to-IR transforms elected by targets |
@@ -23,7 +24,6 @@ A score is a judgement about **domain coverage**, not about code quality. `compi
 | [compiler-orchestration](compiler-orchestration/review.md) | solid | 60 | compose the passes deterministically |
 | [compiler-module](compiler-module/review.md) | early | 55 | what links, in what order, and which slot a name means |
 | [compiler-semantic](compiler-semantic/review.md) | early | 50 | TypeScript in, neutral IR out |
-| [compiler-task](compiler-task/review.md) | early | 48 | what suspends, and what a target must supply to run it |
 | [compiler-backend-hx](compiler-backend-hx/review.md) | early | 38 | neutral IR in, idiomatic Haxe out |
 | [compiler-backend-rs](compiler-backend-rs/review.md) | early | 34 | neutral IR in, idiomatic Rust out |
 

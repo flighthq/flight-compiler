@@ -273,6 +273,10 @@ function createCompilerAsyncStateMachine(
   retainedCaptures: CompilerAsyncStateMachine['retainedCaptures'],
   retainedBindings: readonly CompilerAsyncStateMachineRetainedBinding[],
 ): AsyncStateMachineBuildResult {
+  // `for await` is not a control-flow gap. Its loop shape is the one already compiled here; what it
+  // lacks is an async-iterator protocol in the runtime contract — how a target obtains an iterator
+  // and what a settled iteration result looks like. Until the runtime surface names that, there is
+  // nothing correct to lower it into, so it refuses ahead of the state machine rather than inside it.
   const asyncIteration = suspensions.find((suspension) => suspension.kind === 'asyncIteration');
   if (asyncIteration) {
     return {
