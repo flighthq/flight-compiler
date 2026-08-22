@@ -1243,9 +1243,12 @@ describe('lowerTypeScriptSource', () => {
           for (const key in { second: 2, 10: 10, 2: 2, first: 1 }) return key;
           return '';
         }
-        export function dynamic(values: { value: number }, callback: () => number): void {
+        export function dynamic(values: { value?: number }, callback: () => number): void {
           for (const key in values) key;
           for (const key in { value: callback() }) key;
+        }
+        export function declared(values: { value: number }): void {
+          for (const key in values) key;
         }
         export function closed(): void {
           const values = { second: 2, first: 1 } as const;
@@ -1270,7 +1273,16 @@ describe('lowerTypeScriptSource', () => {
     expect(fixedLoop).toMatchObject({
       keyPlan: { evaluation: 'elide', keys: ['2', '10', 'second', 'first'], kind: 'objectLiteral' },
     });
+    // An optional property means a key that may or may not be present, so the shape is not closed.
     expect(dynamic.body[0]?.kind === 'forIn' ? dynamic.body[0].keyPlan : 'not-for-in').toBeUndefined();
+    const declared = result.module.declarations.find(
+      (declaration) => declaration.kind === 'function' && declaration.binding.name === 'declared',
+    );
+    // A written shape whose properties are all required is closed even though the value is a
+    // parameter rather than a literal.
+    expect(declared?.kind === 'function' ? declared.body[0] : undefined).toMatchObject({
+      keyPlan: { evaluation: 'alreadyEvaluated', keys: ['value'], kind: 'closedRecord' },
+    });
     expect(dynamic.body[1]).toMatchObject({
       keyPlan: { evaluation: 'preserve', keys: ['value'], kind: 'objectLiteral' },
     });
