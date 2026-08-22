@@ -79,6 +79,7 @@ import { analyzeIrModuleOwnershipEvidenceRust } from './rustOwnershipEvidence.js
 import { createCompilerRuntimeExternalConstructorAbiPlanRust } from './rustRuntimeExternalConstructorAbi.js';
 import {
   createCompilerRuntimeExternalSymbolBindingPlanRust,
+  getCompilerRuntimeExternalMemberTargetRust,
   getCompilerRuntimeExternalSymbolTargetRust,
 } from './rustRuntimeExternalSymbolBinding.js';
 
@@ -503,9 +504,16 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
       return emitObjectExpressionRust(expression, context);
     case 'objectRest':
       return emitObjectRestExpressionRust(expression, context);
-    case 'property':
+    case 'property': {
       if (expression.optional) return emitOptionalPropertyExpressionRust(expression, context);
+      // A namespace-like ambient symbol has no target name of its own, so the member decides the
+      // whole spelling: `Math.max` is `f64::max`, not `Math::max`.
+      if (expression.object.kind === 'identifier' && expression.object.reference.kind === 'ambient') {
+        const member = getCompilerRuntimeExternalMemberTargetRust(expression.object.reference.name, expression.name);
+        if (member) return member;
+      }
       return `${emitExpression(expression.object, context)}${isAmbientIdentifier(expression.object) ? '::' : '.'}${safeRustValueName(expression.name)}`;
+    }
     case 'regexp':
       emissionError(context, 'regular expressions require a downstream standard-library mapping');
     case 'spread':

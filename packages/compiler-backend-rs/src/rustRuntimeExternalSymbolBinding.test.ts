@@ -1,5 +1,6 @@
 import {
   createCompilerRuntimeExternalSymbolBindingPlanRust,
+  getCompilerRuntimeExternalMemberTargetRust,
   getCompilerRuntimeExternalSymbolTargetRust,
 } from './rustRuntimeExternalSymbolBinding.js';
 
@@ -8,7 +9,7 @@ describe('createCompilerRuntimeExternalSymbolBindingPlanRust', () => {
     const plan = createCompilerRuntimeExternalSymbolBindingPlanRust();
 
     expect(plan.contract).toBe('flight-runtime-contract/2');
-    expect(plan.bindings).toHaveLength(28);
+    expect(plan.bindings).toHaveLength(29);
     expect(plan.bindings.filter(({ externalSymbol }) => externalSymbol.sourceName === 'Promise')).toEqual([
       {
         capability: 'task',
@@ -39,7 +40,7 @@ describe('createCompilerRuntimeExternalSymbolBindingPlanRust', () => {
     const second = createCompilerRuntimeExternalSymbolBindingPlanRust();
 
     (first.bindings as unknown[]).pop();
-    expect(second.bindings).toHaveLength(28);
+    expect(second.bindings).toHaveLength(29);
   });
 });
 
@@ -81,5 +82,21 @@ describe('getCompilerRuntimeExternalSymbolTargetRust', () => {
     expect(getCompilerRuntimeExternalSymbolTargetRust('Boolean', 'value')).toBeUndefined();
     expect(getCompilerRuntimeExternalSymbolTargetRust('Error', 'type')).toBeUndefined();
     expect(getCompilerRuntimeExternalSymbolTargetRust('Unmapped', 'value')).toBeUndefined();
+  });
+});
+
+describe('getCompilerRuntimeExternalMemberTargetRust', () => {
+  it('spells a namespace member whole, because the symbol has no target name of its own', () => {
+    // `Math` is not a Rust type: `Math.max` is `f64::max` and there is nothing to call `Math`. A
+    // binding that maps one symbol to one name cannot express that, which is why members are bound.
+    expect(getCompilerRuntimeExternalMemberTargetRust('Math', 'max')).toBe('f64::max');
+    expect(getCompilerRuntimeExternalMemberTargetRust('Math', 'abs')).toBe('f64::abs');
+    expect(getCompilerRuntimeExternalMemberTargetRust('Math', 'sqrt')).toBe('f64::sqrt');
+  });
+
+  it('claims nothing for an unbound member or an unbound symbol', () => {
+    expect(getCompilerRuntimeExternalMemberTargetRust('Math', 'atan2')).toBeUndefined();
+    expect(getCompilerRuntimeExternalMemberTargetRust('Array', 'from')).toBeUndefined();
+    expect(getCompilerRuntimeExternalMemberTargetRust('Date', 'now')).toBeUndefined();
   });
 });

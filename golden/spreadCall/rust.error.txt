@@ -1,1 +1,1 @@
-rust emission failed for @flighthq/golden/packages/golden/src/spreadCall.ts: runtime external symbol binding plan is incomplete (missing: Math[value])
+rust emission failed for @flighthq/golden/packages/golden/src/spreadCall.ts: spread expressions require collection or structural lowering

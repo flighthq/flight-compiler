@@ -174,8 +174,8 @@ describe('emitIrModuleRust', () => {
       'export function preserve(values: Map<string, number>, bytes: Uint8Array, task: Promise<number>): Promise<number> { values; bytes; return task; }',
     );
     const missing = lower('external-missing.ts', 'export type fooBar = Date; export type foo_bar = Date;');
-    const missingValue = lower(
-      'external-value-missing.ts',
+    const boundValue = lower(
+      'external-value-bound.ts',
       'export function maximum(left: number, right: number): number { return Math.max(left, right); }',
     );
     const values = lower(
@@ -193,9 +193,9 @@ describe('emitIrModuleRust', () => {
     expect(() => emitIrModuleRust(missing.module)).toThrow(
       'runtime external symbol binding plan is incomplete (missing: Date[type])',
     );
-    expect(() => emitIrModuleRust(missingValue.module)).toThrow(
-      'runtime external symbol binding plan is incomplete (missing: Math[value])',
-    );
+    // `Math` binds through its members rather than as a symbol, because it has no target name of
+    // its own: `Math.max` is `f64::max` and there is nothing to call `Math`.
+    expect(emitIrModuleRust(boundValue.module).contents).toContain('return f64::max(left, right);');
   });
 
   it('elects C-style for lowering and default-parameter declaration expansion', () => {

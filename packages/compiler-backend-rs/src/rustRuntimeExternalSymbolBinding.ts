@@ -1,5 +1,6 @@
 import type {
   CompilerRuntimeCapabilityName,
+  CompilerRuntimeExternalMemberBinding,
   CompilerRuntimeExternalSymbolBinding,
   CompilerRuntimeExternalSymbolBindingPlan,
   CompilerRuntimeExternalSymbolSpace,
@@ -8,6 +9,7 @@ import type {
 type RustRuntimeExternalSymbolBinding =
   | Readonly<{
       kind: Extract<CompilerRuntimeExternalSymbolBinding, { kind: 'native' }>['kind'];
+      members?: readonly CompilerRuntimeExternalMemberBinding[] | undefined;
       sourceName: string;
       space: CompilerRuntimeExternalSymbolSpace;
       targetName: string;
@@ -38,6 +40,17 @@ export function createCompilerRuntimeExternalSymbolBindingPlanRust(): CompilerRu
   };
 }
 
+// A namespace-like ambient symbol has no single target name, so its members are spelled one at a
+// time. `Math.max` is `f64::max`; there is no `Math` to name on its own.
+export function getCompilerRuntimeExternalMemberTargetRust(sourceName: string, member: string): string | undefined {
+  const normalized = sourceName.normalize('NFC');
+  const binding: RustRuntimeExternalSymbolBinding | undefined = rustRuntimeExternalSymbolBindings.find(
+    (candidate) => candidate.sourceName === normalized && candidate.space === 'value',
+  );
+  if (!binding || binding.kind !== 'native') return undefined;
+  return binding.members?.find((candidate) => candidate.sourceMember === member.normalize('NFC'))?.targetName;
+}
+
 export function getCompilerRuntimeExternalSymbolTargetRust(
   sourceName: string,
   space: CompilerRuntimeExternalSymbolSpace,
@@ -49,6 +62,21 @@ export function getCompilerRuntimeExternalSymbolTargetRust(
 }
 
 const rustRuntimeExternalSymbolBindings = [
+  {
+    kind: 'native',
+    members: [
+      { sourceMember: 'abs', targetName: 'f64::abs' },
+      { sourceMember: 'floor', targetName: 'f64::floor' },
+      { sourceMember: 'max', targetName: 'f64::max' },
+      { sourceMember: 'min', targetName: 'f64::min' },
+      { sourceMember: 'round', targetName: 'f64::round' },
+      { sourceMember: 'sqrt', targetName: 'f64::sqrt' },
+      { sourceMember: 'trunc', targetName: 'f64::trunc' },
+    ],
+    sourceName: 'Math',
+    space: 'value',
+    targetName: 'f64',
+  },
   { kind: 'native', sourceName: 'Array', space: 'type', targetName: 'Vec' },
   { kind: 'native', sourceName: 'Array', space: 'value', targetName: 'Vec' },
   { kind: 'native', sourceName: 'Boolean', space: 'type', targetName: 'bool' },

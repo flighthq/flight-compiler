@@ -74,10 +74,19 @@ export type CompilerRuntimeExternalConstructorAbiCompleteness =
       schema: 'flight-runtime-constructor-abi-completeness/1';
     }>;
 
+// How each member of an ambient symbol is spelled by a target. A binding maps one symbol to one
+// target name, which fits `Array` to `Vec`. It does not fit a namespace-like symbol: `Math.max` is
+// `f64::max` and `Math.PI` is a constant path, so the mapping is per member rather than per symbol.
+export interface CompilerRuntimeExternalMemberBinding {
+  readonly sourceMember: string;
+  readonly targetName: string;
+}
+
 export type CompilerRuntimeExternalSymbolBinding =
   | Readonly<{
       externalSymbol: CompilerRuntimeExternalSymbolIdentity;
       kind: 'native';
+      members?: readonly CompilerRuntimeExternalMemberBinding[] | undefined;
     }>
   | Readonly<{
       capability: CompilerRuntimeCapabilityName;
