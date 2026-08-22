@@ -1171,13 +1171,27 @@ describe('emitIrModuleRust', () => {
     expect(output).toContain('  pub fn reset(&mut self) -> () {');
   });
 
-  it('refuses a trait with a data property, which Rust traits cannot hold', () => {
+  it('turns a trait data property into the accessor that reads it', () => {
+    // A Rust trait holds no data. Fields and methods live in different namespaces, so the accessor
+    // keeps the property's own name and reads the field of the same name.
     const module = lower(
       'data-trait.ts',
       'export interface Advancer { step: number; } export class Counter implements Advancer { step: number = 1; }',
     );
+    const output = emitIrModuleRust(module.module).contents;
 
-    expect(() => emitIrModuleRust(module.module)).toThrow('requires Rust accessor lowering');
+    expect(output).toContain('  fn step(&self) -> f64;');
+    expect(output).toContain('impl Advancer for Counter {');
+    expect(output).toContain('    self.step.clone()');
+  });
+
+  it('refuses an optional trait data property, which has no single accessor shape yet', () => {
+    const module = lower(
+      'optional-trait.ts',
+      'export interface Advancer { step?: number; } export class Counter implements Advancer { step: number = 1; }',
+    );
+
+    expect(() => emitIrModuleRust(module.module)).toThrow('requires Rust optional accessor lowering');
   });
 
   it('coalesces an Option-shaped operand and refuses one that is not', () => {

@@ -283,6 +283,21 @@ function emitClass(declaration: Readonly<IrClassDeclaration>, context: EmitConte
     if (target?.kind !== 'interface') continue;
     for (const property of target.properties) traitMethodNames.set(property.name, emitType(reference, context));
   }
+  const traitDataProperties = new Map<string, IrObjectTypeProperty[]>();
+  for (const reference of declaration.implements) {
+    if (reference.kind !== 'named' || reference.reference.kind !== 'binding') continue;
+    const target = context.module.declarations.find(
+      (candidate) =>
+        candidate.kind === 'interface' &&
+        reference.reference.kind === 'binding' &&
+        candidate.binding.id === reference.reference.binding.id,
+    );
+    if (target?.kind !== 'interface') continue;
+    traitDataProperties.set(
+      emitType(reference, context),
+      target.properties.filter((property) => property.type.kind !== 'function'),
+    );
+  }
   const inherentMethods = declaration.methods.filter((method) => !traitMethodNames.has(method.name));
   const emitMethodLines = (method: (typeof declaration.methods)[number]): string[] => {
     const parameters = [
@@ -301,9 +316,18 @@ function emitClass(declaration: Readonly<IrClassDeclaration>, context: EmitConte
       '',
       `impl${emitTypeParameters(declaration.typeParameters, context)} ${trait} for ${getBindingTargetNameRust(declaration.binding, context)}${emitTypeArguments(declaration.typeParameters, context)} {`,
     );
+    const traitAccessors = traitDataProperties.get(trait) ?? [];
     traitMethods.forEach((method, index) => {
       if (index > 0) lines.push('');
       lines.push(...emitMethodLines(method));
+    });
+    traitAccessors.forEach((property, index) => {
+      if (index > 0 || traitMethods.length > 0) lines.push('');
+      lines.push(
+        `  fn ${safeRustValueName(property.name)}(&self) -> ${emitType(property.type, context)} {`,
+        `    self.${safeRustValueName(property.name)}.clone()`,
+        '  }',
+      );
     });
     lines.push('}');
   }
@@ -660,11 +684,16 @@ function emitTraitRust(declaration: Readonly<IrInterfaceDeclaration>, context: E
   return [
     `${visibility}trait ${getBindingTargetNameRust(declaration.binding, context)}${emitTypeParameters(declaration.typeParameters, context)} {`,
     ...declaration.properties.map((property) => {
+      // A Rust trait holds no data, so a data property becomes the accessor that reads it. Fields and
+      // methods live in different namespaces, so the accessor keeps the property's own name.
       if (property.type.kind !== 'function') {
-        return emissionError(
-          context,
-          `interface ${declaration.binding.name} property ${property.name} requires Rust accessor lowering`,
-        );
+        if (property.optional) {
+          return emissionError(
+            context,
+            `interface ${declaration.binding.name} property ${property.name} requires Rust optional accessor lowering`,
+          );
+        }
+        return `  fn ${safeRustValueName(property.name)}(&self) -> ${emitType(property.type, context)};`;
       }
       const parameters = property.type.parameters
         .map(
