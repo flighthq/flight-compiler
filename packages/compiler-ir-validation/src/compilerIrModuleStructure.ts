@@ -500,6 +500,9 @@ function visitExpression(expression: Readonly<IrExpression>, path: string, state
       visitExpression(expression.object, `${path}.object`, state);
       break;
     case 'function':
+      if (expression.thisMode !== 'dynamic' && expression.thisMode !== 'lexical') {
+        addFailure('invalid-node-shape', `${path}.thisMode`, 'function this mode must be dynamic or lexical', state);
+      }
       visitLexicalScope('function', path, state, () => {
         if (expression.binding) {
           addBindingDefinition(

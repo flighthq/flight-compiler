@@ -6,6 +6,7 @@ export type * from './compilerBindingIntermediateRepresentation.js';
 export type * from './compilerBindingPatternIntermediateRepresentation.js';
 export type * from './compilerCatchCompletionContract.js';
 export type * from './compilerClassInitializationContract.js';
+export type * from './compilerClosureEvidenceContract.js';
 export type * from './compilerCompletionContract.js';
 export type * from './compilerDeclarationIntermediateRepresentation.js';
 export type * from './compilerDiagnosticContract.js';

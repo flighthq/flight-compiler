@@ -63,6 +63,7 @@ function createIrCallExpressionExtraArgumentErasure(
       kind: 'function',
       parameters: [],
       returns: evidence.resultType,
+      thisMode: 'lexical',
       typeParameters: [],
     },
     kind: 'call',

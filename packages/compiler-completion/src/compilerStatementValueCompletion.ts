@@ -20,6 +20,7 @@ export function isIrCallExpressionStatementValueCarrier(expression: Readonly<IrE
     expression.callee.binding !== undefined ||
     expression.callee.expression !== undefined ||
     expression.callee.parameters.length > 0 ||
+    expression.callee.thisMode !== 'lexical' ||
     expression.callee.typeParameters.length > 0 ||
     expression.arguments.length > 0 ||
     expression.optional ||

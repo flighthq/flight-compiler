@@ -128,6 +128,7 @@ describe('analyzeIrModuleOwnershipEvidenceRust', () => {
             return once;
           }
         }
+        export class EmptyWorker { run(): void {} }
       `),
     );
     const named = evidence.bindings.filter((binding) => ['once', 'unused'].includes(binding.binding.name));

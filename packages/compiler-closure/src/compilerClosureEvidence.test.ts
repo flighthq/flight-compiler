@@ -1,0 +1,296 @@
+import ts from 'typescript';
+
+import { lowerTypeScriptSource } from '../../compiler-semantic/src/index.js';
+import type { CompilerClosureEvidence, IrModule } from '../../compiler-types/src/index.js';
+import { analyzeIrModuleClosureEvidence } from './compilerClosureEvidence.js';
+
+describe('analyzeIrModuleClosureEvidence', () => {
+  it('distinguishes closure origins, recursion, module capture, and lexical this capture', () => {
+    const evidence = analyzeIrModuleClosureEvidence(
+      lower(`
+        let global: number = 0;
+        export function recurse(input: number): number {
+          global += input;
+          if (input > 0) return recurse(input - 1);
+          return global;
+        }
+        export class Box {
+          constructor(value: number) { value; }
+          method(): () => Box { return () => this; }
+          static read(): number { return global; }
+        }
+      `),
+    );
+    const recurse = evidence.closures.find((closure) => closure.origin.kind === 'functionDeclaration');
+    const constructor = evidence.closures.find((closure) => closure.origin.kind === 'classConstructor');
+    const method = evidence.closures.find(
+      (closure) => closure.origin.kind === 'classMethod' && closure.origin.method === 'method',
+    );
+    const arrow = evidence.closures.find((closure) => closure.thisMode === 'lexical');
+    const staticMethod = evidence.closures.find(
+      (closure) => closure.origin.kind === 'classMethod' && closure.origin.method === 'read',
+    );
+
+    expect(evidence.schema).toBe('flight-compiler-closure-evidence/1');
+    expect(recurse).toMatchObject({
+      escape: 'mayEscape',
+      thisMode: 'dynamic',
+      valueUses: expect.arrayContaining([expect.objectContaining({ kind: 'exported' })]),
+    });
+    expect(recurse?.captures.find((capture) => capture.binding.name === 'global')).toMatchObject({
+      lifetimeBoundaries: ['moduleLifetime'],
+      mutation: 'bindingReassigned',
+    });
+    expect(recurse?.selfReferences).toHaveLength(1);
+    expect(constructor).toMatchObject({
+      escape: 'mayEscape',
+      valueUses: [{ kind: 'classStorage', path: expect.any(Array) }],
+    });
+    expect(method).toMatchObject({ thisMode: 'dynamic', thisUses: [] });
+    expect(arrow).toMatchObject({ escape: 'mayEscape', thisMode: 'lexical' });
+    expect(arrow?.thisUses).toHaveLength(1);
+    expect(staticMethod?.captures.find((capture) => capture.binding.name === 'global')?.lifetimeBoundaries).toEqual([
+      'moduleLifetime',
+    ]);
+  });
+
+  it('reports capture mutation, external mutation, escape retention, and suspension retention independently', () => {
+    const evidence = analyzeIrModuleClosureEvidence(
+      lower(`
+        export function make(seed: number): () => Promise<number> {
+          let scalar: number = seed;
+          let record: { count: number; extra?: number } = { count: seed, extra: seed };
+          scalar++;
+          const closure = async (): Promise<number> => {
+            await Promise.resolve();
+            scalar++;
+            record.count++;
+            delete record.extra;
+            return scalar + record.count;
+          };
+          scalar--;
+          return closure;
+        }
+      `),
+    );
+    const closure = evidence.closures.find((candidate) => candidate.async);
+    const scalar = closure?.captures.find((capture) => capture.binding.name === 'scalar');
+    const record = closure?.captures.find((capture) => capture.binding.name === 'record');
+
+    expect(closure).toMatchObject({
+      escape: 'mayEscape',
+      suspensions: [expect.any(Array)],
+      valueUses: expect.arrayContaining([
+        expect.objectContaining({ kind: 'storedBinding' }),
+        expect.objectContaining({ kind: 'returned' }),
+      ]),
+    });
+    expect(scalar).toMatchObject({
+      lifetimeBoundaries: ['closureEscape', 'suspension'],
+      mutation: 'bindingReassigned',
+      outsideMutations: [
+        expect.objectContaining({ kind: 'rebind', lexicalRelation: 'beforeCreation' }),
+        expect.objectContaining({ kind: 'rebind', lexicalRelation: 'afterCreation' }),
+      ],
+    });
+    expect(record).toMatchObject({
+      lifetimeBoundaries: ['closureEscape', 'suspension'],
+      mutation: 'referentMutated',
+      outsideMutations: [],
+    });
+  });
+
+  it('retains imported, per-iteration, and catch bindings through their exact closure boundaries', () => {
+    const evidence = analyzeIrModuleClosureEvidence(
+      lower(`
+        import { external } from './external.js';
+        export function collect(): Array<() => number> {
+          const callbacks: Array<() => number> = [];
+          for (let index: number = 0; index < 2; index++) callbacks.push(() => index + external);
+          try { throw 1; } catch (error) { callbacks.push(() => error as number); }
+          return callbacks;
+        }
+      `),
+    );
+    const iteration = evidence.closures.find((closure) =>
+      closure.captures.some((capture) => capture.binding.name === 'index'),
+    );
+    const caught = evidence.closures.find((closure) =>
+      closure.captures.some((capture) => capture.binding.name === 'error'),
+    );
+
+    expect(iteration).toMatchObject({
+      escape: 'mayEscape',
+      valueUses: expect.arrayContaining([expect.objectContaining({ kind: 'passedArgument' })]),
+    });
+    expect(iteration?.captures.find((capture) => capture.binding.name === 'index')?.lifetimeBoundaries).toEqual([
+      'iteration',
+      'closureEscape',
+    ]);
+    expect(iteration?.captures.find((capture) => capture.binding.name === 'external')?.lifetimeBoundaries).toEqual([
+      'moduleLifetime',
+    ]);
+    expect(caught?.captures.find((capture) => capture.binding.name === 'error')).toMatchObject({
+      lifetimeBoundaries: ['closureEscape'],
+    });
+  });
+
+  it('classifies direct, discarded, exported, passed, aggregate, alias, property, and unknown value uses', () => {
+    const evidence = analyzeIrModuleClosureEvidence(
+      lower(`
+        export function classify(seed: number, consume: (callback: () => number) => void): object {
+          (() => seed)();
+          const stored = () => seed;
+          stored();
+          const alias = stored;
+          const aggregate = { callback: () => seed };
+          consume(() => seed);
+          const box: { callback?: () => number } = {};
+          box.callback = () => seed;
+          let assigned: () => number;
+          assigned = () => seed;
+          assigned();
+          (() => seed);
+          if (seed) return () => seed;
+          return aggregate;
+        }
+        export default () => 1;
+      `),
+    );
+    const kinds = new Set(evidence.closures.flatMap((closure) => closure.valueUses.map((use) => use.kind)));
+    const nonEscaping = evidence.closures.filter((closure) => closure.escape === 'knownNonEscaping');
+    const defaultExport = evidence.closures.find((closure) => closure.path[0] === 'exports');
+
+    expect(kinds).toEqual(
+      new Set([
+        'directInvocation',
+        'discarded',
+        'exported',
+        'passedArgument',
+        'returned',
+        'storedAggregate',
+        'storedAlias',
+        'storedBinding',
+        'storedProperty',
+        'unknown',
+      ]),
+    );
+    expect(nonEscaping.some((closure) => hasValueUse(closure, 'directInvocation'))).toBe(true);
+    expect(nonEscaping.some((closure) => hasValueUse(closure, 'discarded'))).toBe(true);
+    expect(defaultExport).toMatchObject({
+      escape: 'mayEscape',
+      valueUses: [expect.objectContaining({ kind: 'exported' })],
+    });
+  });
+
+  it('attributes a transitive capture only to its actual lexical user and returns deterministic immutable evidence', () => {
+    const module = lower(`
+      export function nested(value: number): () => () => number {
+        const middle = () => {
+          const inner = () => value;
+          return inner;
+        };
+        return middle;
+      }
+    `);
+    const snapshot = structuredClone(module);
+
+    const first = analyzeIrModuleClosureEvidence(module);
+    const second = analyzeIrModuleClosureEvidence(module);
+    const expressions = first.closures.filter((closure) => closure.origin.kind === 'functionExpression');
+
+    expect(expressions).toHaveLength(2);
+    expect(
+      expressions.filter((closure) => closure.captures.some((capture) => capture.binding.name === 'value')),
+    ).toHaveLength(1);
+    expect(first).toEqual(second);
+    expect(first).not.toBe(second);
+    expect(isDeeplyFrozen(first, new WeakSet())).toBe(true);
+    expect(module).toEqual(snapshot);
+  });
+
+  it('covers named, destructured, repeated, conditional, and every loop-binding closure form', () => {
+    const evidence = analyzeIrModuleClosureEvidence(
+      lower(`
+        enum Choice { first }
+        type Hidden = number;
+        export type { Hidden };
+        const exportedLater = () => Choice.first;
+        export { exportedLater };
+        function getRecord(): { count: number } { return { count: 0 }; }
+        export async function variants(values: number[]): Promise<Array<() => number>> {
+          var repeated: number = 0;
+          var repeated: number;
+          const [first] = values;
+          const { length } = values;
+          let both: { count: number } = { count: first };
+          const named = function named(value: number): number {
+            return value ? named(value - 1) : both.count;
+          };
+          const closures: Array<() => number> = [];
+          for (const value of values) {
+            const bodyValue = value;
+            closures.push(() => value, () => bodyValue);
+          }
+          for (const key in { first }) closures.push(() => key.length);
+          for await (const value of values) closures.push(() => value);
+          for (var hoisted = 0; hoisted < 1; hoisted++) closures.push(() => hoisted);
+          const conditional = first ? () => first : () => length;
+          const mutate = () => {
+            both = { count: 0 };
+            both.count++;
+            getRecord().count++;
+            return named(both.count);
+          };
+          closures.push(conditional, mutate);
+          return closures;
+        }
+      `),
+    );
+    const iterationCaptures = evidence.closures.flatMap((closure) =>
+      closure.captures.filter((capture) => capture.lifetimeBoundaries.includes('iteration')),
+    );
+    const both = evidence.closures
+      .flatMap((closure) => closure.captures)
+      .find((capture) => capture.binding.name === 'both' && capture.mutation === 'bindingAndReferent');
+
+    expect(
+      evidence.closures.some((closure) => closure.origin.kind === 'functionExpression' && closure.origin.binding),
+    ).toBe(true);
+    expect(evidence.closures.some((closure) => closure.valueUses.some((use) => use.kind === 'unknown'))).toBe(true);
+    expect(iterationCaptures.map((capture) => capture.binding.name)).toEqual(['value', 'bodyValue', 'key', 'value']);
+    expect(
+      evidence.closures.flatMap((closure) => closure.captures).find((capture) => capture.binding.name === 'hoisted')
+        ?.lifetimeBoundaries,
+    ).not.toContain('iteration');
+    expect(both).toBeDefined();
+  });
+});
+
+function hasValueUse(
+  closure: Readonly<CompilerClosureEvidence>,
+  kind: CompilerClosureEvidence['valueUses'][number]['kind'],
+): boolean {
+  return closure.valueUses.some((use) => use.kind === kind);
+}
+
+function isDeeplyFrozen(value: unknown, seen: WeakSet<object>): boolean {
+  if (!value || typeof value !== 'object' || seen.has(value)) return true;
+  seen.add(value);
+  return Object.isFrozen(value) && Object.values(value).every((child) => isDeeplyFrozen(child, seen));
+}
+
+function lower(source: string): IrModule {
+  const sourceFile = ts.createSourceFile(
+    '/flight/packages/closure/src/evidence.ts',
+    source,
+    ts.ScriptTarget.Latest,
+    true,
+  );
+  const result = lowerTypeScriptSource(sourceFile, {
+    packageName: '@flighthq/closure',
+    upstreamDirectory: '/flight',
+  });
+  expect(result.diagnostics).toEqual([]);
+  return result.module;
+}

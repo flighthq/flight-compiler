@@ -213,6 +213,7 @@ describe('createIrModuleTargetNameAllocation', () => {
             kind: 'function' as const,
             parameters: [],
             returns: { kind: 'primitive' as const, name: 'void' as const },
+            thisMode: 'lexical' as const,
             typeParameters: [],
           },
           kind: 'variable' as const,
@@ -258,6 +259,7 @@ describe('createIrModuleTargetNameAllocation', () => {
       kind: 'function' as const,
       parameters: [],
       returns: { kind: 'primitive' as const, name: 'void' as const },
+      thisMode: 'lexical' as const,
       typeParameters: [],
     });
     const moduleBinding = { ...binding('module'), scope: 'module' as const };
@@ -343,6 +345,7 @@ describe('createIrModuleTargetNameAllocation', () => {
                   kind: 'function' as const,
                   parameters: [],
                   returns: { kind: 'primitive' as const, name: 'void' as const },
+                  thisMode: 'lexical' as const,
                   typeParameters: [],
                 },
                 pattern: {

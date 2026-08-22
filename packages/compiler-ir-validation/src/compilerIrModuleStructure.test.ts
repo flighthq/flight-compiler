@@ -132,6 +132,31 @@ describe('validateIrModuleStructure', () => {
     });
   });
 
+  it('requires every function expression to state lexical or dynamic this semantics', () => {
+    const module = lower(
+      'function-this.ts',
+      'export const lexical = () => 1; export const dynamic = function () { return 1; };',
+    );
+    const expressions = module.declarations.flatMap((declaration) =>
+      declaration.kind === 'variable' && declaration.initializer?.kind === 'function' ? [declaration.initializer] : [],
+    );
+
+    expect(expressions.map((expression) => expression.thisMode)).toEqual(['lexical', 'dynamic']);
+    const invalid = structuredClone(module);
+    const declaration = invalid.declarations[0];
+    if (declaration?.kind !== 'variable' || declaration.initializer?.kind !== 'function') {
+      throw new Error('Expected function-valued variable');
+    }
+    (declaration.initializer as { thisMode: unknown }).thisMode = 'unknown';
+
+    expect(validateIrModuleStructure(invalid)).toMatchObject({
+      failures: [
+        expect.objectContaining({ code: 'invalid-node-shape', path: '$.declarations[0].initializer.thisMode' }),
+      ],
+      kind: 'invalid',
+    });
+  });
+
   it('requires exact versioned await semantics', () => {
     const valid = lower(
       'await.ts',

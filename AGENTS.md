@@ -49,6 +49,7 @@ Haxe is the first integration target and defines the initial compatibility bar. 
 The repository follows Flight's package-per-domain convention. Internal workspace names always use the `compiler-` prefix so they remain unambiguous beside standard Flight packages:
 
 - `packages/compiler-types/`: every shared compiler contract, diagnostic shape, and target-neutral IR type.
+- `packages/compiler-closure/`: target-neutral closure capture, escape, mutation, and lifetime evidence.
 - `packages/compiler-inventory/`: read-only package, export-lane, symbol, and runtime-value analysis.
 - `packages/compiler-ir-traversal/`: typed, target-neutral structural traversal over IR modules and their nested node families.
 - `packages/compiler-ir-validation/`: structural integrity checks for target-neutral IR values.
@@ -86,6 +87,7 @@ Complexity usually means a unit is hiding smaller primitives. Decompose until ea
 The dependency floor is deliberate:
 
 - `compiler-types` defines vocabulary and contracts without implementation dependencies.
+- `compiler-closure` derives representation-free closure obligations over shared IR traversal.
 - `compiler-provenance` defines deterministic normalization and exact source-fingerprint identity over shared contracts and host-independent canonical form.
 - `compiler-patch` depends on shared contracts, deterministic canonical form, and exact provenance identity; `compiler-emission` depends only on its contracts and canonical form.
 - `compiler-ir-validation` verifies target-neutral IR structure over shared contracts and exact provenance identity.

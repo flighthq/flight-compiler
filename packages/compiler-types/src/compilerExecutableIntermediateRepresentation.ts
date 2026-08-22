@@ -107,6 +107,7 @@ export type IrExpression =
       kind: 'function';
       parameters: readonly IrParameter[];
       returns: IrType;
+      thisMode: 'dynamic' | 'lexical';
       typeParameters: readonly IrTypeParameter[];
     }>
   | IrIdentifierExpression

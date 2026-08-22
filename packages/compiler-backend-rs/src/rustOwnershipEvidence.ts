@@ -1,3 +1,4 @@
+import { analyzeIrModuleClosureEvidence } from '../../compiler-closure/src/index.js';
 import { analyzeIrModuleTraversal } from '../../compiler-ir-traversal/src/index.js';
 import type {
   CompilerIrTraversalPath,
@@ -16,7 +17,6 @@ interface RustOwnershipBindingDraft {
   readonly binding: Readonly<IrBindingIdentity>;
   readonly declaration: CompilerRustOwnershipBindingEvidence['declaration'];
   readonly declarationOrdinal: number;
-  readonly functionPath?: CompilerIrTraversalPath | undefined;
   readonly type: Readonly<IrType>;
   readonly uses: Map<string, RustOwnershipUseDraft>;
 }
@@ -41,6 +41,11 @@ interface RustOwnershipUseDraft extends CompilerRustOwnershipUseEvidence {
 }
 
 export function analyzeIrModuleOwnershipEvidenceRust(module: Readonly<IrModule>): CompilerRustOwnershipEvidence {
+  const closureCaptureBindingIds = new Set(
+    analyzeIrModuleClosureEvidence(module).closures.flatMap((closure) =>
+      closure.captures.map((capture) => capture.binding.id),
+    ),
+  );
   const bindings = new Map<string, RustOwnershipBindingDraft>();
   const carriers: CompilerIrTraversalPath[] = [];
   const functions: RustOwnershipFunctionBoundary[] = [];
@@ -59,7 +64,6 @@ export function analyzeIrModuleOwnershipEvidenceRust(module: Readonly<IrModule>)
           pattern.type ?? plan.type,
           path,
           ordinal,
-          functions,
           bindings,
         );
       }
@@ -87,7 +91,7 @@ export function analyzeIrModuleOwnershipEvidenceRust(module: Readonly<IrModule>)
     },
     parameter(parameter, path) {
       ordinal += 1;
-      addRustOwnershipBindingDraft(parameter.binding, 'parameter', parameter.type, path, ordinal, functions, bindings);
+      addRustOwnershipBindingDraft(parameter.binding, 'parameter', parameter.type, path, ordinal, bindings);
     },
     statement(statement, path) {
       ordinal += 1;
@@ -102,7 +106,6 @@ export function analyzeIrModuleOwnershipEvidenceRust(module: Readonly<IrModule>)
           variable.type ?? compilerUnknownRustOwnershipType,
           path,
           ordinal,
-          functions,
           bindings,
         );
       } else {
@@ -117,7 +120,14 @@ export function analyzeIrModuleOwnershipEvidenceRust(module: Readonly<IrModule>)
   });
   const evidence: CompilerRustOwnershipEvidence = {
     bindings: [...bindings.values()].map((binding) =>
-      createCompilerRustOwnershipBindingEvidence(binding, functions, records, carriers, suspensions),
+      createCompilerRustOwnershipBindingEvidence(
+        binding,
+        closureCaptureBindingIds,
+        functions,
+        records,
+        carriers,
+        suspensions,
+      ),
     ),
     module: { name: module.name, packageName: module.packageName, source: module.source },
     schema: 'flight-compiler-rust-ownership-evidence/1',
@@ -191,7 +201,6 @@ function addRustOwnershipBindingDraft(
   type: Readonly<IrType>,
   path: CompilerIrTraversalPath,
   ordinal: number,
-  functions: readonly RustOwnershipFunctionBoundary[],
   bindings: Map<string, RustOwnershipBindingDraft>,
 ): void {
   if (bindings.has(binding.id)) return;
@@ -199,7 +208,6 @@ function addRustOwnershipBindingDraft(
     binding,
     declaration,
     declarationOrdinal: ordinal,
-    functionPath: getRustOwnershipFunctionBoundary(path, functions)?.path,
     type,
     uses: new Map(),
   });
@@ -229,6 +237,7 @@ function cloneCompilerRustOwnershipValue<Value>(value: Value): Value {
 
 function createCompilerRustOwnershipBindingEvidence(
   binding: Readonly<RustOwnershipBindingDraft>,
+  closureCaptureBindingIds: ReadonlySet<string>,
   functions: readonly RustOwnershipFunctionBoundary[],
   records: readonly CompilerIrTraversalPath[],
   carriers: readonly CompilerIrTraversalPath[],
@@ -236,16 +245,7 @@ function createCompilerRustOwnershipBindingEvidence(
 ): CompilerRustOwnershipBindingEvidence {
   const uses = [...binding.uses.values()].sort((left, right) => left.ordinal - right.ordinal);
   const boundaries = new Set<CompilerRustOwnershipBoundary>();
-  if (
-    uses.some((use) =>
-      isRustOwnershipDifferentFunctionBoundary(
-        binding.functionPath,
-        getRustOwnershipFunctionBoundary(use.path, functions)?.path,
-      ),
-    )
-  ) {
-    boundaries.add('closureCapture');
-  }
+  if (closureCaptureBindingIds.has(binding.binding.id)) boundaries.add('closureCapture');
   if (uses.some((use) => records.some((record) => isRustOwnershipPathWithin(use.path, record)))) {
     boundaries.add('structuralRecord');
   }
@@ -315,22 +315,13 @@ function getRustOwnershipFunctionBoundary(
 ): RustOwnershipFunctionBoundary | undefined {
   let nearest: RustOwnershipFunctionBoundary | undefined;
   for (const candidate of functions) {
-    if (isRustOwnershipPathWithin(path, candidate.path) && (!nearest || candidate.path.length > nearest.path.length)) {
-      nearest = candidate;
-    }
+    if (isRustOwnershipPathWithin(path, candidate.path)) nearest = candidate;
   }
   return nearest;
 }
 
 function getRustOwnershipUsePriority(kind: CompilerRustOwnershipUseEvidence['kind']): number {
   return kind === 'read' ? 0 : kind === 'rebind' ? 1 : 2;
-}
-
-function isRustOwnershipDifferentFunctionBoundary(
-  left: CompilerIrTraversalPath | undefined,
-  right: CompilerIrTraversalPath | undefined,
-): boolean {
-  return JSON.stringify(left) !== JSON.stringify(right);
 }
 
 function isRustOwnershipPathWithin(path: CompilerIrTraversalPath, ancestor: CompilerIrTraversalPath): boolean {

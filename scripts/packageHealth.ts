@@ -59,6 +59,7 @@ const packageRules: Readonly<Record<string, PackageRule>> = {
   'compiler-backend-rs': {
     dependencies: [
       'compiler-canonical-form',
+      'compiler-closure',
       'compiler-emission',
       'compiler-ir-traversal',
       'compiler-lowering',
@@ -67,6 +68,11 @@ const packageRules: Readonly<Record<string, PackageRule>> = {
       'compiler-types',
     ],
     description: 'Rust lowering, naming, and source emission backend',
+    devDependencies: ['compiler-semantic'],
+  },
+  'compiler-closure': {
+    dependencies: ['compiler-ir-traversal', 'compiler-types'],
+    description: 'Target-neutral closure capture, escape, mutation, and lifetime evidence',
     devDependencies: ['compiler-semantic'],
   },
   'compiler-completion': {

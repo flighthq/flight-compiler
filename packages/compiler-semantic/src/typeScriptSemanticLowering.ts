@@ -703,6 +703,7 @@ function lowerExpression(
             }),
       kind: 'function',
       ...(node.name ? { binding: lowerBindingIdentity(node.name, context) } : {}),
+      thisMode: ts.isArrowFunction(node) ? 'lexical' : 'dynamic',
       ...signature,
     };
   }
@@ -1455,6 +1456,7 @@ function lowerObjectMember(
           ),
         ],
         kind: 'function',
+        thisMode: 'dynamic',
         ...signature,
       },
     };
@@ -1787,6 +1789,7 @@ function lowerTypeScriptDestructuringAssignmentExpression(
       kind: 'function',
       parameters: [],
       returns,
+      thisMode: 'lexical',
       typeParameters: [],
     },
     kind: 'call',
