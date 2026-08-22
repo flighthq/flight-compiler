@@ -268,6 +268,7 @@ function emitClass(declaration: Readonly<IrClassDeclaration>, context: EmitConte
       '  }',
     );
   }
+  const mutatingMethodNames = getIrClassMutatingMethodNamesRust(declaration);
   // A trait's methods belong in its `impl` block, not in the inherent one, so the two are split by
   // which trait declares each method name.
   const traitMethodNames = new Map<string, string>();
@@ -285,7 +286,7 @@ function emitClass(declaration: Readonly<IrClassDeclaration>, context: EmitConte
   const inherentMethods = declaration.methods.filter((method) => !traitMethodNames.has(method.name));
   const emitMethodLines = (method: (typeof declaration.methods)[number]): string[] => {
     const parameters = [
-      ...(method.static ? [] : [hasIrFunctionSignatureThisMutationRust(method) ? '&mut self' : '&self']),
+      ...(method.static ? [] : [mutatingMethodNames.has(method.name) ? '&mut self' : '&self']),
       ...method.parameters.map((parameter) => emitParameter(parameter, context)),
     ].join(', ');
     return [
@@ -314,16 +315,7 @@ function emitClass(declaration: Readonly<IrClassDeclaration>, context: EmitConte
     );
     inherentMethods.forEach((method, index) => {
       if (index > 0 || associated.length > 0) lines.push('');
-
-      const parameters = [
-        ...(method.static ? [] : [hasIrFunctionSignatureThisMutationRust(method) ? '&mut self' : '&self']),
-        ...method.parameters.map((parameter) => emitParameter(parameter, context)),
-      ].join(', ');
-      lines.push(
-        `  ${method.visibility === 'public' ? 'pub ' : ''}fn ${safeRustValueName(method.name)}${emitTypeParameters(method.typeParameters, context)}(${parameters}) -> ${emitType(method.returns, context)} {`,
-        ...indentSourceLines(emitStatements(method.body, context), 2),
-        '  }',
-      );
+      lines.push(...emitMethodLines(method));
     });
     lines.push('}');
   }
@@ -524,6 +516,52 @@ function getIrTaskAwaitedTypeRust(type: Readonly<IrType>, context: EmitContext):
 // makes every method exclusive, so a shared read of one value blocks a read of another. The mutation
 // evidence is already in the body: an assignment whose target reaches `this`, or a bare rebinding of
 // it, is what requires exclusivity.
+// Which methods need an exclusive receiver. Writing through `this` is the direct case; calling a
+// method that writes is the transitive one, and missing it emits a `&self` method that calls a
+// `&mut self` method — which Rust rejects. The relation is closed to a fixed point because a caller
+// of a caller needs the same receiver.
+function getIrClassMutatingMethodNamesRust(declaration: Readonly<IrClassDeclaration>): ReadonlySet<string> {
+  const mutating = new Set(
+    declaration.methods.filter((method) => hasIrFunctionSignatureThisMutationRust(method)).map((method) => method.name),
+  );
+  const calls = new Map(
+    declaration.methods.map((method) => [method.name, getIrFunctionSignatureSelfCallNamesRust(method)] as const),
+  );
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const method of declaration.methods) {
+      if (mutating.has(method.name)) continue;
+      if ((calls.get(method.name) ?? []).some((name) => mutating.has(name))) {
+        mutating.add(method.name);
+        changed = true;
+      }
+    }
+  }
+  return mutating;
+}
+
+function getIrFunctionSignatureSelfCallNamesRust(
+  method: Readonly<{ body: readonly Readonly<IrStatement>[] }>,
+): string[] {
+  const names: string[] = [];
+  const observer = {
+    expression(expression: Readonly<IrExpression>) {
+      if (
+        expression.kind === 'call' &&
+        expression.callee.kind === 'property' &&
+        expression.callee.object.kind === 'identifier' &&
+        expression.callee.object.reference.kind === 'this'
+      ) {
+        names.push(expression.callee.name);
+      }
+      return undefined;
+    },
+  };
+  method.body.forEach((statement) => analyzeIrStatementSubtreeTraversal(statement, observer));
+  return names;
+}
+
 function hasIrFunctionSignatureThisMutationRust(method: Readonly<{ body: readonly Readonly<IrStatement>[] }>): boolean {
   let mutates = false;
   const reachesThis = (expression: Readonly<IrExpression>): boolean => {

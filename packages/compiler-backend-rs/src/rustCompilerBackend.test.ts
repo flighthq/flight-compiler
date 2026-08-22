@@ -1083,6 +1083,17 @@ describe('emitIrModuleRust', () => {
     expect(output).toContain('pub fn bump(&mut self) -> () {');
     // A mutation nested inside control flow is still a mutation.
     expect(output).toContain('pub fn nested(&mut self) -> () {');
+    // Calling a method that mutates needs the same receiver the callee needs, transitively: a
+    // `&self` method calling a `&mut self` one is a Rust error, not a style question.
+    const transitive = lower(
+      'transitive.ts',
+      'export class Counter { total: number = 0; bump(): void { this.total = 1; } twice(): void { this.bump(); } thrice(): void { this.twice(); } read(): number { return this.total; } }',
+    );
+    const transitiveOutput = emitIrModuleRust(transitive.module).contents;
+    expect(transitiveOutput).toContain('pub fn twice(&mut self) -> () {');
+    expect(transitiveOutput).toContain('pub fn thrice(&mut self) -> () {');
+    expect(transitiveOutput).toContain('pub fn read(&self) -> f64 {');
+
     // A compound assignment writes through its target the same way a plain one does.
     expect(
       emitIrModuleRust(
