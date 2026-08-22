@@ -251,14 +251,30 @@ function assertIrModuleSuperConstructorCallShapeHaxe(module: Readonly<IrModule>,
 }
 
 function emitClass(declaration: Readonly<IrClassDeclaration>, context: EmitContext): string[] {
-  if (declaration.implements.length > 0) {
-    emissionError(
-      context,
-      `class ${declaration.binding.name} implements interfaces that require nominal Haxe lowering`,
+  const implemented = declaration.implements.map((reference) => {
+    if (reference.kind !== 'named' || reference.reference.kind !== 'binding') {
+      return emissionError(
+        context,
+        `class ${declaration.binding.name} implements a type with no nominal Haxe interface`,
+      );
+    }
+    const target = context.module.declarations.find(
+      (candidate) =>
+        candidate.kind === 'interface' &&
+        reference.reference.kind === 'binding' &&
+        candidate.binding.id === reference.reference.binding.id,
     );
-  }
+    if (!target) {
+      return emissionError(
+        context,
+        `class ${declaration.binding.name} implements an interface declared outside this module`,
+      );
+    }
+    return emitType(reference, context);
+  });
   const parameters = emitTypeParameters(declaration.typeParameters, context);
   const extendsType = declaration.extends ? ` extends ${emitType(declaration.extends, context)}` : '';
+  const implementsTypes = implemented.map((name) => ` implements ${name}`).join('');
   const abstract = declaration.abstract ? 'abstract ' : '';
   const initialization = createIrClassInitializationPlan(declaration);
   const requiresErrorNameStorage =
@@ -278,7 +294,7 @@ function emitClass(declaration: Readonly<IrClassDeclaration>, context: EmitConte
     );
   }
   const lines = [
-    `${declaration.exported ? '' : 'private '}${abstract}class ${getBindingTargetNameHaxe(declaration.binding, context)}${parameters}${extendsType} {`,
+    `${declaration.exported ? '' : 'private '}${abstract}class ${getBindingTargetNameHaxe(declaration.binding, context)}${parameters}${extendsType}${implementsTypes} {`,
   ];
   if (requiresErrorNameStorage) {
     lines.push('  public var name:String;');
@@ -566,9 +582,48 @@ function emitImports(imports: readonly IrImport[], context: EmitContext): string
 function emitInterface(declaration: Readonly<IrInterfaceDeclaration>, context: EmitContext): string[] {
   if (declaration.extends.length > 0)
     emissionError(context, `interface ${declaration.binding.name} inheritance requires structural flattening`);
+  // A shape nothing implements stays a typedef, which is what keeps ordinary structural types
+  // idiomatic. A shape a class implements has to be nominal, because Haxe `implements` names one.
+  if (!hasIrModuleClassImplementingHaxe(declaration, context)) {
+    return [
+      `typedef ${getBindingTargetNameHaxe(declaration.binding, context)}${emitTypeParameters(declaration.typeParameters, context)} = ${emitAnonymousType(declaration.properties, context)};`,
+    ];
+  }
   return [
-    `typedef ${getBindingTargetNameHaxe(declaration.binding, context)}${emitTypeParameters(declaration.typeParameters, context)} = ${emitAnonymousType(declaration.properties, context)};`,
+    `interface ${getBindingTargetNameHaxe(declaration.binding, context)}${emitTypeParameters(declaration.typeParameters, context)} {`,
+    ...declaration.properties.map((property) => `  ${emitInterfaceMemberHaxe(property, context)}`),
+    '}',
   ];
+}
+
+function emitInterfaceMemberHaxe(property: Readonly<IrObjectTypeProperty>, context: EmitContext): string {
+  const name = safeHaxeName(property.name);
+  if (property.type.kind !== 'function') {
+    return `public var ${name}:${emitType(property.type, context)};`;
+  }
+  const parameters = property.type.parameters
+    .map(
+      (parameter, index) =>
+        `${safeHaxeName(parameter.name ?? `argument${String(index)}`)}:${emitType(parameter.type, context)}`,
+    )
+    .join(', ');
+  return `public function ${name}(${parameters}):${emitType(property.type.returns, context)};`;
+}
+
+function hasIrModuleClassImplementingHaxe(
+  declaration: Readonly<IrInterfaceDeclaration>,
+  context: EmitContext,
+): boolean {
+  return context.module.declarations.some(
+    (candidate) =>
+      candidate.kind === 'class' &&
+      candidate.implements.some(
+        (implemented) =>
+          implemented.kind === 'named' &&
+          implemented.reference.kind === 'binding' &&
+          implemented.reference.binding.id === declaration.binding.id,
+      ),
+  );
 }
 
 function emitIdentifierReferenceHaxe(reference: Readonly<IrIdentifierReference>, context: EmitContext): string {

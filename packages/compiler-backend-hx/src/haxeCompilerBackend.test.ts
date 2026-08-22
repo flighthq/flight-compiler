@@ -926,4 +926,30 @@ describe('emitIrModuleHaxe', () => {
 
     expect(output).toContain('typedef Child = { value:Float, own:Bool };');
   });
+
+  it('emits an implemented shape as a nominal interface and leaves an unimplemented one structural', () => {
+    // Haxe `implements` names a nominal type, so a shape a class implements cannot stay a typedef.
+    // A shape nothing implements does stay one, because that is the idiomatic structural form.
+    const implemented = lower(
+      'nominal.ts',
+      'export interface Advancer { step: number; advance(by: number): number; } export class Counter implements Advancer { step: number = 1; advance(by: number): number { return by + this.step; } }',
+    );
+    const structural = lower('shape.ts', 'export interface Point { x: number; y: number; }');
+
+    const nominal = emitIrModuleHaxe(implemented.module).contents;
+    expect(nominal).toContain('interface Advancer {');
+    expect(nominal).toContain('  public var step:Float;');
+    expect(nominal).toContain('  public function advance(by:Float):Float;');
+    expect(nominal).toContain('class Counter implements Advancer {');
+    expect(emitIrModuleHaxe(structural.module).contents).toContain('typedef Point = { x:Float, y:Float };');
+  });
+
+  it('refuses a class implementing an interface it cannot name in this module', () => {
+    const external = lower(
+      'external.ts',
+      "import type { Advancer } from './advancer.js'; export class Counter implements Advancer { step: number = 1; }",
+    );
+
+    expect(() => emitIrModuleHaxe(external.module)).toThrow('implements an interface declared outside this module');
+  });
 });
