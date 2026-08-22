@@ -517,7 +517,9 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
     case 'regexp':
       emissionError(context, 'regular expressions require a downstream standard-library mapping');
     case 'spread':
-      emissionError(context, 'spread expressions require collection or structural lowering');
+      // As in Haxe: a fixed tuple spread is already normalized away, so what reaches here spreads an
+      // unbounded collection into a fixed-arity callee, and Rust has no variadic call to lower it to.
+      emissionError(context, 'spreading an unbounded collection requires a fold or a variadic target');
     case 'template': {
       const format = expression.parts
         .map((part) => (typeof part === 'string' ? part.replaceAll('{', '{{').replaceAll('}', '}}') : '{}'))

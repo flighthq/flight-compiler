@@ -504,7 +504,10 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
     case 'regexp':
       return `~/${expression.pattern}/${expression.flags}`;
     case 'spread':
-      emissionError(context, 'spread expressions require call or collection lowering');
+      // A spread of a FIXED tuple is already normalized into positional arguments by the neutral
+      // pass library. What reaches here is a spread of an unbounded collection into a fixed-arity
+      // callee, which neither static target can express: the arity is not known until run time.
+      emissionError(context, 'spreading an unbounded collection requires reflective call lowering');
     case 'template':
       return expression.parts
         .map((part) => (typeof part === 'string' ? emitLiteral(part) : `Std.string(${emitExpression(part, context)})`))

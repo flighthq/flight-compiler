@@ -35,6 +35,14 @@ The scores fall into the dependency order almost exactly, and that is the intend
 
 The three lowest scores are also the three packages that gate the migration. `compiler-semantic` at 50 bounds both backends: a construct it cannot lower cannot be emitted by either target, so its refusal list is the shared ceiling. Within the backends, the recurring theme is that structure and refusal discipline are ahead of coverage — both have their identity, naming and operator handling settled, and both refuse rather than approximate, which is why the golden fixtures can pin refusals as confidently as output.
 
+## Three open decisions, recorded 2026-08-22
+
+Work stopped at these rather than guessing, because each sets a policy rather than filling a gap.
+
+- **An integer domain.** The neutral numeric domain has one member, `number`, so every numeric reaches a target as `Float` or `f64`. Haxe indexes arrays with `Int` and Rust with `usize`, so both targets now coerce at the use site. Coercion is correct and it is also everywhere; distinguishing integers in the neutral model would remove it, and the question is where integer-ness comes from when TypeScript has no integer type — literals and contexts, which is an inference policy.
+- **Resolved operator assignability.** `compiler-structural` decides when two shapes are the same and when one is assignable to the other, but not what an operator over them yields. The operator work in `compiler-semantic` derives domains from operands; the structural counterpart is unwritten, and both targets refuse the cases it would decide.
+- **Exact versus conservative completions.** `compiler-completion` reports a `throw` on essentially every statement, because essentially every statement can throw. That is sound and it is also uninformative: a backend cannot tell a proven throw from an assumed one, so it guards both. Saying which is which needs a second channel in the completion set, and a decision about what "proven" means for a call into unanalyzed code.
+
 ## Recurring gaps across packages
 
 Six gaps appear in more than one review and are worth reading as one problem each rather than as several:
