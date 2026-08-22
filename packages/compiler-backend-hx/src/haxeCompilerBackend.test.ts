@@ -994,4 +994,23 @@ describe('emitIrModuleHaxe', () => {
     expect(output).toContain('values[0]');
     expect(output).not.toContain('Std.int(0)');
   });
+
+  it('calls reflectively when a spread makes the arity unknown until run time', () => {
+    // A spread of an unbounded collection has no arity a fixed call can take. Haxe's
+    // `Reflect.callMethod` takes its arguments as an array, which is the shape a spread already has.
+    const simple = lower(
+      'spread.ts',
+      'export function widest(values: number[]): number { return Math.max(...values); }',
+    );
+    const mixed = lower(
+      'mixed-spread.ts',
+      'export function widest(values: number[], first: number): number { return Math.max(first, ...values); }',
+    );
+
+    expect(emitIrModuleHaxe(simple.module).contents).toContain('Reflect.callMethod(Math, Math.max, values)');
+    // Fixed arguments around the spread keep their source order.
+    expect(emitIrModuleHaxe(mixed.module).contents).toContain(
+      'Reflect.callMethod(Math, Math.max, [first].concat(values))',
+    );
+  });
 });

@@ -430,9 +430,13 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
       const right = emitExpression(expression.right, context);
       return `(${left} ${emitBinaryOperatorHaxe(expression.operator, expression.semantics, context)} ${right})`;
     }
-    case 'call':
+    case 'call': {
       if (expression.semantics.statementValue) return emitStatementValueExpressionHaxe(expression, context);
+      if (expression.arguments.some((argument) => argument.kind === 'spread')) {
+        return emitSpreadCallHaxe(expression, context);
+      }
       return `${expression.callee.kind === 'function' ? `(${emitExpression(expression.callee, context)})` : emitExpression(expression.callee, context)}${expression.optional ? '?.' : ''}(${emitCallArgumentsHaxe(expression, context)})`;
+    }
     case 'cast':
       return `(cast ${emitExpression(expression.expression, context)} : ${emitType(expression.type, context)})`;
     case 'conditional':
@@ -1007,6 +1011,39 @@ function emitArrayIndexHaxe(index: Readonly<IrExpression>, context: EmitContext)
   return index.kind === 'literal' && typeof index.value === 'number' && Number.isInteger(index.value)
     ? emitted
     : `Std.int(${emitted})`;
+}
+
+// A spread of an unbounded collection has no arity until run time, so the call itself becomes a
+// reflective one: Haxe's `Reflect.callMethod` takes the arguments as an array, which is exactly the
+// shape a spread already has. Fixed arguments around the spread are concatenated in source order.
+function emitSpreadCallHaxe(
+  expression: Readonly<Extract<IrExpression, { kind: 'call' }>>,
+  context: EmitContext,
+): string {
+  if (expression.optional) {
+    emissionError(context, 'an optional spread call requires Haxe null-safe reflective lowering');
+  }
+  const groups: string[] = [];
+  let fixed: string[] = [];
+  for (const argument of expression.arguments) {
+    if (argument.kind === 'spread') {
+      if (fixed.length > 0) groups.push(`[${fixed.join(', ')}]`);
+      fixed = [];
+      groups.push(emitExpression(argument.expression, context));
+      continue;
+    }
+    fixed.push(emitExpression(argument, context));
+  }
+  if (fixed.length > 0) groups.push(`[${fixed.join(', ')}]`);
+  const args =
+    groups.length === 1
+      ? groups[0]!
+      : `${groups[0]!}${groups
+          .slice(1)
+          .map((group) => `.concat(${group})`)
+          .join('')}`;
+  const receiver = expression.callee.kind === 'property' ? emitExpression(expression.callee.object, context) : 'null';
+  return `Reflect.callMethod(${receiver}, ${emitExpression(expression.callee, context)}, ${args})`;
 }
 
 function emitAnonymousType(properties: readonly IrObjectTypeProperty[], context: EmitContext): string {
