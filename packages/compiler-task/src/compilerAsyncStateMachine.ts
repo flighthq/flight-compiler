@@ -362,9 +362,28 @@ function createIrStatementBodyAsyncStateMachine(
   suspensions: readonly Readonly<CompilerAsyncTaskSuspensionSite>[],
   draft: AsyncStateMachineDraft,
 ): CompilerAsyncStateMachineRefusal | undefined {
+  const refusal = createIrStatementListAsyncStateMachine(
+    scope,
+    statements,
+    [...scope.path, 'body'],
+    suspensions,
+    draft,
+  );
+  if (refusal) return refusal;
+  completeIrStatementBodyAsyncStateMachine(scope, draft);
+  return undefined;
+}
+
+function createIrStatementListAsyncStateMachine(
+  scope: Readonly<CompilerAsyncTaskScope>,
+  statements: readonly Readonly<IrStatement>[],
+  basePath: CompilerIrTraversalPath,
+  suspensions: readonly Readonly<CompilerAsyncTaskSuspensionSite>[],
+  draft: AsyncStateMachineDraft,
+): CompilerAsyncStateMachineRefusal | undefined {
   for (let index = 0; index < statements.length; index += 1) {
     const statement = statements[index]!;
-    const path = [...scope.path, 'body', index];
+    const path = [...basePath, index];
     if (draft.terminal) {
       return createCompilerAsyncStateMachineRefusal('unreachable-statement', path, scope.path);
     }
@@ -428,6 +447,13 @@ function createIrStatementBodyAsyncStateMachine(
         break;
     }
   }
+  return undefined;
+}
+
+function completeIrStatementBodyAsyncStateMachine(
+  scope: Readonly<CompilerAsyncTaskScope>,
+  draft: AsyncStateMachineDraft,
+): void {
   if (!draft.terminal) {
     const path = [...scope.path, 'body', 'end'];
     const value = { kind: 'implicitUndefined' } as const;
@@ -435,7 +461,6 @@ function createIrStatementBodyAsyncStateMachine(
     draft.completionPaths.push({ kind: 'normal', path, value });
     draft.terminal = true;
   }
-  return undefined;
 }
 
 function createIrStatementSuspensionAsyncStateMachine(
@@ -445,6 +470,21 @@ function createIrStatementSuspensionAsyncStateMachine(
   suspensions: readonly Readonly<CompilerAsyncTaskSuspensionSite>[],
   draft: AsyncStateMachineDraft,
 ): CompilerAsyncStateMachineRefusal | undefined {
+  if (statement.kind === 'block') {
+    // A block introduces no control flow of its own, so a suspension inside one needs no new state
+    // shape — only the statement list walked at the block's own path. A labelled block is refused,
+    // because its label is a `break` target and the machine does not model one yet.
+    if (statement.label) {
+      return createCompilerAsyncStateMachineRefusal('unsupported-control-flow', path, scope.path);
+    }
+    return createIrStatementListAsyncStateMachine(
+      scope,
+      statement.statements,
+      [...path, 'statements'],
+      suspensions,
+      draft,
+    );
+  }
   if (suspensions.length !== 1) {
     return createCompilerAsyncStateMachineRefusal('unsupported-suspension-expression', path, scope.path);
   }
