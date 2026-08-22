@@ -144,6 +144,11 @@ const packageRules: Readonly<Record<string, PackageRule>> = {
     dependencies: ['compiler-canonical-form', 'compiler-ir-traversal', 'compiler-types'],
     description: 'Target-neutral structural type identity and analysis',
   },
+  'compiler-task': {
+    dependencies: ['compiler-ir-traversal', 'compiler-types'],
+    description: 'Target-neutral asynchronous task inventory and composition semantics',
+    devDependencies: ['compiler-semantic'],
+  },
   'compiler-types': {
     dependencies: [],
     description: 'Shared compiler contracts, diagnostics, and target-neutral IR',

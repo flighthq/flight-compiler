@@ -13,4 +13,5 @@ export * from '../../compiler-provenance/src/index.js';
 export * from '../../compiler-runtime-contract/src/index.js';
 export * from '../../compiler-semantic/src/index.js';
 export * from '../../compiler-structural/src/index.js';
+export * from '../../compiler-task/src/index.js';
 export type * from '../../compiler-types/src/index.js';
