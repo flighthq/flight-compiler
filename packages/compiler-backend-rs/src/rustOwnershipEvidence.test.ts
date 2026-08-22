@@ -2,7 +2,7 @@ import ts from 'typescript';
 
 import { lowerTypeScriptSource } from '../../compiler-semantic/src/index.js';
 import type { IrModule } from '../../compiler-types/src/index.js';
-import { analyzeIrModuleOwnershipEvidenceRust } from './rustOwnershipEvidence.js';
+import { analyzeIrModuleOwnershipEvidenceRust, collectIrModuleMovedBindingIdsRust } from './rustOwnershipEvidence.js';
 
 describe('analyzeIrModuleOwnershipEvidenceRust', () => {
   it('records identity, mutation, reuse, closure, record, carrier, and suspension obligations', () => {
@@ -174,6 +174,31 @@ describe('analyzeIrModuleOwnershipEvidenceRust', () => {
   });
 });
 
+describe('collectIrModuleMovedBindingIdsRust', () => {
+  it('elects a binding consumed twice and a binding one loop consumes again', () => {
+    const module = lower(`
+      export function twice(values: readonly number[], scalar: number): number {
+        return values.length + values.length + scalar + scalar;
+      }
+      export function looped(rows: readonly number[]): number {
+        let sum: number = 0;
+        for (let index: number = 0; index < 2; index += 1) { sum += rows.length; }
+        return sum;
+      }
+    `);
+    expect(namesOf(module, collectIrModuleMovedBindingIdsRust(module))).toEqual(['rows', 'values']);
+  });
+
+  it('leaves a binding consumed once outside a loop to move', () => {
+    const module = lower(`
+      export function once(values: readonly number[]): number {
+        return values.length;
+      }
+    `);
+    expect(collectIrModuleMovedBindingIdsRust(module).size).toBe(0);
+  });
+});
+
 function isDeeplyFrozen(value: unknown, seen: WeakSet<object>): boolean {
   if (!value || typeof value !== 'object' || seen.has(value)) return true;
   seen.add(value);
@@ -193,4 +218,11 @@ function lower(source: string): IrModule {
   });
   expect(result.diagnostics).toEqual([]);
   return result.module;
+}
+
+function namesOf(module: IrModule, ids: ReadonlySet<string>): string[] {
+  return analyzeIrModuleOwnershipEvidenceRust(module)
+    .bindings.filter((binding) => ids.has(binding.binding.id))
+    .map((binding) => binding.binding.name)
+    .sort();
 }

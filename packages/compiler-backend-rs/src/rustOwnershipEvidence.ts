@@ -135,6 +135,30 @@ export function analyzeIrModuleOwnershipEvidenceRust(module: Readonly<IrModule>)
   return cloneCompilerRustOwnershipValue(evidence);
 }
 
+// Which bindings Rust moves rather than copies when their value is handed on. Rust invalidates the
+// source of a move, so a value consumed twice — by two uses, or by one use a loop reaches again —
+// has to be cloned at the consuming site. Numbers, booleans and unit values are `Copy`, and cloning
+// them would be noise the borrow checker never asked for, so they are excluded rather than
+// conservatively included.
+export function collectIrModuleMovedBindingIdsRust(module: Readonly<IrModule>): ReadonlySet<string> {
+  const loops: CompilerIrTraversalPath[] = [];
+  analyzeIrModuleTraversal(module, {
+    statement(statement, path) {
+      if (RUST_OWNERSHIP_LOOP_STATEMENT_KINDS.has(statement.kind)) loops.push(path);
+      return undefined;
+    },
+  });
+  const moved = new Set<string>();
+  for (const evidence of analyzeIrModuleOwnershipEvidenceRust(module).bindings) {
+    if (isIrTypeCopyRust(evidence.type)) continue;
+    const consumedTwice =
+      evidence.uses.length > 1 ||
+      evidence.uses.some((use) => loops.some((loop) => isRustOwnershipPathPrefix(loop, use.path)));
+    if (consumedTwice) moved.add(evidence.binding.id);
+  }
+  return moved;
+}
+
 function addIrBindingPatternRustOwnershipPlan(
   pattern: Readonly<IrBindingPattern>,
   declaration: CompilerRustOwnershipBindingEvidence['declaration'],
@@ -336,3 +360,26 @@ const compilerRustOwnershipBoundaryOrder: readonly CompilerRustOwnershipBoundary
 ];
 
 const compilerUnknownRustOwnershipType: IrType = Object.freeze({ kind: 'unknown', source: 'unknown' });
+
+function isIrTypeCopyRust(type: Readonly<IrType>): boolean {
+  switch (type.kind) {
+    case 'literal':
+      return typeof type.value !== 'string';
+    case 'never':
+    case 'null':
+    case 'undefined':
+      return true;
+    case 'primitive':
+      return type.name === 'boolean' || type.name === 'number';
+    case 'union':
+      return type.types.every((member) => isIrTypeCopyRust(member));
+    default:
+      return false;
+  }
+}
+
+function isRustOwnershipPathPrefix(prefix: CompilerIrTraversalPath, path: CompilerIrTraversalPath): boolean {
+  return prefix.length < path.length && prefix.every((segment, index) => segment === path[index]);
+}
+
+const RUST_OWNERSHIP_LOOP_STATEMENT_KINDS: ReadonlySet<string> = new Set(['do', 'for', 'forIn', 'forOf', 'while']);

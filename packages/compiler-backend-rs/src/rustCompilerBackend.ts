@@ -75,7 +75,7 @@ import {
   convertSourcePathToRustModuleName,
   isRustCompilerKeyword,
 } from './rustCompilerIdentity.js';
-import { analyzeIrModuleOwnershipEvidenceRust } from './rustOwnershipEvidence.js';
+import { analyzeIrModuleOwnershipEvidenceRust, collectIrModuleMovedBindingIdsRust } from './rustOwnershipEvidence.js';
 import { createCompilerRuntimeExternalConstructorAbiPlanRust } from './rustRuntimeExternalConstructorAbi.js';
 import {
   createCompilerRuntimeExternalSymbolBindingPlanRust,
@@ -87,6 +87,7 @@ interface EmitContext {
   anonymousObjectRecords: Map<string, Readonly<{ name: string; properties: readonly IrObjectTypeProperty[] }>>;
   // Which bindings the module rebinds. Rust needs `mut` on a parameter that is assigned to, and the
   // ownership analysis already decides that for every binding in the module.
+  movedBindingIds: ReadonlySet<string>;
   reboundBindingIds: ReadonlySet<string>;
   generatedNames: Set<string>;
   module: Readonly<IrModule>;
@@ -173,6 +174,7 @@ function emitIrModuleRustWithContext(
       ),
     ),
     generatedNames: new Set(targetNames.values()),
+    movedBindingIds: collectIrModuleMovedBindingIdsRust(module),
     module,
     nullableBindingIds: collectIrModuleNullableBindingIds(module),
     objectRestRecords: new Map(),
@@ -427,7 +429,7 @@ function emitStringEnumRust(declaration: Readonly<IrEnumDeclaration>, context: E
 function emitExpression(expression: Readonly<IrExpression>, context: EmitContext): string {
   switch (expression.kind) {
     case 'array':
-      return `vec![${expression.elements.map((element) => (element ? emitExpression(element, context) : 'Default::default()')).join(', ')}]`;
+      return `vec![${expression.elements.map((element) => (element ? emitOwnedOperandRust(element, context) : 'Default::default()')).join(', ')}]`;
     case 'assignment': {
       const left = emitExpression(expression.left, context);
       const right = emitExpression(expression.right, context);
@@ -505,7 +507,7 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
         emissionError(context, 'qualified constructors require Rust type-path lowering');
       }
       assertIrConstructorInvocationAbiRust(expression, context);
-      return `${emitConstructorReferenceRust(expression.callee.reference, context)}::new(${expression.arguments.map((argument) => emitExpression(argument, context)).join(', ')})`;
+      return `${emitConstructorReferenceRust(expression.callee.reference, context)}::new(${expression.arguments.map((argument) => emitOwnedOperandRust(argument, context)).join(', ')})`;
     case 'object':
       return emitObjectExpressionRust(expression, context);
     case 'objectRest':
@@ -822,9 +824,9 @@ function emitCallArgumentsRust(
   }
   const defaults = expression.semantics.defaultParameters;
   const optionals = expression.semantics.optionalParameters;
-  if (!defaults && !optionals) return expression.arguments.map((argument) => emitExpression(argument, context));
+  if (!defaults && !optionals) return expression.arguments.map((argument) => emitOwnedOperandRust(argument, context));
   const plan = defaults ?? optionals;
-  if (!plan) return expression.arguments.map((argument) => emitExpression(argument, context));
+  if (!plan) return expression.arguments.map((argument) => emitOwnedOperandRust(argument, context));
   if (plan.providedArgumentCount === 'dynamic') {
     emissionError(context, 'spread calls into optional or default parameters require Rust ABI expansion lowering');
   }
@@ -1005,6 +1007,20 @@ function getIrObjectTypeTargetNameRust(properties: readonly IrObjectTypeProperty
   const name = getGeneratedTargetNameRust('AnonymousObjectRecord', context);
   context.anonymousObjectRecords.set(shape, { name, properties });
   return name;
+}
+
+// A value Rust moves is invalidated at the site that consumes it, so a binding the source still
+// needs afterwards is cloned into the consuming position rather than handed over. Every emitted
+// record derives `Clone`, so this is always available. The election is per binding rather than per
+// use, so the last consumption clones as well: correct, at the cost of one copy the source did not
+// need, and a binding consumed once is left to move.
+function emitOwnedOperandRust(expression: Readonly<IrExpression>, context: EmitContext): string {
+  const source = emitExpression(expression, context);
+  return expression.kind === 'identifier' &&
+    expression.reference.kind === 'binding' &&
+    context.movedBindingIds.has(expression.reference.binding.id)
+    ? `${source}.clone()`
+    : source;
 }
 
 function emitParameter(parameter: Readonly<IrParameter>, context: EmitContext): string {
