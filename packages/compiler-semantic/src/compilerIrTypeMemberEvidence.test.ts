@@ -6,7 +6,10 @@ import { getIrTypeMemberEvidence } from './compilerIrTypeMemberEvidence.js';
 describe('getIrTypeMemberEvidence', () => {
   it('answers the length of an array or tuple, which the library would otherwise have to', () => {
     const array: IrType = { element: { kind: 'primitive', name: 'number' }, kind: 'array', readonly: true };
-    const tuple: IrType = { elements: [{ type: { kind: 'primitive', name: 'number' } }], kind: 'tuple' };
+    const tuple: IrType = {
+      elements: [{ optional: false, rest: false, type: { kind: 'primitive', name: 'number' } }],
+      kind: 'tuple',
+    };
 
     expect(getIrTypeMemberEvidence(array, 'length')).toEqual({ kind: 'primitive', name: 'number' });
     expect(getIrTypeMemberEvidence(tuple, 'length')).toEqual({ kind: 'primitive', name: 'number' });
