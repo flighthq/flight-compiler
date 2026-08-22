@@ -272,7 +272,7 @@ describe('lowerIrModuleWithCompilerPasses', () => {
 });
 
 function appendImport(moduleValue: Readonly<IrModule>, specifier: string): IrModule {
-  return { ...moduleValue, imports: [...moduleValue.imports, { bindings: [], specifier }] };
+  return { ...moduleValue, imports: [...moduleValue.imports, { bindings: [], specifier, typeOnly: false }] };
 }
 
 function createImportPass(
@@ -353,6 +353,7 @@ const moduleWithBinding: IrModule = {
         source: module.source,
         space: 'value',
       },
+      declarationKind: 'const',
       exported: true,
       kind: 'variable',
       mutable: false,

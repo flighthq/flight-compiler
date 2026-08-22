@@ -141,6 +141,17 @@ export function validateIrModuleStructure(module: Readonly<IrModule>): CompilerI
   try {
     validateModuleIdentity(module, state);
     module.imports.forEach((imported, importIndex) => {
+      if (
+        typeof imported.typeOnly !== 'boolean' ||
+        (imported.typeOnly && imported.bindings.some((binding) => !binding.typeOnly))
+      ) {
+        addFailure(
+          'invalid-node-shape',
+          `$.imports[${String(importIndex)}].typeOnly`,
+          'module import type-only identity must be boolean and cannot contain value bindings',
+          state,
+        );
+      }
       imported.bindings.forEach(({ binding, typeOnly }, bindingIndex) =>
         addBindingDefinition(
           binding,
@@ -405,6 +416,21 @@ function visitDeclaration(declaration: Readonly<IrDeclaration>, path: string, st
       break;
     case 'variable':
       validateDeclarationOrigin(declaration, path, state);
+      if (!['const', 'let', 'var'].includes(declaration.declarationKind)) {
+        addFailure(
+          'invalid-node-shape',
+          `${path}.declarationKind`,
+          'module variable declaration kind must be const, let, or var',
+          state,
+        );
+      } else if ((declaration.declarationKind === 'const') === declaration.mutable) {
+        addFailure(
+          'invalid-node-shape',
+          `${path}.mutable`,
+          'const module variables must be immutable and let or var module variables must be mutable',
+          state,
+        );
+      }
       visitVariable(declaration, path, ['module'], state);
       break;
     default:

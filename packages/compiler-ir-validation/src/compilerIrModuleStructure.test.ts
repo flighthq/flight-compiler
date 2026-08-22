@@ -379,6 +379,49 @@ describe('validateIrModuleStructure', () => {
     }
   });
 
+  it('requires exact module variable declaration kind and mutability agreement', () => {
+    const valid = lower(
+      'module-declaration-kind.ts',
+      'export const fixed = 1; export let temporal = 2; export var available = 3;',
+    );
+
+    expect(validateIrModuleStructure(valid)).toEqual({ kind: 'valid' });
+    for (const mutation of [
+      { declarationKind: 'using' },
+      { declarationKind: 'const', mutable: true },
+      { declarationKind: 'let', mutable: false },
+      { declarationKind: 'var', mutable: false },
+    ]) {
+      const invalid = structuredClone(valid);
+      Object.assign(invalid.declarations[0]!, mutation);
+      const result = validateIrModuleStructure(invalid);
+
+      expect(result.kind).toBe('invalid');
+      if (result.kind === 'invalid') {
+        expect(result.failures.map((failure) => failure.code)).toContain('invalid-node-shape');
+      }
+    }
+  });
+
+  it('requires declaration-level type-only identity to agree with import bindings', () => {
+    const valid = lower(
+      'import-type-only.ts',
+      "import type { Shape } from './shape.js'; import { value } from './value.js'; export type Alias = Shape; value;",
+    );
+    const missing = structuredClone(valid);
+    const conflicting = structuredClone(valid);
+    delete (missing.imports[0] as { typeOnly?: boolean }).typeOnly;
+    Object.assign(conflicting.imports[1]!, { typeOnly: true });
+
+    expect(validateIrModuleStructure(valid)).toEqual({ kind: 'valid' });
+    for (const module of [missing, conflicting]) {
+      expect(validateIrModuleStructure(module)).toMatchObject({
+        failures: [expect.objectContaining({ code: 'invalid-node-shape', path: expect.stringContaining('typeOnly') })],
+        kind: 'invalid',
+      });
+    }
+  });
+
   it('validates static for-in keys against pure object enumeration order', () => {
     const valid = lower(
       'static-for-in.ts',
@@ -1008,6 +1051,7 @@ describe('validateIrModuleStructure', () => {
       scope: 'module',
     };
     const patternedDeclaration: IrVariableDeclaration = {
+      declarationKind: 'const',
       exported: declaration.exported,
       initializer: declaration.initializer,
       kind: 'variable',

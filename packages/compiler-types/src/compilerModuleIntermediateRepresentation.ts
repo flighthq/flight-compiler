@@ -10,6 +10,7 @@ export type IrImportBinding =
 export interface IrImport {
   readonly bindings: readonly IrImportBinding[];
   readonly specifier: string;
+  readonly typeOnly: boolean;
 }
 
 export type IrExport =

@@ -12,6 +12,19 @@ function lower(file: string, source: string) {
 }
 
 describe('lowerTypeScriptSource', () => {
+  it('retains const, let, and var module initialization identity', () => {
+    const result = lower(
+      'module-variables.ts',
+      'export const fixed = 1; export let temporal = 2; export var available = 3;',
+    );
+
+    expect(result.module.declarations).toMatchObject([
+      { binding: { name: 'fixed' }, declarationKind: 'const', kind: 'variable', mutable: false },
+      { binding: { name: 'temporal' }, declarationKind: 'let', kind: 'variable', mutable: true },
+      { binding: { name: 'available' }, declarationKind: 'var', kind: 'variable', mutable: true },
+    ]);
+  });
+
   it('records nominal object construction targets and closed inferred anonymous shapes', () => {
     const result = lower(
       'object-construction.ts',
@@ -1043,6 +1056,7 @@ describe('lowerTypeScriptSource', () => {
     const [alias, identity] = result.module.declarations;
 
     expect(result.diagnostics).toEqual([]);
+    expect(result.module.imports).toMatchObject([{ typeOnly: true }, { typeOnly: false }]);
     expect(typeImport).toMatchObject({ kind: 'import', name: 'Imported', space: 'type' });
     expect(dualImport).toMatchObject({ kind: 'import', name: 'RemoteClass', space: 'value' });
     if (alias?.kind !== 'typeAlias' || identity?.kind !== 'function' || alias.type.kind !== 'named') {

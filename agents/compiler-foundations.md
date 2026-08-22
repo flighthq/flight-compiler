@@ -26,6 +26,9 @@ compiler-completion + compiler-provenance + compiler-types
 compiler-completion + compiler-ir-validation + compiler-structural + compiler-types
   <- compiler-lowering
 
+compiler-canonical-form + compiler-ir-traversal + compiler-types
+  <- compiler-module
+
 compiler-canonical-form + compiler-types + compiler-provenance
   <- compiler-inventory
 
@@ -98,6 +101,7 @@ Strengths:
 - Public compiler results and nested collections are readonly; implementations build mutable local state and return immutable contracts.
 - Declaration, executable, module, and type IR contracts live in focused flat sources rather than one omnibus contract.
 - Function types cannot carry executable default expressions, while executable parameters retain defaults where they are meaningful.
+- Module variable declarations preserve exact `const`, `let`, or `var` identity, and import declarations distinguish declaration-level `import type` erasure from runtime side-effect requests containing only type specifiers.
 - Parameter and tuple-element cardinality excludes contradictory optional-rest states, and union/intersection contracts require at least two constituents.
 - Object expressions preserve ordered members and distinguish ordinary construction from spread-bearing construction through an exact target-neutral copy-semantics contract.
 - Class constructors distinguish absence from an explicit empty constructor; class and interface heritage accepts named type references rather than arbitrary types.
@@ -210,6 +214,14 @@ One versioned task-operation algebra defines the observable contract that any el
 
 A versioned target-neutral state-machine analysis now turns the proven linear async subset into explicit entry and resume states. Each suspension records the once-evaluated operand, fulfillment action, rejection value, and continuation identity; settlement steps distinguish resolution, rejection, implicit `undefined`, expression results, and evaluation failure. Completion paths retain the exact value source for every reachable return, fallthrough, and throw route. Closure captures and local bindings whose current values survive a suspension are explicit, including overwrite kills and operand reads that occur before suspension. The analyzer accepts concise async bodies, direct await, one-binding await initialization, simple binding rebinding, discard, return, throw, and fallthrough. Async iteration, branching and looping control flow, escaping control flow, unreachable tails, nested suspension expressions, destructuring fulfillment, and property assignment remain stable structured refusals until a transform proves their complete semantics. Results are deterministic, deeply immutable, input-independent, and isolated coverage reaches every implementation arm.
 
+### `compiler-module`
+
+Status: narrow target-neutral module linking and evaluation bedrock.
+
+The package accepts an explicit module set, ordered entry set, and ordered resolved dependency edges rather than consulting a filesystem or target resolver. It separates link, instantiation, dependency evaluation, and body evaluation; computes dependency-first strongly connected groups without rejecting cycles; and retains the exact import request order supplied by the linking boundary. Every value import is a read-only live alias to its dependency cell. Local `var` and TypeScript enum bindings are available as `undefined` after instantiation and assigned during evaluation; functions are available after instantiation; `let`, `const`, and classes remain temporal until their exact evaluation step. Destructuring leaves share one initialization step, local mutability remains explicit, and every executable step states that abrupt completion stops module evaluation. Declaration-level type-only imports do not create runtime edges, while side-effect imports and value re-exports do.
+
+Duplicate modules, entries, dependencies, and bindings; malformed identities or graph shapes; missing, unexpected, or unreachable edges; mutability contradictions; multiple default expressions; lost default-expression ordering; and unsupported top-level `await` fail through stable tagged data. Module-array order is irrelevant, dependency and entry order are deliberate semantics, caller inputs remain unchanged, results are deeply immutable, and isolated coverage reaches every implementation arm. Facade routing remains the next package-level composition so this primitive does not choose Haxe or Rust syntax.
+
 ### `compiler-closure`
 
 Status: narrow target-neutral evidence above structural traversal.
@@ -245,6 +257,7 @@ Each workspace passes its own strict typecheck and Vitest target. The package bo
 | `compiler-emission` | Keep independent as the portable emitted-file and backend-failure seam. | Path/content normalization, host-path rejection, stable module-facade public-slot identity and route provenance, portable path and target-name collision identity, fixed-versus-renamable lexical allocation, per-file parser syntax checks, batch target compilation smoke checks, indentation boundaries, and tagged failure guards are exercised. |
 | `compiler-ir-validation` | Keep independent as the structural and lexical integrity boundary for target-neutral IR values. | Module and binding identity, legal introduction roles, exact source fingerprints, shared statement-value carrier validity, ancestor-scope reachability across module/declaration/function/block regions, compound-type arity, parameter cardinality, parameter-property constructor identity, and every discriminated IR family are checked without target policy or mutation. |
 | `compiler-lowering` | Keep independent as the backend-elected library of neutral IR-to-IR transforms and plans. | Pass ordering, shared structural validation, generic substitution and statement-value semantics, pass-specific postconditions, explicit idempotence verification, module identity, immutability, stable pass-named failures, initializer scope, omitted conditions, discarded numeric updates, continue-correct nested-loop behavior, and exact static/base/derived field plus parameter-property initialization timing are direct-tested. |
+| `compiler-module` | Keep independent as the target-neutral module linking, instantiation, and evaluation boundary. | Explicit request-order dependency edges, entry-rooted dependency-first SCC evaluation, cycle preservation, function/var/enum instantiation, lexical temporal access, destructuring initialization, import and export live-cell semantics, declaration-level type erasure, side-effect dependencies, tagged malformed or unsupported graph failures, deterministic deep immutability, and zero unreached arms are covered; facade lowering and target representation remain open. |
 | `compiler-runtime-contract` | Keep independent as the target-neutral runtime reachability and ABI-completeness seam. | Exact type/value-space source identities and direct ambient constructor arities are collected across reachable IR. Symbol bindings, constructor ABIs, and task capability ABIs have independent versioned plans; task requirements retain path-addressed state-machine and operation evidence; scheduling, settlement, assimilation, cleanup, aggregation, duplicate, invalid, missing, mismatch, deterministic immutability, and zero unreached arms are covered, while target implementations stay out. |
 | `compiler-structural` | Keep independent as structural type identity and analysis above canonical form. | Closed object identity, every IR type family, property/compound order equivalence, semantic counterexamples, generic alpha-equivalence and application, sequential defaults, nested shadowing, tagged malformed-input failures, deterministic relative and inventory-routed cross-module construction-target resolution, immutable object-copy semantics, path-addressed construction compatibility, tri-state structural value assignability, empty input, zero unreached arms, and Rust interning reuse are covered; shared nominal storage, target copy representation, and resolved operator assignability remain open. |
 | `compiler-task` | Keep independent as the target-neutral task-analysis and composition boundary. | Async declarations, methods, nested block and expression functions, recovered and unresolved output types, nearest-boundary suspension ownership, async iteration, ambient Promise operations, proven async invocations, composition candidates, dynamic and optional calls, exact ready/reject/join-all/then/catch/finally semantics, completion-preserving linear state machines, resume settlement, retained capture and live-local evidence, structured unsafe-shape refusals, deterministic deep immutability, and zero unreached arms are covered; Haxe has elected the linear representation while Rust and broader control flow remain open. |
@@ -379,18 +392,26 @@ The latest five-iteration task, module-resolution, ownership, and closure batch 
 4. Define Rust ownership evidence for values that cross generated carriers, structural records, closures, and suspension boundaries.
 5. Define target-neutral closure capture, mutation, per-iteration lifetime, escape, suspension retention, and lexical `this` evidence before either backend chooses a representation.
 
-The recalibrated next ten iterations are:
+The latest five-iteration task-state-machine batch completed:
 
 1. **Complete:** define value-bearing completion paths so async and exception lowering retain the value attached to each normal, return, and throw route.
 2. **Complete:** derive a target-neutral async state-machine plan from completion, task, closure, and suspension evidence without choosing runtime syntax.
 3. **Complete:** define the versioned task runtime capability ABI required by that plan, including scheduling, settlement, assimilation, and cleanup.
 4. **Complete:** implement completion-preserving Haxe task lowering against the explicit state-machine plan and downstream runtime capability table.
 5. **Complete:** exercise Haxe task emission through parser and compiler smoke adapters without moving runtime implementation into this repository.
-6. Define module evaluation, initialization order, temporal access, and live-binding semantics independently of target facade syntax.
-7. Derive module-facade lowering from stable public-slot identities and the shared module-evaluation plan.
-8. Implement Haxe module-facade emission only after the neutral facade lowering proves its invariants.
-9. Elect Rust environment and portable-task representations from closure, ownership, completion, and state-machine evidence with structured refusals for unresolved obligations.
-10. Add a deterministic downstream-parity corpus schema and harness without importing downstream runtime or ecosystem fixtures.
+
+The recalibrated next ten iterations are:
+
+1. **Complete:** define module linking, instantiation, dependency order, temporal access, and live-binding semantics independently of target facade syntax.
+2. Derive module-facade lowering from stable public-slot identities and the shared module-evaluation plan.
+3. Implement Haxe module-facade emission only after the neutral facade lowering proves its invariants.
+4. Elect Rust environment and portable-task representations from closure, ownership, completion, and state-machine evidence with structured refusals for unresolved obligations.
+5. Add a deterministic downstream-parity corpus schema and harness without importing downstream runtime or ecosystem fixtures.
+6. Extend the neutral async state machine to conditional and structured branching using the shared completion algebra.
+7. Model async `try`, `catch`, and `finally` transitions without weakening abrupt-completion replacement.
+8. Model async iteration acquisition, stepping, settlement, and cleanup before choosing target loop syntax.
+9. Emit Haxe ready, reject, join, then, catch, and finally task operations through the versioned runtime capability ABI.
+10. Integrate module and task plans into orchestration and the public compiler report without hiding stage-specific refusals.
 
 ## Freeze rule
 

@@ -1338,7 +1338,7 @@ function lowerImports(sourceFile: ts.SourceFile, context: LoweringContext): IrIm
         );
       }
     }
-    return [{ bindings, specifier: statement.moduleSpecifier.text }];
+    return [{ bindings, specifier: statement.moduleSpecifier.text, typeOnly: clause?.isTypeOnly ?? false }];
   });
 }
 
@@ -2711,10 +2711,19 @@ function bindingPatternScope(node: ts.BindingPattern): IrBindingScope {
 function lowerVariableStatement(node: ts.VariableStatement, context: LoweringContext): IrVariableDeclaration[] {
   return lowerVariables(node.declarationList, context).map((variable, index) => ({
     ...variable,
+    declarationKind: getTypeScriptVariableDeclarationKind(node.declarationList),
     exported: isExported(node),
     kind: 'variable',
     origin: origin(node.declarationList.declarations[index]!, context),
   }));
+}
+
+function getTypeScriptVariableDeclarationKind(
+  node: ts.VariableDeclarationList,
+): IrVariableDeclaration['declarationKind'] {
+  if (node.flags & ts.NodeFlags.Const) return 'const';
+  if (node.flags & ts.NodeFlags.Let) return 'let';
+  return 'var';
 }
 
 function inferInitializerType(node: ts.Expression, context: LoweringContext): IrType {

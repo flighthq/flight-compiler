@@ -192,6 +192,7 @@ describe('createIrModuleTargetNameAllocation', () => {
       declarations: [
         {
           binding: moduleBinding,
+          declarationKind: 'const' as const,
           exported: true,
           initializer: {
             async: false,
@@ -267,6 +268,7 @@ describe('createIrModuleTargetNameAllocation', () => {
       declarations: [
         {
           binding: moduleBinding,
+          declarationKind: 'const' as const,
           exported: true,
           initializer: {
             kind: 'object' as const,
@@ -327,6 +329,7 @@ describe('createIrModuleTargetNameAllocation', () => {
     const module = {
       declarations: [
         {
+          declarationKind: 'const' as const,
           exported: true,
           initializer: { kind: 'array' as const, elements: [] },
           kind: 'variable' as const,

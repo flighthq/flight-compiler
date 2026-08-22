@@ -197,7 +197,9 @@ describe('analyzeIrModuleStructuralObjectCompatibilityAcrossModules', () => {
       { kind: 'property', name: 'value', value: { kind: 'literal', value: 1 } },
     ]);
     const subject = createModule([], [expression], {
-      imports: [{ bindings: [{ binding: imported, imported: 'Box', typeOnly: true }], specifier: './model.js' }],
+      imports: [
+        { bindings: [{ binding: imported, imported: 'Box', typeOnly: true }], specifier: './model.js', typeOnly: true },
+      ],
       name: 'use-model',
       source: 'packages/structural/src/use-model.ts',
     });
@@ -246,8 +248,16 @@ describe('analyzeIrModuleStructuralObjectCompatibilityAcrossModules', () => {
       ],
       {
         imports: [
-          { bindings: [{ binding: namedImport, imported: 'Box', typeOnly: true }], specifier: './star.js' },
-          { bindings: [{ binding: namespaceImport, imported: '*', typeOnly: true }], specifier: './model.js' },
+          {
+            bindings: [{ binding: namedImport, imported: 'Box', typeOnly: true }],
+            specifier: './star.js',
+            typeOnly: true,
+          },
+          {
+            bindings: [{ binding: namespaceImport, imported: '*', typeOnly: true }],
+            specifier: './model.js',
+            typeOnly: true,
+          },
         ],
         name: 'routes',
         source: 'packages/structural/src/routes.ts',
@@ -286,8 +296,13 @@ describe('analyzeIrModuleStructuralObjectCompatibilityAcrossModules', () => {
           {
             bindings: [{ binding: parentImport, imported: 'ParentBox', typeOnly: true }],
             specifier: '../parent-model.js',
+            typeOnly: true,
           },
-          { bindings: [{ binding: indexImport, imported: 'IndexBox', typeOnly: true }], specifier: '../directory' },
+          {
+            bindings: [{ binding: indexImport, imported: 'IndexBox', typeOnly: true }],
+            specifier: '../directory',
+            typeOnly: true,
+          },
         ],
         name: 'portable-use',
         source: 'packages/structural/src/nested/portable-use.ts',
@@ -321,7 +336,13 @@ describe('analyzeIrModuleStructuralObjectCompatibilityAcrossModules', () => {
     });
     const imported = typeBinding('type:ambiguous-import', 'Box', 'import');
     const subject = createModule([], [objectExpression(typeReference(imported), [])], {
-      imports: [{ bindings: [{ binding: imported, imported: 'Box', typeOnly: true }], specifier: './ambiguous.js' }],
+      imports: [
+        {
+          bindings: [{ binding: imported, imported: 'Box', typeOnly: true }],
+          specifier: './ambiguous.js',
+          typeOnly: true,
+        },
+      ],
       name: 'ambiguity-use',
       source: 'packages/structural/src/ambiguity-use.ts',
     });
@@ -359,10 +380,15 @@ describe('analyzeIrModuleStructuralObjectCompatibilityAcrossModules', () => {
       [objectExpression(typeReference(cyclicImport), []), objectExpression(typeReference(missingImport), [])],
       {
         imports: [
-          { bindings: [{ binding: cyclicImport, imported: 'Box', typeOnly: true }], specifier: './first-cycle.js' },
+          {
+            bindings: [{ binding: cyclicImport, imported: 'Box', typeOnly: true }],
+            specifier: './first-cycle.js',
+            typeOnly: true,
+          },
           {
             bindings: [{ binding: missingImport, imported: 'Missing', typeOnly: true }],
             specifier: '@flighthq/missing',
+            typeOnly: true,
           },
         ],
         name: 'cycle-use',
@@ -399,10 +425,15 @@ describe('analyzeIrModuleStructuralObjectCompatibilityAcrossModules', () => {
       ],
       {
         imports: [
-          { bindings: [{ binding: namespaceImport, imported: '*', typeOnly: true }], specifier: './models.js' },
+          {
+            bindings: [{ binding: namespaceImport, imported: '*', typeOnly: true }],
+            specifier: './models.js',
+            typeOnly: true,
+          },
           {
             bindings: [{ binding: escapeImport, imported: 'Escape', typeOnly: true }],
             specifier: '../../../../outside.js',
+            typeOnly: true,
           },
         ],
         name: 'unresolved-routes',
@@ -433,6 +464,7 @@ describe('analyzeIrModuleStructuralObjectCompatibilityAcrossModules', () => {
         {
           bindings: [{ binding: imported, imported: 'Box', typeOnly: true }],
           specifier: '@flighthq/types/public',
+          typeOnly: true,
         },
       ],
       name: 'package-use',

@@ -145,6 +145,7 @@ describe('applySemanticPatchSet', () => {
     const fingerprint = fingerprintSourceText('const [value] = values;');
     const origin = { column: 1, fingerprint, line: 1, packageName, source };
     const declaration: IrVariableDeclaration = {
+      declarationKind: 'const',
       exported: true,
       initializer: { elements: [], kind: 'array' },
       kind: 'variable',

@@ -1,0 +1,29 @@
+{
+  "name": "@flighthq/compiler-module",
+  "version": "0.0.0",
+  "description": "Target-neutral module linking, initialization, and evaluation semantics",
+  "author": "Joshua Granick and other contributors",
+  "license": "MIT",
+  "private": true,
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/flighthq/flight-compiler.git",
+    "directory": "packages/compiler-module"
+  },
+  "type": "module",
+  "sideEffects": false,
+  "scripts": {
+    "test": "vitest run --config ../../vitest.config.package.ts --root .",
+    "test:watch": "vitest --config ../../vitest.config.package.ts --root .",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@flighthq/compiler-canonical-form": "*",
+    "@flighthq/compiler-ir-traversal": "*",
+    "@flighthq/compiler-types": "*"
+  },
+  "devDependencies": {
+    "@flighthq/compiler-semantic": "*",
+    "typescript": "5.9.3"
+  }
+}

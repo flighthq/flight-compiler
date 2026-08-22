@@ -391,6 +391,7 @@ function lowerIrDeclarationArrayBindingPattern(
       return lowerIrVariableArrayBindingPattern(declaration, path, analysis).map(
         ({ synthetic, variable }): IrVariableDeclaration => ({
           ...variable,
+          declarationKind: synthetic ? 'const' : declaration.declarationKind,
           exported: synthetic ? false : declaration.exported,
           kind: 'variable',
           origin: declaration.origin,

@@ -29,8 +29,11 @@ export interface IrFunctionDeclaration extends IrFunctionSignature {
   readonly overloads: readonly IrFunctionSignature[];
 }
 
+export type IrVariableDeclarationKind = 'const' | 'let' | 'var';
+
 export type IrVariableDeclaration = IrVariable &
   Readonly<{
+    readonly declarationKind: IrVariableDeclarationKind;
     readonly exported: boolean;
     readonly kind: 'variable';
     readonly origin: CompilerSourceOrigin;
