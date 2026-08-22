@@ -1,6 +1,7 @@
 import type {
   IrAssignmentOperatorSemantics,
   IrBinaryOperatorSemantics,
+  IrNullishComparisonEvidence,
   IrOperatorOperandDomains,
   IrOperatorValueDomain,
   IrUnaryOperatorSemantics,
@@ -24,7 +25,16 @@ describe('compiler operator semantic intermediate representation contracts', () 
         right: IrOperatorOperandDomains;
       }>
     >();
-    expectTypeOf<IrBinaryOperatorSemantics>().toEqualTypeOf<IrAssignmentOperatorSemantics>();
+    // A binary comparison carries one thing an assignment cannot: which absent values the compared
+    // operand admits, which is what a single-absent-value target needs to decide `x === undefined`.
+    expectTypeOf<IrBinaryOperatorSemantics>().toEqualTypeOf<
+      Readonly<{
+        left: IrOperatorOperandDomains;
+        nullishComparison?: IrNullishComparisonEvidence | undefined;
+        result: IrOperatorValueDomain;
+        right: IrOperatorOperandDomains;
+      }>
+    >();
     expectTypeOf<IrUnaryOperatorSemantics>().toEqualTypeOf<
       Readonly<{
         operand: IrOperatorOperandDomains;

@@ -26,6 +26,7 @@ import type {
   IrBindingScope,
   IrBinaryOperator,
   IrBinaryOperatorSemantics,
+  IrNullishComparisonEvidence,
   IrClassDeclaration,
   IrClassField,
   IrClassMethod,
@@ -2813,8 +2814,10 @@ function lowerBinaryOperatorSemantics(node: ts.BinaryExpression, context: Loweri
   const left = lowerOperatorOperandDomains(node.left, context);
   const right = lowerOperatorOperandDomains(node.right, context);
   const result = lowerOperatorValueDomain(node, context);
+  const nullishComparison = getTypeScriptNullishComparisonEvidence(node, context);
   return {
     left,
+    ...(nullishComparison ? { nullishComparison } : {}),
     // A checker with no library types often cannot type the whole expression even when it typed both
     // operands, so the operator's own rule stands in rather than reporting an unknown result and
     // refusing an operation whose domains are decided.
@@ -2827,6 +2830,38 @@ function lowerBinaryOperatorSemantics(node: ts.BinaryExpression, context: Loweri
           )
         : result,
     right,
+  };
+}
+
+// One side of an equality being `null` or `undefined` makes the other side's absent-value membership
+// the only thing a single-absent-value target needs to decide the comparison. The membership comes
+// from the written type, because the checker without a library cannot narrow the union either.
+function getTypeScriptNullishComparisonEvidence(
+  node: ts.BinaryExpression,
+  context: LoweringContext,
+): IrNullishComparisonEvidence | undefined {
+  const equality =
+    node.operatorToken.kind === ts.SyntaxKind.EqualsEqualsToken ||
+    node.operatorToken.kind === ts.SyntaxKind.EqualsEqualsEqualsToken ||
+    node.operatorToken.kind === ts.SyntaxKind.ExclamationEqualsToken ||
+    node.operatorToken.kind === ts.SyntaxKind.ExclamationEqualsEqualsToken;
+  if (!equality) return undefined;
+  const literalOf = (expression: ts.Expression): 'null' | 'undefined' | undefined => {
+    if (expression.kind === ts.SyntaxKind.NullKeyword) return 'null';
+    return ts.isIdentifier(expression) && expression.text === 'undefined' ? 'undefined' : undefined;
+  };
+  const leftLiteral = literalOf(node.left);
+  const rightLiteral = literalOf(node.right);
+  const literal = leftLiteral ?? rightLiteral;
+  if (!literal || (leftLiteral && rightLiteral)) return undefined;
+  const operand = leftLiteral ? node.right : node.left;
+  const type = getTypeScriptExpressionBindingTypeEvidence(operand, context);
+  if (!type) return undefined;
+  const members = type.kind === 'union' ? type.types : [type];
+  return {
+    admitsNull: members.some((member) => member.kind === 'null'),
+    admitsUndefined: members.some((member) => member.kind === 'undefined'),
+    literal,
   };
 }
 

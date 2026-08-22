@@ -952,4 +952,25 @@ describe('emitIrModuleHaxe', () => {
 
     expect(() => emitIrModuleHaxe(external.module)).toThrow('implements an interface declared outside this module');
   });
+
+  it('compares against a single absent value directly, and refuses where the source admits both', () => {
+    // Haxe has one absent value, so `x == null` says exactly what `x === undefined` says when the
+    // operand cannot also be null. When it can be both, the two comparisons differ and Haxe cannot
+    // tell them apart, so the difference has to be lowered rather than emitted.
+    const single = lower(
+      'single.ts',
+      'export function widen(value: number | undefined, fallback: number): number { if (value === undefined) return fallback; return value; }',
+    );
+    const both = lower(
+      'both.ts',
+      'export function widen(value: number | null | undefined, fallback: number): number { if (value === undefined) return fallback; return fallback; }',
+    );
+
+    expect(emitIrModuleHaxe(single.module).contents).toContain('if ((value == null)) {');
+    // The type refuses before the comparison does, which is the earlier and better place for it:
+    // a type Haxe cannot spell is a refusal about the signature, not about one operator.
+    expect(() => emitIrModuleHaxe(both.module)).toThrow(
+      'types containing both null and undefined require distinct Haxe sentinels',
+    );
+  });
 });

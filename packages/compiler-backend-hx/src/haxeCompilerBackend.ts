@@ -403,6 +403,23 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
     case 'await':
       emissionError(context, 'await requires the Haxe async-lowering pass');
     case 'binary': {
+      if (expression.semantics.nullishComparison) {
+        const evidence = expression.semantics.nullishComparison;
+        if (evidence.admitsNull && evidence.admitsUndefined) {
+          emissionError(
+            context,
+            `operator ${expression.operator} against ${evidence.literal} requires Haxe nullability lowering`,
+          );
+        }
+        // Haxe has one absent value, so the comparison is against `null` and the source's own absent
+        // literal is never emitted. That is what lets `x === undefined` lower at all.
+        const operand =
+          expression.left.kind === 'identifier' && expression.left.reference.kind === 'ambient'
+            ? expression.right
+            : expression.left;
+        const negated = expression.operator === '!=' || expression.operator === '!==';
+        return `(${emitExpression(operand, context)} ${negated ? '!=' : '=='} null)`;
+      }
       const left = emitExpression(expression.left, context);
       const right = emitExpression(expression.right, context);
       return `(${left} ${emitBinaryOperatorHaxe(expression.operator, expression.semantics, context)} ${right})`;
@@ -1203,6 +1220,12 @@ function isBinaryOperatorDirectHaxe(
   // `??` selects between its operands rather than combining them, so no coercion can differ between
   // the two languages. Haxe's own `??` has the same short-circuit and the same null result.
   if (operator === '??') return true;
+  // Haxe has one absent value, so `x == null` covers exactly the source's meaning where the operand
+  // admits only one of null and undefined. Where it admits both, the two comparisons differ and Haxe
+  // cannot tell them apart, so the difference has to be lowered rather than emitted.
+  if (semantics.nullishComparison) {
+    return !(semantics.nullishComparison.admitsNull && semantics.nullishComparison.admitsUndefined);
+  }
   if (operator === '===' || operator === '!==') {
     return (
       semantics.left.flow === semantics.right.flow &&
