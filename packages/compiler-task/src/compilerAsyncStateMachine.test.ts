@@ -395,16 +395,7 @@ describe('analyzeIrModuleAsyncStateMachines', () => {
     });
   });
 
-  it('refuses a labelled loop and a suspension in a loop condition', () => {
-    const labelled = analyzeIrModuleAsyncStateMachines(
-      lower(`
-        export async function labelled(task: Promise<number>, again: boolean): Promise<number> {
-          let last: number = 0;
-          outer: while (again) { last = await task; again = false; }
-          return last;
-        }
-      `),
-    );
+  it('refuses a suspension in a loop condition, which settles before each iteration is decided', () => {
     const condition = analyzeIrModuleAsyncStateMachines(
       lower(`
         export async function decide(task: Promise<boolean>): Promise<number> {
@@ -415,7 +406,6 @@ describe('analyzeIrModuleAsyncStateMachines', () => {
       `),
     );
 
-    expect(labelled.refusals.map((refusal) => refusal.code)).toEqual(['unsupported-control-flow']);
     expect(condition.refusals.map((refusal) => refusal.code)).toEqual(['unsupported-suspension-expression']);
   });
 
@@ -480,16 +470,34 @@ describe('analyzeIrModuleAsyncStateMachines', () => {
     ]);
   });
 
-  it('still refuses a labelled jump and a jump with no suspending loop around it', () => {
+  it('sends a labelled jump to the loop that carries the label, not the innermost one', () => {
     const labelled = analyzeIrModuleAsyncStateMachines(
       lower(`
         export async function drain(task: Promise<number>, stop: boolean): Promise<number> {
           let last: number = 0;
-          outer: while (true) { last = await task; if (stop) { break outer; } }
+          outer: while (true) {
+            while (true) {
+              last = await task;
+              if (stop) { break outer; }
+            }
+          }
           return last;
         }
       `),
     );
+    const outerPath = ['declarations', 0, 'body', 1];
+    const jumps = (labelled.machines[0]?.states.flatMap((state) => state.steps) ?? []).filter(
+      (step) => step.kind === 'goto',
+    );
+
+    expect(labelled.refusals).toEqual([]);
+    // The break leaves the OUTER loop, so it targets that loop's join rather than the inner one's.
+    expect(
+      jumps.some(
+        (step) => step.kind === 'goto' && step.target.kind === 'join' && step.target.path.length === outerPath.length,
+      ),
+    ).toBe(true);
+
     const bare = analyzeIrModuleAsyncStateMachines(
       lower(`
         export async function drain(task: Promise<number>): Promise<number> {
@@ -499,7 +507,6 @@ describe('analyzeIrModuleAsyncStateMachines', () => {
       `),
     );
 
-    expect(labelled.refusals.map((refusal) => refusal.code)).toEqual(['unsupported-control-flow']);
     expect(bare.refusals.map((refusal) => refusal.code)).toEqual(['escaping-control-flow']);
   });
 

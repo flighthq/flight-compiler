@@ -68,8 +68,9 @@ interface AsyncStateMachineDraft {
 }
 
 interface AsyncStateMachineLoopTargets {
-  readonly continueTarget: CompilerAsyncStateMachineStateIdentity;
   readonly breakTarget: CompilerAsyncStateMachineStateIdentity;
+  readonly continueTarget: CompilerAsyncStateMachineStateIdentity;
+  readonly label?: string | undefined;
 }
 
 export function analyzeIrModuleAsyncStateMachines(module: Readonly<IrModule>): CompilerAsyncStateMachineAnalysis {
@@ -449,8 +450,13 @@ function createIrStatementListAsyncStateMachine(
       }
       case 'break':
       case 'continue': {
-        const loop = draft.loops.at(-1);
-        if (statement.target || !loop) {
+        // An unlabelled jump means the innermost loop; a labelled one means the loop that carries
+        // that label, which may be several levels out.
+        const target = statement.target;
+        const loop = target
+          ? [...draft.loops].reverse().find((candidate) => candidate.label === target.id)
+          : draft.loops.at(-1);
+        if (!loop) {
           return createCompilerAsyncStateMachineRefusal('escaping-control-flow', path, scope.path);
         }
         draft.currentSteps.push({
@@ -573,9 +579,6 @@ function createIrLoopStatementAsyncStateMachine(
   suspensions: readonly Readonly<CompilerAsyncTaskSuspensionSite>[],
   draft: AsyncStateMachineDraft,
 ): CompilerAsyncStateMachineRefusal | undefined {
-  if (statement.label) {
-    return createCompilerAsyncStateMachineRefusal('unsupported-control-flow', path, scope.path);
-  }
   const conditionPath = [...path, 'condition'];
   if (suspensions.some((suspension) => isCompilerAsyncStateMachinePathWithin(suspension.path, conditionPath))) {
     return createCompilerAsyncStateMachineRefusal('unsupported-suspension-expression', conditionPath, scope.path);
@@ -608,7 +611,11 @@ function createIrLoopStatementAsyncStateMachine(
     draft.currentIdentity = body;
     draft.currentSteps = [];
   }
-  draft.loops.push({ breakTarget: join, continueTarget: header });
+  draft.loops.push({
+    breakTarget: join,
+    continueTarget: header,
+    ...(statement.label ? { label: statement.label.id } : {}),
+  });
   const refusal = createIrStatementArmAsyncStateMachine(scope, statement.body, [...path, 'body'], suspensions, draft);
   draft.loops.pop();
   if (refusal) return refusal;
