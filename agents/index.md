@@ -32,5 +32,11 @@ Per-package domain surveys following Flight's `agents/packages/<name>/` conventi
 - [compiler-runtime-contract](packages/compiler-runtime-contract/review.md): prove every reachable ambient type/value symbol has one target binding decision.
 - [compiler-backend-hx](packages/compiler-backend-hx/review.md): neutral IR in, idiomatic Haxe out.
 - [compiler-backend-rs](packages/compiler-backend-rs/review.md): neutral IR in, idiomatic Rust out.
+- [compiler-ir-traversal](packages/compiler-ir-traversal/review.md): the one typed walk over an IR module.
+- [compiler-completion](packages/compiler-completion/review.md): how a statement finishes, and carrying what.
+- [compiler-structural](packages/compiler-structural/review.md): when two shapes are the same, and what follows.
+- [compiler-closure](packages/compiler-closure/review.md): what a closure captures and how long it must live.
+- [compiler-module](packages/compiler-module/review.md): what links, in what order, and which slot a name means.
+- [compiler-task](packages/compiler-task/review.md): what suspends, and what a target must supply to run it.
 - [compiler-orchestration](packages/compiler-orchestration/review.md): compose the passes deterministically.
 - [tool-compiler](packages/tool-compiler/review.md): the one published artifact.
