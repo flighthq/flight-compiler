@@ -1574,6 +1574,14 @@ describe('lowerTypeScriptSource', () => {
     if (!tryStatement.catchClause || tryStatement.catchClause.body.kind !== 'block') {
       throw new Error('Expected catch clause');
     }
+    expect(tryStatement.catchClause.semantics).toEqual({
+      bindingInitialization: { kind: 'initialize', source: 'thrown-value', timing: 'before-body' },
+      bodyExecution: 'once-per-caught-throw',
+      catchCompletion: 'propagate',
+      interceptedCompletion: 'throw',
+      schema: 'flight-compiler-catch-semantics/1',
+      uncaughtCompletion: 'preserve',
+    });
     if (tryStatement.tryBody.kind !== 'block' || tryStatement.tryBody.statements[0]?.kind !== 'throw') {
       throw new Error('Expected try throw statement');
     }
@@ -1593,6 +1601,23 @@ describe('lowerTypeScriptSource', () => {
     expect(bindingReference(method.body[0].expression).id).toBe(method.parameters[0]?.binding.id);
     expect(method.body[1].expression).toEqual({ kind: 'identifier', reference: { kind: 'this' } });
     expect(lower('bindings.ts', source).module).toEqual(result.module);
+  });
+
+  it('records discarded thrown values for catch clauses without a binding', () => {
+    const result = lower('bindingless-catch.ts', 'export function read(): void { try { throw 1; } catch { return; } }');
+    const declaration = result.module.declarations[0];
+    const statement = declaration?.kind === 'function' ? declaration.body[0] : undefined;
+    if (statement?.kind !== 'try' || !statement.catchClause) throw new Error('Expected catch clause');
+
+    expect(statement.catchClause.binding).toBeUndefined();
+    expect(statement.catchClause.semantics).toEqual({
+      bindingInitialization: { kind: 'discard' },
+      bodyExecution: 'once-per-caught-throw',
+      catchCompletion: 'propagate',
+      interceptedCompletion: 'throw',
+      schema: 'flight-compiler-catch-semantics/1',
+      uncaughtCompletion: 'preserve',
+    });
   });
 
   it('resolves labeled break and continue references to one control-flow identity', () => {

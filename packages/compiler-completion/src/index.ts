@@ -5,6 +5,12 @@ export {
   isIrAwaitSemantics,
 } from './compilerAsyncTaskCompletion.js';
 export {
+  applyCompilerCompletionSetCatchReplacement,
+  createIrCatchSemantics,
+  isCompilerCatchCompletionFailure,
+  isIrCatchSemantics,
+} from './compilerCatchCompletion.js';
+export {
   combineCompilerCompletionSetsAlternatively,
   combineCompilerCompletionSetsSequentially,
   createCompilerCompletionSet,

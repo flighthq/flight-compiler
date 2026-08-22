@@ -78,4 +78,20 @@ describe('compiler executable intermediate representation contracts', () => {
 
     expect(awaited.semantics.schema).toBe('flight-compiler-await-semantics/1');
   });
+
+  it('requires thrown-value semantics on every catch clause', () => {
+    const caught = {
+      body: { kind: 'block', statements: [] },
+      semantics: {
+        bindingInitialization: { kind: 'discard' },
+        bodyExecution: 'once-per-caught-throw',
+        catchCompletion: 'propagate',
+        interceptedCompletion: 'throw',
+        schema: 'flight-compiler-catch-semantics/1',
+        uncaughtCompletion: 'preserve',
+      },
+    } as const satisfies NonNullable<Extract<IrStatement, { kind: 'try' }>['catchClause']>;
+
+    expect(caught.semantics.bindingInitialization).toEqual({ kind: 'discard' });
+  });
 });

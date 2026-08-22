@@ -3,6 +3,7 @@ export type * from './compilerAsyncTaskCompletionContract.js';
 export type * from './compilerBackendContract.js';
 export type * from './compilerBindingIntermediateRepresentation.js';
 export type * from './compilerBindingPatternIntermediateRepresentation.js';
+export type * from './compilerCatchCompletionContract.js';
 export type * from './compilerClassInitializationContract.js';
 export type * from './compilerCompletionContract.js';
 export type * from './compilerDeclarationIntermediateRepresentation.js';

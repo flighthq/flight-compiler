@@ -8,6 +8,7 @@ import type {
 import type { IrAwaitSemantics } from './compilerAsyncTaskCompletionContract.js';
 import type { IrBindingIdentity, IrIdentifierReference } from './compilerBindingIntermediateRepresentation.js';
 import type { IrBindingPattern } from './compilerBindingPatternIntermediateRepresentation.js';
+import type { IrCatchSemantics } from './compilerCatchCompletionContract.js';
 import type {
   IrAssignmentOperator,
   IrBinaryOperator,
@@ -188,6 +189,7 @@ export type IrVariable = IrNamedVariable | IrPatternVariable;
 export interface IrCatchClause {
   readonly binding?: IrBindingIdentity | undefined;
   readonly body: IrStatement;
+  readonly semantics: IrCatchSemantics;
 }
 
 export interface IrSwitchCase {

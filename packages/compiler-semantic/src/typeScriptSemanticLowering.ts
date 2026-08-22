@@ -3,7 +3,11 @@ import path from 'node:path';
 import ts from 'typescript';
 
 import { normalizePathPortable } from '../../compiler-canonical-form/src/index.js';
-import { createIrAwaitSemantics, createIrStatementValueCallSemantics } from '../../compiler-completion/src/index.js';
+import {
+  createIrAwaitSemantics,
+  createIrCatchSemantics,
+  createIrStatementValueCallSemantics,
+} from '../../compiler-completion/src/index.js';
 import { fingerprintTypeScriptNode } from '../../compiler-provenance/src/index.js';
 import {
   createIrObjectCopySemantics,
@@ -1683,6 +1687,7 @@ function lowerStatement(node: ts.Statement, context: LoweringContext): IrStateme
             catchClause: {
               body: lowerStatement(node.catchClause.block, context),
               ...(catchName ? { binding: lowerBindingIdentity(catchName, context) } : {}),
+              semantics: createIrCatchSemantics(catchName ? 'present' : 'absent'),
             },
           }
         : {}),

@@ -1,4 +1,8 @@
-import { isIrAwaitSemantics, isIrCallExpressionStatementValueCarrier } from '../../compiler-completion/src/index.js';
+import {
+  isIrAwaitSemantics,
+  isIrCallExpressionStatementValueCarrier,
+  isIrCatchSemantics,
+} from '../../compiler-completion/src/index.js';
 import { isCompilerSourceFingerprint } from '../../compiler-provenance/src/index.js';
 import type {
   CompilerIrModuleValidation,
@@ -1156,6 +1160,24 @@ function visitStatement(statement: Readonly<IrStatement>, path: string, state: I
         visitStatement(statement.tryBody, `${path}.tryBody`, state);
         const catchClause = statement.catchClause;
         if (catchClause) {
+          if (!isIrCatchSemantics(catchClause.semantics)) {
+            addFailure(
+              'invalid-node-shape',
+              `${path}.catchClause.semantics`,
+              'catch clause requires exact flight-compiler-catch-semantics/1 evidence',
+              state,
+            );
+          } else if (
+            (catchClause.binding && catchClause.semantics.bindingInitialization.kind !== 'initialize') ||
+            (!catchClause.binding && catchClause.semantics.bindingInitialization.kind !== 'discard')
+          ) {
+            addFailure(
+              'invalid-node-shape',
+              `${path}.catchClause.semantics.bindingInitialization`,
+              'catch binding presence must agree with thrown-value initialization evidence',
+              state,
+            );
+          }
           visitLexicalScope('block', `${path}.catchClause`, state, () => {
             if (catchClause.binding) {
               addBindingDefinition(

@@ -161,6 +161,51 @@ describe('validateIrModuleStructure', () => {
     });
   });
 
+  it('requires exact catch semantics consistent with binding presence', () => {
+    const valid = lower(
+      'catch.ts',
+      'export function bound(): void { try { throw 1; } catch (error) { throw error; } } export function unbound(): void { try { throw 1; } catch {} }',
+    );
+    expect(validateIrModuleStructure(valid)).toEqual({ kind: 'valid' });
+
+    const variants = [structuredClone(valid), structuredClone(valid), structuredClone(valid)];
+    const boundStatements = variants.map((variant) => {
+      const declaration = variant.declarations[0];
+      const statement = declaration?.kind === 'function' ? declaration.body[0] : undefined;
+      if (statement?.kind !== 'try' || !statement.catchClause) throw new Error('Expected bound catch clause');
+      return statement.catchClause;
+    });
+    const unboundDeclaration = variants[2]!.declarations[1];
+    const unboundStatement = unboundDeclaration?.kind === 'function' ? unboundDeclaration.body[0] : undefined;
+    if (unboundStatement?.kind !== 'try' || !unboundStatement.catchClause) {
+      throw new Error('Expected unbound catch clause');
+    }
+    (boundStatements[0] as { semantics: unknown }).semantics = {
+      ...boundStatements[0]!.semantics,
+      extra: true,
+    };
+    (boundStatements[1] as { semantics: unknown }).semantics = {
+      ...boundStatements[1]!.semantics,
+      bindingInitialization: { kind: 'discard' },
+    };
+    (unboundStatement.catchClause as { semantics: unknown }).semantics = {
+      ...unboundStatement.catchClause.semantics,
+      bindingInitialization: { kind: 'initialize', source: 'thrown-value', timing: 'before-body' },
+    };
+
+    for (const variant of variants) {
+      expect(validateIrModuleStructure(variant)).toMatchObject({
+        failures: [
+          expect.objectContaining({
+            code: 'invalid-node-shape',
+            path: expect.stringContaining('.catchClause.semantics'),
+          }),
+        ],
+        kind: 'invalid',
+      });
+    }
+  });
+
   it('validates parameter-property identity against its constructor layout', () => {
     const module = lower(
       'parameter-property.ts',
