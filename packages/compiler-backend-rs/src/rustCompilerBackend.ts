@@ -8,6 +8,7 @@ import {
   isCompilerTargetNameAllocationFailure,
 } from '../../compiler-emission/src/index.js';
 import {
+  createIrClassInitializationPlan,
   createCompilerLoweringPassAwaitConditionHoisting,
   createCompilerLoweringPassBindingPattern,
   createCompilerLoweringPassCStyleFor,
@@ -195,8 +196,15 @@ function emitClass(declaration: Readonly<IrClassDeclaration>, context: EmitConte
   if (declaration.fields.some((field) => field.static)) {
     emissionError(context, `class ${declaration.binding.name} static fields require associated-item lowering`);
   }
-  if (declaration.fields.some((field) => field.initializer)) {
+  const constructed =
+    !declaration.classConstructor ||
+    (declaration.classConstructor.parameters.length === 0 && declaration.classConstructor.body.length === 0);
+  const instanceFields = declaration.fields.filter((field) => !field.static);
+  if (declaration.fields.some((field) => field.initializer) && !constructed) {
     emissionError(context, `class ${declaration.binding.name} field initializers require constructor lowering`);
+  }
+  if (declaration.fields.some((field) => field.initializer) && instanceFields.some((field) => !field.initializer)) {
+    emissionError(context, `class ${declaration.binding.name} partially initializes its fields`);
   }
   const lines = [
     '#[derive(Clone, Debug)]',
@@ -208,13 +216,36 @@ function emitClass(declaration: Readonly<IrClassDeclaration>, context: EmitConte
     );
   }
   lines.push('}');
-  if (declaration.methods.length > 0) {
+  // A field initializer is a constructor obligation, and the neutral plan already decides when each
+  // field is initialized. Rust has no implicit constructor, so the plan becomes an associated `new`.
+  const initialization =
+    instanceFields.every((field) => field.initializer) && instanceFields.length > 0 && constructed
+      ? createIrClassInitializationPlan(declaration)
+      : undefined;
+  const associated: string[] = [];
+  if (initialization) {
+    const instanceOrder = initialization.fields.filter(
+      (field) => declaration.fields[field.fieldIndex] && !declaration.fields[field.fieldIndex]!.static,
+    );
+    associated.push(
+      `  ${declaration.exported ? 'pub ' : ''}fn new() -> Self {`,
+      '    Self {',
+      ...instanceOrder.map((field) => {
+        const source = declaration.fields[field.fieldIndex]!;
+        return `      ${safeRustValueName(source.name)}: ${emitExpression(source.initializer!, context)},`;
+      }),
+      '    }',
+      '  }',
+    );
+  }
+  if (declaration.methods.length > 0 || associated.length > 0) {
     lines.push(
       '',
       `impl${emitTypeParameters(declaration.typeParameters, context)} ${getBindingTargetNameRust(declaration.binding, context)}${emitTypeArguments(declaration.typeParameters, context)} {`,
+      ...associated,
     );
     declaration.methods.forEach((method, index) => {
-      if (index > 0) lines.push('');
+      if (index > 0 || associated.length > 0) lines.push('');
 
       const parameters = [
         ...(method.static ? [] : [hasIrFunctionSignatureThisMutationRust(method) ? '&mut self' : '&self']),

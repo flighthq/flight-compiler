@@ -1096,4 +1096,24 @@ describe('emitIrModuleRust', () => {
 
     expect(() => emitIrModuleRust(module.module)).toThrow('requires one discriminant domain for Rust');
   });
+
+  it('turns field initializers into an associated constructor in the plan order', () => {
+    // Rust has no implicit constructor, so a field initializer is a constructor obligation. The
+    // neutral plan already decides when each field is initialized; this emits that decision.
+    const module = lower(
+      'counter.ts',
+      "export class Counter { private step: number = 1; readonly label: string = 'counter'; advance(by: number): number { return by + this.step; } }",
+    );
+    const output = emitIrModuleRust(module.module).contents;
+
+    expect(output).toContain('pub fn new() -> Self {');
+    expect(output).toContain('      step: 1.0,');
+    expect(output).toContain('      label: "counter".to_owned(),');
+  });
+
+  it('refuses a class that initializes only some of its fields', () => {
+    const module = lower('partial.ts', 'export class Partial { first: number = 1; second: number; }');
+
+    expect(() => emitIrModuleRust(module.module)).toThrow('partially initializes its fields');
+  });
 });
