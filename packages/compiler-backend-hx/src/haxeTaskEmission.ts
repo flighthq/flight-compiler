@@ -1,6 +1,7 @@
 import { indentSourceLines } from '../../compiler-emission/src/index.js';
 import { getIrModuleTraversalPathValue } from '../../compiler-ir-traversal/src/index.js';
 import type {
+  CompilerAsyncStateMachineStateIdentity,
   CompilerCompletionValueSource,
   CompilerHaxeTaskEmissionCapabilities,
   CompilerHaxeTaskLoweringFunction,
@@ -33,7 +34,16 @@ export function emitCompilerHaxeTaskLoweringFunction(
   return [
     `return new ${runtime.taskTypeName}(function(${names.resolve}, ${names.reject}) {`,
     ...indentSourceLines(
-      emitCompilerHaxeTaskLoweringState(entry, functionPlan, runtime, module, capabilities, names, new Set()),
+      emitCompilerHaxeTaskLoweringState(
+        entry,
+        functionPlan,
+        runtime,
+        module,
+        capabilities,
+        names,
+        new Set(),
+        new Map(),
+      ),
     ),
     '});',
   ];
@@ -69,13 +79,14 @@ function emitCompilerHaxeTaskLoweringState(
   capabilities: Readonly<CompilerHaxeTaskEmissionCapabilities>,
   names: Readonly<HaxeTaskEmissionNames>,
   ancestors: ReadonlySet<string>,
+  joins: ReadonlyMap<string, string>,
 ): string[] {
   const identity = getCompilerHaxeTaskEmissionStateIdentity(state);
   if (ancestors.has(identity)) capabilities.fail(`Haxe task state graph contains a cycle at ${identity}`);
   const nextAncestors = new Set([...ancestors, identity]);
   const errorName = capabilities.getGeneratedName('taskError');
   const body = state.steps.flatMap((step) =>
-    emitCompilerHaxeTaskLoweringStep(step, functionPlan, runtime, module, capabilities, names, nextAncestors),
+    emitCompilerHaxeTaskLoweringStep(step, functionPlan, runtime, module, capabilities, names, nextAncestors, joins),
   );
   return [
     'try {',
@@ -94,8 +105,74 @@ function emitCompilerHaxeTaskLoweringStep(
   capabilities: Readonly<CompilerHaxeTaskEmissionCapabilities>,
   names: Readonly<HaxeTaskEmissionNames>,
   ancestors: ReadonlySet<string>,
+  joins: ReadonlyMap<string, string>,
 ): string[] {
   switch (step.kind) {
+    case 'branchState': {
+      // Both arms continue at the same join, so the join is emitted once as a local function and
+      // called from each arm. Inlining it into both would duplicate the whole continuation, and the
+      // duplication compounds with every nested branch.
+      const joinIdentity = getCompilerHaxeTaskEmissionIdentityKey({ kind: 'join', path: step.path });
+      const joinState = functionPlan.states.find(
+        (candidate) => getCompilerHaxeTaskEmissionIdentityKey(candidate.identity) === joinIdentity,
+      );
+      if (!joinState) capabilities.fail(`Haxe task branch at ${JSON.stringify(step.path)} has no join state`);
+      const joinName = capabilities.getGeneratedName('taskJoin');
+      const nextJoins = new Map([...joins, [joinIdentity, joinName]]);
+      const condition = capabilities.emitExpression(
+        getCompilerHaxeTaskEmissionSourceValue<IrExpression>(module, step.conditionPath, capabilities),
+      );
+      return [
+        `var ${joinName} = function() {`,
+        ...indentSourceLines(
+          emitCompilerHaxeTaskLoweringState(
+            joinState,
+            functionPlan,
+            runtime,
+            module,
+            capabilities,
+            names,
+            ancestors,
+            joins,
+          ),
+        ),
+        '};',
+        `if (${condition}) {`,
+        ...indentSourceLines(
+          emitCompilerHaxeTaskEmissionBranchArm(
+            step.whenTrue,
+            functionPlan,
+            runtime,
+            module,
+            capabilities,
+            names,
+            ancestors,
+            nextJoins,
+          ),
+        ),
+        '} else {',
+        ...indentSourceLines(
+          emitCompilerHaxeTaskEmissionBranchArm(
+            step.whenFalse,
+            functionPlan,
+            runtime,
+            module,
+            capabilities,
+            names,
+            ancestors,
+            nextJoins,
+          ),
+        ),
+        '}',
+        'return;',
+      ];
+    }
+    case 'continueState': {
+      const target = getCompilerHaxeTaskEmissionIdentityKey(step.target);
+      const joinName = joins.get(target);
+      if (!joinName) capabilities.fail(`Haxe task continuation at ${JSON.stringify(step.path)} has no join in scope`);
+      return [`${joinName}();`, 'return;'];
+    }
     case 'executeSource':
       return [
         ...capabilities.emitStatement(
@@ -119,6 +196,7 @@ function emitCompilerHaxeTaskLoweringStep(
         names,
         awaitValueName,
         ancestors,
+        joins,
       );
       const operand = capabilities.emitExpression(
         getCompilerHaxeTaskEmissionSourceValue<IrExpression>(module, step.operandPath, capabilities),
@@ -138,6 +216,35 @@ function emitCompilerHaxeTaskLoweringStep(
   }
 }
 
+function emitCompilerHaxeTaskEmissionBranchArm(
+  identity: Readonly<CompilerAsyncStateMachineStateIdentity>,
+  functionPlan: Readonly<CompilerHaxeTaskLoweringFunction>,
+  runtime: Readonly<CompilerHaxeTaskLoweringRuntime>,
+  module: Readonly<IrModule>,
+  capabilities: Readonly<CompilerHaxeTaskEmissionCapabilities>,
+  names: Readonly<HaxeTaskEmissionNames>,
+  ancestors: ReadonlySet<string>,
+  joins: ReadonlyMap<string, string>,
+): string[] {
+  const key = getCompilerHaxeTaskEmissionIdentityKey(identity);
+  const joinName = joins.get(key);
+  if (joinName) return [`${joinName}();`, 'return;'];
+  const armState = functionPlan.states.find(
+    (candidate) => getCompilerHaxeTaskEmissionIdentityKey(candidate.identity) === key,
+  );
+  if (!armState) capabilities.fail(`Haxe task branch arm ${key} has no matching state`);
+  return emitCompilerHaxeTaskLoweringState(
+    armState,
+    functionPlan,
+    runtime,
+    module,
+    capabilities,
+    names,
+    ancestors,
+    joins,
+  );
+}
+
 function emitCompilerHaxeTaskSuspensionFulfillment(
   step: Readonly<Extract<CompilerHaxeTaskLoweringStep, { kind: 'awaitRuntime' }>>,
   functionPlan: Readonly<CompilerHaxeTaskLoweringFunction>,
@@ -147,6 +254,7 @@ function emitCompilerHaxeTaskSuspensionFulfillment(
   names: Readonly<HaxeTaskEmissionNames>,
   awaitValueName: string,
   ancestors: ReadonlySet<string>,
+  joins: ReadonlyMap<string, string>,
 ): string[] {
   const lines: string[] = [];
   switch (step.fulfillment.kind) {
@@ -179,7 +287,16 @@ function emitCompilerHaxeTaskSuspensionFulfillment(
   );
   if (!resumeState) capabilities.fail(`Haxe task suspension at ${JSON.stringify(step.path)} has no matching state`);
   lines.push(
-    ...emitCompilerHaxeTaskLoweringState(resumeState, functionPlan, runtime, module, capabilities, names, ancestors),
+    ...emitCompilerHaxeTaskLoweringState(
+      resumeState,
+      functionPlan,
+      runtime,
+      module,
+      capabilities,
+      names,
+      ancestors,
+      joins,
+    ),
   );
   return lines;
 }
@@ -201,13 +318,26 @@ function getCompilerHaxeTaskEmissionSourceValue<Value>(
   return value as Readonly<Value>;
 }
 
+function getCompilerHaxeTaskEmissionIdentityKey(identity: Readonly<CompilerAsyncStateMachineStateIdentity>): string {
+  switch (identity.kind) {
+    case 'branchArm':
+      return `branchArm:${identity.arm}:${JSON.stringify(identity.path)}`;
+    case 'entry':
+      return 'entry';
+    case 'join':
+      return `join:${JSON.stringify(identity.path)}`;
+    case 'resume':
+      return JSON.stringify(identity.suspensionPath);
+  }
+}
+
 function getCompilerHaxeTaskEmissionStateIdentity(
   state:
     | Readonly<CompilerHaxeTaskLoweringState>
     | Readonly<Extract<CompilerHaxeTaskLoweringStep, { kind: 'awaitRuntime' }>>,
 ): string {
   const identity = 'identity' in state ? state.identity : state.resumeState;
-  return identity?.kind === 'resume' ? JSON.stringify(identity.suspensionPath) : 'entry';
+  return identity ? getCompilerHaxeTaskEmissionIdentityKey(identity) : 'entry';
 }
 
 function isCompilerHaxeTaskEmissionPathEqual(left: CompilerIrTraversalPath, right: CompilerIrTraversalPath): boolean {

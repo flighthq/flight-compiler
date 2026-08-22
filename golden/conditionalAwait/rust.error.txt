@@ -1,0 +1,1 @@
+rust emission failed for @flighthq/golden/packages/golden/src/conditionalAwait.ts: async function choose requires Flight task lowering

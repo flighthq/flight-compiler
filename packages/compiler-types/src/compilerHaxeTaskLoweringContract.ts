@@ -57,6 +57,19 @@ export type CompilerHaxeTaskLoweringStep =
       kind: 'rejectTask' | 'resolveTask';
       path: CompilerIrTraversalPath;
       value: CompilerCompletionValueSource;
+    }>
+  | Readonly<{
+      conditionPath: CompilerIrTraversalPath;
+      evaluationRejection: CompilerCompletionValueSource;
+      kind: 'branchState';
+      path: CompilerIrTraversalPath;
+      whenFalse: CompilerAsyncStateMachineStateIdentity;
+      whenTrue: CompilerAsyncStateMachineStateIdentity;
+    }>
+  | Readonly<{
+      kind: 'continueState';
+      path: CompilerIrTraversalPath;
+      target: CompilerAsyncStateMachineStateIdentity;
     }>;
 
 export interface CompilerHaxeTaskLoweringState {
@@ -102,8 +115,7 @@ export interface CompilerHaxeTaskLowering {
 export type CompilerHaxeTaskLoweringFailureCode =
   | 'runtime-capability-incomplete'
   | 'runtime-member-name'
-  | 'runtime-task-type-name'
-  | 'unrepresentable-step';
+  | 'runtime-task-type-name';
 
 export interface CompilerHaxeTaskLoweringFailure extends Error {
   readonly capability?: CompilerRuntimeTaskCapabilityName | undefined;

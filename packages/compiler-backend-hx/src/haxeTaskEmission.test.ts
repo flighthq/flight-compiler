@@ -67,6 +67,45 @@ describe('emitCompilerHaxeTaskLoweringFunction', () => {
 });`);
   });
 
+  it('emits one join local function and calls it from both arms of a branch', () => {
+    const sourceFile = ts.createSourceFile(
+      '/flight/packages/task/src/Task.ts',
+      'export async function choose(task: Promise<number>, flag: boolean): Promise<number> { let total: number = 0; if (flag) { total = await task; } return total; }',
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const module = lowerTypeScriptSource(sourceFile, {
+      packageName: '@flighthq/task',
+      upstreamDirectory: '/flight',
+    }).module;
+    const lowering = lowerCompilerAsyncStateMachinesHaxe(
+      analyzeIrModuleAsyncStateMachines(module),
+      createCompilerRuntimeTaskCapabilityPlanHaxe(),
+    );
+    const names = new Map<string, number>();
+    const source = emitCompilerHaxeTaskLoweringFunction(lowering.functions[0]!, lowering.runtime, module, {
+      emitExpression: emitExpression,
+      emitStatement: emitStatement,
+      fail(message): never {
+        throw new Error(message);
+      },
+      getBindingName: (binding) => binding.name,
+      getGeneratedName(preferredName) {
+        const count = (names.get(preferredName) ?? 0) + 1;
+        names.set(preferredName, count);
+        return count === 1 ? preferredName : `${preferredName}_${String(count)}`;
+      },
+    }).join('\n');
+
+    // The continuation after the branch belongs to both arms. Emitting it once as a local function
+    // and calling it is what keeps a nested branch from duplicating the whole tail of the machine.
+    expect(source.match(/var taskJoin = function\(\) \{/gu)).toHaveLength(1);
+    expect(source.match(/taskJoin\(\);/gu)).toHaveLength(2);
+    expect(source).toContain('if (flag) {');
+    expect(source).toContain('} else {');
+    expect(source).toContain('resolveTask(total);');
+  });
+
   it('emits execute, rebind, discard, rejection, and implicit resolution actions', () => {
     const { lowering, module } = createFixture(`
       export async function actions(input: Promise<number>): Promise<number> {

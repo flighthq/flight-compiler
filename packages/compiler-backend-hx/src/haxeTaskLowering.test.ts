@@ -162,9 +162,7 @@ describe('lowerCompilerAsyncStateMachinesHaxe', () => {
     }
   });
 
-  it('refuses a branching machine by name rather than lowering a state with no transition', () => {
-    // Neutral branching exists ahead of the Haxe state dispatcher that renders it. Refusing here is
-    // what stops a conditional suspension from emitting a machine whose arms have nowhere to go.
+  it('lowers neutral branching into branch and continue steps with their join targets intact', () => {
     const analysis = analyzeIrModuleAsyncStateMachines(
       lower(`
         export async function choose(task: Promise<number>, flag: boolean): Promise<number> {
@@ -174,18 +172,21 @@ describe('lowerCompilerAsyncStateMachinesHaxe', () => {
         }
       `),
     );
+    const result = lowerCompilerAsyncStateMachinesHaxe(analysis, createCompilerRuntimeTaskCapabilityPlanHaxe());
+    const steps = result.functions[0]?.states.flatMap((state) => state.steps) ?? [];
+    const branchPath = ['declarations', 0, 'body', 1];
 
-    expect(analysis.refusals).toEqual([]);
-    expect(() => lowerCompilerAsyncStateMachinesHaxe(analysis, createCompilerRuntimeTaskCapabilityPlanHaxe())).toThrow(
-      'Haxe task lowering cannot represent a branch step yet',
-    );
-    try {
-      lowerCompilerAsyncStateMachinesHaxe(analysis, createCompilerRuntimeTaskCapabilityPlanHaxe());
-    } catch (error) {
-      expect(isCompilerHaxeTaskLoweringFailure(error)).toBe(true);
-      expect(isCompilerHaxeTaskLoweringFailure(error) && error.code).toBe('unrepresentable-step');
-      expect(isCompilerHaxeTaskLoweringFailure(error) && error.received).toBe('branch');
-    }
+    expect(steps.filter((step) => step.kind === 'branchState')).toMatchObject([
+      {
+        conditionPath: [...branchPath, 'condition'],
+        kind: 'branchState',
+        whenFalse: { kind: 'join', path: branchPath },
+        whenTrue: { arm: 'whenTrue', kind: 'branchArm', path: branchPath },
+      },
+    ]);
+    expect(steps.filter((step) => step.kind === 'continueState')).toMatchObject([
+      { kind: 'continueState', target: { kind: 'join', path: branchPath } },
+    ]);
   });
 });
 
