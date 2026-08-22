@@ -26,3 +26,11 @@ export {
   isIrCallExpressionStatementValueCarrier,
   isIrStatementValueCallSemantics,
 } from './compilerStatementValueCompletion.js';
+export {
+  applyCompilerValueCompletionPathSetCatchReplacement,
+  applyCompilerValueCompletionPathSetFinallyReplacement,
+  combineCompilerValueCompletionPathSetsAlternatively,
+  combineCompilerValueCompletionPathSetsSequentially,
+  createCompilerValueCompletionPathSet,
+  isCompilerValueCompletionFailure,
+} from './compilerValueCompletion.js';

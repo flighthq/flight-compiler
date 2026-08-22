@@ -656,7 +656,7 @@ function setCompilerClosureCreationOrdinal(
   draft: ClosureTraversalDraft,
 ): void {
   const closure = draft.closurePaths.get(JSON.stringify(path));
-  if (closure) closure.creationOrdinal = ordinal;
+  (closure as ClosureDraft).creationOrdinal = ordinal;
 }
 
 const compilerClosureCaptureLifetimeBoundaryOrder: readonly CompilerClosureCaptureLifetimeBoundary[] = [

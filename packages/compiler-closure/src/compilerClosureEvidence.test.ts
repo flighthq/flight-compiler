@@ -104,6 +104,8 @@ describe('analyzeIrModuleClosureEvidence', () => {
     const evidence = analyzeIrModuleClosureEvidence(
       lower(`
         import { external } from './external.js';
+        import type { External } from './external-type.js';
+        type Local = External;
         export function collect(): Array<() => number> {
           const callbacks: Array<() => number> = [];
           for (let index: number = 0; index < 2; index++) callbacks.push(() => index + external);
@@ -239,6 +241,7 @@ describe('analyzeIrModuleClosureEvidence', () => {
           const mutate = () => {
             both = { count: 0 };
             both.count++;
+            getRecord().count = 1;
             getRecord().count++;
             return named(both.count);
           };
