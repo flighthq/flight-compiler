@@ -656,6 +656,57 @@ describe('analyzeIrModuleAsyncStateMachines', () => {
     ).toEqual(['initializeBinding']);
   });
 
+  it('carries one completion path per route out, and no path for a route that does not exist', () => {
+    // A machine that drops a completion path still looks plausible: the states are there and the
+    // steps run. The paths are what a target settles from, so a missing one is a task that never
+    // settles, and a spurious one is a settlement the source never had.
+    const branch = analyzeIrModuleAsyncStateMachines(
+      lower(`
+        export async function choose(task: Promise<number>, flag: boolean): Promise<number> {
+          if (flag) { return await task; }
+          return 1;
+        }
+      `),
+    );
+    const loop = analyzeIrModuleAsyncStateMachines(
+      lower(`
+        export async function drain(task: Promise<number>, again: boolean): Promise<number> {
+          let last: number = 0;
+          while (again) { last = await task; again = false; }
+          return last;
+        }
+      `),
+    );
+    const kinds = (analysis: ReturnType<typeof analyzeIrModuleAsyncStateMachines>) =>
+      (analysis.machines[0]?.completionPaths.paths ?? []).map((entry) => entry.kind).sort();
+
+    expect(branch.refusals).toEqual([]);
+    expect(loop.refusals).toEqual([]);
+    // Both arms settle, so both return routes are present, and each awaited operand can reject.
+    expect(kinds(branch).filter((kind) => kind === 'return')).toHaveLength(2);
+    // The loop has one return, reached whether or not the body ever runs — not one per iteration.
+    expect(kinds(loop).filter((kind) => kind === 'return')).toHaveLength(1);
+    // A function with no explicit return still completes normally, and one with only returns does not.
+    expect(kinds(branch)).not.toContain('normal');
+    expect(kinds(loop)).not.toContain('normal');
+  });
+
+  it('settles a body that falls off its end, rather than leaving the task pending', () => {
+    const analysis = analyzeIrModuleAsyncStateMachines(
+      lower(`
+        export async function observe(task: Promise<number>): Promise<void> {
+          await task;
+        }
+      `),
+    );
+    const paths = analysis.machines[0]?.completionPaths.paths ?? [];
+
+    expect(analysis.refusals).toEqual([]);
+    // The implicit completion is what settles a void async function; without it the task never
+    // resolves and nothing in the emitted source looks wrong.
+    expect(paths.filter((entry) => entry.kind === 'normal')).toMatchObject([{ value: { kind: 'implicitUndefined' } }]);
+  });
+
   it('is deterministic, deeply immutable, and vacuous for a module without async scopes', () => {
     const module = lower('export function read(value: number): number { return value; }');
     const first = analyzeIrModuleAsyncStateMachines(module);
