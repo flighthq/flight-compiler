@@ -18,6 +18,7 @@ import type {
 import type {
   IrAssignmentOperatorSemantics,
   IrBinaryOperatorSemantics,
+  IrOperatorValueDomain,
   IrUnaryOperatorSemantics,
 } from './compilerOperatorSemanticIntermediateRepresentation.js';
 import type { CompilerSourceOrigin } from './compilerSourceIdentity.js';
@@ -257,6 +258,9 @@ export type IrStatement =
       kind: 'switch';
       label?: IrControlFlowLabelIdentity | undefined;
       origin?: CompilerSourceOrigin | undefined;
+      // What the subject compares as. A pass that rewrites a switch into equality tests cannot ask a
+      // checker, so the domain travels with the statement.
+      subjectDomain?: IrOperatorValueDomain | undefined;
     }>
   | Readonly<{ expression: IrExpression; kind: 'throw' }>
   | Readonly<{

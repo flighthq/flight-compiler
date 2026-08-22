@@ -15,6 +15,7 @@ import {
   createCompilerLoweringPassExtraArgumentErasure,
   createCompilerLoweringPassInterfaceInheritance,
   createCompilerLoweringPassSwitchFallthrough,
+  createCompilerLoweringPassSwitchSuspension,
   createCompilerLoweringPassVariableHoisting,
   createIrClassInitializationPlan,
   lowerIrModuleWithCompilerPasses,
@@ -124,6 +125,7 @@ function emitIrModuleHaxeWithContext(
     createCompilerLoweringPassCStyleFor(),
     createCompilerLoweringPassInterfaceInheritance(),
     createCompilerLoweringPassSwitchFallthrough(),
+    createCompilerLoweringPassSwitchSuspension(),
   ]);
   assertStructuralObjectCompatibilityHaxe(
     module,

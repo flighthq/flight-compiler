@@ -14,6 +14,7 @@ import {
   createCompilerLoweringPassExtraArgumentErasure,
   createCompilerLoweringPassInterfaceInheritance,
   createCompilerLoweringPassSwitchFallthrough,
+  createCompilerLoweringPassSwitchSuspension,
   createCompilerLoweringPassVariableHoisting,
   lowerIrModuleWithCompilerPasses,
 } from '../../compiler-lowering/src/index.js';
@@ -117,6 +118,7 @@ function emitIrModuleRustWithContext(
     createCompilerLoweringPassCStyleFor(),
     createCompilerLoweringPassInterfaceInheritance(),
     createCompilerLoweringPassSwitchFallthrough(),
+    createCompilerLoweringPassSwitchSuspension(),
   ]);
   assertStructuralObjectCompatibilityRust(
     module,

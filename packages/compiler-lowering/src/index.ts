@@ -8,6 +8,7 @@ export { createCompilerLoweringPassExtraArgumentErasure } from './compilerExtraA
 export { createCompilerLoweringPassInterfaceInheritance } from './compilerInterfaceInheritanceLowering.js';
 export { createCompilerLoweringPassObjectBindingPattern } from './compilerObjectBindingPatternLowering.js';
 export { getIrSwitchCaseCompletion } from './compilerSwitchClauseCompletion.js';
+export { createCompilerLoweringPassSwitchSuspension } from './compilerSwitchSuspensionLowering.js';
 export { createCompilerLoweringPassSwitchFallthrough } from './compilerSwitchFallthroughLowering.js';
 export { createCompilerLoweringPassVariableHoisting } from './compilerVariableHoistingLowering.js';
 export {

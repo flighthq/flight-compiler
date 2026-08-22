@@ -1665,6 +1665,7 @@ function lowerStatement(node: ts.Statement, context: LoweringContext): IrStateme
       expression: lowerExpression(node.expression, context),
       kind: 'switch',
       origin: origin(node, context),
+      subjectDomain: lowerOperatorOperandDomains(node.expression, context).flow,
     };
   }
   if (ts.isBreakStatement(node)) {
