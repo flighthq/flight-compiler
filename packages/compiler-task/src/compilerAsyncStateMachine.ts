@@ -1,5 +1,8 @@
 import { analyzeIrModuleClosureEvidence } from '../../compiler-closure/src/index.js';
-import { createCompilerValueCompletionPathSet } from '../../compiler-completion/src/index.js';
+import {
+  createCompilerValueCompletionPathSet,
+  getIrStatementListCompletionSet,
+} from '../../compiler-completion/src/index.js';
 import { analyzeIrModuleTraversal } from '../../compiler-ir-traversal/src/index.js';
 import type {
   CompilerAsyncStateMachine,
@@ -100,7 +103,7 @@ function addCompilerAsyncStateMachineAbruptCompletion(
 }
 
 function addCompilerAsyncStateMachineExecuteStep(
-  statement: Readonly<Extract<IrStatement, { kind: 'expression' | 'variable' }>>,
+  statement: Readonly<IrStatement>,
   path: CompilerIrTraversalPath,
   draft: AsyncStateMachineDraft,
 ): void {
@@ -418,7 +421,11 @@ function createIrStatementBodyAsyncStateMachine(
       case 'switch':
       case 'try':
       case 'while':
-        return createCompilerAsyncStateMachineRefusal('unsupported-control-flow', path, scope.path);
+        if (!isIrStatementAsyncStateMachineOpaque(statement)) {
+          return createCompilerAsyncStateMachineRefusal('unsupported-control-flow', path, scope.path);
+        }
+        addCompilerAsyncStateMachineExecuteStep(statement, path, draft);
+        break;
     }
   }
   if (!draft.terminal) {
@@ -545,12 +552,29 @@ function getIrModuleAsyncStateMachineBodies(
 }
 
 function getIrStatementAsyncStateMachineAbruptPaths(
-  statement: Readonly<Extract<IrStatement, { kind: 'expression' | 'variable' }>>,
+  statement: Readonly<IrStatement>,
   path: CompilerIrTraversalPath,
 ): CompilerIrTraversalPath[] {
   if (statement.kind === 'expression') return [[...path, 'expression']];
-  return statement.declarations.flatMap((variable, index) =>
-    variable.initializer ? [[...path, 'declarations', index, 'initializer']] : [],
+  if (statement.kind === 'variable') {
+    return statement.declarations.flatMap((variable, index) =>
+      variable.initializer ? [[...path, 'declarations', index, 'initializer']] : [],
+    );
+  }
+  // A compound statement executed as one step can reject from anywhere inside it. The statement is
+  // the finest address available without re-walking it, and re-walking would claim a precision the
+  // step does not have: the whole statement either runs to completion or rejects.
+  return [path];
+}
+
+// A statement that never suspends can run inside one state, but only if control cannot leave it by a
+// route the machine has to represent. `return` must become a resolve, and `break` or `continue` name
+// a loop target outside the statement, so any of the three refuses. `throw` does not: the execute
+// step already registers the statement as an abrupt completion path, so a rejection from anywhere
+// inside it settles the task the same way an inline throwing expression does.
+function isIrStatementAsyncStateMachineOpaque(statement: Readonly<IrStatement>): boolean {
+  return getIrStatementListCompletionSet([statement]).completions.every(
+    (completion) => completion.kind === 'normal' || completion.kind === 'throw',
   );
 }
 

@@ -152,14 +152,6 @@ describe('analyzeIrModuleAsyncStateMachines', () => {
           for await (const value of values) value;
         }
         export async function branch(value: boolean): Promise<void> { if (value) return; }
-        export async function block(): Promise<void> { { 1; } }
-        export async function posttest(): Promise<void> { do { 1; } while (false); }
-        export async function counted(): Promise<void> { for (let index = 0; index < 1; index++) index; }
-        export async function keyed(): Promise<void> { for (const key in { value: 1 }) key; }
-        export async function enumerated(): Promise<void> { for (const value of [1]) value; }
-        export async function selected(value: number): Promise<void> { switch (value) { case 1: break; } }
-        export async function protectedBody(): Promise<void> { try { 1; } finally { 2; } }
-        export async function pretest(): Promise<void> { while (false) { 1; } }
         export async function unreachable(): Promise<void> { return; 1; }
         export async function escaped(): Promise<void> { break; }
         export async function nestedAwait(task: Promise<number>): Promise<number> {
@@ -187,14 +179,6 @@ describe('analyzeIrModuleAsyncStateMachines', () => {
     expect(analysis.refusals.map((refusal) => refusal.code)).toEqual([
       'unsupported-async-iteration',
       'unsupported-control-flow',
-      'unsupported-control-flow',
-      'unsupported-control-flow',
-      'unsupported-control-flow',
-      'unsupported-control-flow',
-      'unsupported-control-flow',
-      'unsupported-control-flow',
-      'unsupported-control-flow',
-      'unsupported-control-flow',
       'unreachable-statement',
       'escaping-control-flow',
       'unsupported-suspension-expression',
@@ -204,6 +188,41 @@ describe('analyzeIrModuleAsyncStateMachines', () => {
       'unsupported-suspension-expression',
       'unsupported-suspension-expression',
     ]);
+  });
+
+  it('runs non-suspending structured control flow inside one state and keeps its rejection path', () => {
+    // Structured control flow only has to become states when a suspension is inside it. A branch or
+    // loop that never awaits runs to completion within one state, so refusing it refused most of the
+    // ordinary code in an async function. It can still reject from anywhere inside, which is why the
+    // step carries the statement itself as an abrupt completion path.
+    const analysis = analyzeIrModuleAsyncStateMachines(
+      lower(`
+        export async function work(values: number[], flag: boolean): Promise<number> {
+          let total: number = 0;
+          if (flag) { total = 1; } else { total = 2; }
+          for (const value of values) total += value;
+          while (total < 0) total += 1;
+          switch (total) { case 1: total = 3; break; default: total = 4; }
+          try { total += 1; } finally { total += 2; }
+          return await Promise.resolve(total);
+        }
+      `),
+    );
+    const machine = analysis.machines[0];
+    const executed = machine?.states.flatMap((state) =>
+      state.steps.filter((step) => step.kind === 'execute').map((step) => step.path.at(-1)),
+    );
+
+    expect(analysis.refusals).toEqual([]);
+    expect(analysis.machines).toHaveLength(1);
+    expect(executed).toEqual([0, 1, 2, 3, 4, 5]);
+    expect(
+      machine?.states
+        .flatMap((state) => state.steps)
+        .filter((step) => step.kind === 'execute')
+        .every((step) => step.abruptValues.length > 0),
+    ).toBe(true);
+    expect(machine?.completionPaths.paths.some((path) => path.kind === 'return')).toBe(true);
   });
 
   it('is deterministic, deeply immutable, and vacuous for a module without async scopes', () => {
