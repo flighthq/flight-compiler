@@ -40,6 +40,25 @@ It works today with no new compiler machinery. `collectIrModulesRuntimeExternalS
 
 **The rule to keep either way:** the compiler resolves the runtime surface to declarations, never to an implementation. If a `runtime` specifier ever auto-resolves to `runtime-js` sources, the compiler parses those bodies and attempts to lower a JavaScript implementation into Haxe and Rust. Auto-resolution belongs to bundlers and the JavaScript runtime, not to compile-time analysis.
 
+## The analysis checker has no library types, decided open 2026-08-22
+
+`createTypeScriptAnalysis` builds its program with `noLib: true` and `noResolve: true`, so the checker that semantic lowering asks about types cannot resolve `Promise`, `Array`, `Map`, `Math`, or anything imported from another module. This is not a small gap. It is why:
+
+- an awaited value had no type until the awaited type was read syntactically out of the written `Promise<T>` argument;
+- `values.length` has no type, so `index < values.length` refuses as `operator < on number and unknown`;
+- a binary expression's own result was unknown even when both operands were known, until the operator's own rule was used to derive it;
+- `compiler-semantic` lowers one file at a time and can answer no cross-module question.
+
+Two of those were worked around where the source carries the answer syntactically. The third and fourth cannot be: a property type on a library type is only in the library.
+
+**The repository already has the other half.** `createTypeScriptProject` in `compiler-inventory` builds a real program from a `tsconfig`, and host-endpoint analysis uses its checker. So the choice is not between building one and not having one; it is whether semantic lowering accepts the program the caller already has.
+
+**What each option costs.** Passing a real program makes type-directed lowering answerable and makes cross-module facts reachable, at the price of a dependency on the resolved library: the same source could lower differently against a different TypeScript version, which is exactly the kind of variation the determinism rules exist to exclude. Keeping the isolated program keeps lowering a pure function of one file's text, at the price of refusing every construct whose meaning is in the library — which is most of the standard library the SDK uses.
+
+The middle path worth considering is an explicit capability: lowering takes an optional checker, uses the isolated one when none is supplied, and records which it used in the report, so a parity harness can tell the two apart. That keeps the deterministic lane available and makes the dependency visible rather than implicit.
+
+This is recorded rather than decided because the answer sets a determinism policy, and the pinned TypeScript version becomes part of compiler identity the moment a library type can change output.
+
 ## Definition of drop-in
 
 A target is ready to switch only when all of these conditions hold:
