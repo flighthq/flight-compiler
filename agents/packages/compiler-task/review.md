@@ -1,7 +1,7 @@
 ---
 package: '@flighthq/compiler-task'
-status: solid
-score: 72
+status: near-mature
+score: 84
 updated: 2026-08-22
 ingested:
   - source
@@ -15,7 +15,7 @@ Target-neutral async analysis: what suspends, what a suspension means, and what 
 
 ## Verdict
 
-**solid — 72/100.** The state machine now compiles structured control flow, and Haxe renders all of it: branches, loops with real back edges, `break` and `continue` to the loop's own targets, and a `try`/`catch` whose handler receives the rejection of a suspended task. What a target sees is no longer a linear slice of async but most of the shape ordinary async code has. Two things hold the score short of near-mature: `finally` around a suspension still refuses, because it runs on every route out of the block and needs the completion algebra's replacement rather than a handler state; and `for await` has no runtime protocol to lower into. Rust still has no task representation at all, so this is Haxe-only in practice.
+**near-mature — 84/100.** The state machine now compiles structured control flow, and Haxe renders all of it: branches, loops with real back edges, `break` and `continue` to the loop's own targets, and a `try`/`catch` whose handler receives the rejection of a suspended task. What a target sees is no longer a linear slice of async but most of the shape ordinary async code has. `finally` now runs on every route out, including a `return` that carries its value through the cleanup in a binding the region declares, and `try`/`catch`/`finally` is built as two regions rather than one with a third route. What remains is `for await`, which needs an async-iterator protocol from the runtime rather than a state shape, and Rust, which emits native `async fn` and so needs a task settlement that carries rejection before it can express a handler at all.
 
 ## What a fully expressed neutral task domain looks like
 
@@ -41,7 +41,7 @@ Target-neutral async analysis: what suspends, what a suspension means, and what 
 
 ## Gaps
 
-- **`finally` around a suspension refuses.** It runs on every route out of the block — normal, `return`, `throw`, `break` — so it needs `compiler-completion`'s finally replacement rather than another state identity. This is the last structured form outstanding.
+- **A cleanup is inlined once per route.** Every route out owes it, and the nested-callback strategy copies it into each — six copies for one `try`/`catch`/`finally`. Correct, and a named continuation per cleanup would collapse them the way the join already collapses branch arms.
 - **`for await` refuses for a runtime reason, not a control-flow one.** Its loop shape is already compiled here; what is missing is an async-iterator protocol in the runtime contract — how a target obtains an iterator and what a settled iteration result looks like. That is a runtime-surface decision, not a state shape.
 - **Labelled jumps and labelled loops refuse.** The completion algebra models targeted completions exactly; the machine has no name for a label yet.
 - **A suspension inside a `catch` body refuses**, so recovery cannot itself await.

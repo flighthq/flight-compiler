@@ -1,7 +1,7 @@
 ---
 package: '@flighthq/compiler-backend-hx'
 status: early
-score: 38
+score: 52
 updated: 2026-08-21
 ingested:
   - source
@@ -15,7 +15,7 @@ Haxe lowering, naming and source emission: ~1,270 lines across the emitter, the 
 
 ## Verdict
 
-**early — 38/100.** Up six points on the destructuring, tuple and control-flow batches: binding patterns now arrive pre-lowered from the neutral pass library, fixed tuples project and spread, computed access routes through `Reflect`, object rest emits, and nullish coalescing lowers to `??`. Two shapes that previously emitted _wrong_ Haxe now refuse instead — a class with an `implements` clause, and a labeled `break`/`continue` — which is the single most valuable kind of change this package can make, because an emitted-invalid case is worse than an unemitted one. The identity half remains in good shape. The score stays in the thirties because the domain's largest cells are untouched: async, nullability beyond `??`, a real number model, and module facades.
+**early — 52/100.** Up six points on the destructuring, tuple and control-flow batches: binding patterns now arrive pre-lowered from the neutral pass library, fixed tuples project and spread, computed access routes through `Reflect`, object rest emits, and nullish coalescing lowers to `??`. Two shapes that previously emitted _wrong_ Haxe now refuse instead — a class with an `implements` clause, and a labeled `break`/`continue` — which is the single most valuable kind of change this package can make, because an emitted-invalid case is worse than an unemitted one. The identity half remains in good shape. Since then async compiles end to end — branches, loops, jumps, handlers and cleanups — nullability compares and returns under narrowing, array indices narrow to `Int`, a spread calls reflectively, and an implemented shape emits as a nominal interface. Forty of forty-one fixtures emit. The score stays early because a real number model and module facades are still absent, and because nothing has ever compiled the output.
 
 ## What a fully expressed Haxe backend looks like
 

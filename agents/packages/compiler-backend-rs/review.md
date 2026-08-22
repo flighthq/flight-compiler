@@ -1,7 +1,7 @@
 ---
 package: '@flighthq/compiler-backend-rs'
 status: early
-score: 34
+score: 46
 updated: 2026-08-21
 ingested:
   - source
@@ -15,7 +15,7 @@ Rust lowering, naming and source emission: ~1,410 lines across the emitter, the 
 
 ## Verdict
 
-**early — 34/100.** The largest single-batch movement in the repository: optional chains now project through `as_ref().map(...)`/`and_then(...)` instead of refusing, nullable parameters emit as `Option<T>` rather than being turned away at the door, switch statements emit, labeled loops emit with real Rust labels, fixed tuples project and spread, and object-key iteration emits when the key set is closed evidence rather than a guess. Its refusal surface is still the broadest in the repository — around thirty-eight named refusals — and that remains the package working as designed. The score moves eight points and no further because the thing that makes a Rust backend a Rust backend is still absent: there is no ownership model, and every gain above is a gain in _what can be expressed_, not in _how values are owned_.
+**early — 46/100.** The largest single-batch movement in the repository: optional chains now project through `as_ref().map(...)`/`and_then(...)` instead of refusing, nullable parameters emit as `Option<T>` rather than being turned away at the door, switch statements emit, labeled loops emit with real Rust labels, fixed tuples project and spread, and object-key iteration emits when the key set is closed evidence rather than a guess. Its refusal surface is still the broadest in the repository — around thirty-eight named refusals — and that remains the package working as designed. The score moves eight points and no further because the thing that makes a Rust backend a Rust backend is still absent: there is no ownership model, and every gain above is a gain in _what can be expressed_, not in _how values are owned_.
 
 ## What a fully expressed Rust backend looks like
 

@@ -1,7 +1,7 @@
 ---
 package: '@flighthq/compiler-semantic'
 status: early
-score: 50
+score: 58
 updated: 2026-08-21
 ingested:
   - source
@@ -15,7 +15,7 @@ TypeScript-to-neutral lowering: ~3,000 lines across the lowering pass, static-fa
 
 ## Verdict
 
-**early — 50/100.** What exists is built the right way: the TypeScript compiler API rather than pattern matching, binding provenance resolved through a checker, closed operator vocabularies, and structured diagnostics for everything it will not lower. The score is low because the domain is enormous and the covered fraction is small — the roadmap says 20–25% and the refusal list bears that out. Namespaces, overloads, parameter properties, generators, decorators and most of the type system are all unrepresented; destructuring, which was on that list, is now in. That is the honest state of a slice deliberately built narrow-and-correct rather than wide-and-approximate, and the refusals are the asset here, not the embarrassment.
+**early — 58/100.** What exists is built the right way: the TypeScript compiler API rather than pattern matching, binding provenance resolved through a checker, closed operator vocabularies, and structured diagnostics for everything it will not lower. The score is low because the domain is enormous and the covered fraction is small — the roadmap says 20–25% and the refusal list bears that out. Namespaces, overloads, parameter properties, generators, decorators and most of the type system are all unrepresented; destructuring and presence narrowing, which were both on that list, are now in. That is the honest state of a slice deliberately built narrow-and-correct rather than wide-and-approximate, and the refusals are the asset here, not the embarrassment.
 
 ## What a fully expressed TypeScript-lowering domain looks like
 
@@ -50,7 +50,7 @@ Measured against the reference, in rough order of how much SDK surface each bloc
 - **Namespaces and `export =`.** Unrepresented in the IR at all.
 - **Most of the type system.** Conditional, mapped, template-literal, `infer`, variadic tuples and recursive aliases have no IR representation, so nothing can lower them.
 - **The refusals name passes that have no home.** Sixty-two of the seventy-seven backend refusals point at a lowering — control flow, async, nullability, call-site, structural copy — and none of those transformations exists anywhere. Most are neutral work this package's output should be transformable into rather than work either emitter should invent; see [the breadth analysis](../../compiler-breadth.md).
-- **No narrowing model.** The nullability refusal in both backends exists precisely because narrowing is unmodelled: after `if (value === undefined) return fallback;`, the lowerer cannot tell the backends that `value` is now non-optional, so the honest move was to refuse. Every nullable-parameter function in the SDK is blocked behind this.
+- **Narrowing is carried, not derived.** A reference now records whether control flow proved it present, read from the checker's own flow type rather than re-derived, and both backends use it: Rust opens the `Option`, Haxe returns the value directly. What is not modelled is narrowing to a _specific_ member of a union, which is what discriminated-union code needs; only presence is answered.
 - **No async or generator lowering.** Both are refused by both backends; the neutral model has no task or coroutine concept to lower them into.
 - **No decorators, no class static blocks, no accessors.** Getters and setters refuse as unsupported class members.
 - **Type-directed operator semantics are named but incomplete.** The roadmap's next iterations — declared-versus-flow operand domains, populated from checker evidence, then numeric arithmetic and narrowed storage — are the missing half of what makes `+` lowerable.

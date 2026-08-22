@@ -12,20 +12,20 @@ A score is a judgement about **domain coverage**, not about code quality. `compi
 | [compiler-provenance](compiler-provenance/review.md) | near-mature | 88 | are two pieces of source the same thing |
 | [compiler-runtime-contract](compiler-runtime-contract/review.md) | near-mature | 86 | does every reachable ambient type/value symbol have one target binding decision |
 | [compiler-ir-validation](compiler-ir-validation/review.md) | near-mature | 86 | is a target-neutral IR module structurally trustworthy |
+| [compiler-task](compiler-task/review.md) | near-mature | 84 | what suspends, and what a target must supply to run it |
 | [compiler-ir-traversal](compiler-ir-traversal/review.md) | near-mature | 82 | the one typed walk over an IR module |
 | [compiler-completion](compiler-completion/review.md) | solid | 78 | how a statement finishes, and carrying what |
 | [compiler-types](compiler-types/review.md) | foundational | 74 | the vocabulary everything else speaks |
 | [compiler-structural](compiler-structural/review.md) | solid | 72 | when two shapes are the same, and what follows |
-| [compiler-task](compiler-task/review.md) | solid | 72 | what suspends, and what a target must supply to run it |
 | [compiler-closure](compiler-closure/review.md) | solid | 70 | what a closure captures and how long it must live |
 | [compiler-inventory](compiler-inventory/review.md) | solid | 68 | what is in this workspace and what does it export |
 | [compiler-lowering](compiler-lowering/review.md) | solid | 64 | verified neutral IR-to-IR transforms elected by targets |
 | [tool-compiler](tool-compiler/review.md) | solid | 62 | the one published artifact |
 | [compiler-orchestration](compiler-orchestration/review.md) | solid | 60 | compose the passes deterministically |
+| [compiler-semantic](compiler-semantic/review.md) | early | 58 | TypeScript in, neutral IR out |
 | [compiler-module](compiler-module/review.md) | early | 55 | what links, in what order, and which slot a name means |
-| [compiler-semantic](compiler-semantic/review.md) | early | 50 | TypeScript in, neutral IR out |
-| [compiler-backend-hx](compiler-backend-hx/review.md) | early | 38 | neutral IR in, idiomatic Haxe out |
-| [compiler-backend-rs](compiler-backend-rs/review.md) | early | 34 | neutral IR in, idiomatic Rust out |
+| [compiler-backend-hx](compiler-backend-hx/review.md) | early | 52 | neutral IR in, idiomatic Haxe out |
+| [compiler-backend-rs](compiler-backend-rs/review.md) | early | 46 | neutral IR in, idiomatic Rust out |
 
 All twenty packages now have a review. Fourteen were re-read against the merged tree on 2026-08-21; the six that arrived after that — traversal, completion, structural, closure, module, task — were reviewed on 2026-08-22. Facade work delivered in a parcel but not yet merged here is called out in the module review rather than scored.
 
@@ -33,7 +33,7 @@ All twenty packages now have a review. Fourteen were re-read against the merged 
 
 The scores fall into the dependency order almost exactly, and that is the intended result of building bedrock-first: the primitives are close to done, the compositions above them are solid, and the two target backends — the packages whose domains are the largest and whose correctness is hardest to establish — are the least expressed. Nothing here is out of order.
 
-The three lowest scores are also the three packages that gate the migration. `compiler-semantic` at 50 bounds both backends: a construct it cannot lower cannot be emitted by either target, so its refusal list is the shared ceiling. Within the backends, the recurring theme is that structure and refusal discipline are ahead of coverage — both have their identity, naming and operator handling settled, and both refuse rather than approximate, which is why the golden fixtures can pin refusals as confidently as output.
+The three lowest scores are also the three packages that gate the migration. `compiler-semantic` at 58 bounds both backends: a construct it cannot lower cannot be emitted by either target, so its refusal list is the shared ceiling. Within the backends, the recurring theme is that structure and refusal discipline are ahead of coverage — both have their identity, naming and operator handling settled, and both refuse rather than approximate, which is why the golden fixtures can pin refusals as confidently as output.
 
 ## Three open decisions, recorded 2026-08-22
 
