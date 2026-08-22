@@ -1048,7 +1048,7 @@ describe('emitIrModuleRust', () => {
     );
     const output = emitIrModuleRust(module.module).contents;
 
-    expect(output).toContain('pub async fn drain(task: FlightTask<f64>, again: bool) -> f64 {');
+    expect(output).toContain('pub async fn drain(task: FlightTask<f64>, mut again: bool) -> f64 {');
     expect(output).toContain('last = task.await;');
   });
 
@@ -1115,5 +1115,18 @@ describe('emitIrModuleRust', () => {
     const module = lower('partial.ts', 'export class Partial { first: number = 1; second: number; }');
 
     expect(() => emitIrModuleRust(module.module)).toThrow('partially initializes its fields');
+  });
+
+  it('elects mut for a parameter the body rebinds, and only for that one', () => {
+    // Rust rejects an assignment to a parameter that is not `mut`, so emitting without it produced
+    // source that could not compile — and pinning bytes cannot catch that. Emitting `mut` on every
+    // parameter would instead warn on each one that is only read, so the evidence decides.
+    const module = lower(
+      'rebind.ts',
+      'export function drain(again: boolean, kept: number): number { again = false; return again ? kept : kept; }',
+    );
+    const output = emitIrModuleRust(module.module).contents;
+
+    expect(output).toContain('pub fn drain(mut again: bool, kept: f64) -> f64 {');
   });
 });

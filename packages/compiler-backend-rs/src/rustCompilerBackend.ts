@@ -72,6 +72,7 @@ import {
   convertSourcePathToRustModuleName,
   isRustCompilerKeyword,
 } from './rustCompilerIdentity.js';
+import { analyzeIrModuleOwnershipEvidenceRust } from './rustOwnershipEvidence.js';
 import { createCompilerRuntimeExternalConstructorAbiPlanRust } from './rustRuntimeExternalConstructorAbi.js';
 import {
   createCompilerRuntimeExternalSymbolBindingPlanRust,
@@ -80,6 +81,9 @@ import {
 
 interface EmitContext {
   anonymousObjectRecords: Map<string, Readonly<{ name: string; properties: readonly IrObjectTypeProperty[] }>>;
+  // Which bindings the module rebinds. Rust needs `mut` on a parameter that is assigned to, and the
+  // ownership analysis already decides that for every binding in the module.
+  reboundBindingIds: ReadonlySet<string>;
   generatedNames: Set<string>;
   module: Readonly<IrModule>;
   objectRestRecords: Map<string, Readonly<{ name: string; properties: readonly IrObjectTypeProperty[] }>>;
@@ -155,6 +159,13 @@ function emitIrModuleRustWithContext(
   }
   const context: EmitContext = {
     anonymousObjectRecords: new Map(),
+    reboundBindingIds: new Set(
+      analyzeIrModuleOwnershipEvidenceRust(module).bindings.flatMap((evidence) =>
+        evidence.mutation === 'bindingAndReferent' || evidence.mutation === 'bindingReassigned'
+          ? [evidence.binding.id]
+          : [],
+      ),
+    ),
     generatedNames: new Set(targetNames.values()),
     module,
     objectRestRecords: new Map(),
@@ -780,8 +791,12 @@ function getIrObjectTypeTargetNameRust(properties: readonly IrObjectTypeProperty
 }
 
 function emitParameter(parameter: Readonly<IrParameter>, context: EmitContext): string {
+  // A parameter the body assigns to is a local binding in Rust as much as in the source language, and
+  // Rust will not accept the assignment without `mut`. Emitting it unconditionally would instead earn
+  // an unused-mut warning on every parameter that is only read.
+  const binding = `${context.reboundBindingIds.has(parameter.binding.id) ? 'mut ' : ''}${getBindingTargetNameRust(parameter.binding, context)}`;
   if (parameter.initializer) {
-    return `${getBindingTargetNameRust(parameter.binding, context)}: Option<${emitType(parameter.type, context)}>`;
+    return `${binding}: Option<${emitType(parameter.type, context)}>`;
   }
   if (parameter.optional) {
     const type = emitType(parameter.type, context);
@@ -792,11 +807,10 @@ function emitParameter(parameter: Readonly<IrParameter>, context: EmitContext): 
       hasIrTypeUndefinedMemberRust(parameter.type) && !hasIrTypeNullMemberRust(parameter.type)
         ? type
         : `Option<${type}>`;
-    return `${getBindingTargetNameRust(parameter.binding, context)}: ${optionalType}`;
+    return `${binding}: ${optionalType}`;
   }
-  const name = getBindingTargetNameRust(parameter.binding, context);
-  if (parameter.rest) return `${name}: Vec<${emitType(parameter.type, context)}>`;
-  return `${name}: ${emitType(parameter.type, context)}`;
+  if (parameter.rest) return `${binding}: Vec<${emitType(parameter.type, context)}>`;
+  return `${binding}: ${emitType(parameter.type, context)}`;
 }
 
 function emitRecord(
