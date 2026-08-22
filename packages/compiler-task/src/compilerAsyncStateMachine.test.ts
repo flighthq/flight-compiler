@@ -419,6 +419,41 @@ describe('analyzeIrModuleAsyncStateMachines', () => {
     expect(condition.refusals.map((refusal) => refusal.code)).toEqual(['unsupported-suspension-expression']);
   });
 
+  it('puts the do-while test at the tail of its header, where the source puts it', () => {
+    const analysis = analyzeIrModuleAsyncStateMachines(
+      lower(`
+        export async function drain(task: Promise<number>, again: boolean): Promise<number> {
+          let last: number = 0;
+          do {
+            last = await task;
+          } while (again);
+          return last;
+        }
+      `),
+    );
+    const machine = analysis.machines[0];
+    const loopPath = ['declarations', 0, 'body', 1];
+    const steps = machine?.states.flatMap((state) => state.steps) ?? [];
+
+    expect(analysis.refusals).toEqual([]);
+    // A do-while has no separate body arm state: the header is the body, and the test is its tail,
+    // which is exactly the difference from `while`.
+    expect(machine?.states.map((state) => state.identity)).toEqual([
+      { kind: 'entry' },
+      { kind: 'loopHeader', path: loopPath },
+      { kind: 'resume', suspensionPath: [...loopPath, 'body', 'statements', 0, 'expression', 'right'] },
+      { kind: 'join', path: loopPath },
+    ]);
+    expect(steps.filter((step) => step.kind === 'branch')).toMatchObject([
+      { conditionPath: [...loopPath, 'condition'], whenFalse: { kind: 'join', path: loopPath } },
+    ]);
+    // A true test re-enters the header, because for do-while the header is the body.
+    expect(machine?.states[2]?.steps.at(-1)).toMatchObject({
+      kind: 'branch',
+      whenTrue: { kind: 'loopHeader', path: loopPath },
+    });
+  });
+
   it('is deterministic, deeply immutable, and vacuous for a module without async scopes', () => {
     const module = lower('export function read(value: number): number { return value; }');
     const first = analyzeIrModuleAsyncStateMachines(module);

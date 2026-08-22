@@ -530,9 +530,9 @@ function createIrIfStatementAsyncStateMachine(
   return undefined;
 }
 
-function createIrWhileStatementAsyncStateMachine(
+function createIrLoopStatementAsyncStateMachine(
   scope: Readonly<CompilerAsyncTaskScope>,
-  statement: Readonly<Extract<IrStatement, { kind: 'while' }>>,
+  statement: Readonly<Extract<IrStatement, { kind: 'do' | 'while' }>>,
   path: CompilerIrTraversalPath,
   suspensions: readonly Readonly<CompilerAsyncTaskSuspensionSite>[],
   draft: AsyncStateMachineDraft,
@@ -547,35 +547,42 @@ function createIrWhileStatementAsyncStateMachine(
   const header: CompilerAsyncStateMachineStateIdentity = { kind: 'loopHeader', path };
   const body: CompilerAsyncStateMachineStateIdentity = { arm: 'whenTrue', kind: 'branchArm', path };
   const join: CompilerAsyncStateMachineStateIdentity = { kind: 'join', path };
+  // `while` tests before its body, so a true test enters the body arm. `do` tests after its body,
+  // where the header *is* the body, so a true test re-enters the header instead.
+  const branch = (): CompilerAsyncStateMachineStep => ({
+    conditionPath,
+    evaluationRejection: addCompilerAsyncStateMachineAbruptCompletion(conditionPath, draft),
+    kind: 'branch',
+    path,
+    whenFalse: join,
+    whenTrue: statement.kind === 'do' ? header : body,
+  });
   draft.currentSteps.push({ header, kind: 'loop', path });
   addCompilerAsyncStateMachineState(draft);
 
+  // The two forms differ only in where the condition sits. `while` tests before the body, so the
+  // header is the test and the body is its own arm; `do` runs the body first, so the header is the
+  // body and the test is its tail.
   draft.currentIdentity = header;
-  draft.currentSteps = [
-    {
-      conditionPath,
-      evaluationRejection: addCompilerAsyncStateMachineAbruptCompletion(conditionPath, draft),
-      kind: 'branch',
-      path,
-      whenFalse: join,
-      whenTrue: body,
-    },
-  ];
-  addCompilerAsyncStateMachineState(draft);
-
-  draft.currentIdentity = body;
   draft.currentSteps = [];
   draft.terminal = false;
+  if (statement.kind === 'while') {
+    draft.currentSteps.push(branch());
+    addCompilerAsyncStateMachineState(draft);
+    draft.currentIdentity = body;
+    draft.currentSteps = [];
+  }
   const refusal = createIrStatementArmAsyncStateMachine(scope, statement.body, [...path, 'body'], suspensions, draft);
   if (refusal) return refusal;
-  // The back edge is what makes this a loop rather than a branch: a body that did not leave the
-  // function re-enters the header, so the condition is evaluated again.
-  if (!draft.terminal) draft.currentSteps.push({ kind: 'goto', path: [...path, 'body'], target: header });
+  if (!draft.terminal) {
+    if (statement.kind === 'do') draft.currentSteps.push(branch());
+    else draft.currentSteps.push({ kind: 'goto', path: [...path, 'body'], target: header });
+  }
   addCompilerAsyncStateMachineState(draft);
 
   draft.currentIdentity = join;
   draft.currentSteps = [];
-  // A `while` may run its body zero times, so the statement after it is always reachable.
+  // Either form may reach its exit, so the statement after the loop is always reachable.
   draft.terminal = false;
   return undefined;
 }
@@ -634,8 +641,8 @@ function createIrStatementSuspensionAsyncStateMachine(
   if (statement.kind === 'if') {
     return createIrIfStatementAsyncStateMachine(scope, statement, path, suspensions, draft);
   }
-  if (statement.kind === 'while') {
-    return createIrWhileStatementAsyncStateMachine(scope, statement, path, suspensions, draft);
+  if (statement.kind === 'do' || statement.kind === 'while') {
+    return createIrLoopStatementAsyncStateMachine(scope, statement, path, suspensions, draft);
   }
   if (suspensions.length !== 1) {
     return createCompilerAsyncStateMachineRefusal('unsupported-suspension-expression', path, scope.path);
