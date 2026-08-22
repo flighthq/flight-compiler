@@ -1,4 +1,5 @@
 export { createCompilerGeneratedFileHeader } from './compilerGeneratedFileProvenance.js';
+export { createCompilerModuleFacadeIdentities, isCompilerModuleFacadeFailure } from './compilerModuleFacadeIdentity.js';
 export {
   isCompilerEmittedSourceSyntaxFailure,
   validateCompilerEmittedSourceSyntax,
