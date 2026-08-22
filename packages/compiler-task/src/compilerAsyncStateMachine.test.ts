@@ -625,7 +625,29 @@ describe('analyzeIrModuleAsyncStateMachines', () => {
     expect(steps.filter((step) => step.kind === 'guard')).toMatchObject([{ carrier: { name: 'cleanupValue' } }]);
   });
 
-  it('refuses a catch and finally together, which need a third route', () => {
+  it('runs a cleanup on every route out of a handled region', () => {
+    // `try`/`catch`/`finally` is two regions rather than one with a third route: the cleanup owes the
+    // handler's own routes as much as the body's, which is exactly `try { try A catch H } finally F`.
+    const analysis = analyzeIrModuleAsyncStateMachines(
+      lower(`
+        export async function attempt(task: Promise<number>, log: number[]): Promise<number> {
+          let result: number = 0;
+          try { result = await task; } catch { result = 1; } finally { log.push(result); }
+          return result;
+        }
+      `),
+    );
+    const steps = (analysis.machines[0]?.states ?? []).flatMap((state) => state.steps);
+    const tryPath = ['declarations', 0, 'body', 1];
+
+    expect(analysis.refusals).toEqual([]);
+    // Two regions, keyed on different paths so their state identities cannot collide.
+    expect(
+      steps.filter((step) => step.kind === 'guard').map((step) => (step.kind === 'guard' ? step.path : [])),
+    ).toEqual([tryPath, [...tryPath, 'tryBody']]);
+  });
+
+  it('refuses nothing that a catch and finally together now cover', () => {
     const both = analyzeIrModuleAsyncStateMachines(
       lower(`
         export async function attempt(task: Promise<number>): Promise<number> {
@@ -636,7 +658,7 @@ describe('analyzeIrModuleAsyncStateMachines', () => {
       `),
     );
 
-    expect(both.refusals.map((refusal) => refusal.code)).toEqual(['unsupported-control-flow']);
+    expect(both.refusals).toEqual([]);
   });
 
   it('retains only the bindings that outlive a suspension, not the ones each iteration recreates', () => {

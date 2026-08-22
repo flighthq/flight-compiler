@@ -674,18 +674,34 @@ function createIrTryStatementAsyncStateMachine(
   path: CompilerIrTraversalPath,
   suspensions: readonly Readonly<CompilerAsyncTaskSuspensionSite>[],
   draft: AsyncStateMachineDraft,
+  // Where the guarded body lives in the source. It is the try body's own path except when two regions
+  // share one statement, where the inner region's body is the same node the outer region guards.
+  bodyPath: CompilerIrTraversalPath = [...path, 'tryBody'],
+  // Likewise for the handler: the inner region's `catch` is the same source node the outer statement
+  // declares, not a nested one.
+  sourceHandlerPath?: CompilerIrTraversalPath,
 ): CompilerAsyncStateMachineRefusal | undefined {
   const catchClause = statement.catchClause;
   const finallyBody = statement.finallyBody;
   if (catchClause && finallyBody) {
-    // `try`/`catch`/`finally` needs the cleanup to run after the handler as well as instead of it,
-    // which is a third route rather than a second handler.
-    return createCompilerAsyncStateMachineRefusal('unsupported-control-flow', path, scope.path);
+    // The cleanup owes every route out of the handled region, including the handler's own. That is
+    // exactly `try { try A catch H } finally F`, so it is built as two regions rather than as a third
+    // route through one. The inner region is keyed on the try body's path, so their state identities
+    // cannot collide.
+    return createIrTryStatementAsyncStateMachine(
+      scope,
+      { finallyBody, kind: 'try', tryBody: { kind: 'try', catchClause, tryBody: statement.tryBody } },
+      path,
+      suspensions,
+      draft,
+      [...path, 'tryBody'],
+      [...path, 'finallyBody'],
+    );
   }
   if (!catchClause && !finallyBody) {
     return createCompilerAsyncStateMachineRefusal('unsupported-control-flow', path, scope.path);
   }
-  const handlerPath = catchClause ? [...path, 'catchClause', 'body'] : [...path, 'finallyBody'];
+  const handlerPath = sourceHandlerPath ?? (catchClause ? [...path, 'catchClause', 'body'] : [...path, 'finallyBody']);
   const body: CompilerAsyncStateMachineStateIdentity = { arm: 'whenTrue', kind: 'branchArm', path };
   const handler: CompilerAsyncStateMachineStateIdentity = { kind: 'catch', path };
   const cleanup: CompilerAsyncStateMachineStateIdentity = { arm: 'whenFalse', kind: 'branchArm', path };
@@ -722,17 +738,18 @@ function createIrTryStatementAsyncStateMachine(
   draft.currentIdentity = body;
   draft.currentSteps = [];
   draft.terminal = false;
-  const tryRefusal = createIrStatementArmAsyncStateMachine(
-    scope,
-    statement.tryBody,
-    [...path, 'tryBody'],
-    suspensions,
-    draft,
-  );
+  const tryRefusal =
+    statement.tryBody.kind === 'try'
+      ? createIrTryStatementAsyncStateMachine(scope, statement.tryBody, bodyPath, suspensions, draft, bodyPath, [
+          ...path,
+          'catchClause',
+          'body',
+        ])
+      : createIrStatementArmAsyncStateMachine(scope, statement.tryBody, bodyPath, suspensions, draft);
   if (tryRefusal) return tryRefusal;
   const bodyTerminal = draft.terminal;
   if (!bodyTerminal) {
-    draft.currentSteps.push({ kind: 'goto', path: [...path, 'tryBody'], target: finallyBody ? cleanup : join });
+    draft.currentSteps.push({ kind: 'goto', path: bodyPath, target: finallyBody ? cleanup : join });
   }
   addCompilerAsyncStateMachineState(draft);
   draft.guards.pop();
