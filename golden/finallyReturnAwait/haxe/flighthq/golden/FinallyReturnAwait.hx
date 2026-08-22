@@ -23,6 +23,14 @@ class FinallyReturnAwait {
             rejectTask(taskError_2);
           }
         };
+        var taskRejected = function(taskRejection:Dynamic) {
+          try {
+            log.push(1);
+          } catch (taskError_4:Dynamic) {
+            rejectTask(taskError_4);
+          }
+          rejectTask(taskRejection);
+        };
         try {
           flighthq._internal._Promise.resolve(task).then(
             function(awaitValue) {
@@ -30,31 +38,20 @@ class FinallyReturnAwait {
               try {
                 taskCleanup();
                 return;
-              } catch (taskError_5:Dynamic) {
-                try {
-                  log.push(1);
-                } catch (taskError_6:Dynamic) {
-                  rejectTask(taskError_6);
-                }
-                rejectTask(taskError_5);
+              } catch (taskError_6:Dynamic) {
+                taskRejected(taskError_6);
+                return;
               }
             },
             function(awaitError) {
-              try {
-                log.push(1);
-              } catch (taskError_7:Dynamic) {
-                rejectTask(taskError_7);
-              }
+              taskRejected(awaitError);
+              return;
             }
           );
           return;
-        } catch (taskError_4:Dynamic) {
-          try {
-            log.push(1);
-          } catch (taskError_8:Dynamic) {
-            rejectTask(taskError_8);
-          }
-          rejectTask(taskError_4);
+        } catch (taskError_5:Dynamic) {
+          taskRejected(taskError_5);
+          return;
         }
         return;
       } catch (taskError:Dynamic) {

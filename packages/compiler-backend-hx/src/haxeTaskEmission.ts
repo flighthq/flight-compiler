@@ -10,7 +10,6 @@ import type {
   CompilerHaxeTaskLoweringState,
   CompilerHaxeTaskLoweringStep,
   CompilerIrTraversalPath,
-  IrBindingIdentity,
   IrExpression,
   IrModule,
   IrStatement,
@@ -19,6 +18,16 @@ import type {
 interface HaxeTaskEmissionNames {
   readonly reject: string;
   readonly resolve: string;
+}
+
+// What the emitter can reach from where it currently is: the states it is already inside, the
+// continuations it may call by name rather than inline, and the handler each guarded region entered
+// by name. Every one of these is a lexical fact about the emitted closure nest, which is why they
+// travel together and why a state emitted outside its region cannot see them.
+interface HaxeTaskEmissionScope {
+  readonly ancestors: ReadonlySet<string>;
+  readonly joins: ReadonlyMap<string, string>;
+  readonly rejections: ReadonlyMap<string, string>;
 }
 
 export function emitCompilerHaxeTaskLoweringFunction(
@@ -36,16 +45,11 @@ export function emitCompilerHaxeTaskLoweringFunction(
   return [
     `return new ${runtime.taskTypeName}(function(${names.resolve}, ${names.reject}) {`,
     ...indentSourceLines(
-      emitCompilerHaxeTaskLoweringState(
-        entry,
-        functionPlan,
-        runtime,
-        module,
-        capabilities,
-        names,
-        new Set(),
-        new Map(),
-      ),
+      emitCompilerHaxeTaskLoweringState(entry, functionPlan, runtime, module, capabilities, names, {
+        ancestors: new Set(),
+        joins: new Map(),
+        rejections: new Map(),
+      }),
     ),
     '});',
   ];
@@ -84,63 +88,42 @@ function emitCompilerHaxeTaskLoweringState(
   module: Readonly<IrModule>,
   capabilities: Readonly<CompilerHaxeTaskEmissionCapabilities>,
   names: Readonly<HaxeTaskEmissionNames>,
-  ancestors: ReadonlySet<string>,
-  joins: ReadonlyMap<string, string>,
+  scope: Readonly<HaxeTaskEmissionScope>,
 ): string[] {
   const identity = getCompilerHaxeTaskEmissionStateIdentity(state);
-  if (ancestors.has(identity)) capabilities.fail(`Haxe task state graph contains a cycle at ${identity}`);
-  const nextAncestors = new Set([...ancestors, identity]);
+  if (scope.ancestors.has(identity)) capabilities.fail(`Haxe task state graph contains a cycle at ${identity}`);
+  const nextScope: HaxeTaskEmissionScope = { ...scope, ancestors: new Set([...scope.ancestors, identity]) };
   const errorName = capabilities.getGeneratedName('taskError');
   const body = state.steps.flatMap((step) =>
-    emitCompilerHaxeTaskLoweringStep(step, functionPlan, runtime, module, capabilities, names, nextAncestors, joins),
+    emitCompilerHaxeTaskLoweringStep(step, functionPlan, runtime, module, capabilities, names, nextScope),
   );
   return [
     'try {',
     ...indentSourceLines(body),
     `} catch (${errorName}:Dynamic) {`,
     ...indentSourceLines(
-      emitCompilerHaxeTaskEmissionRejectionRoute(
-        state.guard,
-        errorName,
-        functionPlan,
-        runtime,
-        module,
-        capabilities,
-        names,
-        nextAncestors,
-        joins,
-      ),
+      emitCompilerHaxeTaskEmissionRejectionRoute(state.guard?.catchState, errorName, capabilities, names, nextScope),
     ),
     '}',
   ];
 }
 
-// A rejection settles the task unless a source-level handler is in scope, in which case it enters
-// that handler with the caught value bound the way the source binds it.
+// A rejection settles the task unless a source-level handler is in scope, in which case it enters the
+// named handler the region declared. The handler is a call rather than an inlining because every
+// state under a region rejects to the same place: inlining it copied the whole handler into every
+// route out of the region, and the copies multiplied with each nested region.
 function emitCompilerHaxeTaskEmissionRejectionRoute(
-  guard: Readonly<CompilerAsyncStateMachineGuardedState> | undefined,
+  catchState: Readonly<CompilerAsyncStateMachineStateIdentity> | undefined,
   errorName: string,
-  functionPlan: Readonly<CompilerHaxeTaskLoweringFunction>,
-  runtime: Readonly<CompilerHaxeTaskLoweringRuntime>,
-  module: Readonly<IrModule>,
   capabilities: Readonly<CompilerHaxeTaskEmissionCapabilities>,
   names: Readonly<HaxeTaskEmissionNames>,
-  ancestors: ReadonlySet<string>,
-  joins: ReadonlyMap<string, string>,
+  scope: Readonly<HaxeTaskEmissionScope>,
 ): string[] {
-  if (!guard) return [`${names.reject}(${errorName});`];
-  const key = getCompilerHaxeTaskEmissionIdentityKey(guard.catchState);
-  const handler = functionPlan.states.find(
-    (candidate) => getCompilerHaxeTaskEmissionIdentityKey(candidate.identity) === key,
-  );
-  if (!handler) capabilities.fail(`Haxe task guard ${key} has no handler state`);
-  return [
-    ...(guard.catchBinding ? [`var ${capabilities.getBindingName(guard.catchBinding)} = ${errorName};`] : []),
-    ...emitCompilerHaxeTaskLoweringState(handler, functionPlan, runtime, module, capabilities, names, ancestors, joins),
-    // A cleanup handler runs and then lets the same rejection continue, which is what separates
-    // `finally` from `catch`.
-    ...(guard.rethrow ? [`${names.reject}(${errorName});`] : []),
-  ];
+  if (!catchState) return [`${names.reject}(${errorName});`];
+  const key = getCompilerHaxeTaskEmissionIdentityKey(catchState);
+  const handlerName = scope.rejections.get(key);
+  if (!handlerName) capabilities.fail(`Haxe task guard ${key} has no handler in scope`);
+  return [`${handlerName}(${errorName});`, 'return;'];
 }
 
 function emitCompilerHaxeTaskLoweringStep(
@@ -150,8 +133,7 @@ function emitCompilerHaxeTaskLoweringStep(
   module: Readonly<IrModule>,
   capabilities: Readonly<CompilerHaxeTaskEmissionCapabilities>,
   names: Readonly<HaxeTaskEmissionNames>,
-  ancestors: ReadonlySet<string>,
-  joins: ReadonlyMap<string, string>,
+  scope: Readonly<HaxeTaskEmissionScope>,
 ): string[] {
   switch (step.kind) {
     case 'branchState': {
@@ -164,23 +146,14 @@ function emitCompilerHaxeTaskLoweringStep(
       );
       if (!joinState) capabilities.fail(`Haxe task branch at ${JSON.stringify(step.path)} has no join state`);
       const joinName = capabilities.getGeneratedName('taskJoin');
-      const nextJoins = new Map([...joins, [joinIdentity, joinName]]);
+      const armScope: HaxeTaskEmissionScope = { ...scope, joins: new Map([...scope.joins, [joinIdentity, joinName]]) };
       const condition = capabilities.emitExpression(
         getCompilerHaxeTaskEmissionSourceValue<IrExpression>(module, step.conditionPath, capabilities),
       );
       return [
         `var ${joinName} = function() {`,
         ...indentSourceLines(
-          emitCompilerHaxeTaskLoweringState(
-            joinState,
-            functionPlan,
-            runtime,
-            module,
-            capabilities,
-            names,
-            ancestors,
-            joins,
-          ),
+          emitCompilerHaxeTaskLoweringState(joinState, functionPlan, runtime, module, capabilities, names, scope),
         ),
         '};',
         `if (${condition}) {`,
@@ -192,8 +165,7 @@ function emitCompilerHaxeTaskLoweringStep(
             module,
             capabilities,
             names,
-            ancestors,
-            nextJoins,
+            armScope,
           ),
         ),
         '} else {',
@@ -205,8 +177,7 @@ function emitCompilerHaxeTaskLoweringStep(
             module,
             capabilities,
             names,
-            ancestors,
-            nextJoins,
+            armScope,
           ),
         ),
         '}',
@@ -226,8 +197,13 @@ function emitCompilerHaxeTaskLoweringStep(
         (candidate) => getCompilerHaxeTaskEmissionIdentityKey(candidate.identity) === bodyIdentity,
       );
       if (!bodyState) capabilities.fail(`Haxe task guard at ${JSON.stringify(step.path)} has no body state`);
+      const handlerKey = getCompilerHaxeTaskEmissionIdentityKey(step.catchState);
+      const handlerState = functionPlan.states.find(
+        (candidate) => getCompilerHaxeTaskEmissionIdentityKey(candidate.identity) === handlerKey,
+      );
+      if (!handlerState) capabilities.fail(`Haxe task guard at ${JSON.stringify(step.path)} has no handler state`);
       const joinName = capabilities.getGeneratedName('taskJoin');
-      const nextJoins = new Map<string, string>([...joins, [joinIdentity, joinName]]);
+      const bodyJoins = new Map([...scope.joins, [joinIdentity, joinName]]);
       // A cleanup arm is reached from the body and from the rejection route, so it is named for the
       // same reason the join is: a continuation with two callers is a function, not an inlining.
       const cleanupIdentity = getCompilerHaxeTaskEmissionIdentityKey({
@@ -244,50 +220,52 @@ function emitCompilerHaxeTaskLoweringStep(
       if (step.carrier) cleanupLines.push(`var ${capabilities.getBindingName(step.carrier)};`);
       if (cleanupState) {
         const cleanupName = capabilities.getGeneratedName('taskCleanup');
-        nextJoins.set(cleanupIdentity, cleanupName);
         cleanupLines.push(
           `var ${cleanupName} = function() {`,
           ...indentSourceLines(
-            emitCompilerHaxeTaskLoweringState(
-              cleanupState,
-              functionPlan,
-              runtime,
-              module,
-              capabilities,
-              names,
-              ancestors,
-              nextJoins,
-            ),
+            emitCompilerHaxeTaskLoweringState(cleanupState, functionPlan, runtime, module, capabilities, names, {
+              ...scope,
+              joins: bodyJoins,
+            }),
           ),
           '};',
         );
+        bodyJoins.set(cleanupIdentity, cleanupName);
       }
+      const guarded = getCompilerHaxeTaskEmissionGuardedState(functionPlan, step.catchState);
+      const handlerName = capabilities.getGeneratedName('taskRejected');
+      const rejectionName = capabilities.getGeneratedName('taskRejection');
+      const handlerScope: HaxeTaskEmissionScope = { ...scope, joins: bodyJoins };
       return [
         `var ${joinName} = function() {`,
         ...indentSourceLines(
-          emitCompilerHaxeTaskLoweringState(
-            joinState,
+          emitCompilerHaxeTaskLoweringState(joinState, functionPlan, runtime, module, capabilities, names, scope),
+        ),
+        '};',
+        ...cleanupLines,
+        `var ${handlerName} = function(${rejectionName}:Dynamic) {`,
+        ...indentSourceLines([
+          ...(guarded?.catchBinding
+            ? [`var ${capabilities.getBindingName(guarded.catchBinding)} = ${rejectionName};`]
+            : []),
+          ...emitCompilerHaxeTaskLoweringState(
+            handlerState,
             functionPlan,
             runtime,
             module,
             capabilities,
             names,
-            ancestors,
-            joins,
+            handlerScope,
           ),
-        ),
+          // A cleanup handler does not consume the rejection it runs on: it runs and then lets the
+          // same rejection continue, which is what separates `finally` from `catch`.
+          ...(guarded?.rethrow ? [`${names.reject}(${rejectionName});`] : []),
+        ]),
         '};',
-        ...cleanupLines,
-        ...emitCompilerHaxeTaskLoweringState(
-          bodyState,
-          functionPlan,
-          runtime,
-          module,
-          capabilities,
-          names,
-          ancestors,
-          nextJoins,
-        ),
+        ...emitCompilerHaxeTaskLoweringState(bodyState, functionPlan, runtime, module, capabilities, names, {
+          ...handlerScope,
+          rejections: new Map([...scope.rejections, [handlerKey, handlerName]]),
+        }),
         'return;',
       ];
     }
@@ -298,7 +276,10 @@ function emitCompilerHaxeTaskLoweringStep(
       );
       if (!headerState) capabilities.fail(`Haxe task loop at ${JSON.stringify(step.path)} has no header state`);
       const headerName = capabilities.getGeneratedName('taskLoop');
-      const nextJoins = new Map([...joins, [headerIdentity, headerName]]);
+      const headerScope: HaxeTaskEmissionScope = {
+        ...scope,
+        joins: new Map([...scope.joins, [headerIdentity, headerName]]),
+      };
       return [
         // A named local function, not a `var` holding a closure: the back edge calls it from inside
         // its own body, which a variable initializer cannot see.
@@ -311,8 +292,7 @@ function emitCompilerHaxeTaskLoweringStep(
             module,
             capabilities,
             names,
-            ancestors,
-            nextJoins,
+            headerScope,
           ),
         ),
         '}',
@@ -327,7 +307,7 @@ function emitCompilerHaxeTaskLoweringStep(
       ];
     case 'continueState': {
       const target = getCompilerHaxeTaskEmissionIdentityKey(step.target);
-      const joinName = joins.get(target);
+      const joinName = scope.joins.get(target);
       if (!joinName) capabilities.fail(`Haxe task continuation at ${JSON.stringify(step.path)} has no join in scope`);
       return [`${joinName}();`, 'return;'];
     }
@@ -353,8 +333,7 @@ function emitCompilerHaxeTaskLoweringStep(
         capabilities,
         names,
         awaitValueName,
-        ancestors,
-        joins,
+        scope,
       );
       const operand = capabilities.emitExpression(
         getCompilerHaxeTaskEmissionSourceValue<IrExpression>(module, step.operandPath, capabilities),
@@ -366,22 +345,7 @@ function emitCompilerHaxeTaskLoweringStep(
         '  },',
         `  function(${awaitErrorName}) {`,
         ...indentSourceLines(
-          emitCompilerHaxeTaskEmissionRejectionRoute(
-            step.rejectState
-              ? {
-                  catchState: step.rejectState,
-                  ...getCompilerHaxeTaskEmissionGuardBinding(functionPlan, step.rejectState),
-                }
-              : undefined,
-            awaitErrorName,
-            functionPlan,
-            runtime,
-            module,
-            capabilities,
-            names,
-            ancestors,
-            joins,
-          ),
+          emitCompilerHaxeTaskEmissionRejectionRoute(step.rejectState, awaitErrorName, capabilities, names, scope),
           2,
         ),
         '  }',
@@ -399,26 +363,16 @@ function emitCompilerHaxeTaskEmissionBranchArm(
   module: Readonly<IrModule>,
   capabilities: Readonly<CompilerHaxeTaskEmissionCapabilities>,
   names: Readonly<HaxeTaskEmissionNames>,
-  ancestors: ReadonlySet<string>,
-  joins: ReadonlyMap<string, string>,
+  scope: Readonly<HaxeTaskEmissionScope>,
 ): string[] {
   const key = getCompilerHaxeTaskEmissionIdentityKey(identity);
-  const joinName = joins.get(key);
+  const joinName = scope.joins.get(key);
   if (joinName) return [`${joinName}();`, 'return;'];
   const armState = functionPlan.states.find(
     (candidate) => getCompilerHaxeTaskEmissionIdentityKey(candidate.identity) === key,
   );
   if (!armState) capabilities.fail(`Haxe task branch arm ${key} has no matching state`);
-  return emitCompilerHaxeTaskLoweringState(
-    armState,
-    functionPlan,
-    runtime,
-    module,
-    capabilities,
-    names,
-    ancestors,
-    joins,
-  );
+  return emitCompilerHaxeTaskLoweringState(armState, functionPlan, runtime, module, capabilities, names, scope);
 }
 
 function emitCompilerHaxeTaskSuspensionFulfillment(
@@ -429,8 +383,7 @@ function emitCompilerHaxeTaskSuspensionFulfillment(
   capabilities: Readonly<CompilerHaxeTaskEmissionCapabilities>,
   names: Readonly<HaxeTaskEmissionNames>,
   awaitValueName: string,
-  ancestors: ReadonlySet<string>,
-  joins: ReadonlyMap<string, string>,
+  scope: Readonly<HaxeTaskEmissionScope>,
 ): string[] {
   const lines: string[] = [];
   switch (step.fulfillment.kind) {
@@ -463,16 +416,7 @@ function emitCompilerHaxeTaskSuspensionFulfillment(
   );
   if (!resumeState) capabilities.fail(`Haxe task suspension at ${JSON.stringify(step.path)} has no matching state`);
   lines.push(
-    ...emitCompilerHaxeTaskLoweringState(
-      resumeState,
-      functionPlan,
-      runtime,
-      module,
-      capabilities,
-      names,
-      ancestors,
-      joins,
-    ),
+    ...emitCompilerHaxeTaskLoweringState(resumeState, functionPlan, runtime, module, capabilities, names, scope),
   );
   return lines;
 }
@@ -494,15 +438,17 @@ function getCompilerHaxeTaskEmissionSourceValue<Value>(
   return value as Readonly<Value>;
 }
 
-function getCompilerHaxeTaskEmissionGuardBinding(
+// How a region's handler consumes the rejection it runs on. The guard step names the handler state;
+// what the handler does with the value is recorded on the states the handler guards, because that is
+// where the source's binding and its `finally`-versus-`catch` distinction were observed.
+function getCompilerHaxeTaskEmissionGuardedState(
   functionPlan: Readonly<CompilerHaxeTaskLoweringFunction>,
   catchState: Readonly<CompilerAsyncStateMachineStateIdentity>,
-): { catchBinding?: IrBindingIdentity } {
+): Readonly<CompilerAsyncStateMachineGuardedState> | undefined {
   const key = getCompilerHaxeTaskEmissionIdentityKey(catchState);
-  const guarded = functionPlan.states.find(
+  return functionPlan.states.find(
     (state) => state.guard && getCompilerHaxeTaskEmissionIdentityKey(state.guard.catchState) === key,
-  );
-  return guarded?.guard?.catchBinding ? { catchBinding: guarded.guard.catchBinding } : {};
+  )?.guard;
 }
 
 function getCompilerHaxeTaskEmissionIdentityKey(identity: Readonly<CompilerAsyncStateMachineStateIdentity>): string {

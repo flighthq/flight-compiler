@@ -14,78 +14,48 @@ class CatchAwait {
             rejectTask(taskError_2);
           }
         };
-        try {
-          flighthq._internal._Promise.resolve(task).then(
-            function(awaitValue) {
-              result = awaitValue;
-              try {
-                taskJoin();
-                return;
-              } catch (taskError_4:Dynamic) {
-                try {
-                  flighthq._internal._Promise.resolve(backup).then(
-                    function(awaitValue_2) {
-                      result = awaitValue_2;
-                      try {
-                        taskJoin();
-                        return;
-                      } catch (taskError_6:Dynamic) {
-                        rejectTask(taskError_6);
-                      }
-                    },
-                    function(awaitError_2) {
-                      rejectTask(awaitError_2);
-                    }
-                  );
-                  return;
-                } catch (taskError_5:Dynamic) {
-                  rejectTask(taskError_5);
-                }
-              }
-            },
-            function(awaitError) {
-              try {
-                flighthq._internal._Promise.resolve(backup).then(
-                  function(awaitValue_3) {
-                    result = awaitValue_3;
-                    try {
-                      taskJoin();
-                      return;
-                    } catch (taskError_8:Dynamic) {
-                      rejectTask(taskError_8);
-                    }
-                  },
-                  function(awaitError_3) {
-                    rejectTask(awaitError_3);
-                  }
-                );
-                return;
-              } catch (taskError_7:Dynamic) {
-                rejectTask(taskError_7);
-              }
-            }
-          );
-          return;
-        } catch (taskError_3:Dynamic) {
+        var taskRejected = function(taskRejection:Dynamic) {
           try {
             flighthq._internal._Promise.resolve(backup).then(
-              function(awaitValue_4) {
-                result = awaitValue_4;
+              function(awaitValue) {
+                result = awaitValue;
                 try {
                   taskJoin();
                   return;
-                } catch (taskError_10:Dynamic) {
-                  rejectTask(taskError_10);
+                } catch (taskError_4:Dynamic) {
+                  rejectTask(taskError_4);
                 }
               },
-              function(awaitError_4) {
-                rejectTask(awaitError_4);
+              function(awaitError) {
+                rejectTask(awaitError);
               }
             );
             return;
-          } catch (taskError_9:Dynamic) {
-            rejectTask(taskError_9);
+          } catch (taskError_3:Dynamic) {
+            rejectTask(taskError_3);
           }
+        };
+        try {
+          flighthq._internal._Promise.resolve(task).then(
+            function(awaitValue_2) {
+              result = awaitValue_2;
+              try {
+                taskJoin();
+                return;
+              } catch (taskError_6:Dynamic) {
+                taskRejected(taskError_6);
+                return;
+              }
+            },
+            function(awaitError_2) {
+              taskRejected(awaitError_2);
+              return;
+            }
+          );
+          return;
+        } catch (taskError_5:Dynamic) {
+          taskRejected(taskError_5);
+          return;
         }
         return;
       } catch (taskError:Dynamic) {

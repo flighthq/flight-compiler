@@ -24,18 +24,32 @@ class CatchFinallyAwait {
             rejectTask(taskError_2);
           }
         };
+        var taskRejected = function(taskRejection:Dynamic) {
+          try {
+            log.push(result);
+          } catch (taskError_4:Dynamic) {
+            rejectTask(taskError_4);
+          }
+          rejectTask(taskRejection);
+        };
         try {
           var taskJoin_2 = function() {
             try {
               taskCleanup();
               return;
-            } catch (taskError_5:Dynamic) {
-              try {
-                log.push(result);
-              } catch (taskError_6:Dynamic) {
-                rejectTask(taskError_6);
-              }
-              rejectTask(taskError_5);
+            } catch (taskError_6:Dynamic) {
+              taskRejected(taskError_6);
+              return;
+            }
+          };
+          var taskRejected_2 = function(taskRejection_2:Dynamic) {
+            try {
+              result = 1;
+              taskJoin_2();
+              return;
+            } catch (taskError_7:Dynamic) {
+              taskRejected(taskError_7);
+              return;
             }
           };
           try {
@@ -45,59 +59,25 @@ class CatchFinallyAwait {
                 try {
                   taskJoin_2();
                   return;
-                } catch (taskError_8:Dynamic) {
-                  try {
-                    result = 1;
-                    taskJoin_2();
-                    return;
-                  } catch (taskError_9:Dynamic) {
-                    try {
-                      log.push(result);
-                    } catch (taskError_10:Dynamic) {
-                      rejectTask(taskError_10);
-                    }
-                    rejectTask(taskError_9);
-                  }
+                } catch (taskError_9:Dynamic) {
+                  taskRejected_2(taskError_9);
+                  return;
                 }
               },
               function(awaitError) {
-                try {
-                  result = 1;
-                  taskJoin_2();
-                  return;
-                } catch (taskError_11:Dynamic) {
-                  try {
-                    log.push(result);
-                  } catch (taskError_12:Dynamic) {
-                    rejectTask(taskError_12);
-                  }
-                  rejectTask(taskError_11);
-                }
+                taskRejected_2(awaitError);
+                return;
               }
             );
             return;
-          } catch (taskError_7:Dynamic) {
-            try {
-              result = 1;
-              taskJoin_2();
-              return;
-            } catch (taskError_13:Dynamic) {
-              try {
-                log.push(result);
-              } catch (taskError_14:Dynamic) {
-                rejectTask(taskError_14);
-              }
-              rejectTask(taskError_13);
-            }
+          } catch (taskError_8:Dynamic) {
+            taskRejected_2(taskError_8);
+            return;
           }
           return;
-        } catch (taskError_4:Dynamic) {
-          try {
-            log.push(result);
-          } catch (taskError_15:Dynamic) {
-            rejectTask(taskError_15);
-          }
-          rejectTask(taskError_4);
+        } catch (taskError_5:Dynamic) {
+          taskRejected(taskError_5);
+          return;
         }
         return;
       } catch (taskError:Dynamic) {

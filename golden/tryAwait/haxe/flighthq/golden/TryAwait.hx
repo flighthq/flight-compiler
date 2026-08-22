@@ -14,6 +14,15 @@ class TryAwait {
             rejectTask(taskError_2);
           }
         };
+        var taskRejected = function(taskRejection:Dynamic) {
+          try {
+            result = fallback;
+            taskJoin();
+            return;
+          } catch (taskError_3:Dynamic) {
+            rejectTask(taskError_3);
+          }
+        };
         try {
           flighthq._internal._Promise.resolve(task).then(
             function(awaitValue) {
@@ -21,35 +30,20 @@ class TryAwait {
               try {
                 taskJoin();
                 return;
-              } catch (taskError_4:Dynamic) {
-                try {
-                  result = fallback;
-                  taskJoin();
-                  return;
-                } catch (taskError_5:Dynamic) {
-                  rejectTask(taskError_5);
-                }
+              } catch (taskError_5:Dynamic) {
+                taskRejected(taskError_5);
+                return;
               }
             },
             function(awaitError) {
-              try {
-                result = fallback;
-                taskJoin();
-                return;
-              } catch (taskError_6:Dynamic) {
-                rejectTask(taskError_6);
-              }
+              taskRejected(awaitError);
+              return;
             }
           );
           return;
-        } catch (taskError_3:Dynamic) {
-          try {
-            result = fallback;
-            taskJoin();
-            return;
-          } catch (taskError_7:Dynamic) {
-            rejectTask(taskError_7);
-          }
+        } catch (taskError_4:Dynamic) {
+          taskRejected(taskError_4);
+          return;
         }
         return;
       } catch (taskError:Dynamic) {
