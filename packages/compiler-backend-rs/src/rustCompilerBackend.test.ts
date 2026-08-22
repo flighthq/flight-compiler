@@ -1077,6 +1077,12 @@ describe('emitIrModuleRust', () => {
     expect(output).toContain('pub fn bump(&mut self) -> () {');
     // A mutation nested inside control flow is still a mutation.
     expect(output).toContain('pub fn nested(&mut self) -> () {');
+    // A compound assignment writes through its target the same way a plain one does.
+    expect(
+      emitIrModuleRust(
+        lower('bump.ts', 'export class Counter { total: number = 0; tick(): void { this.total += 1; } }').module,
+      ).contents,
+    ).toContain('pub fn tick(&mut self) -> () {');
   });
 
   it('emits a string enum as unit variants carrying their source values both ways', () => {

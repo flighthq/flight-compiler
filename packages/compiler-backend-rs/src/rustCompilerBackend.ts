@@ -7,6 +7,7 @@ import {
   indentSourceLines,
   isCompilerTargetNameAllocationFailure,
 } from '../../compiler-emission/src/index.js';
+import { analyzeIrStatementSubtreeTraversal } from '../../compiler-ir-traversal/src/index.js';
 import {
   createIrClassInitializationPlan,
   createCompilerLoweringPassAwaitConditionHoisting,
@@ -474,28 +475,22 @@ function hasIrFunctionSignatureThisMutationRust(method: Readonly<{ body: readonl
     if (expression.kind === 'property' || expression.kind === 'element') return reachesThis(expression.object);
     return false;
   };
-  const visit = (value: unknown): void => {
-    if (mutates || !value || typeof value !== 'object') return;
-    const node = value as { kind?: unknown; left?: unknown; operand?: unknown };
-    if (node.kind === 'assignment' && node.left && reachesThis(node.left as Readonly<IrExpression>)) {
+  const observer = {
+    expression(expression: Readonly<IrExpression>) {
+      // An assignment and an update both write through their target. `this.count++` is a mutation
+      // as much as `this.count = 1`, and the untyped walk this replaced missed it entirely.
+      const target =
+        expression.kind === 'assignment'
+          ? expression.left
+          : expression.kind === 'unary'
+            ? expression.operand
+            : undefined;
+      if (!target || !reachesThis(target)) return undefined;
       mutates = true;
-      return;
-    }
-    if (
-      (node.kind === 'prefixUnary' || node.kind === 'postfixUnary') &&
-      node.operand &&
-      reachesThis(node.operand as Readonly<IrExpression>)
-    ) {
-      mutates = true;
-      return;
-    }
-    if (Array.isArray(value)) {
-      value.forEach(visit);
-      return;
-    }
-    Object.values(value).forEach(visit);
+      return false;
+    },
   };
-  method.body.forEach(visit);
+  method.body.forEach((statement) => analyzeIrStatementSubtreeTraversal(statement, observer));
   return mutates;
 }
 

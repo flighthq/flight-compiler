@@ -1,4 +1,7 @@
-import { analyzeIrModuleTraversal } from '../../compiler-ir-traversal/src/index.js';
+import {
+  analyzeIrExpressionSubtreeTraversal,
+  analyzeIrModuleTraversal,
+} from '../../compiler-ir-traversal/src/index.js';
 import type {
   CompilerLoweringPass,
   IrBindingIdentity,
@@ -54,19 +57,13 @@ function createIrAwaitConditionBinding(origin: Readonly<IrDeclaration>['origin']
 
 function hasIrExpressionAwait(expression: Readonly<IrExpression>): boolean {
   let found = false;
-  const walk = (value: unknown): void => {
-    if (found || !value || typeof value !== 'object') return;
-    if ('kind' in value && (value as { kind?: unknown }).kind === 'await') {
+  analyzeIrExpressionSubtreeTraversal(expression, {
+    expression(candidate) {
+      if (candidate.kind !== 'await') return undefined;
       found = true;
-      return;
-    }
-    if (Array.isArray(value)) {
-      value.forEach(walk);
-      return;
-    }
-    Object.values(value).forEach(walk);
-  };
-  walk(expression);
+      return false;
+    },
+  });
   return found;
 }
 

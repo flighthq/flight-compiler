@@ -1,4 +1,8 @@
-import { analyzeIrModuleTraversal } from '../../compiler-ir-traversal/src/index.js';
+import {
+  analyzeIrExpressionSubtreeTraversal,
+  analyzeIrModuleTraversal,
+  analyzeIrStatementSubtreeTraversal,
+} from '../../compiler-ir-traversal/src/index.js';
 import type {
   CompilerLoweringPass,
   IrBindingIdentity,
@@ -41,11 +45,20 @@ function createIrSwitchSubjectBinding(origin: NonNullable<Extract<IrStatement, {
   return binding;
 }
 
-function hasIrExpressionAwaitSwitchSuspension(value: unknown): boolean {
-  if (!value || typeof value !== 'object') return false;
-  if ('kind' in value && (value as { kind?: unknown }).kind === 'await') return true;
-  if (Array.isArray(value)) return value.some(hasIrExpressionAwaitSwitchSuspension);
-  return Object.values(value).some(hasIrExpressionAwaitSwitchSuspension);
+function hasIrSwitchCasesAwait(cases: readonly Readonly<IrSwitchCase>[]): boolean {
+  let found = false;
+  const observer = {
+    expression(candidate: Readonly<IrExpression>) {
+      if (candidate.kind !== 'await') return undefined;
+      found = true;
+      return false;
+    },
+  };
+  for (const clause of cases) {
+    if (clause.expression) analyzeIrExpressionSubtreeTraversal(clause.expression, observer);
+    clause.statements.forEach((statement) => analyzeIrStatementSubtreeTraversal(statement, observer));
+  }
+  return found;
 }
 
 function hasIrModuleSwitchSuspensionResidual(module: Readonly<IrModule>): boolean {
@@ -84,7 +97,7 @@ function hasIrStatementSwitchLocalBreak(statement: Readonly<IrStatement>): boole
 function isIrSwitchStatementSuspensionConvertible(statement: Readonly<Extract<IrStatement, { kind: 'switch' }>>) {
   if (statement.label || !statement.origin || !statement.subjectDomain) return false;
   if (statement.subjectDomain === 'unknown') return false;
-  if (!hasIrExpressionAwaitSwitchSuspension(statement.cases)) return false;
+  if (!hasIrSwitchCasesAwait(statement.cases)) return false;
   const defaults = statement.cases.filter((clause) => !clause.expression);
   if (defaults.length > 1) return false;
   const last = statement.cases.at(-1);

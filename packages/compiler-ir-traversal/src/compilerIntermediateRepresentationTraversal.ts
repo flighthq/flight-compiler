@@ -180,6 +180,33 @@ function analyzeIrDeclarationTraversal(
   }
 }
 
+// Walking one subtree, for a caller that already has the node rather than the module around it. The
+// stop signal is caught here too, so an observer can end a subtree walk the same way it ends a
+// module walk.
+export function analyzeIrExpressionSubtreeTraversal(
+  expression: Readonly<IrExpression>,
+  observer: Readonly<CompilerIrTraversalObserver>,
+  path: CompilerIrTraversalPath = [],
+): void {
+  try {
+    analyzeIrExpressionTraversal(expression, observer, path);
+  } catch (error) {
+    if (error !== compilerIrTraversalStop) throw error;
+  }
+}
+
+export function analyzeIrStatementSubtreeTraversal(
+  statement: Readonly<IrStatement>,
+  observer: Readonly<CompilerIrTraversalObserver>,
+  path: CompilerIrTraversalPath = [],
+): void {
+  try {
+    analyzeIrStatementTraversal(statement, observer, path);
+  } catch (error) {
+    if (error !== compilerIrTraversalStop) throw error;
+  }
+}
+
 function analyzeIrExpressionTraversal(
   expression: Readonly<IrExpression>,
   observer: Readonly<CompilerIrTraversalObserver>,

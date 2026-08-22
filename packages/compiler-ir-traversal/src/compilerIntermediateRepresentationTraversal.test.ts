@@ -1,8 +1,12 @@
 import ts from 'typescript';
 
 import { lowerTypeScriptSource } from '../../compiler-semantic/src/index.js';
-import type { IrExpression, IrModule, IrType } from '../../compiler-types/src/index.js';
-import { analyzeIrModuleTraversal } from './compilerIntermediateRepresentationTraversal.js';
+import type { IrExpression, IrModule, IrStatement, IrType } from '../../compiler-types/src/index.js';
+import {
+  analyzeIrExpressionSubtreeTraversal,
+  analyzeIrModuleTraversal,
+  analyzeIrStatementSubtreeTraversal,
+} from './compilerIntermediateRepresentationTraversal.js';
 
 describe('analyzeIrModuleTraversal', () => {
   it('observes every public node family in deterministic preorder without mutating the module', () => {
@@ -574,6 +578,64 @@ describe('analyzeIrModuleTraversal', () => {
         `Unknown IR traversal kind ${subject.kind}`,
       );
     }
+  });
+});
+describe('analyzeIrExpressionSubtreeTraversal', () => {
+  it('walks one expression and stops when an observer returns false', () => {
+    const expression: IrExpression = {
+      kind: 'binary',
+      left: { kind: 'literal', value: 1 },
+      operator: '+',
+      right: { kind: 'literal', value: 2 },
+      semantics: {
+        left: { declared: 'number', flow: 'number' },
+        result: 'number',
+        right: { declared: 'number', flow: 'number' },
+      },
+    };
+    const all: string[] = [];
+    const stopped: string[] = [];
+
+    analyzeIrExpressionSubtreeTraversal(expression, {
+      expression(candidate) {
+        all.push(candidate.kind);
+        return undefined;
+      },
+    });
+    analyzeIrExpressionSubtreeTraversal(expression, {
+      expression(candidate) {
+        stopped.push(candidate.kind);
+        return candidate.kind !== 'literal';
+      },
+    });
+
+    expect(all).toEqual(['binary', 'literal', 'literal']);
+    // The stop signal is caught here too, so a subtree walk ends the way a module walk does: the
+    // second literal is never reached.
+    expect(stopped).toEqual(['binary', 'literal']);
+  });
+});
+
+describe('analyzeIrStatementSubtreeTraversal', () => {
+  it('walks one statement without the module around it', () => {
+    const statement: IrStatement = {
+      expression: { kind: 'literal', value: 1 },
+      kind: 'return',
+    };
+    const seen: string[] = [];
+
+    analyzeIrStatementSubtreeTraversal(statement, {
+      expression(candidate) {
+        seen.push(candidate.kind);
+        return undefined;
+      },
+      statement(candidate) {
+        seen.push(candidate.kind);
+        return undefined;
+      },
+    });
+
+    expect(seen).toEqual(['return', 'literal']);
   });
 });
 
