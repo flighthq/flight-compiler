@@ -809,11 +809,14 @@ function emitStatement(statement: Readonly<IrStatement>, context: EmitContext): 
     }
     case 'return':
       // Comparing against an absent value is not narrowing it. Returning a binding that can be absent
-      // from a function that cannot return one is source the target rejects, so it refuses here.
+      // from a function that cannot return one is source the target rejects, so it refuses here — and
+      // a reference narrowing proved present is emitted directly, because `Null<T>` exists precisely
+      // to unify with `T`, and the proof guarantees the runtime check it may insert will pass.
       if (
         !context.returnsAbsent &&
         statement.expression?.kind === 'identifier' &&
         statement.expression.reference.kind === 'binding' &&
+        statement.expression.presence !== 'narrowedPresent' &&
         context.nullableBindingIds.has(statement.expression.reference.binding.id)
       ) {
         emissionError(context, 'returning a nullable binding requires Haxe narrowing evidence');

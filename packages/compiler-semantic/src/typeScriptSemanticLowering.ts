@@ -511,7 +511,7 @@ function lowerExpression(
     ) {
       return { kind: 'undefinedValue', type: contextualType };
     }
-    return { kind: 'identifier', reference };
+    return { kind: 'identifier', ...getTypeScriptReferencePresence(node, reference, context), reference };
   }
   if (node.kind === ts.SyntaxKind.ThisKeyword) return { kind: 'identifier', reference: { kind: 'this' } };
   if (node.kind === ts.SyntaxKind.SuperKeyword) return { kind: 'identifier', reference: { kind: 'super' } };
@@ -2973,6 +2973,32 @@ function getTypeScriptExpressionDeclaredType(expression: ts.Expression, context:
       : unresolved;
   const declaration = symbol?.valueDeclaration ?? symbol?.declarations?.[0];
   return symbol && declaration ? context.checker.getTypeOfSymbolAtLocation(symbol, declaration) : undefined;
+}
+
+// TypeScript already narrows: at a reference after `if (value === undefined) return;` the flow type
+// no longer includes `undefined`, while the declaration's type still does. That difference is the
+// proof a target needs to use the value, and it is read here rather than re-derived, because the
+// checker's flow analysis is the source language's own answer.
+function getTypeScriptReferencePresence(
+  node: ts.Identifier,
+  reference: Readonly<IrIdentifierReference>,
+  context: LoweringContext,
+): { presence?: 'narrowedPresent' } {
+  if (reference.kind !== 'binding') return {};
+  const symbol = context.checker.getSymbolAtLocation(node);
+  const declared = symbol ? context.bindingTypes.get(symbol) : undefined;
+  if (!declared || !hasIrTypeAbsentMemberSemantic(declared)) return {};
+  const flow = context.checker.getTypeAtLocation(node);
+  const members = flow.isUnion() ? flow.types : [flow];
+  const absent = members.some(
+    (member) => (member.flags & (ts.TypeFlags.Undefined | ts.TypeFlags.Null | ts.TypeFlags.Void)) !== 0,
+  );
+  return absent ? {} : { presence: 'narrowedPresent' };
+}
+
+function hasIrTypeAbsentMemberSemantic(type: Readonly<IrType>): boolean {
+  if (type.kind === 'null' || type.kind === 'undefined') return true;
+  return type.kind === 'union' && type.types.some((member) => hasIrTypeAbsentMemberSemantic(member));
 }
 
 function getTypeScriptExpressionBindingTypeEvidence(

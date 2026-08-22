@@ -1,1 +1,0 @@
-rust emission failed for @flighthq/golden/packages/golden/src/nullability.ts: returning a nullable binding requires Rust narrowing evidence

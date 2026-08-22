@@ -961,14 +961,18 @@ describe('emitIrModuleHaxe', () => {
     // tell them apart, so the difference has to be lowered rather than emitted.
     const single = lower(
       'single.ts',
-      'export function widen(value: number | undefined, fallback: number): number { if (value === undefined) return fallback; return fallback; }',
+      'export function widen(value: number | undefined, fallback: number): number { if (value === undefined) return fallback; return value; }',
     );
     const both = lower(
       'both.ts',
       'export function widen(value: number | null | undefined, fallback: number): number { if (value === undefined) return fallback; return fallback; }',
     );
 
-    expect(emitIrModuleHaxe(single.module).contents).toContain('if ((value == null)) {');
+    const singleOutput = emitIrModuleHaxe(single.module).contents;
+    expect(singleOutput).toContain('if ((value == null)) {');
+    // Narrowing proved the value present, so it is returned directly: `Null<T>` exists to unify
+    // with `T`, and the proof guarantees any runtime check that unification inserts will pass.
+    expect(singleOutput).toContain('return value;');
     // The type refuses before the comparison does, which is the earlier and better place for it:
     // a type Haxe cannot spell is a refusal about the signature, not about one operator.
     expect(() => emitIrModuleHaxe(both.module)).toThrow(

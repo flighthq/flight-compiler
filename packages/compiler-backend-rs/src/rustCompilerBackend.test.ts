@@ -1209,4 +1209,18 @@ describe('emitIrModuleRust', () => {
     expect(emitIrModuleRust(optional.module).contents).toContain('.unwrap_or_else(|| 0.0)');
     expect(() => emitIrModuleRust(plain.module)).toThrow('requires an Option-shaped left operand for Rust');
   });
+
+  it('opens an Option where narrowing proved a value, and refuses where nothing did', () => {
+    const narrowed = lower(
+      'narrowed.ts',
+      'export function widen(value: number | undefined, fallback: number): number { if (value === undefined) { return fallback; } return value; }',
+    );
+    const open = lower('open.ts', 'export function widen(value: number | undefined): number { return value; }');
+
+    const output = emitIrModuleRust(narrowed.module).contents;
+    expect(output).toContain('if value.is_none() {');
+    expect(output).toContain('return value.unwrap();');
+    // Unwrapping without the proof is a panic waiting to happen, so it refuses instead.
+    expect(() => emitIrModuleRust(open.module)).toThrow('requires Rust narrowing evidence');
+  });
 });

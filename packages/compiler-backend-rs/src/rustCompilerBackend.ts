@@ -491,7 +491,13 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
         ? `|${expression.parameters.map((parameter) => getBindingTargetNameRust(parameter.binding, context)).join(', ')}| ${emitExpression(expression.expression, context)}`
         : `|${expression.parameters.map((parameter) => getBindingTargetNameRust(parameter.binding, context)).join(', ')}| {\n${indentSourceLines(emitStatements(expression.body, context)).join('\n')}\n}`;
     case 'identifier':
-      return emitIdentifierReferenceRust(expression.reference, context);
+      // Narrowing proved this reference holds a value, so the Option it was declared as is opened
+      // here. Without the proof the emitter refuses rather than unwrapping on faith.
+      return expression.presence === 'narrowedPresent' &&
+        expression.reference.kind === 'binding' &&
+        context.nullableBindingIds.has(expression.reference.binding.id)
+        ? `${emitIdentifierReferenceRust(expression.reference, context)}.unwrap()`
+        : emitIdentifierReferenceRust(expression.reference, context);
     case 'literal':
       return emitLiteral(expression.value);
     case 'new':
@@ -1116,6 +1122,7 @@ function emitStatement(statement: Readonly<IrStatement>, context: EmitContext): 
         !context.returnsAbsent &&
         statement.expression?.kind === 'identifier' &&
         statement.expression.reference.kind === 'binding' &&
+        statement.expression.presence !== 'narrowedPresent' &&
         context.nullableBindingIds.has(statement.expression.reference.binding.id)
       ) {
         emissionError(context, 'returning a nullable binding requires Rust narrowing evidence');

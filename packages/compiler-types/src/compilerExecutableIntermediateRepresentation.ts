@@ -30,6 +30,10 @@ export type IrParameter = Omit<IrFunctionTypeParameter, 'name'> &
 
 export interface IrIdentifierExpression {
   readonly kind: 'identifier';
+  // Whether control flow has proved, at this reference, that a binding whose declared type admits an
+  // absent value does not hold one here. Comparing against `null` or `undefined` is not narrowing on
+  // its own: the proof belongs to the reference, not to the comparison, which is why it travels here.
+  readonly presence?: 'narrowedPresent' | undefined;
   readonly reference: IrIdentifierReference;
 }
 

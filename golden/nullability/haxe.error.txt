@@ -1,1 +1,0 @@
-haxe emission failed for @flighthq/golden/packages/golden/src/nullability.ts: returning a nullable binding requires Haxe narrowing evidence

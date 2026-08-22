@@ -2809,6 +2809,34 @@ describe('lowerTypeScriptSource', () => {
     expect(tuple.module.declarations).toEqual([]);
     expect(tuple.diagnostics[0]?.message).toBe('rest tuple elements cannot be optional');
   });
+  it('marks a reference the source language has narrowed, and only that reference', () => {
+    // The checker already narrows: after `if (value === undefined) return`, the flow type at the next
+    // reference no longer admits undefined while the declaration still does. Re-deriving that would
+    // be inventing a second flow analysis beside the source language's own.
+    const result = lower(
+      'narrowing.ts',
+      `export function widen(value: number | undefined, fallback: number): number {
+         if (value === undefined) { return fallback; }
+         return value;
+       }
+       export function passthrough(value: number | undefined): number | undefined { return value; }`,
+    );
+    const widen = result.module.declarations.find(
+      (declaration) => declaration.kind === 'function' && declaration.binding.name === 'widen',
+    );
+    const passthrough = result.module.declarations.find(
+      (declaration) => declaration.kind === 'function' && declaration.binding.name === 'passthrough',
+    );
+    const narrowedReturn = widen?.kind === 'function' ? widen.body[1] : undefined;
+    const openReturn = passthrough?.kind === 'function' ? passthrough.body[0] : undefined;
+
+    expect(result.diagnostics).toEqual([]);
+    expect(narrowedReturn).toMatchObject({ expression: { presence: 'narrowedPresent' }, kind: 'return' });
+    // Nothing narrowed this one, so it carries no proof and a target must keep treating it as absent.
+    expect(openReturn?.kind === 'return' ? openReturn.expression : undefined).not.toMatchObject({
+      presence: 'narrowedPresent',
+    });
+  });
 });
 
 function ambientReference(expression: Readonly<IrExpression> | undefined): string {
