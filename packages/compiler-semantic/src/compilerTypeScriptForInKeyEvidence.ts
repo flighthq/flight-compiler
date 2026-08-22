@@ -11,7 +11,9 @@ export function getTypeScriptForInKeyEvidence(
   const literal = getTypeScriptForInObjectLiteral(expression);
   if (!literal) {
     const closed = getTypeScriptForInClosedRecord(expression, checker, sourceFile, getPropertyName);
-    const keys = closed && getTypeScriptForInObjectKeys(closed, getPropertyName);
+    const keys =
+      (closed && getTypeScriptForInObjectKeys(closed, getPropertyName)) ??
+      getTypeScriptForInDeclaredShapeKeys(expression, checker, getPropertyName);
     return keys
       ? { evaluation: 'alreadyEvaluated', keys: orderTypeScriptForInStaticObjectKeys(keys), kind: 'closedRecord' }
       : undefined;
@@ -27,6 +29,47 @@ export function getTypeScriptForInKeyEvidence(
     keys: orderTypeScriptForInStaticObjectKeys(keys),
     kind: 'objectLiteral',
   };
+}
+
+// A value whose written type is a closed shape has a known key set even though the value itself is
+// not a literal. The shape has to be closed in the strict sense: an index signature, a method, or a
+// heritage clause each mean a key the declaration does not list, so none of those is closed.
+function getTypeScriptForInDeclaredShapeKeys(
+  expression: ts.Expression,
+  checker: ts.TypeChecker,
+  getPropertyName: (name: ts.PropertyName) => string,
+): string[] | undefined {
+  while (ts.isParenthesizedExpression(expression)) expression = expression.expression;
+  if (!ts.isIdentifier(expression)) return undefined;
+  const symbol = checker.getSymbolAtLocation(expression);
+  const declaration = symbol?.valueDeclaration ?? symbol?.declarations?.[0];
+  if (!declaration || !(ts.isParameter(declaration) || ts.isVariableDeclaration(declaration))) return undefined;
+  const members = getTypeScriptForInShapeMembers(declaration.type, checker);
+  if (!members) return undefined;
+  const keys: string[] = [];
+  for (const member of members) {
+    if (!ts.isPropertySignature(member) || member.questionToken) return undefined;
+    keys.push(getPropertyName(member.name));
+  }
+  return keys.length > 0 ? keys : undefined;
+}
+
+function getTypeScriptForInShapeMembers(
+  type: ts.TypeNode | undefined,
+  checker: ts.TypeChecker,
+): readonly ts.TypeElement[] | undefined {
+  if (!type) return undefined;
+  if (ts.isTypeLiteralNode(type)) return type.members;
+  if (!ts.isTypeReferenceNode(type) || type.typeArguments?.length) return undefined;
+  const symbol = checker.getSymbolAtLocation(type.typeName);
+  const declaration = symbol?.declarations?.[0];
+  if (declaration && ts.isInterfaceDeclaration(declaration)) {
+    return declaration.heritageClauses?.length || declaration.typeParameters?.length ? undefined : declaration.members;
+  }
+  if (declaration && ts.isTypeAliasDeclaration(declaration) && !declaration.typeParameters?.length) {
+    return getTypeScriptForInShapeMembers(declaration.type, checker);
+  }
+  return undefined;
 }
 
 function getTypeScriptForInClosedRecord(

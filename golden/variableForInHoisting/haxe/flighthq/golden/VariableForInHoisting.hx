@@ -6,7 +6,7 @@ typedef Values = { value:Float };
 class VariableForInHoisting {
   public static function selectFirstKey(values:Values):String {
     var key;
-    for (variableHoistingIterationValue in Reflect.fields(values)) {
+    for (variableHoistingIterationValue in ["value"]) {
       key = variableHoistingIterationValue;
       return key;
     }

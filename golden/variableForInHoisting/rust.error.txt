@@ -1,1 +1,0 @@
-rust emission failed for @flighthq/golden/packages/golden/src/variableForInHoisting.ts: object key iteration requires closed key evidence

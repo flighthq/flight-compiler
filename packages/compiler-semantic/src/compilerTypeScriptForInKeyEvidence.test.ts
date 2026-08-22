@@ -53,6 +53,36 @@ describe('getTypeScriptForInKeyEvidence', () => {
       getTypeScriptForInKeyEvidence(mutatedLoop.expression, mutated.checker, mutated.source, getPropertyName),
     ).toBeUndefined();
   });
+  it('reads a closed key set out of a written shape, and refuses shapes that are not closed', () => {
+    // A value whose type lists its properties has a known key set even when the value is a parameter
+    // rather than a literal. An index signature, an optional property, or a heritage clause each mean
+    // a key the declaration does not list.
+    expect(
+      planFor(
+        'interface Shape { first: number; second: number } declare const values: Shape; for (const key in values) key;',
+      ),
+    ).toEqual({
+      evaluation: 'alreadyEvaluated',
+      keys: ['first', 'second'],
+      kind: 'closedRecord',
+    });
+    expect(planFor('declare const values: { only: number }; for (const key in values) key;')).toEqual({
+      evaluation: 'alreadyEvaluated',
+      keys: ['only'],
+      kind: 'closedRecord',
+    });
+    expect(
+      planFor('interface Open { [key: string]: number } declare const values: Open; for (const key in values) key;'),
+    ).toBeUndefined();
+    expect(
+      planFor('interface Partial { first?: number } declare const values: Partial; for (const key in values) key;'),
+    ).toBeUndefined();
+    expect(
+      planFor(
+        'interface Base { first: number } interface Derived extends Base { second: number } declare const values: Derived; for (const key in values) key;',
+      ),
+    ).toBeUndefined();
+  });
 });
 
 function createProgram(text: string): Readonly<{ checker: ts.TypeChecker; source: ts.SourceFile }> {
@@ -71,6 +101,13 @@ function createProgram(text: string): Readonly<{ checker: ts.TypeChecker; source
   };
   const program = ts.createProgram([fileName], { noLib: true, strict: true }, host);
   return { checker: program.getTypeChecker(), source };
+}
+
+function planFor(text: string) {
+  const { checker, source } = createProgram(text);
+  const loop = source.statements.at(-1);
+  if (!loop || !ts.isForInStatement(loop)) throw new Error('Expected the fixture to end in a for-in statement');
+  return getTypeScriptForInKeyEvidence(loop.expression, checker, source, getPropertyName);
 }
 
 function getPropertyName(name: ts.PropertyName): string {
