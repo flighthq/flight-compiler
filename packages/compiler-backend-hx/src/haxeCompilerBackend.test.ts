@@ -961,7 +961,7 @@ describe('emitIrModuleHaxe', () => {
     // tell them apart, so the difference has to be lowered rather than emitted.
     const single = lower(
       'single.ts',
-      'export function widen(value: number | undefined, fallback: number): number { if (value === undefined) return fallback; return value; }',
+      'export function widen(value: number | undefined, fallback: number): number { if (value === undefined) return fallback; return fallback; }',
     );
     const both = lower(
       'both.ts',

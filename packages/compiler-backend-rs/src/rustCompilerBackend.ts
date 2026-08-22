@@ -1,9 +1,11 @@
 import path from 'node:path';
 
 import {
+  collectIrModuleNullableBindingIds,
   createBackendEmissionFailure,
   createCompilerGeneratedFileHeader,
   createIrModuleTargetNameAllocation,
+  hasIrTypeAbsentMember,
   indentSourceLines,
   isCompilerTargetNameAllocationFailure,
 } from '../../compiler-emission/src/index.js';
@@ -87,8 +89,10 @@ interface EmitContext {
   reboundBindingIds: ReadonlySet<string>;
   generatedNames: Set<string>;
   module: Readonly<IrModule>;
+  nullableBindingIds: ReadonlySet<string>;
   objectRestRecords: Map<string, Readonly<{ name: string; properties: readonly IrObjectTypeProperty[] }>>;
   options: Readonly<RustCompilerBackendOptions>;
+  returnsAbsent: boolean;
   targetNames: ReadonlyMap<string, string>;
 }
 
@@ -169,8 +173,10 @@ function emitIrModuleRustWithContext(
     ),
     generatedNames: new Set(targetNames.values()),
     module,
+    nullableBindingIds: collectIrModuleNullableBindingIds(module),
     objectRestRecords: new Map(),
     options,
+    returnsAbsent: false,
     targetNames,
   };
   if (module.exports.length > 0) {
@@ -429,6 +435,24 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
     case 'await':
       return `${emitExpression(expression.expression, context)}.await`;
     case 'binary': {
+      if (expression.semantics.nullishComparison) {
+        const evidence = expression.semantics.nullishComparison;
+        // Rust has one absent value, `None`, so a comparison against `null` or `undefined` is
+        // `.is_none()` — and the source's own absent literal is never emitted. Where the operand
+        // admits both, the two comparisons differ and `Option` cannot tell them apart.
+        if (evidence.admitsNull && evidence.admitsUndefined) {
+          emissionError(
+            context,
+            `operator ${expression.operator} against ${evidence.literal} requires Rust Option-aware lowering`,
+          );
+        }
+        const operand =
+          expression.left.kind === 'identifier' && expression.left.reference.kind === 'ambient'
+            ? expression.right
+            : expression.left;
+        const negated = expression.operator === '!=' || expression.operator === '!==';
+        return `${emitExpression(operand, context)}.${negated ? 'is_some' : 'is_none'}()`;
+      }
       if (expression.operator === '??') {
         // Rust has no `??`. The shape is `Option::unwrap_or_else`, which needs the left operand to
         // already be an Option — an optional chain produces one, an ordinary value does not.
@@ -620,7 +644,8 @@ function hasIrFunctionSignatureThisMutationRust(method: Readonly<{ body: readonl
   return mutates;
 }
 
-function emitFunction(declaration: Readonly<IrFunctionDeclaration>, context: EmitContext): string[] {
+function emitFunction(declaration: Readonly<IrFunctionDeclaration>, outer: EmitContext): string[] {
+  const context: EmitContext = { ...outer, returnsAbsent: hasIrTypeAbsentMember(declaration.returns) };
   // Rust has native suspension, so it declines the neutral state-machine lowering that Haxe elects
   // and emits `async fn` instead. The awaited type of an async function is its return type: the
   // future is implied by `async`, so the task wrapper is dropped rather than named.
@@ -1075,6 +1100,16 @@ function emitStatement(statement: Readonly<IrStatement>, context: EmitContext): 
       return lines;
     }
     case 'return':
+      // Comparing against `None` is not narrowing. Returning a binding that can be absent from a
+      // function that cannot return one is Rust that does not compile, so it refuses here.
+      if (
+        !context.returnsAbsent &&
+        statement.expression?.kind === 'identifier' &&
+        statement.expression.reference.kind === 'binding' &&
+        context.nullableBindingIds.has(statement.expression.reference.binding.id)
+      ) {
+        emissionError(context, 'returning a nullable binding requires Rust narrowing evidence');
+      }
       return [`return${statement.expression ? ` ${emitExpression(statement.expression, context)}` : ''};`];
     case 'switch': {
       const name = getGeneratedTargetNameRust('switch_value', context);

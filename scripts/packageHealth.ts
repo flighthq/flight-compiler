@@ -81,7 +81,7 @@ const packageRules: Readonly<Record<string, PackageRule>> = {
     description: 'Target-neutral statement and expression completion semantics',
   },
   'compiler-emission': {
-    dependencies: ['compiler-canonical-form', 'compiler-types'],
+    dependencies: ['compiler-canonical-form', 'compiler-ir-traversal', 'compiler-types'],
     description: 'Target-neutral source-emission infrastructure',
   },
   'compiler-inventory': {

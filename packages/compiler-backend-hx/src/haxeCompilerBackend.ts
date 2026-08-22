@@ -1,9 +1,11 @@
 import path from 'node:path';
 
 import {
+  collectIrModuleNullableBindingIds,
   createBackendEmissionFailure,
   createCompilerGeneratedFileHeader,
   createIrModuleTargetNameAllocation,
+  hasIrTypeAbsentMember,
   indentSourceLines,
   isCompilerTargetNameAllocationFailure,
 } from '../../compiler-emission/src/index.js';
@@ -81,7 +83,9 @@ interface EmitContext {
   controlFlowLabels: HaxeControlFlowLabel[];
   generatedNames: Set<string>;
   module: Readonly<IrModule>;
+  nullableBindingIds: ReadonlySet<string>;
   options: Readonly<HaxeCompilerBackendOptions>;
+  returnsAbsent: boolean;
   packageName: string;
   targetNames: ReadonlyMap<string, string>;
   taskFunctions: WeakMap<object, CompilerHaxeTaskLoweringFunction>;
@@ -174,8 +178,10 @@ function emitIrModuleHaxeWithContext(
     controlFlowLabels: [],
     generatedNames: new Set(targetNames.values()),
     module,
+    nullableBindingIds: collectIrModuleNullableBindingIds(module),
     options,
     packageName,
+    returnsAbsent: false,
     targetNames,
     taskFunctions: new WeakMap(),
     taskLowering,
@@ -568,8 +574,9 @@ function emitStatementValueExpressionHaxe(
   return `({ ${[...statements, `${emitExpression(completion.expression, context)};`].join(' ')} })`;
 }
 
-function emitFunction(declaration: Readonly<IrFunctionDeclaration>, context: EmitContext): string[] {
+function emitFunction(declaration: Readonly<IrFunctionDeclaration>, outer: EmitContext): string[] {
   const access = declaration.exported ? 'public ' : 'private ';
+  const context: EmitContext = { ...outer, returnsAbsent: hasIrTypeAbsentMember(declaration.returns) };
   return [
     `${access}static function ${getBindingTargetNameHaxe(declaration.binding, context)}${emitTypeParameters(declaration.typeParameters, context)}(${emitParameters(declaration.parameters, context)}):${emitType(declaration.returns, context)} {`,
     ...indentSourceLines(
@@ -798,6 +805,16 @@ function emitStatement(statement: Readonly<IrStatement>, context: EmitContext): 
       return lines;
     }
     case 'return':
+      // Comparing against an absent value is not narrowing it. Returning a binding that can be absent
+      // from a function that cannot return one is source the target rejects, so it refuses here.
+      if (
+        !context.returnsAbsent &&
+        statement.expression?.kind === 'identifier' &&
+        statement.expression.reference.kind === 'binding' &&
+        context.nullableBindingIds.has(statement.expression.reference.binding.id)
+      ) {
+        emissionError(context, 'returning a nullable binding requires Haxe narrowing evidence');
+      }
       return [`return${statement.expression ? ` ${emitExpression(statement.expression, context)}` : ''};`];
     case 'switch': {
       if (statement.label) {
