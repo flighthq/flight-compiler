@@ -7,7 +7,6 @@ import { analyzeIrModuleTraversal, getIrModuleTraversalPathValue } from '../../c
 import type {
   CompilerIrTraversalPath,
   CompilerModuleEvaluationBinding,
-  CompilerModuleEvaluationDependency,
   CompilerModuleEvaluationFailure,
   CompilerModuleEvaluationFailureCode,
   CompilerModuleEvaluationGroup,
@@ -16,6 +15,7 @@ import type {
   CompilerModuleEvaluationPlan,
   CompilerModuleEvaluationStep,
   CompilerModuleIdentity,
+  CompilerModuleLinkDependency,
   IrBindingIdentity,
   IrBindingPattern,
   IrDeclaration,
@@ -68,7 +68,7 @@ export function createCompilerModuleEvaluationPlan(
   connectCompilerModuleEvaluationDependencies(records, input.dependencies);
   const entries = getCompilerModuleEvaluationEntries(records, input.entries);
   const groups = createCompilerModuleEvaluationGroups(entries);
-  assertCompilerModuleEvaluationReachability(records, groups);
+  assertCompilerModuleEvaluationReachability(records, entries);
   const modules = [...records.values()]
     .sort((left, right) => compareTextCodeUnits(left.identityKey, right.identityKey))
     .map(createCompilerModuleEvaluationModulePlan);
@@ -85,6 +85,7 @@ export function createCompilerModuleEvaluationPlan(
       phaseOrder: ['link', 'instantiate', 'evaluate-dependencies', 'evaluate'] as const,
       temporalAccess: 'throw-reference-error' as const,
       topLevelAwait: 'refuse' as const,
+      typeOnlyLinking: 'link-without-evaluation' as const,
     },
   });
 }
@@ -123,9 +124,16 @@ function addCompilerModuleEvaluationBinding(
 
 function assertCompilerModuleEvaluationReachability(
   records: ReadonlyMap<string, CompilerModuleEvaluationRecord>,
-  groups: readonly CompilerModuleEvaluationGroup[],
+  entries: readonly CompilerModuleEvaluationRecord[],
 ): void {
-  const reached = new Set(groups.flatMap((group) => group.modules.map(getCompilerModuleEvaluationIdentityKey)));
+  const reached = new Set<string>();
+  const pending = [...entries];
+  while (pending.length > 0) {
+    const record = pending.pop()!;
+    if (reached.has(record.identityKey)) continue;
+    reached.add(record.identityKey);
+    pending.push(...record.dependencyBySpecifier.values());
+  }
   const unreachable = [...records.values()]
     .filter((record) => !reached.has(record.identityKey))
     .sort((left, right) => compareTextCodeUnits(left.identityKey, right.identityKey))[0];
@@ -160,7 +168,7 @@ function collectCompilerModuleEvaluationPatternBindings(
 
 function connectCompilerModuleEvaluationDependencies(
   records: ReadonlyMap<string, CompilerModuleEvaluationRecord>,
-  dependencies: readonly Readonly<CompilerModuleEvaluationDependency>[],
+  dependencies: readonly Readonly<CompilerModuleLinkDependency>[],
 ): void {
   for (const [index, dependency] of dependencies.entries()) {
     const subject = `dependencies[${String(index)}]`;
@@ -201,10 +209,12 @@ function connectCompilerModuleEvaluationDependencies(
       );
     }
     importer.dependencyBySpecifier.set(dependency.specifier, target);
-    importer.dependencies.push(target);
+    if (getCompilerModuleEvaluationRuntimeSpecifiers(importer.module).has(dependency.specifier)) {
+      importer.dependencies.push(target);
+    }
   }
   for (const record of records.values()) {
-    const expected = getCompilerModuleEvaluationRuntimeSpecifiers(record.module);
+    const expected = getCompilerModuleEvaluationLinkedSpecifiers(record.module);
     for (const specifier of expected) {
       if (!record.dependencyBySpecifier.has(specifier)) {
         throw createCompilerModuleEvaluationFailure(
@@ -333,6 +343,9 @@ function createCompilerModuleEvaluationModulePlan(
   return {
     bindings,
     dependencies: [...record.dependencyBySpecifier].map(([specifier, dependency]) => ({
+      evaluation: getCompilerModuleEvaluationRuntimeSpecifiers(record.module).has(specifier)
+        ? ('runtime' as const)
+        : ('type-only' as const),
       importer: record.identity,
       specifier,
       target: dependency.identity,
@@ -560,6 +573,14 @@ function getCompilerModuleEvaluationRuntimeSpecifiers(module: Readonly<IrModule>
   }
   for (const exported of module.exports) {
     if ('specifier' in exported && !exported.typeOnly) specifiers.add(exported.specifier);
+  }
+  return specifiers;
+}
+
+function getCompilerModuleEvaluationLinkedSpecifiers(module: Readonly<IrModule>): ReadonlySet<string> {
+  const specifiers = new Set(module.imports.map((imported) => imported.specifier));
+  for (const exported of module.exports) {
+    if ('specifier' in exported) specifiers.add(exported.specifier);
   }
   return specifiers;
 }

@@ -65,7 +65,7 @@ The repository follows Flight's package-per-domain convention. Internal workspac
 - `packages/compiler-patch/`: fingerprinted semantic patch application and audits.
 - `packages/compiler-emission/`: target-neutral backend and output infrastructure.
 - `packages/compiler-lowering/`: backend-elected, target-neutral IR-to-IR passes and verification.
-- `packages/compiler-module/`: target-neutral module linking, initialization, temporal access, live bindings, and evaluation order.
+- `packages/compiler-module/`: target-neutral module linking, initialization, temporal access, live bindings, evaluation order, public-slot identity, and facade routing.
 - `packages/compiler-canonical-form/`: dependency-free, portable canonical forms for deterministic compiler data.
 - `packages/compiler-backend-cpp/`: C++-specific lowering, naming, and source emission.
 - `packages/compiler-backend-hx/`: Haxe-specific lowering, naming, and source emission.
@@ -103,7 +103,7 @@ The dependency floor is deliberate:
 - `compiler-task` inventories asynchronous scopes and task operations, then derives completion-preserving state-machine plans from closure, completion, and traversal evidence without choosing a target runtime.
 - `compiler-canonical-form` defines deterministic text order and portable path form without importing compiler contracts or domain identity policy.
 - `compiler-lowering` provides verified neutral transforms over `compiler-types`, composing canonical form, `compiler-ir-traversal`, and `compiler-ir-validation`; backends elect its passes.
-- `compiler-module` defines graph linking, instantiation, temporal access, live binding cells, and dependency-first evaluation over canonical form, traversal, and shared contracts.
+- `compiler-module` defines graph linking, instantiation, temporal access, live binding cells, dependency-first evaluation, public-slot identity, and facade routing over canonical form, traversal, and shared contracts.
 - inventory, semantic lowering, backends, and orchestration are compositions above that floor. Haxe task emission additionally composes `compiler-task` state-machine analysis with the target runtime-capability election.
 
 Before expanding a higher package, read [the compiler foundations audit](agents/compiler-foundations.md). A foundation is mature only when its boundary is narrow, its vocabulary is worth freezing, deterministic behavior is tested by equivalence and counterexample, failure values are inspectable, and callers cannot observe accidental mutation, or differences that come from the machine or platform it ran on.

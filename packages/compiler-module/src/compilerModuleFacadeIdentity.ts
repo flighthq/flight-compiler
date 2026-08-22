@@ -56,9 +56,9 @@ function createCompilerModuleFacadeIdentity(
   module: Readonly<CompilerModuleIdentity>,
   index: number,
 ): CompilerModuleFacadeIdentity {
-  if (!exported || typeof exported !== 'object' || Array.isArray(exported) || !('kind' in exported)) {
-    throwInvalidIrExport(index);
-  }
+  if (exported === null) throwInvalidIrExport(index);
+  if (typeof exported !== 'object') throwInvalidIrExport(index);
+  if (Array.isArray(exported)) throwInvalidIrExport(index);
   let exportName: string;
   let lane: CompilerModuleFacadeLane;
   let source: CompilerModuleFacadeSource;
@@ -73,9 +73,9 @@ function createCompilerModuleFacadeIdentity(
       break;
     case 'default':
       validateIrExportFields(exported, ['expression', 'kind'], index);
-      if (!exported.expression || typeof exported.expression !== 'object' || Array.isArray(exported.expression)) {
-        throwInvalidIrExport(index);
-      }
+      if (exported.expression === null) throwInvalidIrExport(index);
+      if (typeof exported.expression !== 'object') throwInvalidIrExport(index);
+      if (Array.isArray(exported.expression)) throwInvalidIrExport(index);
       exportName = 'default';
       lane = 'value';
       source = Object.freeze({ kind: 'local-expression' });
@@ -84,14 +84,10 @@ function createCompilerModuleFacadeIdentity(
       validateIrExportFields(exported, ['binding', 'exported', 'kind', 'typeOnly'], index);
       validateIrExportName(exported.exported, index);
       validateIrExportTypeOnly(exported.typeOnly, index);
-      if (
-        !exported.binding ||
-        typeof exported.binding !== 'object' ||
-        typeof exported.binding.id !== 'string' ||
-        exported.binding.id.length === 0
-      ) {
-        throwInvalidIrExport(index);
-      }
+      if (exported.binding === null) throwInvalidIrExport(index);
+      if (typeof exported.binding !== 'object') throwInvalidIrExport(index);
+      if (typeof exported.binding.id !== 'string') throwInvalidIrExport(index);
+      if (exported.binding.id.length === 0) throwInvalidIrExport(index);
       exportName = exported.exported;
       lane = exported.typeOnly ? 'type' : 'value';
       source = Object.freeze({ bindingId: exported.binding.id, kind: 'local-binding' });
@@ -138,22 +134,14 @@ function createCompilerModuleFacadeIdentityText(
 }
 
 function normalizeCompilerModuleIdentity(module: Readonly<IrModule>): CompilerModuleIdentity {
-  if (
-    !module ||
-    typeof module !== 'object' ||
-    typeof module.name !== 'string' ||
-    module.name.length === 0 ||
-    typeof module.packageName !== 'string' ||
-    module.packageName.length === 0 ||
-    typeof module.source !== 'string' ||
-    module.source.length === 0
-  ) {
-    throw createCompilerModuleFacadeFailure(
-      'invalid-facade-module',
-      'module',
-      'Module facade identity requires nonempty module name, package name, and source',
-    );
-  }
+  if (module === null) throwInvalidCompilerModuleFacadeModule();
+  if (typeof module !== 'object') throwInvalidCompilerModuleFacadeModule();
+  if (typeof module.name !== 'string') throwInvalidCompilerModuleFacadeModule();
+  if (module.name.length === 0) throwInvalidCompilerModuleFacadeModule();
+  if (typeof module.packageName !== 'string') throwInvalidCompilerModuleFacadeModule();
+  if (module.packageName.length === 0) throwInvalidCompilerModuleFacadeModule();
+  if (typeof module.source !== 'string') throwInvalidCompilerModuleFacadeModule();
+  if (module.source.length === 0) throwInvalidCompilerModuleFacadeModule();
   return Object.freeze({
     name: module.name,
     packageName: module.packageName,
@@ -164,17 +152,18 @@ function normalizeCompilerModuleIdentity(module: Readonly<IrModule>): CompilerMo
 function validateIrExportFields(exported: Readonly<IrExport>, fields: readonly string[], index: number): void {
   const keys = Object.keys(exported).sort(compareTextCodeUnits);
   const expected = [...fields].sort(compareTextCodeUnits);
-  if (keys.length !== expected.length || keys.some((key, keyIndex) => key !== expected[keyIndex])) {
-    throwInvalidIrExport(index);
-  }
+  if (keys.length !== expected.length) throwInvalidIrExport(index);
+  if (keys.some((key, keyIndex) => key !== expected[keyIndex])) throwInvalidIrExport(index);
 }
 
 function validateIrExportName(value: string, index: number): void {
-  if (typeof value !== 'string' || value.length === 0) throwInvalidIrExport(index);
+  if (typeof value !== 'string') throwInvalidIrExport(index);
+  if (value.length === 0) throwInvalidIrExport(index);
 }
 
 function validateIrExportSpecifier(value: string, index: number): void {
-  if (typeof value !== 'string' || value.length === 0) throwInvalidIrExport(index);
+  if (typeof value !== 'string') throwInvalidIrExport(index);
+  if (value.length === 0) throwInvalidIrExport(index);
 }
 
 function validateIrExportTypeOnly(value: boolean, index: number): void {
@@ -187,6 +176,14 @@ function throwInvalidIrExport(index: number): never {
     'invalid-facade-export',
     subject,
     `Module facade export is malformed at ${subject}`,
+  );
+}
+
+function throwInvalidCompilerModuleFacadeModule(): never {
+  throw createCompilerModuleFacadeFailure(
+    'invalid-facade-module',
+    'module',
+    'Module facade identity requires nonempty module name, package name, and source',
   );
 }
 
@@ -205,7 +202,13 @@ function createCompilerModuleFacadeFailure(
 }
 
 const compilerModuleFacadeFailureCodes = new Set<CompilerModuleFacadeFailureCode>([
+  'ambiguous-facade-star',
   'duplicate-facade-identity',
+  'invalid-facade-evaluation',
   'invalid-facade-export',
   'invalid-facade-module',
+  'missing-facade-binding',
+  'missing-facade-dependency',
+  'missing-facade-export',
+  'mismatched-facade-module',
 ]);

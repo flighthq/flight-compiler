@@ -3,14 +3,18 @@ import type { IrModule } from './compilerModuleIntermediateRepresentation.js';
 import type { CompilerModuleIdentity } from './compilerSourceIdentity.js';
 import type { CompilerIrTraversalPath } from './compilerTraversalObserverContract.js';
 
-export interface CompilerModuleEvaluationDependency {
+export interface CompilerModuleLinkDependency {
   readonly importer: CompilerModuleIdentity;
   readonly specifier: string;
   readonly target: CompilerModuleIdentity;
 }
 
+export interface CompilerModuleEvaluationDependency extends CompilerModuleLinkDependency {
+  readonly evaluation: 'runtime' | 'type-only';
+}
+
 export interface CompilerModuleEvaluationInput {
-  readonly dependencies: readonly CompilerModuleEvaluationDependency[];
+  readonly dependencies: readonly CompilerModuleLinkDependency[];
   readonly entries: readonly CompilerModuleIdentity[];
   readonly modules: readonly Readonly<IrModule>[];
 }
@@ -65,6 +69,7 @@ export interface CompilerModuleEvaluationSemantics {
   readonly phaseOrder: readonly ['link', 'instantiate', 'evaluate-dependencies', 'evaluate'];
   readonly temporalAccess: 'throw-reference-error';
   readonly topLevelAwait: 'refuse';
+  readonly typeOnlyLinking: 'link-without-evaluation';
 }
 
 export interface CompilerModuleEvaluationPlan {

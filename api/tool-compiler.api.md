@@ -170,10 +170,18 @@ to the published surface, so review it as one.
 | `CompilerModuleEvaluationStep` | type |
 | `CompilerModuleFacadeFailure` | type |
 | `CompilerModuleFacadeFailureCode` | type |
+| `CompilerModuleFacadeHop` | type |
 | `CompilerModuleFacadeIdentity` | type |
+| `CompilerModuleFacadeInput` | type |
 | `CompilerModuleFacadeLane` | type |
+| `CompilerModuleFacadeModulePlan` | type |
+| `CompilerModuleFacadePlan` | type |
+| `CompilerModuleFacadeRoute` | type |
+| `CompilerModuleFacadeSemantics` | type |
+| `CompilerModuleFacadeSlot` | type |
 | `CompilerModuleFacadeSource` | type |
 | `CompilerModuleIdentity` | type |
+| `CompilerModuleLinkDependency` | type |
 | `CompilerModuleResolutionEdge` | type |
 | `CompilerModuleResolutionFailure` | type |
 | `CompilerModuleResolutionFailureCode` | type |
@@ -292,6 +300,7 @@ to the published surface, so review it as one.
 | `createCompilerLoweringPassVariableHoisting` | function |
 | `createCompilerModuleEvaluationPlan` | function |
 | `createCompilerModuleFacadeIdentities` | function |
+| `createCompilerModuleFacadePlan` | function |
 | `createCompilerModuleResolutionPlan` | function |
 | `createCompilerRuntimeExternalConstructorAbiPlanHaxe` | function |
 | `createCompilerRuntimeExternalConstructorAbiPlanRust` | function |
@@ -343,6 +352,7 @@ to the published surface, so review it as one.
 | `getPackageInventoryRootExportLane` | function |
 | `getTypeScriptInvocationSignatureResolution` | function |
 | `getTypeScriptSymbolRuntimeBindingDeclaration` | function |
+| `hasCompilerModuleFacadeLoweringRequirement` | function |
 | `hasIrModuleArrayBindingPattern` | function |
 | `hasIrTypeAbsentMember` | function |
 | `hasTypeScriptDeclarationRuntimeBinding` | function |

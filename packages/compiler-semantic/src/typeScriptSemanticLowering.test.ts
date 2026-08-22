@@ -522,6 +522,39 @@ describe('lowerTypeScriptSource', () => {
     ]);
   });
 
+  it('materializes every export-modified declaration and destructuring leaf as an explicit facade route', () => {
+    const result = lower(
+      'declaration-exports.ts',
+      `
+        export function read(): number { return 1; }
+        export const direct = 1, { value: renamed, nested: [leaf] } = { value: 2, nested: [3] };
+        export class Box {}
+        export enum Choice { first }
+        export interface Shape { value: number }
+        export type Alias = Shape;
+      `,
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    expect(
+      result.module.exports.map((exported) => ({
+        binding: exported.kind === 'local' ? exported.binding.name : undefined,
+        exportName: exported.kind === 'default' || exported.kind === 'all' ? exported.kind : exported.exported,
+        kind: exported.kind,
+        typeOnly: exported.kind === 'local' ? exported.typeOnly : undefined,
+      })),
+    ).toEqual([
+      { binding: 'read', exportName: 'read', kind: 'local', typeOnly: false },
+      { binding: 'direct', exportName: 'direct', kind: 'local', typeOnly: false },
+      { binding: 'renamed', exportName: 'renamed', kind: 'local', typeOnly: false },
+      { binding: 'leaf', exportName: 'leaf', kind: 'local', typeOnly: false },
+      { binding: 'Box', exportName: 'Box', kind: 'local', typeOnly: false },
+      { binding: 'Choice', exportName: 'Choice', kind: 'local', typeOnly: false },
+      { binding: 'Shape', exportName: 'Shape', kind: 'local', typeOnly: true },
+      { binding: 'Alias', exportName: 'Alias', kind: 'local', typeOnly: true },
+    ]);
+  });
+
   it('links type-only local exports to their source-backed declaration identity', () => {
     const result = lower('types.ts', 'type Value = number; export type { Value };');
 

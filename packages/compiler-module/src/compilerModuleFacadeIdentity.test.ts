@@ -157,10 +157,19 @@ describe('createCompilerModuleFacadeIdentities', () => {
   it('rejects malformed module and export records through stable subjects', () => {
     const invalidModules: IrModule[] = [
       createModule([], { name: '' }),
+      createModule([], { name: 1 as never }),
       createModule([], { packageName: '' }),
+      createModule([], { packageName: 1 as never }),
       createModule([], { source: '' }),
+      createModule([], { source: 1 as never }),
       createModule([], { exports: null as never }),
     ];
+    expect(() => createCompilerModuleFacadeIdentities(null as never)).toThrow(
+      expect.objectContaining({ code: 'invalid-facade-module' }),
+    );
+    expect(() => createCompilerModuleFacadeIdentities(1 as never)).toThrow(
+      expect.objectContaining({ code: 'invalid-facade-module' }),
+    );
     for (const module of invalidModules) {
       expect(() => createCompilerModuleFacadeIdentities(module)).toThrow(
         expect.objectContaining({ code: 'invalid-facade-module', kind: 'compiler-module-facade' }),
@@ -169,21 +178,34 @@ describe('createCompilerModuleFacadeIdentities', () => {
 
     const malformed: unknown[] = [
       null,
+      1,
+      'export',
       [],
+      Object.assign([], { kind: 'all', specifier: './value.js', typeOnly: false }),
       {},
       { kind: 'unknown' },
       { extra: true, kind: 'all', specifier: './value.js', typeOnly: false },
+      { extra: true, kind: 'all', specifier: './value.js' },
       { kind: 'all', specifier: '', typeOnly: false },
+      { kind: 'all', specifier: 1, typeOnly: false },
       { kind: 'all', specifier: './value.js', typeOnly: 'false' },
       { extra: true, expression: { kind: 'literal', value: 1 }, kind: 'default' },
       { expression: null, kind: 'default' },
+      { expression: 1, kind: 'default' },
+      { expression: [], kind: 'default' },
       { binding: {}, exported: 'value', kind: 'local', typeOnly: false },
+      { binding: null, exported: 'value', kind: 'local', typeOnly: false },
+      { binding: 'value', exported: 'value', kind: 'local', typeOnly: false },
+      { binding: { id: '' }, exported: 'value', kind: 'local', typeOnly: false },
       { binding: createBinding(), exported: '', kind: 'local', typeOnly: false },
+      { binding: createBinding(), exported: 1, kind: 'local', typeOnly: false },
       { binding: createBinding(), exported: 'value', kind: 'local', typeOnly: 'false' },
       { exported: '', kind: 'namespace', specifier: './value.js', typeOnly: false },
       { exported: 'value', kind: 'namespace', specifier: '', typeOnly: false },
+      { exported: 1, kind: 'namespace', specifier: './value.js', typeOnly: false },
       { exported: 'value', kind: 'namespace', specifier: './value.js', typeOnly: 'false' },
       { exported: 'value', imported: '', kind: 'reexport', specifier: './value.js', typeOnly: false },
+      { exported: 'value', imported: 1, kind: 'reexport', specifier: './value.js', typeOnly: false },
       { exported: 'value', imported: 'remote', kind: 'reexport', specifier: '', typeOnly: false },
       { exported: 'value', imported: 'remote', kind: 'reexport', specifier: './value.js', typeOnly: 'false' },
     ];

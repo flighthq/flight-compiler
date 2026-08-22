@@ -76,6 +76,7 @@ const packageRules: Readonly<Record<string, PackageRule>> = {
       'compiler-emission',
       'compiler-ir-traversal',
       'compiler-lowering',
+      'compiler-module',
       'compiler-runtime-contract',
       'compiler-structural',
       'compiler-task',
@@ -91,6 +92,7 @@ const packageRules: Readonly<Record<string, PackageRule>> = {
       'compiler-emission',
       'compiler-ir-traversal',
       'compiler-lowering',
+      'compiler-module',
       'compiler-runtime-contract',
       'compiler-structural',
       'compiler-types',
@@ -139,7 +141,7 @@ const packageRules: Readonly<Record<string, PackageRule>> = {
   },
   'compiler-module': {
     dependencies: ['compiler-canonical-form', 'compiler-ir-traversal', 'compiler-types'],
-    description: 'Target-neutral module linking, initialization, and evaluation semantics',
+    description: 'Target-neutral module linking, evaluation, and facade semantics',
     devDependencies: ['compiler-semantic'],
   },
   'compiler-canonical-form': {

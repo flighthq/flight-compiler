@@ -155,34 +155,34 @@ export function lowerTypeScriptSource(
           pendingOverloads.set(name, overloads);
           continue;
         }
-        declarations.push(lowerFunction(statement, pendingOverloads.get(name) ?? [], context));
-        if (hasModifier(statement, ts.SyntaxKind.DefaultKeyword)) {
-          exports.push({
-            binding: lowerBindingIdentity(statement.name!, context),
-            exported: 'default',
-            kind: 'local',
-            typeOnly: false,
-          });
-        }
+        const declaration = lowerFunction(statement, pendingOverloads.get(name) ?? [], context);
+        declarations.push(declaration);
+        exports.push(
+          ...createTypeScriptDeclarationExports(declaration, hasModifier(statement, ts.SyntaxKind.DefaultKeyword)),
+        );
         pendingOverloads.delete(name);
       } else if (ts.isVariableStatement(statement)) {
-        declarations.push(...lowerVariableStatement(statement, context));
+        const lowered = lowerVariableStatement(statement, context);
+        declarations.push(...lowered);
+        exports.push(...lowered.flatMap((declaration) => createTypeScriptDeclarationExports(declaration, false)));
       } else if (ts.isTypeAliasDeclaration(statement)) {
-        declarations.push(lowerTypeAlias(statement, context));
+        const declaration = lowerTypeAlias(statement, context);
+        declarations.push(declaration);
+        exports.push(...createTypeScriptDeclarationExports(declaration, false));
       } else if (ts.isInterfaceDeclaration(statement)) {
-        declarations.push(lowerInterface(statement, context));
+        const declaration = lowerInterface(statement, context);
+        declarations.push(declaration);
+        exports.push(...createTypeScriptDeclarationExports(declaration, false));
       } else if (ts.isEnumDeclaration(statement)) {
-        declarations.push(lowerEnum(statement, context));
+        const declaration = lowerEnum(statement, context);
+        declarations.push(declaration);
+        exports.push(...createTypeScriptDeclarationExports(declaration, false));
       } else if (ts.isClassDeclaration(statement)) {
-        declarations.push(lowerClass(statement, context));
-        if (hasModifier(statement, ts.SyntaxKind.DefaultKeyword)) {
-          exports.push({
-            exported: 'default',
-            kind: 'local',
-            binding: lowerBindingIdentity(statement.name!, context),
-            typeOnly: false,
-          });
-        }
+        const declaration = lowerClass(statement, context);
+        declarations.push(declaration);
+        exports.push(
+          ...createTypeScriptDeclarationExports(declaration, hasModifier(statement, ts.SyntaxKind.DefaultKeyword)),
+        );
       } else if (ts.isModuleDeclaration(statement)) {
         if (hasValueNamespaceMembers(statement)) {
           unsupported(statement, 'value namespace declarations require neutral IR namespace representation');
@@ -505,6 +505,35 @@ function lowerExport(node: ts.ExportDeclaration | ts.ExportAssignment, context: 
       ? { binding, exported, kind: 'local', typeOnly: true }
       : { binding, exported, kind: 'local', typeOnly: bindingTypeOnly };
   });
+}
+
+function createTypeScriptDeclarationExports(
+  declaration: Readonly<IrDeclaration>,
+  defaultExport: boolean,
+): readonly IrExport[] {
+  if (!declaration.exported) return [];
+  if (defaultExport) {
+    if (declaration.kind !== 'class' && declaration.kind !== 'function') return [];
+    return [{ binding: declaration.binding, exported: 'default', kind: 'local', typeOnly: false }];
+  }
+  if (declaration.kind === 'variable') {
+    const bindings =
+      'binding' in declaration ? [declaration.binding] : collectTypeScriptBindingPatternBindings(declaration.pattern);
+    return bindings.map((binding) => ({ binding, exported: binding.name, kind: 'local', typeOnly: false }));
+  }
+  if (declaration.kind === 'interface' || declaration.kind === 'typeAlias') {
+    return [{ binding: declaration.binding, exported: declaration.binding.name, kind: 'local', typeOnly: true }];
+  }
+  return [{ binding: declaration.binding, exported: declaration.binding.name, kind: 'local', typeOnly: false }];
+}
+
+function collectTypeScriptBindingPatternBindings(pattern: Readonly<IrBindingPattern>): readonly IrBindingIdentity[] {
+  if (pattern.kind === 'binding') return [pattern.binding];
+  const nested =
+    pattern.kind === 'array'
+      ? pattern.elements.flatMap((element) => (element ? collectTypeScriptBindingPatternBindings(element.pattern) : []))
+      : pattern.properties.flatMap((property) => collectTypeScriptBindingPatternBindings(property.pattern));
+  return pattern.rest ? [...nested, ...collectTypeScriptBindingPatternBindings(pattern.rest)] : nested;
 }
 
 function lowerExpression(

@@ -2,10 +2,10 @@ import ts from 'typescript';
 
 import { lowerTypeScriptSource } from '../../compiler-semantic/src/index.js';
 import type {
-  CompilerModuleEvaluationDependency,
   CompilerModuleEvaluationFailure,
   CompilerModuleEvaluationInput,
   CompilerModuleIdentity,
+  CompilerModuleLinkDependency,
   IrModule,
 } from '../../compiler-types/src/index.js';
 import { createCompilerModuleEvaluationPlan, isCompilerModuleEvaluationFailure } from './compilerModuleEvaluation.js';
@@ -53,6 +53,7 @@ describe('createCompilerModuleEvaluationPlan', () => {
       phaseOrder: ['link', 'instantiate', 'evaluate-dependencies', 'evaluate'],
       temporalAccess: 'throw-reference-error',
       topLevelAwait: 'refuse',
+      typeOnlyLinking: 'link-without-evaluation',
     });
     expect(byName.get('available')).toMatchObject({
       access: 'available-after-instantiation',
@@ -165,25 +166,41 @@ describe('createCompilerModuleEvaluationPlan', () => {
     ).toEqual([{ cyclic: true, modules: [getModuleIdentity(self)] }]);
   });
 
-  it('omits type-only requests, preserves side-effect dependencies, and supports empty or expression-only plans', () => {
+  it('links type-only requests without evaluating them and supports side effects or expression-only plans', () => {
     const sideEffect = lowerModule('side.ts', 'export interface RuntimeShape {} export function register(): void {}');
+    const types = lowerModule('types.ts', 'export interface Shape { value: number }');
     const entry = lowerModule(
       'entry.ts',
       "import type { Shape } from './types.js'; import { type RuntimeShape } from './side.js'; import './side.js'; export type Alias = Shape & RuntimeShape;",
     );
     const expression = lowerModule('expression.ts', 'export default 1;');
     const reexport = lowerModule('reexport.ts', "export { register } from './side.js';");
+    const typeReexport = lowerModule('type-reexport.ts', "export type { Shape } from './types.js';");
 
     const plan = createCompilerModuleEvaluationPlan(
-      createInput([entry, sideEffect], [createDependency(entry, './side.js', sideEffect)], [entry]),
+      createInput(
+        [entry, sideEffect, types],
+        [createDependency(entry, './types.js', types), createDependency(entry, './side.js', sideEffect)],
+        [entry],
+      ),
     );
     const expressionPlan = createCompilerModuleEvaluationPlan(createInput([expression], [], [expression]));
     const reexportPlan = createCompilerModuleEvaluationPlan(
       createInput([reexport, sideEffect], [createDependency(reexport, './side.js', sideEffect)], [reexport]),
     );
+    const typeReexportPlan = createCompilerModuleEvaluationPlan(
+      createInput([typeReexport, types], [createDependency(typeReexport, './types.js', types)], [typeReexport]),
+    );
 
     expect(plan.modules.find((module) => module.module.source === entry.source)?.dependencies).toEqual([
-      createDependency(getModuleIdentity(entry), './side.js', getModuleIdentity(sideEffect)),
+      {
+        ...createDependency(getModuleIdentity(entry), './types.js', getModuleIdentity(types)),
+        evaluation: 'type-only',
+      },
+      {
+        ...createDependency(getModuleIdentity(entry), './side.js', getModuleIdentity(sideEffect)),
+        evaluation: 'runtime',
+      },
     ]);
     expect(expressionPlan.modules[0]?.steps).toEqual([
       {
@@ -195,7 +212,19 @@ describe('createCompilerModuleEvaluationPlan', () => {
       },
     ]);
     expect(reexportPlan.modules.find((module) => module.module.source === reexport.source)?.dependencies).toEqual([
-      createDependency(getModuleIdentity(reexport), './side.js', getModuleIdentity(sideEffect)),
+      {
+        ...createDependency(getModuleIdentity(reexport), './side.js', getModuleIdentity(sideEffect)),
+        evaluation: 'runtime',
+      },
+    ]);
+    expect(typeReexportPlan.groups).toEqual([{ cyclic: false, modules: [getModuleIdentity(typeReexport)] }]);
+    expect(
+      typeReexportPlan.modules.find((module) => module.module.source === typeReexport.source)?.dependencies,
+    ).toEqual([
+      {
+        ...createDependency(getModuleIdentity(typeReexport), './types.js', getModuleIdentity(types)),
+        evaluation: 'type-only',
+      },
     ]);
     expect(createCompilerModuleEvaluationPlan(createInput([], [], []))).toEqual(
       expect.objectContaining({ entries: [], groups: [], modules: [] }),
@@ -354,7 +383,7 @@ function createDependency(
   importer: Readonly<CompilerModuleIdentity>,
   specifier: string,
   target: Readonly<CompilerModuleIdentity>,
-): CompilerModuleEvaluationDependency {
+): CompilerModuleLinkDependency {
   return { importer, specifier, target };
 }
 
@@ -386,7 +415,7 @@ function createDuplicateModuleInput(): CompilerModuleEvaluationInput {
 
 function createInput(
   modules: readonly Readonly<IrModule>[],
-  dependencies: readonly Readonly<CompilerModuleEvaluationDependency>[],
+  dependencies: readonly Readonly<CompilerModuleLinkDependency>[],
   entries: readonly Readonly<CompilerModuleIdentity>[],
 ): CompilerModuleEvaluationInput {
   return { dependencies, entries, modules };
