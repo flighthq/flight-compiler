@@ -217,7 +217,7 @@ function emitClass(declaration: Readonly<IrClassDeclaration>, context: EmitConte
       if (index > 0) lines.push('');
 
       const parameters = [
-        ...(method.static ? [] : ['&mut self']),
+        ...(method.static ? [] : [hasIrFunctionSignatureThisMutationRust(method) ? '&mut self' : '&self']),
         ...method.parameters.map((parameter) => emitParameter(parameter, context)),
       ].join(', ');
       lines.push(
@@ -385,6 +385,43 @@ function getIrTaskAwaitedTypeRust(type: Readonly<IrType>, context: EmitContext):
     emissionError(context, 'a task type requires one awaited type argument');
   }
   return awaited;
+}
+
+// Rust distinguishes a method that observes its receiver from one that changes it, and the two are
+// not interchangeable to a caller. Taking `&mut self` everywhere is the conservative choice that
+// makes every method exclusive, so a shared read of one value blocks a read of another. The mutation
+// evidence is already in the body: an assignment whose target reaches `this`, or a bare rebinding of
+// it, is what requires exclusivity.
+function hasIrFunctionSignatureThisMutationRust(method: Readonly<{ body: readonly Readonly<IrStatement>[] }>): boolean {
+  let mutates = false;
+  const reachesThis = (expression: Readonly<IrExpression>): boolean => {
+    if (expression.kind === 'identifier') return expression.reference.kind === 'this';
+    if (expression.kind === 'property' || expression.kind === 'element') return reachesThis(expression.object);
+    return false;
+  };
+  const visit = (value: unknown): void => {
+    if (mutates || !value || typeof value !== 'object') return;
+    const node = value as { kind?: unknown; left?: unknown; operand?: unknown };
+    if (node.kind === 'assignment' && node.left && reachesThis(node.left as Readonly<IrExpression>)) {
+      mutates = true;
+      return;
+    }
+    if (
+      (node.kind === 'prefixUnary' || node.kind === 'postfixUnary') &&
+      node.operand &&
+      reachesThis(node.operand as Readonly<IrExpression>)
+    ) {
+      mutates = true;
+      return;
+    }
+    if (Array.isArray(value)) {
+      value.forEach(visit);
+      return;
+    }
+    Object.values(value).forEach(visit);
+  };
+  method.body.forEach(visit);
+  return mutates;
 }
 
 function emitFunction(declaration: Readonly<IrFunctionDeclaration>, context: EmitContext): string[] {

@@ -248,7 +248,7 @@ describe('emitIrModuleRust', () => {
     const output = emitIrModuleRust(result.module).contents;
 
     expect(output.match(/fn choose/gu)).toHaveLength(1);
-    expect(output).toContain('pub fn choose(&mut self, value: f64, radix: Option<f64>) -> f64');
+    expect(output).toContain('pub fn choose(&self, value: f64, radix: Option<f64>) -> f64');
     expect(output).toContain('return picker.choose(1.0, None);');
   });
 
@@ -1064,5 +1064,20 @@ describe('emitIrModuleRust', () => {
     };
 
     expect(() => emitIrModuleRust(rewritten)).toThrow('an async function must return a task type');
+  });
+
+  it('elects a shared receiver for a method that only observes its own state', () => {
+    // `&mut self` on every method makes each call exclusive, so two reads of one value cannot
+    // overlap. The evidence for which methods need exclusivity is already in their bodies.
+    const module = lower(
+      'counter.ts',
+      'export class Counter { total: number; step: number; read(): number { return this.total; } bump(): void { this.total = this.total + this.step; } nested(): void { if (this.step > 0) { this.total = 1; } } }',
+    );
+    const output = emitIrModuleRust(module.module).contents;
+
+    expect(output).toContain('pub fn read(&self) -> f64 {');
+    expect(output).toContain('pub fn bump(&mut self) -> () {');
+    // A mutation nested inside control flow is still a mutation.
+    expect(output).toContain('pub fn nested(&mut self) -> () {');
   });
 });
