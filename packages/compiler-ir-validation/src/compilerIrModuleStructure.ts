@@ -1,4 +1,4 @@
-import { isIrCallExpressionStatementValueCarrier } from '../../compiler-completion/src/index.js';
+import { isIrAwaitSemantics, isIrCallExpressionStatementValueCarrier } from '../../compiler-completion/src/index.js';
 import { isCompilerSourceFingerprint } from '../../compiler-provenance/src/index.js';
 import type {
   CompilerIrModuleValidation,
@@ -429,6 +429,16 @@ function visitExpression(expression: Readonly<IrExpression>, path: string, state
       visitExpression(expression.right, `${path}.right`, state);
       break;
     case 'await':
+      if (!isIrAwaitSemantics(expression.semantics)) {
+        addFailure(
+          'invalid-node-shape',
+          `${path}.semantics`,
+          'await expression requires exact flight-compiler-await-semantics/1 evidence',
+          state,
+        );
+      }
+      visitExpression(expression.expression, `${path}.expression`, state);
+      break;
     case 'spread':
       visitExpression(expression.expression, `${path}.expression`, state);
       break;

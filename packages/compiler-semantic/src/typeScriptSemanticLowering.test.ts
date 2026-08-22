@@ -2526,6 +2526,32 @@ describe('lowerTypeScriptSource', () => {
     });
   });
 
+  it('attaches exact target-neutral settlement semantics to await expressions', () => {
+    const result = lower(
+      'await.ts',
+      'export async function read(task: Promise<number>): Promise<number> { return await task; }',
+    );
+    const declaration = result.module.declarations[0];
+    if (declaration?.kind !== 'function' || declaration.body[0]?.kind !== 'return') {
+      throw new Error('Expected async return');
+    }
+
+    expect(result.diagnostics).toEqual([]);
+    expect(declaration.body[0].expression).toEqual({
+      expression: expect.objectContaining({ kind: 'identifier' }),
+      kind: 'await',
+      semantics: {
+        continuation: 'enqueue-after-settlement',
+        fulfillment: 'resume-normal-with-value',
+        operandEvaluation: 'once-before-suspension',
+        rejection: 'resume-throw-with-reason',
+        schema: 'flight-compiler-await-semantics/1',
+        suspension: 'always-before-continuation',
+        taskResolution: 'normalize-value-task-or-thenable',
+      },
+    });
+  });
+
   it.each([
     ['contextual tuple expression rest at index 1 is not represented yet', '[number, ...number[]]', '[1, 2]'],
     ['contextual tuple expression has more values than its fixed tuple type', '[number]', '[1, 2]'],

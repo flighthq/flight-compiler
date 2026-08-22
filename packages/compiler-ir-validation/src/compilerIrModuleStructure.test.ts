@@ -132,6 +132,35 @@ describe('validateIrModuleStructure', () => {
     });
   });
 
+  it('requires exact versioned await semantics', () => {
+    const valid = lower(
+      'await.ts',
+      'export async function read(task: Promise<number>): Promise<number> { return await task; }',
+    );
+    const invalid = structuredClone(valid);
+    const declaration = invalid.declarations[0];
+    if (declaration?.kind !== 'function' || declaration.body[0]?.kind !== 'return') {
+      throw new Error('Expected async return');
+    }
+    const expression = declaration.body[0].expression;
+    if (expression?.kind !== 'await') throw new Error('Expected await expression');
+    (expression as { semantics: unknown }).semantics = {
+      ...expression.semantics,
+      continuation: 'inline',
+    };
+
+    expect(validateIrModuleStructure(valid)).toEqual({ kind: 'valid' });
+    expect(validateIrModuleStructure(invalid)).toMatchObject({
+      failures: [
+        expect.objectContaining({
+          code: 'invalid-node-shape',
+          path: expect.stringContaining('.semantics'),
+        }),
+      ],
+      kind: 'invalid',
+    });
+  });
+
   it('validates parameter-property identity against its constructor layout', () => {
     const module = lower(
       'parameter-property.ts',

@@ -5,6 +5,7 @@ import type {
   IrOptionalChainSemantics,
   IrPropertyKeyCoercion,
 } from './compilerAccessSemanticIntermediateRepresentation.js';
+import type { IrAwaitSemantics } from './compilerAsyncTaskCompletionContract.js';
 import type { IrBindingIdentity, IrIdentifierReference } from './compilerBindingIntermediateRepresentation.js';
 import type { IrBindingPattern } from './compilerBindingPatternIntermediateRepresentation.js';
 import type {
@@ -72,7 +73,7 @@ export type IrExpression =
       right: IrExpression;
       semantics: IrAssignmentOperatorSemantics;
     }>
-  | Readonly<{ kind: 'await'; expression: IrExpression }>
+  | Readonly<{ kind: 'await'; expression: IrExpression; semantics: IrAwaitSemantics }>
   | Readonly<{
       kind: 'binary';
       left: IrExpression;

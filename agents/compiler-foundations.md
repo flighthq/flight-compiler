@@ -183,6 +183,8 @@ The package constructs and recognizes statement-value semantics without importin
 
 The package also owns a versioned completion-set algebra for normal, break, continue, return, and throw routes. Break and continue retain exact optional target identity. Construction validates, deduplicates, freezes, and orders routes by the shared code-unit canonical form; alternative composition is commutative and idempotent; sequential composition is associative, treats normal completion as the only route into the next statement, preserves earlier abrupt routes, uses normal as its empty-list identity, and validates even unreachable tail input. `finally` replacement validates both inputs, restores every prior route when cleanup can complete normally, replaces prior routes with every abrupt cleanup route, preserves unreachable flow, and composes associatively across nested finalizers. The lowering package now derives variable-initialization completion keys from the shared vocabulary. Value-bearing completion remains separate because route identity alone cannot represent the initialized-binding state attached to each path.
 
+Async task completion is defined over that same floor without choosing Haxe or Rust runtime syntax. A task exists before its body starts, the body runs synchronously until suspension, normal fallthrough resolves implicit `undefined`, `return` resolves its value, and `throw` rejects with its value; both resolution routes normalize plain values, tasks, and thenables, while escaped break or continue routes fail through tagged data. Every neutral `await` expression carries one exact immutable contract: evaluate its operand once, normalize a value, task, or thenable, suspend even for settled input, enqueue continuation after settlement, resume fulfillment as a normal value, and resume rejection as a throw. Semantic lowering constructs that evidence, structural IR validation requires it, and both backends continue to refuse emission until a target lowering implements the whole boundary. All four measured implementation files have zero unreached statement or branch arms under isolated coverage.
+
 Class initialization now has a versioned target-neutral plan in `compiler-lowering`. Every declared field retains its source-array identity and exact initializer-versus-implicit-undefined decision. Static fields run during class evaluation, base instance fields run when the instance binding is established before parameter defaults and the constructor body, and derived instance fields run immediately after a successful `super` return. TypeScript parameter properties retain their constructor-parameter index and run at constructor-body entry for a base class or after ordinary derived fields following `super`. The plan distinguishes explicit constructors, implicit base constructors, and implicit derived constructors that forward all arguments. It deliberately does not choose target storage or synthesize target syntax. Neutral identifier references now distinguish `super` from ambient and bound names; semantic lowering rejects branded private fields, type-only field layouts, and runtime slot collisions rather than producing ambiguous storage. Haxe consumes the plan for base and direct-super constructor shapes, maps ambient `Error` inheritance to `haxe.Exception`, and synthesizes its required instance `name` storage at the derived-field boundary. Implicit derived forwarding and control-flow-nested `super` remain explicit Haxe refusals, while Rust refuses inheritance until its ownership and error representation is defined.
 
 Spread-bearing object expressions carry an independently constructed immutable copy-semantics record. It locks JavaScript's left-to-right single evaluation, nullish skipping, own enumerable string-and-symbol key set, one `Get` per key in own-key order, `CreateDataProperty` target writes, and later-value replacement without changing an existing key position. Semantic lowering retains the ordered source operations—including duplicate writes and computed key-before-value effects—and structural IR validation requires exact semantics if and only if an object contains spread. Both backends continue to refuse source emission until they can implement the complete contract; shared nominal storage, target copy representation, and compatibility diagnostics remain separate decisions.
@@ -194,7 +196,7 @@ Each workspace passes its own strict typecheck and Vitest target. The package bo
 | Package | Isolation conclusion | Current robustness boundary |
 | --- | --- | --- |
 | `compiler-types` | Keep independent as the dependency-free vocabulary floor. | Strict typecheck and focused composition tests cover useful relationships; identity, declaration/type separation and cardinality, closed operator tokens and static value domains, class-initialization phases, parameter-property identity, special `super` references, source location, value/type binding provenance, diagnostics/failures, and readonly collection boundaries are explicit, while declaration merging and complete expression/statement coverage remain open. |
-| `compiler-completion` | Keep independent as the target-neutral normal/abrupt completion floor. | Exact immutable statement-value semantics, all carrier-shape counterexamples, canonical targeted completion sets, alternative, sequential, and `finally` replacement laws, malformed schemas/routes/targets, unreachable-tail validation, propagated abrupt completion, final normal value identity, input independence, and zero unreached arms are covered; value-bearing completion remains open. |
+| `compiler-completion` | Keep independent as the target-neutral normal/abrupt completion floor. | Exact immutable statement-value semantics, all carrier-shape counterexamples, canonical targeted completion sets, alternative, sequential, and `finally` replacement laws, async body-to-task settlement, exact `await` scheduling and resumption evidence, malformed schemas/routes/targets, unreachable-tail validation, escaped function-control failures, input independence, and zero unreached arms are covered; value-bearing completion remains open. |
 | `compiler-canonical-form` | Keep independent as the dependency-free host-independent canonical-form floor. | Exact text equality and order, empty and prefix values, ASCII case, non-ASCII and surrogate text, antisymmetry, transitivity, caller-owned Unicode normalization, and portable separator form are direct-tested; package health prevents local comparator, locale-sensitive ordering, and path-form regressions. |
 | `compiler-provenance` | Keep independent as one narrow identity primitive. | Equivalence, counterexample, empty, Unicode, path, line-ending, raw-text, and TypeScript-version behavior are locked. |
 | `compiler-patch` | Keep independent because patch identity and auditing are a separate lifecycle. | All operations and failure codes, deterministic ordering, backend skipping, and caller-input immutability are exercised. |
@@ -310,18 +312,26 @@ The latest five-iteration structural-construction and completion batch completed
 4. **Complete:** produce structured structural-compatibility diagnostics rather than target-specific late failures.
 5. **Complete:** emit idiomatic Rust statement-value carriers without changing JavaScript completion semantics.
 
-The recalibrated next ten iterations are:
+The latest five-iteration completion and class-semantics batch completed:
 
 1. **Complete:** define a shared normal, break, continue, return, and throw completion algebra with statement-list composition.
 2. **Complete:** define `finally` completion replacement over that algebra before any target lowers exception control flow.
 3. **Complete:** model class field and constructor initialization order as a target-neutral plan.
 4. **Complete:** deepen class layout, inheritance, and implementation semantics from demonstrated source shapes.
-5. Define async task completion and `await` semantics before either backend chooses runtime syntax.
-6. Define thrown values and catch bindings on the shared completion floor.
-7. Give module facades and re-export emission stable cross-module identity.
-8. Resolve imported structural construction targets across an explicit module set.
-9. Add target-neutral structural value-type assignability diagnostics above field-set compatibility.
-10. Define Rust ownership evidence for values that cross generated carriers, records, and closures.
+5. **Complete:** define async task completion and `await` semantics before either backend chooses runtime syntax.
+
+The recalibrated next ten iterations are:
+
+1. Define thrown-value interception and catch-binding initialization on the shared completion floor, including rethrow and `finally` interaction.
+2. Derive exhaustive completion sets from neutral statement lists, consuming only the break and continue targets owned by each loop, switch, or label.
+3. Give module facades, named re-exports, star re-exports, namespace exports, and default exports stable cross-module emission identity.
+4. Resolve imported structural construction targets across an explicit immutable module set with deterministic ambiguity and cycle diagnostics.
+5. Add target-neutral structural value-type assignability diagnostics above field-set compatibility, preserving readonly, optionality, callable, tuple, and union evidence.
+6. Inventory async task scopes, recovered output types, lexical origins, suspension sites, async iteration, and task-construction operations without target policy.
+7. Define task construction and composition semantics for ready, reject, join-all, then, catch, and finally before target runtimes elect capabilities.
+8. Define Rust ownership evidence for values that cross generated carriers, structural records, closures, and suspension boundaries.
+9. Implement completion-preserving Haxe task lowering against the explicit downstream runtime contract and parser/compiler smoke adapters.
+10. Implement Rust portable-task lowering and scheduler ABI only after ownership evidence can prove every value crossing a suspension point.
 
 ## Freeze rule
 

@@ -1,4 +1,10 @@
 export {
+  createCompilerAsyncTaskCompletionPlan,
+  createIrAwaitSemantics,
+  isCompilerAsyncTaskCompletionFailure,
+  isIrAwaitSemantics,
+} from './compilerAsyncTaskCompletion.js';
+export {
   combineCompilerCompletionSetsAlternatively,
   combineCompilerCompletionSetsSequentially,
   createCompilerCompletionSet,

@@ -60,4 +60,22 @@ describe('compiler executable intermediate representation contracts', () => {
     expect(plain).not.toHaveProperty('copySemantics');
     expect(copied.copySemantics.nullish).toBe('skip');
   });
+
+  it('requires settlement semantics on every await expression', () => {
+    const awaited = {
+      expression: { kind: 'literal', value: 1 },
+      kind: 'await',
+      semantics: {
+        continuation: 'enqueue-after-settlement',
+        fulfillment: 'resume-normal-with-value',
+        operandEvaluation: 'once-before-suspension',
+        rejection: 'resume-throw-with-reason',
+        schema: 'flight-compiler-await-semantics/1',
+        suspension: 'always-before-continuation',
+        taskResolution: 'normalize-value-task-or-thenable',
+      },
+    } as const satisfies IrExpression;
+
+    expect(awaited.semantics.schema).toBe('flight-compiler-await-semantics/1');
+  });
 });
