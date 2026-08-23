@@ -3168,14 +3168,18 @@ function getTypeScriptDeclaredTypeEvidence(type: ts.Type, context: LoweringConte
   const symbol = type.aliasSymbol ?? type.getSymbol();
   const declaration = symbol?.declarations?.[0];
   if (!symbol || !declaration || declaration.getSourceFile() !== context.sourceFile) return undefined;
-  if (!isTypeBindingDeclaration(declaration) && !isValueBindingDeclaration(declaration)) return undefined;
   const name = ts.getNameOfDeclaration(declaration);
   if (!name || !ts.isIdentifier(name)) return undefined;
-  return {
-    kind: 'named',
-    reference: { binding: lowerTypeBindingSymbol(symbol, name, context), kind: 'binding', path: [] },
-    typeArguments: [],
-  };
+  // Which space the name lives in decides which identity it has, exactly as it does when the source
+  // writes the name out. A class is a value that also names a type; an interface is only a type.
+  const declarations = symbol.declarations ?? [];
+  const binding = declarations.some(isValueBindingDeclaration)
+    ? lowerBindingSymbol(symbol, name, context)
+    : declarations.some(isTypeBindingDeclaration)
+      ? lowerTypeBindingSymbol(symbol, name, context)
+      : undefined;
+  if (!binding) return undefined;
+  return { kind: 'named', reference: { binding, kind: 'binding', path: [] }, typeArguments: [] };
 }
 
 function getTypeScriptCheckerTypeEvidence(
