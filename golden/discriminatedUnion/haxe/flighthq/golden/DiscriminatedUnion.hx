@@ -5,13 +5,13 @@ typedef Circle = { kind:String, radius:Float };
 
 typedef Square = { kind:String, side:Float };
 
-typedef Shape = Dynamic;
+typedef Shape = { kind:String, ?radius:Float, ?side:Float };
 
 class DiscriminatedUnion {
   public static function area(shape:Shape):Float {
     if ((shape.kind == "circle")) {
-      return ((shape.radius * shape.radius) * 3);
+      return (((cast shape : Circle).radius * (cast shape : Circle).radius) * 3);
     }
-    return (shape.side * shape.side);
+    return ((cast shape : Square).side * (cast shape : Square).side);
   }
 }

@@ -505,8 +505,19 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
         .join(' ');
       return `(function() { final ${name} = Reflect.copy(${emitExpression(expression.object, context)}); ${exclusions} return ${name}; })()`;
     }
-    case 'property':
-      return `${emitExpression(expression.object, context)}${expression.optional ? '?.' : '.'}${safeHaxeName(expression.name)}`;
+    case 'property': {
+      // A union alias flattens to one structure whose non-shared fields are optional, so reading one
+      // yields a nullable where the source proved a value. The proof is control flow's, and the cast
+      // is how Haxe carries it: it names the alternative the reference was narrowed to.
+      const narrowed =
+        expression.object.kind === 'identifier' && expression.object.narrowedMember
+          ? getIrModuleDeclaredTypeNameHaxe(expression.object.narrowedMember, context)
+          : undefined;
+      const object = narrowed
+        ? `(cast ${emitExpression(expression.object, context)} : ${narrowed})`
+        : emitExpression(expression.object, context);
+      return `${object}${expression.optional ? '?.' : '.'}${safeHaxeName(expression.name)}`;
+    }
     case 'regexp':
       return `~/${expression.pattern}/${expression.flags}`;
     case 'spread':
@@ -1108,9 +1119,67 @@ function emitTypeDeclaration(declaration: Readonly<IrDeclaration>, context: Emit
 }
 
 function emitTypeAlias(declaration: Readonly<IrTypeAliasDeclaration>, context: EmitContext): string[] {
+  // Haxe has no union of records. The alternatives share their common fields and differ in the rest,
+  // which a single anonymous structure says exactly: shared fields required, the others optional.
+  // Every field is then typed, where `Dynamic` typed none of them.
+  const flattened =
+    declaration.type.kind === 'union' ? getIrUnionTypeFlattenedPropertiesHaxe(declaration.type, context) : undefined;
   return [
-    `typedef ${getBindingTargetNameHaxe(declaration.binding, context)}${emitTypeParameters(declaration.typeParameters, context)} = ${emitType(declaration.type, context)};`,
+    `typedef ${getBindingTargetNameHaxe(declaration.binding, context)}${emitTypeParameters(declaration.typeParameters, context)} = ${
+      flattened ? emitAnonymousType(flattened, context) : emitType(declaration.type, context)
+    };`,
   ];
+}
+
+function getIrModuleDeclaredTypeNameHaxe(name: string, context: EmitContext): string | undefined {
+  const declaration = context.module.declarations.find(
+    (candidate) =>
+      (candidate.kind === 'interface' || candidate.kind === 'typeAlias') && candidate.binding.name === name,
+  );
+  return declaration && (declaration.kind === 'interface' || declaration.kind === 'typeAlias')
+    ? getBindingTargetNameHaxe(declaration.binding, context)
+    : undefined;
+}
+
+function getIrUnionTypeFlattenedPropertiesHaxe(
+  type: Readonly<Extract<IrType, { kind: 'union' }>>,
+  context: EmitContext,
+): readonly IrObjectTypeProperty[] | undefined {
+  const members: Array<readonly IrObjectTypeProperty[]> = [];
+  for (const member of type.types) {
+    if (member.kind !== 'named' || member.reference.kind !== 'binding') return undefined;
+    const declaration = context.module.declarations.find(
+      (candidate) =>
+        (candidate.kind === 'interface' || candidate.kind === 'typeAlias') &&
+        candidate.binding.name ===
+          (member.kind === 'named' && member.reference.kind === 'binding' ? member.reference.binding.name : ''),
+    );
+    const properties =
+      declaration?.kind === 'interface'
+        ? declaration.properties
+        : declaration?.kind === 'typeAlias' && declaration.type.kind === 'object'
+          ? declaration.type.properties
+          : undefined;
+    if (!properties) return undefined;
+    members.push(properties);
+  }
+  if (members.length < 2) return undefined;
+  const flattened: IrObjectTypeProperty[] = [];
+  for (const properties of members) {
+    for (const property of properties) {
+      const existing = flattened.find((candidate) => candidate.name === property.name);
+      // Two alternatives spelling one field differently have no single Haxe type, so the union keeps
+      // its untyped form rather than picking one of them.
+      if (existing && emitType(existing.type, context) !== emitType(property.type, context)) return undefined;
+      if (!existing) {
+        flattened.push({
+          ...property,
+          optional: !members.every((candidate) => candidate.some((entry) => entry.name === property.name)),
+        });
+      }
+    }
+  }
+  return flattened;
 }
 
 function emitTupleSpreadExpressionHaxe(
