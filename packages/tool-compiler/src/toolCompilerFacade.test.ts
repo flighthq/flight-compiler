@@ -30,9 +30,7 @@ describe('@flighthq/tool-compiler', () => {
     const rust = compileTypeScriptModules({ backend: rustBackend, backendOptions: {}, sources: [input] });
 
     expect(haxe.compilation.files[0]?.path).toBe('flighthq/math/Clamp.hx');
-    expect(haxe.compilation.files[0]?.contents).toContain(
-      'public static function clamp(value:Float, min:Float, max:Float):Float',
-    );
+    expect(haxe.compilation.files[0]?.contents).toContain('function clamp(value:Float, min:Float, max:Float):Float');
     expect(rust.compilation.files[0]?.path).toBe('clamp.rs');
     expect(rust.compilation.files[0]?.contents).toContain('pub fn clamp(value: f64, min: f64, max: f64) -> f64');
     expect(compileTypeScriptModules({ backend: haxeBackend, backendOptions: {}, sources: [input] })).toEqual(haxe);

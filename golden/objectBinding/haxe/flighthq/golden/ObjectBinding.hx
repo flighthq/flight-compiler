@@ -3,16 +3,14 @@ package flighthq.golden;
 
 typedef Shape = { other:Bool, value:Float };
 
-class ObjectBinding {
-  public static function project(parameterPatternValue:Shape, source:Shape):Float {
-    var value:Float;
-    final objectPatternValue:Shape = parameterPatternValue;
-    value = objectPatternValue.value;
-    var assigned:Float = 0;
-    {
-      final destructuringAssignmentValue:Shape = source;
-      assigned = destructuringAssignmentValue.value;
-    }
-    return value + assigned;
+function project(parameterPatternValue:Shape, source:Shape):Float {
+  var value:Float;
+  final objectPatternValue:Shape = parameterPatternValue;
+  value = objectPatternValue.value;
+  var assigned:Float = 0;
+  {
+    final destructuringAssignmentValue:Shape = source;
+    assigned = destructuringAssignmentValue.value;
   }
+  return value + assigned;
 }

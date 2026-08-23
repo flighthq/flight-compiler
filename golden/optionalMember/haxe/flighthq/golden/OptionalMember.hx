@@ -3,24 +3,22 @@ package flighthq.golden;
 
 typedef Options = { ?retries:Float, label:String };
 
-class OptionalMember {
-  public static function summarize(options:Options):String {
-    final retries:Float = options.retries ?? 0;
-    return Std.string(options.label) + ":" + Std.string(retries);
-  }
+function summarize(options:Options):String {
+  final retries:Float = options.retries ?? 0;
+  return Std.string(options.label) + ":" + Std.string(retries);
+}
 
-  public static function pick(flag:Bool, first:String, second:String):String {
-    return flag ? first : second;
-  }
+function pick(flag:Bool, first:String, second:String):String {
+  return flag ? first : second;
+}
 
-  public static function classify(value:Float):String {
-    switch (value) {
-      case 0:
-        return "zero";
-      case 1:
-        return "one";
-      default:
-        return "many";
-    }
+function classify(value:Float):String {
+  switch (value) {
+    case 0:
+      return "zero";
+    case 1:
+      return "one";
+    default:
+      return "many";
   }
 }

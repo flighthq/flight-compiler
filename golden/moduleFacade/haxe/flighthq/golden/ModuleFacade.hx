@@ -3,8 +3,6 @@ package flighthq.golden;
 
 typedef Round = flighthq.golden.Helper.Circle;
 
-class ModuleFacade {
-  public static function local(value:Float):Float {
-    return value;
-  }
+function local(value:Float):Float {
+  return value;
 }

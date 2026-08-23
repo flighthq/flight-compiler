@@ -3,17 +3,15 @@ package flighthq.golden;
 
 typedef Cell = { value:Float };
 
-class MutatedParameter {
-  public static function bump(cell:Cell, next:Float):Void {
-    cell.value = next;
-  }
+function bump(cell:Cell, next:Float):Void {
+  cell.value = next;
+}
 
-  public static function bumpTwice(cell:Cell):Void {
-    bump(cell, 1);
-    bump(cell, 2);
-  }
+function bumpTwice(cell:Cell):Void {
+  bump(cell, 1);
+  bump(cell, 2);
+}
 
-  public static function fill(out:Array<Float>, value:Float):Void {
-    out.push(value);
-  }
+function fill(out:Array<Float>, value:Float):Void {
+  out.push(value);
 }

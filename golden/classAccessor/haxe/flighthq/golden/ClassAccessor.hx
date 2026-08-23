@@ -26,10 +26,8 @@ class Counter {
   }
 }
 
-class ClassAccessor {
-  public static function readBack():Float {
-    final counter:Counter = Counter.make();
-    counter.value = 7;
-    return counter.value + Counter.zero;
-  }
+function readBack():Float {
+  final counter:Counter = Counter.make();
+  counter.value = 7;
+  return counter.value + Counter.zero;
 }

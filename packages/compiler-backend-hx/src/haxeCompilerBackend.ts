@@ -227,14 +227,13 @@ function emitIrModuleHaxeWithContext(
   const reexports = emitReexportsHaxe(module.exports, context);
   if (reexports.length > 0) lines.push('', ...reexports);
   for (const declaration of typeDeclarations) lines.push('', ...emitTypeDeclaration(declaration, context));
-  if (valueDeclarations.length > 0) {
-    lines.push('', `class ${moduleName} {`);
-    valueDeclarations.forEach((declaration, index) => {
-      if (index > 0) lines.push('');
-      lines.push(...indentSourceLines(emitModuleValue(declaration, context)));
-    });
-    lines.push('}');
-  }
+  // Module-level statics rather than a holder class named after the file. A holder collides with a
+  // source class of the same name — `class Store` in `store.ts` is ordinary code and the collision is
+  // a hard error — and it is not what the source wrote either: these are module members, not members
+  // of a type. `pack.Module.name` resolves to them, which is what an importing module already emits.
+  valueDeclarations.forEach((declaration) => {
+    lines.push('', ...emitModuleValue(declaration, context));
+  });
   return {
     contents: lines.join('\n'),
     path: `${packageName.replaceAll('.', '/')}/${moduleName}.hx`,
@@ -667,10 +666,12 @@ function emitStatementValueExpressionHaxe(
 }
 
 function emitFunction(declaration: Readonly<IrFunctionDeclaration>, outer: EmitContext): string[] {
-  const access = declaration.exported ? 'public ' : 'private ';
+  // A module-level static carries no access or `static` keyword: it is already a member of the
+  // module rather than of a type, and Haxe rejects both there.
+  const access = '';
   const context: EmitContext = { ...outer, returnsAbsent: hasIrTypeAbsentMember(declaration.returns) };
   return [
-    `${access}static function ${getBindingTargetNameHaxe(declaration.binding, context)}${emitTypeParameters(declaration.typeParameters, context)}(${emitParameters(declaration.parameters, context)}):${emitType(declaration.returns, context)} {`,
+    `${access}function ${getBindingTargetNameHaxe(declaration.binding, context)}${emitTypeParameters(declaration.typeParameters, context)}(${emitParameters(declaration.parameters, context)}):${emitType(declaration.returns, context)} {`,
     ...indentSourceLines(
       declaration.async
         ? emitCompilerHaxeTaskFunctionBody(declaration, context)
@@ -1438,11 +1439,10 @@ function emitVariableDeclaration(declaration: Readonly<IrVariableDeclaration>, c
     emissionError(context, 'binding patterns require destructuring lowering before Haxe emission');
   if (!declaration.initializer)
     emissionError(context, `module variable ${declaration.binding.name} requires an initializer`);
-  const access = declaration.exported ? 'public ' : 'private ';
   const storage = declaration.mutable ? 'var' : 'final';
   const type = declaration.type ? `:${emitType(declaration.type, context)}` : '';
   return [
-    `${access}static ${storage} ${getBindingTargetNameHaxe(declaration.binding, context)}${type} = ${emitExpression(declaration.initializer, context)};`,
+    `${storage} ${getBindingTargetNameHaxe(declaration.binding, context)}${type} = ${emitExpression(declaration.initializer, context)};`,
   ];
 }
 

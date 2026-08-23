@@ -8,16 +8,14 @@ enum abstract Lane(String) from String to String {
 
 typedef Route = { lane:Lane, cost:Float };
 
-class LiteralUnion {
-  public static function isFast(route:Route):Bool {
-    return route.lane == "fast";
-  }
+function isFast(route:Route):Bool {
+  return route.lane == "fast";
+}
 
-  public static function laneName(route:Route):String {
-    return route.lane;
-  }
+function laneName(route:Route):String {
+  return route.lane;
+}
 
-  public static function describe(lane:Lane):String {
-    return (lane == "fast") ? "quick" : "careful";
-  }
+function describe(lane:Lane):String {
+  return (lane == "fast") ? "quick" : "careful";
 }

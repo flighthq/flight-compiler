@@ -3,8 +3,6 @@ package flighthq.golden;
 
 import flighthq.golden.Helper.helper;
 
-class ModuleImports {
-  public static function use(value:Float):Float {
-    return helper(value);
-  }
+function use(value:Float):Float {
+  return helper(value);
 }

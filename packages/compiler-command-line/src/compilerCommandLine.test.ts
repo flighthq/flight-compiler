@@ -25,7 +25,7 @@ describe('compileCompilerCommandLineRequest', () => {
 
     expect(result).toMatchObject({ emitted: 2, exitCode: 0, refusals: [] });
     expect([...written.keys()]).toEqual(['/out/flighthq/source/Add.hx', '/out/flighthq/source/Negate.hx']);
-    expect(written.get('/out/flighthq/source/Add.hx')).toContain('public static function add(');
+    expect(written.get('/out/flighthq/source/Add.hx')).toContain('function add(');
     expect(out.join('')).toContain('2 module(s) emitted, 0 refused.');
   });
 

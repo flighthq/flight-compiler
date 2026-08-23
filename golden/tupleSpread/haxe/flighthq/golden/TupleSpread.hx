@@ -3,20 +3,18 @@ package flighthq.golden;
 
 typedef Pair = Array<Dynamic>;
 
-class TupleSpread {
-  private static function createPair(value:Float, text:String):Pair {
-    final pair:Pair = [value, text];
-    return pair;
-  }
+function createPair(value:Float, text:String):Pair {
+  final pair:Pair = [value, text];
+  return pair;
+}
 
-  private static function createOptional():Array<Dynamic> {
-    final value:Array<Dynamic> = [null];
-    return value;
-  }
+function createOptional():Array<Dynamic> {
+  final value:Array<Dynamic> = [null];
+  return value;
+}
 
-  public static function createTupleSpread(pair:Pair):Array<Dynamic> {
-    final value:Array<Dynamic> = (function() { final tupleSpreadElement = 0; final tupleSpreadValue = pair; final tupleSpreadValue_2 = createPair(2, "flight"); final tupleSpreadValue_3 = createOptional(); return [tupleSpreadElement, tupleSpreadValue[0], tupleSpreadValue[1], tupleSpreadValue_2[0], tupleSpreadValue_2[1], tupleSpreadValue_3[0]]; })();
-    createPair(pair[0], pair[1]);
-    return value;
-  }
+function createTupleSpread(pair:Pair):Array<Dynamic> {
+  final value:Array<Dynamic> = (function() { final tupleSpreadElement = 0; final tupleSpreadValue = pair; final tupleSpreadValue_2 = createPair(2, "flight"); final tupleSpreadValue_3 = createOptional(); return [tupleSpreadElement, tupleSpreadValue[0], tupleSpreadValue[1], tupleSpreadValue_2[0], tupleSpreadValue_2[1], tupleSpreadValue_3[0]]; })();
+  createPair(pair[0], pair[1]);
+  return value;
 }

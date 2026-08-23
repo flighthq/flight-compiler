@@ -3,8 +3,6 @@ package flighthq.golden;
 
 typedef Pair<Left, Right> = { left:Left, right:Right };
 
-class Generics {
-  public static function identity<Value>(value:Value):Value {
-    return value;
-  }
+function identity<Value>(value:Value):Value {
+  return value;
 }

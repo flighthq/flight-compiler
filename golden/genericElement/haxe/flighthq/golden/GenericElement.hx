@@ -3,18 +3,16 @@ package flighthq.golden;
 
 typedef Box<Value> = { contents:Value };
 
-class GenericElement {
-  public static function unwrap<Value>(box:Box<Value>):Value {
-    return box.contents;
-  }
+function unwrap<Value>(box:Box<Value>):Value {
+  return box.contents;
+}
 
-  public static function firstOf<Value>(values:Array<Value>, fallback:Value):Value {
-    final first:Value = values[0];
-    return first ?? fallback;
-  }
+function firstOf<Value>(values:Array<Value>, fallback:Value):Value {
+  final first:Value = values[0];
+  return first ?? fallback;
+}
 
-  public static function secondName(pair:Array<String>):String {
-    final second:String = pair[1];
-    return second;
-  }
+function secondName(pair:Array<String>):String {
+  final second:String = pair[1];
+  return second;
 }

@@ -3,8 +3,6 @@ package flighthq.golden;
 
 typedef Holder = { value:Float };
 
-class OptionalCoalesce {
-  public static function read(holder:Null<Holder>):Float {
-    return holder?.value ?? 0;
-  }
+function read(holder:Null<Holder>):Float {
+  return holder?.value ?? 0;
 }

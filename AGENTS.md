@@ -42,6 +42,8 @@ This package also owns compiler orchestration, the backend contract, target-spec
 
 Target repositories own ecosystem concerns: maintained runtime support, target standard-library implementations, package or crate/project structure, examples, integration tests, compiler installation, and host/oracle wiring. Compiler output may refer to an explicit runtime contract, but runtime implementation source stays downstream.
 
+A module's own functions and constants are emitted as Haxe module-level statics rather than as statics on a class named after the file. A holder class collides with a source class of the same name — `class Store` in `store.ts` is ordinary code — and it misstates what the source wrote: these are members of a module, not of a type. `pack.Module.name` resolves to them either way.
+
 Haxe is the first integration target and defines the initial compatibility bar. Rust follows against the same neutral model and orchestration path. New core abstractions must still be genuinely target-neutral; “both current targets happen to need it” is evidence, not proof.
 
 ## Workspace Layout

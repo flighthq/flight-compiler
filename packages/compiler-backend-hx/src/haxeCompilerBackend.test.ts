@@ -90,7 +90,7 @@ describe('emitIrModuleHaxe', () => {
     const output = emitIrModuleHaxe(result.module).contents;
 
     expect(output).toContain('typedef Box<Value> = { value:Value, ?optional:Value };');
-    expect(output).toContain('public static function create():Box<Item>');
+    expect(output).toContain('function create():Box<Item>');
     expect(output).toContain('return { value: { label: "flight" } };');
   });
 
@@ -201,8 +201,9 @@ describe('emitIrModuleHaxe', () => {
     );
     const output = emitIrModuleHaxe(result.module).contents;
 
-    expect(output.match(/static function choose/gu)).toHaveLength(1);
-    expect(output).toContain('static function choose(value:Float, radix:Float = 10):Float');
+    // One implementation, not one per overload signature.
+    expect(output.match(/function choose/gu)).toHaveLength(1);
+    expect(output).toContain('function choose(value:Float, radix:Float = 10):Float');
     expect(output).toContain('return choose(1);');
   });
 
@@ -429,7 +430,7 @@ describe('emitIrModuleHaxe', () => {
       'final rest:Array<Dynamic> = arrayPatternValue.slice(1);',
     );
     expect(emitIrModuleHaxe(iteration.module).contents).toContain(
-      'for (arrayPatternValue in rows) {\n      final first:Float = arrayPatternValue[0];\n      final second:Float = arrayPatternValue[1];',
+      'for (arrayPatternValue in rows) {\n    final first:Float = arrayPatternValue[0];\n    final second:Float = arrayPatternValue[1];',
     );
     expect(() => emitIrModuleHaxe(dynamicIndex.module)).toThrow(
       'tuple projection requires one statically known nonnegative integer index',
@@ -487,17 +488,17 @@ describe('emitIrModuleHaxe', () => {
     const patternOutput = emitIrModuleHaxe(pattern.module).contents;
     const iterationOutput = emitIrModuleHaxe(iteration.module).contents;
 
-    expect(namedOutput).toContain('var value:Float;\n    {\n      value = 1;\n    }\n    return value;');
+    expect(namedOutput).toContain('var value:Float;\n  {\n    value = 1;\n  }\n  return value;');
     expect(patternOutput).toContain(
-      'var first:Float;\n    var second:String;\n    final arrayPatternValue:Array<Dynamic> = values;\n    first = arrayPatternValue[0];\n    second = arrayPatternValue[1];',
+      'var first:Float;\n  var second:String;\n  final arrayPatternValue:Array<Dynamic> = values;\n  first = arrayPatternValue[0];\n  second = arrayPatternValue[1];',
     );
     expect(iterationOutput).toContain(
-      'var value:Float;\n    for (variableHoistingIterationValue in values) {\n      value = variableHoistingIterationValue;\n      value += 1;',
+      'var value:Float;\n  for (variableHoistingIterationValue in values) {\n    value = variableHoistingIterationValue;\n    value += 1;',
     );
     // A written shape has a known key set, so iteration is over that set rather than over whatever
     // reflection reports at runtime.
     expect(iterationOutput).toContain(
-      'var key;\n    for (variableHoistingIterationValue in ["value"]) {\n      key = variableHoistingIterationValue;\n      key;',
+      'var key;\n  for (variableHoistingIterationValue in ["value"]) {\n    key = variableHoistingIterationValue;\n    key;',
     );
   });
 
@@ -639,7 +640,7 @@ describe('emitIrModuleHaxe', () => {
     );
 
     expect(emitIrModuleHaxe(index.module).path).toBe('flighthq/math/_Index.hx');
-    expect(emitIrModuleHaxe(index.module).contents).toContain('class _Index');
+    expect(emitIrModuleHaxe(index.module).contents).toContain('function helper(');
     expect(emitIrModuleHaxe(consumer.module).contents).toContain('import flighthq.math._Index.helper;');
     expect(() => emitIrModuleHaxe(defaultImport.module)).toThrow('default imports require explicit Haxe mapping');
   });
@@ -664,7 +665,7 @@ describe('emitIrModuleHaxe', () => {
     const output = emitIrModuleHaxe(fallthrough.module).contents;
 
     expect(() => emitIrModuleHaxe(barrel.module)).toThrow('module-facade lowering');
-    expect(output).toContain('case 1:\n        return 2;\n      case 2:\n        return 2;');
+    expect(output).toContain('case 1:\n      return 2;\n    case 2:\n      return 2;');
   });
 
   it('emits binding-sensitive switch fallthrough through an identity-safe state loop', () => {
@@ -713,9 +714,7 @@ describe('emitIrModuleHaxe', () => {
       'function fallback(value = 1): number { return value; } export function read(): number { return fallback((undefined as number | undefined)); }',
     );
 
-    expect(emitIrModuleHaxe(nullable.module).contents).toContain(
-      'static function nullable():Null<String> {\n    return null;',
-    );
+    expect(emitIrModuleHaxe(nullable.module).contents).toContain('function nullable():Null<String> {\n  return null;');
     expect(() => emitIrModuleHaxe(undefinedValue.module)).toThrow(
       'undefined expressions require Haxe nullability lowering',
     );
@@ -746,7 +745,7 @@ describe('emitIrModuleHaxe', () => {
     };
     const output = emitIrModuleHaxe(renamed).contents;
 
-    expect(output).toContain('static function renamed():Float');
+    expect(output).toContain('function renamed():Float');
     expect(output).toContain('return renamed();');
   });
 
@@ -757,7 +756,7 @@ describe('emitIrModuleHaxe', () => {
     );
     const output = emitIrModuleHaxe(result.module).contents;
 
-    expect(output).toContain('static function choose(operator_:Float, operator__2:Float):Float');
+    expect(output).toContain('function choose(operator_:Float, operator__2:Float):Float');
     expect(output).toContain('final operator__3:Float = operator__2;');
     expect(output).toContain('operator__3;');
     expect(output).toContain('return operator_ + operator__2;');
@@ -776,8 +775,8 @@ describe('emitIrModuleHaxe', () => {
     );
     const output = emitIrModuleHaxe(result.module).contents;
 
-    expect(output).toContain('static function fooBar(value:Float):Float');
-    expect(output).toContain('static function foo_bar(value:Float):Float');
+    expect(output).toContain('function fooBar(value:Float):Float');
+    expect(output).toContain('function foo_bar(value:Float):Float');
   });
 
   it('preserves final locals and abstract classes', () => {
@@ -922,7 +921,7 @@ describe('emitIrModuleHaxe', () => {
     expect(output).toContain('outerControlFlowState = 1;');
     expect(output).toContain('if (outerControlFlowState == 2) { outerControlFlowState = 0; continue; }');
     expect(output).toContain('var doneControlFlowState:Int = 0;');
-    expect(output).toContain('do {\n      if (count < 0)');
+    expect(output).toContain('do {\n    if (count < 0)');
     expect(() => emitIrModuleHaxe(labeledSwitch.module)).toThrow(
       'labeled switch done requires Haxe switch completion lowering',
     );

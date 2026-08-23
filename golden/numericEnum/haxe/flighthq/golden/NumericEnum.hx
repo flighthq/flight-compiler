@@ -10,12 +10,10 @@ typedef Named = { name:String };
 
 typedef Tagged = { name:String, tag:Float };
 
-class NumericEnum {
-  public static function describe(value:Tagged):String {
-    return value.name;
-  }
+function describe(value:Tagged):String {
+  return value.name;
+}
 
-  public static function highest():Level {
-    return Level.High;
-  }
+function highest():Level {
+  return Level.High;
 }

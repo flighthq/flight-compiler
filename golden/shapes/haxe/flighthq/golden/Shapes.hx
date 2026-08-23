@@ -10,8 +10,6 @@ enum abstract Mode(Int) from Int to Int {
   var Debug = 9;
 }
 
-class Shapes {
-  public static function widen(range:Range, by:Float):Range {
-    return { max: (range.max + by), min: (range.min - by) };
-  }
+function widen(range:Range, by:Float):Range {
+  return { max: (range.max + by), min: (range.min - by) };
 }

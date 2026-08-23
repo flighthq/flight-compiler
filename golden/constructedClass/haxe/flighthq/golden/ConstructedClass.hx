@@ -24,16 +24,14 @@ class Point {
   }
 }
 
-class ConstructedClass {
-  public static function origin():Point {
-    return new Point(0, 0);
-  }
+function origin():Point {
+  return new Point(0, 0);
+}
 
-  public static function originLength():Float {
-    return origin().length();
-  }
+function originLength():Float {
+  return origin().length();
+}
 
-  public static function describedAt(x:Float, y:Float):String {
-    return new Point(x, y).describe();
-  }
+function describedAt(x:Float, y:Float):String {
+  return new Point(x, y).describe();
 }
