@@ -48,6 +48,7 @@ import type {
   IrControlFlowLabelIdentity,
   IrDeclaration,
   IrEnumDeclaration,
+  IrExport,
   IrExpression,
   IrFunctionDeclaration,
   IrIdentifierReference,
@@ -197,11 +198,8 @@ function emitIrModuleRustWithContext(
     if (!getIrUnionTypeMemberRecordsRust(alias.type, context)) continue;
     taggedUnionBindingNames.set(evidence.binding.id, getBindingTargetNameRust(alias.binding, context));
   }
-  if (module.exports.length > 0) {
-    emissionError(context, 're-exports and export assignments require Rust module-facade lowering');
-  }
   const lines = [createCompilerGeneratedFileHeader(module, '//', options.upstreamCommit), '#![forbid(unsafe_code)]'];
-  const imports = emitImports(module.imports, context);
+  const imports = [...emitImports(module.imports, context), ...emitReexportsRust(module.exports, context)];
   if (imports.length > 0) lines.push('', ...imports);
   const declarations = module.declarations.map((declaration) => emitDeclaration(declaration, context));
   context.anonymousObjectRecords.forEach((record) => {
@@ -730,6 +728,30 @@ function emitImports(imports: readonly IrImport[], context: EmitContext): string
       return importedName === localName ? importedName : `${importedName} as ${localName}`;
     });
     lines.add(`use ${module}::{${names.sort().join(', ')}};`);
+  }
+  return [...lines].sort();
+}
+
+// A facade module names what it re-exports and where it came from, which is exactly what Rust's
+// `pub use` says. The name a target spells it by depends on which space it lives in, so a re-export
+// carries the same value-versus-type decision an import does.
+function emitReexportsRust(exports: readonly IrExport[], context: EmitContext): string[] {
+  const lines = new Set<string>();
+  for (const exported of exports) {
+    if (exported.kind === 'local') continue;
+    if (exported.kind !== 'reexport') {
+      emissionError(context, `${exported.kind} exports require Rust module-facade lowering`);
+    }
+    const module = rustImportModule(exported.specifier, context);
+    const source =
+      exported.typeOnly || /^[A-Z]/u.test(exported.imported)
+        ? safeRustTypeName(exported.imported)
+        : safeRustValueName(exported.imported);
+    const target =
+      exported.typeOnly || /^[A-Z]/u.test(exported.exported)
+        ? safeRustTypeName(exported.exported)
+        : safeRustValueName(exported.exported);
+    lines.add(`pub use ${module}::{${source === target ? source : `${source} as ${target}`}};`);
   }
   return [...lines].sort();
 }

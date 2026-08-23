@@ -48,6 +48,7 @@ import type {
   IrControlFlowLabelIdentity,
   IrDeclaration,
   IrEnumDeclaration,
+  IrExport,
   IrExpression,
   IrFunctionDeclaration,
   IrIdentifierReference,
@@ -203,9 +204,6 @@ function emitIrModuleHaxeWithContext(
     );
   }
   assertIrModuleSuperConstructorCallShapeHaxe(module, context);
-  if (module.exports.length > 0) {
-    emissionError(context, 're-exports and export assignments require Haxe module-facade lowering');
-  }
   const moduleName = haxeImplementationModule(module.source);
   const typeDeclarations = module.declarations.filter(
     (declaration) =>
@@ -221,6 +219,8 @@ function emitIrModuleHaxeWithContext(
   const lines = [createCompilerGeneratedFileHeader(module, '//', options.upstreamCommit), `package ${packageName};`];
   const imports = emitImports(module.imports, context);
   if (imports.length > 0) lines.push('', ...imports);
+  const reexports = emitReexportsHaxe(module.exports, context);
+  if (reexports.length > 0) lines.push('', ...reexports);
   for (const declaration of typeDeclarations) lines.push('', ...emitTypeDeclaration(declaration, context));
   if (valueDeclarations.length > 0) {
     lines.push('', `class ${moduleName} {`);
@@ -615,6 +615,29 @@ function emitImports(imports: readonly IrImport[], context: EmitContext): string
     }
   }
   return [...emitted].sort();
+}
+
+// Haxe re-exports a type by aliasing it and cannot re-export a value at all: a static lives on its
+// own module's class, and forwarding to it would need the signature this module does not have. So a
+// type facade is a typedef and a value facade is refused with the reason, rather than emitted as an
+// import that only this module can see.
+function emitReexportsHaxe(exports: readonly IrExport[], context: EmitContext): string[] {
+  const lines = new Set<string>();
+  for (const exported of exports) {
+    if (exported.kind === 'local') continue;
+    if (exported.kind !== 'reexport') {
+      emissionError(context, `${exported.kind} exports require Haxe module-facade lowering`);
+    }
+    if (!exported.typeOnly) {
+      emissionError(
+        context,
+        `re-exporting the value ${exported.exported} requires the re-exported signature to forward to`,
+      );
+    }
+    const modulePath = haxeImportModule(exported.specifier, context);
+    lines.add(`typedef ${safeHaxeTypeName(exported.exported)} = ${modulePath}.${safeHaxeTypeName(exported.imported)};`);
+  }
+  return [...lines].sort();
 }
 
 function emitInterface(declaration: Readonly<IrInterfaceDeclaration>, context: EmitContext): string[] {
