@@ -18,6 +18,10 @@ import ts from 'typescript';
 // rather than proven: what this gate establishes for Haxe is that the lowering is right, not that
 // every Haxe backend renders a value the same way. Proving that needs hxcpp and a C++ toolchain.
 //
+// Arguments are scalars, arrays of scalars, and tasks. A record argument would have to be rendered
+// as each target spells a record — including its type name in Rust — which is worth doing when a
+// fixture needs it and is not done yet; such a fixture takes compile coverage only.
+//
 // A fixture opts in with `oracle.json`. Values are compared as canonical text rather than by each
 // language's own formatting, because `1` and `1.0` and `1.000000` are the same answer — and because
 // three languages printing the same double three ways is a difference in the harness, not in the

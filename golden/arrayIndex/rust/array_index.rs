@@ -6,5 +6,5 @@ pub fn at(values: Vec<f64>, index: f64) -> f64 {
 }
 
 pub fn head(values: Vec<f64>) -> f64 {
-  return values.get(0.0 as usize).cloned().unwrap_or_else(|| 0.0);
+  return values.get(0).cloned().unwrap_or_else(|| 0.0);
 }

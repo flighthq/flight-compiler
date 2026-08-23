@@ -590,6 +590,11 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
       if (expression.operator === '??') {
         // Rust has no `??`. The shape is `Option::unwrap_or_else`, which needs the left operand to
         // already be an Option — an optional chain produces one, an ordinary value does not.
+        // A coalesce whose left cannot be absent is its left: the default is unreachable, and the
+        // source's own types are what say so.
+        if (expression.left.kind === 'property' && expression.left.optionalChain?.receiverNullish === 'excluded') {
+          return emitExpression(expression.left, context);
+        }
         if (!isIrExpressionOptionShapedRust(expression.left)) {
           emissionError(context, 'operator ?? requires an Option-shaped left operand for Rust');
         }
@@ -672,7 +677,9 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
         const index = getElementAccessTupleIndexRust(expression, context);
         return `${emitExpression(expression.object, context)}.${String(index)}`;
       }
-      return `${emitExpression(expression.object, context)}[${emitExpression(expression.index, context)} as usize]`;
+      // A written index is already a whole number; sending it through the neutral numeric type and
+      // back is noise the source never asked for.
+      return `${emitExpression(expression.object, context)}[${emitIndexOperandRust(expression.index, context)}]`;
     case 'function':
       if (expression.async) emissionError(context, 'async closures require Flight task lowering');
       if (expression.typeParameters.length > 0) emissionError(context, 'generic closures require monomorphization');
@@ -755,7 +762,10 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
         const member = getCompilerRuntimeExternalMemberTargetRust(expression.object.reference.name, expression.name);
         if (member) return member;
       }
-      return `${emitExpression(expression.object, context)}${isAmbientIdentifier(expression.object) ? '::' : '.'}${safeRustValueName(expression.name)}`;
+      // Indexing a collection yields a place the caller does not own, so a field read out of it is a
+      // copy rather than a move. Every emitted record derives `Clone`, so the copy is always available.
+      const owned = expression.object.kind === 'element' ? '.clone()' : '';
+      return `${emitExpression(expression.object, context)}${isAmbientIdentifier(expression.object) ? '::' : '.'}${safeRustValueName(expression.name)}${owned}`;
     }
     case 'regexp':
       emissionError(context, 'regular expressions require a downstream standard-library mapping');
@@ -1199,7 +1209,9 @@ function emitOptionalPropertyExpressionRust(
   const object = emitExpression(expression.object, context);
   const property = safeRustValueName(expression.name);
   if (semantics.receiverNullish === 'excluded') {
-    return `${object}${isAmbientIdentifier(expression.object) ? '::' : '.'}${property}`;
+    // Indexing yields a place the caller does not own, so the field read out of it is a copy.
+    const owned = expression.object.kind === 'element' ? '.clone()' : '';
+    return `${object}${isAmbientIdentifier(expression.object) ? '::' : '.'}${property}${owned}`;
   }
   getIrTypeOptionalPayloadRust(semantics.receiverType, 'optional property receiver', context);
   const operation = isNullableType(semantics.valueType) ? 'and_then' : 'map';
@@ -1348,6 +1360,14 @@ function emitBorrowedElementClosureRust(expression: Readonly<IrExpression> | und
 
 function isIrTypeCopyValueRust(type: Readonly<IrType>): boolean {
   return type.kind === 'primitive' && (type.name === 'boolean' || type.name === 'number');
+}
+
+// An index, in the form Rust counts with. A literal whole number is written as one; anything else is
+// a value in the neutral numeric type and has to be converted.
+function emitIndexOperandRust(expression: Readonly<IrExpression>, context: EmitContext): string {
+  return expression.kind === 'literal' && typeof expression.value === 'number' && Number.isInteger(expression.value)
+    ? String(expression.value)
+    : `${emitExpression(expression, context)} as usize`;
 }
 
 // Text in a position Rust borrows rather than owns. A literal is already a `&str` before it is
@@ -2043,7 +2063,14 @@ function isAssignmentOperatorDirectRust(
 function isIrExpressionOptionShapedRust(expression: Readonly<IrExpression>): boolean {
   // An optional member is an `Option` field in the emitted record, so reading it is already the shape
   // the operator needs — the chain is about the object being absent, this is about the member.
-  if (expression.kind === 'property') return expression.optional || expression.absent === 'optionalMember';
+  //
+  // A chain the source wrote over a receiver its own types say cannot be absent produces a plain
+  // value, not an `Option`. The `?.` is redundant there, and treating it as an `Option` asks a value
+  // for a method it does not have.
+  if (expression.kind === 'property') {
+    if (expression.optionalChain?.receiverNullish === 'excluded') return false;
+    return expression.optional || expression.absent === 'optionalMember';
+  }
   if (expression.kind === 'call') return expression.optional;
   // An array index is absent-admitting in the source language whatever the index is, which is why
   // `values[index] ?? fallback` is ordinary code. Rust's `[]` panics instead, so the coalesce reads
@@ -2056,7 +2083,7 @@ function isIrExpressionOptionShapedRust(expression: Readonly<IrExpression>): boo
 
 function emitOptionShapedOperandRust(expression: Readonly<IrExpression>, context: EmitContext): string {
   if (expression.kind === 'element' && !expression.optional && expression.semantics.receivers.includes('array')) {
-    return `${emitExpression(expression.object, context)}.get(${emitExpression(expression.index, context)} as usize).cloned()`;
+    return `${emitExpression(expression.object, context)}.get(${emitIndexOperandRust(expression.index, context)}).cloned()`;
   }
   return emitExpression(expression, context);
 }
