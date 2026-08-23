@@ -1,7 +1,37 @@
 import { describe, expect, it } from 'vitest';
 
 import type { IrType } from '../../compiler-types/src/index.js';
-import { getIrTypeMemberEvidence } from './compilerIrTypeMemberEvidence.js';
+import { getIrTypeIndexedElementEvidence, getIrTypeMemberEvidence } from './compilerIrTypeMemberEvidence.js';
+
+describe('getIrTypeIndexedElementEvidence', () => {
+  const array: IrType = { element: { kind: 'primitive', name: 'string' }, kind: 'array', readonly: true };
+  const tuple: IrType = {
+    elements: [
+      { optional: false, rest: false, type: { kind: 'primitive', name: 'string' } },
+      { optional: true, rest: false, type: { kind: 'primitive', name: 'number' } },
+    ],
+    kind: 'tuple',
+    readonly: true,
+  };
+
+  it("answers an array's element whatever the index is, because every position holds it", () => {
+    expect(getIrTypeIndexedElementEvidence(array, undefined)).toEqual({ kind: 'primitive', name: 'string' });
+    expect(getIrTypeIndexedElementEvidence(array, 7)).toEqual({ kind: 'primitive', name: 'string' });
+  });
+
+  it('answers a tuple position only when the index names one that always holds a value', () => {
+    expect(getIrTypeIndexedElementEvidence(tuple, 0)).toEqual({ kind: 'primitive', name: 'string' });
+    // Position 1 is optional, position 2 does not exist, and a computed index names no position.
+    expect(getIrTypeIndexedElementEvidence(tuple, 1)).toBeUndefined();
+    expect(getIrTypeIndexedElementEvidence(tuple, 2)).toBeUndefined();
+    expect(getIrTypeIndexedElementEvidence(tuple, undefined)).toBeUndefined();
+  });
+
+  it('answers nothing for an absent type or one that holds no elements', () => {
+    expect(getIrTypeIndexedElementEvidence(undefined, 0)).toBeUndefined();
+    expect(getIrTypeIndexedElementEvidence({ kind: 'primitive', name: 'string' }, 0)).toBeUndefined();
+  });
+});
 
 describe('getIrTypeMemberEvidence', () => {
   it('answers the length of an array or tuple, which the library would otherwise have to', () => {

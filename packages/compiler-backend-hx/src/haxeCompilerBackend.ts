@@ -1010,8 +1010,16 @@ function emitType(type: Readonly<IrType>, context: EmitContext): string {
         symbol: 'Dynamic',
         void: 'Void',
       }[type.name];
-    case 'tuple':
-      return 'Array<Dynamic>';
+    case 'tuple': {
+      // Haxe has no tuple, so a fixed sequence is an array. Where every position holds the same type
+      // the array can say so; where they differ there is no Haxe type that holds both, and the
+      // element type is lost rather than misstated.
+      const elements = type.elements.map((element) => emitType(element.type, context));
+      const shared = new Set(elements);
+      return shared.size === 1 && !type.elements.some((element) => element.optional)
+        ? `Array<${[...shared][0]!}>`
+        : 'Array<Dynamic>';
+    }
     case 'union': {
       const concrete = type.types.filter((item) => item.kind !== 'null' && item.kind !== 'undefined');
       if (hasIrTypeNullMemberHaxe(type) && hasIrTypeUndefinedMemberHaxe(type)) {

@@ -73,7 +73,7 @@ import type {
   TypeScriptInvocationSignatureResolution,
   LowerTypeScriptSourceOptions,
 } from '../../compiler-types/src/index.js';
-import { getIrTypeMemberEvidence } from './compilerIrTypeMemberEvidence.js';
+import { getIrTypeIndexedElementEvidence, getIrTypeMemberEvidence } from './compilerIrTypeMemberEvidence.js';
 import { getIrBinaryOperatorResultDomain, getIrTypeOperatorValueDomain } from './compilerOperatorDomainEvidence.js';
 import { getTypeScriptForInKeyEvidence } from './compilerTypeScriptForInKeyEvidence.js';
 import { getTypeScriptInvocationSignatureResolution } from './compilerTypeScriptInvocationSemantics.js';
@@ -2316,6 +2316,18 @@ function lowerTypeScriptExpressionTypeEvidence(
   expression: ts.Expression,
   context: LoweringContext,
 ): IrType | undefined {
+  // An indexed read has no declaration to read a written type off, so its evidence is the collection
+  // it reads from. Without this the element is unknown, and every operator over it refuses.
+  if (ts.isElementAccessExpression(expression) && expression.argumentExpression) {
+    const index = ts.isNumericLiteral(expression.argumentExpression)
+      ? Number(expression.argumentExpression.text)
+      : undefined;
+    const element = getIrTypeIndexedElementEvidence(
+      lowerTypeScriptExpressionTypeEvidence(expression.expression, context),
+      index,
+    );
+    if (element) return element;
+  }
   const type = getTypeScriptSyntacticExpressionTypeEvidence(expression, context.checker);
   return type ? lowerTypeScriptTypeNodeEvidence(type, context) : undefined;
 }

@@ -4,8 +4,8 @@ package flighthq.golden;
 typedef Rows<T> = Array<T>;
 
 class ArrayBinding {
-  public static function select(values:Array<Dynamic>):Float {
-    final arrayPatternValue:Array<Dynamic> = values;
+  public static function select(values:Array<Float>):Float {
+    final arrayPatternValue:Array<Float> = values;
     final third:Float = arrayPatternValue[2];
     return third;
   }
@@ -29,7 +29,7 @@ class ArrayBinding {
 
   public static function selectNestedDefault(values:Array<Dynamic>):Float {
     final arrayPatternValue:Array<Dynamic> = values;
-    final arrayPatternValue_2:Array<Dynamic> = (arrayPatternValue[0] ?? [1]);
+    final arrayPatternValue_2:Array<Float> = (arrayPatternValue[0] ?? [1]);
     final first:Float = arrayPatternValue_2[0];
     return first;
   }
@@ -66,7 +66,7 @@ class ArrayBinding {
     return tail;
   }
 
-  public static function selectRows(rows:Rows<Array<Dynamic>>):Float {
+  public static function selectRows(rows:Rows<Array<Float>>):Float {
     for (arrayPatternValue in rows) {
       final first:Float = arrayPatternValue[0];
       final second:Float = arrayPatternValue[1];

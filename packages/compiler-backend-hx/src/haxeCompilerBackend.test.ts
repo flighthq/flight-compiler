@@ -398,7 +398,7 @@ describe('emitIrModuleHaxe', () => {
     );
     const output = emitIrModuleHaxe(fixed.module).contents;
 
-    expect(output).toContain('final arrayPatternValue:Array<Dynamic> = values;');
+    expect(output).toContain('final arrayPatternValue:Array<Float> = values;');
     expect(output).toContain('final first:Float = arrayPatternValue[0];');
     expect(output).toContain('final third:Float = arrayPatternValue[2];');
     expect(emitIrModuleHaxe(defaulted.module).contents).toContain('final first:Float = (arrayPatternValue[0] ?? 0);');
@@ -559,7 +559,7 @@ describe('emitIrModuleHaxe', () => {
     );
     const output = emitIrModuleHaxe(result.module).contents;
 
-    expect(output).toContain('return ({ final destructuringAssignmentValue:Array<Dynamic> = tuple;');
+    expect(output).toContain('return ({ final destructuringAssignmentValue:Array<Float> = tuple;');
     expect(output).toContain('value = destructuringAssignmentValue[0];');
     expect(output).toContain('destructuringAssignmentValue; })');
     expect(output).not.toContain('(function()');
