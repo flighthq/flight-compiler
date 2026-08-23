@@ -109,6 +109,10 @@ export type IrClassField = IrClassFieldCommon &
   );
 
 export interface IrClassMethod extends IrFunctionSignature {
+  // Whether the source declared this as a property accessor rather than a method. The body and the
+  // signature are a method's either way; what differs is how a target spells the call site, and only
+  // the source can say which one was written.
+  readonly accessor?: 'get' | 'set' | undefined;
   readonly async: boolean;
   readonly body: readonly IrStatement[];
   readonly name: string;

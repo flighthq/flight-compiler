@@ -45,6 +45,7 @@ import type {
   IrBinaryOperatorSemantics,
   IrBindingIdentity,
   IrClassDeclaration,
+  IrClassMethod,
   IrControlFlowLabelIdentity,
   IrDeclaration,
   IrEnumDeclaration,
@@ -89,6 +90,8 @@ interface EmitContext {
   // Which bindings the module rebinds. Rust needs `mut` on a parameter that is assigned to, and the
   // ownership analysis already decides that for every binding in the module.
   movedBindingIds: ReadonlySet<string>;
+  accessorClassNames: ReadonlyMap<string, string>;
+  referentMutatedParameterIds: ReadonlySet<string>;
   taggedUnionBindingNames: ReadonlyMap<string, string>;
   reboundBindingIds: ReadonlySet<string>;
   generatedNames: Set<string>;
@@ -166,8 +169,10 @@ function emitIrModuleRustWithContext(
     }
     throw error;
   }
+  const accessorClassNames = new Map<string, string>();
   const taggedUnionBindingNames = new Map<string, string>();
   const context: EmitContext = {
+    accessorClassNames,
     anonymousObjectRecords: new Map(),
     reboundBindingIds: new Set(
       analyzeIrModuleOwnershipEvidenceRust(module).bindings.flatMap((evidence) =>
@@ -178,6 +183,14 @@ function emitIrModuleRustWithContext(
     ),
     generatedNames: new Set(targetNames.values()),
     movedBindingIds: collectIrModuleMovedBindingIdsRust(module),
+    referentMutatedParameterIds: new Set(
+      analyzeIrModuleOwnershipEvidenceRust(module).bindings.flatMap((evidence) =>
+        evidence.declaration === 'parameter' &&
+        (evidence.mutation === 'referentMutated' || evidence.mutation === 'bindingAndReferent')
+          ? [evidence.binding.id]
+          : [],
+      ),
+    ),
     taggedUnionBindingNames,
     module,
     nullableBindingIds: collectIrModuleNullableBindingIds(module),
@@ -194,9 +207,22 @@ function emitIrModuleRustWithContext(
     const alias = module.declarations.find(
       (candidate) => candidate.kind === 'typeAlias' && candidate.binding.name === reference.binding.name,
     );
-    if (alias?.kind !== 'typeAlias' || alias.type.kind !== 'union') continue;
-    if (!getIrUnionTypeMemberRecordsRust(alias.type, context)) continue;
-    taggedUnionBindingNames.set(evidence.binding.id, getBindingTargetNameRust(alias.binding, context));
+    if (
+      alias?.kind === 'typeAlias' &&
+      alias.type.kind === 'union' &&
+      getIrUnionTypeMemberRecordsRust(alias.type, context)
+    ) {
+      taggedUnionBindingNames.set(evidence.binding.id, getBindingTargetNameRust(alias.binding, context));
+      continue;
+    }
+    // Which bindings hold a class with accessors. Rust has no properties, so a source-level field
+    // read of one is a call, and the access site can only tell by asking what the binding holds.
+    const classDeclaration = module.declarations.find(
+      (candidate) => candidate.kind === 'class' && candidate.binding.name === reference.binding.name,
+    );
+    if (classDeclaration?.kind === 'class' && classDeclaration.methods.some((method) => method.accessor)) {
+      accessorClassNames.set(evidence.binding.id, classDeclaration.binding.name);
+    }
   }
   const lines = [createCompilerGeneratedFileHeader(module, '//', options.upstreamCommit), '#![forbid(unsafe_code)]'];
   const imports = [...emitImports(module.imports, context), ...emitReexportsRust(module.exports, context)];
@@ -249,24 +275,28 @@ function emitClass(declaration: Readonly<IrClassDeclaration>, context: EmitConte
   }
   if (declaration.abstract)
     emissionError(context, `abstract class ${declaration.binding.name} requires Rust trait lowering`);
-  if (declaration.fields.some((field) => field.static)) {
-    emissionError(context, `class ${declaration.binding.name} static fields require associated-item lowering`);
+  // A static field is one value shared by the type, which Rust spells as an associated constant —
+  // but only where the source's initializer is a constant. Anything computed needs a place to run,
+  // and an associated constant has none.
+  const staticFields = declaration.fields.filter((field) => field.static);
+  if (staticFields.some((field) => field.initializer?.kind !== 'literal')) {
+    emissionError(context, `class ${declaration.binding.name} static fields require a constant initializer`);
   }
   const constructed =
     !declaration.classConstructor ||
     (declaration.classConstructor.parameters.length === 0 && declaration.classConstructor.body.length === 0);
   const instanceFields = declaration.fields.filter((field) => !field.static);
-  if (declaration.fields.some((field) => field.initializer) && !constructed) {
+  if (instanceFields.some((field) => field.initializer) && !constructed && !constructorFields) {
     emissionError(context, `class ${declaration.binding.name} field initializers require constructor lowering`);
   }
-  if (declaration.fields.some((field) => field.initializer) && instanceFields.some((field) => !field.initializer)) {
+  if (instanceFields.some((field) => field.initializer) && instanceFields.some((field) => !field.initializer)) {
     emissionError(context, `class ${declaration.binding.name} partially initializes its fields`);
   }
   const lines = [
     '#[derive(Clone, Debug)]',
     `${declaration.exported ? 'pub ' : ''}struct ${getBindingTargetNameRust(declaration.binding, context)}${emitTypeParameters(declaration.typeParameters, context)} {`,
   ];
-  for (const field of declaration.fields) {
+  for (const field of instanceFields) {
     lines.push(
       `    ${field.visibility === 'public' ? 'pub ' : ''}${safeRustValueName(field.name)}: ${emitType(field.type, context)},`,
     );
@@ -278,7 +308,10 @@ function emitClass(declaration: Readonly<IrClassDeclaration>, context: EmitConte
     instanceFields.every((field) => field.initializer) && instanceFields.length > 0 && constructed
       ? createIrClassInitializationPlan(declaration)
       : undefined;
-  const associated: string[] = [];
+  const associated: string[] = staticFields.map(
+    (field) =>
+      `  ${field.visibility === 'public' ? 'pub ' : ''}const ${constantRustName(field.name)}: ${emitType(field.type, context)} = ${emitExpression(field.initializer!, context)};`,
+  );
   if (constructorFields && declaration.classConstructor) {
     associated.push(
       `  ${declaration.exported ? 'pub ' : ''}fn new(${declaration.classConstructor.parameters.map((parameter) => emitParameter(parameter, context)).join(', ')}) -> Self {`,
@@ -337,12 +370,19 @@ function emitClass(declaration: Readonly<IrClassDeclaration>, context: EmitConte
   }
   const inherentMethods = declaration.methods.filter((method) => !traitMethodNames.has(method.name));
   const emitMethodLines = (method: (typeof declaration.methods)[number]): string[] => {
+    // Rust has no properties, so an accessor is a method. A setter takes the receiver mutably and is
+    // named apart from the getter, because Rust has one namespace for both and the source had two.
+    const target = getIrClassMethodTargetNameRust(method);
+    const receiver = method.accessor === 'set' || mutatingMethodNames.has(target) ? '&mut self' : '&self';
     const parameters = [
-      ...(method.static ? [] : [mutatingMethodNames.has(method.name) ? '&mut self' : '&self']),
+      ...(method.static ? [] : [receiver]),
       ...method.parameters.map((parameter) => emitParameter(parameter, context)),
     ].join(', ');
+    // A setter yields nothing. The source wrote no return type and the neutral model kept that
+    // unknown, but the accessor contract already decides it.
+    const returns = method.accessor === 'set' ? '()' : emitType(method.returns, context);
     return [
-      `  ${method.visibility === 'public' && !traitMethodNames.has(method.name) ? 'pub ' : ''}fn ${safeRustValueName(method.name)}${emitTypeParameters(method.typeParameters, context)}(${parameters}) -> ${emitType(method.returns, context)} {`,
+      `  ${method.visibility === 'public' && !traitMethodNames.has(method.name) ? 'pub ' : ''}fn ${target}${emitTypeParameters(method.typeParameters, context)}(${parameters}) -> ${returns} {`,
       ...indentSourceLines(emitStatements(method.body, context), 2),
       '  }',
     ];
@@ -459,6 +499,13 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
     case 'array':
       return `vec![${expression.elements.map((element) => (element ? emitOwnedOperandRust(element, context) : 'Default::default()')).join(', ')}]`;
     case 'assignment': {
+      if (
+        expression.operator === '=' &&
+        expression.left.kind === 'property' &&
+        getIrExpressionClassAccessorRust(expression.left.object, expression.left.name, 'set', context)
+      ) {
+        return `${emitExpression(expression.left.object, context)}.set_${safeRustValueName(expression.left.name)}(${emitOwnedOperandRust(expression.right, context)})`;
+      }
       const left = emitExpression(expression.left, context);
       const right = emitExpression(expression.right, context);
       return `${left} ${emitAssignmentOperatorRust(expression.operator, expression.semantics, context)} ${right}`;
@@ -560,6 +607,8 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
       // A union is a closed set of alternatives in Rust, so its fields are not reachable by name.
       // A reference control flow narrowed to one alternative reads that alternative's own field; an
       // unnarrowed one can only read what every alternative agrees on, through the shared accessor.
+      const accessor = getIrExpressionClassAccessorRust(expression.object, expression.name, 'get', context);
+      if (accessor) return `${emitExpression(expression.object, context)}.${safeRustValueName(expression.name)}()`;
       const union = getIrExpressionTaggedUnionRust(expression.object, context);
       if (union) {
         const object = emitExpression(expression.object, context);
@@ -647,20 +696,28 @@ function getIrTaskAwaitedTypeRust(type: Readonly<IrType>, context: EmitContext):
 // method that writes is the transitive one, and missing it emits a `&self` method that calls a
 // `&mut self` method — which Rust rejects. The relation is closed to a fixed point because a caller
 // of a caller needs the same receiver.
+// Keyed by the name the method is emitted under, not the name it was written under: a getter and a
+// setter share one source name and Rust gives them two, so keying by the source name would hand the
+// getter the setter's mutable receiver.
 function getIrClassMutatingMethodNamesRust(declaration: Readonly<IrClassDeclaration>): ReadonlySet<string> {
   const mutating = new Set(
-    declaration.methods.filter((method) => hasIrFunctionSignatureThisMutationRust(method)).map((method) => method.name),
+    declaration.methods
+      .filter((method) => hasIrFunctionSignatureThisMutationRust(method))
+      .map((method) => getIrClassMethodTargetNameRust(method)),
   );
   const calls = new Map(
-    declaration.methods.map((method) => [method.name, getIrFunctionSignatureSelfCallNamesRust(method)] as const),
+    declaration.methods.map(
+      (method) => [getIrClassMethodTargetNameRust(method), getIrFunctionSignatureSelfCallNamesRust(method)] as const,
+    ),
   );
   let changed = true;
   while (changed) {
     changed = false;
     for (const method of declaration.methods) {
-      if (mutating.has(method.name)) continue;
-      if ((calls.get(method.name) ?? []).some((name) => mutating.has(name))) {
-        mutating.add(method.name);
+      const target = getIrClassMethodTargetNameRust(method);
+      if (mutating.has(target)) continue;
+      if ((calls.get(target) ?? []).some((name) => mutating.has(safeRustValueName(name)))) {
+        mutating.add(target);
         changed = true;
       }
     }
@@ -1124,7 +1181,7 @@ function getIrClassConstructorFieldAssignmentsRust(
   const constructor = declaration.classConstructor;
   const instanceFields = declaration.fields.filter((field) => !field.static);
   if (!constructor || instanceFields.length === 0) return undefined;
-  if (declaration.fields.some((field) => field.initializer)) return undefined;
+  if (instanceFields.some((field) => field.initializer)) return undefined;
   const assigned: Array<{ name: string; value: Readonly<IrExpression> }> = [];
   for (const statement of constructor.body) {
     if (statement.kind !== 'expression' || statement.expression.kind !== 'assignment') return undefined;
@@ -1156,6 +1213,16 @@ function hasIrExpressionThisReferenceRust(expression: Readonly<IrExpression>): b
 }
 
 function emitParameter(parameter: Readonly<IrParameter>, context: EmitContext): string {
+  // The source mutates what this parameter names, and the caller sees the change. Rust would move the
+  // value in, mutate the copy, and drop it — the same source, a different meaning. The faithful
+  // parameter is `&mut T`, which is an ownership decision this backend does not make yet, so it
+  // refuses rather than emitting a function whose mutation goes nowhere.
+  if (context.referentMutatedParameterIds.has(parameter.binding.id)) {
+    emissionError(
+      context,
+      `parameter ${parameter.binding.name} has its referent mutated and requires a Rust borrowed parameter`,
+    );
+  }
   // A parameter the body assigns to is a local binding in Rust as much as in the source language, and
   // Rust will not accept the assignment without `mut`. Emitting it unconditionally would instead earn
   // an unused-mut warning on every parameter that is only read.
@@ -1898,6 +1965,24 @@ function getIrUnionTypeMemberRecordsRust(
   return members.length > 1 ? members : undefined;
 }
 
+function getIrExpressionClassAccessorRust(
+  object: Readonly<IrExpression>,
+  name: string,
+  accessor: 'get' | 'set',
+  context: EmitContext,
+): boolean {
+  if (object.kind !== 'identifier' || object.reference.kind !== 'binding') return false;
+  const className = context.accessorClassNames.get(object.reference.binding.id);
+  if (!className) return false;
+  const declaration = context.module.declarations.find(
+    (candidate) => candidate.kind === 'class' && candidate.binding.name === className,
+  );
+  return (
+    declaration?.kind === 'class' &&
+    declaration.methods.some((method) => method.accessor === accessor && method.name === name)
+  );
+}
+
 function getIrExpressionTaggedUnionRust(expression: Readonly<IrExpression>, context: EmitContext): string | undefined {
   if (expression.kind !== 'identifier' || expression.reference.kind !== 'binding') return undefined;
   return context.taggedUnionBindingNames.get(expression.reference.binding.id);
@@ -1958,6 +2043,17 @@ function getTargetNameForDeclaredRustType(name: string, context: EmitContext): s
   return declaration && (declaration.kind === 'interface' || declaration.kind === 'typeAlias')
     ? getBindingTargetNameRust(declaration.binding, context)
     : pascalCase(name);
+}
+
+// Rust spells a constant in upper snake case, and the name is otherwise the source's own.
+// A getter keeps the source's name, because a call reads the same way; a setter takes a `set_` name,
+// because the two accessors share one name in the source and Rust has one namespace for both.
+function getIrClassMethodTargetNameRust(method: Readonly<IrClassMethod>): string {
+  return method.accessor === 'set' ? `set_${safeRustValueName(method.name)}` : safeRustValueName(method.name);
+}
+
+function constantRustName(name: string): string {
+  return safeRustValueName(name).toUpperCase();
 }
 
 function safeRustValueName(name: string): string {

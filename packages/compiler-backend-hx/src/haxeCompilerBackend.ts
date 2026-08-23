@@ -348,14 +348,38 @@ function emitClass(declaration: Readonly<IrClassDeclaration>, context: EmitConte
     }
     lines.push(...indentSourceLines(body, 2), '  }');
   }
+  // Haxe has properties, so an accessor the source wrote as one stays one: the field is declared with
+  // the accessor pair Haxe expects and the bodies become `get_`/`set_` methods. A read at a call site
+  // then needs no rewriting, because the source already wrote a field read.
+  const accessors = new Map<string, { get: boolean; set: boolean; type: Readonly<IrType> }>();
+  for (const method of declaration.methods) {
+    if (!method.accessor) continue;
+    const type = method.accessor === 'get' ? method.returns : (method.parameters[0]?.type ?? method.returns);
+    const existing = accessors.get(method.name) ?? { get: false, set: false, type };
+    accessors.set(method.name, { ...existing, [method.accessor]: true, type: existing.type });
+  }
+  for (const [name, accessor] of accessors) {
+    lines.push(
+      '',
+      `  public var ${safeHaxeName(name)}(${accessor.get ? 'get' : 'never'}, ${accessor.set ? 'set' : 'never'}):${emitType(accessor.type, context)};`,
+    );
+  }
   declaration.methods.forEach((method) => {
     if (lines.length > 1) lines.push('');
     const visibility = method.visibility === 'public' ? 'public ' : method.visibility === 'private' ? 'private ' : '';
     const static_ = method.static ? 'static ' : '';
+    // A Haxe setter yields the value it was given, so the source's void setter gains the return the
+    // property contract requires.
+    const setterValue = method.accessor === 'set' ? method.parameters[0] : undefined;
+    const name = method.accessor ? `${method.accessor}_${safeHaxeName(method.name)}` : safeHaxeName(method.name);
+    const returns = setterValue ? emitType(setterValue.type, context) : emitType(method.returns, context);
     lines.push(
-      `  ${visibility}${static_}function ${safeHaxeName(method.name)}${emitTypeParameters(method.typeParameters, context)}(${emitParameters(method.parameters, context)}):${emitType(method.returns, context)} {`,
+      `  ${method.accessor ? '' : visibility}${static_}function ${name}${emitTypeParameters(method.typeParameters, context)}(${emitParameters(method.parameters, context)}):${returns} {`,
       ...indentSourceLines(
-        method.async ? emitCompilerHaxeTaskFunctionBody(method, context) : emitStatements(method.body, context),
+        [
+          ...(method.async ? emitCompilerHaxeTaskFunctionBody(method, context) : emitStatements(method.body, context)),
+          ...(setterValue ? [`return ${getBindingTargetNameHaxe(setterValue.binding, context)};`] : []),
+        ],
         2,
       ),
       '  }',

@@ -290,8 +290,13 @@ function lowerClass(node: ts.ClassDeclaration, context: LoweringContext): IrClas
       });
       continue;
     }
-    if (ts.isMethodDeclaration(member)) {
+    if (ts.isMethodDeclaration(member) || ts.isGetAccessor(member) || ts.isSetAccessor(member)) {
       if (!member.body) continue;
+      const accessor = ts.isGetAccessor(member)
+        ? ({ accessor: 'get' } as const)
+        : ts.isSetAccessor(member)
+          ? ({ accessor: 'set' } as const)
+          : {};
       const signature = lowerFunctionSignature(member, context);
       const parameterEntries = lowerParameterBindingEntries(member.parameters, signature.parameters, context);
       const name = propertyName(member.name, context);
@@ -301,6 +306,7 @@ function lowerClass(node: ts.ClassDeclaration, context: LoweringContext): IrClas
         .map((candidate) => lowerFunctionSignature(candidate, context));
       methods.push({
         ...signature,
+        ...accessor,
         async: hasModifier(member, ts.SyntaxKind.AsyncKeyword),
         body: [
           ...parameterEntries,

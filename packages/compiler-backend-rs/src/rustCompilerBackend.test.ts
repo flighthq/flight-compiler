@@ -1030,14 +1030,18 @@ describe('emitIrModuleRust', () => {
     expect(() => emitIrModuleRust(result.module)).toThrow('public declarations share fixed Rust target name FooBar');
   });
 
-  it('rejects class state and expands default-parameter ABI at declarations and calls', () => {
+  it('lowers class state and expands default-parameter ABI at declarations and calls', () => {
     const staticField = lower('config.ts', 'export class Config { static limit: number = 3; value: number = 1; }');
+    const computedStatic = lower('computed.ts', 'export class Config { static limit: number = 1 + 2; }');
     const defaultParameter = lower(
       'default.ts',
       'function choose(first: number, second: number = first + 1): number { return second; } export function read(): number { return choose(1); }',
     );
 
-    expect(() => emitIrModuleRust(staticField.module)).toThrow('static fields require associated-item lowering');
+    // A static field is one value shared by the type, which Rust has as an associated constant — but
+    // only for a constant initializer, since an associated constant has nowhere to run an expression.
+    expect(emitIrModuleRust(staticField.module).contents).toContain('pub const LIMIT: f64 = 3.0;');
+    expect(() => emitIrModuleRust(computedStatic.module)).toThrow('static fields require a constant initializer');
     const output = emitIrModuleRust(defaultParameter.module).contents;
     expect(output).toContain('fn choose(first: f64, second: Option<f64>)');
     expect(output).toContain('let second = second.unwrap_or_else(|| (first + 1.0));');
