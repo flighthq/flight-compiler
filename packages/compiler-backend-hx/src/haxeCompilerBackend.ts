@@ -704,7 +704,40 @@ function emitReexportsHaxe(exports: readonly IrExport[], context: EmitContext): 
   return [...lines].sort();
 }
 
+// A data shape as a class rather than an anonymous structure. Haxe's `@:structInit` keeps the
+// source's own construction syntax working — an object literal still builds it — while the fields
+// become real class fields, which is what the static targets can address by offset. The class is
+// `final` because the source declared a shape, not a base to extend.
+function emitStructInitRecordHaxe(
+  targetName: string,
+  typeParameters: readonly IrTypeParameter[],
+  properties: readonly IrObjectTypeProperty[],
+  context: EmitContext,
+): string[] {
+  return [
+    '@:structInit',
+    `final class ${targetName}${emitTypeParameters(typeParameters, context)} {`,
+    ...properties.map((property) => {
+      const type = emitType(property.type, context);
+      // An optional member has to be defaulted, because `@:structInit` reads a field's default as
+      // permission to leave it out of the literal.
+      return property.optional
+        ? `  public var ${safeHaxeName(property.name)}:${hasIrTypeNullMemberHaxe(property.type) ? type : `Null<${type}>`} = null;`
+        : `  public var ${safeHaxeName(property.name)}:${type};`;
+    }),
+    '}',
+  ];
+}
+
 function emitInterface(declaration: Readonly<IrInterfaceDeclaration>, context: EmitContext): string[] {
+  if (context.options.structuralRecords === 'structInit' && !hasIrModuleClassImplementingHaxe(declaration, context)) {
+    return emitStructInitRecordHaxe(
+      getBindingTargetNameHaxe(declaration.binding, context),
+      declaration.typeParameters,
+      declaration.properties,
+      context,
+    );
+  }
   if (declaration.extends.length > 0)
     emissionError(context, `interface ${declaration.binding.name} inheritance requires structural flattening`);
   // A shape nothing implements stays a typedef, which is what keeps ordinary structural types
@@ -1170,6 +1203,14 @@ function emitTypeDeclaration(declaration: Readonly<IrDeclaration>, context: Emit
 }
 
 function emitTypeAlias(declaration: Readonly<IrTypeAliasDeclaration>, context: EmitContext): string[] {
+  if (context.options.structuralRecords === 'structInit' && declaration.type.kind === 'object') {
+    return emitStructInitRecordHaxe(
+      getBindingTargetNameHaxe(declaration.binding, context),
+      declaration.typeParameters,
+      declaration.type.properties,
+      context,
+    );
+  }
   // Haxe has no union of records. The alternatives share their common fields and differ in the rest,
   // which a single anonymous structure says exactly: shared fields required, the others optional.
   // Every field is then typed, where `Dynamic` typed none of them.

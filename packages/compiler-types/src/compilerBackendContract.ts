@@ -36,6 +36,13 @@ export interface BackendEmissionFailure extends Error, CompilerSourceIdentity {
 
 export interface HaxeCompilerBackendOptions {
   readonly rootPackage?: string | undefined;
+  /**
+   * How a data shape is represented. `anonymous` is the honest structural translation of a
+   * structural source type. `structInit` names it as a class instead, which the static targets give
+   * real field offsets rather than the hashed lookup an anonymous structure resolves to, at the cost
+   * of the structural interchange the source language allows.
+   */
+  readonly structuralRecords?: 'anonymous' | 'structInit' | undefined;
   readonly runtimeModule?: string | undefined;
   readonly upstreamCommit?: string | undefined;
 }

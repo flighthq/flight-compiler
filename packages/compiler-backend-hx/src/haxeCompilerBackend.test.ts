@@ -1023,3 +1023,25 @@ describe('emitIrModuleHaxe', () => {
     );
   });
 });
+
+describe('emitIrModuleHaxe structural record election', () => {
+  it('names a data shape as a class when the backend elects struct initialization', () => {
+    // An anonymous structure resolves its fields by hashed lookup on the static targets, so a target
+    // that cares more about field access than about structural interchange can ask for a class. The
+    // source's own construction syntax still builds it, which is what `@:structInit` is for.
+    const result = lower(
+      'range.ts',
+      'export interface Range { readonly max: number; readonly min?: number; } export function widen(range: Range, by: number): Range { return { max: range.max + by, min: 0 }; }',
+    );
+    const anonymous = emitIrModuleHaxe(result.module).contents;
+    const nominal = emitIrModuleHaxe(result.module, { structuralRecords: 'structInit' }).contents;
+
+    expect(anonymous).toContain('typedef Range = { max:Float, ?min:Float };');
+    expect(nominal).toContain('@:structInit\nfinal class Range {');
+    expect(nominal).toContain('  public var max:Float;');
+    // An optional member is defaulted, because a missing default makes the field required.
+    expect(nominal).toContain('  public var min:Null<Float> = null;');
+    // The construction site is unchanged either way, which is what makes the election an option.
+    expect(nominal).toContain('return { max: (range.max + by), min: 0 };');
+  });
+});
