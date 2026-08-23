@@ -5,6 +5,7 @@ import {
   createBackendEmissionFailure,
   createCompilerGeneratedFileHeader,
   createIrModuleTargetNameAllocation,
+  getIrUnionTypeStringLiteralValues,
   hasIrTypeAbsentMember,
   indentSourceLines,
   normalizeSourceTextGrouping,
@@ -1666,7 +1667,22 @@ function emitType(type: Readonly<IrType>, context: EmitContext): string {
   }
 }
 
+// A union of string literals is how the source language spells a closed set of names, and the source
+// treats a value of it as a string everywhere: comparing it, returning it, storing it in a string
+// field. Rust has no implicit conversion, so a unit-variant enum would need a coercion inserted at
+// every one of those positions — type-directed work this backend does not do yet.
+//
+// So the set becomes the string it is made of, and the closed-ness is what is lost. Haxe keeps the
+// enum because `from String to String` gives it exactly those coercions for free; that the two
+// targets diverge here is a property of the targets, not an inconsistency in the compiler.
+function emitStringLiteralUnionRust(declaration: Readonly<IrTypeAliasDeclaration>, context: EmitContext): string[] {
+  return [
+    `${declaration.exported ? 'pub ' : ''}type ${getBindingTargetNameRust(declaration.binding, context)} = String;`,
+  ];
+}
+
 function emitTypeAlias(declaration: Readonly<IrTypeAliasDeclaration>, context: EmitContext): string[] {
+  if (getIrUnionTypeStringLiteralValues(declaration.type)) return emitStringLiteralUnionRust(declaration, context);
   if (declaration.type.kind === 'union' && getIrUnionTypeMemberRecordsRust(declaration.type, context)) {
     return emitTaggedUnionRust(
       getBindingTargetNameRust(declaration.binding, context),

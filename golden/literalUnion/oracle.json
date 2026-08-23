@@ -1,0 +1,4 @@
+[
+  { "call": "describe", "arguments": ["fast"], "returns": "string" },
+  { "call": "describe", "arguments": ["safe"], "returns": "string" }
+]

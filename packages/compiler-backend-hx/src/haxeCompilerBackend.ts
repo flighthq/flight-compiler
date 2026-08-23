@@ -5,6 +5,7 @@ import {
   createBackendEmissionFailure,
   createCompilerGeneratedFileHeader,
   createIrModuleTargetNameAllocation,
+  getIrUnionTypeStringLiteralValues,
   hasIrTypeAbsentMember,
   indentSourceLines,
   normalizeSourceTextGrouping,
@@ -1225,7 +1226,24 @@ function emitTypeDeclaration(declaration: Readonly<IrDeclaration>, context: Emit
   }
 }
 
+// A union of string literals is how the source language spells a closed set of names, and it is what
+// Haxe's `enum abstract` over `String` is for. `from String to String` keeps the comparisons the
+// source already wrote working, so nothing at the use site has to change.
+function emitStringLiteralUnionHaxe(
+  declaration: Readonly<IrTypeAliasDeclaration>,
+  values: readonly string[],
+  context: EmitContext,
+): string[] {
+  return [
+    `enum abstract ${getBindingTargetNameHaxe(declaration.binding, context)}(String) from String to String {`,
+    ...values.map((value) => `  var ${safeHaxeTypeName(value)} = ${JSON.stringify(value)};`),
+    '}',
+  ];
+}
+
 function emitTypeAlias(declaration: Readonly<IrTypeAliasDeclaration>, context: EmitContext): string[] {
+  const literals = getIrUnionTypeStringLiteralValues(declaration.type);
+  if (literals) return emitStringLiteralUnionHaxe(declaration, literals, context);
   if (context.options.structuralRecords === 'structInit' && declaration.type.kind === 'object') {
     return emitStructInitRecordHaxe(
       getBindingTargetNameHaxe(declaration.binding, context),
