@@ -18,6 +18,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
+    "@flighthq/compiler-ambient": "*",
     "@flighthq/compiler-canonical-form": "*",
     "@flighthq/compiler-completion": "*",
     "@flighthq/compiler-ir-traversal": "*",

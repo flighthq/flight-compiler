@@ -237,7 +237,12 @@ function addIrExpressionRustOwnershipMutation(
   // Growing a collection mutates what the receiver names, the same way assigning into it does. Only
   // members the neutral model resolved are read here: a member name alone cannot say whether the call
   // mutates, which is why the resolution happens where the written type is still in hand.
-  if (expression.kind === 'call' && expression.callee.kind === 'property' && expression.callee.member === 'arrayPush') {
+  if (
+    expression.kind === 'call' &&
+    expression.callee.kind === 'property' &&
+    expression.callee.member?.receiver === 'array' &&
+    expression.callee.member.name === 'push'
+  ) {
     const receiver = expression.callee.object;
     if (receiver.kind === 'identifier' && receiver.reference.kind === 'binding') {
       addRustOwnershipUseDraft(

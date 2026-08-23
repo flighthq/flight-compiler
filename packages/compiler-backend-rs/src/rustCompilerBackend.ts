@@ -73,6 +73,7 @@ import type {
   IrVariable,
   IrVariableDeclaration,
 } from '../../compiler-types/src/index.js';
+import { getCompilerRustAmbientMemberBinding } from './rustAmbientMemberBinding.js';
 import {
   convertPackageNameToRustCrateName,
   convertSourcePathToRustModuleName,
@@ -603,12 +604,37 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
       // Rust joins a slice of strings with a borrowed separator, while the source hands it an owned
       // one. The separator is the only argument, so the borrow is decided here rather than by a
       // general rule about where an owned string may stand.
-      if (expression.callee.kind === 'property' && expression.callee.member === 'arrayJoin') {
+      if (
+        expression.callee.kind === 'property' &&
+        expression.callee.member?.receiver === 'array' &&
+        expression.callee.member.name === 'join'
+      ) {
         const separator = expression.arguments[0];
         if (expression.arguments.length !== 1 || !separator) {
           emissionError(context, 'joining a collection requires exactly one separator argument');
         }
         return `${emitExpression(expression.callee.object, context)}.join(${emitBorrowedTextRust(separator, context)})`;
+      }
+      if (expression.callee.kind === 'property' && expression.callee.member) {
+        const binding = getCompilerRustAmbientMemberBinding(expression.callee.member);
+        if (binding && binding.kind !== 'countingMethod') {
+          const receiver = emitExpression(expression.callee.object, context);
+          const values = expression.arguments.map((argument) =>
+            binding.kind === 'borrowedMethod'
+              ? emitBorrowedTextRust(argument, context)
+              : emitExpression(argument, context),
+          );
+          // Rust reaches a collection's shape through an iterator, and the result has to be collected
+          // back into the collection the source was holding.
+          if (binding.kind === 'iterator') {
+            const closure = binding.borrowsElement
+              ? emitBorrowedElementClosureRust(expression.arguments[0], context)
+              : values[0];
+            return `${receiver}.into_iter().${binding.targetName}(${closure ?? ''})${binding.collect ? '.collect::<Vec<_>>()' : ''}`;
+          }
+          const trailing = binding.kind === 'borrowedMethod' ? (binding.trailingArguments ?? []) : [];
+          return `${receiver}.${binding.targetName}(${[...values, ...trailing].join(', ')})${binding.owns ? '.to_owned()' : ''}`;
+        }
       }
       return `${expression.callee.kind === 'function' ? `(${emitExpression(expression.callee, context)})` : emitExpression(expression.callee, context)}(${emitCallArgumentsRust(expression, context).join(', ')})`;
     case 'cast':
@@ -655,8 +681,16 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
       if (expression.optional) return emitOptionalPropertyExpressionRust(expression, context);
       // Rust spells a collection's length `len()`, and it counts in `usize` while the neutral numeric
       // domain is one type. The cast is what keeps the comparison it feeds well typed.
-      if (expression.member === 'arrayLength') {
-        return `(${emitExpression(expression.object, context)}.len() as f64)`;
+      // A member of the ambient surface is spelled by the table, not by the source's name. Rust
+      // counts in `usize`, so a counting member is cast back into the neutral numeric domain.
+      if (expression.member) {
+        const binding = getCompilerRustAmbientMemberBinding(expression.member);
+        if (!binding) {
+          emissionError(context, `${expression.member.receiver} member ${expression.member.name} has no Rust binding`);
+        }
+        if (binding.kind === 'countingMethod') {
+          return `(${emitExpression(expression.object, context)}.${binding.targetName}() as f64)`;
+        }
       }
       // A union is a closed set of alternatives in Rust, so its fields are not reachable by name.
       // A reference control flow narrowed to one alternative reads that alternative's own field; an
@@ -1268,6 +1302,30 @@ function emitLentOperandRust(expression: Readonly<IrExpression>, context: EmitCo
     context.referentMutatedParameterIds.has(expression.reference.binding.id)
     ? source
     : `&mut ${source}`;
+}
+
+// A closure an iterator adaptor hands a reference to. The source wrote it for the element, so the
+// reference is destructured away at the binding — which Rust allows for a value it can copy, and
+// which is why an element it cannot copy is refused rather than silently borrowed.
+function emitBorrowedElementClosureRust(expression: Readonly<IrExpression> | undefined, context: EmitContext): string {
+  if (expression?.kind !== 'function') {
+    return emissionError(context, 'filtering requires a closure written where the predicate is passed');
+  }
+  const parameters = expression.parameters.map((parameter, index) => {
+    if (index > 0) return getBindingTargetNameRust(parameter.binding, context);
+    if (!isIrTypeCopyValueRust(parameter.type)) {
+      emissionError(context, 'filtering an element Rust cannot copy requires a borrowed predicate lowering');
+    }
+    return `&${getBindingTargetNameRust(parameter.binding, context)}`;
+  });
+  const body = expression.expression
+    ? emitExpression(expression.expression, context)
+    : `{\n${indentSourceLines(emitStatements(expression.body, context)).join('\n')}\n}`;
+  return `|${parameters.join(', ')}| ${body}`;
+}
+
+function isIrTypeCopyValueRust(type: Readonly<IrType>): boolean {
+  return type.kind === 'primitive' && (type.name === 'boolean' || type.name === 'number');
 }
 
 // Text in a position Rust borrows rather than owns. A literal is already a `&str` before it is

@@ -1,3 +1,7 @@
+export type {
+  CompilerHaxeAmbientMemberBinding,
+  CompilerRustAmbientMemberBinding,
+} from './compilerAmbientMemberBindingContract.js';
 export type * from './compilerAccessSemanticIntermediateRepresentation.js';
 export type * from './compilerAsyncStateMachineContract.js';
 export type * from './compilerAsyncTaskCompletionContract.js';

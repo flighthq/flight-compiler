@@ -8,6 +8,7 @@ export * from '../../compiler-ir-traversal/src/index.js';
 export * from '../../compiler-ir-validation/src/index.js';
 export * from '../../compiler-lowering/src/index.js';
 export * from '../../compiler-module/src/index.js';
+export * from '../../compiler-ambient/src/index.js';
 export * from '../../compiler-canonical-form/src/index.js';
 export * from '../../compiler-orchestration/src/index.js';
 export * from '../../compiler-patch/src/index.js';

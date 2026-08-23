@@ -1,0 +1,8 @@
+[
+  { "call": "doubled", "arguments": [[1, 2, 3]], "returns": "numbers" },
+  { "call": "positives", "arguments": [[-1, 2, -3, 4]], "returns": "numbers" },
+  { "call": "shout", "arguments": ["hey"], "returns": "string" },
+  { "call": "tidy", "arguments": ["  pad  "], "returns": "string" },
+  { "call": "leads", "arguments": ["going"], "returns": "boolean" },
+  { "call": "leads", "arguments": ["stop"], "returns": "boolean" }
+]

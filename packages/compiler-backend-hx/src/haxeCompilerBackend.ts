@@ -70,6 +70,7 @@ import type {
   IrVariable,
   IrVariableDeclaration,
 } from '../../compiler-types/src/index.js';
+import { getCompilerHaxeAmbientMemberBinding } from './haxeAmbientMemberBinding.js';
 import { convertPackageNameToHaxePackageName, convertSourcePathToHaxeModuleName } from './haxeCompilerIdentity.js';
 import { createCompilerRuntimeExternalConstructorAbiPlanHaxe } from './haxeRuntimeExternalConstructorAbi.js';
 import {
@@ -476,6 +477,17 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
       return `(${left} ${emitBinaryOperatorHaxe(expression.operator, expression.semantics, context)} ${right})`;
     }
     case 'call': {
+      const ambient = expression.callee.kind === 'property' ? expression.callee.member : undefined;
+      if (ambient && expression.callee.kind === 'property') {
+        const binding = getCompilerHaxeAmbientMemberBinding(ambient);
+        if (binding && binding.kind !== 'property') {
+          const receiver = emitExpression(expression.callee.object, context);
+          const values = expression.arguments.map((argument) => emitExpression(argument, context));
+          return binding.kind === 'staticCall'
+            ? `${binding.targetPath}(${[receiver, ...values].join(', ')})`
+            : `${receiver}.${binding.targetName}(${values.join(', ')})`;
+        }
+      }
       if (expression.semantics.statementValue) return emitStatementValueExpressionHaxe(expression, context);
       if (expression.arguments.some((argument) => argument.kind === 'spread')) {
         return emitSpreadCallHaxe(expression, context);
@@ -549,6 +561,17 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
       return `(function() { final ${name} = Reflect.copy(${emitExpression(expression.object, context)}); ${exclusions} return ${name}; })()`;
     }
     case 'property': {
+      // A member of the ambient surface is spelled by the table, not by the source's name. A member
+      // with no binding is refused here rather than emitted and hoped for.
+      if (expression.member) {
+        const binding = getCompilerHaxeAmbientMemberBinding(expression.member);
+        if (!binding) {
+          emissionError(context, `${expression.member.receiver} member ${expression.member.name} has no Haxe binding`);
+        }
+        if (binding.kind === 'property') {
+          return `${emitExpression(expression.object, context)}.${binding.targetName}`;
+        }
+      }
       // A union alias flattens to one structure whose non-shared fields are optional, so reading one
       // yields a nullable where the source proved a value. The proof is control flow's, and the cast
       // is how Haxe carries it: it names the alternative the reference was narrowed to.

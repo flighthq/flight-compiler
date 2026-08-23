@@ -43,6 +43,10 @@ interface PackageRule {
 }
 
 const packageRules: Readonly<Record<string, PackageRule>> = {
+  'compiler-ambient': {
+    dependencies: [],
+    description: 'The ambient value and type surface generated code may assume',
+  },
   'compiler-backend-hx': {
     dependencies: [
       'compiler-canonical-form',
@@ -144,6 +148,7 @@ const packageRules: Readonly<Record<string, PackageRule>> = {
   },
   'compiler-semantic': {
     dependencies: [
+      'compiler-ambient',
       'compiler-canonical-form',
       'compiler-completion',
       'compiler-ir-traversal',

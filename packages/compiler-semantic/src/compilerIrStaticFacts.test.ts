@@ -44,13 +44,23 @@ describe('analyzeIrModulesStaticFacts', () => {
           right: 'boolean',
         },
         {
-          count: 1,
+          // Three, not one: with the ambient surface loaded the checker types an indexed read of a
+          // `number[]`, so every `+=` over one is arithmetic rather than an unknown operand.
+          count: 3,
           kind: 'numericArithmetic',
           left: { declared: 'number', flow: 'number' },
           operation: 'assignment',
           operator: '+=',
           result: 'number',
           right: { declared: 'number', flow: 'number' },
+        },
+        {
+          count: 1,
+          kind: 'numericArithmetic',
+          operand: { declared: 'number', flow: 'number' },
+          operation: 'postfixUnary',
+          operator: '++',
+          result: 'number',
         },
         { count: 1, domain: 'number', kind: 'numericRelation' },
         { context: 'conditionalExpression', count: 1, domain: 'unknown', kind: 'truthiness' },
@@ -354,6 +364,17 @@ describe('analyzeIrModulesStaticFacts', () => {
     expect(lowered.diagnostics).toEqual([]);
     expect(analyzeIrModulesStaticFacts([lowered.module]).facts).toEqual([
       { access: 'read', count: 2, kind: 'indexedAccess', receivers: ['array'] },
+      // The ambient surface types an indexed read, so adding two of them is arithmetic rather than an
+      // operation over unknowns.
+      {
+        count: 1,
+        kind: 'numericArithmetic',
+        left: { declared: 'number', flow: 'number' },
+        operation: 'binary',
+        operator: '+',
+        result: 'number',
+        right: { declared: 'number', flow: 'number' },
+      },
       { context: 'controlFlowCondition', count: 1, domain: 'unknown', kind: 'truthiness' },
     ]);
   });

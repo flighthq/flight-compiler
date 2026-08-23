@@ -48,6 +48,7 @@ Haxe is the first integration target and defines the initial compatibility bar. 
 
 The repository follows Flight's package-per-domain convention. Internal workspace names always use the `compiler-` prefix so they remain unambiguous beside standard Flight packages:
 
+- `packages/compiler-ambient/`: the ambient value and type surface generated code may assume, declared in TypeScript.
 - `packages/compiler-types/`: every shared compiler contract, diagnostic shape, and target-neutral IR type.
 - `packages/compiler-closure/`: target-neutral closure capture, escape, mutation, and lifetime evidence.
 - `packages/compiler-inventory/`: read-only package, export-lane, symbol, and runtime-value analysis.
@@ -88,6 +89,7 @@ Complexity usually means a unit is hiding smaller primitives. Decompose until ea
 The dependency floor is deliberate:
 
 - `compiler-types` defines vocabulary and contracts without implementation dependencies.
+- `compiler-ambient` declares the ambient surface as TypeScript text and depends on nothing. It is the other projection of what the backends' runtime binding tables name: a table says what `Promise` becomes, this says what `Promise` has on it. A member it declares that a backend has not bound is refused at emission, not guessed.
 - `compiler-closure` derives representation-free closure obligations over shared IR traversal.
 - `compiler-provenance` defines deterministic normalization and exact source-fingerprint identity over shared contracts and portable canonical form.
 - `compiler-patch` depends on shared contracts, deterministic canonical form, and exact provenance identity; `compiler-emission` depends only on its contracts and canonical form.

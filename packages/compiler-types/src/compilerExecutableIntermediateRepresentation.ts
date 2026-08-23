@@ -28,6 +28,16 @@ export type IrParameter = Omit<IrFunctionTypeParameter, 'name'> &
   Readonly<{ binding: IrBindingIdentity }> &
   (Readonly<{ initializer?: never; optional: false }> | Readonly<{ initializer?: IrExpression; optional: true }>);
 
+// A member of the ambient surface, named together with the kind of value it was resolved against.
+// This is what lets a backend decide a spelling from a table rather than from a name it hopes is
+// unique, and what lets it refuse a member it has not decided how to lower.
+export type IrResolvedMemberReceiver = 'array' | 'map' | 'number' | 'set' | 'string' | 'task' | 'tuple';
+
+export interface IrResolvedMember {
+  readonly name: string;
+  readonly receiver: IrResolvedMemberReceiver;
+}
+
 export interface IrIdentifierExpression {
   readonly kind: 'identifier';
   // Which member of a union-typed binding control flow has proved this reference to hold, named by
@@ -141,10 +151,10 @@ export type IrExpression =
       // the member; a target that represents absence in the type needs both.
       absent?: 'optionalMember' | undefined;
       kind: 'property';
-      // Which built-in member the written type resolved this to, where the targets spell it
-      // differently. An array's length is `length` in one target and `len()` in another, and the
-      // property name alone cannot tell an array's length from a field that happens to be called one.
-      member?: 'arrayJoin' | 'arrayLength' | 'arrayPush' | undefined;
+      // Which built-in member the written type resolved this to. The property name alone cannot tell
+      // an array's `length` from a field that happens to be called one, and every target spells the
+      // ambient surface differently, so the receiver it was resolved against travels with the name.
+      member?: IrResolvedMember | undefined;
       name: string;
       object: IrExpression;
       optional: boolean;

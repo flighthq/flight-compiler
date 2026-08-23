@@ -1,0 +1,47 @@
+import type { CompilerHaxeAmbientMemberBinding, IrResolvedMember } from '../../compiler-types/src/index.js';
+
+// How Haxe spells a member of the ambient surface.
+//
+// A rename is the common case and stays data. A member Haxe puts somewhere else entirely — `trim` is
+// a `StringTools` function, not a method — is a static call with the receiver as its first argument.
+// A member absent from this table has no agreed Haxe spelling and is refused rather than guessed at,
+// because a name that happens to exist on the target is the most expensive kind of coincidence.
+
+export function getCompilerHaxeAmbientMemberBinding(
+  member: Readonly<IrResolvedMember>,
+): CompilerHaxeAmbientMemberBinding | undefined {
+  return haxeAmbientMemberBindings[`${member.receiver}.${member.name}`];
+}
+
+const haxeAmbientMemberBindings: Readonly<Record<string, CompilerHaxeAmbientMemberBinding>> = {
+  'array.concat': { kind: 'method', targetName: 'concat' },
+  'array.filter': { kind: 'method', targetName: 'filter' },
+  'array.indexOf': { kind: 'method', targetName: 'indexOf' },
+  'array.join': { kind: 'method', targetName: 'join' },
+  'array.lastIndexOf': { kind: 'method', targetName: 'lastIndexOf' },
+  'array.length': { kind: 'property', targetName: 'length' },
+  'array.map': { kind: 'method', targetName: 'map' },
+  'array.pop': { kind: 'method', targetName: 'pop' },
+  'array.push': { kind: 'method', targetName: 'push' },
+  'array.reverse': { kind: 'method', targetName: 'reverse' },
+  'array.shift': { kind: 'method', targetName: 'shift' },
+  'array.slice': { kind: 'method', targetName: 'slice' },
+  'array.unshift': { kind: 'method', targetName: 'unshift' },
+  'number.toString': { kind: 'method', targetName: 'toString' },
+  'string.charAt': { kind: 'method', targetName: 'charAt' },
+  'string.charCodeAt': { kind: 'method', targetName: 'charCodeAt' },
+  'string.endsWith': { kind: 'staticCall', targetPath: 'StringTools.endsWith' },
+  'string.indexOf': { kind: 'method', targetName: 'indexOf' },
+  'string.lastIndexOf': { kind: 'method', targetName: 'lastIndexOf' },
+  'string.length': { kind: 'property', targetName: 'length' },
+  // `string.replace` is deliberately absent. The source language replaces the first occurrence and
+  // `StringTools.replace` replaces every one, so binding them to each other would be silently wrong
+  // — the kind of wrong that compiles. It needs a runtime helper or an inline lowering, not a rename.
+  'string.split': { kind: 'method', targetName: 'split' },
+  'string.startsWith': { kind: 'staticCall', targetPath: 'StringTools.startsWith' },
+  'string.substring': { kind: 'method', targetName: 'substring' },
+  'string.toLowerCase': { kind: 'method', targetName: 'toLowerCase' },
+  'string.toUpperCase': { kind: 'method', targetName: 'toUpperCase' },
+  'string.trim': { kind: 'staticCall', targetPath: 'StringTools.trim' },
+  'tuple.length': { kind: 'property', targetName: 'length' },
+};

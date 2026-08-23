@@ -2,6 +2,7 @@ import path from 'node:path';
 
 import ts from 'typescript';
 
+import { createCompilerAmbientSurfaceSource } from '../../compiler-ambient/src/index.js';
 import { normalizePathPortable } from '../../compiler-canonical-form/src/index.js';
 import {
   createIrAwaitSemantics,
@@ -52,6 +53,7 @@ import type {
   IrOperatorOperandDomains,
   IrOperatorValueDomain,
   IrParameter,
+  IrResolvedMemberReceiver,
   IrParameterProvidedArgumentInvocationSemantics,
   IrPostfixUnaryOperator,
   IrPrefixUnaryOperator,
@@ -586,15 +588,8 @@ function lowerExpression(
   if (ts.isPropertyAccessExpression(node)) {
     const optional = node.questionDotToken !== undefined;
     const receiver = getTypeScriptExpressionBindingTypeEvidence(node.expression, context);
-    const indexed = receiver?.kind === 'array' || receiver?.kind === 'tuple';
-    const member =
-      indexed && node.name.text === 'length'
-        ? ({ member: 'arrayLength' } as const)
-        : receiver?.kind === 'array' && node.name.text === 'join'
-          ? ({ member: 'arrayJoin' } as const)
-          : receiver?.kind === 'array' && node.name.text === 'push'
-            ? ({ member: 'arrayPush' } as const)
-            : {};
+    const resolved = getIrResolvedMemberReceiver(receiver);
+    const member = resolved ? { member: { name: node.name.text, receiver: resolved } } : {};
     const absent = isTypeScriptOptionalMemberAccess(node, context) ? ({ absent: 'optionalMember' } as const) : {};
     return {
       kind: 'property',
@@ -1576,7 +1571,7 @@ function lowerFunctionTypeParameter(node: ts.ParameterDeclaration, context: Lowe
     ? lowerType(node.type, context)
     : node.initializer
       ? inferInitializerType(node.initializer, context)
-      : { kind: 'unknown', source: 'any' };
+      : (getTypeScriptContextualParameterType(node, context) ?? { kind: 'unknown', source: 'any' });
   const value = { name: ts.isIdentifier(node.name) ? node.name.text : 'parameterPatternValue', type };
   if (node.dotDotDotToken) {
     if (node.questionToken || node.initializer) unsupported(node, 'rest parameters cannot be optional or defaulted');
@@ -2160,6 +2155,9 @@ function lowerTypeNameNodeReference(
   const parts = getTypeNameNodeParts(node);
   if (!parts) return { kind: 'ambient', name: node.getText(context.sourceFile) };
   const symbol = context.checker.getSymbolAtLocation(parts.root);
+  if (isTypeScriptAmbientSurfaceSymbol(symbol)) {
+    return { kind: 'ambient', name: node.getText(context.sourceFile) };
+  }
   if (symbol?.declarations?.some(isValueBindingDeclaration)) {
     return { binding: lowerBindingSymbol(symbol, parts.root, context), kind: 'binding', path: parts.path };
   }
@@ -2173,7 +2171,7 @@ function lowerValueNameReference(node: ts.EntityName, context: LoweringContext):
   const parts = getTypeNameNodeParts(node);
   if (!parts) return { kind: 'ambient', name: node.getText(context.sourceFile) };
   const symbol = context.checker.getSymbolAtLocation(parts.root);
-  return symbol?.declarations?.some(isValueBindingDeclaration)
+  return symbol?.declarations?.some(isValueBindingDeclaration) && !isTypeScriptAmbientSurfaceSymbol(symbol)
     ? { binding: lowerBindingSymbol(symbol, parts.root, context), kind: 'binding', path: parts.path }
     : { kind: 'ambient', name: node.getText(context.sourceFile) };
 }
@@ -3087,6 +3085,17 @@ function getTypeScriptReferenceNarrowedMember(
 // Whether the written type declares this member optional. The declaration is the authority rather
 // than the checker's type, because a checker with no library types reports too little and because
 // what a target needs to know is what the source wrote.
+// Which kind of ambient value this member was read from. Only the written type answers: a checker
+// with the ambient surface loaded would also answer for a value the source never described, and a
+// backend cannot bind a member whose receiver it cannot name.
+function getIrResolvedMemberReceiver(type: Readonly<IrType> | undefined): IrResolvedMemberReceiver | undefined {
+  if (!type) return undefined;
+  if (type.kind === 'array') return 'array';
+  if (type.kind === 'tuple') return 'tuple';
+  if (type.kind !== 'primitive') return undefined;
+  return type.name === 'string' ? 'string' : type.name === 'number' ? 'number' : undefined;
+}
+
 function isTypeScriptOptionalMemberAccess(node: ts.PropertyAccessExpression, context: LoweringContext): boolean {
   const declaration = context.checker.getSymbolAtLocation(node.name)?.declarations?.[0];
   return (
@@ -3099,6 +3108,39 @@ function isTypeScriptOptionalMemberAccess(node: ts.PropertyAccessExpression, con
 function getTypeScriptNamedTypeMemberName(type: ts.Type): string | undefined {
   const name = type.aliasSymbol?.name ?? type.getSymbol()?.name;
   return name && name !== '__type' && name !== '__object' ? name : undefined;
+}
+
+// What a callback's parameter holds, when the source did not annotate it and the position it was
+// passed to decides. `values.map((value) => value * 2)` writes no type for `value`; the ambient
+// surface says `map` takes `(value: T, index: number) => U` and the checker instantiates `T`. That
+// instantiation is the checker's work, not syntax, so this is the one place a checker type is read
+// back into the neutral model — and only for the shapes a target can name without guessing.
+function getTypeScriptContextualParameterType(
+  node: ts.ParameterDeclaration,
+  context: LoweringContext,
+): Readonly<IrType> | undefined {
+  if (!ts.isIdentifier(node.name)) return undefined;
+  return getTypeScriptCheckerTypeEvidence(context.checker.getTypeAtLocation(node), context.checker, 0);
+}
+
+function getTypeScriptCheckerTypeEvidence(
+  type: ts.Type,
+  checker: ts.TypeChecker,
+  depth: number,
+): Readonly<IrType> | undefined {
+  if (depth > 4) return undefined;
+  if (type.flags & ts.TypeFlags.BooleanLike) return { kind: 'primitive', name: 'boolean' };
+  if (type.flags & ts.TypeFlags.NumberLike) return { kind: 'primitive', name: 'number' };
+  if (type.flags & ts.TypeFlags.StringLike) return { kind: 'primitive', name: 'string' };
+  if (type.flags & ts.TypeFlags.Void) return { kind: 'primitive', name: 'void' };
+  if (type.flags & ts.TypeFlags.Undefined) return { kind: 'undefined' };
+  if (type.flags & ts.TypeFlags.Null) return { kind: 'null' };
+  if (checker.isArrayType(type)) {
+    const element = checker.getTypeArguments(type as ts.TypeReference)[0];
+    const lowered = element ? getTypeScriptCheckerTypeEvidence(element, checker, depth + 1) : undefined;
+    return lowered ? { element: lowered, kind: 'array', readonly: false } : undefined;
+  }
+  return undefined;
 }
 
 function hasIrTypeAbsentMemberSemantic(type: Readonly<IrType>): boolean {
@@ -3206,18 +3248,35 @@ function createTypeScriptAnalysis(sourceFile: ts.SourceFile): TypeScriptAnalysis
     sourceFile.languageVersion,
     true,
   );
+  // The only library the analysis checker sees is the one this compiler declares. `noLib` stays on
+  // so nothing from the machine's installed definitions can leak in and be typed against a member no
+  // backend has agreed to lower.
+  const surfaceFile = ts.createSourceFile(
+    ambientSurfaceFileName,
+    createCompilerAmbientSurfaceSource(),
+    analysisSourceFile.languageVersion,
+    true,
+  );
   const options: ts.CompilerOptions = {
     noLib: true,
     noResolve: true,
     strictNullChecks: true,
     target: analysisSourceFile.languageVersion,
   };
+  const files = new Map([
+    [analysisSourceFile.fileName, analysisSourceFile],
+    [surfaceFile.fileName, surfaceFile],
+  ]);
   const host = ts.createCompilerHost(options, true);
-  host.fileExists = (file) => file === analysisSourceFile.fileName;
-  host.getSourceFile = (file) => (file === analysisSourceFile.fileName ? analysisSourceFile : undefined);
-  host.readFile = (file) => (file === analysisSourceFile.fileName ? analysisSourceFile.text : undefined);
+  host.fileExists = (file) => files.has(file);
+  host.getSourceFile = (file) => files.get(file);
+  host.readFile = (file) => files.get(file)?.text;
   host.writeFile = () => undefined;
-  const program = ts.createProgram({ host, options, rootNames: [analysisSourceFile.fileName] });
+  const program = ts.createProgram({
+    host,
+    options,
+    rootNames: [surfaceFile.fileName, analysisSourceFile.fileName],
+  });
   return { checker: program.getTypeChecker(), sourceFile: analysisSourceFile };
 }
 
@@ -3226,9 +3285,19 @@ function lowerIdentifierReference(node: ts.Identifier, context: LoweringContext)
     ts.isShorthandPropertyAssignment(node.parent) && node.parent.name === node
       ? context.checker.getShorthandAssignmentValueSymbol(node.parent)
       : context.checker.getSymbolAtLocation(node);
-  return symbol?.declarations?.some(isValueBindingDeclaration)
+  return symbol?.declarations?.some(isValueBindingDeclaration) && !isTypeScriptAmbientSurfaceSymbol(symbol)
     ? { binding: lowerBindingSymbol(symbol, node, context), kind: 'binding' }
     : { kind: 'ambient', name: node.text };
+}
+
+// A name the ambient surface declares is ambient however well the checker resolves it. The surface
+// exists so those names can be typed, not so they become bindings this module introduced — a binding
+// whose declaration lives outside the module has nowhere to be introduced.
+function isTypeScriptAmbientSurfaceSymbol(symbol: ts.Symbol | undefined): boolean {
+  return (
+    symbol?.declarations?.some((declaration) => declaration.getSourceFile().fileName === ambientSurfaceFileName) ===
+    true
+  );
 }
 
 function addTypeScriptBindingTypeEvidence(node: ts.Identifier, type: Readonly<IrType>, context: LoweringContext): void {
@@ -3565,3 +3634,5 @@ function visibility(node: ts.Node): 'private' | 'protected' | 'public' {
   if (hasModifier(node, ts.SyntaxKind.ProtectedKeyword)) return 'protected';
   return 'public';
 }
+
+const ambientSurfaceFileName = '/flight-compiler/ambient-surface.d.ts';
