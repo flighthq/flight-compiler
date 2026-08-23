@@ -1,5 +1,7 @@
 import ts from 'typescript';
 
+import { getCompilerAmbientSurfaceFileName } from '../../compiler-ambient/src/index.js';
+
 export function createTypeScriptSyntacticAliasSubstitutions(
   reference: ts.TypeReferenceNode,
   declaration: ts.TypeAliasDeclaration,
@@ -66,6 +68,10 @@ function getTypeScriptSyntacticExpressionTypeEvidenceAt(
   if (ts.isAsExpression(expression) || ts.isTypeAssertionExpression(expression)) return expression.type;
   if (ts.isCallExpression(expression)) {
     const type = checker.getResolvedSignature(expression)?.declaration?.type;
+    // A signature the ambient surface declares is written in the surface's own type parameters. Those
+    // mean nothing in the module being lowered — reading `T[]` back as module syntax produces an
+    // ambient type named `T` that no target can bind — so the surface's own nodes stop here.
+    if (type?.getSourceFile().fileName === getCompilerAmbientSurfaceFileName()) return undefined;
     return type && ts.isTypeNode(type) ? type : undefined;
   }
   const symbol = checker.getSymbolAtLocation(expression);

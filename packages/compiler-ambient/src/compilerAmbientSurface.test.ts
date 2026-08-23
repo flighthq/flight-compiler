@@ -1,7 +1,7 @@
 import ts from 'typescript';
 import { describe, expect, it } from 'vitest';
 
-import { createCompilerAmbientSurfaceSource } from './compilerAmbientSurface.js';
+import { createCompilerAmbientSurfaceSource, getCompilerAmbientSurfaceFileName } from './compilerAmbientSurface.js';
 
 describe('createCompilerAmbientSurfaceSource', () => {
   it('parses as TypeScript declarations, since a checker is what reads it', () => {
@@ -29,5 +29,14 @@ describe('createCompilerAmbientSurfaceSource', () => {
 
   it('returns the same text every call, because it is analysis input rather than state', () => {
     expect(createCompilerAmbientSurfaceSource()).toBe(createCompilerAmbientSurfaceSource());
+  });
+});
+
+describe('getCompilerAmbientSurfaceFileName', () => {
+  it('names the file the surface is presented as, which is the boundary readers check against', () => {
+    // A node reached through the surface does not belong to the module being lowered, and every
+    // reader that walks back to a declaration compares against this name to tell.
+    expect(getCompilerAmbientSurfaceFileName()).toMatch(/\.d\.ts$/u);
+    expect(getCompilerAmbientSurfaceFileName()).toBe(getCompilerAmbientSurfaceFileName());
   });
 });

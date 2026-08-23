@@ -1,0 +1,8 @@
+[
+  { "call": "hasValue", "arguments": [[1, 2, 3], 2], "returns": "boolean" },
+  { "call": "hasValue", "arguments": [[1, 2, 3], 9], "returns": "boolean" },
+  { "call": "anyPositive", "arguments": [[-1, 5]], "returns": "boolean" },
+  { "call": "anyPositive", "arguments": [[-1, -5]], "returns": "boolean" },
+  { "call": "allPositive", "arguments": [[1, 5]], "returns": "boolean" },
+  { "call": "allPositive", "arguments": [[1, -5]], "returns": "boolean" }
+]

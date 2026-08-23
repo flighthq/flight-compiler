@@ -15,7 +15,10 @@ export function getCompilerHaxeAmbientMemberBinding(
 
 const haxeAmbientMemberBindings: Readonly<Record<string, CompilerHaxeAmbientMemberBinding>> = {
   'array.concat': { kind: 'method', targetName: 'concat' },
+  'array.every': { kind: 'staticCall', targetPath: 'Lambda.foreach' },
   'array.filter': { kind: 'method', targetName: 'filter' },
+  'array.find': { kind: 'staticCall', targetPath: 'Lambda.find' },
+  'array.includes': { kind: 'method', targetName: 'contains' },
   'array.indexOf': { kind: 'method', targetName: 'indexOf' },
   'array.join': { kind: 'method', targetName: 'join' },
   'array.lastIndexOf': { kind: 'method', targetName: 'lastIndexOf' },
@@ -23,7 +26,10 @@ const haxeAmbientMemberBindings: Readonly<Record<string, CompilerHaxeAmbientMemb
   'array.map': { kind: 'method', targetName: 'map' },
   'array.pop': { kind: 'method', targetName: 'pop' },
   'array.push': { kind: 'method', targetName: 'push' },
+  // `array.reduce` is deliberately absent: `Lambda.fold` takes its accumulator second where the
+  // source takes it first, so binding them to each other would quietly transpose the arguments.
   'array.reverse': { kind: 'method', targetName: 'reverse' },
+  'array.some': { kind: 'staticCall', targetPath: 'Lambda.exists' },
   'array.shift': { kind: 'method', targetName: 'shift' },
   'array.slice': { kind: 'method', targetName: 'slice' },
   'array.unshift': { kind: 'method', targetName: 'unshift' },

@@ -14,12 +14,17 @@ export function getCompilerRustAmbientMemberBinding(
 }
 
 const rustAmbientMemberBindings: Readonly<Record<string, CompilerRustAmbientMemberBinding>> = {
+  'array.every': { collect: false, kind: 'iterator', targetName: 'all' },
   'array.filter': { borrowsElement: true, collect: true, kind: 'iterator', targetName: 'filter' },
+  'array.find': { borrowsElement: true, collect: false, kind: 'iterator', targetName: 'find' },
+  'array.includes': { kind: 'borrowedMethod', targetName: 'contains' },
   'array.length': { kind: 'countingMethod', targetName: 'len' },
   'array.map': { collect: true, kind: 'iterator', targetName: 'map' },
   'array.pop': { kind: 'method', targetName: 'pop' },
+  'array.reduce': { argumentOrder: [1, 0], collect: false, kind: 'iterator', targetName: 'fold' },
   'array.push': { kind: 'method', targetName: 'push' },
   'array.reverse': { kind: 'method', targetName: 'reverse' },
+  'array.some': { collect: false, kind: 'iterator', targetName: 'any' },
   'string.endsWith': { kind: 'borrowedMethod', targetName: 'ends_with' },
   // The source language replaces the first occurrence; Rust's `replace` replaces every one, and
   // `replacen` with a count of one is the member that means what the source meant.

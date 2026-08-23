@@ -1,4 +1,11 @@
 export type {
+  CompilerCommandLineCapabilities,
+  CompilerCommandLineRefusal,
+  CompilerCommandLineRequest,
+  CompilerCommandLineResult,
+  CompilerCommandLineSource,
+} from './compilerCommandLineContract.js';
+export type {
   CompilerHaxeAmbientMemberBinding,
   CompilerRustAmbientMemberBinding,
 } from './compilerAmbientMemberBindingContract.js';

@@ -165,6 +165,7 @@ Implement compiler facts and behavior in this repository's architecture; outside
 
 Use npm, not pnpm or Yarn. Node.js 22 or newer is required. Script names follow [the npm script naming grammar](agents/conventions/npm-scripts.md), where `:check` is the non-writing mode of a verb rather than a subject.
 
+- `flight-compile <directory> --target <haxe|rust> --out <directory>`: point the compiler at a codebase. Every module is compiled on its own and its outcome recorded, so a run reports everything it could not lower rather than stopping at the first refusal; `--report` reports without failing. Published as the package's `bin`.
 - `npm run fix`: apply Oxlint fixes and Oxfmt formatting after edits.
 - `npm run check`: complete deterministic gate; run before handoff. Every registered gate runs even after an earlier one fails, and the failures are reported together.
 - `npm run test`: run Vitest once.
@@ -185,7 +186,7 @@ Use npm, not pnpm or Yarn. Node.js 22 or newer is required. Script names follow 
 - `npm run readiness`: report what fraction of the golden corpus each target emits, which fixtures diverge between targets, and which refusal rules block the most fixtures. A reporting instrument over the committed pins that `golden:check` keeps current; nothing gates on it.
 - `npm run untested -- <package>`: list the branch and statement arms in one package that no test took. A location list, not a score, and nothing gates on it.
 - `npm run typecheck`: run the root and every workspace's strict no-emit check, collecting failures.
-- `npm run packages:check`: enforce manifests, flat source trees, dependency declarations and acyclicity, centralized contracts, class-free implementation, globally unique domain filenames and APIs, verb-first function names, transient-comment absence, tests, and public-facade completeness.
+- `npm run packages:check`: enforce manifests, flat source trees, source trees free of compiled output (a stray `.js` beside a source shadows it, so the tests run the stale copy while reporting the source as untested), dependency declarations and acyclicity, centralized contracts, class-free implementation, globally unique domain filenames and APIs, verb-first function names, transient-comment absence, tests, and public-facade completeness.
 - `npm run build`: clean stale output and assemble ESM JavaScript, declarations, maps, and declaration maps in `packages/tool-compiler/dist/`.
 - `npm run pack:check`: build fresh, inspect the publishable tarball, and prove every private workspace is assembled without leaking private imports or source/tests.
 - `npm run mutation -- <package>`: report surviving mutants for one package. A reporting instrument, not a gate: it costs minutes, its output is a worklist, and a survivor is a question rather than a defect.

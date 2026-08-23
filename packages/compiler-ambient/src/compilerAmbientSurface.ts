@@ -15,6 +15,16 @@ export function createCompilerAmbientSurfaceSource(): string {
   return ambientSurfaceSource;
 }
 
+// The file the surface is presented to the checker as. A node reached through it does not belong to
+// the module being lowered, and every reader that walks back to a declaration has to be able to tell.
+
+// The file the surface is presented to the checker as. A node reached through it does not belong to
+// the module being lowered, and every reader that walks back to a declaration compares against this
+// to tell.
+export function getCompilerAmbientSurfaceFileName(): string {
+  return ambientSurfaceFileName;
+}
+
 const ambientSurfaceSource = `
 interface Object {}
 interface Function {}
@@ -232,3 +242,5 @@ declare var console: Console;
 // them to mapped types the neutral model does not carry, and a declaration that mentions one would
 // stop lowering. A surface entry is only worth adding once something can lower what it resolves to.
 `;
+
+const ambientSurfaceFileName = '/flight-compiler/ambient-surface.d.ts';

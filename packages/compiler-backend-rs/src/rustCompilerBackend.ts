@@ -630,7 +630,10 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
             const closure = binding.borrowsElement
               ? emitBorrowedElementClosureRust(expression.arguments[0], context)
               : values[0];
-            return `${receiver}.into_iter().${binding.targetName}(${closure ?? ''})${binding.collect ? '.collect::<Vec<_>>()' : ''}`;
+            const ordered = binding.argumentOrder
+              ? binding.argumentOrder.map((position) => values[position] ?? '')
+              : [closure ?? ''];
+            return `${receiver}.into_iter().${binding.targetName}(${ordered.join(', ')})${binding.collect ? '.collect::<Vec<_>>()' : ''}`;
           }
           const trailing = binding.kind === 'borrowedMethod' ? (binding.trailingArguments ?? []) : [];
           return `${receiver}.${binding.targetName}(${[...values, ...trailing].join(', ')})${binding.owns ? '.to_owned()' : ''}`;

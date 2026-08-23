@@ -47,6 +47,17 @@ const packageRules: Readonly<Record<string, PackageRule>> = {
     dependencies: [],
     description: 'The ambient value and type surface generated code may assume',
   },
+  'compiler-command-line': {
+    dependencies: [
+      'compiler-backend-hx',
+      'compiler-backend-rs',
+      'compiler-canonical-form',
+      'compiler-emission',
+      'compiler-orchestration',
+      'compiler-types',
+    ],
+    description: 'Pointing the compiler at a directory of TypeScript',
+  },
   'compiler-backend-hx': {
     dependencies: [
       'compiler-canonical-form',
@@ -308,6 +319,7 @@ function checkPackage(packageName: string, rule: Readonly<PackageRule>): void {
     return;
   }
 
+  checkPackageSourceTreeIsAuthored(packageDirectory, packageName);
   const scopedName = `@flighthq/${packageName}`;
   check(manifest.name === scopedName, `${packageName}: package name must be ${scopedName}`);
   check(manifest.version === publicManifest?.version, `${packageName}: version must match the public package`);
@@ -410,6 +422,19 @@ function checkPackage(packageName: string, rule: Readonly<PackageRule>): void {
       expectedDependencies.has(dependency) || expectedDevDependencies.has(dependency),
       `${packageName}: test imports undeclared @flighthq/${dependency}`,
     );
+  }
+}
+
+// Compiled output sitting beside a source file is worse than useless: an import of `./thing.js`
+// resolves to it rather than to `thing.ts`, so the tests run yesterday's code while reporting today's
+// as untested. It looks like a coverage collapse rather than like stale output, which is why this
+// refuses it by name.
+function checkPackageSourceTreeIsAuthored(packageDirectory: string, packageName: string): void {
+  const emitted = readdirSync(path.join(packageDirectory, 'src'), { recursive: true, withFileTypes: true })
+    .filter((entry) => entry.isFile() && (entry.name.endsWith('.js') || entry.name.endsWith('.d.ts')))
+    .map((entry) => path.relative(packageDirectory, path.join(entry.parentPath, entry.name)));
+  for (const file of emitted) {
+    errors.push(`${packageName}: ${file} is compiled output beside the source it shadows; remove it`);
   }
 }
 

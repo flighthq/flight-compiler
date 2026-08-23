@@ -27,7 +27,8 @@ describe('getCompilerRustAmbientMemberBinding', () => {
   });
 
   it('answers nothing for a member with no agreed spelling, so emission refuses rather than guesses', () => {
-    expect(getCompilerRustAmbientMemberBinding({ name: 'reduce', receiver: 'array' })).toBeUndefined();
+    expect(getCompilerRustAmbientMemberBinding({ name: 'sort', receiver: 'array' })).toBeUndefined();
     expect(getCompilerRustAmbientMemberBinding({ name: 'split', receiver: 'string' })).toBeUndefined();
+    expect(getCompilerRustAmbientMemberBinding({ name: 'toFixed', receiver: 'number' })).toBeUndefined();
   });
 });

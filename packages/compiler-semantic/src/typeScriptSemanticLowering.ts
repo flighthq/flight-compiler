@@ -2,7 +2,10 @@ import path from 'node:path';
 
 import ts from 'typescript';
 
-import { createCompilerAmbientSurfaceSource } from '../../compiler-ambient/src/index.js';
+import {
+  getCompilerAmbientSurfaceFileName,
+  createCompilerAmbientSurfaceSource,
+} from '../../compiler-ambient/src/index.js';
 import { normalizePathPortable } from '../../compiler-canonical-form/src/index.js';
 import {
   createIrAwaitSemantics,
@@ -2034,6 +2037,11 @@ function lowerStatementListWithTypeScriptReturnType(
 }
 
 function lowerType(node: ts.TypeNode, context: LoweringContext): IrType {
+  // A type node the ambient surface owns is written in the surface's own type parameters, which name
+  // nothing in the module being lowered. Reading one back as module syntax produces an ambient type
+  // called `T` that no target can bind, so the boundary is enforced where every path converges
+  // rather than at each caller.
+  if (node.getSourceFile().fileName === getCompilerAmbientSurfaceFileName()) return { kind: 'unknown', source: 'any' };
   switch (node.kind) {
     case ts.SyntaxKind.AnyKeyword:
       return { kind: 'unknown', source: 'any' };
@@ -2062,7 +2070,7 @@ function lowerType(node: ts.TypeNode, context: LoweringContext): IrType {
   }
   if (ts.isParenthesizedTypeNode(node)) return lowerType(node.type, context);
   if (ts.isTypeReferenceNode(node)) {
-    const name = node.typeName.getText(context.sourceFile);
+    const name = getTypeScriptNodeText(node.typeName, context);
     const arguments_ = node.typeArguments?.map((type) => lowerType(type, context)) ?? [];
     const reference = lowerTypeNameReference(node.typeName, context);
     if (reference.kind === 'ambient' && (name === 'Array' || name === 'ReadonlyArray') && arguments_.length === 1) {
@@ -2153,10 +2161,10 @@ function lowerTypeNameNodeReference(
   context: LoweringContext,
 ): IrTypeNameReference {
   const parts = getTypeNameNodeParts(node);
-  if (!parts) return { kind: 'ambient', name: node.getText(context.sourceFile) };
+  if (!parts) return { kind: 'ambient', name: getTypeScriptNodeText(node, context) };
   const symbol = context.checker.getSymbolAtLocation(parts.root);
   if (isTypeScriptAmbientSurfaceSymbol(symbol)) {
-    return { kind: 'ambient', name: node.getText(context.sourceFile) };
+    return { kind: 'ambient', name: getTypeScriptNodeText(node, context) };
   }
   if (symbol?.declarations?.some(isValueBindingDeclaration)) {
     return { binding: lowerBindingSymbol(symbol, parts.root, context), kind: 'binding', path: parts.path };
@@ -2164,16 +2172,16 @@ function lowerTypeNameNodeReference(
   if (symbol?.declarations?.some(isTypeBindingDeclaration)) {
     return { binding: lowerTypeBindingSymbol(symbol, parts.root, context), kind: 'binding', path: parts.path };
   }
-  return { kind: 'ambient', name: node.getText(context.sourceFile) };
+  return { kind: 'ambient', name: getTypeScriptNodeText(node, context) };
 }
 
 function lowerValueNameReference(node: ts.EntityName, context: LoweringContext): IrValueNameReference {
   const parts = getTypeNameNodeParts(node);
-  if (!parts) return { kind: 'ambient', name: node.getText(context.sourceFile) };
+  if (!parts) return { kind: 'ambient', name: getTypeScriptNodeText(node, context) };
   const symbol = context.checker.getSymbolAtLocation(parts.root);
   return symbol?.declarations?.some(isValueBindingDeclaration) && !isTypeScriptAmbientSurfaceSymbol(symbol)
     ? { binding: lowerBindingSymbol(symbol, parts.root, context), kind: 'binding', path: parts.path }
-    : { kind: 'ambient', name: node.getText(context.sourceFile) };
+    : { kind: 'ambient', name: getTypeScriptNodeText(node, context) };
 }
 
 function getTypeNameNodeParts(
@@ -2354,7 +2362,10 @@ function lowerTypeScriptExpressionTypeEvidence(
     if (present && right && JSON.stringify(present) === JSON.stringify(right)) return present;
   }
   const type = getTypeScriptSyntacticExpressionTypeEvidence(expression, context.checker);
-  return type ? lowerTypeScriptTypeNodeEvidence(type, context) : undefined;
+  // A type node the ambient surface owns is written in the surface's own type parameters, which mean
+  // nothing in the module being lowered. Whatever path reached it, it stops here.
+  if (!type || type.getSourceFile().fileName === getCompilerAmbientSurfaceFileName()) return undefined;
+  return lowerTypeScriptTypeNodeEvidence(type, context);
 }
 
 function removeIrTypeAbsentMembersSemantic(type: Readonly<IrType>): Readonly<IrType> | undefined {
@@ -2423,6 +2434,10 @@ function lowerTypeScriptTypeNodeEvidence(
 ): IrType {
   const substituted = getTypeScriptSyntacticTypeSubstitution(type, context.checker, substitutions);
   if (substituted !== type) return lowerTypeScriptTypeNodeEvidence(substituted, context, seen, substitutions);
+  // A type node the ambient surface owns is written in the surface's own type parameters. Lowering
+  // one would introduce a type named `T` that belongs to no module and that no target can bind, so
+  // every path into this function stops at the boundary rather than each caller remembering to.
+  if (type.getSourceFile().fileName === getCompilerAmbientSurfaceFileName()) return { kind: 'unknown', source: 'any' };
   if (ts.isParenthesizedTypeNode(type)) {
     return lowerTypeScriptTypeNodeEvidence(type.type, context, seen, substitutions);
   }
@@ -3120,14 +3135,32 @@ function getTypeScriptContextualParameterType(
   context: LoweringContext,
 ): Readonly<IrType> | undefined {
   if (!ts.isIdentifier(node.name)) return undefined;
-  return getTypeScriptCheckerTypeEvidence(context.checker.getTypeAtLocation(node), context.checker, 0);
+  return getTypeScriptCheckerTypeEvidence(context.checker.getTypeAtLocation(node), context, 0);
+}
+
+// A type the checker resolved to something this module declares. The declaration's own name is what
+// the neutral model carries, so the reference is rebuilt from it rather than from the checker's
+// spelling — a type named in a callback parameter is the same type the module already introduced.
+function getTypeScriptDeclaredTypeEvidence(type: ts.Type, context: LoweringContext): Readonly<IrType> | undefined {
+  const symbol = type.aliasSymbol ?? type.getSymbol();
+  const declaration = symbol?.declarations?.[0];
+  if (!symbol || !declaration || declaration.getSourceFile() !== context.sourceFile) return undefined;
+  if (!isTypeBindingDeclaration(declaration) && !isValueBindingDeclaration(declaration)) return undefined;
+  const name = ts.getNameOfDeclaration(declaration);
+  if (!name || !ts.isIdentifier(name)) return undefined;
+  return {
+    kind: 'named',
+    reference: { binding: lowerTypeBindingSymbol(symbol, name, context), kind: 'binding', path: [] },
+    typeArguments: [],
+  };
 }
 
 function getTypeScriptCheckerTypeEvidence(
   type: ts.Type,
-  checker: ts.TypeChecker,
+  context: LoweringContext,
   depth: number,
 ): Readonly<IrType> | undefined {
+  const checker = context.checker;
   if (depth > 4) return undefined;
   if (type.flags & ts.TypeFlags.BooleanLike) return { kind: 'primitive', name: 'boolean' };
   if (type.flags & ts.TypeFlags.NumberLike) return { kind: 'primitive', name: 'number' };
@@ -3137,10 +3170,10 @@ function getTypeScriptCheckerTypeEvidence(
   if (type.flags & ts.TypeFlags.Null) return { kind: 'null' };
   if (checker.isArrayType(type)) {
     const element = checker.getTypeArguments(type as ts.TypeReference)[0];
-    const lowered = element ? getTypeScriptCheckerTypeEvidence(element, checker, depth + 1) : undefined;
+    const lowered = element ? getTypeScriptCheckerTypeEvidence(element, context, depth + 1) : undefined;
     return lowered ? { element: lowered, kind: 'array', readonly: false } : undefined;
   }
-  return undefined;
+  return getTypeScriptDeclaredTypeEvidence(type, context);
 }
 
 function hasIrTypeAbsentMemberSemantic(type: Readonly<IrType>): boolean {
@@ -3252,7 +3285,7 @@ function createTypeScriptAnalysis(sourceFile: ts.SourceFile): TypeScriptAnalysis
   // so nothing from the machine's installed definitions can leak in and be typed against a member no
   // backend has agreed to lower.
   const surfaceFile = ts.createSourceFile(
-    ambientSurfaceFileName,
+    getCompilerAmbientSurfaceFileName(),
     createCompilerAmbientSurfaceSource(),
     analysisSourceFile.languageVersion,
     true,
@@ -3290,13 +3323,22 @@ function lowerIdentifierReference(node: ts.Identifier, context: LoweringContext)
     : { kind: 'ambient', name: node.text };
 }
 
+// A node's own text, read from the file it belongs to. A node reached through the ambient surface
+// does not belong to the module being lowered, and asking it for its text against the wrong file
+// yields an empty name — which then travels as an ambient symbol nobody can bind or report.
+function getTypeScriptNodeText(node: ts.Node, context: LoweringContext): string {
+  const sourceFile = node.getSourceFile();
+  return node.getText(sourceFile === context.sourceFile ? context.sourceFile : sourceFile);
+}
+
 // A name the ambient surface declares is ambient however well the checker resolves it. The surface
 // exists so those names can be typed, not so they become bindings this module introduced — a binding
 // whose declaration lives outside the module has nowhere to be introduced.
 function isTypeScriptAmbientSurfaceSymbol(symbol: ts.Symbol | undefined): boolean {
   return (
-    symbol?.declarations?.some((declaration) => declaration.getSourceFile().fileName === ambientSurfaceFileName) ===
-    true
+    symbol?.declarations?.some(
+      (declaration) => declaration.getSourceFile().fileName === getCompilerAmbientSurfaceFileName(),
+    ) === true
   );
 }
 
@@ -3634,5 +3676,3 @@ function visibility(node: ts.Node): 'private' | 'protected' | 'public' {
   if (hasModifier(node, ts.SyntaxKind.ProtectedKeyword)) return 'protected';
   return 'public';
 }
-
-const ambientSurfaceFileName = '/flight-compiler/ambient-surface.d.ts';

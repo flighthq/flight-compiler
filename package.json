@@ -49,7 +49,8 @@
     "typecheck": "npm run _scripts:build --silent && node ./.script-build/workspaceTypecheck.js",
     "untested": "npm run _scripts:build --silent && node ./.script-build/untestedArms.js",
     "prepare": "husky",
-    "oracle:check": "npm run _scripts:build --silent && node ./.script-build/behavioralOracle.js"
+    "oracle:check": "npm run _scripts:build --silent && node ./.script-build/behavioralOracle.js",
+    "compile": "npm run build --silent && node -e \"import('./packages/tool-compiler/dist/packages/tool-compiler/src/index.js').then((m)=>process.exit(m.compileCompilerCommandLineDirectory(process.argv.slice(1))))\" --"
   },
   "devDependencies": {
     "@commitlint/cli": "19.8.1",

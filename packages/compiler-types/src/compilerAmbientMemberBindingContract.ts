@@ -21,4 +21,12 @@ export type CompilerRustAmbientMemberBinding =
   // `borrowsElement` marks an iterator adaptor that hands its closure a reference rather than the
   // element: `map` gives `T` and `filter` gives `&T`, and the closure has to be written for what it
   // is given.
-  | Readonly<{ borrowsElement?: boolean; collect: boolean; kind: 'iterator'; targetName: string }>;
+  // `argumentOrder` reorders what the source passed: `reduce(f, initial)` is `fold(initial, f)`, and
+  // the difference is the order rather than the meaning.
+  | Readonly<{
+      argumentOrder?: readonly number[];
+      borrowsElement?: boolean;
+      collect: boolean;
+      kind: 'iterator';
+      targetName: string;
+    }>;
