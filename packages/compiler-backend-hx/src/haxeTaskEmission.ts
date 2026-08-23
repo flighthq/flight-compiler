@@ -1,4 +1,4 @@
-import { indentSourceLines } from '../../compiler-emission/src/index.js';
+import { indentSourceLines, normalizeSourceTextGrouping } from '../../compiler-emission/src/index.js';
 import { getIrModuleTraversalPathValue } from '../../compiler-ir-traversal/src/index.js';
 import type {
   CompilerAsyncStateMachineGuardedState,
@@ -147,8 +147,10 @@ function emitCompilerHaxeTaskLoweringStep(
       if (!joinState) capabilities.fail(`Haxe task branch at ${JSON.stringify(step.path)} has no join state`);
       const joinName = capabilities.getGeneratedName('taskJoin');
       const armScope: HaxeTaskEmissionScope = { ...scope, joins: new Map([...scope.joins, [joinIdentity, joinName]]) };
-      const condition = capabilities.emitExpression(
-        getCompilerHaxeTaskEmissionSourceValue<IrExpression>(module, step.conditionPath, capabilities),
+      const condition = normalizeSourceTextGrouping(
+        capabilities.emitExpression(
+          getCompilerHaxeTaskEmissionSourceValue<IrExpression>(module, step.conditionPath, capabilities),
+        ),
       );
       return [
         `var ${joinName} = function() {`,

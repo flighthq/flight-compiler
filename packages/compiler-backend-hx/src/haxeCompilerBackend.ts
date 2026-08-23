@@ -7,6 +7,7 @@ import {
   createIrModuleTargetNameAllocation,
   hasIrTypeAbsentMember,
   indentSourceLines,
+  normalizeSourceTextGrouping,
   isCompilerTargetNameAllocationFailure,
 } from '../../compiler-emission/src/index.js';
 import { analyzeIrModuleTraversal, getIrModuleTraversalPathValue } from '../../compiler-ir-traversal/src/index.js';
@@ -892,7 +893,7 @@ function emitStatement(statement: Readonly<IrStatement>, context: EmitContext): 
       ]);
     case 'if': {
       const lines = [
-        `if (${emitExpression(statement.condition, context)}) {`,
+        `if (${normalizeSourceTextGrouping(emitExpression(statement.condition, context))}) {`,
         ...indentSourceLines(emitStatementBody(statement.consequent, context)),
         '}',
       ];
@@ -914,7 +915,9 @@ function emitStatement(statement: Readonly<IrStatement>, context: EmitContext): 
       ) {
         emissionError(context, 'returning a nullable binding requires Haxe narrowing evidence');
       }
-      return [`return${statement.expression ? ` ${emitExpression(statement.expression, context)}` : ''};`];
+      return [
+        `return${statement.expression ? ` ${normalizeSourceTextGrouping(emitExpression(statement.expression, context))}` : ''};`,
+      ];
     case 'switch': {
       if (statement.label) {
         emissionError(context, `labeled switch ${statement.label.name} requires Haxe switch completion lowering`);
@@ -956,7 +959,7 @@ function emitStatement(statement: Readonly<IrStatement>, context: EmitContext): 
       return statement.declarations.map((variable) => emitVariable(variable, context));
     case 'while':
       return emitControlFlowBoundaryHaxe(statement.label, true, context, () => [
-        `while (${emitExpression(statement.condition, context)}) {`,
+        `while (${normalizeSourceTextGrouping(emitExpression(statement.condition, context))}) {`,
         ...indentSourceLines(emitStatementBody(statement.body, context)),
         '}',
       ]);
@@ -1343,7 +1346,7 @@ function emitVariable(variable: Readonly<IrVariable>, context: EmitContext): str
     variable.initializer !== undefined &&
     isIrExpressionDynamicReadHaxe(variable.initializer, context);
   const initializer = variable.initializer
-    ? ` = ${restCast ? `(cast ${emitExpression(variable.initializer, context)} : ${emitType(variable.type!, context)})` : emitExpression(variable.initializer, context)}`
+    ? ` = ${restCast ? `(cast ${emitExpression(variable.initializer, context)} : ${emitType(variable.type!, context)})` : normalizeSourceTextGrouping(emitExpression(variable.initializer, context))}`
     : '';
   return `${variable.mutable ? 'var' : 'final'} ${getBindingTargetNameHaxe(variable.binding, context)}${type}${initializer};`;
 }

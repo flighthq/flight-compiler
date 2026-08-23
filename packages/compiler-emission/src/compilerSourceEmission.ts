@@ -99,6 +99,38 @@ export function normalizeEmittedFilePath(value: string): string {
   return normalizedPath;
 }
 
+// A grouping the target no longer needs. Both compilers accept redundant parentheses and both warn
+// about them, so canonical output drops the outermost pair wherever the surrounding syntax already
+// groups: a return value, a condition, an assigned value. Inner groupings stay, because that is
+// where precedence actually reads.
+//
+// A parenthesised list is not a grouping. `(a, b)` is a tuple in one target and an argument list in
+// the other, and stripping it changes what the source says rather than how it reads, so a top-level
+// comma disqualifies the whole string.
+export function normalizeSourceTextGrouping(source: string): string {
+  // `()` groups nothing: it is the unit value, and removing its parentheses removes the value.
+  if (source === '()' || !source.startsWith('(') || !source.endsWith(')')) return source;
+  let depth = 0;
+  let quoted = false;
+  for (let index = 0; index < source.length; index += 1) {
+    const character = source[index];
+    if (quoted) {
+      if (character === '\\') index += 1;
+      else if (character === '"') quoted = false;
+      continue;
+    }
+    if (character === '"') quoted = true;
+    else if (character === '(') depth += 1;
+    else if (character === ',' && depth === 1) return source;
+    else if (character === ')') {
+      depth -= 1;
+      // The opening parenthesis closed before the end, so the string is not one group.
+      if (depth === 0 && index !== source.length - 1) return source;
+    }
+  }
+  return depth === 0 ? source.slice(1, -1) : source;
+}
+
 function isUnsafePortablePathSegment(segment: string): boolean {
   switch (segment) {
     case '':

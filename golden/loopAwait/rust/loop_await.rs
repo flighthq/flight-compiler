@@ -8,7 +8,7 @@ pub async fn total(task: FlightTask<f64>, mut again: bool) -> f64 {
   let mut pending: bool = true;
   while pending {
     let value: f64 = task.clone().await;
-    sum = (sum + value);
+    sum = sum + value;
     pending = again;
     again = false;
   }

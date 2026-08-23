@@ -16,7 +16,7 @@ impl Point {
   }
 
   pub fn length(&self) -> f64 {
-    return (self.x + self.y);
+    return self.x + self.y;
   }
 
   pub fn describe(&self) -> String {

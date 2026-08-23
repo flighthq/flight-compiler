@@ -2,15 +2,15 @@
 #![forbid(unsafe_code)]
 
 #[derive(Clone, Debug)]
-struct AnonymousObjectRecord {
+pub struct AnonymousObjectRecord {
   pub width: f64,
   pub height: f64,
 }
 
 pub fn is_empty(values: Vec<f64>) -> bool {
-  return ((values.len() as f64) < 1.0);
+  return (values.len() as f64) < 1.0;
 }
 
 pub fn width_of(shape: AnonymousObjectRecord) -> f64 {
-  return (shape.width * shape.height);
+  return shape.width * shape.height;
 }

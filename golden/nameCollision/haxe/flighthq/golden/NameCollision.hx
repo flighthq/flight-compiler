@@ -7,6 +7,6 @@ class NameCollision {
   }
 
   public static function foo_bar(value:Float):Float {
-    return (value + 1);
+    return value + 1;
   }
 }

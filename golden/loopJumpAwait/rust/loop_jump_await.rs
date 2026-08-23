@@ -5,7 +5,7 @@ use flight_runtime::FlightTask;
 
 pub async fn drain(task: FlightTask<f64>, stop: bool, skip: bool) -> f64 {
   let mut last: f64 = 0.0;
-  while true {
+  loop {
     last = task.clone().await;
     if skip {
       continue;

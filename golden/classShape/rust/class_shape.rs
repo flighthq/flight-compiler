@@ -16,6 +16,6 @@ impl Counter {
   }
 
   pub fn advance(&self, by: f64) -> f64 {
-    return (by + self.step);
+    return by + self.step;
   }
 }

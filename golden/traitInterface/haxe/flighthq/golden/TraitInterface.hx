@@ -9,7 +9,7 @@ class Counter implements Advancer {
   public var step:Float = 1;
 
   public function advance(by:Float):Float {
-    return (by + this.step);
+    return by + this.step;
   }
 
   public function reset():Void {

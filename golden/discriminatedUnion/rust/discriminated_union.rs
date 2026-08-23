@@ -41,8 +41,8 @@ impl Shape {
 }
 
 pub fn area(shape: Shape) -> f64 {
-  if (shape.kind() == "circle".to_owned()) {
-    return ((shape.as_circle().radius * shape.as_circle().radius) * 3.0);
+  if shape.kind() == "circle".to_owned() {
+    return (shape.as_circle().radius * shape.as_circle().radius) * 3.0;
   }
-  return (shape.as_square().side * shape.as_square().side);
+  return shape.as_square().side * shape.as_square().side;
 }

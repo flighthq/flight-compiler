@@ -15,12 +15,12 @@ class VariableHoisting {
     var total:Float = 0;
     index = 0;
     {
-      while ((index < limit)) {
+      while (index < limit) {
         total += index;
         index += 1;
       }
     }
-    return (total + index);
+    return total + index;
   }
 
   public static function selectPattern(values:Array<Dynamic>):String {
@@ -29,7 +29,7 @@ class VariableHoisting {
     final arrayPatternValue:Array<Dynamic> = values;
     first = arrayPatternValue[0];
     second = arrayPatternValue[1];
-    if ((first < 0)) {
+    if (first < 0) {
       return "";
     }
     return second;

@@ -10,7 +10,7 @@ class GenericElement {
 
   public static function firstOf<Value>(values:Array<Value>, fallback:Value):Value {
     final first:Value = values[0];
-    return (first ?? fallback);
+    return first ?? fallback;
   }
 
   public static function secondName(pair:Array<String>):String {

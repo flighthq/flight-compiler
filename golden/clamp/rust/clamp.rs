@@ -4,10 +4,10 @@
 pub const EPSILON: f64 = 0.000001;
 
 pub fn clamp(value: f64, min: f64, max: f64) -> f64 {
-  if (value < min) {
+  if value < min {
     return min;
   }
-  if (value > max) {
+  if value > max {
     return max;
   }
   return value;

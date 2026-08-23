@@ -8,6 +8,7 @@ import {
   normalizeEmittedFile,
   normalizeEmittedFileContents,
   normalizeEmittedFilePath,
+  normalizeSourceTextGrouping,
 } from './compilerSourceEmission.js';
 
 describe('createBackendEmissionFailure', () => {
@@ -228,5 +229,26 @@ describe('normalizeEmittedFilePath', () => {
         });
       }
     }
+  });
+});
+
+describe('normalizeSourceTextGrouping', () => {
+  it('drops a grouping the surrounding syntax already provides', () => {
+    expect(normalizeSourceTextGrouping('(a + b)')).toBe('a + b');
+    expect(normalizeSourceTextGrouping('((a + b) * c)')).toBe('(a + b) * c');
+  });
+
+  it('keeps a string that is not one group, so two groups are not spliced into one', () => {
+    expect(normalizeSourceTextGrouping('(a) + (b)')).toBe('(a) + (b)');
+    expect(normalizeSourceTextGrouping('a + b')).toBe('a + b');
+    expect(normalizeSourceTextGrouping('(unbalanced')).toBe('(unbalanced');
+  });
+
+  it('keeps a parenthesised list, which is a tuple or an argument list rather than a grouping', () => {
+    expect(normalizeSourceTextGrouping('(a, b)')).toBe('(a, b)');
+    // The unit value groups nothing, so removing its parentheses would remove the value.
+    expect(normalizeSourceTextGrouping('()')).toBe('()');
+    // A comma inside a string literal is text, not a separator.
+    expect(normalizeSourceTextGrouping('("a,b".to_owned())')).toBe('"a,b".to_owned()');
   });
 });

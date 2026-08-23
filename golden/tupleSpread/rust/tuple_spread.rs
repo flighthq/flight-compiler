@@ -14,7 +14,7 @@ fn create_optional() -> (Option<bool>,) {
 }
 
 pub fn create_tuple_spread(pair: Pair) -> (f64, f64, String, f64, String, Option<bool>) {
-  let value: (f64, f64, String, f64, String, Option<bool>) = ({ let tuple_spread_element = 0.0; let tuple_spread_value = &(pair); let tuple_spread_value_2 = &(create_pair(2.0, "flight".to_owned())); let tuple_spread_value_3 = &(create_optional()); (tuple_spread_element, tuple_spread_value.0.clone(), tuple_spread_value.1.clone(), tuple_spread_value_2.0.clone(), tuple_spread_value_2.1.clone(), tuple_spread_value_3.0.clone()) });
+  let value: (f64, f64, String, f64, String, Option<bool>) = { let tuple_spread_element = 0.0; let tuple_spread_value = &(pair); let tuple_spread_value_2 = &(create_pair(2.0, "flight".to_owned())); let tuple_spread_value_3 = &(create_optional()); (tuple_spread_element, tuple_spread_value.0.clone(), tuple_spread_value.1.clone(), tuple_spread_value_2.0.clone(), tuple_spread_value_2.1.clone(), tuple_spread_value_3.0.clone()) };
   create_pair(pair.0, pair.1);
   return value;
 }

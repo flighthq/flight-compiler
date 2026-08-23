@@ -12,7 +12,7 @@ pub struct Counter {
 
 impl Advancer for Counter {
   fn advance(&self, by: f64) -> f64 {
-    return (by + self.step);
+    return by + self.step;
   }
 }
 

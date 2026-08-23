@@ -210,7 +210,7 @@ describe('emitIrModuleRust', () => {
     const output = emitIrModuleRust(loop.module).contents;
 
     expect(output).toContain('let mut index: f64 = 0.0;');
-    expect(output).toContain('while (index < limit)');
+    expect(output).toContain('while index < limit');
     expect(output).toContain('index += 1.0;');
     expect(emitIrModuleRust(defaults.module).contents).toContain('factor: Option<f64>');
   });
@@ -447,9 +447,9 @@ describe('emitIrModuleRust', () => {
     const patternOutput = emitIrModuleRust(pattern.module).contents;
     const iterationOutput = emitIrModuleRust(iteration.module).contents;
 
-    expect(namedOutput).toContain('let mut value: f64;\n  {\n    value = 1.0;\n  }\n  return value;');
+    expect(namedOutput).toContain('let value: f64;\n  {\n    value = 1.0;\n  }\n  return value;');
     expect(patternOutput).toContain(
-      'let mut first: f64;\n  let mut second: String;\n  let array_pattern_value: (f64, String) = values;\n  first = array_pattern_value.0;\n  second = array_pattern_value.1;',
+      'let first: f64;\n  let second: String;\n  let array_pattern_value: (f64, String) = values;\n  first = array_pattern_value.0;\n  second = array_pattern_value.1;',
     );
     expect(iterationOutput).toContain(
       'let mut value: f64;\n  for variable_hoisting_iteration_value in values {\n    value = variable_hoisting_iteration_value;\n    value += 1.0;',
@@ -609,7 +609,7 @@ describe('emitIrModuleRust', () => {
 
     expect(result.diagnostics).toEqual([]);
     expect(output).toContain(
-      '({ let tuple_spread_element_2 = marker(tuple_spread_element); let tuple_spread_value_2 = &(tuple_spread_value); let tuple_spread_value_3 = &(optional()); (tuple_spread_element_2, tuple_spread_value_2.0.clone(), tuple_spread_value_2.1.clone(), tuple_spread_value_3.0.clone()) })',
+      '{ let tuple_spread_element_2 = marker(tuple_spread_element); let tuple_spread_value_2 = &(tuple_spread_value); let tuple_spread_value_3 = &(optional()); (tuple_spread_element_2, tuple_spread_value_2.0.clone(), tuple_spread_value_2.1.clone(), tuple_spread_value_3.0.clone()) }',
     );
     expect(output).toContain('marker(tuple_spread_value.0);');
   });
@@ -643,7 +643,7 @@ describe('emitIrModuleRust', () => {
     );
     const stateMachine = lower(
       'labeled-switch-state.ts',
-      'export function scan(running: boolean, choice: number): void { outer: while (running) { switch (choice) { case 0: { const local = choice; local; } case 1: continue outer; default: break outer; } } }',
+      'export function scan(running: boolean, choice: number): void { outer: while running { switch (choice) { case 0: { const local = choice; local; } case 1: continue outer; default: break outer; } } }',
     );
     const nested = lower(
       'nested-labeled-for.ts',
@@ -653,7 +653,7 @@ describe('emitIrModuleRust', () => {
     const stateOutput = emitIrModuleRust(stateMachine.module).contents;
     const nestedOutput = emitIrModuleRust(nested.module).contents;
 
-    expect(loopOutput).toContain("'outer: while (index < 2.0)");
+    expect(loopOutput).toContain("'outer: while index < 2.0");
     expect(loopOutput).toMatch(/index \+= 1\.0;\s+continue 'outer;/u);
     expect(loopOutput).toContain("break 'outer;");
     expect(stateOutput).toContain('switch_fallthrough_state');
@@ -690,7 +690,7 @@ describe('emitIrModuleRust', () => {
 
     expect(output).toContain('const LIMIT: f64 = 4.0;');
     expect(output).toContain('let limit: f64 = 9.0;');
-    expect(output).toContain('(value > limit)');
+    expect(output).toContain('if value > limit {');
     expect(output).toContain('panic!("{:?}",');
     expect(output).not.toContain('panic!("{{:?}}"');
   });
@@ -698,7 +698,7 @@ describe('emitIrModuleRust', () => {
   it('restores module bindings after nested local shadowing', () => {
     const result = lower(
       'scope.ts',
-      'export const limit: number = 4; export function read(flag: boolean): number { if (flag) { const limit: number = 9; return limit; } return limit; }',
+      'export const limit: number = 4; export function read(flag: boolean): number { if flag { const limit: number = 9; return limit; } return limit; }',
     );
     const output = emitIrModuleRust(result.module).contents;
 
@@ -726,7 +726,7 @@ describe('emitIrModuleRust', () => {
     const output = emitIrModuleRust(result.module).contents;
 
     expect(output).toContain('value += right;');
-    expect(output).toContain('return ((value == right) && !disabled);');
+    expect(output).toContain('return (value == right) && !disabled;');
   });
 
   it('refuses operators whose static domains require Rust type-directed lowering', () => {
@@ -775,7 +775,7 @@ describe('emitIrModuleRust', () => {
     const output = emitIrModuleRust(result.module).contents;
 
     expect(output).toContain('let mut switch_fallthrough_state: f64 = -1.0;');
-    expect(output).toContain('while (switch_fallthrough_state >= 0.0)');
+    expect(output).toContain('while switch_fallthrough_state >= 0.0');
     expect(output.match(/let local/g)).toHaveLength(1);
   });
 
@@ -993,7 +993,7 @@ describe('emitIrModuleRust', () => {
     expect(output).toContain('pub fn choose(foo_bar: f64, foo_bar_2: f64) -> f64');
     expect(output).toContain('let foo_bar_3: f64 = foo_bar_2;');
     expect(output).toContain('foo_bar_3;');
-    expect(output).toContain('return (foo_bar + foo_bar_2);');
+    expect(output).toContain('return foo_bar + foo_bar_2;');
   });
 
   it('keeps a public target name fixed while renaming an internal collision', () => {
@@ -1054,7 +1054,7 @@ describe('emitIrModuleRust', () => {
     // backend-elected pass library actually diverges between targets.
     const module = lower(
       'drain.ts',
-      'export async function drain(task: Promise<number>, again: boolean): Promise<number> { let last: number = 0; while (again) { last = await task; again = false; } return last; }',
+      'export async function drain(task: Promise<number>, again: boolean): Promise<number> { let last: number = 0; while again { last = await task; again = false; } return last; }',
     );
     const output = emitIrModuleRust(module.module).contents;
 
@@ -1081,7 +1081,7 @@ describe('emitIrModuleRust', () => {
     // overlap. The evidence for which methods need exclusivity is already in their bodies.
     const module = lower(
       'counter.ts',
-      'export class Counter { total: number; step: number; read(): number { return this.total; } bump(): void { this.total = this.total + this.step; } nested(): void { if (this.step > 0) { this.total = 1; } } }',
+      'export class Counter { total: number; step: number; read(): number { return this.total; } bump(): void { this.total = this.total + this.step; } nested(): void { if this.step > 0 { this.total = 1; } } }',
     );
     const output = emitIrModuleRust(module.module).contents;
 
@@ -1220,7 +1220,7 @@ describe('emitIrModuleRust', () => {
   it('opens an Option where narrowing proved a value, and refuses where nothing did', () => {
     const narrowed = lower(
       'narrowed.ts',
-      'export function widen(value: number | undefined, fallback: number): number { if (value === undefined) { return fallback; } return value; }',
+      'export function widen(value: number | undefined, fallback: number): number { if value === undefined { return fallback; } return value; }',
     );
     const open = lower('open.ts', 'export function widen(value: number | undefined): number { return value; }');
 
@@ -1241,7 +1241,7 @@ describe('emitIrModuleRust', () => {
     );
     const output = emitIrModuleRust(module.module).contents;
 
-    expect(output).toContain('(values.len() as f64)');
+    expect(output).toContain('return values.len() as f64;');
     expect(output).toContain('values.get(index as usize).cloned().unwrap_or_else(|| 0.0)');
   });
 });

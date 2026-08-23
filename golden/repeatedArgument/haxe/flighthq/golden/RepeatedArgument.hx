@@ -7,14 +7,14 @@ class RepeatedArgument {
   }
 
   public static function report(values:Array<Float>):Float {
-    return (total(values) + total(values));
+    return total(values) + total(values);
   }
 
   public static function eachTotal(rows:Array<Float>):Float {
     var sum:Float = 0;
     {
       var index:Float = 0;
-      while ((index < 2)) {
+      while (index < 2) {
         {
           sum += total(rows);
         }

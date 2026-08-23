@@ -6,7 +6,7 @@ class CStyleForEmission {
     var sum:Float = 0;
     {
       var index:Float = 0;
-      while ((index < limit)) {
+      while (index < limit) {
         {
           sum += index;
         }

@@ -3,13 +3,13 @@ package flighthq.golden;
 
 class Nullability {
   public static function widen(value:Null<Float>, fallback:Float):Float {
-    if ((value == null)) {
+    if (value == null) {
       return fallback;
     }
     return value;
   }
 
   public static function label(name:Null<String>):String {
-    return ((name == null) ? "none" : name);
+    return (name == null) ? "none" : name;
   }
 }

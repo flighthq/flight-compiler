@@ -7,11 +7,11 @@ pub async fn pick(task: FlightTask<f64>, mode: f64) -> f64 {
   let mut total: f64 = 0.0;
   {
     let switch_subject = mode;
-    if (switch_subject == 1.0) {
+    if switch_subject == 1.0 {
       total = task.await;
     }
     else {
-      if (switch_subject == 2.0) {
+      if switch_subject == 2.0 {
         total = 20.0;
       }
       else {

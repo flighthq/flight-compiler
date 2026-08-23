@@ -7,6 +7,7 @@ import {
   createIrModuleTargetNameAllocation,
   hasIrTypeAbsentMember,
   indentSourceLines,
+  normalizeSourceTextGrouping,
   isCompilerTargetNameAllocationFailure,
 } from '../../compiler-emission/src/index.js';
 import { analyzeIrStatementSubtreeTraversal } from '../../compiler-ir-traversal/src/index.js';
@@ -98,6 +99,7 @@ interface EmitContext {
   accessorClassNames: ReadonlyMap<string, string>;
   runtimeTypeNames: Set<string>;
   borrowedParameterPositions: ReadonlyMap<string, ReadonlySet<number>>;
+  deferredBindingIds: ReadonlySet<string>;
   referentMutatedParameterIds: ReadonlySet<string>;
   taggedUnionBindingNames: ReadonlyMap<string, string>;
   reboundBindingIds: ReadonlySet<string>;
@@ -183,6 +185,11 @@ function emitIrModuleRustWithContext(
     accessorClassNames,
     anonymousObjectRecords: new Map(),
     borrowedParameterPositions,
+    deferredBindingIds: new Set(
+      analyzeIrModuleOwnershipEvidenceRust(module).bindings.flatMap((evidence) =>
+        evidence.uses.filter((use) => use.kind === 'rebind').length === 1 ? [evidence.binding.id] : [],
+      ),
+    ),
     runtimeTypeNames: new Set<string>(),
     reboundBindingIds: new Set(
       analyzeIrModuleOwnershipEvidenceRust(module).bindings.flatMap((evidence) =>
@@ -540,7 +547,7 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
       }
       const left = emitExpression(expression.left, context);
       const right = emitExpression(expression.right, context);
-      return `${left} ${emitAssignmentOperatorRust(expression.operator, expression.semantics, context)} ${right}`;
+      return `${left} ${emitAssignmentOperatorRust(expression.operator, expression.semantics, context)} ${normalizeSourceTextGrouping(right)}`;
     }
     case 'await':
       // `.await` consumes the future it is given, while the source language's await does not consume
@@ -1338,10 +1345,11 @@ function emitRecord(
   exported: boolean,
   context: EmitContext,
 ): string[] {
-  const lines = [
-    '#[derive(Clone, Debug)]',
-    `${exported ? 'pub ' : ''}struct ${targetName}${emitTypeParameters(typeParameters, context)} {`,
-  ];
+  // A record a public function names has to be at least as visible as that function, and a record
+  // the source did not export is still named by one often enough that hiding it only produces a
+  // private-interface warning. What leaves the crate is the crate root's decision, not this module's.
+  void exported;
+  const lines = ['#[derive(Clone, Debug)]', `pub struct ${targetName}${emitTypeParameters(typeParameters, context)} {`];
   for (const property of properties) {
     const type = emitType(property.type, context);
     lines.push(`  pub ${safeRustValueName(property.name)}: ${property.optional ? `Option<${type}>` : type},`);
@@ -1413,7 +1421,7 @@ function emitStatement(statement: Readonly<IrStatement>, context: EmitContext): 
       ];
     case 'if': {
       const lines = [
-        `if ${emitExpression(statement.condition, context)} {`,
+        `if ${normalizeSourceTextGrouping(emitExpression(statement.condition, context))} {`,
         ...indentSourceLines(emitStatementBody(statement.consequent, context)),
         '}',
       ];
@@ -1433,7 +1441,9 @@ function emitStatement(statement: Readonly<IrStatement>, context: EmitContext): 
       ) {
         emissionError(context, 'returning a nullable binding requires Rust narrowing evidence');
       }
-      return [`return${statement.expression ? ` ${emitExpression(statement.expression, context)}` : ''};`];
+      return [
+        `return${statement.expression ? ` ${normalizeSourceTextGrouping(emitExpression(statement.expression, context))}` : ''};`,
+      ];
     case 'switch': {
       const name = getGeneratedTargetNameRust('switch_value', context);
       const cases = statement.cases.filter((switchCase) => switchCase.expression);
@@ -1468,8 +1478,11 @@ function emitStatement(statement: Readonly<IrStatement>, context: EmitContext): 
     case 'variable':
       return statement.declarations.map((variable) => emitVariable(variable, context));
     case 'while':
+      // Rust spells a loop with no exit condition `loop`, and warns on `while true` because the two
+      // differ to the borrow checker: only `loop` tells it the body always runs.
+      const condition = normalizeSourceTextGrouping(emitExpression(statement.condition, context));
       return [
-        `${emitControlFlowLabelRust(statement.label)}while ${emitExpression(statement.condition, context)} {`,
+        `${emitControlFlowLabelRust(statement.label)}${condition === 'true' ? 'loop' : `while ${condition}`} {`,
         ...indentSourceLines(emitStatementBody(statement.body, context)),
         '}',
       ];
@@ -1657,8 +1670,14 @@ function emitVariable(variable: Readonly<IrVariable>, context: EmitContext): str
     variable.type && !(variable.initializer?.kind === 'objectRest' && variable.type.kind === 'object')
       ? `: ${emitType(variable.type, context)}`
       : '';
-  const initializer = variable.initializer ? ` = ${emitExpression(variable.initializer, context)}` : '';
-  return `let ${variable.mutable ? 'mut ' : ''}${getBindingTargetNameRust(variable.binding, context)}${type}${initializer};`;
+  const initializer = variable.initializer
+    ? ` = ${normalizeSourceTextGrouping(emitExpression(variable.initializer, context))}`
+    : '';
+  // A binding declared without a value and written once afterwards is Rust's deferred
+  // initialization, not a mutation: the source hoisted the declaration above the assignment, and
+  // `mut` on it would claim a rebinding that never happens.
+  const deferred = !variable.initializer && context.deferredBindingIds.has(variable.binding.id);
+  return `let ${variable.mutable && !deferred ? 'mut ' : ''}${getBindingTargetNameRust(variable.binding, context)}${type}${initializer};`;
 }
 
 function emitVariableDeclaration(declaration: Readonly<IrVariableDeclaration>, context: EmitContext): string[] {

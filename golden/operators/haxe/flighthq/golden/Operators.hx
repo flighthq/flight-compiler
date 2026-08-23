@@ -10,7 +10,7 @@ class Operators {
   }
 
   public static function same(left:Float, right:Float):Bool {
-    return ((left == right) && (left != 0));
+    return (left == right) && (left != 0);
   }
 
   public static function negate(value:Bool):Bool {

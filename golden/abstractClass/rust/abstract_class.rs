@@ -16,7 +16,7 @@ pub struct Square {
 
 impl Shape for Square {
   fn area(&self) -> f64 {
-    return (self.side * self.side);
+    return self.side * self.side;
   }
 }
 

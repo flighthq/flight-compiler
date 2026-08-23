@@ -14,6 +14,7 @@ export {
   createCompilerInvariantFailure,
   convertEmittedFileContentsToUtf8,
   indentSourceLines,
+  normalizeSourceTextGrouping,
   isBackendEmissionFailure,
   isCompilerInvariantFailure,
   normalizeEmittedFile,

@@ -5,10 +5,10 @@ class Clamp {
   public static final EPSILON:Float = 0.000001;
 
   public static function clamp(value:Float, min:Float, max:Float):Float {
-    if ((value < min)) {
+    if (value < min) {
       return min;
     }
-    if ((value > max)) {
+    if (value > max) {
       return max;
     }
     return value;

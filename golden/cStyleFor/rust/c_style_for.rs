@@ -5,7 +5,7 @@ pub fn total(values: Vec<f64>) -> f64 {
   let mut sum: f64 = 0.0;
   {
     let mut index: f64 = 0.0;
-    while (index < (values.len() as f64)) {
+    while index < (values.len() as f64) {
       {
         sum += values.get(index as usize).cloned().unwrap_or_else(|| 0.0);
       }

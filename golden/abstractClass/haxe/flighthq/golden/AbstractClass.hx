@@ -20,6 +20,6 @@ class Square extends Shape {
   }
 
   public function area():Float {
-    return (this.side * this.side);
+    return this.side * this.side;
   }
 }

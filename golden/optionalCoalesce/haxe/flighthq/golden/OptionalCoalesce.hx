@@ -5,6 +5,6 @@ typedef Holder = { value:Float };
 
 class OptionalCoalesce {
   public static function read(holder:Null<Holder>):Float {
-    return (holder?.value ?? 0);
+    return holder?.value ?? 0;
   }
 }

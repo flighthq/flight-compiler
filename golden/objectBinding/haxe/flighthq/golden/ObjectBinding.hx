@@ -13,6 +13,6 @@ class ObjectBinding {
       final destructuringAssignmentValue:Shape = source;
       assigned = destructuringAssignmentValue.value;
     }
-    return (value + assigned);
+    return value + assigned;
   }
 }

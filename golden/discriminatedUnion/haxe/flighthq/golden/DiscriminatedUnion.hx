@@ -9,9 +9,9 @@ typedef Shape = { kind:String, ?radius:Float, ?side:Float };
 
 class DiscriminatedUnion {
   public static function area(shape:Shape):Float {
-    if ((shape.kind == "circle")) {
-      return (((cast shape : Circle).radius * (cast shape : Circle).radius) * 3);
+    if (shape.kind == "circle") {
+      return ((cast shape : Circle).radius * (cast shape : Circle).radius) * 3;
     }
-    return ((cast shape : Square).side * (cast shape : Square).side);
+    return (cast shape : Square).side * (cast shape : Square).side;
   }
 }

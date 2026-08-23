@@ -15,7 +15,7 @@ class SwitchAwait {
             rejectTask(taskError_2);
           }
         };
-        if ((switchSubject == 1)) {
+        if (switchSubject == 1) {
           try {
             flighthq._internal._Promise.resolve(task).then(
               function(awaitValue) {
@@ -37,7 +37,7 @@ class SwitchAwait {
           }
         } else {
           try {
-            if ((switchSubject == 2)) {
+            if (switchSubject == 2) {
               total = 20;
             }
             else {

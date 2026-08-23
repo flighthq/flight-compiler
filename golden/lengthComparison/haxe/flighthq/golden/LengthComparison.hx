@@ -3,10 +3,10 @@ package flighthq.golden;
 
 class LengthComparison {
   public static function isEmpty(values:Array<Float>):Bool {
-    return (values.length < 1);
+    return values.length < 1;
   }
 
   public static function widthOf(shape:{ width:Float, height:Float }):Float {
-    return (shape.width * shape.height);
+    return shape.width * shape.height;
   }
 }

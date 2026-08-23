@@ -6,7 +6,7 @@ class CStyleFor {
     var sum:Float = 0;
     {
       var index:Float = 0;
-      while ((index < values.length)) {
+      while (index < values.length) {
         {
           sum += (values[Std.int(index)] ?? 0);
         }

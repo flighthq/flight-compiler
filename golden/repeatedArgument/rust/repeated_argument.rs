@@ -2,18 +2,18 @@
 #![forbid(unsafe_code)]
 
 pub fn total(values: Vec<f64>) -> f64 {
-  return (values.len() as f64);
+  return values.len() as f64;
 }
 
 pub fn report(values: Vec<f64>) -> f64 {
-  return (total(values.clone()) + total(values.clone()));
+  return total(values.clone()) + total(values.clone());
 }
 
 pub fn each_total(rows: Vec<f64>) -> f64 {
   let mut sum: f64 = 0.0;
   {
     let mut index: f64 = 0.0;
-    while (index < 2.0) {
+    while index < 2.0 {
       {
         sum += total(rows.clone());
       }

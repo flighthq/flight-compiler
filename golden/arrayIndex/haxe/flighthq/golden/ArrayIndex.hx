@@ -3,10 +3,10 @@ package flighthq.golden;
 
 class ArrayIndex {
   public static function at(values:Array<Float>, index:Float):Float {
-    return (values[Std.int(index)] ?? 0);
+    return values[Std.int(index)] ?? 0;
   }
 
   public static function head(values:Array<Float>):Float {
-    return (values[0] ?? 0);
+    return values[0] ?? 0;
   }
 }

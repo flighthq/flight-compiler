@@ -12,7 +12,7 @@ class Point {
   }
 
   public function length():Float {
-    return (this.x + this.y);
+    return this.x + this.y;
   }
 
   public function describe():String {

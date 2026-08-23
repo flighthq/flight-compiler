@@ -2,7 +2,7 @@
 #![forbid(unsafe_code)]
 
 pub fn select_nested() -> f64 {
-  let mut value: f64;
+  let value: f64;
   {
     value = 1.0;
   }
@@ -14,21 +14,21 @@ pub fn select_loop(limit: f64) -> f64 {
   let mut total: f64 = 0.0;
   index = 0.0;
   {
-    while (index < limit) {
+    while index < limit {
       total += index;
       index += 1.0;
     }
   }
-  return (total + index);
+  return total + index;
 }
 
 pub fn select_pattern(values: (f64, String)) -> String {
-  let mut first: f64;
-  let mut second: String;
+  let first: f64;
+  let second: String;
   let array_pattern_value: (f64, String) = values;
   first = array_pattern_value.0;
   second = array_pattern_value.1;
-  if (first < 0.0) {
+  if first < 0.0 {
     return "".to_owned();
   }
   return second;

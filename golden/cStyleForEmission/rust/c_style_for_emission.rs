@@ -5,7 +5,7 @@ pub fn total(limit: f64) -> f64 {
   let mut sum: f64 = 0.0;
   {
     let mut index: f64 = 0.0;
-    while (index < limit) {
+    while index < limit {
       {
         sum += index;
       }

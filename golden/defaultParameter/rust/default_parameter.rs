@@ -3,5 +3,5 @@
 
 pub fn scale(value: f64, factor: Option<f64>) -> f64 {
   let factor = factor.unwrap_or_else(|| 2.0);
-  return (value * factor);
+  return value * factor;
 }

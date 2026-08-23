@@ -3,6 +3,6 @@ package flighthq.golden;
 
 class DefaultParameter {
   public static function scale(value:Float, factor:Float = 2):Float {
-    return (value * factor);
+    return value * factor;
   }
 }

@@ -184,7 +184,7 @@ describe('emitIrModuleHaxe', () => {
     const output = emitIrModuleHaxe(loop.module).contents;
 
     expect(output).toContain('var index:Float = 0;');
-    expect(output).toContain('while ((index < limit))');
+    expect(output).toContain('while (index < limit)');
     expect(output).toContain('index += 1;');
     expect(emitIrModuleHaxe(defaults.module).contents).toContain('factor:Float = 2');
   });
@@ -410,7 +410,7 @@ describe('emitIrModuleHaxe', () => {
     // A tuple written with an explicit `undefined` member is homogeneous, so Haxe can type it and
     // the read needs no cast.
     expect(emitIrModuleHaxe(requiredDefault.module).contents).toContain(
-      'final first:Float = (arrayPatternValue[0] ?? 0);',
+      'final first:Float = arrayPatternValue[0] ?? 0;',
     );
     expect(emitIrModuleHaxe(rest.module).contents).toContain(
       'final rest:Array<Float> = (cast arrayPatternValue.slice(1) : Array<Float>);',
@@ -462,7 +462,7 @@ describe('emitIrModuleHaxe', () => {
     const output = emitIrModuleHaxe(named.module).contents;
 
     expect(output).toContain('final objectPatternValue:Shape = source;');
-    expect(output).toContain('final value:Float = (objectPatternValue.value ?? 1);');
+    expect(output).toContain('final value:Float = objectPatternValue.value ?? 1;');
     expect(output).toContain('Reflect.copy(objectPatternValue)');
     expect(output).toContain('Reflect.deleteField(objectRestValue, "value")');
     const computedOutput = emitIrModuleHaxe(computed.module).contents;
@@ -568,9 +568,9 @@ describe('emitIrModuleHaxe', () => {
     );
     const output = emitIrModuleHaxe(result.module).contents;
 
-    expect(output).toContain('return ({ final destructuringAssignmentValue:Array<Float> = tuple;');
+    expect(output).toContain('return { final destructuringAssignmentValue:Array<Float> = tuple;');
     expect(output).toContain('value = destructuringAssignmentValue[0];');
-    expect(output).toContain('destructuringAssignmentValue; })');
+    expect(output).toContain('destructuringAssignmentValue; }');
     expect(output).not.toContain('(function()');
   });
 
@@ -675,7 +675,7 @@ describe('emitIrModuleHaxe', () => {
     const output = emitIrModuleHaxe(result.module).contents;
 
     expect(output).toContain('var switchFallthroughState:Float = -1;');
-    expect(output).toContain('while ((switchFallthroughState >= 0))');
+    expect(output).toContain('while (switchFallthroughState >= 0)');
     expect(output.match(/final local/g)).toHaveLength(1);
   });
 
@@ -760,7 +760,7 @@ describe('emitIrModuleHaxe', () => {
     expect(output).toContain('static function choose(operator_:Float, operator__2:Float):Float');
     expect(output).toContain('final operator__3:Float = operator__2;');
     expect(output).toContain('operator__3;');
-    expect(output).toContain('return (operator_ + operator__2);');
+    expect(output).toContain('return operator_ + operator__2;');
   });
 
   it('refuses public type collisions introduced by Haxe normalization', () => {
@@ -808,7 +808,7 @@ describe('emitIrModuleHaxe', () => {
     const output = emitIrModuleHaxe(result.module).contents;
 
     expect(output).toContain('value += right;');
-    expect(output).toContain('return ((value == right) && ! disabled);');
+    expect(output).toContain('return (value == right) && ! disabled;');
   });
 
   it('emits only operators whose static domains preserve Haxe meaning', () => {
@@ -825,7 +825,7 @@ describe('emitIrModuleHaxe', () => {
       'export function equal(left: number, right: number): boolean { return left == right; }',
     );
 
-    expect(emitIrModuleHaxe(strings.module).contents).toContain('return (left + right);');
+    expect(emitIrModuleHaxe(strings.module).contents).toContain('return left + right;');
     expect(() => emitIrModuleHaxe(mixed.module)).toThrow(
       'operator + on string and number requires Haxe type-directed lowering',
     );
@@ -922,7 +922,7 @@ describe('emitIrModuleHaxe', () => {
     expect(output).toContain('outerControlFlowState = 1;');
     expect(output).toContain('if (outerControlFlowState == 2) { outerControlFlowState = 0; continue; }');
     expect(output).toContain('var doneControlFlowState:Int = 0;');
-    expect(output).toContain('do {\n      if ((count < 0))');
+    expect(output).toContain('do {\n      if (count < 0)');
     expect(() => emitIrModuleHaxe(labeledSwitch.module)).toThrow(
       'labeled switch done requires Haxe switch completion lowering',
     );
@@ -978,7 +978,7 @@ describe('emitIrModuleHaxe', () => {
     );
 
     const singleOutput = emitIrModuleHaxe(single.module).contents;
-    expect(singleOutput).toContain('if ((value == null)) {');
+    expect(singleOutput).toContain('if (value == null) {');
     // Narrowing proved the value present, so it is returned directly: `Null<T>` exists to unify
     // with `T`, and the proof guarantees any runtime check that unification inserts will pass.
     expect(singleOutput).toContain('return value;');

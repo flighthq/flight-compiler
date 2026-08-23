@@ -7,7 +7,7 @@ pub struct Values {
 }
 
 pub fn select_first_key(values: Values) -> String {
-  let mut key;
+  let key;
   for variable_hoisting_iteration_value in ["value".to_owned()] {
     key = variable_hoisting_iteration_value;
     return key;

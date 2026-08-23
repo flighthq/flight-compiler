@@ -2,13 +2,13 @@
 #![forbid(unsafe_code)]
 
 #[derive(Clone, Debug)]
-struct Shape {
+pub struct Shape {
   pub other: bool,
   pub value: f64,
 }
 
 pub fn project(parameter_pattern_value: Shape, source: Shape) -> f64 {
-  let mut value: f64;
+  let value: f64;
   let object_pattern_value: Shape = parameter_pattern_value;
   value = object_pattern_value.value;
   let mut assigned: f64 = 0.0;
@@ -16,5 +16,5 @@ pub fn project(parameter_pattern_value: Shape, source: Shape) -> f64 {
     let destructuring_assignment_value: Shape = source;
     assigned = destructuring_assignment_value.value;
   }
-  return (value + assigned);
+  return value + assigned;
 }

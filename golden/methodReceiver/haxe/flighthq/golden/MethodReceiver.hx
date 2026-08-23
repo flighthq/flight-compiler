@@ -11,7 +11,7 @@ class Counter {
   }
 
   public function scaled(factor:Float):Float {
-    return (this.total * factor);
+    return this.total * factor;
   }
 
   public function advance():Void {

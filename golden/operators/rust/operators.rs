@@ -9,7 +9,7 @@ pub fn adjust(value: f64, mask: f64) -> f64 {
 }
 
 pub fn same(left: f64, right: f64) -> bool {
-  return ((left == right) && (left != 0.0));
+  return (left == right) && (left != 0.0);
 }
 
 pub fn negate(value: bool) -> bool {

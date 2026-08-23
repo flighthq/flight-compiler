@@ -5,12 +5,12 @@ typedef Options = { ?retries:Float, label:String };
 
 class OptionalMember {
   public static function summarize(options:Options):String {
-    final retries:Float = (options.retries ?? 0);
+    final retries:Float = options.retries ?? 0;
     return Std.string(options.label) + ":" + Std.string(retries);
   }
 
   public static function pick(flag:Bool, first:String, second:String):String {
-    return (flag ? first : second);
+    return flag ? first : second;
   }
 
   public static function classify(value:Float):String {

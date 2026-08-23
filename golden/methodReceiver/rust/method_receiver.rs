@@ -13,10 +13,10 @@ impl Counter {
   }
 
   pub fn scaled(&self, factor: f64) -> f64 {
-    return (self.total * factor);
+    return self.total * factor;
   }
 
   pub fn advance(&mut self) -> () {
-    self.total = (self.total + self.step);
+    self.total = self.total + self.step;
   }
 }
