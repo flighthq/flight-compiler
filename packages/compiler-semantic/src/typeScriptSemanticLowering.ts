@@ -595,8 +595,10 @@ function lowerExpression(
           : receiver?.kind === 'array' && node.name.text === 'push'
             ? ({ member: 'arrayPush' } as const)
             : {};
+    const absent = isTypeScriptOptionalMemberAccess(node, context) ? ({ absent: 'optionalMember' } as const) : {};
     return {
       kind: 'property',
+      ...absent,
       ...member,
       name: node.name.text,
       object: lowerExpression(node.expression, context),
@@ -2344,8 +2346,28 @@ function lowerTypeScriptExpressionTypeEvidence(
     );
     if (element) return element;
   }
+  // A coalesce yields the left operand with its absent members removed, or the right one. Where both
+  // are the same written type that is the answer; where they differ there is no single written type
+  // to name, and the caller keeps its unknown rather than picking one.
+  if (ts.isBinaryExpression(expression) && expression.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken) {
+    const left = lowerTypeScriptExpressionTypeEvidence(expression.left, context);
+    const right = inferInitializerType(expression.right, context);
+    const present = left ? removeIrTypeAbsentMembersSemantic(left) : undefined;
+    if (present && right && JSON.stringify(present) === JSON.stringify(right)) return present;
+  }
   const type = getTypeScriptSyntacticExpressionTypeEvidence(expression, context.checker);
   return type ? lowerTypeScriptTypeNodeEvidence(type, context) : undefined;
+}
+
+function removeIrTypeAbsentMembersSemantic(type: Readonly<IrType>): Readonly<IrType> | undefined {
+  if (type.kind === 'null' || type.kind === 'undefined') return undefined;
+  if (type.kind !== 'union') return type;
+  const present = type.types.filter((member) => !hasIrTypeAbsentMemberSemantic(member));
+  return present.length === 1
+    ? present[0]
+    : present.length > 1
+      ? { kind: 'union', types: [present[0]!, present[1]!, ...present.slice(2)] }
+      : undefined;
 }
 
 interface TypeScriptTypeNodeEvidence {
@@ -3062,6 +3084,18 @@ function getTypeScriptReferenceNarrowedMember(
   return members.filter((member) => member === narrowed).length === 1 ? { narrowedMember: narrowed } : {};
 }
 
+// Whether the written type declares this member optional. The declaration is the authority rather
+// than the checker's type, because a checker with no library types reports too little and because
+// what a target needs to know is what the source wrote.
+function isTypeScriptOptionalMemberAccess(node: ts.PropertyAccessExpression, context: LoweringContext): boolean {
+  const declaration = context.checker.getSymbolAtLocation(node.name)?.declarations?.[0];
+  return (
+    declaration !== undefined &&
+    (ts.isPropertySignature(declaration) || ts.isPropertyDeclaration(declaration)) &&
+    declaration.questionToken !== undefined
+  );
+}
+
 function getTypeScriptNamedTypeMemberName(type: ts.Type): string | undefined {
   const name = type.aliasSymbol?.name ?? type.getSymbol()?.name;
   return name && name !== '__type' && name !== '__object' ? name : undefined;
@@ -3086,6 +3120,17 @@ function getTypeScriptExpressionBindingTypeEvidence(
     return getTypeScriptExpressionBindingTypeEvidence(expression.expression, context);
   }
   if (ts.isPropertyAccessExpression(expression)) {
+    // The member's own declaration carries the written type, which a receiver named by a reference
+    // does not: resolving the reference would mean resolving every alias the source went through.
+    const declaration = context.checker.getSymbolAtLocation(expression.name)?.declarations?.[0];
+    if (
+      declaration &&
+      (ts.isPropertySignature(declaration) || ts.isPropertyDeclaration(declaration)) &&
+      declaration.type
+    ) {
+      const written = lowerTypeScriptTypeNodeEvidence(declaration.type, context);
+      return declaration.questionToken ? { kind: 'union', types: [written, { kind: 'undefined' }] } : written;
+    }
     return getIrTypeMemberEvidence(
       getTypeScriptExpressionBindingTypeEvidence(expression.expression, context),
       expression.name.text,

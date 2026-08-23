@@ -1875,7 +1875,10 @@ function isAssignmentOperatorDirectRust(
 // Which expressions the Rust emitter renders as an `Option`. An optional chain projects into one; an
 // ordinary value does not, and wrapping it would claim a nullability the emitted type does not have.
 function isIrExpressionOptionShapedRust(expression: Readonly<IrExpression>): boolean {
-  if (expression.kind === 'call' || expression.kind === 'property') return expression.optional;
+  // An optional member is an `Option` field in the emitted record, so reading it is already the shape
+  // the operator needs — the chain is about the object being absent, this is about the member.
+  if (expression.kind === 'property') return expression.optional || expression.absent === 'optionalMember';
+  if (expression.kind === 'call') return expression.optional;
   // An array index is absent-admitting in the source language whatever the index is, which is why
   // `values[index] ?? fallback` is ordinary code. Rust's `[]` panics instead, so the coalesce reads
   // through `get`, which is both the Option the operator needs and the faithful behaviour.

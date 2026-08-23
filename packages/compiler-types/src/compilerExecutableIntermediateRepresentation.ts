@@ -136,6 +136,10 @@ export type IrExpression =
       type: IrType;
     }>
   | Readonly<{
+      // Whether reading this member can produce no value because the written type declares it
+      // optional. Distinct from an optional chain, which is about the object being absent rather than
+      // the member; a target that represents absence in the type needs both.
+      absent?: 'optionalMember' | undefined;
       kind: 'property';
       // Which built-in member the written type resolved this to, where the targets spell it
       // differently. An array's length is `length` in one target and `len()` in another, and the
