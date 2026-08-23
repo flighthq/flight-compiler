@@ -2837,6 +2837,35 @@ describe('lowerTypeScriptSource', () => {
       presence: 'narrowedPresent',
     });
   });
+  it('names the union member a reference was narrowed to, and leaves an unnarrowed one open', () => {
+    const result = lower(
+      'union.ts',
+      `export interface Circle { readonly kind: 'circle'; readonly radius: number; }
+       export interface Square { readonly kind: 'square'; readonly side: number; }
+       export type Shape = Circle | Square;
+       export function area(shape: Shape): number {
+         if (shape.kind === 'circle') { return shape.radius; }
+         return shape.side;
+       }`,
+    );
+    const area = result.module.declarations.find(
+      (declaration) => declaration.kind === 'function' && declaration.binding.name === 'area',
+    );
+    const body = area?.kind === 'function' ? area.body : [];
+    const guard = body[0];
+    const narrowed =
+      guard?.kind === 'if' && guard.consequent.kind === 'block' && guard.consequent.statements[0]?.kind === 'return'
+        ? guard.consequent.statements[0].expression
+        : undefined;
+    const condition = guard?.kind === 'if' ? guard.condition : undefined;
+
+    expect(result.diagnostics).toEqual([]);
+    expect(narrowed).toMatchObject({ kind: 'property', object: { narrowedMember: 'Circle' } });
+    // The reference the comparison reads is the one being narrowed, not one already narrowed.
+    expect(
+      condition?.kind === 'binary' && condition.left.kind === 'property' ? condition.left.object : undefined,
+    ).not.toMatchObject({ narrowedMember: 'Circle' });
+  });
 });
 
 function ambientReference(expression: Readonly<IrExpression> | undefined): string {

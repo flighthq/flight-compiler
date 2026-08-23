@@ -88,6 +88,7 @@ interface EmitContext {
   // Which bindings the module rebinds. Rust needs `mut` on a parameter that is assigned to, and the
   // ownership analysis already decides that for every binding in the module.
   movedBindingIds: ReadonlySet<string>;
+  taggedUnionBindingNames: ReadonlyMap<string, string>;
   reboundBindingIds: ReadonlySet<string>;
   generatedNames: Set<string>;
   module: Readonly<IrModule>;
@@ -164,6 +165,7 @@ function emitIrModuleRustWithContext(
     }
     throw error;
   }
+  const taggedUnionBindingNames = new Map<string, string>();
   const context: EmitContext = {
     anonymousObjectRecords: new Map(),
     reboundBindingIds: new Set(
@@ -175,6 +177,7 @@ function emitIrModuleRustWithContext(
     ),
     generatedNames: new Set(targetNames.values()),
     movedBindingIds: collectIrModuleMovedBindingIdsRust(module),
+    taggedUnionBindingNames,
     module,
     nullableBindingIds: collectIrModuleNullableBindingIds(module),
     objectRestRecords: new Map(),
@@ -182,6 +185,18 @@ function emitIrModuleRustWithContext(
     returnsAbsent: false,
     targetNames,
   };
+  // Which bindings hold a union this module lowered to an enum. The type is on the binding, not on
+  // the member access, so the access site can only tell that its object is an enum by asking here.
+  for (const evidence of analyzeIrModuleOwnershipEvidenceRust(module).bindings) {
+    if (evidence.type.kind !== 'named' || evidence.type.reference.kind !== 'binding') continue;
+    const reference = evidence.type.reference;
+    const alias = module.declarations.find(
+      (candidate) => candidate.kind === 'typeAlias' && candidate.binding.name === reference.binding.name,
+    );
+    if (alias?.kind !== 'typeAlias' || alias.type.kind !== 'union') continue;
+    if (!getIrUnionTypeMemberRecordsRust(alias.type, context)) continue;
+    taggedUnionBindingNames.set(evidence.binding.id, getBindingTargetNameRust(alias.binding, context));
+  }
   if (module.exports.length > 0) {
     emissionError(context, 're-exports and export assignments require Rust module-facade lowering');
   }
@@ -518,6 +533,16 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
       // domain is one type. The cast is what keeps the comparison it feeds well typed.
       if (expression.member === 'arrayLength') {
         return `(${emitExpression(expression.object, context)}.len() as f64)`;
+      }
+      // A union is a closed set of alternatives in Rust, so its fields are not reachable by name.
+      // A reference control flow narrowed to one alternative reads that alternative's own field; an
+      // unnarrowed one can only read what every alternative agrees on, through the shared accessor.
+      const union = getIrExpressionTaggedUnionRust(expression.object, context);
+      if (union) {
+        const object = emitExpression(expression.object, context);
+        return expression.object.kind === 'identifier' && expression.object.narrowedMember
+          ? `${object}.as_${safeRustValueName(expression.object.narrowedMember)}().${safeRustValueName(expression.name)}`
+          : `${object}.${safeRustValueName(expression.name)}()`;
       }
       // A namespace-like ambient symbol has no target name of its own, so the member decides the
       // whole spelling: `Math.max` is `f64::max`, not `Math::max`.
@@ -1279,6 +1304,14 @@ function emitType(type: Readonly<IrType>, context: EmitContext): string {
 }
 
 function emitTypeAlias(declaration: Readonly<IrTypeAliasDeclaration>, context: EmitContext): string[] {
+  if (declaration.type.kind === 'union' && getIrUnionTypeMemberRecordsRust(declaration.type, context)) {
+    return emitTaggedUnionRust(
+      getBindingTargetNameRust(declaration.binding, context),
+      declaration.type,
+      declaration.exported,
+      context,
+    );
+  }
   if (declaration.type.kind === 'object') {
     return emitRecord(
       getBindingTargetNameRust(declaration.binding, context),
@@ -1729,6 +1762,95 @@ function safeRustTypeName(name: string): string {
     .map((segment) => pascalCase(segment))
     .join('::');
   return isRustCompilerKeyword(value) ? `${value}_` : value;
+}
+
+// A union alias becomes a Rust enum only when every alternative is a named record this module
+// declares: the variant needs a name and the accessors need the alternative's fields, and neither
+// exists for an anonymous shape or a primitive.
+function getIrUnionTypeMemberRecordsRust(
+  type: Readonly<Extract<IrType, { kind: 'union' }>>,
+  context: EmitContext,
+): ReadonlyArray<{ name: string; properties: readonly IrObjectTypeProperty[] }> | undefined {
+  const members: Array<{ name: string; properties: readonly IrObjectTypeProperty[] }> = [];
+  for (const member of type.types) {
+    if (member.kind !== 'named' || member.reference.kind !== 'binding') return undefined;
+    const name = member.reference.binding.name;
+    const declaration = context.module.declarations.find(
+      (candidate) =>
+        (candidate.kind === 'interface' || candidate.kind === 'typeAlias') && candidate.binding.name === name,
+    );
+    const properties =
+      declaration?.kind === 'interface'
+        ? declaration.properties
+        : declaration?.kind === 'typeAlias' && declaration.type.kind === 'object'
+          ? declaration.type.properties
+          : undefined;
+    if (!properties) return undefined;
+    members.push({ name, properties });
+  }
+  return members.length > 1 ? members : undefined;
+}
+
+function getIrExpressionTaggedUnionRust(expression: Readonly<IrExpression>, context: EmitContext): string | undefined {
+  if (expression.kind !== 'identifier' || expression.reference.kind !== 'binding') return undefined;
+  return context.taggedUnionBindingNames.get(expression.reference.binding.id);
+}
+
+// A Rust enum plus the accessors that make the alternatives reachable: one per alternative for a
+// reference control flow narrowed, and one per field every alternative shares for a reference it did
+// not. An accessor rather than a `match` at each site keeps the emitted shape of the source's own
+// control flow, which is what makes the two targets comparable.
+function emitTaggedUnionRust(
+  targetName: string,
+  type: Readonly<Extract<IrType, { kind: 'union' }>>,
+  exported: boolean,
+  context: EmitContext,
+): string[] {
+  const members = getIrUnionTypeMemberRecordsRust(type, context);
+  if (!members) emissionError(context, 'non-nullable unions require Rust tagged-union lowering');
+  const visibility = exported ? 'pub ' : '';
+  const lines = ['#[derive(Clone, Debug)]', `${visibility}enum ${targetName} {`];
+  for (const member of members) {
+    lines.push(`  ${pascalCase(member.name)}(${getTargetNameForDeclaredRustType(member.name, context)}),`);
+  }
+  lines.push('}', '', `impl ${targetName} {`);
+  for (const member of members) {
+    lines.push(
+      `  ${visibility}fn as_${safeRustValueName(member.name)}(&self) -> &${getTargetNameForDeclaredRustType(member.name, context)} {`,
+      '    match self {',
+      `      ${targetName}::${pascalCase(member.name)}(value) => value,`,
+      ...(members.length > 1 ? [`      _ => panic!("${targetName} is not ${pascalCase(member.name)}"),`] : []),
+      '    }',
+      '  }',
+    );
+  }
+  const shared = members[0]!.properties.filter((property) =>
+    members.every((member) => member.properties.some((candidate) => candidate.name === property.name)),
+  );
+  for (const property of shared) {
+    lines.push(
+      `  ${visibility}fn ${safeRustValueName(property.name)}(&self) -> ${emitType(property.type, context)} {`,
+      '    match self {',
+      ...members.map(
+        (member) =>
+          `      ${targetName}::${pascalCase(member.name)}(value) => value.${safeRustValueName(property.name)}.clone(),`,
+      ),
+      '    }',
+      '  }',
+    );
+  }
+  lines.push('}');
+  return lines;
+}
+
+function getTargetNameForDeclaredRustType(name: string, context: EmitContext): string {
+  const declaration = context.module.declarations.find(
+    (candidate) =>
+      (candidate.kind === 'interface' || candidate.kind === 'typeAlias') && candidate.binding.name === name,
+  );
+  return declaration && (declaration.kind === 'interface' || declaration.kind === 'typeAlias')
+    ? getBindingTargetNameRust(declaration.binding, context)
+    : pascalCase(name);
 }
 
 function safeRustValueName(name: string): string {

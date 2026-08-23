@@ -30,6 +30,10 @@ export type IrParameter = Omit<IrFunctionTypeParameter, 'name'> &
 
 export interface IrIdentifierExpression {
   readonly kind: 'identifier';
+  // Which member of a union-typed binding control flow has proved this reference to hold, named by
+  // the member type. A target that represents a union as one open shape ignores it; a target that
+  // represents it as a closed set of alternatives cannot reach the member's own fields without it.
+  readonly narrowedMember?: string | undefined;
   // Whether control flow has proved, at this reference, that a binding whose declared type admits an
   // absent value does not hold one here. Comparing against `null` or `undefined` is not narrowing on
   // its own: the proof belongs to the reference, not to the comparison, which is why it travels here.

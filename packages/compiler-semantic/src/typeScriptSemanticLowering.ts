@@ -511,7 +511,12 @@ function lowerExpression(
     ) {
       return { kind: 'undefinedValue', type: contextualType };
     }
-    return { kind: 'identifier', ...getTypeScriptReferencePresence(node, reference, context), reference };
+    return {
+      kind: 'identifier',
+      ...getTypeScriptReferencePresence(node, reference, context),
+      ...getTypeScriptReferenceNarrowedMember(node, reference, context),
+      reference,
+    };
   }
   if (node.kind === ts.SyntaxKind.ThisKeyword) return { kind: 'identifier', reference: { kind: 'this' } };
   if (node.kind === ts.SyntaxKind.SuperKeyword) return { kind: 'identifier', reference: { kind: 'super' } };
@@ -3000,6 +3005,35 @@ function getTypeScriptReferencePresence(
     (member) => (member.flags & (ts.TypeFlags.Undefined | ts.TypeFlags.Null | ts.TypeFlags.Void)) !== 0,
   );
   return absent ? {} : { presence: 'narrowedPresent' };
+}
+
+// Which alternative of a union-typed binding this reference was proved to hold. The proof is the
+// checker's, not this compiler's: the declared type is a union of named alternatives and the flow
+// type at this reference is exactly one of them. A union of literals or of anonymous shapes has no
+// member name to carry, so it is left unnarrowed rather than described by a name a target cannot
+// resolve.
+function getTypeScriptReferenceNarrowedMember(
+  node: ts.Identifier,
+  reference: Readonly<IrIdentifierReference>,
+  context: LoweringContext,
+): { narrowedMember?: string } {
+  if (reference.kind !== 'binding') return {};
+  const symbol = context.checker.getSymbolAtLocation(node);
+  const declaration = symbol?.valueDeclaration ?? symbol?.declarations?.[0];
+  if (!symbol || !declaration) return {};
+  const declared = context.checker.getTypeOfSymbolAtLocation(symbol, declaration);
+  if (!declared.isUnion()) return {};
+  const flow = context.checker.getTypeAtLocation(node);
+  if (flow.isUnion()) return {};
+  const narrowed = getTypeScriptNamedTypeMemberName(flow);
+  if (!narrowed) return {};
+  const members = declared.types.map((member) => getTypeScriptNamedTypeMemberName(member));
+  return members.filter((member) => member === narrowed).length === 1 ? { narrowedMember: narrowed } : {};
+}
+
+function getTypeScriptNamedTypeMemberName(type: ts.Type): string | undefined {
+  const name = type.aliasSymbol?.name ?? type.getSymbol()?.name;
+  return name && name !== '__type' && name !== '__object' ? name : undefined;
 }
 
 function hasIrTypeAbsentMemberSemantic(type: Readonly<IrType>): boolean {
