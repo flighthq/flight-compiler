@@ -1,0 +1,8 @@
+[
+  { "call": "adjust", "arguments": [3, 4], "returns": "number" },
+  { "call": "adjust", "arguments": [-1, 1], "returns": "number" },
+  { "call": "same", "arguments": [2, 2], "returns": "boolean" },
+  { "call": "same", "arguments": [0, 0], "returns": "boolean" },
+  { "call": "same", "arguments": [1, 2], "returns": "boolean" },
+  { "call": "negate", "arguments": [true], "returns": "boolean" }
+]

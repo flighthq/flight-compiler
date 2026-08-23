@@ -36,6 +36,7 @@ add('typecheck', process.execPath, compiledScript('workspaceTypecheck'));
 add('test:packages', process.execPath, compiledScript('isolatedPackageTest'));
 add('test:coverage', binary('vitest'), ['run', '--coverage']);
 add('compile:check', process.execPath, compiledScript('emittedSourceCompile'));
+add('oracle:check', process.execPath, compiledScript('behavioralOracle'));
 add('pack:check', npm, ['run', 'pack:check', '--silent']);
 
 // A sweep with no gates would walk nothing and report the same success a complete run does. That

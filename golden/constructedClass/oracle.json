@@ -1,0 +1,4 @@
+[
+  { "call": "originLength", "arguments": [], "returns": "number" },
+  { "call": "describedAt", "arguments": [2, 3], "returns": "string" }
+]

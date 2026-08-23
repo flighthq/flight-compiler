@@ -1,0 +1,4 @@
+[
+  { "call": "widest", "arguments": [3, -9], "returns": "number" },
+  { "call": "widest", "arguments": [-2, 1], "returns": "number" }
+]

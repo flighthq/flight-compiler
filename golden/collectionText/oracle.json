@@ -1,0 +1,6 @@
+[
+  { "call": "sum", "arguments": [[1, 2, 3]], "returns": "number" },
+  { "call": "sum", "arguments": [[]], "returns": "number" },
+  { "call": "commaJoined", "arguments": [["a", "b"]], "returns": "string" },
+  { "call": "customJoined", "arguments": [["x", "y"], "-"], "returns": "string" }
+]

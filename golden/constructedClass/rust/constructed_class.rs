@@ -31,3 +31,11 @@ impl Point {
 pub fn origin() -> Point {
   return Point::new(0.0, 0.0);
 }
+
+pub fn origin_length() -> f64 {
+  return origin().length();
+}
+
+pub fn described_at(x: f64, y: f64) -> String {
+  return Point::new(x, y).describe();
+}

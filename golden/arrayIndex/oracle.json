@@ -1,0 +1,6 @@
+[
+  { "call": "at", "arguments": [[7, 8, 9], 1], "returns": "number" },
+  { "call": "at", "arguments": [[7], 5], "returns": "number" },
+  { "call": "head", "arguments": [[4, 5]], "returns": "number" },
+  { "call": "head", "arguments": [[]], "returns": "number" }
+]

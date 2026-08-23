@@ -19,6 +19,8 @@ export class Counter {
   }
 }
 
-export function readBack(counter: Counter): number {
-  return counter.value;
+export function readBack(): number {
+  const counter = Counter.make();
+  counter.value = 7;
+  return counter.value + Counter.zero;
 }

@@ -19,3 +19,11 @@ export class Point {
 export function origin(): Point {
   return new Point(0, 0);
 }
+
+export function originLength(): number {
+  return origin().length();
+}
+
+export function describedAt(x: number, y: number): string {
+  return new Point(x, y).describe();
+}

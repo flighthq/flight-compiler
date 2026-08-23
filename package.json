@@ -48,7 +48,8 @@
     "test:watch": "vitest",
     "typecheck": "npm run _scripts:build --silent && node ./.script-build/workspaceTypecheck.js",
     "untested": "npm run _scripts:build --silent && node ./.script-build/untestedArms.js",
-    "prepare": "husky"
+    "prepare": "husky",
+    "oracle:check": "npm run _scripts:build --silent && node ./.script-build/behavioralOracle.js"
   },
   "devDependencies": {
     "@commitlint/cli": "19.8.1",

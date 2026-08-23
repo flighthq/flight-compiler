@@ -27,6 +27,8 @@ impl Counter {
   }
 }
 
-pub fn read_back(counter: Counter) -> f64 {
-  return counter.value();
+pub fn read_back() -> f64 {
+  let mut counter: Counter = Counter::make();
+  counter.set_value(7.0);
+  return counter.value() + Counter::ZERO;
 }

@@ -1,0 +1,5 @@
+[
+  { "call": "total", "arguments": [[1, 2, 3]], "returns": "number" },
+  { "call": "report", "arguments": [[1, 2]], "returns": "number" },
+  { "call": "eachTotal", "arguments": [[4, 5, 6]], "returns": "number" }
+]

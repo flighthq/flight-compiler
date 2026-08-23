@@ -97,9 +97,11 @@ interface EmitContext {
   // ownership analysis already decides that for every binding in the module.
   movedBindingIds: ReadonlySet<string>;
   accessorClassNames: ReadonlyMap<string, string>;
+  classBindingNames: ReadonlyMap<string, string>;
   runtimeTypeNames: Set<string>;
   borrowedParameterPositions: ReadonlyMap<string, ReadonlySet<number>>;
   deferredBindingIds: ReadonlySet<string>;
+  referentMutatedBindingIds: ReadonlySet<string>;
   referentMutatedParameterIds: ReadonlySet<string>;
   taggedUnionBindingNames: ReadonlyMap<string, string>;
   reboundBindingIds: ReadonlySet<string>;
@@ -179,11 +181,13 @@ function emitIrModuleRustWithContext(
     throw error;
   }
   const accessorClassNames = new Map<string, string>();
+  const classBindingNames = new Map<string, string>();
   const borrowedParameterPositions = new Map<string, ReadonlySet<number>>();
   const taggedUnionBindingNames = new Map<string, string>();
   const context: EmitContext = {
     accessorClassNames,
     anonymousObjectRecords: new Map(),
+    classBindingNames,
     borrowedParameterPositions,
     deferredBindingIds: new Set(
       analyzeIrModuleOwnershipEvidenceRust(module).bindings.flatMap((evidence) =>
@@ -193,13 +197,18 @@ function emitIrModuleRustWithContext(
     runtimeTypeNames: new Set<string>(),
     reboundBindingIds: new Set(
       analyzeIrModuleOwnershipEvidenceRust(module).bindings.flatMap((evidence) =>
-        evidence.mutation === 'bindingAndReferent' || evidence.mutation === 'bindingReassigned'
-          ? [evidence.binding.id]
-          : [],
+        evidence.mutation !== 'none' ? [evidence.binding.id] : [],
       ),
     ),
     generatedNames: new Set(targetNames.values()),
     movedBindingIds: collectIrModuleMovedBindingIdsRust(module),
+    referentMutatedBindingIds: new Set(
+      analyzeIrModuleOwnershipEvidenceRust(module).bindings.flatMap((evidence) =>
+        evidence.mutation === 'referentMutated' || evidence.mutation === 'bindingAndReferent'
+          ? [evidence.binding.id]
+          : [],
+      ),
+    ),
     referentMutatedParameterIds: collectIrModuleReferentMutatedParameterIdsRust(module),
     taggedUnionBindingNames,
     module,
@@ -230,7 +239,9 @@ function emitIrModuleRustWithContext(
     const classDeclaration = module.declarations.find(
       (candidate) => candidate.kind === 'class' && candidate.binding.name === reference.binding.name,
     );
-    if (classDeclaration?.kind === 'class' && classDeclaration.methods.some((method) => method.accessor)) {
+    if (classDeclaration?.kind !== 'class') continue;
+    classBindingNames.set(evidence.binding.id, classDeclaration.binding.name);
+    if (classDeclaration.methods.some((method) => method.accessor)) {
       accessorClassNames.set(evidence.binding.id, classDeclaration.binding.name);
     }
   }
@@ -650,6 +661,23 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
       // A union is a closed set of alternatives in Rust, so its fields are not reachable by name.
       // A reference control flow narrowed to one alternative reads that alternative's own field; an
       // unnarrowed one can only read what every alternative agrees on, through the shared accessor.
+      // A class's static members belong to the type, not to a value of it, so Rust paths into the
+      // type: an associated constant for a field and an associated function for a method. Reading
+      // either off a value is the source language's spelling, not Rust's.
+      const classDeclaration = getIrExpressionClassDeclarationRust(expression.object, context);
+      if (classDeclaration) {
+        const field = classDeclaration.fields.find(
+          (candidate) => candidate.static && candidate.name === expression.name,
+        );
+        const method = classDeclaration.methods.find(
+          (candidate) => candidate.static && candidate.name === expression.name,
+        );
+        if (field || method) {
+          return `${getBindingTargetNameRust(classDeclaration.binding, context)}::${
+            field ? constantRustName(expression.name) : safeRustValueName(expression.name)
+          }`;
+        }
+      }
       // An enum member is a variant, not a field: Rust paths into the type rather than reading off a
       // value, and the variant keeps the source's own spelling.
       const enumeration = getIrExpressionEnumDeclarationRust(expression.object, context);
@@ -1677,7 +1705,10 @@ function emitVariable(variable: Readonly<IrVariable>, context: EmitContext): str
   // initialization, not a mutation: the source hoisted the declaration above the assignment, and
   // `mut` on it would claim a rebinding that never happens.
   const deferred = !variable.initializer && context.deferredBindingIds.has(variable.binding.id);
-  return `let ${variable.mutable && !deferred ? 'mut ' : ''}${getBindingTargetNameRust(variable.binding, context)}${type}${initializer};`;
+  // Rust asks for `mut` to reach a value's own fields through a method, where the source language
+  // only asks for it to rebind the name. A `const` the source mutates through is still `mut` here.
+  const mutable = (variable.mutable && !deferred) || context.referentMutatedBindingIds.has(variable.binding.id);
+  return `let ${mutable ? 'mut ' : ''}${getBindingTargetNameRust(variable.binding, context)}${type}${initializer};`;
 }
 
 function emitVariableDeclaration(declaration: Readonly<IrVariableDeclaration>, context: EmitContext): string[] {
@@ -2133,6 +2164,18 @@ function emitAbstractClassTraitRust(declaration: Readonly<IrClassDeclaration>, c
   });
   lines.push('}');
   return lines;
+}
+
+function getIrExpressionClassDeclarationRust(
+  object: Readonly<IrExpression>,
+  context: EmitContext,
+): Readonly<IrClassDeclaration> | undefined {
+  if (object.kind !== 'identifier' || object.reference.kind !== 'binding') return undefined;
+  const binding = object.reference.binding;
+  const declaration = context.module.declarations.find(
+    (candidate) => candidate.kind === 'class' && candidate.binding.id === binding.id,
+  );
+  return declaration?.kind === 'class' ? declaration : undefined;
 }
 
 function getIrExpressionEnumDeclarationRust(

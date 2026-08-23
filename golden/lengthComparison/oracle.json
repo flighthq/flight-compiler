@@ -1,0 +1,4 @@
+[
+  { "call": "isEmpty", "arguments": [[]], "returns": "boolean" },
+  { "call": "isEmpty", "arguments": [[1, 2]], "returns": "boolean" }
+]
