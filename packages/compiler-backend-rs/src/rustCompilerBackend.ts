@@ -254,9 +254,17 @@ function emitIrModuleRustWithContext(
 }
 
 function emitClass(declaration: Readonly<IrClassDeclaration>, context: EmitContext): string[] {
-  if (declaration.extends) {
+  // Rust has no inheritance of state, so a base that carries fields has nothing to inherit into. A
+  // stateless abstract base is a different thing: it is a set of methods, which is a trait, and the
+  // subclass implements it.
+  const abstractBase = getIrClassStatelessAbstractBaseRust(declaration, context);
+  if (declaration.extends && !abstractBase) {
     emissionError(context, `class ${declaration.binding.name} inheritance requires Rust ownership lowering`);
   }
+  // An abstract class declares behaviour and holds no state, which is what a Rust trait is. A method
+  // it implements becomes the trait's default body, so a subclass inherits it by implementing nothing.
+  if (declaration.abstract) return emitAbstractClassTraitRust(declaration, context);
+  const inheritedTraits = abstractBase ? [getBindingTargetNameRust(abstractBase.binding, context)] : [];
   const implementedTraits = declaration.implements.map((reference) => {
     if (reference.kind !== 'named' || reference.reference.kind !== 'binding') {
       return emissionError(context, `class ${declaration.binding.name} implements a type with no Rust trait`);
@@ -276,7 +284,7 @@ function emitClass(declaration: Readonly<IrClassDeclaration>, context: EmitConte
     return emitType(reference, context);
   });
   const constructorFields = declaration.classConstructor
-    ? getIrClassConstructorFieldAssignmentsRust(declaration)
+    ? getIrClassConstructorFieldAssignmentsRust(declaration, abstractBase !== undefined)
     : undefined;
   if (
     declaration.classConstructor &&
@@ -285,8 +293,6 @@ function emitClass(declaration: Readonly<IrClassDeclaration>, context: EmitConte
   ) {
     emissionError(context, `class ${declaration.binding.name} constructor requires Rust initialization lowering`);
   }
-  if (declaration.abstract)
-    emissionError(context, `abstract class ${declaration.binding.name} requires Rust trait lowering`);
   // A static field is one value shared by the type, which Rust spells as an associated constant —
   // but only where the source's initializer is a constant. Anything computed needs a place to run,
   // and an associated constant has none.
@@ -365,6 +371,10 @@ function emitClass(declaration: Readonly<IrClassDeclaration>, context: EmitConte
     if (target?.kind !== 'interface') continue;
     for (const property of target.properties) traitMethodNames.set(property.name, emitType(reference, context));
   }
+  if (abstractBase) {
+    const traitName = getBindingTargetNameRust(abstractBase.binding, context);
+    for (const method of abstractBase.methods) traitMethodNames.set(method.name, traitName);
+  }
   const traitDataProperties = new Map<string, IrObjectTypeProperty[]>();
   for (const reference of declaration.implements) {
     if (reference.kind !== 'named' || reference.reference.kind !== 'binding') continue;
@@ -399,7 +409,7 @@ function emitClass(declaration: Readonly<IrClassDeclaration>, context: EmitConte
       '  }',
     ];
   };
-  for (const trait of implementedTraits) {
+  for (const trait of [...inheritedTraits, ...implementedTraits]) {
     const traitMethods = declaration.methods.filter((method) => traitMethodNames.get(method.name) === trait);
     lines.push(
       '',
@@ -942,7 +952,15 @@ function assertIrConstructorInvocationAbiRust(
         expression.callee.reference.kind === 'binding' &&
         candidate.binding.id === expression.callee.reference.binding.id,
     );
-    if (target?.kind === 'class' && getIrClassConstructorFieldAssignmentsRust(target)) return;
+    if (
+      target?.kind === 'class' &&
+      getIrClassConstructorFieldAssignmentsRust(
+        target,
+        getIrClassStatelessAbstractBaseRust(target, context) !== undefined,
+      )
+    ) {
+      return;
+    }
   }
   emissionError(context, 'class constructor calls require Rust initialization lowering');
 }
@@ -1212,6 +1230,7 @@ function emitBorrowedTextRust(expression: Readonly<IrExpression>, context: EmitC
 // them back: a field literal cannot see a field the same literal is still building.
 function getIrClassConstructorFieldAssignmentsRust(
   declaration: Readonly<IrClassDeclaration>,
+  statelessBase: boolean,
 ): ReadonlyArray<{ name: string; value: Readonly<IrExpression> }> | undefined {
   const constructor = declaration.classConstructor;
   const instanceFields = declaration.fields.filter((field) => !field.static);
@@ -1219,6 +1238,9 @@ function getIrClassConstructorFieldAssignmentsRust(
   if (instanceFields.some((field) => field.initializer)) return undefined;
   const assigned: Array<{ name: string; value: Readonly<IrExpression> }> = [];
   for (const statement of constructor.body) {
+    // A base that holds no state has nothing to initialize, so the call that would have initialized
+    // it does nothing and leaves nothing for the struct literal to say.
+    if (statelessBase && isIrStatementSuperConstructorCallRust(statement)) continue;
     if (statement.kind !== 'expression' || statement.expression.kind !== 'assignment') return undefined;
     const { left, operator, right } = statement.expression;
     if (operator !== '=' || left.kind !== 'property' || left.object.kind !== 'identifier') return undefined;
@@ -1231,6 +1253,15 @@ function getIrClassConstructorFieldAssignmentsRust(
     instanceFields.every((field) => assigned.some((entry) => entry.name === field.name))
     ? assigned
     : undefined;
+}
+
+function isIrStatementSuperConstructorCallRust(statement: Readonly<IrStatement>): boolean {
+  return (
+    statement.kind === 'expression' &&
+    statement.expression.kind === 'call' &&
+    statement.expression.callee.kind === 'identifier' &&
+    statement.expression.callee.reference.kind === 'super'
+  );
 }
 
 function hasIrExpressionThisReferenceRust(expression: Readonly<IrExpression>): boolean {
@@ -2009,6 +2040,56 @@ function getIrCallBorrowedPositionsRust(
   return expression.callee.kind === 'identifier' && expression.callee.reference.kind === 'binding'
     ? (context.borrowedParameterPositions.get(expression.callee.reference.binding.id) ?? new Set())
     : new Set();
+}
+
+// The base a subclass can be lowered onto: an abstract class in this module that carries no state.
+// A base with fields has state to inherit and Rust has nowhere to put it.
+function getIrClassStatelessAbstractBaseRust(
+  declaration: Readonly<IrClassDeclaration>,
+  context: EmitContext,
+): Readonly<IrClassDeclaration> | undefined {
+  const reference = declaration.extends;
+  if (!reference || reference.kind !== 'named' || reference.reference.kind !== 'binding') return undefined;
+  const binding = reference.reference.binding;
+  const target = context.module.declarations.find(
+    (candidate) => candidate.kind === 'class' && candidate.binding.id === binding.id,
+  );
+  return target?.kind === 'class' && target.abstract && target.fields.length === 0 && !target.extends
+    ? target
+    : undefined;
+}
+
+function emitAbstractClassTraitRust(declaration: Readonly<IrClassDeclaration>, context: EmitContext): string[] {
+  if (declaration.fields.length > 0) {
+    emissionError(context, `abstract class ${declaration.binding.name} carries state a Rust trait cannot hold`);
+  }
+  if (declaration.classConstructor && declaration.classConstructor.body.length > 0) {
+    emissionError(context, `abstract class ${declaration.binding.name} constructor has no Rust trait equivalent`);
+  }
+  const mutating = getIrClassMutatingMethodNamesRust(declaration);
+  const visibility = declaration.exported ? 'pub ' : '';
+  const lines = [
+    `${visibility}trait ${getBindingTargetNameRust(declaration.binding, context)}${emitTypeParameters(declaration.typeParameters, context)} {`,
+  ];
+  declaration.methods.forEach((method, index) => {
+    if (index > 0) lines.push('');
+    const target = getIrClassMethodTargetNameRust(method);
+    const parameters = [
+      ...(method.static ? [] : [method.accessor === 'set' || mutating.has(target) ? '&mut self' : '&self']),
+      ...method.parameters.map((parameter) => emitParameter(parameter, context)),
+    ].join(', ');
+    const returns = method.accessor === 'set' ? '()' : emitType(method.returns, context);
+    const signature = `  fn ${target}${emitTypeParameters(method.typeParameters, context)}(${parameters}) -> ${returns}`;
+    // A method the abstract class implements becomes the trait's default body, which is how a
+    // subclass inherits it without restating it.
+    if (method.abstract) {
+      lines.push(`${signature};`);
+      return;
+    }
+    lines.push(`${signature} {`, ...indentSourceLines(emitStatements(method.body, context), 2), '  }');
+  });
+  lines.push('}');
+  return lines;
 }
 
 function getIrExpressionEnumDeclarationRust(
