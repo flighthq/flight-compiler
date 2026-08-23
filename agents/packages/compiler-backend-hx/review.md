@@ -1,7 +1,7 @@
 ---
 package: '@flighthq/compiler-backend-hx'
 status: early
-score: 52
+score: 68
 updated: 2026-08-21
 ingested:
   - source
@@ -15,7 +15,7 @@ Haxe lowering, naming and source emission: ~1,270 lines across the emitter, the 
 
 ## Verdict
 
-**early — 52/100.** Up six points on the destructuring, tuple and control-flow batches: binding patterns now arrive pre-lowered from the neutral pass library, fixed tuples project and spread, computed access routes through `Reflect`, object rest emits, and nullish coalescing lowers to `??`. Two shapes that previously emitted _wrong_ Haxe now refuse instead — a class with an `implements` clause, and a labeled `break`/`continue` — which is the single most valuable kind of change this package can make, because an emitted-invalid case is worse than an unemitted one. The identity half remains in good shape. Since then async compiles end to end — branches, loops, jumps, handlers and cleanups — nullability compares and returns under narrowing, array indices narrow to `Int`, a spread calls reflectively, and an implemented shape emits as a nominal interface. Forty of forty-one fixtures emit. The score stays early because a real number model and module facades are still absent, and because nothing has ever compiled the output.
+**solid — 68/100.** Up six points on the destructuring, tuple and control-flow batches: binding patterns now arrive pre-lowered from the neutral pass library, fixed tuples project and spread, computed access routes through `Reflect`, object rest emits, and nullish coalescing lowers to `??`. Two shapes that previously emitted _wrong_ Haxe now refuse instead — a class with an `implements` clause, and a labeled `break`/`continue` — which is the single most valuable kind of change this package can make, because an emitted-invalid case is worse than an unemitted one. The identity half remains in good shape. Since then async compiles end to end — branches, loops, jumps, handlers and cleanups — nullability compares and returns under narrowing, array indices narrow to `Int`, a spread calls reflectively, and an implemented shape emits as a nominal interface. Forty of forty-one fixtures emit. The score stays early because a real number model and module facades are still absent, and because nothing has ever compiled the output.
 
 ## What a fully expressed Haxe backend looks like
 
@@ -63,3 +63,5 @@ Three defects in emitted Haxe were found by reading output rather than by any ga
 - **Fixed: a computed array index emitted as `Float`.** Haxe indexes with `Int`, and the neutral numeric domain has only `number`, so `values[index]` did not compile. Indices are narrowed with `Std.int` now, and an integer literal is left alone.
 - **Fixed elsewhere: `x === undefined` had no lowering.** It is `x == null` where the operand admits only one absent value, and a refusal where it admits both.
 - **Unsettled: `values?.[index]`.** The emitter produces Haxe's safe-navigation operator in array position and a test pins it. Haxe's `?.` is documented for field access; whether it also reaches array access is a question about another language's grammar that nothing in this repository can answer. Emitting it is either correct or it is source that cannot parse, and the only thing that can decide is a real Haxe parser through the conformance adapter. Recorded rather than changed, because flipping committed behaviour on an unverified belief about a grammar is the worse error.
+
+Since the last score the Haxe backend gained module-level statics — which removed a name collision with any source class named after its file, and simplified every emitted module — string-literal unions as `enum abstract(String)`, an ambient member binding table with a refusal for anything unbound, and `Lambda.fold` through an exchanged closure. Every emitted fixture compiles under Haxe 4.3.6 and its answers match the source language's own. It is solid rather than near-mature because the number model is still one type and the JavaScript lane is what runs, so hxcpp remains unproven.

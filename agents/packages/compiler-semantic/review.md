@@ -1,7 +1,7 @@
 ---
 package: '@flighthq/compiler-semantic'
 status: early
-score: 58
+score: 70
 updated: 2026-08-21
 ingested:
   - source
@@ -15,7 +15,7 @@ TypeScript-to-neutral lowering: ~3,000 lines across the lowering pass, static-fa
 
 ## Verdict
 
-**early — 58/100.** What exists is built the right way: the TypeScript compiler API rather than pattern matching, binding provenance resolved through a checker, closed operator vocabularies, and structured diagnostics for everything it will not lower. The score is low because the domain is enormous and the covered fraction is small — the roadmap says 20–25% and the refusal list bears that out. Namespaces, overloads, parameter properties, generators, decorators and most of the type system are all unrepresented; destructuring and presence narrowing, which were both on that list, are now in. That is the honest state of a slice deliberately built narrow-and-correct rather than wide-and-approximate, and the refusals are the asset here, not the embarrassment.
+**solid — 70/100.** What exists is built the right way: the TypeScript compiler API rather than pattern matching, binding provenance resolved through a checker, closed operator vocabularies, and structured diagnostics for everything it will not lower. The score is low because the domain is enormous and the covered fraction is small — the roadmap says 20–25% and the refusal list bears that out. Namespaces, overloads, parameter properties, generators, decorators and most of the type system are all unrepresented; destructuring and presence narrowing, which were both on that list, are now in. That is the honest state of a slice deliberately built narrow-and-correct rather than wide-and-approximate, and the refusals are the asset here, not the embarrassment.
 
 ## What a fully expressed TypeScript-lowering domain looks like
 
@@ -76,3 +76,5 @@ That distinction is the point. This score measures how much of the domain is _ex
 The re-score above listed destructuring among the unrepresented constructs. That was already wrong when written: variable and parameter binding patterns lower to `IrBindingPattern` with nested, defaulted, rest and tuple-typed forms, and only a destructured catch binding still refuses. Destructuring is the single most common of the constructs this package was missing, so crediting it moves the score six points on its own — this is domain expressed, not tests added, which is the axis the re-score argued for.
 
 The correction matters more than the six points. A review that reads a diff for what it _verifies_ can miss what it _adds_; the destructuring work arrived spread across ten commits titled for lowering and tuples rather than one titled for destructuring, and the summary judgement inherited the old shape of the gap list instead of re-reading the refusals. Re-derive the refusal list from source on every re-score.
+
+Since the last score the semantic layer stopped being blind to the ambient surface. Callback parameters, indexed elements, member types, and construction targets are typed now — by written evidence first and by the checker's instantiation where the surface only describes a shape generically. The boundary between the surface and the module is enforced where paths converge rather than at each caller, which is what stopped the surface's own type parameters leaking out as unbindable ambient names.

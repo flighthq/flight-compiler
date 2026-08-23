@@ -1,7 +1,7 @@
 ---
 package: '@flighthq/compiler-backend-rs'
 status: early
-score: 46
+score: 62
 updated: 2026-08-21
 ingested:
   - source
@@ -15,7 +15,7 @@ Rust lowering, naming and source emission: ~1,410 lines across the emitter, the 
 
 ## Verdict
 
-**early — 46/100.** The largest single-batch movement in the repository: optional chains now project through `as_ref().map(...)`/`and_then(...)` instead of refusing, nullable parameters emit as `Option<T>` rather than being turned away at the door, switch statements emit, labeled loops emit with real Rust labels, fixed tuples project and spread, and object-key iteration emits when the key set is closed evidence rather than a guess. Its refusal surface is still the broadest in the repository — around thirty-eight named refusals — and that remains the package working as designed. The score moves eight points and no further because the thing that makes a Rust backend a Rust backend is still absent: there is no ownership model, and every gain above is a gain in _what can be expressed_, not in _how values are owned_.
+**solid — 62/100.** The largest single-batch movement in the repository: optional chains now project through `as_ref().map(...)`/`and_then(...)` instead of refusing, nullable parameters emit as `Option<T>` rather than being turned away at the door, switch statements emit, labeled loops emit with real Rust labels, fixed tuples project and spread, and object-key iteration emits when the key set is closed evidence rather than a guess. Its refusal surface is still the broadest in the repository — around thirty-eight named refusals — and that remains the package working as designed. The score moves eight points and no further because the thing that makes a Rust backend a Rust backend is still absent: there is no ownership model, and every gain above is a gain in _what can be expressed_, not in _how values are owned_.
 
 ## What a fully expressed Rust backend looks like
 
@@ -68,3 +68,5 @@ Rust lowering, naming and source emission: ~1,410 lines across the emitter, the 
 Faithful lowering means an element access produces an `Option` — `values.get(index as usize).copied()` — and every consumer then handles the absent case. That is invasive rather than difficult: it changes the type of every indexed read, and the neutral IR already distinguishes the two through the source's own `noUncheckedIndexedAccess` typing.
 
 Until it is done, `??` over an indexed read refuses rather than emitting a coalesce over a value that cannot be absent, which at least keeps the wrong program from being emitted quietly.
+
+Since the last score the Rust backend gained a working ownership story at the seams that matter: borrowed parameters where the source mutates through, clones where a value would otherwise be moved out from under a later use, `Some` entering an `Option` and a borrow rather than a move opening one, and an ambient member table whose iterator shapes are the difference between a rename and a lowering. Every emitted fixture compiles under rustc 1.98 with only source-mirroring warnings. Representation is still the gap: nothing decides between owning, borrowing, and sharing beyond these seams.

@@ -1,7 +1,7 @@
 ---
 package: '@flighthq/tool-compiler'
 status: solid
-score: 62
+score: 70
 updated: 2026-08-20
 ingested:
   - source
@@ -15,7 +15,7 @@ The only public workspace: a nine-line barrel re-exporting the nine private pack
 
 ## Verdict
 
-**solid — 62/100.** As an assembly boundary it works and is well guarded: the packed tarball installs into a clean project and compiles a module end to end, no private package specifier leaks into shipped JavaScript or declarations, and every export is recorded in a committed API report that fails the build when it drifts. The score is held down by what a _published compiler package_ owes its consumers and does not yet provide — no entry point above the primitives, no configuration contract, no CLI, and a surface of 119 exports that is closer to "everything the packages export" than to a cultivated API.
+**solid — 70/100.** As an assembly boundary it works and is well guarded: the packed tarball installs into a clean project and compiles a module end to end, no private package specifier leaks into shipped JavaScript or declarations, and every export is recorded in a committed API report that fails the build when it drifts. The score is held down by what a _published compiler package_ owes its consumers and does not yet provide — no entry point above the primitives, no configuration contract, no CLI, and a surface of 119 exports that is closer to "everything the packages export" than to a cultivated API.
 
 ## What a fully expressed public-compiler-package domain looks like
 
@@ -53,3 +53,5 @@ The only public workspace: a nine-line barrel re-exporting the nine private pack
 ## Reviewer follow-up
 
 The surface was 119 exports when this review was written. It is 191 now — 136 types and 55 functions — a 60% increase across the semantic batches, the new lowering package, and the inventory capability contracts, with no consumer added and no per-name decision made about any of them. The facade is ten `export *` lines, so every name a package barrel gains is published by default; `api:check` faithfully records the growth without ever asking whether it was intended. The gap below is therefore not a stable observation about a fixed surface — the surface is growing at roughly the rate the compiler is, and the cultivation debt grows with it. `compiler-lowering`'s own review already flags that it exposes a concrete pass and a generic runner before any downstream consumer exercises them.
+
+The package now carries a command line: `flight-compile <directory> --target <haxe|rust> --out`. Every module compiles on its own and its outcome is recorded, so pointing it at an unfamiliar codebase reports what it could not do rather than stopping at the first refusal.

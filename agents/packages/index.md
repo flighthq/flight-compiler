@@ -18,14 +18,14 @@ A score is a judgement about **domain coverage**, not about code quality. `compi
 | [compiler-types](compiler-types/review.md) | foundational | 74 | the vocabulary everything else speaks |
 | [compiler-structural](compiler-structural/review.md) | solid | 72 | when two shapes are the same, and what follows |
 | [compiler-closure](compiler-closure/review.md) | solid | 70 | what a closure captures and how long it must live |
+| [tool-compiler](tool-compiler/review.md) | solid | 70 | the one published artifact |
+| [compiler-semantic](compiler-semantic/review.md) | solid | 70 | TypeScript in, neutral IR out |
 | [compiler-inventory](compiler-inventory/review.md) | solid | 68 | what is in this workspace and what does it export |
+| [compiler-backend-hx](compiler-backend-hx/review.md) | solid | 68 | neutral IR in, idiomatic Haxe out |
 | [compiler-lowering](compiler-lowering/review.md) | solid | 64 | verified neutral IR-to-IR transforms elected by targets |
-| [tool-compiler](tool-compiler/review.md) | solid | 62 | the one published artifact |
+| [compiler-backend-rs](compiler-backend-rs/review.md) | solid | 62 | neutral IR in, idiomatic Rust out |
 | [compiler-orchestration](compiler-orchestration/review.md) | solid | 60 | compose the passes deterministically |
-| [compiler-semantic](compiler-semantic/review.md) | early | 58 | TypeScript in, neutral IR out |
 | [compiler-module](compiler-module/review.md) | early | 55 | what links, in what order, and which slot a name means |
-| [compiler-backend-hx](compiler-backend-hx/review.md) | early | 52 | neutral IR in, idiomatic Haxe out |
-| [compiler-backend-rs](compiler-backend-rs/review.md) | early | 46 | neutral IR in, idiomatic Rust out |
 
 All twenty packages now have a review. Fourteen were re-read against the merged tree on 2026-08-21; the six that arrived after that — traversal, completion, structural, closure, module, task — were reviewed on 2026-08-22. Facade work delivered in a parcel but not yet merged here is called out in the module review rather than scored.
 
@@ -33,7 +33,7 @@ All twenty packages now have a review. Fourteen were re-read against the merged 
 
 The scores fall into the dependency order almost exactly, and that is the intended result of building bedrock-first: the primitives are close to done, the compositions above them are solid, and the two target backends — the packages whose domains are the largest and whose correctness is hardest to establish — are the least expressed. Nothing here is out of order.
 
-The three lowest scores are also the three packages that gate the migration. `compiler-semantic` at 58 bounds both backends: a construct it cannot lower cannot be emitted by either target, so its refusal list is the shared ceiling. Within the backends, the recurring theme is that structure and refusal discipline are ahead of coverage — both have their identity, naming and operator handling settled, and both refuse rather than approximate, which is why the golden fixtures can pin refusals as confidently as output.
+The three lowest scores are also the three packages that gate the migration. `compiler-semantic` at 70 bounds both backends: a construct it cannot lower cannot be emitted by either target, so its refusal list is the shared ceiling. Within the backends, the recurring theme is that structure and refusal discipline are ahead of coverage — both have their identity, naming and operator handling settled, and both refuse rather than approximate, which is why the golden fixtures can pin refusals as confidently as output.
 
 ## Three open decisions, recorded 2026-08-22
 
