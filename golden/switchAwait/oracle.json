@@ -1,0 +1,5 @@
+[
+  { "call": "pick", "arguments": [{ "task": 11 }, 1], "returns": "number", "awaits": true },
+  { "call": "pick", "arguments": [{ "task": 11 }, 2], "returns": "number", "awaits": true },
+  { "call": "pick", "arguments": [{ "task": 11 }, 7], "returns": "number", "awaits": true }
+]

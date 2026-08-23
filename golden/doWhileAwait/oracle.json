@@ -1,0 +1,4 @@
+[
+  { "call": "drain", "arguments": [{ "task": 4 }, false], "returns": "number", "awaits": true },
+  { "call": "drain", "arguments": [{ "task": 4 }, true], "returns": "number", "awaits": true }
+]

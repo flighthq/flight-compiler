@@ -1,0 +1,4 @@
+[
+  { "call": "choose", "arguments": [{ "task": 9 }, true], "returns": "number", "awaits": true },
+  { "call": "choose", "arguments": [{ "task": 9 }, false], "returns": "number", "awaits": true }
+]

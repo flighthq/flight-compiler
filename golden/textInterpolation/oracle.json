@@ -1,0 +1,9 @@
+[
+  { "call": "label", "arguments": [3, "cart"], "returns": "string" },
+  { "call": "label", "arguments": [0, "cart"], "returns": "string" },
+  { "call": "ratio", "arguments": [4, 2], "returns": "string" },
+  { "call": "ratio", "arguments": [1, 3], "returns": "string" },
+  { "call": "ratio", "arguments": [1, 2], "returns": "string" },
+  { "call": "flag", "arguments": [true], "returns": "string" },
+  { "call": "joined", "arguments": ["a", "b"], "returns": "string" }
+]

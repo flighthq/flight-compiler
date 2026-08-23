@@ -14,6 +14,10 @@ import ts from 'typescript';
 // is the behavioral source of truth; a target that disagrees with it is wrong however well it
 // compiles.
 //
+// The Haxe lane runs on the JavaScript target, so JavaScript-shaped semantics are inherited there
+// rather than proven: what this gate establishes for Haxe is that the lowering is right, not that
+// every Haxe backend renders a value the same way. Proving that needs hxcpp and a C++ toolchain.
+//
 // A fixture opts in with `oracle.json`. Values are compared as canonical text rather than by each
 // language's own formatting, because `1` and `1.0` and `1.000000` are the same answer — and because
 // three languages printing the same double three ways is a difference in the harness, not in the
@@ -26,9 +30,22 @@ const supportDirectory = path.join(goldenDirectory, 'support');
 type OracleValueKind = 'boolean' | 'number' | 'numbers' | 'string' | 'strings';
 
 interface OracleCase {
-  readonly arguments: readonly (boolean | number | string | readonly number[] | readonly string[])[];
+  readonly arguments: readonly unknown[];
+  readonly awaits?: boolean;
   readonly call: string;
   readonly returns: OracleValueKind;
+}
+
+// A settled task argument. Async is the machinery with the most moving parts and the least chance of
+// being right by inspection, so the oracle has to be able to hand a function something to await.
+function isTaskArgument(value: unknown): value is { task: unknown } {
+  return typeof value === 'object' && value !== null && 'task' in value;
+}
+
+// A task that settles the other way. A handler and a cleanup are only reached by a rejection, so
+// without one the whole `catch`/`finally` lowering is untested however many cases succeed.
+function isRejectedTaskArgument(value: unknown): value is { rejects: unknown } {
+  return typeof value === 'object' && value !== null && 'rejects' in value;
 }
 
 interface OracleDivergence {
@@ -115,10 +132,10 @@ function runTypeScriptOracle(fixture: string, cases: readonly OracleCase[]): rea
       '    : Array.isArray(value)',
       "      ? `[${value.map(say).join(', ')}]`",
       '      : String(value);',
-      ...cases.map(
-        (oracleCase) =>
-          `console.log(say(fixture.${oracleCase.call}(${oracleCase.arguments.map((value) => JSON.stringify(value)).join(', ')})));`,
-      ),
+      ...cases.map((oracleCase) => {
+        const call = `fixture.${oracleCase.call}(${oracleCase.arguments.map(renderTypeScriptValue).join(', ')})`;
+        return `console.log(say(${oracleCase.awaits ? `await ${call}` : call}));`;
+      }),
     ].join('\n'),
   );
   return runLines('node', ['oracle.mjs'], directory, `${fixture} source`);
@@ -146,9 +163,15 @@ function runHaxeOracle(fixture: string, cases: readonly OracleCase[]): readonly 
       '    return Std.string(value);',
       '  }',
       '  static function main() {',
-      ...cases.map(
-        (oracleCase) =>
-          `    js.Lib.global.console.log(say(${haxeModuleType(fixture)}.${oracleCase.call}(${oracleCase.arguments.map(renderHaxeValue).join(', ')})));`,
+      '    var step:flighthq._internal._Promise<Dynamic> = flighthq._internal._Promise.resolve(null);',
+      ...cases.map((oracleCase) =>
+        ((): string => {
+          const call = `${haxeModuleType(fixture)}.${oracleCase.call}(${oracleCase.arguments.map(renderHaxeValue).join(', ')})`;
+          // Chained rather than fired together, so the answers arrive in the order they were asked.
+          return oracleCase.awaits
+            ? `    step = step.then((_) -> ${call}.then((value) -> js.Lib.global.console.log(say(value))));`
+            : `    step = step.then((_) -> js.Lib.global.console.log(say(${call})));`;
+        })(),
       ),
       '  }',
       '}',
@@ -190,7 +213,8 @@ function runRustOracle(fixture: string, cases: readonly OracleCase[]): readonly 
       '}',
       'fn main() {',
       ...cases.map((oracleCase) => {
-        const call = `${modules[0] ?? 'fixture'}::${toSnakeCase(oracleCase.call)}(${oracleCase.arguments.map(renderRustValue).join(', ')})`;
+        const invocation = `${modules[0] ?? 'fixture'}::${toSnakeCase(oracleCase.call)}(${oracleCase.arguments.map(renderRustValue).join(', ')})`;
+        const call = oracleCase.awaits ? `flight_runtime::block_on(${invocation})` : invocation;
         switch (oracleCase.returns) {
           case 'number':
             return `    println!("{}", say_number(${call}));`;
@@ -232,12 +256,22 @@ function haxeModuleType(fixture: string): string {
     .join('.');
 }
 
+function renderTypeScriptValue(value: unknown): string {
+  if (isTaskArgument(value)) return `Promise.resolve(${JSON.stringify(value.task)})`;
+  if (isRejectedTaskArgument(value)) return `Promise.reject(${JSON.stringify(value.rejects)})`;
+  return JSON.stringify(value);
+}
+
 function renderHaxeValue(value: unknown): string {
+  if (isTaskArgument(value)) return `flighthq._internal._Promise.resolve(${renderHaxeValue(value.task)})`;
+  if (isRejectedTaskArgument(value)) return `flighthq._internal._Promise.reject(${renderHaxeValue(value.rejects)})`;
   if (Array.isArray(value)) return `[${value.map(renderHaxeValue).join(', ')}]`;
   return JSON.stringify(value);
 }
 
 function renderRustValue(value: unknown): string {
+  if (isTaskArgument(value)) return `flight_runtime::FlightTask::ready(${renderRustValue(value.task)})`;
+  if (isRejectedTaskArgument(value)) throw new Error('a rejected task has no Rust settlement yet');
   if (Array.isArray(value)) return `vec![${value.map(renderRustValue).join(', ')}]`;
   if (typeof value === 'string') return `${JSON.stringify(value)}.to_owned()`;
   if (typeof value === 'number') return Number.isInteger(value) ? `${String(value)}.0` : String(value);

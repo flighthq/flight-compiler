@@ -1,0 +1,1 @@
+[{ "call": "attempt", "arguments": [{ "task": 6 }, []], "returns": "number", "awaits": true }]
