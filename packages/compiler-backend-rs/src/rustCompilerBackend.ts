@@ -616,6 +616,24 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
         }
         return `${emitExpression(expression.callee.object, context)}.join(${emitBorrowedTextRust(separator, context)})`;
       }
+      // A slice of a collection is a range in Rust, and the source's own optional bounds decide which
+      // range. Copied back into an owned collection because the source's slice is a new array, not a
+      // view into the one it came from.
+      if (
+        expression.callee.kind === 'property' &&
+        expression.callee.member?.receiver === 'array' &&
+        expression.callee.member.name === 'slice'
+      ) {
+        const receiver = emitExpression(expression.callee.object, context);
+        if (expression.arguments.length === 0) return `${receiver}.clone()`;
+        if (expression.arguments.length > 2) {
+          emissionError(context, 'slicing a collection takes at most a start and an end');
+        }
+        const bounds = expression.arguments
+          .map((argument) => `${emitExpression(argument, context)} as usize`)
+          .join('..');
+        return `${receiver}[${expression.arguments.length === 1 ? `${bounds}..` : bounds}].to_vec()`;
+      }
       if (expression.callee.kind === 'property' && expression.callee.member) {
         const binding = getCompilerRustAmbientMemberBinding(expression.callee.member);
         if (binding && binding.kind !== 'countingMethod') {

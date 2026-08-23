@@ -576,10 +576,25 @@ function lowerExpression(
     const members = node.properties.map((member) =>
       lowerObjectMember(member, context, memberContext, memberTarget ?? memberContext),
     );
+    // An unknown contextual type is not evidence about what is being built, so it does not outrank
+    // the shape the literal itself states. The position a literal is passed to often knows nothing —
+    // an ambient signature's own type parameter means nothing here — and treating that as a target
+    // leaves the construction with no shape at all.
+    const contextualEvidence =
+      [contextualTargetType, contextualType].find(
+        (candidate) => candidate !== undefined && candidate.kind !== 'unknown',
+      ) ??
+      // The position may still know what is being built even where no written type says so: a
+      // parameter declared in the ambient surface is written in the surface's own type parameters,
+      // and only the checker's instantiation of them names the module's type.
+      (() => {
+        const contextual = context.checker.getContextualType(node);
+        return contextual ? getTypeScriptCheckerTypeEvidence(contextual, context, 0) : undefined;
+      })();
     const common = {
       kind: 'object',
       members,
-      type: contextualTargetType ?? contextualType ?? inferredType,
+      type: contextualEvidence ?? inferredType,
     } as const;
     if (members.some((member) => member.kind === 'spread')) {
       return { ...common, copySemantics: createIrObjectCopySemantics() };
@@ -2851,7 +2866,15 @@ function inferInitializerType(node: ts.Expression, context: LoweringContext): Ir
   if (ts.isArrowFunction(node) || ts.isFunctionExpression(node)) {
     return lowerFunctionType(node, context);
   }
-  return lowerTypeScriptExpressionTypeEvidence(node, context) ?? { kind: 'unknown', source: 'any' };
+  // Where no written type reaches the value — a call into the ambient surface returns the surface's
+  // own type parameter, which names nothing here — the checker's instantiation of it does.
+  return (
+    lowerTypeScriptExpressionTypeEvidence(node, context) ??
+    getTypeScriptCheckerTypeEvidence(context.checker.getTypeAtLocation(node), context, 0) ?? {
+      kind: 'unknown',
+      source: 'any',
+    }
+  );
 }
 
 function commonType(types: readonly [IrType, ...IrType[]]): IrType {
@@ -3210,6 +3233,12 @@ function getTypeScriptExpressionBindingTypeEvidence(
       getTypeScriptExpressionBindingTypeEvidence(expression.expression, context),
       expression.name.text,
     );
+  }
+  // A call's result has no declaration to read a written type off, and a call into the ambient
+  // surface returns the surface's own type parameter. The checker's instantiation is what says an
+  // array came back, which is what decides whether the member read next is an array's.
+  if (ts.isCallExpression(expression)) {
+    return getTypeScriptCheckerTypeEvidence(context.checker.getTypeAtLocation(expression), context, 0);
   }
   if (!ts.isIdentifier(expression)) return undefined;
   const symbol = context.checker.getSymbolAtLocation(expression);

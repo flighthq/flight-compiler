@@ -477,6 +477,19 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
       return `(${left} ${emitBinaryOperatorHaxe(expression.operator, expression.semantics, context)} ${right})`;
     }
     case 'call': {
+      // Haxe's `slice` takes a required position and counts in `Int`, where the source's takes
+      // optional bounds and counts in its one numeric type. With no bounds at all the source means a
+      // copy, which Haxe spells as `copy`.
+      if (
+        expression.callee.kind === 'property' &&
+        expression.callee.member?.receiver === 'array' &&
+        expression.callee.member.name === 'slice'
+      ) {
+        const receiver = emitExpression(expression.callee.object, context);
+        if (expression.arguments.length === 0) return `${receiver}.copy()`;
+        const bounds = expression.arguments.map((argument) => `Std.int(${emitExpression(argument, context)})`);
+        return `${receiver}.slice(${bounds.join(', ')})`;
+      }
       const ambient = expression.callee.kind === 'property' ? expression.callee.member : undefined;
       if (ambient && expression.callee.kind === 'property') {
         const binding = getCompilerHaxeAmbientMemberBinding(ambient);

@@ -24,6 +24,9 @@ const rustAmbientMemberBindings: Readonly<Record<string, CompilerRustAmbientMemb
   'array.reduce': { argumentOrder: [1, 0], collect: false, kind: 'iterator', targetName: 'fold' },
   'array.push': { kind: 'method', targetName: 'push' },
   'array.reverse': { kind: 'method', targetName: 'reverse' },
+  // `slice` is emitted as a range rather than bound to a name: Rust reaches a subrange through
+  // indexing, and the source's optional bounds decide which range it is.
+  'array.slice': { kind: 'method', targetName: 'slice' },
   'array.some': { collect: false, kind: 'iterator', targetName: 'any' },
   'string.endsWith': { kind: 'borrowedMethod', targetName: 'ends_with' },
   // The source language replaces the first occurrence; Rust's `replace` replaces every one, and
