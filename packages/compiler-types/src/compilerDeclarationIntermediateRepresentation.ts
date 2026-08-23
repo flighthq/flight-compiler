@@ -109,6 +109,10 @@ export type IrClassField = IrClassFieldCommon &
   );
 
 export interface IrClassMethod extends IrFunctionSignature {
+  // A method the class declares but does not implement. Its body is empty because there is none: it
+  // is a contract every concrete subclass owes, which is a different thing from a method that
+  // happens to do nothing.
+  readonly abstract?: boolean | undefined;
   // Whether the source declared this as a property accessor rather than a method. The body and the
   // signature are a method's either way; what differs is how a target spells the call site, and only
   // the source can say which one was written.

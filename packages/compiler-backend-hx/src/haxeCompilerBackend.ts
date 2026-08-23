@@ -364,6 +364,10 @@ function emitClass(declaration: Readonly<IrClassDeclaration>, context: EmitConte
       `  public var ${safeHaxeName(name)}(${accessor.get ? 'get' : 'never'}, ${accessor.set ? 'set' : 'never'}):${emitType(accessor.type, context)};`,
     );
   }
+  // Haxe requires `override` on a method that replaces an inherited one, and refuses it on one that
+  // does not. The source's own `override` keyword is optional in TypeScript, so the answer comes from
+  // the base class this module declares — and a base declared elsewhere cannot be asked.
+  const overriddenMethodNames = getIrClassInheritedMethodNamesHaxe(declaration, context);
   declaration.methods.forEach((method) => {
     if (lines.length > 1) lines.push('');
     const visibility = method.visibility === 'public' ? 'public ' : method.visibility === 'private' ? 'private ' : '';
@@ -373,8 +377,14 @@ function emitClass(declaration: Readonly<IrClassDeclaration>, context: EmitConte
     const setterValue = method.accessor === 'set' ? method.parameters[0] : undefined;
     const name = method.accessor ? `${method.accessor}_${safeHaxeName(method.name)}` : safeHaxeName(method.name);
     const returns = setterValue ? emitType(setterValue.type, context) : emitType(method.returns, context);
+    const signature = `  ${method.accessor ? '' : visibility}${method.abstract ? 'abstract ' : ''}${overriddenMethodNames.has(method.name) ? 'override ' : ''}${static_}function ${name}${emitTypeParameters(method.typeParameters, context)}(${emitParameters(method.parameters, context)}):${returns}`;
+    // A method with no implementation has no body to emit: the declaration is the whole contract.
+    if (method.abstract) {
+      lines.push(`${signature};`);
+      return;
+    }
     lines.push(
-      `  ${method.accessor ? '' : visibility}${static_}function ${name}${emitTypeParameters(method.typeParameters, context)}(${emitParameters(method.parameters, context)}):${returns} {`,
+      `${signature} {`,
       ...indentSourceLines(
         [
           ...(method.async ? emitCompilerHaxeTaskFunctionBody(method, context) : emitStatements(method.body, context)),
@@ -1153,6 +1163,31 @@ function emitTypeAlias(declaration: Readonly<IrTypeAliasDeclaration>, context: E
       flattened ? emitAnonymousType(flattened, context) : emitType(declaration.type, context)
     };`,
   ];
+}
+
+function getIrClassInheritedMethodNamesHaxe(
+  declaration: Readonly<IrClassDeclaration>,
+  context: EmitContext,
+): ReadonlySet<string> {
+  const names = new Set<string>();
+  let base = declaration.extends;
+  const visited = new Set<string>();
+  while (
+    base &&
+    base.kind === 'named' &&
+    base.reference.kind === 'binding' &&
+    !visited.has(base.reference.binding.id)
+  ) {
+    visited.add(base.reference.binding.id);
+    const reference = base.reference;
+    const target = context.module.declarations.find(
+      (candidate) => candidate.kind === 'class' && candidate.binding.id === reference.binding.id,
+    );
+    if (target?.kind !== 'class') break;
+    for (const method of target.methods) names.add(method.name);
+    base = target.extends;
+  }
+  return names;
 }
 
 function getIrModuleDeclaredTypeNameHaxe(name: string, context: EmitContext): string | undefined {

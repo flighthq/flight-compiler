@@ -257,6 +257,11 @@ function lowerClass(node: ts.ClassDeclaration, context: LoweringContext): IrClas
   }
   for (const group of methodGroups.values()) {
     const implementations = group.filter((method) => method.body !== undefined);
+    // An abstract method has no implementation by definition, so an overload group of exactly one
+    // abstract declaration is complete rather than missing one.
+    if (implementations.length === 0 && group.length === 1 && hasModifier(group[0]!, ts.SyntaxKind.AbstractKeyword)) {
+      continue;
+    }
     if (implementations.length !== 1) {
       unsupported(group[0]!, `class method ${propertyName(group[0]!.name, context)} requires one implementation`);
     }
@@ -291,7 +296,7 @@ function lowerClass(node: ts.ClassDeclaration, context: LoweringContext): IrClas
       continue;
     }
     if (ts.isMethodDeclaration(member) || ts.isGetAccessor(member) || ts.isSetAccessor(member)) {
-      if (!member.body) continue;
+      if (!member.body && !hasModifier(member, ts.SyntaxKind.AbstractKeyword)) continue;
       const accessor = ts.isGetAccessor(member)
         ? ({ accessor: 'get' } as const)
         : ts.isSetAccessor(member)
@@ -308,15 +313,18 @@ function lowerClass(node: ts.ClassDeclaration, context: LoweringContext): IrClas
         ...signature,
         ...accessor,
         async: hasModifier(member, ts.SyntaxKind.AsyncKeyword),
-        body: [
-          ...parameterEntries,
-          ...lowerStatementListWithTypeScriptReturnType(
-            member.body.statements,
-            getTypeScriptFunctionReturnValueType(member, signature.returns, context),
-            signature.returns,
-            context,
-          ),
-        ],
+        ...(member.body ? {} : { abstract: true }),
+        body: member.body
+          ? [
+              ...parameterEntries,
+              ...lowerStatementListWithTypeScriptReturnType(
+                member.body.statements,
+                getTypeScriptFunctionReturnValueType(member, signature.returns, context),
+                signature.returns,
+                context,
+              ),
+            ]
+          : [],
         name,
         overloads,
         static: hasModifier(member, ts.SyntaxKind.StaticKeyword),
