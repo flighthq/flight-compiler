@@ -5,9 +5,9 @@ pub fn widen(value: Option<f64>, fallback: f64) -> f64 {
   if value.is_none() {
     return fallback;
   }
-  return value.unwrap();
+  return value.clone().unwrap();
 }
 
 pub fn label(name: Option<String>) -> String {
-  return if name.is_none() { "none".to_owned() } else { name.unwrap() };
+  return if name.is_none() { "none".to_owned() } else { name.clone().unwrap() };
 }

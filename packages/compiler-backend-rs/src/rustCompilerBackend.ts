@@ -559,7 +559,7 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
         return `${emitExpression(expression.left.object, context)}.set_${safeRustValueName(expression.left.name)}(${emitOwnedOperandRust(expression.right, context)})`;
       }
       const left = emitExpression(expression.left, context);
-      const right = emitExpression(expression.right, context);
+      const right = emitOptionalTargetOperandRust(expression.left, expression.right, context);
       return `${left} ${emitAssignmentOperatorRust(expression.operator, expression.semantics, context)} ${normalizeSourceTextGrouping(right)}`;
     }
     case 'await':
@@ -689,10 +689,13 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
     case 'identifier':
       // Narrowing proved this reference holds a value, so the Option it was declared as is opened
       // here. Without the proof the emitter refuses rather than unwrapping on faith.
+      // Opening an `Option` consumes it, and the source's narrowing does not consume anything, so the
+      // value is copied out rather than taken. A read that only needs to look borrows instead; that
+      // decision belongs to the reader, which is why it is made where the member is read.
       return expression.presence === 'narrowedPresent' &&
         expression.reference.kind === 'binding' &&
         context.nullableBindingIds.has(expression.reference.binding.id)
-        ? `${emitIdentifierReferenceRust(expression.reference, context)}.unwrap()`
+        ? `${emitIdentifierReferenceRust(expression.reference, context)}.clone().unwrap()`
         : emitIdentifierReferenceRust(expression.reference, context);
     case 'literal':
       return emitLiteral(expression.value);
@@ -746,6 +749,12 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
       const enumeration = getIrExpressionEnumDeclarationRust(expression.object, context);
       if (enumeration) {
         return `${getBindingTargetNameRust(enumeration.binding, context)}::${safeRustTypeName(expression.name)}`;
+      }
+      // Reading a member of a narrowed `Option` only needs to look at it, so it is borrowed open
+      // rather than copied out.
+      const borrowedNarrow = emitBorrowedNarrowedReceiverRust(expression.object, context);
+      if (borrowedNarrow !== undefined) {
+        return `${borrowedNarrow}.${safeRustValueName(expression.name)}`;
       }
       const accessor = getIrExpressionClassAccessorRust(expression.object, expression.name, 'get', context);
       if (accessor) return `${emitExpression(expression.object, context)}.${safeRustValueName(expression.name)}()`;
@@ -1368,6 +1377,32 @@ function emitIndexOperandRust(expression: Readonly<IrExpression>, context: EmitC
   return expression.kind === 'literal' && typeof expression.value === 'number' && Number.isInteger(expression.value)
     ? String(expression.value)
     : `${emitExpression(expression, context)} as usize`;
+}
+
+function emitBorrowedNarrowedReceiverRust(object: Readonly<IrExpression>, context: EmitContext): string | undefined {
+  if (object.kind !== 'identifier' || object.reference.kind !== 'binding') return undefined;
+  if (object.presence !== 'narrowedPresent') return undefined;
+  if (!context.nullableBindingIds.has(object.reference.binding.id)) return undefined;
+  return `${emitIdentifierReferenceRust(object.reference, context)}.as_ref().unwrap()`;
+}
+
+// A value on its way into a binding that can hold nothing. The source language stores a value and an
+// absence in one place without saying so; Rust's `Option` says so, and a present value has to be
+// wrapped to enter it. A value that is already optional passes through: it is already the shape.
+function emitOptionalTargetOperandRust(
+  target: Readonly<IrExpression>,
+  value: Readonly<IrExpression>,
+  context: EmitContext,
+): string {
+  const source = emitExpression(value, context);
+  if (target.kind !== 'identifier' || target.reference.kind !== 'binding') return source;
+  if (!context.nullableBindingIds.has(target.reference.binding.id)) return source;
+  const alreadyOptional =
+    isIrExpressionOptionShapedRust(value) ||
+    (value.kind === 'identifier' &&
+      value.reference.kind === 'binding' &&
+      context.nullableBindingIds.has(value.reference.binding.id));
+  return alreadyOptional ? source : `Some(${source})`;
 }
 
 // Text in a position Rust borrows rather than owns. A literal is already a `&str` before it is

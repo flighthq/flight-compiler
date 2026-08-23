@@ -1228,7 +1228,9 @@ describe('emitIrModuleRust', () => {
 
     const output = emitIrModuleRust(narrowed.module).contents;
     expect(output).toContain('if value.is_none() {');
-    expect(output).toContain('return value.unwrap();');
+    // Copied out rather than taken: the source's narrowing proves the value is there, and does not
+    // consume the place it was proved in.
+    expect(output).toContain('return value.clone().unwrap();');
     // Unwrapping without the proof is a panic waiting to happen, so it refuses instead.
     expect(() => emitIrModuleRust(open.module)).toThrow('requires Rust narrowing evidence');
   });
