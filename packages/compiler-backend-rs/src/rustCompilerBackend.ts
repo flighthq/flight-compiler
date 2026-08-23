@@ -87,6 +87,7 @@ import {
   createCompilerRuntimeExternalSymbolBindingPlanRust,
   getCompilerRuntimeExternalMemberTargetRust,
   getCompilerRuntimeExternalSymbolTargetRust,
+  isCompilerRuntimeExternalSymbolProvidedRust,
 } from './rustRuntimeExternalSymbolBinding.js';
 
 interface EmitContext {
@@ -95,6 +96,7 @@ interface EmitContext {
   // ownership analysis already decides that for every binding in the module.
   movedBindingIds: ReadonlySet<string>;
   accessorClassNames: ReadonlyMap<string, string>;
+  runtimeTypeNames: Set<string>;
   borrowedParameterPositions: ReadonlyMap<string, ReadonlySet<number>>;
   referentMutatedParameterIds: ReadonlySet<string>;
   taggedUnionBindingNames: ReadonlyMap<string, string>;
@@ -181,6 +183,7 @@ function emitIrModuleRustWithContext(
     accessorClassNames,
     anonymousObjectRecords: new Map(),
     borrowedParameterPositions,
+    runtimeTypeNames: new Set<string>(),
     reboundBindingIds: new Set(
       analyzeIrModuleOwnershipEvidenceRust(module).bindings.flatMap((evidence) =>
         evidence.mutation === 'bindingAndReferent' || evidence.mutation === 'bindingReassigned'
@@ -238,8 +241,15 @@ function emitIrModuleRustWithContext(
   }
   const lines = [createCompilerGeneratedFileHeader(module, '//', options.upstreamCommit), '#![forbid(unsafe_code)]'];
   const imports = [...emitImports(module.imports, context), ...emitReexportsRust(module.exports, context)];
-  if (imports.length > 0) lines.push('', ...imports);
   const declarations = module.declarations.map((declaration) => emitDeclaration(declaration, context));
+  // The runtime contract's types are named bare in emitted source, so the module has to bring them
+  // into scope. Which ones it needs is only known once everything is emitted, which is why the use
+  // line is assembled here rather than beside the source's own imports.
+  const runtimeImports =
+    context.runtimeTypeNames.size > 0
+      ? [`use ${options.runtimeCrate ?? 'flight_runtime'}::${emitUseTreeRust([...context.runtimeTypeNames].sort())};`]
+      : [];
+  if (runtimeImports.length > 0 || imports.length > 0) lines.push('', ...runtimeImports, ...imports);
   context.anonymousObjectRecords.forEach((record) => {
     lines.push('', ...emitRecord(record.name, record.properties, [], false, context));
   });
@@ -533,7 +543,11 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
       return `${left} ${emitAssignmentOperatorRust(expression.operator, expression.semantics, context)} ${right}`;
     }
     case 'await':
-      return `${emitExpression(expression.expression, context)}.await`;
+      // `.await` consumes the future it is given, while the source language's await does not consume
+      // the promise: a promise settles once and every await sees that settlement. A task reached more
+      // than once is therefore cloned, which the runtime contract's first-call-wins settlement is
+      // what makes equivalent.
+      return `${emitOwnedOperandRust(expression.expression, context)}.await`;
     case 'binary': {
       if (expression.semantics.nullishComparison) {
         const evidence = expression.semantics.nullishComparison;
@@ -837,7 +851,7 @@ function emitImports(imports: readonly IrImport[], context: EmitContext): string
       const localName = getBindingTargetNameRust(binding.binding, context);
       return importedName === localName ? importedName : `${importedName} as ${localName}`;
     });
-    lines.add(`use ${module}::{${names.sort().join(', ')}};`);
+    lines.add(`use ${module}::${emitUseTreeRust(names.sort())};`);
   }
   return [...lines].sort();
 }
@@ -861,7 +875,7 @@ function emitReexportsRust(exports: readonly IrExport[], context: EmitContext): 
       exported.typeOnly || /^[A-Z]/u.test(exported.exported)
         ? safeRustTypeName(exported.exported)
         : safeRustValueName(exported.exported);
-    lines.add(`pub use ${module}::{${source === target ? source : `${source} as ${target}`}};`);
+    lines.add(`pub use ${module}::${emitUseTreeRust([source === target ? source : `${source} as ${target}`])};`);
   }
   return [...lines].sort();
 }
@@ -934,7 +948,9 @@ function emitConstructorReferenceRust(reference: Readonly<IrIdentifierReference>
   if (reference.kind !== 'ambient') return getBindingTargetNameRust(reference.binding, context);
   const targetName = getCompilerRuntimeExternalSymbolTargetRust(reference.name, 'value');
   if (!targetName) emissionError(context, `external constructor ${reference.name} has no Rust binding`);
-  return targetName;
+  return isCompilerRuntimeExternalSymbolProvidedRust(reference.name, 'value')
+    ? recordRuntimeTypeRust(targetName, context)
+    : targetName;
 }
 
 function assertIrConstructorInvocationAbiRust(
@@ -974,7 +990,9 @@ function emitIdentifierReferenceRust(reference: Readonly<IrIdentifierReference>,
     }
     const targetName = getCompilerRuntimeExternalSymbolTargetRust(reference.name, 'value');
     if (!targetName) emissionError(context, `external value ${reference.name} has no Rust binding`);
-    return targetName;
+    return isCompilerRuntimeExternalSymbolProvidedRust(reference.name, 'value')
+      ? recordRuntimeTypeRust(targetName, context)
+      : targetName;
   }
   return getBindingTargetNameRust(reference.binding, context);
 }
@@ -1492,7 +1510,7 @@ function emitType(type: Readonly<IrType>, context: EmitContext): string {
       return `Vec<${emitType(type.element, context)}>`;
     case 'function': {
       const parameters = type.parameters.map((parameter) => emitType(parameter.type, context));
-      return `FlightCallback<(${parameters.join(', ')}${parameters.length === 1 ? ',' : ''}), ${emitType(type.returns, context)}>`;
+      return `${recordRuntimeTypeRust('FlightCallback', context)}<(${parameters.join(', ')}${parameters.length === 1 ? ',' : ''}), ${emitType(type.returns, context)}>`;
     }
     case 'indexedAccess':
     case 'keyof':
@@ -1521,6 +1539,7 @@ function emitType(type: Readonly<IrType>, context: EmitContext): string {
     case 'object':
       return getIrObjectTypeTargetNameRust(type.properties, context);
     case 'primitive':
+      if (type.name === 'symbol') return recordRuntimeTypeRust('FlightSymbol', context);
       return { bigint: 'i64', boolean: 'bool', number: 'f64', string: 'String', symbol: 'FlightSymbol', void: '()' }[
         type.name
       ];
@@ -1704,7 +1723,9 @@ function getTypeReferenceTargetNameRust(type: Readonly<IrTypeReference>, context
   if (type.reference.kind === 'ambient') {
     const targetName = getCompilerRuntimeExternalSymbolTargetRust(type.reference.name, 'type');
     if (!targetName) emissionError(context, `external type ${type.reference.name} has no Rust binding`);
-    return targetName;
+    return isCompilerRuntimeExternalSymbolProvidedRust(type.reference.name, 'type')
+      ? recordRuntimeTypeRust(targetName, context)
+      : targetName;
   }
   return [getBindingTargetNameRust(type.reference.binding, context), ...type.reference.path.map(safeRustTypeName)].join(
     '::',
@@ -1983,7 +2004,7 @@ function isIrTypeCloneSafeRust(type: Readonly<IrType>): boolean {
 }
 
 function opaqueHostType(context: EmitContext): string {
-  return context.options.opaqueHostType ?? 'OpaqueHostValue';
+  return context.options.opaqueHostType ?? recordRuntimeTypeRust('OpaqueHostValue', context);
 }
 
 function rustImportModule(specifier: string, context: EmitContext): string {
@@ -2192,6 +2213,19 @@ function getTargetNameForDeclaredRustType(name: string, context: EmitContext): s
 // because the two accessors share one name in the source and Rust has one namespace for both.
 function getIrClassMethodTargetNameRust(method: Readonly<IrClassMethod>): string {
   return method.accessor === 'set' ? `set_${safeRustValueName(method.name)}` : safeRustValueName(method.name);
+}
+
+// A runtime type is named bare where it is used and imported once at the top, which is how Rust
+// spells a dependency. Recording the name at the point of use is what makes the import exact.
+// Rust braces a use list only when there is more than one name in it, which is what `rustfmt` leaves
+// behind and therefore what canonical output looks like.
+function emitUseTreeRust(names: readonly string[]): string {
+  return names.length === 1 ? names[0]! : `{${names.join(', ')}}`;
+}
+
+function recordRuntimeTypeRust(name: string, context: EmitContext): string {
+  context.runtimeTypeNames.add(name);
+  return name;
 }
 
 function constantRustName(name: string): string {

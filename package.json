@@ -31,6 +31,7 @@
     "format:check": "oxfmt --check .",
     "golden": "npm run _scripts:build --silent && node ./.script-build/goldenUpdate.js",
     "golden:check": "vitest run golden",
+    "compile:check": "npm run _scripts:build --silent && node ./.script-build/emittedSourceCompile.js",
     "lint": "oxlint --max-warnings=0",
     "lint:fix": "oxlint --fix --max-warnings=0",
     "license:check": "npm run _scripts:build --silent && node ./.script-build/licenseProvenanceHealth.js",

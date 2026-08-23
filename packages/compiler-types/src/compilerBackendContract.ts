@@ -42,5 +42,7 @@ export interface HaxeCompilerBackendOptions {
 
 export interface RustCompilerBackendOptions {
   readonly opaqueHostType?: string | undefined;
+  /** Crate the runtime contract's Rust types are imported from. */
+  readonly runtimeCrate?: string | undefined;
   readonly upstreamCommit?: string | undefined;
 }

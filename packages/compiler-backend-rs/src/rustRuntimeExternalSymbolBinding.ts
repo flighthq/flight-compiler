@@ -61,6 +61,21 @@ export function getCompilerRuntimeExternalSymbolTargetRust(
   )?.targetName;
 }
 
+// Whether the runtime crate provides this symbol, as opposed to Rust itself. `Promise` becomes a
+// type the runtime defines and has to be imported; `Map` becomes `std::collections::HashMap`, which
+// is already there. Only the first kind belongs in a `use` of the runtime crate.
+export function isCompilerRuntimeExternalSymbolProvidedRust(
+  sourceName: string,
+  space: CompilerRuntimeExternalSymbolSpace,
+): boolean {
+  const normalized = sourceName.normalize('NFC');
+  return (
+    rustRuntimeExternalSymbolBindings.find(
+      (candidate) => candidate.sourceName === normalized && candidate.space === space,
+    )?.kind === 'runtime'
+  );
+}
+
 const rustRuntimeExternalSymbolBindings = [
   {
     kind: 'native',

@@ -2,7 +2,6 @@
 package flighthq.golden;
 
 typedef Round = flighthq.golden.Helper.Circle;
-typedef Shape = flighthq.golden.Helper.Shape;
 
 class ModuleFacade {
   public static function local(value:Float):Float {

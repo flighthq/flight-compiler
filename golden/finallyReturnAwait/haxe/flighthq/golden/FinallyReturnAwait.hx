@@ -13,7 +13,7 @@ class FinallyReturnAwait {
             rejectTask(taskError_3);
           }
         };
-        var cleanupValue;
+        var cleanupValue:Dynamic = null;
         var taskCleanup = function() {
           try {
             log.push(1);

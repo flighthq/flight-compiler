@@ -12,13 +12,13 @@ class ArrayBinding {
 
   public static function selectDefault(values:Array<Dynamic>):Float {
     final arrayPatternValue:Array<Dynamic> = values;
-    final first:Float = (arrayPatternValue[0] ?? 4);
+    final first:Float = (cast (arrayPatternValue[0] ?? 4) : Float);
     return first;
   }
 
   public static function selectRest(values:Array<Dynamic>):Array<Float> {
     final arrayPatternValue:Array<Dynamic> = values;
-    final rest:Array<Float> = arrayPatternValue.slice(1);
+    final rest:Array<Float> = (cast arrayPatternValue.slice(1) : Array<Float>);
     return rest;
   }
 
@@ -29,7 +29,7 @@ class ArrayBinding {
 
   public static function selectNestedDefault(values:Array<Dynamic>):Float {
     final arrayPatternValue:Array<Dynamic> = values;
-    final arrayPatternValue_2:Array<Float> = (arrayPatternValue[0] ?? [1]);
+    final arrayPatternValue_2:Array<Float> = (cast (arrayPatternValue[0] ?? [1]) : Array<Float>);
     final first:Float = arrayPatternValue_2[0];
     return first;
   }
@@ -43,7 +43,7 @@ class ArrayBinding {
   public static function selectNestedRest(values:Array<Dynamic>):String {
     final arrayPatternValue:Array<Dynamic> = values;
     final arrayPatternValue_2:Array<Dynamic> = arrayPatternValue.slice(1);
-    final second:String = arrayPatternValue_2[0];
+    final second:String = (cast arrayPatternValue_2[0] : String);
     return second;
   }
 
@@ -62,7 +62,7 @@ class ArrayBinding {
   public static function selectNestedMixedRest(values:Array<Dynamic>):Array<Bool> {
     final arrayPatternValue:Array<Dynamic> = values;
     final arrayPatternValue_2:Array<Dynamic> = arrayPatternValue.slice(1);
-    final tail:Array<Bool> = arrayPatternValue_2.slice(1);
+    final tail:Array<Bool> = (cast arrayPatternValue_2.slice(1) : Array<Bool>);
     return tail;
   }
 

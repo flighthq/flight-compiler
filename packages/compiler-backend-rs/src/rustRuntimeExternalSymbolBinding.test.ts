@@ -2,6 +2,7 @@ import {
   createCompilerRuntimeExternalSymbolBindingPlanRust,
   getCompilerRuntimeExternalMemberTargetRust,
   getCompilerRuntimeExternalSymbolTargetRust,
+  isCompilerRuntimeExternalSymbolProvidedRust,
 } from './rustRuntimeExternalSymbolBinding.js';
 
 describe('createCompilerRuntimeExternalSymbolBindingPlanRust', () => {
@@ -98,5 +99,15 @@ describe('getCompilerRuntimeExternalMemberTargetRust', () => {
     expect(getCompilerRuntimeExternalMemberTargetRust('Math', 'atan2')).toBeUndefined();
     expect(getCompilerRuntimeExternalMemberTargetRust('Array', 'from')).toBeUndefined();
     expect(getCompilerRuntimeExternalMemberTargetRust('Date', 'now')).toBeUndefined();
+  });
+});
+
+describe('isCompilerRuntimeExternalSymbolProvidedRust', () => {
+  it('separates a symbol the runtime crate defines from one Rust already has', () => {
+    // `Promise` becomes a type the runtime provides and the module has to import; `Map` becomes
+    // `std::collections::HashMap`, which is already in scope and must not be imported from it.
+    expect(isCompilerRuntimeExternalSymbolProvidedRust('Promise', 'type')).toBe(true);
+    expect(isCompilerRuntimeExternalSymbolProvidedRust('Map', 'type')).toBe(false);
+    expect(isCompilerRuntimeExternalSymbolProvidedRust('NotASymbol', 'type')).toBe(false);
   });
 });

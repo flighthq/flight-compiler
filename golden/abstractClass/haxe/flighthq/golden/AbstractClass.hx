@@ -2,6 +2,8 @@
 package flighthq.golden;
 
 abstract class Shape {
+  public function new() {}
+
   public abstract function area():Float;
 
   public function describe():Float {
@@ -17,7 +19,7 @@ class Square extends Shape {
     this.side = side;
   }
 
-  public override function area():Float {
+  public function area():Float {
     return (this.side * this.side);
   }
 }

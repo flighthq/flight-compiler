@@ -398,14 +398,23 @@ describe('emitIrModuleHaxe', () => {
     );
     const output = emitIrModuleHaxe(fixed.module).contents;
 
+    // A tuple whose positions all hold one type is that array in Haxe, so its reads need no cast.
     expect(output).toContain('final arrayPatternValue:Array<Float> = values;');
     expect(output).toContain('final first:Float = arrayPatternValue[0];');
     expect(output).toContain('final third:Float = arrayPatternValue[2];');
-    expect(emitIrModuleHaxe(defaulted.module).contents).toContain('final first:Float = (arrayPatternValue[0] ?? 0);');
+    // A tuple with an optional position has no Haxe array type that holds it, so it is
+    // `Array<Dynamic>` and reads out of it reach their declared type by cast.
+    expect(emitIrModuleHaxe(defaulted.module).contents).toContain(
+      'final first:Float = (cast (arrayPatternValue[0] ?? 0) : Float);',
+    );
+    // A tuple written with an explicit `undefined` member is homogeneous, so Haxe can type it and
+    // the read needs no cast.
     expect(emitIrModuleHaxe(requiredDefault.module).contents).toContain(
       'final first:Float = (arrayPatternValue[0] ?? 0);',
     );
-    expect(emitIrModuleHaxe(rest.module).contents).toContain('final rest:Array<Float> = arrayPatternValue.slice(1);');
+    expect(emitIrModuleHaxe(rest.module).contents).toContain(
+      'final rest:Array<Float> = (cast arrayPatternValue.slice(1) : Array<Float>);',
+    );
     expect(emitIrModuleHaxe(nestedDefault.module).contents).toContain('(arrayPatternValue[0] ?? [1])');
     expect(emitIrModuleHaxe(fixedRest.module).contents).toContain(
       'final rest:Array<Dynamic> = arrayPatternValue.slice(1);',

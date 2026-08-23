@@ -173,6 +173,7 @@ Use npm, not pnpm or Yarn. Node.js 22 or newer is required. Script names follow 
 - `npm run order`: rewrite leading import blocks into group order. It refuses a block containing a comment rather than re-attaching it to the wrong import, and never moves exported functions.
 - `npm run order:check`: require imports grouped builtin, external, then relative and alphabetized within each group, and exported package functions in alphabetical order.
 - `npm run golden`: rewrite the committed emission fixtures under `golden/`.
+- `npm run compile:check`: hand every emitted fixture to the target's own compiler. Haxe type-checks against `golden/support`, which supplies the runtime contract and sibling modules a one-module fixture cannot; Rust builds the runtime as a crate and checks each fixture against it. A toolchain that is not installed is reported and skipped rather than failed.
 - `npm run golden:check`: compile every fixture through both backends and compare emitted output byte for byte, including the refusals a fixture pins.
 - `npm run smoke`: install the packed tarball into a clean project and compile through the published entry point. Reaches the network, so it runs nightly rather than in `check`.
 - `npm run api`: rewrite `api/tool-compiler.api.md`, the committed record of the published export surface.
@@ -196,7 +197,7 @@ Run `npm run fix` before committing and `npm run check` after committing so the 
 
 ## Migration Discipline
 
-Extraction from `flight-hx` must preserve its generated Haxe byte-for-byte once that repository adopts this package. Move general analysis into the neutral packages before changing semantics. Move Haxe-specific analysis, lowering, and emission into `compiler-backend-hx`; runtime and integration support remain in `flight-hx`.
+Extraction from `flight-hx` is not required to preserve its generated Haxe byte for byte; where this compiler emits better Haxe, it should. Move general analysis into the neutral packages before changing semantics. Move Haxe-specific analysis, lowering, and emission into `compiler-backend-hx`; runtime and integration support remain in `flight-hx`.
 
 Extraction from `flight-rs` follows after the Haxe seam is proven. Move its Rust-specific lowering and emitter into `compiler-backend-rs` while keeping task runtimes, standard-library support, Cargo workspace structure, examples, and integration tests downstream. Port Rust-only task, ownership, host-capability, and conformance concepts only when their neutral meaning is separated from their Rust representation.
 

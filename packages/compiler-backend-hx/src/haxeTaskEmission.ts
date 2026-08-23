@@ -217,7 +217,10 @@ function emitCompilerHaxeTaskLoweringStep(
       const cleanupLines: string[] = [];
       // The carrier is declared where the region opens so the cleanup, which is a sibling closure,
       // can read what a route left in it.
-      if (step.carrier) cleanupLines.push(`var ${capabilities.getBindingName(step.carrier)};`);
+      // Declared with a value, because Haxe reports a local that a later path reads before any path
+      // has written it. The carrier holds whatever a route left, so its type is the same `Dynamic`
+      // the machine's other introduced values carry.
+      if (step.carrier) cleanupLines.push(`var ${capabilities.getBindingName(step.carrier)}:Dynamic = null;`);
       if (cleanupState) {
         const cleanupName = capabilities.getGeneratedName('taskCleanup');
         cleanupLines.push(

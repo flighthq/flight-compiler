@@ -677,7 +677,7 @@ describe('emitIrModuleRust', () => {
     );
     const output = emitIrModuleRust(result.module).contents;
 
-    expect(output).toContain('use crate::types::{SourceType as LocalType};');
+    expect(output).toContain('use crate::types::SourceType as LocalType;');
     expect(output).toContain('pub type Alias = LocalType;');
   });
 
@@ -1059,7 +1059,9 @@ describe('emitIrModuleRust', () => {
     const output = emitIrModuleRust(module.module).contents;
 
     expect(output).toContain('pub async fn drain(task: FlightTask<f64>, mut again: bool) -> f64 {');
-    expect(output).toContain('last = task.await;');
+    // `.await` consumes the future; the source's await does not consume the promise, so a task the
+    // loop reaches again is cloned.
+    expect(output).toContain('last = task.clone().await;');
   });
 
   it('refuses an async function whose declared return is not a task type', () => {

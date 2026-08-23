@@ -14,7 +14,7 @@ class CatchFinallyAwait {
             rejectTask(taskError_3);
           }
         };
-        var cleanupValue;
+        var cleanupValue:Dynamic = null;
         var taskCleanup = function() {
           try {
             log.push(result);

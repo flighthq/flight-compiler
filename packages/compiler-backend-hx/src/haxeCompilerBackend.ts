@@ -88,6 +88,7 @@ interface EmitContext {
   nullableBindingIds: ReadonlySet<string>;
   options: Readonly<HaxeCompilerBackendOptions>;
   returnsAbsent: boolean;
+  dynamicBindingIds: Set<string>;
   packageName: string;
   targetNames: ReadonlyMap<string, string>;
   taskFunctions: WeakMap<object, CompilerHaxeTaskLoweringFunction>;
@@ -183,6 +184,7 @@ function emitIrModuleHaxeWithContext(
     module,
     nullableBindingIds: collectIrModuleNullableBindingIds(module),
     options,
+    dynamicBindingIds: new Set<string>(),
     packageName,
     returnsAbsent: false,
     targetNames,
@@ -321,6 +323,12 @@ function emitClass(declaration: Readonly<IrClassDeclaration>, context: EmitConte
       `  ${visibility}${static_}${storage} ${safeHaxeName(field.name)}:${emitType(field.type, context)}${initializer};`,
     );
   });
+  // Haxe has no implicit constructor, so a base a subclass calls `super()` on has to declare one
+  // even when the source did not: the call is what the subclass was written to make.
+  if (!declaration.classConstructor && hasIrModuleSubclassHaxe(declaration, context)) {
+    if (declaration.fields.length > 0 || requiresErrorNameStorage) lines.push('');
+    lines.push('  public function new() {}');
+  }
   if (
     declaration.classConstructor &&
     (declaration.classConstructor.parameters.length > 0 || declaration.classConstructor.body.length > 0)
@@ -685,6 +693,11 @@ function emitReexportsHaxe(exports: readonly IrExport[], context: EmitContext): 
       );
     }
     const modulePath = haxeImportModule(exported.specifier, context);
+    // A module's types occupy their package's namespace, so re-exporting one under the name it
+    // already has inside the same package is both illegal and pointless: that name already resolves
+    // to it. A rename, or a source in another package, is a real alias and is emitted.
+    const samePackage = modulePath.slice(0, modulePath.lastIndexOf('.')) === context.packageName;
+    if (samePackage && exported.exported === exported.imported) continue;
     lines.add(`typedef ${safeHaxeTypeName(exported.exported)} = ${modulePath}.${safeHaxeTypeName(exported.imported)};`);
   }
   return [...lines].sort();
@@ -812,6 +825,7 @@ function emitParameters(parameters: readonly IrParameter[], context: EmitContext
     .map((parameter) => {
       const name = getBindingTargetNameHaxe(parameter.binding, context);
       const type = emitType(parameter.type, context);
+      if (type === 'Array<Dynamic>') context.dynamicBindingIds.add(parameter.binding.id);
       if (parameter.rest) return `...${name}:${type}`;
       if (parameter.initializer) return `${name}:${type} = ${emitExpression(parameter.initializer, context)}`;
       if (parameter.optional && hasIrTypeNullMemberHaxe(parameter.type)) {
@@ -1165,6 +1179,37 @@ function emitTypeAlias(declaration: Readonly<IrTypeAliasDeclaration>, context: E
   ];
 }
 
+// Whether this value was read out of something Haxe holds as `Array<Dynamic>` — a mixed tuple has no
+// other Haxe type. Every read from one is `Dynamic` however much the source knew, so the declared
+// type is reached by a cast rather than by assignment. A collection Haxe can type is read directly. A coalesce is looked through, since the default does not change where the value came
+// from.
+function isIrExpressionDynamicReadHaxe(expression: Readonly<IrExpression>, context: EmitContext): boolean {
+  // A default does not change where the value came from, so the read under it is what decides.
+  if (expression.kind === 'undefinedDefault') return isIrExpressionDynamicReadHaxe(expression.value, context);
+  if (expression.kind === 'binary' && expression.operator === '??') {
+    return isIrExpressionDynamicReadHaxe(expression.left, context);
+  }
+  const object =
+    expression.kind === 'element' || expression.kind === 'tupleRest' || expression.kind === 'tupleSuffix'
+      ? expression.object
+      : undefined;
+  return (
+    object?.kind === 'identifier' &&
+    object.reference.kind === 'binding' &&
+    context.dynamicBindingIds.has(object.reference.binding.id)
+  );
+}
+
+function hasIrModuleSubclassHaxe(declaration: Readonly<IrClassDeclaration>, context: EmitContext): boolean {
+  return context.module.declarations.some(
+    (candidate) =>
+      candidate.kind === 'class' &&
+      candidate.extends?.kind === 'named' &&
+      candidate.extends.reference.kind === 'binding' &&
+      candidate.extends.reference.binding.id === declaration.binding.id,
+  );
+}
+
 function getIrClassInheritedMethodNamesHaxe(
   declaration: Readonly<IrClassDeclaration>,
   context: EmitContext,
@@ -1184,7 +1229,11 @@ function getIrClassInheritedMethodNamesHaxe(
       (candidate) => candidate.kind === 'class' && candidate.binding.id === reference.binding.id,
     );
     if (target?.kind !== 'class') break;
-    for (const method of target.methods) names.add(method.name);
+    // An abstract method provides no implementation, so a subclass implements rather than overrides
+    // it, and Haxe rejects `override` on exactly that case.
+    for (const method of target.methods) {
+      if (!method.abstract) names.add(method.name);
+    }
     base = target.extends;
   }
   return names;
@@ -1282,7 +1331,20 @@ function emitVariable(variable: Readonly<IrVariable>, context: EmitContext): str
     return `var ${getBindingTargetNameHaxe(variable.binding, context)}:Dynamic = null;`;
   }
   const type = variable.type ? `:${emitType(variable.type, context)}` : '';
-  const initializer = variable.initializer ? ` = ${emitExpression(variable.initializer, context)}` : '';
+  // A rest taken from a mixed tuple is an `Array<Dynamic>`, because that is the only Haxe type the
+  // tuple has. The source knows the rest's own element type, and the cast is how that knowledge
+  // crosses: Haxe will not narrow `Array<Dynamic>` on its own.
+  const declared = variable.type ? emitType(variable.type, context) : undefined;
+  if (declared === 'Array<Dynamic>') context.dynamicBindingIds.add(variable.binding.id);
+  const restCast =
+    declared !== undefined &&
+    declared !== 'Array<Dynamic>' &&
+    declared !== 'Dynamic' &&
+    variable.initializer !== undefined &&
+    isIrExpressionDynamicReadHaxe(variable.initializer, context);
+  const initializer = variable.initializer
+    ? ` = ${restCast ? `(cast ${emitExpression(variable.initializer, context)} : ${emitType(variable.type!, context)})` : emitExpression(variable.initializer, context)}`
+    : '';
   return `${variable.mutable ? 'var' : 'final'} ${getBindingTargetNameHaxe(variable.binding, context)}${type}${initializer};`;
 }
 
