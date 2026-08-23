@@ -237,8 +237,12 @@ function emitClass(declaration: Readonly<IrClassDeclaration>, context: EmitConte
     }
     return emitType(reference, context);
   });
+  const constructorFields = declaration.classConstructor
+    ? getIrClassConstructorFieldAssignmentsRust(declaration)
+    : undefined;
   if (
     declaration.classConstructor &&
+    !constructorFields &&
     (declaration.classConstructor.parameters.length > 0 || declaration.classConstructor.body.length > 0)
   ) {
     emissionError(context, `class ${declaration.binding.name} constructor requires Rust initialization lowering`);
@@ -275,6 +279,17 @@ function emitClass(declaration: Readonly<IrClassDeclaration>, context: EmitConte
       ? createIrClassInitializationPlan(declaration)
       : undefined;
   const associated: string[] = [];
+  if (constructorFields && declaration.classConstructor) {
+    associated.push(
+      `  ${declaration.exported ? 'pub ' : ''}fn new(${declaration.classConstructor.parameters.map((parameter) => emitParameter(parameter, context)).join(', ')}) -> Self {`,
+      '    Self {',
+      ...constructorFields.map(
+        (field) => `      ${safeRustValueName(field.name)}: ${emitOwnedOperandRust(field.value, context)},`,
+      ),
+      '    }',
+      '  }',
+    );
+  }
   if (initialization) {
     const instanceOrder = initialization.fields.filter(
       (field) => declaration.fields[field.fieldIndex] && !declaration.fields[field.fieldIndex]!.static,
@@ -842,6 +857,18 @@ function assertIrConstructorInvocationAbiRust(
   context: EmitContext,
 ): void {
   if (expression.callee.kind === 'identifier' && expression.callee.reference.kind === 'ambient') return;
+  // A class this module declares has an associated `new` whenever its constructor was lowered to one,
+  // so the call is emitted; a class whose constructor was refused has nothing to call.
+  if (expression.callee.kind === 'identifier' && expression.callee.reference.kind === 'binding') {
+    const target = context.module.declarations.find(
+      (candidate) =>
+        candidate.kind === 'class' &&
+        expression.callee.kind === 'identifier' &&
+        expression.callee.reference.kind === 'binding' &&
+        candidate.binding.id === expression.callee.reference.binding.id,
+    );
+    if (target?.kind === 'class' && getIrClassConstructorFieldAssignmentsRust(target)) return;
+  }
   emissionError(context, 'class constructor calls require Rust initialization lowering');
 }
 
@@ -1086,6 +1113,46 @@ function emitBorrowedTextRust(expression: Readonly<IrExpression>, context: EmitC
   return expression.kind === 'literal' && typeof expression.value === 'string'
     ? JSON.stringify(expression.value)
     : `&${emitExpression(expression, context)}`;
+}
+
+// A constructor that does nothing but fill its own fields is a Rust struct literal, which is the one
+// constructor shape Rust has. The body must assign every instance field exactly once and read none of
+// them back: a field literal cannot see a field the same literal is still building.
+function getIrClassConstructorFieldAssignmentsRust(
+  declaration: Readonly<IrClassDeclaration>,
+): ReadonlyArray<{ name: string; value: Readonly<IrExpression> }> | undefined {
+  const constructor = declaration.classConstructor;
+  const instanceFields = declaration.fields.filter((field) => !field.static);
+  if (!constructor || instanceFields.length === 0) return undefined;
+  if (declaration.fields.some((field) => field.initializer)) return undefined;
+  const assigned: Array<{ name: string; value: Readonly<IrExpression> }> = [];
+  for (const statement of constructor.body) {
+    if (statement.kind !== 'expression' || statement.expression.kind !== 'assignment') return undefined;
+    const { left, operator, right } = statement.expression;
+    if (operator !== '=' || left.kind !== 'property' || left.object.kind !== 'identifier') return undefined;
+    if (left.object.reference.kind !== 'this' || left.optional) return undefined;
+    if (assigned.some((field) => field.name === left.name)) return undefined;
+    if (hasIrExpressionThisReferenceRust(right)) return undefined;
+    assigned.push({ name: left.name, value: right });
+  }
+  return assigned.length === instanceFields.length &&
+    instanceFields.every((field) => assigned.some((entry) => entry.name === field.name))
+    ? assigned
+    : undefined;
+}
+
+function hasIrExpressionThisReferenceRust(expression: Readonly<IrExpression>): boolean {
+  let found = false;
+  analyzeIrStatementSubtreeTraversal(
+    { expression, kind: 'expression' },
+    {
+      expression(node) {
+        if (node.kind === 'identifier' && node.reference.kind === 'this') found = true;
+        return undefined;
+      },
+    },
+  );
+  return found;
 }
 
 function emitParameter(parameter: Readonly<IrParameter>, context: EmitContext): string {

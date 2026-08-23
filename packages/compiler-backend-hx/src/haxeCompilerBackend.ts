@@ -514,10 +514,15 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
       // pass library. What reaches here is a spread of an unbounded collection into a fixed-arity
       // callee, which neither static target can express: the arity is not known until run time.
       emissionError(context, 'spreading an unbounded collection requires reflective call lowering');
-    case 'template':
-      return expression.parts
-        .map((part) => (typeof part === 'string' ? emitLiteral(part) : `Std.string(${emitExpression(part, context)})`))
-        .join(' + ');
+    case 'template': {
+      // A template's literal parts include the empty text between two interpolations and at either
+      // end. Concatenating them changes nothing, so they are dropped — unless dropping every part
+      // would leave no expression at all, which is the empty template itself.
+      const parts = expression.parts
+        .filter((part) => typeof part !== 'string' || part.length > 0)
+        .map((part) => (typeof part === 'string' ? emitLiteral(part) : `Std.string(${emitExpression(part, context)})`));
+      return parts.length > 0 ? parts.join(' + ') : emitLiteral('');
+    }
     case 'tuple':
       return `[${expression.elements
         .map((element) => (element.expression ? emitExpression(element.expression, context) : 'null'))
