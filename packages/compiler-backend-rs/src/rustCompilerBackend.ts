@@ -619,6 +619,12 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
       // A union is a closed set of alternatives in Rust, so its fields are not reachable by name.
       // A reference control flow narrowed to one alternative reads that alternative's own field; an
       // unnarrowed one can only read what every alternative agrees on, through the shared accessor.
+      // An enum member is a variant, not a field: Rust paths into the type rather than reading off a
+      // value, and the variant keeps the source's own spelling.
+      const enumeration = getIrExpressionEnumDeclarationRust(expression.object, context);
+      if (enumeration) {
+        return `${getBindingTargetNameRust(enumeration.binding, context)}::${safeRustTypeName(expression.name)}`;
+      }
       const accessor = getIrExpressionClassAccessorRust(expression.object, expression.name, 'get', context);
       if (accessor) return `${emitExpression(expression.object, context)}.${safeRustValueName(expression.name)}()`;
       const union = getIrExpressionTaggedUnionRust(expression.object, context);
@@ -2003,6 +2009,18 @@ function getIrCallBorrowedPositionsRust(
   return expression.callee.kind === 'identifier' && expression.callee.reference.kind === 'binding'
     ? (context.borrowedParameterPositions.get(expression.callee.reference.binding.id) ?? new Set())
     : new Set();
+}
+
+function getIrExpressionEnumDeclarationRust(
+  object: Readonly<IrExpression>,
+  context: EmitContext,
+): Readonly<IrEnumDeclaration> | undefined {
+  if (object.kind !== 'identifier' || object.reference.kind !== 'binding') return undefined;
+  const binding = object.reference.binding;
+  const declaration = context.module.declarations.find(
+    (candidate) => candidate.kind === 'enum' && candidate.binding.id === binding.id,
+  );
+  return declaration?.kind === 'enum' ? declaration : undefined;
 }
 
 function getIrExpressionClassAccessorRust(
