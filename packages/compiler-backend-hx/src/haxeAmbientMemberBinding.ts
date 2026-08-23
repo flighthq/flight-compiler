@@ -26,8 +26,7 @@ const haxeAmbientMemberBindings: Readonly<Record<string, CompilerHaxeAmbientMemb
   'array.map': { kind: 'method', targetName: 'map' },
   'array.pop': { kind: 'method', targetName: 'pop' },
   'array.push': { kind: 'method', targetName: 'push' },
-  // `array.reduce` is deliberately absent: `Lambda.fold` takes its accumulator second where the
-  // source takes it first, so binding them to each other would quietly transpose the arguments.
+  'array.reduce': { kind: 'staticFold', targetPath: 'Lambda.fold' },
   'array.reverse': { kind: 'method', targetName: 'reverse' },
   'array.some': { kind: 'staticCall', targetPath: 'Lambda.exists' },
   'array.shift': { kind: 'method', targetName: 'shift' },

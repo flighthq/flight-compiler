@@ -10,7 +10,10 @@
 export type CompilerHaxeAmbientMemberBinding =
   | Readonly<{ kind: 'property'; targetName: string }>
   | Readonly<{ kind: 'method'; targetName: string }>
-  | Readonly<{ kind: 'staticCall'; targetPath: string }>;
+  | Readonly<{ kind: 'staticCall'; targetPath: string }>
+  // A fold whose accumulator is the second parameter where the source's is the first. The closure is
+  // emitted with its parameters exchanged rather than wrapped, so the body is the source's own.
+  | Readonly<{ kind: 'staticFold'; targetPath: string }>;
 
 export type CompilerRustAmbientMemberBinding =
   // `owns` marks a member whose result is borrowed from the receiver where the source's is a value of

@@ -13,13 +13,20 @@ describe('getCompilerHaxeAmbientMemberBinding', () => {
       kind: 'staticCall',
       targetPath: 'StringTools.trim',
     });
+    // `Lambda.fold` takes its accumulator second where the source takes it first, which is a
+    // different shape from a rename and is named as one.
+    expect(getCompilerHaxeAmbientMemberBinding({ name: 'reduce', receiver: 'array' })).toEqual({
+      kind: 'staticFold',
+      targetPath: 'Lambda.fold',
+    });
   });
 
   it('answers nothing for a member with no agreed spelling, so emission refuses rather than guesses', () => {
     // `replace` is deliberately unbound: the source replaces the first occurrence and Haxe's replaces
     // every one, which is a difference that compiles.
     expect(getCompilerHaxeAmbientMemberBinding({ name: 'replace', receiver: 'string' })).toBeUndefined();
-    expect(getCompilerHaxeAmbientMemberBinding({ name: 'reduce', receiver: 'array' })).toBeUndefined();
+    expect(getCompilerHaxeAmbientMemberBinding({ name: 'sort', receiver: 'array' })).toBeUndefined();
+    expect(getCompilerHaxeAmbientMemberBinding({ name: 'toFixed', receiver: 'number' })).toBeUndefined();
     expect(getCompilerHaxeAmbientMemberBinding({ name: 'length', receiver: 'number' })).toBeUndefined();
   });
 });

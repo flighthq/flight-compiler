@@ -495,6 +495,13 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
         const binding = getCompilerHaxeAmbientMemberBinding(ambient);
         if (binding && binding.kind !== 'property') {
           const receiver = emitExpression(expression.callee.object, context);
+          if (binding.kind === 'staticFold') {
+            const [fold, initial] = expression.arguments;
+            if (expression.arguments.length !== 2 || !fold || !initial) {
+              emissionError(context, 'folding a collection takes a step and an initial value');
+            }
+            return `${binding.targetPath}(${receiver}, ${emitExchangedClosureHaxe(fold, context)}, ${emitExpression(initial, context)})`;
+          }
           const values = expression.arguments.map((argument) => emitExpression(argument, context));
           return binding.kind === 'staticCall'
             ? `${binding.targetPath}(${[receiver, ...values].join(', ')})`
@@ -718,6 +725,22 @@ function emitImports(imports: readonly IrImport[], context: EmitContext): string
 // own module's class, and forwarding to it would need the signature this module does not have. So a
 // type facade is a typedef and a value facade is refused with the reason, rather than emitted as an
 // import that only this module can see.
+// The source's own closure with its first two parameters exchanged. Wrapping it in another closure
+// would work too, and would put a call where the source wrote none; exchanging the names leaves the
+// body exactly as written.
+function emitExchangedClosureHaxe(expression: Readonly<IrExpression>, context: EmitContext): string {
+  if (expression.kind !== 'function' || expression.parameters.length < 2) {
+    return emissionError(context, 'folding a collection requires a step written where it is passed');
+  }
+  const [accumulated, item, ...rest] = expression.parameters;
+  const exchanged = [item!, accumulated!, ...rest]
+    .map((parameter) => `${getBindingTargetNameHaxe(parameter.binding, context)}:${emitType(parameter.type, context)}`)
+    .join(', ');
+  return expression.expression
+    ? `function(${exchanged}) return ${emitExpression(expression.expression, context)}`
+    : `function(${exchanged}) {\n${indentSourceLines(emitStatements(expression.body, context)).join('\n')}\n}`;
+}
+
 function emitReexportsHaxe(exports: readonly IrExport[], context: EmitContext): string[] {
   const lines = new Set<string>();
   for (const exported of exports) {
