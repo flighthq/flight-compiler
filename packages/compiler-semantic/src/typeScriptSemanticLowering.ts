@@ -584,7 +584,9 @@ function lowerExpression(
         ? ({ member: 'arrayLength' } as const)
         : receiver?.kind === 'array' && node.name.text === 'join'
           ? ({ member: 'arrayJoin' } as const)
-          : {};
+          : receiver?.kind === 'array' && node.name.text === 'push'
+            ? ({ member: 'arrayPush' } as const)
+            : {};
     return {
       kind: 'property',
       ...member,

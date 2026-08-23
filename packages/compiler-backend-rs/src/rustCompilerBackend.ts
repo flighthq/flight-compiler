@@ -77,7 +77,11 @@ import {
   convertSourcePathToRustModuleName,
   isRustCompilerKeyword,
 } from './rustCompilerIdentity.js';
-import { analyzeIrModuleOwnershipEvidenceRust, collectIrModuleMovedBindingIdsRust } from './rustOwnershipEvidence.js';
+import {
+  analyzeIrModuleOwnershipEvidenceRust,
+  collectIrModuleMovedBindingIdsRust,
+  collectIrModuleReferentMutatedParameterIdsRust,
+} from './rustOwnershipEvidence.js';
 import { createCompilerRuntimeExternalConstructorAbiPlanRust } from './rustRuntimeExternalConstructorAbi.js';
 import {
   createCompilerRuntimeExternalSymbolBindingPlanRust,
@@ -91,6 +95,7 @@ interface EmitContext {
   // ownership analysis already decides that for every binding in the module.
   movedBindingIds: ReadonlySet<string>;
   accessorClassNames: ReadonlyMap<string, string>;
+  borrowedParameterPositions: ReadonlyMap<string, ReadonlySet<number>>;
   referentMutatedParameterIds: ReadonlySet<string>;
   taggedUnionBindingNames: ReadonlyMap<string, string>;
   reboundBindingIds: ReadonlySet<string>;
@@ -170,10 +175,12 @@ function emitIrModuleRustWithContext(
     throw error;
   }
   const accessorClassNames = new Map<string, string>();
+  const borrowedParameterPositions = new Map<string, ReadonlySet<number>>();
   const taggedUnionBindingNames = new Map<string, string>();
   const context: EmitContext = {
     accessorClassNames,
     anonymousObjectRecords: new Map(),
+    borrowedParameterPositions,
     reboundBindingIds: new Set(
       analyzeIrModuleOwnershipEvidenceRust(module).bindings.flatMap((evidence) =>
         evidence.mutation === 'bindingAndReferent' || evidence.mutation === 'bindingReassigned'
@@ -183,14 +190,7 @@ function emitIrModuleRustWithContext(
     ),
     generatedNames: new Set(targetNames.values()),
     movedBindingIds: collectIrModuleMovedBindingIdsRust(module),
-    referentMutatedParameterIds: new Set(
-      analyzeIrModuleOwnershipEvidenceRust(module).bindings.flatMap((evidence) =>
-        evidence.declaration === 'parameter' &&
-        (evidence.mutation === 'referentMutated' || evidence.mutation === 'bindingAndReferent')
-          ? [evidence.binding.id]
-          : [],
-      ),
-    ),
+    referentMutatedParameterIds: collectIrModuleReferentMutatedParameterIdsRust(module),
     taggedUnionBindingNames,
     module,
     nullableBindingIds: collectIrModuleNullableBindingIds(module),
@@ -223,6 +223,18 @@ function emitIrModuleRustWithContext(
     if (classDeclaration?.kind === 'class' && classDeclaration.methods.some((method) => method.accessor)) {
       accessorClassNames.set(evidence.binding.id, classDeclaration.binding.name);
     }
+  }
+  // Which positions each module-local function borrows. Rust does not take a reference for an
+  // argument the way it does for a method receiver, so the call site has to lend explicitly, and only
+  // the callee's own declaration knows which positions those are.
+  for (const declaration of module.declarations) {
+    if (declaration.kind !== 'function') continue;
+    const borrowed = new Set(
+      declaration.parameters.flatMap((parameter, index) =>
+        context.referentMutatedParameterIds.has(parameter.binding.id) ? [index] : [],
+      ),
+    );
+    if (borrowed.size > 0) borrowedParameterPositions.set(declaration.binding.id, borrowed);
   }
   const lines = [createCompilerGeneratedFileHeader(module, '//', options.upstreamCommit), '#![forbid(unsafe_code)]'];
   const imports = [...emitImports(module.imports, context), ...emitReexportsRust(module.exports, context)];
@@ -963,9 +975,14 @@ function emitCallArgumentsRust(
   ) {
     emissionError(context, 'extra JavaScript call arguments require target-neutral erasure lowering');
   }
+  const borrowed = getIrCallBorrowedPositionsRust(expression, context);
   const defaults = expression.semantics.defaultParameters;
   const optionals = expression.semantics.optionalParameters;
-  if (!defaults && !optionals) return expression.arguments.map((argument) => emitOwnedOperandRust(argument, context));
+  if (!defaults && !optionals) {
+    return expression.arguments.map((argument, index) =>
+      borrowed.has(index) ? emitLentOperandRust(argument, context) : emitOwnedOperandRust(argument, context),
+    );
+  }
   const plan = defaults ?? optionals;
   if (!plan) return expression.arguments.map((argument) => emitOwnedOperandRust(argument, context));
   if (plan.providedArgumentCount === 'dynamic') {
@@ -1164,6 +1181,18 @@ function emitOwnedOperandRust(expression: Readonly<IrExpression>, context: EmitC
     : source;
 }
 
+// A value lent to a callee that mutates through it. An argument that is already a mutable borrow is
+// passed as it stands, because Rust reborrows it: taking a reference to it again would hand the
+// callee a reference to the reference.
+function emitLentOperandRust(expression: Readonly<IrExpression>, context: EmitContext): string {
+  const source = emitExpression(expression, context);
+  return expression.kind === 'identifier' &&
+    expression.reference.kind === 'binding' &&
+    context.referentMutatedParameterIds.has(expression.reference.binding.id)
+    ? source
+    : `&mut ${source}`;
+}
+
 // Text in a position Rust borrows rather than owns. A literal is already a `&str` before it is
 // owned, so the ownership is simply not taken; anything else is borrowed from the value it names.
 function emitBorrowedTextRust(expression: Readonly<IrExpression>, context: EmitContext): string {
@@ -1213,15 +1242,17 @@ function hasIrExpressionThisReferenceRust(expression: Readonly<IrExpression>): b
 }
 
 function emitParameter(parameter: Readonly<IrParameter>, context: EmitContext): string {
-  // The source mutates what this parameter names, and the caller sees the change. Rust would move the
-  // value in, mutate the copy, and drop it — the same source, a different meaning. The faithful
-  // parameter is `&mut T`, which is an ownership decision this backend does not make yet, so it
-  // refuses rather than emitting a function whose mutation goes nowhere.
+  // The source mutates what this parameter names, and the caller sees the change. Moving the value in
+  // would mutate a copy and drop it — the same source, a different meaning — so the parameter is
+  // borrowed mutably and every call site lends rather than gives.
   if (context.referentMutatedParameterIds.has(parameter.binding.id)) {
-    emissionError(
-      context,
-      `parameter ${parameter.binding.name} has its referent mutated and requires a Rust borrowed parameter`,
-    );
+    if (parameter.initializer || parameter.optional || parameter.rest) {
+      emissionError(
+        context,
+        `parameter ${parameter.binding.name} is mutated through and cannot also be optional or variadic in Rust`,
+      );
+    }
+    return `${getBindingTargetNameRust(parameter.binding, context)}: &mut ${emitType(parameter.type, context)}`;
   }
   // A parameter the body assigns to is a local binding in Rust as much as in the source language, and
   // Rust will not accept the assignment without `mut`. Emitting it unconditionally would instead earn
@@ -1963,6 +1994,15 @@ function getIrUnionTypeMemberRecordsRust(
     members.push({ name, properties });
   }
   return members.length > 1 ? members : undefined;
+}
+
+function getIrCallBorrowedPositionsRust(
+  expression: Readonly<Extract<IrExpression, { kind: 'call' }>>,
+  context: EmitContext,
+): ReadonlySet<number> {
+  return expression.callee.kind === 'identifier' && expression.callee.reference.kind === 'binding'
+    ? (context.borrowedParameterPositions.get(expression.callee.reference.binding.id) ?? new Set())
+    : new Set();
 }
 
 function getIrExpressionClassAccessorRust(

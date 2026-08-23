@@ -1,5 +1,5 @@
 import { analyzeIrModuleClosureEvidence } from '../../compiler-closure/src/index.js';
-import { analyzeIrModuleTraversal } from '../../compiler-ir-traversal/src/index.js';
+import { analyzeIrModuleTraversal, analyzeIrStatementSubtreeTraversal } from '../../compiler-ir-traversal/src/index.js';
 import type {
   CompilerIrTraversalPath,
   CompilerRustOwnershipBindingEvidence,
@@ -10,6 +10,7 @@ import type {
   IrBindingPattern,
   IrExpression,
   IrModule,
+  IrStatement,
   IrType,
 } from '../../compiler-types/src/index.js';
 
@@ -159,6 +160,46 @@ export function collectIrModuleMovedBindingIdsRust(module: Readonly<IrModule>): 
   return moved;
 }
 
+// Which parameters the caller sees mutated through. A parameter the body assigns into is one; so is a
+// parameter handed to a function that mutates through the position it was handed to, which is why
+// this closes over the module's calls rather than reading one function at a time.
+export function collectIrModuleReferentMutatedParameterIdsRust(module: Readonly<IrModule>): ReadonlySet<string> {
+  const evidence = analyzeIrModuleOwnershipEvidenceRust(module);
+  const mutated = new Set(
+    evidence.bindings.flatMap((binding) =>
+      binding.declaration === 'parameter' &&
+      (binding.mutation === 'referentMutated' || binding.mutation === 'bindingAndReferent')
+        ? [binding.binding.id]
+        : [],
+    ),
+  );
+  const functions = module.declarations.flatMap((declaration) =>
+    declaration.kind === 'function' ? [declaration] : [],
+  );
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const declaration of functions) {
+      for (const call of collectIrStatementListCallsRust(declaration.body)) {
+        const target = call.callee;
+        if (target.kind !== 'identifier' || target.reference.kind !== 'binding') continue;
+        const calleeId = target.reference.binding.id;
+        const callee = functions.find((candidate) => candidate.binding.id === calleeId);
+        if (!callee) continue;
+        call.arguments.forEach((argument, index) => {
+          const parameter = callee.parameters[index];
+          if (!parameter || !mutated.has(parameter.binding.id)) return;
+          if (argument.kind !== 'identifier' || argument.reference.kind !== 'binding') return;
+          if (mutated.has(argument.reference.binding.id)) return;
+          mutated.add(argument.reference.binding.id);
+          changed = true;
+        });
+      }
+    }
+  }
+  return mutated;
+}
+
 function addIrBindingPatternRustOwnershipPlan(
   pattern: Readonly<IrBindingPattern>,
   declaration: CompilerRustOwnershipBindingEvidence['declaration'],
@@ -192,6 +233,21 @@ function addIrExpressionRustOwnershipMutation(
   }
   if (expression.kind === 'unary' && (expression.operator === '++' || expression.operator === '--')) {
     addIrExpressionRustOwnershipMutationTarget(expression.operand, [...path, 'operand'], ordinal, bindings);
+  }
+  // Growing a collection mutates what the receiver names, the same way assigning into it does. Only
+  // members the neutral model resolved are read here: a member name alone cannot say whether the call
+  // mutates, which is why the resolution happens where the written type is still in hand.
+  if (expression.kind === 'call' && expression.callee.kind === 'property' && expression.callee.member === 'arrayPush') {
+    const receiver = expression.callee.object;
+    if (receiver.kind === 'identifier' && receiver.reference.kind === 'binding') {
+      addRustOwnershipUseDraft(
+        receiver.reference.binding.id,
+        'referentMutation',
+        [...path, 'callee', 'object'],
+        ordinal,
+        bindings,
+      );
+    }
   }
 }
 
@@ -383,3 +439,18 @@ function isRustOwnershipPathPrefix(prefix: CompilerIrTraversalPath, path: Compil
 }
 
 const RUST_OWNERSHIP_LOOP_STATEMENT_KINDS: ReadonlySet<string> = new Set(['do', 'for', 'forIn', 'forOf', 'while']);
+
+function collectIrStatementListCallsRust(
+  statements: readonly Readonly<IrStatement>[],
+): ReadonlyArray<Readonly<Extract<IrExpression, { kind: 'call' }>>> {
+  const calls: Array<Readonly<Extract<IrExpression, { kind: 'call' }>>> = [];
+  for (const statement of statements) {
+    analyzeIrStatementSubtreeTraversal(statement, {
+      expression(expression) {
+        if (expression.kind === 'call') calls.push(expression);
+        return undefined;
+      },
+    });
+  }
+  return calls;
+}

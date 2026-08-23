@@ -2,7 +2,11 @@ import ts from 'typescript';
 
 import { lowerTypeScriptSource } from '../../compiler-semantic/src/index.js';
 import type { IrModule } from '../../compiler-types/src/index.js';
-import { analyzeIrModuleOwnershipEvidenceRust, collectIrModuleMovedBindingIdsRust } from './rustOwnershipEvidence.js';
+import {
+  analyzeIrModuleOwnershipEvidenceRust,
+  collectIrModuleMovedBindingIdsRust,
+  collectIrModuleReferentMutatedParameterIdsRust,
+} from './rustOwnershipEvidence.js';
 
 describe('analyzeIrModuleOwnershipEvidenceRust', () => {
   it('records identity, mutation, reuse, closure, record, carrier, and suspension obligations', () => {
@@ -196,6 +200,25 @@ describe('collectIrModuleMovedBindingIdsRust', () => {
       }
     `);
     expect(collectIrModuleMovedBindingIdsRust(module).size).toBe(0);
+  });
+});
+
+describe('collectIrModuleReferentMutatedParameterIdsRust', () => {
+  it('elects a parameter assigned into, one grown, and one handed to a function that mutates it', () => {
+    const module = lower(`
+      export function bump(cell: { value: number }, next: number): void { cell.value = next; }
+      export function fill(out: number[], value: number): void { out.push(value); }
+      export function twice(cell: { value: number }): void { bump(cell, 1); }
+      export function read(cell: { value: number }): number { return cell.value; }
+    `);
+    expect(namesOf(module, collectIrModuleReferentMutatedParameterIdsRust(module))).toEqual(['cell', 'cell', 'out']);
+  });
+
+  it('leaves a parameter only read alone, however many times it is read', () => {
+    const module = lower(`
+      export function span(cell: { value: number }): number { return cell.value + cell.value; }
+    `);
+    expect(collectIrModuleReferentMutatedParameterIdsRust(module).size).toBe(0);
   });
 });
 

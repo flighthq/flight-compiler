@@ -1,1 +1,0 @@
-rust emission failed for @flighthq/golden/packages/golden/src/mutatedParameter.ts: parameter cell has its referent mutated and requires a Rust borrowed parameter
