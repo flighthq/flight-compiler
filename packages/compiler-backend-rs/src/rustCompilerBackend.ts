@@ -484,6 +484,16 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
     case 'call':
       if (expression.semantics.statementValue) return emitStatementValueExpressionRust(expression, context);
       if (expression.optional) return emitOptionalCallExpressionRust(expression, context);
+      // Rust joins a slice of strings with a borrowed separator, while the source hands it an owned
+      // one. The separator is the only argument, so the borrow is decided here rather than by a
+      // general rule about where an owned string may stand.
+      if (expression.callee.kind === 'property' && expression.callee.member === 'arrayJoin') {
+        const separator = expression.arguments[0];
+        if (expression.arguments.length !== 1 || !separator) {
+          emissionError(context, 'joining a collection requires exactly one separator argument');
+        }
+        return `${emitExpression(expression.callee.object, context)}.join(${emitBorrowedTextRust(separator, context)})`;
+      }
       return `${expression.callee.kind === 'function' ? `(${emitExpression(expression.callee, context)})` : emitExpression(expression.callee, context)}(${emitCallArgumentsRust(expression, context).join(', ')})`;
     case 'cast':
       return `(${emitExpression(expression.expression, context)} as ${emitType(expression.type, context)})`;
@@ -1068,6 +1078,14 @@ function emitOwnedOperandRust(expression: Readonly<IrExpression>, context: EmitC
     context.movedBindingIds.has(expression.reference.binding.id)
     ? `${source}.clone()`
     : source;
+}
+
+// Text in a position Rust borrows rather than owns. A literal is already a `&str` before it is
+// owned, so the ownership is simply not taken; anything else is borrowed from the value it names.
+function emitBorrowedTextRust(expression: Readonly<IrExpression>, context: EmitContext): string {
+  return expression.kind === 'literal' && typeof expression.value === 'string'
+    ? JSON.stringify(expression.value)
+    : `&${emitExpression(expression, context)}`;
 }
 
 function emitParameter(parameter: Readonly<IrParameter>, context: EmitContext): string {
