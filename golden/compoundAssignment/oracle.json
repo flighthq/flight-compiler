@@ -1,0 +1,9 @@
+[
+  { "call": "accumulate", "arguments": [10, 5], "returns": "number" },
+  { "call": "accumulate", "arguments": [0, 0], "returns": "number" },
+  { "call": "scale", "arguments": [3, 4], "returns": "number" },
+  { "call": "halve", "arguments": [10], "returns": "number" },
+  { "call": "halve", "arguments": [7], "returns": "number" },
+  { "call": "remainder", "arguments": [17, 5], "returns": "number" },
+  { "call": "remainder", "arguments": [10, 3], "returns": "number" }
+]

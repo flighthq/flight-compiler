@@ -1,0 +1,10 @@
+[
+  { "call": "factorial", "arguments": [5], "returns": "number" },
+  { "call": "factorial", "arguments": [0], "returns": "number" },
+  { "call": "factorial", "arguments": [1], "returns": "number" },
+  { "call": "fibonacci", "arguments": [7], "returns": "number" },
+  { "call": "fibonacci", "arguments": [0], "returns": "number" },
+  { "call": "fibonacci", "arguments": [1], "returns": "number" },
+  { "call": "gcd", "arguments": [12, 8], "returns": "number" },
+  { "call": "gcd", "arguments": [7, 0], "returns": "number" }
+]
