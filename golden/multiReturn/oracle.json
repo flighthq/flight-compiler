@@ -1,0 +1,16 @@
+[
+  { "call": "sign", "arguments": [42], "returns": "number" },
+  { "call": "sign", "arguments": [-7], "returns": "number" },
+  { "call": "sign", "arguments": [0], "returns": "number" },
+  { "call": "safeDivide", "arguments": [10, 3], "returns": "number" },
+  { "call": "safeDivide", "arguments": [10, 0], "returns": "number" },
+  { "call": "letterGrade", "arguments": [95], "returns": "string" },
+  { "call": "letterGrade", "arguments": [85], "returns": "string" },
+  { "call": "letterGrade", "arguments": [75], "returns": "string" },
+  { "call": "letterGrade", "arguments": [65], "returns": "string" },
+  { "call": "letterGrade", "arguments": [55], "returns": "string" },
+  { "call": "fizzbuzz", "arguments": [15], "returns": "string" },
+  { "call": "fizzbuzz", "arguments": [9], "returns": "string" },
+  { "call": "fizzbuzz", "arguments": [10], "returns": "string" },
+  { "call": "fizzbuzz", "arguments": [7], "returns": "string" }
+]

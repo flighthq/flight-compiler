@@ -1,0 +1,13 @@
+[
+  { "call": "sumMatrix", "arguments": [3, 4], "returns": "number" },
+  { "call": "sumMatrix", "arguments": [1, 1], "returns": "number" },
+  { "call": "sumMatrix", "arguments": [0, 5], "returns": "number" },
+  { "call": "classifyRange", "arguments": [-5], "returns": "string" },
+  { "call": "classifyRange", "arguments": [0], "returns": "string" },
+  { "call": "classifyRange", "arguments": [7], "returns": "string" },
+  { "call": "classifyRange", "arguments": [42], "returns": "string" },
+  { "call": "classifyRange", "arguments": [999], "returns": "string" },
+  { "call": "countDivisible", "arguments": [20, 3], "returns": "number" },
+  { "call": "countDivisible", "arguments": [10, 2], "returns": "number" },
+  { "call": "countDivisible", "arguments": [0, 5], "returns": "number" }
+]
