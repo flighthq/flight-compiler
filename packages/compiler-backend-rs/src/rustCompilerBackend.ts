@@ -676,6 +676,20 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
           .join('..');
         return `${receiver}[${expression.arguments.length === 1 ? `${bounds}..` : bounds}].to_vec()`;
       }
+      if (
+        expression.callee.kind === 'property' &&
+        expression.callee.member?.receiver === 'string' &&
+        expression.callee.member.name === 'substring'
+      ) {
+        const receiver = emitExpression(expression.callee.object, context);
+        if (expression.arguments.length === 0 || expression.arguments.length > 2) {
+          emissionError(context, 'string substring takes a start index and an optional end index');
+        }
+        const bounds = expression.arguments
+          .map((argument) => `${emitExpression(argument, context)} as usize`)
+          .join('..');
+        return `${receiver}[${expression.arguments.length === 1 ? `${bounds}..` : bounds}].to_string()`;
+      }
       if (expression.callee.kind === 'property' && expression.callee.member) {
         const binding = getCompilerRustAmbientMemberBinding(expression.callee.member);
         if (binding && binding.kind !== 'countingMethod') {

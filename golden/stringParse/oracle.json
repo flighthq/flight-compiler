@@ -1,0 +1,13 @@
+[
+  { "call": "countWords", "arguments": ["hello world foo"], "returns": "number" },
+  { "call": "countWords", "arguments": ["single"], "returns": "number" },
+  { "call": "countWords", "arguments": [""], "returns": "number" },
+  { "call": "hasProtocol", "arguments": ["https://example.com"], "returns": "boolean" },
+  { "call": "hasProtocol", "arguments": ["plaintext"], "returns": "boolean" },
+  { "call": "containsAt", "arguments": ["user@example.com"], "returns": "boolean" },
+  { "call": "containsAt", "arguments": ["nope"], "returns": "boolean" },
+  { "call": "tokenCount", "arguments": ["a,b,c"], "returns": "number" },
+  { "call": "tokenCount", "arguments": ["single"], "returns": "number" },
+  { "call": "rejoinTokens", "arguments": ["a,b,c", "-"], "returns": "string" },
+  { "call": "rejoinTokens", "arguments": ["hello", "-"], "returns": "string" }
+]
