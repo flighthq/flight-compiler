@@ -60,9 +60,7 @@ const haxeAmbientMemberBindings: Readonly<Record<string, CompilerHaxeAmbientMemb
   'string.indexOf': { kind: 'method', targetName: 'indexOf' },
   'string.lastIndexOf': { kind: 'method', targetName: 'lastIndexOf' },
   'string.length': { kind: 'property', targetName: 'length' },
-  // `string.replace` is deliberately absent. The source language replaces the first occurrence and
-  // `StringTools.replace` replaces every one, so binding them to each other would be silently wrong
-  // — the kind of wrong that compiles. It needs a runtime helper or an inline lowering, not a rename.
+  'string.replace': { kind: 'staticCall', targetPath: 'flighthq._internal._StringTools.replaceFirst' },
   'string.split': { kind: 'method', targetName: 'split' },
   'string.startsWith': { kind: 'staticCall', targetPath: 'StringTools.startsWith' },
   'string.substring': { kind: 'method', targetName: 'substring' },

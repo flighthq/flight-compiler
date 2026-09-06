@@ -21,10 +21,14 @@ describe('getCompilerHaxeAmbientMemberBinding', () => {
     });
   });
 
+  it('spells first-occurrence replace as a runtime helper because Haxe replaces every occurrence', () => {
+    expect(getCompilerHaxeAmbientMemberBinding({ name: 'replace', receiver: 'string' })).toEqual({
+      kind: 'staticCall',
+      targetPath: 'flighthq._internal._StringTools.replaceFirst',
+    });
+  });
+
   it('answers nothing for a member with no agreed spelling, so emission refuses rather than guesses', () => {
-    // `replace` is deliberately unbound: the source replaces the first occurrence and Haxe's replaces
-    // every one, which is a difference that compiles.
-    expect(getCompilerHaxeAmbientMemberBinding({ name: 'replace', receiver: 'string' })).toBeUndefined();
     expect(getCompilerHaxeAmbientMemberBinding({ name: 'sort', receiver: 'array' })).toBeUndefined();
     expect(getCompilerHaxeAmbientMemberBinding({ name: 'toFixed', receiver: 'number' })).toBeUndefined();
     expect(getCompilerHaxeAmbientMemberBinding({ name: 'length', receiver: 'number' })).toBeUndefined();
