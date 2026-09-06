@@ -3132,6 +3132,7 @@ function getIrResolvedMemberReceiver(type: Readonly<IrType> | undefined): IrReso
   if (type.kind === 'tuple') return 'tuple';
   if (type.kind === 'named' && type.reference.kind === 'ambient') {
     const ambientReceivers: Record<string, IrResolvedMemberReceiver> = {
+      Date: 'date',
       Map: 'map',
       Promise: 'task',
       Set: 'set',

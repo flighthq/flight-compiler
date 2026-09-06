@@ -31,7 +31,7 @@ export type IrParameter = Omit<IrFunctionTypeParameter, 'name'> &
 // A member of the ambient surface, named together with the kind of value it was resolved against.
 // This is what lets a backend decide a spelling from a table rather than from a name it hopes is
 // unique, and what lets it refuse a member it has not decided how to lower.
-export type IrResolvedMemberReceiver = 'array' | 'map' | 'number' | 'set' | 'string' | 'task' | 'tuple';
+export type IrResolvedMemberReceiver = 'array' | 'date' | 'map' | 'number' | 'set' | 'string' | 'task' | 'tuple';
 
 export interface IrResolvedMember {
   readonly name: string;
