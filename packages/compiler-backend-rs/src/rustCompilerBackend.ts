@@ -795,16 +795,6 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
       }
       const accessor = getIrExpressionClassAccessorRust(expression.object, expression.name, 'get', context);
       if (accessor) return `${emitExpression(expression.object, context)}.${safeRustValueName(expression.name)}()`;
-      if (expression.object.kind === 'identifier' && expression.object.narrowedMember) {
-        const primitiveUnion = getIrExpressionPrimitiveUnionRust(expression.object, context);
-        if (primitiveUnion) {
-          const narrowed = expression.object.narrowedMember;
-          const variant = primitiveUnion.variants.find((v) => v.primitiveKind === narrowed);
-          if (variant) {
-            return `${emitExpression(expression.object, context)}.as_${snakeCase(variant.variantName)}().${safeRustValueName(expression.name)}${expression.member ? '()' : ''}`;
-          }
-        }
-      }
       const union = getIrExpressionTaggedUnionRust(expression.object, context);
       if (union) {
         const object = emitExpression(expression.object, context);

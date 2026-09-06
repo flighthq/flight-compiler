@@ -241,7 +241,11 @@ function addIrExpressionRustOwnershipMutation(
     expression.kind === 'call' &&
     expression.callee.kind === 'property' &&
     expression.callee.member?.receiver === 'array' &&
-    expression.callee.member.name === 'push'
+    (expression.callee.member.name === 'push' ||
+      expression.callee.member.name === 'pop' ||
+      expression.callee.member.name === 'reverse' ||
+      expression.callee.member.name === 'shift' ||
+      expression.callee.member.name === 'unshift')
   ) {
     const receiver = expression.callee.object;
     if (receiver.kind === 'identifier' && receiver.reference.kind === 'binding') {

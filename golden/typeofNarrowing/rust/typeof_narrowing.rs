@@ -71,7 +71,7 @@ impl std::fmt::Display for StrOrF64OrBool {
 
 pub fn describe(value: StrOrF64) -> String {
   if matches!(value, StrOrF64::Str(_)) {
-    return value.as_str().to_upper_case();
+    return value.as_str().to_uppercase();
   }
   return format!("number {}", value);
 }
@@ -80,7 +80,7 @@ pub fn length(value: StrOrF64) -> f64 {
   if matches!(value, StrOrF64::F64(_)) {
     return 1.0;
   }
-  return value.as_str().length;
+  return value.as_str().len() as f64;
 }
 
 pub fn classify(value: StrOrF64OrBool) -> String {

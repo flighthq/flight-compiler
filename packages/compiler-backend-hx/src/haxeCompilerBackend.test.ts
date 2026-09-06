@@ -714,7 +714,7 @@ describe('emitIrModuleHaxe', () => {
 
     const stringOutput = emitIrModuleHaxe(stringTest.module).contents;
     expect(stringOutput).toContain('Std.isOfType(value, String)');
-    expect(stringOutput).toContain('(cast value : String).toUpperCase()');
+    expect(stringOutput).toContain('value.toUpperCase()');
     const numberOutput = emitIrModuleHaxe(numberTest.module).contents;
     expect(numberOutput).toContain('Std.isOfType(value, Float)');
     expect(emitIrModuleHaxe(negated.module).contents).toContain('!Std.isOfType(value, String)');

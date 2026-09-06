@@ -606,7 +606,8 @@ function lowerExpression(
   if (ts.isPropertyAccessExpression(node)) {
     const optional = node.questionDotToken !== undefined;
     const receiver = getTypeScriptExpressionBindingTypeEvidence(node.expression, context);
-    const resolved = getIrResolvedMemberReceiver(receiver);
+    const resolved =
+      getIrResolvedMemberReceiver(receiver) ?? getIrResolvedMemberReceiverFromNarrowedFlow(node.expression, context);
     const member = resolved ? { member: { name: node.name.text, receiver: resolved } } : {};
     const absent = isTypeScriptOptionalMemberAccess(node, context) ? ({ absent: 'optionalMember' } as const) : {};
     return {
@@ -3145,6 +3146,19 @@ function getIrResolvedMemberReceiver(type: Readonly<IrType> | undefined): IrReso
   }
   if (type.kind !== 'primitive') return undefined;
   return type.name === 'string' ? 'string' : type.name === 'number' ? 'number' : undefined;
+}
+
+function getIrResolvedMemberReceiverFromNarrowedFlow(
+  expression: ts.Expression,
+  context: LoweringContext,
+): IrResolvedMemberReceiver | undefined {
+  if (!ts.isIdentifier(expression)) return undefined;
+  const flow = context.checker.getTypeAtLocation(expression);
+  if (flow.isUnion()) return undefined;
+  const name = getTypeScriptPrimitiveTypeName(flow);
+  if (name === 'string') return 'string';
+  if (name === 'number') return 'number';
+  return undefined;
 }
 
 function isTypeScriptOptionalMemberAccess(node: ts.PropertyAccessExpression, context: LoweringContext): boolean {

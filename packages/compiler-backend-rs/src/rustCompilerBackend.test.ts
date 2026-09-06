@@ -1246,4 +1246,18 @@ describe('emitIrModuleRust', () => {
     expect(output).toContain('return values.len() as f64;');
     expect(output).toContain('values.get(index as usize).cloned().unwrap_or_else(|| 0.0)');
   });
+
+  it('emits primitive union enums with typeof narrowing and ambient member dispatch', () => {
+    const module = lower(
+      'typeof-union.ts',
+      'export function describe(value: string | number): string { if (typeof value === "string") { return value.toUpperCase(); } return "number"; }',
+    );
+    const output = emitIrModuleRust(module.module).contents;
+
+    expect(output).toContain('enum StrOrF64');
+    expect(output).toContain('Str(String)');
+    expect(output).toContain('F64(f64)');
+    expect(output).toContain('matches!(value, StrOrF64::Str(_))');
+    expect(output).toContain('value.as_str().to_uppercase()');
+  });
 });

@@ -3,7 +3,7 @@ package flighthq.golden;
 
 function describe(value:Dynamic):String {
   if (Std.isOfType(value, String)) {
-    return (cast value : String).toUpperCase();
+    return value.toUpperCase();
   }
   return "number " + Std.string(value);
 }
@@ -12,7 +12,7 @@ function length(value:Dynamic):Float {
   if (Std.isOfType(value, Float)) {
     return 1;
   }
-  return (cast value : String).length;
+  return value.length;
 }
 
 function classify(value:Dynamic):String {

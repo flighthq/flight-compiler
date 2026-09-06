@@ -16,7 +16,7 @@ pub fn has_value(values: Vec<String>, target: String) -> bool {
 }
 
 pub fn reversed(values: Vec<f64>) -> Vec<f64> {
-  let copy: Vec<f64> = values.into_iter().map(|v| v).collect::<Vec<_>>();
+  let mut copy: Vec<f64> = values.into_iter().map(|v| v).collect::<Vec<_>>();
   copy.reverse();
   return copy;
 }
