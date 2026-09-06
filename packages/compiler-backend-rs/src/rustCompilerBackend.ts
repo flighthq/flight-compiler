@@ -1497,7 +1497,7 @@ function emitParameter(parameter: Readonly<IrParameter>, context: EmitContext): 
         : `Option<${type}>`;
     return `${binding}: ${optionalType}`;
   }
-  if (parameter.rest) return `${binding}: Vec<${emitType(parameter.type, context)}>`;
+  if (parameter.rest) return `${binding}: ${emitType(parameter.type, context)}`;
   return `${binding}: ${emitType(parameter.type, context)}`;
 }
 
