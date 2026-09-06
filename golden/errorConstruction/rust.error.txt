@@ -1,0 +1,1 @@
+rust emission failed for @flighthq/golden/packages/golden/src/errorConstruction.ts: runtime external constructor ABI plan is incomplete (missing: Error[value](1))
