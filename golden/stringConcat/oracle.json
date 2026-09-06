@@ -1,0 +1,7 @@
+[
+  { "call": "greetUser", "arguments": ["World"], "returns": "string" },
+  { "call": "greetUser", "arguments": [""], "returns": "string" },
+  { "call": "formatPair", "arguments": ["x", 42], "returns": "string" },
+  { "call": "repeat", "arguments": ["ab", 3], "returns": "string" },
+  { "call": "repeat", "arguments": ["x", 0], "returns": "string" }
+]

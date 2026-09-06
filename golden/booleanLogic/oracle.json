@@ -1,0 +1,13 @@
+[
+  { "call": "both", "arguments": [true, true], "returns": "boolean" },
+  { "call": "both", "arguments": [true, false], "returns": "boolean" },
+  { "call": "either", "arguments": [false, true], "returns": "boolean" },
+  { "call": "either", "arguments": [false, false], "returns": "boolean" },
+  { "call": "negate", "arguments": [true], "returns": "boolean" },
+  { "call": "negate", "arguments": [false], "returns": "boolean" },
+  { "call": "inRange", "arguments": [5, 1, 10], "returns": "boolean" },
+  { "call": "inRange", "arguments": [0, 1, 10], "returns": "boolean" },
+  { "call": "clampedSign", "arguments": [42], "returns": "number" },
+  { "call": "clampedSign", "arguments": [-3], "returns": "number" },
+  { "call": "clampedSign", "arguments": [0], "returns": "number" }
+]

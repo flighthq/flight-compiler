@@ -1,0 +1,8 @@
+[
+  { "call": "greet", "arguments": ["en"], "returns": "string" },
+  { "call": "greet", "arguments": ["es"], "returns": "string" },
+  { "call": "greet", "arguments": ["de"], "returns": "string" },
+  { "call": "priority", "arguments": ["low"], "returns": "number" },
+  { "call": "priority", "arguments": ["high"], "returns": "number" },
+  { "call": "priority", "arguments": ["unknown"], "returns": "number" }
+]
