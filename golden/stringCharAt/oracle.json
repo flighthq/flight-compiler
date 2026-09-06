@@ -1,0 +1,8 @@
+[
+  { "call": "firstChar", "arguments": ["hello"], "returns": "string" },
+  { "call": "firstChar", "arguments": ["A"], "returns": "string" },
+  { "call": "lastChar", "arguments": ["hello"], "returns": "string" },
+  { "call": "lastChar", "arguments": ["Z"], "returns": "string" },
+  { "call": "isUpperFirst", "arguments": ["Hello"], "returns": "boolean" },
+  { "call": "isUpperFirst", "arguments": ["hello"], "returns": "boolean" }
+]

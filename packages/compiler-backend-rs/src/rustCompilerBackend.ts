@@ -679,6 +679,15 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
       if (
         expression.callee.kind === 'property' &&
         expression.callee.member?.receiver === 'string' &&
+        expression.callee.member.name === 'charAt'
+      ) {
+        const receiver = emitExpression(expression.callee.object, context);
+        const index = emitExpression(expression.arguments[0], context);
+        return `${receiver}.chars().nth(${index} as usize).map(|c| c.to_string()).unwrap_or_default()`;
+      }
+      if (
+        expression.callee.kind === 'property' &&
+        expression.callee.member?.receiver === 'string' &&
         expression.callee.member.name === 'substring'
       ) {
         const receiver = emitExpression(expression.callee.object, context);
