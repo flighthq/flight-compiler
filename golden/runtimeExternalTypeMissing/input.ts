@@ -1,1 +1,1 @@
-export type MissingRuntimeType = Date;
+export type MissingRuntimeType = WeakMap<string, number>;

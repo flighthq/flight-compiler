@@ -119,7 +119,7 @@ describe('emitIrModuleHaxe', () => {
       'external-types.ts',
       'export function preserve(values: Map<string, number>, bytes: Uint8Array, task: Promise<number>): Promise<number> { values; bytes; return task; }',
     );
-    const missing = lower('external-missing.ts', 'export type operator = Date; export type operator_ = Date;');
+    const missing = lower('external-missing.ts', 'export type operator = WeakMap; export type operator_ = WeakMap;');
     const missingValue = lower('external-value-missing.ts', 'export function fail(): void { throw new Error(); }');
     const values = lower(
       'external-values.ts',
@@ -141,7 +141,7 @@ describe('emitIrModuleHaxe', () => {
     expect(customValueOutput).toContain('new custom.runtime._Map()');
     expect(customValueOutput).toContain('custom.runtime._Promise.resolve(1)');
     expect(() => emitIrModuleHaxe(missing.module)).toThrow(
-      'runtime external symbol binding plan is incomplete (missing: Date[type])',
+      'runtime external symbol binding plan is incomplete (missing: WeakMap[type])',
     );
     expect(() => emitIrModuleHaxe(missingValue.module)).toThrow(
       'runtime external symbol binding plan is incomplete (missing: Error[value])',

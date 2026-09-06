@@ -13,6 +13,7 @@ export function createCompilerRuntimeExternalConstructorAbiPlanRust(): CompilerR
 
 const rustRuntimeExternalConstructorAbis = [
   createRustRuntimeExternalConstructorAbi('Array'),
+  createRustRuntimeExternalConstructorAbi('Date'),
   createRustRuntimeExternalConstructorAbi('Float32Array'),
   createRustRuntimeExternalConstructorAbi('Float64Array'),
   createRustRuntimeExternalConstructorAbi('Int16Array'),

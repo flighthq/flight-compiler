@@ -223,6 +223,27 @@ interface SetConstructor {
 }
 declare var Set: SetConstructor;
 
+interface Date {
+  getDate(): number;
+  getDay(): number;
+  getFullYear(): number;
+  getHours(): number;
+  getMilliseconds(): number;
+  getMinutes(): number;
+  getMonth(): number;
+  getSeconds(): number;
+  getTime(): number;
+  toISOString(): string;
+  toString(): string;
+}
+
+interface DateConstructor {
+  new (): Date;
+  new (value: number): Date;
+  now(): number;
+}
+declare var Date: DateConstructor;
+
 interface JSON {
   parse(text: string): unknown;
   stringify(value: unknown): string;

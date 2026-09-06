@@ -10,7 +10,7 @@ describe('createCompilerRuntimeExternalSymbolBindingPlanRust', () => {
     const plan = createCompilerRuntimeExternalSymbolBindingPlanRust();
 
     expect(plan.contract).toBe('flight-runtime-contract/2');
-    expect(plan.bindings).toHaveLength(29);
+    expect(plan.bindings).toHaveLength(31);
     expect(plan.bindings.filter(({ externalSymbol }) => externalSymbol.sourceName === 'Promise')).toEqual([
       {
         capability: 'task',
@@ -41,7 +41,7 @@ describe('createCompilerRuntimeExternalSymbolBindingPlanRust', () => {
     const second = createCompilerRuntimeExternalSymbolBindingPlanRust();
 
     (first.bindings as unknown[]).pop();
-    expect(second.bindings).toHaveLength(29);
+    expect(second.bindings).toHaveLength(31);
   });
 });
 
@@ -50,6 +50,8 @@ describe('getCompilerRuntimeExternalSymbolTargetRust', () => {
     ['Array', 'type', 'Vec'],
     ['Array', 'value', 'Vec'],
     ['Boolean', 'type', 'bool'],
+    ['Date', 'type', 'FlightDate'],
+    ['Date', 'value', 'FlightDate'],
     ['Error', 'value', 'Error'],
     ['Float32Array', 'type', 'Vec<f32>'],
     ['Float32Array', 'value', 'Vec<f32>'],

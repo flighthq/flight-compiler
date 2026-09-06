@@ -175,7 +175,7 @@ describe('emitIrModuleRust', () => {
       'external-types.ts',
       'export function preserve(values: Map<string, number>, bytes: Uint8Array, task: Promise<number>): Promise<number> { values; bytes; return task; }',
     );
-    const missing = lower('external-missing.ts', 'export type fooBar = Date; export type foo_bar = Date;');
+    const missing = lower('external-missing.ts', 'export type fooBar = WeakMap; export type foo_bar = WeakMap;');
     const boundValue = lower(
       'external-value-bound.ts',
       'export function maximum(left: number, right: number): number { return Math.max(left, right); }',
@@ -193,7 +193,7 @@ describe('emitIrModuleRust', () => {
     expect(valueOutput).toContain('std::collections::HashMap::new()');
     expect(valueOutput).toContain('FlightTask::resolve(1.0)');
     expect(() => emitIrModuleRust(missing.module)).toThrow(
-      'runtime external symbol binding plan is incomplete (missing: Date[type])',
+      'runtime external symbol binding plan is incomplete (missing: WeakMap[type])',
     );
     // `Math` binds through its members rather than as a symbol, because it has no target name of
     // its own: `Math.max` is `f64::max` and there is nothing to call `Math`.
