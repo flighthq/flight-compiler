@@ -14,6 +14,7 @@ export function createCompilerRuntimeExternalConstructorAbiPlanHaxe(): CompilerR
 const haxeRuntimeExternalConstructorAbis = [
   createHaxeRuntimeExternalConstructorAbi('Array', [0]),
   createHaxeRuntimeExternalConstructorAbi('Date', [0, 1]),
+  createHaxeRuntimeExternalConstructorAbi('Error', [0, 1]),
   createHaxeRuntimeExternalConstructorAbi('Float32Array', [0, 1, 2, 3]),
   createHaxeRuntimeExternalConstructorAbi('Float64Array', [0, 1, 2, 3]),
   createHaxeRuntimeExternalConstructorAbi('Int16Array', [0, 1, 2, 3]),

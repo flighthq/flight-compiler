@@ -10,7 +10,7 @@ describe('createCompilerRuntimeExternalSymbolBindingPlanRust', () => {
     const plan = createCompilerRuntimeExternalSymbolBindingPlanRust();
 
     expect(plan.contract).toBe('flight-runtime-contract/2');
-    expect(plan.bindings).toHaveLength(31);
+    expect(plan.bindings).toHaveLength(32);
     expect(plan.bindings.filter(({ externalSymbol }) => externalSymbol.sourceName === 'Promise')).toEqual([
       {
         capability: 'task',
@@ -24,11 +24,11 @@ describe('createCompilerRuntimeExternalSymbolBindingPlanRust', () => {
       },
     ]);
     expect(plan.bindings).toContainEqual({
-      externalSymbol: { sourceName: 'Error', space: 'value' },
+      externalSymbol: { sourceName: 'Error', space: 'type' },
       kind: 'native',
     });
-    expect(plan.bindings).not.toContainEqual({
-      externalSymbol: { sourceName: 'Error', space: 'type' },
+    expect(plan.bindings).toContainEqual({
+      externalSymbol: { sourceName: 'Error', space: 'value' },
       kind: 'native',
     });
     expect(new Set(plan.bindings.map(({ externalSymbol }) => JSON.stringify(externalSymbol)))).toHaveLength(
@@ -41,7 +41,7 @@ describe('createCompilerRuntimeExternalSymbolBindingPlanRust', () => {
     const second = createCompilerRuntimeExternalSymbolBindingPlanRust();
 
     (first.bindings as unknown[]).pop();
-    expect(second.bindings).toHaveLength(31);
+    expect(second.bindings).toHaveLength(32);
   });
 });
 
@@ -52,6 +52,7 @@ describe('getCompilerRuntimeExternalSymbolTargetRust', () => {
     ['Boolean', 'type', 'bool'],
     ['Date', 'type', 'FlightDate'],
     ['Date', 'value', 'FlightDate'],
+    ['Error', 'type', 'Error'],
     ['Error', 'value', 'Error'],
     ['Float32Array', 'type', 'Vec<f32>'],
     ['Float32Array', 'value', 'Vec<f32>'],
@@ -83,7 +84,6 @@ describe('getCompilerRuntimeExternalSymbolTargetRust', () => {
 
   it('has no crossed-space or unknown fallback', () => {
     expect(getCompilerRuntimeExternalSymbolTargetRust('Boolean', 'value')).toBeUndefined();
-    expect(getCompilerRuntimeExternalSymbolTargetRust('Error', 'type')).toBeUndefined();
     expect(getCompilerRuntimeExternalSymbolTargetRust('Unmapped', 'value')).toBeUndefined();
   });
 });

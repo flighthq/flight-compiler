@@ -39,6 +39,7 @@ const rustAmbientMemberBindings: Readonly<Record<string, CompilerRustAmbientMemb
   'date.getTime': { kind: 'method', targetName: 'timestamp_millis' },
   'date.toISOString': { kind: 'method', targetName: 'to_iso_string' },
   'date.toString': { kind: 'method', targetName: 'to_string' },
+  'error.message': { kind: 'method', targetName: 'to_string' },
   'map.delete': { kind: 'method', targetName: 'remove' },
   'map.has': { kind: 'borrowedMethod', targetName: 'contains_key' },
   'map.set': { kind: 'method', targetName: 'insert' },

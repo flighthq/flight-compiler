@@ -8,7 +8,7 @@ describe('createCompilerRuntimeExternalSymbolBindingPlanHaxe', () => {
     const plan = createCompilerRuntimeExternalSymbolBindingPlanHaxe();
 
     expect(plan.contract).toBe('flight-runtime-contract/2');
-    expect(plan.bindings).toHaveLength(31);
+    expect(plan.bindings).toHaveLength(32);
     expect(plan.bindings.filter(({ externalSymbol }) => externalSymbol.sourceName === 'Promise')).toEqual([
       {
         capability: 'task',
@@ -29,6 +29,10 @@ describe('createCompilerRuntimeExternalSymbolBindingPlanHaxe', () => {
       externalSymbol: { sourceName: 'Error', space: 'type' },
       kind: 'native',
     });
+    expect(plan.bindings).toContainEqual({
+      externalSymbol: { sourceName: 'Error', space: 'value' },
+      kind: 'native',
+    });
     expect(plan.bindings).not.toContainEqual({
       externalSymbol: { sourceName: 'Math', space: 'type' },
       kind: 'native',
@@ -43,7 +47,7 @@ describe('createCompilerRuntimeExternalSymbolBindingPlanHaxe', () => {
     const second = createCompilerRuntimeExternalSymbolBindingPlanHaxe();
 
     (first.bindings as unknown[]).pop();
-    expect(second.bindings).toHaveLength(31);
+    expect(second.bindings).toHaveLength(32);
   });
 });
 
@@ -55,6 +59,7 @@ describe('getCompilerRuntimeExternalSymbolTargetHaxe', () => {
     ['Date', 'type', 'flighthq._internal._Date'],
     ['Date', 'value', 'flighthq._internal._Date'],
     ['Error', 'type', 'haxe.Exception'],
+    ['Error', 'value', 'haxe.Exception'],
     ['Float32Array', 'type', 'flighthq._internal._Float32Array'],
     ['Float32Array', 'value', 'flighthq._internal._Float32Array'],
     ['Float64Array', 'type', 'flighthq._internal._Float64Array'],
@@ -89,7 +94,6 @@ describe('getCompilerRuntimeExternalSymbolTargetHaxe', () => {
       'custom.runtime._UInt8Array',
     );
     expect(getCompilerRuntimeExternalSymbolTargetHaxe('Boolean', 'value')).toBeUndefined();
-    expect(getCompilerRuntimeExternalSymbolTargetHaxe('Error', 'value')).toBeUndefined();
     expect(getCompilerRuntimeExternalSymbolTargetHaxe('Math', 'type')).toBeUndefined();
     expect(getCompilerRuntimeExternalSymbolTargetHaxe('Unmapped', 'type')).toBeUndefined();
   });

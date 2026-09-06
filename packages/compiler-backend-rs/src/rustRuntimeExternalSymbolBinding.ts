@@ -97,6 +97,7 @@ const rustRuntimeExternalSymbolBindings = [
   { kind: 'native', sourceName: 'Boolean', space: 'type', targetName: 'bool' },
   { capability: 'date', kind: 'runtime', sourceName: 'Date', space: 'type', targetName: 'FlightDate' },
   { capability: 'date', kind: 'runtime', sourceName: 'Date', space: 'value', targetName: 'FlightDate' },
+  { kind: 'native', sourceName: 'Error', space: 'type', targetName: 'Error' },
   { kind: 'native', sourceName: 'Error', space: 'value', targetName: 'Error' },
   { kind: 'native', sourceName: 'Float32Array', space: 'type', targetName: 'Vec<f32>' },
   { kind: 'native', sourceName: 'Float32Array', space: 'value', targetName: 'Vec<f32>' },

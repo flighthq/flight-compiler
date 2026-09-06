@@ -43,6 +43,7 @@ const haxeAmbientMemberBindings: Readonly<Record<string, CompilerHaxeAmbientMemb
   'date.getTime': { kind: 'method', targetName: 'getTime' },
   'date.toISOString': { kind: 'method', targetName: 'toISOString' },
   'date.toString': { kind: 'method', targetName: 'toString' },
+  'error.message': { kind: 'property', targetName: 'message' },
   'number.toString': { kind: 'method', targetName: 'toString' },
   'map.delete': { kind: 'method', targetName: 'delete' },
   'map.get': { kind: 'method', targetName: 'get' },

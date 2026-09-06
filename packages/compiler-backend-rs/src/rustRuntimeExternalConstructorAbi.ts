@@ -14,6 +14,7 @@ export function createCompilerRuntimeExternalConstructorAbiPlanRust(): CompilerR
 const rustRuntimeExternalConstructorAbis = [
   createRustRuntimeExternalConstructorAbi('Array'),
   createRustRuntimeExternalConstructorAbi('Date'),
+  createRustRuntimeExternalConstructorAbi('Error', [0, 1]),
   createRustRuntimeExternalConstructorAbi('Float32Array'),
   createRustRuntimeExternalConstructorAbi('Float64Array'),
   createRustRuntimeExternalConstructorAbi('Int16Array'),
@@ -27,10 +28,10 @@ const rustRuntimeExternalConstructorAbis = [
   createRustRuntimeExternalConstructorAbi('Uint8ClampedArray'),
 ] as const;
 
-function createRustRuntimeExternalConstructorAbi(sourceName: string) {
+function createRustRuntimeExternalConstructorAbi(sourceName: string, fixedArgumentCounts: readonly number[] = [0]) {
   return {
     dynamicArguments: false,
     externalSymbol: { sourceName, space: 'value' },
-    fixedArgumentCounts: [0],
+    fixedArgumentCounts,
   } as const;
 }

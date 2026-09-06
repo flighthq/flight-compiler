@@ -58,6 +58,7 @@ const haxeRuntimeExternalSymbolBindings = [
   { capability: 'date', kind: 'runtime', sourceName: 'Date', space: 'type', targetName: '_Date' },
   { capability: 'date', kind: 'runtime', sourceName: 'Date', space: 'value', targetName: '_Date' },
   { kind: 'native', sourceName: 'Error', space: 'type', targetName: 'haxe.Exception' },
+  { kind: 'native', sourceName: 'Error', space: 'value', targetName: 'haxe.Exception' },
   {
     capability: 'float32-array',
     kind: 'runtime',
