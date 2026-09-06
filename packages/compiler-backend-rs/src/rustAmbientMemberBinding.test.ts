@@ -26,6 +26,13 @@ describe('getCompilerRustAmbientMemberBinding', () => {
     });
   });
 
+  it('spells string.includes as a borrowed contains call', () => {
+    expect(getCompilerRustAmbientMemberBinding({ name: 'includes', receiver: 'string' })).toEqual({
+      kind: 'borrowedMethod',
+      targetName: 'contains',
+    });
+  });
+
   it('answers nothing for a member with no agreed spelling, so emission refuses rather than guesses', () => {
     expect(getCompilerRustAmbientMemberBinding({ name: 'sort', receiver: 'array' })).toBeUndefined();
     expect(getCompilerRustAmbientMemberBinding({ name: 'split', receiver: 'string' })).toBeUndefined();

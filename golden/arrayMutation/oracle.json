@@ -1,0 +1,7 @@
+[
+  { "call": "collect", "arguments": [[-1, 2, -3, 4]], "returns": "numbers" },
+  { "call": "collect", "arguments": [[]], "returns": "numbers" },
+  { "call": "hasValue", "arguments": [["a", "b", "c"], "b"], "returns": "boolean" },
+  { "call": "hasValue", "arguments": [["a", "b", "c"], "d"], "returns": "boolean" },
+  { "call": "reversed", "arguments": [[1, 2, 3]], "returns": "numbers" }
+]

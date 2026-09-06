@@ -21,6 +21,13 @@ describe('getCompilerHaxeAmbientMemberBinding', () => {
     });
   });
 
+  it('spells string.includes as StringTools.contains because Haxe String has no includes method', () => {
+    expect(getCompilerHaxeAmbientMemberBinding({ name: 'includes', receiver: 'string' })).toEqual({
+      kind: 'staticCall',
+      targetPath: 'StringTools.contains',
+    });
+  });
+
   it('spells first-occurrence replace as a runtime helper because Haxe replaces every occurrence', () => {
     expect(getCompilerHaxeAmbientMemberBinding({ name: 'replace', receiver: 'string' })).toEqual({
       kind: 'staticCall',

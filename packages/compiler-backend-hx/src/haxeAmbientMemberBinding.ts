@@ -57,6 +57,7 @@ const haxeAmbientMemberBindings: Readonly<Record<string, CompilerHaxeAmbientMemb
   'string.charAt': { kind: 'method', targetName: 'charAt' },
   'string.charCodeAt': { kind: 'method', targetName: 'charCodeAt' },
   'string.endsWith': { kind: 'staticCall', targetPath: 'StringTools.endsWith' },
+  'string.includes': { kind: 'staticCall', targetPath: 'StringTools.contains' },
   'string.indexOf': { kind: 'method', targetName: 'indexOf' },
   'string.lastIndexOf': { kind: 'method', targetName: 'lastIndexOf' },
   'string.length': { kind: 'property', targetName: 'length' },

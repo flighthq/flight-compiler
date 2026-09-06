@@ -1,0 +1,8 @@
+[
+  { "call": "has", "arguments": ["hello world", "world"], "returns": "boolean" },
+  { "call": "has", "arguments": ["hello world", "xyz"], "returns": "boolean" },
+  { "call": "prefix", "arguments": ["hello world"], "returns": "boolean" },
+  { "call": "prefix", "arguments": ["goodbye"], "returns": "boolean" },
+  { "call": "suffix", "arguments": ["hello world"], "returns": "boolean" },
+  { "call": "suffix", "arguments": ["hello"], "returns": "boolean" }
+]

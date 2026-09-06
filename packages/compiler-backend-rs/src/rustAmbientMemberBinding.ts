@@ -50,6 +50,7 @@ const rustAmbientMemberBindings: Readonly<Record<string, CompilerRustAmbientMemb
   'set.has': { kind: 'borrowedMethod', targetName: 'contains' },
   'set.size': { kind: 'countingMethod', targetName: 'len' },
   'string.endsWith': { kind: 'borrowedMethod', targetName: 'ends_with' },
+  'string.includes': { kind: 'borrowedMethod', targetName: 'contains' },
   // The source language replaces the first occurrence; Rust's `replace` replaces every one, and
   // `replacen` with a count of one is the member that means what the source meant.
   'string.replace': { kind: 'borrowedMethod', targetName: 'replacen', trailingArguments: ['1'] },
