@@ -93,6 +93,11 @@ import {
   isCompilerRuntimeExternalSymbolProvidedRust,
 } from './rustRuntimeExternalSymbolBinding.js';
 
+interface PrimitiveUnionEnum {
+  readonly name: string;
+  readonly variants: ReadonlyArray<{ primitiveKind: string; rustType: string; variantName: string }>;
+}
+
 interface EmitContext {
   anonymousObjectRecords: Map<string, Readonly<{ name: string; properties: readonly IrObjectTypeProperty[] }>>;
   // Which bindings the module rebinds. Rust needs `mut` on a parameter that is assigned to, and the
@@ -103,6 +108,8 @@ interface EmitContext {
   runtimeTypeNames: Set<string>;
   borrowedParameterPositions: ReadonlyMap<string, ReadonlySet<number>>;
   deferredBindingIds: ReadonlySet<string>;
+  primitiveUnionEnums: Map<string, PrimitiveUnionEnum>;
+  primitiveUnionBindingIds: Map<string, string>;
   referentMutatedBindingIds: ReadonlySet<string>;
   referentMutatedParameterIds: ReadonlySet<string>;
   taggedUnionBindingNames: ReadonlyMap<string, string>;
@@ -185,6 +192,8 @@ function emitIrModuleRustWithContext(
   const accessorClassNames = new Map<string, string>();
   const classBindingNames = new Map<string, string>();
   const borrowedParameterPositions = new Map<string, ReadonlySet<number>>();
+  const primitiveUnionEnums = new Map<string, PrimitiveUnionEnum>();
+  const primitiveUnionBindingIds = new Map<string, string>();
   const taggedUnionBindingNames = new Map<string, string>();
   const context: EmitContext = {
     accessorClassNames,
@@ -196,6 +205,8 @@ function emitIrModuleRustWithContext(
         evidence.uses.filter((use) => use.kind === 'rebind').length === 1 ? [evidence.binding.id] : [],
       ),
     ),
+    primitiveUnionEnums,
+    primitiveUnionBindingIds,
     runtimeTypeNames: new Set<string>(),
     reboundBindingIds: new Set(
       analyzeIrModuleOwnershipEvidenceRust(module).bindings.flatMap((evidence) =>
@@ -259,6 +270,7 @@ function emitIrModuleRustWithContext(
     );
     if (borrowed.size > 0) borrowedParameterPositions.set(declaration.binding.id, borrowed);
   }
+  collectPrimitiveUnionBindingsRust(module, context);
   const lines = [createCompilerGeneratedFileHeader(module, '//', options.upstreamCommit), '#![forbid(unsafe_code)]'];
   const imports = [...emitImports(module.imports, context), ...emitReexportsRust(module.exports, context)];
   const declarations = module.declarations.map((declaration) => emitDeclaration(declaration, context));
@@ -275,6 +287,9 @@ function emitIrModuleRustWithContext(
   });
   context.objectRestRecords.forEach((record) => {
     lines.push('', ...emitRecord(record.name, record.properties, [], false, context));
+  });
+  context.primitiveUnionEnums.forEach((union) => {
+    lines.push('', ...emitPrimitiveUnionEnumRust(union));
   });
   declarations.forEach((declaration) => lines.push('', ...declaration));
   return {
@@ -616,6 +631,12 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
       ) {
         return emitStringConcatenationRust(expression, context);
       }
+      const typeofTest = getTypeofTypeTestRust(expression, context);
+      if (typeofTest) {
+        const operand = emitExpression(typeofTest.operand, context);
+        const test = `matches!(${operand}, ${typeofTest.enumName}::${typeofTest.variantName}(_))`;
+        return typeofTest.negated ? `!${test}` : test;
+      }
       const left = emitExpression(expression.left, context);
       const right = emitExpression(expression.right, context);
       return `(${left} ${emitBinaryOperatorRust(expression.operator, expression.semantics, context)} ${right})`;
@@ -658,7 +679,9 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
       if (expression.callee.kind === 'property' && expression.callee.member) {
         const binding = getCompilerRustAmbientMemberBinding(expression.callee.member);
         if (binding && binding.kind !== 'countingMethod') {
-          const receiver = emitExpression(expression.callee.object, context);
+          const receiver =
+            emitPrimitiveUnionNarrowedReceiverRust(expression.callee.object, context) ??
+            emitExpression(expression.callee.object, context);
           const values = expression.arguments.map((argument) =>
             binding.kind === 'borrowedMethod'
               ? emitBorrowedTextRust(argument, context)
@@ -703,11 +726,6 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
         ? `|${expression.parameters.map((parameter) => getBindingTargetNameRust(parameter.binding, context)).join(', ')}| ${emitExpression(expression.expression, context)}`
         : `|${expression.parameters.map((parameter) => getBindingTargetNameRust(parameter.binding, context)).join(', ')}| {\n${indentSourceLines(emitStatements(expression.body, context)).join('\n')}\n}`;
     case 'identifier':
-      // Narrowing proved this reference holds a value, so the Option it was declared as is opened
-      // here. Without the proof the emitter refuses rather than unwrapping on faith.
-      // Opening an `Option` consumes it, and the source's narrowing does not consume anything, so the
-      // value is copied out rather than taken. A read that only needs to look borrows instead; that
-      // decision belongs to the reader, which is why it is made where the member is read.
       return expression.presence === 'narrowedPresent' &&
         expression.reference.kind === 'binding' &&
         context.nullableBindingIds.has(expression.reference.binding.id)
@@ -737,7 +755,10 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
           emissionError(context, `${expression.member.receiver} member ${expression.member.name} has no Rust binding`);
         }
         if (binding.kind === 'countingMethod') {
-          return `(${emitExpression(expression.object, context)}.${binding.targetName}() as f64)`;
+          const countingReceiver =
+            emitPrimitiveUnionNarrowedReceiverRust(expression.object, context) ??
+            emitExpression(expression.object, context);
+          return `(${countingReceiver}.${binding.targetName}() as f64)`;
         }
       }
       // A union is a closed set of alternatives in Rust, so its fields are not reachable by name.
@@ -774,6 +795,16 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
       }
       const accessor = getIrExpressionClassAccessorRust(expression.object, expression.name, 'get', context);
       if (accessor) return `${emitExpression(expression.object, context)}.${safeRustValueName(expression.name)}()`;
+      if (expression.object.kind === 'identifier' && expression.object.narrowedMember) {
+        const primitiveUnion = getIrExpressionPrimitiveUnionRust(expression.object, context);
+        if (primitiveUnion) {
+          const narrowed = expression.object.narrowedMember;
+          const variant = primitiveUnion.variants.find((v) => v.primitiveKind === narrowed);
+          if (variant) {
+            return `${emitExpression(expression.object, context)}.as_${snakeCase(variant.variantName)}().${safeRustValueName(expression.name)}${expression.member ? '()' : ''}`;
+          }
+        }
+      }
       const union = getIrExpressionTaggedUnionRust(expression.object, context);
       if (union) {
         const object = emitExpression(expression.object, context);
@@ -1749,6 +1780,8 @@ function emitType(type: Readonly<IrType>, context: EmitContext): string {
       }
       if (concrete.length === 1 && concrete.length !== type.types.length)
         return `Option<${emitType(concrete[0]!, context)}>`;
+      const primitiveEnum = getOrCreatePrimitiveUnionEnumRust(concrete, context);
+      if (primitiveEnum) return primitiveEnum.name;
       emissionError(context, 'non-nullable unions require Rust tagged-union lowering');
     }
     case 'unknown':
@@ -2414,6 +2447,135 @@ function getIrExpressionClassAccessorRust(
 function getIrExpressionTaggedUnionRust(expression: Readonly<IrExpression>, context: EmitContext): string | undefined {
   if (expression.kind !== 'identifier' || expression.reference.kind !== 'binding') return undefined;
   return context.taggedUnionBindingNames.get(expression.reference.binding.id);
+}
+
+function collectPrimitiveUnionBindingsRust(module: Readonly<IrModule>, context: EmitContext): void {
+  for (const declaration of module.declarations) {
+    if (declaration.kind !== 'function') continue;
+    for (const parameter of declaration.parameters) {
+      if (parameter.type.kind !== 'union') continue;
+      const concrete = parameter.type.types.filter((t) => t.kind !== 'null' && t.kind !== 'undefined');
+      if (concrete.length < 2) continue;
+      const enumRecord = getOrCreatePrimitiveUnionEnumRust(concrete, context);
+      if (enumRecord) {
+        context.primitiveUnionBindingIds.set(parameter.binding.id, enumRecord.name);
+      }
+    }
+  }
+}
+
+function emitPrimitiveUnionEnumRust(union: PrimitiveUnionEnum): string[] {
+  const lines = [
+    '#[derive(Clone, Debug)]',
+    `enum ${union.name} {`,
+    ...union.variants.map((v) => `  ${v.variantName}(${v.rustType}),`),
+    '}',
+    '',
+    `impl ${union.name} {`,
+    ...union.variants.flatMap((v) => [
+      `  fn as_${snakeCase(v.variantName)}(&self) -> &${v.rustType} {`,
+      '    match self {',
+      `      ${union.name}::${v.variantName}(value) => value,`,
+      ...(union.variants.length > 1 ? [`      _ => panic!("${union.name} is not ${v.variantName}"),`] : []),
+      '    }',
+      '  }',
+    ]),
+    '}',
+    '',
+    `impl std::fmt::Display for ${union.name} {`,
+    "  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {",
+    '    match self {',
+    ...union.variants.map((v) => `      ${union.name}::${v.variantName}(value) => write!(f, "{}", value),`),
+    '    }',
+    '  }',
+    '}',
+  ];
+  return lines;
+}
+
+function emitPrimitiveUnionNarrowedReceiverRust(
+  expression: Readonly<IrExpression>,
+  context: EmitContext,
+): string | undefined {
+  if (expression.kind !== 'identifier' || !expression.narrowedMember) return undefined;
+  const primitiveUnion = getIrExpressionPrimitiveUnionRust(expression, context);
+  if (!primitiveUnion) return undefined;
+  const variant = primitiveUnion.variants.find((v) => v.primitiveKind === expression.narrowedMember);
+  if (!variant) return undefined;
+  return `${emitIdentifierReferenceRust(expression.reference, context)}.as_${snakeCase(variant.variantName)}()`;
+}
+
+function getIrExpressionPrimitiveUnionRust(
+  expression: Readonly<IrExpression>,
+  context: EmitContext,
+): PrimitiveUnionEnum | undefined {
+  if (expression.kind !== 'identifier' || expression.reference.kind !== 'binding') return undefined;
+  const enumName = context.primitiveUnionBindingIds.get(expression.reference.binding.id);
+  if (!enumName) return undefined;
+  for (const union of context.primitiveUnionEnums.values()) {
+    if (union.name === enumName) return union;
+  }
+  return undefined;
+}
+
+function getOrCreatePrimitiveUnionEnumRust(
+  types: readonly IrType[],
+  context: EmitContext,
+): PrimitiveUnionEnum | undefined {
+  if (!types.every((t) => t.kind === 'primitive')) return undefined;
+  const primitives = types.filter((t): t is Extract<IrType, { kind: 'primitive' }> => t.kind === 'primitive');
+  const rustPrimitiveInfo: Record<string, { rustType: string; variantName: string } | undefined> = {
+    boolean: { rustType: 'bool', variantName: 'Bool' },
+    number: { rustType: 'f64', variantName: 'F64' },
+    string: { rustType: 'String', variantName: 'Str' },
+  };
+  const variants = primitives.flatMap((p) => {
+    const info = rustPrimitiveInfo[p.name];
+    return info ? [{ primitiveKind: p.name, ...info }] : [];
+  });
+  if (variants.length !== primitives.length) return undefined;
+  const key = variants
+    .map((v) => v.primitiveKind)
+    .sort()
+    .join('|');
+  const existing = context.primitiveUnionEnums.get(key);
+  if (existing) return existing;
+  const name = variants.map((v) => v.variantName).join('Or');
+  const record: PrimitiveUnionEnum = { name, variants };
+  context.primitiveUnionEnums.set(key, record);
+  return record;
+}
+
+function getTypeofTypeTestRust(
+  expression: Readonly<Extract<IrExpression, { kind: 'binary' }>>,
+  context: EmitContext,
+): { enumName: string; negated: boolean; operand: Readonly<IrExpression>; variantName: string } | undefined {
+  if (
+    expression.operator !== '===' &&
+    expression.operator !== '==' &&
+    expression.operator !== '!==' &&
+    expression.operator !== '!='
+  ) {
+    return undefined;
+  }
+  const typeofSide =
+    expression.left.kind === 'unary' && !expression.left.postfix && expression.left.operator === 'typeof'
+      ? expression.left
+      : expression.right.kind === 'unary' && !expression.right.postfix && expression.right.operator === 'typeof'
+        ? expression.right
+        : undefined;
+  const literalSide = typeofSide === expression.left ? expression.right : expression.left;
+  if (!typeofSide || literalSide.kind !== 'literal' || typeof literalSide.value !== 'string') return undefined;
+  const primitiveUnion = getIrExpressionPrimitiveUnionRust(typeofSide.operand, context);
+  if (!primitiveUnion) return undefined;
+  const variant = primitiveUnion.variants.find((v) => v.primitiveKind === literalSide.value);
+  if (!variant) return undefined;
+  return {
+    enumName: primitiveUnion.name,
+    negated: expression.operator === '!==' || expression.operator === '!=',
+    operand: typeofSide.operand,
+    variantName: variant.variantName,
+  };
 }
 
 // A Rust enum plus the accessors that make the alternatives reachable: one per alternative for a
