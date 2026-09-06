@@ -2,11 +2,11 @@
 #![forbid(unsafe_code)]
 
 pub fn doubled(values: Vec<f64>) -> Vec<f64> {
-  return values.into_iter().map(|value| (value * 2.0)).collect::<Vec<_>>();
+  return values.into_iter().map(|value| value * 2.0).collect::<Vec<_>>();
 }
 
 pub fn positives(values: Vec<f64>) -> Vec<f64> {
-  return values.into_iter().filter(|&value| (value > 0.0)).collect::<Vec<_>>();
+  return values.into_iter().filter(|&value| value > 0.0).collect::<Vec<_>>();
 }
 
 pub fn shout(text: String) -> String {

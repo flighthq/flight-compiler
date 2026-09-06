@@ -723,7 +723,7 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
       if (expression.async) emissionError(context, 'async closures require Flight task lowering');
       if (expression.typeParameters.length > 0) emissionError(context, 'generic closures require monomorphization');
       return expression.expression
-        ? `|${expression.parameters.map((parameter) => getBindingTargetNameRust(parameter.binding, context)).join(', ')}| ${emitExpression(expression.expression, context)}`
+        ? `|${expression.parameters.map((parameter) => getBindingTargetNameRust(parameter.binding, context)).join(', ')}| ${normalizeSourceTextGrouping(emitExpression(expression.expression, context))}`
         : `|${expression.parameters.map((parameter) => getBindingTargetNameRust(parameter.binding, context)).join(', ')}| {\n${indentSourceLines(emitStatements(expression.body, context)).join('\n')}\n}`;
     case 'identifier':
       return expression.presence === 'narrowedPresent' &&
@@ -1399,7 +1399,7 @@ function emitBorrowedElementClosureRust(expression: Readonly<IrExpression> | und
     return `&${getBindingTargetNameRust(parameter.binding, context)}`;
   });
   const body = expression.expression
-    ? emitExpression(expression.expression, context)
+    ? normalizeSourceTextGrouping(emitExpression(expression.expression, context))
     : `{\n${indentSourceLines(emitStatements(expression.body, context)).join('\n')}\n}`;
   return `|${parameters.join(', ')}| ${body}`;
 }

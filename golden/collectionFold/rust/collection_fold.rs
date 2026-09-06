@@ -2,5 +2,5 @@
 #![forbid(unsafe_code)]
 
 pub fn total(values: Vec<f64>) -> f64 {
-  return values.into_iter().fold(0.0, |accumulated, value| (accumulated + value));
+  return values.into_iter().fold(0.0, |accumulated, value| accumulated + value);
 }

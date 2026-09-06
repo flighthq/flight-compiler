@@ -16,5 +16,5 @@ pub fn apply_twice(value: f64, transform: FlightCallback<(f64,), f64>) -> f64 {
 }
 
 pub fn filter_and_map(items: Vec<f64>, threshold: f64) -> Vec<String> {
-  return items.into_iter().filter(|&item| (item > threshold)).collect::<Vec<_>>().into_iter().map(|item| item.to_string()).collect::<Vec<_>>();
+  return items.into_iter().filter(|&item| item > threshold).collect::<Vec<_>>().into_iter().map(|item| item.to_string()).collect::<Vec<_>>();
 }

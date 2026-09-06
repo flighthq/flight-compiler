@@ -6,9 +6,9 @@ pub fn has_value(values: Vec<f64>, value: f64) -> bool {
 }
 
 pub fn any_positive(values: Vec<f64>) -> bool {
-  return values.into_iter().any(|value| (value > 0.0));
+  return values.into_iter().any(|value| value > 0.0);
 }
 
 pub fn all_positive(values: Vec<f64>) -> bool {
-  return values.into_iter().all(|value| (value > 0.0));
+  return values.into_iter().all(|value| value > 0.0);
 }
