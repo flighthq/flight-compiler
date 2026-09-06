@@ -44,7 +44,7 @@ describe('getCompilerRustAmbientMemberBinding', () => {
     });
   });
 
-  it('spells indexOf as a sentinel search through find', () => {
+  it('spells string indexOf as a sentinel search through find', () => {
     expect(getCompilerRustAmbientMemberBinding({ name: 'indexOf', receiver: 'string' })).toEqual({
       kind: 'sentinelSearch',
       targetName: 'find',
@@ -52,6 +52,17 @@ describe('getCompilerRustAmbientMemberBinding', () => {
     expect(getCompilerRustAmbientMemberBinding({ name: 'lastIndexOf', receiver: 'string' })).toEqual({
       kind: 'sentinelSearch',
       targetName: 'rfind',
+    });
+  });
+
+  it('spells array indexOf as a position search through iter', () => {
+    expect(getCompilerRustAmbientMemberBinding({ name: 'indexOf', receiver: 'array' })).toEqual({
+      kind: 'positionSearch',
+      targetName: 'position',
+    });
+    expect(getCompilerRustAmbientMemberBinding({ name: 'lastIndexOf', receiver: 'array' })).toEqual({
+      kind: 'positionSearch',
+      targetName: 'rposition',
     });
   });
 

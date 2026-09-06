@@ -710,6 +710,10 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
               : [closure ?? ''];
             return `${receiver}.into_iter().${binding.targetName}(${ordered.join(', ')})${binding.collect ? '.collect::<Vec<_>>()' : ''}`;
           }
+          if (binding.kind === 'positionSearch') {
+            const borrowed = expression.arguments.map((argument) => emitBorrowedTextRust(argument, context));
+            return `${receiver}.iter().${binding.targetName}(|x| x == ${borrowed.join(', ')}).map(|i| i as f64).unwrap_or(-1.0)`;
+          }
           if (binding.kind === 'sentinelSearch') {
             return `${receiver}.${binding.targetName}(${values.join(', ')}).map(|i| i as f64).unwrap_or(-1.0)`;
           }
