@@ -5,7 +5,7 @@ function throwMessage(message:String):Dynamic {
   throw new haxe.Exception(message);
 }
 
-function tryCatch(action:->Void):String {
+function tryCatch(action:()->Void):String {
   try {
     action();
     return "ok";

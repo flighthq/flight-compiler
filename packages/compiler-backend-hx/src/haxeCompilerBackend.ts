@@ -1136,8 +1136,10 @@ function emitType(type: Readonly<IrType>, context: EmitContext): string {
   switch (type.kind) {
     case 'array':
       return `Array<${emitType(type.element, context)}>`;
-    case 'function':
-      return `${type.parameters.map((parameter) => emitType(parameter.type, context)).join('->')}->${emitType(type.returns, context)}`;
+    case 'function': {
+      const params = type.parameters.map((parameter) => emitType(parameter.type, context));
+      return `(${params.join(', ')})->${emitType(type.returns, context)}`;
+    }
     case 'indexedAccess':
     case 'keyof':
     case 'typeOf':

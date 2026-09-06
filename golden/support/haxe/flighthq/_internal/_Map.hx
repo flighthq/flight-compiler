@@ -1,5 +1,9 @@
 package flighthq._internal;
 
 class _Map<K, V> {
-  public function new() {}
+  public var size:Float;
+  public function new() { size = 0; }
+  public function has(key:K):Bool { return false; }
+  public function set(key:K, value:V):Void {}
+  public function delete(key:K):Void {}
 }
