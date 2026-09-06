@@ -28,6 +28,14 @@ const rustAmbientMemberBindings: Readonly<Record<string, CompilerRustAmbientMemb
   // indexing, and the source's optional bounds decide which range it is.
   'array.slice': { kind: 'method', targetName: 'slice' },
   'array.some': { collect: false, kind: 'iterator', targetName: 'any' },
+  'map.delete': { kind: 'method', targetName: 'remove' },
+  'map.has': { kind: 'borrowedMethod', targetName: 'contains_key' },
+  'map.set': { kind: 'method', targetName: 'insert' },
+  'map.size': { kind: 'countingMethod', targetName: 'len' },
+  'set.add': { kind: 'method', targetName: 'insert' },
+  'set.delete': { kind: 'method', targetName: 'remove' },
+  'set.has': { kind: 'borrowedMethod', targetName: 'contains' },
+  'set.size': { kind: 'countingMethod', targetName: 'len' },
   'string.endsWith': { kind: 'borrowedMethod', targetName: 'ends_with' },
   // The source language replaces the first occurrence; Rust's `replace` replaces every one, and
   // `replacen` with a count of one is the member that means what the source meant.

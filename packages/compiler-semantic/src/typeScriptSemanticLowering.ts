@@ -3130,6 +3130,14 @@ function getIrResolvedMemberReceiver(type: Readonly<IrType> | undefined): IrReso
   if (!type) return undefined;
   if (type.kind === 'array') return 'array';
   if (type.kind === 'tuple') return 'tuple';
+  if (type.kind === 'named' && type.reference.kind === 'ambient') {
+    const ambientReceivers: Record<string, IrResolvedMemberReceiver> = {
+      Map: 'map',
+      Promise: 'task',
+      Set: 'set',
+    };
+    return ambientReceivers[type.reference.name];
+  }
   if (type.kind !== 'primitive') return undefined;
   return type.name === 'string' ? 'string' : type.name === 'number' ? 'number' : undefined;
 }
