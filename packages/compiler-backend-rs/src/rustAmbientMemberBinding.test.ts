@@ -44,9 +44,33 @@ describe('getCompilerRustAmbientMemberBinding', () => {
     });
   });
 
+  it('spells indexOf as a sentinel search through find', () => {
+    expect(getCompilerRustAmbientMemberBinding({ name: 'indexOf', receiver: 'string' })).toEqual({
+      kind: 'sentinelSearch',
+      targetName: 'find',
+    });
+    expect(getCompilerRustAmbientMemberBinding({ name: 'lastIndexOf', receiver: 'string' })).toEqual({
+      kind: 'sentinelSearch',
+      targetName: 'rfind',
+    });
+  });
+
+  it('spells split as a collected split iterator', () => {
+    expect(getCompilerRustAmbientMemberBinding({ name: 'split', receiver: 'string' })).toEqual({
+      kind: 'splitCollect',
+      targetName: 'split',
+    });
+  });
+
+  it('spells array join as a borrowed method call', () => {
+    expect(getCompilerRustAmbientMemberBinding({ name: 'join', receiver: 'array' })).toEqual({
+      kind: 'borrowedMethod',
+      targetName: 'join',
+    });
+  });
+
   it('answers nothing for a member with no agreed spelling, so emission refuses rather than guesses', () => {
     expect(getCompilerRustAmbientMemberBinding({ name: 'sort', receiver: 'array' })).toBeUndefined();
-    expect(getCompilerRustAmbientMemberBinding({ name: 'split', receiver: 'string' })).toBeUndefined();
     expect(getCompilerRustAmbientMemberBinding({ name: 'toFixed', receiver: 'number' })).toBeUndefined();
   });
 });

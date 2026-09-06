@@ -1,0 +1,11 @@
+[
+  { "call": "findFirst", "arguments": ["hello world hello", "hello"], "returns": "number" },
+  { "call": "findFirst", "arguments": ["hello world", "xyz"], "returns": "number" },
+  { "call": "findFirst", "arguments": ["", "anything"], "returns": "number" },
+  { "call": "findLast", "arguments": ["hello world hello", "hello"], "returns": "number" },
+  { "call": "findLast", "arguments": ["hello world", "xyz"], "returns": "number" },
+  { "call": "countTokens", "arguments": ["a,b,c", ","], "returns": "number" },
+  { "call": "countTokens", "arguments": ["hello", ","], "returns": "number" },
+  { "call": "splitAndJoin", "arguments": ["a,b,c", ",", "-"], "returns": "string" },
+  { "call": "splitAndJoin", "arguments": ["hello", ",", "-"], "returns": "string" }
+]

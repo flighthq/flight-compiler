@@ -682,13 +682,11 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
           const receiver =
             emitPrimitiveUnionNarrowedReceiverRust(expression.callee.object, context) ??
             emitExpression(expression.callee.object, context);
+          const borrows =
+            binding.kind === 'borrowedMethod' || binding.kind === 'sentinelSearch' || binding.kind === 'splitCollect';
           const values = expression.arguments.map((argument) =>
-            binding.kind === 'borrowedMethod'
-              ? emitBorrowedTextRust(argument, context)
-              : emitExpression(argument, context),
+            borrows ? emitBorrowedTextRust(argument, context) : emitExpression(argument, context),
           );
-          // Rust reaches a collection's shape through an iterator, and the result has to be collected
-          // back into the collection the source was holding.
           if (binding.kind === 'iterator') {
             const closure = binding.borrowsElement
               ? emitBorrowedElementClosureRust(expression.arguments[0], context)
@@ -697,6 +695,12 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
               ? binding.argumentOrder.map((position) => values[position] ?? '')
               : [closure ?? ''];
             return `${receiver}.into_iter().${binding.targetName}(${ordered.join(', ')})${binding.collect ? '.collect::<Vec<_>>()' : ''}`;
+          }
+          if (binding.kind === 'sentinelSearch') {
+            return `${receiver}.${binding.targetName}(${values.join(', ')}).map(|i| i as f64).unwrap_or(-1.0)`;
+          }
+          if (binding.kind === 'splitCollect') {
+            return `${receiver}.${binding.targetName}(${values.join(', ')}).map(|s| s.to_string()).collect::<Vec<String>>()`;
           }
           const trailing = binding.kind === 'borrowedMethod' ? (binding.trailingArguments ?? []) : [];
           return `${receiver}.${binding.targetName}(${[...values, ...trailing].join(', ')})${binding.owns ? '.to_owned()' : ''}`;

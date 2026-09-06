@@ -32,4 +32,6 @@ export type CompilerRustAmbientMemberBinding =
       collect: boolean;
       kind: 'iterator';
       targetName: string;
-    }>;
+    }>
+  | Readonly<{ kind: 'sentinelSearch'; targetName: string }>
+  | Readonly<{ kind: 'splitCollect'; targetName: string }>;
