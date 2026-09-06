@@ -9,11 +9,11 @@ pub fn count(entries: std::collections::HashMap<String, f64>) -> f64 {
   return entries.len() as f64;
 }
 
-pub fn insert(entries: std::collections::HashMap<String, f64>, key: String, value: f64) -> () {
+pub fn insert(entries: &mut std::collections::HashMap<String, f64>, key: String, value: f64) -> () {
   entries.insert(key, value);
 }
 
-pub fn remove(entries: std::collections::HashMap<String, f64>, key: String) -> bool {
+pub fn remove(entries: &mut std::collections::HashMap<String, f64>, key: String) -> bool {
   return entries.remove(key);
 }
 
@@ -25,6 +25,6 @@ pub fn set_size(values: std::collections::HashSet<String>) -> f64 {
   return values.len() as f64;
 }
 
-pub fn set_add(values: std::collections::HashSet<String>, item: String) -> () {
+pub fn set_add(values: &mut std::collections::HashSet<String>, item: String) -> () {
   values.insert(item);
 }

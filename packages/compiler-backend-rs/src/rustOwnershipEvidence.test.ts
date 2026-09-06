@@ -214,6 +214,13 @@ describe('collectIrModuleReferentMutatedParameterIdsRust', () => {
     expect(namesOf(module, collectIrModuleReferentMutatedParameterIdsRust(module))).toEqual(['cell', 'cell', 'out']);
   });
 
+  it('detects map.set and set.add as referent mutation', () => {
+    const module = lower(`
+      export function populate(entries: Map<string, number>, values: Set<string>): void { entries.set("a", 1); values.add("b"); }
+    `);
+    expect(namesOf(module, collectIrModuleReferentMutatedParameterIdsRust(module))).toEqual(['entries', 'values']);
+  });
+
   it('leaves a parameter only read alone, however many times it is read', () => {
     const module = lower(`
       export function span(cell: { value: number }): number { return cell.value + cell.value; }

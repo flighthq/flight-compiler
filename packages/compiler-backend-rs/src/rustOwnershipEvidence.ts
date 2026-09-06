@@ -10,6 +10,7 @@ import type {
   IrBindingPattern,
   IrExpression,
   IrModule,
+  IrResolvedMember,
   IrStatement,
   IrType,
 } from '../../compiler-types/src/index.js';
@@ -240,12 +241,7 @@ function addIrExpressionRustOwnershipMutation(
   if (
     expression.kind === 'call' &&
     expression.callee.kind === 'property' &&
-    expression.callee.member?.receiver === 'array' &&
-    (expression.callee.member.name === 'push' ||
-      expression.callee.member.name === 'pop' ||
-      expression.callee.member.name === 'reverse' ||
-      expression.callee.member.name === 'shift' ||
-      expression.callee.member.name === 'unshift')
+    isRustReferentMutatingMethod(expression.callee.member)
   ) {
     const receiver = expression.callee.object;
     if (receiver.kind === 'identifier' && receiver.reference.kind === 'binding') {
@@ -443,11 +439,29 @@ function isIrTypeCopyRust(type: Readonly<IrType>): boolean {
   }
 }
 
+function isRustReferentMutatingMethod(member: Readonly<IrResolvedMember> | undefined): boolean {
+  if (!member) return false;
+  const key = `${member.receiver}.${member.name}`;
+  return RUST_REFERENT_MUTATING_METHODS.has(key);
+}
+
 function isRustOwnershipPathPrefix(prefix: CompilerIrTraversalPath, path: CompilerIrTraversalPath): boolean {
   return prefix.length < path.length && prefix.every((segment, index) => segment === path[index]);
 }
 
 const RUST_OWNERSHIP_LOOP_STATEMENT_KINDS: ReadonlySet<string> = new Set(['do', 'for', 'forIn', 'forOf', 'while']);
+
+const RUST_REFERENT_MUTATING_METHODS: ReadonlySet<string> = new Set([
+  'array.push',
+  'array.pop',
+  'array.reverse',
+  'array.shift',
+  'array.unshift',
+  'map.delete',
+  'map.set',
+  'set.add',
+  'set.delete',
+]);
 
 function collectIrStatementListCallsRust(
   statements: readonly Readonly<IrStatement>[],
