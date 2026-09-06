@@ -1,1 +1,0 @@
-rust emission failed for @flighthq/golden/packages/golden/src/textInterpolation.ts: operator + on string and string requires Rust type-directed lowering

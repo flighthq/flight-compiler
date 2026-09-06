@@ -731,7 +731,7 @@ describe('emitIrModuleRust', () => {
     expect(output).toContain('return (value == right) && !disabled;');
   });
 
-  it('refuses operators whose static domains require Rust type-directed lowering', () => {
+  it('emits string concatenation as format! and refuses non-direct operator domains', () => {
     const strings = lower(
       'string-operators.ts',
       'export function join(left: string, right: string): string { return left + right; }',
@@ -745,9 +745,7 @@ describe('emitIrModuleRust', () => {
       'export function equal(left: number, right: number): boolean { return left == right; }',
     );
 
-    expect(() => emitIrModuleRust(strings.module)).toThrow(
-      'operator + on string and string requires Rust type-directed lowering',
-    );
+    expect(emitIrModuleRust(strings.module).contents).toContain('format!("{}{}", left, right)');
     expect(() => emitIrModuleRust(unknown.module)).toThrow(
       'operator && on unknown and boolean requires Rust type-directed lowering',
     );

@@ -558,6 +558,15 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
       ) {
         return `${emitExpression(expression.left.object, context)}.set_${safeRustValueName(expression.left.name)}(${emitOwnedOperandRust(expression.right, context)})`;
       }
+      if (
+        expression.operator === '+=' &&
+        expression.semantics.left.flow === 'string' &&
+        expression.semantics.right.flow === 'string'
+      ) {
+        const left = emitExpression(expression.left, context);
+        const right = emitExpression(expression.right, context);
+        return `${left}.push_str(&${normalizeSourceTextGrouping(right)})`;
+      }
       const left = emitExpression(expression.left, context);
       const right = emitOptionalTargetOperandRust(expression.left, expression.right, context);
       return `${left} ${emitAssignmentOperatorRust(expression.operator, expression.semantics, context)} ${normalizeSourceTextGrouping(right)}`;
@@ -599,6 +608,13 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
           emissionError(context, 'operator ?? requires an Option-shaped left operand for Rust');
         }
         return `${emitOptionShapedOperandRust(expression.left, context)}.unwrap_or_else(|| ${emitExpression(expression.right, context)})`;
+      }
+      if (
+        expression.operator === '+' &&
+        expression.semantics.left.flow === 'string' &&
+        expression.semantics.right.flow === 'string'
+      ) {
+        return emitStringConcatenationRust(expression, context);
       }
       const left = emitExpression(expression.left, context);
       const right = emitExpression(expression.right, context);
@@ -2031,6 +2047,36 @@ function isAmbientIdentifier(expression: Readonly<IrExpression>): boolean {
 
 function emissionError(context: EmitContext, message: string): never {
   throw createBackendEmissionFailure('rust', context.module, message);
+}
+
+function collectStringConcatenationOperands(expression: Readonly<IrExpression>): readonly IrExpression[] {
+  if (
+    expression.kind === 'binary' &&
+    expression.operator === '+' &&
+    expression.semantics.left.flow === 'string' &&
+    expression.semantics.right.flow === 'string'
+  ) {
+    return [
+      ...collectStringConcatenationOperands(expression.left),
+      ...collectStringConcatenationOperands(expression.right),
+    ];
+  }
+  return [expression];
+}
+
+function emitStringConcatenationRust(expression: Readonly<IrExpression>, context: EmitContext): string {
+  const operands = collectStringConcatenationOperands(expression);
+  const format = operands
+    .map((operand) =>
+      operand.kind === 'literal' && typeof operand.value === 'string'
+        ? operand.value.replaceAll('{', '{{').replaceAll('}', '}}')
+        : '{}',
+    )
+    .join('');
+  const values = operands.flatMap((operand) =>
+    operand.kind === 'literal' && typeof operand.value === 'string' ? [] : [emitExpression(operand, context)],
+  );
+  return `format!(${JSON.stringify(format)}${values.length > 0 ? `, ${values.join(', ')}` : ''})`;
 }
 
 function emitAssignmentOperatorRust(
