@@ -43,6 +43,7 @@ const rustAmbientMemberBindings: Readonly<Record<string, CompilerRustAmbientMemb
   'map.has': { kind: 'borrowedMethod', targetName: 'contains_key' },
   'map.set': { kind: 'method', targetName: 'insert' },
   'map.size': { kind: 'countingMethod', targetName: 'len' },
+  'number.toString': { kind: 'method', targetName: 'to_string' },
   'set.add': { kind: 'method', targetName: 'insert' },
   'set.delete': { kind: 'method', targetName: 'remove' },
   'set.has': { kind: 'borrowedMethod', targetName: 'contains' },
