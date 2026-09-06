@@ -1,0 +1,1 @@
+rust emission failed for @flighthq/golden/packages/golden/src/typeofNarrowing.ts: non-nullable unions require Rust tagged-union lowering
