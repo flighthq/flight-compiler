@@ -3097,10 +3097,11 @@ function getTypeScriptReferencePresence(
 }
 
 // Which alternative of a union-typed binding this reference was proved to hold. The proof is the
-// checker's, not this compiler's: the declared type is a union of named alternatives and the flow
-// type at this reference is exactly one of them. A union of literals or of anonymous shapes has no
-// member name to carry, so it is left unnarrowed rather than described by a name a target cannot
-// resolve.
+// checker's, not this compiler's: the declared type is a union of alternatives and the flow type
+// at this reference is exactly one of them. Named alternatives carry the type's own name;
+// primitive alternatives carry the primitive name the typeof operator would return. A union of
+// literals or of anonymous shapes has no member name to carry, so it is left unnarrowed rather
+// than described by a name a target cannot resolve.
 function getTypeScriptReferenceNarrowedMember(
   node: ts.Identifier,
   reference: Readonly<IrIdentifierReference>,
@@ -3114,9 +3115,11 @@ function getTypeScriptReferenceNarrowedMember(
   if (!declared.isUnion()) return {};
   const flow = context.checker.getTypeAtLocation(node);
   if (flow.isUnion()) return {};
-  const narrowed = getTypeScriptNamedTypeMemberName(flow);
+  const narrowed = getTypeScriptNamedTypeMemberName(flow) ?? getTypeScriptPrimitiveTypeName(flow);
   if (!narrowed) return {};
-  const members = declared.types.map((member) => getTypeScriptNamedTypeMemberName(member));
+  const members = declared.types.map(
+    (member) => getTypeScriptNamedTypeMemberName(member) ?? getTypeScriptPrimitiveTypeName(member),
+  );
   return members.filter((member) => member === narrowed).length === 1 ? { narrowedMember: narrowed } : {};
 }
 
@@ -3156,6 +3159,13 @@ function isTypeScriptOptionalMemberAccess(node: ts.PropertyAccessExpression, con
 function getTypeScriptNamedTypeMemberName(type: ts.Type): string | undefined {
   const name = type.aliasSymbol?.name ?? type.getSymbol()?.name;
   return name && name !== '__type' && name !== '__object' ? name : undefined;
+}
+
+function getTypeScriptPrimitiveTypeName(type: ts.Type): string | undefined {
+  if (type.flags & ts.TypeFlags.String) return 'string';
+  if (type.flags & ts.TypeFlags.Number) return 'number';
+  if (type.flags & ts.TypeFlags.Boolean) return 'boolean';
+  return undefined;
 }
 
 // What a callback's parameter holds, when the source did not annotate it and the position it was

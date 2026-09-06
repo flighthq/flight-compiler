@@ -472,6 +472,12 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
         const negated = expression.operator === '!=' || expression.operator === '!==';
         return `(${emitExpression(operand, context)} ${negated ? '!=' : '=='} null)`;
       }
+      const typeofTest = getTypeofTypeTestHaxe(expression);
+      if (typeofTest) {
+        const operand = emitExpression(typeofTest.operand, context);
+        const test = `Std.isOfType(${operand}, ${typeofTest.haxeType})`;
+        return typeofTest.negated ? `!${test}` : test;
+      }
       const left = emitExpression(expression.left, context);
       const right = emitExpression(expression.right, context);
       return `(${left} ${emitBinaryOperatorHaxe(expression.operator, expression.semantics, context)} ${right})`;
@@ -592,12 +598,10 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
           return `${emitExpression(expression.object, context)}.${binding.targetName}`;
         }
       }
-      // A union alias flattens to one structure whose non-shared fields are optional, so reading one
-      // yields a nullable where the source proved a value. The proof is control flow's, and the cast
-      // is how Haxe carries it: it names the alternative the reference was narrowed to.
       const narrowed =
         expression.object.kind === 'identifier' && expression.object.narrowedMember
-          ? getIrModuleDeclaredTypeNameHaxe(expression.object.narrowedMember, context)
+          ? (getIrModuleDeclaredTypeNameHaxe(expression.object.narrowedMember, context) ??
+            getHaxePrimitiveNarrowedTypeName(expression.object.narrowedMember))
           : undefined;
       const object = narrowed
         ? `(cast ${emitExpression(expression.object, context)} : ${narrowed})`
@@ -1359,6 +1363,40 @@ function getIrClassInheritedMethodNamesHaxe(
     base = target.extends;
   }
   return names;
+}
+
+function getHaxePrimitiveNarrowedTypeName(name: string): string | undefined {
+  const map: Record<string, string> = { boolean: 'Bool', number: 'Float', string: 'String' };
+  return map[name];
+}
+
+function getTypeofTypeTestHaxe(
+  expression: Readonly<Extract<IrExpression, { kind: 'binary' }>>,
+): { haxeType: string; negated: boolean; operand: Readonly<IrExpression> } | undefined {
+  if (
+    expression.operator !== '===' &&
+    expression.operator !== '==' &&
+    expression.operator !== '!==' &&
+    expression.operator !== '!='
+  ) {
+    return undefined;
+  }
+  const typeofSide =
+    expression.left.kind === 'unary' && !expression.left.postfix && expression.left.operator === 'typeof'
+      ? expression.left
+      : expression.right.kind === 'unary' && !expression.right.postfix && expression.right.operator === 'typeof'
+        ? expression.right
+        : undefined;
+  const literalSide = typeofSide === expression.left ? expression.right : expression.left;
+  if (!typeofSide || literalSide.kind !== 'literal' || typeof literalSide.value !== 'string') return undefined;
+  const haxeTypeMap: Record<string, string> = { boolean: 'Bool', number: 'Float', string: 'String' };
+  const haxeType = haxeTypeMap[literalSide.value];
+  if (!haxeType) return undefined;
+  return {
+    haxeType,
+    negated: expression.operator === '!==' || expression.operator === '!=',
+    operand: typeofSide.operand,
+  };
 }
 
 function getIrModuleDeclaredTypeNameHaxe(name: string, context: EmitContext): string | undefined {

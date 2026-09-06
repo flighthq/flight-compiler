@@ -2866,6 +2866,28 @@ describe('lowerTypeScriptSource', () => {
       condition?.kind === 'binary' && condition.left.kind === 'property' ? condition.left.object : undefined,
     ).not.toMatchObject({ narrowedMember: 'Circle' });
   });
+
+  it('sets narrowedMember for primitive union alternatives narrowed by typeof', () => {
+    const result = lower(
+      'primitive-narrowing.ts',
+      `export function check(value: string | number): string {
+         if (typeof value === 'string') { return value; }
+         return String(value);
+       }`,
+    );
+    const check = result.module.declarations.find(
+      (declaration) => declaration.kind === 'function' && declaration.binding.name === 'check',
+    );
+    const body = check?.kind === 'function' ? check.body : [];
+    const guard = body[0];
+    const narrowed =
+      guard?.kind === 'if' && guard.consequent.kind === 'block' && guard.consequent.statements[0]?.kind === 'return'
+        ? guard.consequent.statements[0].expression
+        : undefined;
+
+    expect(result.diagnostics).toEqual([]);
+    expect(narrowed).toMatchObject({ kind: 'identifier', narrowedMember: 'string' });
+  });
 });
 
 function ambientReference(expression: Readonly<IrExpression> | undefined): string {

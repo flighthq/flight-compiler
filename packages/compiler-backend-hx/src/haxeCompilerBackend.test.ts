@@ -698,6 +698,28 @@ describe('emitIrModuleHaxe', () => {
     expect(() => emitIrModuleHaxe(result.module)).toThrow(message);
   });
 
+  it('emits typeof type-test comparisons as Std.isOfType and casts narrowed primitive members', () => {
+    const stringTest = lower(
+      'typeof-string.ts',
+      'export function check(value: string | number): string { if (typeof value === "string") { return value.toUpperCase(); } return "other"; }',
+    );
+    const numberTest = lower(
+      'typeof-number.ts',
+      'export function check(value: string | number): number { if (typeof value === "number") { return value; } return 0; }',
+    );
+    const negated = lower(
+      'typeof-negated.ts',
+      'export function check(value: string | number): boolean { return typeof value !== "string"; }',
+    );
+
+    const stringOutput = emitIrModuleHaxe(stringTest.module).contents;
+    expect(stringOutput).toContain('Std.isOfType(value, String)');
+    expect(stringOutput).toContain('(cast value : String).toUpperCase()');
+    const numberOutput = emitIrModuleHaxe(numberTest.module).contents;
+    expect(numberOutput).toContain('Std.isOfType(value, Float)');
+    expect(emitIrModuleHaxe(negated.module).contents).toContain('!Std.isOfType(value, String)');
+  });
+
   it('emits contextual undefined as null but rejects unrepresentable undefined expressions', () => {
     const nullable = lower('nullable.ts', 'export function nullable(): string | null { return null; }');
     const undefinedNullable = lower(
