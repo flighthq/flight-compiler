@@ -720,6 +720,17 @@ describe('emitIrModuleHaxe', () => {
     expect(emitIrModuleHaxe(negated.module).contents).toContain('!Std.isOfType(value, String)');
   });
 
+  it('emits rest parameters with the element type so Haxe wraps them in Rest<T>', () => {
+    const result = lower(
+      'rest-sum.ts',
+      'export function sum(...values: number[]): number { let total: number = 0; for (const v of values) { total += v; } return total; }',
+    );
+
+    const output = emitIrModuleHaxe(result.module).contents;
+    expect(output).toContain('...values:Float');
+    expect(output).not.toContain('Array<Float>');
+  });
+
   it('emits contextual undefined as null but rejects unrepresentable undefined expressions', () => {
     const nullable = lower('nullable.ts', 'export function nullable(): string | null { return null; }');
     const undefinedNullable = lower(

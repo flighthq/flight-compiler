@@ -1,7 +1,0 @@
-[
-  { "call": "sum", "arguments": [1, 2, 3], "returns": "number" },
-  { "call": "sum", "arguments": [], "returns": "number" },
-  { "call": "joined", "arguments": ["-", "a", "b", "c"], "returns": "string" },
-  { "call": "counted", "arguments": [10, 20], "returns": "number" },
-  { "call": "counted", "arguments": [], "returns": "number" }
-]

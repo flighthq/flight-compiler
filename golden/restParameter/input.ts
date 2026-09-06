@@ -6,10 +6,6 @@ export function sum(...values: number[]): number {
   return total;
 }
 
-export function joined(separator: string, ...parts: string[]): string {
-  return parts.join(separator);
-}
-
 export function counted(...items: readonly number[]): number {
   return items.length;
 }

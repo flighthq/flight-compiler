@@ -925,7 +925,10 @@ function emitParameters(parameters: readonly IrParameter[], context: EmitContext
       const name = getBindingTargetNameHaxe(parameter.binding, context);
       const type = emitType(parameter.type, context);
       if (type === 'Array<Dynamic>') context.dynamicBindingIds.add(parameter.binding.id);
-      if (parameter.rest) return `...${name}:${type}`;
+      if (parameter.rest) {
+        const elementType = parameter.type.kind === 'array' ? emitType(parameter.type.element, context) : type;
+        return `...${name}:${elementType}`;
+      }
       if (parameter.initializer) return `${name}:${type} = ${emitExpression(parameter.initializer, context)}`;
       if (parameter.optional && hasIrTypeNullMemberHaxe(parameter.type)) {
         emissionError(context, 'optional nullable parameters require distinct Haxe null and undefined sentinels');

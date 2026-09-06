@@ -9,10 +9,6 @@ pub fn sum(values: Vec<f64>) -> f64 {
   return total;
 }
 
-pub fn joined(separator: String, parts: Vec<String>) -> String {
-  return parts.join(&separator);
-}
-
 pub fn counted(items: Vec<f64>) -> f64 {
   return items.len() as f64;
 }
