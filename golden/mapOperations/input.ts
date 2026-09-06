@@ -10,8 +10,8 @@ export function insert(entries: Map<string, number>, key: string, value: number)
   entries.set(key, value);
 }
 
-export function remove(entries: Map<string, number>, key: string): boolean {
-  return entries.delete(key);
+export function remove(entries: Map<string, number>, key: string): void {
+  entries.delete(key);
 }
 
 export function setContains(values: Set<string>, item: string): boolean {

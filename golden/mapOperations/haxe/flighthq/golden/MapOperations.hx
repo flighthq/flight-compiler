@@ -13,8 +13,8 @@ function insert(entries:flighthq._internal._Map<String, Float>, key:String, valu
   entries.set(key, value);
 }
 
-function remove(entries:flighthq._internal._Map<String, Float>, key:String):Bool {
-  return entries.delete(key);
+function remove(entries:flighthq._internal._Map<String, Float>, key:String):Void {
+  entries.delete(key);
 }
 
 function setContains(values:flighthq._internal._Set<String>, item:String):Bool {

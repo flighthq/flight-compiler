@@ -13,8 +13,8 @@ pub fn insert(entries: &mut std::collections::HashMap<String, f64>, key: String,
   entries.insert(key, value);
 }
 
-pub fn remove(entries: &mut std::collections::HashMap<String, f64>, key: String) -> bool {
-  return entries.remove(key);
+pub fn remove(entries: &mut std::collections::HashMap<String, f64>, key: String) -> () {
+  entries.remove(&key);
 }
 
 pub fn set_contains(values: std::collections::HashSet<String>, item: String) -> bool {

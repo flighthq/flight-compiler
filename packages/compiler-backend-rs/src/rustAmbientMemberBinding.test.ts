@@ -33,6 +33,17 @@ describe('getCompilerRustAmbientMemberBinding', () => {
     });
   });
 
+  it('borrows the key argument for map and set deletion', () => {
+    expect(getCompilerRustAmbientMemberBinding({ name: 'delete', receiver: 'map' })).toEqual({
+      kind: 'borrowedMethod',
+      targetName: 'remove',
+    });
+    expect(getCompilerRustAmbientMemberBinding({ name: 'delete', receiver: 'set' })).toEqual({
+      kind: 'borrowedMethod',
+      targetName: 'remove',
+    });
+  });
+
   it('answers nothing for a member with no agreed spelling, so emission refuses rather than guesses', () => {
     expect(getCompilerRustAmbientMemberBinding({ name: 'sort', receiver: 'array' })).toBeUndefined();
     expect(getCompilerRustAmbientMemberBinding({ name: 'split', receiver: 'string' })).toBeUndefined();
