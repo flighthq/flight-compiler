@@ -1,0 +1,13 @@
+[
+  { "call": "addMul", "arguments": [2, 3, 4], "returns": "number" },
+  { "call": "addMul", "arguments": [0, 5, 5], "returns": "number" },
+  { "call": "mulAdd", "arguments": [2, 3, 4], "returns": "number" },
+  { "call": "mulAdd", "arguments": [0, 5, 5], "returns": "number" },
+  { "call": "groupedAdd", "arguments": [2, 3, 4], "returns": "number" },
+  { "call": "groupedAdd", "arguments": [0, 0, 5], "returns": "number" },
+  { "call": "mixedOps", "arguments": [2, 3, 8, 4], "returns": "number" },
+  { "call": "mixedOps", "arguments": [1, 1, 1, 1], "returns": "number" },
+  { "call": "nestedGroups", "arguments": [1, 2, 3], "returns": "number" },
+  { "call": "nestedGroups", "arguments": [0, 0, 0], "returns": "number" },
+  { "call": "nestedGroups", "arguments": [-1, 2, -3], "returns": "number" }
+]

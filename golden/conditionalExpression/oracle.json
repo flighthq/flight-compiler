@@ -1,0 +1,17 @@
+[
+  { "call": "signLabel", "arguments": [5], "returns": "string" },
+  { "call": "signLabel", "arguments": [-5], "returns": "string" },
+  { "call": "signLabel", "arguments": [0], "returns": "string" },
+  { "call": "maxOfTwo", "arguments": [3, 7], "returns": "number" },
+  { "call": "maxOfTwo", "arguments": [7, 3], "returns": "number" },
+  { "call": "maxOfTwo", "arguments": [5, 5], "returns": "number" },
+  { "call": "absValue", "arguments": [5], "returns": "number" },
+  { "call": "absValue", "arguments": [-5], "returns": "number" },
+  { "call": "absValue", "arguments": [0], "returns": "number" },
+  { "call": "evenOddLabel", "arguments": [4], "returns": "string" },
+  { "call": "evenOddLabel", "arguments": [7], "returns": "string" },
+  { "call": "evenOddLabel", "arguments": [0], "returns": "string" },
+  { "call": "clampPositive", "arguments": [5], "returns": "number" },
+  { "call": "clampPositive", "arguments": [-5], "returns": "number" },
+  { "call": "clampPositive", "arguments": [0], "returns": "number" }
+]

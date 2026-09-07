@@ -1,0 +1,13 @@
+[
+  { "call": "doubleAndAdd", "arguments": [5], "returns": "number" },
+  { "call": "doubleAndAdd", "arguments": [0], "returns": "number" },
+  { "call": "doubleAndAdd", "arguments": [-3], "returns": "number" },
+  { "call": "squareOfDouble", "arguments": [3], "returns": "number" },
+  { "call": "squareOfDouble", "arguments": [0], "returns": "number" },
+  { "call": "chainThree", "arguments": [2], "returns": "number" },
+  { "call": "chainThree", "arguments": [0], "returns": "number" },
+  { "call": "chainThree", "arguments": [-1], "returns": "number" },
+  { "call": "sumOfSquares", "arguments": [3, 4], "returns": "number" },
+  { "call": "sumOfSquares", "arguments": [0, 0], "returns": "number" },
+  { "call": "sumOfSquares", "arguments": [1, -1], "returns": "number" }
+]

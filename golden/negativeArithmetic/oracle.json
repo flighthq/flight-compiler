@@ -1,0 +1,15 @@
+[
+  { "call": "negate", "arguments": [5], "returns": "number" },
+  { "call": "negate", "arguments": [-5], "returns": "number" },
+  { "call": "negate", "arguments": [0], "returns": "number" },
+  { "call": "doubleNegate", "arguments": [7], "returns": "number" },
+  { "call": "doubleNegate", "arguments": [-7], "returns": "number" },
+  { "call": "subtractFromZero", "arguments": [3], "returns": "number" },
+  { "call": "subtractFromZero", "arguments": [-3], "returns": "number" },
+  { "call": "negativeProduct", "arguments": [3, 4], "returns": "number" },
+  { "call": "negativeProduct", "arguments": [-3, 4], "returns": "number" },
+  { "call": "negativeProduct", "arguments": [0, 5], "returns": "number" },
+  { "call": "absoluteDifference", "arguments": [10, 3], "returns": "number" },
+  { "call": "absoluteDifference", "arguments": [3, 10], "returns": "number" },
+  { "call": "absoluteDifference", "arguments": [5, 5], "returns": "number" }
+]
