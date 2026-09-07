@@ -508,7 +508,18 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
             }
             return `${binding.targetPath}(${receiver}, ${emitExchangedClosureHaxe(fold, context)}, ${emitExpression(initial, context)})`;
           }
-          const values = expression.arguments.map((argument) => emitExpression(argument, context));
+          const intPositions = binding.kind === 'method' ? (binding.intArguments ?? []) : [];
+          const values = expression.arguments.map((argument, position) => {
+            const emitted = emitExpression(argument, context);
+            if (intPositions.includes(position)) {
+              return argument.kind === 'literal' &&
+                typeof argument.value === 'number' &&
+                Number.isInteger(argument.value)
+                ? emitted
+                : `Std.int(${emitted})`;
+            }
+            return emitted;
+          });
           return binding.kind === 'staticCall'
             ? `${binding.targetPath}(${[receiver, ...values].join(', ')})`
             : `${receiver}.${binding.targetName}(${values.join(', ')})`;

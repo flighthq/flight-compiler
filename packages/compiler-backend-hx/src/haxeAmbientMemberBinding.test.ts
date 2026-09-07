@@ -35,6 +35,21 @@ describe('getCompilerHaxeAmbientMemberBinding', () => {
     });
   });
 
+  it('marks index arguments for Int coercion on methods that take Haxe Int', () => {
+    expect(getCompilerHaxeAmbientMemberBinding({ name: 'charAt', receiver: 'string' })).toMatchObject({
+      intArguments: [0],
+    });
+    expect(getCompilerHaxeAmbientMemberBinding({ name: 'charCodeAt', receiver: 'string' })).toMatchObject({
+      intArguments: [0],
+    });
+    expect(getCompilerHaxeAmbientMemberBinding({ name: 'substring', receiver: 'string' })).toMatchObject({
+      intArguments: [0, 1],
+    });
+    expect(getCompilerHaxeAmbientMemberBinding({ name: 'indexOf', receiver: 'string' })).toMatchObject({
+      intArguments: [1],
+    });
+  });
+
   it('answers nothing for a member with no agreed spelling, so emission refuses rather than guesses', () => {
     expect(getCompilerHaxeAmbientMemberBinding({ name: 'sort', receiver: 'array' })).toBeUndefined();
     expect(getCompilerHaxeAmbientMemberBinding({ name: 'toFixed', receiver: 'number' })).toBeUndefined();
