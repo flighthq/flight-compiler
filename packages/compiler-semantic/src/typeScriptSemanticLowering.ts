@@ -3287,6 +3287,9 @@ function getTypeScriptExpressionBindingTypeEvidence(
   if (ts.isCallExpression(expression)) {
     return getTypeScriptCheckerTypeEvidence(context.checker.getTypeAtLocation(expression), context, 0);
   }
+  if (ts.isElementAccessExpression(expression)) {
+    return getTypeScriptCheckerTypeEvidence(context.checker.getTypeAtLocation(expression), context, 0);
+  }
   if (!ts.isIdentifier(expression)) return undefined;
   const symbol = context.checker.getSymbolAtLocation(expression);
   return symbol ? context.bindingTypes.get(symbol) : undefined;
