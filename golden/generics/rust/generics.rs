@@ -2,11 +2,11 @@
 #![forbid(unsafe_code)]
 
 #[derive(Clone, Debug)]
-pub struct Pair<Left, Right> {
+pub struct Pair<Left: Clone, Right: Clone> {
   pub left: Left,
   pub right: Right,
 }
 
-pub fn identity<Value>(value: Value) -> Value {
+pub fn identity<Value: Clone>(value: Value) -> Value {
   return value;
 }

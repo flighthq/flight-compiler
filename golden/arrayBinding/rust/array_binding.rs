@@ -72,4 +72,4 @@ pub fn select_rows(rows: Rows<(f64, f64)>) -> f64 {
   return 0.0;
 }
 
-type Rows<T> = Vec<T>;
+type Rows<T: Clone> = Vec<T>;

@@ -1999,7 +1999,8 @@ function emitTypeParameters(parameters: readonly IrTypeParameter[], context: Emi
   return `<${parameters
     .map((parameter) => {
       const name = getBindingTargetNameRust(parameter.binding, context);
-      return `${name}${parameter.constraint ? `: ${emitType(parameter.constraint, context)}` : ''}`;
+      const bound = parameter.constraint ? emitType(parameter.constraint, context) : 'Clone';
+      return `${name}: ${bound}`;
     })
     .join(', ')}>`;
 }

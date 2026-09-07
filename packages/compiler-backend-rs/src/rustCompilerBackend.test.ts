@@ -108,7 +108,7 @@ describe('emitIrModuleRust', () => {
     );
     const output = emitIrModuleRust(result.module).contents;
 
-    expect(output).toContain('struct Box<Value> {\n  pub value: Value,\n  pub optional: Option<Value>,\n}');
+    expect(output).toContain('struct Box<Value: Clone> {\n  pub value: Value,\n  pub optional: Option<Value>,\n}');
     expect(output).toContain('pub fn create() -> Box<Item>');
     expect(output).toContain('return Box<Item> { value: Item { label: "flight".to_owned(), }, optional: None, };');
   });
