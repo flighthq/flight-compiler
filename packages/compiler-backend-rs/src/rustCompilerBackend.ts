@@ -1782,6 +1782,8 @@ function emitStatement(statement: Readonly<IrStatement>, context: EmitContext): 
           ),
         );
         if (cases.length > 0) lines.push('}');
+      } else if (cases.length > 0) {
+        lines.push('else {', '  unreachable!();', '}');
       }
       return [`${emitControlFlowLabelRust(statement.label)}{`, ...indentSourceLines(lines), '}'];
     }

@@ -49,6 +49,9 @@ pub fn opposite(dir: Direction) -> Direction {
     else if switch_value == Direction::Right {
       return Direction::Left;
     }
+    else {
+      unreachable!();
+    }
   }
 }
 
@@ -66,6 +69,9 @@ pub fn direction_label(dir: Direction) -> String {
     }
     else if switch_value_2 == Direction::Right {
       return "east".to_owned();
+    }
+    else {
+      unreachable!();
     }
   }
 }
