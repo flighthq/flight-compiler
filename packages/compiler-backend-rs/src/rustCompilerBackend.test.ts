@@ -716,7 +716,7 @@ describe('emitIrModuleRust', () => {
     const output = emitIrModuleRust(result.module).contents;
 
     expect(output).toContain('pub fn read(limit: f64) -> f64 {\n  return limit;');
-    expect(output).toContain('return |limit| limit;');
+    expect(output).toContain('return Rc::new(|limit| limit);');
     expect(output.match(/return LIMIT;/gu)).toBeNull();
   });
 

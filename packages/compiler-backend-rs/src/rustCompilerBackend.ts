@@ -104,7 +104,9 @@ interface EmitContext {
   // ownership analysis already decides that for every binding in the module.
   movedBindingIds: ReadonlySet<string>;
   accessorClassNames: ReadonlyMap<string, string>;
+  callbackBindingIds: Set<string>;
   classBindingNames: ReadonlyMap<string, string>;
+  enclosingReturnType?: Readonly<IrType> | undefined;
   runtimeTypeNames: Set<string>;
   borrowedParameterPositions: ReadonlyMap<string, ReadonlySet<number>>;
   deferredBindingIds: ReadonlySet<string>;
@@ -116,6 +118,7 @@ interface EmitContext {
   reboundBindingIds: ReadonlySet<string>;
   generatedNames: Set<string>;
   module: Readonly<IrModule>;
+  needsRcImport: Set<'Rc'>;
   nullableBindingIds: ReadonlySet<string>;
   objectRestRecords: Map<string, Readonly<{ name: string; properties: readonly IrObjectTypeProperty[] }>>;
   options: Readonly<RustCompilerBackendOptions>;
@@ -198,6 +201,7 @@ function emitIrModuleRustWithContext(
   const context: EmitContext = {
     accessorClassNames,
     anonymousObjectRecords: new Map(),
+    callbackBindingIds: new Set<string>(),
     classBindingNames,
     borrowedParameterPositions,
     deferredBindingIds: new Set(
@@ -225,6 +229,7 @@ function emitIrModuleRustWithContext(
     referentMutatedParameterIds: collectIrModuleReferentMutatedParameterIdsRust(module),
     taggedUnionBindingNames,
     module,
+    needsRcImport: new Set(),
     nullableBindingIds: collectIrModuleNullableBindingIds(module),
     objectRestRecords: new Map(),
     options,
@@ -281,7 +286,9 @@ function emitIrModuleRustWithContext(
     context.runtimeTypeNames.size > 0
       ? [`use ${options.runtimeCrate ?? 'flight_runtime'}::${emitUseTreeRust([...context.runtimeTypeNames].sort())};`]
       : [];
-  if (runtimeImports.length > 0 || imports.length > 0) lines.push('', ...runtimeImports, ...imports);
+  const stdImports = context.needsRcImport.size > 0 ? ['use std::rc::Rc;'] : [];
+  if (runtimeImports.length > 0 || imports.length > 0 || stdImports.length > 0)
+    lines.push('', ...stdImports, ...runtimeImports, ...imports);
   context.anonymousObjectRecords.forEach((record) => {
     lines.push('', ...emitRecord(record.name, record.properties, [], false, context));
   });
@@ -817,7 +824,21 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
           return `${receiver}.${binding.targetName}(${[...leading, ...values, ...trailing].join(', ')})${binding.owns ? '.to_owned()' : ''}`;
         }
       }
-      return `${expression.callee.kind === 'function' ? `(${emitExpression(expression.callee, context)})` : emitExpression(expression.callee, context)}(${emitCallArgumentsRust(expression, context).join(', ')})`;
+      {
+        const calleeRust =
+          expression.callee.kind === 'function'
+            ? `(${emitExpression(expression.callee, context)})`
+            : emitExpression(expression.callee, context);
+        const isCallbackCallee =
+          expression.callee.kind === 'identifier' &&
+          expression.callee.reference.kind === 'binding' &&
+          context.callbackBindingIds.has(expression.callee.reference.binding.id);
+        if (isCallbackCallee) {
+          const args = emitCallArgumentsRust(expression, context);
+          return `${calleeRust}((${args.join(', ')}${args.length === 1 ? ',' : ''}))`;
+        }
+        return `${calleeRust}(${emitCallArgumentsRust(expression, context).join(', ')})`;
+      }
     case 'cast':
       return `(${emitExpression(expression.expression, context)} as ${emitType(expression.type, context)})`;
     case 'conditional':
@@ -1084,7 +1105,14 @@ function hasIrFunctionSignatureThisMutationRust(method: Readonly<{ body: readonl
 }
 
 function emitFunction(declaration: Readonly<IrFunctionDeclaration>, outer: EmitContext): string[] {
-  const context: EmitContext = { ...outer, returnsAbsent: hasIrTypeAbsentMember(declaration.returns) };
+  const context: EmitContext = {
+    ...outer,
+    enclosingReturnType: declaration.returns,
+    returnsAbsent: hasIrTypeAbsentMember(declaration.returns),
+  };
+  for (const parameter of declaration.parameters) {
+    if (parameter.type.kind === 'function') context.callbackBindingIds.add(parameter.binding.id);
+  }
   // Rust has native suspension, so it declines the neutral state-machine lowering that Haxe elects
   // and emits `async fn` instead. The awaited type of an async function is its return type: the
   // future is implied by `async`, so the task wrapper is dropped rather than named.
@@ -1502,6 +1530,10 @@ function emitReturnedExpressionRust(expression: Readonly<IrExpression>, context:
   const source = emitExpression(expression, context);
   if (expression.kind === 'element' && !expression.optional && expression.semantics.receivers.includes('array'))
     return `${source}.clone()`;
+  if (context.enclosingReturnType?.kind === 'function' && expression.kind === 'function') {
+    context.needsRcImport.add('Rc');
+    return `Rc::new(${source})`;
+  }
   return source;
 }
 
@@ -2022,12 +2054,17 @@ function emitVariable(variable: Readonly<IrVariable>, context: EmitContext): str
     }
     return `let ${variable.mutable ? 'mut ' : ''}${getBindingTargetNameRust(variable.binding, context)}: ${emitType(variable.type, context)} = None;`;
   }
+  if (variable.type?.kind === 'function') {
+    context.callbackBindingIds.add(variable.binding.id);
+  }
   const type =
     variable.type && !(variable.initializer?.kind === 'objectRest' && variable.type.kind === 'object')
       ? `: ${emitType(variable.type, context)}`
       : '';
+  const isCallbackInitializer = variable.type?.kind === 'function' && variable.initializer?.kind === 'function';
+  if (isCallbackInitializer) context.needsRcImport.add('Rc');
   const initializer = variable.initializer
-    ? ` = ${normalizeSourceTextGrouping(emitOwnedOperandRust(variable.initializer, context))}`
+    ? ` = ${normalizeSourceTextGrouping(isCallbackInitializer ? `Rc::new(${emitExpression(variable.initializer, context)})` : emitOwnedOperandRust(variable.initializer, context))}`
     : '';
   // A binding declared without a value and written once afterwards is Rust's deferred
   // initialization, not a mutation: the source hoisted the declaration above the assignment, and
