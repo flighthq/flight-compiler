@@ -1,0 +1,10 @@
+[
+  { "call": "sum", "arguments": [[1, 2, 3, 4]], "returns": "number" },
+  { "call": "sum", "arguments": [[]], "returns": "number" },
+  { "call": "product", "arguments": [[2, 3, 4]], "returns": "number" },
+  { "call": "product", "arguments": [[]], "returns": "number" },
+  { "call": "maxValue", "arguments": [[3, 1, 4, 1, 5]], "returns": "number" },
+  { "call": "maxValue", "arguments": [[]], "returns": "number" },
+  { "call": "countAbove", "arguments": [[1, 5, 3, 7, 2], 3], "returns": "number" },
+  { "call": "countAbove", "arguments": [[], 0], "returns": "number" }
+]

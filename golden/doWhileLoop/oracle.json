@@ -1,0 +1,8 @@
+[
+  { "call": "collatz", "arguments": [6], "returns": "number" },
+  { "call": "collatz", "arguments": [1], "returns": "number" },
+  { "call": "collatz", "arguments": [27], "returns": "number" },
+  { "call": "digitSum", "arguments": [123], "returns": "number" },
+  { "call": "digitSum", "arguments": [0], "returns": "number" },
+  { "call": "digitSum", "arguments": [999], "returns": "number" }
+]
