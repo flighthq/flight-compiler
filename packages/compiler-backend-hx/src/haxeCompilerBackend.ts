@@ -314,7 +314,7 @@ function emitClass(declaration: Readonly<IrClassDeclaration>, context: EmitConte
   declaration.fields.forEach((field, index) => {
     if (index > 0 || lines.length > 1) lines.push('');
     const visibility = field.visibility === 'public' ? 'public ' : field.visibility === 'private' ? 'private ' : '';
-    const storage = field.readonly ? 'final' : 'var';
+    const storage = field.readonly && !field.declare ? 'final' : 'var';
     const static_ = field.static ? 'static ' : '';
     const fieldInitialization = initialization.fields[index]!;
     const initializer =

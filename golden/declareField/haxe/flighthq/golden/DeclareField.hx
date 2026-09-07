@@ -4,7 +4,7 @@ package flighthq.golden;
 class Config {
   public var label:String;
 
-  public final flags:Float;
+  public var flags:Float;
 
   public var value:Float = 0;
 
