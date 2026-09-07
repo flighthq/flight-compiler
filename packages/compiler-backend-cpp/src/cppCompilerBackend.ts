@@ -680,7 +680,8 @@ function emitStatement(statement: Readonly<IrStatement>, context: EmitContext): 
       return [`throw std::runtime_error(${emitExpression(statement.expression, context)});`];
     }
     case 'try': {
-      if (statement.finallyBody) return emitTryFinallyCpp(statement, context);
+      if (statement.finallyBody)
+        return emitTryFinallyCpp(statement as typeof statement & { finallyBody: IrStatement }, context);
       const lines = ['try {', ...indentSourceLines(emitStatementBody(statement.tryBody, context)), '}'];
       if (statement.catchClause) {
         context.includes.add('stdexcept');
@@ -734,7 +735,7 @@ function containsReturnStatementCpp(statement: Readonly<IrStatement>): boolean {
       return statement.statements.some(containsReturnStatementCpp);
     case 'if':
       return (
-        containsReturnStatementCpp(statement.body) ||
+        containsReturnStatementCpp(statement.consequent) ||
         (statement.otherwise ? containsReturnStatementCpp(statement.otherwise) : false)
       );
     case 'try':
