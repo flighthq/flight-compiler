@@ -50,4 +50,19 @@ pub type FlightCallback<Arguments, Return> = std::rc::Rc<dyn Fn(Arguments) -> Re
 pub type FlightSymbol = String;
 
 #[derive(Clone, Debug)]
+pub struct FlightDate(f64);
+
+impl FlightDate {
+    pub fn timestamp_millis(&self) -> f64 {
+        self.0
+    }
+    pub fn year(&self) -> f64 {
+        1970.0
+    }
+    pub fn to_iso_string(&self) -> String {
+        "1970-01-01T00:00:00.000Z".to_owned()
+    }
+}
+
+#[derive(Clone, Debug)]
 pub struct OpaqueHostValue;
