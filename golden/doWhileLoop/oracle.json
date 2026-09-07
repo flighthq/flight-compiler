@@ -4,5 +4,9 @@
   { "call": "collatz", "arguments": [27], "returns": "number" },
   { "call": "digitSum", "arguments": [123], "returns": "number" },
   { "call": "digitSum", "arguments": [0], "returns": "number" },
-  { "call": "digitSum", "arguments": [999], "returns": "number" }
+  { "call": "digitSum", "arguments": [9999], "returns": "number" },
+  { "call": "gcd", "arguments": [12, 8], "returns": "number" },
+  { "call": "gcd", "arguments": [17, 13], "returns": "number" },
+  { "call": "gcd", "arguments": [100, 25], "returns": "number" },
+  { "call": "gcd", "arguments": [0, 5], "returns": "number" }
 ]

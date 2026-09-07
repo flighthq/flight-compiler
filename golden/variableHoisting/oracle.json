@@ -1,0 +1,5 @@
+[
+  { "call": "selectNested", "arguments": [], "returns": "number" },
+  { "call": "selectLoop", "arguments": [5], "returns": "number" },
+  { "call": "selectLoop", "arguments": [0], "returns": "number" }
+]

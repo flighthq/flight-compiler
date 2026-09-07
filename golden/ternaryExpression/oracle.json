@@ -1,0 +1,11 @@
+[
+  { "call": "clampValue", "arguments": [5, 0, 10], "returns": "number" },
+  { "call": "clampValue", "arguments": [-5, 0, 10], "returns": "number" },
+  { "call": "clampValue", "arguments": [15, 0, 10], "returns": "number" },
+  { "call": "sign", "arguments": [42], "returns": "number" },
+  { "call": "sign", "arguments": [-7], "returns": "number" },
+  { "call": "sign", "arguments": [0], "returns": "number" },
+  { "call": "label", "arguments": [0], "returns": "string" },
+  { "call": "label", "arguments": [1], "returns": "string" },
+  { "call": "label", "arguments": [5], "returns": "string" }
+]

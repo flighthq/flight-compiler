@@ -1,15 +1,15 @@
-export function bothPositive(a: number, b: number): number {
-  return a > 0 && b > 0 ? a + b : 0;
+export function allPositive(a: number, b: number, c: number): boolean {
+  return a > 0 && b > 0 && c > 0;
 }
 
-export function eitherLarge(a: number, b: number): boolean {
-  return a > 100 || b > 100;
+export function anyNegative(a: number, b: number, c: number): boolean {
+  return a < 0 || b < 0 || c < 0;
 }
 
-export function guardedDivide(a: number, b: number): number {
-  return b !== 0 && a / b > 1 ? a / b : 0;
-}
-
-export function rangeCheck(value: number, low: number, high: number): boolean {
+export function inRange(value: number, low: number, high: number): boolean {
   return value >= low && value <= high;
+}
+
+export function xorSign(a: number, b: number): boolean {
+  return (a > 0 && b < 0) || (a < 0 && b > 0);
 }

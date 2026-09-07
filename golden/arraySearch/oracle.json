@@ -1,0 +1,10 @@
+[
+  { "call": "findIndex", "arguments": [[10, 20, 30], 20], "returns": "number" },
+  { "call": "findIndex", "arguments": [[10, 20, 30], 99], "returns": "number" },
+  { "call": "findIndex", "arguments": [[], 1], "returns": "number" },
+  { "call": "findLastIndex", "arguments": [[1, 2, 1, 3], 1], "returns": "number" },
+  { "call": "findLastIndex", "arguments": [[1, 2, 3], 5], "returns": "number" },
+  { "call": "containsValue", "arguments": [[1, 2, 3], 2], "returns": "boolean" },
+  { "call": "containsValue", "arguments": [[1, 2, 3], 5], "returns": "boolean" },
+  { "call": "containsValue", "arguments": [[], 1], "returns": "boolean" }
+]

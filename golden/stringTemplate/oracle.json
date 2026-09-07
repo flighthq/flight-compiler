@@ -1,0 +1,11 @@
+[
+  { "call": "greet", "arguments": ["world"], "returns": "string" },
+  { "call": "greet", "arguments": [""], "returns": "string" },
+  { "call": "formatCoord", "arguments": [3, 4], "returns": "string" },
+  { "call": "formatCoord", "arguments": [0, 0], "returns": "string" },
+  { "call": "formatCoord", "arguments": [-1, 5], "returns": "string" },
+  { "call": "wrapTag", "arguments": ["b", "bold"], "returns": "string" },
+  { "call": "wrapTag", "arguments": ["p", ""], "returns": "string" },
+  { "call": "repeatLine", "arguments": ["abc", 3], "returns": "string" },
+  { "call": "repeatLine", "arguments": ["x", 0], "returns": "string" }
+]

@@ -1,0 +1,14 @@
+[
+  {
+    "call": "mergeArrays",
+    "arguments": [
+      [1, 2],
+      [3, 4]
+    ],
+    "returns": "numbers"
+  },
+  { "call": "mergeArrays", "arguments": [[], [1]], "returns": "numbers" },
+  { "call": "mergeArrays", "arguments": [[], []], "returns": "numbers" },
+  { "call": "appendOne", "arguments": [[1, 2], 3], "returns": "numbers" },
+  { "call": "appendOne", "arguments": [[], 42], "returns": "numbers" }
+]

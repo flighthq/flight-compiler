@@ -1,0 +1,7 @@
+[
+  { "call": "singleElement", "arguments": [], "returns": "numbers" },
+  { "call": "threeElements", "arguments": [], "returns": "numbers" },
+  { "call": "emptyArray", "arguments": [], "returns": "numbers" },
+  { "call": "computed", "arguments": [3, 4], "returns": "numbers" },
+  { "call": "computed", "arguments": [0, 0], "returns": "numbers" }
+]
