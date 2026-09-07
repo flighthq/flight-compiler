@@ -71,6 +71,44 @@ describe('emitIrModuleCpp', () => {
     expect(emitted.contents).toContain('#include <coroutine>');
   });
 
+  it('emits co_await for await expressions in async functions', () => {
+    const result = lower(
+      'waiter.ts',
+      'export async function wait(task: Promise<number>): Promise<number> { const v = await task; return v; }',
+    );
+    const emitted = emitIrModuleCpp(result.module);
+
+    expect(emitted.contents).toContain('co_await task');
+    expect(emitted.contents).toContain('co_return');
+    expect(emitted.contents).not.toContain(' return ');
+  });
+
+  it('emits finally blocks with exception_ptr catch-rethrow', () => {
+    const result = lower(
+      'cleanup.ts',
+      'export async function cleanup(task: Promise<number>): Promise<number> { let r: number = 0; try { r = await task; } finally { r = r + 1; } return r; }',
+    );
+    const emitted = emitIrModuleCpp(result.module);
+
+    expect(emitted.contents).toContain('std::exception_ptr');
+    expect(emitted.contents).toContain('std::current_exception()');
+    expect(emitted.contents).toContain('std::rethrow_exception');
+    expect(emitted.contents).toContain('#include <exception>');
+  });
+
+  it('emits return-in-try-with-finally using deferred return variable', () => {
+    const result = lower(
+      'deferred.ts',
+      'export async function deferred(task: Promise<number>): Promise<number> { try { return await task; } finally { let x: number = 1; } }',
+    );
+    const emitted = emitIrModuleCpp(result.module);
+
+    expect(emitted.contents).toContain('std::optional<double> finally_return');
+    expect(emitted.contents).toContain('finally_return = co_await task');
+    expect(emitted.contents).toContain('finally_return.has_value()');
+    expect(emitted.contents).toContain('co_return finally_return.value()');
+  });
+
   it('emits class inheritance with virtual destructor and initializer list', () => {
     const result = lower(
       'derived.ts',
