@@ -1,5 +1,6 @@
 import path from 'node:path';
 
+import { analyzeIrModuleClosureEvidence } from '../../compiler-closure/src/index.js';
 import {
   collectIrModuleNullableBindingIds,
   createBackendEmissionFailure,
@@ -100,6 +101,7 @@ interface PrimitiveUnionEnum {
 
 interface EmitContext {
   anonymousObjectRecords: Map<string, Readonly<{ name: string; properties: readonly IrObjectTypeProperty[] }>>;
+  cellWrappedBindingIds: ReadonlySet<string>;
   // Which bindings the module rebinds. Rust needs `mut` on a parameter that is assigned to, and the
   // ownership analysis already decides that for every binding in the module.
   movedBindingIds: ReadonlySet<string>;
@@ -117,6 +119,7 @@ interface EmitContext {
   reboundBindingIds: ReadonlySet<string>;
   generatedNames: Set<string>;
   module: Readonly<IrModule>;
+  needsCellImport: Set<'Cell'>;
   needsRcImport: Set<'Rc'>;
   nullableBindingIds: ReadonlySet<string>;
   objectRestRecords: Map<string, Readonly<{ name: string; properties: readonly IrObjectTypeProperty[] }>>;
@@ -191,6 +194,18 @@ function emitIrModuleRustWithContext(
     }
     throw error;
   }
+  const closureEvidence = analyzeIrModuleClosureEvidence(module);
+  const cellWrappedBindingIds = new Set(
+    closureEvidence.closures
+      .filter(
+        (closure) =>
+          closure.origin.kind === 'functionExpression' &&
+          !closure.valueUses.every((use) => use.kind === 'directInvocation'),
+      )
+      .flatMap((closure) =>
+        closure.captures.filter((capture) => capture.mutation !== 'none').map((capture) => capture.binding.id),
+      ),
+  );
   const accessorClassNames = new Map<string, string>();
   const classBindingNames = new Map<string, string>();
   const borrowedParameterPositions = new Map<string, ReadonlySet<number>>();
@@ -200,6 +215,7 @@ function emitIrModuleRustWithContext(
   const context: EmitContext = {
     accessorClassNames,
     anonymousObjectRecords: new Map(),
+    cellWrappedBindingIds,
     classBindingNames,
     borrowedParameterPositions,
     deferredBindingIds: new Set(
@@ -227,6 +243,7 @@ function emitIrModuleRustWithContext(
     referentMutatedParameterIds: collectIrModuleReferentMutatedParameterIdsRust(module),
     taggedUnionBindingNames,
     module,
+    needsCellImport: new Set(),
     needsRcImport: new Set(),
     nullableBindingIds: collectIrModuleNullableBindingIds(module),
     objectRestRecords: new Map(),
@@ -284,7 +301,9 @@ function emitIrModuleRustWithContext(
     context.runtimeTypeNames.size > 0
       ? [`use ${options.runtimeCrate ?? 'flight_runtime'}::${emitUseTreeRust([...context.runtimeTypeNames].sort())};`]
       : [];
-  const stdImports = context.needsRcImport.size > 0 ? ['use std::rc::Rc;'] : [];
+  const stdImports: string[] = [];
+  if (context.needsCellImport.size > 0) stdImports.push('use std::cell::Cell;');
+  if (context.needsRcImport.size > 0) stdImports.push('use std::rc::Rc;');
   if (runtimeImports.length > 0 || imports.length > 0 || stdImports.length > 0)
     lines.push('', ...stdImports, ...runtimeImports, ...imports);
   context.anonymousObjectRecords.forEach((record) => {
@@ -572,6 +591,17 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
       return `vec![${expression.elements.map((element) => (element ? emitOwnedOperandRust(element, context) : 'Default::default()')).join(', ')}]`;
     case 'assignment': {
       if (
+        expression.left.kind === 'identifier' &&
+        expression.left.reference.kind === 'binding' &&
+        context.cellWrappedBindingIds.has(expression.left.reference.binding.id)
+      ) {
+        const name = emitIdentifierReferenceRust(expression.left.reference, context);
+        const right = emitExpression(expression.right, context);
+        if (expression.operator === '=') return `${name}.set(${right})`;
+        const op = expression.operator.slice(0, -1);
+        return `${name}.set(${name}.get() ${op} ${normalizeSourceTextGrouping(right)})`;
+      }
+      if (
         expression.operator === '=' &&
         expression.left.kind === 'property' &&
         getIrExpressionClassAccessorRust(expression.left.object, expression.left.name, 'set', context)
@@ -850,6 +880,8 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
         ? `|${expression.parameters.map((parameter) => getBindingTargetNameRust(parameter.binding, context)).join(', ')}| ${normalizeSourceTextGrouping(emitExpression(expression.expression, context))}`
         : `|${expression.parameters.map((parameter) => getBindingTargetNameRust(parameter.binding, context)).join(', ')}| {\n${indentSourceLines(emitStatements(expression.body, context)).join('\n')}\n}`;
     case 'identifier': {
+      if (expression.reference.kind === 'binding' && context.cellWrappedBindingIds.has(expression.reference.binding.id))
+        return `${emitIdentifierReferenceRust(expression.reference, context)}.get()`;
       if (
         expression.presence === 'narrowedPresent' &&
         expression.reference.kind === 'binding' &&
@@ -1517,9 +1549,51 @@ function emitReturnedExpressionRust(expression: Readonly<IrExpression>, context:
     return `${source}.clone()`;
   if (context.enclosingReturnType?.kind === 'function' && expression.kind === 'function') {
     context.needsRcImport.add('Rc');
-    return `Rc::new(move ${source})`;
+    return emitCellCloneBlockRust(`Rc::new(move ${source})`, expression, context);
   }
   return source;
+}
+
+function collectCellCapturedBindingIdsRust(
+  expression: Readonly<IrExpression>,
+  context: EmitContext,
+): readonly string[] {
+  if (expression.kind !== 'function' || context.cellWrappedBindingIds.size === 0) return [];
+  const found = new Set<string>();
+  const observer = {
+    expression(expr: Readonly<IrExpression>) {
+      if (
+        expr.kind === 'identifier' &&
+        expr.reference.kind === 'binding' &&
+        context.cellWrappedBindingIds.has(expr.reference.binding.id)
+      ) {
+        found.add(expr.reference.binding.id);
+      }
+      if (expr.kind === 'function') return false as const;
+      return undefined;
+    },
+  };
+  expression.body.forEach((stmt) => analyzeIrStatementSubtreeTraversal(stmt, observer));
+  return [...found];
+}
+
+function emitCellCloneBlockRust(
+  rcExpression: string,
+  closureExpression: Readonly<IrExpression>,
+  context: EmitContext,
+): string {
+  const capturedCellIds = collectCellCapturedBindingIdsRust(closureExpression, context);
+  if (capturedCellIds.length === 0) return rcExpression;
+  const clones = capturedCellIds.map((id) => {
+    const name = context.targetNames.get(id) ?? id;
+    return `  let ${name} = Rc::clone(&${name});`;
+  });
+  return `{\n${clones.join('\n')}\n  ${rcExpression}\n}`;
+}
+
+function emitClosureWithCellClonesRust(expression: Readonly<IrExpression>, context: EmitContext): string {
+  const source = emitExpression(expression, context);
+  return emitCellCloneBlockRust(`Rc::new(move ${source})`, expression, context);
 }
 
 // A value lent to a callee that mutates through it. An argument that is already a mutable borrow is
@@ -2050,6 +2124,14 @@ function emitVariable(variable: Readonly<IrVariable>, context: EmitContext): str
     }
     return `let ${variable.mutable ? 'mut ' : ''}${getBindingTargetNameRust(variable.binding, context)}: ${emitType(variable.type, context)} = None;`;
   }
+  if (context.cellWrappedBindingIds.has(variable.binding.id)) {
+    context.needsCellImport.add('Cell');
+    context.needsRcImport.add('Rc');
+    const name = getBindingTargetNameRust(variable.binding, context);
+    const type = variable.type ? emitType(variable.type, context) : 'f64';
+    const init = variable.initializer ? emitExpression(variable.initializer, context) : '0.0';
+    return `let ${name}: Rc<Cell<${type}>> = Rc::new(Cell::new(${init}));`;
+  }
   const type =
     variable.type && !(variable.initializer?.kind === 'objectRest' && variable.type.kind === 'object')
       ? `: ${emitType(variable.type, context)}`
@@ -2057,7 +2139,7 @@ function emitVariable(variable: Readonly<IrVariable>, context: EmitContext): str
   const isCallbackInitializer = variable.type?.kind === 'function' && variable.initializer?.kind === 'function';
   if (isCallbackInitializer) context.needsRcImport.add('Rc');
   const initializer = variable.initializer
-    ? ` = ${normalizeSourceTextGrouping(isCallbackInitializer ? `Rc::new(move ${emitExpression(variable.initializer, context)})` : emitOwnedOperandRust(variable.initializer, context))}`
+    ? ` = ${normalizeSourceTextGrouping(isCallbackInitializer ? emitClosureWithCellClonesRust(variable.initializer, context) : emitOwnedOperandRust(variable.initializer, context))}`
     : '';
   // A binding declared without a value and written once afterwards is Rust's deferred
   // initialization, not a mutation: the source hoisted the declaration above the assignment, and
