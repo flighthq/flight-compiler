@@ -1,13 +1,14 @@
 [
-  { "call": "firstTruthy", "arguments": [0, 5], "returns": "number" },
-  { "call": "firstTruthy", "arguments": [3, 5], "returns": "number" },
-  { "call": "firstTruthy", "arguments": [0, 0], "returns": "number" },
   { "call": "bothPositive", "arguments": [3, 4], "returns": "number" },
   { "call": "bothPositive", "arguments": [-1, 4], "returns": "number" },
   { "call": "bothPositive", "arguments": [0, 0], "returns": "number" },
-  { "call": "defaultValue", "arguments": [0, 42], "returns": "number" },
-  { "call": "defaultValue", "arguments": [7, 42], "returns": "number" },
+  { "call": "eitherLarge", "arguments": [50, 200], "returns": "boolean" },
+  { "call": "eitherLarge", "arguments": [50, 50], "returns": "boolean" },
+  { "call": "eitherLarge", "arguments": [101, 0], "returns": "boolean" },
   { "call": "guardedDivide", "arguments": [10, 3], "returns": "number" },
   { "call": "guardedDivide", "arguments": [10, 0], "returns": "number" },
-  { "call": "guardedDivide", "arguments": [1, 5], "returns": "number" }
+  { "call": "guardedDivide", "arguments": [1, 5], "returns": "number" },
+  { "call": "rangeCheck", "arguments": [5, 0, 10], "returns": "boolean" },
+  { "call": "rangeCheck", "arguments": [-1, 0, 10], "returns": "boolean" },
+  { "call": "rangeCheck", "arguments": [10, 0, 10], "returns": "boolean" }
 ]
