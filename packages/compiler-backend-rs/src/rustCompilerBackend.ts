@@ -2472,7 +2472,8 @@ function rustImportModule(specifier: string, context: EmitContext): string {
 }
 
 function safeRustTypeName(name: string): string {
-  const value = name
+  const stripped = name.startsWith('#') ? name.slice(1) : name;
+  const value = stripped
     .split('.')
     .map((segment) => pascalCase(segment))
     .join('::');
@@ -2824,7 +2825,8 @@ function constantRustName(name: string): string {
 
 function safeRustValueName(name: string): string {
   if (name === 'this') return 'self';
-  const value = snakeCase(name);
+  const stripped = name.startsWith('#') ? name.slice(1) : name;
+  const value = snakeCase(stripped);
   return isRustCompilerKeyword(value) ? `${value}_` : value;
 }
 

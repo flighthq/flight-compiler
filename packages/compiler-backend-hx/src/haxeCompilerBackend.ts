@@ -1910,7 +1910,8 @@ function pascalCase(value: string): string {
 }
 
 function safeHaxeName(name: string): string {
-  return haxeKeywords.has(name) ? `${name}_` : name;
+  const stripped = name.startsWith('#') ? name.slice(1) : name;
+  return haxeKeywords.has(stripped) ? `${stripped}_` : stripped;
 }
 
 function safeHaxeTypeName(name: string): string {

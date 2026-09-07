@@ -2,21 +2,21 @@
 package flighthq.golden;
 
 class Counter {
-  public var #count:Float = 0;
+  public var count:Float = 0;
 
   public function increment():Void {
-    this.#count += 1;
+    this.count += 1;
   }
 
   public function getCount():Float {
-    return this.#count;
+    return this.count;
   }
 
-  public function #reset():Void {
-    this.#count = 0;
+  public function reset():Void {
+    this.count = 0;
   }
 
   public function clear():Void {
-    this.#reset();
+    this.reset();
   }
 }

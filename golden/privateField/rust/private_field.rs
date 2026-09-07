@@ -3,29 +3,29 @@
 
 #[derive(Clone, Debug)]
 pub struct Counter {
-    pub #count: f64,
+    pub count: f64,
 }
 
 impl Counter {
   pub fn new() -> Self {
     Self {
-      #count: 0.0,
+      count: 0.0,
     }
   }
 
   pub fn increment(&mut self) -> () {
-    self.#count += 1.0;
+    self.count += 1.0;
   }
 
   pub fn get_count(&self) -> f64 {
-    return self.#count;
+    return self.count;
   }
 
-  pub fn #reset(&mut self) -> () {
-    self.#count = 0.0;
+  pub fn reset(&mut self) -> () {
+    self.count = 0.0;
   }
 
   pub fn clear(&mut self) -> () {
-    self.#reset();
+    self.reset();
   }
 }
