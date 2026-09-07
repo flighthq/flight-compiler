@@ -783,7 +783,10 @@ function emitType(type: Readonly<IrType>, context: EmitContext): string {
       return `std::variant<${variants.join(', ')}>`;
     }
     case 'unknown':
-      emissionError(context, 'unknown types require C++ type-erasure lowering');
+      if (type.source === 'this' && context.currentClass) {
+        return getBindingTargetName(context.currentClass.binding, context);
+      }
+      return 'auto';
   }
 }
 
