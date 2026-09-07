@@ -1,0 +1,12 @@
+[
+  { "call": "conditionalReassign", "arguments": [5], "returns": "string" },
+  { "call": "conditionalReassign", "arguments": [-3], "returns": "string" },
+  { "call": "conditionalReassign", "arguments": [0], "returns": "string" },
+  { "call": "swapValues", "arguments": [10, 3], "returns": "number" },
+  { "call": "swapValues", "arguments": [0, 0], "returns": "number" },
+  { "call": "accumulate", "arguments": [[1, 2, 3]], "returns": "number" },
+  { "call": "accumulate", "arguments": [[]], "returns": "number" },
+  { "call": "narrowDown", "arguments": [16], "returns": "number" },
+  { "call": "narrowDown", "arguments": [1], "returns": "number" },
+  { "call": "narrowDown", "arguments": [100], "returns": "number" }
+]

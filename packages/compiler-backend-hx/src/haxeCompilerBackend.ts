@@ -448,6 +448,20 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
     case 'array':
       return `[${expression.elements.map((element) => (element ? emitExpression(element, context) : 'null')).join(', ')}]`;
     case 'assignment': {
+      if (
+        (expression.operator === '&=' ||
+          expression.operator === '|=' ||
+          expression.operator === '^=' ||
+          expression.operator === '<<=' ||
+          expression.operator === '>>=') &&
+        expression.semantics.left.flow === 'number' &&
+        expression.semantics.right.flow === 'number'
+      ) {
+        const left = emitExpression(expression.left, context);
+        const right = emitExpression(expression.right, context);
+        const binaryOp = expression.operator.slice(0, -1);
+        return `${left} = Std.int(${left}) ${binaryOp} Std.int(${right})`;
+      }
       const left = emitExpression(expression.left, context);
       const right = emitExpression(expression.right, context);
       return `${left} ${emitAssignmentOperatorHaxe(expression.operator, expression.semantics, context)} ${right}`;

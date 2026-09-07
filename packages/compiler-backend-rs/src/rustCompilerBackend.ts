@@ -582,6 +582,20 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
         const right = emitExpression(expression.right, context);
         return `${left}.push_str(&${normalizeSourceTextGrouping(right)})`;
       }
+      if (
+        (expression.operator === '&=' ||
+          expression.operator === '|=' ||
+          expression.operator === '^=' ||
+          expression.operator === '<<=' ||
+          expression.operator === '>>=') &&
+        expression.semantics.left.flow === 'number' &&
+        expression.semantics.right.flow === 'number'
+      ) {
+        const left = emitExpression(expression.left, context);
+        const right = emitExpression(expression.right, context);
+        const binaryOp = expression.operator.slice(0, -1);
+        return `${left} = (((${left} as i32) ${binaryOp} (${right} as i32)) as f64)`;
+      }
       const left = emitExpression(expression.left, context);
       const right = emitOptionalTargetOperandRust(expression.left, expression.right, context);
       return `${left} ${emitAssignmentOperatorRust(expression.operator, expression.semantics, context)} ${normalizeSourceTextGrouping(right)}`;

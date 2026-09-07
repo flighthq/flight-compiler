@@ -1,0 +1,16 @@
+[
+  { "call": "unless", "arguments": [false, 42], "returns": "number" },
+  { "call": "unless", "arguments": [true, 42], "returns": "number" },
+  { "call": "neither", "arguments": [false, false], "returns": "boolean" },
+  { "call": "neither", "arguments": [true, false], "returns": "boolean" },
+  { "call": "neither", "arguments": [false, true], "returns": "boolean" },
+  { "call": "nand", "arguments": [true, true], "returns": "boolean" },
+  { "call": "nand", "arguments": [true, false], "returns": "boolean" },
+  { "call": "nand", "arguments": [false, false], "returns": "boolean" },
+  { "call": "xorManual", "arguments": [true, false], "returns": "boolean" },
+  { "call": "xorManual", "arguments": [true, true], "returns": "boolean" },
+  { "call": "xorManual", "arguments": [false, false], "returns": "boolean" },
+  { "call": "clampPositive", "arguments": [5], "returns": "number" },
+  { "call": "clampPositive", "arguments": [-3], "returns": "number" },
+  { "call": "clampPositive", "arguments": [0], "returns": "number" }
+]

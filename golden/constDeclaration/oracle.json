@@ -1,0 +1,12 @@
+[
+  { "call": "circleArea", "arguments": [1], "returns": "number" },
+  { "call": "circleArea", "arguments": [0], "returns": "number" },
+  { "call": "circleArea", "arguments": [10], "returns": "number" },
+  { "call": "celsiusToFahrenheit", "arguments": [0], "returns": "number" },
+  { "call": "celsiusToFahrenheit", "arguments": [100], "returns": "number" },
+  { "call": "celsiusToFahrenheit", "arguments": [-40], "returns": "number" },
+  { "call": "hypotenuse", "arguments": [3, 4], "returns": "number" },
+  { "call": "hypotenuse", "arguments": [0, 5], "returns": "number" },
+  { "call": "formatPair", "arguments": ["hello", "world"], "returns": "string" },
+  { "call": "formatPair", "arguments": ["a", "b"], "returns": "string" }
+]

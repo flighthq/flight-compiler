@@ -1,0 +1,12 @@
+[
+  { "call": "countUp", "arguments": [0, 5], "returns": "number" },
+  { "call": "countUp", "arguments": [10, 0], "returns": "number" },
+  { "call": "countDown", "arguments": [10, 3], "returns": "number" },
+  { "call": "countDown", "arguments": [0, 5], "returns": "number" },
+  { "call": "stepAccumulate", "arguments": [4], "returns": "number" },
+  { "call": "stepAccumulate", "arguments": [0], "returns": "number" },
+  { "call": "stepAccumulate", "arguments": [1], "returns": "number" },
+  { "call": "halvingSteps", "arguments": [16], "returns": "number" },
+  { "call": "halvingSteps", "arguments": [1], "returns": "number" },
+  { "call": "halvingSteps", "arguments": [100], "returns": "number" }
+]

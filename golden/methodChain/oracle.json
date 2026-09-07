@@ -1,0 +1,10 @@
+[
+  { "call": "trimLower", "arguments": ["  Hello World  "], "returns": "string" },
+  { "call": "trimLower", "arguments": ["ABC"], "returns": "string" },
+  { "call": "trimUpper", "arguments": ["  hello  "], "returns": "string" },
+  { "call": "trimUpper", "arguments": ["abc"], "returns": "string" },
+  { "call": "measureTrimmed", "arguments": ["  hi  "], "returns": "number" },
+  { "call": "measureTrimmed", "arguments": [""], "returns": "number" },
+  { "call": "lowerLength", "arguments": ["Hello"], "returns": "number" },
+  { "call": "lowerLength", "arguments": [""], "returns": "number" }
+]

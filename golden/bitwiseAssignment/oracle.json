@@ -1,0 +1,12 @@
+[
+  { "call": "maskBits", "arguments": [255, 15], "returns": "number" },
+  { "call": "maskBits", "arguments": [170, 240], "returns": "number" },
+  { "call": "setBits", "arguments": [12, 3], "returns": "number" },
+  { "call": "setBits", "arguments": [0, 255], "returns": "number" },
+  { "call": "toggleBits", "arguments": [255, 15], "returns": "number" },
+  { "call": "toggleBits", "arguments": [170, 85], "returns": "number" },
+  { "call": "shiftLeft", "arguments": [1, 8], "returns": "number" },
+  { "call": "shiftLeft", "arguments": [3, 4], "returns": "number" },
+  { "call": "shiftRight", "arguments": [256, 4], "returns": "number" },
+  { "call": "shiftRight", "arguments": [255, 1], "returns": "number" }
+]
