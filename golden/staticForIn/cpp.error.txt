@@ -1,1 +1,0 @@
-cpp emission failed for @flighthq/golden/packages/golden/src/staticForIn.ts: for-in loops require C++ structural iteration lowering

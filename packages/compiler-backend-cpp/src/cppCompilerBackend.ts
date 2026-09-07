@@ -565,8 +565,36 @@ function emitStatement(statement: Readonly<IrStatement>, context: EmitContext): 
       return [`${emitExpression(statement.expression, context)};`];
     case 'for':
       emissionError(context, 'C-style for loops require control-flow lowering before C++ emission');
-    case 'forIn':
-      emissionError(context, 'for-in loops require C++ structural iteration lowering');
+    case 'forIn': {
+      if ('pattern' in statement.variable) {
+        emissionError(context, 'binding patterns require destructuring lowering before C++ emission');
+      }
+      if (!statement.keyPlan) {
+        emissionError(context, 'object key iteration requires closed key evidence');
+      }
+      if (statement.keyPlan.evaluation === 'preserve') {
+        const objectName = generateUniqueName('for_in_object', context);
+        context.includes.add('string');
+        context.includes.add('vector');
+        const variableName = getBindingTargetName(statement.variable.binding, context);
+        return [
+          '{',
+          `  auto ${objectName} = ${emitExpression(statement.object, context)};`,
+          `  for (const std::string& ${variableName} : std::vector<std::string>{${statement.keyPlan.keys.map((key) => JSON.stringify(key)).join(', ')}}) {`,
+          ...indentSourceLines(emitStatements([statement.body], context), 2),
+          '  }',
+          '}',
+        ];
+      }
+      context.includes.add('string');
+      context.includes.add('vector');
+      const variableName = getBindingTargetName(statement.variable.binding, context);
+      return [
+        `for (const std::string& ${variableName} : std::vector<std::string>{${statement.keyPlan.keys.map((key) => JSON.stringify(key)).join(', ')}}) {`,
+        ...indentSourceLines(emitStatements([statement.body], context)),
+        '}',
+      ];
+    }
     case 'forOf': {
       if (statement.await) emissionError(context, 'async iteration requires C++ coroutine lowering');
       if ('pattern' in statement.variable) {
@@ -939,6 +967,17 @@ function assertRuntimeExternalSymbolBindingsCpp(module: Readonly<IrModule>): voi
     module,
     `runtime external symbol binding plan is incomplete (${problems.join('; ')})`,
   );
+}
+
+function generateUniqueName(base: string, context: EmitContext): string {
+  let candidate = base;
+  let suffix = 0;
+  while (context.generatedNames.has(candidate)) {
+    suffix++;
+    candidate = `${base}_${suffix}`;
+  }
+  context.generatedNames.add(candidate);
+  return candidate;
 }
 
 function generateAnonymousStructName(properties: readonly { readonly name: string }[], context: EmitContext): string {
