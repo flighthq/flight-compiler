@@ -50,12 +50,9 @@ const packageRules: Readonly<Record<string, PackageRule>> = {
   'compiler-backend-cpp': {
     dependencies: [
       'compiler-canonical-form',
-      'compiler-closure',
       'compiler-emission',
-      'compiler-ir-traversal',
       'compiler-lowering',
       'compiler-runtime-contract',
-      'compiler-structural',
       'compiler-types',
     ],
     description: 'C++ lowering, naming, and source emission backend',
