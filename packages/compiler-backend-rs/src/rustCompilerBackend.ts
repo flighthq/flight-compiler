@@ -103,6 +103,7 @@ interface PrimitiveUnionEnum {
 interface EmitContext {
   abstractFieldNames: ReadonlySet<string>;
   anonymousObjectRecords: Map<string, Readonly<{ name: string; properties: readonly IrObjectTypeProperty[] }>>;
+  compositionBase?: Readonly<{ baseDeclaration: IrClassDeclaration; fieldName: string }> | undefined;
   cellWrappedBindingIds: ReadonlySet<string>;
   // Which bindings the module rebinds. Rust needs `mut` on a parameter that is assigned to, and the
   // ownership analysis already decides that for every binding in the module.
@@ -330,7 +331,8 @@ function emitClass(declaration: Readonly<IrClassDeclaration>, context: EmitConte
   // stateless abstract base is a different thing: it is a set of methods, which is a trait, and the
   // subclass implements it.
   const abstractBase = getIrClassStatelessAbstractBaseRust(declaration, context);
-  if (declaration.extends && !abstractBase) {
+  const concreteBase = !abstractBase ? getIrClassConcreteBaseRust(declaration, context) : undefined;
+  if (declaration.extends && !abstractBase && !concreteBase) {
     emissionError(context, `class ${declaration.binding.name} inheritance requires Rust ownership lowering`);
   }
   // An abstract class declares behaviour and holds no state, which is what a Rust trait is. A method
@@ -355,12 +357,18 @@ function emitClass(declaration: Readonly<IrClassDeclaration>, context: EmitConte
     }
     return emitType(reference, context);
   });
-  const constructorFields = declaration.classConstructor
-    ? getIrClassConstructorFieldAssignmentsRust(declaration, abstractBase !== undefined)
-    : undefined;
+  const compositionInit =
+    concreteBase && declaration.classConstructor
+      ? getIrClassCompositionConstructorRust(declaration, concreteBase)
+      : undefined;
+  const constructorFields =
+    !concreteBase && declaration.classConstructor
+      ? getIrClassConstructorFieldAssignmentsRust(declaration, abstractBase !== undefined)
+      : undefined;
   if (
     declaration.classConstructor &&
     !constructorFields &&
+    !compositionInit &&
     (declaration.classConstructor.parameters.length > 0 || declaration.classConstructor.body.length > 0)
   ) {
     emissionError(context, `class ${declaration.binding.name} constructor requires Rust initialization lowering`);
@@ -376,7 +384,7 @@ function emitClass(declaration: Readonly<IrClassDeclaration>, context: EmitConte
     !declaration.classConstructor ||
     (declaration.classConstructor.parameters.length === 0 && declaration.classConstructor.body.length === 0);
   const instanceFields = declaration.fields.filter((field) => !field.static);
-  if (instanceFields.some((field) => field.initializer) && !constructed && !constructorFields) {
+  if (instanceFields.some((field) => field.initializer) && !constructed && !constructorFields && !compositionInit) {
     emissionError(context, `class ${declaration.binding.name} field initializers require constructor lowering`);
   }
   if (
@@ -389,6 +397,9 @@ function emitClass(declaration: Readonly<IrClassDeclaration>, context: EmitConte
     '#[derive(Clone, Debug)]',
     `${declaration.exported ? 'pub ' : ''}struct ${getBindingTargetNameRust(declaration.binding, context)}${emitTypeParameters(declaration.typeParameters, context)} {`,
   ];
+  if (concreteBase) {
+    lines.push(`    ${safeRustValueName('base')}: ${getBindingTargetNameRust(concreteBase.binding, context)},`);
+  }
   for (const field of instanceFields) {
     lines.push(
       `    ${field.visibility === 'public' ? 'pub ' : ''}${safeRustValueName(field.name)}: ${emitType(field.type, context)},`,
@@ -410,6 +421,18 @@ function emitClass(declaration: Readonly<IrClassDeclaration>, context: EmitConte
       `  ${declaration.exported ? 'pub ' : ''}fn new(${declaration.classConstructor.parameters.map((parameter) => emitParameter(parameter, context)).join(', ')}) -> Self {`,
       '    Self {',
       ...constructorFields.map(
+        (field) => `      ${safeRustValueName(field.name)}: ${emitOwnedOperandRust(field.value, context)},`,
+      ),
+      '    }',
+      '  }',
+    );
+  }
+  if (compositionInit && concreteBase && declaration.classConstructor) {
+    associated.push(
+      `  ${declaration.exported ? 'pub ' : ''}fn new(${declaration.classConstructor.parameters.map((parameter) => emitParameter(parameter, context)).join(', ')}) -> Self {`,
+      '    Self {',
+      `      ${safeRustValueName('base')}: ${getBindingTargetNameRust(concreteBase.binding, context)}::new(${compositionInit.superArguments.map((argument) => emitOwnedOperandRust(argument, context)).join(', ')}),`,
+      ...compositionInit.childFields.map(
         (field) => `      ${safeRustValueName(field.name)}: ${emitOwnedOperandRust(field.value, context)},`,
       ),
       '    }',
@@ -468,6 +491,12 @@ function emitClass(declaration: Readonly<IrClassDeclaration>, context: EmitConte
       emitType(reference, context),
       target.properties.filter((property) => property.type.kind !== 'function'),
     );
+  }
+  if (concreteBase) {
+    (context as { compositionBase: EmitContext['compositionBase'] }).compositionBase = {
+      baseDeclaration: concreteBase,
+      fieldName: 'base',
+    };
   }
   const inherentMethods = declaration.methods.filter((method) => !traitMethodNames.has(method.name));
   const emitMethodLines = (method: (typeof declaration.methods)[number]): string[] => {
@@ -534,6 +563,9 @@ function emitClass(declaration: Readonly<IrClassDeclaration>, context: EmitConte
       lines.push(...emitMethodLines(method));
     });
     lines.push('}');
+  }
+  if (concreteBase) {
+    (context as { compositionBase: EmitContext['compositionBase'] }).compositionBase = undefined;
   }
   return lines;
 }
@@ -1014,6 +1046,18 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
       ) {
         return `self.${safeRustValueName(expression.name)}()`;
       }
+      if (
+        expression.object.kind === 'identifier' &&
+        expression.object.reference.kind === 'this' &&
+        context.compositionBase &&
+        isIrCompositionBaseMemberRust(expression.name, context.compositionBase.baseDeclaration)
+      ) {
+        const baseField = context.compositionBase.baseDeclaration.fields.find(
+          (candidate) => !candidate.static && candidate.name === expression.name,
+        );
+        const cloneSuffix = baseField && !isIrTypeCopyValueRust(baseField.type) ? '.clone()' : '';
+        return `self.${safeRustValueName(context.compositionBase.fieldName)}.${safeRustValueName(expression.name)}${cloneSuffix}`;
+      }
       const needsClone =
         expression.object.kind === 'element' ||
         (expression.object.kind === 'identifier' &&
@@ -1330,14 +1374,11 @@ function assertIrConstructorInvocationAbiRust(
         expression.callee.reference.kind === 'binding' &&
         candidate.binding.id === expression.callee.reference.binding.id,
     );
-    if (
-      target?.kind === 'class' &&
-      getIrClassConstructorFieldAssignmentsRust(
-        target,
-        getIrClassStatelessAbstractBaseRust(target, context) !== undefined,
-      )
-    ) {
-      return;
+    if (target?.kind === 'class') {
+      const abstractBase = getIrClassStatelessAbstractBaseRust(target, context);
+      if (getIrClassConstructorFieldAssignmentsRust(target, abstractBase !== undefined)) return;
+      const concreteBase = !abstractBase ? getIrClassConcreteBaseRust(target, context) : undefined;
+      if (concreteBase && getIrClassCompositionConstructorRust(target, concreteBase)) return;
     }
   }
   emissionError(context, 'class constructor calls require Rust initialization lowering');
@@ -1764,6 +1805,49 @@ function getIrClassConstructorFieldAssignmentsRust(
     instanceFields.every((field) => assigned.some((entry) => entry.name === field.name))
     ? assigned
     : undefined;
+}
+
+function getIrClassCompositionConstructorRust(
+  declaration: Readonly<IrClassDeclaration>,
+  base: Readonly<IrClassDeclaration>,
+):
+  | Readonly<{
+      superArguments: readonly Readonly<IrExpression>[];
+      childFields: ReadonlyArray<{ name: string; value: Readonly<IrExpression> }>;
+    }>
+  | undefined {
+  const constructor = declaration.classConstructor;
+  const instanceFields = declaration.fields.filter((field) => !field.static);
+  if (!constructor || instanceFields.length === 0) return undefined;
+  let superArguments: readonly Readonly<IrExpression>[] | undefined;
+  const childFields: Array<{ name: string; value: Readonly<IrExpression> }> = [];
+  for (const statement of constructor.body) {
+    if (!superArguments && isIrStatementSuperConstructorCallRust(statement)) {
+      const call = (statement as { expression: Extract<IrExpression, { kind: 'call' }> }).expression;
+      superArguments = call.arguments;
+      continue;
+    }
+    if (statement.kind !== 'expression' || statement.expression.kind !== 'assignment') return undefined;
+    const { left, operator, right } = statement.expression;
+    if (operator !== '=' || left.kind !== 'property' || left.object.kind !== 'identifier') return undefined;
+    if (left.object.reference.kind !== 'this' || left.optional) return undefined;
+    if (base.fields.some((field) => !field.static && field.name === left.name)) return undefined;
+    if (childFields.some((field) => field.name === left.name)) return undefined;
+    if (hasIrExpressionThisReferenceRust(right)) return undefined;
+    childFields.push({ name: left.name, value: right });
+  }
+  if (!superArguments) return undefined;
+  return childFields.length === instanceFields.length &&
+    instanceFields.every((field) => childFields.some((entry) => entry.name === field.name))
+    ? { superArguments, childFields }
+    : undefined;
+}
+
+function isIrCompositionBaseMemberRust(name: string, base: Readonly<IrClassDeclaration>): boolean {
+  return (
+    base.fields.some((field) => !field.static && field.name === name) ||
+    base.methods.some((method) => !method.static && method.name === name)
+  );
 }
 
 function isIrStatementSuperConstructorCallRust(statement: Readonly<IrStatement>): boolean {
@@ -2663,8 +2747,19 @@ function getIrCallBorrowedPositionsRust(
     : new Set();
 }
 
-// The base a subclass can be lowered onto: an abstract class in this module that carries no state.
-// A base with fields has state to inherit and Rust has nowhere to put it.
+function getIrClassConcreteBaseRust(
+  declaration: Readonly<IrClassDeclaration>,
+  context: EmitContext,
+): Readonly<IrClassDeclaration> | undefined {
+  const reference = declaration.extends;
+  if (!reference || reference.kind !== 'named' || reference.reference.kind !== 'binding') return undefined;
+  const binding = reference.reference.binding;
+  const target = context.module.declarations.find(
+    (candidate) => candidate.kind === 'class' && candidate.binding.id === binding.id,
+  );
+  return target?.kind === 'class' && !target.abstract ? target : undefined;
+}
+
 function getIrClassStatelessAbstractBaseRust(
   declaration: Readonly<IrClassDeclaration>,
   context: EmitContext,

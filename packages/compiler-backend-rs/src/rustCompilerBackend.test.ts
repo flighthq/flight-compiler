@@ -1438,4 +1438,17 @@ describe('emitIrModuleRust', () => {
     expect(output).toContain('matches!(value, StrOrF64::Str(_))');
     expect(output).toContain('value.as_str().to_uppercase()');
   });
+
+  it('emits concrete class inheritance as composition with base field delegation', () => {
+    const result = lower(
+      'class-inheritance.ts',
+      'class Base { value: number; constructor(value: number) { this.value = value; } doubled(): number { return this.value * 2; } } class Child extends Base { label: string; constructor(value: number, label: string) { super(value); this.label = label; } getDoubled(): number { return this.doubled(); } } export function run(v: number, l: string): number { const c: Child = new Child(v, l); return c.getDoubled(); }',
+    );
+    const output = emitIrModuleRust(result.module).contents;
+    expect(output).toContain('base: Base,');
+    expect(output).toContain('base: Base::new(value),');
+    expect(output).toContain('label: label,');
+    expect(output).toContain('self.base.doubled()');
+    expect(output).not.toContain('inheritance requires');
+  });
 });
