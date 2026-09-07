@@ -13,10 +13,10 @@ function roundNearest(value:Float):Float {
   return Math.round(value);
 }
 
-function truncate(value:Float):Float {
-  return Math.trunc(value);
-}
-
 function fractionalPart(value:Float):Float {
   return value - Math.floor(value);
+}
+
+function roundToInt(value:Float):Float {
+  return Math.floor((value + 0.5));
 }

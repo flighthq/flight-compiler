@@ -13,10 +13,10 @@ pub fn round_nearest(value: f64) -> f64 {
   return f64::round(value);
 }
 
-pub fn truncate(value: f64) -> f64 {
-  return f64::trunc(value);
-}
-
 pub fn fractional_part(value: f64) -> f64 {
   return value - f64::floor(value);
+}
+
+pub fn round_to_int(value: f64) -> f64 {
+  return f64::floor((value + 0.5));
 }

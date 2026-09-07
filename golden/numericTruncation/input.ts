@@ -10,10 +10,10 @@ export function roundNearest(value: number): number {
   return Math.round(value);
 }
 
-export function truncate(value: number): number {
-  return Math.trunc(value);
-}
-
 export function fractionalPart(value: number): number {
   return value - Math.floor(value);
+}
+
+export function roundToInt(value: number): number {
+  return Math.floor(value + 0.5);
 }
