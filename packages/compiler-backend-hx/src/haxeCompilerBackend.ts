@@ -310,6 +310,7 @@ function emitClass(declaration: Readonly<IrClassDeclaration>, context: EmitConte
       `class ${declaration.binding.name} requires one direct super constructor call for Haxe initialization`,
     );
   }
+  const inheritedFieldNames = collectIrClassInheritedFieldNamesHaxe(declaration, context);
   const lines = [
     `${declaration.exported ? '' : 'private '}${abstract}class ${getBindingTargetNameHaxe(declaration.binding, context)}${parameters}${extendsType}${implementsTypes} {`,
   ];
@@ -317,9 +318,10 @@ function emitClass(declaration: Readonly<IrClassDeclaration>, context: EmitConte
     lines.push('  public var name:String;');
   }
   declaration.fields.forEach((field, index) => {
+    if (!field.static && inheritedFieldNames.has(field.name)) return;
     if (index > 0 || lines.length > 1) lines.push('');
     const visibility = field.visibility === 'public' ? 'public ' : field.visibility === 'private' ? 'private ' : '';
-    const storage = field.readonly && !field.declare ? 'final' : 'var';
+    const storage = field.readonly && !field.declare && !field.abstract ? 'final' : 'var';
     const static_ = field.static ? 'static ' : '';
     const fieldInitialization = initialization.fields[index]!;
     const initializer =
@@ -1419,6 +1421,21 @@ function hasIrModuleSubclassHaxe(declaration: Readonly<IrClassDeclaration>, cont
       candidate.extends.reference.kind === 'binding' &&
       candidate.extends.reference.binding.id === declaration.binding.id,
   );
+}
+
+function collectIrClassInheritedFieldNamesHaxe(
+  declaration: Readonly<IrClassDeclaration>,
+  context: EmitContext,
+): ReadonlySet<string> {
+  const names = new Set<string>();
+  let base = resolveIrBaseClassHaxe(declaration, context);
+  while (base) {
+    for (const field of base.fields) {
+      if (!field.static) names.add(field.name);
+    }
+    base = resolveIrBaseClassHaxe(base, context);
+  }
+  return names;
 }
 
 function resolveIrBaseClassHaxe(

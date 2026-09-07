@@ -4,7 +4,7 @@ package flighthq.golden;
 abstract class Component {
   public var name:String;
 
-  public final version:Float;
+  public var version:Float;
 
   public function new() {}
 
@@ -18,9 +18,6 @@ abstract class Component {
 }
 
 class Button extends Component {
-  public var name:String;
-
-  public final version:Float;
 
   public function new() {
     super();
