@@ -840,12 +840,17 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
       return expression.expression
         ? `|${expression.parameters.map((parameter) => getBindingTargetNameRust(parameter.binding, context)).join(', ')}| ${normalizeSourceTextGrouping(emitExpression(expression.expression, context))}`
         : `|${expression.parameters.map((parameter) => getBindingTargetNameRust(parameter.binding, context)).join(', ')}| {\n${indentSourceLines(emitStatements(expression.body, context)).join('\n')}\n}`;
-    case 'identifier':
-      return expression.presence === 'narrowedPresent' &&
+    case 'identifier': {
+      if (
+        expression.presence === 'narrowedPresent' &&
         expression.reference.kind === 'binding' &&
         context.nullableBindingIds.has(expression.reference.binding.id)
-        ? `${emitIdentifierReferenceRust(expression.reference, context)}.clone().unwrap()`
-        : emitIdentifierReferenceRust(expression.reference, context);
+      )
+        return `${emitIdentifierReferenceRust(expression.reference, context)}.clone().unwrap()`;
+      const narrowedReceiver = emitPrimitiveUnionNarrowedReceiverRust(expression, context);
+      if (narrowedReceiver) return `*${narrowedReceiver}`;
+      return emitIdentifierReferenceRust(expression.reference, context);
+    }
     case 'literal':
       return emitLiteral(expression.value);
     case 'new':
