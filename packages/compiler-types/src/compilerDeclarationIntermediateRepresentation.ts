@@ -88,6 +88,9 @@ export interface IrClassParameterProperty {
 }
 
 type IrClassFieldCommon = Readonly<{
+  readonly abstract?: boolean | undefined;
+  readonly branded?: boolean | undefined;
+  readonly declare?: boolean | undefined;
   readonly name: string;
   readonly optional: boolean;
   readonly readonly: boolean;
@@ -119,6 +122,7 @@ export interface IrClassMethod extends IrFunctionSignature {
   readonly accessor?: 'get' | 'set' | undefined;
   readonly async: boolean;
   readonly body: readonly IrStatement[];
+  readonly branded?: boolean | undefined;
   readonly name: string;
   readonly overloads: readonly IrFunctionSignature[];
   readonly static: boolean;

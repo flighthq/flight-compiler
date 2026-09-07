@@ -251,9 +251,6 @@ function lowerClass(node: ts.ClassDeclaration, context: LoweringContext): IrClas
   const methods: IrClassMethod[] = [];
   const methodGroups = new Map<string, ts.MethodDeclaration[]>();
   for (const method of node.members.filter(ts.isMethodDeclaration)) {
-    if (ts.isPrivateIdentifier(method.name)) {
-      unsupported(method.name, 'ECMAScript private methods require branded member identity');
-    }
     const name = propertyName(method.name, context);
     const key = `${hasModifier(method, ts.SyntaxKind.StaticKeyword) ? 'static' : 'instance'}:${name}`;
     const group = methodGroups.get(key) ?? [];
@@ -275,12 +272,9 @@ function lowerClass(node: ts.ClassDeclaration, context: LoweringContext): IrClas
   for (const member of node.members) {
     if (ts.isConstructorDeclaration(member)) continue;
     if (ts.isPropertyDeclaration(member)) {
-      if (ts.isPrivateIdentifier(member.name)) {
-        unsupported(member.name, 'ECMAScript private fields require branded member identity');
-      }
-      if (hasModifier(member, ts.SyntaxKind.DeclareKeyword) || hasModifier(member, ts.SyntaxKind.AbstractKeyword)) {
-        unsupported(member, 'declare and abstract class fields require type-only layout representation');
-      }
+      const isBranded = ts.isPrivateIdentifier(member.name);
+      const isAbstract = hasModifier(member, ts.SyntaxKind.AbstractKeyword);
+      const isDeclare = hasModifier(member, ts.SyntaxKind.DeclareKeyword);
       if (!member.type && !member.initializer) unsupported(member, 'class fields require a type or initializer');
       const type = member.type ? lowerType(member.type, context) : inferInitializerType(member.initializer!, context);
       const name = propertyName(member.name, context);
@@ -290,6 +284,9 @@ function lowerClass(node: ts.ClassDeclaration, context: LoweringContext): IrClas
       }
       fieldSlots.add(key);
       fields.push({
+        ...(isAbstract ? { abstract: true } : {}),
+        ...(isBranded ? { branded: true } : {}),
+        ...(isDeclare ? { declare: true } : {}),
         ...(member.initializer ? { initializer: lowerExpression(member.initializer, context, type) } : {}),
         name,
         optional: member.questionToken !== undefined,
@@ -314,6 +311,7 @@ function lowerClass(node: ts.ClassDeclaration, context: LoweringContext): IrClas
       const overloads = (methodGroups.get(key) ?? [])
         .filter((candidate) => candidate !== member)
         .map((candidate) => lowerFunctionSignature(candidate, context));
+      const isBrandedMethod = ts.isMethodDeclaration(member) && ts.isPrivateIdentifier(member.name);
       methods.push({
         ...signature,
         ...accessor,
@@ -330,6 +328,7 @@ function lowerClass(node: ts.ClassDeclaration, context: LoweringContext): IrClas
               ),
             ]
           : [],
+        ...(isBrandedMethod ? { branded: true } : {}),
         name,
         overloads,
         static: hasModifier(member, ts.SyntaxKind.StaticKeyword),

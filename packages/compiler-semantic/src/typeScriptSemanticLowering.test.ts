@@ -589,10 +589,10 @@ describe('lowerTypeScriptSource', () => {
     const conflicts = [
       'class Value { field = 1; field(): number { return 1; } }',
       'class Value { field = 1; constructor(public field: number) {} }',
-      'class Value { #field = 1; }',
-      'abstract class Value { abstract field: number; }',
-      'class Value { declare field: number; }',
     ].map((source, index) => lower(`class-conflict-${String(index)}.ts`, source));
+    const branded = lower('class-branded.ts', 'class Value { #field = 1; }');
+    const abstractField = lower('class-abstract-field.ts', 'abstract class Value { abstract field: number; }');
+    const declareField = lower('class-declare-field.ts', 'class Value { declare field: number; }');
     const declaration = derived.module.declarations[0];
     if (declaration?.kind !== 'class') throw new Error('Expected derived class declaration');
     const superCall = declaration.classConstructor?.body.find(
@@ -604,14 +604,23 @@ describe('lowerTypeScriptSource', () => {
       expression: { callee: { kind: 'identifier', reference: { kind: 'super' } }, kind: 'call' },
       kind: 'expression',
     });
-    expect(conflicts.map((result) => result.module.declarations)).toEqual([[], [], [], [], []]);
+    expect(conflicts.map((result) => result.module.declarations)).toEqual([[], []]);
     expect(conflicts.map((result) => result.diagnostics[0]?.message)).toEqual([
       'class runtime member field has conflicting field and method storage',
       'class runtime member field has conflicting parameter-property storage',
-      'ECMAScript private fields require branded member identity',
-      'declare and abstract class fields require type-only layout representation',
-      'declare and abstract class fields require type-only layout representation',
     ]);
+    const brandedDecl = branded.module.declarations[0];
+    if (brandedDecl?.kind !== 'class') throw new Error('Expected class declaration');
+    expect(branded.diagnostics).toEqual([]);
+    expect(brandedDecl.fields[0]).toMatchObject({ branded: true, name: '#field' });
+    const abstractDecl = abstractField.module.declarations[0];
+    if (abstractDecl?.kind !== 'class') throw new Error('Expected class declaration');
+    expect(abstractField.diagnostics).toEqual([]);
+    expect(abstractDecl.fields[0]).toMatchObject({ abstract: true, name: 'field' });
+    const declareDecl = declareField.module.declarations[0];
+    if (declareDecl?.kind !== 'class') throw new Error('Expected class declaration');
+    expect(declareField.diagnostics).toEqual([]);
+    expect(declareDecl.fields[0]).toMatchObject({ declare: true, name: 'field' });
   });
 
   it('returns stable globally identified one-based diagnostics', () => {
