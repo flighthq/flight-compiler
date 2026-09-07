@@ -1,0 +1,17 @@
+[
+  { "call": "multiplicationTable", "arguments": [3], "returns": "number" },
+  { "call": "multiplicationTable", "arguments": [1], "returns": "number" },
+  {
+    "call": "flattenSum",
+    "arguments": [
+      [
+        [1, 2],
+        [3, 4]
+      ]
+    ],
+    "returns": "number"
+  },
+  { "call": "flattenSum", "arguments": [[[], [5]]], "returns": "number" },
+  { "call": "triangleNumber", "arguments": [4], "returns": "number" },
+  { "call": "triangleNumber", "arguments": [0], "returns": "number" }
+]

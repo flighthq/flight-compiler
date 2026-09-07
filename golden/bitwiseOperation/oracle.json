@@ -1,0 +1,10 @@
+[
+  { "call": "bitwiseAnd", "arguments": [12, 10], "returns": "number" },
+  { "call": "bitwiseAnd", "arguments": [255, 0], "returns": "number" },
+  { "call": "bitwiseOr", "arguments": [12, 10], "returns": "number" },
+  { "call": "bitwiseXor", "arguments": [12, 10], "returns": "number" },
+  { "call": "leftShift", "arguments": [1, 4], "returns": "number" },
+  { "call": "rightShift", "arguments": [16, 2], "returns": "number" },
+  { "call": "bitwiseNot", "arguments": [0], "returns": "number" },
+  { "call": "bitwiseNot", "arguments": [255], "returns": "number" }
+]

@@ -1,0 +1,11 @@
+[
+  { "call": "trimAndLower", "arguments": ["  Hello World  "], "returns": "string" },
+  { "call": "trimAndLower", "arguments": [""], "returns": "string" },
+  { "call": "isPalindrome", "arguments": ["racecar"], "returns": "boolean" },
+  { "call": "isPalindrome", "arguments": ["hello"], "returns": "boolean" },
+  { "call": "isPalindrome", "arguments": ["a"], "returns": "boolean" },
+  { "call": "isPalindrome", "arguments": [""], "returns": "boolean" },
+  { "call": "hasPrefix", "arguments": ["hello", "hel"], "returns": "boolean" },
+  { "call": "hasPrefix", "arguments": ["hi", "hi"], "returns": "boolean" },
+  { "call": "replaceFirst", "arguments": ["abc", "b", "x"], "returns": "string" }
+]

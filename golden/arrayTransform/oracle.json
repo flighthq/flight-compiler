@@ -1,0 +1,9 @@
+[
+  { "call": "sumAll", "arguments": [[1, 2, 3]], "returns": "number" },
+  { "call": "sumAll", "arguments": [[]], "returns": "number" },
+  { "call": "allPositive", "arguments": [[1, 2, 3]], "returns": "boolean" },
+  { "call": "allPositive", "arguments": [[1, -2, 3]], "returns": "boolean" },
+  { "call": "allPositive", "arguments": [[]], "returns": "boolean" },
+  { "call": "hasNegative", "arguments": [[1, 2, 3]], "returns": "boolean" },
+  { "call": "hasNegative", "arguments": [[1, -2, 3]], "returns": "boolean" }
+]

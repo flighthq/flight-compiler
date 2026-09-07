@@ -1,0 +1,10 @@
+[
+  { "call": "dayName", "arguments": [0], "returns": "string" },
+  { "call": "dayName", "arguments": [3], "returns": "string" },
+  { "call": "dayName", "arguments": [6], "returns": "string" },
+  { "call": "dayName", "arguments": [7], "returns": "string" },
+  { "call": "classifyChar", "arguments": [65], "returns": "string" },
+  { "call": "classifyChar", "arguments": [97], "returns": "string" },
+  { "call": "classifyChar", "arguments": [48], "returns": "string" },
+  { "call": "classifyChar", "arguments": [33], "returns": "string" }
+]
