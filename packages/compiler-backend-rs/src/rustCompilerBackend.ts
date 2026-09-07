@@ -1482,11 +1482,15 @@ function getIrObjectTypeTargetNameRust(properties: readonly IrObjectTypeProperty
 // need, and a binding consumed once is left to move.
 function emitOwnedOperandRust(expression: Readonly<IrExpression>, context: EmitContext): string {
   const source = emitExpression(expression, context);
-  return expression.kind === 'identifier' &&
+  if (
+    expression.kind === 'identifier' &&
     expression.reference.kind === 'binding' &&
     context.movedBindingIds.has(expression.reference.binding.id)
-    ? `${source}.clone()`
-    : source;
+  )
+    return `${source}.clone()`;
+  if (expression.kind === 'element' && !expression.optional && expression.semantics.receivers.includes('array'))
+    return `${source}.clone()`;
+  return source;
 }
 
 // A value lent to a callee that mutates through it. An argument that is already a mutable borrow is
@@ -2007,7 +2011,7 @@ function emitVariable(variable: Readonly<IrVariable>, context: EmitContext): str
       ? `: ${emitType(variable.type, context)}`
       : '';
   const initializer = variable.initializer
-    ? ` = ${normalizeSourceTextGrouping(emitExpression(variable.initializer, context))}`
+    ? ` = ${normalizeSourceTextGrouping(emitOwnedOperandRust(variable.initializer, context))}`
     : '';
   // A binding declared without a value and written once afterwards is Rust's deferred
   // initialization, not a mutation: the source hoisted the declaration above the assignment, and

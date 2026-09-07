@@ -1257,6 +1257,15 @@ describe('emitIrModuleRust', () => {
     expect(greetOutput).toContain('name.clone().unwrap()');
   });
 
+  it('clones array element access in variable initializers to prevent move-out', () => {
+    const module = lower(
+      'array-init.ts',
+      'export function first(items: string[]): string { if (items.length === 0) { return ""; } const head: string = items[0]!; return head; }',
+    );
+    const output = emitIrModuleRust(module.module).contents;
+    expect(output).toContain('items[0].clone()');
+  });
+
   it('reads an array length as len and an indexed element through get', () => {
     // Rust spells a collection's length `len()` and counts in `usize`, and its `[]` panics where the
     // source language returns undefined. Emitting `.length` and `[]` produced Rust that neither

@@ -19,7 +19,7 @@ pub fn join_with_separator(items: Vec<String>, separator: String) -> String {
   if (items.len() as f64) == 0.0 {
     return "".to_owned();
   }
-  let mut result: String = items[0];
+  let mut result: String = items[0].clone();
   {
     let mut i: f64 = 1.0;
     while i < (items.len() as f64) {

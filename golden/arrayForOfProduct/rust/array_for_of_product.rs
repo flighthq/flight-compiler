@@ -10,7 +10,7 @@ pub fn product(values: Vec<f64>) -> f64 {
 }
 
 pub fn max(values: Vec<f64>) -> f64 {
-  let mut best: f64 = values[0];
+  let mut best: f64 = values[0].clone();
   for value in values {
     if value > best {
       best = value;
