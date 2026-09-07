@@ -24,13 +24,15 @@ const rustAmbientMemberBindings: Readonly<Record<string, CompilerRustAmbientMemb
   'array.length': { kind: 'countingMethod', targetName: 'len' },
   'array.map': { collect: true, kind: 'iterator', targetName: 'map' },
   'array.pop': { kind: 'method', targetName: 'pop' },
-  'array.reduce': { argumentOrder: [1, 0], collect: false, kind: 'iterator', targetName: 'fold' },
   'array.push': { kind: 'method', targetName: 'push' },
+  'array.reduce': { argumentOrder: [1, 0], collect: false, kind: 'iterator', targetName: 'fold' },
   'array.reverse': { kind: 'method', targetName: 'reverse' },
+  'array.shift': { kind: 'method', leadingArguments: ['0'], targetName: 'remove' },
   // `slice` is emitted as a range rather than bound to a name: Rust reaches a subrange through
   // indexing, and the source's optional bounds decide which range it is.
   'array.slice': { kind: 'method', targetName: 'slice' },
   'array.some': { collect: false, kind: 'iterator', targetName: 'any' },
+  'array.unshift': { kind: 'method', leadingArguments: ['0'], targetName: 'insert' },
   'date.getDate': { kind: 'method', targetName: 'day' },
   'date.getDay': { kind: 'method', targetName: 'weekday' },
   'date.getFullYear': { kind: 'method', targetName: 'year' },

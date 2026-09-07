@@ -81,9 +81,11 @@ const rustRuntimeExternalSymbolBindings = [
     kind: 'native',
     members: [
       { sourceMember: 'abs', targetName: 'f64::abs' },
+      { sourceMember: 'ceil', targetName: 'f64::ceil' },
       { sourceMember: 'floor', targetName: 'f64::floor' },
       { sourceMember: 'max', targetName: 'f64::max' },
       { sourceMember: 'min', targetName: 'f64::min' },
+      { sourceMember: 'pow', targetName: 'f64::powf' },
       { sourceMember: 'round', targetName: 'f64::round' },
       { sourceMember: 'sqrt', targetName: 'f64::sqrt' },
       { sourceMember: 'trunc', targetName: 'f64::trunc' },

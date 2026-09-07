@@ -18,7 +18,7 @@ export type CompilerHaxeAmbientMemberBinding =
 export type CompilerRustAmbientMemberBinding =
   // `owns` marks a member whose result is borrowed from the receiver where the source's is a value of
   // its own: `trim` hands back a slice, and the source's `string` is owned.
-  | Readonly<{ kind: 'method'; owns?: boolean; targetName: string }>
+  | Readonly<{ kind: 'method'; leadingArguments?: readonly string[]; owns?: boolean; targetName: string }>
   | Readonly<{ kind: 'borrowedMethod'; owns?: boolean; targetName: string; trailingArguments?: readonly string[] }>
   | Readonly<{ kind: 'countingMethod'; targetName: string }>
   // `borrowsElement` marks an iterator adaptor that hands its closure a reference rather than the

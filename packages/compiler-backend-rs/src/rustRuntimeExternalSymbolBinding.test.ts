@@ -95,6 +95,8 @@ describe('getCompilerRuntimeExternalMemberTargetRust', () => {
     expect(getCompilerRuntimeExternalMemberTargetRust('Math', 'max')).toBe('f64::max');
     expect(getCompilerRuntimeExternalMemberTargetRust('Math', 'abs')).toBe('f64::abs');
     expect(getCompilerRuntimeExternalMemberTargetRust('Math', 'sqrt')).toBe('f64::sqrt');
+    expect(getCompilerRuntimeExternalMemberTargetRust('Math', 'pow')).toBe('f64::powf');
+    expect(getCompilerRuntimeExternalMemberTargetRust('Math', 'ceil')).toBe('f64::ceil');
   });
 
   it('claims nothing for an unbound member or an unbound symbol', () => {

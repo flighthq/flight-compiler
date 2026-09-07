@@ -689,6 +689,16 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
       if (
         expression.callee.kind === 'property' &&
         expression.callee.member?.receiver === 'string' &&
+        expression.callee.member.name === 'charCodeAt' &&
+        expression.arguments.length === 1
+      ) {
+        const receiver = emitExpression(expression.callee.object, context);
+        const index = emitExpression(expression.arguments[0]!, context);
+        return `${receiver}.chars().nth(${index} as usize).map(|c| c as u32 as f64).unwrap_or(f64::NAN)`;
+      }
+      if (
+        expression.callee.kind === 'property' &&
+        expression.callee.member?.receiver === 'string' &&
         expression.callee.member.name === 'substring'
       ) {
         const receiver = emitExpression(expression.callee.object, context);
@@ -730,8 +740,9 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
           if (binding.kind === 'splitCollect') {
             return `${receiver}.${binding.targetName}(${values.join(', ')}).map(|s| s.to_string()).collect::<Vec<String>>()`;
           }
+          const leading = binding.kind === 'method' ? (binding.leadingArguments ?? []) : [];
           const trailing = binding.kind === 'borrowedMethod' ? (binding.trailingArguments ?? []) : [];
-          return `${receiver}.${binding.targetName}(${[...values, ...trailing].join(', ')})${binding.owns ? '.to_owned()' : ''}`;
+          return `${receiver}.${binding.targetName}(${[...leading, ...values, ...trailing].join(', ')})${binding.owns ? '.to_owned()' : ''}`;
         }
       }
       return `${expression.callee.kind === 'function' ? `(${emitExpression(expression.callee, context)})` : emitExpression(expression.callee, context)}(${emitCallArgumentsRust(expression, context).join(', ')})`;

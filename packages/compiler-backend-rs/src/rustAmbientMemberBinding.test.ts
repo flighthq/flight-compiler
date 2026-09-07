@@ -80,6 +80,22 @@ describe('getCompilerRustAmbientMemberBinding', () => {
     });
   });
 
+  it('spells array shift as remove at index zero', () => {
+    expect(getCompilerRustAmbientMemberBinding({ name: 'shift', receiver: 'array' })).toEqual({
+      kind: 'method',
+      leadingArguments: ['0'],
+      targetName: 'remove',
+    });
+  });
+
+  it('spells array unshift as insert at index zero', () => {
+    expect(getCompilerRustAmbientMemberBinding({ name: 'unshift', receiver: 'array' })).toEqual({
+      kind: 'method',
+      leadingArguments: ['0'],
+      targetName: 'insert',
+    });
+  });
+
   it('answers nothing for a member with no agreed spelling, so emission refuses rather than guesses', () => {
     expect(getCompilerRustAmbientMemberBinding({ name: 'sort', receiver: 'array' })).toBeUndefined();
     expect(getCompilerRustAmbientMemberBinding({ name: 'toFixed', receiver: 'number' })).toBeUndefined();
