@@ -1411,6 +1411,20 @@ describe('lowerTypeScriptSource', () => {
     ]);
   });
 
+  it('resolves array member receiver through element access expressions', () => {
+    const result = lower(
+      'nested-length.ts',
+      'export function cols(grid: number[][]): number { return grid[0]!.length; }',
+    );
+    const fn = result.module.declarations[0];
+    if (fn?.kind !== 'function') throw new Error('Expected function');
+    const ret = fn.body[0];
+    const expr = ret?.kind === 'return' ? ret.expression : undefined;
+
+    expect(result.diagnostics).toEqual([]);
+    expect(expr).toMatchObject({ kind: 'property', member: { name: 'length', receiver: 'array' } });
+  });
+
   it('records optional-chain receiver and projected value type evidence', () => {
     const result = lower(
       'optional-chain-evidence.ts',
