@@ -74,15 +74,28 @@ describe('emitIrModuleCpp', () => {
     }
   });
 
-  it('refuses class inheritance with a vtable lowering message', () => {
-    const result = lower('derived.ts', 'class Base { value = 0 } export class Derived extends Base { extra = 1 }');
+  it('emits class inheritance with virtual destructor and initializer list', () => {
+    const result = lower(
+      'derived.ts',
+      'class Base { value: number; constructor(v: number) { this.value = v; } doubled(): number { return this.value * 2; } } export class Derived extends Base { extra: number; constructor(v: number) { super(v); this.extra = 1; } }',
+    );
+    const emitted = emitIrModuleCpp(result.module);
 
-    try {
-      emitIrModuleCpp(result.module);
-      expect.fail('expected emission to throw');
-    } catch (error) {
-      expect(isBackendEmissionFailure(error)).toBe(true);
-      expect((error as Error).message).toContain('vtable');
-    }
+    expect(emitted.contents).toContain('struct base {');
+    expect(emitted.contents).toContain('virtual ~base() = default;');
+    expect(emitted.contents).toContain('virtual double doubled()');
+    expect(emitted.contents).toContain('struct derived : public base {');
+    expect(emitted.contents).toContain(': base(v)');
+  });
+
+  it('emits abstract methods as pure virtual', () => {
+    const result = lower(
+      'shape.ts',
+      'export abstract class Shape { abstract area(): number; describe(): number { return this.area(); } } export class Square extends Shape { side: number; constructor(s: number) { super(); this.side = s; } area(): number { return this.side * this.side; } }',
+    );
+    const emitted = emitIrModuleCpp(result.module);
+
+    expect(emitted.contents).toContain('virtual double area() = 0;');
+    expect(emitted.contents).toContain('double area() override');
   });
 });

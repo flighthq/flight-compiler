@@ -62,6 +62,7 @@ import {
 } from './cppRuntimeExternalSymbolBinding.js';
 
 interface EmitContext {
+  currentClass?: Readonly<IrClassDeclaration> | undefined;
   includes: Set<string>;
   module: Readonly<IrModule>;
   nullableBindingIds: ReadonlySet<string>;
@@ -167,15 +168,16 @@ function emitDeclaration(declaration: Readonly<IrDeclaration>, context: EmitCont
   }
 }
 
-function emitClass(declaration: Readonly<IrClassDeclaration>, context: EmitContext): string[] {
-  if (declaration.extends) {
-    emissionError(context, `class ${declaration.binding.name} inheritance requires C++ vtable lowering`);
-  }
+function emitClass(declaration: Readonly<IrClassDeclaration>, outer: EmitContext): string[] {
+  const context: EmitContext = { ...outer, currentClass: declaration };
   const name = getBindingTargetName(declaration.binding, context);
   const typeParams = emitTypeParameters(declaration.typeParameters, context);
+  const extendsClause = declaration.extends ? ` : public ${emitType(declaration.extends, context)}` : '';
+  const overriddenMethods = getIrClassInheritedMethodNamesCpp(declaration, context);
+  const hasSubclass = hasIrModuleSubclassCpp(declaration, context);
   const lines: string[] = [];
   if (typeParams) lines.push(`template ${typeParams}`);
-  lines.push(`struct ${name} {`);
+  lines.push(`struct ${name}${extendsClause} {`);
   for (const field of declaration.fields) {
     if (field.static) continue;
     const fieldType = field.type ? emitType(field.type, context) : 'auto';
@@ -185,15 +187,31 @@ function emitClass(declaration: Readonly<IrClassDeclaration>, context: EmitConte
     const params = declaration.classConstructor.parameters
       .map((parameter) => emitParameter(parameter, context))
       .join(', ');
-    lines.push(`  ${name}(${params}) {`);
-    lines.push(...indentSourceLines(emitStatements(declaration.classConstructor.body, context), 2));
+    const superCall = declaration.extends ? extractSuperCallCpp(declaration.classConstructor.body, context) : undefined;
+    const initList = superCall ? ` : ${superCall}` : '';
+    const body = superCall
+      ? declaration.classConstructor.body.filter((statement) => !isSuperCallStatement(statement))
+      : declaration.classConstructor.body;
+    lines.push(`  ${name}(${params})${initList} {`);
+    lines.push(...indentSourceLines(emitStatements(body, context), 2));
     lines.push('  }');
+  }
+  if (hasSubclass || declaration.abstract) {
+    lines.push(`  virtual ~${name}() = default;`);
   }
   for (const method of declaration.methods) {
     if (method.static) continue;
     const returnType = emitType(method.returns, context);
     const params = method.parameters.map((parameter) => emitParameter(parameter, context)).join(', ');
-    lines.push(`  ${returnType} ${safeCppName(method.name)}(${params}) {`);
+    const methodName = safeCppName(method.name);
+    if (method.abstract) {
+      lines.push(`  virtual ${returnType} ${methodName}(${params}) = 0;`);
+      continue;
+    }
+    const needsVirtual = hasSubclass || declaration.abstract || overriddenMethods.has(method.name);
+    const virtual = needsVirtual && !overriddenMethods.has(method.name) ? 'virtual ' : '';
+    const override = overriddenMethods.has(method.name) ? ' override' : '';
+    lines.push(`  ${virtual}${returnType} ${methodName}(${params})${override} {`);
     lines.push(...indentSourceLines(emitStatements(method.body, context), 2));
     lines.push('  }');
   }
@@ -758,8 +776,18 @@ function emitIdentifierReference(
     return reference.name;
   }
   if (reference.kind === 'this') return 'this';
-  if (reference.kind === 'super') return 'super';
+  if (reference.kind === 'super') {
+    const base = context.currentClass?.extends;
+    if (base && base.kind === 'named' && base.reference.kind === 'binding') {
+      return context.targetNames.get(base.reference.binding.id) ?? safeCppName(base.reference.binding.name);
+    }
+    return 'super';
+  }
   return context.targetNames.get(reference.binding.id) ?? safeCppName(reference.binding.name);
+}
+
+function isSuperAccess(expression: Readonly<IrExpression>): boolean {
+  return expression.kind === 'identifier' && expression.reference.kind === 'super';
 }
 
 function isThisAccess(expression: Readonly<IrExpression>): boolean {
@@ -767,6 +795,7 @@ function isThisAccess(expression: Readonly<IrExpression>): boolean {
 }
 
 function memberOp(object: Readonly<IrExpression>): string {
+  if (isSuperAccess(object)) return '::';
   return isThisAccess(object) ? '->' : '.';
 }
 
@@ -908,6 +937,72 @@ function pascalCase(value: string): string {
   return value
     .replace(/(?:^|[_\-\s])([a-zA-Z])/gu, (_, letter: string) => letter.toUpperCase())
     .replace(/[^A-Za-z0-9]/gu, '');
+}
+
+function extractSuperCallCpp(body: readonly Readonly<IrStatement>[], context: EmitContext): string | undefined {
+  for (const statement of body) {
+    if (
+      statement.kind !== 'expression' ||
+      statement.expression.kind !== 'call' ||
+      statement.expression.callee.kind !== 'identifier' ||
+      statement.expression.callee.reference.kind !== 'super'
+    ) {
+      continue;
+    }
+    const callee = statement.expression.callee;
+    const baseName = emitIdentifierReference(callee.reference, context);
+    const args = statement.expression.arguments.map((argument: Readonly<IrExpression>) =>
+      emitExpression(argument, context),
+    );
+    return `${baseName}(${args.join(', ')})`;
+  }
+  return undefined;
+}
+
+function getIrClassInheritedMethodNamesCpp(
+  declaration: Readonly<IrClassDeclaration>,
+  context: EmitContext,
+): ReadonlySet<string> {
+  const names = new Set<string>();
+  let base = declaration.extends;
+  const visited = new Set<string>();
+  while (
+    base &&
+    base.kind === 'named' &&
+    base.reference.kind === 'binding' &&
+    !visited.has(base.reference.binding.id)
+  ) {
+    visited.add(base.reference.binding.id);
+    const reference = base.reference;
+    const target = context.module.declarations.find(
+      (candidate) => candidate.kind === 'class' && candidate.binding.id === reference.binding.id,
+    );
+    if (target?.kind !== 'class') break;
+    for (const method of target.methods) {
+      names.add(method.name);
+    }
+    base = target.extends;
+  }
+  return names;
+}
+
+function hasIrModuleSubclassCpp(declaration: Readonly<IrClassDeclaration>, context: EmitContext): boolean {
+  return context.module.declarations.some(
+    (candidate) =>
+      candidate.kind === 'class' &&
+      candidate.extends?.kind === 'named' &&
+      candidate.extends.reference.kind === 'binding' &&
+      candidate.extends.reference.binding.id === declaration.binding.id,
+  );
+}
+
+function isSuperCallStatement(statement: Readonly<IrStatement>): boolean {
+  return (
+    statement.kind === 'expression' &&
+    statement.expression.kind === 'call' &&
+    statement.expression.callee.kind === 'identifier' &&
+    statement.expression.callee.reference.kind === 'super'
+  );
 }
 
 function emissionError(context: EmitContext, message: string): never {

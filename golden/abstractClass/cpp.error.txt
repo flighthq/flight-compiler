@@ -1,1 +1,0 @@
-cpp emission failed for @flighthq/golden/packages/golden/src/abstractClass.ts: class Square inheritance requires C++ vtable lowering
