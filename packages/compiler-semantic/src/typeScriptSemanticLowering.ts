@@ -3119,7 +3119,8 @@ function getTypeScriptReferenceNarrowedMember(
     if (
       flow.types.length === 2 &&
       flow.types.every((t) => t.flags & ts.TypeFlags.BooleanLiteral) &&
-      declared.types.some((t) => t.flags & ts.TypeFlags.BooleanLiteral)
+      declared.types.some((t) => t.flags & ts.TypeFlags.BooleanLiteral) &&
+      declared.types.some((t) => !(t.flags & ts.TypeFlags.BooleanLiteral))
     )
       return { narrowedMember: 'boolean' };
     return {};
