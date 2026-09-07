@@ -17,6 +17,6 @@ pub fn degrees_to_radians(degrees: f64) -> f64 {
   return (degrees * std::f64::consts::PI) / 180.0;
 }
 
-pub fn sign_of(value: f64) -> f64 {
-  return f64::signum(value);
+pub fn absolute_value(value: f64) -> f64 {
+  return f64::abs(value);
 }

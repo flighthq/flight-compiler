@@ -6,7 +6,7 @@
   { "call": "ceilDivide", "arguments": [6, 3], "returns": "number" },
   { "call": "degreesToRadians", "arguments": [180], "returns": "number" },
   { "call": "degreesToRadians", "arguments": [0], "returns": "number" },
-  { "call": "signOf", "arguments": [5], "returns": "number" },
-  { "call": "signOf", "arguments": [-3], "returns": "number" },
-  { "call": "signOf", "arguments": [0], "returns": "number" }
+  { "call": "absoluteValue", "arguments": [5], "returns": "number" },
+  { "call": "absoluteValue", "arguments": [-3], "returns": "number" },
+  { "call": "absoluteValue", "arguments": [0], "returns": "number" }
 ]

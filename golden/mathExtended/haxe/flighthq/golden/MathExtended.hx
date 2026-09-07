@@ -17,6 +17,6 @@ function degreesToRadians(degrees:Float):Float {
   return (degrees * Math.PI) / 180;
 }
 
-function signOf(value:Float):Float {
-  return Math.sign(value);
+function absoluteValue(value:Float):Float {
+  return Math.abs(value);
 }
