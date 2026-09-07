@@ -612,7 +612,7 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
       ) {
         const left = emitExpression(expression.left, context);
         const right = emitExpression(expression.right, context);
-        return `${left} = (((${left} as u32) >> (${right} as u32)) as f64)`;
+        return `${left} = ((((${left} as i32) as u32) >> (${right} as u32)) as f64)`;
       }
       const left = emitExpression(expression.left, context);
       const right = emitOptionalTargetOperandRust(expression.left, expression.right, context);
@@ -685,7 +685,7 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
       ) {
         const left = emitExpression(expression.left, context);
         const right = emitExpression(expression.right, context);
-        return `(((${left} as u32) >> (${right} as u32)) as f64)`;
+        return `((((${left} as i32) as u32) >> (${right} as u32)) as f64)`;
       }
       const op = emitBinaryOperatorRust(expression.operator, expression.semantics, context);
       const bitwise =

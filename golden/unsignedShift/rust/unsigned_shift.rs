@@ -2,17 +2,17 @@
 #![forbid(unsafe_code)]
 
 pub fn unsigned_shift_right(value: f64, count: f64) -> f64 {
-  return ((value as u32) >> (count as u32)) as f64;
+  return (((value as i32) as u32) >> (count as u32)) as f64;
 }
 
 pub fn unsigned_shift_assign(value: f64, count: f64) -> f64 {
   let mut result: f64 = value;
-  result = (((result as u32) >> (count as u32)) as f64);
+  result = ((((result as i32) as u32) >> (count as u32)) as f64);
   return result;
 }
 
 pub fn signed_vs_unsigned(value: f64) -> f64 {
   let signed: f64 = ((value as i32) >> (1.0 as i32)) as f64;
-  let unsigned: f64 = ((value as u32) >> (1.0 as u32)) as f64;
+  let unsigned: f64 = (((value as i32) as u32) >> (1.0 as u32)) as f64;
   return signed + unsigned;
 }
