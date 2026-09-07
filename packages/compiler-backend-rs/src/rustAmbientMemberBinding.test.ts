@@ -103,6 +103,13 @@ describe('getCompilerRustAmbientMemberBinding', () => {
     });
   });
 
+  it('spells array concat as extend into a new collection', () => {
+    expect(getCompilerRustAmbientMemberBinding({ name: 'concat', receiver: 'array' })).toEqual({
+      kind: 'method',
+      targetName: 'extend',
+    });
+  });
+
   it('answers nothing for a member with no agreed spelling, so emission refuses rather than guesses', () => {
     expect(getCompilerRustAmbientMemberBinding({ name: 'sort', receiver: 'array' })).toBeUndefined();
     expect(getCompilerRustAmbientMemberBinding({ name: 'toFixed', receiver: 'number' })).toBeUndefined();

@@ -678,6 +678,16 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
       }
       if (
         expression.callee.kind === 'property' &&
+        expression.callee.member?.receiver === 'array' &&
+        expression.callee.member.name === 'concat' &&
+        expression.arguments.length === 1
+      ) {
+        const receiver = emitExpression(expression.callee.object, context);
+        const other = emitExpression(expression.arguments[0]!, context);
+        return `{ let mut __concat = ${receiver}; __concat.extend(${other}); __concat }`;
+      }
+      if (
+        expression.callee.kind === 'property' &&
         expression.callee.member?.receiver === 'string' &&
         expression.callee.member.name === 'charAt' &&
         expression.arguments.length === 1

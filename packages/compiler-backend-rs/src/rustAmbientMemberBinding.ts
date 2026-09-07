@@ -14,6 +14,7 @@ export function getCompilerRustAmbientMemberBinding(
 }
 
 const rustAmbientMemberBindings: Readonly<Record<string, CompilerRustAmbientMemberBinding>> = {
+  'array.concat': { kind: 'method', targetName: 'extend' },
   'array.every': { collect: false, kind: 'iterator', targetName: 'all' },
   'array.filter': { borrowsElement: true, collect: true, kind: 'iterator', targetName: 'filter' },
   'array.find': { borrowsElement: true, collect: false, kind: 'iterator', targetName: 'find' },
