@@ -987,9 +987,12 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
         const member = getCompilerRuntimeExternalMemberTargetRust(expression.object.reference.name, expression.name);
         if (member) return member;
       }
-      // Indexing a collection yields a place the caller does not own, so a field read out of it is a
-      // copy rather than a move. Every emitted record derives `Clone`, so the copy is always available.
-      const owned = expression.object.kind === 'element' ? '.clone()' : '';
+      const needsClone =
+        expression.object.kind === 'element' ||
+        (expression.object.kind === 'identifier' &&
+          expression.object.reference.kind === 'this' &&
+          isIrSelfFieldNonCopyRust(expression.name, context));
+      const owned = needsClone ? '.clone()' : '';
       return `${emitExpression(expression.object, context)}${isAmbientIdentifier(expression.object) ? '::' : '.'}${safeRustValueName(expression.name)}${owned}`;
     }
     case 'regexp':
@@ -1653,6 +1656,15 @@ function emitIteratorCallbackWrapperRust(
 ): string {
   const name = getGeneratedTargetNameRust('x', context);
   return `|${name}| ${emittedCallee}(${name})`;
+}
+
+function isIrSelfFieldNonCopyRust(fieldName: string, context: EmitContext): boolean {
+  for (const declaration of context.module.declarations) {
+    if (declaration.kind !== 'class') continue;
+    const field = declaration.fields.find((candidate) => !candidate.static && candidate.name === fieldName);
+    if (field) return !isIrTypeCopyValueRust(field.type);
+  }
+  return false;
 }
 
 function isIrTypeCopyValueRust(type: Readonly<IrType>): boolean {

@@ -18,7 +18,7 @@ impl Config {
   }
 
   pub fn get_label(&self) -> String {
-    return self.label;
+    return self.label.clone();
   }
 
   pub fn get_flags(&self) -> f64 {
