@@ -6,7 +6,7 @@ function charCodeFirst(text:String):Float {
 }
 
 function isDigitCode(text:String, index:Float):Bool {
-  final code:Float = text.charCodeAt(index);
+  final code:Float = text.charCodeAt(Std.int(index));
   return (code >= 48) && (code <= 57);
 }
 
@@ -16,7 +16,7 @@ function sumCharCodes(text:String):Float {
     var i:Float = 0;
     while (i < text.length) {
       {
-        total = (total + text.charCodeAt(i));
+        total = (total + text.charCodeAt(Std.int(i)));
       }
       i = (i + 1);
     }

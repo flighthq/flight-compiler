@@ -6,7 +6,7 @@ function firstChar(text:String):String {
 }
 
 function lastChar(text:String):String {
-  return text.charAt((text.length - 1));
+  return text.charAt(Std.int((text.length - 1)));
 }
 
 function isUpperFirst(text:String):Bool {
