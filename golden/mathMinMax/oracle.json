@@ -1,0 +1,14 @@
+[
+  { "call": "minimum", "arguments": [3, 5], "returns": "number" },
+  { "call": "minimum", "arguments": [5, 3], "returns": "number" },
+  { "call": "minimum", "arguments": [3, 3], "returns": "number" },
+  { "call": "maximum", "arguments": [3, 5], "returns": "number" },
+  { "call": "maximum", "arguments": [-1, -5], "returns": "number" },
+  { "call": "clamp", "arguments": [5, 0, 10], "returns": "number" },
+  { "call": "clamp", "arguments": [-5, 0, 10], "returns": "number" },
+  { "call": "clamp", "arguments": [15, 0, 10], "returns": "number" },
+  { "call": "clamp", "arguments": [0, 0, 0], "returns": "number" },
+  { "call": "absDistance", "arguments": [3, 7], "returns": "number" },
+  { "call": "absDistance", "arguments": [7, 3], "returns": "number" },
+  { "call": "absDistance", "arguments": [5, 5], "returns": "number" }
+]
