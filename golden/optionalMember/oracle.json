@@ -1,0 +1,7 @@
+[
+  { "call": "pick", "arguments": [true, "alpha", "beta"], "returns": "string" },
+  { "call": "pick", "arguments": [false, "alpha", "beta"], "returns": "string" },
+  { "call": "classify", "arguments": [0], "returns": "string" },
+  { "call": "classify", "arguments": [1], "returns": "string" },
+  { "call": "classify", "arguments": [42], "returns": "string" }
+]
