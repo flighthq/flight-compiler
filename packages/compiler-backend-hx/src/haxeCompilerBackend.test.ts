@@ -287,6 +287,30 @@ describe('emitIrModuleHaxe', () => {
     expect(emitted.contents).toContain('super()');
   });
 
+  it('forwards base constructor parameters in implicit derived constructor', () => {
+    const result = lower(
+      'param-forward.ts',
+      'class Base { value: number; constructor(v: number) { this.value = v; } } export class Child extends Base { extra: number = 1; }',
+    );
+    const emitted = emitIrModuleHaxe(result.module);
+
+    expect(emitted.contents).toContain('public function new(v:Float)');
+    expect(emitted.contents).toContain('super(v)');
+    expect(emitted.contents).toContain('this.extra = 1');
+  });
+
+  it('skips inherited field redeclaration in derived class', () => {
+    const result = lower(
+      'abstract-fields.ts',
+      'abstract class Component { abstract name: string; } export class Button extends Component { name: string = "button"; }',
+    );
+    const emitted = emitIrModuleHaxe(result.module);
+    const buttonSection = emitted.contents.slice(emitted.contents.indexOf('class Button'));
+
+    expect(buttonSection).not.toMatch(/var name/);
+    expect(buttonSection).toContain('this.name = "button"');
+  });
+
   it('refuses derived constructor shapes whose field timing cannot be preserved', () => {
     const conditional = lower(
       'conditional-super.ts',
