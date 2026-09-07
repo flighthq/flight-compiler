@@ -1,1 +1,0 @@
-cpp emission failed for @flighthq/golden/packages/golden/src/spreadCall.ts: spreading an unbounded collection requires a fold or a variadic target

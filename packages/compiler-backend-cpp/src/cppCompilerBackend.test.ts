@@ -138,6 +138,31 @@ describe('emitIrModuleCpp', () => {
     expect(emitted.contents).not.toContain('value unwrap');
   });
 
+  it('folds Math.max spread into std::max_element with empty guard', () => {
+    const result = lower(
+      'spread-max.ts',
+      'export function widest(values: number[]): number { return Math.max(...values); }',
+    );
+    const emitted = emitIrModuleCpp(result.module);
+
+    expect(emitted.contents).toContain('#include <algorithm>');
+    expect(emitted.contents).toContain('#include <limits>');
+    expect(emitted.contents).toContain(
+      'values.empty() ? -std::numeric_limits<double>::infinity() : *std::max_element(values.begin(), values.end())',
+    );
+  });
+
+  it('folds Math.min spread into std::min_element with empty guard', () => {
+    const result = lower(
+      'spread-min.ts',
+      'export function narrowest(values: number[]): number { return Math.min(...values); }',
+    );
+    const emitted = emitIrModuleCpp(result.module);
+
+    expect(emitted.contents).toContain('*std::min_element(values.begin(), values.end())');
+    expect(emitted.contents).toContain('std::numeric_limits<double>::infinity()');
+  });
+
   it('emits abstract methods as pure virtual', () => {
     const result = lower(
       'shape.ts',

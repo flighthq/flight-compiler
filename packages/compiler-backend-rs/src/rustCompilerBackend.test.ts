@@ -1359,6 +1359,27 @@ describe('emitIrModuleRust', () => {
     expect(output).toContain('value = destructuring_assignment_value.0');
   });
 
+  it('folds Math.max spread into iterator fold with NEG_INFINITY identity', () => {
+    const result = lower(
+      'spread-max.ts',
+      'export function widest(values: number[]): number { return Math.max(...values); }',
+    );
+    const output = emitIrModuleRust(result.module).contents;
+
+    expect(output).toContain('values.iter().cloned().fold(f64::NEG_INFINITY, f64::max)');
+    expect(output).not.toContain('spreading');
+  });
+
+  it('folds Math.min spread into iterator fold with INFINITY identity', () => {
+    const result = lower(
+      'spread-min.ts',
+      'export function narrowest(values: number[]): number { return Math.min(...values); }',
+    );
+    const output = emitIrModuleRust(result.module).contents;
+
+    expect(output).toContain('values.iter().cloned().fold(f64::INFINITY, f64::min)');
+  });
+
   it('emits primitive union enums with typeof narrowing and ambient member dispatch', () => {
     const module = lower(
       'typeof-union.ts',

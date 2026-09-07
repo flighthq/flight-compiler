@@ -855,6 +855,20 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
           return `${receiver}.${binding.targetName}(${[...leading, ...values, ...trailing].join(', ')})${binding.owns ? '.to_owned()' : ''}`;
         }
       }
+      if (
+        expression.arguments.length === 1 &&
+        expression.arguments[0]!.kind === 'spread' &&
+        expression.callee.kind === 'property' &&
+        expression.callee.object.kind === 'identifier' &&
+        expression.callee.object.reference.kind === 'ambient' &&
+        expression.callee.object.reference.name === 'Math'
+      ) {
+        const foldTarget = rustMathSpreadFoldTargets[expression.callee.name];
+        if (foldTarget) {
+          const spreadOperand = emitExpression(expression.arguments[0]!.expression, context);
+          return `${spreadOperand}.iter().cloned().fold(${foldTarget.identity}, ${foldTarget.folder})`;
+        }
+      }
       return `${expression.callee.kind === 'function' ? `(${emitExpression(expression.callee, context)})` : emitExpression(expression.callee, context)}(${emitCallArgumentsRust(expression, context).join(', ')})`;
 
     case 'cast':
@@ -2996,3 +3010,8 @@ const rustPrefixUnaryOperatorDecision = {
   void: { refusal: 'void requires Rust semantic lowering' },
   '~': { emitted: '!' },
 } as const satisfies Readonly<Record<IrPrefixUnaryOperator, OperatorEmissionDecision>>;
+
+const rustMathSpreadFoldTargets: Readonly<Record<string, { folder: string; identity: string }>> = {
+  max: { folder: 'f64::max', identity: 'f64::NEG_INFINITY' },
+  min: { folder: 'f64::min', identity: 'f64::INFINITY' },
+};

@@ -424,6 +424,22 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
         context.includes.add('string');
         return `std::to_string(${emitExpression(expression.callee.object, context)})`;
       }
+      if (
+        expression.arguments.length === 1 &&
+        expression.arguments[0]!.kind === 'spread' &&
+        expression.callee.kind === 'property' &&
+        expression.callee.object.kind === 'identifier' &&
+        expression.callee.object.reference.kind === 'ambient' &&
+        expression.callee.object.reference.name === 'Math'
+      ) {
+        const spreadOperand = emitExpression(expression.arguments[0]!.expression, context);
+        const foldTarget = cppMathSpreadFoldTargets[expression.callee.name];
+        if (foldTarget) {
+          context.includes.add('algorithm');
+          context.includes.add('limits');
+          return `${spreadOperand}.empty() ? ${foldTarget.identity} : *${foldTarget.algorithm}(${spreadOperand}.begin(), ${spreadOperand}.end())`;
+        }
+      }
       const callee =
         expression.callee.kind === 'function'
           ? `(${emitExpression(expression.callee, context)})`
@@ -1260,3 +1276,8 @@ function isSuperCallStatement(statement: Readonly<IrStatement>): boolean {
 function emissionError(context: EmitContext, message: string): never {
   throw createBackendEmissionFailure('cpp', context.module, message);
 }
+
+const cppMathSpreadFoldTargets: Readonly<Record<string, { algorithm: string; identity: string }>> = {
+  max: { algorithm: 'std::max_element', identity: '-std::numeric_limits<double>::infinity()' },
+  min: { algorithm: 'std::min_element', identity: 'std::numeric_limits<double>::infinity()' },
+};
