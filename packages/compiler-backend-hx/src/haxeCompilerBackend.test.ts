@@ -278,8 +278,16 @@ describe('emitIrModuleHaxe', () => {
     expect(derivedOutput.indexOf('this.code = 1')).toBeLessThan(derivedOutput.indexOf('this.label = label'));
   });
 
-  it('refuses derived constructor shapes whose field timing cannot be preserved', () => {
+  it('emits implicit derived constructor forwarding super call', () => {
     const implicit = lower('implicit-derived.ts', 'class Base {} export class Derived extends Base {}');
+    const emitted = emitIrModuleHaxe(implicit.module);
+
+    expect(emitted.contents).toContain('extends Base');
+    expect(emitted.contents).toContain('public function new()');
+    expect(emitted.contents).toContain('super()');
+  });
+
+  it('refuses derived constructor shapes whose field timing cannot be preserved', () => {
     const conditional = lower(
       'conditional-super.ts',
       'class Base {} export class Derived extends Base { value = 1; constructor(flag: boolean) { if (flag) super(); else super(); } }',
@@ -290,9 +298,6 @@ describe('emitIrModuleHaxe', () => {
     );
     const base = lower('base-super.ts', 'export class Base { constructor() { super(); } }');
 
-    expect(() => emitIrModuleHaxe(implicit.module)).toThrow(
-      'class Derived implicit derived constructor requires inherited-ABI forwarding',
-    );
     expect(() => emitIrModuleHaxe(conditional.module)).toThrow(
       'super constructor calls require a direct derived-constructor statement in Haxe',
     );

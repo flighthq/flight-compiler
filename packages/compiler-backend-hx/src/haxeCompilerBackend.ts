@@ -292,11 +292,16 @@ function emitClass(declaration: Readonly<IrClassDeclaration>, context: EmitConte
   const requiresErrorNameStorage =
     isIrClassErrorSubclassHaxe(declaration) &&
     !declaration.fields.some((field) => !field.static && field.name === 'name');
+  let implicitDerivedBaseParameters: readonly IrParameter[] | undefined;
   if (initialization.constructor.kind === 'implicit-derived') {
-    emissionError(
-      context,
-      `class ${declaration.binding.name} implicit derived constructor requires inherited-ABI forwarding`,
-    );
+    const baseClass = resolveIrBaseClassHaxe(declaration, context);
+    if (!baseClass) {
+      emissionError(
+        context,
+        `class ${declaration.binding.name} implicit derived constructor requires inherited-ABI forwarding`,
+      );
+    }
+    implicitDerivedBaseParameters = baseClass.classConstructor?.parameters ?? [];
   }
   const directSuperCalls = declaration.classConstructor?.body.filter(isIrStatementSuperConstructorCall) ?? [];
   if (declaration.extends && declaration.classConstructor && directSuperCalls.length !== 1) {
@@ -325,8 +330,21 @@ function emitClass(declaration: Readonly<IrClassDeclaration>, context: EmitConte
       `  ${visibility}${static_}${storage} ${safeHaxeName(field.name)}:${emitType(field.type, context)}${initializer};`,
     );
   });
-  // Haxe has no implicit constructor, so a base a subclass calls `super()` on has to declare one
-  // even when the source did not: the call is what the subclass was written to make.
+  if (implicitDerivedBaseParameters) {
+    if (declaration.fields.length > 0 || requiresErrorNameStorage) lines.push('');
+    lines.push(`  public function new(${emitParameters(implicitDerivedBaseParameters, context)}) {`);
+    const body: string[] = [];
+    const args = implicitDerivedBaseParameters
+      .map((parameter) => getBindingTargetNameHaxe(parameter.binding, context))
+      .join(', ');
+    body.push(`super(${args});`);
+    if (requiresErrorNameStorage) body.push('this.name = "Error";');
+    body.push(...emitIrClassFieldInitializationsHaxe(declaration, initialization, 'derived-super-return', context));
+    body.push(
+      ...emitIrClassFieldInitializationsHaxe(declaration, initialization, 'derived-super-return-after-fields', context),
+    );
+    lines.push(...indentSourceLines(body, 2), '  }');
+  }
   if (!declaration.classConstructor && hasIrModuleSubclassHaxe(declaration, context)) {
     if (declaration.fields.length > 0 || requiresErrorNameStorage) lines.push('');
     lines.push('  public function new() {}');
@@ -1400,6 +1418,17 @@ function hasIrModuleSubclassHaxe(declaration: Readonly<IrClassDeclaration>, cont
       candidate.extends?.kind === 'named' &&
       candidate.extends.reference.kind === 'binding' &&
       candidate.extends.reference.binding.id === declaration.binding.id,
+  );
+}
+
+function resolveIrBaseClassHaxe(
+  declaration: Readonly<IrClassDeclaration>,
+  context: EmitContext,
+): Readonly<IrClassDeclaration> | undefined {
+  if (!declaration.extends || declaration.extends.reference.kind !== 'binding') return undefined;
+  const baseId = declaration.extends.reference.binding.id;
+  return context.module.declarations.find(
+    (candidate): candidate is IrClassDeclaration => candidate.kind === 'class' && candidate.binding.id === baseId,
   );
 }
 
