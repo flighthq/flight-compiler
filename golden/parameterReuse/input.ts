@@ -3,8 +3,11 @@ export function spread(value: number): number {
 }
 
 export function mirror(text: string): string {
-  const reversed = text.split('').reverse().join('');
-  return text + reversed;
+  let result = '';
+  for (let i = text.length - 1; i >= 0; i--) {
+    result = result + text.charAt(i);
+  }
+  return text + result;
 }
 
 export function clampAndScale(value: number, lo: number, hi: number): number {

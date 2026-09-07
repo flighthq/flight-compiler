@@ -21,7 +21,7 @@ pub fn flatten(grid: Vec<Vec<f64>>) -> Vec<f64> {
 
 pub fn transpose(grid: Vec<Vec<f64>>) -> Vec<Vec<f64>> {
   let rows: f64 = grid.len() as f64;
-  let cols: f64 = grid[0].length.clone();
+  let cols: f64 = grid[0].len() as f64;
   let mut result: Vec<Vec<f64>> = vec![];
   {
     let mut c: f64 = 0.0;

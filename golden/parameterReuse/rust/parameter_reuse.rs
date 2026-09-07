@@ -6,8 +6,17 @@ pub fn spread(value: f64) -> f64 {
 }
 
 pub fn mirror(text: String) -> String {
-  let reversed: String = text.split("").map(|s| s.to_string()).collect::<Vec<String>>().reverse().join("");
-  return format!("{}{}", text, reversed);
+  let mut result: String = "".to_owned();
+  {
+    let mut i: f64 = (text.len() as f64) - 1.0;
+    while i >= 0.0 {
+      {
+        result = format!("{}{}", result, text.chars().nth(i as usize).map(|c| c.to_string()).unwrap_or_default());
+      }
+      i -= 1.0;
+    }
+  }
+  return format!("{}{}", text, result);
 }
 
 pub fn clamp_and_scale(value: f64, lo: f64, hi: f64) -> f64 {

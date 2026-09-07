@@ -6,8 +6,17 @@ function spread(value:Float):Float {
 }
 
 function mirror(text:String):String {
-  final reversed:String = text.split("").reverse().join("");
-  return text + reversed;
+  var result:String = "";
+  {
+    var i:Float = text.length - 1;
+    while (i >= 0) {
+      {
+        result = (result + text.charAt(Std.int(i)));
+      }
+      i -= 1;
+    }
+  }
+  return text + result;
 }
 
 function clampAndScale(value:Float, lo:Float, hi:Float):Float {
