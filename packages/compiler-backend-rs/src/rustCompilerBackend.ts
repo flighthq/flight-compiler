@@ -104,7 +104,6 @@ interface EmitContext {
   // ownership analysis already decides that for every binding in the module.
   movedBindingIds: ReadonlySet<string>;
   accessorClassNames: ReadonlyMap<string, string>;
-  callbackBindingIds: Set<string>;
   classBindingNames: ReadonlyMap<string, string>;
   enclosingReturnType?: Readonly<IrType> | undefined;
   runtimeTypeNames: Set<string>;
@@ -201,7 +200,6 @@ function emitIrModuleRustWithContext(
   const context: EmitContext = {
     accessorClassNames,
     anonymousObjectRecords: new Map(),
-    callbackBindingIds: new Set<string>(),
     classBindingNames,
     borrowedParameterPositions,
     deferredBindingIds: new Set(
@@ -824,21 +822,8 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
           return `${receiver}.${binding.targetName}(${[...leading, ...values, ...trailing].join(', ')})${binding.owns ? '.to_owned()' : ''}`;
         }
       }
-      {
-        const calleeRust =
-          expression.callee.kind === 'function'
-            ? `(${emitExpression(expression.callee, context)})`
-            : emitExpression(expression.callee, context);
-        const isCallbackCallee =
-          expression.callee.kind === 'identifier' &&
-          expression.callee.reference.kind === 'binding' &&
-          context.callbackBindingIds.has(expression.callee.reference.binding.id);
-        if (isCallbackCallee) {
-          const args = emitCallArgumentsRust(expression, context);
-          return `${calleeRust}((${args.join(', ')}${args.length === 1 ? ',' : ''}))`;
-        }
-        return `${calleeRust}(${emitCallArgumentsRust(expression, context).join(', ')})`;
-      }
+      return `${expression.callee.kind === 'function' ? `(${emitExpression(expression.callee, context)})` : emitExpression(expression.callee, context)}(${emitCallArgumentsRust(expression, context).join(', ')})`;
+
     case 'cast':
       return `(${emitExpression(expression.expression, context)} as ${emitType(expression.type, context)})`;
     case 'conditional':
@@ -1110,9 +1095,6 @@ function emitFunction(declaration: Readonly<IrFunctionDeclaration>, outer: EmitC
     enclosingReturnType: declaration.returns,
     returnsAbsent: hasIrTypeAbsentMember(declaration.returns),
   };
-  for (const parameter of declaration.parameters) {
-    if (parameter.type.kind === 'function') context.callbackBindingIds.add(parameter.binding.id);
-  }
   // Rust has native suspension, so it declines the neutral state-machine lowering that Haxe elects
   // and emits `async fn` instead. The awaited type of an async function is its return type: the
   // future is implied by `async`, so the task wrapper is dropped rather than named.
@@ -1892,8 +1874,10 @@ function emitType(type: Readonly<IrType>, context: EmitContext): string {
     case 'array':
       return `Vec<${emitType(type.element, context)}>`;
     case 'function': {
+      context.needsRcImport.add('Rc');
       const parameters = type.parameters.map((parameter) => emitType(parameter.type, context));
-      return `${recordRuntimeTypeRust('FlightCallback', context)}<(${parameters.join(', ')}${parameters.length === 1 ? ',' : ''}), ${emitType(type.returns, context)}>`;
+      const returns = emitType(type.returns, context);
+      return `Rc<dyn Fn(${parameters.join(', ')}) -> ${returns}>`;
     }
     case 'indexedAccess':
     case 'keyof':
@@ -2053,9 +2037,6 @@ function emitVariable(variable: Readonly<IrVariable>, context: EmitContext): str
       emissionError(context, 'observable undefined function-entry value requires a nullable Rust type domain');
     }
     return `let ${variable.mutable ? 'mut ' : ''}${getBindingTargetNameRust(variable.binding, context)}: ${emitType(variable.type, context)} = None;`;
-  }
-  if (variable.type?.kind === 'function') {
-    context.callbackBindingIds.add(variable.binding.id);
   }
   const type =
     variable.type && !(variable.initializer?.kind === 'objectRest' && variable.type.kind === 'object')

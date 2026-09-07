@@ -2,9 +2,8 @@
 #![forbid(unsafe_code)]
 
 use std::rc::Rc;
-use flight_runtime::FlightCallback;
 
-pub fn create_counter(initial: f64) -> FlightCallback<(), f64> {
+pub fn create_counter(initial: f64) -> Rc<dyn Fn() -> f64> {
   let mut count: f64 = initial;
   return Rc::new(|| {
   count = count + 1.0;
@@ -12,8 +11,8 @@ pub fn create_counter(initial: f64) -> FlightCallback<(), f64> {
 });
 }
 
-pub fn apply_twice(value: f64, transform: FlightCallback<(f64,), f64>) -> f64 {
-  return transform((transform((value,)),));
+pub fn apply_twice(value: f64, transform: Rc<dyn Fn(f64) -> f64>) -> f64 {
+  return transform(transform(value));
 }
 
 pub fn filter_and_map(items: Vec<f64>, threshold: f64) -> Vec<String> {

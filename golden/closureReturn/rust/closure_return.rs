@@ -2,16 +2,15 @@
 #![forbid(unsafe_code)]
 
 use std::rc::Rc;
-use flight_runtime::FlightCallback;
 
-pub fn make_adder(base: f64) -> FlightCallback<(f64,), f64> {
+pub fn make_adder(base: f64) -> Rc<dyn Fn(f64) -> f64> {
   return Rc::new(|x| base + x);
 }
 
-pub fn apply_to_each(values: Vec<f64>, transform: FlightCallback<(f64,), f64>) -> Vec<f64> {
+pub fn apply_to_each(values: Vec<f64>, transform: Rc<dyn Fn(f64) -> f64>) -> Vec<f64> {
   return values.into_iter().map(transform).collect::<Vec<_>>();
 }
 
-pub fn compose(f: FlightCallback<(f64,), f64>, g: FlightCallback<(f64,), f64>) -> FlightCallback<(f64,), f64> {
-  return Rc::new(|x| f((g((x,)),)));
+pub fn compose(f: Rc<dyn Fn(f64) -> f64>, g: Rc<dyn Fn(f64) -> f64>) -> Rc<dyn Fn(f64) -> f64> {
+  return Rc::new(|x| f(g(x)));
 }

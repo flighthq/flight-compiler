@@ -2,9 +2,8 @@
 #![forbid(unsafe_code)]
 
 use std::rc::Rc;
-use flight_runtime::FlightCallback;
 
-pub fn counter() -> FlightCallback<(), f64> {
+pub fn counter() -> Rc<dyn Fn() -> f64> {
   let mut count: f64 = 0.0;
   return Rc::new(|| {
   count += 1.0;
@@ -14,15 +13,15 @@ pub fn counter() -> FlightCallback<(), f64> {
 
 pub fn accumulate(values: Vec<f64>) -> f64 {
   let mut total: f64 = 0.0;
-  let add: FlightCallback<(f64,), ()> = Rc::new(|n| {
+  let add: Rc<dyn Fn(f64) -> ()> = Rc::new(|n| {
   total += n;
 });
   for v in values {
-    add((v,));
+    add(v);
   }
   return total;
 }
 
-pub fn make_multiplier(factor: f64) -> FlightCallback<(f64,), f64> {
+pub fn make_multiplier(factor: f64) -> Rc<dyn Fn(f64) -> f64> {
   return Rc::new(|x| x * factor);
 }
