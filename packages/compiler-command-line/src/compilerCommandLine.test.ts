@@ -74,7 +74,7 @@ describe('compileCompilerCommandLineRequest', () => {
 
     expect(missingTarget.exitCode).toBe(2);
     expect(missingDirectory.exitCode).toBe(2);
-    expect(errors.join('')).toContain('--target must be haxe or rust');
+    expect(errors.join('')).toContain('--target must be cpp, haxe, or rust');
     expect(errors.join('')).toContain(getCompilerCommandLineUsage());
   });
 

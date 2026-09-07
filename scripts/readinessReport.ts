@@ -13,7 +13,7 @@ import type { ReadinessFixtureOutcome } from './readinessRuleGrouping.js';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const goldenDirectory = path.join(root, 'golden');
-const targets = ['haxe', 'rust'] as const;
+const targets = ['cpp', 'haxe', 'rust'] as const;
 const fixtures = readdirSync(goldenDirectory, { withFileTypes: true })
   .filter((entry) => entry.isDirectory() && existsSync(path.join(goldenDirectory, entry.name, 'input.ts')))
   .map((entry) => entry.name)

@@ -1,3 +1,4 @@
+import { createCppCompilerBackend } from '../../compiler-backend-cpp/src/index.js';
 import { createHaxeCompilerBackend } from '../../compiler-backend-hx/src/index.js';
 import { createRustCompilerBackend } from '../../compiler-backend-rs/src/index.js';
 import { isBackendEmissionFailure } from '../../compiler-emission/src/index.js';
@@ -31,7 +32,12 @@ export function compileCompilerCommandLineRequest(
     capabilities.writeError(`${parsed.failure}\n\n${getCompilerCommandLineUsage()}\n`);
     return { emitted: 0, exitCode: 2, refusals: [] };
   }
-  const backend = parsed.target === 'haxe' ? createHaxeCompilerBackend() : createRustCompilerBackend();
+  const backend =
+    parsed.target === 'haxe'
+      ? createHaxeCompilerBackend()
+      : parsed.target === 'cpp'
+        ? createCppCompilerBackend()
+        : createRustCompilerBackend();
   const sources = capabilities.listSourceFiles(parsed.sourceDirectory);
   if (sources.length === 0) {
     capabilities.writeError(`No TypeScript modules under ${parsed.sourceDirectory}\n`);
@@ -79,7 +85,7 @@ export function getCompilerCommandLineUsage(): string {
   return commandLineUsage;
 }
 
-const commandLineUsage = `Usage: flight-compile <source-directory> --target <haxe|rust> --out <directory>
+const commandLineUsage = `Usage: flight-compile <source-directory> --target <cpp|haxe|rust> --out <directory>
 
   --package <name>        Package name the modules belong to (default: @local/source)
   --root-package <name>   Root package for Haxe output (default: the target's own)
@@ -123,7 +129,7 @@ interface ParsedCompilerCommandLineRequest {
   readonly reportOnly: boolean;
   readonly rootPackage?: string | undefined;
   readonly sourceDirectory: string;
-  readonly target: 'haxe' | 'rust';
+  readonly target: 'cpp' | 'haxe' | 'rust';
 }
 
 function parseCompilerCommandLineRequest(
@@ -150,7 +156,8 @@ function parseCompilerCommandLineRequest(
   const sourceDirectory = positional[0];
   if (sourceDirectory === undefined) return { failure: 'A source directory is required' };
   const target = named.get('target');
-  if (target !== 'haxe' && target !== 'rust') return { failure: '--target must be haxe or rust' };
+  if (target !== 'cpp' && target !== 'haxe' && target !== 'rust')
+    return { failure: '--target must be cpp, haxe, or rust' };
   const outputDirectory = named.get('out');
   if (outputDirectory === undefined) return { failure: '--out is required' };
   const rootPackage = named.get('root-package');

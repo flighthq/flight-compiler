@@ -1,3 +1,5 @@
+import path from 'node:path';
+
 import {
   collectIrModuleNullableBindingIds,
   createBackendEmissionFailure,
@@ -728,9 +730,14 @@ function emitParameter(parameter: Readonly<IrParameter>, context: EmitContext): 
   return `${type} ${name}`;
 }
 
-function emitImports(imports: readonly IrImport[], _context: EmitContext): string[] {
+function emitImports(imports: readonly IrImport[], context: EmitContext): string[] {
   return imports.flatMap((importItem) => {
-    const fileName = convertSourcePathToCppFileName(importItem.specifier);
+    if (!importItem.specifier.startsWith('.')) return [];
+    const target = path.posix.normalize(
+      path.posix.join(path.posix.dirname(context.module.source), importItem.specifier.replace(/\.[cm]?js$/u, '.ts')),
+    );
+    const resolved = /\.tsx?$/u.test(target) ? target : `${target}.ts`;
+    const fileName = convertSourcePathToCppFileName(resolved);
     if (!fileName) return [];
     return [`#include "${fileName}.hpp"`];
   });

@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 
 import {
   compileTypeScriptModules,
+  createCppCompilerBackend,
   createHaxeCompilerBackend,
   createRustCompilerBackend,
   isBackendEmissionFailure,
@@ -26,6 +27,7 @@ import type { CompilerBackend } from '../packages/compiler-types/src/index.js';
 const goldenDirectory = path.dirname(fileURLToPath(import.meta.url));
 const updating = process.env.FLIGHT_GOLDEN_UPDATE === '1';
 const backends: readonly { readonly backend: CompilerBackend<Record<string, never>>; readonly name: string }[] = [
+  { backend: createCppCompilerBackend(), name: 'cpp' },
   { backend: createHaxeCompilerBackend(), name: 'haxe' },
   { backend: createRustCompilerBackend(), name: 'rust' },
 ];

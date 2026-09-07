@@ -13,6 +13,7 @@
   "type": "module",
   "sideEffects": false,
   "dependencies": {
+    "@flighthq/compiler-backend-cpp": "*",
     "@flighthq/compiler-backend-hx": "*",
     "@flighthq/compiler-backend-rs": "*",
     "@flighthq/compiler-canonical-form": "*",

@@ -1,4 +1,5 @@
 export * from '../../compiler-command-line/src/index.js';
+export * from '../../compiler-backend-cpp/src/index.js';
 export * from '../../compiler-backend-hx/src/index.js';
 export * from '../../compiler-backend-rs/src/index.js';
 export * from '../../compiler-closure/src/index.js';

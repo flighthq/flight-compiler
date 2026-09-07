@@ -1,0 +1,1 @@
+cpp emission failed for @flighthq/golden/packages/golden/src/arrayBinding.ts: tupleRest expressions require C++ structured binding lowering
