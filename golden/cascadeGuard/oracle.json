@@ -1,0 +1,18 @@
+[
+  { "call": "isLeapYear", "arguments": [2000], "returns": "boolean" },
+  { "call": "isLeapYear", "arguments": [1900], "returns": "boolean" },
+  { "call": "isLeapYear", "arguments": [2024], "returns": "boolean" },
+  { "call": "isLeapYear", "arguments": [2023], "returns": "boolean" },
+  { "call": "isValidTriangle", "arguments": [3, 4, 5], "returns": "boolean" },
+  { "call": "isValidTriangle", "arguments": [1, 1, 3], "returns": "boolean" },
+  { "call": "isValidTriangle", "arguments": [0, 4, 5], "returns": "boolean" },
+  { "call": "isValidTriangle", "arguments": [5, 5, 5], "returns": "boolean" },
+  { "call": "classifyBmi", "arguments": [50, 1.7], "returns": "string" },
+  { "call": "classifyBmi", "arguments": [80, 1.7], "returns": "string" },
+  { "call": "classifyBmi", "arguments": [100, 1.7], "returns": "string" },
+  { "call": "classifyBmi", "arguments": [40, 1.7], "returns": "string" },
+  { "call": "classifyBmi", "arguments": [70, 0], "returns": "string" },
+  { "call": "safeReciprocal", "arguments": [4], "returns": "number" },
+  { "call": "safeReciprocal", "arguments": [0], "returns": "number" },
+  { "call": "safeReciprocal", "arguments": [-2], "returns": "number" }
+]

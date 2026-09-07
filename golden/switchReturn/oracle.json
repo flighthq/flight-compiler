@@ -1,0 +1,14 @@
+[
+  { "call": "dayType", "arguments": [0], "returns": "string" },
+  { "call": "dayType", "arguments": [3], "returns": "string" },
+  { "call": "dayType", "arguments": [6], "returns": "string" },
+  { "call": "dayType", "arguments": [7], "returns": "string" },
+  { "call": "monthDays", "arguments": [1], "returns": "number" },
+  { "call": "monthDays", "arguments": [2], "returns": "number" },
+  { "call": "monthDays", "arguments": [4], "returns": "number" },
+  { "call": "monthDays", "arguments": [7], "returns": "number" },
+  { "call": "gradePoints", "arguments": ["A"], "returns": "number" },
+  { "call": "gradePoints", "arguments": ["C"], "returns": "number" },
+  { "call": "gradePoints", "arguments": ["F"], "returns": "number" },
+  { "call": "gradePoints", "arguments": [""], "returns": "number" }
+]

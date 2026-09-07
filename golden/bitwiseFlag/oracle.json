@@ -1,0 +1,18 @@
+[
+  { "call": "hasFlag", "arguments": [7, 2], "returns": "boolean" },
+  { "call": "hasFlag", "arguments": [4, 2], "returns": "boolean" },
+  { "call": "hasFlag", "arguments": [0, 1], "returns": "boolean" },
+  { "call": "setFlag", "arguments": [4, 2], "returns": "number" },
+  { "call": "setFlag", "arguments": [7, 2], "returns": "number" },
+  { "call": "setFlag", "arguments": [0, 8], "returns": "number" },
+  { "call": "clearFlag", "arguments": [7, 2], "returns": "number" },
+  { "call": "clearFlag", "arguments": [4, 2], "returns": "number" },
+  { "call": "clearFlag", "arguments": [15, 5], "returns": "number" },
+  { "call": "toggleFlag", "arguments": [5, 2], "returns": "number" },
+  { "call": "toggleFlag", "arguments": [7, 2], "returns": "number" },
+  { "call": "toggleFlag", "arguments": [0, 3], "returns": "number" },
+  { "call": "countFlags", "arguments": [7], "returns": "number" },
+  { "call": "countFlags", "arguments": [0], "returns": "number" },
+  { "call": "countFlags", "arguments": [255], "returns": "number" },
+  { "call": "countFlags", "arguments": [1], "returns": "number" }
+]

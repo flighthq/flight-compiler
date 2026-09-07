@@ -1,0 +1,14 @@
+[
+  { "call": "product", "arguments": [[2, 3, 4]], "returns": "number" },
+  { "call": "product", "arguments": [[1, 1, 1]], "returns": "number" },
+  { "call": "product", "arguments": [[5, -2, 3]], "returns": "number" },
+  { "call": "max", "arguments": [[1, 5, 3, 2]], "returns": "number" },
+  { "call": "max", "arguments": [[-10, -3, -7]], "returns": "number" },
+  { "call": "max", "arguments": [[42]], "returns": "number" },
+  { "call": "countPositive", "arguments": [[1, -2, 3, 0, -1, 5]], "returns": "number" },
+  { "call": "countPositive", "arguments": [[-1, -2, -3]], "returns": "number" },
+  { "call": "countPositive", "arguments": [[0, 0, 0]], "returns": "number" },
+  { "call": "sumAbsolute", "arguments": [[-3, 4, -5, 2]], "returns": "number" },
+  { "call": "sumAbsolute", "arguments": [[0, 0, 0]], "returns": "number" },
+  { "call": "sumAbsolute", "arguments": [[-1, -1, -1]], "returns": "number" }
+]

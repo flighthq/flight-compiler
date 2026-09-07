@@ -1,0 +1,12 @@
+[
+  { "call": "firstAbove", "arguments": [[1, 5, 3, 8, 2], 4], "returns": "number" },
+  { "call": "firstAbove", "arguments": [[1, 2, 3], 10], "returns": "number" },
+  { "call": "firstAbove", "arguments": [[10], 5], "returns": "number" },
+  { "call": "countOccurrences", "arguments": ["hello world", "l"], "returns": "number" },
+  { "call": "countOccurrences", "arguments": ["aaa", "a"], "returns": "number" },
+  { "call": "countOccurrences", "arguments": ["abc", "z"], "returns": "number" },
+  { "call": "countOccurrences", "arguments": ["", "a"], "returns": "number" },
+  { "call": "indexOfFirst", "arguments": [[3, 1, 4, 1, 5], 4], "returns": "number" },
+  { "call": "indexOfFirst", "arguments": [[3, 1, 4, 1, 5], 9], "returns": "number" },
+  { "call": "indexOfFirst", "arguments": [[7], 7], "returns": "number" }
+]

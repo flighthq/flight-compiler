@@ -1,0 +1,20 @@
+[
+  { "call": "floorValue", "arguments": [3.7], "returns": "number" },
+  { "call": "floorValue", "arguments": [-2.3], "returns": "number" },
+  { "call": "floorValue", "arguments": [5], "returns": "number" },
+  { "call": "ceilValue", "arguments": [3.2], "returns": "number" },
+  { "call": "ceilValue", "arguments": [-2.7], "returns": "number" },
+  { "call": "ceilValue", "arguments": [5], "returns": "number" },
+  { "call": "absValue", "arguments": [-7], "returns": "number" },
+  { "call": "absValue", "arguments": [3], "returns": "number" },
+  { "call": "absValue", "arguments": [0], "returns": "number" },
+  { "call": "roundHalf", "arguments": [3.3], "returns": "number" },
+  { "call": "roundHalf", "arguments": [3.7], "returns": "number" },
+  { "call": "roundHalf", "arguments": [-2.7], "returns": "number" },
+  { "call": "clampFloor", "arguments": [3.7, 0, 10], "returns": "number" },
+  { "call": "clampFloor", "arguments": [-5, 0, 10], "returns": "number" },
+  { "call": "clampFloor", "arguments": [15.9, 0, 10], "returns": "number" },
+  { "call": "distanceFromOrigin", "arguments": [3, 4], "returns": "number" },
+  { "call": "distanceFromOrigin", "arguments": [0, 0], "returns": "number" },
+  { "call": "distanceFromOrigin", "arguments": [1, 1], "returns": "number" }
+]

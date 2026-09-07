@@ -1,0 +1,14 @@
+[
+  { "call": "applyTwice", "arguments": [3], "returns": "number" },
+  { "call": "applyTwice", "arguments": [0], "returns": "number" },
+  { "call": "applyTwice", "arguments": [-5], "returns": "number" },
+  { "call": "composeResult", "arguments": [4], "returns": "number" },
+  { "call": "composeResult", "arguments": [0], "returns": "number" },
+  { "call": "composeResult", "arguments": [-1], "returns": "number" },
+  { "call": "pipeFour", "arguments": [2], "returns": "number" },
+  { "call": "pipeFour", "arguments": [0], "returns": "number" },
+  { "call": "pipeFour", "arguments": [-3], "returns": "number" },
+  { "call": "nestedArithmetic", "arguments": [2, 3], "returns": "number" },
+  { "call": "nestedArithmetic", "arguments": [0, 0], "returns": "number" },
+  { "call": "nestedArithmetic", "arguments": [-1, 4], "returns": "number" }
+]

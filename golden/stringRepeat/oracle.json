@@ -1,0 +1,14 @@
+[
+  { "call": "repeatString", "arguments": ["ab", 3], "returns": "string" },
+  { "call": "repeatString", "arguments": ["x", 0], "returns": "string" },
+  { "call": "repeatString", "arguments": ["", 5], "returns": "string" },
+  { "call": "joinWithSeparator", "arguments": [["a", "b", "c"], ", "], "returns": "string" },
+  { "call": "joinWithSeparator", "arguments": [["only"], "-"], "returns": "string" },
+  { "call": "joinWithSeparator", "arguments": [[], ", "], "returns": "string" },
+  { "call": "padLeft", "arguments": ["42", 5, "0"], "returns": "string" },
+  { "call": "padLeft", "arguments": ["hello", 3, " "], "returns": "string" },
+  { "call": "padLeft", "arguments": ["", 4, "."], "returns": "string" },
+  { "call": "surroundWith", "arguments": ["hello", "[", "]"], "returns": "string" },
+  { "call": "surroundWith", "arguments": ["", "<", ">"], "returns": "string" },
+  { "call": "surroundWith", "arguments": ["test", "", ""], "returns": "string" }
+]
