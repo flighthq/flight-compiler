@@ -7,7 +7,7 @@
 namespace flighthq_golden {
 
 void throw_message(std::string message) {
-  throw std::runtime_error(std::runtime_error(message));
+  throw std::runtime_error(message);
 }
 
 std::string try_catch(std::function<void()> action) {

@@ -470,6 +470,7 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
         emissionError(context, 'qualified constructors require C++ type-path lowering');
       }
       const typeName = emitIdentifierReference(expression.callee.reference, context);
+      if (typeName === 'std::runtime_error') context.includes.add('stdexcept');
       const args = expression.arguments.map((argument) => emitExpression(argument, context));
       return `${typeName}(${args.join(', ')})`;
     }
@@ -675,24 +676,14 @@ function emitStatement(statement: Readonly<IrStatement>, context: EmitContext): 
       }
       return ['{', ...indentSourceLines(lines), '}'];
     }
-    case 'throw': {
-      context.includes.add('stdexcept');
-      return [`throw std::runtime_error(${emitExpression(statement.expression, context)});`];
-    }
+    case 'throw':
+      return [`throw ${emitExpression(statement.expression, context)};`];
     case 'try': {
       if (statement.finallyBody)
         return emitTryFinallyCpp(statement as typeof statement & { finallyBody: IrStatement }, context);
       const lines = ['try {', ...indentSourceLines(emitStatementBody(statement.tryBody, context)), '}'];
       if (statement.catchClause) {
-        context.includes.add('stdexcept');
-        const catchVar = statement.catchClause.binding
-          ? `const std::exception& ${safeCppName(statement.catchClause.binding.name)}`
-          : '...';
-        lines.push(
-          `catch (${catchVar}) {`,
-          ...indentSourceLines(emitStatementBody(statement.catchClause.body, context)),
-          '}',
-        );
+        lines.push(...emitCatchClauseCpp(statement.catchClause, context));
       }
       return lines;
     }
@@ -705,6 +696,15 @@ function emitStatement(statement: Readonly<IrStatement>, context: EmitContext): 
         '}',
       ];
   }
+}
+
+function emitCatchClauseCpp(
+  catchClause: NonNullable<Extract<IrStatement, { kind: 'try' }>['catchClause']>,
+  context: EmitContext,
+): string[] {
+  if (catchClause.binding) context.includes.add('stdexcept');
+  const catchVar = catchClause.binding ? `const std::exception& ${safeCppName(catchClause.binding.name)}` : '...';
+  return [`catch (${catchVar}) {`, ...indentSourceLines(emitStatementBody(catchClause.body, context)), '}'];
 }
 
 function emitSwitchCaseStatementsCpp(
@@ -772,18 +772,12 @@ function emitTryFinallyCpp(
   const innerContext: EmitContext = returnVar ? { ...context, finallyReturnVar: returnVar } : context;
   lines.push('try {');
   if (statement.catchClause) {
-    context.includes.add('stdexcept');
-    const catchVar = statement.catchClause.binding
-      ? `const std::exception& ${safeCppName(statement.catchClause.binding.name)}`
-      : '...';
     lines.push(
       ...indentSourceLines([
         'try {',
         ...indentSourceLines(emitStatementBody(statement.tryBody, innerContext)),
         '}',
-        `catch (${catchVar}) {`,
-        ...indentSourceLines(emitStatementBody(statement.catchClause.body, innerContext)),
-        '}',
+        ...emitCatchClauseCpp(statement.catchClause, innerContext),
       ]),
     );
   } else {

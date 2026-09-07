@@ -2,7 +2,6 @@
 #pragma once
 #include <coroutine>
 #include <exception>
-#include <stdexcept>
 #include <vector>
 
 namespace flighthq_golden {
