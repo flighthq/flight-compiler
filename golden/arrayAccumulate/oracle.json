@@ -1,0 +1,11 @@
+[
+  { "call": "runningSum", "arguments": [[1, 2, 3, 4]], "returns": "numbers" },
+  { "call": "runningSum", "arguments": [[]], "returns": "numbers" },
+  { "call": "runningSum", "arguments": [[5]], "returns": "numbers" },
+  { "call": "filterPositive", "arguments": [[-1, 2, -3, 4, 0]], "returns": "numbers" },
+  { "call": "filterPositive", "arguments": [[-1, -2]], "returns": "numbers" },
+  { "call": "filterPositive", "arguments": [[]], "returns": "numbers" },
+  { "call": "sumSquares", "arguments": [[1, 2, 3]], "returns": "number" },
+  { "call": "sumSquares", "arguments": [[]], "returns": "number" },
+  { "call": "sumSquares", "arguments": [[4, -3]], "returns": "number" }
+]

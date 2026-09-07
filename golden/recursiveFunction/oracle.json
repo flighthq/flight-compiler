@@ -1,0 +1,13 @@
+[
+  { "call": "factorial", "arguments": [5], "returns": "number" },
+  { "call": "factorial", "arguments": [0], "returns": "number" },
+  { "call": "factorial", "arguments": [1], "returns": "number" },
+  { "call": "fibonacci", "arguments": [10], "returns": "number" },
+  { "call": "fibonacci", "arguments": [0], "returns": "number" },
+  { "call": "fibonacci", "arguments": [1], "returns": "number" },
+  { "call": "sumTo", "arguments": [100], "returns": "number" },
+  { "call": "sumTo", "arguments": [0], "returns": "number" },
+  { "call": "power", "arguments": [2, 10], "returns": "number" },
+  { "call": "power", "arguments": [3, 0], "returns": "number" },
+  { "call": "power", "arguments": [5, 3], "returns": "number" }
+]

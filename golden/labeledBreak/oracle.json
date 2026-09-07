@@ -1,0 +1,5 @@
+[
+  { "call": "findPair", "arguments": [[1, 2, 3, 4], 5], "returns": "number" },
+  { "call": "findPair", "arguments": [[1, 2, 3, 4], 100], "returns": "number" },
+  { "call": "findPair", "arguments": [[10, 20, 30], 30], "returns": "number" }
+]

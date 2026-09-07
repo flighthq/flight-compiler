@@ -1,0 +1,16 @@
+[
+  { "call": "fizzbuzz", "arguments": [15], "returns": "string" },
+  { "call": "fizzbuzz", "arguments": [9], "returns": "string" },
+  { "call": "fizzbuzz", "arguments": [10], "returns": "string" },
+  { "call": "fizzbuzz", "arguments": [7], "returns": "string" },
+  { "call": "letterGrade", "arguments": [95], "returns": "string" },
+  { "call": "letterGrade", "arguments": [85], "returns": "string" },
+  { "call": "letterGrade", "arguments": [75], "returns": "string" },
+  { "call": "letterGrade", "arguments": [65], "returns": "string" },
+  { "call": "letterGrade", "arguments": [55], "returns": "string" },
+  { "call": "quadrant", "arguments": [1, 1], "returns": "number" },
+  { "call": "quadrant", "arguments": [-1, 1], "returns": "number" },
+  { "call": "quadrant", "arguments": [-1, -1], "returns": "number" },
+  { "call": "quadrant", "arguments": [1, -1], "returns": "number" },
+  { "call": "quadrant", "arguments": [0, 0], "returns": "number" }
+]

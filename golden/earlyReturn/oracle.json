@@ -1,0 +1,11 @@
+[
+  { "call": "findFirst", "arguments": [[1, 2, 3], 2], "returns": "number" },
+  { "call": "findFirst", "arguments": [[1, 2, 3], 5], "returns": "number" },
+  { "call": "findFirst", "arguments": [[], 1], "returns": "number" },
+  { "call": "validatePositive", "arguments": [5], "returns": "boolean" },
+  { "call": "validatePositive", "arguments": [-3], "returns": "boolean" },
+  { "call": "validatePositive", "arguments": [0], "returns": "boolean" },
+  { "call": "classify", "arguments": [5], "returns": "string" },
+  { "call": "classify", "arguments": [-3], "returns": "string" },
+  { "call": "classify", "arguments": [0], "returns": "string" }
+]

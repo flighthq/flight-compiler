@@ -1,0 +1,11 @@
+[
+  { "call": "reverse", "arguments": ["hello"], "returns": "string" },
+  { "call": "reverse", "arguments": [""], "returns": "string" },
+  { "call": "reverse", "arguments": ["a"], "returns": "string" },
+  { "call": "countChar", "arguments": ["banana", "a"], "returns": "number" },
+  { "call": "countChar", "arguments": ["hello", "z"], "returns": "number" },
+  { "call": "countChar", "arguments": ["", "a"], "returns": "number" },
+  { "call": "truncate", "arguments": ["hello world", 5], "returns": "string" },
+  { "call": "truncate", "arguments": ["hi", 10], "returns": "string" },
+  { "call": "truncate", "arguments": ["", 5], "returns": "string" }
+]

@@ -1,0 +1,14 @@
+[
+  { "call": "integerPart", "arguments": [3.7], "returns": "number" },
+  { "call": "integerPart", "arguments": [-2.3], "returns": "number" },
+  { "call": "integerPart", "arguments": [5], "returns": "number" },
+  { "call": "isEven", "arguments": [4], "returns": "boolean" },
+  { "call": "isEven", "arguments": [7], "returns": "boolean" },
+  { "call": "isEven", "arguments": [0], "returns": "boolean" },
+  { "call": "sign", "arguments": [42], "returns": "number" },
+  { "call": "sign", "arguments": [-7], "returns": "number" },
+  { "call": "sign", "arguments": [0], "returns": "number" },
+  { "call": "clamp", "arguments": [5, 0, 10], "returns": "number" },
+  { "call": "clamp", "arguments": [-5, 0, 10], "returns": "number" },
+  { "call": "clamp", "arguments": [15, 0, 10], "returns": "number" }
+]
