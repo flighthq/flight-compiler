@@ -1,0 +1,10 @@
+[
+  { "call": "numberToString", "arguments": [42], "returns": "string" },
+  { "call": "numberToString", "arguments": [3.14], "returns": "string" },
+  { "call": "stringLength", "arguments": ["hello"], "returns": "number" },
+  { "call": "stringLength", "arguments": [""], "returns": "number" },
+  { "call": "repeatString", "arguments": ["ab", 3], "returns": "string" },
+  { "call": "repeatString", "arguments": ["x", 0], "returns": "string" },
+  { "call": "padLeft", "arguments": ["5", 3, "0"], "returns": "string" },
+  { "call": "padLeft", "arguments": ["hello", 3, " "], "returns": "string" }
+]
