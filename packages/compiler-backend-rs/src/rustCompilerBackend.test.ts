@@ -814,9 +814,9 @@ describe('emitIrModuleRust', () => {
       'prefix ++ requires value-preserving Rust lowering',
     ],
     [
-      'prefix unary',
-      'export function positive(a: number): number { return +a; }',
-      'operator + requires Rust semantic lowering',
+      'prefix unary void',
+      'export function discard(a: number): void { void a; }',
+      'void requires Rust semantic lowering',
     ],
   ])('refuses unsupported %s operators explicitly', (family, source, message) => {
     const result = lower(`${family.replaceAll(' ', '-')}-operator.ts`, source);

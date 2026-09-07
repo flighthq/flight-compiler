@@ -453,7 +453,8 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
           expression.operator === '|=' ||
           expression.operator === '^=' ||
           expression.operator === '<<=' ||
-          expression.operator === '>>=') &&
+          expression.operator === '>>=' ||
+          expression.operator === '>>>=') &&
         expression.semantics.left.flow === 'number' &&
         expression.semantics.right.flow === 'number'
       ) {
@@ -509,6 +510,15 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
         const left = emitExpression(expression.left, context);
         const right = emitExpression(expression.right, context);
         return `Math.pow(${left}, ${right})`;
+      }
+      if (
+        expression.operator === '>>>' &&
+        expression.semantics.left.flow === 'number' &&
+        expression.semantics.right.flow === 'number'
+      ) {
+        const left = emitExpression(expression.left, context);
+        const right = emitExpression(expression.right, context);
+        return `(Std.int(${left}) >>> Std.int(${right}))`;
       }
       const op = emitBinaryOperatorHaxe(expression.operator, expression.semantics, context);
       const bitwise =

@@ -605,6 +605,15 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
         const right = emitExpression(expression.right, context);
         return `${left} = f64::powf(${left}, ${right})`;
       }
+      if (
+        expression.operator === '>>>=' &&
+        expression.semantics.left.flow === 'number' &&
+        expression.semantics.right.flow === 'number'
+      ) {
+        const left = emitExpression(expression.left, context);
+        const right = emitExpression(expression.right, context);
+        return `${left} = (((${left} as u32) >> (${right} as u32)) as f64)`;
+      }
       const left = emitExpression(expression.left, context);
       const right = emitOptionalTargetOperandRust(expression.left, expression.right, context);
       return `${left} ${emitAssignmentOperatorRust(expression.operator, expression.semantics, context)} ${normalizeSourceTextGrouping(right)}`;
@@ -668,6 +677,15 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
         const left = emitExpression(expression.left, context);
         const right = emitExpression(expression.right, context);
         return `f64::powf(${left}, ${right})`;
+      }
+      if (
+        expression.operator === '>>>' &&
+        expression.semantics.left.flow === 'number' &&
+        expression.semantics.right.flow === 'number'
+      ) {
+        const left = emitExpression(expression.left, context);
+        const right = emitExpression(expression.right, context);
+        return `(((${left} as u32) >> (${right} as u32)) as f64)`;
       }
       const op = emitBinaryOperatorRust(expression.operator, expression.semantics, context);
       const bitwise =
@@ -951,6 +969,7 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
         ? emitPostfixUnaryOperatorRust(expression.operator, context)
         : emitPrefixUnaryOperatorRust(expression.operator, expression.semantics, context);
       if (expression.operator === '~') return `(!(${operand} as i32) as f64)`;
+      if (expression.operator === '+' && expression.semantics.operand.flow === 'number') return operand;
       return expression.postfix ? `${operand}${operator}` : `${operator}${operand}`;
     }
     case 'undefinedValue':
@@ -2321,7 +2340,7 @@ function isPrefixUnaryOperatorDirectRust(
   semantics: Readonly<IrUnaryOperatorSemantics>,
 ): boolean {
   if (operator === '!') return semantics.operand.flow === 'boolean' && semantics.result === 'boolean';
-  if (operator === '-') return semantics.operand.flow === 'number' && semantics.result === 'number';
+  if (operator === '+' || operator === '-') return semantics.operand.flow === 'number' && semantics.result === 'number';
   if (operator === '~') return semantics.operand.flow === 'number' && semantics.result === 'number';
   return false;
 }
@@ -2832,7 +2851,7 @@ const rustPostfixUnaryOperatorRefusal = {
 
 const rustPrefixUnaryOperatorDecision = {
   '!': { emitted: '!' },
-  '+': { refusal: 'operator + requires Rust semantic lowering' },
+  '+': { emitted: '+' },
   '++': { refusal: 'prefix ++ requires value-preserving Rust lowering' },
   '-': { emitted: '-' },
   '--': { refusal: 'prefix -- requires value-preserving Rust lowering' },

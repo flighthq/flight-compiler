@@ -1,0 +1,12 @@
+[
+  { "call": "unsignedShiftRight", "arguments": [16, 2], "returns": "number" },
+  { "call": "unsignedShiftRight", "arguments": [-1, 16], "returns": "number" },
+  { "call": "unsignedShiftRight", "arguments": [0, 5], "returns": "number" },
+  { "call": "unsignedShiftRight", "arguments": [255, 4], "returns": "number" },
+  { "call": "unsignedShiftAssign", "arguments": [32, 3], "returns": "number" },
+  { "call": "unsignedShiftAssign", "arguments": [-1, 24], "returns": "number" },
+  { "call": "unsignedShiftAssign", "arguments": [1024, 0], "returns": "number" },
+  { "call": "signedVsUnsigned", "arguments": [100], "returns": "number" },
+  { "call": "signedVsUnsigned", "arguments": [-100], "returns": "number" },
+  { "call": "signedVsUnsigned", "arguments": [0], "returns": "number" }
+]
