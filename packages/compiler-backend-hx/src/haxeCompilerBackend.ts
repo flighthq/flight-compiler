@@ -478,9 +478,17 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
         const test = `Std.isOfType(${operand}, ${typeofTest.haxeType})`;
         return typeofTest.negated ? `!${test}` : test;
       }
+      const op = emitBinaryOperatorHaxe(expression.operator, expression.semantics, context);
+      const bitwise =
+        expression.operator === '&' ||
+        expression.operator === '|' ||
+        expression.operator === '^' ||
+        expression.operator === '<<' ||
+        expression.operator === '>>';
       const left = emitExpression(expression.left, context);
       const right = emitExpression(expression.right, context);
-      return `(${left} ${emitBinaryOperatorHaxe(expression.operator, expression.semantics, context)} ${right})`;
+      if (bitwise) return `(Std.int(${left}) ${op} Std.int(${right}))`;
+      return `(${left} ${op} ${right})`;
     }
     case 'call': {
       // Haxe's `slice` takes a required position and counts in `Int`, where the source's takes
@@ -650,6 +658,7 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
       const operator = expression.postfix
         ? emitPostfixUnaryOperatorHaxe(expression.operator, expression.semantics, context)
         : emitPrefixUnaryOperatorHaxe(expression.operator, expression.semantics, context);
+      if (expression.operator === '~') return `${operator} Std.int(${operand})`;
       return expression.postfix ? `${operand}${operator}` : `${operator} ${operand}`;
     }
     case 'undefinedValue':
@@ -1716,6 +1725,9 @@ function isBinaryOperatorDirectHaxe(
       (semantics.left.flow === 'boolean' || semantics.left.flow === 'number' || semantics.left.flow === 'string')
     );
   }
+  if (operator === '&' || operator === '|' || operator === '^' || operator === '<<' || operator === '>>') {
+    return hasMatchingOperatorDomains(semantics, ['number']);
+  }
   return false;
 }
 
@@ -1727,6 +1739,7 @@ function isPrefixUnaryOperatorDirectHaxe(
   if (operator === '+' || operator === '-' || operator === '++' || operator === '--') {
     return semantics.operand.flow === 'number' && semantics.result === 'number';
   }
+  if (operator === '~') return semantics.operand.flow === 'number' && semantics.result === 'number';
   return false;
 }
 

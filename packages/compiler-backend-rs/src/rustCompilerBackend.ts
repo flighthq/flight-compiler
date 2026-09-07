@@ -637,9 +637,17 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
         const test = `matches!(${operand}, ${typeofTest.enumName}::${typeofTest.variantName}(_))`;
         return typeofTest.negated ? `!${test}` : test;
       }
+      const op = emitBinaryOperatorRust(expression.operator, expression.semantics, context);
+      const bitwise =
+        expression.operator === '&' ||
+        expression.operator === '|' ||
+        expression.operator === '^' ||
+        expression.operator === '<<' ||
+        expression.operator === '>>';
       const left = emitExpression(expression.left, context);
       const right = emitExpression(expression.right, context);
-      return `(${left} ${emitBinaryOperatorRust(expression.operator, expression.semantics, context)} ${right})`;
+      if (bitwise) return `(((${left} as i32) ${op} (${right} as i32)) as f64)`;
+      return `(${left} ${op} ${right})`;
     }
     case 'call':
       if (expression.semantics.statementValue) return emitStatementValueExpressionRust(expression, context);
@@ -910,6 +918,7 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
       const operator = expression.postfix
         ? emitPostfixUnaryOperatorRust(expression.operator, context)
         : emitPrefixUnaryOperatorRust(expression.operator, expression.semantics, context);
+      if (expression.operator === '~') return `(!(${operand} as i32) as f64)`;
       return expression.postfix ? `${operand}${operator}` : `${operator}${operand}`;
     }
     case 'undefinedValue':
@@ -2269,6 +2278,9 @@ function isBinaryOperatorDirectRust(
       (semantics.left.flow === 'boolean' || semantics.left.flow === 'number' || semantics.left.flow === 'string')
     );
   }
+  if (operator === '&' || operator === '|' || operator === '^' || operator === '<<' || operator === '>>') {
+    return hasMatchingOperatorDomains(semantics, ['number']);
+  }
   return false;
 }
 
@@ -2278,6 +2290,7 @@ function isPrefixUnaryOperatorDirectRust(
 ): boolean {
   if (operator === '!') return semantics.operand.flow === 'boolean' && semantics.result === 'boolean';
   if (operator === '-') return semantics.operand.flow === 'number' && semantics.result === 'number';
+  if (operator === '~') return semantics.operand.flow === 'number' && semantics.result === 'number';
   return false;
 }
 
@@ -2794,5 +2807,5 @@ const rustPrefixUnaryOperatorDecision = {
   delete: { refusal: 'delete requires Rust semantic lowering' },
   typeof: { refusal: 'typeof requires Rust semantic lowering' },
   void: { refusal: 'void requires Rust semantic lowering' },
-  '~': { refusal: 'operator ~ requires Rust semantic lowering' },
+  '~': { emitted: '!' },
 } as const satisfies Readonly<Record<IrPrefixUnaryOperator, OperatorEmissionDecision>>;

@@ -1,1 +1,0 @@
-rust emission failed for @flighthq/golden/packages/golden/src/bitwiseOperation.ts: operator & on number and number requires Rust type-directed lowering
