@@ -795,9 +795,12 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
             borrows ? emitBorrowedTextRust(argument, context) : emitExpression(argument, context),
           );
           if (binding.kind === 'iterator') {
+            const firstArg = expression.arguments[0];
             const closure = binding.borrowsElement
-              ? emitBorrowedElementClosureRust(expression.arguments[0], context)
-              : values[0];
+              ? emitBorrowedElementClosureRust(firstArg, context)
+              : firstArg && firstArg.kind !== 'function'
+                ? emitIteratorCallbackWrapperRust(firstArg, values[0]!, context)
+                : values[0];
             const ordered = binding.argumentOrder
               ? binding.argumentOrder.map((position) => values[position] ?? '')
               : [closure ?? ''];
@@ -1514,7 +1517,7 @@ function emitReturnedExpressionRust(expression: Readonly<IrExpression>, context:
     return `${source}.clone()`;
   if (context.enclosingReturnType?.kind === 'function' && expression.kind === 'function') {
     context.needsRcImport.add('Rc');
-    return `Rc::new(${source})`;
+    return `Rc::new(move ${source})`;
   }
   return source;
 }
@@ -1549,6 +1552,15 @@ function emitBorrowedElementClosureRust(expression: Readonly<IrExpression> | und
     ? normalizeSourceTextGrouping(emitExpression(expression.expression, context))
     : `{\n${indentSourceLines(emitStatements(expression.body, context)).join('\n')}\n}`;
   return `|${parameters.join(', ')}| ${body}`;
+}
+
+function emitIteratorCallbackWrapperRust(
+  expression: Readonly<IrExpression>,
+  emittedCallee: string,
+  context: EmitContext,
+): string {
+  const name = getGeneratedTargetNameRust('x', context);
+  return `|${name}| ${emittedCallee}(${name})`;
 }
 
 function isIrTypeCopyValueRust(type: Readonly<IrType>): boolean {
@@ -2045,7 +2057,7 @@ function emitVariable(variable: Readonly<IrVariable>, context: EmitContext): str
   const isCallbackInitializer = variable.type?.kind === 'function' && variable.initializer?.kind === 'function';
   if (isCallbackInitializer) context.needsRcImport.add('Rc');
   const initializer = variable.initializer
-    ? ` = ${normalizeSourceTextGrouping(isCallbackInitializer ? `Rc::new(${emitExpression(variable.initializer, context)})` : emitOwnedOperandRust(variable.initializer, context))}`
+    ? ` = ${normalizeSourceTextGrouping(isCallbackInitializer ? `Rc::new(move ${emitExpression(variable.initializer, context)})` : emitOwnedOperandRust(variable.initializer, context))}`
     : '';
   // A binding declared without a value and written once afterwards is Rust's deferred
   // initialization, not a mutation: the source hoisted the declaration above the assignment, and

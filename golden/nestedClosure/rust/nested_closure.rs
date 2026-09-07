@@ -5,7 +5,7 @@ use std::rc::Rc;
 
 pub fn create_counter(initial: f64) -> Rc<dyn Fn() -> f64> {
   let mut count: f64 = initial;
-  return Rc::new(|| {
+  return Rc::new(move || {
   count = count + 1.0;
   return count;
 });

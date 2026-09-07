@@ -5,7 +5,7 @@ use std::rc::Rc;
 
 pub fn counter() -> Rc<dyn Fn() -> f64> {
   let mut count: f64 = 0.0;
-  return Rc::new(|| {
+  return Rc::new(move || {
   count += 1.0;
   return count;
 });
@@ -13,7 +13,7 @@ pub fn counter() -> Rc<dyn Fn() -> f64> {
 
 pub fn accumulate(values: Vec<f64>) -> f64 {
   let mut total: f64 = 0.0;
-  let add: Rc<dyn Fn(f64) -> ()> = Rc::new(|n| {
+  let add: Rc<dyn Fn(f64) -> ()> = Rc::new(move |n| {
   total += n;
 });
   for v in values {
@@ -23,5 +23,5 @@ pub fn accumulate(values: Vec<f64>) -> f64 {
 }
 
 pub fn make_multiplier(factor: f64) -> Rc<dyn Fn(f64) -> f64> {
-  return Rc::new(|x| x * factor);
+  return Rc::new(move |x| x * factor);
 }
