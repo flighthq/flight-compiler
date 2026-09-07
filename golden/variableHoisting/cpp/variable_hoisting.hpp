@@ -31,8 +31,8 @@ std::string select_pattern(std::tuple<double, std::string> values) {
   double first;
   std::string second;
   const std::tuple<double, std::string> array_pattern_value = values;
-  first = array_pattern_value[static_cast<size_t>(0.0)];
-  second = array_pattern_value[static_cast<size_t>(1.0)];
+  first = std::get<0>(array_pattern_value);
+  second = std::get<1>(array_pattern_value);
   if ((first < 0.0)) {
     return "";
   }

@@ -24,7 +24,7 @@ value first_of(std::vector<value> values, value fallback) {
 }
 
 std::string second_name(std::tuple<std::string, std::string> pair) {
-  const std::string second = pair[static_cast<size_t>(1.0)];
+  const std::string second = std::get<1>(pair);
   return second;
 }
 

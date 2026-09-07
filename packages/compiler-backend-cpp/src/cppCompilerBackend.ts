@@ -429,8 +429,14 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
       return `static_cast<${emitType(expression.type, context)}>(${emitExpression(expression.expression, context)})`;
     case 'conditional':
       return `(${emitExpression(expression.condition, context)} ? ${emitExpression(expression.whenTrue, context)} : ${emitExpression(expression.whenFalse, context)})`;
-    case 'element':
+    case 'element': {
+      if (expression.semantics.receivers.includes('tuple')) {
+        context.includes.add('tuple');
+        const index = getElementAccessTupleIndexCpp(expression, context);
+        return `std::get<${String(index)}>(${emitExpression(expression.object, context)})`;
+      }
       return `${emitExpression(expression.object, context)}[static_cast<size_t>(${emitExpression(expression.index, context)})]`;
+    }
     case 'function': {
       if (expression.async) emissionError(context, 'async closures require C++ coroutine lowering');
       context.includes.add('functional');
@@ -539,9 +545,21 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
       context.includes.add('optional');
       return `${emitExpression(expression.value, context)}.value_or(${emitExpression(expression.fallback, context)})`;
     }
+    case 'tupleRest': {
+      context.includes.add('tuple');
+      return `std::get<${String(expression.start)}>(${emitExpression(expression.object, context)})`;
+    }
     case 'tupleSpread':
-    case 'tupleRest':
-    case 'tupleSuffix':
+      return emitTupleSpreadExpressionCpp(expression, context);
+    case 'tupleSuffix': {
+      context.includes.add('tuple');
+      const object = emitExpression(expression.object, context);
+      const elements = Array.from(
+        { length: expression.width },
+        (_, offset) => `std::get<${String(expression.start + offset)}>(${object})`,
+      );
+      return `std::make_tuple(${elements.join(', ')})`;
+    }
     case 'objectRest':
       emissionError(context, `${expression.kind} expressions require C++ structured binding lowering`);
   }
@@ -886,6 +904,51 @@ function collectStringParts(expression: Readonly<IrExpression>, context: EmitCon
   return [emitExpression(expression, context)];
 }
 
+function emitTupleSpreadExpressionCpp(
+  expression: Readonly<Extract<IrExpression, { kind: 'tupleSpread' }>>,
+  context: EmitContext,
+): string {
+  context.includes.add('tuple');
+  const declarations: string[] = [];
+  const elements: string[] = [];
+  let resultIndex = 0;
+  for (const segment of expression.segments) {
+    if (segment.kind === 'element') {
+      const target = expression.type.elements[resultIndex]!;
+      if (!segment.element.expression) {
+        context.includes.add('optional');
+        elements.push('std::nullopt');
+      } else {
+        const name = getGeneratedTargetName('tuple_spread_element', context);
+        declarations.push(`auto ${name} = ${emitExpression(segment.element.expression, context)};`);
+        if (target.optional) {
+          context.includes.add('optional');
+          elements.push(`std::make_optional(${name})`);
+        } else {
+          elements.push(name);
+        }
+      }
+      resultIndex += 1;
+      continue;
+    }
+    const name = getGeneratedTargetName('tuple_spread_value', context);
+    declarations.push(`auto ${name} = ${emitExpression(segment.expression, context)};`);
+    segment.type.elements.forEach((element, offset) => {
+      const value = `std::get<${String(offset)}>(${name})`;
+      const target = expression.type.elements[resultIndex + offset]!;
+      if (target.optional && !element.optional) {
+        context.includes.add('optional');
+        elements.push(`std::make_optional(${value})`);
+      } else {
+        elements.push(value);
+      }
+    });
+    resultIndex += segment.type.elements.length;
+  }
+  const tuple = `std::make_tuple(${elements.join(', ')})`;
+  return `([&]() { ${declarations.join(' ')} return ${tuple}; })()`;
+}
+
 function emitAssignmentOperator(operator: string): string {
   if (operator === '**=') return '=';
   if (operator === '>>>=') return '=';
@@ -925,6 +988,22 @@ function getTypeReferenceTargetName(type: Readonly<IrType & { kind: 'named' }>, 
 
 function getBindingTargetName(binding: Readonly<{ id: string; name: string }>, context: EmitContext): string {
   return context.targetNames.get(binding.id) ?? safeCppName(binding.name);
+}
+
+function getElementAccessTupleIndexCpp(
+  expression: Readonly<Extract<IrExpression, { kind: 'element' }>>,
+  context: EmitContext,
+): number {
+  if (
+    expression.semantics.receivers.length !== 1 ||
+    expression.index.kind !== 'literal' ||
+    typeof expression.index.value !== 'number' ||
+    !Number.isSafeInteger(expression.index.value) ||
+    expression.index.value < 0
+  ) {
+    emissionError(context, 'tuple projection requires one statically known nonnegative integer index');
+  }
+  return expression.index.value;
 }
 
 function getGeneratedTargetName(base: string, context: EmitContext): string {
