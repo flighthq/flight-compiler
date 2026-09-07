@@ -1,0 +1,8 @@
+[
+  { "call": "listToCsv", "arguments": [["a", "b", "c"]], "returns": "string" },
+  { "call": "listToCsv", "arguments": [["single"]], "returns": "string" },
+  { "call": "wordCount", "arguments": ["hello world foo"], "returns": "number" },
+  { "call": "wordCount", "arguments": ["one"], "returns": "number" },
+  { "call": "reverseWords", "arguments": ["hello world"], "returns": "string" },
+  { "call": "reverseWords", "arguments": ["a"], "returns": "string" }
+]

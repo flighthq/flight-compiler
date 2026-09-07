@@ -1,0 +1,9 @@
+[
+  { "call": "allBelow", "arguments": [[1, 2, 3], 5], "returns": "boolean" },
+  { "call": "allBelow", "arguments": [[1, 2, 6], 5], "returns": "boolean" },
+  { "call": "allBelow", "arguments": [[], 5], "returns": "boolean" },
+  { "call": "anyNegative", "arguments": [[1, -2, 3]], "returns": "boolean" },
+  { "call": "anyNegative", "arguments": [[1, 2, 3]], "returns": "boolean" },
+  { "call": "findFirst", "arguments": [[1, 5, 3, 7], 4], "returns": "number" },
+  { "call": "findFirst", "arguments": [[1, 2, 3], 10], "returns": "number" }
+]
