@@ -61,7 +61,13 @@ import {
   getCompilerRuntimeExternalSymbolTargetCpp,
 } from './cppRuntimeExternalSymbolBinding.js';
 
+interface AnonymousStruct {
+  name: string;
+  properties: readonly { name: string; type: string }[];
+}
+
 interface EmitContext {
+  anonymousStructs: Map<string, AnonymousStruct>;
   currentClass?: Readonly<IrClassDeclaration> | undefined;
   includes: Set<string>;
   module: Readonly<IrModule>;
@@ -123,6 +129,7 @@ function emitIrModuleCppWithContext(
     throw error;
   }
   const context: EmitContext = {
+    anonymousStructs: new Map(),
     includes: new Set<string>(),
     module,
     nullableBindingIds: collectIrModuleNullableBindingIds(module),
@@ -143,6 +150,14 @@ function emitIrModuleCppWithContext(
   if (imports.length > 0) lines.push('', ...imports);
   const namespaceName = convertPackageNameToCppNamespace(module.packageName);
   lines.push('', `namespace ${namespaceName} {`);
+  for (const struct of context.anonymousStructs.values()) {
+    lines.push('');
+    lines.push(`struct ${struct.name} {`);
+    for (const property of struct.properties) {
+      lines.push(`  ${property.type} ${property.name};`);
+    }
+    lines.push('};');
+  }
   declarations.forEach((declaration) => lines.push('', ...declaration));
   lines.push('', `} // namespace ${namespaceName}`);
   return {
@@ -691,8 +706,18 @@ function emitType(type: Readonly<IrType>, context: EmitContext): string {
     case 'null':
     case 'undefined':
       return 'void';
-    case 'object':
-      emissionError(context, 'anonymous object types require C++ struct lowering');
+    case 'object': {
+      const emittedProperties = type.properties.map((property) => ({
+        name: safeCppName(property.name),
+        type: emitType(property.type, context),
+      }));
+      const key = emittedProperties.map((property) => `${property.type} ${property.name}`).join('; ');
+      const existing = context.anonymousStructs.get(key);
+      if (existing) return existing.name;
+      const structName = generateAnonymousStructName(type.properties, context);
+      context.anonymousStructs.set(key, { name: structName, properties: emittedProperties });
+      return structName;
+    }
     case 'primitive':
       if (type.name === 'string') {
         context.includes.add('string');
@@ -914,6 +939,18 @@ function assertRuntimeExternalSymbolBindingsCpp(module: Readonly<IrModule>): voi
     module,
     `runtime external symbol binding plan is incomplete (${problems.join('; ')})`,
   );
+}
+
+function generateAnonymousStructName(properties: readonly { readonly name: string }[], context: EmitContext): string {
+  const base = properties.map((property) => snakeCase(property.name)).join('_');
+  let candidate = base || 'anonymous';
+  let suffix = 0;
+  while (context.generatedNames.has(candidate)) {
+    suffix++;
+    candidate = `${base}_${suffix}`;
+  }
+  context.generatedNames.add(candidate);
+  return candidate;
 }
 
 function safeCppName(name: string): string {
