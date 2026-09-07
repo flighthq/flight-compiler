@@ -3,7 +3,7 @@
 
 pub fn sum_row(grid: Vec<Vec<f64>>, row: f64) -> f64 {
   let mut total: f64 = 0.0;
-  for value in grid[row as usize] {
+  for value in &grid[row as usize] {
     total += value;
   }
   return total;

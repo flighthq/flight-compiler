@@ -1743,15 +1743,18 @@ function emitStatement(statement: Readonly<IrStatement>, context: EmitContext): 
         ...indentSourceLines(emitStatementBody(statement.body, context)),
         '}',
       ];
-    case 'forOf':
+    case 'forOf': {
       if (statement.await) emissionError(context, 'async iteration requires Flight task lowering');
       if ('pattern' in statement.variable)
         emissionError(context, 'binding patterns require destructuring lowering before Rust emission');
+      const iterableRust = emitExpression(statement.iterable, context);
+      const borrowPrefix = statement.iterable.kind === 'element' ? '&' : '';
       return [
-        `${emitControlFlowLabelRust(statement.label)}for ${statement.variable.mutable ? 'mut ' : ''}${getBindingTargetNameRust(statement.variable.binding, context)} in ${emitExpression(statement.iterable, context)} {`,
+        `${emitControlFlowLabelRust(statement.label)}for ${statement.variable.mutable ? 'mut ' : ''}${getBindingTargetNameRust(statement.variable.binding, context)} in ${borrowPrefix}${iterableRust} {`,
         ...indentSourceLines(emitStatementBody(statement.body, context)),
         '}',
       ];
+    }
     case 'if': {
       const lines = [
         `if ${normalizeSourceTextGrouping(emitExpression(statement.condition, context))} {`,
