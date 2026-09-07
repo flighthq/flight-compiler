@@ -686,7 +686,7 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
         if (expression.left.kind === 'property' && expression.left.optionalChain?.receiverNullish === 'excluded') {
           return emitExpression(expression.left, context);
         }
-        if (!isIrExpressionOptionShapedRust(expression.left)) {
+        if (!isIrExpressionOptionShapedRust(expression.left, context)) {
           emissionError(context, 'operator ?? requires an Option-shaped left operand for Rust');
         }
         return `${emitOptionShapedOperandRust(expression.left, context)}.unwrap_or_else(|| ${emitExpression(expression.right, context)})`;
@@ -1681,11 +1681,7 @@ function emitOptionalTargetOperandRust(
   const source = emitExpression(value, context);
   if (target.kind !== 'identifier' || target.reference.kind !== 'binding') return source;
   if (!context.nullableBindingIds.has(target.reference.binding.id)) return source;
-  const alreadyOptional =
-    isIrExpressionOptionShapedRust(value) ||
-    (value.kind === 'identifier' &&
-      value.reference.kind === 'binding' &&
-      context.nullableBindingIds.has(value.reference.binding.id));
+  const alreadyOptional = isIrExpressionOptionShapedRust(value, context);
   return alreadyOptional ? source : `Some(${source})`;
 }
 
@@ -2152,8 +2148,14 @@ function emitVariable(variable: Readonly<IrVariable>, context: EmitContext): str
       : '';
   const isCallbackInitializer = variable.type?.kind === 'function' && variable.initializer?.kind === 'function';
   if (isCallbackInitializer) context.needsRcImport.add('Rc');
+  const isNullableArrayElement =
+    'binding' in variable &&
+    context.nullableBindingIds.has(variable.binding.id) &&
+    variable.initializer?.kind === 'element' &&
+    !variable.initializer.optional &&
+    variable.initializer.semantics.receivers.includes('array');
   const initializer = variable.initializer
-    ? ` = ${normalizeSourceTextGrouping(isCallbackInitializer ? emitClosureWithCellClonesRust(variable.initializer, context) : emitOwnedOperandRust(variable.initializer, context))}`
+    ? ` = ${normalizeSourceTextGrouping(isCallbackInitializer ? emitClosureWithCellClonesRust(variable.initializer, context) : isNullableArrayElement ? emitOptionShapedOperandRust(variable.initializer, context) : emitOwnedOperandRust(variable.initializer, context))}`
     : '';
   // A binding declared without a value and written once afterwards is Rust's deferred
   // initialization, not a mutation: the source hoisted the declaration above the assignment, and
@@ -2429,7 +2431,7 @@ function isAssignmentOperatorDirectRust(
 
 // Which expressions the Rust emitter renders as an `Option`. An optional chain projects into one; an
 // ordinary value does not, and wrapping it would claim a nullability the emitted type does not have.
-function isIrExpressionOptionShapedRust(expression: Readonly<IrExpression>): boolean {
+function isIrExpressionOptionShapedRust(expression: Readonly<IrExpression>, context: EmitContext): boolean {
   // An optional member is an `Option` field in the emitted record, so reading it is already the shape
   // the operator needs — the chain is about the object being absent, this is about the member.
   //
@@ -2447,6 +2449,12 @@ function isIrExpressionOptionShapedRust(expression: Readonly<IrExpression>): boo
   if (expression.kind === 'element') {
     return expression.optional || (expression.semantics.receivers.includes('array') && !expression.optional);
   }
+  if (
+    expression.kind === 'identifier' &&
+    expression.reference.kind === 'binding' &&
+    context.nullableBindingIds.has(expression.reference.binding.id)
+  )
+    return true;
   return expression.kind === 'undefinedDefault';
 }
 

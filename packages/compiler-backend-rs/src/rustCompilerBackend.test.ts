@@ -1380,6 +1380,17 @@ describe('emitIrModuleRust', () => {
     expect(output).toContain('values.iter().cloned().fold(f64::INFINITY, f64::min)');
   });
 
+  it('emits nullable binding coalesce as Option unwrap_or_else', () => {
+    const result = lower(
+      'nullable-coalesce.ts',
+      'export function fallback(value: number | undefined, def: number): number { return value ?? def; }',
+    );
+    const output = emitIrModuleRust(result.module).contents;
+
+    expect(output).toContain('Option<f64>');
+    expect(output).toContain('.unwrap_or_else(|| def)');
+  });
+
   it('emits primitive union enums with typeof narrowing and ambient member dispatch', () => {
     const module = lower(
       'typeof-union.ts',
