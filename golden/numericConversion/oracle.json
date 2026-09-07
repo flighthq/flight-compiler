@@ -1,0 +1,12 @@
+[
+  { "call": "clampValue", "arguments": [5, 0, 10], "returns": "number" },
+  { "call": "clampValue", "arguments": [-3, 0, 10], "returns": "number" },
+  { "call": "clampValue", "arguments": [15, 0, 10], "returns": "number" },
+  { "call": "lerp", "arguments": [0, 10, 0.5], "returns": "number" },
+  { "call": "lerp", "arguments": [0, 10, 0], "returns": "number" },
+  { "call": "lerp", "arguments": [0, 10, 1], "returns": "number" },
+  { "call": "roundToPlaces", "arguments": [3.14159, 2], "returns": "number" },
+  { "call": "roundToPlaces", "arguments": [2.5, 0], "returns": "number" },
+  { "call": "average", "arguments": [[1, 2, 3, 4, 5]], "returns": "number" },
+  { "call": "average", "arguments": [[]], "returns": "number" }
+]

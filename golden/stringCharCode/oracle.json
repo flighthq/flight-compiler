@@ -1,0 +1,8 @@
+[
+  { "call": "charCodeFirst", "arguments": ["A"], "returns": "number" },
+  { "call": "charCodeFirst", "arguments": ["z"], "returns": "number" },
+  { "call": "isDigitCode", "arguments": ["a1b", 1], "returns": "boolean" },
+  { "call": "isDigitCode", "arguments": ["abc", 0], "returns": "boolean" },
+  { "call": "sumCharCodes", "arguments": ["AB"], "returns": "number" },
+  { "call": "sumCharCodes", "arguments": [""], "returns": "number" }
+]
