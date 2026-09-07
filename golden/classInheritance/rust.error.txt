@@ -1,0 +1,1 @@
+rust emission failed for @flighthq/golden/packages/golden/src/classInheritance.ts: class Child inheritance requires Rust ownership lowering

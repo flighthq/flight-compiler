@@ -1,0 +1,11 @@
+[
+  { "call": "computeWithConst", "arguments": [3, 4], "returns": "number" },
+  { "call": "computeWithConst", "arguments": [0, 0], "returns": "number" },
+  { "call": "computeWithConst", "arguments": [-2, 5], "returns": "number" },
+  { "call": "multiStep", "arguments": [3], "returns": "number" },
+  { "call": "multiStep", "arguments": [0], "returns": "number" },
+  { "call": "multiStep", "arguments": [-1], "returns": "number" },
+  { "call": "stringBuild", "arguments": ["hello", "world"], "returns": "string" },
+  { "call": "stringBuild", "arguments": ["", "test"], "returns": "string" },
+  { "call": "stringBuild", "arguments": ["a", "b"], "returns": "string" }
+]

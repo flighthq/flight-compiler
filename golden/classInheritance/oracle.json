@@ -1,0 +1,7 @@
+[
+  { "call": "createChild", "arguments": [5, "test"], "returns": "string" },
+  { "call": "createChild", "arguments": [0, "zero"], "returns": "string" },
+  { "call": "baseDoubled", "arguments": [7], "returns": "number" },
+  { "call": "baseDoubled", "arguments": [0], "returns": "number" },
+  { "call": "baseDoubled", "arguments": [-3], "returns": "number" }
+]
