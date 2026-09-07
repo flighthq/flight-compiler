@@ -624,18 +624,26 @@ describe('lowerTypeScriptSource', () => {
   });
 
   it('returns stable globally identified one-based diagnostics', () => {
-    const result = lower('namespace.ts', 'export namespace Values {}');
+    const valueNamespace = lower(
+      'namespace.ts',
+      'export namespace Values { export function create(): number { return 1; } }',
+    );
+    const typeOnlyNamespace = lower(
+      'type-namespace.ts',
+      'export namespace Values { export interface Config { name: string; } }',
+    );
 
-    expect(result.diagnostics).toEqual([
+    expect(valueNamespace.diagnostics).toEqual([
       {
         code: 'unsupported-typescript',
         column: 1,
         line: 1,
-        message: 'namespace declarations are not represented in the neutral IR yet',
+        message: 'value namespace declarations require neutral IR namespace representation',
         packageName: '@flighthq/math',
         source: 'packages/math/src/namespace.ts',
       },
     ]);
+    expect(typeOnlyNamespace.diagnostics).toEqual([]);
   });
 
   it('uses per-declarator fingerprints and lowers negative literal types', () => {

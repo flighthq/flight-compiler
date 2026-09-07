@@ -184,7 +184,9 @@ export function lowerTypeScriptSource(
           });
         }
       } else if (ts.isModuleDeclaration(statement)) {
-        unsupported(statement, 'namespace declarations are not represented in the neutral IR yet');
+        if (hasValueNamespaceMembers(statement)) {
+          unsupported(statement, 'value namespace declarations require neutral IR namespace representation');
+        }
       } else if (!ts.isEmptyStatement(statement)) {
         unsupported(statement, `unsupported top-level ${ts.SyntaxKind[statement.kind]}`);
       }
@@ -3656,6 +3658,20 @@ function requiredDeclarationName(
   if (!node.name)
     unsupported(node, `anonymous default ${ts.isClassDeclaration(node) ? 'class' : 'function'} is unsupported`);
   return node.name.text;
+}
+
+function hasValueNamespaceMembers(node: ts.ModuleDeclaration): boolean {
+  if (!node.body) return false;
+  if (ts.isModuleDeclaration(node.body)) return hasValueNamespaceMembers(node.body);
+  if (!ts.isModuleBlock(node.body)) return false;
+  return node.body.statements.some(
+    (statement) =>
+      ts.isFunctionDeclaration(statement) ||
+      ts.isClassDeclaration(statement) ||
+      ts.isVariableStatement(statement) ||
+      ts.isEnumDeclaration(statement) ||
+      (ts.isModuleDeclaration(statement) && hasValueNamespaceMembers(statement)),
+  );
 }
 
 function unsupported(node: ts.Node, message: string): never {
