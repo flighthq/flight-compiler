@@ -4,22 +4,22 @@
 
 namespace flighthq_golden {
 
-using lane = std::string;
+using Lane = std::string;
 
-struct route {
-  lane lane;
+struct Route {
+  Lane lane;
   double cost;
 };
 
-bool is_fast(route route) {
+bool is_fast(Route route) {
   return (route.lane == "fast");
 }
 
-std::string lane_name(route route) {
+std::string lane_name(Route route) {
   return route.lane;
 }
 
-std::string describe(lane lane) {
+std::string describe(Lane lane) {
   return ((lane == "fast") ? "quick" : "careful");
 }
 

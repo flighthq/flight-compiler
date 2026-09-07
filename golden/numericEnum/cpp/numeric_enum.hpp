@@ -9,16 +9,16 @@ enum class level {
   High = 2.0,
 };
 
-struct named {
+struct Named {
   std::string name;
 };
 
-struct tagged {
+struct Tagged {
   std::string name;
   double tag;
 };
 
-std::string describe(tagged value) {
+std::string describe(Tagged value) {
   return value.name;
 }
 

@@ -4,11 +4,11 @@
 
 namespace flighthq_golden {
 
-struct holder {
+struct Holder {
   double value;
 };
 
-double read(std::optional<holder> holder) {
+double read(std::optional<Holder> holder) {
   return holder.value.value_or(0.0);
 }
 

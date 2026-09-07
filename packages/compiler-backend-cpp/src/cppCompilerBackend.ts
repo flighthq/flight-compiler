@@ -117,7 +117,7 @@ function emitIrModuleCppWithContext(
     targetNames = new Map(
       createIrModuleTargetNameAllocation(module, (binding) => ({
         namespace: 'identifier',
-        preferredName: snakeCase(binding.name),
+        preferredName: binding.space === 'type' ? pascalCase(binding.name) : snakeCase(binding.name),
       })).map((allocation) => [allocation.identity, allocation.name]),
     );
   } catch (error) {
@@ -915,9 +915,9 @@ function emitImports(imports: readonly IrImport[], context: EmitContext): string
   });
 }
 
-function emitTypeParameters(parameters: readonly IrTypeParameter[], _context: EmitContext): string {
+function emitTypeParameters(parameters: readonly IrTypeParameter[], context: EmitContext): string {
   if (parameters.length === 0) return '';
-  return `<${parameters.map((parameter) => `typename ${parameter.binding.name}`).join(', ')}>`;
+  return `<${parameters.map((parameter) => `typename ${context.targetNames.get(parameter.binding.id) ?? pascalCase(parameter.binding.name)}`).join(', ')}>`;
 }
 
 function emitIdentifierReference(

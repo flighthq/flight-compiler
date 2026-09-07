@@ -4,19 +4,19 @@
 
 namespace flighthq_golden {
 
-struct circle {
+struct Circle {
   std::string kind;
   double radius;
 };
 
-struct square {
+struct Square {
   std::string kind;
   double side;
 };
 
-using shape = std::variant<circle, square>;
+using Shape = std::variant<Circle, Square>;
 
-double area(shape shape) {
+double area(Shape shape) {
   if ((shape.kind == "circle")) {
     return ((shape.radius * shape.radius) * 3.0);
   }

@@ -3,7 +3,7 @@
 
 namespace flighthq_golden {
 
-struct range {
+struct Range {
   double max;
   double min;
 };
@@ -15,7 +15,7 @@ enum class mode {
   Debug = 9.0,
 };
 
-range widen(range range, double by) {
+Range widen(Range range, double by) {
   return {.max = (range.max + by), .min = (range.min - by)};
 }
 

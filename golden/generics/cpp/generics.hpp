@@ -4,15 +4,15 @@
 namespace flighthq_golden {
 
 struct left_right {
-  left left;
-  right right;
+  Left left;
+  Right right;
 };
 
 template <typename Left, typename Right>
-using pair = left_right;
+using Pair = left_right;
 
 template <typename Value>
-value_2 identity(value_2 value) {
+Value identity(Value value) {
   return value;
 }
 

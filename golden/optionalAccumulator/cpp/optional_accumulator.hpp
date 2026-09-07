@@ -11,13 +11,13 @@ struct name_count {
   double count;
 };
 
-struct item {
+struct Item {
   std::string name;
   double count;
 };
 
-double busiest_count(std::vector<item> items) {
-  std::optional<item> best = std::nullopt;
+double busiest_count(std::vector<Item> items) {
+  std::optional<Item> best = std::nullopt;
   for (name_count item : items) {
     if ((!best.has_value() || (item.count > best.value().count))) {
       best = item;

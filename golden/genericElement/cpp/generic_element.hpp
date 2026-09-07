@@ -8,18 +8,18 @@
 namespace flighthq_golden {
 
 template <typename Value>
-struct box {
-  value contents;
+struct Box {
+  Value contents;
 };
 
 template <typename Value>
-value unwrap(box<value> box) {
+Value unwrap(Box<Value> box) {
   return box.contents;
 }
 
 template <typename Value>
-value first_of(std::vector<value> values, value fallback) {
-  const value first = values[static_cast<size_t>(0.0)];
+Value first_of(std::vector<Value> values, Value fallback) {
+  const Value first = values[static_cast<size_t>(0.0)];
   return first.value_or(fallback);
 }
 

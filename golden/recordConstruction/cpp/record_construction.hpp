@@ -5,18 +5,18 @@
 
 namespace flighthq_golden {
 
-struct entry {
+struct Entry {
   std::string key;
   double value;
 };
 
-std::vector<entry> appended(std::vector<entry> entries, std::string key, double value) {
-  const std::vector<entry> next = entries.slice();
+std::vector<Entry> appended(std::vector<Entry> entries, std::string key, double value) {
+  const std::vector<Entry> next = entries.slice();
   next.push_back({.key = key, .value = value});
   return next;
 }
 
-double tail_size(std::vector<entry> entries, double index) {
+double tail_size(std::vector<Entry> entries, double index) {
   return static_cast<double>(entries.slice(index).size());
 }
 

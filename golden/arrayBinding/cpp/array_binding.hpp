@@ -69,7 +69,7 @@ std::vector<bool> select_nested_mixed_rest(std::tuple<double, std::string, std::
   return tail;
 }
 
-double select_rows(rows<std::tuple<double, double>> rows) {
+double select_rows(Rows<std::tuple<double, double>> rows) {
   for (std::tuple<double, double> array_pattern_value : rows) {
     const double first = std::get<0>(array_pattern_value);
     const double second = std::get<1>(array_pattern_value);
@@ -79,6 +79,6 @@ double select_rows(rows<std::tuple<double, double>> rows) {
 }
 
 template <typename T>
-using rows = std::vector<t>;
+using Rows = std::vector<T>;
 
 } // namespace flighthq_golden

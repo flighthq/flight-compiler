@@ -5,12 +5,12 @@
 
 namespace flighthq_golden {
 
-struct options {
+struct Options {
   double retries;
   std::string label;
 };
 
-std::string summarize(options options) {
+std::string summarize(Options options) {
   const double retries = options.retries.value_or(0.0);
   return std::string("") + std::to_string(options.label) + std::string(":") + std::to_string(retries) + std::string("");
 }

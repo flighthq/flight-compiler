@@ -5,11 +5,11 @@
 
 namespace flighthq_golden {
 
-struct values {
+struct Values {
   double value;
 };
 
-std::string select_first_key(values values) {
+std::string select_first_key(Values values) {
   auto key;
   for (const std::string& variable_hoisting_iteration_value : std::vector<std::string>{"value"}) {
     {

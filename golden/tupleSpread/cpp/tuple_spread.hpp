@@ -6,10 +6,10 @@
 
 namespace flighthq_golden {
 
-using pair = std::tuple<double, std::string>;
+using Pair = std::tuple<double, std::string>;
 
-pair create_pair(double value, std::string text) {
-  const pair pair = std::make_tuple(value, text);
+Pair create_pair(double value, std::string text) {
+  const Pair pair = std::make_tuple(value, text);
   return pair;
 }
 
@@ -18,7 +18,7 @@ std::tuple<std::optional<bool>> create_optional() {
   return value;
 }
 
-std::tuple<double, double, std::string, double, std::string, std::optional<bool>> create_tuple_spread(pair pair) {
+std::tuple<double, double, std::string, double, std::string, std::optional<bool>> create_tuple_spread(Pair pair) {
   const std::tuple<double, double, std::string, double, std::string, std::optional<bool>> value = ([&]() { auto tuple_spread_element = 0.0; auto tuple_spread_value = pair; auto tuple_spread_value_2 = create_pair(2.0, "flight"); auto tuple_spread_value_3 = create_optional(); return std::make_tuple(tuple_spread_element, std::get<0>(tuple_spread_value), std::get<1>(tuple_spread_value), std::get<0>(tuple_spread_value_2), std::get<1>(tuple_spread_value_2), std::get<0>(tuple_spread_value_3)); })();
   create_pair(std::get<0>(pair), std::get<1>(pair));
   return value;

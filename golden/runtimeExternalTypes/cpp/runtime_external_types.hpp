@@ -10,6 +10,6 @@ struct values_task_bytes {
   std::vector<uint8_t> bytes;
 };
 
-using runtime_types = values_task_bytes;
+using RuntimeTypes = values_task_bytes;
 
 } // namespace flighthq_golden

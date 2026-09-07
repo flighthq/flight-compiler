@@ -4,27 +4,27 @@
 
 namespace flighthq_golden {
 
-struct named {
+struct Named {
   std::string name;
 };
 
-struct valued {
+struct Valued {
   double value;
 };
 
-std::string get_name(named item) {
+std::string get_name(Named item) {
   return item.name;
 }
 
-double get_value(valued item) {
+double get_value(Valued item) {
   return item.value;
 }
 
-std::string format_named(named item) {
+std::string format_named(Named item) {
   return "item: " + item.name;
 }
 
-bool is_positive(valued item) {
+bool is_positive(Valued item) {
   return (item.value > 0.0);
 }
 

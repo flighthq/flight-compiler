@@ -123,6 +123,21 @@ describe('emitIrModuleCpp', () => {
     expect(emitted.contents).toContain(': base(v)');
   });
 
+  it('emits type parameters as PascalCase and value bindings as snake_case', () => {
+    const result = lower(
+      'container.ts',
+      'export interface Box<Value> { contents: Value } export function unwrap<Value>(box: Box<Value>): Value { return box.contents; }',
+    );
+    const emitted = emitIrModuleCpp(result.module);
+
+    expect(emitted.contents).toContain('template <typename Value>');
+    expect(emitted.contents).toContain('Value contents');
+    expect(emitted.contents).toContain('Box<Value>');
+    expect(emitted.contents).toContain('Value unwrap');
+    expect(emitted.contents).not.toContain('value contents');
+    expect(emitted.contents).not.toContain('value unwrap');
+  });
+
   it('emits abstract methods as pure virtual', () => {
     const result = lower(
       'shape.ts',

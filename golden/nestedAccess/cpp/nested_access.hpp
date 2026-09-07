@@ -3,25 +3,25 @@
 
 namespace flighthq_golden {
 
-struct point {
+struct Point {
   double x;
   double y;
 };
 
-struct rect {
-  point origin;
-  point size;
+struct Rect {
+  Point origin;
+  Point size;
 };
 
-double area(rect rect) {
+double area(Rect rect) {
   return (rect.size.x * rect.size.y);
 }
 
-point translate(rect rect, double dx, double dy) {
+Point translate(Rect rect, double dx, double dy) {
   return {.x = (rect.origin.x + dx), .y = (rect.origin.y + dy)};
 }
 
-double diagonal(rect rect) {
+double diagonal(Rect rect) {
   const double w = rect.size.x;
   const double h = rect.size.y;
   return std::sqrt(((w * w) + (h * h)));

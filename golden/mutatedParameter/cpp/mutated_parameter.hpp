@@ -4,15 +4,15 @@
 
 namespace flighthq_golden {
 
-struct cell {
+struct Cell {
   double value;
 };
 
-void bump(cell cell, double next) {
+void bump(Cell cell, double next) {
   cell.value = next;
 }
 
-void bump_twice(cell cell) {
+void bump_twice(Cell cell) {
   bump(cell, 1.0);
   bump(cell, 2.0);
 }

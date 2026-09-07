@@ -3,42 +3,42 @@
 
 namespace flighthq_golden {
 
-struct rectangle {
+struct Rectangle {
   double height;
   double width;
 };
 
-double area(rectangle parameter_pattern_value) {
+double area(Rectangle parameter_pattern_value) {
   double width;
   double height;
-  const rectangle object_pattern_value = parameter_pattern_value;
+  const Rectangle object_pattern_value = parameter_pattern_value;
   width = object_pattern_value.width;
   height = object_pattern_value.height;
   return (width * height);
 }
 
-double perimeter(rectangle parameter_pattern_value) {
+double perimeter(Rectangle parameter_pattern_value) {
   double width;
   double height;
-  const rectangle object_pattern_value = parameter_pattern_value;
+  const Rectangle object_pattern_value = parameter_pattern_value;
   width = object_pattern_value.width;
   height = object_pattern_value.height;
   return (2.0 * (width + height));
 }
 
-double diagonal(rectangle parameter_pattern_value) {
+double diagonal(Rectangle parameter_pattern_value) {
   double width;
   double height;
-  const rectangle object_pattern_value = parameter_pattern_value;
+  const Rectangle object_pattern_value = parameter_pattern_value;
   width = object_pattern_value.width;
   height = object_pattern_value.height;
   return std::sqrt(((width * width) + (height * height)));
 }
 
-bool is_square(rectangle parameter_pattern_value) {
+bool is_square(Rectangle parameter_pattern_value) {
   double width;
   double height;
-  const rectangle object_pattern_value = parameter_pattern_value;
+  const Rectangle object_pattern_value = parameter_pattern_value;
   width = object_pattern_value.width;
   height = object_pattern_value.height;
   return (width == height);

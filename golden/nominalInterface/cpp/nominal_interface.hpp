@@ -4,7 +4,7 @@
 
 namespace flighthq_golden {
 
-struct advancer {
+struct Advancer {
   double step;
   std::function<double(double)> advance;
 };

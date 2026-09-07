@@ -3,24 +3,24 @@
 
 namespace flighthq_golden {
 
-struct point {
+struct Point {
   double x;
   double y;
 };
 
-point origin() {
+Point origin() {
   return {.x = 0.0, .y = 0.0};
 }
 
-point from_values(double x, double y) {
+Point from_values(double x, double y) {
   return {.x = x, .y = y};
 }
 
-point translate(point p, double dx, double dy) {
+Point translate(Point p, double dx, double dy) {
   return {.x = (p.x + dx), .y = (p.y + dy)};
 }
 
-double distance(point a, point b) {
+double distance(Point a, Point b) {
   const double dx = (a.x - b.x);
   const double dy = (a.y - b.y);
   return std::sqrt(((dx * dx) + (dy * dy)));

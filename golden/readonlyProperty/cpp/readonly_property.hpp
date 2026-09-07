@@ -4,21 +4,21 @@
 
 namespace flighthq_golden {
 
-struct config {
+struct Config {
   double width;
   double height;
   std::string label;
 };
 
-double get_area(config config) {
+double get_area(Config config) {
   return (config.width * config.height);
 }
 
-std::string get_label(config config) {
+std::string get_label(Config config) {
   return config.label;
 }
 
-double get_perimeter(config config) {
+double get_perimeter(Config config) {
   return (2.0 * (config.width + config.height));
 }
 

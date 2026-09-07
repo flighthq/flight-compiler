@@ -8,15 +8,15 @@ struct other_value {
   double value;
 };
 
-using shape = other_value;
+using Shape = other_value;
 
-double project(shape parameter_pattern_value, shape source) {
+double project(Shape parameter_pattern_value, Shape source) {
   double value;
-  const shape object_pattern_value = parameter_pattern_value;
+  const Shape object_pattern_value = parameter_pattern_value;
   value = object_pattern_value.value;
   double assigned = 0.0;
   {
-    const shape destructuring_assignment_value = source;
+    const Shape destructuring_assignment_value = source;
     assigned = destructuring_assignment_value.value;
   }
   return (value + assigned);

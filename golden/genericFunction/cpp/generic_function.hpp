@@ -6,17 +6,17 @@
 namespace flighthq_golden {
 
 template <typename T>
-t identity(t value) {
+T identity(T value) {
   return value;
 }
 
 template <typename T>
-t first_element(std::vector<t> items) {
+T first_element(std::vector<T> items) {
   return items[static_cast<size_t>(0.0)];
 }
 
 template <typename A, typename B>
-std::tuple<a_2, b_2> pair(a_2 a, b_2 b) {
+std::tuple<A, B> pair(A a, B b) {
   return std::make_tuple(a, b);
 }
 

@@ -6,11 +6,11 @@
 
 namespace flighthq_golden {
 
-struct entry {
+struct Entry {
   std::string key;
 };
 
-std::string first_key(std::vector<entry> entries) {
+std::string first_key(std::vector<Entry> entries) {
   return entries[static_cast<size_t>(0.0)].key.value_or("none");
 }
 
