@@ -1,0 +1,14 @@
+[
+  { "call": "sign", "arguments": [5], "returns": "string" },
+  { "call": "sign", "arguments": [-3], "returns": "string" },
+  { "call": "sign", "arguments": [0], "returns": "string" },
+  { "call": "bounds", "arguments": [[1, 5, 3, 7, 2]], "returns": "number" },
+  { "call": "bounds", "arguments": [[10]], "returns": "number" },
+  { "call": "bounds", "arguments": [[-3, -1, -5]], "returns": "number" },
+  { "call": "grade", "arguments": [95], "returns": "string" },
+  { "call": "grade", "arguments": [85], "returns": "string" },
+  { "call": "grade", "arguments": [75], "returns": "string" },
+  { "call": "grade", "arguments": [65], "returns": "string" },
+  { "call": "grade", "arguments": [50], "returns": "string" },
+  { "call": "grade", "arguments": [90], "returns": "string" }
+]

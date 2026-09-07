@@ -1,0 +1,15 @@
+[
+  { "call": "spread", "arguments": [3], "returns": "number" },
+  { "call": "spread", "arguments": [0], "returns": "number" },
+  { "call": "spread", "arguments": [-2], "returns": "number" },
+  { "call": "mirror", "arguments": ["abc"], "returns": "string" },
+  { "call": "mirror", "arguments": ["a"], "returns": "string" },
+  { "call": "mirror", "arguments": [""], "returns": "string" },
+  { "call": "clampAndScale", "arguments": [5, 0, 10], "returns": "number" },
+  { "call": "clampAndScale", "arguments": [-5, 0, 10], "returns": "number" },
+  { "call": "clampAndScale", "arguments": [15, 0, 10], "returns": "number" },
+  { "call": "clampAndScale", "arguments": [0, 0, 10], "returns": "number" },
+  { "call": "repeatJoin", "arguments": ["ha", 3, "-"], "returns": "string" },
+  { "call": "repeatJoin", "arguments": ["x", 1, ","], "returns": "string" },
+  { "call": "repeatJoin", "arguments": ["ab", 4, ""], "returns": "string" }
+]

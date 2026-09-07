@@ -1,0 +1,39 @@
+[
+  { "call": "translate", "arguments": [{ "x": 1, "y": 2 }, 3, 4], "returns": "json" },
+  { "call": "translate", "arguments": [{ "x": 0, "y": 0 }, 0, 0], "returns": "json" },
+  { "call": "translate", "arguments": [{ "x": -1, "y": -2 }, 1, 2], "returns": "json" },
+  { "call": "scale", "arguments": [{ "x": 3, "y": 4 }, 2], "returns": "json" },
+  { "call": "scale", "arguments": [{ "x": 1, "y": -1 }, 0], "returns": "json" },
+  {
+    "call": "distance",
+    "arguments": [
+      { "x": 0, "y": 0 },
+      { "x": 3, "y": 4 }
+    ],
+    "returns": "number"
+  },
+  {
+    "call": "distance",
+    "arguments": [
+      { "x": 0, "y": 0 },
+      { "x": 0, "y": 0 }
+    ],
+    "returns": "number"
+  },
+  {
+    "call": "midpoint",
+    "arguments": [
+      { "x": 0, "y": 0 },
+      { "x": 4, "y": 6 }
+    ],
+    "returns": "json"
+  },
+  {
+    "call": "midpoint",
+    "arguments": [
+      { "x": -1, "y": -1 },
+      { "x": 1, "y": 1 }
+    ],
+    "returns": "json"
+  }
+]

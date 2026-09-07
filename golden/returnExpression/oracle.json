@@ -1,0 +1,19 @@
+[
+  { "call": "abs", "arguments": [5], "returns": "number" },
+  { "call": "abs", "arguments": [-5], "returns": "number" },
+  { "call": "abs", "arguments": [0], "returns": "number" },
+  { "call": "maxOfThree", "arguments": [1, 2, 3], "returns": "number" },
+  { "call": "maxOfThree", "arguments": [3, 1, 2], "returns": "number" },
+  { "call": "maxOfThree", "arguments": [2, 3, 1], "returns": "number" },
+  { "call": "maxOfThree", "arguments": [5, 5, 5], "returns": "number" },
+  { "call": "describe", "arguments": [0], "returns": "string" },
+  { "call": "describe", "arguments": [10], "returns": "string" },
+  { "call": "describe", "arguments": [-3], "returns": "string" },
+  { "call": "safeDiv", "arguments": [10, 3], "returns": "number" },
+  { "call": "safeDiv", "arguments": [10, 0], "returns": "number" },
+  { "call": "safeDiv", "arguments": [0, 5], "returns": "number" },
+  { "call": "between", "arguments": [5, 1, 10], "returns": "boolean" },
+  { "call": "between", "arguments": [0, 1, 10], "returns": "boolean" },
+  { "call": "between", "arguments": [1, 1, 10], "returns": "boolean" },
+  { "call": "between", "arguments": [10, 1, 10], "returns": "boolean" }
+]

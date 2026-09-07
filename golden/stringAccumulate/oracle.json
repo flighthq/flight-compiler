@@ -1,0 +1,14 @@
+[
+  { "call": "join", "arguments": [["a", "b", "c"], ","], "returns": "string" },
+  { "call": "join", "arguments": [["hello"], "-"], "returns": "string" },
+  { "call": "join", "arguments": [[], ","], "returns": "string" },
+  { "call": "join", "arguments": [["x", "y"], ""], "returns": "string" },
+  { "call": "repeat", "arguments": ["ab", 3], "returns": "string" },
+  { "call": "repeat", "arguments": ["x", 0], "returns": "string" },
+  { "call": "repeat", "arguments": ["!", 5], "returns": "string" },
+  { "call": "wrap", "arguments": ["hello", "[", "]"], "returns": "string" },
+  { "call": "wrap", "arguments": ["", "<", ">"], "returns": "string" },
+  { "call": "padLeft", "arguments": ["42", 5, "0"], "returns": "string" },
+  { "call": "padLeft", "arguments": ["hello", 3, " "], "returns": "string" },
+  { "call": "padLeft", "arguments": ["x", 4, "."], "returns": "string" }
+]
