@@ -754,6 +754,24 @@ describe('emitIrModuleRust', () => {
     );
   });
 
+  it('emits exponentiation as f64::powf and bitwise operators with i32 casts', () => {
+    const power = lower('power.ts', 'export function power(a: number, b: number): number { return a ** b; }');
+    const powerAssign = lower(
+      'power-assign.ts',
+      'export function power(a: number, b: number): number { let x: number = a; x **= b; return x; }',
+    );
+    const bitAnd = lower('bit-and.ts', 'export function bitAnd(a: number, b: number): number { return a & b; }');
+    const bitAndAssign = lower(
+      'bit-and-assign.ts',
+      'export function bitAnd(a: number, b: number): number { let x: number = a; x &= b; return x; }',
+    );
+
+    expect(emitIrModuleRust(power.module).contents).toContain('return f64::powf(a, b);');
+    expect(emitIrModuleRust(powerAssign.module).contents).toContain('x = f64::powf(x, b);');
+    expect(emitIrModuleRust(bitAnd.module).contents).toContain('((a as i32) & (b as i32)) as f64');
+    expect(emitIrModuleRust(bitAndAssign.module).contents).toContain('x = (((x as i32) & (b as i32)) as f64)');
+  });
+
   it('rejects module facades and emits normalized switch fallthrough', () => {
     const barrel = lower('barrel.ts', "export * from './other.js';");
     const fallthrough = lower(
@@ -780,16 +798,6 @@ describe('emitIrModuleRust', () => {
   });
 
   it.each([
-    [
-      'assignment',
-      'export function power(a: number, b: number): number { a **= b; return a; }',
-      'operator **= requires Rust semantic lowering',
-    ],
-    [
-      'binary',
-      'export function power(a: number, b: number): number { return a ** b; }',
-      'operator ** requires Rust semantic lowering',
-    ],
     [
       'keyword unary',
       'export function type(a: number): string { return typeof a; }',

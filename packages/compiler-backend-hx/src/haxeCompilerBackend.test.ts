@@ -678,16 +678,6 @@ describe('emitIrModuleHaxe', () => {
 
   it.each([
     [
-      'assignment',
-      'export function power(a: number, b: number): number { a **= b; return a; }',
-      'operator **= requires Haxe semantic lowering',
-    ],
-    [
-      'binary',
-      'export function power(a: number, b: number): number { return a ** b; }',
-      'operator ** requires Haxe semantic lowering',
-    ],
-    [
       'keyword unary',
       'export function type(a: number): string { return typeof a; }',
       'operator typeof requires Haxe semantic lowering',
@@ -860,6 +850,24 @@ describe('emitIrModuleHaxe', () => {
     expect(() => emitIrModuleHaxe(loose.module)).toThrow(
       'operator == on number and number requires Haxe type-directed lowering',
     );
+  });
+
+  it('emits exponentiation as Math.pow and bitwise operators with Std.int wrapping', () => {
+    const power = lower('power.ts', 'export function power(a: number, b: number): number { return a ** b; }');
+    const powerAssign = lower(
+      'power-assign.ts',
+      'export function power(a: number, b: number): number { let x: number = a; x **= b; return x; }',
+    );
+    const bitAnd = lower('bit-and.ts', 'export function bitAnd(a: number, b: number): number { return a & b; }');
+    const bitAndAssign = lower(
+      'bit-and-assign.ts',
+      'export function bitAnd(a: number, b: number): number { let x: number = a; x &= b; return x; }',
+    );
+
+    expect(emitIrModuleHaxe(power.module).contents).toContain('return Math.pow(a, b);');
+    expect(emitIrModuleHaxe(powerAssign.module).contents).toContain('x = Math.pow(x, b);');
+    expect(emitIrModuleHaxe(bitAnd.module).contents).toContain('return Std.int(a) & Std.int(b);');
+    expect(emitIrModuleHaxe(bitAndAssign.module).contents).toContain('x = Std.int(x) & Std.int(b);');
   });
 
   it('emits completion-preserving async functions through the Haxe task runtime ABI', () => {
