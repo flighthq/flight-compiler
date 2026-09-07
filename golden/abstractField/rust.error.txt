@@ -1,1 +1,0 @@
-rust emission failed for @flighthq/golden/packages/golden/src/abstractField.ts: abstract class Component carries state a Rust trait cannot hold

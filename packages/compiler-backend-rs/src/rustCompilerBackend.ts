@@ -48,6 +48,7 @@ import type {
   IrBinaryOperatorSemantics,
   IrBindingIdentity,
   IrClassDeclaration,
+  IrClassField,
   IrClassMethod,
   IrControlFlowLabelIdentity,
   IrDeclaration,
@@ -100,6 +101,7 @@ interface PrimitiveUnionEnum {
 }
 
 interface EmitContext {
+  abstractFieldNames: ReadonlySet<string>;
   anonymousObjectRecords: Map<string, Readonly<{ name: string; properties: readonly IrObjectTypeProperty[] }>>;
   cellWrappedBindingIds: ReadonlySet<string>;
   // Which bindings the module rebinds. Rust needs `mut` on a parameter that is assigned to, and the
@@ -213,6 +215,7 @@ function emitIrModuleRustWithContext(
   const primitiveUnionBindingIds = new Map<string, string>();
   const taggedUnionBindingNames = new Map<string, string>();
   const context: EmitContext = {
+    abstractFieldNames: new Set(),
     accessorClassNames,
     anonymousObjectRecords: new Map(),
     cellWrappedBindingIds,
@@ -444,9 +447,12 @@ function emitClass(declaration: Readonly<IrClassDeclaration>, context: EmitConte
     if (target?.kind !== 'interface') continue;
     for (const property of target.properties) traitMethodNames.set(property.name, emitType(reference, context));
   }
+  const traitAbstractFields = new Map<string, readonly IrClassField[]>();
   if (abstractBase) {
     const traitName = getBindingTargetNameRust(abstractBase.binding, context);
     for (const method of abstractBase.methods) traitMethodNames.set(method.name, traitName);
+    const abstractFields = abstractBase.fields.filter((field) => field.abstract);
+    if (abstractFields.length > 0) traitAbstractFields.set(traitName, abstractFields);
   }
   const traitDataProperties = new Map<string, IrObjectTypeProperty[]>();
   for (const reference of declaration.implements) {
@@ -489,17 +495,31 @@ function emitClass(declaration: Readonly<IrClassDeclaration>, context: EmitConte
       `impl${emitTypeParameters(declaration.typeParameters, context)} ${trait} for ${getBindingTargetNameRust(declaration.binding, context)}${emitTypeArguments(declaration.typeParameters, context)} {`,
     );
     const traitAccessors = traitDataProperties.get(trait) ?? [];
-    traitMethods.forEach((method, index) => {
-      if (index > 0) lines.push('');
-      lines.push(...emitMethodLines(method));
+    const abstractFields = traitAbstractFields.get(trait) ?? [];
+    let emittedCount = 0;
+    abstractFields.forEach((field) => {
+      if (emittedCount > 0) lines.push('');
+      const owned = isIrTypeCopyValueRust(field.type) ? '' : '.clone()';
+      lines.push(
+        `  fn ${safeRustValueName(field.name)}(&self) -> ${emitType(field.type, context)} {`,
+        `    self.${safeRustValueName(field.name)}${owned}`,
+        '  }',
+      );
+      emittedCount++;
     });
-    traitAccessors.forEach((property, index) => {
-      if (index > 0 || traitMethods.length > 0) lines.push('');
+    traitMethods.forEach((method) => {
+      if (emittedCount > 0) lines.push('');
+      lines.push(...emitMethodLines(method));
+      emittedCount++;
+    });
+    traitAccessors.forEach((property) => {
+      if (emittedCount > 0) lines.push('');
       lines.push(
         `  fn ${safeRustValueName(property.name)}(&self) -> ${emitType(property.type, context)} {`,
         `    self.${safeRustValueName(property.name)}.clone()`,
         '  }',
       );
+      emittedCount++;
     });
     lines.push('}');
   }
@@ -986,6 +1006,13 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
       if (expression.object.kind === 'identifier' && expression.object.reference.kind === 'ambient') {
         const member = getCompilerRuntimeExternalMemberTargetRust(expression.object.reference.name, expression.name);
         if (member) return member;
+      }
+      if (
+        expression.object.kind === 'identifier' &&
+        expression.object.reference.kind === 'this' &&
+        context.abstractFieldNames.has(expression.name)
+      ) {
+        return `self.${safeRustValueName(expression.name)}()`;
       }
       const needsClone =
         expression.object.kind === 'element' ||
@@ -2648,25 +2675,36 @@ function getIrClassStatelessAbstractBaseRust(
   const target = context.module.declarations.find(
     (candidate) => candidate.kind === 'class' && candidate.binding.id === binding.id,
   );
-  return target?.kind === 'class' && target.abstract && target.fields.length === 0 && !target.extends
+  return target?.kind === 'class' &&
+    target.abstract &&
+    target.fields.every((field) => field.abstract) &&
+    !target.extends
     ? target
     : undefined;
 }
 
 function emitAbstractClassTraitRust(declaration: Readonly<IrClassDeclaration>, context: EmitContext): string[] {
-  if (declaration.fields.length > 0) {
+  if (declaration.fields.some((field) => !field.abstract)) {
     emissionError(context, `abstract class ${declaration.binding.name} carries state a Rust trait cannot hold`);
   }
   if (declaration.classConstructor && declaration.classConstructor.body.length > 0) {
     emissionError(context, `abstract class ${declaration.binding.name} constructor has no Rust trait equivalent`);
   }
+  const abstractFields = declaration.fields.filter((field) => field.abstract);
+  const fieldNames = new Set(abstractFields.map((field) => field.name));
   const mutating = getIrClassMutatingMethodNamesRust(declaration);
   const visibility = declaration.exported ? 'pub ' : '';
   const lines = [
     `${visibility}trait ${getBindingTargetNameRust(declaration.binding, context)}${emitTypeParameters(declaration.typeParameters, context)} {`,
   ];
-  declaration.methods.forEach((method, index) => {
+  abstractFields.forEach((field, index) => {
     if (index > 0) lines.push('');
+    lines.push(`  fn ${safeRustValueName(field.name)}(&self) -> ${emitType(field.type, context)};`);
+  });
+  const previousAbstractFieldNames = context.abstractFieldNames;
+  (context as { abstractFieldNames: ReadonlySet<string> }).abstractFieldNames = fieldNames;
+  declaration.methods.forEach((method, index) => {
+    if (index > 0 || abstractFields.length > 0) lines.push('');
     const target = getIrClassMethodTargetNameRust(method);
     const parameters = [
       ...(method.static ? [] : [method.accessor === 'set' || mutating.has(target) ? '&mut self' : '&self']),
@@ -2674,14 +2712,13 @@ function emitAbstractClassTraitRust(declaration: Readonly<IrClassDeclaration>, c
     ].join(', ');
     const returns = method.accessor === 'set' ? '()' : emitType(method.returns, context);
     const signature = `  fn ${target}${emitTypeParameters(method.typeParameters, context)}(${parameters}) -> ${returns}`;
-    // A method the abstract class implements becomes the trait's default body, which is how a
-    // subclass inherits it without restating it.
     if (method.abstract) {
       lines.push(`${signature};`);
       return;
     }
     lines.push(`${signature} {`, ...indentSourceLines(emitStatements(method.body, context), 2), '  }');
   });
+  (context as { abstractFieldNames: ReadonlySet<string> }).abstractFieldNames = previousAbstractFieldNames;
   lines.push('}');
   return lines;
 }

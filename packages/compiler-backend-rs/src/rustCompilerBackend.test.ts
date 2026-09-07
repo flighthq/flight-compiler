@@ -1408,6 +1408,23 @@ describe('emitIrModuleRust', () => {
     expect(output).not.toContain('self.flags.clone()');
   });
 
+  it('emits abstract fields as trait method signatures with subclass getters', () => {
+    const result = lower(
+      'abstract-field.ts',
+      'export abstract class Component { abstract name: string; abstract readonly version: number; public describe(): string { return this.name; } } export class Button extends Component { name: string = "button"; readonly version: number = 1; }',
+    );
+    const output = emitIrModuleRust(result.module).contents;
+
+    expect(output).toContain('trait Component');
+    expect(output).toContain('fn name(&self) -> String;');
+    expect(output).toContain('fn version(&self) -> f64;');
+    expect(output).toContain('fn describe(&self) -> String {');
+    expect(output).toContain('self.name()');
+    expect(output).toContain('impl Component for Button');
+    expect(output).toContain('self.name.clone()');
+    expect(output).not.toContain('self.version.clone()');
+  });
+
   it('emits primitive union enums with typeof narrowing and ambient member dispatch', () => {
     const module = lower(
       'typeof-union.ts',
