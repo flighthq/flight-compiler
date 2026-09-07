@@ -3115,7 +3115,15 @@ function getTypeScriptReferenceNarrowedMember(
   const declared = context.checker.getTypeOfSymbolAtLocation(symbol, declaration);
   if (!declared.isUnion()) return {};
   const flow = context.checker.getTypeAtLocation(node);
-  if (flow.isUnion()) return {};
+  if (flow.isUnion()) {
+    if (
+      flow.types.length === 2 &&
+      flow.types.every((t) => t.flags & ts.TypeFlags.BooleanLiteral) &&
+      declared.types.some((t) => t.flags & ts.TypeFlags.BooleanLiteral)
+    )
+      return { narrowedMember: 'boolean' };
+    return {};
+  }
   const narrowed = getTypeScriptNamedTypeMemberName(flow) ?? getTypeScriptPrimitiveTypeName(flow);
   if (!narrowed) return {};
   const members = declared.types.map(

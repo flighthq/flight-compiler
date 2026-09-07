@@ -2888,6 +2888,29 @@ describe('lowerTypeScriptSource', () => {
     expect(result.diagnostics).toEqual([]);
     expect(narrowed).toMatchObject({ kind: 'identifier', narrowedMember: 'string' });
   });
+
+  it('sets narrowedMember for the third alternative narrowed by elimination', () => {
+    const result = lower(
+      'three-way-narrowing.ts',
+      `export function format(value: string | number | boolean): string {
+         if (typeof value === 'string') { return value; }
+         if (typeof value === 'number') { return String(value); }
+         return value ? 'yes' : 'no';
+       }`,
+    );
+    const format = result.module.declarations.find(
+      (declaration) => declaration.kind === 'function' && declaration.binding.name === 'format',
+    );
+    const body = format?.kind === 'function' ? format.body : [];
+    const lastStmt = body[body.length - 1];
+    const condition =
+      lastStmt?.kind === 'return' && lastStmt.expression?.kind === 'conditional'
+        ? lastStmt.expression.condition
+        : undefined;
+
+    expect(result.diagnostics).toEqual([]);
+    expect(condition).toMatchObject({ kind: 'identifier', narrowedMember: 'boolean' });
+  });
 });
 
 function ambientReference(expression: Readonly<IrExpression> | undefined): string {
