@@ -740,6 +740,10 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
           if (binding.kind === 'splitCollect') {
             return `${receiver}.${binding.targetName}(${values.join(', ')}).map(|s| s.to_string()).collect::<Vec<String>>()`;
           }
+          if (binding.kind === 'optionalLookup') {
+            const borrowed = expression.arguments.map((argument) => emitBorrowedTextRust(argument, context));
+            return `${receiver}.${binding.targetName}(${borrowed.join(', ')}).cloned()`;
+          }
           const leading = binding.kind === 'method' ? (binding.leadingArguments ?? []) : [];
           const trailing = binding.kind === 'borrowedMethod' ? (binding.trailingArguments ?? []) : [];
           return `${receiver}.${binding.targetName}(${[...leading, ...values, ...trailing].join(', ')})${binding.owns ? '.to_owned()' : ''}`;

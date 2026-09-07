@@ -80,6 +80,13 @@ describe('getCompilerRustAmbientMemberBinding', () => {
     });
   });
 
+  it('spells map get as an optional lookup that clones the reference', () => {
+    expect(getCompilerRustAmbientMemberBinding({ name: 'get', receiver: 'map' })).toEqual({
+      kind: 'optionalLookup',
+      targetName: 'get',
+    });
+  });
+
   it('spells array shift as remove at index zero', () => {
     expect(getCompilerRustAmbientMemberBinding({ name: 'shift', receiver: 'array' })).toEqual({
       kind: 'method',
