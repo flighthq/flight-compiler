@@ -5,7 +5,7 @@ pub fn first_above(values: Vec<f64>, threshold: f64) -> f64 {
   let mut i: f64 = 0.0;
   while i < (values.len() as f64) {
     if values[i as usize] > threshold {
-      return values[i as usize];
+      return values[i as usize].clone();
     }
     i += 1.0;
   }

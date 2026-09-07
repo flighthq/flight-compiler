@@ -1493,6 +1493,13 @@ function emitOwnedOperandRust(expression: Readonly<IrExpression>, context: EmitC
   return source;
 }
 
+function emitReturnedExpressionRust(expression: Readonly<IrExpression>, context: EmitContext): string {
+  const source = emitExpression(expression, context);
+  if (expression.kind === 'element' && !expression.optional && expression.semantics.receivers.includes('array'))
+    return `${source}.clone()`;
+  return source;
+}
+
 // A value lent to a callee that mutates through it. An argument that is already a mutable borrow is
 // passed as it stands, because Rust reborrows it: taking a reference to it again would hand the
 // callee a reference to the reference.
@@ -1763,7 +1770,7 @@ function emitStatement(statement: Readonly<IrStatement>, context: EmitContext): 
         emissionError(context, 'returning a nullable binding requires Rust narrowing evidence');
       }
       return [
-        `return${statement.expression ? ` ${normalizeSourceTextGrouping(emitExpression(statement.expression, context))}` : ''};`,
+        `return${statement.expression ? ` ${normalizeSourceTextGrouping(emitReturnedExpressionRust(statement.expression, context))}` : ''};`,
       ];
     case 'switch': {
       const name = getGeneratedTargetNameRust('switch_value', context);

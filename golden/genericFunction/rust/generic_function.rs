@@ -6,7 +6,7 @@ pub fn identity<T>(value: T) -> T {
 }
 
 pub fn first_element<T>(items: Vec<T>) -> T {
-  return items[0];
+  return items[0].clone();
 }
 
 pub fn pair<A, B>(a: A, b: B) -> (A, B) {
