@@ -1257,6 +1257,23 @@ describe('emitIrModuleRust', () => {
     expect(greetOutput).toContain('name.clone().unwrap()');
   });
 
+  it('extracts the narrowed primitive from a union identifier after typeof guards', () => {
+    const twoMember = lower(
+      'two-union.ts',
+      'export function describe(value: string | number): string { if (typeof value === "string") { return value.toUpperCase(); } return `number ${value}`; }',
+    );
+    const twoOutput = emitIrModuleRust(twoMember.module).contents;
+    expect(twoOutput).toContain('*value.as_f64()');
+
+    const threeMember = lower(
+      'three-union.ts',
+      'export function format(value: string | number | boolean): string { if (typeof value === "string") { return value; } if (typeof value === "number") { return `${value}`; } return value ? "yes" : "no"; }',
+    );
+    const threeOutput = emitIrModuleRust(threeMember.module).contents;
+    expect(threeOutput).toContain('*value.as_f64()');
+    expect(threeOutput).toContain('*value.as_bool()');
+  });
+
   it('clones array element access in variable initializers to prevent move-out', () => {
     const module = lower(
       'array-init.ts',
