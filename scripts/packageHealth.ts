@@ -47,8 +47,23 @@ const packageRules: Readonly<Record<string, PackageRule>> = {
     dependencies: [],
     description: 'The ambient value and type surface generated code may assume',
   },
+  'compiler-backend-cpp': {
+    dependencies: [
+      'compiler-canonical-form',
+      'compiler-closure',
+      'compiler-emission',
+      'compiler-ir-traversal',
+      'compiler-lowering',
+      'compiler-runtime-contract',
+      'compiler-structural',
+      'compiler-types',
+    ],
+    description: 'C++ lowering, naming, and source emission backend',
+    devDependencies: ['compiler-semantic'],
+  },
   'compiler-command-line': {
     dependencies: [
+      'compiler-backend-cpp',
       'compiler-backend-hx',
       'compiler-backend-rs',
       'compiler-canonical-form',

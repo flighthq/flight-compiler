@@ -113,6 +113,27 @@ if (hasCommand('rustc', ['--version'])) {
   reports.push('rustc not installed (skipped)');
 }
 
+if (hasCommand('g++', ['--version'])) {
+  const cppFixtures = fixtures.filter((fixture) => existsSync(path.join(goldenDirectory, fixture, 'cpp')));
+  for (const fixture of cppFixtures) {
+    const emitted = path.join(goldenDirectory, fixture, 'cpp');
+    const headers = collectSourceFiles(emitted, '.hpp');
+    if (headers.length === 0) continue;
+    checked += headers.length;
+    for (const header of headers) {
+      const result = spawnSync('g++', ['-std=c++17', '-fsyntax-only', '-x', 'c++-header', path.join(emitted, header)], {
+        cwd: emitted,
+        encoding: 'utf8',
+      });
+      const output = `${result.stdout ?? ''}${result.stderr ?? ''}`;
+      if (result.status !== 0) failures.push({ fixture: `cpp/${fixture}/${header}`, output: output.trim() });
+    }
+  }
+  reports.push(`cpp ${String(cppFixtures.length)} fixtures`);
+} else {
+  reports.push('g++ not installed (skipped)');
+}
+
 if (failures.length > 0) {
   for (const failure of failures) {
     process.stderr.write(`\n### ${failure.fixture}\n${failure.output}\n`);

@@ -53,9 +53,9 @@ const divergent = fixtures.filter((fixture) => {
   const verdicts = targets.map(
     (target) => outcomes.find((outcome) => outcome.fixture === fixture && outcome.target === target)?.verdict,
   );
-  return verdicts[0] !== verdicts[1];
+  return new Set(verdicts).size > 1;
 });
-lines.push('', `Divergent fixtures, where one target emits and the other refuses: ${String(divergent.length)}`);
+lines.push('', `Divergent fixtures, where targets disagree on emit vs. refuse: ${String(divergent.length)}`);
 for (const fixture of divergent) lines.push(`  ${fixture}`);
 
 lines.push('', 'Blocking rules, most fixtures first:');
