@@ -69,4 +69,117 @@ describe('collectIrModuleNullableBindingIds', () => {
 
     expect([...collectIrModuleNullableBindingIds(module)]).toEqual(['optionalParameter']);
   });
+
+  it('collects optional parameters whose type has no absent member', () => {
+    const number: IrType = { kind: 'primitive', name: 'number' };
+    const origin: CompilerSourceOrigin = {
+      column: 1,
+      fingerprint: `sha256:${'0'.repeat(64)}`,
+      line: 1,
+      packageName: '@flighthq/math',
+      source: 'optional.ts',
+    };
+    const module: IrModule = {
+      declarations: [
+        {
+          async: false,
+          binding: { ...origin, id: 'add', kind: 'function', name: 'add', scope: 'module', space: 'value' } as const,
+          body: [],
+          exported: true,
+          kind: 'function',
+          origin,
+          overloads: [],
+          parameters: [
+            {
+              binding: { ...origin, id: 'a', kind: 'parameter', name: 'a', scope: 'function', space: 'value' } as const,
+              optional: false,
+              rest: false,
+              type: number,
+            },
+            {
+              binding: { ...origin, id: 'b', kind: 'parameter', name: 'b', scope: 'function', space: 'value' } as const,
+              optional: true,
+              rest: false,
+              type: number,
+            },
+          ],
+          returns: number,
+          typeParameters: [],
+        },
+      ],
+      exports: [],
+      imports: [],
+      name: 'Optional',
+      packageName: '@flighthq/math',
+      source: 'optional.ts',
+    };
+
+    const ids = [...collectIrModuleNullableBindingIds(module)];
+    expect(ids).toContain('b');
+    expect(ids).not.toContain('a');
+  });
+
+  it('excludes optional parameters that have a default initializer', () => {
+    const number: IrType = { kind: 'primitive', name: 'number' };
+    const origin: CompilerSourceOrigin = {
+      column: 1,
+      fingerprint: `sha256:${'0'.repeat(64)}`,
+      line: 1,
+      packageName: '@flighthq/math',
+      source: 'defaulted.ts',
+    };
+    const module: IrModule = {
+      declarations: [
+        {
+          async: false,
+          binding: { ...origin, id: 'add', kind: 'function', name: 'add', scope: 'module', space: 'value' } as const,
+          body: [],
+          exported: true,
+          kind: 'function',
+          origin,
+          overloads: [],
+          parameters: [
+            {
+              binding: {
+                ...origin,
+                id: 'defaulted',
+                kind: 'parameter',
+                name: 'defaulted',
+                scope: 'function',
+                space: 'value',
+              } as const,
+              initializer: { kind: 'literal', value: 0 },
+              optional: true,
+              rest: false,
+              type: number,
+            },
+            {
+              binding: {
+                ...origin,
+                id: 'bare',
+                kind: 'parameter',
+                name: 'bare',
+                scope: 'function',
+                space: 'value',
+              } as const,
+              optional: true,
+              rest: false,
+              type: number,
+            },
+          ],
+          returns: number,
+          typeParameters: [],
+        },
+      ],
+      exports: [],
+      imports: [],
+      name: 'Defaulted',
+      packageName: '@flighthq/math',
+      source: 'defaulted.ts',
+    };
+
+    const ids = [...collectIrModuleNullableBindingIds(module)];
+    expect(ids).toContain('bare');
+    expect(ids).not.toContain('defaulted');
+  });
 });

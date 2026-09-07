@@ -12,7 +12,8 @@ export function collectIrModuleNullableBindingIds(module: Readonly<IrModule>): R
   const nullable = new Set<string>();
   analyzeIrModuleTraversal(module, {
     parameter(parameter) {
-      if (hasIrTypeAbsentMember(parameter.type)) nullable.add(parameter.binding.id);
+      if ((parameter.optional && !parameter.initializer) || hasIrTypeAbsentMember(parameter.type))
+        nullable.add(parameter.binding.id);
       return undefined;
     },
     variable(variable) {

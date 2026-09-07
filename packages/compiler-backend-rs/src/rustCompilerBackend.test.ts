@@ -1241,6 +1241,22 @@ describe('emitIrModuleRust', () => {
     expect(() => emitIrModuleRust(open.module)).toThrow('requires Rust narrowing evidence');
   });
 
+  it('unwraps narrowed optional parameters in expressions after an is_some guard', () => {
+    const addResult = lower(
+      'addopt.ts',
+      'export function addOptional(a: number, b?: number): number { if (b !== undefined) { return a + b; } return a; }',
+    );
+    const addOutput = emitIrModuleRust(addResult.module).contents;
+    expect(addOutput).toContain('return a + b.clone().unwrap();');
+
+    const greetResult = lower(
+      'greetopt.ts',
+      'export function greetOptional(name?: string): string { if (name !== undefined) { return `Hello, ${name}!`; } return "Hello, stranger!"; }',
+    );
+    const greetOutput = emitIrModuleRust(greetResult.module).contents;
+    expect(greetOutput).toContain('name.clone().unwrap()');
+  });
+
   it('reads an array length as len and an indexed element through get', () => {
     // Rust spells a collection's length `len()` and counts in `usize`, and its `[]` panics where the
     // source language returns undefined. Emitting `.length` and `[]` produced Rust that neither

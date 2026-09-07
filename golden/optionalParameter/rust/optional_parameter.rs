@@ -3,14 +3,14 @@
 
 pub fn greet_optional(name: Option<String>) -> String {
   if name.is_some() {
-    return format!("Hello, {}!", name);
+    return format!("Hello, {}!", name.clone().unwrap());
   }
   return "Hello, stranger!".to_owned();
 }
 
 pub fn add_optional(a: f64, b: Option<f64>) -> f64 {
   if b.is_some() {
-    return a + b;
+    return a + b.clone().unwrap();
   }
   return a;
 }
@@ -18,10 +18,10 @@ pub fn add_optional(a: f64, b: Option<f64>) -> f64 {
 pub fn format_optional(value: f64, prefix: Option<String>, suffix: Option<String>) -> String {
   let mut result: String = format!("{}", value);
   if prefix.is_some() {
-    result = format!("{}{}", prefix, result);
+    result = format!("{}{}", prefix.clone().unwrap(), result);
   }
   if suffix.is_some() {
-    result = format!("{}{}", result, suffix);
+    result = format!("{}{}", result, suffix.clone().unwrap());
   }
   return result;
 }
