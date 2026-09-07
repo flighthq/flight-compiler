@@ -8,17 +8,17 @@ struct point {
   double x;
   double y;
   point(double x, double y) {
-    *this.x = x;
-    *this.y = y;
+    this->x = x;
+    this->y = y;
   }
   double length() {
-    return (*this.x + *this.y);
+    return (this->x + this->y);
   }
   std::string describe() {
-    return std::string("point ") + std::to_string(*this.x) + std::string(", ") + std::to_string(*this.y) + std::string("");
+    return std::string("point ") + std::to_string(this->x) + std::string(", ") + std::to_string(this->y) + std::string("");
   }
   std::string bare() {
-    return std::string("") + std::to_string(*this.x) + std::string("");
+    return std::string("") + std::to_string(this->x) + std::string("");
   }
 };
 

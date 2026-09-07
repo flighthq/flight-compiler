@@ -8,20 +8,20 @@ struct rectangle {
   double width;
   double height;
   rectangle(double width, double height) {
-    *this.width = width;
-    *this.height = height;
+    this->width = width;
+    this->height = height;
   }
   double area() {
-    return (*this.width * *this.height);
+    return (this->width * this->height);
   }
   double perimeter() {
-    return (2.0 * (*this.width + *this.height));
+    return (2.0 * (this->width + this->height));
   }
   bool is_square() {
-    return (*this.width == *this.height);
+    return (this->width == this->height);
   }
   rectangle scale(double factor) {
-    return rectangle((*this.width * factor), (*this.height * factor));
+    return rectangle((this->width * factor), (this->height * factor));
   }
 };
 

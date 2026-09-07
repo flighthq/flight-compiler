@@ -8,7 +8,7 @@ struct counter {
   double step;
   std::string label;
   double advance(double by) {
-    return (by + *this.step);
+    return (by + this->step);
   }
 };
 

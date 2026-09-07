@@ -6,13 +6,13 @@ namespace flighthq_golden {
 struct counter {
   double count;
   counter(double initial) {
-    *this.count = initial;
+    this->count = initial;
   }
   void increment() {
-    *this.count = (*this.count + 1.0);
+    this->count = (this->count + 1.0);
   }
   double value() {
-    return *this.count;
+    return this->count;
   }
 };
 

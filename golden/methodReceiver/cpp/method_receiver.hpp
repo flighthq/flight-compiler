@@ -7,13 +7,13 @@ struct counter {
   double total;
   double step;
   double read() {
-    return *this.total;
+    return this->total;
   }
   double scaled(double factor) {
-    return (*this.total * factor);
+    return (this->total * factor);
   }
   void advance() {
-    *this.total = (*this.total + *this.step);
+    this->total = (this->total + this->step);
   }
 };
 

@@ -11,10 +11,10 @@ struct advancer {
 struct counter {
   double step;
   double advance(double by) {
-    return (by + *this.step);
+    return (by + this->step);
   }
   void reset() {
-    *this.step = 1.0;
+    this->step = 1.0;
   }
 };
 

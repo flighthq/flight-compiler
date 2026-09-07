@@ -369,12 +369,12 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
         const binding = getCompilerCppAmbientMemberBinding(expression.callee.member);
         if (binding && binding.kind === 'sizeMethod') {
           const receiver = emitExpression(expression.callee.object, context);
-          return `static_cast<double>(${receiver}.${binding.targetName}())`;
+          return `static_cast<double>(${receiver}${memberOp(expression.callee.object)}${binding.targetName}())`;
         }
         if (binding && binding.kind === 'method') {
           const receiver = emitExpression(expression.callee.object, context);
           const args = expression.arguments.map((argument) => emitExpression(argument, context));
-          return `${receiver}.${binding.targetName}(${args.join(', ')})`;
+          return `${receiver}${memberOp(expression.callee.object)}${binding.targetName}(${args.join(', ')})`;
         }
       }
       if (
@@ -442,10 +442,10 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
         const binding = getCompilerCppAmbientMemberBinding(expression.member);
         if (binding && binding.kind === 'sizeMethod') {
           const receiver = emitExpression(expression.object, context);
-          return `static_cast<double>(${receiver}.${binding.targetName}())`;
+          return `static_cast<double>(${receiver}${memberOp(expression.object)}${binding.targetName}())`;
         }
         if (binding && binding.kind === 'property') {
-          return `${emitExpression(expression.object, context)}.${binding.targetName}`;
+          return `${emitExpression(expression.object, context)}${memberOp(expression.object)}${binding.targetName}`;
         }
       }
       if (expression.object.kind === 'identifier' && expression.object.reference.kind === 'ambient') {
@@ -456,7 +456,7 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
       if (enumeration) {
         return `${getBindingTargetName(enumeration.binding, context)}::${safeCppTypeName(expression.name)}`;
       }
-      return `${emitExpression(expression.object, context)}.${safeCppName(expression.name)}`;
+      return `${emitExpression(expression.object, context)}${memberOp(expression.object)}${safeCppName(expression.name)}`;
     }
     case 'regexp':
       emissionError(context, 'regular expressions require a downstream standard-library mapping');
@@ -757,9 +757,17 @@ function emitIdentifierReference(
     if (target) return target;
     return reference.name;
   }
-  if (reference.kind === 'this') return '*this';
+  if (reference.kind === 'this') return 'this';
   if (reference.kind === 'super') return 'super';
   return context.targetNames.get(reference.binding.id) ?? safeCppName(reference.binding.name);
+}
+
+function isThisAccess(expression: Readonly<IrExpression>): boolean {
+  return expression.kind === 'identifier' && expression.reference.kind === 'this';
+}
+
+function memberOp(object: Readonly<IrExpression>): string {
+  return isThisAccess(object) ? '->' : '.';
 }
 
 function emitLiteral(value: boolean | null | number | string): string {
