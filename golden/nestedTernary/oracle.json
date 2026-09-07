@@ -1,0 +1,16 @@
+[
+  { "call": "classify", "arguments": [5], "returns": "string" },
+  { "call": "classify", "arguments": [-3], "returns": "string" },
+  { "call": "classify", "arguments": [0], "returns": "string" },
+  { "call": "letterGrade", "arguments": [95], "returns": "string" },
+  { "call": "letterGrade", "arguments": [85], "returns": "string" },
+  { "call": "letterGrade", "arguments": [75], "returns": "string" },
+  { "call": "letterGrade", "arguments": [50], "returns": "string" },
+  { "call": "clampRange", "arguments": [5, 0, 10], "returns": "number" },
+  { "call": "clampRange", "arguments": [-5, 0, 10], "returns": "number" },
+  { "call": "clampRange", "arguments": [15, 0, 10], "returns": "number" },
+  { "call": "minOfThree", "arguments": [3, 1, 2], "returns": "number" },
+  { "call": "minOfThree", "arguments": [1, 2, 3], "returns": "number" },
+  { "call": "minOfThree", "arguments": [3, 2, 1], "returns": "number" },
+  { "call": "minOfThree", "arguments": [5, 5, 5], "returns": "number" }
+]

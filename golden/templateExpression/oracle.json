@@ -1,0 +1,11 @@
+[
+  { "call": "greet", "arguments": ["World"], "returns": "string" },
+  { "call": "greet", "arguments": [""], "returns": "string" },
+  { "call": "formatCoordinate", "arguments": [3, 4], "returns": "string" },
+  { "call": "formatCoordinate", "arguments": [0, 0], "returns": "string" },
+  { "call": "formatCoordinate", "arguments": [-1, -2], "returns": "string" },
+  { "call": "multiLine", "arguments": ["Test", "Content"], "returns": "string" },
+  { "call": "nested", "arguments": [3, 4], "returns": "string" },
+  { "call": "nested", "arguments": [0, 0], "returns": "string" },
+  { "call": "nested", "arguments": [-2, 5], "returns": "string" }
+]

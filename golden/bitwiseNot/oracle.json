@@ -1,0 +1,14 @@
+[
+  { "call": "complement", "arguments": [0], "returns": "number" },
+  { "call": "complement", "arguments": [1], "returns": "number" },
+  { "call": "complement", "arguments": [-1], "returns": "number" },
+  { "call": "complement", "arguments": [255], "returns": "number" },
+  { "call": "extractLowByte", "arguments": [0], "returns": "number" },
+  { "call": "extractLowByte", "arguments": [255], "returns": "number" },
+  { "call": "extractLowByte", "arguments": [-1], "returns": "number" },
+  { "call": "toggleSign", "arguments": [5], "returns": "number" },
+  { "call": "toggleSign", "arguments": [-5], "returns": "number" },
+  { "call": "toggleSign", "arguments": [0], "returns": "number" },
+  { "call": "maskAndComplement", "arguments": [255, 15], "returns": "number" },
+  { "call": "maskAndComplement", "arguments": [0, 255], "returns": "number" }
+]

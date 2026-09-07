@@ -1,0 +1,17 @@
+[
+  { "call": "roundDown", "arguments": [3.7], "returns": "number" },
+  { "call": "roundDown", "arguments": [-3.7], "returns": "number" },
+  { "call": "roundDown", "arguments": [5.0], "returns": "number" },
+  { "call": "roundUp", "arguments": [3.2], "returns": "number" },
+  { "call": "roundUp", "arguments": [-3.2], "returns": "number" },
+  { "call": "roundUp", "arguments": [5.0], "returns": "number" },
+  { "call": "roundNearest", "arguments": [3.5], "returns": "number" },
+  { "call": "roundNearest", "arguments": [3.4], "returns": "number" },
+  { "call": "roundNearest", "arguments": [-3.5], "returns": "number" },
+  { "call": "truncate", "arguments": [3.9], "returns": "number" },
+  { "call": "truncate", "arguments": [-3.9], "returns": "number" },
+  { "call": "truncate", "arguments": [0.0], "returns": "number" },
+  { "call": "fractionalPart", "arguments": [3.75], "returns": "number" },
+  { "call": "fractionalPart", "arguments": [-1.25], "returns": "number" },
+  { "call": "fractionalPart", "arguments": [5.0], "returns": "number" }
+]

@@ -1,0 +1,15 @@
+[
+  { "call": "remainder", "arguments": [10, 3], "returns": "number" },
+  { "call": "remainder", "arguments": [-10, 3], "returns": "number" },
+  { "call": "remainder", "arguments": [10, -3], "returns": "number" },
+  { "call": "remainder", "arguments": [0, 5], "returns": "number" },
+  { "call": "isEven", "arguments": [4], "returns": "boolean" },
+  { "call": "isEven", "arguments": [7], "returns": "boolean" },
+  { "call": "isEven", "arguments": [0], "returns": "boolean" },
+  { "call": "wrapAround", "arguments": [7, 5], "returns": "number" },
+  { "call": "wrapAround", "arguments": [-3, 5], "returns": "number" },
+  { "call": "wrapAround", "arguments": [0, 5], "returns": "number" },
+  { "call": "divideAndRemainder", "arguments": [17, 5], "returns": "number" },
+  { "call": "divideAndRemainder", "arguments": [-17, 5], "returns": "number" },
+  { "call": "divideAndRemainder", "arguments": [10, 10], "returns": "number" }
+]

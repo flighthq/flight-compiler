@@ -1,0 +1,16 @@
+[
+  { "call": "sumUpTo", "arguments": [10], "returns": "number" },
+  { "call": "sumUpTo", "arguments": [0], "returns": "number" },
+  { "call": "sumUpTo", "arguments": [1], "returns": "number" },
+  { "call": "sumUpTo", "arguments": [100], "returns": "number" },
+  { "call": "digitSum", "arguments": [123], "returns": "number" },
+  { "call": "digitSum", "arguments": [9999], "returns": "number" },
+  { "call": "digitSum", "arguments": [0], "returns": "number" },
+  { "call": "digitSum", "arguments": [-456], "returns": "number" },
+  { "call": "countDigits", "arguments": [0], "returns": "number" },
+  { "call": "countDigits", "arguments": [12345], "returns": "number" },
+  { "call": "countDigits", "arguments": [-99], "returns": "number" },
+  { "call": "collatzSteps", "arguments": [6], "returns": "number" },
+  { "call": "collatzSteps", "arguments": [27], "returns": "number" },
+  { "call": "collatzSteps", "arguments": [1], "returns": "number" }
+]
