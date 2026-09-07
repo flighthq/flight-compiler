@@ -1,0 +1,12 @@
+[
+  { "call": "classify", "arguments": [-5], "returns": "string" },
+  { "call": "classify", "arguments": [0], "returns": "string" },
+  { "call": "classify", "arguments": [5], "returns": "string" },
+  { "call": "classify", "arguments": [50], "returns": "string" },
+  { "call": "classify", "arguments": [200], "returns": "string" },
+  { "call": "clampedLabel", "arguments": [-10], "returns": "string" },
+  { "call": "clampedLabel", "arguments": [50], "returns": "string" },
+  { "call": "clampedLabel", "arguments": [200], "returns": "string" },
+  { "call": "absoluteDifference", "arguments": [10, 3], "returns": "number" },
+  { "call": "absoluteDifference", "arguments": [3, 10], "returns": "number" }
+]

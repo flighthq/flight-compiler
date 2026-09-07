@@ -1,0 +1,9 @@
+[
+  { "call": "sumUntil", "arguments": [[1, 2, 3, 4, 5], 6], "returns": "number" },
+  { "call": "sumUntil", "arguments": [[10, 20], 5], "returns": "number" },
+  { "call": "sumUntil", "arguments": [[], 100], "returns": "number" },
+  { "call": "countPositive", "arguments": [[-1, 0, 1, 2, -3]], "returns": "number" },
+  { "call": "countPositive", "arguments": [[]], "returns": "number" },
+  { "call": "findFirstNegative", "arguments": [[1, 2, -3, 4]], "returns": "number" },
+  { "call": "findFirstNegative", "arguments": [[1, 2, 3]], "returns": "number" }
+]

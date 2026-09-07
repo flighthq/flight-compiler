@@ -1,0 +1,8 @@
+[
+  { "call": "wrapInParens", "arguments": ["hello"], "returns": "string" },
+  { "call": "wrapInParens", "arguments": [""], "returns": "string" },
+  { "call": "bracket", "arguments": ["abc", "[", "]"], "returns": "string" },
+  { "call": "bracket", "arguments": ["x", "<", ">"], "returns": "string" },
+  { "call": "buildPath", "arguments": [["a", "b", "c"]], "returns": "string" },
+  { "call": "buildPath", "arguments": [["single"]], "returns": "string" }
+]
