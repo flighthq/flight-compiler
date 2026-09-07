@@ -6,6 +6,7 @@ export type {
   CompilerCommandLineSource,
 } from './compilerCommandLineContract.js';
 export type {
+  CompilerCppAmbientMemberBinding,
   CompilerHaxeAmbientMemberBinding,
   CompilerRustAmbientMemberBinding,
 } from './compilerAmbientMemberBindingContract.js';

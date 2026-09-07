@@ -7,6 +7,12 @@
 // A member absent from a target's table is refused at emission rather than guessed at, because a
 // name that happens to exist on the target is the most expensive kind of coincidence.
 
+export type CompilerCppAmbientMemberBinding =
+  | Readonly<{ kind: 'method'; targetName: string }>
+  | Readonly<{ kind: 'property'; targetName: string }>
+  | Readonly<{ algorithm: string; kind: 'algorithm'; targetName: string }>
+  | Readonly<{ kind: 'sizeMethod'; targetName: string }>;
+
 export type CompilerHaxeAmbientMemberBinding =
   | Readonly<{ kind: 'property'; targetName: string }>
   | Readonly<{ intArguments?: readonly number[]; kind: 'method'; targetName: string }>

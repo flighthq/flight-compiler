@@ -3,6 +3,7 @@ import type {
   BackendCompilation,
   BackendEmitContext,
   CompilerBackend,
+  CppCompilerBackendOptions,
   EmittedFile,
   EmittedFileIdentity,
   HaxeCompilerBackendOptions,
@@ -29,6 +30,8 @@ describe('compiler backend contracts', () => {
 
     expect(compilation).toEqual({ backend: 'haxe', files: [file] });
     expect(rustOptions).toEqual({ opaqueHostType: 'FlightHostValue', upstreamCommit: 'a'.repeat(40) });
+    const cppOptions: CppCompilerBackendOptions = { runtimeHeader: 'flight_runtime.h', upstreamCommit: 'a'.repeat(40) };
+    expect(cppOptions).toEqual({ runtimeHeader: 'flight_runtime.h', upstreamCommit: 'a'.repeat(40) });
     expectTypeOf<BackendEmissionFailure>().toMatchTypeOf<CompilerSourceIdentity>();
     expectTypeOf<EmittedFile>().toMatchTypeOf<EmittedFileIdentity>();
   });

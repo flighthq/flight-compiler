@@ -47,6 +47,11 @@ export interface HaxeCompilerBackendOptions {
   readonly upstreamCommit?: string | undefined;
 }
 
+export interface CppCompilerBackendOptions {
+  readonly runtimeHeader?: string | undefined;
+  readonly upstreamCommit?: string | undefined;
+}
+
 export interface RustCompilerBackendOptions {
   readonly opaqueHostType?: string | undefined;
   /** Crate the runtime contract's Rust types are imported from. */
