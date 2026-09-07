@@ -1,0 +1,1 @@
+rust emission failed for @flighthq/golden/packages/golden/src/multipleReturn.ts: runtime external symbol binding plan is incomplete (missing: String[value])

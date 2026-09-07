@@ -1,0 +1,11 @@
+[
+  { "call": "outerInner", "arguments": [5], "returns": "number" },
+  { "call": "outerInner", "arguments": [-3], "returns": "number" },
+  { "call": "outerInner", "arguments": [0], "returns": "number" },
+  { "call": "loopShadow", "arguments": [5], "returns": "number" },
+  { "call": "loopShadow", "arguments": [0], "returns": "number" },
+  { "call": "loopShadow", "arguments": [20], "returns": "number" },
+  { "call": "parameterShadow", "arguments": [10], "returns": "number" },
+  { "call": "parameterShadow", "arguments": [0], "returns": "number" },
+  { "call": "parameterShadow", "arguments": [-5], "returns": "number" }
+]

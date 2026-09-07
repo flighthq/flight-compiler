@@ -1,0 +1,11 @@
+[
+  { "call": "numberToString", "arguments": [42], "returns": "string" },
+  { "call": "numberToString", "arguments": [0], "returns": "string" },
+  { "call": "numberToString", "arguments": [-7], "returns": "string" },
+  { "call": "booleanToString", "arguments": [true], "returns": "string" },
+  { "call": "booleanToString", "arguments": [false], "returns": "string" },
+  { "call": "concatNumberString", "arguments": [3, " apples"], "returns": "string" },
+  { "call": "concatNumberString", "arguments": [0, ""], "returns": "string" },
+  { "call": "formatDecimal", "arguments": [3.14, "pi"], "returns": "string" },
+  { "call": "formatDecimal", "arguments": [0, "zero"], "returns": "string" }
+]

@@ -1,0 +1,16 @@
+[
+  { "call": "absoluteValue", "arguments": [5], "returns": "number" },
+  { "call": "absoluteValue", "arguments": [-5], "returns": "number" },
+  { "call": "absoluteValue", "arguments": [0], "returns": "number" },
+  { "call": "fizzbuzz", "arguments": [1], "returns": "string" },
+  { "call": "fizzbuzz", "arguments": [3], "returns": "string" },
+  { "call": "fizzbuzz", "arguments": [5], "returns": "string" },
+  { "call": "fizzbuzz", "arguments": [15], "returns": "string" },
+  { "call": "fizzbuzz", "arguments": [7], "returns": "string" },
+  { "call": "boundedIncrement", "arguments": [5, 10], "returns": "number" },
+  { "call": "boundedIncrement", "arguments": [10, 10], "returns": "number" },
+  { "call": "boundedIncrement", "arguments": [0, 1], "returns": "number" },
+  { "call": "triangleType", "arguments": [3, 3, 3], "returns": "string" },
+  { "call": "triangleType", "arguments": [3, 3, 5], "returns": "string" },
+  { "call": "triangleType", "arguments": [3, 4, 5], "returns": "string" }
+]

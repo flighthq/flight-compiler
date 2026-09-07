@@ -1,0 +1,12 @@
+[
+  { "call": "sumOneToN", "arguments": [5], "returns": "number" },
+  { "call": "sumOneToN", "arguments": [1], "returns": "number" },
+  { "call": "sumOneToN", "arguments": [10], "returns": "number" },
+  { "call": "repeatHalve", "arguments": [1], "returns": "number" },
+  { "call": "repeatHalve", "arguments": [16], "returns": "number" },
+  { "call": "repeatHalve", "arguments": [255], "returns": "number" },
+  { "call": "reverseDigits", "arguments": [123], "returns": "number" },
+  { "call": "reverseDigits", "arguments": [1000], "returns": "number" },
+  { "call": "reverseDigits", "arguments": [-456], "returns": "number" },
+  { "call": "reverseDigits", "arguments": [7], "returns": "number" }
+]

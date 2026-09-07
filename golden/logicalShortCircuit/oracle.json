@@ -1,0 +1,13 @@
+[
+  { "call": "firstTruthy", "arguments": [0, 5], "returns": "number" },
+  { "call": "firstTruthy", "arguments": [3, 5], "returns": "number" },
+  { "call": "firstTruthy", "arguments": [0, 0], "returns": "number" },
+  { "call": "bothPositive", "arguments": [3, 4], "returns": "number" },
+  { "call": "bothPositive", "arguments": [-1, 4], "returns": "number" },
+  { "call": "bothPositive", "arguments": [0, 0], "returns": "number" },
+  { "call": "defaultValue", "arguments": [0, 42], "returns": "number" },
+  { "call": "defaultValue", "arguments": [7, 42], "returns": "number" },
+  { "call": "guardedDivide", "arguments": [10, 3], "returns": "number" },
+  { "call": "guardedDivide", "arguments": [10, 0], "returns": "number" },
+  { "call": "guardedDivide", "arguments": [1, 5], "returns": "number" }
+]
