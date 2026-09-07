@@ -3,7 +3,7 @@
 
 namespace flighthq_golden {
 
-struct counter {
+struct Counter {
   double total;
   double step;
   double read() {

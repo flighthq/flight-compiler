@@ -4,43 +4,43 @@
 
 namespace flighthq_golden {
 
-using direction = std::string;
+using Direction = std::string;
 
-bool is_vertical(direction dir) {
-  return ((dir == direction::Up) || (dir == direction::Down));
+bool is_vertical(Direction dir) {
+  return ((dir == Direction::Up) || (dir == Direction::Down));
 }
 
-direction opposite(direction dir) {
+Direction opposite(Direction dir) {
   {
     auto switch_value = dir;
-    if (switch_value == direction::Up) {
-      return direction::Down;
+    if (switch_value == Direction::Up) {
+      return Direction::Down;
     }
-    else if (switch_value == direction::Down) {
-      return direction::Up;
+    else if (switch_value == Direction::Down) {
+      return Direction::Up;
     }
-    else if (switch_value == direction::Left) {
-      return direction::Right;
+    else if (switch_value == Direction::Left) {
+      return Direction::Right;
     }
-    else if (switch_value == direction::Right) {
-      return direction::Left;
+    else if (switch_value == Direction::Right) {
+      return Direction::Left;
     }
   }
 }
 
-std::string direction_label(direction dir) {
+std::string direction_label(Direction dir) {
   {
     auto switch_value_2 = dir;
-    if (switch_value_2 == direction::Up) {
+    if (switch_value_2 == Direction::Up) {
       return "north";
     }
-    else if (switch_value_2 == direction::Down) {
+    else if (switch_value_2 == Direction::Down) {
       return "south";
     }
-    else if (switch_value_2 == direction::Left) {
+    else if (switch_value_2 == Direction::Left) {
       return "west";
     }
-    else if (switch_value_2 == direction::Right) {
+    else if (switch_value_2 == Direction::Right) {
       return "east";
     }
   }

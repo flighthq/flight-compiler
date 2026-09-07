@@ -4,10 +4,10 @@
 
 namespace flighthq_golden {
 
-struct point {
+struct Point {
   double x;
   double y;
-  point(double x, double y) {
+  Point(double x, double y) {
     this->x = x;
     this->y = y;
   }
@@ -22,8 +22,8 @@ struct point {
   }
 };
 
-point origin() {
-  return point(0.0, 0.0);
+Point origin() {
+  return Point(0.0, 0.0);
 }
 
 double origin_length() {
@@ -31,7 +31,7 @@ double origin_length() {
 }
 
 std::string described_at(double x, double y) {
-  return point(x, y).describe();
+  return Point(x, y).describe();
 }
 
 } // namespace flighthq_golden

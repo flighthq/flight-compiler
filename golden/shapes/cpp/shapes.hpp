@@ -8,7 +8,7 @@ struct Range {
   double min;
 };
 
-enum class mode {
+enum class Mode {
   Fast = 1.0,
   Safe = 2.0,
   Strict = 8.0,

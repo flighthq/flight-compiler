@@ -116,11 +116,11 @@ describe('emitIrModuleCpp', () => {
     );
     const emitted = emitIrModuleCpp(result.module);
 
-    expect(emitted.contents).toContain('struct base {');
-    expect(emitted.contents).toContain('virtual ~base() = default;');
+    expect(emitted.contents).toContain('struct Base {');
+    expect(emitted.contents).toContain('virtual ~Base() = default;');
     expect(emitted.contents).toContain('virtual double doubled()');
-    expect(emitted.contents).toContain('struct derived : public base {');
-    expect(emitted.contents).toContain(': base(v)');
+    expect(emitted.contents).toContain('struct Derived : public Base {');
+    expect(emitted.contents).toContain(': Base(v)');
   });
 
   it('emits type parameters as PascalCase and value bindings as snake_case', () => {

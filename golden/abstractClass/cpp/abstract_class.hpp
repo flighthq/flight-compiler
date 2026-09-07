@@ -3,17 +3,17 @@
 
 namespace flighthq_golden {
 
-struct shape {
-  virtual ~shape() = default;
+struct Shape {
+  virtual ~Shape() = default;
   virtual double area() = 0;
   virtual double describe() {
     return this->area();
   }
 };
 
-struct square : public shape {
+struct Square : public Shape {
   double side;
-  square(double side) : shape() {
+  Square(double side) : Shape() {
     this->side = side;
   }
   double area() override {

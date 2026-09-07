@@ -4,6 +4,6 @@
 
 namespace flighthq_golden {
 
-using lane = std::string;
+using Lane = std::string;
 
 } // namespace flighthq_golden

@@ -4,10 +4,10 @@
 
 namespace flighthq_golden {
 
-struct component {
+struct Component {
   std::string name;
   double version;
-  virtual ~component() = default;
+  virtual ~Component() = default;
   virtual std::string describe() {
     return this->name;
   }
@@ -16,12 +16,12 @@ struct component {
   }
 };
 
-struct button : public component {
+struct Button : public Component {
   std::string name;
   double version;
 };
 
-struct declare_example {
+struct DeclareExample {
   std::string label;
   double value;
   std::string get_label() {

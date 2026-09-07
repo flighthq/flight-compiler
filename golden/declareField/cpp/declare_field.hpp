@@ -4,7 +4,7 @@
 
 namespace flighthq_golden {
 
-struct config {
+struct Config {
   std::string label;
   double flags;
   double value;

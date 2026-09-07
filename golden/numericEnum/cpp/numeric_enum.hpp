@@ -4,7 +4,7 @@
 
 namespace flighthq_golden {
 
-enum class level {
+enum class Level {
   Low = 1.0,
   High = 2.0,
 };
@@ -22,8 +22,8 @@ std::string describe(Tagged value) {
   return value.name;
 }
 
-level highest() {
-  return level::High;
+Level highest() {
+  return Level::High;
 }
 
 } // namespace flighthq_golden

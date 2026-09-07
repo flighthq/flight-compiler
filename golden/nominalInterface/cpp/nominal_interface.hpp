@@ -9,7 +9,7 @@ struct Advancer {
   std::function<double(double)> advance;
 };
 
-struct counter {
+struct Counter {
   double step;
   double advance(double by) {
     return (by + this->step);

@@ -4,7 +4,7 @@
 
 namespace flighthq_golden {
 
-struct counter {
+struct Counter {
   double step;
   std::string label;
   double advance(double by) {

@@ -117,7 +117,10 @@ function emitIrModuleCppWithContext(
     targetNames = new Map(
       createIrModuleTargetNameAllocation(module, (binding) => ({
         namespace: 'identifier',
-        preferredName: binding.space === 'type' ? pascalCase(binding.name) : snakeCase(binding.name),
+        preferredName:
+          binding.space === 'type' || binding.kind === 'class' || binding.kind === 'enum'
+            ? pascalCase(binding.name)
+            : snakeCase(binding.name),
       })).map((allocation) => [allocation.identity, allocation.name]),
     );
   } catch (error) {

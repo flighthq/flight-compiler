@@ -4,10 +4,10 @@
 
 namespace flighthq_golden {
 
-struct rectangle {
+struct Rectangle {
   double width;
   double height;
-  rectangle(double width, double height) {
+  Rectangle(double width, double height) {
     this->width = width;
     this->height = height;
   }
@@ -20,14 +20,14 @@ struct rectangle {
   bool is_square() {
     return (this->width == this->height);
   }
-  rectangle scale(double factor) {
-    return rectangle((this->width * factor), (this->height * factor));
+  Rectangle scale(double factor) {
+    return Rectangle((this->width * factor), (this->height * factor));
   }
 };
 
-double total_area(std::vector<rectangle> rects) {
+double total_area(std::vector<Rectangle> rects) {
   double sum = 0.0;
-  for (rectangle rect : rects) {
+  for (Rectangle rect : rects) {
     sum = (sum + rect.area());
   }
   return sum;

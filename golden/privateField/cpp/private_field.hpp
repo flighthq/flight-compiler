@@ -3,7 +3,7 @@
 
 namespace flighthq_golden {
 
-struct counter {
+struct Counter {
   double count;
   void increment() {
     this->count += 1.0;

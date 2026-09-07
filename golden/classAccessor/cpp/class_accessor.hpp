@@ -3,9 +3,9 @@
 
 namespace flighthq_golden {
 
-struct counter {
+struct Counter {
   double count;
-  counter(double count) {
+  Counter(double count) {
     this->count = count;
   }
   double value() {
@@ -17,9 +17,9 @@ struct counter {
 };
 
 double read_back() {
-  const counter counter = counter.make();
+  const Counter counter = Counter.make();
   counter.value = 7.0;
-  return (counter.value + counter.zero);
+  return (counter.value + Counter.zero);
 }
 
 } // namespace flighthq_golden

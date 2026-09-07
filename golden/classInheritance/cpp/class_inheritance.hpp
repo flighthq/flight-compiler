@@ -4,20 +4,20 @@
 
 namespace flighthq_golden {
 
-struct base {
+struct Base {
   double value;
-  base(double value) {
+  Base(double value) {
     this->value = value;
   }
-  virtual ~base() = default;
+  virtual ~Base() = default;
   virtual double doubled() {
     return (this->value * 2.0);
   }
 };
 
-struct child : public base {
+struct Child : public Base {
   std::string label;
-  child(double value, std::string label) : base(value) {
+  Child(double value, std::string label) : Base(value) {
     this->label = label;
   }
   std::string describe() {
@@ -26,12 +26,12 @@ struct child : public base {
 };
 
 std::string create_child(double value, std::string label) {
-  const child child = child(value, label);
+  const Child child = Child(value, label);
   return child.describe();
 }
 
 double base_doubled(double value) {
-  const base base = base(value);
+  const Base base = Base(value);
   return base.doubled();
 }
 
