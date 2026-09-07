@@ -14,7 +14,6 @@ export function padToLength(s: string, target: number): string {
   return result;
 }
 
-export function truncateString(s: string, maxLength: number): string {
-  if (s.length <= maxLength) return s;
-  return s.slice(0, maxLength);
+export function longerThan(s: string, threshold: number): boolean {
+  return s.length > threshold;
 }

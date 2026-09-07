@@ -6,7 +6,7 @@
   { "call": "padToLength", "arguments": ["hi", 5], "returns": "string" },
   { "call": "padToLength", "arguments": ["hello", 3], "returns": "string" },
   { "call": "padToLength", "arguments": ["", 3], "returns": "string" },
-  { "call": "truncateString", "arguments": ["hello world", 5], "returns": "string" },
-  { "call": "truncateString", "arguments": ["hi", 10], "returns": "string" },
-  { "call": "truncateString", "arguments": ["", 5], "returns": "string" }
+  { "call": "longerThan", "arguments": ["hello", 3], "returns": "boolean" },
+  { "call": "longerThan", "arguments": ["hi", 5], "returns": "boolean" },
+  { "call": "longerThan", "arguments": ["", 0], "returns": "boolean" }
 ]

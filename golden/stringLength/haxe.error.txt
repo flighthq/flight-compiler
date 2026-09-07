@@ -1,1 +1,0 @@
-haxe emission failed for @flighthq/golden/packages/golden/src/stringLength.ts: string member slice has no Haxe binding
