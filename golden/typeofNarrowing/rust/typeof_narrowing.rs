@@ -73,7 +73,7 @@ pub fn describe(value: StrOrF64) -> String {
   if matches!(value, StrOrF64::Str(_)) {
     return value.as_str().to_uppercase();
   }
-  return format!("number {}", value);
+  return format!("number {}", *value.as_f64());
 }
 
 pub fn length(value: StrOrF64) -> f64 {

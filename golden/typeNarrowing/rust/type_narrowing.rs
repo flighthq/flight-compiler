@@ -73,7 +73,7 @@ pub fn describe_type(value: StrOrF64) -> String {
   if matches!(value, StrOrF64::Str(_)) {
     return format!("string of length {}", (value.as_str().len() as f64));
   }
-  return format!("number: {}", value);
+  return format!("number: {}", *value.as_f64());
 }
 
 pub fn format_value(value: StrOrF64OrBool) -> String {
@@ -81,7 +81,7 @@ pub fn format_value(value: StrOrF64OrBool) -> String {
     return value.as_str().to_uppercase();
   }
   if matches!(value, StrOrF64OrBool::F64(_)) {
-    return format!("{}", value);
+    return format!("{}", *value.as_f64());
   }
-  return if value { "yes".to_owned() } else { "no".to_owned() };
+  return if *value.as_bool() { "yes".to_owned() } else { "no".to_owned() };
 }
