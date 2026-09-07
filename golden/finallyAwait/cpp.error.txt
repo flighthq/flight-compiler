@@ -1,1 +1,0 @@
-cpp emission failed for @flighthq/golden/packages/golden/src/finallyAwait.ts: async functions require C++ coroutine lowering

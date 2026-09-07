@@ -68,7 +68,9 @@ interface AnonymousStruct {
 
 interface EmitContext {
   anonymousStructs: Map<string, AnonymousStruct>;
+  async?: boolean | undefined;
   currentClass?: Readonly<IrClassDeclaration> | undefined;
+  finallyReturnVar?: string | undefined;
   includes: Set<string>;
   module: Readonly<IrModule>;
   nullableBindingIds: ReadonlySet<string>;
@@ -256,10 +258,11 @@ function emitStringEnumCpp(declaration: Readonly<IrEnumDeclaration>, context: Em
 function emitFunction(declaration: Readonly<IrFunctionDeclaration>, outer: EmitContext): string[] {
   const context: EmitContext = {
     ...outer,
+    async: declaration.async,
     enclosingReturnType: declaration.returns,
     returnsAbsent: hasIrTypeAbsentMember(declaration.returns),
   };
-  if (declaration.async) emissionError(context, 'async functions require C++ coroutine lowering');
+  if (declaration.async) context.includes.add('coroutine');
   const returnType = emitType(declaration.returns, context);
   const typeParams = emitTypeParameters(declaration.typeParameters, context);
   const params = declaration.parameters.map((parameter) => emitParameter(parameter, context)).join(', ');
@@ -344,7 +347,7 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
       return `${left} ${emitAssignmentOperator(expression.operator)} ${right}`;
     }
     case 'await':
-      emissionError(context, 'await expressions require C++ coroutine lowering');
+      return `co_await ${emitExpression(expression.expression, context)}`;
     case 'binary': {
       if (expression.semantics.nullishComparison) {
         context.includes.add('optional');
@@ -637,8 +640,17 @@ function emitStatement(statement: Readonly<IrStatement>, context: EmitContext): 
         lines.push('else {', ...indentSourceLines(emitStatementBody(statement.otherwise, context)), '}');
       return lines;
     }
-    case 'return':
-      return [`return${statement.expression ? ` ${emitExpression(statement.expression, context)}` : ''};`];
+    case 'return': {
+      if (context.finallyReturnVar) {
+        const lines: string[] = [];
+        if (statement.expression) {
+          lines.push(`${context.finallyReturnVar} = ${emitExpression(statement.expression, context)};`);
+        }
+        return lines;
+      }
+      const keyword = context.async ? 'co_return' : 'return';
+      return [`${keyword}${statement.expression ? ` ${emitExpression(statement.expression, context)}` : ''};`];
+    }
     case 'switch': {
       const name = getGeneratedTargetName('switch_value', context);
       const cases = statement.cases.filter((switchCase) => switchCase.expression);
@@ -668,6 +680,7 @@ function emitStatement(statement: Readonly<IrStatement>, context: EmitContext): 
       return [`throw std::runtime_error(${emitExpression(statement.expression, context)});`];
     }
     case 'try': {
+      if (statement.finallyBody) return emitTryFinallyCpp(statement, context);
       const lines = ['try {', ...indentSourceLines(emitStatementBody(statement.tryBody, context)), '}'];
       if (statement.catchClause) {
         context.includes.add('stdexcept');
@@ -679,9 +692,6 @@ function emitStatement(statement: Readonly<IrStatement>, context: EmitContext): 
           ...indentSourceLines(emitStatementBody(statement.catchClause.body, context)),
           '}',
         );
-      }
-      if (statement.finallyBody) {
-        emissionError(context, 'finally blocks require C++ RAII scope-guard lowering');
       }
       return lines;
     }
@@ -714,6 +724,81 @@ function emitStatementBody(statement: Readonly<IrStatement>, context: EmitContex
 
 function emitStatements(statements: readonly IrStatement[], context: EmitContext): string[] {
   return statements.flatMap((statement) => emitStatement(statement, context));
+}
+
+function containsReturnStatementCpp(statement: Readonly<IrStatement>): boolean {
+  switch (statement.kind) {
+    case 'return':
+      return true;
+    case 'block':
+      return statement.statements.some(containsReturnStatementCpp);
+    case 'if':
+      return (
+        containsReturnStatementCpp(statement.body) ||
+        (statement.otherwise ? containsReturnStatementCpp(statement.otherwise) : false)
+      );
+    case 'try':
+      return (
+        containsReturnStatementCpp(statement.tryBody) ||
+        (statement.catchClause ? containsReturnStatementCpp(statement.catchClause.body) : false) ||
+        (statement.finallyBody ? containsReturnStatementCpp(statement.finallyBody) : false)
+      );
+    default:
+      return false;
+  }
+}
+
+function emitTryFinallyCpp(
+  statement: Readonly<Extract<IrStatement, { kind: 'try' }>> & { finallyBody: IrStatement },
+  context: EmitContext,
+): string[] {
+  context.includes.add('exception');
+  const exceptionVar = getGeneratedTargetName('finally_exception', context);
+  const lines: string[] = [];
+  const hasReturn =
+    containsReturnStatementCpp(statement.tryBody) ||
+    (statement.catchClause ? containsReturnStatementCpp(statement.catchClause.body) : false);
+  let returnVar: string | undefined;
+  if (hasReturn && context.enclosingReturnType) {
+    context.includes.add('optional');
+    returnVar = getGeneratedTargetName('finally_return', context);
+    const returnValueType = context.async
+      ? getIrTaskAwaitedTypeCpp(context.enclosingReturnType, context)
+      : context.enclosingReturnType;
+    lines.push(`std::optional<${emitType(returnValueType, context)}> ${returnVar};`);
+  }
+  lines.push(`std::exception_ptr ${exceptionVar};`);
+  const innerContext: EmitContext = returnVar ? { ...context, finallyReturnVar: returnVar } : context;
+  lines.push('try {');
+  if (statement.catchClause) {
+    context.includes.add('stdexcept');
+    const catchVar = statement.catchClause.binding
+      ? `const std::exception& ${safeCppName(statement.catchClause.binding.name)}`
+      : '...';
+    lines.push(
+      ...indentSourceLines([
+        'try {',
+        ...indentSourceLines(emitStatementBody(statement.tryBody, innerContext)),
+        '}',
+        `catch (${catchVar}) {`,
+        ...indentSourceLines(emitStatementBody(statement.catchClause.body, innerContext)),
+        '}',
+      ]),
+    );
+  } else {
+    lines.push(...indentSourceLines(emitStatementBody(statement.tryBody, innerContext)));
+  }
+  lines.push('}');
+  lines.push('catch (...) {');
+  lines.push(...indentSourceLines([`${exceptionVar} = std::current_exception();`]));
+  lines.push('}');
+  lines.push(...emitStatementBody(statement.finallyBody, context));
+  lines.push(`if (${exceptionVar}) std::rethrow_exception(${exceptionVar});`);
+  if (returnVar) {
+    const keyword = context.async ? 'co_return' : 'return';
+    lines.push(`if (${returnVar}.has_value()) ${keyword} ${returnVar}.value();`);
+  }
+  return lines;
 }
 
 function emitType(type: Readonly<IrType>, context: EmitContext): string {
@@ -988,6 +1073,17 @@ function getTypeReferenceTargetName(type: Readonly<IrType & { kind: 'named' }>, 
 
 function getBindingTargetName(binding: Readonly<{ id: string; name: string }>, context: EmitContext): string {
   return context.targetNames.get(binding.id) ?? safeCppName(binding.name);
+}
+
+function getIrTaskAwaitedTypeCpp(type: Readonly<IrType>, context: EmitContext): Readonly<IrType> {
+  if (type.kind !== 'named' || type.reference.kind !== 'ambient' || type.reference.name !== 'Promise') {
+    emissionError(context, 'an async function must return a task type');
+  }
+  const awaited = type.typeArguments[0];
+  if (type.typeArguments.length !== 1 || !awaited) {
+    emissionError(context, 'a task type requires one awaited type argument');
+  }
+  return awaited;
 }
 
 function getElementAccessTupleIndexCpp(

@@ -62,16 +62,13 @@ describe('emitIrModuleCpp', () => {
     expect(emitted.contents).toContain('double');
   });
 
-  it('refuses async functions with a coroutine lowering message', () => {
+  it('emits async functions with C++20 coroutine syntax', () => {
     const result = lower('fetcher.ts', 'export async function fetchData(): Promise<number> { return 1; }');
+    const emitted = emitIrModuleCpp(result.module);
 
-    try {
-      emitIrModuleCpp(result.module);
-      expect.fail('expected emission to throw');
-    } catch (error) {
-      expect(isBackendEmissionFailure(error)).toBe(true);
-      expect((error as Error).message).toContain('coroutine');
-    }
+    expect(emitted.contents).toContain('FlightTask<double> fetch_data()');
+    expect(emitted.contents).toContain('co_return');
+    expect(emitted.contents).toContain('#include <coroutine>');
   });
 
   it('emits class inheritance with virtual destructor and initializer list', () => {
