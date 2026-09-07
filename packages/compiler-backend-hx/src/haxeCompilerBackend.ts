@@ -462,6 +462,15 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
         const binaryOp = expression.operator.slice(0, -1);
         return `${left} = Std.int(${left}) ${binaryOp} Std.int(${right})`;
       }
+      if (
+        expression.operator === '**=' &&
+        expression.semantics.left.flow === 'number' &&
+        expression.semantics.right.flow === 'number'
+      ) {
+        const left = emitExpression(expression.left, context);
+        const right = emitExpression(expression.right, context);
+        return `${left} = Math.pow(${left}, ${right})`;
+      }
       const left = emitExpression(expression.left, context);
       const right = emitExpression(expression.right, context);
       return `${left} ${emitAssignmentOperatorHaxe(expression.operator, expression.semantics, context)} ${right}`;
@@ -491,6 +500,15 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
         const operand = emitExpression(typeofTest.operand, context);
         const test = `Std.isOfType(${operand}, ${typeofTest.haxeType})`;
         return typeofTest.negated ? `!${test}` : test;
+      }
+      if (
+        expression.operator === '**' &&
+        expression.semantics.left.flow === 'number' &&
+        expression.semantics.right.flow === 'number'
+      ) {
+        const left = emitExpression(expression.left, context);
+        const right = emitExpression(expression.right, context);
+        return `Math.pow(${left}, ${right})`;
       }
       const op = emitBinaryOperatorHaxe(expression.operator, expression.semantics, context);
       const bitwise =

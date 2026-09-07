@@ -1,0 +1,13 @@
+[
+  { "call": "square", "arguments": [5], "returns": "number" },
+  { "call": "square", "arguments": [0], "returns": "number" },
+  { "call": "square", "arguments": [-3], "returns": "number" },
+  { "call": "cube", "arguments": [2], "returns": "number" },
+  { "call": "cube", "arguments": [3], "returns": "number" },
+  { "call": "nthPower", "arguments": [2, 10], "returns": "number" },
+  { "call": "nthPower", "arguments": [10, 0], "returns": "number" },
+  { "call": "squareRoot", "arguments": [4], "returns": "number" },
+  { "call": "squareRoot", "arguments": [9], "returns": "number" },
+  { "call": "accumPower", "arguments": [2, 8], "returns": "number" },
+  { "call": "accumPower", "arguments": [3, 4], "returns": "number" }
+]
