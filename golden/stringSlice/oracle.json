@@ -1,0 +1,8 @@
+[
+  { "call": "prefix", "arguments": ["hello", 3], "returns": "string" },
+  { "call": "prefix", "arguments": ["hello", 0], "returns": "string" },
+  { "call": "suffix", "arguments": ["hello", 2], "returns": "string" },
+  { "call": "middle", "arguments": ["hello world", 3, 8], "returns": "string" },
+  { "call": "removeFirst", "arguments": ["abc"], "returns": "string" },
+  { "call": "removeFirst", "arguments": ["x"], "returns": "string" }
+]

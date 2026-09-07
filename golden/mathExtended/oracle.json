@@ -1,0 +1,12 @@
+[
+  { "call": "circleArea", "arguments": [1], "returns": "number" },
+  { "call": "circleArea", "arguments": [0], "returns": "number" },
+  { "call": "hypotenuse", "arguments": [3, 4], "returns": "number" },
+  { "call": "ceilDivide", "arguments": [7, 3], "returns": "number" },
+  { "call": "ceilDivide", "arguments": [6, 3], "returns": "number" },
+  { "call": "degreesToRadians", "arguments": [180], "returns": "number" },
+  { "call": "degreesToRadians", "arguments": [0], "returns": "number" },
+  { "call": "signOf", "arguments": [5], "returns": "number" },
+  { "call": "signOf", "arguments": [-3], "returns": "number" },
+  { "call": "signOf", "arguments": [0], "returns": "number" }
+]
