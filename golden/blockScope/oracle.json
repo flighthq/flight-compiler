@@ -1,0 +1,9 @@
+[
+  { "call": "scopedAccumulate", "arguments": [[1, 2, 3]], "returns": "number" },
+  { "call": "scopedAccumulate", "arguments": [[]], "returns": "number" },
+  { "call": "nestedScope", "arguments": [5], "returns": "number" },
+  { "call": "nestedScope", "arguments": [-3], "returns": "number" },
+  { "call": "nestedScope", "arguments": [0], "returns": "number" },
+  { "call": "multipleBindings", "arguments": [3, 4], "returns": "number" },
+  { "call": "multipleBindings", "arguments": [0, 0], "returns": "number" }
+]

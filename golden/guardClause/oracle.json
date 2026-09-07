@@ -1,0 +1,13 @@
+[
+  { "call": "safeSqrt", "arguments": [9], "returns": "number" },
+  { "call": "safeSqrt", "arguments": [-4], "returns": "number" },
+  { "call": "safeSqrt", "arguments": [0], "returns": "number" },
+  { "call": "classify", "arguments": [5], "returns": "string" },
+  { "call": "classify", "arguments": [0], "returns": "string" },
+  { "call": "classify", "arguments": [-3], "returns": "string" },
+  { "call": "classify", "arguments": [0.5], "returns": "string" },
+  { "call": "firstPositive", "arguments": [[-1, -2, 3, 4]], "returns": "number" },
+  { "call": "firstPositive", "arguments": [[-1, -2]], "returns": "number" },
+  { "call": "boundedSum", "arguments": [[1, 2, 3, 4, 5], 6], "returns": "number" },
+  { "call": "boundedSum", "arguments": [[10], 5], "returns": "number" }
+]

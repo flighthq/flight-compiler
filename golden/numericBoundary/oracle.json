@@ -1,0 +1,13 @@
+[
+  { "call": "safeDiv", "arguments": [10, 3], "returns": "number" },
+  { "call": "safeDiv", "arguments": [10, 0], "returns": "number" },
+  { "call": "clampInt", "arguments": [5.7, 0, 10], "returns": "number" },
+  { "call": "clampInt", "arguments": [-1, 0, 10], "returns": "number" },
+  { "call": "clampInt", "arguments": [15, 0, 10], "returns": "number" },
+  { "call": "isEven", "arguments": [4], "returns": "boolean" },
+  { "call": "isEven", "arguments": [3], "returns": "boolean" },
+  { "call": "isEven", "arguments": [0], "returns": "boolean" },
+  { "call": "lerp", "arguments": [0, 10, 0.5], "returns": "number" },
+  { "call": "lerp", "arguments": [0, 10, 0], "returns": "number" },
+  { "call": "lerp", "arguments": [0, 10, 1], "returns": "number" }
+]
