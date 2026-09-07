@@ -1,0 +1,13 @@
+[
+  { "call": "isEqual", "arguments": ["hello", "hello"], "returns": "boolean" },
+  { "call": "isEqual", "arguments": ["hello", "world"], "returns": "boolean" },
+  { "call": "isNotEqual", "arguments": ["a", "b"], "returns": "boolean" },
+  { "call": "isNotEqual", "arguments": ["x", "x"], "returns": "boolean" },
+  { "call": "isEmpty", "arguments": [""], "returns": "boolean" },
+  { "call": "isEmpty", "arguments": ["hello"], "returns": "boolean" },
+  { "call": "longerThan", "arguments": ["hello", 3], "returns": "boolean" },
+  { "call": "longerThan", "arguments": ["hi", 3], "returns": "boolean" },
+  { "call": "longerThan", "arguments": ["abc", 3], "returns": "boolean" },
+  { "call": "matchOrDefault", "arguments": ["ok", "ok", "fail"], "returns": "string" },
+  { "call": "matchOrDefault", "arguments": ["no", "ok", "fail"], "returns": "string" }
+]
