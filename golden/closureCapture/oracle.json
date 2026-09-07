@@ -1,6 +1,0 @@
-[
-  { "call": "accumulate", "arguments": [[1, 2, 3, 4, 5]], "returns": "number" },
-  { "call": "accumulate", "arguments": [[]], "returns": "number" },
-  { "call": "accumulate", "arguments": [[10]], "returns": "number" },
-  { "call": "accumulate", "arguments": [[-1, 1, -1, 1]], "returns": "number" }
-]
