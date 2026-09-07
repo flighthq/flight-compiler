@@ -1391,6 +1391,21 @@ describe('emitIrModuleRust', () => {
     expect(output).toContain('.unwrap_or_else(|| def)');
   });
 
+  it('emits declare fields with Default::default in constructor', () => {
+    const result = lower(
+      'declare-field.ts',
+      'export class Config { declare label: string; declare readonly flags: number; value: number = 0; }',
+    );
+    const output = emitIrModuleRust(result.module).contents;
+
+    expect(output).toContain('label: String');
+    expect(output).toContain('flags: f64');
+    expect(output).toContain('value: f64');
+    expect(output).toContain('label: Default::default()');
+    expect(output).toContain('flags: Default::default()');
+    expect(output).toContain('value: 0.0');
+  });
+
   it('emits primitive union enums with typeof narrowing and ambient member dispatch', () => {
     const module = lower(
       'typeof-union.ts',

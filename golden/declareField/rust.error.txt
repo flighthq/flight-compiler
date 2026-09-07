@@ -1,1 +1,0 @@
-rust emission failed for @flighthq/golden/packages/golden/src/declareField.ts: class Config partially initializes its fields

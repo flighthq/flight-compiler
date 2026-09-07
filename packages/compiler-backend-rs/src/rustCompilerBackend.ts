@@ -376,7 +376,10 @@ function emitClass(declaration: Readonly<IrClassDeclaration>, context: EmitConte
   if (instanceFields.some((field) => field.initializer) && !constructed && !constructorFields) {
     emissionError(context, `class ${declaration.binding.name} field initializers require constructor lowering`);
   }
-  if (instanceFields.some((field) => field.initializer) && instanceFields.some((field) => !field.initializer)) {
+  if (
+    instanceFields.some((field) => field.initializer) &&
+    instanceFields.some((field) => !field.initializer && !field.declare)
+  ) {
     emissionError(context, `class ${declaration.binding.name} partially initializes its fields`);
   }
   const lines = [
@@ -392,7 +395,7 @@ function emitClass(declaration: Readonly<IrClassDeclaration>, context: EmitConte
   // A field initializer is a constructor obligation, and the neutral plan already decides when each
   // field is initialized. Rust has no implicit constructor, so the plan becomes an associated `new`.
   const initialization =
-    instanceFields.every((field) => field.initializer) && instanceFields.length > 0 && constructed
+    instanceFields.every((field) => field.initializer || field.declare) && instanceFields.length > 0 && constructed
       ? createIrClassInitializationPlan(declaration)
       : undefined;
   const associated: string[] = staticFields.map(
@@ -419,6 +422,7 @@ function emitClass(declaration: Readonly<IrClassDeclaration>, context: EmitConte
       '    Self {',
       ...instanceOrder.map((field) => {
         const source = declaration.fields[field.fieldIndex]!;
+        if (source.declare) return `      ${safeRustValueName(source.name)}: Default::default(),`;
         return `      ${safeRustValueName(source.name)}: ${emitExpression(source.initializer!, context)},`;
       }),
       '    }',
