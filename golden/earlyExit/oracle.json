@@ -1,0 +1,15 @@
+[
+  { "call": "abs", "arguments": [5], "returns": "number" },
+  { "call": "abs", "arguments": [-5], "returns": "number" },
+  { "call": "abs", "arguments": [0], "returns": "number" },
+  { "call": "sign", "arguments": [42], "returns": "number" },
+  { "call": "sign", "arguments": [-7], "returns": "number" },
+  { "call": "sign", "arguments": [0], "returns": "number" },
+  { "call": "classify", "arguments": [95], "returns": "string" },
+  { "call": "classify", "arguments": [75], "returns": "string" },
+  { "call": "classify", "arguments": [55], "returns": "string" },
+  { "call": "classify", "arguments": [30], "returns": "string" },
+  { "call": "firstPositive", "arguments": [-1, -2, 3], "returns": "number" },
+  { "call": "firstPositive", "arguments": [5, 2, 1], "returns": "number" },
+  { "call": "firstPositive", "arguments": [-1, -2, -3], "returns": "number" }
+]

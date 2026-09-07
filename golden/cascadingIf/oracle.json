@@ -1,0 +1,15 @@
+[
+  { "call": "dayType", "arguments": [0], "returns": "string" },
+  { "call": "dayType", "arguments": [3], "returns": "string" },
+  { "call": "dayType", "arguments": [6], "returns": "string" },
+  { "call": "dayType", "arguments": [7], "returns": "string" },
+  { "call": "range", "arguments": [-5], "returns": "string" },
+  { "call": "range", "arguments": [0], "returns": "string" },
+  { "call": "range", "arguments": [5], "returns": "string" },
+  { "call": "range", "arguments": [50], "returns": "string" },
+  { "call": "range", "arguments": [500], "returns": "string" },
+  { "call": "season", "arguments": [1], "returns": "string" },
+  { "call": "season", "arguments": [4], "returns": "string" },
+  { "call": "season", "arguments": [7], "returns": "string" },
+  { "call": "season", "arguments": [10], "returns": "string" }
+]
