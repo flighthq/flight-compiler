@@ -1,0 +1,18 @@
+[
+  { "call": "negate", "arguments": [true], "returns": "boolean" },
+  { "call": "negate", "arguments": [false], "returns": "boolean" },
+  { "call": "doubleNegate", "arguments": [true], "returns": "boolean" },
+  { "call": "doubleNegate", "arguments": [false], "returns": "boolean" },
+  { "call": "and", "arguments": [true, true], "returns": "boolean" },
+  { "call": "and", "arguments": [true, false], "returns": "boolean" },
+  { "call": "and", "arguments": [false, false], "returns": "boolean" },
+  { "call": "or", "arguments": [false, true], "returns": "boolean" },
+  { "call": "or", "arguments": [false, false], "returns": "boolean" },
+  { "call": "xor", "arguments": [true, false], "returns": "boolean" },
+  { "call": "xor", "arguments": [true, true], "returns": "boolean" },
+  { "call": "xor", "arguments": [false, false], "returns": "boolean" },
+  { "call": "implies", "arguments": [true, true], "returns": "boolean" },
+  { "call": "implies", "arguments": [true, false], "returns": "boolean" },
+  { "call": "implies", "arguments": [false, true], "returns": "boolean" },
+  { "call": "implies", "arguments": [false, false], "returns": "boolean" }
+]

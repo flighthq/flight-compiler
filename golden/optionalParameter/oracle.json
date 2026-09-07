@@ -1,0 +1,9 @@
+[
+  { "call": "greetOptional", "arguments": ["Alice"], "returns": "string" },
+  { "call": "greetOptional", "arguments": [], "returns": "string" },
+  { "call": "addOptional", "arguments": [5, 3], "returns": "number" },
+  { "call": "addOptional", "arguments": [5], "returns": "number" },
+  { "call": "formatOptional", "arguments": [42, "$", " USD"], "returns": "string" },
+  { "call": "formatOptional", "arguments": [42], "returns": "string" },
+  { "call": "formatOptional", "arguments": [42, ">>"], "returns": "string" }
+]
