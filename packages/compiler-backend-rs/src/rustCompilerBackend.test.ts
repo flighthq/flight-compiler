@@ -1320,6 +1320,45 @@ describe('emitIrModuleRust', () => {
     expect(output).toContain('Rc<dyn Fn(f64) -> f64>');
   });
 
+  it('wraps closure-captured mutable bindings in Rc<Cell<T>> with clone block', () => {
+    const result = lower(
+      'cell-capture.ts',
+      'export function counter(): () => number { let count = 0; return (): number => { count += 1; return count; }; }',
+    );
+    const output = emitIrModuleRust(result.module).contents;
+
+    expect(output).toContain('use std::cell::Cell;');
+    expect(output).toContain('Rc<Cell<f64>>');
+    expect(output).toContain('Rc::new(Cell::new(0.0))');
+    expect(output).toContain('Rc::clone(&count)');
+    expect(output).toContain('count.set(count.get() + 1.0)');
+    expect(output).toContain('count.get()');
+    expect(output).not.toContain('let mut count');
+  });
+
+  it('emits Rc<Cell<T>> for shared mutable state between closure and outer scope', () => {
+    const result = lower(
+      'cell-shared.ts',
+      'export function accumulate(values: number[]): number { let total = 0; const add: (n: number) => void = (n: number): void => { total += n; }; for (const v of values) { add(v); } return total; }',
+    );
+    const output = emitIrModuleRust(result.module).contents;
+
+    expect(output).toContain('let total: Rc<Cell<f64>>');
+    expect(output).toContain('total.set(total.get() + n)');
+    expect(output).toContain('return total.get()');
+  });
+
+  it('does not cell-wrap bindings captured by immediately-invoked closures', () => {
+    const result = lower(
+      'iife-destructure.ts',
+      'export function assign(tuple: [number]): [number] { let value = 0; return ([value] = tuple); }',
+    );
+    const output = emitIrModuleRust(result.module).contents;
+
+    expect(output).not.toContain('Cell');
+    expect(output).toContain('value = destructuring_assignment_value.0');
+  });
+
   it('emits primitive union enums with typeof narrowing and ambient member dispatch', () => {
     const module = lower(
       'typeof-union.ts',
