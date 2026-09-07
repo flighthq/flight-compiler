@@ -1297,6 +1297,29 @@ describe('emitIrModuleRust', () => {
     expect(output).toContain('values.get(index as usize).cloned().unwrap_or_else(|| 0.0)');
   });
 
+  it('wraps returned closures in Rc::new with move and emits function types as Rc<dyn Fn>', () => {
+    const result = lower(
+      'callback.ts',
+      'export function makeAdder(base: number): (x: number) => number { return (x: number): number => base + x; }',
+    );
+    const output = emitIrModuleRust(result.module).contents;
+
+    expect(output).toContain('use std::rc::Rc;');
+    expect(output).toContain('Rc<dyn Fn(f64) -> f64>');
+    expect(output).toContain('Rc::new(move |x| base + x)');
+  });
+
+  it('wraps variable-assigned closures in Rc::new with move when typed as function', () => {
+    const result = lower(
+      'callback-var.ts',
+      'export function apply(values: number[]): number { const double: (x: number) => number = (x: number): number => x * 2; return double(values[0]!); }',
+    );
+    const output = emitIrModuleRust(result.module).contents;
+
+    expect(output).toContain('Rc::new(move |x| x * 2.0)');
+    expect(output).toContain('Rc<dyn Fn(f64) -> f64>');
+  });
+
   it('emits primitive union enums with typeof narrowing and ambient member dispatch', () => {
     const module = lower(
       'typeof-union.ts',
