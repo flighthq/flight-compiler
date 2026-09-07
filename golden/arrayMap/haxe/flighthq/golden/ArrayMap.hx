@@ -9,6 +9,6 @@ function squares(values:Array<Float>):Array<Float> {
   return values.map(function(v:Float) return (v * v));
 }
 
-function lengths(items:Array<String>):Array<Float> {
-  return items.map(function(s:String) return s.length);
+function negated(values:Array<Float>):Array<Float> {
+  return values.map(function(v:Float) return - v);
 }

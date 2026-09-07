@@ -9,6 +9,6 @@ pub fn squares(values: Vec<f64>) -> Vec<f64> {
   return values.into_iter().map(|v| v * v).collect::<Vec<_>>();
 }
 
-pub fn lengths(items: Vec<String>) -> Vec<f64> {
-  return items.into_iter().map(|s| s.len() as f64).collect::<Vec<_>>();
+pub fn negated(values: Vec<f64>) -> Vec<f64> {
+  return values.into_iter().map(|v| -v).collect::<Vec<_>>();
 }

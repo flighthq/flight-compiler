@@ -1,0 +1,11 @@
+[
+  { "call": "doubles", "arguments": [[1, 2, 3]], "returns": "numbers" },
+  { "call": "doubles", "arguments": [[0, -1, 5]], "returns": "numbers" },
+  { "call": "doubles", "arguments": [[]], "returns": "numbers" },
+  { "call": "squares", "arguments": [[1, 2, 3]], "returns": "numbers" },
+  { "call": "squares", "arguments": [[0, -2, 4]], "returns": "numbers" },
+  { "call": "squares", "arguments": [[]], "returns": "numbers" },
+  { "call": "negated", "arguments": [[1, -2, 3]], "returns": "numbers" },
+  { "call": "negated", "arguments": [[0, 0, 0]], "returns": "numbers" },
+  { "call": "negated", "arguments": [[]], "returns": "numbers" }
+]
