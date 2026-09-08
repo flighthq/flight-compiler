@@ -22,8 +22,8 @@ describe('hasCompilerModuleFacadeLoweringRequirement', () => {
   });
 
   it.each([
-    "const value = 1; export { value as renamed };",
-    "const value = 1; export default value;",
+    'const value = 1; export { value as renamed };',
+    'const value = 1; export default value;',
     "export { value } from './value.js';",
     "export * from './value.js';",
     "export * as values from './value.js';",
