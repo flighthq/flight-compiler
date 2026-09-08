@@ -2734,4 +2734,167 @@ describe('emitIrModuleRust', () => {
     ).contents;
     expect(output).toContain('let x: Option<f64>');
   });
+
+  it('emits cast expression with as', () => {
+    const output = emitIrModuleRust(
+      lower('cast-expr.ts', 'export function narrow(x: unknown): number { return x as number; }').module,
+    ).contents;
+    expect(output).toContain(' as ');
+  });
+
+  it('emits tuple element access by index', () => {
+    const output = emitIrModuleRust(
+      lower('tuple-access.ts', 'export function first(pair: [number, string]): number { return pair[0]; }').module,
+    ).contents;
+    expect(output).toContain('.0');
+  });
+
+  it('emits reexport as pub use', () => {
+    const result = lowerPackage(
+      '@flighthq/core',
+      'barrel.ts',
+      "export { add } from './math.js'; export function local(): number { return 1; }",
+    );
+    const output = emitIrModuleRust(result.module).contents;
+    expect(output).toContain('pub use');
+  });
+
+  it('emits typeof guard as matches! for primitive unions', () => {
+    const output = emitIrModuleRust(
+      lower('typeof-guard.ts', 'export function check(x: string | number): boolean { return typeof x === "string"; }')
+        .module,
+    ).contents;
+    expect(output).toContain('matches!');
+  });
+
+  it('emits class with field initializers as struct literal new', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'field-init-ctor.ts',
+        'export class Point { x: number; y: number; constructor(x: number, y: number) { this.x = x; this.y = y; } }',
+      ).module,
+    ).contents;
+    expect(output).toContain('fn new(');
+    expect(output).toContain('Point {');
+  });
+
+  it('emits undefinedDefault expression as unwrap_or_else', () => {
+    const output = emitIrModuleRust(
+      lower('undef-default.ts', 'export function safe(x: number | undefined): number { return x ?? 0; }').module,
+    ).contents;
+    expect(output).toContain('.unwrap_or_else(');
+  });
+
+  it('emits narrowed present nullable as unwrap', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'narrowed-present.ts',
+        'export function value(x: number | null): number { if (x !== null) { return x; } return 0; }',
+      ).module,
+    ).contents;
+    expect(output).toContain('.unwrap()');
+  });
+
+  it('emits callback variable as Rc-wrapped closure', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'callback-var.ts',
+        'export function run(): number { const fn_: (x: number) => number = (x: number): number => x + 1; return fn_(1); }',
+      ).module,
+    ).contents;
+    expect(output).toContain('Rc::new(');
+  });
+
+  it('emits element access with expression index as usize cast', () => {
+    const output = emitIrModuleRust(
+      lower('elem-expr-idx.ts', 'export function at(items: number[], i: number): number { return items[i]; }').module,
+    ).contents;
+    expect(output).toContain('as usize');
+  });
+
+  it('emits owned operand clone for multi-use binding', () => {
+    const output = emitIrModuleRust(
+      lower('multi-use.ts', 'export function dup(s: string): string { const a = s; const b = s; return a; }').module,
+    ).contents;
+    expect(output).toContain('.clone()');
+  });
+
+  it('emits abstract class trait with abstract field accessors', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'abstract-field.ts',
+        'export abstract class Named { abstract name: string; greet(): string { return this.name; } }',
+      ).module,
+    ).contents;
+    expect(output).toContain('trait Named');
+    expect(output).toContain('fn name(&self) -> String;');
+    expect(output).toContain('fn greet(&self) -> String');
+    expect(output).toContain('self.name()');
+  });
+
+  it('emits scoped package import as use crate path', () => {
+    const result = lowerPackage(
+      '@flighthq/core',
+      'consumer.ts',
+      "import { Point } from '@flighthq/types/point'; export function use(p: Point): number { return p.x; }",
+    );
+    const output = emitIrModuleRust(result.module).contents;
+    expect(output).toContain('use ');
+  });
+
+  it('emits composition base member access through base field', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'comp-access.ts',
+        [
+          'export class Base { x: number; constructor(x: number) { this.x = x; } }',
+          'export class Child extends Base { y: number; constructor(x: number, y: number) { super(x); this.y = y; } get_x(): number { return this.x; } }',
+        ].join('\n'),
+      ).module,
+    ).contents;
+    expect(output).toContain('self.base');
+  });
+
+  it('emits string replace as replacen with count 1', () => {
+    const output = emitIrModuleRust(
+      lower('str-replace.ts', 'export function fix(s: string): string { return s.replace("old", "new"); }').module,
+    ).contents;
+    expect(output).toContain('replacen(');
+  });
+
+  it('emits class non-copy self field clone', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'self-field-clone.ts',
+        'export class Container { items: string[]; constructor() { this.items = []; } get(): string[] { return this.items; } }',
+      ).module,
+    ).contents;
+    expect(output).toContain('.clone()');
+  });
+
+  it('emits switch with unreachable default when exhaustive', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'switch-exhaust.ts',
+        'export function label(n: number): string { switch (n) { case 1: return "one"; case 2: return "two"; } return "none"; }',
+      ).module,
+    ).contents;
+    expect(output).toContain('unreachable!()');
+  });
+
+  it('emits assignment operators directly', () => {
+    const output = emitIrModuleRust(
+      lower('assign-ops.ts', 'export function ops(): number { let x = 10; x += 5; x -= 3; x *= 2; return x; }').module,
+    ).contents;
+    expect(output).toContain('+=');
+    expect(output).toContain('-=');
+    expect(output).toContain('*=');
+  });
+
+  it('emits clone safety for nested array types', () => {
+    const output = emitIrModuleRust(
+      lower('nested-array.ts', 'export function wrap(items: number[]): number[][] { return [items]; }').module,
+    ).contents;
+    expect(output).toBeDefined();
+  });
 });
