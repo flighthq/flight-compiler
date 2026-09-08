@@ -3438,4 +3438,135 @@ describe('emitIrModuleCpp', () => {
     }
     expect(() => emitIrModuleCpp(module, { runtimeProfile: 'flight-cpp' })).toThrow('type argument');
   });
+
+  it('skips static fields and emits only instance fields in struct body', () => {
+    const output = emitIrModuleCpp(
+      lower(
+        'static-skip.ts',
+        `export class Counter {
+          static count: number = 0;
+          static label: string = 'counter';
+          value: number;
+          name: string;
+          constructor(v: number, n: string) { this.value = v; this.name = n; }
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('double value');
+    expect(output).toContain('name');
+    expect(output).not.toMatch(/\bcount\b/u);
+    expect(output).not.toMatch(/\blabel\b/u);
+  });
+
+  it('emits labeled break in switch case that targets outer loop', () => {
+    const output = emitIrModuleCpp(
+      lower(
+        'labeled-switch.ts',
+        `export function scan(values: number[]): number {
+          let result: number = 0;
+          outer: for (let i: number = 0; i < values.length; i++) {
+            switch (values[i]) {
+              case -1:
+                break outer;
+              case 0:
+                continue;
+              default:
+                result = result + values[i]!;
+            }
+          }
+          return result;
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('break');
+  });
+
+  it('detects return only in else branch of if inside try-finally', () => {
+    const output = emitIrModuleCpp(
+      lower(
+        'try-else-return.ts',
+        `export function decide(condition: boolean, cleanup: () => void): number {
+          try {
+            if (condition) {
+              cleanup();
+            } else {
+              return 2;
+            }
+          } finally {
+            cleanup();
+          }
+          return 0;
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('finally_return');
+    expect(output).toContain('finally_exception');
+  });
+
+  it('detects return in catch body of try inside outer try-finally', () => {
+    const output = emitIrModuleCpp(
+      lower(
+        'nested-catch-return.ts',
+        `export function nested(cleanup: () => void): number {
+          try {
+            try {
+              cleanup();
+            } catch (e: unknown) {
+              return 1;
+            }
+          } finally {
+            cleanup();
+          }
+          return 0;
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('finally_return');
+  });
+
+  it('emits enum member without explicit value via IR injection', () => {
+    const module = structuredClone(
+      lower('auto-enum.ts', 'export enum Direction { Up = 0, Down = 1, Left = 2, Right = 3 }').module,
+    );
+    const enumDecl = module.declarations.find((d: { kind: string }) => d.kind === 'enum');
+    if (enumDecl?.kind === 'enum' && enumDecl.members[2]) {
+      delete (enumDecl.members[2] as any).value;
+    }
+    const output = emitIrModuleCpp(module).contents;
+    expect(output).toContain('Left,');
+    expect(output).toContain('Right = 3');
+  });
+
+  it('emits optional and rest parameters in function declarations', () => {
+    const output = emitIrModuleCpp(
+      lower(
+        'opt-rest.ts',
+        `export function greet(name: string, title?: string): string { return name; }
+         export function sum(...values: number[]): number { return values[0]!; }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('std::optional');
+    expect(output).toContain('std::nullopt');
+    expect(output).toContain('std::vector');
+  });
+
+  it('emits super call returning undefined when constructor has no super', () => {
+    const module = structuredClone(
+      lower(
+        'no-super.ts',
+        `export class Base { value: number; constructor(v: number) { this.value = v; } }
+         export class Child extends Base { extra: string; constructor(v: number) { super(v); this.extra = 'x'; } }`,
+      ).module,
+    );
+    const child = module.declarations.find(
+      (d: { kind: string; binding?: { name: string } }) => d.kind === 'class' && d.binding?.name === 'Child',
+    );
+    if (child?.kind === 'class' && child.classConstructor) {
+      child.classConstructor.body = child.classConstructor.body.filter(
+        (s: { kind: string }) => s.kind !== 'expression',
+      );
+    }
+    const output = emitIrModuleCpp(module).contents;
+    expect(output).toContain('Child');
+  });
 });
