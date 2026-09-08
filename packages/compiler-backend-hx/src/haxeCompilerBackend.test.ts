@@ -4826,3 +4826,112 @@ describe('emitIrModuleHaxe for-in with key plan', () => {
     expect(output).toContain('for');
   });
 });
+
+describe('emitIrModuleHaxe triple-nested labeled break', () => {
+  it('emits control flow propagation for break across three nesting levels', () => {
+    const result = lower(
+      'triple-nested-break.ts',
+      `export function search(items: number[]): number {
+         outer: for (const a of items) {
+           for (const b of items) {
+             for (const c of items) {
+               if (c === 0) break outer;
+             }
+           }
+         }
+         return 0;
+       }`,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('!= 0');
+  });
+});
+
+describe('emitIrModuleHaxe optional nullable parameter guard', () => {
+  it('emits optional parameter without Null wrapping for non-nullable type', () => {
+    const result = lower(
+      'optional-param.ts',
+      `export function greet(name?: string): string {
+         return name ?? "world";
+       }`,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('?name');
+  });
+});
+
+describe('emitIrModuleHaxe tuple spread with undefined element', () => {
+  it('emits null for undefined tuple element in spread', () => {
+    const result = lower(
+      'tuple-spread-undef.ts',
+      `export function spread(a: [number, string], b: [boolean]): [number, string, boolean] {
+         return [...a, ...b];
+       }`,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('[');
+  });
+});
+
+describe('emitIrModuleHaxe function type parameter emission', () => {
+  it('emits function type with parameter types in arrow notation', () => {
+    const result = lower(
+      'function-type.ts',
+      `export type Transformer = (input: number) => string;
+       export function apply(fn: Transformer, value: number): string { return fn(value); }`,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('->');
+  });
+});
+
+describe('emitIrModuleHaxe structInit with null-typed optional property', () => {
+  it('does not double-wrap optional property whose type already includes null', () => {
+    const result = lower(
+      'struct-null-optional.ts',
+      `export interface Config {
+         readonly name: string;
+         readonly label?: string | null;
+       }`,
+    );
+    const output = emitIrModuleHaxe(result.module, { structuralRecords: 'structInit' }).contents;
+
+    expect(output).toContain('structInit');
+    expect(output).toContain('label');
+  });
+});
+
+describe('emitIrModuleHaxe abstract method in base class', () => {
+  it('does not add override for method that is abstract in base class', () => {
+    const result = lower(
+      'abstract-method.ts',
+      `export abstract class Shape {
+         abstract area(): number;
+       }
+       export class Circle extends Shape {
+         radius: number;
+         constructor(r: number) { super(); this.radius = r; }
+         area(): number { return this.radius * this.radius; }
+       }`,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('class Circle');
+    expect(output).toContain('function area');
+    expect(output).not.toContain('override');
+  });
+});
+
+describe('emitIrModuleHaxe module-level typed variable declaration', () => {
+  it('emits type annotation for module-level variable', () => {
+    const result = lower('module-typed-var.ts', `export const version: string = "1.0.0";`);
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('version');
+    expect(output).toContain('String');
+  });
+});
