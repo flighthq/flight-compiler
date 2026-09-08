@@ -220,6 +220,21 @@ describe('createCompilerLoweringPassSwitchSuspension', () => {
       { condition: { kind: 'literal', value: true }, consequent: { kind: 'break' }, kind: 'if' },
     ]);
     const targetedBreak = makeModule([{ kind: 'break', target: { id: 'outer' } as never }]);
+    const ifBreakOnlyInElse = makeModule([
+      {
+        condition: { kind: 'literal', value: true },
+        consequent: { expression: { kind: 'literal', value: 0 }, kind: 'expression' },
+        kind: 'if',
+        otherwise: { kind: 'break' },
+      },
+    ]);
+    const ifNoBreakNoElse = makeModule([
+      {
+        condition: { kind: 'literal', value: true },
+        consequent: { expression: { kind: 'literal', value: 0 }, kind: 'expression' },
+        kind: 'if',
+      },
+    ]);
     const noBreak = makeModule([
       {
         condition: { kind: 'literal', value: true },
@@ -229,7 +244,7 @@ describe('createCompilerLoweringPassSwitchSuspension', () => {
       { expression: { kind: 'literal', value: 0 }, kind: 'expression' },
     ]);
 
-    for (const module of [breakInBlock, breakInIf, breakInIfNoElse]) {
+    for (const module of [breakInBlock, breakInIf, breakInIfNoElse, ifBreakOnlyInElse]) {
       const result = pass.lowerIrModule(module);
       const resultFn = result.declarations[0];
       expect(resultFn?.kind === 'function' && resultFn.body[0]?.kind).toBe('switch');
@@ -242,6 +257,10 @@ describe('createCompilerLoweringPassSwitchSuspension', () => {
     expect(noBreakResult.declarations[0]?.kind === 'function' && noBreakResult.declarations[0].body[0]?.kind).toBe(
       'block',
     );
+    const ifNoBreakNoElseResult = pass.lowerIrModule(ifNoBreakNoElse);
+    expect(
+      ifNoBreakNoElseResult.declarations[0]?.kind === 'function' && ifNoBreakNoElseResult.declarations[0].body[0]?.kind,
+    ).toBe('block');
   });
 
   it('walks passthrough declarations and statement containers beside the converted switch', () => {

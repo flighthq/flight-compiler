@@ -1,7 +1,7 @@
 import ts from 'typescript';
 
 import { lowerTypeScriptSource } from '../../compiler-semantic/src/index.js';
-import type { IrModule } from '../../compiler-types/src/index.js';
+import type { IrBindingPattern, IrModule, IrVariable } from '../../compiler-types/src/index.js';
 import { createCompilerLoweringPassArrayBindingPattern } from './compilerArrayBindingPatternLowering.js';
 import { hasIrModuleArrayBindingPattern } from './compilerArrayBindingPatternPresence.js';
 import { lowerIrModuleWithCompilerPasses } from './compilerLoweringPass.js';
@@ -159,6 +159,37 @@ describe('hasIrModuleArrayBindingPattern', () => {
 
     expect(hasIrModuleArrayBindingPattern(computed)).toBe(true);
     expect(hasIrModuleArrayBindingPattern(rest)).toBe(true);
+  });
+
+  it('detects an array binding pattern in the rest element of an object pattern', () => {
+    const source = lower(
+      'rest-binding.ts',
+      `
+        interface Source { name: string; extra: string }
+        export function read(source: Source): string {
+          const { name, ...rest }: Source = source;
+          name;
+          rest;
+          return name;
+        }
+      `,
+    );
+
+    expect(hasIrModuleArrayBindingPattern(source)).toBe(false);
+
+    const injected = structuredClone(source);
+    const fn = injected.declarations.find((declaration) => declaration.kind === 'function');
+    if (fn?.kind !== 'function') throw new Error('Expected function');
+    const variableStatement = fn.body[0];
+    if (variableStatement?.kind !== 'variable') throw new Error('Expected variable');
+    const variable = variableStatement.declarations[0] as IrVariable & { pattern: IrBindingPattern };
+    if (variable.pattern?.kind !== 'object') throw new Error('Expected object pattern');
+    (variable.pattern as { rest: IrBindingPattern }).rest = {
+      elements: [{ binding: variable.pattern.rest!, kind: 'binding', omitted: false, rest: false }],
+      kind: 'array',
+    } as IrBindingPattern;
+
+    expect(hasIrModuleArrayBindingPattern(injected)).toBe(true);
   });
 });
 

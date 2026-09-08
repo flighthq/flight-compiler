@@ -724,6 +724,8 @@ describe('createCompilerLoweringPassSwitchFallthrough', () => {
          export const processor = (value: number): number => {
            switch (value) { case 0: case 1: return 1; default: return 0; }
          };
+         const helper = 1;
+         export { helper };
          export default (value: number): number => {
            switch (value) { case 0: case 1: return 1; default: return 0; }
          };`,
