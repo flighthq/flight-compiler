@@ -3124,6 +3124,13 @@ describe('emitIrModuleRust', () => {
     expect(output).toContain('f64::floor');
   });
 
+  it('emits Math.round through the JavaScript-compatible runtime wrapper', () => {
+    const output = emitIrModuleRust(
+      lower('math-round.ts', 'export function nearest(x: number): number { return Math.round(x); }').module,
+    ).contents;
+    expect(output).toContain('flight_runtime::round(x)');
+  });
+
   it('emits Math.abs via f64 method', () => {
     const output = emitIrModuleRust(
       lower('math-abs.ts', 'export function abs(x: number): number { return Math.abs(x); }').module,

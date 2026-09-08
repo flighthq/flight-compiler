@@ -16,7 +16,7 @@ inline double round_up(double value) {
 }
 
 inline double rounded(double value) {
-  return std::round(value);
+  return flight::round(value);
 }
 
 inline double absolute(double value) {

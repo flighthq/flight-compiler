@@ -17,7 +17,7 @@ pub fn lerp(start: f64, end: f64, t: f64) -> f64 {
 
 pub fn round_to_places(value: f64, places: f64) -> f64 {
   let factor: f64 = f64::powf(10.0, places);
-  return f64::round((value * factor)) / factor;
+  return flight_runtime::round((value * factor)) / factor;
 }
 
 pub fn average(values: Vec<f64>) -> f64 {

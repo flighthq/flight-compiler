@@ -100,7 +100,7 @@ const cppFlightRuntimeExternalSymbolBindings = [
       { sourceMember: 'max', targetName: 'std::max' },
       { sourceMember: 'min', targetName: 'std::min' },
       { sourceMember: 'pow', targetName: 'std::pow' },
-      { sourceMember: 'round', targetName: 'std::round' },
+      { sourceMember: 'round', targetName: 'flight::round' },
       { sourceMember: 'sign', targetName: 'flight::sign' },
       { sourceMember: 'sin', targetName: 'std::sin' },
       { sourceMember: 'sqrt', targetName: 'std::sqrt' },

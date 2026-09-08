@@ -1864,6 +1864,12 @@ describe('emitIrModuleCpp', () => {
     expect(emitted.contents).toContain('std::pow');
   });
 
+  it('emits Math.round through the semantic runtime wrapper', () => {
+    const result = lower('math-round.ts', 'export function nearest(x: number): number { return Math.round(x); }');
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+    expect(emitted.contents).toContain('return flight::round(x)');
+  });
+
   it('emits Math.max with spread as fold over std::max_element', () => {
     const result = lower(
       'math-max-spread.ts',

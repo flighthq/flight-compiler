@@ -13,6 +13,7 @@ The runtime exists where C++ standard-library behavior is observably different f
 - `Set<T>` shares Map's SameValueZero and insertion-order rules. Typed-array copies and `subarray` share a fixed backing store, while `slice` copies; clamped bytes use saturating ties-to-even conversion.
 - `Task<T>` is copyable and shares one settlement. Observers run through a non-reentrant executor, completed tasks can be awaited repeatedly, and exception or non-exception rejection values retain their identity and type.
 - `Date` applies ECMAScript-style finite millisecond clipping and stores an epoch instant. The initial calendar projection is UTC-only and is limited to the range represented by C++20 `std::chrono::year`; local-zone `getFullYear` behavior is not yet claimed.
+- `round` follows `Math.round`: nearest-integer ties move toward positive infinity, inputs from -0.5 through negative zero retain a negative-zero result, and NaN and infinities pass through unchanged.
 
 ## Deliberate gaps
 

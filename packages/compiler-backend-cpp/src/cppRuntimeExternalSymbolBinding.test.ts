@@ -116,6 +116,10 @@ describe('getCompilerRuntimeExternalMemberTargetCpp', () => {
     expect(getCompilerRuntimeExternalMemberTargetCpp('Math', 'PI')).toBe('M_PI');
   });
 
+  it('uses the JavaScript-compatible rounding wrapper with the semantic runtime', () => {
+    expect(getCompilerRuntimeExternalMemberTargetCpp('Math', 'round', 'flight-cpp')).toBe('flight::round');
+  });
+
   it('claims nothing for an unbound member or an unbound symbol', () => {
     expect(getCompilerRuntimeExternalMemberTargetCpp('Math', 'atan2')).toBeUndefined();
     expect(getCompilerRuntimeExternalMemberTargetCpp('Array', 'from')).toBeUndefined();

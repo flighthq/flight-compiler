@@ -163,6 +163,21 @@ void test_presence_and_math() {
   check(std::holds_alternative<flight::Undefined>(value), "undefined is distinct from a value");
   value = flight::null;
   check(std::holds_alternative<flight::Null>(value), "null is distinct from undefined");
+  check(flight::round(3.5) == 4.0 && flight::round(-3.5) == -3.0,
+        "Math.round resolves half-integer ties toward positive infinity");
+  check(flight::round(-3.5000000000000004) == -4.0 &&
+            flight::round(-3.4999999999999996) == -3.0,
+        "Math.round distinguishes values immediately around a negative half boundary");
+  check(std::signbit(flight::round(-0.5)) && std::signbit(flight::round(-0.1)) &&
+            std::signbit(flight::round(-0.0)),
+        "Math.round preserves negative zero where JavaScript does");
+  check(flight::round(std::numeric_limits<double>::infinity()) ==
+            std::numeric_limits<double>::infinity() &&
+            flight::round(-std::numeric_limits<double>::infinity()) ==
+                -std::numeric_limits<double>::infinity(),
+        "Math.round preserves infinities");
+  check(std::isnan(flight::round(std::numeric_limits<double>::quiet_NaN())),
+        "Math.round preserves NaN");
   check(std::signbit(flight::sign(-0.0)), "Math.sign preserves negative zero");
   check(std::isnan(flight::sign(std::numeric_limits<double>::quiet_NaN())),
         "Math.sign preserves NaN");

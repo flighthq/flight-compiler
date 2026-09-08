@@ -48,6 +48,22 @@ pub fn block_on<F: Future>(future: F) -> F::Output {
     }
 }
 
+pub fn round(value: f64) -> f64 {
+    if !value.is_finite() || value == 0.0 {
+        return value;
+    }
+    if value < 0.0 && value >= -0.5 {
+        return -0.0;
+    }
+
+    let lower = value.floor();
+    if value - lower < 0.5 {
+        lower
+    } else {
+        lower + 1.0
+    }
+}
+
 const NOOP_WAKER_VTABLE: RawWakerVTable = RawWakerVTable::new(
     |_| RawWaker::new(std::ptr::null(), &NOOP_WAKER_VTABLE),
     |_| {},
@@ -75,3 +91,22 @@ impl FlightDate {
 
 #[derive(Clone, Debug)]
 pub struct OpaqueHostValue;
+
+#[cfg(test)]
+mod tests {
+    use super::round;
+
+    #[test]
+    fn round_matches_javascript_boundaries_and_special_values() {
+        assert_eq!(round(3.5), 4.0);
+        assert_eq!(round(-3.5), -3.0);
+        assert_eq!(round(-3.5000000000000004), -4.0);
+        assert_eq!(round(-3.4999999999999996), -3.0);
+        assert!(round(-0.5).is_sign_negative());
+        assert!(round(-0.1).is_sign_negative());
+        assert!(round(-0.0).is_sign_negative());
+        assert_eq!(round(f64::INFINITY), f64::INFINITY);
+        assert_eq!(round(f64::NEG_INFINITY), f64::NEG_INFINITY);
+        assert!(round(f64::NAN).is_nan());
+    }
+}

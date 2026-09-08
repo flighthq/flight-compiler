@@ -10,7 +10,7 @@ pub fn round_up(value: f64) -> f64 {
 }
 
 pub fn round_nearest(value: f64) -> f64 {
-  return f64::round(value);
+  return flight_runtime::round(value);
 }
 
 pub fn fractional_part(value: f64) -> f64 {

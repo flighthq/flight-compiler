@@ -89,7 +89,7 @@ const rustRuntimeExternalSymbolBindings = [
       { sourceMember: 'max', targetName: 'f64::max' },
       { sourceMember: 'min', targetName: 'f64::min' },
       { sourceMember: 'pow', targetName: 'f64::powf' },
-      { sourceMember: 'round', targetName: 'f64::round' },
+      { sourceMember: 'round', targetName: 'flight_runtime::round' },
       { sourceMember: 'sign', targetName: 'f64::signum' },
       { sourceMember: 'sin', targetName: 'f64::sin' },
       { sourceMember: 'sqrt', targetName: 'f64::sqrt' },

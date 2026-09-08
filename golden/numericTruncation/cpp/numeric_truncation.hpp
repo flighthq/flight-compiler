@@ -16,7 +16,7 @@ inline double round_up(double value) {
 }
 
 inline double round_nearest(double value) {
-  return std::round(value);
+  return flight::round(value);
 }
 
 inline double fractional_part(double value) {

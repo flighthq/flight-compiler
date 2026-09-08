@@ -23,7 +23,7 @@ inline double lerp(double start, double end, double t) {
 
 inline double round_to_places(double value, double places) {
   const double factor = std::pow(10.0, places);
-  return (std::round((value * factor)) / factor);
+  return (flight::round((value * factor)) / factor);
 }
 
 inline double average(flight::Array<double> values) {
