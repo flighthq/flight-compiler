@@ -997,11 +997,11 @@ describe('createCompilerLoweringPassArrayBindingPattern', () => {
     }
     const firstElement = patternVar.pattern.elements[0];
     if (!firstElement || firstElement.pattern.kind !== 'binding') throw new Error('Expected binding');
-    (firstElement.pattern as { type: IrType }).type = { kind: 'primitive', name: 'number' } as IrType;
-    const output = lowerIrModuleWithCompilerPasses(injected, [pass]);
+    (firstElement.pattern as { type: IrType }).type = { kind: 'primitive', name: 'string' } as IrType;
+    const output = pass.lowerIrModule(injected);
     const declarations = getVariableStatement(getFunctionDeclaration(output, 'read').body[0]).declarations;
     const xVar = declarations.find((v): v is IrNamedVariable => !('pattern' in v) && v.binding.name === 'x');
-    expect(xVar?.type).toEqual({ kind: 'primitive', name: 'number' });
+    expect(xVar?.type).toEqual({ kind: 'primitive', name: 'string' });
   });
 
   it('lowers rest elements with explicit type annotations', () => {
@@ -1029,15 +1029,15 @@ describe('createCompilerLoweringPassArrayBindingPattern', () => {
       throw new Error('Expected binding rest');
     }
     (patternVar.pattern.rest as { type: IrType }).type = {
-      element: { kind: 'primitive', name: 'string' },
+      element: { kind: 'primitive', name: 'boolean' },
       kind: 'array',
     } as IrType;
-    const output = lowerIrModuleWithCompilerPasses(injected, [pass]);
+    const output = pass.lowerIrModule(injected);
     const declarations = getVariableStatement(getFunctionDeclaration(output, 'split').body[0]).declarations.map(
       getNamedVariable,
     );
     const restVar = declarations.find((v) => v.binding.name === 'rest');
-    expect(restVar?.type).toEqual({ element: { kind: 'primitive', name: 'string' }, kind: 'array' });
+    expect(restVar?.type).toEqual({ element: { kind: 'primitive', name: 'boolean' }, kind: 'array' });
   });
 
   it('handles non-array pattern variables and variables without types through injection', () => {
