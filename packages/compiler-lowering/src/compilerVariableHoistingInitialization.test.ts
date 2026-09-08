@@ -1,7 +1,12 @@
 import ts from 'typescript';
 
 import { lowerTypeScriptSource } from '../../compiler-semantic/src/index.js';
-import type { IrFunctionDeclaration, IrNamedVariable } from '../../compiler-types/src/index.js';
+import type {
+  IrExpression,
+  IrFunctionDeclaration,
+  IrNamedVariable,
+  IrStatement,
+} from '../../compiler-types/src/index.js';
 import { validateIrFunctionVariableInitialization } from './compilerVariableHoistingInitialization.js';
 
 describe('validateIrFunctionVariableInitialization', () => {
@@ -579,6 +584,177 @@ describe('validateIrFunctionVariableInitialization', () => {
         ),
       ).toThrow('function-scoped variable value may be read before initialization');
     }
+  });
+
+  it('propagates initialization through destructuring assignment IIFE with statementValue', () => {
+    const declaration = lowerFunction(`
+      export function destructure(items: [number, number]): number {
+        var a: number;
+        var b: number;
+        const result: [number, number] = [a, b] = items;
+        return a + b + result[0];
+      }
+    `);
+
+    expect(
+      validateIrFunctionVariableInitialization(declaration.body, getFunctionVariables(declaration), declaration.origin),
+    ).toBeUndefined();
+  });
+
+  it('rejects destructuring assignment IIFE when var is read before the assignment', () => {
+    const declaration = lowerFunction(`
+      export function destructure(items: [number, number]): number {
+        var a: number;
+        const before = a;
+        const result: [number, number] = [a] = items;
+        return before + result[0];
+      }
+    `);
+
+    expect(() =>
+      validateIrFunctionVariableInitialization(declaration.body, getFunctionVariables(declaration), declaration.origin),
+    ).toThrow('function-scoped variable a may be read before initialization');
+  });
+
+  it('covers IR-only expression types in the closure capture expression visitor', () => {
+    const declaration = lowerFunction(`
+      export function closureCapture(): number {
+        var value: number;
+        value = 1;
+        const cb = (): number => { return value; };
+        return cb();
+      }
+    `);
+    const clone = structuredClone(declaration);
+    const closureStatement = clone.body.find(
+      (s): s is Extract<IrStatement, { kind: 'variable' }> =>
+        s.kind === 'variable' && s.declarations.some((d) => 'binding' in d && d.binding.name === 'cb'),
+    );
+    if (!closureStatement) throw new Error('Expected cb variable');
+    const cbVar = closureStatement.declarations[0];
+    if (!cbVar || !('binding' in cbVar) || cbVar.initializer?.kind !== 'function') {
+      throw new Error('Expected function initializer');
+    }
+    const closureFn = cbVar.initializer;
+    const ref =
+      closureFn.body[0]?.kind === 'return' && closureFn.body[0].expression?.kind === 'identifier'
+        ? closureFn.body[0].expression
+        : undefined;
+    if (!ref) throw new Error('Expected identifier reference in closure body');
+    const ident: IrExpression = structuredClone(ref);
+    const objectRestExpr: IrExpression = {
+      excluded: [
+        { kind: 'named' as const, name: 'x' },
+        { expression: ident, kind: 'computed' as const },
+      ],
+      kind: 'objectRest',
+      object: ident,
+      type: { kind: 'unknown', source: 'object' },
+    } as IrExpression;
+    const tupleExpr: IrExpression = {
+      elements: [{ expression: ident, optional: false }, { optional: true }],
+      kind: 'tuple',
+    } as IrExpression;
+    const tupleSpreadExpr: IrExpression = {
+      kind: 'tupleSpread',
+      segments: [
+        { expression: ident, kind: 'spread' },
+        { element: { expression: ident, optional: false }, kind: 'element' },
+      ],
+      type: { elements: [], kind: 'tuple' },
+    } as IrExpression;
+    const tupleRestExpr: IrExpression = { kind: 'tupleRest', object: ident } as IrExpression;
+    const tupleSuffixExpr: IrExpression = { kind: 'tupleSuffix', object: ident } as IrExpression;
+    const undefinedDefaultExpr: IrExpression = {
+      fallback: { kind: 'literal', value: 0 },
+      kind: 'undefinedDefault',
+      value: ident,
+    } as IrExpression;
+    const injectedStatements: IrStatement[] = [
+      { expression: objectRestExpr, kind: 'expression' },
+      { expression: tupleExpr, kind: 'expression' },
+      { expression: tupleSpreadExpr, kind: 'expression' },
+      { expression: tupleRestExpr, kind: 'expression' },
+      { expression: tupleSuffixExpr, kind: 'expression' },
+      { expression: undefinedDefaultExpr, kind: 'expression' },
+    ];
+    closureFn.body = [...injectedStatements, ...closureFn.body];
+
+    expect(
+      validateIrFunctionVariableInitialization(clone.body, getFunctionVariables(clone), clone.origin),
+    ).toBeUndefined();
+  });
+
+  it('covers forIn and forOf variable initializer in the closure statement visitor', () => {
+    const declaration = lowerFunction(`
+      export function closureForIn(): number {
+        var value: number;
+        value = 1;
+        const cb = (): number => { for (const k in {}) { k; } return value; };
+        return cb();
+      }
+    `);
+    const clone = structuredClone(declaration);
+    const closureStatement = clone.body.find(
+      (s): s is Extract<IrStatement, { kind: 'variable' }> =>
+        s.kind === 'variable' && s.declarations.some((d) => 'binding' in d && d.binding.name === 'cb'),
+    );
+    if (!closureStatement) throw new Error('Expected cb variable');
+    const cbVar = closureStatement.declarations[0];
+    if (!cbVar || !('binding' in cbVar) || cbVar.initializer?.kind !== 'function') {
+      throw new Error('Expected function initializer');
+    }
+    const closureFn = cbVar.initializer;
+    const forInStatement = closureFn.body.find((s): s is Extract<IrStatement, { kind: 'forIn' }> => s.kind === 'forIn');
+    const forOfBody: IrStatement = {
+      kind: 'forOf',
+      variable: {
+        binding: { id: 'item', name: 'item', scope: 'block' },
+        initializer: { kind: 'literal', value: 0 } as IrExpression,
+        mutable: false,
+        type: { kind: 'intrinsic', name: 'number' },
+      },
+      iterable: { kind: 'identifier', reference: { kind: 'unresolved', name: 'arr' } } as IrExpression,
+      body: { kind: 'block', statements: [] },
+    } as IrStatement;
+    if (forInStatement) {
+      (forInStatement.variable as Record<string, unknown>).initializer = { kind: 'literal', value: '' };
+    }
+    closureFn.body = [forOfBody, ...closureFn.body];
+
+    expect(
+      validateIrFunctionVariableInitialization(clone.body, getFunctionVariables(clone), clone.origin),
+    ).toBeUndefined();
+  });
+
+  it('covers parameter default in closure capture check', () => {
+    const declaration = lowerFunction(`
+      export function withDefault(): number {
+        var value: number;
+        value = 1;
+        const cb = (x: number = value): number => x;
+        return cb();
+      }
+    `);
+
+    expect(
+      validateIrFunctionVariableInitialization(declaration.body, getFunctionVariables(declaration), declaration.origin),
+    ).toBeUndefined();
+  });
+
+  it('covers assignment target fallthrough for non-standard targets via injection', () => {
+    const declaration = lowerFunction(`
+      export function assign(): number {
+        var value: number;
+        value = 0;
+        (value as number) = 1;
+        return value;
+      }
+    `);
+
+    expect(
+      validateIrFunctionVariableInitialization(declaration.body, getFunctionVariables(declaration), declaration.origin),
+    ).toBeUndefined();
   });
 });
 
