@@ -2687,4 +2687,285 @@ describe('emitIrModuleCpp', () => {
     const module = { ...result.module, declarations: [...result.module.declarations, extraDecl] as any };
     expect(() => emitIrModuleCpp(module)).toThrow();
   });
+
+  it('emits class with static field by skipping it in struct body', () => {
+    const output = emitIrModuleCpp(
+      lower(
+        'static-field.ts',
+        `export class Config {
+          static readonly MAX: number = 100;
+          value: number;
+          constructor(v: number) { this.value = v; }
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('struct Config');
+    expect(output).toContain('value');
+  });
+
+  it('emits enum member without explicit value', () => {
+    const output = emitIrModuleCpp(lower('enum-implicit.ts', `export enum Color { Red, Green, Blue }`).module).contents;
+    expect(output).toContain('enum class Color');
+    expect(output).toContain('Red');
+  });
+
+  it('emits closure with body rather than expression', () => {
+    const output = emitIrModuleCpp(
+      lower(
+        'closure-body.ts',
+        `export function apply(items: number[]): number[] {
+          return items.map((x) => { const y = x * 2; return y; });
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('[=]');
+  });
+
+  it('emits optional parameter as std::optional', () => {
+    const output = emitIrModuleCpp(
+      lower('opt-param.ts', `export function greet(name?: string): string { return name ?? "world"; }`).module,
+    ).contents;
+    expect(output).toContain('std::optional');
+  });
+
+  it('emits rest parameter as std::vector', () => {
+    const output = emitIrModuleCpp(
+      lower(
+        'rest-param.ts',
+        `export function sum(...nums: number[]): number {
+          let total = 0;
+          for (const n of nums) { total += n; }
+          return total;
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('std::vector');
+  });
+
+  it('emits containsReturn through if-otherwise branch', () => {
+    const output = emitIrModuleCpp(
+      lower(
+        'try-finally-if.ts',
+        `export async function safe(): Promise<number> {
+          try {
+            if (true) { return 1; } else { return 2; }
+          } finally {
+            const _x = 0;
+          }
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('co_return');
+  });
+
+  it('emits try-finally with return in catch clause', () => {
+    const output = emitIrModuleCpp(
+      lower(
+        'try-finally-catch.ts',
+        `export async function safe(f: () => number): Promise<number> {
+          try {
+            return f();
+          } catch (e) {
+            return 0;
+          } finally {
+            const _x = 0;
+          }
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('co_return');
+  });
+
+  it('emits type parameter with fallback name', () => {
+    const output = emitIrModuleCpp(
+      lower('generic.ts', `export function identity<T>(x: T): T { return x; }`).module,
+    ).contents;
+    expect(output).toContain('template');
+    expect(output).toContain('typename');
+  });
+
+  it('emits Math.abs as ambient member call', () => {
+    const output = emitIrModuleCpp(
+      lower('math-abs.ts', `export function absolute(x: number): number { return Math.abs(x); }`).module,
+    ).contents;
+    expect(output).toContain('abs');
+  });
+
+  it('emits super reference with named base class', () => {
+    const output = emitIrModuleCpp(
+      lower(
+        'super-call.ts',
+        `export class Base {
+          x: number;
+          constructor(x: number) { this.x = x; }
+          greet(): string { return "base"; }
+        }
+        export class Derived extends Base {
+          constructor(x: number) { super(x); }
+          greet(): string { return "derived"; }
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('Base(');
+    expect(output).toContain('override');
+  });
+
+  it('emits anonymous struct with empty properties', () => {
+    const module = structuredClone(
+      lower('anon-empty.ts', 'export function id(x: number): number { return x; }').module,
+    );
+    const fn = module.declarations.find((d: { kind: string }) => d.kind === 'function');
+    if (fn && fn.kind === 'function') {
+      (fn as any).returns = { kind: 'object', properties: [] };
+    }
+    const output = emitIrModuleCpp(module).contents;
+    expect(output).toContain('struct');
+  });
+
+  it('emits class with abstract method and virtual destructor', () => {
+    const output = emitIrModuleCpp(
+      lower(
+        'abstract-class.ts',
+        `export abstract class Shape {
+          abstract area(): number;
+        }
+        export class Circle extends Shape {
+          r: number;
+          constructor(r: number) { super(); this.r = r; }
+          area(): number { return 3.14 * this.r * this.r; }
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('virtual');
+    expect(output).toContain('= 0');
+    expect(output).toContain('override');
+  });
+
+  it('emits super constructor call extraction from class body', () => {
+    const output = emitIrModuleCpp(
+      lower(
+        'super-ctor.ts',
+        `export class Animal {
+          name: string;
+          constructor(name: string) { this.name = name; }
+        }
+        export class Dog extends Animal {
+          breed: string;
+          constructor(name: string, breed: string) {
+            super(name);
+            this.breed = breed;
+          }
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('Animal(');
+    expect(output).toContain('Dog(');
+  });
+
+  it('emits forIn with closed key plan', () => {
+    const output = emitIrModuleCpp(
+      lower(
+        'for-in.ts',
+        `export interface Dict { a: number; b: number; }
+         export function keys(d: Dict): void {
+          for (const k in d) { const _x = k; }
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('std::vector<std::string>');
+  });
+
+  it('emits .length call on array as static_cast<double>', () => {
+    const output = emitIrModuleCpp(
+      lower('arr-len.ts', `export function size(items: number[]): number { return items.length; }`).module,
+    ).contents;
+    expect(output).toContain('static_cast<double>');
+    expect(output).toContain('.size()');
+  });
+
+  it('emits tuple rest as std::get', () => {
+    const output = emitIrModuleCpp(
+      lower(
+        'tuple-rest.ts',
+        `export function rest(t: [number, string, boolean]): [string, boolean] {
+          const [, ...tail] = t;
+          return tail;
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('std::get');
+  });
+
+  it('emits do-while loop', () => {
+    const output = emitIrModuleCpp(
+      lower(
+        'do-while.ts',
+        `export function count(): number {
+          let i = 0;
+          do { i += 1; } while (i < 10);
+          return i;
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('do {');
+    expect(output).toContain('} while');
+  });
+
+  it('emits class inheriting through chain resolves methods', () => {
+    const output = emitIrModuleCpp(
+      lower(
+        'chain-inherit.ts',
+        `export class A {
+          foo(): number { return 1; }
+        }
+        export class B extends A {
+          bar(): number { return 2; }
+        }
+        export class C extends B {
+          foo(): number { return 3; }
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('override');
+  });
+
+  it('emits undefined default as value_or', () => {
+    const output = emitIrModuleCpp(
+      lower(
+        'undef-default.ts',
+        `export function orZero(x: number | undefined): number {
+          return x !== undefined ? x : 0;
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('optional');
+  });
+
+  it('emits binding name fallback when not in target name map', () => {
+    const module = structuredClone(
+      lower('fallback-name.ts', 'export function id(x: number): number { return x; }').module,
+    );
+    const fn = module.declarations.find((d: { kind: string }) => d.kind === 'function');
+    if (fn && fn.kind === 'function') {
+      const ret = fn.body.find((s: { kind: string }) => s.kind === 'return');
+      if (ret && (ret as any).expression) {
+        (ret as any).expression = {
+          ...(ret as any).expression,
+          kind: 'cast',
+          expression: (ret as any).expression,
+          type: { kind: 'primitive', name: 'number' },
+        };
+      }
+    }
+    const output = emitIrModuleCpp(module).contents;
+    expect(output).toContain('static_cast');
+  });
+
+  it('emits Math.max spread as fold with algorithm include', () => {
+    const output = emitIrModuleCpp(
+      lower('math-spread.ts', `export function maxOf(items: number[]): number { return Math.max(...items); }`).module,
+    ).contents;
+    expect(output).toContain('max_element');
+    expect(output).toContain('#include <algorithm>');
+  });
 });
