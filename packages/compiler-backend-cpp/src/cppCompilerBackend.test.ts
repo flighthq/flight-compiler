@@ -2553,4 +2553,134 @@ describe('emitIrModuleCpp', () => {
     const emitted = emitIrModuleCpp(result.module);
     expect(emitted.contents).toContain('create_item');
   });
+
+  it('emits non-negated nullish comparison as negated has_value', () => {
+    const result = lower(
+      'null-equal.ts',
+      'export function isAbsent(x: number | undefined): boolean { return x === undefined; }',
+    );
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('!x.has_value()');
+  });
+
+  it('emits Promise construction via ::create with flight-cpp profile', () => {
+    const result = lower(
+      'promise-create.ts',
+      'export function make(): Promise<number> { return new Promise<number>((resolve) => { resolve(1); }); }',
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+    expect(emitted.contents).toContain('::create(');
+  });
+
+  it('emits import resolution for relative specifier without js extension', () => {
+    const result = lower(
+      'bare-import.ts',
+      `import { helper } from './helper';
+       export function use(): number { return helper(); }`,
+    );
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('#include "helper.hpp"');
+  });
+
+  it('emits class with inherited methods tracking for virtual dispatch', () => {
+    const result = lower(
+      'inherit-chain.ts',
+      `class Base { run(): number { return 1; } }
+       class Middle extends Base { step(): number { return 2; } }
+       export class Leaf extends Middle { run(): number { return 3; } step(): number { return 4; } }`,
+    );
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('virtual');
+    expect(emitted.contents).toContain('override');
+  });
+
+  it('refuses async closures before coroutine lowering', () => {
+    const result = lower('async-closure.ts', 'export function run(): void { return; }');
+    const module = structuredClone(result.module);
+    const fn = module.declarations.find((d) => d.kind === 'function')!;
+    if (fn.kind === 'function') {
+      fn.body = [
+        {
+          kind: 'expression',
+          expression: {
+            kind: 'function',
+            async: true,
+            parameters: [],
+            body: [],
+            expression: undefined,
+            typeParameters: [],
+            returnType: { kind: 'primitive', name: 'void' },
+          },
+        } as any,
+      ];
+    }
+    expect(() => emitIrModuleCpp(module)).toThrow();
+  });
+
+  it('refuses for-of with await before async iteration lowering', () => {
+    const result = lower('for-await.ts', 'export function run(): void { return; }');
+    const module = structuredClone(result.module);
+    const fn = module.declarations.find((d) => d.kind === 'function')!;
+    if (fn.kind === 'function') {
+      fn.body = [
+        {
+          kind: 'forOf',
+          await: true,
+          variable: {
+            binding: {
+              id: 'for-await-var',
+              kind: 'variable',
+              name: 'item',
+              line: 1,
+              column: 1,
+              fingerprint: '',
+              packageName: '',
+              scope: 'local',
+              source: '',
+              space: 'value',
+            },
+            mutable: false,
+          },
+          expression: { kind: 'literal', value: 0 },
+          body: { kind: 'block', statements: [] },
+        } as any,
+      ];
+    }
+    expect(() => emitIrModuleCpp(module)).toThrow();
+  });
+
+  it('emits runtime external symbol binding plan completeness failures', () => {
+    const result = lower('ext.ts', 'export const x: number = 1;');
+    const module = structuredClone(result.module);
+    module.declarations.push({
+      kind: 'function',
+      binding: {
+        id: 'fn-ext',
+        kind: 'variable',
+        name: 'use',
+        line: 1,
+        column: 1,
+        fingerprint: '',
+        packageName: '',
+        scope: 'module',
+        source: '',
+        space: 'value',
+      },
+      async: false,
+      typeParameters: [],
+      parameters: [],
+      returnType: { kind: 'primitive', name: 'void' },
+      body: [
+        {
+          kind: 'expression',
+          expression: {
+            kind: 'identifier',
+            reference: { kind: 'ambient', name: 'NonExistentGlobal' },
+            presence: 'definite',
+          },
+        },
+      ],
+    } as any);
+    expect(() => emitIrModuleCpp(module)).toThrow();
+  });
 });
