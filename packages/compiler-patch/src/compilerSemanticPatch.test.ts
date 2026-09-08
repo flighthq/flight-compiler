@@ -1,7 +1,10 @@
 import { fingerprintSourceText } from '../../compiler-provenance/src/index.js';
 import type {
+  IrClassDeclaration,
   IrDeclaration,
+  IrEnumDeclaration,
   IrFunctionDeclaration,
+  IrInterfaceDeclaration,
   IrModule,
   IrTypeAliasDeclaration,
   IrVariableDeclaration,
@@ -472,6 +475,229 @@ describe('applySemanticPatchSet', () => {
     }
   });
 
+  it('refuses replaceBody on a non-function declaration', () => {
+    const patch: SemanticPatch = {
+      ...patchBase('type-body', 'Range', 'typeAlias'),
+      body: [{ expression: { kind: 'literal', value: 1 }, kind: 'return' }],
+      operation: 'replaceBody',
+    };
+    const module = createModule([createTypeDeclaration('Range')]);
+    const failure = captureFailure([module], [patch] as unknown as SemanticPatch[]);
+
+    expect(failure).toMatchObject({
+      code: 'incompatible-patch-operation',
+      message: expect.stringContaining('requires a function'),
+    });
+  });
+
+  it('renames class, enum, variable, and interface declarations through their respective switch arms', () => {
+    const classDecl = createClassDeclaration('Widget');
+    const enumDecl = createEnumDeclaration('Choice');
+    const varDecl = createVariableDeclaration('config');
+    const ifaceDecl = createInterfaceDeclaration('Shape');
+    const module = createModule([classDecl, enumDecl, varDecl, ifaceDecl]);
+    const patches = defineSemanticPatchSet([
+      { ...patchBase('rename-class', 'Widget', 'class'), name: 'Component', operation: 'rename' },
+      { ...patchBase('rename-enum', 'Choice', 'enum'), name: 'Option', operation: 'rename' },
+      { ...patchBase('rename-var', 'config', 'variable'), name: 'settings', operation: 'rename' },
+      { ...patchBase('rename-iface', 'Shape', 'interface'), name: 'Geometry', operation: 'rename' },
+    ]);
+
+    const result = applySemanticPatchSet([module], patches, 'haxe');
+    const names = result.modules[0]?.declarations.map(declarationName);
+
+    expect(names).toEqual(['Component', 'Option', 'settings', 'Geometry']);
+  });
+
+  it('applies patches against multi-module inputs preserving unaffected modules', () => {
+    const first = createModule([createFunctionDeclaration('clamp')]);
+    const second = { ...createModule([createFunctionDeclaration('lerp')]), name: 'Lerp' };
+    const thirdDecl = createFunctionDeclaration('step');
+    const third = { ...createModule([thirdDecl]), name: 'Step' };
+    const patches = defineSemanticPatchSet([
+      renamePatch('rename-clamp', 'bounded', { kind: 'neutral' }),
+      { ...patchBase('rename-lerp', 'lerp', 'function'), name: 'interpolate', operation: 'rename' },
+    ]);
+
+    const result = applySemanticPatchSet([first, second, third], patches, 'haxe');
+
+    expect(result.modules[0]?.declarations[0]).toMatchObject({ binding: { name: 'bounded' } });
+    expect(result.modules[1]?.declarations[0]).toMatchObject({ binding: { name: 'interpolate' } });
+    expect(result.modules[2]?.declarations[0]).toMatchObject({ binding: { name: 'step' } });
+  });
+
+  it('identifies binding-pattern targets through nested object and array patterns with rest', () => {
+    const fp = fingerprintSourceText('const { items: [first], ...rest } = source;');
+    const origin = { column: 1, fingerprint: fp, line: 1, packageName, source };
+    const bindingOrigin = { ...origin, kind: 'variable' as const, scope: 'module' as const, space: 'value' as const };
+    const objectPattern: IrVariableDeclaration = {
+      declarationKind: 'const',
+      exported: true,
+      initializer: { kind: 'identifier', reference: { kind: 'ambient', name: 'source' } },
+      kind: 'variable',
+      mutable: false,
+      origin,
+      pattern: {
+        ...origin,
+        kind: 'object',
+        properties: [
+          {
+            key: { kind: 'named', name: 'items' },
+            pattern: {
+              ...origin,
+              elements: [
+                {
+                  pattern: {
+                    binding: { ...bindingOrigin, id: 'binding:first', name: 'first' },
+                    kind: 'binding',
+                  },
+                },
+              ],
+              kind: 'array',
+              scope: 'module',
+            },
+          },
+        ],
+        rest: {
+          binding: { ...bindingOrigin, id: 'binding:rest', name: 'rest' },
+          kind: 'binding',
+        },
+        scope: 'module',
+      },
+      type: { kind: 'unknown', source: 'object' },
+    };
+    const module = createModule([objectPattern]);
+    const firstPatch: SemanticPatch = {
+      ...patchBase('rename-first', 'first', 'variable'),
+      expect: { fingerprint: fp, kind: 'variable' },
+      name: 'head',
+      operation: 'rename',
+    };
+    const restPatch: SemanticPatch = {
+      ...patchBase('rename-rest', 'rest', 'variable'),
+      expect: { fingerprint: fp, kind: 'variable' },
+      name: 'tail',
+      operation: 'rename',
+    };
+
+    const firstFailure = captureFailure([module], [firstPatch]);
+    const restFailure = captureFailure([module], [restPatch]);
+
+    expect(firstFailure).toMatchObject({
+      code: 'incompatible-patch-operation',
+      message: expect.stringContaining('binding-pattern leaf first'),
+    });
+    expect(restFailure).toMatchObject({
+      code: 'incompatible-patch-operation',
+      message: expect.stringContaining('binding-pattern leaf rest'),
+    });
+  });
+
+  it('identifies binding-pattern targets through object patterns without rest', () => {
+    const fp = fingerprintSourceText('const { value } = source;');
+    const originNoRest = { column: 1, fingerprint: fp, line: 1, packageName, source };
+    const bindingNoRest = {
+      ...originNoRest,
+      kind: 'variable' as const,
+      scope: 'module' as const,
+      space: 'value' as const,
+    };
+    const noRestPattern: IrVariableDeclaration = {
+      declarationKind: 'const',
+      exported: true,
+      initializer: { kind: 'identifier', reference: { kind: 'ambient', name: 'source' } },
+      kind: 'variable',
+      mutable: false,
+      origin: originNoRest,
+      pattern: {
+        ...originNoRest,
+        kind: 'object',
+        properties: [
+          {
+            key: { kind: 'named', name: 'value' },
+            pattern: {
+              binding: { ...bindingNoRest, id: 'binding:value', name: 'value' },
+              kind: 'binding',
+            },
+          },
+        ],
+        scope: 'module',
+      },
+      type: { kind: 'unknown', source: 'object' },
+    };
+    const noRestModule = createModule([noRestPattern]);
+    const noRestPatch: SemanticPatch = {
+      ...patchBase('rename-value', 'value', 'variable'),
+      expect: { fingerprint: fp, kind: 'variable' },
+      name: 'renamed',
+      operation: 'rename',
+    };
+    const noRestFailure = captureFailure([noRestModule], [noRestPatch]);
+
+    expect(noRestFailure).toMatchObject({
+      code: 'incompatible-patch-operation',
+      message: expect.stringContaining('binding-pattern leaf value'),
+    });
+  });
+
+  it('identifies binding-pattern targets through array patterns with optional elements and rest', () => {
+    const fp = fingerprintSourceText('const [first, , ...rest] = values;');
+    const origin = { column: 1, fingerprint: fp, line: 1, packageName, source };
+    const bindingOrigin = { ...origin, kind: 'variable' as const, scope: 'module' as const, space: 'value' as const };
+    const arrayPattern: IrVariableDeclaration = {
+      declarationKind: 'const',
+      exported: true,
+      initializer: { kind: 'identifier', reference: { kind: 'ambient', name: 'values' } },
+      kind: 'variable',
+      mutable: false,
+      origin,
+      pattern: {
+        ...origin,
+        elements: [
+          {
+            pattern: {
+              binding: { ...bindingOrigin, id: 'binding:first', name: 'first' },
+              kind: 'binding',
+            },
+          },
+          undefined,
+        ],
+        kind: 'array',
+        rest: {
+          binding: { ...bindingOrigin, id: 'binding:rest', name: 'rest' },
+          kind: 'binding',
+        },
+        scope: 'module',
+      },
+      type: { element: { kind: 'primitive', name: 'number' }, kind: 'array', readonly: false },
+    };
+    const module = createModule([arrayPattern]);
+    const patch: SemanticPatch = {
+      ...patchBase('rename-first', 'first', 'variable'),
+      expect: { fingerprint: fp, kind: 'variable' },
+      name: 'head',
+      operation: 'rename',
+    };
+    const restPatchDef: SemanticPatch = {
+      ...patchBase('rename-rest', 'rest', 'variable'),
+      expect: { fingerprint: fp, kind: 'variable' },
+      name: 'tail',
+      operation: 'rename',
+    };
+
+    const firstFailure = captureFailure([module], [patch]);
+    const restFailure = captureFailure([module], [restPatchDef]);
+
+    expect(firstFailure).toMatchObject({
+      code: 'incompatible-patch-operation',
+      message: expect.stringContaining('binding-pattern leaf first'),
+    });
+    expect(restFailure).toMatchObject({
+      code: 'incompatible-patch-operation',
+      message: expect.stringContaining('binding-pattern leaf rest'),
+    });
+  });
+
   it('reports conflicts deterministically regardless of input order', () => {
     const first = renamePatch('Z-first', 'first', { kind: 'neutral' });
     const second = renamePatch('é-second', 'second', { kind: 'neutral' });
@@ -607,6 +833,100 @@ function createTypeDeclaration(name: string): IrTypeAliasDeclaration {
     },
     type: { kind: 'primitive', name: 'number' },
     typeParameters: [],
+  };
+}
+
+function createClassDeclaration(name: string): IrClassDeclaration {
+  return {
+    abstract: false,
+    binding: {
+      column: 1,
+      fingerprint: fingerprintSourceText(name),
+      id: `binding:[${JSON.stringify(packageName)},${JSON.stringify(source)},${JSON.stringify(name)}]`,
+      kind: 'class',
+      line: 1,
+      name,
+      packageName,
+      scope: 'module',
+      source,
+      space: 'value',
+    },
+    exported: true,
+    extends: undefined,
+    fields: [],
+    implements: [],
+    kind: 'class',
+    methods: [],
+    origin: { column: 1, fingerprint: fingerprintSourceText(name), line: 1, packageName, source },
+    typeParameters: [],
+  };
+}
+
+function createEnumDeclaration(name: string): IrEnumDeclaration {
+  return {
+    binding: {
+      column: 1,
+      fingerprint: fingerprintSourceText(name),
+      id: `binding:[${JSON.stringify(packageName)},${JSON.stringify(source)},${JSON.stringify(name)}]`,
+      kind: 'enum',
+      line: 1,
+      name,
+      packageName,
+      scope: 'module',
+      source,
+      space: 'value',
+    },
+    exported: true,
+    kind: 'enum',
+    members: [],
+    origin: { column: 1, fingerprint: fingerprintSourceText(name), line: 1, packageName, source },
+  };
+}
+
+function createInterfaceDeclaration(name: string): IrInterfaceDeclaration {
+  return {
+    binding: {
+      column: 1,
+      fingerprint: fingerprintSourceText(name),
+      id: `type-binding:[${JSON.stringify(packageName)},${JSON.stringify(source)},${JSON.stringify(name)}]`,
+      kind: 'interface',
+      line: 1,
+      name,
+      packageName,
+      scope: 'module',
+      source,
+      space: 'type',
+    },
+    exported: true,
+    extends: [],
+    kind: 'interface',
+    origin: { column: 1, fingerprint: fingerprintSourceText(name), line: 1, packageName, source },
+    properties: [],
+    typeParameters: [],
+  };
+}
+
+function createVariableDeclaration(name: string): IrVariableDeclaration {
+  return {
+    binding: {
+      column: 1,
+      fingerprint: fingerprintSourceText(name),
+      id: `binding:[${JSON.stringify(packageName)},${JSON.stringify(source)},${JSON.stringify(name)}]`,
+      kind: 'variable',
+      line: 1,
+      name,
+      packageName,
+      scope: 'module',
+      source,
+      space: 'value',
+    },
+    declarationKind: 'const',
+    exported: true,
+    initializer: { kind: 'literal', value: 0 },
+    kind: 'variable',
+    mutable: false,
+    origin: { column: 1, fingerprint: fingerprintSourceText(name), line: 1, packageName, source },
+    type: { kind: 'primitive', name: 'number' },
   };
 }
 
