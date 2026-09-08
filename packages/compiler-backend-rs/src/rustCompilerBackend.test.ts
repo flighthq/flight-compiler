@@ -10862,3 +10862,241 @@ describe('emitIrModuleRust null equality check', () => {
     expect(output).toContain('is_some');
   });
 });
+
+describe('emitIrModuleRust tagged union', () => {
+  it('emits a type alias union of records as a Rust enum with shared accessors', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'tagged-union.ts',
+        `export interface Circle { kind: string; radius: number }
+         export interface Square { kind: string; side: number }
+         export type Shape = Circle | Square;
+         export function describe(s: Shape): string {
+           return s.kind;
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('enum Shape');
+    expect(output).toContain('Circle(');
+    expect(output).toContain('Square(');
+    expect(output).toContain('fn kind(');
+  });
+});
+
+describe('emitIrModuleRust primitive union enum', () => {
+  it('emits a string | number parameter as a Rust enum with typeof test', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'prim-union.ts',
+        `export function isText(val: string | number): boolean {
+           return typeof val === 'string';
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('F64');
+    expect(output).toContain('Str');
+    expect(output).toContain('matches!');
+  });
+});
+
+describe('emitIrModuleRust composition constructor', () => {
+  it('emits a derived class with composition base field', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'composition.ts',
+        `export class Base {
+           x: number;
+           constructor(x: number) { this.x = x; }
+         }
+         export class Derived extends Base {
+           y: number;
+           constructor(x: number, y: number) { super(x); this.y = y; }
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('struct Derived');
+    expect(output).toContain('base: Base');
+    expect(output).toContain('Base::new(');
+  });
+});
+
+describe('emitIrModuleRust optional property chain', () => {
+  it('emits ?. property access as Option map', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'optional-prop.ts',
+        `export interface Box { value: number }
+         export function read(b: Box | undefined): number | undefined {
+           return b?.value;
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('.map(');
+    expect(output).toContain('optional_chain_value');
+  });
+});
+
+describe('emitIrModuleRust cell-wrapped closure capture', () => {
+  it('emits Rc<Cell> for a mutable variable captured by a returned closure', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'cell-capture.ts',
+        `export function makeCounter(): () => number {
+           let count: number = 0;
+           const inc = (): number => { count = count + 1; return count; };
+           return inc;
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('Cell');
+    expect(output).toContain('Rc');
+  });
+});
+
+describe('emitIrModuleRust class with abstract base trait', () => {
+  it('emits abstract class as trait and concrete subclass implements it', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'abstract-base.ts',
+        `export abstract class Animal {
+           abstract name(): string;
+           greet(): string { return "I am " + this.name(); }
+         }
+         export class Dog extends Animal {
+           name(): string { return "Dog"; }
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('trait Animal');
+    expect(output).toContain('impl Animal for Dog');
+  });
+});
+
+describe('emitIrModuleRust class implements interface as trait', () => {
+  it('emits interface as trait when a class implements it', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'impl-trait.ts',
+        `export interface Describable { describe(): string }
+         export class Item implements Describable {
+           label: string;
+           constructor(label: string) { this.label = label; }
+           describe(): string { return this.label; }
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('trait Describable');
+    expect(output).toContain('impl Describable for Item');
+  });
+});
+
+describe('emitIrModuleRust do-while loop', () => {
+  it('emits do-while as loop with break condition', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'do-while.ts',
+        `export function countdown(n: number): number {
+           let i: number = n;
+           do { i = i - 1; } while (i > 0);
+           return i;
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('loop');
+    expect(output).toContain('break');
+  });
+});
+
+describe('emitIrModuleRust while-true loop', () => {
+  it('emits while(true) as Rust loop', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'infinite-loop.ts',
+        `export function spin(): number {
+           let i: number = 0;
+           while (true) { i = i + 1; if (i > 10) { return i; } }
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('loop {');
+  });
+});
+
+describe('emitIrModuleRust narrowed present unwrap', () => {
+  it('emits narrowed present binding as unwrap', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'narrowed-unwrap.ts',
+        `export function check(x: number | null): number {
+           if (x !== null) { return x; }
+           return 0;
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('unwrap');
+  });
+});
+
+describe('emitIrModuleRust object expression', () => {
+  it('emits an object literal as a Rust struct construction', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'object-lit.ts',
+        `export interface Point { x: number; y: number }
+         export function origin(): Point { return { x: 0, y: 0 }; }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('Point {');
+    expect(output).toContain('x:');
+    expect(output).toContain('y:');
+  });
+});
+
+describe('emitIrModuleRust abstract class with abstract fields', () => {
+  it('emits abstract fields as trait accessor methods', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'abstract-fields.ts',
+        `export abstract class Shape {
+           abstract readonly area: number;
+         }
+         export class Circle extends Shape {
+           radius: number;
+           constructor(r: number) { super(); this.radius = r; }
+           get area(): number { return 3.14 * this.radius * this.radius; }
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('trait Shape');
+    expect(output).toContain('fn area(');
+  });
+});
+
+describe('emitIrModuleRust tuple expression', () => {
+  it('emits a tuple with one element including trailing comma', () => {
+    const output = emitIrModuleRust(
+      lower('tuple-one.ts', `export function wrap(x: number): [number] { return [x]; }`).module,
+    ).contents;
+    expect(output).toContain(',)');
+  });
+});
+
+describe('emitIrModuleRust labeled break and continue', () => {
+  it('emits labeled loop with break target', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'labeled-break.ts',
+        `export function search(matrix: number[][]): boolean {
+           outer: for (const row of matrix) {
+             for (const val of row) {
+               if (val === 42) { break outer; }
+             }
+           }
+           return false;
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain("'outer");
+    expect(output).toContain("break 'outer");
+  });
+});
