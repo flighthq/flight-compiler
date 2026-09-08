@@ -1054,6 +1054,212 @@ describe('emitIrModuleHaxe', () => {
     );
   });
 
+  it('emits class accessors as Haxe property pairs with get_/set_ bodies', () => {
+    const result = lower(
+      'accessor.ts',
+      `
+        export class Value {
+          private _count: number = 0;
+          get count(): number { return this._count; }
+          set count(value: number) { this._count = value; }
+        }
+      `,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('public var count(get, set):Float;');
+    expect(output).toContain('function get_count():Float {');
+    expect(output).toContain('function set_count(value:Float):Float {');
+    expect(output).toContain('return value;');
+  });
+
+  it('emits abstract methods, static methods, and private visibility', () => {
+    const result = lower(
+      'methods.ts',
+      `
+        export abstract class Shape {
+          abstract area(): number;
+          static origin(): number { return 0; }
+          private radius(): number { return 1; }
+          call(): number { return this.radius(); }
+        }
+      `,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('abstract function area():Float;');
+    expect(output).toContain('static function origin():Float');
+    expect(output).toContain('private function radius():Float');
+  });
+
+  it('emits Float enum from non-integer numeric values', () => {
+    const result = lower('float-enum.ts', 'export enum Ratio { Half = 0.5, Third = 0.33 }');
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('enum abstract Ratio(Float) from Float to Float');
+    expect(output).toContain('var Half = 0.5;');
+    expect(output).toContain('var Third = 0.33;');
+  });
+
+  it('emits ternary expressions with condition, whenTrue, and whenFalse', () => {
+    const result = lower(
+      'ternary.ts',
+      'export function pick(flag: boolean, a: number, b: number): number { return flag ? a : b; }',
+    );
+
+    expect(emitIrModuleHaxe(result.module).contents).toContain('return flag ? a : b;');
+  });
+
+  it('emits template literals as Std.string concatenation', () => {
+    const result = lower(
+      'template.ts',
+      'export function greet(name: string): string { return `hello ${name} world`; }',
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('"hello " + Std.string(name) + " world"');
+  });
+
+  it('emits bitwise complement with Std.int wrapping', () => {
+    const result = lower('complement.ts', 'export function complement(value: number): number { return ~value; }');
+
+    expect(emitIrModuleHaxe(result.module).contents).toContain('~ Std.int(value)');
+  });
+
+  it('emits do-while loops and throw statements', () => {
+    const doWhile = lower(
+      'do-while.ts',
+      'export function loop(): number { let count: number = 0; do { count += 1; } while (count < 3); return count; }',
+    );
+    const throwStatement = lower('throw.ts', 'export function fail(): never { throw new Error("fail"); }');
+
+    expect(emitIrModuleHaxe(doWhile.module).contents).toContain('do {');
+    expect(emitIrModuleHaxe(doWhile.module).contents).toContain('count += 1;');
+    expect(emitIrModuleHaxe(doWhile.module).contents).toContain('} while ((count < 3));');
+    expect(emitIrModuleHaxe(throwStatement.module).contents).toContain('throw');
+  });
+
+  it('emits try-catch without finally', () => {
+    const result = lower(
+      'try-catch.ts',
+      'export function safe(value: number): number { try { return value; } catch (error) { return 0; } }',
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('try {');
+    expect(output).toContain('catch (error:Dynamic) {');
+    expect(output).toContain('return 0;');
+  });
+
+  it('emits Dynamic for never, null, undefined, unknown, keyof, indexedAccess, and typeOf types', () => {
+    const result = lower(
+      'dynamic-types.ts',
+      `
+        interface Box { value: number }
+        export function dynamic(
+          neverValue: never,
+          keyValue: keyof Box,
+          unknownValue: unknown,
+          nullValue: null,
+          undefinedValue: undefined,
+        ): void { neverValue; keyValue; unknownValue; nullValue; undefinedValue; }
+      `,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('neverValue:Dynamic');
+    expect(output).toContain('keyValue:Dynamic');
+    expect(output).toContain('unknownValue:Dynamic');
+  });
+
+  it('emits dynamic for-in using Reflect.fields when no closed key plan exists', () => {
+    const result = lower(
+      'dynamic-for-in.ts',
+      'export function keys(record: object): void { for (const key in record) key; }',
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('Reflect.fields(record)');
+  });
+
+  it('emits unsigned right shift through explicit Std.int wrapping', () => {
+    const result = lower(
+      'unsigned-shift.ts',
+      'export function shift(a: number, b: number): number { return a >>> b; }',
+    );
+
+    expect(emitIrModuleHaxe(result.module).contents).toContain('Std.int(a) >>> Std.int(b)');
+  });
+
+  it('emits bitwise or, xor, left shift, and right shift with Std.int wrapping', () => {
+    const result = lower(
+      'bitwise.ts',
+      `
+        export function bitOr(a: number, b: number): number { return a | b; }
+        export function bitXor(a: number, b: number): number { return a ^ b; }
+        export function leftShift(a: number, b: number): number { return a << b; }
+        export function rightShift(a: number, b: number): number { return a >> b; }
+      `,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('Std.int(a) | Std.int(b)');
+    expect(output).toContain('Std.int(a) ^ Std.int(b)');
+    expect(output).toContain('Std.int(a) << Std.int(b)');
+    expect(output).toContain('Std.int(a) >> Std.int(b)');
+  });
+
+  it('emits type-only re-exports as Haxe typedef aliases', () => {
+    const result = lowerPackage(
+      '@flighthq/core',
+      'reexport.ts',
+      "export type { sourceType as Renamed } from '@flighthq/math/types';",
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('typedef Renamed =');
+  });
+
+  it('emits union types with one concrete member as Null<T> and multi-concrete as Dynamic', () => {
+    const result = lower(
+      'union-types.ts',
+      'export function nullable(value: number | null): number { return value ?? 0; } export function mixed(value: number | string): void { value; }',
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('value:Null<Float>');
+    expect(output).toContain('value:Dynamic');
+  });
+
+  it('emits for-of iteration without async or patterns', () => {
+    const result = lower(
+      'for-of.ts',
+      'export function visit(values: number[]): number { let total: number = 0; for (const value of values) { total += value; } return total; }',
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('for (value in values)');
+  });
+
+  it('emits array.slice calls with Int-narrowed bounds', () => {
+    const result = lower(
+      'array-slice.ts',
+      'export function middle(values: number[], start: number, end: number): number[] { return values.slice(start, end); }',
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('values.slice(Std.int(start), Std.int(end))');
+  });
+
+  it('emits array.slice with no arguments as copy', () => {
+    const result = lower(
+      'array-copy.ts',
+      'export function copy(values: number[]): number[] { return values.slice(); }',
+    );
+
+    expect(emitIrModuleHaxe(result.module).contents).toContain('values.copy()');
+  });
+
   it('narrows a computed array index to Int, and leaves an integer literal alone', () => {
     // Haxe indexes arrays with `Int` while the neutral numeric domain has only `number`, so every
     // index arrives as `Float`. Emitting it directly produced Haxe that does not compile, which
