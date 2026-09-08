@@ -61,6 +61,59 @@ describe('compileCompilerCommandLineRequest', () => {
     expect(result.exitCode).toBe(0);
   });
 
+  it('elects the semantic C++ runtime by default and permits an explicit compatibility profile', () => {
+    const semantic = new Map<string, string>();
+    const standard = new Map<string, string>();
+    const input = source('label.ts', 'export function label(): string { return "flight"; }');
+
+    expect(
+      compileCompilerCommandLineRequest(
+        { argv: ['/src', '--target', 'cpp', '--out', '/semantic'] },
+        capabilities([input], semantic, []),
+      ).exitCode,
+    ).toBe(0);
+    expect(
+      compileCompilerCommandLineRequest(
+        {
+          argv: ['/src', '--target', 'cpp', '--out', '/standard', '--runtime-profile', 'standard-library'],
+        },
+        capabilities([input], standard, []),
+      ).exitCode,
+    ).toBe(0);
+
+    expect(semantic.get('/semantic/label.hpp')).toContain('#include <flight/runtime.hpp>');
+    expect(semantic.get('/semantic/label.hpp')).toContain('flight::String label()');
+    expect(standard.get('/standard/label.hpp')).toContain('std::string label()');
+    expect(standard.get('/standard/label.hpp')).not.toContain('flight/runtime.hpp');
+  });
+
+  it('validates target-specific and source-generating options before compiling', () => {
+    const errors: string[] = [];
+    const invalidRequests = [
+      ['/src', '--target', 'cpp', '--out', '/out', '--runtime-profile', 'unknown'],
+      ['/src', '--target', 'haxe', '--out', '/out', '--runtime-profile', 'flight-cpp'],
+      ['/src', '--target', 'cpp', '--out', '/out', '--runtime-header', '../bad\\runtime.hpp'],
+      ['/src', '--target', 'rust', '--out', '/out', '--root-package', 'flight'],
+      ['/src', '--target', 'rust', '--out', '/out', '--unknown', 'value'],
+      ['/src', '/other', '--target', 'rust', '--out', '/out'],
+    ];
+
+    for (const argv of invalidRequests) {
+      const result = compileCompilerCommandLineRequest(
+        { argv },
+        { ...capabilities([], new Map(), []), writeError: (text) => errors.push(text) },
+      );
+      expect(result.exitCode).toBe(2);
+    }
+
+    expect(errors.join('')).toContain('--runtime-profile must be flight-cpp or standard-library');
+    expect(errors.join('')).toContain('require --target cpp');
+    expect(errors.join('')).toContain('portable quoted-include path');
+    expect(errors.join('')).toContain('--root-package requires --target haxe');
+    expect(errors.join('')).toContain('Unknown option --unknown');
+    expect(errors.join('')).toContain('Exactly one source directory is required');
+  });
+
   it('refuses an incomplete invocation with the usage rather than a stack', () => {
     const errors: string[] = [];
     const missingTarget = compileCompilerCommandLineRequest(
@@ -137,6 +190,8 @@ describe('getCompilerCommandLineUsage', () => {
     expect(usage).toContain('--target');
     expect(usage).toContain('--out');
     expect(usage).toContain('--package');
+    expect(usage).toContain('--runtime-header');
+    expect(usage).toContain('--runtime-profile');
     expect(usage).toContain('--report');
   });
 });

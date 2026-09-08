@@ -10,6 +10,9 @@
     "directory": "packages/tool-compiler"
   },
   "type": "module",
+  "bin": {
+    "flight-compile": "dist/packages/compiler-command-line/src/compilerCommandLineEntryPoint.js"
+  },
   "main": "dist/packages/tool-compiler/src/index.js",
   "types": "dist/packages/tool-compiler/src/index.d.ts",
   "exports": {

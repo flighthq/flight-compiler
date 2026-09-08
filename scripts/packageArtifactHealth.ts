@@ -56,6 +56,7 @@ for (const required of [
   'README.md',
   'dist/packages/tool-compiler/src/index.d.ts',
   'dist/packages/tool-compiler/src/index.js',
+  'dist/packages/compiler-command-line/src/compilerCommandLineEntryPoint.js',
   'package.json',
 ]) {
   check(files.has(required), `tarball is missing ${required}`);
@@ -86,6 +87,7 @@ for (const publicExport of [
   'analyzeFlightWorkspace',
   'compileTypeScriptModules',
   'createHaxeCompilerBackend',
+  'createCppCompilerBackend',
   'createRustCompilerBackend',
 ]) {
   check(publicExport in publicModule, `assembled public module is missing ${publicExport}`);

@@ -51,4 +51,29 @@ describe('compileCompilerCommandLineDirectory', () => {
       compileCompilerCommandLineDirectory([path.join(workspace, 'src'), '--target', 'haxe', '--out', workspace]),
     ).toBe(2);
   });
+
+  it('writes semantic C++ output with a caller-selected runtime include', () => {
+    const workspace = mkdtempSync(path.join(tmpdir(), 'flight-command-line-'));
+    workspaces.push(workspace);
+    const source = path.join(workspace, 'src');
+    mkdirSync(source);
+    writeFileSync(path.join(source, 'label.ts'), 'export function label(): string { return "flight"; }');
+    const output = path.join(workspace, 'out');
+
+    expect(
+      compileCompilerCommandLineDirectory([
+        source,
+        '--target',
+        'cpp',
+        '--out',
+        output,
+        '--runtime-header',
+        'vendor/flight.hpp',
+      ]),
+    ).toBe(0);
+
+    const emitted = readFileSync(path.join(output, 'label.hpp'), 'utf8');
+    expect(emitted).toContain('#include "vendor/flight.hpp"');
+    expect(emitted).toContain('flight::String label()');
+  });
 });

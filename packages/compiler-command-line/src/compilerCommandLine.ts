@@ -38,6 +38,17 @@ export function compileCompilerCommandLineRequest(
       : parsed.target === 'cpp'
         ? createCppCompilerBackend()
         : createRustCompilerBackend();
+  const backendOptions: Record<string, unknown> =
+    parsed.target === 'haxe'
+      ? parsed.rootPackage === undefined
+        ? {}
+        : { rootPackage: parsed.rootPackage }
+      : parsed.target === 'cpp'
+        ? {
+            runtimeProfile: parsed.runtimeProfile,
+            ...(parsed.runtimeHeader === undefined ? {} : { runtimeHeader: parsed.runtimeHeader }),
+          }
+        : {};
   const sources = capabilities.listSourceFiles(parsed.sourceDirectory);
   if (sources.length === 0) {
     capabilities.writeError(`No TypeScript modules under ${parsed.sourceDirectory}\n`);
@@ -46,7 +57,7 @@ export function compileCompilerCommandLineRequest(
   const refusals: { module: string; reason: string }[] = [];
   let emitted = 0;
   for (const source of sources) {
-    const outcome = compileOneModule(source, parsed, backend, capabilities);
+    const outcome = compileOneModule(source, parsed, backend, backendOptions, capabilities);
     if (outcome.kind === 'emitted') {
       emitted += 1;
       continue;
@@ -89,18 +100,21 @@ const commandLineUsage = `Usage: flight-compile <source-directory> --target <cpp
 
   --package <name>        Package name the modules belong to (default: @local/source)
   --root-package <name>   Root package for Haxe output (default: the target's own)
+  --runtime-profile <id>  C++ runtime profile: flight-cpp or standard-library (default: flight-cpp)
+  --runtime-header <path> Override the flight-cpp runtime include spelling
   --report                Report refusals without failing the run`;
 
 function compileOneModule(
   source: Readonly<{ contents: string; moduleName: string; sourcePath: string }>,
   request: ParsedCompilerCommandLineRequest,
   backend: CompilerBackend<Record<string, unknown>>,
+  backendOptions: Readonly<Record<string, unknown>>,
   capabilities: Readonly<CompilerCommandLineCapabilities>,
 ): Readonly<{ kind: 'emitted' } | { kind: 'refused'; reason: string }> {
   try {
     const result = compileTypeScriptModules({
       backend,
-      backendOptions: request.rootPackage === undefined ? {} : { rootPackage: request.rootPackage },
+      backendOptions,
       sources: [
         {
           packageName: request.packageName,
@@ -128,6 +142,8 @@ interface ParsedCompilerCommandLineRequest {
   readonly packageName: string;
   readonly reportOnly: boolean;
   readonly rootPackage?: string | undefined;
+  readonly runtimeHeader?: string | undefined;
+  readonly runtimeProfile: 'flight-cpp' | 'standard-library';
   readonly sourceDirectory: string;
   readonly target: 'cpp' | 'haxe' | 'rust';
 }
@@ -148,6 +164,8 @@ function parseCompilerCommandLineRequest(
       positional.push(argument);
       continue;
     }
+    if (!commandLineValueOptions.has(argument)) return { failure: `Unknown option ${argument}` };
+    if (named.has(argument.slice(2))) return { failure: `${argument} may be supplied once` };
     const value = request.argv[index + 1];
     if (value === undefined || value.startsWith('--')) return { failure: `${argument} requires a value` };
     named.set(argument.slice(2), value);
@@ -155,20 +173,53 @@ function parseCompilerCommandLineRequest(
   }
   const sourceDirectory = positional[0];
   if (sourceDirectory === undefined) return { failure: 'A source directory is required' };
+  if (positional.length > 1) return { failure: 'Exactly one source directory is required' };
   const target = named.get('target');
   if (target !== 'cpp' && target !== 'haxe' && target !== 'rust')
     return { failure: '--target must be cpp, haxe, or rust' };
   const outputDirectory = named.get('out');
   if (outputDirectory === undefined) return { failure: '--out is required' };
   const rootPackage = named.get('root-package');
+  if (rootPackage !== undefined && target !== 'haxe') return { failure: '--root-package requires --target haxe' };
+  const runtimeProfile = named.get('runtime-profile') ?? 'flight-cpp';
+  if (runtimeProfile !== 'flight-cpp' && runtimeProfile !== 'standard-library') {
+    return { failure: '--runtime-profile must be flight-cpp or standard-library' };
+  }
+  const runtimeHeader = named.get('runtime-header');
+  if ((named.has('runtime-profile') || runtimeHeader !== undefined) && target !== 'cpp') {
+    return { failure: '--runtime-profile and --runtime-header require --target cpp' };
+  }
+  if (runtimeHeader !== undefined && (!isPortableIncludePath(runtimeHeader) || runtimeProfile !== 'flight-cpp')) {
+    return {
+      failure:
+        runtimeProfile !== 'flight-cpp'
+          ? '--runtime-header requires the flight-cpp runtime profile'
+          : '--runtime-header must be a portable quoted-include path',
+    };
+  }
   return {
     outputDirectory,
     packageName: named.get('package') ?? '@local/source',
     reportOnly,
     ...(rootPackage === undefined ? {} : { rootPackage }),
+    ...(runtimeHeader === undefined ? {} : { runtimeHeader }),
+    runtimeProfile,
     sourceDirectory,
     target,
   };
 }
+
+function isPortableIncludePath(value: string): boolean {
+  return value.length > 0 && !value.includes('\\') && !/["<>\r\n]/u.test(value);
+}
+
+const commandLineValueOptions = new Set([
+  '--out',
+  '--package',
+  '--root-package',
+  '--runtime-header',
+  '--runtime-profile',
+  '--target',
+]);
 
 const refusalModuleSampleSize = 3;

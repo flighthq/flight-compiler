@@ -1,6 +1,9 @@
+#!/usr/bin/env node
+
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import process from 'node:process';
+import { fileURLToPath } from 'node:url';
 
 import { normalizePathPortable } from '../../compiler-canonical-form/src/index.js';
 import { compileCompilerCommandLineRequest } from './compilerCommandLine.js';
@@ -42,4 +45,8 @@ export function compileCompilerCommandLineDirectory(argv: readonly string[]): nu
       },
     },
   ).exitCode;
+}
+
+if (path.resolve(process.argv[1] ?? '') === fileURLToPath(import.meta.url)) {
+  process.exitCode = compileCompilerCommandLineDirectory(process.argv.slice(2));
 }

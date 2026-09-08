@@ -28,6 +28,12 @@ The package is not published yet. During extraction, target repositories can ins
 
 ## Usage
 
+Compile a directory directly. The C++ command elects the semantic `flight-cpp` runtime by default; `--runtime-profile standard-library` retains the provisional compatibility output.
+
+```sh
+flight-compile src --target cpp --out generated
+```
+
 ```ts
 import { analyzeFlightWorkspace } from '@flighthq/tool-compiler';
 
