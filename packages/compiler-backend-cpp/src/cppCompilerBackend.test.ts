@@ -700,4 +700,201 @@ describe('emitIrModuleCpp', () => {
     const result = lower('my-module.ts', 'export const x: number = 1;');
     expect(emitIrModuleCpp(result.module).path).toBe('my_module.hpp');
   });
+
+  it('emits mutable local variables without const', () => {
+    const result = lower('mutable.ts', 'export function inc(): number { let x: number = 0; x = x + 1; return x; }');
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toMatch(/(?<!const )double x/);
+  });
+
+  it('emits class with type parameters', () => {
+    const result = lower(
+      'generic-class.ts',
+      'export class Box<T> { value: T; constructor(v: T) { this.value = v; } get(): T { return this.value; } }',
+    );
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('template <typename T>');
+    expect(emitted.contents).toContain('struct Box');
+    expect(emitted.contents).toContain('T value');
+  });
+
+  it('emits static class methods correctly', () => {
+    const result = lower(
+      'static-method.ts',
+      'export class Factory { static value: number = 0; static create(): number { return 0; } make(): number { return 1; } }',
+    );
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('make()');
+  });
+
+  it('emits .length property via ambient sizeMethod binding', () => {
+    const result = lower('length.ts', 'export function len(items: number[]): number { return items.length; }');
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('size()');
+  });
+
+  it('emits array.push via ambient method binding', () => {
+    const result = lower(
+      'push.ts',
+      'export function append(items: number[], value: number): void { items.push(value); }',
+    );
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('push_back');
+  });
+
+  it('emits for-in with preserve evaluation wrapping object reference', () => {
+    const result = lower(
+      'for-in-preserve.ts',
+      'interface Cfg { host: string; port: number } export function read(cfg: Cfg): string { let result: string = ""; for (const key in cfg) { result += key; } return result; }',
+    );
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('std::vector<std::string>');
+  });
+
+  it('emits async closure rejection as emission failure', () => {
+    const result = lower(
+      'async-closure.ts',
+      'export function make(): () => Promise<number> { return async (): Promise<number> => { return 1; }; }',
+    );
+    expect(() => emitIrModuleCpp(result.module)).toThrow('async closures');
+  });
+
+  it('emits element access on arrays with static_cast<size_t>', () => {
+    const result = lower('elem.ts', 'export function first(items: number[]): number { return items[0]; }');
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('static_cast<size_t>');
+  });
+
+  it('emits void return in finally context correctly', () => {
+    const result = lower(
+      'finally-void.ts',
+      'export async function run(task: Promise<number>): Promise<number> { let r: number = 0; try { r = await task; return r; } finally { r = 0; } }',
+    );
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('finally_return');
+  });
+
+  it('emits try-catch-finally with return in catch clause', () => {
+    const result = lower(
+      'catch-return.ts',
+      'export async function safe(task: Promise<number>): Promise<number> { try { return await task; } catch (e) { return -1; } finally { let x: number = 0; } }',
+    );
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('catch');
+    expect(emitted.contents).toContain('finally_return');
+    expect(emitted.contents).toContain('has_value()');
+  });
+
+  it('emits tuple element types with optional wrapping', () => {
+    const result = lower('opt-tuple.ts', 'export function partial(): [number, number?] { return [1]; }');
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('std::optional');
+    expect(emitted.contents).toContain('std::tuple');
+  });
+
+  it('emits undefinedDefault with value_or', () => {
+    const result = lower(
+      'default-value.ts',
+      'export function withDefault(pair: [number, number?]): number { const [a, b = 0] = pair; return a + b; }',
+    );
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('value_or');
+  });
+
+  it('emits tupleRest with std::get', () => {
+    const result = lower(
+      'tuple-rest.ts',
+      'export function rest(triple: [number, number, number]): number { const [, ...tail] = triple; return tail[0]; }',
+    );
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('std::get<');
+  });
+
+  it('emits tupleSuffix with multiple std::get calls', () => {
+    const result = lower(
+      'tuple-suffix.ts',
+      'export function suffix(quad: [number, number, number, number]): [number, number] { const [, , ...last] = quad; return last; }',
+    );
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('std::make_tuple');
+    expect(emitted.contents).toContain('std::get<');
+  });
+
+  it('emits unary plus on number as identity', () => {
+    const result = lower('unary-plus.ts', 'export function pos(x: number): number { return +x; }');
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).not.toContain('++');
+  });
+
+  it('emits IIFE call with parenthesized lambda', () => {
+    const result = lower('iife.ts', 'export function wrap(): number { return ((x: number): number => x)(42); }');
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('([=]');
+    expect(emitted.contents).toContain(')(42.0)');
+  });
+
+  it('emits enum without explicit values', () => {
+    const result = lower('auto-enum.ts', 'export enum Status { Active, Inactive }');
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('enum class Status');
+    expect(emitted.contents).toContain('Active');
+    expect(emitted.contents).toContain('Inactive');
+  });
+
+  it('emits this type as class name in method context', () => {
+    const result = lower(
+      'this-type.ts',
+      'export class Node { next: Node | undefined; self(): Node { return this as Node; } }',
+    );
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('Node self()');
+  });
+
+  it('emits never type as void', () => {
+    const result = lower('never.ts', 'export function fail(): never { throw new Error("fail"); }');
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('void fail()');
+  });
+
+  it('emits void type in function returns', () => {
+    const result = lower('void-fn.ts', 'export function noop(): void { return; }');
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('void noop()');
+  });
+
+  it('emits bigint as int64_t', () => {
+    const result = lower('bigint-param.ts', 'export function process(x: bigint): bigint { return x; }');
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('int64_t');
+  });
+
+  it('emits literal types correctly', () => {
+    const result = lower('literal-type.ts', 'export function one(): 1 { return 1; }');
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('double one');
+  });
+
+  it('emits catch without binding using ellipsis', () => {
+    const result = lower(
+      'catch-all.ts',
+      'export function safe(x: number): number { try { return x; } catch { return 0; } }',
+    );
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('catch (...)');
+  });
+
+  it('rejects objectRest expressions before lowering', () => {
+    const result = lower('rest-obj.ts', 'export const x: number = 1;');
+    const module = structuredClone(result.module);
+    const decl = module.declarations[0];
+    if (decl?.kind === 'variable' && !('pattern' in decl)) {
+      (decl as any).initializer = {
+        kind: 'objectRest',
+        object: decl.initializer,
+        excluded: [],
+        type: { kind: 'unknown', source: 'object' },
+      };
+    }
+    expect(() => emitIrModuleCpp(module)).toThrow();
+  });
 });
