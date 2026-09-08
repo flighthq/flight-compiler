@@ -76,12 +76,12 @@ function createCompilerCppClosureCaptureReasons(
   mutableBinding: boolean,
   outsideMutation: boolean,
 ): CompilerCppClosureCaptureReason[] {
-  if (binding.scope === 'module') return ['moduleLifetime'];
-  const reasons: CompilerCppClosureCaptureReason[] = [];
+  const moduleBinding = binding.scope === 'module';
+  const reasons: CompilerCppClosureCaptureReason[] = moduleBinding ? ['moduleLifetime'] : [];
   if (mutations.has('bindingReassigned') || mutations.has('bindingAndReferent')) {
     reasons.push('capturedBindingMutation');
   }
-  if (mutableBinding) reasons.push('capturedMutableBinding');
+  if (mutableBinding && !moduleBinding) reasons.push('capturedMutableBinding');
   if (mutations.has('referentMutated') || mutations.has('bindingAndReferent')) {
     reasons.push('capturedReferentMutation');
   }

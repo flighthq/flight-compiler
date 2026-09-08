@@ -56,6 +56,20 @@ describe('createIrModuleClosureCapturePlanCpp', () => {
     });
   });
 
+  it('retains mutation evidence for direct module bindings', () => {
+    const plan = createIrModuleClosureCapturePlanCpp(
+      lower(`
+        const state: { value: number } = { value: 0 };
+        export function update(): void { state.value += 1; }
+      `),
+    );
+
+    expect(plan.bindings.find((binding) => binding.binding.name === 'state')).toMatchObject({
+      reasons: ['moduleLifetime', 'capturedReferentMutation'],
+      representation: 'directModuleBinding',
+    });
+  });
+
   it('keeps mutable var iteration bindings shared when assignment precedes each closure creation', () => {
     const plan = createIrModuleClosureCapturePlanCpp(
       lower(`

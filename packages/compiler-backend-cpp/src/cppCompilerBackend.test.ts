@@ -230,6 +230,27 @@ describe('emitIrModuleCpp', () => {
     );
   });
 
+  it('refuses module structural referent mutation without shared object identity', () => {
+    const result = lower(
+      'module-referent.ts',
+      'const state = { value: 0 }; export function update(): void { state.value += 1; }',
+    );
+
+    expect(() => emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' })).toThrow(
+      'captured referent mutation of state requires a shared C++ reference representation',
+    );
+  });
+
+  it('allows module referent mutation backed by a shared runtime container', () => {
+    const result = lower(
+      'module-array.ts',
+      'const values: number[] = []; export function append(value: number): void { values.push(value); }',
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+
+    expect(emitted.contents).toContain('values.push(value)');
+  });
+
   it('allows mutation owned entirely by a closure', () => {
     const result = lower(
       'local-mutation.ts',

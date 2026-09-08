@@ -170,21 +170,21 @@ function emitIrModuleCppWithContext(
     generatedNames: new Set(targetNames.values()),
   };
   for (const bindingPlan of closureCapturePlan.bindings) {
-    if (bindingPlan.representation !== 'sharedMutableCell') continue;
     const bindingType = bindingTypes.get(bindingPlan.binding.id);
-    if (!bindingType) {
-      emissionError(
-        context,
-        `shared mutable capture ${bindingPlan.binding.name} requires concrete binding type evidence`,
-      );
-    }
     if (
       bindingPlan.reasons.includes('capturedReferentMutation') &&
-      !hasSharedReferentRepresentationCpp(bindingType, context)
+      (!bindingType || !hasSharedReferentRepresentationCpp(bindingType, context))
     ) {
       emissionError(
         context,
         `captured referent mutation of ${bindingPlan.binding.name} requires a shared C++ reference representation`,
+      );
+    }
+    if (bindingPlan.representation !== 'sharedMutableCell') continue;
+    if (!bindingType) {
+      emissionError(
+        context,
+        `shared mutable capture ${bindingPlan.binding.name} requires concrete binding type evidence`,
       );
     }
     const targetName = targetNames.get(bindingPlan.binding.id) ?? safeCppName(bindingPlan.binding.name);
