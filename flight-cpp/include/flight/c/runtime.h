@@ -20,6 +20,7 @@
 extern "C" {
 #endif
 
+typedef struct flight_cpp_error flight_cpp_error;
 typedef struct flight_cpp_string flight_cpp_string;
 typedef uint32_t flight_cpp_status;
 
@@ -33,6 +34,19 @@ enum {
 
 FLIGHT_CPP_C_API uint32_t flight_cpp_abi_version(void);
 FLIGHT_CPP_C_API const char* flight_cpp_version(void);
+
+FLIGHT_CPP_C_API flight_cpp_status flight_cpp_error_create(
+    const flight_cpp_string* message,
+    flight_cpp_error** output);
+FLIGHT_CPP_C_API flight_cpp_status flight_cpp_error_create_utf8(
+    const char* bytes,
+    size_t size,
+    flight_cpp_error** output);
+FLIGHT_CPP_C_API flight_cpp_status flight_cpp_error_message(
+    const flight_cpp_error* value,
+    flight_cpp_string** output);
+FLIGHT_CPP_C_API flight_cpp_status flight_cpp_error_retain(flight_cpp_error* value);
+FLIGHT_CPP_C_API void flight_cpp_error_release(flight_cpp_error* value);
 
 FLIGHT_CPP_C_API flight_cpp_status flight_cpp_string_create_utf8(
     const char* bytes,
