@@ -257,6 +257,106 @@ describe('analyzeFlightWorkspace', () => {
     }
   });
 
+  it('resolves default imports, re-export chains, and same-source duplicate deduplication', () => {
+    const upstream = createUpstreamFixture();
+    try {
+      write(
+        upstream,
+        'packages/types/src/defaultModule.ts',
+        'export default function defaultFn(): number { return 1; }\n',
+      );
+      write(
+        upstream,
+        'packages/types/src/reexporter.ts',
+        "import defaultFn from './defaultModule.js';\nexport { defaultFn };\n",
+      );
+      write(
+        upstream,
+        'packages/types/src/index.ts',
+        "export { Mode } from './Mode.js';\nexport type { Shape } from './Shape.js';\nexport { createValue } from './value.js';\n" +
+          "import { createOtherValue as createRenamedValue } from './other.js';\nexport { createRenamedValue as createPublicValue };\n" +
+          "export { createValue as createDirectAlias } from './value.js';\n" +
+          "export { defaultFn } from './reexporter.js';\n",
+      );
+      git(upstream, 'add', '.');
+      git(upstream, 'commit', '-m', 'default import chain');
+
+      const inventory = analyzeFlightWorkspace({ upstreamDirectory: upstream });
+      const inventoryByName = new Map(inventory.packages.map((item) => [item.name, item]));
+      const root = resolvePackageExportLane(inventoryByName, '@flighthq/types');
+
+      expect(root.exports.find((e) => e.name === 'defaultFn')).toMatchObject({ kind: 'function', runtime: true });
+    } finally {
+      rmSync(upstream, { force: true, recursive: true });
+    }
+  });
+
+  it('resolves export = assignment in a module', () => {
+    const upstream = createUpstreamFixture();
+    try {
+      write(upstream, 'packages/types/src/legacy.ts', 'const value = 42;\nexport = value;\n');
+      write(
+        upstream,
+        'packages/types/src/index.ts',
+        "export { Mode } from './Mode.js';\nexport type { Shape } from './Shape.js';\nexport { createValue } from './value.js';\n" +
+          "import { createOtherValue as createRenamedValue } from './other.js';\nexport { createRenamedValue as createPublicValue };\n" +
+          "export { createValue as createDirectAlias } from './value.js';\n",
+      );
+      git(upstream, 'add', '.');
+      git(upstream, 'commit', '-m', 'export assignment');
+
+      const inventory = analyzeFlightWorkspace({ upstreamDirectory: upstream });
+      expect(inventory.packages.length).toBeGreaterThan(0);
+    } finally {
+      rmSync(upstream, { force: true, recursive: true });
+    }
+  });
+
+  it('resolves a declaration namespace merged with a class of the same name', () => {
+    const upstream = createUpstreamFixture();
+    try {
+      write(
+        upstream,
+        'packages/types/src/Merged.ts',
+        'export class Merged { readonly value = 1; }\nexport namespace Merged { export const meta = "info"; }\n',
+      );
+      write(
+        upstream,
+        'packages/types/src/index.ts',
+        "export { Mode } from './Mode.js';\nexport type { Shape } from './Shape.js';\nexport { createValue } from './value.js';\n" +
+          "import { createOtherValue as createRenamedValue } from './other.js';\nexport { createRenamedValue as createPublicValue };\n" +
+          "export { createValue as createDirectAlias } from './value.js';\n" +
+          "export { Merged } from './Merged.js';\n",
+      );
+      git(upstream, 'add', '.');
+      git(upstream, 'commit', '-m', 'merged declaration');
+
+      const inventory = analyzeFlightWorkspace({ upstreamDirectory: upstream });
+      const inventoryByName = new Map(inventory.packages.map((item) => [item.name, item]));
+      const root = resolvePackageExportLane(inventoryByName, '@flighthq/types');
+
+      expect(root.exports.find((e) => e.name === 'Merged')).toMatchObject({ kind: 'class', runtime: true });
+    } finally {
+      rmSync(upstream, { force: true, recursive: true });
+    }
+  });
+
+  it('fails when SDK re-exports to an external non-scoped target', () => {
+    const upstream = createUpstreamFixture();
+    try {
+      write(upstream, 'packages/sdk/src/index.ts', "export * from 'external-package';\n");
+      git(upstream, 'add', '.');
+      git(upstream, 'commit', '-m', 'bad sdk target');
+
+      expectInventoryFailure(
+        () => analyzeFlightWorkspace({ upstreamDirectory: upstream }),
+        'unsupported-package-specifier',
+      );
+    } finally {
+      rmSync(upstream, { force: true, recursive: true });
+    }
+  });
+
   it('refuses a program file that resolves outside the upstream checkout', () => {
     const upstream = createUpstreamFixture();
     const outside = mkdtempSync(path.join(os.tmpdir(), 'flight-compiler-outside-'));
