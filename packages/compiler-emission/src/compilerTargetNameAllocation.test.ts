@@ -1,6 +1,7 @@
 import type {
   IrBindingIdentity,
   IrExpression,
+  IrIdentifierExpression,
   IrModule,
   IrStatement,
   IrTypeBindingIdentity,
@@ -495,8 +496,9 @@ describe('createIrModuleTargetNameAllocation', () => {
     const module = createFixtureModule({
       imports: [
         {
-          bindings: [{ binding: createBinding('imported', 'imported'), exportName: 'value', kind: 'named' as const }],
-          path: './other.js',
+          bindings: [{ binding: createBinding('imported', 'imported'), imported: 'value', typeOnly: false as const }],
+          specifier: './other.js',
+          typeOnly: false,
         },
       ],
     });
@@ -519,35 +521,55 @@ describe('createIrModuleTargetNameAllocation', () => {
     const module = createFixtureModule({
       declarations: [
         {
+          abstract: false,
           binding: classBinding,
           classConstructor: {
             body: [variableStatement(ctorLocal, createLiteral(1))],
+            overloads: [],
             parameters: [
-              { binding: ctorParam, initializer: createFunctionExpression(ctorDefaultBinding), mutable: false },
+              {
+                binding: ctorParam,
+                initializer: createFunctionExpression(ctorDefaultBinding),
+                optional: true as const,
+                rest: false as const,
+                type: primitiveType,
+              },
             ],
           },
           exported: true,
           extends: undefined,
           fields: [
             {
-              binding: createBinding('field', 'field'),
               initializer: createFunctionExpression(fieldInitBinding),
-              mutable: false,
+              name: 'field',
+              optional: false,
+              readonly: false,
+              static: false,
+              type: primitiveType,
+              visibility: 'public' as const,
             },
           ],
           implements: [],
           kind: 'class' as const,
           methods: [
             {
-              binding: createBinding('method', 'method'),
+              async: false,
               body: [variableStatement(methodLocal, createLiteral(2))],
+              name: 'method',
               overloads: [],
               parameters: [
-                { binding: methodParam, initializer: createFunctionExpression(methodDefaultBinding), mutable: false },
+                {
+                  binding: methodParam,
+                  initializer: createFunctionExpression(methodDefaultBinding),
+                  optional: true as const,
+                  rest: false as const,
+                  type: primitiveType,
+                },
               ],
               returns: primitiveType,
-              thisMode: 'lexical' as const,
+              static: false,
               typeParameters: [{ binding: methodTypeParam, constraint: undefined, default: undefined }],
+              visibility: 'public' as const,
             },
           ],
           origin: classBinding,
@@ -576,6 +598,7 @@ describe('createIrModuleTargetNameAllocation', () => {
     const module = createFixtureModule({
       declarations: [
         {
+          abstract: false,
           binding: classBinding,
           exported: false,
           extends: undefined,
@@ -616,8 +639,10 @@ describe('createIrModuleTargetNameAllocation', () => {
         {
           binding: ifaceBinding,
           exported: false,
+          extends: [],
           kind: 'interface' as const,
           origin: ifaceBinding,
+          properties: [],
           typeParameters: [{ binding: ifaceTypeParam, constraint: undefined, default: undefined }],
         },
         {
@@ -648,15 +673,23 @@ describe('createIrModuleTargetNameAllocation', () => {
     const module = createFixtureModule({
       declarations: [
         {
+          async: false,
           binding: fnBinding,
           body: [variableStatement(fnLocal, createLiteral(0))],
           exported: true,
           kind: 'function' as const,
           origin: fnBinding,
           overloads: [],
-          parameters: [{ binding: fnParam, initializer: createFunctionExpression(fnDefaultBinding), mutable: false }],
+          parameters: [
+            {
+              binding: fnParam,
+              initializer: createFunctionExpression(fnDefaultBinding),
+              optional: true as const,
+              rest: false as const,
+              type: primitiveType,
+            },
+          ],
           returns: primitiveType,
-          thisMode: 'lexical' as const,
           typeParameters: [{ binding: fnTypeParam, constraint: undefined, default: undefined }],
         },
       ],
@@ -706,7 +739,7 @@ describe('createIrModuleTargetNameAllocation', () => {
       { elements: [fn('arrayEl'), undefined], kind: 'array' },
       { kind: 'assignment', left: ident, operator: '=', right: fn('assignRight'), semantics: {} as never },
       { kind: 'binary', left: fn('binLeft'), operator: '+', right: fn('binRight'), semantics: {} as never },
-      { expression: fn('awaitExpr'), kind: 'await' },
+      { expression: fn('awaitExpr'), kind: 'await', semantics: {} as never },
       { expression: fn('castExpr'), kind: 'cast', type: primitiveType },
       { expression: fn('spreadExpr'), kind: 'spread' },
       {
@@ -730,7 +763,7 @@ describe('createIrModuleTargetNameAllocation', () => {
         whenFalse: fn('condFalse'),
         whenTrue: fn('condTrue'),
       },
-      { index: fn('elemIdx'), kind: 'element', object: fn('elemObj'), semantics: {} as never },
+      { index: fn('elemIdx'), kind: 'element', object: fn('elemObj'), optional: false, semantics: {} as never },
       {
         async: false,
         binding: createBinding('innerFn', 'innerFn'),
@@ -738,7 +771,13 @@ describe('createIrModuleTargetNameAllocation', () => {
         expression: fn('fnResult'),
         kind: 'function',
         parameters: [
-          { binding: createBinding('fnParam', 'fnParam'), initializer: fn('fnParamDefault'), mutable: false },
+          {
+            binding: createBinding('fnParam', 'fnParam'),
+            initializer: fn('fnParamDefault'),
+            optional: true as const,
+            rest: false as const,
+            type: primitiveType,
+          },
         ],
         returns: primitiveType,
         thisMode: 'lexical' as const,
@@ -753,14 +792,14 @@ describe('createIrModuleTargetNameAllocation', () => {
         members: [{ kind: 'property' as const, name: 'p', value: lit }],
         type: { kind: 'unknown' as const, source: 'object' as const },
       },
-      { kind: 'property', name: 'prop', object: fn('propObj'), semantics: {} as never },
+      { kind: 'property', name: 'prop', object: fn('propObj'), optional: false },
       {
         excluded: [
           { kind: 'named' as const, name: 'a' },
           { coercion: 'string' as const, expression: fn('restKey'), kind: 'computed' as const },
         ],
         kind: 'objectRest',
-        object: fn('restObj'),
+        object: fn('restObj') as unknown as IrIdentifierExpression,
         type: { kind: 'object' as const, properties: [] },
       },
       {
@@ -781,8 +820,8 @@ describe('createIrModuleTargetNameAllocation', () => {
         type: { elements: [], kind: 'tuple' as const, readonly: false },
       },
       { kind: 'tupleRest', object: fn('tupleRestObj'), start: 0 },
-      { kind: 'tupleSuffix', object: fn('tupleSufObj'), start: 0, width: 1 },
-      { kind: 'unary', operand: fn('unaryOp'), operator: '-', prefix: true },
+      { kind: 'tupleSuffix', object: fn('tupleSufObj') as unknown as IrIdentifierExpression, start: 0, width: 1 },
+      { kind: 'unary', operand: fn('unaryOp'), operator: '-', postfix: false as const, semantics: {} as never },
       {
         fallback: fn('udFallback'),
         kind: 'undefinedDefault',
@@ -794,6 +833,7 @@ describe('createIrModuleTargetNameAllocation', () => {
     const module = createFixtureModule({
       declarations: [
         {
+          async: false,
           binding: declBinding,
           body: expressions.map(
             (expression, index): IrStatement =>
@@ -805,7 +845,6 @@ describe('createIrModuleTargetNameAllocation', () => {
           overloads: [],
           parameters: [],
           returns: primitiveType,
-          thisMode: 'lexical' as const,
           typeParameters: [],
         },
       ],
@@ -884,6 +923,7 @@ describe('createIrModuleTargetNameAllocation', () => {
         variable: { binding: createBinding('forInVar', 'forInVar'), mutable: false } as IrVariable,
       },
       {
+        await: false,
         body: noop,
         iterable: fn('forOfIter'),
         kind: 'forOf',
@@ -912,6 +952,7 @@ describe('createIrModuleTargetNameAllocation', () => {
         catchClause: {
           binding: createBinding('caught', 'caught'),
           body: variableStatement(createBinding('catchLocal', 'catchLocal'), lit),
+          semantics: {} as never,
         },
         finallyBody: variableStatement(createBinding('finallyLocal', 'finallyLocal'), lit),
         kind: 'try',
@@ -931,6 +972,7 @@ describe('createIrModuleTargetNameAllocation', () => {
     const module = createFixtureModule({
       declarations: [
         {
+          async: false,
           binding: declBinding,
           body: statements,
           exported: false,
@@ -939,7 +981,6 @@ describe('createIrModuleTargetNameAllocation', () => {
           overloads: [],
           parameters: [],
           returns: primitiveType,
-          thisMode: 'lexical' as const,
           typeParameters: [],
         },
       ],
@@ -1003,13 +1044,13 @@ describe('createIrModuleTargetNameAllocation', () => {
               kind: 'variable' as const,
             },
           ],
+          async: false,
           exported: false,
           kind: 'function' as const,
           origin: declBinding,
           overloads: [],
           parameters: [],
           returns: primitiveType,
-          thisMode: 'lexical' as const,
           typeParameters: [],
         },
       ],
