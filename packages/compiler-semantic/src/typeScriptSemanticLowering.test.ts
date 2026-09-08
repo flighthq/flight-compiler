@@ -9482,6 +9482,482 @@ it('lowers class with implements clause', () => {
   expect(result.diagnostics).toEqual([]);
 });
 
+// --- Untested arm coverage batch 3: extra arguments, side-effect imports, operator domains ---
+
+it('records extra arguments semantics when call has more args than parameters', () => {
+  const result = lower(
+    'extra-arguments.ts',
+    `
+      function greet(name: string): string { return "Hello " + name; }
+      export function use(): string { return greet("world", "extra" as any); }
+    `,
+  );
+  expect(result.diagnostics).toEqual([]);
+});
+
+it('lowers side-effect import with no clause', () => {
+  const result = lower(
+    'side-effect-import.ts',
+    `
+      import "./polyfill";
+      export const x = 1;
+    `,
+  );
+  expect(result.diagnostics).toEqual([]);
+});
+
+it('resolves indexed receiver from object literal expression', () => {
+  const result = lower(
+    'object-literal-receiver.ts',
+    `
+      export function get(): number {
+        return ({ a: 1, b: 2 })["a"];
+      }
+    `,
+  );
+  expect(result.diagnostics).toEqual([]);
+});
+
+it('resolves indexed receiver from string literal expression', () => {
+  const result = lower(
+    'string-literal-receiver.ts',
+    `
+      export function get(): string {
+        return "hello"[0];
+      }
+    `,
+  );
+  expect(result.diagnostics).toEqual([]);
+});
+
+it('resolves indexed receiver from array literal expression', () => {
+  const result = lower(
+    'array-literal-receiver.ts',
+    `
+      export function get(): number {
+        return [1, 2, 3][0];
+      }
+    `,
+  );
+  expect(result.diagnostics).toEqual([]);
+});
+
+it('resolves indexed receiver from template expression', () => {
+  const result = lower(
+    'template-receiver.ts',
+    `
+      export function get(name: string): string {
+        return (\`hello \${name}\`)[0];
+      }
+    `,
+  );
+  expect(result.diagnostics).toEqual([]);
+});
+
+it('lowers typed array set with template literal property access', () => {
+  const result = lower(
+    'typed-array-set-template.ts',
+    `
+      export function fill(dst: Float32Array, src: Float32Array): void {
+        dst[\`set\`](src);
+      }
+    `,
+  );
+  expect(result.diagnostics).toEqual([]);
+});
+
+it('resolves declared type through parenthesized expression', () => {
+  const result = lower(
+    'parens-declared-type.ts',
+    `
+      export function process(x: number): number {
+        return (x) + 1;
+      }
+    `,
+  );
+  expect(result.diagnostics).toEqual([]);
+});
+
+it('resolves declared type through as expression', () => {
+  const result = lower(
+    'as-declared-type.ts',
+    `
+      export function process(x: number | string): number {
+        return (x as number) + 1;
+      }
+    `,
+  );
+  expect(result.diagnostics).toEqual([]);
+});
+
+it('resolves declared type through satisfies expression', () => {
+  const result = lower(
+    'satisfies-declared-type.ts',
+    `
+      export function process(x: number): number {
+        return (x satisfies number) + 1;
+      }
+    `,
+  );
+  expect(result.diagnostics).toEqual([]);
+});
+
+it('resolves declared type through non-null expression', () => {
+  const result = lower(
+    'nonnull-declared-type.ts',
+    `
+      export function process(x: number | undefined): number {
+        return x! + 1;
+      }
+    `,
+  );
+  expect(result.diagnostics).toEqual([]);
+});
+
+it('resolves binding evidence through parenthesized expression in property access', () => {
+  const result = lower(
+    'parens-binding-evidence.ts',
+    `
+      interface Data { count: number; }
+      export function read(d: Data): number {
+        return (d).count;
+      }
+    `,
+  );
+  expect(result.diagnostics).toEqual([]);
+});
+
+it('resolves binding evidence through non-null assertion in property access', () => {
+  const result = lower(
+    'nonnull-binding-evidence.ts',
+    `
+      interface Data { count: number; }
+      export function read(d: Data | undefined): number {
+        return d!.count;
+      }
+    `,
+  );
+  expect(result.diagnostics).toEqual([]);
+});
+
+it('resolves binding evidence through cast in property access', () => {
+  const result = lower(
+    'cast-binding-evidence.ts',
+    `
+      interface Data { count: number; }
+      export function read(d: any): number {
+        return (d as Data).count;
+      }
+    `,
+  );
+  expect(result.diagnostics).toEqual([]);
+});
+
+it('resolves binding evidence through satisfies in property access', () => {
+  const result = lower(
+    'satisfies-binding-evidence.ts',
+    `
+      interface Data { count: number; }
+      export function read(d: Data): number {
+        return (d satisfies Data).count;
+      }
+    `,
+  );
+  expect(result.diagnostics).toEqual([]);
+});
+
+it('resolves optional chain on property with nullish receiver from checker', () => {
+  const result = lower(
+    'optional-chain-nullish-receiver.ts',
+    `
+      export function read(arr: number[] | undefined): number | undefined {
+        return arr?.length;
+      }
+    `,
+  );
+  expect(result.diagnostics).toEqual([]);
+});
+
+it('resolves expression type evidence through expression in destructuring assignment', () => {
+  const result = lower(
+    'destructure-assign-type-evidence.ts',
+    `
+      export function process(pair: [number, string]): number {
+        let a: number;
+        let b: string;
+        [a, b] = pair;
+        return a;
+      }
+    `,
+  );
+  expect(result.diagnostics).toEqual([]);
+});
+
+it('resolves element access binding evidence from property access chain', () => {
+  const result = lower(
+    'element-property-chain.ts',
+    `
+      interface Store { items: number[] }
+      export function get(s: Store, i: number): number {
+        return s.items[i];
+      }
+    `,
+  );
+  expect(result.diagnostics).toEqual([]);
+});
+
+it('resolves receiver from narrowed identifier flow type', () => {
+  const result = lower(
+    'narrowed-flow-receiver.ts',
+    `
+      export function format(value: number | string): string {
+        if (typeof value === "string") {
+          return value.toUpperCase();
+        }
+        return String(value);
+      }
+    `,
+  );
+  expect(result.diagnostics).toEqual([]);
+});
+
+it('resolves indexed receiver from new Map constructor', () => {
+  const result = lower(
+    'new-map-receiver.ts',
+    `
+      export function create(): any {
+        return new Map<string, number>()["size"];
+      }
+    `,
+  );
+  expect(result.diagnostics).toEqual([]);
+});
+
+it('resolves nullish comparison evidence for loose equality', () => {
+  const result = lower(
+    'nullish-loose-eq.ts',
+    `
+      export function isNull(x: number | null): boolean {
+        return x == null;
+      }
+    `,
+  );
+  expect(result.diagnostics).toEqual([]);
+});
+
+it('resolves nullish comparison left-side literal', () => {
+  const result = lower(
+    'nullish-left-literal.ts',
+    `
+      export function isNull(x: number | null): boolean {
+        return null === x;
+      }
+    `,
+  );
+  expect(result.diagnostics).toEqual([]);
+});
+
+it('lowers async function return type unwrapping Promise', () => {
+  const result = lower(
+    'async-return-unwrap.ts',
+    `
+      export async function fetch(): Promise<number> {
+        return 42;
+      }
+    `,
+  );
+  expect(result.diagnostics).toEqual([]);
+});
+
+it('resolves type name reference through qualified name in typeof', () => {
+  const result = lower(
+    'qualified-typeof.ts',
+    `
+      const value = 42;
+      export function same(): typeof value {
+        return 42;
+      }
+    `,
+  );
+  expect(result.diagnostics).toEqual([]);
+});
+
+it('lowers class with static method', () => {
+  const result = lower(
+    'class-static-method.ts',
+    `
+      export class Factory {
+        static create(): Factory { return new Factory(); }
+        value: number = 0;
+      }
+    `,
+  );
+  expect(result.diagnostics).toEqual([]);
+});
+
+it('lowers class with extends clause', () => {
+  const result = lower(
+    'class-extends.ts',
+    `
+      class Base { value: number = 0; }
+      export class Child extends Base {
+        extra: string = "";
+      }
+    `,
+  );
+  expect(result.diagnostics).toEqual([]);
+});
+
+it('resolves for-in key plan from typed object expression', () => {
+  const result = lower(
+    'for-in-typed.ts',
+    `
+      interface Config { a: number; b: string; c: boolean; }
+      export function keys(obj: Config): string[] {
+        const result: string[] = [];
+        for (const key in obj) {
+          result.push(key);
+        }
+        return result;
+      }
+    `,
+  );
+  expect(result.diagnostics).toEqual([]);
+});
+
+it('resolves type evidence through element access from property chain', () => {
+  const result = lower(
+    'element-access-chain-evidence.ts',
+    `
+      interface Matrix { rows: [number, number][] }
+      export function get(m: Matrix, r: number): number {
+        const row = m.rows[r];
+        return row[0];
+      }
+    `,
+  );
+  expect(result.diagnostics).toEqual([]);
+});
+
+it('resolves operator domain for union of same numeric types', () => {
+  const result = lower(
+    'union-numeric-operator.ts',
+    `
+      export function add(x: 1 | 2, y: 3 | 4): number {
+        return x + y;
+      }
+    `,
+  );
+  expect(result.diagnostics).toEqual([]);
+});
+
+it('resolves nullish comparison for undefined identifier', () => {
+  const result = lower(
+    'nullish-undefined-cmp.ts',
+    `
+      export function isDefined(x: number | undefined): boolean {
+        return x !== undefined;
+      }
+    `,
+  );
+  expect(result.diagnostics).toEqual([]);
+});
+
+it('lowers export specifier with renamed local binding', () => {
+  const result = lower(
+    'export-rename.ts',
+    `
+      const internal = 42;
+      export { internal as external };
+    `,
+  );
+  expect(result.diagnostics).toEqual([]);
+  expect(result.module.exports).toMatchObject([{ kind: 'local', exported: 'external' }]);
+});
+
+it('lowers re-export with renamed specifier', () => {
+  const result = lower(
+    'reexport-rename.ts',
+    `
+      export { foo as bar } from "./other";
+    `,
+  );
+  expect(result.diagnostics).toEqual([]);
+  expect(result.module.exports).toMatchObject([{ kind: 'reexport', exported: 'bar', imported: 'foo' }]);
+});
+
+it('resolves type evidence from type alias in for-of iterable', () => {
+  const result = lower(
+    'for-of-iterable-alias.ts',
+    `
+      type Pair = [number, string];
+      type Pairs = Pair[];
+      export function firsts(pairs: Pairs): number[] {
+        const result: number[] = [];
+        for (const [n] of pairs) {
+          result.push(n);
+        }
+        return result;
+      }
+    `,
+  );
+  expect(result.diagnostics).toEqual([]);
+});
+
+it('lowers class method with async modifier', () => {
+  const result = lower(
+    'class-async-method.ts',
+    `
+      export class Worker {
+        async run(): Promise<number> {
+          return 42;
+        }
+      }
+    `,
+  );
+  expect(result.diagnostics).toEqual([]);
+});
+
+it('lowers object method with async modifier', () => {
+  const result = lower(
+    'object-async-method.ts',
+    `
+      export function create() {
+        return {
+          async process(): Promise<number> { return 1; }
+        };
+      }
+    `,
+  );
+  expect(result.diagnostics).toEqual([]);
+});
+
+it('lowers nested destructuring assignment with property access', () => {
+  const result = lower(
+    'destructure-assign-property.ts',
+    `
+      export function extract(obj: { a: number; b: string }): number {
+        let a: number;
+        ({ a } = obj);
+        return a;
+      }
+    `,
+  );
+  expect(result.diagnostics).toEqual([]);
+});
+
+it('resolves binding evidence through call expression result for member access', () => {
+  const result = lower(
+    'call-result-member.ts',
+    `
+      export function process(items: number[]): number {
+        return items.filter((x) => x > 0).length;
+      }
+    `,
+  );
+  expect(result.diagnostics).toEqual([]);
+});
+
 function getVariableBinding(value: unknown): IrBindingIdentity {
   if (typeof value !== 'object' || value === null || !('binding' in value)) {
     throw new Error('Expected named variable');
