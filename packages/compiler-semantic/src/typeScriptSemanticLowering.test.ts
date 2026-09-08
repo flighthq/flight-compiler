@@ -6208,6 +6208,53 @@ it('lowers interface type reference as named type on parameters', () => {
   expect(fn.parameters[0]?.type).toMatchObject({ kind: 'named' });
 });
 
+it('resolves interface type through evidence path on destructured parameter', () => {
+  const result = lower(
+    'destructure-interface.ts',
+    `
+        interface Handler {
+          spread(...args: string[]): void;
+          maybe(value?: number): void;
+          destructure({ x }: { x: number }): void;
+        }
+        export function accept({ spread, maybe, destructure }: Handler): void {
+          spread("a");
+          maybe();
+          destructure({ x: 1 });
+        }
+      `,
+  );
+  expect(result.diagnostics).toEqual([]);
+  const fn = result.module.declarations.find((d) => d.kind === 'function' && d.binding.name === 'accept');
+  if (fn?.kind !== 'function') throw new Error('Expected function');
+  expect(fn.body.length).toBeGreaterThan(0);
+});
+
+it('resolves interface heritage properties through evidence path', () => {
+  const result = lower(
+    'interface-heritage-evidence.ts',
+    `
+        interface Base { x: number }
+        interface Extended extends Base { y: string }
+        export function accept({ x, y }: Extended): void { void x; void y; }
+      `,
+  );
+  expect(result.diagnostics).toEqual([]);
+  const fn = result.module.declarations.find((d) => d.kind === 'function' && d.binding.name === 'accept');
+  if (fn?.kind !== 'function') throw new Error('Expected function');
+});
+
+it('resolves type alias union and readonly through evidence path on destructured parameter', () => {
+  const result = lower(
+    'destructure-alias.ts',
+    `
+        type Config = { items: readonly number[]; label: string | number };
+        export function accept({ items, label }: Config): void { void items; void label; }
+      `,
+  );
+  expect(result.diagnostics).toEqual([]);
+});
+
 it('resolves nullish coalescing type evidence when both sides match', () => {
   const result = lower(
     'coalesce-evidence.ts',
