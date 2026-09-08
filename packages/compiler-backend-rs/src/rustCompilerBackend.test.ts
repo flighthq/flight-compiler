@@ -2897,4 +2897,153 @@ describe('emitIrModuleRust', () => {
     ).contents;
     expect(output).toBeDefined();
   });
+
+  it('emits string concatenation with format!', () => {
+    const output = emitIrModuleRust(
+      lower('str-concat.ts', 'export function greet(name: string): string { return "hello " + name; }').module,
+    ).contents;
+    expect(output).toContain('format!');
+  });
+
+  it('emits exponentiation as f64::powf', () => {
+    const output = emitIrModuleRust(
+      lower('pow-op.ts', 'export function square(x: number): number { return x ** 2; }').module,
+    ).contents;
+    expect(output).toContain('f64::powf(');
+  });
+
+  it('emits unsigned right shift as u32 cast', () => {
+    const output = emitIrModuleRust(
+      lower('urshift.ts', 'export function shift(x: number): number { return x >>> 2; }').module,
+    ).contents;
+    expect(output).toContain('as u32');
+  });
+
+  it('emits bitwise and as i32 cast round-trip', () => {
+    const output = emitIrModuleRust(
+      lower('bitwise-and.ts', 'export function mask(a: number, b: number): number { return a & b; }').module,
+    ).contents;
+    expect(output).toContain('as i32');
+  });
+
+  it('emits nullish coalesce as unwrap_or_else', () => {
+    const output = emitIrModuleRust(
+      lower('nullish.ts', 'export function fallback(x: number | null): number { return x ?? 0; }').module,
+    ).contents;
+    expect(output).toContain('.unwrap_or_else(');
+  });
+
+  it('emits null comparison as is_none/is_some', () => {
+    const output = emitIrModuleRust(
+      lower('null-cmp.ts', 'export function isNull(x: number | null): boolean { return x === null; }').module,
+    ).contents;
+    expect(output).toContain('.is_none()');
+  });
+
+  it('emits null inequality as is_some', () => {
+    const output = emitIrModuleRust(
+      lower('not-null.ts', 'export function notNull(x: number | null): boolean { return x !== null; }').module,
+    ).contents;
+    expect(output).toContain('.is_some()');
+  });
+
+  it('emits string += as push_str', () => {
+    const output = emitIrModuleRust(
+      lower('str-append.ts', 'export function append(): string { let s = "hello"; s += " world"; return s; }').module,
+    ).contents;
+    expect(output).toContain('.push_str(');
+  });
+
+  it('emits exponentiation assignment as f64::powf', () => {
+    const output = emitIrModuleRust(
+      lower('pow-assign.ts', 'export function cube(): number { let x = 2.0; x **= 3.0; return x; }').module,
+    ).contents;
+    expect(output).toContain('f64::powf(');
+  });
+
+  it('emits bitwise assignment operators with i32 casts', () => {
+    const output = emitIrModuleRust(
+      lower('bitwise-assign.ts', 'export function flags(): number { let x = 255; x &= 15; return x; }').module,
+    ).contents;
+    expect(output).toContain('as i32');
+  });
+
+  it('emits unsigned right shift assignment as u32 cast', () => {
+    const output = emitIrModuleRust(
+      lower('urshift-assign.ts', 'export function shift(): number { let x = 255; x >>>= 2; return x; }').module,
+    ).contents;
+    expect(output).toContain('as u32');
+  });
+
+  it('emits accessor call for setter assignment', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'setter-call.ts',
+        [
+          'export class Box { _value: number; constructor(v: number) { this._value = v; }',
+          '  get value(): number { return this._value; }',
+          '  set value(v: number) { this._value = v; }',
+          '}',
+          'export function update(b: Box): void { b.value = 10; }',
+        ].join('\n'),
+      ).module,
+    ).contents;
+    expect(output).toContain('.set_value(');
+  });
+
+  it('emits class with field initializer auto-constructor', () => {
+    const output = emitIrModuleRust(
+      lower('auto-ctor.ts', 'export class Config { name: string = "default"; count: number = 0; }').module,
+    ).contents;
+    expect(output).toContain('fn new() -> Self');
+    expect(output).toContain('"default"');
+  });
+
+  it('emits await expression with .await', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'await-expr.ts',
+        'export async function fetch(): Promise<number> { const p = Promise.resolve(42); return await p; }',
+      ).module,
+    ).contents;
+    expect(output).toContain('.await');
+  });
+
+  it('emits interface data property as trait accessor when class implements', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'trait-data-prop.ts',
+        [
+          'export interface Named { name: string; greet(): string; }',
+          'export class Person implements Named { name: string; constructor(n: string) { this.name = n; } greet(): string { return this.name; } }',
+        ].join('\n'),
+      ).module,
+    ).contents;
+    expect(output).toContain('trait Named');
+    expect(output).toContain('fn name(&self) -> String');
+    expect(output).toContain('self.name.clone()');
+  });
+
+  it('emits class implementing interface trait with data and method accessors', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'trait-impl-mixed.ts',
+        [
+          'export interface HasValue { value: number; compute(): number; }',
+          'export class Impl implements HasValue { value: number; constructor(v: number) { this.value = v; } compute(): number { return this.value * 2; } }',
+        ].join('\n'),
+      ).module,
+    ).contents;
+    expect(output).toContain('impl HasValue for Impl');
+  });
+
+  it('emits scoped package import with rename', () => {
+    const result = lowerPackage(
+      '@flighthq/core',
+      'rename.ts',
+      "import { Point as Pt } from './geom.js'; export function use(p: Pt): number { return p.x; }",
+    );
+    const output = emitIrModuleRust(result.module).contents;
+    expect(output).toContain('use crate::');
+  });
 });
