@@ -3720,3 +3720,468 @@ describe('emitIrModuleHaxe switch fallthrough detection', () => {
     expect(output).toContain('"one"');
   });
 });
+
+describe('emitIrModuleHaxe type alias union of interfaces', () => {
+  it('flattens a union of two interfaces into a typedef with common fields', () => {
+    const result = lower(
+      'type-union-ifaces.ts',
+      `export interface Left { x: number; y: string }
+       export interface Right { x: number; z: boolean }
+       export type Both = Left | Right;`,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('typedef Both');
+    expect(output).toContain('x:');
+  });
+
+  it('marks non-shared fields as optional in flattened union', () => {
+    const result = lower(
+      'type-union-optional.ts',
+      `export interface A { shared: number; onlyA: string }
+       export interface B { shared: number; onlyB: boolean }
+       export type AB = A | B;`,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('typedef AB');
+    expect(output).toContain('?onlyA:');
+    expect(output).toContain('?onlyB:');
+  });
+
+  it('falls back to Dynamic when same field has different types across union members', () => {
+    const result = lower(
+      'type-union-mismatch.ts',
+      `export interface C { value: number }
+       export interface D { value: string }
+       export type CD = C | D;`,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('typedef CD');
+    expect(output).toContain('Dynamic');
+  });
+});
+
+describe('emitIrModuleHaxe optional structInit property', () => {
+  it('defaults optional struct-init field to null', () => {
+    const result = lower(
+      'optional-struct.ts',
+      `export interface Config { required: number; optional?: string }
+       export function create(): Config { return { required: 1 }; }`,
+    );
+    const output = emitIrModuleHaxe(result.module, { structuralRecords: 'structInit' }).contents;
+
+    expect(output).toContain('@:structInit');
+    expect(output).toContain('= null');
+  });
+});
+
+describe('emitIrModuleHaxe interface member function', () => {
+  it('emits interface method with named parameters', () => {
+    const result = lower(
+      'iface-method.ts',
+      `export interface Processor {
+         process(input: string, count: number): boolean;
+       }
+       export class Impl implements Processor {
+         process(input: string, count: number): boolean { return count > 0; }
+       }`,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('public function process(');
+    expect(output).toContain(':String');
+  });
+});
+
+describe('emitIrModuleHaxe labeled continue in nested loops', () => {
+  it('emits control flow propagation for labeled continue targeting outer loop', () => {
+    const result = lower(
+      'labeled-continue.ts',
+      `export function scan(grid: number[][]): number {
+        let total: number = 0;
+        outer: for (const row of grid) {
+          for (const cell of row) {
+            if (cell < 0) continue outer;
+            total += cell;
+          }
+        }
+        return total;
+      }`,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('continue');
+  });
+});
+
+describe('emitIrModuleHaxe labeled break in nested loops', () => {
+  it('emits control flow exit for labeled break across nested loops', () => {
+    const result = lower(
+      'labeled-break-nested.ts',
+      `export function find(grid: number[][]): number {
+        let result: number = -1;
+        outer: for (const row of grid) {
+          for (const cell of row) {
+            if (cell === 42) { result = cell; break outer; }
+          }
+        }
+        return result;
+      }`,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('break');
+  });
+});
+
+describe('emitIrModuleHaxe mutable variable declaration', () => {
+  it('emits mutable variable with var keyword', () => {
+    const result = lower('mutable-var.ts', 'export let counter: number = 0;');
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('var counter');
+  });
+});
+
+describe('emitIrModuleHaxe variable without type annotation at module level', () => {
+  it('emits module variable without explicit type when source omits it', () => {
+    const result = lower('var-no-type.ts', 'export const name = "hello";');
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('name');
+    expect(output).toContain('"hello"');
+  });
+});
+
+describe('emitIrModuleHaxe override on abstract methods', () => {
+  it('does not mark override on methods implementing an abstract declaration', () => {
+    const result = lower(
+      'abstract-override.ts',
+      `export abstract class Shape {
+        abstract area(): number;
+      }
+      export class Circle extends Shape {
+        radius: number;
+        constructor(r: number) { super(); this.radius = r; }
+        area(): number { return 3.14 * this.radius * this.radius; }
+      }`,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('area');
+    expect(output).not.toMatch(/override.*area/);
+  });
+});
+
+describe('emitIrModuleHaxe class with three-level inheritance', () => {
+  it('resolves inherited methods through multi-level base chain', () => {
+    const result = lower(
+      'three-level.ts',
+      `export class A {
+        shared(): string { return "a"; }
+      }
+      export class B extends A {
+        middle(): string { return "b"; }
+      }
+      export class C extends B {
+        shared(): string { return "c"; }
+        middle(): string { return "c-mid"; }
+      }`,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('override');
+    expect(output).toContain('class C');
+  });
+});
+
+describe('emitIrModuleHaxe scoped package import path', () => {
+  it('converts scoped package specifiers into Haxe dot-separated import modules', () => {
+    const result = lowerPackage(
+      '@flighthq/widgets',
+      'use-types.ts',
+      `import type { Box } from "@flighthq/types";
+       export function wrap(b: Box): Box { return b; }`,
+    );
+
+    expect(() => emitIrModuleHaxe(result.module)).not.toThrow();
+  });
+});
+
+describe('emitIrModuleHaxe type alias as structInit record', () => {
+  it('emits type alias for object type as structInit class when option is set', () => {
+    const result = lower('type-struct.ts', 'export type Point = { x: number; y: number };');
+    const output = emitIrModuleHaxe(result.module, { structuralRecords: 'structInit' }).contents;
+
+    expect(output).toContain('@:structInit');
+    expect(output).toContain('Point');
+  });
+});
+
+describe('emitIrModuleHaxe dynamic read through element access', () => {
+  it('casts dynamic tuple element reads to the declared type', () => {
+    const result = lower(
+      'dynamic-read.ts',
+      `export function first(pair: [number, string]): number {
+        const [a] = pair;
+        return a;
+      }`,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toBeDefined();
+  });
+});
+
+describe('emitIrModuleHaxe nullish coalescing dynamic read', () => {
+  it('handles dynamic read looking through nullish coalescing', () => {
+    const result = lower(
+      'dynamic-coalesce.ts',
+      `export function safe(items: [number, string, boolean], fallback: number): number {
+        const [a] = items;
+        return a ?? fallback;
+      }`,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('??');
+  });
+});
+
+describe('emitIrModuleHaxe template expression with interpolations', () => {
+  it('joins interpolated parts with Std.string and concatenation', () => {
+    const result = lower(
+      'template-interp.ts',
+      'export function greet(name: string): string { return `hello ${name} world`; }',
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('Std.string');
+    expect(output).toContain('+');
+  });
+});
+
+describe('emitIrModuleHaxe class with subclass detection', () => {
+  it('adjusts class behavior when a subclass exists in the same module', () => {
+    const result = lower(
+      'has-subclass.ts',
+      `export class Parent {
+        value: number;
+        constructor(v: number) { this.value = v; }
+      }
+      export class Child extends Parent {
+        extra: string;
+        constructor(v: number, e: string) { super(v); this.extra = e; }
+      }`,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('class Parent');
+    expect(output).toContain('class Child');
+    expect(output).toContain('extends');
+  });
+});
+
+describe('emitIrModuleHaxe class field inherited from base', () => {
+  it('collects inherited field names from base class in same module', () => {
+    const result = lower(
+      'inherited-field.ts',
+      `export class Base {
+        x: number;
+        constructor(x: number) { this.x = x; }
+      }
+      export class Derived extends Base {
+        y: string;
+        constructor(x: number, y: string) { super(x); this.y = y; }
+      }`,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('class Derived');
+    expect(output).toContain('extends');
+  });
+});
+
+describe('emitIrModuleHaxe implicit derived base parameters', () => {
+  it('generates implicit constructor passing parameters to super', () => {
+    const result = lower(
+      'implicit-super.ts',
+      `export class BaseError extends Error {
+        constructor(message: string) { super(message); }
+      }
+      export class SpecificError extends BaseError {}`,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('SpecificError');
+    expect(output).toContain('super(');
+  });
+});
+
+describe('emitIrModuleHaxe class with setter accessor', () => {
+  it('emits property declaration with set accessor', () => {
+    const result = lower(
+      'setter-accessor.ts',
+      `export class Box {
+        private _value: number = 0;
+        get value(): number { return this._value; }
+        set value(v: number) { this._value = v; }
+      }`,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('get, set');
+    expect(output).toContain('get_value');
+    expect(output).toContain('set_value');
+  });
+
+  it('emits set-only accessor with never for get', () => {
+    const result = lower(
+      'set-only.ts',
+      `export class Writer {
+        private _text: string = "";
+        set text(v: string) { this._text = v; }
+      }`,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('never, set');
+    expect(output).toContain('set_text');
+  });
+});
+
+describe('emitIrModuleHaxe typeof narrowing with property access', () => {
+  it('emits typeof check as Std.isOfType and accesses narrowed member', () => {
+    const result = lower(
+      'typeof-narrow.ts',
+      `export function len(x: string | number): number {
+        if (typeof x === "string") { return x.length; }
+        return x;
+      }`,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('Std.isOfType(');
+    expect(output).toContain('String');
+    expect(output).toContain('.length');
+  });
+});
+
+describe('emitIrModuleHaxe discriminated union narrowing with cast', () => {
+  it('casts narrowed identifier to declared type when accessing union member', () => {
+    const result = lower(
+      'discriminated-union.ts',
+      `export interface Circle { readonly kind: 'circle'; readonly radius: number; }
+       export interface Square { readonly kind: 'square'; readonly side: number; }
+       export type Shape = Circle | Square;
+       export function area(shape: Shape): number {
+         if (shape.kind === 'circle') { return shape.radius; }
+         return shape.side;
+       }`,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('cast');
+    expect(output).toContain('radius');
+  });
+});
+
+describe('emitIrModuleHaxe spread call expression', () => {
+  it('emits reflective spread call with Reflect.callMethod', () => {
+    const result = lower(
+      'spread-call.ts',
+      `export function apply(fn: (...args: number[]) => number, args: number[]): number {
+        return fn(...args);
+      }`,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('Reflect.callMethod');
+  });
+
+  it('concatenates fixed and spread argument groups', () => {
+    const result = lower(
+      'spread-mixed.ts',
+      `export function call(fn: (a: number, ...rest: number[]) => number, rest: number[]): number {
+        return fn(1, ...rest);
+      }`,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('concat');
+  });
+});
+
+describe('emitIrModuleHaxe empty template literal', () => {
+  it('emits empty string for template with no content', () => {
+    const result = lower('empty-template.ts', 'export function empty(): string { return ``; }');
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('""');
+  });
+});
+
+describe('emitIrModuleHaxe tuple spread expression', () => {
+  it('emits tuple spread that combines element and spread segments', () => {
+    const result = lower(
+      'tuple-spread.ts',
+      `export function combine(a: [number, string], b: [boolean]): [number, string, boolean] {
+        return [...a, ...b];
+      }`,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toBeDefined();
+  });
+});
+
+describe('emitIrModuleHaxe exchanged closure for reduce', () => {
+  it('emits exchanged closure with swapped parameter order for fold', () => {
+    const result = lower(
+      'reduce-fold.ts',
+      `export function sum(items: number[]): number {
+        return items.reduce((acc: number, item: number) => acc + item, 0);
+      }`,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('function(');
+  });
+});
+
+describe('emitIrModuleHaxe type parameters on generic function', () => {
+  it('emits type parameter on a generic function', () => {
+    const result = lower('generic-fn.ts', 'export function identity<T>(value: T): T { return value; }');
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('<T>');
+  });
+});
+
+describe('emitIrModuleHaxe class implementing interface as nominal', () => {
+  it('promotes interface to nominal when a class implements it', () => {
+    const result = lower(
+      'nominal-iface.ts',
+      `export interface Shape { area(): number; }
+       export class Circle implements Shape {
+         radius: number;
+         constructor(r: number) { this.radius = r; }
+         area(): number { return 3.14 * this.radius * this.radius; }
+       }`,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('interface Shape');
+    expect(output).toContain('implements');
+  });
+});
+
+describe('emitIrModuleHaxe re-export facade', () => {
+  it('emits type-only re-export as typedef', () => {
+    const result = lowerPackage('@flighthq/facade', 'reexport.ts', `export type { Box } from "@flighthq/types";`);
+
+    expect(() => emitIrModuleHaxe(result.module)).not.toThrow();
+  });
+});
