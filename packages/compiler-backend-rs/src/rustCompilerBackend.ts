@@ -1895,6 +1895,17 @@ function isIrStatementSuperConstructorCallRust(statement: Readonly<IrStatement>)
   );
 }
 
+function hasIrStatementSubtreeAwaitRust(statement: Readonly<IrStatement>): boolean {
+  let found = false;
+  analyzeIrStatementSubtreeTraversal(statement, {
+    expression(node) {
+      if (node.kind === 'await') found = true;
+      return undefined;
+    },
+  });
+  return found;
+}
+
 function hasIrExpressionThisReferenceRust(expression: Readonly<IrExpression>): boolean {
   let found = false;
   analyzeIrStatementSubtreeTraversal(
@@ -2079,13 +2090,38 @@ function emitStatement(statement: Readonly<IrStatement>, context: EmitContext): 
       }
       return [`${emitControlFlowLabelRust(statement.label)}{`, ...indentSourceLines(lines), '}'];
     }
-    case 'throw':
-      return [`panic!("{:?}", ${emitExpression(statement.expression, context)});`];
-    case 'try':
-      // Rust has no exceptions. The faithful shape is `Result` propagation, which means the runtime
-      // contract has to say that a task settles with a rejection rather than yielding its value
-      // directly — a runtime-surface decision, not a lowering this compiler can pick on its own.
-      emissionError(context, 'try/catch/finally requires a Rust task settlement that carries rejection');
+    case 'throw': {
+      const thrown = statement.expression;
+      if (thrown.kind === 'new' && thrown.callee.kind === 'identifier' && thrown.arguments.length === 1) {
+        return [`panic!("{}", ${emitExpression(thrown.arguments[0]!, context)});`];
+      }
+      return [`panic!("{:?}", ${emitExpression(thrown, context)});`];
+    }
+    case 'try': {
+      if (statement.finallyBody || hasIrStatementSubtreeAwaitRust(statement.tryBody)) {
+        emissionError(context, 'try/catch/finally requires a Rust task settlement that carries rejection');
+      }
+      const catchBinding = statement.catchClause
+        ? statement.catchClause.binding
+          ? safeRustValueName(statement.catchClause.binding.name)
+          : '_'
+        : '_';
+      const matchArms: string[] = statement.catchClause
+        ? [
+            'Ok(__catch_result) => return __catch_result,',
+            `Err(${catchBinding}) => {`,
+            ...indentSourceLines(emitStatementBody(statement.catchClause.body, context)),
+            '}',
+          ]
+        : ['Ok(_) => {}', 'Err(_) => {}'];
+      return [
+        'match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {',
+        ...indentSourceLines(emitStatementBody(statement.tryBody, context)),
+        '})) {',
+        ...indentSourceLines(matchArms),
+        '}',
+      ];
+    }
     case 'variable':
       return statement.declarations.map((variable) => emitVariable(variable, context));
     case 'while':

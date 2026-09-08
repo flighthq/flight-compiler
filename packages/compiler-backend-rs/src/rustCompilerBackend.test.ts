@@ -1450,6 +1450,19 @@ describe('emitIrModuleRust', () => {
     expect(output).toContain('unwrap_or_else');
   });
 
+  it('emits synchronous try/catch as catch_unwind with panic', () => {
+    const result = lower(
+      'try-catch-sync.ts',
+      'export function tryCatch(action: () => void): string { try { action(); return "ok"; } catch { return "caught"; } }',
+    );
+    const output = emitIrModuleRust(result.module).contents;
+    expect(output).toContain('catch_unwind');
+    expect(output).toContain('AssertUnwindSafe');
+    expect(output).toContain('Ok(__catch_result) => return __catch_result,');
+    expect(output).toContain('Err(_)');
+    expect(output).not.toContain('settlement');
+  });
+
   it('emits concrete class inheritance as composition with base field delegation', () => {
     const result = lower(
       'class-inheritance.ts',
