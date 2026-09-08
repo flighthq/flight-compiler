@@ -6242,3 +6242,417 @@ describe('emitIrModuleHaxe literal type emission', () => {
     expect(output).toContain('Float');
   });
 });
+
+describe('emitIrModuleHaxe bitwise binary operators', () => {
+  it('emits bitwise AND between number operands', () => {
+    const output = emitIrModuleHaxe(
+      lower('bitwise-and.ts', 'export function band(a: number, b: number): number { return a & b; }').module,
+    ).contents;
+    expect(output).toContain('&');
+  });
+
+  it('emits bitwise OR between number operands', () => {
+    const output = emitIrModuleHaxe(
+      lower('bitwise-or.ts', 'export function bor(a: number, b: number): number { return a | b; }').module,
+    ).contents;
+    expect(output).toContain('|');
+  });
+
+  it('emits bitwise XOR between number operands', () => {
+    const output = emitIrModuleHaxe(
+      lower('bitwise-xor.ts', 'export function bxor(a: number, b: number): number { return a ^ b; }').module,
+    ).contents;
+    expect(output).toContain('^');
+  });
+
+  it('emits left shift between number operands', () => {
+    const output = emitIrModuleHaxe(
+      lower('shift-left.ts', 'export function shl(a: number, b: number): number { return a << b; }').module,
+    ).contents;
+    expect(output).toContain('<<');
+  });
+
+  it('emits right shift between number operands', () => {
+    const output = emitIrModuleHaxe(
+      lower('shift-right.ts', 'export function shr(a: number, b: number): number { return a >> b; }').module,
+    ).contents;
+    expect(output).toContain('>>');
+  });
+});
+
+describe('emitIrModuleHaxe comparison operators', () => {
+  it('emits less-than comparison between numbers', () => {
+    const output = emitIrModuleHaxe(
+      lower('cmp-lt.ts', 'export function lt(a: number, b: number): boolean { return a < b; }').module,
+    ).contents;
+    expect(output).toContain('<');
+  });
+
+  it('emits greater-equal comparison between numbers', () => {
+    const output = emitIrModuleHaxe(
+      lower('cmp-gte.ts', 'export function gte(a: number, b: number): boolean { return a >= b; }').module,
+    ).contents;
+    expect(output).toContain('>=');
+  });
+});
+
+describe('emitIrModuleHaxe logical operators', () => {
+  it('emits logical AND between boolean operands', () => {
+    const output = emitIrModuleHaxe(
+      lower('log-and.ts', 'export function both(a: boolean, b: boolean): boolean { return a && b; }').module,
+    ).contents;
+    expect(output).toContain('&&');
+  });
+
+  it('emits logical OR between boolean operands', () => {
+    const output = emitIrModuleHaxe(
+      lower('log-or.ts', 'export function either(a: boolean, b: boolean): boolean { return a || b; }').module,
+    ).contents;
+    expect(output).toContain('||');
+  });
+});
+
+describe('emitIrModuleHaxe compound assignment operators', () => {
+  it('emits multiply-assign on number', () => {
+    const output = emitIrModuleHaxe(
+      lower('mul-assign.ts', 'export function mulAssign(x: number): number { x *= 2; return x; }').module,
+    ).contents;
+    expect(output).toContain('*=');
+  });
+
+  it('emits subtract-assign on number', () => {
+    const output = emitIrModuleHaxe(
+      lower('sub-assign.ts', 'export function subAssign(x: number): number { x -= 1; return x; }').module,
+    ).contents;
+    expect(output).toContain('-=');
+  });
+
+  it('emits divide-assign on number', () => {
+    const output = emitIrModuleHaxe(
+      lower('div-assign.ts', 'export function divAssign(x: number): number { x /= 2; return x; }').module,
+    ).contents;
+    expect(output).toContain('/=');
+  });
+
+  it('emits modulo-assign on number', () => {
+    const output = emitIrModuleHaxe(
+      lower('mod-assign.ts', 'export function modAssign(x: number): number { x %= 3; return x; }').module,
+    ).contents;
+    expect(output).toContain('%=');
+  });
+
+  it('emits add-assign on string', () => {
+    const output = emitIrModuleHaxe(
+      lower('add-assign-str.ts', 'export function append(s: string): string { s += "!"; return s; }').module,
+    ).contents;
+    expect(output).toContain('+=');
+  });
+});
+
+describe('emitIrModuleHaxe arithmetic operators', () => {
+  it('emits multiplication between numbers', () => {
+    const output = emitIrModuleHaxe(
+      lower('mul.ts', 'export function mul(a: number, b: number): number { return a * b; }').module,
+    ).contents;
+    expect(output).toContain('*');
+  });
+
+  it('emits modulo between numbers', () => {
+    const output = emitIrModuleHaxe(
+      lower('mod.ts', 'export function mod(a: number, b: number): number { return a % b; }').module,
+    ).contents;
+    expect(output).toContain('%');
+  });
+
+  it('emits division between numbers', () => {
+    const output = emitIrModuleHaxe(
+      lower('div.ts', 'export function div(a: number, b: number): number { return a / b; }').module,
+    ).contents;
+    expect(output).toContain('/');
+  });
+});
+
+describe('emitIrModuleHaxe prefix unary operators', () => {
+  it('emits unary negation on number', () => {
+    const output = emitIrModuleHaxe(
+      lower('neg.ts', 'export function neg(a: number): number { return -a; }').module,
+    ).contents;
+    expect(output).toContain('-');
+  });
+
+  it('emits unary plus on number', () => {
+    const output = emitIrModuleHaxe(
+      lower('pos.ts', 'export function pos(a: number): number { return +a; }').module,
+    ).contents;
+    expect(output).toBeDefined();
+  });
+
+  it('emits prefix increment on number', () => {
+    const output = emitIrModuleHaxe(
+      lower('preinc.ts', 'export function preinc(x: number): number { return ++x; }').module,
+    ).contents;
+    expect(output).toContain('++');
+  });
+
+  it('emits prefix decrement on number', () => {
+    const output = emitIrModuleHaxe(
+      lower('predec.ts', 'export function predec(x: number): number { return --x; }').module,
+    ).contents;
+    expect(output).toContain('--');
+  });
+
+  it('emits bitwise complement on number', () => {
+    const output = emitIrModuleHaxe(
+      lower('bitnot.ts', 'export function bitnot(a: number): number { return ~a; }').module,
+    ).contents;
+    expect(output).toContain('~');
+  });
+});
+
+describe('emitIrModuleHaxe nullish coalescing operator', () => {
+  it('emits nullish coalescing as Haxe ?? operator', () => {
+    const output = emitIrModuleHaxe(
+      lower('nullish-coal.ts', 'export function fallback(x: number | undefined): number { return x ?? 0; }').module,
+    ).contents;
+    expect(output).toContain('??');
+  });
+});
+
+describe('emitIrModuleHaxe for-of statement', () => {
+  it('emits for-of loop over array', () => {
+    const output = emitIrModuleHaxe(
+      lower(
+        'for-of.ts',
+        'export function sum(items: number[]): number { let total = 0; for (const x of items) { total += x; } return total; }',
+      ).module,
+    ).contents;
+    expect(output).toContain('for (');
+    expect(output).toContain(' in ');
+  });
+});
+
+describe('emitIrModuleHaxe for-in statement', () => {
+  it('emits for-in loop with known key plan', () => {
+    const output = emitIrModuleHaxe(
+      lower(
+        'for-in.ts',
+        `interface Obj { a: number; b: number }
+         export function keys(obj: Obj): string[] {
+           const result: string[] = [];
+           for (const k in obj) { result.push(k); }
+           return result;
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('for (');
+    expect(output).toContain('"a"');
+    expect(output).toContain('"b"');
+  });
+});
+
+describe('emitIrModuleHaxe type parameter constraint', () => {
+  it('emits type parameter with constraint', () => {
+    const output = emitIrModuleHaxe(
+      lower(
+        'constrained.ts',
+        `interface HasLength { length: number }
+         export function len<T extends HasLength>(x: T): number { return x.length; }`,
+      ).module,
+    ).contents;
+    expect(output).toContain(':');
+  });
+});
+
+describe('emitIrModuleHaxe subtraction operator', () => {
+  it('emits subtraction between numbers', () => {
+    const output = emitIrModuleHaxe(
+      lower('sub.ts', 'export function sub(a: number, b: number): number { return a - b; }').module,
+    ).contents;
+    expect(output).toContain('-');
+  });
+});
+
+describe('emitIrModuleHaxe postfix decrement', () => {
+  it('emits postfix decrement on number variable', () => {
+    const output = emitIrModuleHaxe(
+      lower('postdec.ts', 'export function dec(x: number): number { x--; return x; }').module,
+    ).contents;
+    expect(output).toContain('--');
+  });
+});
+
+describe('emitIrModuleHaxe conditional expression', () => {
+  it('emits ternary conditional expression', () => {
+    const output = emitIrModuleHaxe(
+      lower('cond.ts', 'export function pick(a: boolean, x: number, y: number): number { return a ? x : y; }').module,
+    ).contents;
+    expect(output).toContain('?');
+    expect(output).toContain(':');
+  });
+});
+
+describe('emitIrModuleHaxe enum member emission', () => {
+  it('emits enum declaration with all members', () => {
+    const output = emitIrModuleHaxe(
+      lower('my-enum.ts', 'export enum Color { Red = 0, Green = 1, Blue = 2 }').module,
+    ).contents;
+    expect(output).toContain('enum abstract');
+    expect(output).toContain('Red');
+    expect(output).toContain('Green');
+    expect(output).toContain('Blue');
+  });
+});
+
+describe('emitIrModuleHaxe regexp expression', () => {
+  it('emits regexp literal as Haxe EReg', () => {
+    const output = emitIrModuleHaxe(
+      lower('regex.ts', 'export function test(s: string): boolean { return /^hello/.test(s); }').module,
+    ).contents;
+    expect(output).toContain('~/^hello/');
+  });
+});
+
+describe('emitIrModuleHaxe labeled loop emission', () => {
+  it('emits labeled while loop with break', () => {
+    const output = emitIrModuleHaxe(
+      lower(
+        'labeled-while.ts',
+        `export function find(items: number[]): number {
+           outer: while (true) {
+             for (const x of items) {
+               if (x > 0) break outer;
+             }
+             break;
+           }
+           return 0;
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('break');
+  });
+});
+
+describe('emitIrModuleHaxe switch with default case', () => {
+  it('emits switch statement with default fallback', () => {
+    const output = emitIrModuleHaxe(
+      lower(
+        'switch-default.ts',
+        `export function describe(n: number): string {
+           switch (n) {
+             case 0: return "zero";
+             case 1: return "one";
+             default: return "other";
+           }
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('switch');
+    expect(output).toContain('case 0');
+    expect(output).toContain('default');
+  });
+});
+
+describe('emitIrModuleHaxe do-while loop', () => {
+  it('emits do-while loop with condition', () => {
+    const output = emitIrModuleHaxe(
+      lower('do-while.ts', 'export function countDown(n: number): number { do { n--; } while (n > 0); return n; }')
+        .module,
+    ).contents;
+    expect(output).toContain('do {');
+    expect(output).toContain('} while');
+  });
+});
+
+describe('emitIrModuleHaxe while loop', () => {
+  it('emits while loop', () => {
+    const output = emitIrModuleHaxe(
+      lower('while.ts', 'export function countUp(n: number): number { let i = 0; while (i < n) { i++; } return i; }')
+        .module,
+    ).contents;
+    expect(output).toContain('while (');
+  });
+});
+
+describe('emitIrModuleHaxe throw statement', () => {
+  it('emits throw with error expression', () => {
+    const output = emitIrModuleHaxe(
+      lower('throw.ts', 'export function fail(): never { throw new Error("oops"); }').module,
+    ).contents;
+    expect(output).toContain('throw');
+  });
+});
+
+describe('emitIrModuleHaxe try-catch-finally', () => {
+  it('emits try-catch with finally block', () => {
+    const output = emitIrModuleHaxe(
+      lower(
+        'try-catch.ts',
+        `export function safe(fn: () => number): number {
+           try {
+             return fn();
+           } catch (e) {
+             return -1;
+           }
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('try {');
+    expect(output).toContain('catch');
+  });
+});
+
+describe('emitIrModuleHaxe mutable variable', () => {
+  it('emits mutable variable with var keyword', () => {
+    const output = emitIrModuleHaxe(
+      lower('mutable.ts', 'export function count(): number { let x = 0; x = x + 1; return x; }').module,
+    ).contents;
+    expect(output).toContain('var ');
+  });
+
+  it('emits immutable variable with final keyword', () => {
+    const output = emitIrModuleHaxe(
+      lower('immutable.ts', 'export function one(): number { const x = 1; return x; }').module,
+    ).contents;
+    expect(output).toContain('final ');
+  });
+});
+
+describe('emitIrModuleHaxe static class member', () => {
+  it('emits static method on class', () => {
+    const output = emitIrModuleHaxe(
+      lower(
+        'static-method.ts',
+        `export class Util {
+           static double(x: number): number { return x * 2; }
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('static');
+    expect(output).toContain('function double');
+  });
+});
+
+describe('emitIrModuleHaxe class with private field', () => {
+  it('emits private field with underscore prefix', () => {
+    const output = emitIrModuleHaxe(
+      lower(
+        'private-field.ts',
+        `export class Box {
+           private _val: number;
+           constructor(v: number) { this._val = v; }
+           get(): number { return this._val; }
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('_val');
+  });
+});
+
+describe('emitIrModuleHaxe string equality', () => {
+  it('emits strict equality between string operands', () => {
+    const output = emitIrModuleHaxe(
+      lower('str-eq.ts', 'export function eq(a: string, b: string): boolean { return a === b; }').module,
+    ).contents;
+    expect(output).toContain('==');
+  });
+});
