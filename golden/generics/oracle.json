@@ -1,0 +1,5 @@
+[
+  { "call": "identity", "arguments": [42], "returns": "number" },
+  { "call": "identity", "arguments": [0], "returns": "number" },
+  { "call": "identity", "arguments": [-7], "returns": "number" }
+]
