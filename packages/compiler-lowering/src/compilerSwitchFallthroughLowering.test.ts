@@ -128,6 +128,202 @@ describe('createCompilerLoweringPassSwitchFallthrough', () => {
     expect(createCompilerLoweringPassSwitchFallthrough().verifyIrModule(output)).toEqual({ kind: 'valid' });
   });
 
+  it('reports switch fallthrough as invalid in declarations and default exports', () => {
+    const pass = createCompilerLoweringPassSwitchFallthrough();
+    expect(
+      pass.verifyIrModule(
+        lower(
+          'verify-declaration.ts',
+          `export function voidReturn(): void { return; }
+           export function process(value: number, limit = 10): number {
+             switch (value) { case 0: case 1: return 1; default: return 0; }
+           }`,
+        ),
+      ),
+    ).toEqual({ kind: 'invalid', reason: 'switch fallthrough remains after normalization' });
+    expect(
+      pass.verifyIrModule(
+        lower(
+          'verify-default.ts',
+          'export default (value: number): number => { switch (value) { case 0: case 1: return 1; default: return 0; } };',
+        ),
+      ),
+    ).toEqual({ kind: 'invalid', reason: 'switch fallthrough remains after normalization' });
+  });
+
+  it('lowers switch fallthrough in class constructors, methods, and field initializers', () => {
+    const output = lowerIrModuleWithCompilerPasses(
+      lower(
+        'class-fallthrough.ts',
+        `export class Handler {
+           handler = (value: number): number => {
+             switch (value) { case 0: case 1: return 1; default: return 0; }
+           };
+           constructor(public label: string) {}
+           process(value: number): number {
+             switch (value) { case 0: case 1: return 1; default: return 0; }
+           }
+         }
+         export class Simple {
+           process(value: number): number {
+             switch (value) { case 0: case 1: return 1; default: return 0; }
+           }
+         }`,
+      ),
+      [
+        createCompilerLoweringPassBindingPattern(),
+        createCompilerLoweringPassVariableHoisting(),
+        createCompilerLoweringPassSwitchFallthrough(),
+      ],
+    );
+    expect(createCompilerLoweringPassSwitchFallthrough().verifyIrModule(output)).toEqual({ kind: 'valid' });
+  });
+
+  it('lowers switch fallthrough in variable initializers and default exports', () => {
+    const output = lowerIrModuleWithCompilerPasses(
+      lower(
+        'variable-default.ts',
+        `export const processor = (value: number): number => {
+           switch (value) { case 0: case 1: return 1; default: return 0; }
+         };
+         export default (value: number): number => {
+           switch (value) { case 0: case 1: return 1; default: return 0; }
+         };`,
+      ),
+      [
+        createCompilerLoweringPassBindingPattern(),
+        createCompilerLoweringPassVariableHoisting(),
+        createCompilerLoweringPassSwitchFallthrough(),
+      ],
+    );
+    expect(createCompilerLoweringPassSwitchFallthrough().verifyIrModule(output)).toEqual({ kind: 'valid' });
+  });
+
+  it('recurses through diverse expression kinds and for-loop variants during lowering', () => {
+    const output = lowerIrModuleWithCompilerPasses(
+      lower(
+        'expression-variety.ts',
+        `export function voidHelper(): void { return; }
+         export function compute(
+           values: number[],
+           obj: { x: number },
+           fn: (n: number) => number,
+           limit = 10,
+         ): string {
+           const mapper = (n: number): number => { return n * 2; };
+           for (;;) { break; }
+           for (let i = 0; i < 1; i++) { break; }
+           switch (values.length) {
+             case 0: {
+               const arr = [1, ...values];
+               const first = values[0];
+               const prop = obj.x;
+               const key = 'z';
+               const message = \`count: \${values.length}\`;
+               const ternary = prop > 0 ? 1 : 0;
+               const composed = { y: prop, [key]: ternary, ...obj };
+               const negated = -prop;
+               const called = fn(prop);
+               const instance = new Error(message);
+               return message;
+             }
+             case 1:
+             default:
+               return '';
+           }
+         }`,
+      ),
+      [
+        createCompilerLoweringPassBindingPattern(),
+        createCompilerLoweringPassVariableHoisting(),
+        createCompilerLoweringPassSwitchFallthrough(),
+      ],
+    );
+    expect(createCompilerLoweringPassSwitchFallthrough().verifyIrModule(output)).toEqual({ kind: 'valid' });
+  });
+
+  it('detects binding introductions in diverse statement containers for state machine election', () => {
+    const output = lowerIrModuleWithCompilerPasses(
+      lower(
+        'binding-containers.ts',
+        `export function analyze(
+           value: number,
+           items: number[],
+           obj: Record<string, number>,
+         ): number {
+           let total = 0;
+           switch (value) {
+             case 0:
+               total += 1;
+               { total += 2; }
+               do { total += 1; } while (false);
+               while (false) { total += 1; }
+               if (total > 0) { total += 1; }
+               if (total > 0) { total += 1; } else { total -= 1; }
+               try { total += 1; } catch { total -= 1; }
+               for (total = 0; total < 1; total++) { break; }
+               for (;;) { break; }
+             case 1:
+               for (const item of items) { total += item; }
+               break;
+             default:
+               return total;
+           }
+           switch (value) {
+             case 2:
+               for (const key in obj) { total += 1; }
+             case 3:
+               const other = total;
+               total = other + 1;
+               break;
+             default:
+               return total;
+           }
+           return total;
+         }`,
+      ),
+      [
+        createCompilerLoweringPassBindingPattern(),
+        createCompilerLoweringPassVariableHoisting(),
+        createCompilerLoweringPassSwitchFallthrough(),
+      ],
+    );
+    const pass = createCompilerLoweringPassSwitchFallthrough();
+    expect(pass.verifyIrModule(output)).toEqual({ kind: 'valid' });
+    const declaration = output.declarations[0];
+    if (declaration?.kind !== 'function') throw new Error('Expected function');
+    expect(declaration.body.filter((statement) => statement.kind === 'block')).toHaveLength(2);
+  });
+
+  it('transfers the switch label to the state machine wrapper block', () => {
+    const output = lowerIrModuleWithCompilerPasses(
+      lower(
+        'labeled-state-machine.ts',
+        `export function labeled(value: number): number {
+           let total = 0;
+           outer: switch (value) {
+             case 0: const local = value; total += local;
+             case 1: total += 1; break outer;
+             default: total += 2;
+           }
+           return total;
+         }`,
+      ),
+      [
+        createCompilerLoweringPassBindingPattern(),
+        createCompilerLoweringPassVariableHoisting(),
+        createCompilerLoweringPassSwitchFallthrough(),
+      ],
+    );
+    const pass = createCompilerLoweringPassSwitchFallthrough();
+    expect(pass.verifyIrModule(output)).toEqual({ kind: 'valid' });
+    const declaration = output.declarations[0];
+    if (declaration?.kind !== 'function') throw new Error('Expected function');
+    const block = declaration.body.find((statement) => statement.kind === 'block');
+    expect(block).toBeDefined();
+    expect(block?.kind === 'block' && block.label).toBeDefined();
+  });
+
   it('exits the state loop before continuing its enclosing loop and keeps multiple machine identities unique', () => {
     const output = lowerIrModuleWithCompilerPasses(
       lower(
