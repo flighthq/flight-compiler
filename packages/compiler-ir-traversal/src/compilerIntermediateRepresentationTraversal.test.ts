@@ -614,6 +614,18 @@ describe('analyzeIrExpressionSubtreeTraversal', () => {
     // second literal is never reached.
     expect(stopped).toEqual(['binary', 'literal']);
   });
+
+  it('propagates observer errors through the subtree boundary', () => {
+    const expression: IrExpression = { kind: 'literal', value: 1 };
+
+    expect(() =>
+      analyzeIrExpressionSubtreeTraversal(expression, {
+        expression() {
+          throw new Error('observer failure');
+        },
+      }),
+    ).toThrow('observer failure');
+  });
 });
 
 describe('analyzeIrStatementSubtreeTraversal', () => {
@@ -636,6 +648,18 @@ describe('analyzeIrStatementSubtreeTraversal', () => {
     });
 
     expect(seen).toEqual(['return', 'literal']);
+  });
+
+  it('propagates observer errors through the subtree boundary', () => {
+    const statement: IrStatement = { expression: { kind: 'literal', value: 1 }, kind: 'return' };
+
+    expect(() =>
+      analyzeIrStatementSubtreeTraversal(statement, {
+        statement() {
+          throw new Error('statement observer failure');
+        },
+      }),
+    ).toThrow('statement observer failure');
   });
 });
 
