@@ -1999,7 +1999,7 @@ describe('validateIrModuleStructure', () => {
     if (invalidDecl?.kind !== 'variable' || invalidDecl.initializer?.kind !== 'tupleSpread') {
       throw new Error('Expected tuple spread');
     }
-    (invalidDecl.initializer as { type: { elements: unknown[] } }).type.elements = [
+    (invalidDecl.initializer as unknown as { type: { elements: unknown[] } }).type.elements = [
       { optional: false, rest: true, type: { kind: 'primitive', name: 'number' } },
     ];
 
