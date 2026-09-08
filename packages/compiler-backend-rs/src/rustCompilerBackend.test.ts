@@ -10394,3 +10394,206 @@ describe('emitIrModuleRust class field initializers', () => {
     expect(output).toContain('label:');
   });
 });
+
+describe('emitIrModuleRust transitive method mutation', () => {
+  it('emits mut self when method calls a mutating peer', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'mut-transitive.ts',
+        `export class Accumulator {
+           total: number;
+           constructor() { this.total = 0; }
+           add(n: number): void { this.total = this.total + n; }
+           addTwice(n: number): void { this.add(n); this.add(n); }
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('&mut self');
+    expect(output).toContain('fn add(');
+    expect(output).toContain('fn add_twice(');
+  });
+});
+
+describe('emitIrModuleRust nullable binding and optional chain', () => {
+  it('emits optional property access as map/and_then', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'opt-chain.ts',
+        `interface Config { label: string }
+         export function getLabel(config: Config | undefined): string | undefined {
+           return config?.label;
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('.map(');
+  });
+
+  it('emits nullish coalescing as unwrap_or_else', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'coalesce.ts',
+        `interface Config { label: string }
+         export function getLabel(config: Config | undefined): string {
+           return config?.label ?? "default";
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('unwrap_or_else');
+  });
+});
+
+describe('emitIrModuleRust re-export emission', () => {
+  it('emits re-exports as pub use statements', () => {
+    const result = lowerPackage('@flighthq/math', 'reexport.ts', `export { Vec2 } from './vector.js';`);
+    const output = emitIrModuleRust(result.module).contents;
+    expect(output).toContain('pub use');
+    expect(output).toContain('Vec2');
+  });
+});
+
+describe('emitIrModuleRust class with static constant field', () => {
+  it('emits static field as associated constant', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'static-const.ts',
+        `export class Config {
+           static readonly VERSION: number = 1;
+           name: string;
+           constructor(name: string) { this.name = name; }
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('const VERSION');
+    expect(output).toContain('1.0');
+  });
+});
+
+describe('emitIrModuleRust type alias passthrough', () => {
+  it('emits simple type alias as Rust type alias', () => {
+    const output = emitIrModuleRust(lower('type-alias.ts', `export type Score = number;`).module).contents;
+    expect(output).toContain('pub type Score = f64;');
+  });
+});
+
+describe('emitIrModuleRust array element access with coalescing', () => {
+  it('emits array index with ?? as get + unwrap_or', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'arr-coalesce.ts',
+        `export function safe(items: number[], i: number): number {
+           return items[i] ?? 0;
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('unwrap_or');
+  });
+});
+
+describe('emitIrModuleRust mutable variable declaration', () => {
+  it('emits let mut for reassigned variable', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'mutable-var.ts',
+        `export function count(): number {
+           let total = 0;
+           total = total + 1;
+           return total;
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('let mut total');
+  });
+});
+
+describe('emitIrModuleRust enum declaration', () => {
+  it('emits enum as associated constants on a struct', () => {
+    const output = emitIrModuleRust(
+      lower('enum-vals.ts', `export enum Direction { Up, Down, Left, Right }`).module,
+    ).contents;
+    expect(output).toContain('Direction');
+    expect(output).toContain('Up');
+    expect(output).toContain('Down');
+  });
+});
+
+describe('emitIrModuleRust object literal expression', () => {
+  it('emits object literal as struct construction', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'obj-lit.ts',
+        `interface Point { x: number; y: number }
+         export function origin(): Point { return { x: 0, y: 0 }; }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('Point {');
+    expect(output).toContain('x:');
+    expect(output).toContain('y:');
+  });
+});
+
+describe('emitIrModuleRust conditional expression', () => {
+  it('emits ternary as Rust if-else expression', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'ternary.ts',
+        `export function sign(x: number): number {
+           return x >= 0 ? 1 : -1;
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('if ');
+    expect(output).toContain('else');
+  });
+});
+
+describe('emitIrModuleRust string concatenation', () => {
+  it('emits string + string as format! macro', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'str-concat.ts',
+        `export function greet(name: string): string {
+           return "hello " + name;
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('format!');
+  });
+});
+
+describe('emitIrModuleRust class method with accessor', () => {
+  it('emits getter and setter as separate methods', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'accessor.ts',
+        `export class Box {
+           _value: number;
+           constructor(v: number) { this._value = v; }
+           get value(): number { return this._value; }
+           set value(v: number) { this._value = v; }
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('fn value(');
+    expect(output).toContain('fn set_value(');
+  });
+});
+
+describe('emitIrModuleRust bitwise NOT and typeof', () => {
+  it('emits bitwise NOT as i32 negation', () => {
+    const output = emitIrModuleRust(
+      lower('bitwise-not.ts', `export function invert(x: number): number { return ~x; }`).module,
+    ).contents;
+    expect(output).toContain('as i32');
+    expect(output).toContain('as f64');
+  });
+});
+
+describe('emitIrModuleRust null literal in return', () => {
+  it('emits null as None in nullable return', () => {
+    const output = emitIrModuleRust(
+      lower('null-return.ts', `export function nothing(): number | null { return null; }`).module,
+    ).contents;
+    expect(output).toContain('None');
+    expect(output).toContain('Option<f64>');
+  });
+});
