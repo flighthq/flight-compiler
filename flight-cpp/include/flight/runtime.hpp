@@ -1,0 +1,16 @@
+#pragma once
+
+#include <flight/array.hpp>
+#include <flight/contract.hpp>
+#include <flight/date.hpp>
+#include <flight/equality.hpp>
+#include <flight/map.hpp>
+#include <flight/math.hpp>
+#include <flight/presence.hpp>
+#include <flight/task.hpp>
+#include <flight/version.hpp>
+
+template <typename Value>
+using FlightTask = flight::Task<Value>;
+
+using FlightDate = flight::Date;
