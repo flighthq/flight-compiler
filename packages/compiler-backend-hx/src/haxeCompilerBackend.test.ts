@@ -1844,3 +1844,475 @@ describe('emitIrModuleHaxe statement coverage', () => {
     expect(output).toContain('var value:Float = input;');
   });
 });
+
+describe('emitIrModuleHaxe ambient member coverage', () => {
+  it('emits array.reduce as Lambda.fold with exchanged closure', () => {
+    const result = lower(
+      'reduce.ts',
+      'export function sum(values: number[]): number { return values.reduce((acc, item) => acc + item, 0); }',
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('Lambda.fold(');
+  });
+
+  it('emits array.every as Lambda.foreach static call', () => {
+    const result = lower(
+      'every.ts',
+      'export function allPositive(values: number[]): boolean { return values.every((v) => v > 0); }',
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('Lambda.foreach(');
+  });
+
+  it('emits string.endsWith as StringTools.endsWith static call', () => {
+    const result = lower('ends-with.ts', 'export function check(s: string): boolean { return s.endsWith("x"); }');
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('StringTools.endsWith(');
+  });
+
+  it('emits array.length as property access', () => {
+    const result = lower(
+      'array-length.ts',
+      'export function count(values: number[]): number { return values.length; }',
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('.length');
+  });
+
+  it('emits string.charAt with int argument position', () => {
+    const result = lower('char-at.ts', 'export function first(s: string): string { return s.charAt(0); }');
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('.charAt(');
+  });
+
+  it('emits string.charCodeAt with Std.int on index argument', () => {
+    const result = lower(
+      'char-code-at.ts',
+      'export function code(s: string, pos: number): number { return s.charCodeAt(pos); }',
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('.charCodeAt(');
+    expect(output).toContain('Std.int(pos)');
+  });
+});
+
+describe('emitIrModuleHaxe class extended coverage', () => {
+  it('emits get/set accessor pair as Haxe property with methods', () => {
+    const result = lower(
+      'accessor.ts',
+      `
+        export class Counter {
+          private _count: number = 0;
+          get count(): number { return this._count; }
+          set count(value: number) { this._count = value; }
+        }
+      `,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('var count(get, set):Float;');
+    expect(output).toContain('function get_count():Float');
+    expect(output).toContain('function set_count(value:Float):Float');
+  });
+
+  it('emits abstract class with abstract method', () => {
+    const result = lower(
+      'abstract-class.ts',
+      `
+        export abstract class Shape {
+          abstract area(): number;
+        }
+      `,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('abstract class Shape');
+    expect(output).toContain('abstract function area():Float;');
+  });
+
+  it('emits class implementing interface', () => {
+    const result = lower(
+      'implements.ts',
+      `
+        export interface Printable { display(): string; }
+        export class Label implements Printable {
+          text: string = "";
+          display(): string { return this.text; }
+        }
+      `,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('implements Printable');
+    expect(output).toContain('interface Printable');
+    expect(output).toContain('public function display():String;');
+  });
+
+  it('emits override on method inherited from base class in same module', () => {
+    const result = lower(
+      'override-method.ts',
+      `
+        export class Base {
+          run(): number { return 1; }
+        }
+        export class Child extends Base {
+          override run(): number { return 2; }
+        }
+      `,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('override');
+  });
+
+  it('emits derived class constructor with super call and field initialization', () => {
+    const result = lower(
+      'derived-ctor.ts',
+      `
+        export class Base {
+          name: string;
+          constructor(name: string) { this.name = name; }
+        }
+        export class Child extends Base {
+          extra: number = 10;
+          constructor(name: string) { super(name); }
+        }
+      `,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('super(name)');
+    expect(output).toContain('this.extra = 10');
+  });
+});
+
+describe('emitIrModuleHaxe interface and typedef coverage', () => {
+  it('emits interface extending another as flattened typedef', () => {
+    const result = lower(
+      'interface-extends.ts',
+      `
+        export interface Base { x: number; }
+        export interface Extended extends Base { y: number; }
+      `,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('typedef Extended');
+    expect(output).toContain('y:Float');
+  });
+
+  it('emits structInit record with optional properties', () => {
+    const result = lower('optional-record.ts', 'export interface Config { name: string; debug?: boolean; }');
+    const output = emitIrModuleHaxe(result.module, { structuralRecords: 'structInit' }).contents;
+
+    expect(output).toContain('@:structInit');
+    expect(output).toContain('final class Config');
+    expect(output).toContain('public var name:String;');
+    expect(output).toContain('public var debug:Null<Bool> = null;');
+  });
+});
+
+describe('emitIrModuleHaxe statement extended coverage', () => {
+  it('emits do-while loop', () => {
+    const result = lower(
+      'do-while.ts',
+      `
+        export function countdown(n: number): number {
+          let i: number = n;
+          do { i = i - 1; } while (i > 0);
+          return i;
+        }
+      `,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('do {');
+    expect(output).toContain('} while ((i > 0));');
+  });
+
+  it('emits for-of loop', () => {
+    const result = lower(
+      'for-of.ts',
+      'export function total(values: number[]): number { let sum: number = 0; for (const v of values) { sum = sum + v; } return sum; }',
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('for (');
+    expect(output).toContain(' in ');
+  });
+
+  it('emits throw statement', () => {
+    const result = lower('throw.ts', 'export function fail(): never { throw new Error("fail"); }');
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('throw ');
+  });
+
+  it('emits switch statement with cases and default', () => {
+    const result = lower(
+      'switch.ts',
+      `
+        export function label(n: number): string {
+          switch (n) {
+            case 1: return "one";
+            case 2: return "two";
+            default: return "other";
+          }
+        }
+      `,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('switch (n)');
+    expect(output).toContain('case 1:');
+    expect(output).toContain('default:');
+  });
+
+  it('emits expression statement', () => {
+    const result = lower('expression-stmt.ts', 'export function noop(values: number[]): void { values.push(1); }');
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('values.push(1);');
+  });
+
+  it('emits C-style for loop as while after lowering', () => {
+    const result = lower(
+      'for-loop.ts',
+      'export function loop(): number { let s: number = 0; for (let i: number = 0; i < 5; i++) { s = s + i; } return s; }',
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('while');
+  });
+});
+
+describe('emitIrModuleHaxe operator coverage', () => {
+  it('emits postfix increment and decrement', () => {
+    const result = lower(
+      'postfix.ts',
+      `
+        export function step(n: number): number {
+          let x: number = n;
+          x++;
+          x--;
+          return x;
+        }
+      `,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('x++');
+    expect(output).toContain('x--');
+  });
+
+  it('emits prefix increment, decrement, negation, and bitwise not', () => {
+    const result = lower(
+      'prefix.ts',
+      `
+        export function ops(n: number): number {
+          let x: number = n;
+          ++x;
+          --x;
+          const neg: number = -x;
+          const inv: number = ~x;
+          return neg + inv;
+        }
+      `,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('++ x');
+    expect(output).toContain('-- x');
+  });
+
+  it('emits power assignment as Math.pow', () => {
+    const result = lower(
+      'power-assign.ts',
+      'export function square(n: number): number { let x: number = n; x **= 2; return x; }',
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('Math.pow(');
+  });
+
+  it('emits string addition operator', () => {
+    const result = lower('string-add.ts', 'export function greet(name: string): string { return "hello " + name; }');
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('"hello " + name');
+  });
+
+  it('emits arithmetic operators for number domain', () => {
+    const result = lower(
+      'arithmetic.ts',
+      `
+        export function math(a: number, b: number): number {
+          const sub: number = a - b;
+          const mul: number = a * b;
+          const div: number = a / b;
+          const mod: number = a % b;
+          return sub + mul + div + mod;
+        }
+      `,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('a - b');
+    expect(output).toContain('a * b');
+    expect(output).toContain('a / b');
+    expect(output).toContain('a % b');
+  });
+
+  it('emits compound assignment operators for number domain', () => {
+    const result = lower(
+      'compound-assign.ts',
+      `
+        export function compound(a: number, b: number): number {
+          let x: number = a;
+          x += b;
+          x -= b;
+          x *= b;
+          x /= b;
+          x %= b;
+          return x;
+        }
+      `,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('x += b');
+    expect(output).toContain('x -= b');
+    expect(output).toContain('x *= b');
+    expect(output).toContain('x /= b');
+    expect(output).toContain('x %= b');
+  });
+
+  it('emits typeof type test as Std.isOfType', () => {
+    const result = lower(
+      'typeof-test.ts',
+      `
+        export function isNumber(x: number | string): boolean {
+          return typeof x === "number";
+        }
+      `,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('Std.isOfType(');
+  });
+
+  it('emits nullish comparison as null check', () => {
+    const result = lower(
+      'null-check.ts',
+      'export function isPresent(value: number | null): boolean { return value !== null; }',
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('!= null');
+  });
+});
+
+describe('emitIrModuleHaxe enum extended coverage', () => {
+  it('emits string enum as String abstract', () => {
+    const result = lower('string-enum.ts', 'export enum Color { Red = "red", Green = "green", Blue = "blue" }');
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('(String)');
+    expect(output).toContain('"red"');
+  });
+
+  it('emits numeric enum with float values', () => {
+    const result = lower('float-enum.ts', 'export enum Ratio { Half = 0.5, Third = 0.333 }');
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('(Float)');
+    expect(output).toContain('0.5');
+  });
+});
+
+describe('emitIrModuleHaxe variable and module-level coverage', () => {
+  it('emits module-level variable declaration with type', () => {
+    const result = lower('module-var.ts', 'export const PI: number = 3.14;');
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('final PI:Float = 3.14;');
+  });
+
+  it('emits variable with undefined initialValue as Dynamic null', () => {
+    const result = lower(
+      'undef-var.ts',
+      'export function init(): number { let x: number | undefined; if (x !== undefined) { return x; } return 0; }',
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('var ');
+    expect(output).toContain('= null');
+  });
+
+  it('emits new expression', () => {
+    const result = lower(
+      'new-expr.ts',
+      `
+        export class Point { x: number = 0; y: number = 0; }
+        export function create(): Point { return new Point(); }
+      `,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('new Point()');
+  });
+
+  it('emits re-export as typedef for type-only cross-package', () => {
+    const result = lowerPackage('@flighthq/core', 'reexport.ts', 'export type { Point } from "@flighthq/math";');
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('typedef');
+  });
+
+  it('refuses re-export of value', () => {
+    const result = lower('value-reexport.ts', 'export { add } from "./add.js";');
+
+    expect(() => emitIrModuleHaxe(result.module)).toThrow('re-exporting the value');
+  });
+});
+
+describe('emitIrModuleHaxe tuple and spread coverage', () => {
+  it('emits tuple type as Array with shared element type', () => {
+    const result = lower(
+      'tuple-type.ts',
+      'export function pair(a: number, b: number): [number, number] { return [a, b]; }',
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('Array<Float>');
+  });
+
+  it('emits tuple type with mixed elements as Array<Dynamic>', () => {
+    const result = lower(
+      'tuple-mixed.ts',
+      'export function mixed(a: number, b: string): [number, string] { return [a, b]; }',
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('Array<Dynamic>');
+  });
+
+  it('emits optional chaining on property access', () => {
+    const result = lower(
+      'optional-chain.ts',
+      `
+        export class Node { next: Node | null = null; value: number = 0; }
+        export function peek(node: Node | null): number | null { return node?.value ?? null; }
+      `,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('?.');
+  });
+});
