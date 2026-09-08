@@ -1,0 +1,12 @@
+package(default_visibility = ["//visibility:public"])
+
+cc_test(
+    name = "runtime_benchmark",
+    srcs = ["runtime_benchmark.cpp"],
+    size = "small",
+    tags = [
+        "benchmark",
+        "manual",
+    ],
+    deps = ["//:cpp"],
+)

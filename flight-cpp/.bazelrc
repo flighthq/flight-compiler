@@ -1,0 +1,19 @@
+build --incompatible_strict_action_env
+build --nostamp
+
+test --test_env=LC_ALL=C
+test --test_env=TZ=UTC
+test --test_output=errors
+
+build:local-posix --cxxopt=-std=c++20
+build:local-posix --cxxopt=-pthread
+build:local-posix --linkopt=-pthread
+build:local-msvc --cxxopt=/std:c++20
+
+build:release --compilation_mode=opt
+build:release --nostamp
+build:release --strip=always
+
+test:ci --keep_going
+
+try-import %workspace%/.bazelrc.local

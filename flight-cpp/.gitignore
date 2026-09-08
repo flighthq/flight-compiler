@@ -1,3 +1,5 @@
 /build/
 /out/
 /CMakeUserPresets.json
+/.bazelrc.local
+/bazel-*
