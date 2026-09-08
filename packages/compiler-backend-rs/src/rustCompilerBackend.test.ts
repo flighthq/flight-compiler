@@ -9093,3 +9093,820 @@ describe('emitIrModuleRust index search methods', () => {
     expect(output).toContain('unwrap_or(-1.0)');
   });
 });
+
+describe('emitIrModuleRust ambient method binding kinds', () => {
+  it('emits array.reduce as into_iter().fold() with reordered arguments', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'reduce.ts',
+        `export function sum(items: number[]): number {
+           return items.reduce((acc: number, x: number): number => acc + x, 0);
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('into_iter()');
+    expect(output).toContain('fold');
+  });
+
+  it('emits array.find as into_iter().find() with borrowed element', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'find.ts',
+        `export function first(items: number[]): number | undefined {
+           return items.find((x: number): boolean => x > 0);
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('into_iter()');
+    expect(output).toContain('find');
+  });
+
+  it('emits array.every as into_iter().all()', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'every.ts',
+        `export function allPositive(items: number[]): boolean {
+           return items.every((x: number): boolean => x > 0);
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('into_iter()');
+    expect(output).toContain('all');
+  });
+
+  it('emits array.some as into_iter().any()', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'some.ts',
+        `export function hasNeg(items: number[]): boolean {
+           return items.some((x: number): boolean => x < 0);
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('into_iter()');
+    expect(output).toContain('any');
+  });
+
+  it('emits array.map as into_iter().map().collect()', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'map.ts',
+        `export function doubled(items: number[]): number[] {
+           return items.map((x: number): number => x * 2);
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('into_iter()');
+    expect(output).toContain('map');
+    expect(output).toContain('collect');
+  });
+
+  it('emits string.indexOf as sentinelSearch .find()', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'str-indexof.ts',
+        `export function pos(text: string, needle: string): number {
+           return text.indexOf(needle);
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('.find(');
+    expect(output).toContain('unwrap_or(-1.0)');
+  });
+
+  it('emits string.lastIndexOf as sentinelSearch .rfind()', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'str-lastindexof.ts',
+        `export function lastPos(text: string, needle: string): number {
+           return text.lastIndexOf(needle);
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('.rfind(');
+    expect(output).toContain('unwrap_or(-1.0)');
+  });
+
+  it('emits string.split as splitCollect', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'str-split.ts',
+        `export function parts(text: string, sep: string): string[] {
+           return text.split(sep);
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('.split(');
+    expect(output).toContain('collect::<Vec<String>>()');
+  });
+
+  it('emits map.get as optionalLookup .get().cloned()', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'map-get.ts',
+        `export function lookup(m: Map<string, number>, key: string): number | undefined {
+           return m.get(key);
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('.get(');
+    expect(output).toContain('.cloned()');
+  });
+
+  it('emits array.join with borrowed separator', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'join.ts',
+        `export function csv(items: string[]): string {
+           return items.join(",");
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('.join(');
+  });
+
+  it('emits array.slice with start and end bounds', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'slice.ts',
+        `export function mid(items: number[]): number[] {
+           return items.slice(1, 3);
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('as usize');
+    expect(output).toContain('.to_vec()');
+  });
+
+  it('emits array.slice with start only', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'slice-start.ts',
+        `export function tail(items: number[]): number[] {
+           return items.slice(1);
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('as usize..');
+    expect(output).toContain('.to_vec()');
+  });
+
+  it('emits array.slice with no arguments as .clone()', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'slice-clone.ts',
+        `export function copy(items: number[]): number[] {
+           return items.slice();
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('.clone()');
+  });
+
+  it('emits array.concat with extend', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'concat.ts',
+        `export function merge(a: number[], b: number[]): number[] {
+           return a.concat(b);
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('extend');
+    expect(output).toContain('__concat');
+  });
+
+  it('emits string.charAt with chars().nth()', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'charat.ts',
+        `export function first(s: string): string {
+           return s.charAt(0);
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('chars().nth(');
+    expect(output).toContain('unwrap_or_default()');
+  });
+
+  it('emits string.charCodeAt with chars().nth() and NaN fallback', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'charcodeat.ts',
+        `export function code(s: string): number {
+           return s.charCodeAt(0);
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('chars().nth(');
+    expect(output).toContain('f64::NAN');
+  });
+
+  it('emits string.substring with range indexing', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'substring.ts',
+        `export function mid(s: string): string {
+           return s.substring(1, 5);
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('as usize');
+    expect(output).toContain('.to_string()');
+  });
+
+  it('emits string.replace with replacen and trailing 1', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'replace.ts',
+        `export function fix(s: string): string {
+           return s.replace("old", "new");
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('replacen');
+  });
+
+  it('emits string.endsWith as ends_with()', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'endswith.ts',
+        `export function check(s: string): boolean {
+           return s.endsWith("!");
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('ends_with(');
+  });
+
+  it('emits string.startsWith as starts_with()', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'startswith.ts',
+        `export function check(s: string): boolean {
+           return s.startsWith("h");
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('starts_with(');
+  });
+
+  it('emits string.includes as contains()', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'str-includes.ts',
+        `export function has(s: string, sub: string): boolean {
+           return s.includes(sub);
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('.contains(');
+  });
+
+  it('emits string.trim with .to_owned()', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'trim.ts',
+        `export function clean(s: string): string {
+           return s.trim();
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('.trim()');
+    expect(output).toContain('.to_owned()');
+  });
+
+  it('emits string.toLowerCase as to_lowercase()', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'tolower.ts',
+        `export function down(s: string): string {
+           return s.toLowerCase();
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('.to_lowercase()');
+  });
+
+  it('emits string.toUpperCase as to_uppercase()', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'toupper.ts',
+        `export function up(s: string): string {
+           return s.toUpperCase();
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('.to_uppercase()');
+  });
+
+  it('emits array.includes as contains() with borrowed argument', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'arr-includes.ts',
+        `export function has(items: string[], target: string): boolean {
+           return items.includes(target);
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('.contains(');
+  });
+
+  it('emits array.push as .push()', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'push.ts',
+        `export function add(items: number[]): void {
+           items.push(1);
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('.push(');
+  });
+
+  it('emits array.pop as .pop()', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'pop.ts',
+        `export function take(items: number[]): number | undefined {
+           return items.pop();
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('.pop()');
+  });
+
+  it('emits array.reverse as .reverse()', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'reverse.ts',
+        `export function flip(items: number[]): void {
+           items.reverse();
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('.reverse()');
+  });
+
+  it('emits array.lastIndexOf as iter().rposition()', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'lastindexof.ts',
+        `export function findLast(items: string[], target: string): number {
+           return items.lastIndexOf(target);
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('rposition');
+    expect(output).toContain('unwrap_or(-1.0)');
+  });
+
+  it('emits map.has as contains_key()', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'map-has.ts',
+        `export function exists(m: Map<string, number>, key: string): boolean {
+           return m.has(key);
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('.contains_key(');
+  });
+
+  it('emits map.set as insert()', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'map-set.ts',
+        `export function put(m: Map<string, number>, key: string, val: number): void {
+           m.set(key, val);
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('.insert(');
+  });
+
+  it('emits map.delete as remove()', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'map-del.ts',
+        `export function del(m: Map<string, number>, key: string): void {
+           m.delete(key);
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('.remove(');
+  });
+
+  it('emits set.add as insert()', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'set-add.ts',
+        `export function add(s: Set<string>, val: string): void {
+           s.add(val);
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('.insert(');
+  });
+
+  it('emits set.has as contains()', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'set-has.ts',
+        `export function has(s: Set<string>, val: string): boolean {
+           return s.has(val);
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('.contains(');
+  });
+
+  it('emits set.delete as remove()', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'set-del.ts',
+        `export function del(s: Set<string>, val: string): void {
+           s.delete(val);
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('.remove(');
+  });
+
+  it('emits Math.max(...arr) as fold with f64::NEG_INFINITY', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'math-max-spread.ts',
+        `export function biggest(items: number[]): number {
+           return Math.max(...items);
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('fold');
+    expect(output).toContain('f64::NEG_INFINITY');
+  });
+
+  it('emits Math.min(...arr) as fold with f64::INFINITY', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'math-min-spread.ts',
+        `export function smallest(items: number[]): number {
+           return Math.min(...items);
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('fold');
+    expect(output).toContain('f64::INFINITY');
+  });
+
+  it('emits number.toString as .to_string()', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'num-tostring.ts',
+        `export function render(n: number): string {
+           return n.toString();
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('.to_string()');
+  });
+
+  it('emits array.shift as .remove(0)', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'shift.ts',
+        `export function take(items: number[]): number | undefined {
+           return items.shift();
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('.remove(0');
+  });
+
+  it('emits array.unshift as .insert(0, ...)', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'unshift.ts',
+        `export function prepend(items: number[]): void {
+           items.unshift(42);
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('.insert(0');
+  });
+});
+
+describe('emitIrModuleRust expression patterns', () => {
+  it('emits tupleRest expression', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'tuple-rest.ts',
+        `export function rest(pair: [number, string, boolean]): string {
+           const [_first, ...tail] = pair;
+           return tail[0];
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toBeDefined();
+  });
+
+  it('emits undefinedDefault with unwrap_or_else', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'undef-default.ts',
+        `interface Opt { label?: string }
+         export function name(o: Opt): string {
+           return o.label ?? "none";
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('unwrap_or_else');
+  });
+
+  it('emits forIn with closed key evidence', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'forin.ts',
+        `interface Rec { a: number; b: number }
+         export function keys(r: Rec): string[] {
+           const out: string[] = [];
+           for (const k in r) { out.push(k); }
+           return out;
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('for ');
+  });
+
+  it('emits optional property chain with .map()', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'opt-prop.ts',
+        `interface Inner { value: number }
+         export function read(x: Inner | undefined): number | undefined {
+           return x?.value;
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('.map(');
+    expect(output).toContain('optional_chain_value');
+  });
+
+  it('emits optional call expression', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'opt-call.ts',
+        `export function invoke(fn: ((x: number) => number) | undefined, val: number): number | undefined {
+           return fn?.(val);
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('.map(');
+    expect(output).toContain('optional_chain_value');
+  });
+
+  it('emits do-while with loop and trailing break guard', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'do-while.ts',
+        `export function countdown(n: number): number {
+           let i: number = n;
+           do { i = i - 1; } while (i > 0);
+           return i;
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('loop {');
+    expect(output).toContain('break');
+  });
+
+  it('emits IIFE as statement-value block expression', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'iife.ts',
+        `export function compute(): number {
+           return (() => { const x: number = 1; return x + 2; })();
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toBeDefined();
+  });
+});
+
+describe('emitIrModuleRust async try/catch with return await', () => {
+  it('emits return-form settlement with Ok return and named catch binding', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'try-return-catch.ts',
+        'export async function attempt(task: Promise<number>): Promise<number> { try { return await task; } catch (e) { return 0; } }',
+      ).module,
+    ).contents;
+    expect(output).toContain('.settle()');
+    expect(output).toContain('Ok(__value)');
+    expect(output).toContain('return __value;');
+    expect(output).toContain('Err(e)');
+    expect(output).toContain('return 0.0;');
+  });
+
+  it('emits return-form settlement with catch only, no finally', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'try-return-catch-only.ts',
+        'export async function attempt(task: Promise<number>, fallback: number): Promise<number> { try { return await task; } catch { return fallback; } }',
+      ).module,
+    ).contents;
+    expect(output).toContain('Ok(__value)');
+    expect(output).toContain('return __value;');
+    expect(output).toContain('Err(_)');
+    expect(output).toContain('return fallback;');
+  });
+});
+
+describe('emitIrModuleRust void return statement', () => {
+  it('emits early return without expression', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'void-return.ts',
+        'export function guard(skip: boolean): void { if (skip) return; const value: number = 1; value; }',
+      ).module,
+    ).contents;
+    expect(output).toContain('return;');
+  });
+});
+
+describe('emitIrModuleRust switch default-only', () => {
+  it('emits default body without case branches', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'switch-default.ts',
+        'export function name(code: number): number { switch (code) { default: return code; } }',
+      ).module,
+    ).contents;
+    expect(output).toContain('return code;');
+    expect(output).not.toContain('unreachable!');
+  });
+});
+
+describe('emitIrModuleRust type alias passthrough', () => {
+  it('emits non-object, non-union type alias as Rust type alias', () => {
+    const output = emitIrModuleRust(lower('type-alias.ts', 'export type Count = number;').module).contents;
+    expect(output).toContain('pub type Count = f64;');
+  });
+
+  it('emits string literal union as String type alias', () => {
+    const output = emitIrModuleRust(
+      lower('dir-alias.ts', 'export type Direction = "up" | "down" | "left" | "right";').module,
+    ).contents;
+    expect(output).toContain('pub type Direction = String;');
+  });
+});
+
+describe('emitIrModuleRust throw statement', () => {
+  it('emits throw new Error with panic! and message', () => {
+    const output = emitIrModuleRust(
+      lower('throw-new.ts', 'export function fail(msg: string): never { throw new Error(msg); }').module,
+    ).contents;
+    expect(output).toContain('panic!("{}", msg)');
+  });
+
+  it('emits throw non-Error as debug panic', () => {
+    const output = emitIrModuleRust(
+      lower('throw-plain.ts', 'export function fail(code: number): never { throw code; }').module,
+    ).contents;
+    expect(output).toContain('panic!("{:?}", code)');
+  });
+});
+
+describe('emitIrModuleRust while-true and do-while', () => {
+  it('emits while true as loop keyword', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'while-true.ts',
+        'export function spin(): number { let i: number = 0; while (true) { i += 1; if (i > 10) return i; } }',
+      ).module,
+    ).contents;
+    expect(output).toContain('loop {');
+    expect(output).not.toContain('while true');
+  });
+
+  it('emits do-while as loop with break condition', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'do-while.ts',
+        'export function count(): number { let i: number = 0; do { i += 1; } while (i < 10); return i; }',
+      ).module,
+    ).contents;
+    expect(output).toContain('loop {');
+    expect(output).toContain('if !(');
+    expect(output).toContain('break;');
+  });
+});
+
+describe('emitIrModuleRust labeled blocks and break targets', () => {
+  it('emits labeled block with break target', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'labeled-block.ts',
+        'export function test(x: number): number { outer: { if (x > 0) break outer; return -1; } return x; }',
+      ).module,
+    ).contents;
+    expect(output).toContain("'outer");
+    expect(output).toContain("break 'outer");
+  });
+
+  it('emits continue with target label', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'labeled-continue.ts',
+        'export function skip(items: number[]): number { let sum: number = 0; outer: for (const item of items) { if (item < 0) continue outer; sum += item; } return sum; }',
+      ).module,
+    ).contents;
+    expect(output).toContain("continue 'outer");
+  });
+});
+
+describe('emitIrModuleRust nullable variable initialization', () => {
+  it('emits deferred nullable binding without mut or None', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'nullable-var.ts',
+        'export function find(items: number[]): number | undefined { let found: number | undefined; for (const item of items) { found = item; } return found; }',
+      ).module,
+    ).contents;
+    expect(output).toContain('let found: Option<f64>;');
+  });
+
+  it('emits mutable nullable variable with None initializer', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'nullable-mut.ts',
+        'export function scan(items: number[]): number | undefined { let found: number | undefined = undefined; for (const item of items) { if (item > 0) { found = item; } } if (found) { found = found; } return found; }',
+      ).module,
+    ).contents;
+    expect(output).toContain('Option<f64>');
+    expect(output).toContain('None');
+  });
+});
+
+describe('emitIrModuleRust closure cell wrapping', () => {
+  it('emits Rc<Cell> for closure-captured mutable variable', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'cell-wrap.ts',
+        'export function counter(): (x: number) => number { let count: number = 0; const increment = (x: number): number => { count += x; return count; }; return increment; }',
+      ).module,
+    ).contents;
+    expect(output).toContain('Rc::new(Cell::new(');
+    expect(output).toContain('Rc::clone(');
+  });
+});
+
+describe('emitIrModuleRust optional parameter emission', () => {
+  it('emits optional parameter as Option wrapped', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'optional-param.ts',
+        'export function greet(name: string, title?: string): string { return title ? title : name; }',
+      ).module,
+    ).contents;
+    expect(output).toContain('title: Option<String>');
+  });
+});
+
+describe('emitIrModuleRust Readonly and Required type wrappers', () => {
+  it('unwraps Readonly<T> to the inner type', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'readonly-type.ts',
+        'export interface Config { readonly label: string } export function getName(config: Readonly<Config>): string { return config.label; }',
+      ).module,
+    ).contents;
+    expect(output).toContain('config: Config');
+    expect(output).not.toContain('Readonly<');
+  });
+});
+
+describe('emitIrModuleRust mutable parameter emission', () => {
+  it('emits rebound parameter with mut prefix', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'mut-param.ts',
+        'export function clamp(value: number, max: number): number { if (value > max) value = max; return value; }',
+      ).module,
+    ).contents;
+    expect(output).toContain('mut value: f64');
+  });
+});
+
+describe('emitIrModuleRust for-of with element borrow', () => {
+  it('emits borrow prefix for element-access iterable', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'for-of-elem.ts',
+        'export function sum(matrix: number[][]): number { let total: number = 0; for (const row of matrix) { for (const item of row) { total += item; } } return total; }',
+      ).module,
+    ).contents;
+    expect(output).toContain('for ');
+    expect(output).toContain('total += ');
+  });
+});
