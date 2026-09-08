@@ -4585,4 +4585,166 @@ describe('emitIrModuleRust', () => {
     ).contents;
     expect(output).toContain('find');
   });
+
+  it('emits modulo assignment as %=', () => {
+    const output = emitIrModuleRust(
+      lower('mod-assign.ts', 'export function wrap(x: number, m: number): number { x %= m; return x; }').module,
+    ).contents;
+    expect(output).toContain('%=');
+  });
+
+  it('emits multiply assignment as *=', () => {
+    const output = emitIrModuleRust(
+      lower('mul-assign.ts', 'export function scale(x: number, f: number): number { x *= f; return x; }').module,
+    ).contents;
+    expect(output).toContain('*=');
+  });
+
+  it('emits subtract assignment as -=', () => {
+    const output = emitIrModuleRust(
+      lower('sub-assign.ts', 'export function decrement(x: number): number { x -= 1; return x; }').module,
+    ).contents;
+    expect(output).toContain('-=');
+  });
+
+  it('emits divide assignment as /=', () => {
+    const output = emitIrModuleRust(
+      lower('div-assign.ts', 'export function halve(x: number): number { x /= 2; return x; }').module,
+    ).contents;
+    expect(output).toContain('/=');
+  });
+
+  it('emits string strict equality as == comparison', () => {
+    const output = emitIrModuleRust(
+      lower('str-eq.ts', 'export function isHello(s: string): boolean { return s === "hello"; }').module,
+    ).contents;
+    expect(output).toContain('==');
+  });
+
+  it('emits string strict inequality as != comparison', () => {
+    const output = emitIrModuleRust(
+      lower('str-neq.ts', 'export function isNotHello(s: string): boolean { return s !== "hello"; }').module,
+    ).contents;
+    expect(output).toContain('!=');
+  });
+
+  it('emits boolean strict equality as == comparison', () => {
+    const output = emitIrModuleRust(
+      lower('bool-eq.ts', 'export function same(a: boolean, b: boolean): boolean { return a === b; }').module,
+    ).contents;
+    expect(output).toContain('==');
+  });
+
+  it('emits modulo as % operator', () => {
+    const output = emitIrModuleRust(
+      lower('modulo.ts', 'export function mod(a: number, b: number): number { return a % b; }').module,
+    ).contents;
+    expect(output).toContain('%');
+  });
+
+  it('emits logical AND as && operator', () => {
+    const output = emitIrModuleRust(
+      lower('and.ts', 'export function both(a: boolean, b: boolean): boolean { return a && b; }').module,
+    ).contents;
+    expect(output).toContain('&&');
+  });
+
+  it('emits logical OR as || operator', () => {
+    const output = emitIrModuleRust(
+      lower('or.ts', 'export function either(a: boolean, b: boolean): boolean { return a || b; }').module,
+    ).contents;
+    expect(output).toContain('||');
+  });
+
+  it('emits less-than-or-equal comparison', () => {
+    const output = emitIrModuleRust(
+      lower('lte.ts', 'export function atMost(a: number, b: number): boolean { return a <= b; }').module,
+    ).contents;
+    expect(output).toContain('<=');
+  });
+
+  it('emits greater-than-or-equal comparison', () => {
+    const output = emitIrModuleRust(
+      lower('gte.ts', 'export function atLeast(a: number, b: number): boolean { return a >= b; }').module,
+    ).contents;
+    expect(output).toContain('>=');
+  });
+
+  it('emits bitwise OR as i32 cast round-trip', () => {
+    const output = emitIrModuleRust(
+      lower('bitor.ts', 'export function bor(a: number, b: number): number { return a | b; }').module,
+    ).contents;
+    expect(output).toContain('as i32');
+  });
+
+  it('emits bitwise XOR as i32 cast round-trip', () => {
+    const output = emitIrModuleRust(
+      lower('bitxor.ts', 'export function bxor(a: number, b: number): number { return a ^ b; }').module,
+    ).contents;
+    expect(output).toContain('as i32');
+  });
+
+  it('emits left shift as i32 cast round-trip', () => {
+    const output = emitIrModuleRust(
+      lower('shl.ts', 'export function shl(a: number, b: number): number { return a << b; }').module,
+    ).contents;
+    expect(output).toContain('as i32');
+  });
+
+  it('emits right shift as i32 cast round-trip', () => {
+    const output = emitIrModuleRust(
+      lower('shr.ts', 'export function shr(a: number, b: number): number { return a >> b; }').module,
+    ).contents;
+    expect(output).toContain('as i32');
+  });
+
+  it('emits integer literal as Rust integer float', () => {
+    const output = emitIrModuleRust(
+      lower('int-lit.ts', 'export function fortytwo(): number { return 42; }').module,
+    ).contents;
+    expect(output).toContain('42.0');
+  });
+
+  it('emits unary plus on number as identity', () => {
+    const output = emitIrModuleRust(
+      lower('unary-plus.ts', 'export function pos(x: number): number { return +x; }').module,
+    ).contents;
+    expect(output).toContain('fn pos');
+  });
+
+  it('emits new Map() as runtime type construction', () => {
+    const output = emitIrModuleRust(
+      lower('new-map.ts', `export function makeMap(): Map<string, number> { return new Map(); }`).module,
+    ).contents;
+    expect(output).toContain('new');
+  });
+
+  it('emits new Set() as runtime type construction', () => {
+    const output = emitIrModuleRust(
+      lower('new-set.ts', `export function makeSet(): Set<number> { return new Set(); }`).module,
+    ).contents;
+    expect(output).toContain('new');
+  });
+
+  it('emits call to function with optional parameter passing value', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'call-opt.ts',
+        `export function greet(name?: string): string { return name ?? "world"; }
+         export function hello(): string { return greet("Alice"); }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('Some(');
+  });
+
+  it('emits call to function with default parameter', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'call-default.ts',
+        `export function add(a: number, b: number = 1): number { return a + b; }
+         export function inc(x: number): number { return add(x); }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('None');
+  });
 });
