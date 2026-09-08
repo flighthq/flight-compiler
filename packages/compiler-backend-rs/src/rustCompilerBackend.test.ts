@@ -2372,4 +2372,140 @@ describe('emitIrModuleRust', () => {
     expect(output).toContain('self.base.doubled()');
     expect(output).not.toContain('inheritance requires');
   });
+
+  it('emits tagged union as Rust enum with variant accessors', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'tagged-union.ts',
+        'interface Circle { radius: number; } interface Rect { width: number; height: number; } export type Shape = Circle | Rect; export function area(s: Shape): number { return 0.0; }',
+      ).module,
+    ).contents;
+    expect(output).toContain('enum Shape');
+    expect(output).toContain('Circle(');
+    expect(output).toContain('Rect(');
+    expect(output).toContain('fn as_circle(');
+    expect(output).toContain('fn as_rect(');
+  });
+
+  it('emits primitive union as tagged enum with Display', () => {
+    const output = emitIrModuleRust(
+      lower('prim-union.ts', 'export function accept(x: string | number): string { return x.toString(); }').module,
+    ).contents;
+    expect(output).toContain('enum');
+    expect(output).toContain('Str(String)');
+    expect(output).toContain('F64(f64)');
+    expect(output).toContain('impl std::fmt::Display');
+  });
+
+  it('emits tuple type as Rust tuple', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'tuple-type.ts',
+        'export function swap(pair: [number, string]): [string, number] { return [pair[1], pair[0]]; }',
+      ).module,
+    ).contents;
+    expect(output).toContain('(f64, String)');
+    expect(output).toContain('(String, f64)');
+  });
+
+  it('emits never type as bang type', () => {
+    const output = emitIrModuleRust(
+      lower('never-type.ts', 'export function fail(): never { throw new Error("fatal"); }').module,
+    ).contents;
+    expect(output).toContain('-> !');
+  });
+
+  it('emits union with null as Option', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'option-type.ts',
+        'export function safe(x: string | null): string { if (x === null) { return "none"; } return x; }',
+      ).module,
+    ).contents;
+    expect(output).toContain('Option<String>');
+  });
+
+  it('emits array type as Vec', () => {
+    const output = emitIrModuleRust(
+      lower('vec-type.ts', 'export function empty(): number[] { return []; }').module,
+    ).contents;
+    expect(output).toContain('Vec<f64>');
+  });
+
+  it('emits boolean primitive type', () => {
+    const output = emitIrModuleRust(
+      lower('bool-type.ts', 'export function yes(): boolean { return true; }').module,
+    ).contents;
+    expect(output).toContain('-> bool');
+  });
+
+  it('emits void return as unit type', () => {
+    const output = emitIrModuleRust(lower('void-type.ts', 'export function noop(): void { }').module).contents;
+    expect(output).toContain('-> ()');
+  });
+
+  it('emits class with private field visibility', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'private-field.ts',
+        'export class Secret { private data: string; constructor(d: string) { this.data = d; } read(): string { return this.data; } }',
+      ).module,
+    ).contents;
+    expect(output).toContain('data: String');
+    expect(output).not.toMatch(/pub\s+data/);
+  });
+
+  it('emits class with public field visibility', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'public-field.ts',
+        'export class Point { x: number; y: number; constructor(x: number, y: number) { this.x = x; this.y = y; } }',
+      ).module,
+    ).contents;
+    expect(output).toContain('pub x: f64');
+    expect(output).toContain('pub y: f64');
+  });
+
+  it('emits Readonly<T> by unwrapping to inner type', () => {
+    const output = emitIrModuleRust(
+      lower('readonly-unwrap.ts', 'export function freeze(items: Readonly<number[]>): number { return items[0]; }')
+        .module,
+    ).contents;
+    expect(output).toContain('Vec<f64>');
+  });
+
+  it('emits Math.max spread as fold over iter', () => {
+    const output = emitIrModuleRust(
+      lower('math-spread.ts', 'export function biggest(items: number[]): number { return Math.max(...items); }').module,
+    ).contents;
+    expect(output).toContain('.iter()');
+    expect(output).toContain('.fold(');
+    expect(output).toContain('f64::max');
+  });
+
+  it('emits Math.min spread as fold over iter', () => {
+    const output = emitIrModuleRust(
+      lower('math-min-spread.ts', 'export function smallest(items: number[]): number { return Math.min(...items); }')
+        .module,
+    ).contents;
+    expect(output).toContain('.fold(');
+    expect(output).toContain('f64::min');
+  });
+
+  it('emits this reference as self', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'this-ref.ts',
+        'export class Node { value: number; constructor(v: number) { this.value = v; } double(): number { return this.value * 2.0; } }',
+      ).module,
+    ).contents;
+    expect(output).toContain('self.value');
+  });
+
+  it('emits Map type as std HashMap', () => {
+    const output = emitIrModuleRust(
+      lower('map-type.ts', 'export function make(): Map<string, number> { return new Map<string, number>(); }').module,
+    ).contents;
+    expect(output).toContain('HashMap');
+  });
 });
