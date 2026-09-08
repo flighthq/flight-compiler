@@ -1,6 +1,5 @@
-import { describe, expect, it } from 'vitest';
-
 import ts from 'typescript';
+import { describe, expect, it } from 'vitest';
 
 import { lowerTypeScriptSource } from '../../compiler-semantic/src/index.js';
 import type {
