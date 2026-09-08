@@ -7845,3 +7845,552 @@ describe('emitIrModuleRust compound assignment', () => {
     expect(output).toContain('-=');
   });
 });
+
+describe('emitIrModuleRust interface extends', () => {
+  it('emits extended interface with flattened fields', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'iface-extends.ts',
+        `export interface Base { x: number }
+         export interface Child extends Base { y: number }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('struct Child');
+    expect(output).toContain('y:');
+  });
+});
+
+describe('emitIrModuleRust intersection type refusal', () => {
+  it('refuses intersection type in return position', () => {
+    expect(() =>
+      emitIrModuleRust(
+        lower(
+          'intersection-ret.ts',
+          `interface A { a: number }
+           interface B { b: number }
+           export function get(): A & B { return { a: 1, b: 2 } as A & B; }`,
+        ).module,
+      ),
+    ).toThrow('intersection');
+  });
+});
+
+describe('emitIrModuleRust optional parameter defaulting', () => {
+  it('emits optional parameter as Option wrapped in Some', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'opt-param.ts',
+        `export function greet(name: string, suffix?: string): string {
+           const s = suffix ?? "!";
+           return name + s;
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('Option<');
+  });
+});
+
+describe('emitIrModuleRust parameter with initializer', () => {
+  it('emits parameter default as unwrap_or_else', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'param-default.ts',
+        `export function greet(name: string, suffix: string = "!"): string {
+           return name + suffix;
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('unwrap_or_else');
+  });
+});
+
+describe('emitIrModuleRust concrete base composition', () => {
+  it('emits class extending concrete class with composition pattern', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'composition.ts',
+        `export class Base {
+           x: number;
+           constructor(x: number) { this.x = x; }
+           getX(): number { return this.x; }
+         }
+         export class Child extends Base {
+           y: number;
+           constructor(x: number, y: number) { super(x); this.y = y; }
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('struct Child');
+    expect(output).toContain('base');
+  });
+});
+
+describe('emitIrModuleRust type parameter with constraint', () => {
+  it('emits generic function with type bound', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'generic.ts',
+        `export interface HasName { name: string }
+         export function getName<T extends HasName>(item: T): string {
+           return item.name;
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('T:');
+  });
+});
+
+describe('emitIrModuleRust object literal expression', () => {
+  it('emits object literal as struct instantiation', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'obj-lit.ts',
+        `export interface Pt { x: number; y: number }
+         export function origin(): Pt { return { x: 0, y: 0 }; }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('Pt {');
+    expect(output).toContain('x:');
+    expect(output).toContain('y:');
+  });
+});
+
+describe('emitIrModuleRust optional interface property', () => {
+  it('emits optional field as Option type in struct', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'opt-field.ts',
+        `export interface Config { name: string; debug?: boolean }
+         export function makeConfig(n: string): Config { return { name: n }; }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('Option<bool>');
+    expect(output).toContain('None');
+  });
+});
+
+describe('emitIrModuleRust typeof test', () => {
+  it('emits typeof check as matches! macro on primitive union', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'typeof-check.ts',
+        `export function isNum(x: string | number): boolean {
+           return typeof x === "number";
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('matches!');
+  });
+});
+
+describe('emitIrModuleRust primitive union type', () => {
+  it('emits string | number as tagged enum', () => {
+    const output = emitIrModuleRust(
+      lower('prim-union.ts', `export function identity(x: string | number): string | number { return x; }`).module,
+    ).contents;
+    expect(output).toContain('enum');
+  });
+});
+
+describe('emitIrModuleRust Readonly wrapper type', () => {
+  it('emits Readonly<T> parameter', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'readonly-wrap.ts',
+        `export interface Pt { x: number; y: number }
+         export function freeze(p: Readonly<Pt>): number { return p.x; }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('fn freeze');
+  });
+});
+
+describe('emitIrModuleRust class with accessor pair', () => {
+  it('emits getter and setter as Rust methods', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'accessor.ts',
+        `export class Box {
+           private _value: number;
+           constructor(v: number) { this._value = v; }
+           get value(): number { return this._value; }
+           set value(v: number) { this._value = v; }
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('fn value(');
+    expect(output).toContain('fn set_value(');
+  });
+});
+
+describe('emitIrModuleRust narrowed optional unwrap', () => {
+  it('emits narrowed present optional as unwrap()', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'narrow-unwrap.ts',
+        `export function safe(x: number | undefined): number {
+           if (x !== undefined) { return x; }
+           return 0;
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('unwrap');
+  });
+});
+
+describe('emitIrModuleRust optional property access', () => {
+  it('emits ?. property as map on Option', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'opt-prop.ts',
+        `export interface Pt { x: number }
+         export function getX(p: Pt | undefined): number | undefined { return p?.x; }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('.map(');
+  });
+});
+
+describe('emitIrModuleRust optional element access', () => {
+  it('emits ?. element as and_then on Option', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'opt-elem.ts',
+        `export function first(items: number[] | undefined): number | undefined { return items?.[0]; }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('and_then');
+  });
+});
+
+describe('emitIrModuleRust tagged union type alias', () => {
+  it('emits discriminated union as Rust enum with variants', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'tagged-union.ts',
+        `interface Circle { kind: "circle"; radius: number }
+         interface Square { kind: "square"; side: number }
+         export type Shape = Circle | Square;`,
+      ).module,
+    ).contents;
+    expect(output).toContain('enum Shape');
+    expect(output).toContain('Circle');
+    expect(output).toContain('Square');
+  });
+});
+
+describe('emitIrModuleRust object type alias as record', () => {
+  it('emits type alias with object body as struct', () => {
+    const output = emitIrModuleRust(
+      lower('type-obj.ts', `export type Coord = { x: number; y: number };`).module,
+    ).contents;
+    expect(output).toContain('struct Coord');
+  });
+});
+
+describe('emitIrModuleRust re-export', () => {
+  it('emits re-export as pub use', () => {
+    const output = emitIrModuleRust(lower('reexport.ts', `export { add } from "./helper.js";`).module).contents;
+    expect(output).toContain('pub use');
+  });
+});
+
+describe('emitIrModuleRust relative import', () => {
+  it('emits use statement for relative import', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'import.ts',
+        `import { add } from "./helper.js";
+         export function double(x: number): number { return add(x, x); }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('use ');
+  });
+});
+
+describe('emitIrModuleRust Math spread fold', () => {
+  it('emits Math.max(...arr) as iter fold', () => {
+    const output = emitIrModuleRust(
+      lower('math-fold.ts', `export function maxVal(arr: number[]): number { return Math.max(...arr); }`).module,
+    ).contents;
+    expect(output).toContain('fold(');
+  });
+});
+
+describe('emitIrModuleRust string charAt', () => {
+  it('emits .charAt() with chars().nth()', () => {
+    const output = emitIrModuleRust(
+      lower('char-at.ts', `export function first(s: string): string { return s.charAt(0); }`).module,
+    ).contents;
+    expect(output).toContain('chars().nth(');
+  });
+});
+
+describe('emitIrModuleRust string charCodeAt', () => {
+  it('emits .charCodeAt() with chars().nth() and u32 cast', () => {
+    const output = emitIrModuleRust(
+      lower('char-code.ts', `export function code(s: string): number { return s.charCodeAt(0); }`).module,
+    ).contents;
+    expect(output).toContain('chars().nth(');
+    expect(output).toContain('as u32');
+  });
+});
+
+describe('emitIrModuleRust string substring', () => {
+  it('emits .substring(start, end) as slice', () => {
+    const output = emitIrModuleRust(
+      lower('substr.ts', `export function mid(s: string): string { return s.substring(1, 3); }`).module,
+    ).contents;
+    expect(output).toContain('as usize');
+    expect(output).toContain('.to_string()');
+  });
+});
+
+describe('emitIrModuleRust array concat', () => {
+  it('emits .concat() with extend', () => {
+    const output = emitIrModuleRust(
+      lower('arr-concat.ts', `export function merge(a: number[], b: number[]): number[] { return a.concat(b); }`)
+        .module,
+    ).contents;
+    expect(output).toContain('extend(');
+  });
+});
+
+describe('emitIrModuleRust undefined variable declaration', () => {
+  it('emits deferred variable for uninitialized let with later assignment', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'undef-var.ts',
+        `export function test(): number {
+           let x: number | undefined;
+           x = 5;
+           return x;
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('let ');
+    expect(output).toContain('5.0');
+  });
+});
+
+describe('emitIrModuleRust void return', () => {
+  it('emits unit return type for void function', () => {
+    const output = emitIrModuleRust(lower('void-fn.ts', 'export function noop(): void { }').module).contents;
+    expect(output).toContain('()');
+  });
+});
+
+describe('emitIrModuleRust never return type', () => {
+  it('emits ! for never return type', () => {
+    const output = emitIrModuleRust(
+      lower('never-fn.ts', 'export function crash(): never { throw new Error("boom"); }').module,
+    ).contents;
+    expect(output).toContain('-> !');
+  });
+});
+
+describe('emitIrModuleRust tuple type', () => {
+  it('emits tuple type as Rust tuple', () => {
+    const output = emitIrModuleRust(
+      lower('tuple-type.ts', 'export function pair(a: number, b: string): [number, string] { return [a, b]; }').module,
+    ).contents;
+    expect(output).toContain('(f64, String)');
+  });
+});
+
+describe('emitIrModuleRust array type', () => {
+  it('emits array type as Vec<T>', () => {
+    const output = emitIrModuleRust(
+      lower('arr-type.ts', 'export function wrap(x: number): number[] { return [x]; }').module,
+    ).contents;
+    expect(output).toContain('Vec<f64>');
+  });
+});
+
+describe('emitIrModuleRust class static method', () => {
+  it('emits static method access as Type::method', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'static-method.ts',
+        `export class Util {
+           static double(x: number): number { return x + x; }
+         }
+         export function test(): number { return Util.double(5); }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('Util::double');
+  });
+});
+
+describe('emitIrModuleRust enum member access', () => {
+  it('emits enum member as Type::Variant', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'enum-access.ts',
+        `export enum Dir { Up = 0, Down = 1 }
+         export function up(): Dir { return Dir.Up; }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('Dir::Up');
+  });
+});
+
+describe('emitIrModuleRust while-true as loop', () => {
+  it('emits while(true) as Rust loop keyword', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'loop.ts',
+        `export function spin(): number {
+           let i = 0.0;
+           while (true) { i = i + 1.0; if (i > 10.0) return i; }
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('loop {');
+    expect(output).not.toContain('while true');
+  });
+});
+
+describe('emitIrModuleRust deferred binding', () => {
+  it('emits deferred variable for branching initialization', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'deferred.ts',
+        `export function test(flag: boolean): number {
+           let result: number;
+           if (flag) { result = 1; } else { result = 2; }
+           return result;
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('result');
+    expect(output).toContain('1.0');
+    expect(output).toContain('2.0');
+  });
+});
+
+describe('emitIrModuleRust abstract class with concrete method', () => {
+  it('emits abstract class default method as trait default', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'abstract-default.ts',
+        `export abstract class Animal {
+           abstract name(): string;
+           greet(): string { return "hello"; }
+         }
+         export class Dog extends Animal {
+           name(): string { return "dog"; }
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('trait Animal');
+    expect(output).toContain('fn greet');
+  });
+});
+
+describe('emitIrModuleRust array element access', () => {
+  it('emits arr[i] with usize cast', () => {
+    const output = emitIrModuleRust(
+      lower('arr-elem.ts', `export function get(items: number[], i: number): number { return items[i]; }`).module,
+    ).contents;
+    expect(output).toContain('as usize');
+  });
+});
+
+describe('emitIrModuleRust multiple return value', () => {
+  it('emits tuple return', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'multi-ret.ts',
+        `export function minmax(a: number, b: number): [number, number] {
+           if (a < b) { return [a, b]; } else { return [b, a]; }
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('(f64, f64)');
+  });
+});
+
+describe('emitIrModuleRust private field naming', () => {
+  it('emits private fields with correct naming', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'private.ts',
+        `export class Counter {
+           private count: number;
+           constructor() { this.count = 0; }
+           get(): number { return this.count; }
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('count');
+  });
+});
+
+describe('emitIrModuleRust Math namespace member', () => {
+  it('emits Math.floor as f64::floor', () => {
+    const output = emitIrModuleRust(
+      lower('math-floor.ts', `export function floor(x: number): number { return Math.floor(x); }`).module,
+    ).contents;
+    expect(output).toContain('floor');
+  });
+});
+
+describe('emitIrModuleRust not-equal operator', () => {
+  it('emits !== as !=', () => {
+    const output = emitIrModuleRust(
+      lower('ne.ts', 'export function ne(a: number, b: number): boolean { return a !== b; }').module,
+    ).contents;
+    expect(output).toContain('!=');
+  });
+});
+
+describe('emitIrModuleRust negative number literal', () => {
+  it('emits negative prefix operator', () => {
+    const output = emitIrModuleRust(
+      lower('neg.ts', 'export function neg(x: number): number { return -x; }').module,
+    ).contents;
+    expect(output).toContain('-');
+  });
+});
+
+describe('emitIrModuleRust logical NOT', () => {
+  it('emits !x as Rust !', () => {
+    const output = emitIrModuleRust(
+      lower('not.ts', 'export function not(x: boolean): boolean { return !x; }').module,
+    ).contents;
+    expect(output).toContain('!');
+  });
+});
+
+describe('emitIrModuleRust prefix increment refusal', () => {
+  it('refuses prefix ++ operator', () => {
+    expect(() =>
+      emitIrModuleRust(lower('pre-inc.ts', 'export function inc(x: number): number { ++x; return x; }').module),
+    ).toThrow('value-preserving');
+  });
+});
+
+describe('emitIrModuleRust postfix decrement refusal', () => {
+  it('refuses postfix -- operator', () => {
+    expect(() =>
+      emitIrModuleRust(lower('post-dec.ts', 'export function dec(x: number): number { x--; return x; }').module),
+    ).toThrow('value-preserving');
+  });
+});
+
+describe('emitIrModuleRust C-style for loop', () => {
+  it('lowers C-style for to while loop', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'c-for.ts',
+        `export function sum(n: number): number {
+           let total = 0;
+           for (let i = 0; i < n; i++) { total += i; }
+           return total;
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('while');
+  });
+});
