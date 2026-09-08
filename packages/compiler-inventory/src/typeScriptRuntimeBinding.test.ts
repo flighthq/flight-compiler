@@ -60,6 +60,16 @@ describe('getTypeScriptSymbolRuntimeBindingDeclaration', () => {
       expect(shapeDeclaration).toBeUndefined();
     });
   });
+
+  it('returns undefined for a value symbol with no declarations array', () => {
+    const syntheticSymbol = {
+      declarations: undefined,
+      flags: ts.SymbolFlags.Variable,
+      valueDeclaration: undefined,
+    } as unknown as ts.Symbol;
+
+    expect(getTypeScriptSymbolRuntimeBindingDeclaration(syntheticSymbol, {})).toBeUndefined();
+  });
 });
 
 describe('hasTypeScriptDeclarationRuntimeBinding', () => {
@@ -146,6 +156,12 @@ describe('isTypeScriptExportExplicitlyTypeOnly', () => {
 
       expect(isTypeScriptExportExplicitlyTypeOnly(exports.get('value')!)).toBe(false);
     });
+  });
+
+  it('returns false for a symbol with no declarations property', () => {
+    const syntheticSymbol = { declarations: undefined, flags: ts.SymbolFlags.None } as unknown as ts.Symbol;
+
+    expect(isTypeScriptExportExplicitlyTypeOnly(syntheticSymbol)).toBe(false);
   });
 
   it('recognizes per-specifier type-only exports', () => {

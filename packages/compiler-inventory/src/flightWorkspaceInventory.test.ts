@@ -357,6 +357,57 @@ describe('analyzeFlightWorkspace', () => {
     }
   });
 
+  it('passes expected exclusion package names through to the exclusion analysis', () => {
+    const upstream = createUpstreamFixture();
+    try {
+      expectInventoryFailure(
+        () =>
+          analyzeFlightWorkspace({ expectedExclusionPackageNames: ['@flighthq/missing'], upstreamDirectory: upstream }),
+        'package-exclusion-drift',
+      );
+    } finally {
+      rmSync(upstream, { force: true, recursive: true });
+    }
+  });
+
+  it('resolves an export default function and export default expression', () => {
+    const upstream = createUpstreamFixture();
+    try {
+      write(upstream, 'packages/types/src/defaultFn.ts', 'export default function defaultFn(): number { return 1; }\n');
+      write(
+        upstream,
+        'packages/types/src/index.ts',
+        "export { Mode } from './Mode.js';\nexport type { Shape } from './Shape.js';\nexport { createValue } from './value.js';\n" +
+          "import { createOtherValue as createRenamedValue } from './other.js';\nexport { createRenamedValue as createPublicValue };\n" +
+          "export { createValue as createDirectAlias } from './value.js';\n" +
+          "export { default as defaultFn } from './defaultFn.js';\n",
+      );
+      git(upstream, 'add', '.');
+      git(upstream, 'commit', '-m', 'default function');
+
+      const inventory = analyzeFlightWorkspace({ upstreamDirectory: upstream });
+      const inventoryByName = new Map(inventory.packages.map((item) => [item.name, item]));
+      const root = resolvePackageExportLane(inventoryByName, '@flighthq/types');
+
+      expect(root.exports.find((e) => e.name === 'defaultFn')).toMatchObject({ kind: 'function', runtime: true });
+    } finally {
+      rmSync(upstream, { force: true, recursive: true });
+    }
+  });
+
+  it('fails on a missing package export lane specifier', () => {
+    const upstream = createUpstreamFixture();
+    try {
+      write(upstream, 'packages/types/src/index.ts', "export { value } from '@flighthq/types/nonexistent-lane';\n");
+      git(upstream, 'add', '.');
+      git(upstream, 'commit', '-m', 'missing lane');
+
+      expectInventoryFailure(() => analyzeFlightWorkspace({ upstreamDirectory: upstream }), 'missing-package-export');
+    } finally {
+      rmSync(upstream, { force: true, recursive: true });
+    }
+  });
+
   it('refuses a program file that resolves outside the upstream checkout', () => {
     const upstream = createUpstreamFixture();
     const outside = mkdtempSync(path.join(os.tmpdir(), 'flight-compiler-outside-'));
