@@ -3,7 +3,8 @@ import type { IrBindingPattern, IrDeclaration, IrExport, IrModule } from '../../
 export function hasCompilerModuleFacadeLoweringRequirement(module: Readonly<IrModule>): boolean {
   return module.exports.some(
     (exported) =>
-      exported.kind !== 'local' || !hasCompilerModuleFacadeDeclarationReflection(module.declarations, exported),
+      exported.kind !== 'local' ||
+      !hasCompilerModuleFacadeDeclarationReflection(module.declarations, exported),
   );
 }
 
@@ -14,12 +15,17 @@ function hasCompilerModuleFacadeBindingPattern(pattern: Readonly<IrBindingPatter
       ? pattern.elements.some(
           (element) => !!element && hasCompilerModuleFacadeBindingPattern(element.pattern, bindingId),
         )
-      : pattern.properties.some((property) => hasCompilerModuleFacadeBindingPattern(property.pattern, bindingId))) ||
+      : pattern.properties.some((property) =>
+          hasCompilerModuleFacadeBindingPattern(property.pattern, bindingId),
+        )) ||
     (!!pattern.rest && hasCompilerModuleFacadeBindingPattern(pattern.rest, bindingId))
   );
 }
 
-function hasCompilerModuleFacadeDeclarationBinding(declaration: Readonly<IrDeclaration>, bindingId: string): boolean {
+function hasCompilerModuleFacadeDeclarationBinding(
+  declaration: Readonly<IrDeclaration>,
+  bindingId: string,
+): boolean {
   if (declaration.kind !== 'variable') return declaration.binding.id === bindingId;
   return 'binding' in declaration
     ? declaration.binding.id === bindingId

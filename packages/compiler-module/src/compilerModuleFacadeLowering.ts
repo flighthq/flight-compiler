@@ -57,7 +57,10 @@ export function createCompilerModuleFacadePlan(input: Readonly<CompilerModuleFac
       'Module facade lowering requires a versioned module evaluation plan',
     );
   }
-  if (input.evaluation.schema !== 'flight-compiler-module-evaluation/1' || !Array.isArray(input.evaluation.modules)) {
+  if (
+    input.evaluation.schema !== 'flight-compiler-module-evaluation/1' ||
+    !Array.isArray(input.evaluation.modules)
+  ) {
     throw createCompilerModuleFacadeLoweringFailure(
       'invalid-facade-evaluation',
       'evaluation',
@@ -91,7 +94,9 @@ function cloneCompilerModuleFacadeValue<Value>(value: Value): Value {
   return clone;
 }
 
-function collectCompilerModuleFacadeBindingPattern(pattern: Readonly<IrBindingPattern>): readonly IrBindingIdentity[] {
+function collectCompilerModuleFacadeBindingPattern(
+  pattern: Readonly<IrBindingPattern>,
+): readonly IrBindingIdentity[] {
   if (pattern.kind === 'binding') return [pattern.binding];
   const nested =
     pattern.kind === 'array'
@@ -298,9 +303,7 @@ function createCompilerModuleFacadeRecords(
   return records;
 }
 
-function createCompilerModuleFacadeSlots(
-  record: Readonly<CompilerModuleFacadeRecord>,
-): readonly CompilerModuleFacadeSlot[] {
+function createCompilerModuleFacadeSlots(record: Readonly<CompilerModuleFacadeRecord>): readonly CompilerModuleFacadeSlot[] {
   const names = [...collectCompilerModuleFacadeExportNames(record, new Set())].sort(compareTextCodeUnits);
   const slots: CompilerModuleFacadeSlot[] = [];
   for (const exportName of names) {
@@ -357,7 +360,11 @@ function getCompilerModuleFacadeCandidateLanes(exported: Readonly<IrExport>): re
     return exported.typeOnly ? ['type'] : ['type', 'value'];
   }
   if (exported.typeOnly) return ['type'];
-  if (exported.binding.kind === 'class' || exported.binding.kind === 'enum' || exported.binding.kind === 'import') {
+  if (
+    exported.binding.kind === 'class' ||
+    exported.binding.kind === 'enum' ||
+    exported.binding.kind === 'import'
+  ) {
     return ['type', 'value'];
   }
   return ['value'];
@@ -429,10 +436,7 @@ function getCompilerModuleFacadeSource(
   resolution: Readonly<CompilerModuleFacadeResolution>,
 ): CompilerModuleFacadeSource {
   const firstHop = resolution.via[0];
-  if (
-    firstHop?.kind === 'star-reexport' &&
-    normalizeCompilerModuleFacadeIdentityKey(firstHop.module) === record.identityKey
-  ) {
+  if (firstHop?.kind === 'star-reexport' && normalizeCompilerModuleFacadeIdentityKey(firstHop.module) === record.identityKey) {
     return { kind: 'module-all', specifier: firstHop.specifier };
   }
   const explicit = getCompilerModuleFacadeExplicitCandidates(record, exportName).find((candidate) =>
@@ -453,11 +457,16 @@ function getCompilerModuleFacadeSource(
 function isCompilerModuleFacadeRuntimeRequest(module: Readonly<IrModule>, specifier: string): boolean {
   return (
     module.imports.some((imported) => imported.specifier === specifier && !imported.typeOnly) ||
-    module.exports.some((exported) => 'specifier' in exported && exported.specifier === specifier && !exported.typeOnly)
+    module.exports.some(
+      (exported) => 'specifier' in exported && exported.specifier === specifier && !exported.typeOnly,
+    )
   );
 }
 
-function normalizeCompilerModuleFacadeIdentity(value: unknown, subject: string): CompilerModuleIdentity {
+function normalizeCompilerModuleFacadeIdentity(
+  value: unknown,
+  subject: string,
+): CompilerModuleIdentity {
   if (value === null) throwInvalidCompilerModuleFacadeIdentity(subject);
   if (typeof value !== 'object') throwInvalidCompilerModuleFacadeIdentity(subject);
   if (!('name' in value)) throwInvalidCompilerModuleFacadeIdentity(subject);
@@ -497,10 +506,7 @@ function resolveCompilerModuleFacadeCandidate(
   const exported = candidate.exported;
   switch (exported.kind) {
     case 'default':
-      return {
-        route: { kind: 'expression', module: record.identity, path: ['exports', candidate.index, 'expression'] },
-        via: [],
-      };
+      return { route: { kind: 'expression', module: record.identity, path: ['exports', candidate.index, 'expression'] }, via: [] };
     case 'local': {
       const binding = getCompilerModuleFacadeIntroducedBinding(record, exported.binding);
       if (!binding) {

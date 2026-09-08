@@ -50,7 +50,10 @@ describe('createCompilerModuleFacadePlan', () => {
     );
     const input = createInput(
       [entry, relay, origin],
-      [createDependency(entry, './relay.js', relay), createDependency(relay, './origin.js', origin)],
+      [
+        createDependency(entry, './relay.js', relay),
+        createDependency(relay, './origin.js', origin),
+      ],
       [entry],
     );
     const evaluation = createCompilerModuleEvaluationPlan(input);
@@ -101,8 +104,15 @@ describe('createCompilerModuleFacadePlan', () => {
 
   it('keeps type-only links out of evaluation groups while using them for facade resolution', () => {
     const types = lowerModule('types.ts', 'export interface Shape { value: number }');
-    const entry = lowerModule('entry.ts', "import type { Shape } from './types.js'; export type { Shape };");
-    const input = createInput([entry, types], [createDependency(entry, './types.js', types)], [entry]);
+    const entry = lowerModule(
+      'entry.ts',
+      "import type { Shape } from './types.js'; export type { Shape };",
+    );
+    const input = createInput(
+      [entry, types],
+      [createDependency(entry, './types.js', types)],
+      [entry],
+    );
     const evaluation = createCompilerModuleEvaluationPlan(input);
     const plan = createCompilerModuleFacadePlan({ evaluation, modules: input.modules });
 
@@ -151,9 +161,15 @@ describe('createCompilerModuleFacadePlan', () => {
     const left = lowerModule('left.ts', "export * from './origin.js';");
     const right = lowerModule('right.ts', "export * from './origin.js';");
     const diamond = lowerModule('diamond.ts', "export * from './left.js'; export * from './right.js';");
-    const explicit = lowerModule('explicit.ts', "const value = 2; export { value }; export * from './origin.js';");
+    const explicit = lowerModule(
+      'explicit.ts',
+      "const value = 2; export { value }; export * from './origin.js';",
+    );
     const other = lowerModule('other.ts', 'export const value = 3;');
-    const ambiguous = lowerModule('ambiguous.ts', "export * from './origin.js'; export * from './other.js';");
+    const ambiguous = lowerModule(
+      'ambiguous.ts',
+      "export * from './origin.js'; export * from './other.js';",
+    );
     const modules = [diamond, left, right, explicit, ambiguous, origin, other];
     const dependencies = [
       createDependency(diamond, './left.js', left),
@@ -184,9 +200,7 @@ describe('createCompilerModuleFacadePlan', () => {
     expect(diamondSlot?.route).toMatchObject({ binding: { name: 'value' }, module: { source: origin.source } });
     expect(explicitSlot?.route).toMatchObject({ binding: { name: 'value' }, module: { source: explicit.source } });
     expect(
-      plan.modules
-        .find((module) => module.module.source === diamond.source)
-        ?.slots.some((slot) => slot.exportName === 'default'),
+      plan.modules.find((module) => module.module.source === diamond.source)?.slots.some((slot) => slot.exportName === 'default'),
     ).toBe(false);
     expect(() => createCompilerModuleFacadePlan({ evaluation, modules })).toThrow(
       expect.objectContaining({ code: 'ambiguous-facade-star', kind: 'compiler-module-facade' }),
@@ -206,9 +220,7 @@ describe('createCompilerModuleFacadePlan', () => {
       modules: cyclic.modules,
     });
     expect(
-      cyclicPlan.modules
-        .find((module) => module.module.source === first.source)
-        ?.slots.find((slot) => slot.exportName === 'value'),
+      cyclicPlan.modules.find((module) => module.module.source === first.source)?.slots.find((slot) => slot.exportName === 'value'),
     ).toMatchObject({ route: { binding: { name: 'value' }, module: { source: second.source } } });
 
     const namedFirst = lowerModule('named-first.ts', "export { value } from './named-second.js';");
@@ -241,7 +253,10 @@ describe('createCompilerModuleFacadePlan', () => {
     );
     const input = createInput(
       [entry, valueType, typeOnly],
-      [createDependency(entry, './value-type.js', valueType), createDependency(entry, './type-only.js', typeOnly)],
+      [
+        createDependency(entry, './value-type.js', valueType),
+        createDependency(entry, './type-only.js', typeOnly),
+      ],
       [entry],
     );
 

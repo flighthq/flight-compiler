@@ -189,7 +189,11 @@ describe('createCompilerModuleEvaluationPlan', () => {
       createInput([reexport, sideEffect], [createDependency(reexport, './side.js', sideEffect)], [reexport]),
     );
     const typeReexportPlan = createCompilerModuleEvaluationPlan(
-      createInput([typeReexport, types], [createDependency(typeReexport, './types.js', types)], [typeReexport]),
+      createInput(
+        [typeReexport, types],
+        [createDependency(typeReexport, './types.js', types)],
+        [typeReexport],
+      ),
     );
 
     expect(plan.modules.find((module) => module.module.source === entry.source)?.dependencies).toEqual([
@@ -218,9 +222,7 @@ describe('createCompilerModuleEvaluationPlan', () => {
       },
     ]);
     expect(typeReexportPlan.groups).toEqual([{ cyclic: false, modules: [getModuleIdentity(typeReexport)] }]);
-    expect(
-      typeReexportPlan.modules.find((module) => module.module.source === typeReexport.source)?.dependencies,
-    ).toEqual([
+    expect(typeReexportPlan.modules.find((module) => module.module.source === typeReexport.source)?.dependencies).toEqual([
       {
         ...createDependency(getModuleIdentity(typeReexport), './types.js', getModuleIdentity(types)),
         evaluation: 'type-only',
