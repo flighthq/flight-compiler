@@ -2010,6 +2010,8 @@ describe('emitIrModuleCpp', () => {
         name: string = "";
       }`,
     );
+    const classDecl = result.module.declarations.find((d) => d.kind === 'class');
+    expect(classDecl?.fields.some((f) => f.static)).toBe(true);
     const emitted = emitIrModuleCpp(result.module);
     expect(emitted.contents).toContain('name');
     expect(emitted.contents).not.toMatch(/struct Config[^}]*default_value/s);
@@ -2141,17 +2143,40 @@ describe('emitIrModuleCpp', () => {
       `export async function run(flag: boolean, x: number): Promise<number> {
         try {
           if (flag) {
-            return x + 1;
+            x += 10;
           } else {
             return x + 2;
           }
         } finally {
           x += 1;
         }
+        return x;
       }`,
     );
     const emitted = emitIrModuleCpp(result.module);
     expect(emitted.contents).toContain('co_return');
+    expect(emitted.contents).toContain('finally_return');
+  });
+
+  it('detects return in catch clause for try-finally emission', () => {
+    const result = lower(
+      'catch-return.ts',
+      `export async function run(x: number): Promise<number> {
+        try {
+          try {
+            x += 1;
+          } catch (error) {
+            return x + 2;
+          }
+        } finally {
+          x += 1;
+        }
+        return x;
+      }`,
+    );
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('co_return');
+    expect(emitted.contents).toContain('finally_return');
   });
 
   it('detects return inside finally body for catch-and-rethrow', () => {
@@ -2226,9 +2251,9 @@ describe('emitIrModuleCpp', () => {
     expect(matches!.length).toBeGreaterThanOrEqual(2);
   });
 
-  it('extracts super call from constructor or returns undefined when absent', () => {
+  it('emits constructor with super call as init list', () => {
     const result = lower(
-      'no-super-call.ts',
+      'super-call.ts',
       `export class Base { x: number = 0 }
        export class Child extends Base {
          y: number = 0;
@@ -2238,6 +2263,20 @@ describe('emitIrModuleCpp', () => {
     const emitted = emitIrModuleCpp(result.module);
     expect(emitted.contents).toContain('struct Child');
     expect(emitted.contents).toContain('Base');
+    expect(emitted.contents).toContain('Child()');
+  });
+
+  it('emits constructor without super call when class has no base', () => {
+    const result = lower(
+      'no-super.ts',
+      `export class Config {
+         value: number;
+         constructor(value: number) { this.value = value; }
+       }`,
+    );
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('struct Config');
+    expect(emitted.contents).toContain('Config(double value)');
   });
 
   it('emits sizeMethod binding as property access with static_cast', () => {
