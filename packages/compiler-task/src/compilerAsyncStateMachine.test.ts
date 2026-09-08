@@ -875,6 +875,88 @@ describe('analyzeIrModuleAsyncStateMachines', () => {
     expect(paths.filter((entry) => entry.kind === 'normal')).toMatchObject([{ value: { kind: 'implicitUndefined' } }]);
   });
 
+  it('uses a synthetic origin when the module has no declarations', () => {
+    const base = lower('export default async (): Promise<number> => await Promise.resolve(1);');
+    const clone = structuredClone(base);
+    clone.declarations = [];
+    const analysis = analyzeIrModuleAsyncStateMachines(clone);
+
+    expect(analysis.machines).toHaveLength(1);
+    expect(analysis.refusals).toEqual([]);
+  });
+
+  it('refuses a suspension in an unsupported expression inside a loop body', () => {
+    const analysis = analyzeIrModuleAsyncStateMachines(
+      lower(`
+        export async function loopBody(task: Promise<number>): Promise<number> {
+          let x: number = 0;
+          while (true) {
+            x = 1 + await task;
+          }
+          return x;
+        }
+      `),
+    );
+
+    expect(analysis.machines).toEqual([]);
+    expect(analysis.refusals.some((refusal) => refusal.code === 'unsupported-suspension-expression')).toBe(true);
+  });
+
+  it('refuses a suspension in an unsupported expression inside a try body', () => {
+    const analysis = analyzeIrModuleAsyncStateMachines(
+      lower(`
+        export async function tryBody(task: Promise<number>): Promise<number> {
+          try {
+            return 1 + await task;
+          } catch {
+            return 0;
+          }
+        }
+      `),
+    );
+
+    expect(analysis.machines).toEqual([]);
+    expect(analysis.refusals.some((refusal) => refusal.code === 'unsupported-suspension-expression')).toBe(true);
+  });
+
+  it('refuses an unreachable statement in a finally body', () => {
+    const base = lower(`
+      export async function cleanupRefusal(task: Promise<number>): Promise<number> {
+        try { return await task; } finally { 1; }
+      }
+    `);
+    const clone = structuredClone(base);
+    const fn = clone.declarations[0];
+    if (fn?.kind !== 'function') throw new Error('Expected function');
+    const tryStmt = fn.body[0];
+    if (!tryStmt || !('finallyBody' in tryStmt) || !tryStmt.finallyBody || tryStmt.finallyBody.kind !== 'block') {
+      throw new Error('Expected try/finally');
+    }
+    tryStmt.finallyBody.statements = [
+      { expression: { kind: 'literal', value: 1 }, kind: 'return' },
+      { expression: { kind: 'literal', value: 2 }, kind: 'expression' },
+    ] as typeof tryStmt.finallyBody.statements;
+    const analysis = analyzeIrModuleAsyncStateMachines(clone);
+
+    expect(analysis.machines).toEqual([]);
+    expect(analysis.refusals.some((refusal) => refusal.code === 'unreachable-statement')).toBe(true);
+  });
+
+  it('walks a non-opaque block without suspensions through the structured handler', () => {
+    const analysis = analyzeIrModuleAsyncStateMachines(
+      lower(`
+        export async function blockReturn(task: Promise<number>): Promise<number> {
+          let x: number = await task;
+          { return x; }
+        }
+      `),
+    );
+
+    expect(analysis.refusals).toEqual([]);
+    expect(analysis.machines).toHaveLength(1);
+    expect(analysis.machines[0]?.completionPaths.paths.some((p) => p.kind === 'return')).toBe(true);
+  });
+
   it('is deterministic, deeply immutable, and vacuous for a module without async scopes', () => {
     const module = lower('export function read(value: number): number { return value; }');
     const first = analyzeIrModuleAsyncStateMachines(module);
