@@ -3645,7 +3645,7 @@ describe('emitIrModuleCpp', () => {
     const module = structuredClone(lower('untyped-var.ts', 'export const value: number = 42;').module);
     const decl = module.declarations.find((d: { kind: string }) => d.kind === 'variable');
     if (decl?.kind === 'variable') {
-      delete (decl as Record<string, unknown>).type;
+      delete (decl as unknown as Record<string, unknown>).type;
     }
     const output = emitIrModuleCpp(module).contents;
     expect(output).toContain('const auto value');
