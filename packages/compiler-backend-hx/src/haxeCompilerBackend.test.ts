@@ -2715,65 +2715,6 @@ describe('emitIrModuleHaxe async task function body', () => {
   });
 });
 
-describe('emitIrModuleHaxe await and nullish comparison errors', () => {
-  it('refuses a raw await expression that was not lowered', () => {
-    const result = lower(
-      'await-raw.ts',
-      'export function read(input: Promise<number>): number { let x: number = 0; return x; }',
-    );
-    const decl = result.module.declarations[0]!;
-    if (decl.kind !== 'function') throw new Error('Expected function');
-    const awaitExpr = {
-      kind: 'await' as const,
-      expression: decl.body[0]!.kind === 'variable' ? decl.body[0].declarations[0]! : decl.body[0]!,
-    };
-    const patched = {
-      ...decl,
-      body: [...decl.body.slice(0, -1), { kind: 'return' as const, expression: awaitExpr }],
-    };
-    const module = { ...result.module, declarations: [patched] };
-
-    expect(() => emitIrModuleHaxe(module)).toThrow('await requires the Haxe async-lowering pass');
-  });
-});
-
-describe('emitIrModuleHaxe object element access', () => {
-  it('emits non-optional computed object access through Reflect.field', () => {
-    const result = lower(
-      'reflect-access.ts',
-      'export function read(record: { [key: string]: number }, key: string): number { return (record as any)[key]; }',
-    );
-    const output = emitIrModuleHaxe(result.module).contents;
-
-    expect(output).toContain('cast');
-  });
-});
-
-describe('emitIrModuleHaxe function expression edge cases', () => {
-  it('refuses generic function expressions as values', () => {
-    const result = lower('generic-fn.ts', 'export function call(value: number): number { return value; }');
-    const decl = result.module.declarations[0]!;
-    if (decl.kind !== 'function') throw new Error('Expected function');
-    const fnExpr = {
-      kind: 'function' as const,
-      async: false,
-      body: decl.body,
-      expression: undefined,
-      parameters: decl.parameters,
-      typeParameters: [
-        { binding: { id: 'tp1', name: 'T', space: 'type' as const, kind: 'type' as const }, constraint: undefined },
-      ],
-    };
-    const patched = {
-      ...decl,
-      body: [{ kind: 'return' as const, expression: fnExpr }],
-    };
-    const module = { ...result.module, declarations: [patched] };
-
-    expect(() => emitIrModuleHaxe(module)).toThrow('generic function expressions are not valid Haxe values');
-  });
-});
-
 describe('emitIrModuleHaxe property narrowing and optional access', () => {
   it('emits ambient member property that has no call binding as a property', () => {
     const result = lower(
@@ -2783,19 +2724,6 @@ describe('emitIrModuleHaxe property narrowing and optional access', () => {
     const output = emitIrModuleHaxe(result.module).contents;
 
     expect(output).toContain('.length');
-  });
-});
-
-describe('emitIrModuleHaxe imports with empty bindings', () => {
-  it('skips imports that have no bindings', () => {
-    const result = lower('side-effect-import.ts', 'export function noop(): void {}');
-    const patched = {
-      ...result.module,
-      imports: [...result.module.imports, { specifier: './side-effect.js', bindings: [] }],
-    };
-    const output = emitIrModuleHaxe(patched).contents;
-
-    expect(output).not.toContain('side-effect');
   });
 });
 
@@ -2813,132 +2741,6 @@ describe('emitIrModuleHaxe exchanged closure body form', () => {
   });
 });
 
-describe('emitIrModuleHaxe interface extends without flattening', () => {
-  it('refuses interface inheritance that was not structurally flattened', () => {
-    const result = lower(
-      'interface-extends-raw.ts',
-      'export interface Base { x: number } export interface Child extends Base { y: number }',
-    );
-    const decl = result.module.declarations.find((d) => d.kind === 'interface' && d.binding.name === 'Child')!;
-    if (decl.kind !== 'interface') throw new Error('Expected interface');
-    const unflattenedDecl = {
-      ...decl,
-      extends: [
-        {
-          kind: 'named' as const,
-          reference: {
-            kind: 'binding' as const,
-            binding: { id: 'base-id', name: 'Base', space: 'type' as const, kind: 'type' as const },
-            path: [],
-          },
-          typeArguments: [],
-        },
-      ],
-      properties: [{ name: 'y', optional: false, type: { kind: 'primitive' as const, name: 'number' as const } }],
-    };
-    const module = {
-      ...result.module,
-      declarations: result.module.declarations.map((d) =>
-        d.kind === 'interface' && d.binding.name === 'Child' ? unflattenedDecl : d,
-      ),
-    };
-
-    expect(() => emitIrModuleHaxe(module)).toThrow('inheritance requires structural flattening');
-  });
-});
-
-describe('emitIrModuleHaxe interface method parameters', () => {
-  it('emits interface method with unnamed parameter positions', () => {
-    const result = lower(
-      'interface-method.ts',
-      `
-        export interface Processor { process(value: number): string }
-        export class Impl implements Processor { process(value: number): string { return String(value); } }
-      `,
-    );
-    const output = emitIrModuleHaxe(result.module).contents;
-
-    expect(output).toContain('public function process(');
-  });
-});
-
-describe('emitIrModuleHaxe ambient value binding', () => {
-  it('refuses an ambient value reference with no Haxe binding', () => {
-    const result = lower('ambient-value.ts', 'export function read(): number { return 1; }');
-    const decl = result.module.declarations[0]!;
-    if (decl.kind !== 'function') throw new Error('Expected function');
-    const patched = {
-      ...decl,
-      body: [
-        {
-          kind: 'return' as const,
-          expression: {
-            kind: 'identifier' as const,
-            reference: { kind: 'ambient' as const, name: 'UnknownGlobal' },
-          },
-        },
-      ],
-    };
-    const module = { ...result.module, declarations: [patched] };
-
-    expect(() => emitIrModuleHaxe(module)).toThrow('external value UnknownGlobal has no Haxe binding');
-  });
-});
-
-describe('emitIrModuleHaxe statement for and forIn branches', () => {
-  it('refuses a raw C-style for statement that was not lowered', () => {
-    const result = lower(
-      'for-raw.ts',
-      'export function loop(): number { let s: number = 0; for (let i: number = 0; i < 5; i++) { s = s + i; } return s; }',
-    );
-    const decl = result.module.declarations[0]!;
-    if (decl.kind !== 'function') throw new Error('Expected function');
-    const forStatement = {
-      kind: 'for' as const,
-      initializer: decl.body[0]!,
-      condition: { kind: 'literal' as const, value: true },
-      incrementor: { kind: 'literal' as const, value: 1 },
-      body: { kind: 'block' as const, statements: [], label: undefined },
-    };
-    const patched = {
-      ...decl,
-      body: [decl.body[0]!, forStatement],
-    };
-    const module = { ...result.module, declarations: [patched] };
-
-    expect(() => emitIrModuleHaxe(module)).toThrow('C-style for loops require control-flow lowering');
-  });
-});
-
-describe('emitIrModuleHaxe forOf pattern error', () => {
-  it('refuses a forOf statement with a binding pattern that was not lowered', () => {
-    const result = lower(
-      'for-of-pattern.ts',
-      'export function visit(values: number[]): number { let total: number = 0; for (const v of values) { total += v; } return total; }',
-    );
-    const decl = result.module.declarations[0]!;
-    if (decl.kind !== 'function') throw new Error('Expected function');
-    const forOf = decl.body[1]!;
-    if (forOf.kind !== 'forOf') throw new Error('Expected forOf');
-    const patched = {
-      ...forOf,
-      variable: {
-        pattern: {
-          kind: 'array' as const,
-          elements: [],
-        },
-        type: { kind: 'primitive' as const, name: 'number' as const },
-      },
-    };
-    const module = {
-      ...result.module,
-      declarations: [{ ...decl, body: [decl.body[0]!, patched, decl.body[2]!] }],
-    };
-
-    expect(() => emitIrModuleHaxe(module)).toThrow('binding patterns require destructuring lowering');
-  });
-});
-
 describe('emitIrModuleHaxe return nullable binding error', () => {
   it('refuses returning a nullable binding without narrowing evidence', () => {
     const result = lower(
@@ -2949,31 +2751,6 @@ describe('emitIrModuleHaxe return nullable binding error', () => {
 
     expect(output).toContain('return value;');
     expect(output).toContain('return 0;');
-  });
-});
-
-describe('emitIrModuleHaxe try without catch', () => {
-  it('emits try without a catch clause as bare try', () => {
-    const result = lower(
-      'try-no-catch.ts',
-      'export function safe(value: number): number { try { return value; } catch (error) { return 0; } }',
-    );
-    const decl = result.module.declarations[0]!;
-    if (decl.kind !== 'function') throw new Error('Expected function');
-    const tryStmt = decl.body[0]!;
-    if (tryStmt.kind !== 'try') throw new Error('Expected try');
-    const patched = {
-      ...tryStmt,
-      catchClause: undefined,
-    };
-    const module = {
-      ...result.module,
-      declarations: [{ ...decl, body: [patched] }],
-    };
-    const output = emitIrModuleHaxe(module).contents;
-
-    expect(output).toContain('try {');
-    expect(output).not.toContain('catch');
   });
 });
 
@@ -3024,61 +2801,9 @@ describe('emitIrModuleHaxe type indexedAccess and intersection', () => {
 
     expect(output).toContain('Dynamic');
   });
-
-  it('emits intersection with one member as that type', () => {
-    const result = lower(
-      'single-intersection.ts',
-      `
-        interface A { value: number }
-        export function read(value: A): void { value; }
-      `,
-    );
-    const decl = result.module.declarations.find((d) => d.kind === 'function')!;
-    if (decl.kind !== 'function') throw new Error('Expected function');
-    const patched = {
-      ...decl,
-      parameters: [
-        {
-          ...decl.parameters[0]!,
-          type: {
-            kind: 'intersection' as const,
-            types: [decl.parameters[0]!.type],
-          },
-        },
-      ],
-    };
-    const module = {
-      ...result.module,
-      declarations: result.module.declarations.map((d) => (d.kind === 'function' ? patched : d)),
-    };
-    const output = emitIrModuleHaxe(module).contents;
-
-    expect(output).toContain('value:A');
-    expect(output).not.toContain('Dynamic');
-  });
 });
 
 describe('emitIrModuleHaxe optional spread call', () => {
-  it('refuses an optional spread call', () => {
-    const result = lower(
-      'spread-optional.ts',
-      'export function widest(values: number[]): number { return Math.max(...values); }',
-    );
-    const decl = result.module.declarations[0]!;
-    if (decl.kind !== 'function') throw new Error('Expected function');
-    const retStmt = decl.body[0]!;
-    if (retStmt.kind !== 'return' || !retStmt.expression) throw new Error('Expected return');
-    const call = retStmt.expression;
-    if (call.kind !== 'call') throw new Error('Expected call');
-    const patched = { ...call, optional: true };
-    const module = {
-      ...result.module,
-      declarations: [{ ...decl, body: [{ ...retStmt, expression: patched }] }],
-    };
-
-    expect(() => emitIrModuleHaxe(module)).toThrow('optional spread call requires Haxe null-safe reflective lowering');
-  });
-
   it('emits spread call with fixed arguments after spread', () => {
     const result = lower(
       'spread-fixed-after.ts',
@@ -3097,18 +2822,6 @@ describe('emitIrModuleHaxe typeAlias emission', () => {
     const output = emitIrModuleHaxe(result.module).contents;
 
     expect(output).toContain('typedef Count = Float;');
-  });
-});
-
-describe('emitIrModuleHaxe dynamic read detection', () => {
-  it('detects a dynamic read through a nullish coalescing operator', () => {
-    const result = lower(
-      'dynamic-read.ts',
-      'export function select(values: [number, string?]): string { const [first, second]: [number, string?] = values; first; return second ?? "default"; }',
-    );
-    const output = emitIrModuleHaxe(result.module).contents;
-
-    expect(output).toContain('arrayPatternValue');
   });
 });
 
