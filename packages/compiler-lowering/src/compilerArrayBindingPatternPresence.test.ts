@@ -108,6 +108,33 @@ describe('hasIrModuleArrayBindingPattern', () => {
     expect(hasIrModuleArrayBindingPattern(expression)).toBe(true);
     expect(hasIrModuleArrayBindingPattern(normalized)).toBe(false);
   });
+
+  it('walks object pattern binding and rest properties to find nested array patterns', () => {
+    const bindingThenArray = lower(
+      'binding-then-array.ts',
+      `
+        interface Source { name: string; items: [number] }
+        export function read(source: Source): number {
+          const { name, items: [first] }: Source = source;
+          name;
+          return first;
+        }
+      `,
+    );
+    const noRest = lower(
+      'no-rest.ts',
+      `
+        interface Source { name: string; items: [number] }
+        export function read(source: Source): number {
+          const { items: [first] }: Source = source;
+          return first;
+        }
+      `,
+    );
+
+    expect(hasIrModuleArrayBindingPattern(bindingThenArray)).toBe(true);
+    expect(hasIrModuleArrayBindingPattern(noRest)).toBe(true);
+  });
 });
 
 function lower(file: string, source: string): IrModule {

@@ -778,6 +778,54 @@ describe('createCompilerLoweringPassSwitchFallthrough', () => {
     expect(machines).toHaveLength(2);
     expect(machines.every((machine) => machine.statements.at(-1)?.kind === 'if')).toBe(true);
   });
+
+  it('checks binding introductions through nested switch default cases', () => {
+    const pass = createCompilerLoweringPassSwitchFallthrough();
+    const output = lowerIrModuleWithCompilerPasses(
+      lower(
+        'nested-default.ts',
+        `
+          export function nested(mode: number, sub: number): number {
+            let result = 0;
+            switch (mode) {
+              case 0:
+                switch (sub) {
+                  case 1: result = 10; break;
+                  default: result = 20; break;
+                }
+              case 1: result += 30; break;
+            }
+            return result;
+          }
+        `,
+      ),
+      [createCompilerLoweringPassBindingPattern(), createCompilerLoweringPassVariableHoisting(), pass],
+    );
+
+    expect(pass.verifyIrModule(output)).toMatchObject({ kind: 'valid' });
+  });
+
+  it('lowers fallthrough in default export function expressions', () => {
+    const pass = createCompilerLoweringPassSwitchFallthrough();
+    const output = lowerIrModuleWithCompilerPasses(
+      lower(
+        'default-export.ts',
+        `
+          export default (mode: number): number => {
+            switch (mode) {
+              case 0:
+              case 1: return 1;
+              case 2: return 2;
+            }
+            return 0;
+          };
+        `,
+      ),
+      [createCompilerLoweringPassBindingPattern(), createCompilerLoweringPassVariableHoisting(), pass],
+    );
+
+    expect(pass.verifyIrModule(output)).toMatchObject({ kind: 'valid' });
+  });
 });
 
 function getFunctionSwitch(module: Readonly<IrModule>): Extract<IrStatement, { kind: 'switch' }> {
