@@ -10597,3 +10597,268 @@ describe('emitIrModuleRust null literal in return', () => {
     expect(output).toContain('Option<f64>');
   });
 });
+
+describe('emitIrModuleRust mutable module variable', () => {
+  it('refuses a mutable module variable requiring synchronization', () => {
+    expect(() => emitIrModuleRust(lower('mut-module-var.ts', `export let counter: number = 0;`).module)).toThrow(
+      /synchronization/u,
+    );
+  });
+});
+
+describe('emitIrModuleRust module variable without initializer', () => {
+  it('refuses a module variable without an initializer', () => {
+    expect(() =>
+      emitIrModuleRust(lower('no-init-var.ts', `export const value: number = undefined as unknown as number;`).module),
+    ).toThrow();
+  });
+});
+
+describe('emitIrModuleRust enum discriminant domain', () => {
+  it('refuses an enum with a fractional discriminant', () => {
+    expect(() => emitIrModuleRust(lower('frac-enum.ts', `export enum E { A = 1.5 }`).module)).toThrow(
+      /discriminant domain/u,
+    );
+  });
+
+  it('refuses an enum with a discriminant outside i32 range', () => {
+    expect(() => emitIrModuleRust(lower('big-enum.ts', `export enum E { A = 3000000000 }`).module)).toThrow(
+      /i32 range/u,
+    );
+  });
+});
+
+describe('emitIrModuleRust intersection type', () => {
+  it('refuses an intersection type requiring record lowering', () => {
+    expect(() =>
+      emitIrModuleRust(
+        lower(
+          'intersect.ts',
+          `interface A { a: number }
+           interface B { b: string }
+           export function use(val: A & B): A & B { return val; }`,
+        ).module,
+      ),
+    ).toThrow(/intersection/u);
+  });
+});
+
+describe('emitIrModuleRust synchronous try-finally', () => {
+  it('refuses synchronous try/finally without catch', () => {
+    expect(() =>
+      emitIrModuleRust(
+        lower(
+          'try-finally.ts',
+          `export function cleanup(): void {
+             let x: number = 0;
+             try { x = 1; } finally { x = 2; }
+           }`,
+        ).module,
+      ),
+    ).toThrow(/catch_unwind/u);
+  });
+});
+
+describe('emitIrModuleRust bitwise compound assignment', () => {
+  it('emits bitwise AND assignment through i32 cast', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'bitwise-and-assign.ts',
+        `export function mask(x: number): number { let v: number = x; v &= 0xFF; return v; }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('as i32');
+    expect(output).toContain('&');
+  });
+
+  it('emits left shift assignment through i32 cast', () => {
+    const output = emitIrModuleRust(
+      lower('shl-assign.ts', `export function shift(x: number): number { let v: number = x; v <<= 2; return v; }`)
+        .module,
+    ).contents;
+    expect(output).toContain('as i32');
+    expect(output).toContain('<<');
+  });
+
+  it('emits right shift assignment through i32 cast', () => {
+    const output = emitIrModuleRust(
+      lower('shr-assign.ts', `export function shift(x: number): number { let v: number = x; v >>= 2; return v; }`)
+        .module,
+    ).contents;
+    expect(output).toContain('as i32');
+    expect(output).toContain('>>');
+  });
+
+  it('emits XOR assignment through i32 cast', () => {
+    const output = emitIrModuleRust(
+      lower('xor-assign.ts', `export function flip(x: number): number { let v: number = x; v ^= 0xFF; return v; }`)
+        .module,
+    ).contents;
+    expect(output).toContain('as i32');
+    expect(output).toContain('^');
+  });
+
+  it('emits OR assignment through i32 cast', () => {
+    const output = emitIrModuleRust(
+      lower('or-assign.ts', `export function combine(x: number): number { let v: number = x; v |= 0x80; return v; }`)
+        .module,
+    ).contents;
+    expect(output).toContain('as i32');
+    expect(output).toContain('|');
+  });
+});
+
+describe('emitIrModuleRust exponentiation assignment', () => {
+  it('emits **= as f64::powf assignment', () => {
+    const output = emitIrModuleRust(
+      lower('pow-assign.ts', `export function square(x: number): number { let v: number = x; v **= 2; return v; }`)
+        .module,
+    ).contents;
+    expect(output).toContain('f64::powf');
+  });
+});
+
+describe('emitIrModuleRust unsigned right shift assignment', () => {
+  it('emits >>>= through u32 cast', () => {
+    const output = emitIrModuleRust(
+      lower('ushr-assign.ts', `export function shift(x: number): number { let v: number = x; v >>>= 2; return v; }`)
+        .module,
+    ).contents;
+    expect(output).toContain('as u32');
+  });
+});
+
+describe('emitIrModuleRust binary exponentiation', () => {
+  it('emits ** as f64::powf', () => {
+    const output = emitIrModuleRust(
+      lower('pow.ts', `export function square(x: number): number { return x ** 2; }`).module,
+    ).contents;
+    expect(output).toContain('f64::powf');
+  });
+});
+
+describe('emitIrModuleRust unsigned right shift', () => {
+  it('emits >>> through u32 cast', () => {
+    const output = emitIrModuleRust(
+      lower('ushr.ts', `export function shift(x: number): number { return x >>> 2; }`).module,
+    ).contents;
+    expect(output).toContain('as u32');
+  });
+});
+
+describe('emitIrModuleRust bitwise binary operators', () => {
+  it('emits & through i32 cast', () => {
+    const output = emitIrModuleRust(
+      lower('bitwise-and.ts', `export function mask(a: number, b: number): number { return a & b; }`).module,
+    ).contents;
+    expect(output).toContain('as i32');
+  });
+
+  it('emits | through i32 cast', () => {
+    const output = emitIrModuleRust(
+      lower('bitwise-or.ts', `export function combine(a: number, b: number): number { return a | b; }`).module,
+    ).contents;
+    expect(output).toContain('as i32');
+  });
+
+  it('emits ^ through i32 cast', () => {
+    const output = emitIrModuleRust(
+      lower('bitwise-xor.ts', `export function flip(a: number, b: number): number { return a ^ b; }`).module,
+    ).contents;
+    expect(output).toContain('as i32');
+  });
+
+  it('emits << through i32 cast', () => {
+    const output = emitIrModuleRust(
+      lower('shl.ts', `export function shift(a: number, b: number): number { return a << b; }`).module,
+    ).contents;
+    expect(output).toContain('as i32');
+  });
+
+  it('emits >> through i32 cast', () => {
+    const output = emitIrModuleRust(
+      lower('shr.ts', `export function shift(a: number, b: number): number { return a >> b; }`).module,
+    ).contents;
+    expect(output).toContain('as i32');
+  });
+});
+
+describe('emitIrModuleRust assignment operator refusal', () => {
+  it('refuses &&= requiring semantic lowering', () => {
+    expect(() =>
+      emitIrModuleRust(
+        lower('and-assign.ts', `export function use(x: boolean): boolean { let v: boolean = x; v &&= true; return v; }`)
+          .module,
+      ),
+    ).toThrow(/semantic lowering/u);
+  });
+
+  it('refuses ??= requiring semantic lowering', () => {
+    expect(() =>
+      emitIrModuleRust(
+        lower(
+          'nullish-assign.ts',
+          `export function use(x: number | null): number | null { let v: number | null = x; v ??= 0; return v; }`,
+        ).module,
+      ),
+    ).toThrow(/semantic lowering/u);
+  });
+
+  it('refuses ||= requiring semantic lowering', () => {
+    expect(() =>
+      emitIrModuleRust(
+        lower(
+          'or-logical-assign.ts',
+          `export function use(x: boolean): boolean { let v: boolean = x; v ||= false; return v; }`,
+        ).module,
+      ),
+    ).toThrow(/semantic lowering/u);
+  });
+});
+
+describe('emitIrModuleRust string concatenation assignment', () => {
+  it('emits += on strings as push_str', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'str-push.ts',
+        `export function build(base: string): string { let s: string = base; s += " world"; return s; }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('push_str');
+  });
+});
+
+describe('emitIrModuleRust unary plus on number', () => {
+  it('emits unary + on number as identity', () => {
+    const output = emitIrModuleRust(
+      lower('unary-plus.ts', `export function identity(x: number): number { return +x; }`).module,
+    ).contents;
+    expect(output).not.toContain('++');
+    expect(output).toContain('fn identity');
+  });
+});
+
+describe('emitIrModuleRust undefined default expression', () => {
+  it('emits ?? with unwrap_or_else for nullable binding', () => {
+    const output = emitIrModuleRust(
+      lower('undef-default.ts', `export function fallback(x: number | undefined): number { return x ?? 0; }`).module,
+    ).contents;
+    expect(output).toContain('unwrap_or_else');
+  });
+});
+
+describe('emitIrModuleRust null equality check', () => {
+  it('emits null comparison as is_none', () => {
+    const output = emitIrModuleRust(
+      lower('null-check.ts', `export function isNull(x: number | null): boolean { return x === null; }`).module,
+    ).contents;
+    expect(output).toContain('is_none');
+  });
+
+  it('emits null inequality as is_some', () => {
+    const output = emitIrModuleRust(
+      lower('not-null-check.ts', `export function isPresent(x: number | null): boolean { return x !== null; }`).module,
+    ).contents;
+    expect(output).toContain('is_some');
+  });
+});
