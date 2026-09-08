@@ -6414,4 +6414,369 @@ describe('emitIrModuleRust', () => {
     ).contents;
     expect(output).toContain('bool');
   });
+
+  it('emits call with omitted optional argument as None', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'call-omitted.ts',
+        `export function greet(name?: string): string {
+          if (name !== undefined) { return name; }
+          return "hello";
+        }
+        export function run(): string { return greet(); }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('greet(None)');
+  });
+
+  it('emits call with explicit undefined as None', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'call-undefined.ts',
+        `export function greet(name?: string): string {
+          if (name !== undefined) { return name; }
+          return "hello";
+        }
+        export function run(): string { return greet(undefined); }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('None');
+  });
+
+  it('emits call with provided value to optional parameter as Some', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'call-some.ts',
+        `export function greet(name?: string): string {
+          if (name !== undefined) { return name; }
+          return "hello";
+        }
+        export function run(): string { return greet("world"); }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('Some(');
+  });
+
+  it('emits call with default parameter value providing argument', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'call-default.ts',
+        `export function add(a: number, b: number = 0): number { return a + b; }
+         export function run(): number { return add(1, 2); }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('Some(');
+  });
+
+  it('emits interface trait with data property accessor', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'trait-data.ts',
+        `export interface Named { readonly name: string; }
+         export class Person implements Named {
+           name: string;
+           constructor() { this.name = ""; }
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('trait Named');
+    expect(output).toContain('fn name(&self) -> String');
+  });
+
+  it('emits interface trait with method signature', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'trait-method.ts',
+        `export interface Formatter { format(value: number): string; }
+         export class NumFormatter implements Formatter {
+           format(value: number): string { return "num"; }
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('trait Formatter');
+    expect(output).toContain('fn format(&self');
+  });
+
+  it('emits renamed re-export with as alias', () => {
+    const output = emitIrModuleRust(
+      lowerPackage('@flighthq/math', 'rename.ts', `export { add as sum } from './helpers.js';`).module,
+    ).contents;
+    expect(output).toContain('pub use');
+    expect(output).toContain('as');
+  });
+
+  it('emits type-only re-export with type name casing', () => {
+    const output = emitIrModuleRust(
+      lowerPackage('@flighthq/math', 'type-reexport.ts', `export type { Vector } from './types.js';`).module,
+    ).contents;
+    expect(output).toContain('pub use');
+  });
+
+  it('emits composition base field access through self.base', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'comp-access.ts',
+        `export class Base {
+          value: number;
+          constructor(v: number) { this.value = v; }
+        }
+        export class Child extends Base {
+          extra: string;
+          constructor(v: number) { super(v); this.extra = ""; }
+          getValue(): number { return this.value; }
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('self.base');
+  });
+
+  it('emits abstract field accessor in subclass trait impl', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'abstract-field-impl.ts',
+        `export abstract class Labeled {
+          abstract readonly label: string;
+          describe(): string { return this.label; }
+        }
+        export class Item extends Labeled {
+          label: string;
+          constructor() { super(); this.label = "item"; }
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('fn label(&self)');
+    expect(output).toContain('self.label');
+  });
+
+  it('emits narrowed nullable binding property access with borrow', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'narrow-borrow.ts',
+        `export interface Info { value: number }
+         export function readValue(x: Info | undefined): number {
+           if (x !== undefined) { return x.value; }
+           return 0;
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('unwrap');
+  });
+
+  it('emits class implementing interface with trait methods in impl block', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'impl-trait-method.ts',
+        `export interface Runnable { run(): void; }
+         export class Task implements Runnable {
+           run(): void { }
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('impl Runnable for');
+    expect(output).toContain('fn run(');
+  });
+
+  it('emits constructor reference for new expression', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'new-class.ts',
+        `export class Point {
+          x: number;
+          y: number;
+          constructor(x: number, y: number) { this.x = x; this.y = y; }
+        }
+        export function origin(): Point { return new Point(0, 0); }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('Point::new(');
+  });
+
+  it('emits enum member access as variant path', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'enum-access.ts',
+        `export enum Direction { Up = 0, Down = 1 }
+         export function isUp(d: Direction): boolean { return d === Direction.Up; }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('Direction::Up');
+  });
+
+  it('emits static method as associated function', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'static-method.ts',
+        `export class Factory {
+          value: number;
+          constructor() { this.value = 0; }
+          static create(): Factory { return new Factory(); }
+        }
+        export function make(): Factory { return Factory.create(); }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('Factory::create()');
+  });
+
+  it('emits counting method as cast to f64', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'counting.ts',
+        `export function length(items: string[]): number {
+          return items.length;
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('.len()');
+    expect(output).toContain('as f64');
+  });
+
+  it('emits string length as counting method', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'str-len.ts',
+        `export function len(s: string): number {
+          return s.length;
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('.len()');
+  });
+
+  it('emits tuple element access with positional index', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'tuple-access.ts',
+        `export function first(pair: [number, string]): number {
+          return pair[0];
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('.0');
+  });
+
+  it('emits string literal union type alias as String type', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'string-union.ts',
+        `export type Color = "red" | "blue" | "green";
+         export function paint(c: Color): string { return c; }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('type Color = String');
+  });
+
+  it('emits type alias for union of named records as tagged union', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'tagged-union-alias.ts',
+        `export interface Dog { breed: string; name: string }
+         export interface Cat { color: string; name: string }
+         export type Pet = Dog | Cat;
+         export function petName(p: Pet): string { return p.name; }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('enum Pet');
+    expect(output).toContain('fn name(');
+  });
+
+  it('emits object type as anonymous record struct', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'anon-object.ts',
+        `export function make(): { x: number; y: number } {
+          return { x: 0, y: 0 };
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('struct');
+    expect(output).toContain('pub x: f64');
+  });
+
+  it('emits moved binding with clone', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'moved-binding.ts',
+        `export function dup(items: string[]): string[][] {
+          return [items, items];
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('.clone()');
+  });
+
+  it('emits deferred binding initialized in one branch', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'deferred-init.ts',
+        `export function pick(flag: boolean): number {
+          let result: number;
+          result = flag ? 1 : 2;
+          return result;
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('let result');
+  });
+
+  it('emits referent-mutated parameter as &mut borrow', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'mut-param.ts',
+        `export function increment(arr: number[]): void {
+          arr.push(1);
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('&mut');
+  });
+
+  it('emits Readonly<T> unwrap for named type argument', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'readonly-named.ts',
+        `export interface Point { x: number; y: number }
+         export function copy(p: Readonly<Point>): Point {
+           return { x: p.x, y: p.y };
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('pub fn copy(p: Point) -> Point');
+  });
+
+  it('emits Required<T> unwrap', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'required.ts',
+        `export interface Opts { a?: number }
+         export function defaults(o: Required<Opts>): number {
+           return o.a;
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('pub fn defaults(o: Opts) -> f64');
+  });
+
+  it('emits scoped import from relative specifier', () => {
+    const output = emitIrModuleRust(
+      lowerPackage(
+        '@flighthq/math',
+        'consumer.ts',
+        `import { add } from './helpers.js';
+         export function sum(a: number, b: number): number { return add(a, b); }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('use crate::');
+    expect(output).toContain('add');
+  });
+
+  it('emits scoped import from package specifier', () => {
+    const result = lowerPackage(
+      '@flighthq/core',
+      'use.ts',
+      `import { compute } from '@flighthq/math';
+       export function run(x: number): number { return compute(x); }`,
+    );
+    const output = emitIrModuleRust(result.module).contents;
+    expect(output).toContain('use flighthq_math::');
+  });
 });
