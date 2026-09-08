@@ -471,6 +471,305 @@ describe('createCompilerLoweringPassVariableHoisting', () => {
     );
   });
 
+  it('lowers diverse expression kinds in a function body with var hoisting', () => {
+    const output = lowerIrModuleWithCompilerPasses(
+      lower(
+        'expression-variety.ts',
+        `
+          export async function diverse(
+            items: number[],
+            obj: { x: number },
+            fn: (n: number) => number,
+            task: Promise<number>,
+          ): Promise<number> {
+            var value: number = 1;
+            const awaited = await task;
+            const casted = value as number;
+            const arr = [value, ...items];
+            const result = fn(value);
+            const instance = new Error(String(value));
+            const ternary = value > 0 ? value : 0;
+            const indexed = items[value];
+            const prop = obj.x;
+            const key = 'z';
+            const msg = \`count: \${value}\`;
+            const neg = -value;
+            const composed = { y: value, [key]: 1, ...obj };
+            const pattern = /test/;
+            value = result + 1;
+            return value;
+          }
+        `,
+      ),
+      [createCompilerLoweringPassBindingPattern(), createCompilerLoweringPassVariableHoisting()],
+    );
+    const body = getFunctionBody(output, 'diverse');
+
+    expect(getVariableStatement(body[0]).declarations).toMatchObject([
+      { binding: { name: 'value', scope: 'function' } },
+    ]);
+    expect(body.some((statement) => statement.kind === 'return')).toBe(true);
+    expect(createCompilerLoweringPassVariableHoisting().verifyIrModule(output)).toEqual({ kind: 'valid' });
+  });
+
+  it('lowers var in class constructors, methods, field initializers, and default parameters', () => {
+    const output = lowerIrModuleWithCompilerPasses(
+      lower(
+        'class-hoisting.ts',
+        `
+          export class Processor {
+            action = (value: number): number => {
+              var local: number = value;
+              return local;
+            };
+            constructor(public label: string) {
+              var init: number = label.length;
+              init;
+            }
+            process(value: number, limit = 10): number {
+              var result: number = value + limit;
+              return result;
+            }
+          }
+        `,
+      ),
+      [createCompilerLoweringPassBindingPattern(), createCompilerLoweringPassVariableHoisting()],
+    );
+    const declaration = output.declarations[0];
+    if (declaration?.kind !== 'class') throw new Error('Expected class');
+
+    expect(declaration.classConstructor?.body[0]).toMatchObject({ declarations: [{ binding: { name: 'init' } }] });
+    const method = declaration.methods[0];
+    expect(method?.body[0]).toMatchObject({ declarations: [{ binding: { name: 'result' } }] });
+    expect(createCompilerLoweringPassVariableHoisting().verifyIrModule(output)).toEqual({ kind: 'valid' });
+  });
+
+  it('lowers var through default exports, diverse for-loop initializers, and try variants', () => {
+    const output = lowerIrModuleWithCompilerPasses(
+      lower(
+        'loops-and-try.ts',
+        `
+          export default (): number => {
+            var value: number = 1;
+            return value;
+          };
+          export function loops(): number {
+            var total: number = 0;
+            while (total < 10) { total += 1; }
+            do { total -= 1; } while (total > 0);
+            for (total += 1; total < 20; total++) { break; }
+            for (let i = 0; i < 5; i++) { total += i; }
+            for (;;) { total = 1; break; }
+            try { total += 1; } finally { total += 2; }
+            try { total += 1; } catch { total = 0; }
+            return total;
+          }
+        `,
+      ),
+      [createCompilerLoweringPassBindingPattern(), createCompilerLoweringPassVariableHoisting()],
+    );
+    const body = getFunctionBody(output, 'loops');
+
+    expect(getVariableStatement(body[0]).declarations).toMatchObject([{ binding: { name: 'total' } }]);
+    expect(body.some((statement) => statement.kind === 'while')).toBe(true);
+    expect(body.some((statement) => statement.kind === 'do')).toBe(true);
+    expect(body.filter((statement) => statement.kind === 'for')).toHaveLength(3);
+    expect(body.filter((statement) => statement.kind === 'try')).toHaveLength(2);
+    expect(createCompilerLoweringPassVariableHoisting().verifyIrModule(output)).toEqual({ kind: 'valid' });
+  });
+
+  it('maps diverse variable types to their operator value domains through hoisted assignments', () => {
+    const output = lowerIrModuleWithCompilerPasses(
+      lower(
+        'type-domains.ts',
+        `
+          export function typeDomains(
+            fn: () => void,
+            arr: number[],
+            pair: [number, string],
+            obj: { x: number },
+            namedObj: Error,
+          ): void {
+            var boolVal: boolean = true;
+            var strVal: string = 'hello';
+            var numVal: number = 1;
+            var nullVal: null = null;
+            var undefVal: undefined = undefined;
+            var voidVal: void = undefined;
+            var literalBool: true = true;
+            var literalNum: 42 = 42;
+            var literalStr: 'hi' = 'hi' as 'hi';
+            var unionSame: 1 | 2 = 1;
+            var unionMixed: number | string = 1;
+            var fnVal: () => void = fn;
+            var arrVal: number[] = arr;
+            var tupleVal: [number, string] = pair;
+            var objVal: { x: number } = obj;
+            var namedVal: Error = namedObj;
+            boolVal; strVal; numVal; nullVal; undefVal; voidVal;
+            literalBool; literalNum; literalStr;
+            unionSame; unionMixed; fnVal; arrVal; tupleVal; objVal; namedVal;
+          }
+        `,
+      ),
+      [createCompilerLoweringPassBindingPattern(), createCompilerLoweringPassVariableHoisting()],
+    );
+    const body = getFunctionBody(output, 'typeDomains');
+    const hoisted = getVariableStatement(body[0]).declarations.map(getNamedVariable);
+
+    expect(hoisted.map((variable) => variable.binding.name)).toEqual([
+      'boolVal',
+      'strVal',
+      'numVal',
+      'nullVal',
+      'undefVal',
+      'voidVal',
+      'literalBool',
+      'literalNum',
+      'literalStr',
+      'unionSame',
+      'unionMixed',
+      'fnVal',
+      'arrVal',
+      'tupleVal',
+      'objVal',
+      'namedVal',
+    ]);
+    expect(hoisted.filter((variable) => variable.initialValue === 'undefined').map((v) => v.binding.name)).toEqual([
+      'undefVal',
+      'voidVal',
+    ]);
+    expect(createCompilerLoweringPassVariableHoisting().verifyIrModule(output)).toEqual({ kind: 'valid' });
+  });
+
+  it('collapses multi-declaration var in a single-statement body into a block', () => {
+    const output = lowerIrModuleWithCompilerPasses(
+      lower(
+        'collapse-hoisting.ts',
+        `
+          export function collapse(): number {
+            var x: number = 1, y: number = 2;
+            do var a: number = 3, b: number = 4; while (false);
+            return x + y;
+          }
+        `,
+      ),
+      [createCompilerLoweringPassBindingPattern(), createCompilerLoweringPassVariableHoisting()],
+    );
+    const body = getFunctionBody(output, 'collapse');
+
+    expect(
+      getVariableStatement(body[0])
+        .declarations.map(getNamedVariable)
+        .map((v) => v.binding.name),
+    ).toEqual(['x', 'y', 'a', 'b']);
+    const doLoop = body.find((statement) => statement.kind === 'do');
+    expect(doLoop?.kind === 'do' && doLoop.body.kind).toBe('block');
+    expect(createCompilerLoweringPassVariableHoisting().verifyIrModule(output)).toEqual({ kind: 'valid' });
+  });
+
+  it('passes non-default exports unchanged while lowering declarations with var', () => {
+    const output = lowerIrModuleWithCompilerPasses(
+      lower(
+        'named-export-hoisting.ts',
+        `
+          function helper(): number { return 1; }
+          export { helper };
+          export function main(): number {
+            var value: number = helper();
+            return value;
+          }
+        `,
+      ),
+      [createCompilerLoweringPassBindingPattern(), createCompilerLoweringPassVariableHoisting()],
+    );
+
+    expect(output.exports.some((exported) => exported.kind !== 'default')).toBe(true);
+    expect(createCompilerLoweringPassVariableHoisting().verifyIrModule(output)).toEqual({ kind: 'valid' });
+  });
+
+  it('refuses immutable function-scoped variables and patterns in iteration or variable statements', () => {
+    const module = lower(
+      'defensive-hoisting.ts',
+      'export function read(): number { var value: number = 1; return value; }',
+    );
+    const pass = createCompilerLoweringPassVariableHoisting();
+    const fn = module.declarations[0];
+    if (fn?.kind !== 'function') throw new Error('Expected function');
+    const varStatement = fn.body[0];
+    if (varStatement?.kind !== 'variable') throw new Error('Expected variable');
+    const variable = varStatement.declarations[0];
+    if (!variable || 'pattern' in variable) throw new Error('Expected named variable');
+
+    const immutable = structuredClone(module);
+    const immutableFn = immutable.declarations[0];
+    if (immutableFn?.kind !== 'function') throw new Error('Expected function');
+    const immutableVar = immutableFn.body[0];
+    if (immutableVar?.kind !== 'variable') throw new Error('Expected variable');
+    (immutableVar.declarations[0] as Record<string, unknown>).mutable = false;
+    expectLoweringFailure(() => pass.lowerIrModule(immutable), 'must be mutable');
+
+    const patternVar = structuredClone(module);
+    const patternFn = patternVar.declarations[0];
+    if (patternFn?.kind !== 'function') throw new Error('Expected function');
+    const patternStatement = patternFn.body[0];
+    if (patternStatement?.kind !== 'variable') throw new Error('Expected variable');
+    (patternStatement.declarations[0] as Record<string, unknown>).pattern = {
+      binding: variable.binding,
+      kind: 'binding',
+    };
+    expectLoweringFailure(() => pass.lowerIrModule(patternVar), 'requires prior binding-pattern normalization');
+
+    const forOfModule = lower(
+      'defensive-for-of.ts',
+      'export function read(items: number[]): number { for (var value of items) { value; } return 0; }',
+    );
+    const forOfClone = structuredClone(forOfModule);
+    const forOfFn = forOfClone.declarations[0];
+    if (forOfFn?.kind !== 'function') throw new Error('Expected function');
+    const forOfLoop = forOfFn.body[0];
+    if (forOfLoop?.kind !== 'forOf') throw new Error('Expected for-of');
+    (forOfLoop.variable as Record<string, unknown>).pattern = {
+      binding: (forOfLoop.variable as { binding: unknown }).binding,
+      kind: 'binding',
+    };
+    expectLoweringFailure(() => pass.lowerIrModule(forOfClone), 'requires prior binding-pattern normalization');
+
+    const forOfInitModule = lower(
+      'defensive-for-of-init.ts',
+      'export function read(items: number[]): number { for (var value of items) { value; } return 0; }',
+    );
+    const forOfInitClone = structuredClone(forOfInitModule);
+    const initFn = forOfInitClone.declarations[0];
+    if (initFn?.kind !== 'function') throw new Error('Expected function');
+    const initLoop = initFn.body[0];
+    if (initLoop?.kind !== 'forOf') throw new Error('Expected for-of');
+    (initLoop.variable as Record<string, unknown>).initializer = { kind: 'literal', value: 0 };
+    expectLoweringFailure(() => pass.lowerIrModule(forOfInitClone), 'cannot have an initializer');
+  });
+
+  it('composes with object binding-pattern rest to lower objectRest expressions in a var body', () => {
+    const output = lowerIrModuleWithCompilerPasses(
+      lower(
+        'object-rest-hoisting.ts',
+        `
+          interface Shape { x: number; y: string; z: boolean }
+          export function objectSplit(input: Shape): number {
+            var total: number = 0;
+            const { x, ...rest } = input;
+            total = x;
+            return total;
+          }
+        `,
+      ),
+      [createCompilerLoweringPassBindingPattern(), createCompilerLoweringPassVariableHoisting()],
+    );
+    const body = getFunctionBody(output, 'objectSplit');
+
+    expect(getVariableStatement(body[0]).declarations).toMatchObject([{ binding: { name: 'total' } }]);
+    expect(createCompilerLoweringPassVariableHoisting().verifyIrModule(output)).toEqual({ kind: 'valid' });
+  });
+
   it('elects observable undefined entry state only for an undefined-bearing variable domain', () => {
     const output = lowerIrModuleWithCompilerPasses(
       lower(
