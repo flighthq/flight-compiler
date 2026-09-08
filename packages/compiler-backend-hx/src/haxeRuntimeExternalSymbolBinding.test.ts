@@ -8,7 +8,7 @@ describe('createCompilerRuntimeExternalSymbolBindingPlanHaxe', () => {
     const plan = createCompilerRuntimeExternalSymbolBindingPlanHaxe();
 
     expect(plan.contract).toBe('flight-runtime-contract/2');
-    expect(plan.bindings).toHaveLength(32);
+    expect(plan.bindings).toHaveLength(34);
     expect(plan.bindings.filter(({ externalSymbol }) => externalSymbol.sourceName === 'Promise')).toEqual([
       {
         capability: 'task',
@@ -47,7 +47,7 @@ describe('createCompilerRuntimeExternalSymbolBindingPlanHaxe', () => {
     const second = createCompilerRuntimeExternalSymbolBindingPlanHaxe();
 
     (first.bindings as unknown[]).pop();
-    expect(second.bindings).toHaveLength(32);
+    expect(second.bindings).toHaveLength(34);
   });
 });
 
@@ -85,6 +85,8 @@ describe('getCompilerRuntimeExternalSymbolTargetHaxe', () => {
     ['Uint8Array', 'value', 'flighthq._internal._UInt8Array'],
     ['Uint8ClampedArray', 'type', 'flighthq._internal._UInt8ClampedArray'],
     ['Uint8ClampedArray', 'value', 'flighthq._internal._UInt8ClampedArray'],
+    ['WeakMap', 'type', 'flighthq._internal._WeakMap'],
+    ['WeakMap', 'value', 'flighthq._internal._WeakMap'],
   ] as const)('maps %s in %s space to %s', (sourceName, space, targetName) => {
     expect(getCompilerRuntimeExternalSymbolTargetHaxe(sourceName, space)).toBe(targetName);
   });

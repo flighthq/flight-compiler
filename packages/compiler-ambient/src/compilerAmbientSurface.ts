@@ -235,6 +235,18 @@ interface SetConstructor {
 }
 declare var Set: SetConstructor;
 
+interface WeakMap<K extends object, V> {
+  delete(key: K): boolean;
+  get(key: K): V | undefined;
+  has(key: K): boolean;
+  set(key: K, value: V): WeakMap<K, V>;
+}
+
+interface WeakMapConstructor {
+  new <K extends object, V>(entries?: readonly (readonly [K, V])[]): WeakMap<K, V>;
+}
+declare var WeakMap: WeakMapConstructor;
+
 interface Date {
   getDate(): number;
   getDay(): number;

@@ -130,4 +130,6 @@ const rustRuntimeExternalSymbolBindings = [
   { kind: 'native', sourceName: 'Uint8Array', space: 'value', targetName: 'Vec<u8>' },
   { kind: 'native', sourceName: 'Uint8ClampedArray', space: 'type', targetName: 'Vec<u8>' },
   { kind: 'native', sourceName: 'Uint8ClampedArray', space: 'value', targetName: 'Vec<u8>' },
+  { kind: 'native', sourceName: 'WeakMap', space: 'type', targetName: 'std::collections::HashMap' },
+  { kind: 'native', sourceName: 'WeakMap', space: 'value', targetName: 'std::collections::HashMap' },
 ] as const satisfies readonly RustRuntimeExternalSymbolBinding[];

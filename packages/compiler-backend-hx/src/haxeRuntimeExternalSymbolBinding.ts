@@ -192,4 +192,6 @@ const haxeRuntimeExternalSymbolBindings = [
     space: 'value',
     targetName: '_UInt8ClampedArray',
   },
+  { capability: 'weak-map', kind: 'runtime', sourceName: 'WeakMap', space: 'type', targetName: '_WeakMap' },
+  { capability: 'weak-map', kind: 'runtime', sourceName: 'WeakMap', space: 'value', targetName: '_WeakMap' },
 ] as const satisfies readonly HaxeRuntimeExternalSymbolBinding[];

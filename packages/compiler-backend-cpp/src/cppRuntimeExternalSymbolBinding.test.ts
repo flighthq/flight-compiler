@@ -10,7 +10,7 @@ describe('createCompilerRuntimeExternalSymbolBindingPlanCpp', () => {
     const plan = createCompilerRuntimeExternalSymbolBindingPlanCpp();
 
     expect(plan.contract).toBe('flight-runtime-contract/2');
-    expect(plan.bindings).toHaveLength(32);
+    expect(plan.bindings).toHaveLength(34);
     expect(plan.bindings.filter(({ externalSymbol }) => externalSymbol.sourceName === 'Promise')).toEqual([
       {
         capability: 'task',
@@ -41,7 +41,7 @@ describe('createCompilerRuntimeExternalSymbolBindingPlanCpp', () => {
     const second = createCompilerRuntimeExternalSymbolBindingPlanCpp();
 
     (first.bindings as unknown[]).pop();
-    expect(second.bindings).toHaveLength(32);
+    expect(second.bindings).toHaveLength(34);
   });
 
   it('elects semantic containers and strings as flight-cpp runtime capabilities', () => {
@@ -90,6 +90,8 @@ describe('getCompilerRuntimeExternalSymbolTargetCpp', () => {
     ['Set', 'type', 'std::unordered_set'],
     ['Set', 'value', 'std::unordered_set'],
     ['Uint8Array', 'type', 'std::vector<uint8_t>'],
+    ['WeakMap', 'type', 'std::unordered_map'],
+    ['WeakMap', 'value', 'std::unordered_map'],
   ] as const)('maps %s in %s space to %s', (sourceName, space, targetName) => {
     expect(getCompilerRuntimeExternalSymbolTargetCpp(sourceName, space)).toBe(targetName);
   });
@@ -108,6 +110,7 @@ describe('getCompilerRuntimeExternalSymbolTargetCpp', () => {
     ['Set', 'value', 'flight::Set'],
     ['String', 'type', 'flight::String'],
     ['Uint8ClampedArray', 'value', 'flight::Uint8ClampedArray'],
+    ['WeakMap', 'type', 'flight::WeakMap'],
   ] as const)('maps %s in %s space to the semantic runtime target %s', (sourceName, space, targetName) => {
     expect(getCompilerRuntimeExternalSymbolTargetCpp(sourceName, space, 'flight-cpp')).toBe(targetName);
   });

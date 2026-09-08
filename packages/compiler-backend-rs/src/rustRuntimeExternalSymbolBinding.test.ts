@@ -10,7 +10,7 @@ describe('createCompilerRuntimeExternalSymbolBindingPlanRust', () => {
     const plan = createCompilerRuntimeExternalSymbolBindingPlanRust();
 
     expect(plan.contract).toBe('flight-runtime-contract/2');
-    expect(plan.bindings).toHaveLength(32);
+    expect(plan.bindings).toHaveLength(34);
     expect(plan.bindings.filter(({ externalSymbol }) => externalSymbol.sourceName === 'Promise')).toEqual([
       {
         capability: 'task',
@@ -41,7 +41,7 @@ describe('createCompilerRuntimeExternalSymbolBindingPlanRust', () => {
     const second = createCompilerRuntimeExternalSymbolBindingPlanRust();
 
     (first.bindings as unknown[]).pop();
-    expect(second.bindings).toHaveLength(32);
+    expect(second.bindings).toHaveLength(34);
   });
 });
 
@@ -78,6 +78,8 @@ describe('getCompilerRuntimeExternalSymbolTargetRust', () => {
     ['Uint8Array', 'value', 'Vec<u8>'],
     ['Uint8ClampedArray', 'type', 'Vec<u8>'],
     ['Uint8ClampedArray', 'value', 'Vec<u8>'],
+    ['WeakMap', 'type', 'std::collections::HashMap'],
+    ['WeakMap', 'value', 'std::collections::HashMap'],
   ] as const)('maps %s in %s space to %s', (sourceName, space, targetName) => {
     expect(getCompilerRuntimeExternalSymbolTargetRust(sourceName, space)).toBe(targetName);
   });

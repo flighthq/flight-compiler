@@ -347,4 +347,6 @@ const cppRuntimeExternalSymbolBindings = [
   { kind: 'native', sourceName: 'Uint8Array', space: 'value', targetName: 'std::vector<uint8_t>' },
   { kind: 'native', sourceName: 'Uint8ClampedArray', space: 'type', targetName: 'std::vector<uint8_t>' },
   { kind: 'native', sourceName: 'Uint8ClampedArray', space: 'value', targetName: 'std::vector<uint8_t>' },
+  { kind: 'native', sourceName: 'WeakMap', space: 'type', targetName: 'std::unordered_map' },
+  { kind: 'native', sourceName: 'WeakMap', space: 'value', targetName: 'std::unordered_map' },
 ] as const satisfies readonly CppRuntimeExternalSymbolBinding[];
