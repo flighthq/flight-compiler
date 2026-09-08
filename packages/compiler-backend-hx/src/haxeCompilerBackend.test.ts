@@ -5620,6 +5620,60 @@ describe('emitIrModuleHaxe while loop', () => {
   });
 });
 
+describe('emitIrModuleHaxe typeof narrowing with Std.isOfType', () => {
+  it('emits Std.isOfType for typeof string check inside guard', () => {
+    const result = lower(
+      'typeof-guard.ts',
+      `export function len(value: string | number): number {
+         if (typeof value === 'string') { return value.length; }
+         return 0;
+       }`,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('Std.isOfType');
+    expect(output).toContain('String');
+    expect(output).toContain('value.length');
+  });
+});
+
+describe('emitIrModuleHaxe module variable without type annotation', () => {
+  it('emits variable without explicit Haxe type annotation', () => {
+    const result = lower('inferred-var.ts', `export const count = 42;`);
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('count');
+    expect(output).toContain('42');
+  });
+});
+
+describe('emitIrModuleHaxe nullish comparison admitting both null and undefined', () => {
+  it('refuses loose equality with null when operand admits both null and undefined', () => {
+    const result = lower(
+      'both-nullish.ts',
+      `export function check(value: number | null | undefined): boolean {
+         return value == null;
+       }`,
+    );
+
+    expect(() => emitIrModuleHaxe(result.module)).toThrow('distinct Haxe sentinels');
+  });
+});
+
+describe('emitIrModuleHaxe nullish coalescing on dynamic tuple read', () => {
+  it('looks through nullish coalescing to detect dynamic read from mixed tuple', () => {
+    const result = lower(
+      'tuple-coalesce.ts',
+      `export function safe(pair: [number, string]): number {
+         return pair[0] ?? 0;
+       }`,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('??');
+  });
+});
+
 describe('emitIrModuleHaxe class with non-overriding method and base chain', () => {
   it('does not mark method as override when only grandparent has it', () => {
     const result = lower(
