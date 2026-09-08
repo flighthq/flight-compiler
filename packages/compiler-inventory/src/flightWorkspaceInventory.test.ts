@@ -534,7 +534,11 @@ describe('analyzeFlightWorkspace', () => {
           version: '0.0.0',
         }),
       );
-      write(upstream, 'packages/sdk/src/index.ts', "export * from '@flighthq/types';\n");
+      write(
+        upstream,
+        'packages/sdk/src/index.ts',
+        "export * from '@flighthq/types';\nexport * from '@flighthq/types/contract';\n",
+      );
       write(upstream, 'packages/sdk/src/extra.ts', "export * from '@flighthq/types';\n");
       git(upstream, 'add', '.');
       git(upstream, 'commit', '-m', 'multi sdk lane');
@@ -585,13 +589,13 @@ describe('analyzeFlightWorkspace', () => {
     }
   });
 
-  it('resolves an exported variable statement and a type alias declaration', () => {
+  it('resolves an exported destructured binding pattern and a type alias', () => {
     const upstream = createUpstreamFixture();
     try {
       write(
         upstream,
         'packages/types/src/VarExport.ts',
-        'export const exportedVar: number = 42;\nexport type Alias = string;\n',
+        'export const { alpha, beta } = { alpha: 1, beta: 2 };\nexport type Alias = string;\n',
       );
       write(
         upstream,
@@ -599,16 +603,17 @@ describe('analyzeFlightWorkspace', () => {
         "export { Mode } from './Mode.js';\nexport type { Shape } from './Shape.js';\nexport { createValue } from './value.js';\n" +
           "import { createOtherValue as createRenamedValue } from './other.js';\nexport { createRenamedValue as createPublicValue };\n" +
           "export { createValue as createDirectAlias } from './value.js';\n" +
-          "export { exportedVar, Alias } from './VarExport.js';\n",
+          "export { alpha, beta, Alias } from './VarExport.js';\n",
       );
       git(upstream, 'add', '.');
-      git(upstream, 'commit', '-m', 'var export');
+      git(upstream, 'commit', '-m', 'destructured export');
 
       const inventory = analyzeFlightWorkspace({ upstreamDirectory: upstream });
       const inventoryByName = new Map(inventory.packages.map((item) => [item.name, item]));
       const root = resolvePackageExportLane(inventoryByName, '@flighthq/types');
 
-      expect(root.exports.find((e) => e.name === 'exportedVar')).toMatchObject({ kind: 'variable', runtime: true });
+      expect(root.exports.find((e) => e.name === 'alpha')).toMatchObject({ kind: 'variable' });
+      expect(root.exports.find((e) => e.name === 'beta')).toMatchObject({ kind: 'variable' });
       expect(root.exports.find((e) => e.name === 'Alias')).toMatchObject({ kind: 'type', runtime: false });
     } finally {
       rmSync(upstream, { force: true, recursive: true });
