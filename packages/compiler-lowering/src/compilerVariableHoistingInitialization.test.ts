@@ -718,7 +718,7 @@ describe('validateIrFunctionVariableInitialization', () => {
       body: { kind: 'block', statements: [] },
     } as IrStatement;
     if (forInStatement) {
-      (forInStatement.variable as Record<string, unknown>).initializer = { kind: 'literal', value: '' };
+      (forInStatement.variable as unknown as Record<string, unknown>).initializer = { kind: 'literal', value: '' };
     }
     closureFn.body = [forOfBody, ...closureFn.body];
 

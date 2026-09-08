@@ -708,7 +708,7 @@ describe('createCompilerLoweringPassVariableHoisting', () => {
     if (immutableFn?.kind !== 'function') throw new Error('Expected function');
     const immutableVar = immutableFn.body[0];
     if (immutableVar?.kind !== 'variable') throw new Error('Expected variable');
-    (immutableVar.declarations[0] as Record<string, unknown>).mutable = false;
+    (immutableVar.declarations[0] as unknown as Record<string, unknown>).mutable = false;
     expectLoweringFailure(() => pass.lowerIrModule(immutable), 'must be mutable');
 
     const patternVar = structuredClone(module);
@@ -716,7 +716,7 @@ describe('createCompilerLoweringPassVariableHoisting', () => {
     if (patternFn?.kind !== 'function') throw new Error('Expected function');
     const patternStatement = patternFn.body[0];
     if (patternStatement?.kind !== 'variable') throw new Error('Expected variable');
-    (patternStatement.declarations[0] as Record<string, unknown>).pattern = {
+    (patternStatement.declarations[0] as unknown as Record<string, unknown>).pattern = {
       binding: variable.binding,
       kind: 'binding',
     };
@@ -731,7 +731,7 @@ describe('createCompilerLoweringPassVariableHoisting', () => {
     if (forOfFn?.kind !== 'function') throw new Error('Expected function');
     const forOfLoop = forOfFn.body[0];
     if (forOfLoop?.kind !== 'forOf') throw new Error('Expected for-of');
-    (forOfLoop.variable as Record<string, unknown>).pattern = {
+    (forOfLoop.variable as unknown as Record<string, unknown>).pattern = {
       binding: (forOfLoop.variable as { binding: unknown }).binding,
       kind: 'binding',
     };
@@ -746,7 +746,7 @@ describe('createCompilerLoweringPassVariableHoisting', () => {
     if (initFn?.kind !== 'function') throw new Error('Expected function');
     const initLoop = initFn.body[0];
     if (initLoop?.kind !== 'forOf') throw new Error('Expected for-of');
-    (initLoop.variable as Record<string, unknown>).initializer = { kind: 'literal', value: 0 };
+    (initLoop.variable as unknown as Record<string, unknown>).initializer = { kind: 'literal', value: 0 };
     expectLoweringFailure(() => pass.lowerIrModule(forOfInitClone), 'cannot have an initializer');
   });
 

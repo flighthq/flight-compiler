@@ -461,22 +461,23 @@ describe('createCompilerLoweringPassCStyleFor', () => {
     const clone = structuredClone(module);
     const declaration = clone.declarations[0];
     if (declaration?.kind !== 'function') throw new Error('Expected function');
-    const ref = { binding: declaration.parameters[0]!.binding };
+    const ref = { binding: declaration.parameters[0]!.binding, kind: 'binding' as const };
     const ident: IrExpression = { kind: 'identifier', reference: ref };
-    const namedVar = (name: string, initializer: IrExpression): IrVariable => ({
-      binding: { id: name, name },
-      initializer,
-      mutable: false,
-      type: { kind: 'intrinsic', name: 'number' },
-    });
+    const namedVar = (name: string, initializer: IrExpression): IrVariable =>
+      ({
+        binding: { id: name, name },
+        initializer,
+        mutable: false,
+        type: { kind: 'primitive', name: 'number' },
+      }) as unknown as IrVariable;
 
-    declaration.body = [
+    (declaration as unknown as { body: IrStatement[] }).body = [
       {
         declarations: [
           namedVar('a', {
             elements: [{ expression: ident, optional: false }, { optional: true }],
             kind: 'tuple',
-          } as IrExpression),
+          } as unknown as IrExpression),
           namedVar('b', {
             kind: 'tupleSpread',
             segments: [
@@ -484,8 +485,8 @@ describe('createCompilerLoweringPassCStyleFor', () => {
               { element: { expression: ident, optional: false as const }, kind: 'element' },
               { element: { optional: true as const }, kind: 'element' },
             ],
-            type: { elements: [], kind: 'tuple' },
-          } as IrExpression),
+            type: { elements: [], kind: 'tuple', readonly: false },
+          } as unknown as IrExpression),
           namedVar('c', { kind: 'tupleRest', object: ident, start: 0 } as IrExpression),
           namedVar('d', { kind: 'tupleSuffix', object: ident, start: 0, width: 1 } as IrExpression),
         ],

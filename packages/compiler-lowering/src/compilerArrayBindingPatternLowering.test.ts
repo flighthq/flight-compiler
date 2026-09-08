@@ -1143,8 +1143,8 @@ describe('createCompilerLoweringPassArrayBindingPattern', () => {
     if (!patternVar || !('pattern' in patternVar) || patternVar.pattern.kind !== 'array') {
       throw new Error('Expected array pattern');
     }
-    delete (patternVar.pattern as Record<string, unknown>).type;
-    delete (patternVar as Record<string, unknown>).type;
+    delete (patternVar.pattern as unknown as Record<string, unknown>).type;
+    delete (patternVar as unknown as Record<string, unknown>).type;
     const run = () => pass.lowerIrModule(injected);
     expectLoweringFailure(run, 'array binding lowering requires a statically known tuple type');
   });

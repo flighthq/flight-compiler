@@ -291,16 +291,17 @@ describe('createCompilerLoweringPassObjectBindingPattern', () => {
     const clone: IrModule = structuredClone(module);
     const declaration = clone.declarations[0];
     if (declaration?.kind !== 'function') throw new Error('Expected function');
-    const ref = { binding: declaration.parameters[0]!.binding };
+    const ref = { binding: declaration.parameters[0]!.binding, kind: 'binding' as const };
     const ident: IrExpression = { kind: 'identifier', reference: ref };
-    const namedVar = (name: string, initializer: IrExpression): IrVariable => ({
-      binding: { id: name, name },
-      initializer,
-      mutable: false,
-      type: { kind: 'intrinsic', name: 'number' },
-    });
+    const namedVar = (name: string, initializer: IrExpression): IrVariable =>
+      ({
+        binding: { id: name, name },
+        initializer,
+        mutable: false,
+        type: { kind: 'primitive', name: 'number' },
+      }) as unknown as IrVariable;
 
-    declaration.body = [
+    (declaration as unknown as { body: IrStatement[] }).body = [
       {
         declarations: [
           namedVar('a', {
@@ -314,8 +315,8 @@ describe('createCompilerLoweringPassObjectBindingPattern', () => {
               { element: { expression: ident, optional: false as const }, kind: 'element' },
               { element: { optional: true as const }, kind: 'element' },
             ],
-            type: { elements: [], kind: 'tuple' },
-          } as IrExpression),
+            type: { elements: [], kind: 'tuple', readonly: false },
+          } as unknown as IrExpression),
           namedVar('c', { kind: 'tupleRest', object: ident, start: 0 } as IrExpression),
           namedVar('d', { kind: 'tupleSuffix', object: ident, start: 0, width: 1 } as IrExpression),
           namedVar('e', { fallback: ident, kind: 'undefinedDefault', value: ident } as IrExpression),
@@ -326,7 +327,7 @@ describe('createCompilerLoweringPassObjectBindingPattern', () => {
             ],
             kind: 'objectRest',
             object: ident,
-          } as IrExpression),
+          } as unknown as IrExpression),
         ],
         kind: 'variable' as const,
       },
@@ -606,7 +607,7 @@ describe('createCompilerLoweringPassObjectBindingPattern', () => {
     const clone = structuredClone(module);
     const declaration = clone.declarations[0];
     if (declaration?.kind !== 'function') throw new Error('Expected function');
-    const ref = { binding: declaration.parameters[1]!.binding };
+    const ref = { binding: declaration.parameters[1]!.binding, kind: 'binding' as const };
     const ident: IrExpression = { kind: 'identifier', reference: ref };
     const namedVar = (name: string, initializer: IrExpression): IrVariable =>
       ({
@@ -614,9 +615,9 @@ describe('createCompilerLoweringPassObjectBindingPattern', () => {
         initializer,
         mutable: false,
         type: { kind: 'primitive', name: 'number' },
-      }) as IrVariable;
+      }) as unknown as IrVariable;
 
-    declaration.body = [
+    (declaration as unknown as { body: IrStatement[] }).body = [
       {
         declarations: [
           namedVar('a', {
@@ -630,8 +631,8 @@ describe('createCompilerLoweringPassObjectBindingPattern', () => {
               { element: { expression: ident, optional: false as const }, kind: 'element' },
               { element: { optional: true as const }, kind: 'element' },
             ],
-            type: { elements: [], kind: 'tuple' },
-          } as IrExpression),
+            type: { elements: [], kind: 'tuple', readonly: false },
+          } as unknown as IrExpression),
           namedVar('c', { kind: 'tupleRest', object: ident, start: 0 } as IrExpression),
         ],
         kind: 'variable' as const,
@@ -657,7 +658,7 @@ describe('createCompilerLoweringPassObjectBindingPattern', () => {
     const clone = structuredClone(module);
     const declaration = clone.declarations[0];
     if (declaration?.kind !== 'function') throw new Error('Expected function');
-    const ref = { binding: declaration.parameters[0]!.binding };
+    const ref = { binding: declaration.parameters[0]!.binding, kind: 'binding' as const };
     const ident: IrExpression = { kind: 'identifier', reference: ref };
     const origin = {
       column: 1,
@@ -667,7 +668,7 @@ describe('createCompilerLoweringPassObjectBindingPattern', () => {
       source: 'inject-for-in.ts',
     };
 
-    declaration.body = [
+    (declaration as unknown as { body: IrStatement[] }).body = [
       {
         body: { expression: ident, kind: 'expression' },
         kind: 'forIn',
@@ -751,7 +752,7 @@ describe('createCompilerLoweringPassObjectBindingPattern', () => {
     const pv = varStmt.declarations[0]!;
     if (!('pattern' in pv) || pv.pattern.kind !== 'object') throw new Error('Expected object pattern');
     const sourceType =
-      (pv.pattern as { type?: { kind: string; properties: Array<{ type: unknown }> } }).type ??
+      (pv.pattern as unknown as { type?: { kind: string; properties: Array<{ type: unknown }> } }).type ??
       (pv as unknown as { type?: { kind: string; properties: Array<{ type: unknown }> } }).type;
     if (!sourceType || sourceType.kind !== 'object') throw new Error('Expected object source type');
     sourceType.properties[0]!.type = injectedType;
@@ -778,7 +779,7 @@ describe('createCompilerLoweringPassObjectBindingPattern', () => {
     if (vs1?.kind !== 'variable') throw new Error('Expected variable');
     const pv1 = vs1.declarations[0]!;
     if (!('pattern' in pv1)) throw new Error('Expected pattern');
-    delete (pv1 as Record<string, unknown>).initializer;
+    delete (pv1 as unknown as Record<string, unknown>).initializer;
     expect(() => pass.lowerIrModule(clone1)).toThrow('object binding pattern requires an initializer');
 
     const module2 = lower(
@@ -797,7 +798,7 @@ describe('createCompilerLoweringPassObjectBindingPattern', () => {
     const pv2 = vs2.declarations[0]!;
     if (!('pattern' in pv2) || pv2.pattern.kind !== 'object') throw new Error('Expected object pattern');
     if (pv2.pattern.rest && 'type' in pv2.pattern.rest) {
-      delete (pv2.pattern.rest as Record<string, unknown>).type;
+      delete (pv2.pattern.rest as unknown as Record<string, unknown>).type;
     }
     const output2 = pass.lowerIrModule(clone2);
     expect(pass.verifyIrModule(output2)).toEqual({ kind: 'valid' });
@@ -808,8 +809,8 @@ describe('createCompilerLoweringPassObjectBindingPattern', () => {
     if (vs3?.kind !== 'variable') throw new Error('Expected variable');
     const pv3 = vs3.declarations[0]!;
     if (!('pattern' in pv3) || pv3.pattern.kind !== 'object') throw new Error('Expected pattern');
-    delete (pv3.pattern as Record<string, unknown>).type;
-    delete (pv3 as Record<string, unknown>).type;
+    delete (pv3.pattern as unknown as Record<string, unknown>).type;
+    delete (pv3 as unknown as Record<string, unknown>).type;
     const output3 = pass.lowerIrModule(clone3);
     expect(pass.verifyIrModule(output3)).toEqual({ kind: 'valid' });
 
@@ -839,7 +840,7 @@ describe('createCompilerLoweringPassObjectBindingPattern', () => {
     const pv5 = vs5.declarations[0]!;
     if (!('pattern' in pv5) || pv5.pattern.kind !== 'object') throw new Error('Expected pattern');
     const st5 =
-      (pv5.pattern as { type?: { properties: Array<{ type: unknown; optional: boolean }> } }).type ??
+      (pv5.pattern as unknown as { type?: { properties: Array<{ type: unknown; optional: boolean }> } }).type ??
       (pv5 as unknown as { type?: { properties: Array<{ type: unknown; optional: boolean }> } }).type;
     if (st5) {
       st5.properties[0]!.type = { kind: 'union', types: [{ kind: 'undefined' }, { kind: 'undefined' }] };
@@ -862,12 +863,12 @@ describe('createCompilerLoweringPassObjectBindingPattern', () => {
     if (vs6?.kind !== 'variable') throw new Error('Expected variable');
     const pv6 = vs6.declarations[0]!;
     if (!('pattern' in pv6) || pv6.pattern.kind !== 'object') throw new Error('Expected pattern');
-    const st6 = (pv6.pattern as { type?: { properties: Array<{ name: string }> } }).type;
+    const st6 = (pv6.pattern as unknown as { type?: { properties: Array<{ name: string }> } }).type;
     if (st6) {
       st6.properties = st6.properties.filter((p) => p.name !== 'inner' && p.name !== 'items');
     }
     for (const prop of pv6.pattern.properties) {
-      if ('type' in prop.pattern) delete (prop.pattern as Record<string, unknown>).type;
+      if ('type' in prop.pattern) delete (prop.pattern as unknown as Record<string, unknown>).type;
     }
     const output6 = pass.lowerIrModule(clone6);
     expect(pass.verifyIrModule(output6)).toEqual({ kind: 'valid' });
@@ -882,7 +883,7 @@ describe('createCompilerLoweringPassObjectBindingPattern', () => {
       (p) => p.key.kind === 'named' && p.key.name === 'inner' && p.pattern.kind === 'object',
     );
     if (innerProp && innerProp.pattern.kind === 'object') {
-      (innerProp.pattern as Record<string, unknown>).type = {
+      (innerProp.pattern as unknown as Record<string, unknown>).type = {
         kind: 'object',
         properties: [{ name: 'x', optional: false, type: { kind: 'primitive', name: 'number' } }],
       };
@@ -897,13 +898,13 @@ describe('createCompilerLoweringPassObjectBindingPattern', () => {
     const pv8 = vs8.declarations[0]!;
     if (!('pattern' in pv8) || pv8.pattern.kind !== 'object') throw new Error('Expected pattern');
     if (pv8.pattern.rest) {
-      (pv8.pattern as Record<string, unknown>).rest = {
+      (pv8.pattern as unknown as Record<string, unknown>).rest = {
         elements: [],
         kind: 'array',
         scope: 'block',
-        ...(pv8.pattern.rest as Record<string, unknown>),
+        ...(pv8.pattern.rest as unknown as Record<string, unknown>),
       };
-      (pv8.pattern.rest as Record<string, unknown>).kind = 'array';
+      (pv8.pattern.rest as unknown as Record<string, unknown>).kind = 'array';
     }
     expect(() => pass.lowerIrModule(clone8)).toThrow('object binding rest must introduce one binding');
   });

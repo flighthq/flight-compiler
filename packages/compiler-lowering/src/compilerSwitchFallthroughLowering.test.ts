@@ -466,11 +466,11 @@ describe('createCompilerLoweringPassSwitchFallthrough', () => {
     if (declaration?.kind !== 'function') throw new Error('Expected function');
     const switchStmt = declaration.body.find((s) => s.kind === 'switch');
     if (switchStmt?.kind !== 'switch') throw new Error('Expected switch');
-    const ref = { binding: declaration.parameters[0]!.binding };
+    const ref = { binding: declaration.parameters[0]!.binding, kind: 'binding' as const };
     const ident: IrExpression = { kind: 'identifier', reference: ref };
     const expr = (expression: IrExpression): IrStatement => ({ expression, kind: 'expression' as const });
 
-    switchStmt.cases[0]!.statements.unshift(
+    (switchStmt.cases[0]!.statements as IrStatement[]).unshift(
       expr({
         excluded: [
           { kind: 'named', name: 'x' },
@@ -478,11 +478,11 @@ describe('createCompilerLoweringPassSwitchFallthrough', () => {
         ],
         kind: 'objectRest',
         object: ident,
-      } as IrExpression),
+      } as unknown as IrExpression),
       expr({
         elements: [{ expression: ident, optional: false }, { optional: true }],
         kind: 'tuple',
-      } as IrExpression),
+      } as unknown as IrExpression),
       expr({
         kind: 'tupleSpread',
         segments: [
@@ -490,8 +490,8 @@ describe('createCompilerLoweringPassSwitchFallthrough', () => {
           { element: { expression: ident, optional: false as const }, kind: 'element' },
           { element: { optional: true as const }, kind: 'element' },
         ],
-        type: { elements: [], kind: 'tuple' },
-      } as IrExpression),
+        type: { elements: [], kind: 'tuple', readonly: false },
+      } as unknown as IrExpression),
       expr({ kind: 'tupleRest', object: ident, start: 0 } as IrExpression),
       expr({ kind: 'tupleSuffix', object: ident, start: 0, width: 1 } as IrExpression),
       expr({ fallback: ident, kind: 'undefinedDefault', value: ident } as IrExpression),
@@ -674,22 +674,23 @@ describe('createCompilerLoweringPassSwitchFallthrough', () => {
     const clone: IrModule = structuredClone(module);
     const declaration = clone.declarations[0];
     if (declaration?.kind !== 'function') throw new Error('Expected function');
-    const ref = { binding: declaration.parameters[0]!.binding };
+    const ref = { binding: declaration.parameters[0]!.binding, kind: 'binding' as const };
     const ident: IrExpression = { kind: 'identifier', reference: ref };
-    const namedVar = (name: string, initializer: IrExpression): IrVariable => ({
-      binding: { id: name, name },
-      initializer,
-      mutable: false,
-      type: { kind: 'intrinsic', name: 'number' },
-    });
+    const namedVar = (name: string, initializer: IrExpression): IrVariable =>
+      ({
+        binding: { id: name, name },
+        initializer,
+        mutable: false,
+        type: { kind: 'primitive', name: 'number' },
+      }) as unknown as IrVariable;
 
-    declaration.body = [
+    (declaration as unknown as { body: IrStatement[] }).body = [
       {
         declarations: [
           namedVar('a', {
             elements: [{ expression: ident, optional: false }, { optional: true }],
             kind: 'tuple',
-          } as IrExpression),
+          } as unknown as IrExpression),
           namedVar('b', {
             kind: 'tupleSpread',
             segments: [
@@ -697,11 +698,11 @@ describe('createCompilerLoweringPassSwitchFallthrough', () => {
               { element: { expression: ident, optional: false as const }, kind: 'element' },
               { element: { optional: true as const }, kind: 'element' },
             ],
-            type: { elements: [], kind: 'tuple' },
-          } as IrExpression),
-          namedVar('c', { kind: 'tupleRest', object: ident, start: 0 } as IrExpression),
-          namedVar('d', { kind: 'tupleSuffix', object: ident, start: 0, width: 1 } as IrExpression),
-          namedVar('e', { fallback: ident, kind: 'undefinedDefault', value: ident } as IrExpression),
+            type: { elements: [], kind: 'tuple', readonly: false },
+          } as unknown as IrExpression),
+          namedVar('c', { kind: 'tupleRest', object: ident, start: 0 } as unknown as IrExpression),
+          namedVar('d', { kind: 'tupleSuffix', object: ident, start: 0, width: 1 } as unknown as IrExpression),
+          namedVar('e', { fallback: ident, kind: 'undefinedDefault', value: ident } as unknown as IrExpression),
         ],
         kind: 'variable' as const,
       },
