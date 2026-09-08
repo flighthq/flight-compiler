@@ -1112,6 +1112,53 @@ describe('createCompilerLoweringPassVariableHoisting', () => {
     expect(createCompilerLoweringPassVariableHoisting().verifyIrModule(output)).toEqual({ kind: 'valid' });
   });
 
+  it('detects residual in raw var with object and array destructuring before binding-pattern lowering', () => {
+    const pass = createCompilerLoweringPassVariableHoisting();
+    const objectModule = lower(
+      'object-pattern-residual.ts',
+      `
+        export function extract(values: { x: number; y: string }): void {
+          var { x, y }: { x: number; y: string } = values;
+          x; y;
+        }
+      `,
+    );
+    expect(pass.verifyIrModule(objectModule)).toMatchObject({ kind: 'invalid' });
+
+    const arrayModule = lower(
+      'array-pattern-residual.ts',
+      `
+        export function extract(values: [number, string]): void {
+          var [first, second]: [number, string] = values;
+          first; second;
+        }
+      `,
+    );
+    expect(pass.verifyIrModule(arrayModule)).toMatchObject({ kind: 'invalid' });
+
+    const restObjectModule = lower(
+      'rest-object-residual.ts',
+      `
+        export function extract(values: { x: number; y: string; z: boolean }): void {
+          var { x, ...rest }: { x: number; y: string; z: boolean } = values;
+          x; rest;
+        }
+      `,
+    );
+    expect(pass.verifyIrModule(restObjectModule)).toMatchObject({ kind: 'invalid' });
+
+    const restArrayModule = lower(
+      'rest-array-residual.ts',
+      `
+        export function extract(values: [number, ...string[]]): void {
+          var [first, ...rest]: [number, ...string[]] = values;
+          first; rest;
+        }
+      `,
+    );
+    expect(pass.verifyIrModule(restArrayModule)).toMatchObject({ kind: 'invalid' });
+  });
+
   it('elects observable undefined entry state only for an undefined-bearing variable domain', () => {
     const output = lowerIrModuleWithCompilerPasses(
       lower(
