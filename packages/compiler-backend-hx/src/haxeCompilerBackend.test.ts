@@ -5385,7 +5385,7 @@ describe('emitIrModuleHaxe additional coverage', () => {
     );
     const iface = module.declarations.find((d) => d.kind === 'interface');
     if (iface && iface.kind === 'interface') {
-      (iface as { extends: unknown[] }).extends = [
+      (iface as unknown as { extends: unknown[] }).extends = [
         { kind: 'named', reference: { kind: 'ambient', name: 'Other' }, typeArguments: [] },
       ];
     }

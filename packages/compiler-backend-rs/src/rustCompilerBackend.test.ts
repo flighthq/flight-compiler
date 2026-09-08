@@ -4303,7 +4303,7 @@ describe('emitIrModuleRust', () => {
     const module = structuredClone(lower('partial.ts', 'export function id(x: number): number { return x; }').module);
     const fn = module.declarations.find((d) => d.kind === 'function');
     if (fn && fn.kind === 'function') {
-      (fn as { returns: { kind: string; reference: unknown; typeArguments: unknown[] } }).returns = {
+      (fn as unknown as { returns: { kind: string; reference: unknown; typeArguments: unknown[] } }).returns = {
         kind: 'named',
         reference: { kind: 'ambient', name: 'Partial' },
         typeArguments: [{ kind: 'primitive', name: 'number' }],
@@ -4545,7 +4545,7 @@ describe('emitIrModuleRust', () => {
     const module = structuredClone(lower('required.ts', 'export function id(x: number): number { return x; }').module);
     const fn = module.declarations.find((d) => d.kind === 'function');
     if (fn && fn.kind === 'function') {
-      (fn as { returns: { kind: string; reference: unknown; typeArguments: unknown[] } }).returns = {
+      (fn as unknown as { returns: { kind: string; reference: unknown; typeArguments: unknown[] } }).returns = {
         kind: 'named',
         reference: { kind: 'ambient', name: 'Required' },
         typeArguments: [{ kind: 'primitive', name: 'number' }],
@@ -4561,7 +4561,7 @@ describe('emitIrModuleRust', () => {
     if (fn && fn.kind === 'function') {
       const ret = fn.body.find((s) => s.kind === 'return') as IrStatement & { kind: 'return' };
       if (ret?.expression?.kind === 'array') {
-        (ret.expression as { elements: unknown[] }).elements = [
+        (ret.expression as unknown as { elements: unknown[] }).elements = [
           ret.expression.elements[0],
           undefined,
           ret.expression.elements[1],
@@ -5632,5 +5632,837 @@ describe('emitIrModuleRust', () => {
     ).contents;
     expect(output).toContain('fn helper');
     expect(output).not.toContain('pub fn helper');
+  });
+
+  it('emits optional parameter as Option wrapper', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'optional-param.ts',
+        `export function greet(name?: string): string {
+          if (name !== undefined) { return name; }
+          return "hello";
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('Option<String>');
+  });
+
+  it('emits function with default parameter value', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'default-param.ts',
+        `export function add(a: number, b: number = 0): number {
+          return a + b;
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('Option<f64>');
+    expect(output).toContain('unwrap_or_else');
+  });
+
+  it('emits accessor getter and setter methods', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'accessor.ts',
+        `export class Box {
+          private _value: number;
+          constructor() { this._value = 0; }
+          get value(): number { return this._value; }
+          set value(v: number) { this._value = v; }
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('fn value(');
+    expect(output).toContain('fn set_value(');
+  });
+
+  it('emits setter assignment through accessor', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'setter-assign.ts',
+        `export class Box {
+          private _value: number;
+          constructor() { this._value = 0; }
+          get value(): number { return this._value; }
+          set value(v: number) { this._value = v; }
+        }
+        export function setBox(b: Box): void { b.value = 42; }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('set_value(');
+  });
+
+  it('emits string concatenation with push_str for +=', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'string-concat-assign.ts',
+        `export function build(a: string, b: string): string {
+          let result: string = a;
+          result += b;
+          return result;
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('push_str');
+  });
+
+  it('emits bitwise assignment operators with integer casts', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'bitwise-assign.ts',
+        `export function bitOps(a: number, b: number): number {
+          let x: number = a;
+          x &= b;
+          return x;
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('as i32');
+  });
+
+  it('emits exponentiation assignment with powf', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'exp-assign.ts',
+        `export function power(base: number, exp: number): number {
+          let result: number = base;
+          result **= exp;
+          return result;
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('f64::powf');
+  });
+
+  it('emits unsigned right shift assignment', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'urs-assign.ts',
+        `export function shift(x: number, bits: number): number {
+          let result: number = x;
+          result >>>= bits;
+          return result;
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('as u32');
+  });
+
+  it('emits coalesce with optional-shaped operand as unwrap_or_else', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'coalesce.ts',
+        `export function fallback(x: number | undefined): number {
+          return x ?? 0;
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('unwrap_or_else');
+  });
+
+  it('emits for-in with key plan', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'for-in.ts',
+        `export function keys(obj: { a: number; b: number }): string[] {
+          const result: string[] = [];
+          for (const key in obj) { result.push(key); }
+          return result;
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('for');
+    expect(output).toContain('to_owned');
+  });
+
+  it('emits for-of loop', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'for-of.ts',
+        `export function sum(items: number[]): number {
+          let total: number = 0;
+          for (const item of items) { total = total + item; }
+          return total;
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('for');
+    expect(output).toContain('in');
+  });
+
+  it('emits type alias as struct when object type', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'type-alias-object.ts',
+        `export type Point = { x: number; y: number };
+         export function origin(): Point { return { x: 0, y: 0 }; }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('pub struct Point');
+    expect(output).toContain('pub x: f64');
+  });
+
+  it('emits type alias as plain type alias for non-object', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'type-alias-simple.ts',
+        `export type ID = number;
+         export function create(): ID { return 0; }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('pub type Id = f64');
+  });
+
+  it('emits tagged union from type alias of named record union', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'tagged-union.ts',
+        `export interface Circle { kind: string; radius: number }
+         export interface Square { kind: string; side: number }
+         export type Shape = Circle | Square;
+         export function area(s: Shape): number {
+           return s.kind === "circle" ? 3.14 : 1.0;
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('enum Shape');
+    expect(output).toContain('Circle(');
+    expect(output).toContain('Square(');
+    expect(output).toContain('fn kind(');
+  });
+
+  it('emits abstract class with default method as trait', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'abstract-default.ts',
+        `export abstract class Serializable {
+          abstract serialize(): string;
+          describe(): string { return this.serialize(); }
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('pub trait Serializable');
+    expect(output).toContain('fn serialize(');
+    expect(output).toContain('fn describe(');
+  });
+
+  it('emits abstract class with abstract fields as trait methods', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'abstract-fields.ts',
+        `export abstract class Named {
+          abstract readonly name: string;
+        }
+        export class Person extends Named {
+          name: string;
+          constructor() { super(); this.name = ""; }
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('trait Named');
+    expect(output).toContain('fn name(');
+    expect(output).toContain('impl Named for');
+  });
+
+  it('emits concrete base class via composition', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'composition.ts',
+        `export class Base {
+          value: number;
+          constructor(v: number) { this.value = v; }
+        }
+        export class Child extends Base {
+          extra: string;
+          constructor(v: number) { super(v); this.extra = ""; }
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('base:');
+    expect(output).toContain('Base');
+  });
+
+  it('emits this.field reference with clone for non-copy type', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'self-field-clone.ts',
+        `export class Container {
+          items: string[];
+          constructor() { this.items = []; }
+          getItems(): string[] { return this.items; }
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('.clone()');
+  });
+
+  it('emits conditional expression as if-else', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'conditional.ts',
+        `export function max(a: number, b: number): number {
+          return a > b ? a : b;
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('if');
+    expect(output).toContain('else');
+  });
+
+  it('emits cast expression', () => {
+    const result = lower(
+      'cast.ts',
+      `export function convert(x: number): number {
+        return x as number;
+      }`,
+    );
+    const output = emitIrModuleRust(result.module).contents;
+    expect(output).toContain('return');
+  });
+
+  it('emits labeled break and continue', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'label.ts',
+        `export function search(grid: number[][]): number {
+          let found: number = -1;
+          outer: for (const row of grid) {
+            for (const cell of row) {
+              if (cell > 0) { found = cell; break outer; }
+              continue;
+            }
+          }
+          return found;
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain("'outer");
+    expect(output).toContain("break 'outer");
+  });
+
+  it('emits optional property chain as map/and_then', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'optional-prop.ts',
+        `export function getName(obj: { name: string } | undefined): string | undefined {
+          return obj?.name;
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('.map(');
+    expect(output).toContain('optional_chain_value');
+  });
+
+  it('emits optional element chain as and_then', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'optional-element.ts',
+        `export function first(arr: number[] | undefined): number | undefined {
+          return arr?.[0];
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('and_then');
+  });
+
+  it('emits function expression as closure', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'closure.ts',
+        `export function applyOp(a: number, b: number): number {
+          const op = (x: number, y: number): number => { return x + y; };
+          return op(a, b);
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('|');
+  });
+
+  it('emits function returning a callback with Rc', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'return-callback.ts',
+        `export function makeAdder(n: number): (x: number) => number {
+          return (x: number): number => x + n;
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('Rc');
+  });
+
+  it('emits object rest expression as generated record', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'object-rest.ts',
+        `export function stripKind(obj: { kind: string; value: number }): { value: number } {
+          const { kind, ...rest } = obj;
+          return rest;
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('value:');
+  });
+
+  it('emits variable with undefined initial value as None', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'undefined-var.ts',
+        `export function find(items: number[]): number | undefined {
+          let result: number | undefined = undefined;
+          for (const item of items) {
+            if (item > 0) { result = item; }
+          }
+          return result;
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('None');
+    expect(output).toContain('Option<f64>');
+  });
+
+  it('emits mutable variable with mut keyword', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'mutable-var.ts',
+        `export function count(items: number[]): number {
+          let total: number = 0;
+          for (const item of items) { total = total + item; }
+          return total;
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('let mut total');
+  });
+
+  it('emits tuple type as parenthesized elements', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'tuple-type.ts',
+        `export function pair(a: number, b: string): [number, string] {
+          return [a, b];
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('(f64, String)');
+  });
+
+  it('emits array filter with borrowed element closure', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'filter.ts',
+        `export function positives(items: number[]): number[] {
+          return items.filter((x: number): boolean => x > 0);
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('into_iter()');
+    expect(output).toContain('filter(');
+    expect(output).toContain('collect');
+  });
+
+  it('emits array map with iterator adaptor', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'map.ts',
+        `export function doubles(items: number[]): number[] {
+          return items.map((x: number): number => x * 2);
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('into_iter()');
+    expect(output).toContain('.map(');
+    expect(output).toContain('collect');
+  });
+
+  it('emits array indexOf as position search', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'index-of.ts',
+        `export function findIndex(items: string[], target: string): number {
+          return items.indexOf(target);
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('iter()');
+    expect(output).toContain('position(');
+    expect(output).toContain('unwrap_or(-1.0)');
+  });
+
+  it('emits string includes as borrowed method', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'str-includes.ts',
+        `export function hasWord(s: string, word: string): boolean {
+          return s.includes(word);
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('contains(');
+  });
+
+  it('emits string split as splitCollect', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'str-split.ts',
+        `export function words(s: string): string[] {
+          return s.split(" ");
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('.split(');
+    expect(output).toContain('collect');
+  });
+
+  it('emits Math.max spread as fold', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'math-spread.ts',
+        `export function maxOf(items: number[]): number {
+          return Math.max(...items);
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('fold(');
+  });
+
+  it('emits function call expression with parens around callee', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'iife.ts',
+        `export function run(): number {
+          return ((x: number): number => x)(42);
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('(|');
+  });
+
+  it('emits narrowed present identifier with unwrap', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'narrowed.ts',
+        `export function safe(x: number | undefined): number {
+          if (x !== undefined) { return x; }
+          return 0;
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('unwrap()');
+  });
+
+  it('emits class with trait abstract field accessor', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'abstract-field-access.ts',
+        `export abstract class Sized {
+          abstract readonly size: number;
+          describe(): string { return "size"; }
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('fn size(');
+    expect(output).toContain('&self');
+  });
+
+  it('emits block statement', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'block.ts',
+        `export function scope(): number {
+          let x: number = 1;
+          { x = x + 1; }
+          return x;
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('{');
+  });
+
+  it('emits string charCodeAt as chars nth', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'char-code.ts',
+        `export function code(s: string, i: number): number {
+          return s.charCodeAt(i);
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('chars().nth(');
+  });
+
+  it('emits string indexOf as find search', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'str-index-of.ts',
+        `export function findPos(s: string, target: string): number {
+          return s.indexOf(target);
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('find(');
+    expect(output).toContain('unwrap_or(-1.0)');
+  });
+
+  it('emits Readonly<T> by unwrapping to inner type', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'readonly-unwrap.ts',
+        `export function identity(items: Readonly<number[]>): Readonly<number[]> {
+          return items;
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('Vec<f64>');
+  });
+
+  it('emits primitive union as enum with Display impl', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'primitive-union.ts',
+        `export function show(x: string | number): string {
+          if (typeof x === "string") { return x; }
+          return "num";
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('enum');
+    expect(output).toContain('impl std::fmt::Display');
+  });
+
+  it('emits element access with runtime index as usize cast', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'dynamic-index.ts',
+        `export function at(items: number[], i: number): number {
+          return items[i];
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('as usize');
+  });
+
+  it('emits string substring with range slice', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'substring.ts',
+        `export function mid(s: string, start: number, end: number): string {
+          return s.substring(start, end);
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('to_string()');
+  });
+
+  it('emits string substring with one argument as open range', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'substring-one.ts',
+        `export function tail(s: string, start: number): string {
+          return s.substring(start);
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('..');
+    expect(output).toContain('to_string()');
+  });
+
+  it('emits module-level const variable declaration', () => {
+    const output = emitIrModuleRust(lower('module-const.ts', `export const MAX: number = 100;`).module).contents;
+    expect(output).toContain('pub const');
+    expect(output).toContain('100');
+  });
+
+  it('emits array some with any iterator', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'some.ts',
+        `export function hasPositive(items: number[]): boolean {
+          return items.some((x: number): boolean => x > 0);
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('any(');
+  });
+
+  it('emits array every with all iterator', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'every.ts',
+        `export function allPositive(items: number[]): boolean {
+          return items.every((x: number): boolean => x > 0);
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('all(');
+  });
+
+  it('emits array find with find iterator', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'find.ts',
+        `export function findPositive(items: number[]): number | undefined {
+          return items.find((x: number): boolean => x > 0);
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('find(');
+  });
+
+  it('emits Math.floor as ambient member target', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'math-floor.ts',
+        `export function floor(x: number): number {
+          return Math.floor(x);
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('floor');
+  });
+
+  it('emits never type as !', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'never.ts',
+        `export function fail(): never {
+          throw new Error("fail");
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('-> !');
+  });
+
+  it('emits null and undefined types as unit', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'null-type.ts',
+        `export function nothing(): null {
+          return null;
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('()');
+  });
+
+  it('emits function type as Rc<dyn Fn>', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'fn-type.ts',
+        `export function apply(f: (x: number) => number, v: number): number {
+          return f(v);
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('Rc<dyn Fn(f64) -> f64>');
+  });
+
+  it('emits while true as loop', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'infinite-loop.ts',
+        `export function spin(): number {
+          let i: number = 0;
+          while (true) { if (i > 10) { return i; } i = i + 1; }
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('loop {');
+  });
+
+  it('emits array push as method binding', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'push.ts',
+        `export function collect(items: number[]): number[] {
+          const result: number[] = [];
+          for (const item of items) { result.push(item); }
+          return result;
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('.push(');
+  });
+
+  it('emits imported symbol re-export', () => {
+    const output = emitIrModuleRust(
+      lowerPackage(
+        '@flighthq/math',
+        'reexport.ts',
+        `export { add } from './helpers.js';
+         export { subtract } from './helpers.js';`,
+      ).module,
+    ).contents;
+    expect(output).toContain('pub use');
+  });
+
+  it('emits unary plus on number as identity', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'unary-plus.ts',
+        `export function pos(x: number): number {
+          return +x;
+        }`,
+      ).module,
+    ).contents;
+    expect(output).not.toContain('++');
+  });
+
+  it('emits bitwise NOT with integer cast', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'bitwise-not.ts',
+        `export function complement(x: number): number {
+          return ~x;
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('as i32');
+  });
+
+  it('emits deferred binding without mut', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'deferred.ts',
+        `export function deferred(flag: boolean): number {
+          let result: number;
+          if (flag) { result = 1; } else { result = 2; }
+          return result;
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('let result');
+    expect(output).not.toMatch(/let mut result/);
+  });
+
+  it('emits literal boolean type as bool', () => {
+    const output = emitIrModuleRust(
+      lower('lit-type.ts', `export function truthy(): true { return true; }`).module,
+    ).contents;
+    expect(output).toContain('bool');
+  });
+
+  it('emits string enum as string enum', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'string-enum-rs.ts',
+        `export enum Color { Red = "red", Blue = "blue" }
+         export function name(c: Color): string { return c; }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('enum Color');
+    expect(output).toContain('to_string');
+    expect(output).toContain('from_str');
+  });
+
+  it('emits Map and Set types with runtime type names', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'collections.ts',
+        `export function create(): Map<string, number> {
+          return new Map();
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('FlightMap');
   });
 });
