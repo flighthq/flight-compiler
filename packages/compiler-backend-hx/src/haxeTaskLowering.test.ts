@@ -162,6 +162,49 @@ describe('lowerCompilerAsyncStateMachinesHaxe', () => {
     }
   });
 
+  it('lowers try-catch guards, carry values, and reject-state suspension', () => {
+    const analysis = analyzeIrModuleAsyncStateMachines(
+      lower(`
+        export async function guarded(task: Promise<number>): Promise<number> {
+          try {
+            const value = await task;
+            return value;
+          } catch (error) {
+            return 0;
+          }
+        }
+      `),
+    );
+    const result = lowerCompilerAsyncStateMachinesHaxe(analysis, createCompilerRuntimeTaskCapabilityPlanHaxe());
+    const steps = result.functions[0]?.states.flatMap((state) => state.steps) ?? [];
+    const guards = result.functions[0]?.states.filter((state) => state.guard) ?? [];
+    const stepKinds = steps.map((step) => step.kind);
+
+    expect(stepKinds).toContain('guardState');
+    expect(guards.length).toBeGreaterThan(0);
+    const suspendStep = steps.find((step) => step.kind === 'awaitRuntime');
+    expect(suspendStep).toHaveProperty('rejectState');
+
+    const finallyAnalysis = analyzeIrModuleAsyncStateMachines(
+      lower(`
+        export async function cleanup(task: Promise<number>, log: Promise<void>): Promise<number> {
+          try {
+            return await task;
+          } finally {
+            await log;
+          }
+        }
+      `),
+    );
+    const finallyResult = lowerCompilerAsyncStateMachinesHaxe(
+      finallyAnalysis,
+      createCompilerRuntimeTaskCapabilityPlanHaxe(),
+    );
+    const finallySteps = finallyResult.functions[0]?.states.flatMap((state) => state.steps) ?? [];
+    const finallyKinds = finallySteps.map((step) => step.kind);
+    expect(finallyKinds).toEqual(expect.arrayContaining(['guardState']));
+  });
+
   it('lowers neutral branching into branch and continue steps with their join targets intact', () => {
     const analysis = analyzeIrModuleAsyncStateMachines(
       lower(`

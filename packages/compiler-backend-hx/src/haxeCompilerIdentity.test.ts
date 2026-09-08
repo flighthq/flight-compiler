@@ -29,6 +29,7 @@ describe('convertSourcePathToHaxeModuleName', () => {
     expect(convertSourcePathToHaxeModuleName('packages/render-gl/src/glShader.ts')).toBe('GlShader');
     expect(convertSourcePathToHaxeModuleName('packages\\render-gl\\src\\glShader.ts')).toBe('GlShader');
     expect(convertSourcePathToHaxeModuleName('packages/render-gl/src/3dPoint.tsx')).toBe('_3dPoint');
+    expect(convertSourcePathToHaxeModuleName('packages/render-gl/src/---.ts')).toBe('_Generated');
   });
 
   it('reserves routine source identities and rejects non-TypeScript paths', () => {
