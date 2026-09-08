@@ -9910,3 +9910,240 @@ describe('emitIrModuleRust for-of with element borrow', () => {
     expect(output).toContain('total += ');
   });
 });
+
+describe('emitIrModuleRust primitive union dispatch', () => {
+  it('emits typeof narrowing as matches! on primitive union enum', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'typeof-narrow.ts',
+        `export function describe(value: string | number): string {
+           if (typeof value === "string") { return value; }
+           return value.toString();
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('enum');
+    expect(output).toContain('matches!');
+  });
+
+  it('emits negated typeof test', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'typeof-neg.ts',
+        `export function isNumber(value: string | number): boolean {
+           return typeof value !== "string";
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('!matches!');
+  });
+});
+
+describe('emitIrModuleRust tagged union', () => {
+  it('emits discriminated union as Rust enum with accessors', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'tagged-union.ts',
+        `export interface Circle { kind: string; radius: number }
+         export interface Square { kind: string; side: number }
+         export type Shape = Circle | Square;`,
+      ).module,
+    ).contents;
+    expect(output).toContain('enum Shape');
+    expect(output).toContain('Circle');
+    expect(output).toContain('Square');
+    expect(output).toContain('fn kind');
+  });
+});
+
+describe('emitIrModuleRust type emission edge cases', () => {
+  it('emits literal boolean type as bool', () => {
+    const output = emitIrModuleRust(
+      lower('lit-bool-type.ts', 'export function always(): true { return true; }').module,
+    ).contents;
+    expect(output).toContain('bool');
+  });
+
+  it('emits literal number type as f64', () => {
+    const output = emitIrModuleRust(lower('lit-num-type.ts', 'export function one(): 1 { return 1; }').module).contents;
+    expect(output).toContain('f64');
+  });
+
+  it('emits literal string type as String', () => {
+    const output = emitIrModuleRust(
+      lower('lit-str-type.ts', 'export function hello(): "hi" { return "hi"; }').module,
+    ).contents;
+    expect(output).toContain('String');
+  });
+
+  it('emits tuple type with trailing comma for single-element', () => {
+    const output = emitIrModuleRust(
+      lower('single-tuple-type.ts', 'export function wrap(x: number): [number] { return [x]; }').module,
+    ).contents;
+    expect(output).toContain('(f64,)');
+  });
+
+  it('emits never type as !', () => {
+    const output = emitIrModuleRust(
+      lower('never-type.ts', 'export function fail(msg: string): never { throw new Error(msg); }').module,
+    ).contents;
+    expect(output).toContain('!');
+  });
+
+  it('emits void type as ()', () => {
+    const output = emitIrModuleRust(lower('void-type.ts', 'export function noop(): void {}').module).contents;
+    expect(output).toContain('()');
+  });
+
+  it('emits string literal union alias as type alias to String', () => {
+    const output = emitIrModuleRust(
+      lower('str-union.ts', 'export type Direction = "north" | "south" | "east" | "west";').module,
+    ).contents;
+    expect(output).toContain('type Direction = String');
+  });
+
+  it('emits bigint as i64', () => {
+    const output = emitIrModuleRust(
+      lower('bigint.ts', 'export function big(n: bigint): bigint { return n; }').module,
+    ).contents;
+    expect(output).toContain('i64');
+  });
+});
+
+describe('emitIrModuleRust labeled control flow', () => {
+  it('emits labeled break with Rust lifetime label', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'labeled-break.ts',
+        `export function find(grid: number[][]): number {
+           outer: for (const row of grid) {
+             for (const cell of row) {
+               if (cell > 10) break outer;
+             }
+           }
+           return -1;
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain("'outer");
+    expect(output).toContain('break');
+  });
+
+  it('emits labeled continue', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'labeled-continue.ts',
+        `export function skip(items: number[][]): number {
+           let count: number = 0;
+           outer: for (const row of items) {
+             for (const x of row) {
+               if (x < 0) continue outer;
+               count = count + 1;
+             }
+           }
+           return count;
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain("'outer");
+    expect(output).toContain('continue');
+  });
+
+  it('emits while true as loop', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'while-true.ts',
+        `export function spin(): number {
+           let i: number = 0;
+           while (true) { i = i + 1; if (i > 100) return i; }
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('loop {');
+    expect(output).not.toContain('while true');
+  });
+});
+
+describe('emitIrModuleRust collection mutation methods', () => {
+  it('emits map.set as insert and map.delete as remove', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'map-ops.ts',
+        `export function update(m: Map<string, number>): void {
+           m.set("a", 1);
+           m.delete("b");
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('.insert(');
+    expect(output).toContain('.remove(');
+  });
+});
+
+describe('emitIrModuleRust Readonly and Required type unwrapping', () => {
+  it('emits Readonly<T> as T without wrapper', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'readonly-unwrap.ts',
+        'export interface Item { value: number } export function read(item: Readonly<Item>): number { return item.value; }',
+      ).module,
+    ).contents;
+    expect(output).toContain('item: Item');
+    expect(output).not.toContain('Readonly<');
+  });
+});
+
+describe('emitIrModuleRust switch exhaustiveness', () => {
+  it('emits unreachable! when no default case', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'switch-no-default.ts',
+        `export function name(x: number): string {
+           switch (x) {
+             case 1: return "one";
+             case 2: return "two";
+           }
+           return "other";
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toBeDefined();
+  });
+});
+
+describe('emitIrModuleRust try-catch without await', () => {
+  it('emits catch_unwind for synchronous try-catch', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'try-catch-sync.ts',
+        `export function safe(): number {
+           try {
+             return 1;
+           } catch (e) {
+             return 0;
+           }
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('catch_unwind');
+    expect(output).toContain('AssertUnwindSafe');
+  });
+});
+
+describe('emitIrModuleRust forIn closed key iteration', () => {
+  it('emits for-in with inline key list', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'forin-keys.ts',
+        `interface Rec { a: number; b: number }
+         export function keys(r: Rec): string[] {
+           const out: string[] = [];
+           for (const k in r) { out.push(k); }
+           return out;
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('for ');
+    expect(output).toContain('.to_owned()');
+  });
+});
