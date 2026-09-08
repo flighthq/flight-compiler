@@ -3420,4 +3420,297 @@ describe('emitIrModuleRust', () => {
     expect(output).toContain('if');
     expect(output).toContain('else');
   });
+
+  it('emits array literal as vec! macro', () => {
+    const output = emitIrModuleRust(
+      lower('arr-lit.ts', 'export function nums(): number[] { return [1, 2, 3]; }').module,
+    ).contents;
+    expect(output).toContain('vec![');
+  });
+
+  it('emits string concatenation assignment as push_str', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'str-concat-assign.ts',
+        'export function build(base: string): string { let s = base; s += " world"; return s; }',
+      ).module,
+    ).contents;
+    expect(output).toContain('push_str');
+  });
+
+  it('emits bitwise assignment as i32 cast round-trip', () => {
+    const output = emitIrModuleRust(
+      lower('bit-assign.ts', 'export function mask(x: number, m: number): number { x &= m; return x; }').module,
+    ).contents;
+    expect(output).toContain('as i32');
+  });
+
+  it('emits exponentiation assignment as f64::powf', () => {
+    const output = emitIrModuleRust(
+      lower('pow-assign.ts', 'export function square(x: number): number { x **= 2; return x; }').module,
+    ).contents;
+    expect(output).toContain('powf');
+  });
+
+  it('emits unsigned right shift assignment as u32 cast', () => {
+    const output = emitIrModuleRust(
+      lower('ursh-assign.ts', 'export function ursh(x: number): number { x >>>= 2; return x; }').module,
+    ).contents;
+    expect(output).toContain('as u32');
+  });
+
+  it('emits exponentiation as f64::powf', () => {
+    const output = emitIrModuleRust(
+      lower('pow.ts', 'export function power(base: number, exp: number): number { return base ** exp; }').module,
+    ).contents;
+    expect(output).toContain('powf');
+  });
+
+  it('emits unsigned right shift as u32 cast round-trip', () => {
+    const output = emitIrModuleRust(
+      lower('ursh.ts', 'export function ursh(x: number, y: number): number { return x >>> y; }').module,
+    ).contents;
+    expect(output).toContain('as u32');
+  });
+
+  it('emits bitwise AND as i32 cast round-trip', () => {
+    const output = emitIrModuleRust(
+      lower('bitand.ts', 'export function band(a: number, b: number): number { return a & b; }').module,
+    ).contents;
+    expect(output).toContain('as i32');
+  });
+
+  it('emits array join as join method with borrowed separator', () => {
+    const output = emitIrModuleRust(
+      lower('arr-join.ts', 'export function csv(items: string[]): string { return items.join(","); }').module,
+    ).contents;
+    expect(output).toContain('.join(');
+  });
+
+  it('emits array slice as range indexing', () => {
+    const output = emitIrModuleRust(
+      lower('arr-slice.ts', 'export function tail(items: number[]): number[] { return items.slice(1); }').module,
+    ).contents;
+    expect(output).toContain('to_vec()');
+  });
+
+  it('emits array slice with two bounds as range indexing', () => {
+    const output = emitIrModuleRust(
+      lower('arr-slice2.ts', 'export function mid(items: number[]): number[] { return items.slice(1, 3); }').module,
+    ).contents;
+    expect(output).toContain('..');
+    expect(output).toContain('to_vec()');
+  });
+
+  it('emits array concat as extend', () => {
+    const output = emitIrModuleRust(
+      lower('arr-concat.ts', 'export function merge(a: number[], b: number[]): number[] { return a.concat(b); }')
+        .module,
+    ).contents;
+    expect(output).toContain('extend');
+  });
+
+  it('emits string charAt as chars().nth()', () => {
+    const output = emitIrModuleRust(
+      lower('char-at.ts', 'export function first(s: string): string { return s.charAt(0); }').module,
+    ).contents;
+    expect(output).toContain('chars().nth(');
+  });
+
+  it('emits string charCodeAt as chars().nth() with u32 cast', () => {
+    const output = emitIrModuleRust(
+      lower('char-code.ts', 'export function code(s: string): number { return s.charCodeAt(0); }').module,
+    ).contents;
+    expect(output).toContain('as u32');
+    expect(output).toContain('f64');
+  });
+
+  it('emits string substring as range slice', () => {
+    const output = emitIrModuleRust(
+      lower('substr.ts', 'export function mid(s: string): string { return s.substring(1, 3); }').module,
+    ).contents;
+    expect(output).toContain('to_string()');
+  });
+
+  it('emits labeled break as break with lifetime label', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'labeled-break.ts',
+        `export function search(matrix: number[][]): boolean {
+          outer: for (const row of matrix) {
+            for (const cell of row) {
+              if (cell === 42) break outer;
+            }
+          }
+          return false;
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain("'outer");
+    expect(output).toContain('break');
+  });
+
+  it('emits switch with default as if-else chain', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'switch.ts',
+        `export function describe(n: number): string {
+          switch (n) {
+            case 0: return "zero";
+            case 1: return "one";
+            default: return "other";
+          }
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('if');
+    expect(output).toContain('else');
+  });
+
+  it('emits throw new Error as panic! with message', () => {
+    const output = emitIrModuleRust(
+      lower('throw.ts', 'export function fail(msg: string): never { throw new Error(msg); }').module,
+    ).contents;
+    expect(output).toContain('panic!');
+  });
+
+  it('emits try-catch as catch_unwind', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'try-catch.ts',
+        `export function safe(f: () => number): number {
+          try { return f(); } catch (e) { return 0; }
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('catch_unwind');
+  });
+
+  it('emits nullable variable as Option None initialization', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'nullable-var.ts',
+        `export function find(items: number[]): number | undefined {
+          let result: number | undefined = undefined;
+          for (const item of items) { if (item > 0) { result = item; break; } }
+          return result;
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('None');
+    expect(output).toContain('Option');
+  });
+
+  it('emits type parameter with constraint as bound', () => {
+    const output = emitIrModuleRust(
+      lower('generic-bound.ts', `export function identity<T extends number>(x: T): T { return x; }`).module,
+    ).contents;
+    expect(output).toContain('f64');
+  });
+
+  it('emits while true as loop keyword', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'infinite.ts',
+        `export function run(): number {
+          let i = 0;
+          while (true) { i += 1; if (i > 10) return i; }
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('loop');
+  });
+
+  it('emits function type as Rc<dyn Fn>', () => {
+    const output = emitIrModuleRust(
+      lower('fn-type.ts', `export function apply(f: (x: number) => number, v: number): number { return f(v); }`).module,
+    ).contents;
+    expect(output).toContain('Rc<dyn Fn');
+  });
+
+  it('emits literal type as primitive Rust type', () => {
+    const output = emitIrModuleRust(
+      lower('lit-type.ts', `export function truthy(): true { return true; }`).module,
+    ).contents;
+    expect(output).toContain('bool');
+  });
+
+  it('emits tuple type with single element trailing comma', () => {
+    const output = emitIrModuleRust(
+      lower('tuple-single.ts', `export function wrap(x: number): [number] { return [x]; }`).module,
+    ).contents;
+    expect(output).toMatch(/\(f64,\)/);
+  });
+
+  it('emits never return type as diverging function', () => {
+    const output = emitIrModuleRust(
+      lower('never.ts', `export function abort(): never { throw new Error("abort"); }`).module,
+    ).contents;
+    expect(output).toContain('-> !');
+  });
+
+  it('emits null literal as None', () => {
+    const output = emitIrModuleRust(
+      lower('null-lit.ts', `export function nothing(): null { return null; }`).module,
+    ).contents;
+    expect(output).toContain('None');
+  });
+
+  it('emits object type as named struct', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'obj-type.ts',
+        `export interface Point { x: number; y: number; }
+         export function origin(): Point { return { x: 0, y: 0 }; }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('struct Point');
+  });
+
+  it('emits nullish comparison as is_none()', () => {
+    const output = emitIrModuleRust(
+      lower('nullish-cmp.ts', `export function isAbsent(x: number | null): boolean { return x === null; }`).module,
+    ).contents;
+    expect(output).toContain('is_none()');
+  });
+
+  it('emits negated nullish comparison as is_some()', () => {
+    const output = emitIrModuleRust(
+      lower('nullish-cmp-neg.ts', `export function isPresent(x: number | null): boolean { return x !== null; }`).module,
+    ).contents;
+    expect(output).toContain('is_some()');
+  });
+
+  it('emits coalesce operator as unwrap_or_else', () => {
+    const output = emitIrModuleRust(
+      lower('coalesce.ts', `export function fallback(x: number | null, d: number): number { return x ?? d; }`).module,
+    ).contents;
+    expect(output).toContain('unwrap_or_else');
+  });
+
+  it('emits string concatenation as format! macro', () => {
+    const output = emitIrModuleRust(
+      lower('str-concat.ts', `export function greet(name: string): string { return "hello " + name; }`).module,
+    ).contents;
+    expect(output).toContain('format!');
+  });
+
+  it('emits array index as usize cast', () => {
+    const output = emitIrModuleRust(
+      lower('arr-index.ts', `export function get(items: number[], i: number): number { return items[i]; }`).module,
+    ).contents;
+    expect(output).toContain('as usize');
+  });
+
+  it('emits closure with body as multi-line lambda', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'closure-body.ts',
+        `export function apply(items: number[]): number[] {
+          return items.map((x) => { const y = x * 2; return y; });
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('|x|');
+  });
 });
