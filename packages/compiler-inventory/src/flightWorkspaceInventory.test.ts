@@ -699,6 +699,50 @@ describe('analyzeFlightWorkspace', () => {
     }
   });
 
+  it('resolves an exported array destructuring binding with omitted elements', () => {
+    const upstream = createUpstreamFixture();
+    try {
+      write(upstream, 'packages/types/src/ArrayExport.ts', 'export const [first, , third] = [1, 2, 3];\n');
+      write(
+        upstream,
+        'packages/types/src/index.ts',
+        "export { Mode } from './Mode.js';\nexport type { Shape } from './Shape.js';\nexport { createValue } from './value.js';\n" +
+          "import { createOtherValue as createRenamedValue } from './other.js';\nexport { createRenamedValue as createPublicValue };\n" +
+          "export { createValue as createDirectAlias } from './value.js';\n" +
+          "export { first, third } from './ArrayExport.js';\n",
+      );
+      git(upstream, 'add', '.');
+      git(upstream, 'commit', '-m', 'array destructuring');
+
+      const inventory = analyzeFlightWorkspace({ upstreamDirectory: upstream });
+      const inventoryByName = new Map(inventory.packages.map((item) => [item.name, item]));
+      const root = resolvePackageExportLane(inventoryByName, '@flighthq/types');
+
+      expect(root.exports.find((e) => e.name === 'first')).toMatchObject({ kind: 'variable' });
+      expect(root.exports.find((e) => e.name === 'third')).toMatchObject({ kind: 'variable' });
+      expect(root.exports.find((e) => e.name === 'second')).toBeUndefined();
+    } finally {
+      rmSync(upstream, { force: true, recursive: true });
+    }
+  });
+
+  it('fails when SDK re-exports a relative module specifier', () => {
+    const upstream = createUpstreamFixture();
+    try {
+      write(upstream, 'packages/sdk/src/helper.ts', 'export const helper = 1;\n');
+      write(upstream, 'packages/sdk/src/index.ts', "export * from './helper.js';\nexport * from '@flighthq/types';\n");
+      git(upstream, 'add', '.');
+      git(upstream, 'commit', '-m', 'sdk relative re-export');
+
+      expectInventoryFailure(
+        () => analyzeFlightWorkspace({ upstreamDirectory: upstream }),
+        'unsupported-package-specifier',
+      );
+    } finally {
+      rmSync(upstream, { force: true, recursive: true });
+    }
+  });
+
   it('refuses a program file that resolves outside the upstream checkout', () => {
     const upstream = createUpstreamFixture();
     const outside = mkdtempSync(path.join(os.tmpdir(), 'flight-compiler-outside-'));
