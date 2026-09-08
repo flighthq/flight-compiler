@@ -4340,3 +4340,221 @@ describe('emitIrModuleHaxe property access with optional chaining', () => {
     expect(output).toContain('?.');
   });
 });
+
+describe('emitIrModuleHaxe object rest destructuring', () => {
+  it('emits object rest pattern using Reflect.copy and deleteField', () => {
+    const result = lower(
+      'object-rest.ts',
+      `export function strip(obj: { a: number; b: string; c: boolean }): { b: string; c: boolean } {
+         const { a, ...rest } = obj;
+         return rest;
+       }`,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('Reflect.copy(');
+    expect(output).toContain('Reflect.deleteField(');
+  });
+});
+
+describe('emitIrModuleHaxe function expression with body', () => {
+  it('emits non-arrow function expression with block body', () => {
+    const result = lower(
+      'fn-expr-body.ts',
+      `export const add = function(a: number, b: number): number { return a + b; };`,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('function(');
+    expect(output).toContain('return');
+  });
+});
+
+describe('emitIrModuleHaxe array slice with no arguments', () => {
+  it('emits array.copy() for slice with no bounds', () => {
+    const result = lower(
+      'array-copy.ts',
+      `export function clone(arr: number[]): number[] {
+         return arr.slice();
+       }`,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('.copy()');
+  });
+
+  it('emits array.slice with Std.int bounds when arguments provided', () => {
+    const result = lower(
+      'array-slice.ts',
+      `export function sub(arr: number[], start: number, end: number): number[] {
+         return arr.slice(start, end);
+       }`,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('.slice(');
+    expect(output).toContain('Std.int(');
+  });
+});
+
+describe('emitIrModuleHaxe array method bindings', () => {
+  it('emits array.push as push', () => {
+    const result = lower(
+      'array-push.ts',
+      `export function append(arr: number[], item: number): void {
+         arr.push(item);
+       }`,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('.push(');
+  });
+
+  it('emits array.indexOf with Std.int argument position', () => {
+    const result = lower(
+      'array-indexOf.ts',
+      `export function find(arr: number[], value: number): number {
+         return arr.indexOf(value);
+       }`,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('indexOf');
+  });
+});
+
+describe('emitIrModuleHaxe unsigned right shift', () => {
+  it('emits unsigned right shift with Std.int wrapping', () => {
+    const result = lower(
+      'unsigned-shift.ts',
+      `export function urshift(a: number, b: number): number {
+         return a >>> b;
+       }`,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('>>>');
+    expect(output).toContain('Std.int(');
+  });
+});
+
+describe('emitIrModuleHaxe exponentiation operator', () => {
+  it('emits ** as Math.pow', () => {
+    const result = lower(
+      'power-op.ts',
+      `export function power(base: number, exp: number): number {
+         return base ** exp;
+       }`,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('Math.pow(');
+  });
+});
+
+describe('emitIrModuleHaxe new expression with ambient type', () => {
+  it('emits new expression with mapped ambient type', () => {
+    const result = lower('new-map.ts', 'export function create(): Map<string, number> { return new Map(); }');
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('new ');
+  });
+});
+
+describe('emitIrModuleHaxe class with private and public visibility', () => {
+  it('emits private and public modifiers on methods', () => {
+    const result = lower(
+      'visibility.ts',
+      `export class Service {
+        private key: string;
+        constructor(k: string) { this.key = k; }
+        private internal(): string { return this.key; }
+        public external(): string { return this.internal(); }
+       }`,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('private');
+    expect(output).toContain('public');
+  });
+});
+
+describe('emitIrModuleHaxe async task function emission', () => {
+  it('emits async function body through task lowering pipeline', () => {
+    const result = lower(
+      'async-fn.ts',
+      `export async function fetch(input: Promise<number>): Promise<number> {
+         const value = await input;
+         return value + 1;
+       }`,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('_Promise');
+    expect(output).toContain('function(');
+  });
+});
+
+describe('emitIrModuleHaxe class without constructor having subclass', () => {
+  it('emits empty constructor when class has a subclass in the same module', () => {
+    const result = lower(
+      'no-ctor-subclass.ts',
+      `export class Parent {
+        value: number = 0;
+      }
+      export class Child extends Parent {
+        extra: string;
+        constructor() { super(); this.extra = "hi"; }
+      }`,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('class Parent');
+    expect(output).toContain('class Child');
+  });
+});
+
+describe('emitIrModuleHaxe static methods and fields', () => {
+  it('emits static modifier on class members', () => {
+    const result = lower(
+      'static-members.ts',
+      `export class Constants {
+        static readonly PI: number = 3.14;
+        static double(x: number): number { return x * 2; }
+      }`,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('static');
+  });
+});
+
+describe('emitIrModuleHaxe tupleSuffix expression', () => {
+  it('emits tuple suffix as slice from start index', () => {
+    const result = lower(
+      'tuple-suffix.ts',
+      `export function tail(t: [number, string, boolean]): [string, boolean] {
+        const [, ...rest] = t;
+        return rest;
+      }`,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('.slice(');
+  });
+});
+
+describe('emitIrModuleHaxe tupleRest expression', () => {
+  it('emits tuple rest as slice from start index', () => {
+    const result = lower(
+      'tuple-rest.ts',
+      `export function rest(t: [number, ...string[]]): string[] {
+        const [, ...values] = t;
+        return values;
+      }`,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('.slice(');
+  });
+});
