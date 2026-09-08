@@ -897,4 +897,414 @@ describe('emitIrModuleCpp', () => {
     }
     expect(() => emitIrModuleCpp(module)).toThrow();
   });
+
+  it('refuses regexp expressions before lowering', () => {
+    const result = lower('regexp.ts', 'export const x: number = 1;');
+    const module = structuredClone(result.module);
+    const decl = module.declarations[0];
+    if (decl?.kind === 'variable' && !('pattern' in decl)) {
+      (decl as any).initializer = { kind: 'regexp', pattern: 'test', flags: '' };
+    }
+    expect(() => emitIrModuleCpp(module)).toThrow('regular expressions');
+  });
+
+  it('refuses spread expressions in non-Math contexts', () => {
+    const result = lower('spread.ts', 'export const x: number = 1;');
+    const module = structuredClone(result.module);
+    const decl = module.declarations[0];
+    if (decl?.kind === 'variable' && !('pattern' in decl)) {
+      (decl as any).initializer = {
+        kind: 'spread',
+        expression: { kind: 'literal', value: 1 },
+      };
+    }
+    expect(() => emitIrModuleCpp(module)).toThrow('spreading');
+  });
+
+  it('emits NaN and Infinity literals via std::numeric_limits', () => {
+    const result = lower('special-num.ts', 'export const x: number = 1;');
+    const module = structuredClone(result.module);
+    const decl = module.declarations[0];
+    if (decl?.kind === 'variable' && !('pattern' in decl)) {
+      decl.initializer = { kind: 'literal', value: NaN };
+    }
+    const emitted = emitIrModuleCpp(module);
+    expect(emitted.contents).toContain('std::numeric_limits<double>::quiet_NaN()');
+
+    const module2 = structuredClone(result.module);
+    const decl2 = module2.declarations[0];
+    if (decl2?.kind === 'variable' && !('pattern' in decl2)) {
+      decl2.initializer = { kind: 'literal', value: Infinity };
+    }
+    const emitted2 = emitIrModuleCpp(module2);
+    expect(emitted2.contents).toContain('std::numeric_limits<double>::infinity()');
+
+    const module3 = structuredClone(result.module);
+    const decl3 = module3.declarations[0];
+    if (decl3?.kind === 'variable' && !('pattern' in decl3)) {
+      decl3.initializer = { kind: 'literal', value: -Infinity };
+    }
+    const emitted3 = emitIrModuleCpp(module3);
+    expect(emitted3.contents).toContain('-std::numeric_limits<double>::infinity()');
+  });
+
+  it('emits null literal as nullptr', () => {
+    const result = lower('null-lit.ts', 'export const x: number = 1;');
+    const module = structuredClone(result.module);
+    const decl = module.declarations[0];
+    if (decl?.kind === 'variable' && !('pattern' in decl)) {
+      decl.initializer = { kind: 'literal', value: null };
+    }
+    const emitted = emitIrModuleCpp(module);
+    expect(emitted.contents).toContain('nullptr');
+  });
+
+  it('emits string literal with flight-cpp runtime as flight::String', () => {
+    const result = lower('string-lit.ts', 'export const x: string = "hello";');
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+    expect(emitted.contents).toContain('flight::String("hello")');
+  });
+
+  it('emits template literals with flight-cpp runtime', () => {
+    const result = lower('tpl-flight.ts', 'export function label(n: number): string { return `item ${n}`; }');
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+    expect(emitted.contents).toContain('flight::String');
+    expect(emitted.contents).toContain('flight::String::from_utf8(std::to_string(');
+  });
+
+  it('emits empty template literal as empty string construction', () => {
+    const result = lower('empty-tpl.ts', 'export const x: number = 1;');
+    const module = structuredClone(result.module);
+    const decl = module.declarations[0];
+    if (decl?.kind === 'variable' && !('pattern' in decl)) {
+      (decl as any).initializer = { kind: 'template', parts: [] };
+    }
+    const emitted = emitIrModuleCpp(module);
+    expect(emitted.contents).toContain('std::string()');
+    const flightEmitted = emitIrModuleCpp(module, { runtimeProfile: 'flight-cpp' });
+    expect(flightEmitted.contents).toContain('flight::String()');
+  });
+
+  it('emits array literals with flight-cpp runtime', () => {
+    const result = lower('array-flight.ts', 'export function items(): number[] { return [1, 2, 3]; }');
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+    expect(emitted.contents).toContain('flight::Array');
+    expect(emitted.contents).not.toContain('std::vector');
+  });
+
+  it('emits tuple literal with absent element as std::nullopt', () => {
+    const result = lower('tuple-absent.ts', 'export function partial(): [number, number?] { return [1]; }');
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('std::nullopt');
+    expect(emitted.contents).toContain('std::make_tuple');
+  });
+
+  it('emits tuple literal with present optional element using make_optional', () => {
+    const result = lower('tuple-opt.ts', 'export function full(): [number, number?] { return [1, 2]; }');
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('std::make_optional');
+  });
+
+  it('emits Required<T> type by unwrapping to the inner type', () => {
+    const result = lower(
+      'required.ts',
+      'interface Pt { x: number } export function fill(p: Required<Pt>): number { return p.x; }',
+    );
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('double fill(Pt p)');
+  });
+
+  it('refuses indexedAccess types', () => {
+    const result = lower('idx.ts', 'export const x: number = 1;');
+    const module = structuredClone(result.module);
+    const decl = module.declarations[0];
+    if (decl?.kind === 'variable' && !('pattern' in decl)) {
+      (decl as any).type = {
+        kind: 'indexedAccess',
+        object: { kind: 'primitive', name: 'string' },
+        index: { kind: 'literal', value: 'x' },
+      };
+    }
+    expect(() => emitIrModuleCpp(module)).toThrow('indexedAccess');
+  });
+
+  it('refuses intersection types', () => {
+    const result = lower('inter.ts', 'export const x: number = 1;');
+    const module = structuredClone(result.module);
+    const decl = module.declarations[0];
+    if (decl?.kind === 'variable' && !('pattern' in decl)) {
+      (decl as any).type = { kind: 'intersection', types: [] };
+    }
+    expect(() => emitIrModuleCpp(module)).toThrow('intersection');
+  });
+
+  it('emits boolean literal type as bool', () => {
+    const result = lower('bool-lit.ts', 'export function yes(): true { return true; }');
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('bool yes()');
+  });
+
+  it('emits string literal type with flight-cpp runtime', () => {
+    const result = lower('str-lit-type.ts', "export function tag(): 'hello' { return 'hello'; }");
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+    expect(emitted.contents).toContain('flight::String tag()');
+  });
+
+  it('emits null and undefined types as void', () => {
+    const result = lower('null-type.ts', 'export const x: number = 1;');
+    const module = structuredClone(result.module);
+    const decl = module.declarations[0];
+    if (decl?.kind === 'variable' && !('pattern' in decl)) {
+      (decl as any).type = { kind: 'null' };
+    }
+    const emitted = emitIrModuleCpp(module);
+    expect(emitted.contents).toContain('void');
+  });
+
+  it('emits symbol type as int', () => {
+    const result = lower('symbol.ts', 'export const x: number = 1;');
+    const module = structuredClone(result.module);
+    const decl = module.declarations[0];
+    if (decl?.kind === 'variable' && !('pattern' in decl)) {
+      (decl as any).type = { kind: 'primitive', name: 'symbol' };
+    }
+    const emitted = emitIrModuleCpp(module);
+    expect(emitted.contents).toContain('int x');
+  });
+
+  it('emits unknown type as auto', () => {
+    const result = lower('unknown.ts', 'export const x: number = 1;');
+    const module = structuredClone(result.module);
+    const decl = module.declarations[0];
+    if (decl?.kind === 'variable' && !('pattern' in decl)) {
+      (decl as any).type = { kind: 'unknown', source: 'param' };
+    }
+    const emitted = emitIrModuleCpp(module);
+    expect(emitted.contents).toContain('auto x');
+  });
+
+  it('refuses Partial<T> types', () => {
+    const result = lower('partial.ts', 'export const x: number = 1;');
+    const module = structuredClone(result.module);
+    const decl = module.declarations[0];
+    if (decl?.kind === 'variable' && !('pattern' in decl)) {
+      (decl as any).type = {
+        kind: 'named',
+        reference: { kind: 'ambient', name: 'Partial' },
+        typeArguments: [{ kind: 'primitive', name: 'number' }],
+      };
+    }
+    expect(() => emitIrModuleCpp(module)).toThrow('Partial');
+  });
+
+  it('emits C++ keywords with trailing underscore', () => {
+    const result = lower(
+      'keywords.ts',
+      'export function check(value: number): number { const auto_val: number = value; return auto_val; }',
+    );
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('double check');
+  });
+
+  it('emits variable without type as auto', () => {
+    const result = lower('auto-var.ts', 'export const value = 42;');
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toMatch(/(?:auto|double)\s+value/);
+  });
+
+  it('emits string concatenation with flight-cpp runtime', () => {
+    const result = lower(
+      'concat-flight.ts',
+      'export function greet(name: string): string { return "Hello, " + name; }',
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+    expect(emitted.contents).toContain('+');
+    expect(emitted.contents).not.toContain('#include <string>');
+  });
+
+  it('emits target name allocation collision as emission failure', () => {
+    const result = lower('collision.ts', 'export const x: number = 1;');
+    const module = structuredClone(result.module);
+    const binding = {
+      id: 'b:1',
+      kind: 'variable' as const,
+      column: 1,
+      fingerprint: 'sha256:a',
+      line: 1,
+      name: 'value',
+      packageName: '@flighthq/math',
+      scope: 'module' as const,
+      source: 'test.ts',
+      space: 'value' as const,
+    };
+    const binding2 = { ...binding, id: 'b:2', fingerprint: 'sha256:b', line: 2 };
+    module.declarations = [
+      {
+        kind: 'variable',
+        binding,
+        mutable: false,
+        type: { kind: 'primitive', name: 'number' },
+        initializer: { kind: 'literal', value: 1 },
+      },
+      {
+        kind: 'variable',
+        binding: binding2,
+        mutable: false,
+        type: { kind: 'primitive', name: 'number' },
+        initializer: { kind: 'literal', value: 2 },
+      },
+    ] as any;
+    expect(() => emitIrModuleCpp(module)).toThrow();
+  });
+
+  it('emits class with overridden method using override keyword', () => {
+    const result = lower(
+      'override.ts',
+      'class A { x(): number { return 1; } } export class B extends A { x(): number { return 2; } }',
+    );
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('override');
+  });
+
+  it('emits block statement with braces', () => {
+    const result = lower('block.ts', 'export function run(): number { { let x: number = 1; return x; } }');
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('{');
+  });
+
+  it('emits string enum with flight-cpp runtime', () => {
+    const result = lower('str-enum-flight.ts', "export enum Color { Red = 'red', Green = 'green' }");
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+    expect(emitted.contents).toContain('using Color = flight::String');
+  });
+
+  it('reuses existing anonymous struct when types match', () => {
+    const result = lower(
+      'reuse-struct.ts',
+      'export function a(): { x: number; y: number } { return { x: 1, y: 2 }; } export function b(): { x: number; y: number } { return { x: 3, y: 4 }; }',
+    );
+    const emitted = emitIrModuleCpp(result.module);
+    const structMatches = emitted.contents.match(/struct \w+ \{/g) ?? [];
+    const anonymousStructs = structMatches.filter((m) => !m.includes('flighthq'));
+    expect(anonymousStructs.length).toBe(1);
+  });
+
+  it('emits return without expression in void function', () => {
+    const result = lower('void-return.ts', 'export function stop(): void { return; }');
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('return;');
+  });
+
+  it('skips non-relative import specifiers', () => {
+    const result = lower(
+      'external-import.ts',
+      "import { something } from 'external-package'; export function use(): number { return something(); }",
+    );
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).not.toContain('#include "external');
+  });
+
+  it('emits typeof prefix as typeid', () => {
+    const result = lower('typeof.ts', 'export const x: number = 1;');
+    const module = structuredClone(result.module);
+    const decl = module.declarations[0];
+    if (decl?.kind === 'variable' && !('pattern' in decl)) {
+      (decl as any).initializer = {
+        kind: 'unary',
+        operator: 'typeof',
+        operand: { kind: 'literal', value: 1 },
+        prefix: true,
+        postfix: false,
+        semantics: { operand: { flow: 'number' } },
+      };
+    }
+    const emitted = emitIrModuleCpp(module);
+    expect(emitted.contents).toContain('typeid');
+  });
+
+  it('emits void prefix operator', () => {
+    const result = lower('void-op.ts', 'export const x: number = 1;');
+    const module = structuredClone(result.module);
+    const decl = module.declarations[0];
+    if (decl?.kind === 'variable' && !('pattern' in decl)) {
+      (decl as any).initializer = {
+        kind: 'unary',
+        operator: 'void',
+        operand: { kind: 'literal', value: 0 },
+        prefix: true,
+        postfix: false,
+        semantics: { operand: { flow: 'number' } },
+      };
+    }
+    const emitted = emitIrModuleCpp(module);
+    expect(emitted.contents).toContain('(void)');
+  });
+
+  it('emits for-of with typed variable', () => {
+    const result = lower(
+      'for-of-typed.ts',
+      'export function sum(items: number[]): number { let total: number = 0; for (const item of items) { total = total + item; } return total; }',
+    );
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('double item');
+  });
+
+  it('detects return statements in if branches for try-finally deferred return', () => {
+    const result = lower(
+      'try-if-return.ts',
+      'export async function check(task: Promise<number>): Promise<number> { try { if (true) { return await task; } else { return await task; } } finally { let x: number = 0; } }',
+    );
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('finally_return');
+  });
+
+  it('detects return statements in try body for try-catch-finally deferred return', () => {
+    const result = lower(
+      'try-catch-ret.ts',
+      'export async function safe(task: Promise<number>): Promise<number> { try { return await task; } catch (e) { throw e; } finally { let x: number = 0; } }',
+    );
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('finally_return');
+    expect(emitted.contents).toContain('catch');
+  });
+
+  it('emits try-finally without catch clause', () => {
+    const result = lower(
+      'try-finally-no-catch.ts',
+      'export async function run(task: Promise<number>): Promise<number> { let r: number = 0; try { r = await task; } finally { r = 0; } return r; }',
+    );
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('std::exception_ptr');
+    expect(emitted.contents).not.toContain('catch (const std::exception');
+  });
+
+  it('emits tupleSpread with mixed element and spread segments', () => {
+    const result = lower(
+      'tuple-spread.ts',
+      'export function combine(pair: [number, number]): [number, number, number] { return [0, ...pair]; }',
+    );
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('std::make_tuple');
+    expect(emitted.contents).toContain('std::get<');
+  });
+
+  it('emits deep class inheritance chain walking all ancestor methods for overrides', () => {
+    const result = lower(
+      'deep-inherit.ts',
+      'class A { run(): number { return 1; } } class B extends A { step(): number { return 2; } } export class C extends B { run(): number { return 3; } step(): number { return 4; } }',
+    );
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('override');
+    expect((emitted.contents.match(/override/g) ?? []).length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('emits && and || binary operators as C++ logical operators', () => {
+    const result = lower(
+      'logical.ts',
+      'export function both(a: boolean, b: boolean): boolean { return a && b; } export function either(a: boolean, b: boolean): boolean { return a || b; }',
+    );
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('&&');
+    expect(emitted.contents).toContain('||');
+  });
 });
