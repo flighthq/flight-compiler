@@ -167,6 +167,9 @@ describe('createCompilerModuleFacadeIdentities', () => {
     expect(() => createCompilerModuleFacadeIdentities(null as never)).toThrow(
       expect.objectContaining({ code: 'invalid-facade-module' }),
     );
+    expect(() => createCompilerModuleFacadeIdentities(42 as never)).toThrow(
+      expect.objectContaining({ code: 'invalid-facade-module' }),
+    );
     for (const module of invalidModules) {
       expect(() => createCompilerModuleFacadeIdentities(module)).toThrow(
         expect.objectContaining({ code: 'invalid-facade-module', kind: 'compiler-module-facade' }),
