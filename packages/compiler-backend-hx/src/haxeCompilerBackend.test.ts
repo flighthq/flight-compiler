@@ -524,7 +524,7 @@ describe('emitIrModuleHaxe', () => {
     // A written shape has a known key set, so iteration is over that set rather than over whatever
     // reflection reports at runtime.
     expect(iterationOutput).toContain(
-      'var key;\n  for (variableHoistingIterationValue in ["value"]) {\n    key = variableHoistingIterationValue;\n    key;',
+      'var key:String;\n  for (variableHoistingIterationValue in ["value"]) {\n    key = variableHoistingIterationValue;\n    key;',
     );
   });
 

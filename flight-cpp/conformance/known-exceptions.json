@@ -16,13 +16,6 @@
       "owner": "runtime-contract",
       "rule": "runtime external symbol binding plan is incomplete (missing: WeakMap[type])",
       "reason": "WeakMap has no elected ownership and lifetime contract for native targets."
-    },
-    {
-      "fixture": "variableForInHoisting",
-      "phase": "emission",
-      "owner": "compiler-lowering",
-      "rule": "uninitialized variable key requires inferred type evidence",
-      "reason": "Variable-hoisting lowering must retain the string type of a for-in binding."
     }
   ]
 }

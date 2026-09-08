@@ -25,6 +25,8 @@ A release candidate must keep the compiler runtime contract, C++ ABI number, CMa
 
 Bazel is a supported build contract rather than a wrapper around CMake. Its version, module graph, and repository configuration are checked-in inputs; its C++ rules consume the same maintained source and test inventory as CMake. Consumers may register a local, cross, or remote-execution C++ toolchain without changing Flight source. A platform-selected compiler is reproducible only when the consumer also pins that toolchain and its sysroot, so Flight records the Bazel graph while leaving toolchain ownership at the embedding boundary.
 
+Static closed-record for-in enumeration is a constrained profile feature, not open JavaScript reflection. Deployment inputs must enforce that enumerated values have exactly their statically declared own enumerable string keys; values with structural extras or inherited enumerable properties are outside the portable profile.
+
 `Flight::C` is the foreign-language ABI boundary. Its opaque handles are reference counted, all functions return explicit status values, and no C++ exception or object layout crosses the header. Haxe native targets should bind this surface or a later generated extension of it; JavaScript targets should continue to use the compiler's original JavaScript output. `flight::HostScope` is the C++ embedding boundary for thread-scoped executor and Unicode services.
 
 ## Explicitly pending

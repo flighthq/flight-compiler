@@ -4,7 +4,7 @@ package flighthq.golden;
 typedef Values = { value:Float };
 
 function selectFirstKey(values:Values):String {
-  var key;
+  var key:String;
   for (variableHoistingIterationValue in ["value"]) {
     key = variableHoistingIterationValue;
     return key;

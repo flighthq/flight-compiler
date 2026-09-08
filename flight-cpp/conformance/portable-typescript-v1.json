@@ -23,6 +23,7 @@
     "dates",
     "default-and-optional-parameters",
     "enums",
+    "for-in-over-exact-closed-records",
     "functions-and-closures-with-shared-mutable-binding-capture",
     "interfaces-and-structural-records",
     "maps-and-sets",
@@ -43,6 +44,10 @@
     {
       "id": "closed-property-access",
       "rule": "Computed object access and open-ended JavaScript property-key coercion require lowering before C++ emission."
+    },
+    {
+      "id": "exact-closed-record-enumeration",
+      "rule": "Closed-record for-in applies only when the runtime value has exactly the statically declared own enumerable string keys; extra structural properties and inherited enumerable properties are outside the profile."
     },
     {
       "id": "closed-union-representation",

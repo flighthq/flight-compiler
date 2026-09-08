@@ -709,6 +709,18 @@ describe('emitIrModuleCpp', () => {
     const emitted = emitIrModuleCpp(result.module);
     expect(emitted.contents).toContain('std::vector<std::string>');
     expect(emitted.contents).toContain('#include <string>');
+    expect(emitted.contents).toContain('static_cast<void>(cfg);');
+    expect(emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents).toContain(
+      'flight::Array<flight::String>',
+    );
+
+    const malformed = structuredClone(result.module);
+    const declaration = malformed.declarations[1];
+    if (declaration?.kind !== 'function' || declaration.body[1]?.kind !== 'forIn') {
+      throw new Error('Expected for-in statement');
+    }
+    (declaration.body[1].variable as { type: IrType }).type = { kind: 'primitive', name: 'number' };
+    expect(() => emitIrModuleCpp(malformed)).toThrow('for-in binding requires primitive string type evidence');
   });
 
   it('emits switch as if-else chain', () => {
@@ -2385,6 +2397,7 @@ describe('emitIrModuleCpp', () => {
     expect(emitted.contents).toContain('std::vector');
     expect(emitted.contents).toContain('"second"');
     expect(emitted.contents).toContain('"first"');
+    expect(emitted.contents).toContain('static_cast<void>(for_in_object);');
   });
 
   it('emits for-of with auto type when variable lacks annotation', () => {

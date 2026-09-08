@@ -48,6 +48,7 @@ inline double observe_after_creation() {
 
 inline flight::String select_first_key(ForInValues values) {
   flight::String key;
+  static_cast<void>(values);
   for (const flight::String& variable_hoisting_iteration_value : flight::Array<flight::String>{flight::String("value")}) {
     {
       key = variable_hoisting_iteration_value;

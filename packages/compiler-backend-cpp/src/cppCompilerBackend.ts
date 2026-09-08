@@ -917,8 +917,11 @@ function emitStatement(statement: Readonly<IrStatement>, context: EmitContext): 
       if (context.sharedCaptureTargetNames.has(statement.variable.binding.id)) {
         emissionError(context, 'shared mutable for-in capture requires iteration-storage lowering');
       }
+      if (statement.variable.type?.kind !== 'primitive' || statement.variable.type.name !== 'string') {
+        emissionError(context, 'for-in binding requires primitive string type evidence');
+      }
       const flightRuntime = getCppRuntimeProfile(context.options) === 'flight-cpp';
-      const keyType = emitCppStringType(context);
+      const keyType = emitType(statement.variable.type, context);
       const keyValues = statement.keyPlan.keys
         .map((key) => (flightRuntime ? `flight::String(${JSON.stringify(key)})` : JSON.stringify(key)))
         .join(', ');
@@ -930,6 +933,7 @@ function emitStatement(statement: Readonly<IrStatement>, context: EmitContext): 
         return [
           '{',
           `  auto ${objectName} = ${emitExpression(statement.object, context)};`,
+          `  static_cast<void>(${objectName});`,
           `  for (const ${keyType}& ${variableName} : ${keyCollection}{${keyValues}}) {`,
           ...indentSourceLines(emitStatements([statement.body], context), 2),
           '  }',
@@ -939,6 +943,9 @@ function emitStatement(statement: Readonly<IrStatement>, context: EmitContext): 
       if (!flightRuntime) context.includes.add('vector');
       const variableName = getBindingTargetName(statement.variable.binding, context);
       return [
+        ...(statement.keyPlan.evaluation === 'alreadyEvaluated'
+          ? [`static_cast<void>(${emitExpression(statement.object, context)});`]
+          : []),
         `for (const ${keyType}& ${variableName} : ${keyCollection}{${keyValues}}) {`,
         ...indentSourceLines(emitStatements([statement.body], context)),
         '}',

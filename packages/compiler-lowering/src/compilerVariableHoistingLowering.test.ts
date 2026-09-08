@@ -311,11 +311,35 @@ describe('createCompilerLoweringPassVariableHoisting', () => {
             kind: 'assignment',
             left: { reference: { binding: { name: 'key' } } },
             right: { reference: { binding: carrier.binding } },
+            semantics: {
+              left: { declared: 'string', flow: 'string' },
+              result: 'string',
+              right: { declared: 'string', flow: 'string' },
+            },
           },
         },
         { kind: 'expression' },
       ],
     });
+  });
+
+  it('refuses to over-type an untyped redeclaration from later for-in evidence', () => {
+    const run = () =>
+      lowerIrModuleWithCompilerPasses(
+        lower(
+          'for-in-redeclaration-hoisting.ts',
+          `
+            export function visit(values: Record<string, number>): void {
+              var key;
+              key = 1;
+              for (var key in values) key;
+            }
+          `,
+        ),
+        [createCompilerLoweringPassBindingPattern(), createCompilerLoweringPassVariableHoisting()],
+      );
+
+    expectLoweringFailure(run, 'function-scoped variable key has inconsistent redeclaration types');
   });
 
   it('composes iteration carriers with function-scoped array binding leaves', () => {
