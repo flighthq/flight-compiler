@@ -2,11 +2,11 @@
 #pragma once
 #include <algorithm>
 #include <limits>
-#include <vector>
+#include <flight/runtime.hpp>
 
 namespace flighthq_golden {
 
-double widest(std::vector<double> values) {
+inline double widest(flight::Array<double> values) {
   return values.empty() ? -std::numeric_limits<double>::infinity() : *std::max_element(values.begin(), values.end());
 }
 

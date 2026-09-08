@@ -1,8 +1,11 @@
 #pragma once
 
 #include <algorithm>
+#include <array>
+#include <charconv>
 #include <cmath>
 #include <concepts>
+#include <compare>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -11,6 +14,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <type_traits>
 #include <utility>
 
@@ -72,6 +76,17 @@ class String {
   String(std::u16string_view value) : value_(value) {}
 
   [[nodiscard]] static String from_utf8(std::string_view value) { return String(value); }
+
+  [[nodiscard]] static String from_number(double value) {
+    if (std::isnan(value)) return String("NaN");
+    if (std::isinf(value)) return String(value < 0 ? "-Infinity" : "Infinity");
+    if (value == 0.0) return String("0");
+
+    std::array<char, 64> buffer{};
+    const auto conversion = std::to_chars(buffer.data(), buffer.data() + buffer.size(), value);
+    if (conversion.ec != std::errc{}) throw std::runtime_error("flight::String number conversion failed");
+    return String::from_utf8(format_number(std::string(buffer.data(), conversion.ptr)));
+  }
 
   template <typename... Codes>
     requires(std::is_arithmetic_v<Codes> && ...)
@@ -266,6 +281,7 @@ class String {
   }
 
   [[nodiscard]] friend bool operator==(const String&, const String&) noexcept = default;
+  [[nodiscard]] friend auto operator<=>(const String&, const String&) noexcept = default;
 
   String& operator+=(const String& other) {
     value_.append(other.value_);
@@ -279,6 +295,46 @@ class String {
   }
 
  private:
+  [[nodiscard]] static std::string expand_decimal_exponent(std::string value, int exponent) {
+    const bool negative = value.starts_with('-');
+    if (negative) value.erase(0, 1);
+    const auto point = value.find('.');
+    const auto fractional = point == std::string::npos ? 0 : value.size() - point - 1;
+    if (point != std::string::npos) value.erase(point, 1);
+    const auto decimal = static_cast<std::ptrdiff_t>(value.size() - fractional) + exponent;
+    std::string result = negative ? "-" : "";
+    if (decimal <= 0) {
+      result += "0.";
+      result.append(static_cast<std::size_t>(-decimal), '0');
+      result += value;
+    } else if (static_cast<std::size_t>(decimal) >= value.size()) {
+      result += value;
+      result.append(static_cast<std::size_t>(decimal) - value.size(), '0');
+    } else {
+      result += value.substr(0, static_cast<std::size_t>(decimal));
+      result += '.';
+      result += value.substr(static_cast<std::size_t>(decimal));
+    }
+    return result;
+  }
+
+  [[nodiscard]] static std::string format_number(std::string value) {
+    const auto marker = value.find_first_of("eE");
+    if (marker == std::string::npos) return value;
+    const auto mantissa = value.substr(0, marker);
+    int exponent = 0;
+    auto exponent_begin = value.data() + marker + 1;
+    const auto exponent_end = value.data() + value.size();
+    const bool positive = exponent_begin != exponent_end && *exponent_begin == '+';
+    if (positive) ++exponent_begin;
+    const auto parsed = std::from_chars(exponent_begin, exponent_end, exponent);
+    if (parsed.ec != std::errc{} || parsed.ptr != exponent_end) {
+      throw std::runtime_error("flight::String exponent conversion failed");
+    }
+    if (exponent >= -6 && exponent < 21) return expand_decimal_exponent(mantissa, exponent);
+    return mantissa + "e" + (exponent >= 0 ? "+" : "") + std::to_string(exponent);
+  }
+
   [[nodiscard]] static std::u16string decode_utf8(std::string_view utf8) {
     std::u16string result;
     for (size_type index = 0; index < utf8.size();) {
@@ -398,5 +454,19 @@ class String {
 
   std::u16string value_;
 };
+
+} // namespace flight
+
+namespace flight {
+
+[[nodiscard]] inline String to_string(const String& value) { return value; }
+
+[[nodiscard]] inline String to_string(bool value) { return String(value ? "true" : "false"); }
+
+template <typename Value>
+  requires std::is_arithmetic_v<Value> && (!std::same_as<std::remove_cv_t<Value>, bool>)
+[[nodiscard]] inline String to_string(Value value) {
+  return String::from_number(static_cast<double>(value));
+}
 
 } // namespace flight

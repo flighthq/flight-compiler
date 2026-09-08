@@ -2,10 +2,11 @@
 #pragma once
 #include <coroutine>
 #include <exception>
+#include <flight/runtime.hpp>
 
 namespace flighthq_golden {
 
-FlightTask<double> attempt(FlightTask<double> task) {
+inline flight::Task<double> attempt(flight::Task<double> task) {
   double result = 0.0;
   bool done = false;
   std::exception_ptr finally_exception;

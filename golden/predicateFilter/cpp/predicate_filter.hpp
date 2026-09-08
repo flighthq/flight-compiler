@@ -2,15 +2,15 @@
 #pragma once
 #include <functional>
 #include <optional>
-#include <vector>
+#include <flight/runtime.hpp>
 
 namespace flighthq_golden {
 
-std::vector<double> filter_above(std::vector<double> values, double threshold) {
+inline flight::Array<double> filter_above(flight::Array<double> values, double threshold) {
   return values.filter([=](double v) { return (v > threshold); });
 }
 
-double find_first(std::vector<double> values, double threshold) {
+inline double find_first(flight::Array<double> values, double threshold) {
   const std::optional<double> found = values.find([=](double v) { return (v > threshold); });
   if (!found.has_value()) {
     return -1.0;
@@ -18,11 +18,11 @@ double find_first(std::vector<double> values, double threshold) {
   return found.value();
 }
 
-bool all_below(std::vector<double> values, double limit) {
+inline bool all_below(flight::Array<double> values, double limit) {
   return values.every([=](double v) { return (v < limit); });
 }
 
-bool any_negative(std::vector<double> values) {
+inline bool any_negative(flight::Array<double> values) {
   return values.some([=](double v) { return (v < 0.0); });
 }
 

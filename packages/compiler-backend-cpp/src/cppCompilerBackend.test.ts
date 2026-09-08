@@ -63,16 +63,79 @@ describe('emitIrModuleCpp', () => {
 
     expect(emitIrModuleCpp(result.module).contents).toContain('return std::to_string(value)');
     expect(emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents).toContain(
-      'return flight::String::from_utf8(std::to_string(value))',
+      'return flight::to_string(value)',
     );
   });
 
   it('emits an interface as a C++ struct with properties', () => {
-    const result = lower('point.ts', 'export interface Point { x: number; y: number }');
+    const result = lower('point.ts', 'export interface Point { x: number; y?: number }');
     const emitted = emitIrModuleCpp(result.module);
 
     expect(emitted.contents).toContain('struct');
-    expect(emitted.contents).toContain('double');
+    expect(emitted.contents).toContain('double x');
+    expect(emitted.contents).toContain('std::optional<double> y');
+  });
+
+  it('emits semantic arrays with contextual empty types and checked indexed access', () => {
+    const result = lower(
+      'indexes.ts',
+      'export function empty(): number[] { return []; } export function first(values: number[], index: number): number { return values[index] ?? 0; } export function scale(values: number[], index: number): void { values[index] *= 2; }',
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+
+    expect(emitted.contents).toContain('return flight::Array<double>{}');
+    expect(emitted.contents).toContain('return values.get(index).value_or(0.0)');
+    expect(emitted.contents).toContain('values.element(index) *= 2.0');
+    expect(emitted.contents).not.toContain('static_cast<size_t>');
+  });
+
+  it('uses source numeric and error semantics in the runtime profile', () => {
+    const result = lower(
+      'semantics.ts',
+      'export function remainder(left: number, right: number): number { return left % right; } export function fail(message: string): Error { return new Error(message); }',
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+
+    expect(emitted.contents).toContain('return std::fmod(left, right)');
+    expect(emitted.contents).toContain('return flight::Error(message)');
+  });
+
+  it('places module types before values that use them and makes header definitions inline', () => {
+    const result = lower(
+      'ordering.ts',
+      'export function total(values: Values): number { return values.length; } export type Values = number[];',
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+
+    expect(emitted.contents.indexOf('using Values')).toBeLessThan(emitted.contents.indexOf('inline double total'));
+  });
+
+  it('preserves class initializers, static members, and property accessors', () => {
+    const result = lower(
+      'counter.ts',
+      'export function read(): number { const counter = Counter.make(); counter.value = 7; return counter.value + Counter.zero; } export class Counter { private count: number = 1; static readonly zero = 0; static make(): Counter { return new Counter(); } get value(): number { return this.count; } set value(next: number) { this.count = next; } }',
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+    expect(emitted.contents.indexOf('struct Counter')).toBeLessThan(emitted.contents.indexOf('inline double read'));
+    expect(emitted.contents).toContain('double count = 1.0');
+    expect(emitted.contents).toContain('inline static const double zero = 0.0');
+    expect(emitted.contents).toContain('static Counter make()');
+    expect(emitted.contents).toContain('counter.value(7.0)');
+    expect(emitted.contents).toContain('counter.value() + Counter::zero');
+    expect(emitted.contents).not.toContain('const Counter counter');
+  });
+
+  it('evaluates nullable property receivers once and safely projects indexed values', () => {
+    const result = lower(
+      'optional.ts',
+      'interface Entry { key: string } export function first(entries: Entry[]): string { return entries[0]?.key ?? "none"; } export function read(entry: Entry | undefined): string { return entry?.key ?? "none"; }',
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+
+    expect(emitted.contents).toContain('auto optional_chain_receiver = entries.get(0.0)');
+    expect(emitted.contents).toContain('auto optional_chain_receiver = entry');
+    expect(emitted.contents).toContain('if (!optional_chain_receiver.has_value()) return std::nullopt');
+    expect(emitted.contents).toContain('optional_chain_receiver.value().key');
   });
 
   it('emits async functions with C++20 coroutine syntax', () => {

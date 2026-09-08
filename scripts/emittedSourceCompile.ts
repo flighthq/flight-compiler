@@ -121,10 +121,23 @@ if (hasCommand('g++', ['--version'])) {
     if (headers.length === 0) continue;
     checked += headers.length;
     for (const header of headers) {
-      const result = spawnSync('g++', ['-std=c++17', '-fsyntax-only', '-x', 'c++-header', path.join(emitted, header)], {
-        cwd: emitted,
-        encoding: 'utf8',
-      });
+      const result = spawnSync(
+        'g++',
+        [
+          '-std=c++20',
+          '-fsyntax-only',
+          '-pthread',
+          '-I',
+          path.join(root, 'flight-cpp', 'include'),
+          '-x',
+          'c++-header',
+          path.join(emitted, header),
+        ],
+        {
+          cwd: emitted,
+          encoding: 'utf8',
+        },
+      );
       const output = `${result.stdout ?? ''}${result.stderr ?? ''}`;
       if (result.status !== 0) failures.push({ fixture: `cpp/${fixture}/${header}`, output: output.trim() });
     }

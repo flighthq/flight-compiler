@@ -21,6 +21,7 @@ import {
   createCompilerLoweringPassVariableHoisting,
   lowerIrModuleWithCompilerPasses,
 } from '../../compiler-lowering/src/index.js';
+import { analyzeIrModuleTraversal } from '../../compiler-ir-traversal/src/index.js';
 import {
   analyzeCompilerRuntimeExternalSymbolCompleteness,
   collectIrModulesRuntimeExternalSymbolIdentities,
@@ -64,12 +65,13 @@ import {
 
 interface AnonymousStruct {
   name: string;
-  properties: readonly { name: string; type: string }[];
+  properties: readonly { name: string; optional: boolean; type: string }[];
 }
 
 interface EmitContext {
   anonymousStructs: Map<string, AnonymousStruct>;
   async?: boolean | undefined;
+  bindingClasses: ReadonlyMap<string, Readonly<IrClassDeclaration>>;
   currentClass?: Readonly<IrClassDeclaration> | undefined;
   finallyReturnVar?: string | undefined;
   includes: Set<string>;
@@ -136,6 +138,7 @@ function emitIrModuleCppWithContext(
   }
   const context: EmitContext = {
     anonymousStructs: new Map(),
+    bindingClasses: collectIrModuleBindingClassesCpp(module),
     includes: new Set<string>(),
     module,
     nullableBindingIds: collectIrModuleNullableBindingIds(module),
@@ -144,7 +147,9 @@ function emitIrModuleCppWithContext(
     targetNames,
     generatedNames: new Set(targetNames.values()),
   };
-  const declarations = module.declarations.map((declaration) => emitDeclaration(declaration, context));
+  const declarations = [...module.declarations]
+    .sort((left, right) => declarationPriorityCpp(left) - declarationPriorityCpp(right))
+    .map((declaration) => emitDeclaration(declaration, context));
   const imports = emitImports(module.imports, context);
   const lines = [createCompilerGeneratedFileHeader(module, '//', options.upstreamCommit)];
   lines.push('#pragma once');
@@ -164,7 +169,7 @@ function emitIrModuleCppWithContext(
     lines.push('');
     lines.push(`struct ${struct.name} {`);
     for (const property of struct.properties) {
-      lines.push(`  ${property.type} ${property.name};`);
+      lines.push(`  ${emitOptionalTypeCpp(property.type, property.optional, context)} ${property.name};`);
     }
     lines.push('};');
   }
@@ -204,9 +209,11 @@ function emitClass(declaration: Readonly<IrClassDeclaration>, outer: EmitContext
   if (typeParams) lines.push(`template ${typeParams}`);
   lines.push(`struct ${name}${extendsClause} {`);
   for (const field of declaration.fields) {
-    if (field.static) continue;
-    const fieldType = field.type ? emitType(field.type, context) : 'auto';
-    lines.push(`  ${fieldType} ${safeCppName(field.name)};`);
+    const fieldType = emitOptionalTypeCpp(emitType(field.type, context), field.optional, context);
+    const initializer = field.initializer ? ` = ${emitExpression(field.initializer, context, field.type)}` : '';
+    const staticPrefix = field.static ? 'inline static ' : '';
+    const constPrefix = field.static && field.readonly ? 'const ' : '';
+    lines.push(`  ${staticPrefix}${constPrefix}${fieldType} ${safeCppName(field.name)}${initializer};`);
   }
   if (declaration.classConstructor) {
     const params = declaration.classConstructor.parameters
@@ -225,18 +232,18 @@ function emitClass(declaration: Readonly<IrClassDeclaration>, outer: EmitContext
     lines.push(`  virtual ~${name}() = default;`);
   }
   for (const method of declaration.methods) {
-    if (method.static) continue;
-    const returnType = emitType(method.returns, context);
+    const returnType = method.accessor === 'set' ? 'void' : emitType(method.returns, context);
     const params = method.parameters.map((parameter) => emitParameter(parameter, context)).join(', ');
     const methodName = safeCppName(method.name);
     if (method.abstract) {
       lines.push(`  virtual ${returnType} ${methodName}(${params}) = 0;`);
       continue;
     }
-    const needsVirtual = hasSubclass || declaration.abstract || overriddenMethods.has(method.name);
+    const needsVirtual = !method.static && (hasSubclass || declaration.abstract || overriddenMethods.has(method.name));
     const virtual = needsVirtual && !overriddenMethods.has(method.name) ? 'virtual ' : '';
     const override = overriddenMethods.has(method.name) ? ' override' : '';
-    lines.push(`  ${virtual}${returnType} ${methodName}(${params})${override} {`);
+    const staticPrefix = method.static ? 'static ' : '';
+    lines.push(`  ${staticPrefix}${virtual}${returnType} ${methodName}(${params})${override} {`);
     lines.push(...indentSourceLines(emitStatements(method.body, context), 2));
     lines.push('  }');
   }
@@ -276,7 +283,7 @@ function emitFunction(declaration: Readonly<IrFunctionDeclaration>, outer: EmitC
   const name = getBindingTargetName(declaration.binding, context);
   const lines: string[] = [];
   if (typeParams) lines.push(`template ${typeParams}`);
-  lines.push(`${returnType} ${name}(${params}) {`);
+  lines.push(`inline ${returnType} ${name}(${params}) {`);
   lines.push(...indentSourceLines(emitStatements(declaration.body, context)));
   lines.push('}');
   return lines;
@@ -289,7 +296,7 @@ function emitInterface(declaration: Readonly<IrInterfaceDeclaration>, context: E
   if (typeParams) lines.push(`template ${typeParams}`);
   lines.push(`struct ${name} {`);
   for (const property of declaration.properties) {
-    const propType = emitType(property.type, context);
+    const propType = emitOptionalTypeCpp(emitType(property.type, context), property.optional, context);
     lines.push(`  ${propType} ${safeCppName(property.name)};`);
   }
   lines.push('};');
@@ -317,9 +324,11 @@ function emitVariableDeclaration(declaration: Readonly<IrVariableDeclaration>, c
   }
   const name = getBindingTargetName(declaration.binding, context);
   const type = declaration.type ? emitType(declaration.type, context) : 'auto';
-  const constness = declaration.mutable ? '' : 'const ';
-  const initializer = declaration.initializer ? ` = ${emitExpression(declaration.initializer, context)}` : '';
-  return [`${constness}${type} ${name}${initializer};`];
+  const constness = emitBindingConstnessCpp(declaration.mutable, declaration.type);
+  const initializer = declaration.initializer
+    ? ` = ${emitExpression(declaration.initializer, context, declaration.type)}`
+    : '';
+  return [`inline ${constness}${type} ${name}${initializer};`];
 }
 
 function emitVariable(variable: Readonly<IrVariable>, context: EmitContext): string {
@@ -328,17 +337,28 @@ function emitVariable(variable: Readonly<IrVariable>, context: EmitContext): str
   }
   const name = getBindingTargetName(variable.binding, context);
   const type = variable.type ? emitType(variable.type, context) : 'auto';
-  const constness = variable.mutable ? '' : 'const ';
-  const initializer = variable.initializer ? ` = ${emitExpression(variable.initializer, context)}` : '';
+  const constness = emitBindingConstnessCpp(variable.mutable, variable.type);
+  const initializer = variable.initializer ? ` = ${emitExpression(variable.initializer, context, variable.type)}` : '';
   return `${constness}${type} ${name}${initializer};`;
 }
 
-function emitExpression(expression: Readonly<IrExpression>, context: EmitContext): string {
+function emitExpression(
+  expression: Readonly<IrExpression>,
+  context: EmitContext,
+  expectedType?: Readonly<IrType> | undefined,
+): string {
   switch (expression.kind) {
     case 'array': {
-      const elements = expression.elements.map((element) => (element ? emitExpression(element, context) : '{}'));
+      const expectedArray = expectedType?.kind === 'array' ? expectedType : undefined;
+      const elements = expression.elements.map((element) =>
+        element ? emitExpression(element, context, expectedArray?.element) : '{}',
+      );
       if (getCppRuntimeProfile(context.options) === 'flight-cpp') {
-        return `flight::Array{${elements.join(', ')}}`;
+        if (elements.length === 0 && !expectedArray) {
+          emissionError(context, 'an empty array requires contextual element type in C++ emission');
+        }
+        const target = expectedArray ? `flight::Array<${emitType(expectedArray.element, context)}>` : 'flight::Array';
+        return `${target}{${elements.join(', ')}}`;
       }
       context.includes.add('vector');
       return `std::vector{${elements.join(', ')}}`;
@@ -351,8 +371,14 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
       ) {
         return `${emitExpression(expression.left, context)} += ${emitExpression(expression.right, context)}`;
       }
-      const left = emitExpression(expression.left, context);
       const right = emitExpression(expression.right, context);
+      if (expression.operator === '=' && expression.left.kind === 'property') {
+        const setter = getIrExpressionClassAccessorCpp(expression.left.object, expression.left.name, 'set', context);
+        if (setter) {
+          return `${emitExpression(expression.left.object, context)}${memberOp(expression.left.object)}${safeCppName(expression.left.name)}(${right})`;
+        }
+      }
+      const left = emitAssignmentTargetCpp(expression.left, context);
       return `${left} ${emitAssignmentOperator(expression.operator)} ${right}`;
     }
     case 'await':
@@ -369,7 +395,7 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
       }
       if (expression.operator === '??') {
         context.includes.add('optional');
-        return `${emitExpression(expression.left, context)}.value_or(${emitExpression(expression.right, context)})`;
+        return `${emitOptionalExpressionCpp(expression.left, context, expectedType)}.value_or(${emitExpression(expression.right, context, expectedType)})`;
       }
       if (
         expression.operator === '+' &&
@@ -394,6 +420,10 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
         context.includes.add('cstdint');
         return `static_cast<double>(static_cast<uint32_t>(static_cast<int32_t>(${emitExpression(expression.left, context)})) >> static_cast<uint32_t>(${emitExpression(expression.right, context)}))`;
       }
+      if (expression.operator === '%') {
+        context.includes.add('cmath');
+        return `std::fmod(${emitExpression(expression.left, context)}, ${emitExpression(expression.right, context)})`;
+      }
       const op = emitBinaryOperator(expression.operator, expression.semantics, context);
       const bitwise =
         expression.operator === '&' ||
@@ -410,13 +440,16 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
       return `(${left} ${op} ${right})`;
     }
     case 'call': {
+      if (expression.optional) return emitOptionalCallExpressionCpp(expression, context);
       if (
         expression.callee.kind === 'property' &&
         expression.callee.member?.receiver === 'number' &&
         expression.callee.member.name === 'toString'
       ) {
         const value = `std::to_string(${emitExpression(expression.callee.object, context)})`;
-        if (getCppRuntimeProfile(context.options) === 'flight-cpp') return `flight::String::from_utf8(${value})`;
+        if (getCppRuntimeProfile(context.options) === 'flight-cpp') {
+          return `flight::to_string(${emitExpression(expression.callee.object, context)})`;
+        }
         context.includes.add('string');
         return value;
       }
@@ -463,10 +496,14 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
     case 'conditional':
       return `(${emitExpression(expression.condition, context)} ? ${emitExpression(expression.whenTrue, context)} : ${emitExpression(expression.whenFalse, context)})`;
     case 'element': {
+      if (expression.optional) return emitOptionalElementExpressionCpp(expression, context);
       if (expression.semantics.receivers.includes('tuple')) {
         context.includes.add('tuple');
         const index = getElementAccessTupleIndexCpp(expression, context);
         return `std::get<${String(index)}>(${emitExpression(expression.object, context)})`;
+      }
+      if (getCppRuntimeProfile(context.options) === 'flight-cpp' && hasIndexedRuntimeReceiverCpp(expression)) {
+        return `${emitExpression(expression.object, context)}.element(${emitExpression(expression.index, context)})`;
       }
       return `${emitExpression(expression.object, context)}[static_cast<size_t>(${emitExpression(expression.index, context)})]`;
     }
@@ -522,6 +559,7 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
       return `{${members.join(', ')}}`;
     }
     case 'property': {
+      if (expression.optional) return emitOptionalPropertyExpressionCpp(expression, context);
       if (expression.member) {
         const binding = getCompilerCppAmbientMemberBinding(expression.member, getCppRuntimeProfile(context.options));
         if (binding && binding.kind === 'sizeMethod') {
@@ -540,9 +578,21 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
         );
         if (member) return member;
       }
+      const classDeclaration = getIrExpressionClassDeclarationCpp(expression.object, context);
+      if (classDeclaration) {
+        const staticMember =
+          classDeclaration.fields.some((field) => field.static && field.name === expression.name) ||
+          classDeclaration.methods.some((method) => method.static && method.name === expression.name);
+        if (staticMember) {
+          return `${getBindingTargetName(classDeclaration.binding, context)}::${safeCppName(expression.name)}`;
+        }
+      }
       const enumeration = getIrExpressionEnumDeclaration(expression.object, context);
       if (enumeration) {
         return `${getBindingTargetName(enumeration.binding, context)}::${safeCppTypeName(expression.name)}`;
+      }
+      if (getIrExpressionClassAccessorCpp(expression.object, expression.name, 'get', context)) {
+        return `${emitExpression(expression.object, context)}${memberOp(expression.object)}${safeCppName(expression.name)}()`;
       }
       return `${emitExpression(expression.object, context)}${memberOp(expression.object)}${safeCppName(expression.name)}`;
     }
@@ -559,7 +609,7 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
             ? `flight::String(${JSON.stringify(part)})`
             : `std::string(${JSON.stringify(part)})`
           : flightRuntime
-            ? `flight::String::from_utf8(std::to_string(${emitExpression(part, context)}))`
+            ? `flight::to_string(${emitExpression(part, context)})`
             : `std::to_string(${emitExpression(part, context)})`,
       );
       return parts.length === 0 ? (flightRuntime ? 'flight::String()' : 'std::string()') : parts.join(' + ');
@@ -695,12 +745,16 @@ function emitStatement(statement: Readonly<IrStatement>, context: EmitContext): 
       if (context.finallyReturnVar) {
         const lines: string[] = [];
         if (statement.expression) {
-          lines.push(`${context.finallyReturnVar} = ${emitExpression(statement.expression, context)};`);
+          lines.push(
+            `${context.finallyReturnVar} = ${emitExpression(statement.expression, context, getExpectedReturnTypeCpp(context))};`,
+          );
         }
         return lines;
       }
       const keyword = context.async ? 'co_return' : 'return';
-      return [`${keyword}${statement.expression ? ` ${emitExpression(statement.expression, context)}` : ''};`];
+      return [
+        `${keyword}${statement.expression ? ` ${emitExpression(statement.expression, context, getExpectedReturnTypeCpp(context))}` : ''};`,
+      ];
     }
     case 'switch': {
       const name = getGeneratedTargetName('switch_value', context);
@@ -892,9 +946,12 @@ function emitType(type: Readonly<IrType>, context: EmitContext): string {
     case 'object': {
       const emittedProperties = type.properties.map((property) => ({
         name: safeCppName(property.name),
+        optional: property.optional,
         type: emitType(property.type, context),
       }));
-      const key = emittedProperties.map((property) => `${property.type} ${property.name}`).join('; ');
+      const key = emittedProperties
+        .map((property) => `${property.optional ? '?' : ''}${property.type} ${property.name}`)
+        .join('; ');
       const existing = context.anonymousStructs.get(key);
       if (existing) return existing.name;
       const structName = generateAnonymousStructName(type.properties, context);
@@ -940,6 +997,238 @@ function emitType(type: Readonly<IrType>, context: EmitContext): string {
       }
       return 'auto';
   }
+}
+
+function declarationPriorityCpp(declaration: Readonly<IrDeclaration>): number {
+  return declaration.kind === 'class' ||
+    declaration.kind === 'typeAlias' ||
+    declaration.kind === 'interface' ||
+    declaration.kind === 'enum'
+    ? 0
+    : 1;
+}
+
+function emitBindingConstnessCpp(mutable: boolean, type: Readonly<IrType> | undefined): string {
+  return !mutable && type && isCppScalarValueType(type) ? 'const ' : '';
+}
+
+function isCppScalarValueType(type: Readonly<IrType>): boolean {
+  if (type.kind === 'primitive' || type.kind === 'literal') return true;
+  if (type.kind === 'union') {
+    return type.types.every(
+      (member) => member.kind === 'null' || member.kind === 'undefined' || isCppScalarValueType(member),
+    );
+  }
+  return false;
+}
+
+function collectIrModuleBindingClassesCpp(
+  module: Readonly<IrModule>,
+): ReadonlyMap<string, Readonly<IrClassDeclaration>> {
+  const classesByIdentity = new Map(
+    module.declarations
+      .filter((declaration): declaration is IrClassDeclaration => declaration.kind === 'class')
+      .map((declaration) => [declaration.binding.id, declaration] as const),
+  );
+  const result = new Map(classesByIdentity);
+  const record = (bindingId: string, type: Readonly<IrType> | undefined): void => {
+    if (type?.kind !== 'named' || type.reference.kind !== 'binding') return;
+    const declaration = classesByIdentity.get(type.reference.binding.id);
+    if (declaration) result.set(bindingId, declaration);
+  };
+  analyzeIrModuleTraversal(module, {
+    parameter(parameter) {
+      record(parameter.binding.id, parameter.type);
+    },
+    variable(variable) {
+      if ('binding' in variable) record(variable.binding.id, variable.type);
+    },
+  });
+  return result;
+}
+
+function getIrExpressionClassDeclarationCpp(
+  expression: Readonly<IrExpression>,
+  context: EmitContext,
+): Readonly<IrClassDeclaration> | undefined {
+  if (expression.kind === 'identifier') {
+    if (expression.reference.kind === 'this') return context.currentClass;
+    if (expression.reference.kind === 'binding') return context.bindingClasses.get(expression.reference.binding.id);
+  }
+  if (
+    expression.kind === 'new' &&
+    expression.callee.kind === 'identifier' &&
+    expression.callee.reference.kind === 'binding'
+  ) {
+    return context.bindingClasses.get(expression.callee.reference.binding.id);
+  }
+  return undefined;
+}
+
+function getIrExpressionClassAccessorCpp(
+  expression: Readonly<IrExpression>,
+  name: string,
+  accessor: 'get' | 'set',
+  context: EmitContext,
+): boolean {
+  const declaration = getIrExpressionClassDeclarationCpp(expression, context);
+  return declaration?.methods.some((method) => method.accessor === accessor && method.name === name) ?? false;
+}
+
+function emitAssignmentTargetCpp(expression: Readonly<IrExpression>, context: EmitContext): string {
+  if (
+    expression.kind === 'element' &&
+    getCppRuntimeProfile(context.options) === 'flight-cpp' &&
+    hasIndexedRuntimeReceiverCpp(expression)
+  ) {
+    return `${emitExpression(expression.object, context)}.element(${emitExpression(expression.index, context)})`;
+  }
+  return emitExpression(expression, context);
+}
+
+function emitOptionalExpressionCpp(
+  expression: Readonly<IrExpression>,
+  context: EmitContext,
+  expectedType: Readonly<IrType> | undefined,
+): string {
+  if (
+    expression.kind === 'element' &&
+    getCppRuntimeProfile(context.options) === 'flight-cpp' &&
+    hasIndexedRuntimeReceiverCpp(expression)
+  ) {
+    return `${emitExpression(expression.object, context)}.get(${emitExpression(expression.index, context)})`;
+  }
+  if (
+    expression.kind === 'property' &&
+    expression.absent === 'optionalMember' &&
+    expression.object.kind === 'element' &&
+    getCppRuntimeProfile(context.options) === 'flight-cpp' &&
+    hasIndexedRuntimeReceiverCpp(expression.object)
+  ) {
+    if (!expectedType) {
+      emissionError(context, 'an optional indexed member requires contextual result type in C++ emission');
+    }
+    const payload = emitType(expectedType, context);
+    const receiver = `${emitExpression(expression.object.object, context)}.get(${emitExpression(expression.object.index, context)})`;
+    context.includes.add('optional');
+    return `([&]() -> std::optional<${payload}> { auto optional_chain_receiver = ${receiver}; if (!optional_chain_receiver.has_value()) return std::nullopt; return optional_chain_receiver.value().${safeCppName(expression.name)}; }())`;
+  }
+  return emitExpression(expression, context);
+}
+
+function emitOptionalCallExpressionCpp(
+  expression: Readonly<Extract<IrExpression, { kind: 'call' }>>,
+  context: EmitContext,
+): string {
+  const semantics = expression.semantics.optionalChain;
+  if (!semantics) emissionError(context, 'optional call lacks neutral optional-chain evidence');
+  if (semantics.receiverNullish === 'excluded') {
+    return emitExpression({ ...expression, optional: false }, context);
+  }
+  const payload = emitOptionalChainPayloadTypeCpp(semantics.valueType, context);
+  const callee = emitOptionalChainReceiverCpp(expression.callee, context);
+  const arguments_ = expression.arguments.map((argument) => emitExpression(argument, context)).join(', ');
+  context.includes.add('optional');
+  return `([&]() -> std::optional<${payload}> { auto optional_chain_receiver = ${callee}; if (!optional_chain_receiver.has_value()) return std::nullopt; return optional_chain_receiver.value()(${arguments_}); }())`;
+}
+
+function emitOptionalElementExpressionCpp(
+  expression: Readonly<Extract<IrExpression, { kind: 'element' }>>,
+  context: EmitContext,
+): string {
+  const semantics = expression.semantics.optionalChain;
+  if (!semantics) emissionError(context, 'optional element access lacks neutral optional-chain evidence');
+  if (semantics.receiverNullish === 'excluded') {
+    return emitExpression({ ...expression, optional: false }, context);
+  }
+  const payload = emitOptionalChainPayloadTypeCpp(semantics.valueType, context);
+  const object = emitOptionalChainReceiverCpp(expression.object, context);
+  const index = emitExpression(expression.index, context);
+  context.includes.add('optional');
+  if (semantics.receiverType.kind === 'union') {
+    const receiver = getOptionalPayloadTypeCpp(semantics.receiverType, context);
+    if (receiver.kind === 'tuple') {
+      const tupleIndex = getElementAccessTupleIndexCpp(expression, context);
+      return `([&]() -> std::optional<${payload}> { auto optional_chain_receiver = ${object}; if (!optional_chain_receiver.has_value()) return std::nullopt; return std::get<${String(tupleIndex)}>(optional_chain_receiver.value()); }())`;
+    }
+    if (receiver.kind === 'array') {
+      return `([&]() -> std::optional<${payload}> { auto optional_chain_receiver = ${object}; if (!optional_chain_receiver.has_value()) return std::nullopt; return optional_chain_receiver.value().get(${index}); }())`;
+    }
+  }
+  emissionError(context, 'optional element access requires nullable array or fixed-tuple receiver evidence');
+}
+
+function emitOptionalPropertyExpressionCpp(
+  expression: Readonly<Extract<IrExpression, { kind: 'property' }>>,
+  context: EmitContext,
+): string {
+  const semantics = expression.optionalChain;
+  if (!semantics) emissionError(context, 'optional property access lacks neutral optional-chain evidence');
+  const indexesRuntimeCollection =
+    expression.object.kind === 'element' &&
+    getCppRuntimeProfile(context.options) === 'flight-cpp' &&
+    hasIndexedRuntimeReceiverCpp(expression.object);
+  if (semantics.receiverNullish === 'excluded' && !indexesRuntimeCollection) {
+    return emitExpression({ ...expression, optional: false }, context);
+  }
+  const payload = emitOptionalChainPayloadTypeCpp(semantics.valueType, context);
+  const object = emitOptionalChainReceiverCpp(expression.object, context);
+  let projected: string;
+  if (expression.member) {
+    const binding = getCompilerCppAmbientMemberBinding(expression.member, getCppRuntimeProfile(context.options));
+    if (binding?.kind === 'sizeMethod') {
+      projected = 'static_cast<double>(optional_chain_receiver.value().size())';
+    } else if (binding?.kind === 'property') {
+      projected = `optional_chain_receiver.value().${binding.targetName}`;
+    } else {
+      projected = `optional_chain_receiver.value().${safeCppName(expression.name)}`;
+    }
+  } else if (getIrExpressionClassAccessorCpp(expression.object, expression.name, 'get', context)) {
+    projected = `optional_chain_receiver.value().${safeCppName(expression.name)}()`;
+  } else {
+    projected = `optional_chain_receiver.value().${safeCppName(expression.name)}`;
+  }
+  context.includes.add('optional');
+  return `([&]() -> std::optional<${payload}> { auto optional_chain_receiver = ${object}; if (!optional_chain_receiver.has_value()) return std::nullopt; return ${projected}; }())`;
+}
+
+function emitOptionalChainReceiverCpp(expression: Readonly<IrExpression>, context: EmitContext): string {
+  if (
+    expression.kind === 'element' &&
+    getCppRuntimeProfile(context.options) === 'flight-cpp' &&
+    hasIndexedRuntimeReceiverCpp(expression)
+  ) {
+    return `${emitExpression(expression.object, context)}.get(${emitExpression(expression.index, context)})`;
+  }
+  return emitExpression(expression, context);
+}
+
+function emitOptionalChainPayloadTypeCpp(type: Readonly<IrType>, context: EmitContext): string {
+  return emitType(hasIrTypeAbsentMember(type) ? getOptionalPayloadTypeCpp(type, context) : type, context);
+}
+
+function getOptionalPayloadTypeCpp(type: Readonly<IrType>, context: EmitContext): Readonly<IrType> {
+  if (type.kind !== 'union') emissionError(context, 'optional chain receiver requires a nullable union type');
+  const concrete = type.types.filter((member) => member.kind !== 'null' && member.kind !== 'undefined');
+  if (concrete.length !== 1) {
+    emissionError(context, 'optional chain receiver requires one concrete nullable union member');
+  }
+  return concrete[0]!;
+}
+
+function emitOptionalTypeCpp(type: string, optional: boolean, context: EmitContext): string {
+  if (!optional) return type;
+  context.includes.add('optional');
+  return `std::optional<${type}>`;
+}
+
+function hasIndexedRuntimeReceiverCpp(expression: Readonly<Extract<IrExpression, { kind: 'element' }>>): boolean {
+  return expression.semantics.receivers.some((receiver) => receiver === 'array' || receiver.endsWith('Array'));
+}
+
+function getExpectedReturnTypeCpp(context: EmitContext): Readonly<IrType> | undefined {
+  if (!context.enclosingReturnType) return undefined;
+  return context.async ? getIrTaskAwaitedTypeCpp(context.enclosingReturnType, context) : context.enclosingReturnType;
 }
 
 function emitParameter(parameter: Readonly<IrParameter>, context: EmitContext): string {

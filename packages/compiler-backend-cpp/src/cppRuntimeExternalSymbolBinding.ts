@@ -129,8 +129,8 @@ const cppFlightRuntimeExternalSymbolBindings = [
     space: 'value',
     targetName: 'flight::Date',
   },
-  { kind: 'native', sourceName: 'Error', space: 'type', targetName: 'std::runtime_error' },
-  { kind: 'native', sourceName: 'Error', space: 'value', targetName: 'std::runtime_error' },
+  { capability: 'error', kind: 'runtime', sourceName: 'Error', space: 'type', targetName: 'flight::Error' },
+  { capability: 'error', kind: 'runtime', sourceName: 'Error', space: 'value', targetName: 'flight::Error' },
   {
     capability: 'float32-array',
     kind: 'runtime',

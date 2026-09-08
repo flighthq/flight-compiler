@@ -26,6 +26,7 @@ set(
   contract
   date
   equality
+  error
   executor
   map
   math

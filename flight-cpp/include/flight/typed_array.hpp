@@ -79,6 +79,14 @@ class TypedArray {
     return (*this)[*normalized];
   }
 
+  [[nodiscard]] Value& element(double index) { return (*this)[required_index(index)]; }
+  [[nodiscard]] const Value& element(double index) const { return (*this)[required_index(index)]; }
+
+  [[nodiscard]] std::optional<Value> get(double index) const {
+    const auto normalized = property_index(index);
+    return normalized ? std::optional<Value>((*this)[*normalized]) : std::nullopt;
+  }
+
   [[nodiscard]] const_iterator begin() const noexcept {
     return storage_->cbegin() + static_cast<std::ptrdiff_t>(offset_);
   }
@@ -147,6 +155,18 @@ class TypedArray {
   }
 
  private:
+  [[nodiscard]] std::optional<size_type> property_index(double index) const noexcept {
+    if (!std::isfinite(index) || index < 0.0 || std::trunc(index) != index) return std::nullopt;
+    if (index >= static_cast<double>(length_)) return std::nullopt;
+    return static_cast<size_type>(index);
+  }
+
+  [[nodiscard]] size_type required_index(double index) const {
+    const auto normalized = property_index(index);
+    if (!normalized) throw std::range_error("flight::TypedArray index is outside the view");
+    return *normalized;
+  }
+
   template <typename Iterator>
   TypedArray(Iterator first, Iterator last)
       : length_(static_cast<size_type>(std::distance(first, last))),

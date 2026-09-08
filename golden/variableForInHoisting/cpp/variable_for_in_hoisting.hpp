@@ -2,6 +2,7 @@
 #pragma once
 #include <string>
 #include <vector>
+#include <flight/runtime.hpp>
 
 namespace flighthq_golden {
 
@@ -9,7 +10,7 @@ struct Values {
   double value;
 };
 
-std::string select_first_key(Values values) {
+inline flight::String select_first_key(Values values) {
   auto key;
   for (const std::string& variable_hoisting_iteration_value : std::vector<std::string>{"value"}) {
     {
@@ -17,7 +18,7 @@ std::string select_first_key(Values values) {
       return key;
     }
   }
-  return "";
+  return flight::String("");
 }
 
 } // namespace flighthq_golden

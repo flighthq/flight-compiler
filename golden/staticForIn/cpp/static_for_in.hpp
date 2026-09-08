@@ -2,14 +2,15 @@
 #pragma once
 #include <string>
 #include <vector>
+#include <flight/runtime.hpp>
 
 namespace flighthq_golden {
 
-std::string select_first_key() {
+inline flight::String select_first_key() {
   for (const std::string& key : std::vector<std::string>{"2", "10", "second", "first"}) {
     return key;
   }
-  return "";
+  return flight::String("");
 }
 
 } // namespace flighthq_golden

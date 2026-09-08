@@ -2,11 +2,11 @@
 #pragma once
 #include <coroutine>
 #include <exception>
-#include <vector>
+#include <flight/runtime.hpp>
 
 namespace flighthq_golden {
 
-FlightTask<double> attempt(FlightTask<double> task, std::vector<double> log) {
+inline flight::Task<double> attempt(flight::Task<double> task, flight::Array<double> log) {
   double result = 0.0;
   std::exception_ptr finally_exception;
   try {
@@ -20,7 +20,7 @@ FlightTask<double> attempt(FlightTask<double> task, std::vector<double> log) {
   catch (...) {
     finally_exception = std::current_exception();
   }
-  log.push_back(result);
+  log.push(result);
   if (finally_exception) std::rethrow_exception(finally_exception);
   co_return result;
 }

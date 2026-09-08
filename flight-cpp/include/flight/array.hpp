@@ -1,6 +1,7 @@
 #pragma once
 
 #include <algorithm>
+#include <cmath>
 #include <concepts>
 #include <cstddef>
 #include <functional>
@@ -10,6 +11,7 @@
 #include <memory>
 #include <optional>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <type_traits>
 #include <utility>
@@ -38,7 +40,9 @@ template <typename Value>
 class Array {
  public:
   using const_iterator = typename std::vector<Value>::const_iterator;
+  using const_reference = typename std::vector<Value>::const_reference;
   using iterator = typename std::vector<Value>::iterator;
+  using reference = typename std::vector<Value>::reference;
   using size_type = typename std::vector<Value>::size_type;
   using value_type = Value;
 
@@ -54,17 +58,25 @@ class Array {
   Array(Iterator first, Iterator last)
       : values_(std::make_shared<std::vector<Value>>(first, last)) {}
 
-  [[nodiscard]] const Value& operator[](size_type index) const noexcept { return (*values_)[index]; }
-  [[nodiscard]] Value& operator[](size_type index) noexcept { return (*values_)[index]; }
+  [[nodiscard]] const_reference operator[](size_type index) const noexcept { return (*values_)[index]; }
+  [[nodiscard]] reference operator[](size_type index) noexcept { return (*values_)[index]; }
 
-  [[nodiscard]] std::optional<std::reference_wrapper<const Value>> at(size_type index) const noexcept {
+  [[nodiscard]] std::optional<Value> at(size_type index) const {
     if (index >= size()) return std::nullopt;
-    return std::cref((*values_)[index]);
+    return (*values_)[index];
   }
 
-  [[nodiscard]] std::optional<std::reference_wrapper<Value>> at(size_type index) noexcept {
+  [[nodiscard]] std::optional<Value> at(size_type index) {
     if (index >= size()) return std::nullopt;
-    return std::ref((*values_)[index]);
+    return (*values_)[index];
+  }
+
+  [[nodiscard]] reference element(double index) { return (*values_)[required_index(index)]; }
+  [[nodiscard]] const_reference element(double index) const { return (*values_)[required_index(index)]; }
+
+  [[nodiscard]] std::optional<Value> get(double index) const {
+    const auto normalized = property_index(index);
+    return normalized ? std::optional<Value>((*values_)[*normalized]) : std::nullopt;
   }
 
   [[nodiscard]] const_iterator begin() const noexcept { return values_->begin(); }
@@ -288,6 +300,18 @@ class Array {
   }
 
  private:
+  [[nodiscard]] std::optional<size_type> property_index(double index) const noexcept {
+    if (!std::isfinite(index) || index < 0.0 || std::trunc(index) != index) return std::nullopt;
+    if (index >= static_cast<double>(size())) return std::nullopt;
+    return static_cast<size_type>(index);
+  }
+
+  [[nodiscard]] size_type required_index(double index) const {
+    const auto normalized = property_index(index);
+    if (!normalized) throw std::range_error("flight::Array index is outside the array");
+    return *normalized;
+  }
+
   [[nodiscard]] size_type normalize_boundary(std::ptrdiff_t index) const noexcept {
     if (index < 0) {
       const auto magnitude = static_cast<size_type>(-(index + 1)) + 1;

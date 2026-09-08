@@ -58,6 +58,11 @@ describe('createCompilerRuntimeExternalSymbolBindingPlanCpp', () => {
       externalSymbol: { sourceName: 'String', space: 'value' },
       kind: 'runtime',
     });
+    expect(plan.bindings).toContainEqual({
+      capability: 'error',
+      externalSymbol: { sourceName: 'Error', space: 'type' },
+      kind: 'runtime',
+    });
   });
 });
 
@@ -92,6 +97,7 @@ describe('getCompilerRuntimeExternalSymbolTargetCpp', () => {
   it.each([
     ['Array', 'type', 'flight::Array'],
     ['Date', 'value', 'flight::Date'],
+    ['Error', 'type', 'flight::Error'],
     ['Map', 'type', 'flight::Map'],
     ['Promise', 'type', 'flight::Task'],
     ['Set', 'value', 'flight::Set'],

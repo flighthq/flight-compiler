@@ -3,11 +3,11 @@
 #include <coroutine>
 #include <exception>
 #include <optional>
-#include <vector>
+#include <flight/runtime.hpp>
 
 namespace flighthq_golden {
 
-FlightTask<double> attempt(FlightTask<double> task, std::vector<double> log) {
+inline flight::Task<double> attempt(flight::Task<double> task, flight::Array<double> log) {
   std::optional<double> finally_return;
   std::exception_ptr finally_exception;
   try {
@@ -16,7 +16,7 @@ FlightTask<double> attempt(FlightTask<double> task, std::vector<double> log) {
   catch (...) {
     finally_exception = std::current_exception();
   }
-  log.push_back(1.0);
+  log.push(1.0);
   if (finally_exception) std::rethrow_exception(finally_exception);
   if (finally_return.has_value()) co_return finally_return.value();
 }

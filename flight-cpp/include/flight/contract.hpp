@@ -33,6 +33,7 @@ inline constexpr std::array runtime_capabilities{
     RuntimeCapability{"array", RuntimeCapabilityStatus::initial},
     RuntimeCapability{"date", RuntimeCapabilityStatus::initial},
     RuntimeCapability{"executor", RuntimeCapabilityStatus::initial},
+    RuntimeCapability{"error", RuntimeCapabilityStatus::initial},
     RuntimeCapability{"float32-array", RuntimeCapabilityStatus::initial},
     RuntimeCapability{"float64-array", RuntimeCapabilityStatus::initial},
     RuntimeCapability{"int8-array", RuntimeCapabilityStatus::initial},

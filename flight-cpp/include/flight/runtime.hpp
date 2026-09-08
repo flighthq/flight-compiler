@@ -4,6 +4,7 @@
 #include <flight/contract.hpp>
 #include <flight/date.hpp>
 #include <flight/equality.hpp>
+#include <flight/error.hpp>
 #include <flight/executor.hpp>
 #include <flight/map.hpp>
 #include <flight/math.hpp>

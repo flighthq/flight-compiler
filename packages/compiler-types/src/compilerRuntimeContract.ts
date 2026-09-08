@@ -8,6 +8,7 @@
 export type CompilerRuntimeCapabilityName =
   | 'array'
   | 'date'
+  | 'error'
   | 'float32-array'
   | 'float64-array'
   | 'int8-array'

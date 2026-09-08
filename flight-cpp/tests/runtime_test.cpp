@@ -94,6 +94,13 @@ void test_contract() {
         "unknown capabilities are not treated as planned");
 }
 
+void test_error() {
+  const flight::Error error(flight::String("expected"));
+  check(error.message() == flight::String("expected") && std::string(error.what()) == "expected",
+        "error preserves its semantic and native messages");
+  check(flight::Error::name() == flight::String("Error"), "error exposes its source-language name");
+}
+
 void test_date() {
   const FlightDate epoch(0.0);
   check(epoch.get_time() == 0.0, "date retains epoch milliseconds");
@@ -182,6 +189,11 @@ void test_string() {
         "string substring clamps and swaps its boundaries");
   check(flight::String::from_char_code(65, 0xD83D, 0xDE00).length() == 3,
         "from_char_code preserves exact UTF-16 code units");
+  check(flight::to_string(true) == flight::String("true") &&
+            flight::String::from_number(-0.0) == flight::String("0") &&
+            flight::String::from_number(1.0e-6) == flight::String("0.000001") &&
+            flight::String::from_number(1.0e21) == flight::String("1e+21"),
+        "source string coercion handles booleans and numeric format boundaries");
 
   bool provider_required = false;
   try {
@@ -329,6 +341,7 @@ int main() {
   test_array();
   test_contract();
   test_date();
+  test_error();
   test_map();
   test_presence_and_math();
   test_set();

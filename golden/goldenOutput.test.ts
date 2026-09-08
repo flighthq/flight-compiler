@@ -26,11 +26,7 @@ import type { CompilerBackend } from '../packages/compiler-types/src/index.js';
 
 const goldenDirectory = path.dirname(fileURLToPath(import.meta.url));
 const updating = process.env.FLIGHT_GOLDEN_UPDATE === '1';
-const backends: readonly { readonly backend: CompilerBackend<Record<string, never>>; readonly name: string }[] = [
-  { backend: createCppCompilerBackend(), name: 'cpp' },
-  { backend: createHaxeCompilerBackend(), name: 'haxe' },
-  { backend: createRustCompilerBackend(), name: 'rust' },
-];
+const backendNames = ['cpp', 'haxe', 'rust'] as const;
 
 const fixtures = readdirSync(goldenDirectory, { withFileTypes: true })
   .filter((entry) => entry.isDirectory() && existsSync(path.join(goldenDirectory, entry.name, 'input.ts')))
@@ -44,11 +40,11 @@ describe('golden emission fixtures', () => {
   });
 
   for (const fixture of fixtures) {
-    for (const { backend, name } of backends) {
+    for (const name of backendNames) {
       it(`${fixture} emits stable ${name}`, () => {
         const outputDirectory = path.join(goldenDirectory, fixture, name);
         const errorFile = path.join(goldenDirectory, fixture, `${name}.error.txt`);
-        const emitted = compile(fixture, backend);
+        const emitted = compile(fixture, name);
 
         if (emitted.kind === 'refused') {
           if (updating) {
@@ -99,18 +95,32 @@ function committedPaths(outputDirectory: string): string[] {
   return walk(outputDirectory, '').sort();
 }
 
-function compile(fixture: string, backend: CompilerBackend<Record<string, never>>): Emitted {
+function compile(fixture: string, backendName: (typeof backendNames)[number]): Emitted {
   const file = path.join(goldenDirectory, fixture, 'input.ts');
   const sourceFile = parseTypeScriptSource(`/flight/packages/golden/src/${fixture}.ts`, readFileSync(file, 'utf8'));
   try {
-    const result = compileTypeScriptModules({
-      backend,
-      backendOptions: {},
-      sources: [{ packageName: '@flighthq/golden', sourceFile, upstreamDirectory: '/flight' }],
-    });
+    const sources = [{ packageName: '@flighthq/golden', sourceFile, upstreamDirectory: '/flight' }];
+    const result =
+      backendName === 'cpp'
+        ? compileWithBackend(createCppCompilerBackend(), { runtimeProfile: 'flight-cpp' }, sources)
+        : backendName === 'haxe'
+          ? compileWithBackend(createHaxeCompilerBackend(), {}, sources)
+          : compileWithBackend(createRustCompilerBackend(), {}, sources);
     return { files: result.compilation.files, kind: 'emitted' };
   } catch (error) {
     if (isBackendEmissionFailure(error)) return { kind: 'refused', message: error.message };
     throw error;
   }
+}
+
+function compileWithBackend<Options>(
+  backend: CompilerBackend<Options>,
+  backendOptions: Readonly<Options>,
+  sources: readonly {
+    readonly packageName: string;
+    readonly sourceFile: ReturnType<typeof parseTypeScriptSource>;
+    readonly upstreamDirectory: string;
+  }[],
+) {
+  return compileTypeScriptModules({ backend, backendOptions, sources });
 }

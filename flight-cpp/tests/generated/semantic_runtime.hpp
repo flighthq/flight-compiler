@@ -7,23 +7,23 @@
 
 namespace flighthq_cpp_conformance {
 
-flight::String summarize(flight::Array<double> values) {
-  const flight::Array<double> indexed = values.map([=](double value, double index) { return (value + index); });
+inline flight::String summarize(flight::Array<double> values) {
+  flight::Array<double> indexed = values.map([=](double value, double index) { return (value + index); });
   return indexed.join(flight::String("|"));
 }
 
-double update(flight::Map<flight::String, double> labels, flight::Set<flight::String> seen) {
+inline double update(flight::Map<flight::String, double> labels, flight::Set<flight::String> seen) {
   labels.set(flight::String("size"), (static_cast<double>(labels.size()) + 1.0));
   seen.add(flight::String("size"));
   return (seen.has(flight::String("size")) ? labels.get(flight::String("size")).value_or(0.0) : -1.0);
 }
 
-double overwrite(flight::Uint8Array values, flight::Array<double> source) {
+inline double overwrite(flight::Uint8Array values, flight::Array<double> source) {
   values.set(source);
-  return values[static_cast<size_t>(0.0)];
+  return values.element(0.0);
 }
 
-flight::Task<double> increment(flight::Task<double> value) {
+inline flight::Task<double> increment(flight::Task<double> value) {
   co_return (co_await value + 1.0);
 }
 
