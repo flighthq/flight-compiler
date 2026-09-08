@@ -64,11 +64,28 @@ template <typename Value>
 class TaskState {
  public:
   bool fulfill(Value value) {
-    return complete(TaskStatus::fulfilled, std::optional<Value>(std::move(value)), std::nullopt);
+    return complete(TaskStatus::fulfilled, std::optional<Value>(std::move(value)), std::nullopt, false);
+  }
+
+  bool fulfill_adopted(Value value) {
+    return complete(TaskStatus::fulfilled, std::optional<Value>(std::move(value)), std::nullopt, true);
   }
 
   bool reject(Rejection rejection) {
-    return complete(TaskStatus::rejected, std::nullopt, std::optional<Rejection>(std::move(rejection)));
+    return complete(TaskStatus::rejected, std::nullopt,
+                    std::optional<Rejection>(std::move(rejection)), false);
+  }
+
+  bool reject_adopted(Rejection rejection) {
+    return complete(TaskStatus::rejected, std::nullopt,
+                    std::optional<Rejection>(std::move(rejection)), true);
+  }
+
+  bool start_adoption() {
+    std::lock_guard lock(mutex_);
+    if (status_ != TaskStatus::pending || adopting_) return false;
+    adopting_ = true;
+    return true;
   }
 
   [[nodiscard]] Rejection rejection() const {
@@ -117,11 +134,12 @@ class TaskState {
   }
 
  private:
-  bool complete(TaskStatus status, std::optional<Value> value, std::optional<Rejection> rejection) {
+  bool complete(TaskStatus status, std::optional<Value> value,
+                std::optional<Rejection> rejection, bool adopted) {
     std::vector<std::function<void()>> continuations;
     {
       std::lock_guard lock(mutex_);
-      if (status_ != TaskStatus::pending) return false;
+      if (status_ != TaskStatus::pending || adopting_ != adopted) return false;
       status_ = status;
       value_ = std::move(value);
       rejection_ = std::move(rejection);
@@ -133,6 +151,7 @@ class TaskState {
   }
 
   mutable std::condition_variable condition_;
+  bool adopting_ = false;
   std::vector<std::function<void()>> continuations_;
   std::optional<Rejection> rejection_;
   mutable std::mutex mutex_;
@@ -143,10 +162,23 @@ class TaskState {
 template <>
 class TaskState<void> {
  public:
-  bool fulfill() { return complete(TaskStatus::fulfilled, std::nullopt); }
+  bool fulfill() { return complete(TaskStatus::fulfilled, std::nullopt, false); }
+
+  bool fulfill_adopted() { return complete(TaskStatus::fulfilled, std::nullopt, true); }
 
   bool reject(Rejection rejection) {
-    return complete(TaskStatus::rejected, std::optional<Rejection>(std::move(rejection)));
+    return complete(TaskStatus::rejected, std::optional<Rejection>(std::move(rejection)), false);
+  }
+
+  bool reject_adopted(Rejection rejection) {
+    return complete(TaskStatus::rejected, std::optional<Rejection>(std::move(rejection)), true);
+  }
+
+  bool start_adoption() {
+    std::lock_guard lock(mutex_);
+    if (status_ != TaskStatus::pending || adopting_) return false;
+    adopting_ = true;
+    return true;
   }
 
   [[nodiscard]] Rejection rejection() const {
@@ -192,11 +224,11 @@ class TaskState<void> {
   }
 
  private:
-  bool complete(TaskStatus status, std::optional<Rejection> rejection) {
+  bool complete(TaskStatus status, std::optional<Rejection> rejection, bool adopted) {
     std::vector<std::function<void()>> continuations;
     {
       std::lock_guard lock(mutex_);
-      if (status_ != TaskStatus::pending) return false;
+      if (status_ != TaskStatus::pending || adopting_ != adopted) return false;
       status_ = status;
       rejection_ = std::move(rejection);
       continuations = std::move(continuations_);
@@ -207,6 +239,7 @@ class TaskState<void> {
   }
 
   mutable std::condition_variable condition_;
+  bool adopting_ = false;
   std::vector<std::function<void()>> continuations_;
   std::optional<Rejection> rejection_;
   mutable std::mutex mutex_;
@@ -699,8 +732,18 @@ class Task {
           std::make_exception_ptr(std::logic_error("flight::Task cannot resolve itself"))));
       return;
     }
+    if (!output->start_adoption()) return;
     auto source = *this;
-    state_->subscribe([source, output] { source.copy_settlement_to(output); });
+    state_->subscribe([source, output] {
+      if (source.status() == TaskStatus::rejected) {
+        output->reject_adopted(source.state_->rejection());
+      } else if constexpr (std::is_void_v<Value>) {
+        source.state_->result();
+        output->fulfill_adopted();
+      } else {
+        output->fulfill_adopted(source.state_->result());
+      }
+    });
   }
 
   template <typename Output, typename Invocation>

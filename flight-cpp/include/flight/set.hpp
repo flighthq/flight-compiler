@@ -2,10 +2,13 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <cstdint>
 #include <functional>
 #include <initializer_list>
 #include <iterator>
+#include <limits>
 #include <memory>
+#include <stdexcept>
 #include <utility>
 #include <vector>
 
@@ -15,11 +18,56 @@ namespace flight {
 
 template <typename Value, typename Equal = SameValueZero<Value>>
 class Set {
- public:
-  using const_iterator = typename std::vector<Value>::const_iterator;
-  using size_type = typename std::vector<Value>::size_type;
+ private:
+  struct Record {
+    Value value;
+    std::uint64_t insertion_identity;
+  };
 
-  Set() : values_(std::make_shared<std::vector<Value>>()) {}
+  struct Storage {
+    std::vector<Record> records;
+    std::uint64_t next_insertion_identity = 0;
+  };
+
+ public:
+  class const_iterator {
+   public:
+    using difference_type = typename std::vector<Record>::difference_type;
+    using iterator_category = std::forward_iterator_tag;
+    using pointer = const Value*;
+    using reference = const Value&;
+    using value_type = Value;
+
+    const_iterator() = default;
+
+    [[nodiscard]] reference operator*() const noexcept { return iterator_->value; }
+    [[nodiscard]] pointer operator->() const noexcept { return &iterator_->value; }
+
+    const_iterator& operator++() noexcept {
+      ++iterator_;
+      return *this;
+    }
+
+    const_iterator operator++(int) noexcept {
+      auto previous = *this;
+      ++*this;
+      return previous;
+    }
+
+    [[nodiscard]] friend bool operator==(const const_iterator&, const const_iterator&) noexcept = default;
+
+   private:
+    friend class Set;
+    using RecordIterator = typename std::vector<Record>::const_iterator;
+
+    explicit const_iterator(RecordIterator iterator) noexcept : iterator_(iterator) {}
+
+    RecordIterator iterator_{};
+  };
+
+  using size_type = typename std::vector<Record>::size_type;
+
+  Set() : storage_(std::make_shared<Storage>()) {}
 
   Set(std::initializer_list<Value> values) : Set() {
     for (const auto& value : values) add(value);
@@ -35,47 +83,76 @@ class Set {
   }
 
   Set& add(Value value) {
-    if (!has(value)) values_->push_back(std::move(value));
+    if (has(value)) return *this;
+    if (storage_->next_insertion_identity == std::numeric_limits<std::uint64_t>::max()) {
+      throw std::length_error("flight::Set exhausted insertion identities");
+    }
+    if constexpr (std::floating_point<Value>) {
+      if (value == Value{0}) value = Value{0};
+    }
+    storage_->records.push_back(Record{std::move(value), storage_->next_insertion_identity});
+    ++storage_->next_insertion_identity;
     return *this;
   }
 
-  [[nodiscard]] const_iterator begin() const noexcept { return values_->begin(); }
-  [[nodiscard]] const_iterator end() const noexcept { return values_->end(); }
+  [[nodiscard]] const_iterator begin() const noexcept {
+    return const_iterator(storage_->records.cbegin());
+  }
 
-  void clear() noexcept { values_->clear(); }
+  [[nodiscard]] const_iterator end() const noexcept {
+    return const_iterator(storage_->records.cend());
+  }
+
+  void clear() noexcept { storage_->records.clear(); }
 
   [[nodiscard]] Set clone() const {
     Set result;
-    *result.values_ = *values_;
+    *result.storage_ = *storage_;
     return result;
   }
 
-  [[nodiscard]] bool empty() const noexcept { return values_->empty(); }
+  [[nodiscard]] bool empty() const noexcept { return storage_->records.empty(); }
 
   template <typename Function>
   void for_each(Function function) const {
-    for (const auto& value : *values_) std::invoke(function, value);
+    std::vector<std::uint64_t> visited;
+    while (true) {
+      const auto record = std::find_if(
+          storage_->records.cbegin(), storage_->records.cend(), [&](const Record& candidate) {
+            return std::find(visited.cbegin(), visited.cend(), candidate.insertion_identity) ==
+                   visited.cend();
+          });
+      if (record == storage_->records.cend()) return;
+
+      const auto identity = record->insertion_identity;
+      const auto value = record->value;
+      visited.push_back(identity);
+      std::invoke(function, value);
+    }
   }
 
   bool erase(const Value& value) {
     const auto found = find(value);
-    if (found == values_->end()) return false;
-    values_->erase(found);
+    if (found == storage_->records.end()) return false;
+    storage_->records.erase(found);
     return true;
   }
 
-  [[nodiscard]] bool has(const Value& value) const { return find(value) != values_->end(); }
-  [[nodiscard]] size_type size() const noexcept { return values_->size(); }
+  [[nodiscard]] bool has(const Value& value) const {
+    return find(value) != storage_->records.end();
+  }
+
+  [[nodiscard]] size_type size() const noexcept { return storage_->records.size(); }
 
  private:
-  [[nodiscard]] const_iterator find(const Value& value) const {
-    return std::find_if(values_->cbegin(), values_->cend(), [&](const Value& candidate) {
-      return equal_(candidate, value);
+  [[nodiscard]] auto find(const Value& value) const {
+    return std::find_if(storage_->records.cbegin(), storage_->records.cend(), [&](const Record& record) {
+      return equal_(record.value, value);
     });
   }
 
   Equal equal_{};
-  std::shared_ptr<std::vector<Value>> values_;
+  std::shared_ptr<Storage> storage_;
 };
 
 } // namespace flight

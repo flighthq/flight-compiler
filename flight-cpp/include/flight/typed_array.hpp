@@ -186,9 +186,9 @@ class TypedArray {
 
   [[nodiscard]] std::optional<size_type> normalize_element_index(std::ptrdiff_t index) const noexcept {
     if (index < 0) {
-      const auto boundary = normalize_boundary(index);
-      if (boundary >= length_) return std::nullopt;
-      return boundary;
+      const auto magnitude = static_cast<size_type>(-(index + 1)) + 1;
+      if (magnitude > length_) return std::nullopt;
+      return length_ - magnitude;
     }
     const auto positive = static_cast<size_type>(index);
     return positive < length_ ? std::optional<size_type>(positive) : std::nullopt;

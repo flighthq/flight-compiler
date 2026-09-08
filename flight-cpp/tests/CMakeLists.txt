@@ -16,6 +16,12 @@ flight_cpp_set_project_warnings(flight_cpp_c_api_tests)
 add_test(NAME flight_cpp.c_api COMMAND flight_cpp_c_api_tests)
 
 find_package(Threads REQUIRED)
+
+add_executable(flight_cpp_runtime_conformance_tests runtime_conformance_test.cpp)
+target_link_libraries(flight_cpp_runtime_conformance_tests PRIVATE Flight::Cpp Threads::Threads)
+flight_cpp_set_project_warnings(flight_cpp_runtime_conformance_tests)
+add_test(NAME flight_cpp.runtime_conformance COMMAND flight_cpp_runtime_conformance_tests)
+
 add_executable(flight_cpp_c_api_thread_tests c_api_thread_test.cpp)
 target_link_libraries(flight_cpp_c_api_thread_tests PRIVATE Flight::C Threads::Threads)
 flight_cpp_set_project_warnings(flight_cpp_c_api_thread_tests)
