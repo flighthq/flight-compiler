@@ -20,6 +20,7 @@ import {
   createCompilerLoweringPassAwaitConditionHoisting,
   createCompilerLoweringPassBindingPattern,
   createCompilerLoweringPassCStyleFor,
+  createCompilerLoweringPassCatchAwaitHoisting,
   createCompilerLoweringPassExtraArgumentErasure,
   createCompilerLoweringPassInterfaceInheritance,
   createCompilerLoweringPassSwitchFallthrough,
@@ -44,6 +45,7 @@ import type {
   EmittedFile,
   IrBinaryOperator,
   IrBinaryOperatorSemantics,
+  IrCatchClause,
   IrClassDeclaration,
   IrControlFlowLabelIdentity,
   IrDeclaration,
@@ -138,6 +140,7 @@ function emitIrModuleCppWithContext(
   const module = lowerIrModuleWithCompilerPasses(sourceModule, [
     createCompilerLoweringPassExtraArgumentErasure(),
     createCompilerLoweringPassAwaitConditionHoisting(),
+    createCompilerLoweringPassCatchAwaitHoisting(),
     createCompilerLoweringPassBindingPattern(),
     createCompilerLoweringPassVariableHoisting(),
     createCompilerLoweringPassCStyleFor(),
@@ -1258,6 +1261,9 @@ function emitStatement(statement: Readonly<IrStatement>, context: EmitContext): 
     case 'try': {
       if (statement.finallyBody)
         return emitTryFinallyCpp(statement as typeof statement & { finallyBody: IrStatement }, context);
+      if (statement.catchClause && containsAwaitExpressionCpp(statement.catchClause.body)) {
+        return emitTryCatchAwaitCpp(statement, statement.catchClause, context);
+      }
       const lines = ['try {', ...indentSourceLines(emitStatementBody(statement.tryBody, context)), '}'];
       if (statement.catchClause) {
         lines.push(...emitCatchClauseCpp(statement.catchClause, context));
@@ -1284,6 +1290,23 @@ function emitCatchClauseCpp(
   return [`catch (${catchVar}) {`, ...indentSourceLines(emitStatementBody(catchClause.body, context)), '}'];
 }
 
+function emitTryCatchAwaitCpp(
+  statement: Readonly<Extract<IrStatement, { kind: 'try' }>>,
+  catchClause: Readonly<IrCatchClause>,
+  context: EmitContext,
+): string[] {
+  if (catchClause.binding) {
+    emissionError(context, 'C++ coroutines forbid co_await in catch handlers with an exception binding');
+  }
+  const caughtVar = getGeneratedTargetName('caught', context);
+  const lines: string[] = [];
+  lines.push(`bool ${caughtVar} = false;`);
+  lines.push('try {', ...indentSourceLines(emitStatementBody(statement.tryBody, context)), '}');
+  lines.push('catch (...) {', ...indentSourceLines([`${caughtVar} = true;`]), '}');
+  lines.push(`if (${caughtVar}) {`, ...indentSourceLines(emitStatementBody(catchClause.body, context)), '}');
+  return lines;
+}
+
 function emitSwitchCaseStatementsCpp(
   switchCase: Readonly<IrSwitchCase>,
   switchLabel: Readonly<IrControlFlowLabelIdentity> | undefined,
@@ -1302,6 +1325,18 @@ function emitStatementBody(statement: Readonly<IrStatement>, context: EmitContex
 
 function emitStatements(statements: readonly IrStatement[], context: EmitContext): string[] {
   return statements.flatMap((statement) => emitStatement(statement, context));
+}
+
+function containsAwaitExpressionCpp(statement: Readonly<IrStatement>): boolean {
+  let found = false;
+  analyzeIrStatementSubtreeTraversal(statement, {
+    expression(expression) {
+      if (expression.kind !== 'await') return;
+      found = true;
+      return false;
+    },
+  });
+  return found;
 }
 
 function containsReturnStatementCpp(statement: Readonly<IrStatement>): boolean {
@@ -1348,7 +1383,9 @@ function emitTryFinallyCpp(
   lines.push(`std::exception_ptr ${exceptionVar};`);
   const innerContext: EmitContext = returnVar ? { ...context, finallyReturnVar: returnVar } : context;
   lines.push('try {');
-  if (statement.catchClause) {
+  if (statement.catchClause && containsAwaitExpressionCpp(statement.catchClause.body)) {
+    lines.push(...indentSourceLines(emitTryCatchAwaitCpp(statement, statement.catchClause, innerContext)));
+  } else if (statement.catchClause) {
     lines.push(
       ...indentSourceLines([
         'try {',

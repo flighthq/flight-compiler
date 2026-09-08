@@ -10,11 +10,17 @@ namespace flighthq_golden {
 
 inline flight::Task<double> attempt(flight::Task<double> task, flight::Task<double> backup) {
   double result = 0.0;
-  try {
-    result = co_await task;
-  }
-  catch (...) {
-    result = co_await backup;
+  {
+    auto caught = false;
+    try {
+      result = co_await task;
+    }
+    catch (...) {
+      caught = true;
+    }
+    if (caught) {
+      result = co_await backup;
+    }
   }
   co_return result;
 }

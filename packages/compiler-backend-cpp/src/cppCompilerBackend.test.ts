@@ -689,6 +689,22 @@ describe('emitIrModuleCpp', () => {
     expect(emitted.contents).not.toContain(' return ');
   });
 
+  it('hoists co_await out of catch handlers into a deferred block', () => {
+    const result = lower(
+      'catch-await.ts',
+      'export async function attempt(task: Promise<number>, backup: Promise<number>): Promise<number> { let result: number = 0; try { result = await task; } catch { result = await backup; } return result; }',
+    );
+    const emitted = emitIrModuleCpp(result.module);
+
+    expect(emitted.contents).toContain('auto caught = false');
+    expect(emitted.contents).toContain('catch (...)');
+    expect(emitted.contents).toContain('caught = true');
+    expect(emitted.contents).toContain('if (caught)');
+    expect(emitted.contents).toContain('co_await backup');
+    const catchBody = emitted.contents.match(/catch \(\.\.\.\) \{([^}]*)\}/)?.[1] ?? '';
+    expect(catchBody).not.toContain('co_await');
+  });
+
   it('emits finally blocks with exception_ptr catch-rethrow', () => {
     const result = lower(
       'cleanup.ts',
@@ -1668,6 +1684,13 @@ describe('emitIrModuleCpp', () => {
     );
     const emitted = emitIrModuleCpp(result.module);
     expect(emitted.contents).toContain('double check');
+  });
+
+  it('escapes C++ keywords in exported function target names', () => {
+    const result = lower('keyword-fn.ts', 'export function or(a: boolean, b: boolean): boolean { return a || b; }');
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('or_');
+    expect(emitted.contents).not.toMatch(/\bbool or\b/);
   });
 
   it('emits variable without type as auto', () => {
