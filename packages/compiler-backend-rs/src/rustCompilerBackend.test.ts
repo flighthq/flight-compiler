@@ -3250,7 +3250,7 @@ describe('emitIrModuleRust', () => {
     const module = structuredClone(result.module);
     const decl = module.declarations.find((d: { kind: string }) => d.kind === 'enum');
     if (decl?.kind === 'enum') {
-      decl.members.push({ name: 'B', value: 1.5 });
+      (decl.members as unknown as { name: string; value: number }[]).push({ name: 'B', value: 1.5 });
     }
     expect(() => emitIrModuleRust(module)).toThrow('discriminant domain');
   });
@@ -3332,5 +3332,92 @@ describe('emitIrModuleRust', () => {
       }
     }
     expect(() => emitIrModuleRust(module)).toThrow('Option-shaped');
+  });
+
+  it('emits abstract class with state as trait-carrying-state error', () => {
+    const result = lower(
+      'abstract-state.ts',
+      `export abstract class Shape {
+        abstract area(): number;
+        describe(): string { return "shape"; }
+      }`,
+    );
+    const module = structuredClone(result.module);
+    const cls = module.declarations.find((d: { kind: string }) => d.kind === 'class');
+    if (cls?.kind === 'class') {
+      (cls.fields as unknown as unknown[]).push({
+        name: 'count',
+        type: { kind: 'primitive', name: 'number' },
+        static: false,
+        abstract: false,
+        optional: false,
+        declare: false,
+        visibility: 'public',
+      });
+    }
+    expect(() => emitIrModuleRust(module)).toThrow('state a Rust trait cannot hold');
+  });
+
+  it('refuses mutable module-scoped variable', () => {
+    const result = lower('mut-module.ts', 'export let counter: number = 0;');
+    expect(() => emitIrModuleRust(result.module)).toThrow();
+  });
+
+  it('emits do-while loop as loop with break condition', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'do-while.ts',
+        `export function countdown(n: number): void {
+          let i = n;
+          do { i = i - 1; } while (i > 0);
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('loop');
+    expect(output).toContain('break');
+  });
+
+  it('emits template literal as format! macro', () => {
+    const output = emitIrModuleRust(
+      lower('template.ts', 'export function greet(name: string): string { return `hello ${name}`; }').module,
+    ).contents;
+    expect(output).toContain('format!');
+  });
+
+  it('emits bitwise NOT as i32 cast round-trip', () => {
+    const output = emitIrModuleRust(
+      lower('bitnot.ts', 'export function invert(n: number): number { return ~n; }').module,
+    ).contents;
+    expect(output).toContain('i32');
+  });
+
+  it('emits string enum with bidirectional conversion', () => {
+    const output = emitIrModuleRust(
+      lower('str-enum.ts', 'export enum Direction { Up = "UP", Down = "DOWN" }').module,
+    ).contents;
+    expect(output).toContain('as_str');
+    expect(output).toContain('from_str');
+  });
+
+  it('emits tuple rest expression as field access', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'tuple-rest.ts',
+        `export function rest(t: [number, string, boolean]): [string, boolean] {
+          const [, ...tail] = t;
+          return tail;
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('f64');
+  });
+
+  it('emits conditional ternary as if-else expression', () => {
+    const output = emitIrModuleRust(
+      lower('ternary.ts', 'export function pick(flag: boolean, a: number, b: number): number { return flag ? a : b; }')
+        .module,
+    ).contents;
+    expect(output).toContain('if');
+    expect(output).toContain('else');
   });
 });
