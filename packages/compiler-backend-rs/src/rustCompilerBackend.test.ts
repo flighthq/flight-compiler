@@ -4139,4 +4139,254 @@ describe('emitIrModuleRust', () => {
     ).contents;
     expect(output).toContain('abs');
   });
+
+  it('emits non-exported numeric enum without pub', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'internal-enum.ts',
+        `enum Internal { A, B }
+         export function pick(n: number): number { return n === 0 ? Internal.A : Internal.B; }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('enum Internal');
+    expect(output).not.toMatch(/pub enum Internal/);
+  });
+
+  it('emits non-exported string enum without pub', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'internal-str-enum.ts',
+        `enum Tag { X = "x", Y = "y" }
+         export function getTag(): string { return Tag.X; }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('enum Tag');
+    expect(output).not.toMatch(/pub enum Tag/);
+  });
+
+  it('refuses postfix increment before lowering', () => {
+    expect(() =>
+      emitIrModuleRust(
+        lower('postfix.ts', 'export function countUp(n: number): number { let x = n; x++; return x; }').module,
+      ),
+    ).toThrow('postfix ++');
+  });
+
+  it('emits substring with one argument as open range', () => {
+    const output = emitIrModuleRust(
+      lower('substr1.ts', `export function tail(s: string): string { return s.substring(1); }`).module,
+    ).contents;
+    expect(output).toContain('..');
+    expect(output).toContain('to_string()');
+  });
+
+  it('emits transitive mutation as &mut self', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'transitive-mut.ts',
+        `export class Counter {
+          count: number;
+          constructor() { this.count = 0; }
+          increment(): void { this.count += 1; }
+          doubleIncrement(): void { this.increment(); this.increment(); }
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toMatch(/fn double_increment\(&mut self\)/);
+  });
+
+  it('emits non-exported class without pub struct', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'internal-class.ts',
+        `class Internal {
+          x: number;
+          constructor(x: number) { this.x = x; }
+        }
+        export class Wrapper extends Internal {
+          y: number;
+          constructor(x: number, y: number) { super(x); this.y = y; }
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('struct Internal');
+    expect(output).not.toMatch(/pub struct Internal/);
+  });
+
+  it('emits class with private static field without pub', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'private-static.ts',
+        `export class Config {
+          private static readonly SECRET: number = 42;
+          static getSecret(): number { return Config.SECRET; }
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('SECRET');
+  });
+
+  it('emits interface as struct when not implemented by class', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'iface-struct.ts',
+        `export interface Point { x: number; y: number; }
+         export function make(x: number, y: number): Point { return { x, y }; }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('struct Point');
+  });
+
+  it('emits class with abstract field as trait getter', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'abstract-field.ts',
+        `export abstract class Named {
+          abstract readonly name: string;
+          describe(): string { return this.name; }
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('trait Named');
+    expect(output).toContain('fn name');
+  });
+
+  it('emits class accessor read from external call site', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'accessor-read.ts',
+        `export class Temp {
+          private _celsius: number;
+          constructor(c: number) { this._celsius = c; }
+          get celsius(): number { return this._celsius; }
+        }
+        export function read(t: Temp): number { return t.celsius; }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('celsius()');
+  });
+
+  it('emits type alias as Rust type alias', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'type-alias.ts',
+        `export type Numeric = number;
+         export function add(a: Numeric, b: Numeric): Numeric { return a + b; }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('type Numeric');
+  });
+
+  it('emits optional parameter as Option wrapper', () => {
+    const output = emitIrModuleRust(
+      lower('opt-param.ts', `export function greet(name?: string): string { return name ?? "world"; }`).module,
+    ).contents;
+    expect(output).toContain('Option<String>');
+  });
+
+  it('emits default parameter as unwrap_or_else', () => {
+    const output = emitIrModuleRust(
+      lower('default-param.ts', `export function greet(name: string = "world"): string { return name; }`).module,
+    ).contents;
+    expect(output).toContain('unwrap_or_else');
+  });
+
+  it('emits void return as empty tuple', () => {
+    const output = emitIrModuleRust(lower('void-return.ts', `export function noop(): void {}`).module).contents;
+    expect(output).toContain('()');
+  });
+
+  it('emits undefinedDefault expression as unwrap_or_else', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'undef-default.ts',
+        `export function orZero(x: number | undefined, fallback: number): number {
+          return x !== undefined ? x : fallback;
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('fn or_zero');
+  });
+
+  it('refuses intersection type before lowering', () => {
+    const module = structuredClone(lower('inter.ts', 'export function id(x: number): number { return x; }').module);
+    const fn = module.declarations.find((d) => d.kind === 'function');
+    if (fn && fn.kind === 'function') {
+      (fn as { returns: { kind: string } }).returns = { kind: 'intersection', types: [] } as never;
+    }
+    expect(() => emitIrModuleRust(module)).toThrow('intersection types require');
+  });
+
+  it('refuses Partial type before lowering', () => {
+    const module = structuredClone(lower('partial.ts', 'export function id(x: number): number { return x; }').module);
+    const fn = module.declarations.find((d) => d.kind === 'function');
+    if (fn && fn.kind === 'function') {
+      (fn as { returns: { kind: string; reference: unknown; typeArguments: unknown[] } }).returns = {
+        kind: 'named',
+        reference: { kind: 'ambient', name: 'Partial' },
+        typeArguments: [{ kind: 'primitive', name: 'number' }],
+      } as never;
+    }
+    expect(() => emitIrModuleRust(module)).toThrow('Partial<T> requires');
+  });
+
+  it('refuses synchronous try/finally', () => {
+    const module = structuredClone(
+      lower(
+        'try-finally.ts',
+        `export function safe(f: () => number): number {
+          try { return f(); } catch (e) { return 0; }
+        }`,
+      ).module,
+    );
+    const fn = module.declarations.find((d) => d.kind === 'function');
+    if (fn && fn.kind === 'function') {
+      const tryStmt = fn.body.find((s) => s.kind === 'try') as IrStatement & { kind: 'try' };
+      if (tryStmt) {
+        (tryStmt as { finallyBody: unknown }).finallyBody = {
+          kind: 'block',
+          statements: [],
+        };
+      }
+    }
+    expect(() => emitIrModuleRust(module)).toThrow('synchronous try/finally');
+  });
+
+  it('emits unary prefix minus as negation', () => {
+    const output = emitIrModuleRust(
+      lower('negate.ts', 'export function neg(x: number): number { return -x; }').module,
+    ).contents;
+    expect(output).toContain('-');
+  });
+
+  it('emits logical not as prefix !', () => {
+    const output = emitIrModuleRust(
+      lower('not.ts', 'export function negate(b: boolean): boolean { return !b; }').module,
+    ).contents;
+    expect(output).toContain('!');
+  });
+
+  it('emits cast expression as Rust as', () => {
+    const module = structuredClone(lower('cast.ts', 'export function id(x: number): number { return x; }').module);
+    const fn = module.declarations.find((d) => d.kind === 'function');
+    if (fn && fn.kind === 'function') {
+      const ret = fn.body.find((s) => s.kind === 'return') as IrStatement & { kind: 'return' };
+      if (ret?.expression) {
+        (ret as { expression: unknown }).expression = {
+          kind: 'cast',
+          expression: ret.expression,
+          type: { kind: 'primitive', name: 'number' },
+        };
+      }
+    }
+    const output = emitIrModuleRust(module).contents;
+    expect(output).toContain(' as ');
+  });
+
+  it('emits unknown type as opaque host value', () => {
+    const output = emitIrModuleRust(
+      lower('unknown-type.ts', `export function accept(x: unknown): unknown { return x; }`).module,
+    ).contents;
+    expect(output).toContain('OpaqueHostValue');
+  });
 });
