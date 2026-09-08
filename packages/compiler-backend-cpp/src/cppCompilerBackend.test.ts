@@ -6,6 +6,7 @@ import ts from 'typescript';
 
 import { isBackendEmissionFailure } from '../../compiler-emission/src/index.js';
 import { lowerTypeScriptSource } from '../../compiler-semantic/src/index.js';
+import type { IrType } from '../../compiler-types/src/index.js';
 import { createCppCompilerBackend, emitIrModuleCpp } from './cppCompilerBackend.js';
 
 function lower(file: string, source: string) {
@@ -152,15 +153,19 @@ describe('emitIrModuleCpp', () => {
     expect(emitted.contents).toContain('return value.value_or(fallback)');
   });
 
-  it('refuses multi-member unions until variant access has neutral lowering evidence', () => {
+  it('emits checker-proven typeof narrowing through an elected variant representation', () => {
     const result = lower(
       'union.ts',
       'export function describe(value: string | number): string { return typeof value === "string" ? value : value.toString(); }',
     );
 
-    expect(() => emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' })).toThrow(
-      'multi-member unions require C++ narrowing and variant-access lowering',
-    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+
+    expect(emitted.contents).toContain('#include <variant>');
+    expect(emitted.contents).toContain('std::variant<flight::String, double> value');
+    expect(emitted.contents).toContain('std::holds_alternative<flight::String>(value)');
+    expect(emitted.contents).toContain('std::get<flight::String>(value)');
+    expect(emitted.contents).toContain('std::get<double>(value)');
   });
 
   it('refuses mutating closures until capture lifetime is explicit', () => {
@@ -531,9 +536,22 @@ describe('emitIrModuleCpp', () => {
     expect(emitted.contents).toContain(':');
   });
 
-  it('refuses cast expressions on multi-member unions', () => {
+  it('turns a union type assertion into checked variant access', () => {
     const result = lower('cast.ts', 'export function toNumber(x: number | string): number { return x as number; }');
-    expect(() => emitIrModuleCpp(result.module)).toThrow('multi-member unions require C++ narrowing');
+    const emitted = emitIrModuleCpp(result.module);
+
+    expect(emitted.contents).toContain('#include <variant>');
+    expect(emitted.contents).toContain('return std::get<double>(x)');
+
+    const invalid = structuredClone(result.module);
+    const declaration = invalid.declarations[0];
+    const statement = declaration?.kind === 'function' ? declaration.body[0] : undefined;
+    const expression = statement?.kind === 'return' ? statement.expression : undefined;
+    if (expression?.kind !== 'cast') throw new Error('Expected asserted return');
+    (expression as { type: IrType }).type = { kind: 'primitive', name: 'boolean' };
+    expect(() => emitIrModuleCpp(invalid)).toThrow(
+      'type assertion target must identify exactly one C++ variant alternative',
+    );
   });
 
   it('emits tuple types and tuple access with std::get', () => {
@@ -684,12 +702,15 @@ describe('emitIrModuleCpp', () => {
     expect(emitted.contents).toContain('#include <functional>');
   });
 
-  it('refuses multi-member union types pending variant lowering', () => {
+  it('emits checked access for assertions into a three-member primitive union', () => {
     const result = lower(
       'union.ts',
       'export function convert(input: number | string | boolean): number { return input as number; }',
     );
-    expect(() => emitIrModuleCpp(result.module)).toThrow('multi-member unions require C++ narrowing');
+    const emitted = emitIrModuleCpp(result.module);
+
+    expect(emitted.contents).toContain('std::variant<double, std::string, bool> input');
+    expect(emitted.contents).toContain('return std::get<double>(input)');
   });
 
   it('emits nullable types as std::optional', () => {
@@ -1717,9 +1738,61 @@ describe('emitIrModuleCpp', () => {
     expect(emitted.contents).toContain('std::function');
   });
 
-  it('refuses multi-member union types without null/undefined', () => {
+  it('emits an intact multi-member union when no member access is needed', () => {
     const result = lower('union-variant.ts', 'export function pick(x: number | string): number | string { return x; }');
-    expect(() => emitIrModuleCpp(result.module)).toThrow('multi-member unions require C++ narrowing');
+    const emitted = emitIrModuleCpp(result.module);
+
+    expect(emitted.contents).toContain('std::variant<double, std::string> pick(std::variant<double, std::string> x)');
+    expect(emitted.contents).toContain('return x');
+  });
+
+  it('emits discriminant tests and member access only from checker-proven evidence', () => {
+    const result = lower(
+      'shape.ts',
+      `export interface Circle { readonly kind: 'circle'; readonly radius: number; }
+       export interface Square { readonly kind: 'square'; readonly side: number; }
+       export type Shape = Circle | Square;
+       export function area(shape: Shape): number {
+         if (shape.kind === 'circle') return shape.radius;
+         return shape.side;
+       }`,
+    );
+    const emitted = emitIrModuleCpp(result.module);
+
+    expect(emitted.contents).toContain('using Shape = std::variant<Circle, Square>');
+    expect(emitted.contents).toContain('std::holds_alternative<Circle>(shape)');
+    expect(emitted.contents).toContain('std::get<Circle>(shape).radius');
+    expect(emitted.contents).toContain('std::get<Square>(shape).side');
+  });
+
+  it('refuses ambiguous variant representations, open discriminants, and nullable multi-value unions', () => {
+    const duplicate = lower(
+      'duplicate.ts',
+      'type Numeric = number; export function duplicate(value: Numeric | number): Numeric | number { return value; }',
+    );
+    const open = lower(
+      'open.ts',
+      `interface Exact { kind: 'exact'; value: number; }
+       interface Open { kind: string; value: number; }
+       export function read(value: Exact | Open): number {
+         if (value.kind === 'exact') return value.value;
+         return value.value;
+       }`,
+    );
+    const nullable = lower(
+      'nullable-variant.ts',
+      'export function maybe(value: string | number | undefined): string | number | undefined { return value; }',
+    );
+
+    expect(() => emitIrModuleCpp(duplicate.module)).toThrow(
+      'multi-member union alternatives must have unique C++ representations',
+    );
+    expect(() => emitIrModuleCpp(open.module)).toThrow(
+      'property kind on a C++ variant requires proven union member access',
+    );
+    expect(() => emitIrModuleCpp(nullable.module)).toThrow(
+      'unions combining multiple values with null or undefined require optional-variant lowering',
+    );
   });
 
   it('emits nullish comparison with negated != operator', () => {

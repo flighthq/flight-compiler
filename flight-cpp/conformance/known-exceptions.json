@@ -11,13 +11,6 @@
       "reason": "The IR does not yet distinguish an escaping capture from a same-frame mutable borrow."
     },
     {
-      "fixture": "discriminatedUnion",
-      "phase": "emission",
-      "owner": "compiler-ir",
-      "rule": "multi-member unions require C++ narrowing and variant-access lowering",
-      "reason": "The backend needs target-neutral alternative selection at each narrowed use."
-    },
-    {
       "fixture": "nameCollision",
       "phase": "emission",
       "owner": "compiler-emission",
@@ -37,20 +30,6 @@
       "owner": "runtime-contract",
       "rule": "runtime external symbol binding plan is incomplete (missing: WeakMap[type])",
       "reason": "WeakMap has no elected ownership and lifetime contract for native targets."
-    },
-    {
-      "fixture": "typeNarrowing",
-      "phase": "emission",
-      "owner": "compiler-ir",
-      "rule": "multi-member unions require C++ narrowing and variant-access lowering",
-      "reason": "The backend needs target-neutral primitive-alternative evidence at each narrowed use."
-    },
-    {
-      "fixture": "typeofNarrowing",
-      "phase": "emission",
-      "owner": "compiler-ir",
-      "rule": "multi-member unions require C++ narrowing and variant-access lowering",
-      "reason": "The backend needs target-neutral primitive-alternative evidence at each narrowed use."
     },
     {
       "fixture": "variableForInHoisting",

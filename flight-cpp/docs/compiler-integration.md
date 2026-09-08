@@ -17,7 +17,9 @@ The versioned [`flight-portable-typescript/1`](../conformance/portable-typescrip
 
 The generated golden corpus uses the semantic profile. Native compilation accepts GCC or Clang and includes the real runtime rather than a permissive stub. The behavioral oracle executes the same fixture calls under Node and native C++ and compares canonical answers whenever a C++ compiler is available. CI additionally builds runtime and installed consumers with GCC, Clang, AppleClang, and MSVC.
 
-Remaining graduation work is intentionally narrow: remove the exception ledger through neutral union/capture evidence, select production Unicode and time-zone providers, prove a supported 32-bit configuration, and hold performance/ABI compatibility gates over at least one release-candidate cycle.
+Closed multi-member unions elect `std::variant` only when every source alternative has a distinct C++ representation. `typeof` and discriminant guards consume checker-proven union-member evidence, narrowed reads use checked `std::get`, and a source type assertion becomes the same checked access, failing with `std::bad_variant_access` when the runtime alternative disagrees. Duplicate target representations and optional variants remain outside the profile rather than producing ambiguous or nested storage.
+
+Remaining graduation work is intentionally narrow: remove the exception ledger through neutral capture and for-in evidence, select production Unicode and time-zone providers, prove a supported 32-bit configuration, and hold performance/ABI compatibility gates over at least one release-candidate cycle.
 
 ## Binding profiles
 

@@ -26,12 +26,15 @@ import ts from 'typescript';
 // language's own formatting, because `1` and `1.0` and `1.000000` are the same answer — and because
 // three languages printing the same double three ways is a difference in the harness, not in the
 // compiler. Every side rounds to six decimals and trims, so the comparison is of values.
+// A case may name target adapters when another adapter cannot construct its parameter representation;
+// that is a harness limitation, not a waiver for a behavioral divergence in a target that runs it.
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const goldenDirectory = path.join(root, 'golden');
 const supportDirectory = path.join(goldenDirectory, 'support');
 
 type OracleValueKind = 'boolean' | 'number' | 'numbers' | 'string' | 'strings';
+type OracleTarget = 'cpp' | 'haxe' | 'rust';
 
 interface OracleCase {
   readonly arguments: readonly unknown[];
@@ -40,6 +43,7 @@ interface OracleCase {
   readonly cppTypes?: readonly (string | null)[];
   readonly returns: OracleValueKind;
   readonly rustRef?: readonly number[];
+  readonly targets?: readonly OracleTarget[];
 }
 
 // A settled task argument. Async is the machinery with the most moving parts and the least chance of
@@ -81,15 +85,18 @@ try {
       readFileSync(path.join(goldenDirectory, fixture, 'oracle.json'), 'utf8'),
     ) as readonly OracleCase[];
     const expected = runTypeScriptOracle(fixture, cases);
-    if (haxeAvailable && existsSync(path.join(goldenDirectory, fixture, 'haxe'))) {
-      compare(fixture, 'haxe', expected, runHaxeOracle(fixture, cases));
+    const haxeCases = selectOracleCases(cases, expected, 'haxe');
+    if (haxeAvailable && haxeCases.cases.length > 0 && existsSync(path.join(goldenDirectory, fixture, 'haxe'))) {
+      compare(fixture, 'haxe', haxeCases.expected, runHaxeOracle(fixture, haxeCases.cases));
     }
-    if (rustAvailable && existsSync(path.join(goldenDirectory, fixture, 'rust'))) {
-      compare(fixture, 'rust', expected, runRustOracle(fixture, cases));
+    const rustCases = selectOracleCases(cases, expected, 'rust');
+    if (rustAvailable && rustCases.cases.length > 0 && existsSync(path.join(goldenDirectory, fixture, 'rust'))) {
+      compare(fixture, 'rust', rustCases.expected, runRustOracle(fixture, rustCases.cases));
     }
-    if (cppCompiler && existsSync(path.join(goldenDirectory, fixture, 'cpp'))) {
-      compare(fixture, 'cpp', expected, runCppOracle(fixture, cases, cppCompiler));
-    } else if (cppCompiler) {
+    const cppCases = selectOracleCases(cases, expected, 'cpp');
+    if (cppCompiler && cppCases.cases.length > 0 && existsSync(path.join(goldenDirectory, fixture, 'cpp'))) {
+      compare(fixture, 'cpp', cppCases.expected, runCppOracle(fixture, cppCases.cases, cppCompiler));
+    } else if (cppCompiler && cppCases.cases.length > 0) {
       cppExcluded += 1;
     }
   }
@@ -126,6 +133,21 @@ function compare(fixture: string, target: string, expected: readonly string[], a
       divergences.push({ actual: observed, expected: value, fixture, subject: `answer ${String(index + 1)}`, target });
     }
   }
+}
+
+function selectOracleCases(
+  cases: readonly OracleCase[],
+  expected: readonly string[],
+  target: OracleTarget,
+): Readonly<{ cases: readonly OracleCase[]; expected: readonly string[] }> {
+  const selectedCases: OracleCase[] = [];
+  const selectedExpected: string[] = [];
+  cases.forEach((oracleCase, index) => {
+    if (oracleCase.targets && !oracleCase.targets.includes(target)) return;
+    selectedCases.push(oracleCase);
+    selectedExpected.push(expected[index]!);
+  });
+  return { cases: selectedCases, expected: selectedExpected };
 }
 
 function runTypeScriptOracle(fixture: string, cases: readonly OracleCase[]): readonly string[] {

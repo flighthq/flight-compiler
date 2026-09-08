@@ -1,1 +1,0 @@
-cpp emission failed for @flighthq/golden/packages/golden/src/typeofNarrowing.ts: multi-member unions require C++ narrowing and variant-access lowering

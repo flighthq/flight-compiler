@@ -4,6 +4,7 @@ import type {
   IrNullishComparisonEvidence,
   IrOperatorOperandDomains,
   IrOperatorValueDomain,
+  IrUnionMemberTestEvidence,
   IrUnaryOperatorSemantics,
 } from './compilerOperatorSemanticIntermediateRepresentation.js';
 
@@ -33,6 +34,7 @@ describe('compiler operator semantic intermediate representation contracts', () 
         nullishComparison?: IrNullishComparisonEvidence | undefined;
         result: IrOperatorValueDomain;
         right: IrOperatorOperandDomains;
+        unionMemberTest?: IrUnionMemberTestEvidence | undefined;
       }>
     >();
     expectTypeOf<IrUnaryOperatorSemantics>().toEqualTypeOf<

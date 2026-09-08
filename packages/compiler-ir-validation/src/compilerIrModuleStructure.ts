@@ -454,9 +454,29 @@ function visitExpression(expression: Readonly<IrExpression>, path: string, state
       });
       break;
     case 'assignment':
+      visitExpression(expression.left, `${path}.left`, state);
+      visitExpression(expression.right, `${path}.right`, state);
+      break;
     case 'binary':
       visitExpression(expression.left, `${path}.left`, state);
       visitExpression(expression.right, `${path}.right`, state);
+      if (expression.semantics.unionMemberTest) {
+        const test = expression.semantics.unionMemberTest;
+        const testPath = `${path}.semantics.unionMemberTest`;
+        if (
+          expression.operator !== '==' &&
+          expression.operator !== '===' &&
+          expression.operator !== '!=' &&
+          expression.operator !== '!=='
+        ) {
+          addFailure('invalid-node-shape', testPath, 'union member test evidence requires an equality operator', state);
+        }
+        if (typeof test.whenResult !== 'boolean') {
+          addFailure('invalid-node-shape', `${testPath}.whenResult`, 'union member test result must be boolean', state);
+        }
+        addBindingReference(test.binding, `${testPath}.binding`, state);
+        visitType(test.member, `${testPath}.member`, state);
+      }
       break;
     case 'await':
       if (!isIrAwaitSemantics(expression.semantics)) {

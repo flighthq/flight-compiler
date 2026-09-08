@@ -157,6 +157,47 @@ describe('validateIrModuleStructure', () => {
     });
   });
 
+  it('validates union member test evidence, its binding, member type, and equality operator', () => {
+    const valid = lower(
+      'union-member-test.ts',
+      `export function isText(value: string | number): boolean { return typeof value === 'string'; }`,
+    );
+    expect(validateIrModuleStructure(valid)).toEqual({ kind: 'valid' });
+
+    const invalidOperator = structuredClone(valid);
+    const invalidResult = structuredClone(valid);
+    const invalidType = structuredClone(valid);
+    for (const [module, change] of [
+      [invalidOperator, 'operator'],
+      [invalidResult, 'result'],
+      [invalidType, 'type'],
+    ] as const) {
+      const declaration = module.declarations[0];
+      const statement = declaration?.kind === 'function' ? declaration.body[0] : undefined;
+      const expression = statement?.kind === 'return' ? statement.expression : undefined;
+      if (expression?.kind !== 'binary' || !expression.semantics.unionMemberTest) {
+        throw new Error('Expected union member test');
+      }
+      if (change === 'operator') (expression as { operator: string }).operator = '+';
+      if (change === 'result') {
+        (expression.semantics.unionMemberTest as { whenResult: unknown }).whenResult = 'true';
+      }
+      if (change === 'type') {
+        (expression.semantics.unionMemberTest as { member: unknown }).member = { kind: 'future-type' };
+      }
+    }
+
+    for (const module of [invalidOperator, invalidResult, invalidType]) {
+      const result = validateIrModuleStructure(module);
+      expect(result.kind).toBe('invalid');
+      if (result.kind === 'invalid') {
+        expect(result.failures.map((failure) => failure.code)).toContain(
+          module === invalidType ? 'unknown-ir-kind' : 'invalid-node-shape',
+        );
+      }
+    }
+  });
+
   it('requires exact versioned await semantics', () => {
     const valid = lower(
       'await.ts',

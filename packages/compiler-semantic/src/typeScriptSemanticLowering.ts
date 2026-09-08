@@ -70,6 +70,7 @@ import type {
   IrTypeParameter,
   IrTypeReference,
   IrUnaryOperatorSemantics,
+  IrUnionMemberTestEvidence,
   IrTypedArrayReceiver,
   IrValueNameReference,
   IrVariable,
@@ -2946,6 +2947,7 @@ function lowerBinaryOperatorSemantics(node: ts.BinaryExpression, context: Loweri
   const right = lowerOperatorOperandDomains(node.right, context);
   const result = lowerOperatorValueDomain(node, context);
   const nullishComparison = getTypeScriptNullishComparisonEvidence(node, context);
+  const unionMemberTest = getTypeScriptUnionMemberTestEvidence(node, context);
   return {
     left,
     ...(nullishComparison ? { nullishComparison } : {}),
@@ -2963,7 +2965,112 @@ function lowerBinaryOperatorSemantics(node: ts.BinaryExpression, context: Loweri
           )
         : result,
     right,
+    ...(unionMemberTest ? { unionMemberTest } : {}),
   };
+}
+
+function getTypeScriptUnionMemberTestEvidence(
+  node: ts.BinaryExpression,
+  context: LoweringContext,
+): IrUnionMemberTestEvidence | undefined {
+  const whenResult =
+    node.operatorToken.kind === ts.SyntaxKind.EqualsEqualsToken ||
+    node.operatorToken.kind === ts.SyntaxKind.EqualsEqualsEqualsToken
+      ? true
+      : node.operatorToken.kind === ts.SyntaxKind.ExclamationEqualsToken ||
+          node.operatorToken.kind === ts.SyntaxKind.ExclamationEqualsEqualsToken
+        ? false
+        : undefined;
+  if (whenResult === undefined) return undefined;
+  return (
+    getTypeScriptTypeofUnionMemberTestEvidence(node.left, node.right, whenResult, context) ??
+    getTypeScriptTypeofUnionMemberTestEvidence(node.right, node.left, whenResult, context) ??
+    getTypeScriptDiscriminantUnionMemberTestEvidence(node.left, node.right, whenResult, context) ??
+    getTypeScriptDiscriminantUnionMemberTestEvidence(node.right, node.left, whenResult, context)
+  );
+}
+
+function getTypeScriptTypeofUnionMemberTestEvidence(
+  test: ts.Expression,
+  expected: ts.Expression,
+  whenResult: boolean,
+  context: LoweringContext,
+): IrUnionMemberTestEvidence | undefined {
+  if (!ts.isTypeOfExpression(test) || !ts.isStringLiteralLike(expected)) return undefined;
+  const subject = unwrapTypeScriptParenthesizedExpression(test.expression);
+  if (!ts.isIdentifier(subject)) return undefined;
+  const source = getTypeScriptUnionBindingEvidence(subject, context);
+  if (!source) return undefined;
+  const members = source.type.types.filter((member) => getTypeScriptPrimitiveTypeName(member) === expected.text);
+  if (members.length !== 1) return undefined;
+  const member = getTypeScriptCheckerTypeEvidence(members[0]!, context, 0);
+  return member ? { binding: source.binding, member, whenResult } : undefined;
+}
+
+function getTypeScriptDiscriminantUnionMemberTestEvidence(
+  test: ts.Expression,
+  expected: ts.Expression,
+  whenResult: boolean,
+  context: LoweringContext,
+): IrUnionMemberTestEvidence | undefined {
+  const literal = getTypeScriptLiteralExpressionValue(expected);
+  if (literal === undefined || !ts.isPropertyAccessExpression(test) || test.questionDotToken) return undefined;
+  const subject = unwrapTypeScriptParenthesizedExpression(test.expression);
+  if (!ts.isIdentifier(subject)) return undefined;
+  const source = getTypeScriptUnionBindingEvidence(subject, context);
+  if (!source) return undefined;
+  const members: ts.Type[] = [];
+  for (const member of source.type.types) {
+    const property = context.checker.getPropertyOfType(member, test.name.text);
+    const declaration = property?.valueDeclaration ?? property?.declarations?.[0];
+    if (!property || !declaration) return undefined;
+    const propertyValue = getTypeScriptLiteralTypeValue(
+      context.checker.getTypeOfSymbolAtLocation(property, declaration),
+      context.checker,
+    );
+    if (propertyValue === undefined) return undefined;
+    if (Object.is(propertyValue, literal)) members.push(member);
+  }
+  if (members.length !== 1) return undefined;
+  const member = getTypeScriptCheckerTypeEvidence(members[0]!, context, 0);
+  return member ? { binding: source.binding, member, whenResult } : undefined;
+}
+
+function getTypeScriptUnionBindingEvidence(
+  node: ts.Identifier,
+  context: LoweringContext,
+): Readonly<{ binding: IrBindingIdentity; type: ts.UnionType }> | undefined {
+  const symbol = context.checker.getSymbolAtLocation(node);
+  const declaration = symbol?.valueDeclaration ?? symbol?.declarations?.[0];
+  if (!symbol || !declaration) return undefined;
+  const type = context.checker.getTypeOfSymbolAtLocation(symbol, declaration);
+  if (!type.isUnion()) return undefined;
+  const reference = lowerIdentifierReference(node, context);
+  return reference.kind === 'binding' ? { binding: reference.binding, type } : undefined;
+}
+
+function getTypeScriptLiteralExpressionValue(expression: ts.Expression): boolean | number | string | undefined {
+  if (ts.isStringLiteralLike(expression)) return expression.text;
+  if (ts.isNumericLiteral(expression)) return Number(expression.text.replaceAll('_', ''));
+  if (expression.kind === ts.SyntaxKind.TrueKeyword) return true;
+  if (expression.kind === ts.SyntaxKind.FalseKeyword) return false;
+  if (
+    ts.isPrefixUnaryExpression(expression) &&
+    expression.operator === ts.SyntaxKind.MinusToken &&
+    ts.isNumericLiteral(expression.operand)
+  ) {
+    return -Number(expression.operand.text.replaceAll('_', ''));
+  }
+  return undefined;
+}
+
+function getTypeScriptLiteralTypeValue(type: ts.Type, checker: ts.TypeChecker): boolean | number | string | undefined {
+  if (type.isStringLiteral() || type.isNumberLiteral()) return type.value;
+  if (type.flags & ts.TypeFlags.BooleanLiteral) {
+    const value = checker.typeToString(type);
+    return value === 'true' ? true : value === 'false' ? false : undefined;
+  }
+  return undefined;
 }
 
 // One side of an equality being `null` or `undefined` makes the other side's absent-value membership

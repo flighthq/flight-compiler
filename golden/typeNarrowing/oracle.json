@@ -1,0 +1,8 @@
+[
+  { "call": "describeType", "arguments": ["flight"], "returns": "string", "targets": ["cpp"] },
+  { "call": "describeType", "arguments": [42], "returns": "string", "targets": ["cpp"] },
+  { "call": "formatValue", "arguments": ["flight"], "returns": "string", "targets": ["cpp"] },
+  { "call": "formatValue", "arguments": [3.5], "returns": "string", "targets": ["cpp"] },
+  { "call": "formatValue", "arguments": [true], "returns": "string", "targets": ["cpp"] },
+  { "call": "formatValue", "arguments": [false], "returns": "string", "targets": ["cpp"] }
+]

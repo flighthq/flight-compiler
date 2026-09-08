@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
 
 import {
   collectIrModuleNullableBindingIds,
@@ -53,6 +54,7 @@ import type {
   IrType,
   IrTypeAliasDeclaration,
   IrTypeParameter,
+  IrUnionMemberTestEvidence,
   IrVariable,
   IrVariableDeclaration,
 } from '../../compiler-types/src/index.js';
@@ -71,6 +73,10 @@ import {
 interface AnonymousStruct {
   name: string;
   properties: readonly { name: string; optional: boolean; type: string }[];
+}
+
+interface CppVariantRepresentation {
+  alternatives: readonly Readonly<{ member: IrType; representationKey: string; targetType: string }>[];
 }
 
 interface EmitContext {
@@ -492,6 +498,9 @@ function emitExpression(
     case 'await':
       return `co_await ${emitExpression(expression.expression, context)}`;
     case 'binary': {
+      if (expression.semantics.unionMemberTest) {
+        return emitUnionMemberTestCpp(expression.semantics.unionMemberTest, context);
+      }
       if (expression.semantics.nullishComparison) {
         context.includes.add('optional');
         const operand =
@@ -599,8 +608,13 @@ function emitExpression(
       const args = expression.arguments.map((argument) => emitExpression(argument, context));
       return `${callee}${emitCppTypeArguments(expression.typeArguments, context)}(${args.join(', ')})`;
     }
-    case 'cast':
-      return `static_cast<${emitType(expression.type, context)}>(${emitExpression(expression.expression, context)})`;
+    case 'cast': {
+      const asserted = emitUnionMemberAssertionCpp(expression.expression, expression.type, context);
+      return (
+        asserted ??
+        `static_cast<${emitType(expression.type, context)}>(${emitExpression(expression.expression, context)})`
+      );
+    }
     case 'conditional':
       return `(${emitExpression(expression.condition, context)} ? ${emitExpression(expression.whenTrue, context)} : ${emitExpression(expression.whenFalse, context)})`;
     case 'element': {
@@ -665,6 +679,10 @@ function emitExpression(
         context.includes.add('optional');
         return `${emitIdentifierReference(expression.reference, context)}.value()`;
       }
+      if (expression.narrowedMember && expression.reference.kind === 'binding') {
+        const narrowed = emitNarrowedUnionMemberCpp(expression, context);
+        if (narrowed) return narrowed;
+      }
       return emitIdentifierReference(expression.reference, context);
     }
     case 'literal':
@@ -714,6 +732,14 @@ function emitExpression(
           getCppRuntimeProfile(context.options),
         );
         if (member) return member;
+      }
+      if (
+        expression.object.kind === 'identifier' &&
+        expression.object.reference.kind === 'binding' &&
+        !expression.object.narrowedMember &&
+        getIrBindingVariantUnionTypeCpp(expression.object.reference.binding.id, context)
+      ) {
+        emissionError(context, `property ${expression.name} on a C++ variant requires proven union member access`);
       }
       const classDeclaration = getIrExpressionClassDeclarationCpp(expression.object, context);
       if (classDeclaration) {
@@ -768,6 +794,14 @@ function emitExpression(
       return `std::make_tuple(${elements.join(', ')})`;
     }
     case 'unary': {
+      if (
+        expression.operator === 'typeof' &&
+        expression.operand.kind === 'identifier' &&
+        expression.operand.reference.kind === 'binding' &&
+        getIrBindingVariantUnionTypeCpp(expression.operand.reference.binding.id, context)
+      ) {
+        emissionError(context, 'typeof on a C++ variant requires proven union member test evidence');
+      }
       const operand = emitExpression(expression.operand, context);
       if (expression.operator === '~') {
         context.includes.add('cstdint');
@@ -1127,7 +1161,7 @@ function emitType(type: Readonly<IrType>, context: EmitContext): string {
         context.includes.add('optional');
         return `std::optional<${emitType(concrete[0]!, context)}>`;
       }
-      emissionError(context, 'multi-member unions require C++ narrowing and variant-access lowering');
+      return emitVariantTypeCpp(type, context);
     }
     case 'unknown':
       if (type.source === 'this' && context.currentClass) {
@@ -1135,6 +1169,168 @@ function emitType(type: Readonly<IrType>, context: EmitContext): string {
       }
       return 'auto';
   }
+}
+
+function emitVariantTypeCpp(type: Readonly<Extract<IrType, { kind: 'union' }>>, context: EmitContext): string {
+  const representation = getCppVariantRepresentation(type, context);
+  return `std::variant<${representation.alternatives.map((alternative) => alternative.targetType).join(', ')}>`;
+}
+
+function emitUnionMemberAssertionCpp(
+  expression: Readonly<IrExpression>,
+  assertedType: Readonly<IrType>,
+  context: EmitContext,
+): string | undefined {
+  if (expression.kind !== 'identifier' || expression.reference.kind !== 'binding') return undefined;
+  const union = getIrBindingVariantUnionTypeCpp(expression.reference.binding.id, context);
+  if (!union) return undefined;
+  const representation = getCppVariantRepresentation(union, context);
+  const alternatives = representation.alternatives.filter((alternative) =>
+    isDeepStrictEqual(alternative.member, assertedType),
+  );
+  if (alternatives.length !== 1) {
+    emissionError(context, 'type assertion target must identify exactly one C++ variant alternative');
+  }
+  return `std::get<${alternatives[0]!.targetType}>(${emitIdentifierReference(expression.reference, context)})`;
+}
+
+function emitUnionMemberTestCpp(evidence: Readonly<IrUnionMemberTestEvidence>, context: EmitContext): string {
+  const union = getIrBindingVariantUnionTypeCpp(evidence.binding.id, context);
+  if (!union) emissionError(context, 'union member test requires a C++ variant binding');
+  const representation = getCppVariantRepresentation(union, context);
+  const alternatives = representation.alternatives.filter((alternative) =>
+    isDeepStrictEqual(alternative.member, evidence.member),
+  );
+  if (alternatives.length !== 1) {
+    emissionError(context, 'union member test must identify exactly one C++ variant alternative');
+  }
+  const test = `std::holds_alternative<${alternatives[0]!.targetType}>(${getBindingTargetName(evidence.binding, context)})`;
+  return evidence.whenResult ? test : `!${test}`;
+}
+
+function emitNarrowedUnionMemberCpp(
+  expression: Readonly<Extract<IrExpression, { kind: 'identifier' }>>,
+  context: EmitContext,
+): string | undefined {
+  if (!expression.narrowedMember || expression.reference.kind !== 'binding') return undefined;
+  const union = getIrBindingVariantUnionTypeCpp(expression.reference.binding.id, context);
+  if (!union) return undefined;
+  const representation = getCppVariantRepresentation(union, context);
+  const alternatives = representation.alternatives.filter(
+    (alternative) => getIrUnionMemberNameCpp(alternative.member) === expression.narrowedMember,
+  );
+  if (alternatives.length !== 1) {
+    emissionError(context, `narrowed member ${expression.narrowedMember} must identify one C++ variant alternative`);
+  }
+  return `std::get<${alternatives[0]!.targetType}>(${emitIdentifierReference(expression.reference, context)})`;
+}
+
+function getCppVariantRepresentation(
+  type: Readonly<Extract<IrType, { kind: 'union' }>>,
+  context: EmitContext,
+): CppVariantRepresentation {
+  if (type.types.some((member) => member.kind === 'null' || member.kind === 'undefined')) {
+    emissionError(context, 'unions combining multiple values with null or undefined require optional-variant lowering');
+  }
+  if (type.types.some((member) => !isIrTypeCppVariantAlternative(member, context, new Set()))) {
+    emissionError(context, 'multi-member union contains an unsupported C++ variant alternative');
+  }
+  const alternatives = type.types.map((member) => {
+    const targetType = emitType(member, context);
+    return {
+      member,
+      representationKey: getIrTypeCppVariantRepresentationKey(member, targetType, context, new Set()),
+      targetType,
+    };
+  });
+  if (new Set(alternatives.map((alternative) => alternative.representationKey)).size !== alternatives.length) {
+    emissionError(context, 'multi-member union alternatives must have unique C++ representations');
+  }
+  context.includes.add('variant');
+  return { alternatives };
+}
+
+function getIrTypeCppVariantRepresentationKey(
+  type: Readonly<IrType>,
+  targetType: string,
+  context: EmitContext,
+  seen: ReadonlySet<string>,
+): string {
+  if (type.kind !== 'named' || type.reference.kind !== 'binding' || type.typeArguments.length > 0) return targetType;
+  const bindingId = type.reference.binding.id;
+  if (seen.has(bindingId)) return targetType;
+  const alias = context.module.declarations.find(
+    (declaration) => declaration.kind === 'typeAlias' && declaration.binding.id === bindingId,
+  );
+  if (alias?.kind !== 'typeAlias' || alias.type.kind === 'object') return targetType;
+  const nextSeen = new Set(seen);
+  nextSeen.add(bindingId);
+  const aliasTarget = getIrUnionTypeStringLiteralValues(alias.type)
+    ? emitCppStringType(context)
+    : emitType(alias.type, context);
+  return getIrTypeCppVariantRepresentationKey(alias.type, aliasTarget, context, nextSeen);
+}
+
+function getIrBindingVariantUnionTypeCpp(
+  bindingId: string,
+  context: EmitContext,
+): Extract<IrType, { kind: 'union' }> | undefined {
+  const type = context.bindingTypes.get(bindingId);
+  return type ? getIrVariantUnionTypeCpp(type, context, new Set()) : undefined;
+}
+
+function getIrVariantUnionTypeCpp(
+  type: Readonly<IrType>,
+  context: EmitContext,
+  seen: ReadonlySet<string>,
+): Extract<IrType, { kind: 'union' }> | undefined {
+  if (type.kind === 'union') {
+    return type.types.some((member) => member.kind === 'null' || member.kind === 'undefined') ? undefined : type;
+  }
+  if (type.kind !== 'named' || type.reference.kind !== 'binding' || type.typeArguments.length > 0) return undefined;
+  const bindingId = type.reference.binding.id;
+  if (seen.has(bindingId)) return undefined;
+  const alias = context.module.declarations.find(
+    (declaration) => declaration.kind === 'typeAlias' && declaration.binding.id === bindingId,
+  );
+  if (alias?.kind !== 'typeAlias') return undefined;
+  const nextSeen = new Set(seen);
+  nextSeen.add(bindingId);
+  return getIrVariantUnionTypeCpp(alias.type, context, nextSeen);
+}
+
+function getIrUnionMemberNameCpp(type: Readonly<IrType>): string | undefined {
+  if (type.kind === 'primitive') return type.name;
+  if (type.kind !== 'named') return undefined;
+  return type.reference.kind === 'binding' ? type.reference.binding.name : type.reference.name;
+}
+
+function isIrTypeCppVariantAlternative(
+  type: Readonly<IrType>,
+  context: EmitContext,
+  seen: ReadonlySet<string>,
+): boolean {
+  if (type.kind === 'primitive') return type.name !== 'void';
+  if (
+    type.kind === 'array' ||
+    type.kind === 'function' ||
+    type.kind === 'literal' ||
+    type.kind === 'object' ||
+    type.kind === 'tuple'
+  ) {
+    return true;
+  }
+  if (type.kind !== 'named') return false;
+  if (type.reference.kind !== 'binding' || type.typeArguments.length > 0) return true;
+  const bindingId = type.reference.binding.id;
+  if (seen.has(bindingId)) return false;
+  const alias = context.module.declarations.find(
+    (declaration) => declaration.kind === 'typeAlias' && declaration.binding.id === bindingId,
+  );
+  if (alias?.kind !== 'typeAlias') return true;
+  const nextSeen = new Set(seen);
+  nextSeen.add(bindingId);
+  return alias.type.kind !== 'union' && isIrTypeCppVariantAlternative(alias.type, context, nextSeen);
 }
 
 function declarationPriorityCpp(declaration: Readonly<IrDeclaration>): number {

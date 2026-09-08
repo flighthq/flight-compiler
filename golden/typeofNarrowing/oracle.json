@@ -1,0 +1,9 @@
+[
+  { "call": "describe", "arguments": ["flight"], "returns": "string", "targets": ["cpp"] },
+  { "call": "describe", "arguments": [42], "returns": "string", "targets": ["cpp"] },
+  { "call": "length", "arguments": ["flight"], "returns": "number", "targets": ["cpp"] },
+  { "call": "length", "arguments": [42], "returns": "number", "targets": ["cpp"] },
+  { "call": "classify", "arguments": ["flight"], "returns": "string", "targets": ["cpp"] },
+  { "call": "classify", "arguments": [42], "returns": "string", "targets": ["cpp"] },
+  { "call": "classify", "arguments": [true], "returns": "string", "targets": ["cpp"] }
+]

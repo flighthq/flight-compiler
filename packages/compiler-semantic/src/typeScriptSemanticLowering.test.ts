@@ -2929,6 +2929,11 @@ describe('lowerTypeScriptSource', () => {
     expect(
       condition?.kind === 'binary' && condition.left.kind === 'property' ? condition.left.object : undefined,
     ).not.toMatchObject({ narrowedMember: 'Circle' });
+    expect(condition?.kind === 'binary' ? condition.semantics.unionMemberTest : undefined).toMatchObject({
+      binding: { name: 'shape' },
+      member: { kind: 'named', reference: { binding: { name: 'Circle' } } },
+      whenResult: true,
+    });
   });
 
   it('sets narrowedMember for primitive union alternatives narrowed by typeof', () => {
@@ -2951,6 +2956,71 @@ describe('lowerTypeScriptSource', () => {
 
     expect(result.diagnostics).toEqual([]);
     expect(narrowed).toMatchObject({ kind: 'identifier', narrowedMember: 'string' });
+    expect(
+      guard?.kind === 'if' && guard.condition.kind === 'binary' ? guard.condition.semantics.unionMemberTest : undefined,
+    ).toMatchObject({
+      binding: { name: 'value' },
+      member: { kind: 'primitive', name: 'string' },
+      whenResult: true,
+    });
+  });
+
+  it('records reversed and negated union member tests without guessing open discriminants', () => {
+    const result = lower(
+      'union-tests.ts',
+      `export interface Exact { readonly kind: 'exact'; readonly value: number; }
+       export interface Other { readonly kind: 'other'; readonly value: string; }
+       export interface Open { readonly kind: string; readonly value: boolean; }
+       export function reversed(value: string | number): boolean { return 'string' !== typeof value; }
+       export function exact(value: Exact | Other): boolean { return value.kind !== 'exact'; }
+       export function open(value: Exact | Open): boolean { return value.kind === 'exact'; }`,
+    );
+    const tests = result.module.declarations
+      .filter((declaration) => declaration.kind === 'function')
+      .map((declaration) => declaration.body[0])
+      .map((statement) =>
+        statement?.kind === 'return' && statement.expression?.kind === 'binary'
+          ? statement.expression.semantics.unionMemberTest
+          : undefined,
+      );
+
+    expect(result.diagnostics).toEqual([]);
+    expect(tests[0]).toMatchObject({ member: { kind: 'primitive', name: 'string' }, whenResult: false });
+    expect(tests[1]).toMatchObject({
+      member: { kind: 'named', reference: { binding: { name: 'Exact' } } },
+      whenResult: false,
+    });
+    expect(tests[2]).toBeUndefined();
+  });
+
+  it('records numeric and boolean literal discriminants, including negative numbers', () => {
+    const result = lower(
+      'literal-discriminants.ts',
+      `interface Positive { readonly kind: 1; }
+       interface Negative { readonly kind: -1; }
+       interface Enabled { readonly enabled: true; }
+       interface Disabled { readonly enabled: false; }
+       export function negative(value: Positive | Negative): boolean { return value.kind === -1; }
+       export function positive(value: Positive | Negative): boolean { return value.kind === 1; }
+       export function enabled(value: Enabled | Disabled): boolean { return value.enabled === true; }
+       export function disabled(value: Enabled | Disabled): boolean { return value.enabled === false; }`,
+    );
+    const tests = result.module.declarations
+      .filter((declaration) => declaration.kind === 'function')
+      .map((declaration) => declaration.body[0])
+      .map((statement) =>
+        statement?.kind === 'return' && statement.expression?.kind === 'binary'
+          ? statement.expression.semantics.unionMemberTest
+          : undefined,
+      );
+
+    expect(result.diagnostics).toEqual([]);
+    expect(tests).toEqual([
+      expect.objectContaining({ member: expect.objectContaining({ kind: 'named' }), whenResult: true }),
+      expect.objectContaining({ member: expect.objectContaining({ kind: 'named' }), whenResult: true }),
+      expect.objectContaining({ member: expect.objectContaining({ kind: 'named' }), whenResult: true }),
+      expect.objectContaining({ member: expect.objectContaining({ kind: 'named' }), whenResult: true }),
+    ]);
   });
 
   it('sets narrowedMember for the third alternative narrowed by elimination', () => {

@@ -222,9 +222,19 @@ function analyzeIrExpressionTraversal(
       });
       break;
     case 'assignment':
+      analyzeIrExpressionTraversal(expression.left, observer, createIrTraversalPath(path, 'left'));
+      analyzeIrExpressionTraversal(expression.right, observer, createIrTraversalPath(path, 'right'));
+      break;
     case 'binary':
       analyzeIrExpressionTraversal(expression.left, observer, createIrTraversalPath(path, 'left'));
       analyzeIrExpressionTraversal(expression.right, observer, createIrTraversalPath(path, 'right'));
+      if (expression.semantics.unionMemberTest) {
+        analyzeIrTypeTraversal(
+          expression.semantics.unionMemberTest.member,
+          observer,
+          createIrTraversalPath(path, 'semantics', 'unionMemberTest', 'member'),
+        );
+      }
       break;
     case 'await':
     case 'spread':

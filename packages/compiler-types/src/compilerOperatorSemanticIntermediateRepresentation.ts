@@ -1,3 +1,6 @@
+import type { IrBindingIdentity } from './compilerBindingIntermediateRepresentation.js';
+import type { IrType } from './compilerTypeIntermediateRepresentation.js';
+
 export type IrOperatorValueDomain =
   | 'bigint'
   | 'boolean'
@@ -29,11 +32,21 @@ export interface IrNullishComparisonEvidence {
   readonly literal: 'null' | 'undefined';
 }
 
+// Proof that one equality comparison is exactly a test for one member of a closed union binding.
+// The source checker decides the member: targets may elect a tagged representation without
+// rediscovering TypeScript control flow from expression spelling.
+export interface IrUnionMemberTestEvidence {
+  readonly binding: IrBindingIdentity;
+  readonly member: IrType;
+  readonly whenResult: boolean;
+}
+
 export interface IrBinaryOperatorSemantics {
   readonly left: IrOperatorOperandDomains;
   readonly nullishComparison?: IrNullishComparisonEvidence | undefined;
   readonly result: IrOperatorValueDomain;
   readonly right: IrOperatorOperandDomains;
+  readonly unionMemberTest?: IrUnionMemberTestEvidence | undefined;
 }
 
 export interface IrUnaryOperatorSemantics {

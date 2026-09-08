@@ -19,6 +19,7 @@
     "arrays",
     "async-functions",
     "classes",
+    "closed-multi-member-unions",
     "dates",
     "default-and-optional-parameters",
     "enums",
@@ -44,8 +45,8 @@
       "rule": "Computed object access and open-ended JavaScript property-key coercion require lowering before C++ emission."
     },
     {
-      "id": "no-multi-member-union",
-      "rule": "Multi-member unions remain excluded until neutral narrowing and variant-access evidence is available."
+      "id": "closed-union-representation",
+      "rule": "Closed multi-member unions require distinct C++ alternative representations. Typeof and discriminant access requires checker proof; type assertions use checked access. Alternatives that collapse to the same C++ type, and unions combining several values with null or undefined, remain excluded."
     },
     {
       "id": "no-captured-mutation",

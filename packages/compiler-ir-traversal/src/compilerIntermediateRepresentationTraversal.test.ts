@@ -9,6 +9,23 @@ import {
 } from './compilerIntermediateRepresentationTraversal.js';
 
 describe('analyzeIrModuleTraversal', () => {
+  it('visits the type carried by union member test evidence', () => {
+    const module = lower(
+      `interface Circle { kind: 'circle'; radius: number; }
+       interface Square { kind: 'square'; side: number; }
+       export function isCircle(shape: Circle | Square): boolean { return shape.kind === 'circle'; }`,
+    );
+    const paths: string[] = [];
+
+    analyzeIrModuleTraversal(module, {
+      type(type, path) {
+        if (type.kind === 'named') paths.push(path.join('.'));
+      },
+    });
+
+    expect(paths).toContain('declarations.2.body.0.expression.semantics.unionMemberTest.member');
+  });
+
   it('observes every public node family in deterministic preorder without mutating the module', () => {
     const module = lower(`
       import { external as imported } from './imported.js';
