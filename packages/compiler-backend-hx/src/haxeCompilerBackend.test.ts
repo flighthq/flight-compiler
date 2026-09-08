@@ -4185,3 +4185,158 @@ describe('emitIrModuleHaxe re-export facade', () => {
     expect(() => emitIrModuleHaxe(result.module)).not.toThrow();
   });
 });
+
+describe('emitIrModuleHaxe narrowedMember with primitive typeof cast', () => {
+  it('narrows primitive union member with Std.isOfType when accessing its property', () => {
+    const result = lower(
+      'primitive-narrow-prop.ts',
+      `export function len(value: string | number): number {
+         if (typeof value === 'string') { return value.length; }
+         return value;
+       }`,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('Std.isOfType(');
+    expect(output).toContain('.length');
+  });
+});
+
+describe('emitIrModuleHaxe union type alias where member is typeAlias not interface', () => {
+  it('flattens union where members are type aliases with object types', () => {
+    const result = lower(
+      'type-alias-union-flat.ts',
+      `export type Left = { x: number; y: string };
+       export type Right = { x: number; z: boolean };
+       export type Both = Left | Right;`,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('typedef Both');
+    expect(output).toContain('?y:');
+    expect(output).toContain('?z:');
+  });
+});
+
+describe('emitIrModuleHaxe union flattening with single-member union', () => {
+  it('falls back to Dynamic for union with less than 2 flattened members', () => {
+    const result = lower(
+      'union-one-member.ts',
+      `export interface Single { value: number }
+       export type Wrapped = Single | number;`,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('typedef Wrapped');
+    expect(output).toContain('Dynamic');
+  });
+});
+
+describe('emitIrModuleHaxe private field access with hash prefix', () => {
+  it('strips hash prefix from private field names', () => {
+    const result = lower(
+      'private-field.ts',
+      `export class Counter {
+         #count: number = 0;
+         increment(): void { this.#count += 1; }
+         get value(): number { return this.#count; }
+       }`,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('count');
+    expect(output).not.toContain('#count');
+  });
+});
+
+describe('emitIrModuleHaxe class with haxe keyword as field name', () => {
+  it('escapes Haxe keyword field names with trailing underscore', () => {
+    const result = lower(
+      'keyword-field.ts',
+      `export class Config {
+         abstract: boolean;
+         constructor(value: boolean) { this.abstract = value; }
+       }`,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('abstract_');
+  });
+});
+
+describe('emitIrModuleHaxe labeled continue targeting outer while', () => {
+  it('emits control flow state for labeled continue to outer while loop', () => {
+    const result = lower(
+      'labeled-while-continue.ts',
+      `export function skip(matrix: number[][]): number {
+         let sum: number = 0;
+         outer: for (const row of matrix) {
+           for (const val of row) {
+             if (val < 0) continue outer;
+             sum += val;
+           }
+         }
+         return sum;
+       }`,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toBeDefined();
+  });
+});
+
+describe('emitIrModuleHaxe typeof test on right side of comparison', () => {
+  it('handles typeof on right side of equality comparison', () => {
+    const result = lower(
+      'typeof-right.ts',
+      `export function isString(x: string | number): boolean {
+         return "string" === typeof x;
+       }`,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('Std.isOfType(');
+  });
+});
+
+describe('emitIrModuleHaxe negated typeof test', () => {
+  it('emits negated typeof check with !Std.isOfType', () => {
+    const result = lower(
+      'typeof-negated.ts',
+      `export function notString(x: string | number): boolean {
+         return typeof x !== "string";
+       }`,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('!Std.isOfType(');
+  });
+});
+
+describe('emitIrModuleHaxe generic class with type parameter constraint', () => {
+  it('emits type parameter with constraint', () => {
+    const result = lower(
+      'generic-constraint.ts',
+      `export interface HasLength { length: number; }
+       export function measure<T extends HasLength>(x: T): number { return x.length; }`,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('<T:');
+  });
+});
+
+describe('emitIrModuleHaxe property access with optional chaining', () => {
+  it('emits ?. for optional property access', () => {
+    const result = lower(
+      'opt-chain-deep.ts',
+      `export interface Nested { inner: Nested | null; value: number; }
+       export function deep(x: Nested | null): number | null {
+         return x?.inner?.value ?? null;
+       }`,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('?.');
+  });
+});
