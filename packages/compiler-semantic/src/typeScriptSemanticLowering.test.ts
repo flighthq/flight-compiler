@@ -6255,6 +6255,32 @@ it('resolves type alias union and readonly through evidence path on destructured
   expect(result.diagnostics).toEqual([]);
 });
 
+it('resolves evidence-path method signature with untyped parameter and no return type', () => {
+  const result = lower(
+    'untyped-method-evidence.ts',
+    `
+        interface Callback {
+          run(x);
+        }
+        export function accept({ run }: Callback): void { run(1); }
+      `,
+  );
+  expect(result.diagnostics).toEqual([]);
+});
+
+it('resolves evidence-path interface with compatible duplicate heritage property', () => {
+  const result = lower(
+    'heritage-dup-evidence.ts',
+    `
+        interface A { x: number }
+        interface B { x: number }
+        interface Both extends A, B { y: string }
+        export function accept({ x, y }: Both): void { void x; void y; }
+      `,
+  );
+  expect(result.diagnostics).toEqual([]);
+});
+
 it('resolves nullish coalescing type evidence when both sides match', () => {
   const result = lower(
     'coalesce-evidence.ts',
