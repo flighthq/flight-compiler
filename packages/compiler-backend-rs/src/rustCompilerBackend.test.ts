@@ -1629,6 +1629,241 @@ describe('emitIrModuleRust', () => {
     expect(output).toContain('Config::');
   });
 
+  it('emits template literals as format! with escaped braces', () => {
+    const output = emitIrModuleRust(
+      lower('template.ts', 'export function greet(name: string): string { return `hello ${name}!`; }').module,
+    ).contents;
+    expect(output).toContain('format!("hello {}!"');
+  });
+
+  it('emits tuple construction with trailing comma for single-element tuples', () => {
+    const output = emitIrModuleRust(
+      lower('tuple-ctor.ts', 'export function pair(a: number, b: string): [number, string] { return [a, b]; }').module,
+    ).contents;
+    expect(output).toContain('(a, b)');
+  });
+
+  it('emits bitwise NOT as !(x as i32) as f64', () => {
+    const output = emitIrModuleRust(
+      lower('bitwise-not.ts', 'export function invert(x: number): number { return ~x; }').module,
+    ).contents;
+    expect(output).toContain('as i32');
+    expect(output).toContain('as f64');
+  });
+
+  it('emits undefined return as None for optional return type', () => {
+    const output = emitIrModuleRust(
+      lower('undef-return.ts', 'export function maybe(): number | undefined { return undefined; }').module,
+    ).contents;
+    expect(output).toContain('None');
+    expect(output).toContain('Option<f64>');
+  });
+
+  it('emits numeric enum with i32 repr and discriminants', () => {
+    const output = emitIrModuleRust(
+      lower('num-enum.ts', 'export enum Status { Active = 0, Inactive = 1, Pending = 2 }').module,
+    ).contents;
+    expect(output).toContain('#[repr(i32)]');
+    expect(output).toContain('Active = 0,');
+    expect(output).toContain('Inactive = 1,');
+    expect(output).toContain('Pending = 2,');
+  });
+
+  it('emits string enum with as_str and from_str methods', () => {
+    const output = emitIrModuleRust(
+      lower('str-enum.ts', 'export enum Color { Red = "red", Blue = "blue" }').module,
+    ).contents;
+    expect(output).toContain('fn as_str(&self)');
+    expect(output).toContain('fn from_str(value: &str)');
+    expect(output).toContain('"red"');
+    expect(output).toContain('"blue"');
+  });
+
+  it('emits enum member access as variant path', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'enum-access.ts',
+        'export enum Color { Red = 0, Green = 1 } export function pick(): Color { return Color.Red; }',
+      ).module,
+    ).contents;
+    expect(output).toContain('Color::Red');
+  });
+
+  it('emits interface without implementor as struct record', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'iface-record.ts',
+        'export interface Point { x: number; y: number; } export function origin(): Point { return { x: 0, y: 0 }; }',
+      ).module,
+    ).contents;
+    expect(output).toContain('pub struct Point');
+    expect(output).toContain('pub x: f64,');
+    expect(output).toContain('pub y: f64,');
+  });
+
+  it('emits interface with class implementor as trait', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'iface-trait.ts',
+        'export interface Greetable { greet(): string; } export class Person implements Greetable { name: string; constructor(name: string) { this.name = name; } greet(): string { return this.name; } }',
+      ).module,
+    ).contents;
+    expect(output).toContain('pub trait Greetable');
+    expect(output).toContain('fn greet(&self) -> String;');
+  });
+
+  it('emits do-while as loop with break condition', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'do-while.ts',
+        'export function countdown(n: number): number { let i: number = n; do { i = i - 1.0; } while (i > 0.0); return i; }',
+      ).module,
+    ).contents;
+    expect(output).toContain('loop {');
+    expect(output).toContain('break;');
+  });
+
+  it('emits for-of loop as for-in iteration', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'for-of.ts',
+        'export function total(items: number[]): number { let s: number = 0.0; for (const item of items) { s = s + item; } return s; }',
+      ).module,
+    ).contents;
+    expect(output).toContain('for ');
+    expect(output).toContain(' in ');
+  });
+
+  it('emits switch as if-else chain with unreachable default', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'switch.ts',
+        'export function name(x: number): string { switch (x) { case 1.0: return "one"; case 2.0: return "two"; default: return "other"; } }',
+      ).module,
+    ).contents;
+    expect(output).toContain('if ');
+    expect(output).toContain('else');
+  });
+
+  it('emits throw new Error as panic! with message', () => {
+    const output = emitIrModuleRust(
+      lower('throw.ts', 'export function fail(msg: string): never { throw new Error(msg); }').module,
+    ).contents;
+    expect(output).toContain('panic!("{}"');
+  });
+
+  it('emits while true as loop keyword', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'loop.ts',
+        'export function spin(limit: number): number { let i: number = 0.0; while (true) { i = i + 1.0; if (i > limit) { return i; } } }',
+      ).module,
+    ).contents;
+    expect(output).toContain('loop {');
+    expect(output).not.toContain('while true');
+  });
+
+  it('emits while condition as while loop', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'while.ts',
+        'export function count(n: number): number { let i: number = 0.0; while (i < n) { i = i + 1.0; } return i; }',
+      ).module,
+    ).contents;
+    expect(output).toContain('while ');
+  });
+
+  it('emits type alias for string literal union as String type alias', () => {
+    const output = emitIrModuleRust(
+      lower('string-union.ts', "export type Direction = 'up' | 'down' | 'left' | 'right';").module,
+    ).contents;
+    expect(output).toContain('pub type Direction = String;');
+  });
+
+  it('emits type alias for object type as struct record', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'type-record.ts',
+        'export type Config = { width: number; height: number; }; export function create(): Config { return { width: 100, height: 200 }; }',
+      ).module,
+    ).contents;
+    expect(output).toContain('pub struct Config');
+    expect(output).toContain('pub width: f64,');
+    expect(output).toContain('pub height: f64,');
+  });
+
+  it('emits function type as Rc<dyn Fn>', () => {
+    const output = emitIrModuleRust(
+      lower('fn-type.ts', 'export function apply(f: (x: number) => number, value: number): number { return f(value); }')
+        .module,
+    ).contents;
+    expect(output).toContain('Rc<dyn Fn(f64) -> f64>');
+  });
+
+  it('emits nullable type as Option wrapper', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'nullable.ts',
+        'export function maybe(x: number | null): number { if (x === null) { return 0; } return x; }',
+      ).module,
+    ).contents;
+    expect(output).toContain('Option<f64>');
+  });
+
+  it('emits default parameter with unwrap_or_else', () => {
+    const output = emitIrModuleRust(
+      lower('default-param.ts', 'export function add(a: number, b: number = 10.0): number { return a + b; }').module,
+    ).contents;
+    expect(output).toContain('Option<f64>');
+    expect(output).toContain('unwrap_or_else');
+  });
+
+  it('emits rest parameter with Vec type', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'rest-param.ts',
+        'export function sum(...args: number[]): number { let total: number = 0.0; for (const n of args) { total = total + n; } return total; }',
+      ).module,
+    ).contents;
+    expect(output).toContain('args: Vec<f64>');
+  });
+
+  it('emits object literal construction with struct initializer', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'object-lit.ts',
+        'export interface Rect { width: number; height: number; } export function create(w: number, h: number): Rect { return { width: w, height: h }; }',
+      ).module,
+    ).contents;
+    expect(output).toContain('Rect {');
+    expect(output).toContain('width:');
+    expect(output).toContain('height:');
+  });
+
+  it('emits literal types in return position', () => {
+    const output = emitIrModuleRust(
+      lower('literal-type.ts', 'export function yes(): true { return true; }').module,
+    ).contents;
+    expect(output).toContain('-> bool');
+  });
+
+  it('emits null literal as None', () => {
+    const output = emitIrModuleRust(
+      lower('null-lit.ts', 'export function nothing(): null { return null; }').module,
+    ).contents;
+    expect(output).toContain('None');
+  });
+
+  it('emits integer literal as f64 with decimal', () => {
+    const output = emitIrModuleRust(lower('int-lit.ts', 'export const VALUE: number = 42;').module).contents;
+    expect(output).toContain('42.0');
+  });
+
+  it('emits string literal with to_owned()', () => {
+    const output = emitIrModuleRust(lower('str-lit.ts', 'export const GREETING: string = "hello";').module).contents;
+    expect(output).toContain('"hello".to_owned()');
+  });
+
   it('emits concrete class inheritance as composition with base field delegation', () => {
     const result = lower(
       'class-inheritance.ts',
