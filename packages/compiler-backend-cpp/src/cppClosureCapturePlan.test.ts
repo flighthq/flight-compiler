@@ -23,17 +23,32 @@ describe('createIrModuleClosureCapturePlanCpp', () => {
     const plan = createIrModuleClosureCapturePlanCpp(module);
     const byName = new Map(plan.bindings.map((binding) => [binding.binding.name, binding]));
 
-    expect(plan.schema).toBe('flight-compiler-cpp-closure-capture-plan/1');
+    expect(plan.schema).toBe('flight-compiler-cpp-closure-capture-plan/2');
     expect(byName.get('moduleValue')).toMatchObject({
+      accesses: ['bindingRead'],
+      lifetimeBoundaries: ['moduleLifetime'],
+      ownership: 'moduleStorage',
       reasons: ['moduleLifetime'],
       representation: 'directModuleBinding',
     });
-    expect(byName.get('fixed')).toMatchObject({ reasons: ['valueSnapshot'], representation: 'valueCopy' });
+    expect(byName.get('fixed')).toMatchObject({
+      accesses: ['bindingRead'],
+      lifetimeBoundaries: ['closureEscape'],
+      ownership: 'closureValue',
+      reasons: ['valueSnapshot'],
+      representation: 'valueCopy',
+    });
     expect(byName.get('changed')).toMatchObject({
+      accesses: ['bindingRead', 'bindingReassignment'],
+      lifetimeBoundaries: ['closureEscape'],
+      ownership: 'sharedBindingStorage',
       reasons: ['capturedBindingMutation', 'capturedMutableBinding', 'outsideMutation'],
       representation: 'sharedMutableCell',
     });
     expect(byName.get('observed')).toMatchObject({
+      accesses: ['bindingRead', 'bindingReassignment'],
+      lifetimeBoundaries: ['closureEscape'],
+      ownership: 'sharedBindingStorage',
       reasons: ['capturedMutableBinding', 'outsideMutation'],
       representation: 'sharedMutableCell',
     });
@@ -51,6 +66,9 @@ describe('createIrModuleClosureCapturePlanCpp', () => {
     );
 
     expect(plan.bindings.find((binding) => binding.binding.name === 'state')).toMatchObject({
+      accesses: ['bindingRead', 'bindingReassignment', 'referentMutation'],
+      lifetimeBoundaries: ['closureEscape'],
+      ownership: 'sharedBindingStorage',
       reasons: ['capturedBindingMutation', 'capturedMutableBinding', 'capturedReferentMutation', 'outsideMutation'],
       representation: 'sharedMutableCell',
     });
@@ -65,6 +83,9 @@ describe('createIrModuleClosureCapturePlanCpp', () => {
     );
 
     expect(plan.bindings.find((binding) => binding.binding.name === 'state')).toMatchObject({
+      accesses: ['referentMutation'],
+      lifetimeBoundaries: ['moduleLifetime'],
+      ownership: 'moduleStorage',
       reasons: ['moduleLifetime', 'capturedReferentMutation'],
       representation: 'directModuleBinding',
     });
@@ -82,7 +103,52 @@ describe('createIrModuleClosureCapturePlanCpp', () => {
     );
 
     expect(plan.bindings.find((binding) => binding.binding.name === 'key')).toMatchObject({
+      accesses: ['bindingRead'],
+      lifetimeBoundaries: ['closureEscape'],
+      ownership: 'sharedBindingStorage',
       reasons: expect.arrayContaining(['capturedMutableBinding']),
+      representation: 'sharedMutableCell',
+    });
+  });
+
+  it('distinguishes per-iteration value ownership from a shared var iteration binding', () => {
+    const plan = createIrModuleClosureCapturePlanCpp(
+      lower(`
+        export function readers(values: Array<number>): Array<() => number> {
+          const result: Array<() => number> = [];
+          for (const value of values) result.push((): number => value);
+          return result;
+        }
+      `),
+    );
+
+    expect(plan.bindings.find((binding) => binding.binding.name === 'value')).toMatchObject({
+      accesses: ['bindingRead'],
+      lifetimeBoundaries: ['iteration', 'closureEscape'],
+      ownership: 'closureValue',
+      reasons: ['valueSnapshot'],
+      representation: 'valueCopy',
+    });
+  });
+
+  it('retains shared binding ownership across escape and suspension boundaries', () => {
+    const plan = createIrModuleClosureCapturePlanCpp(
+      lower(`
+        export function deferred(seed: number): () => Promise<number> {
+          let value: number = seed;
+          return async (): Promise<number> => {
+            await Promise.resolve();
+            value += 1;
+            return value;
+          };
+        }
+      `),
+    );
+
+    expect(plan.bindings.find((binding) => binding.binding.name === 'value')).toMatchObject({
+      accesses: ['bindingRead', 'bindingReassignment'],
+      lifetimeBoundaries: ['closureEscape', 'suspension'],
+      ownership: 'sharedBindingStorage',
       representation: 'sharedMutableCell',
     });
   });
@@ -103,6 +169,8 @@ describe('createIrModuleClosureCapturePlanCpp', () => {
     expect(Object.isFrozen(first)).toBe(true);
     expect(Object.isFrozen(first.bindings)).toBe(true);
     expect(Object.isFrozen(first.bindings[0]?.binding)).toBe(true);
+    expect(Object.isFrozen(first.bindings[0]?.accesses)).toBe(true);
+    expect(Object.isFrozen(first.bindings[0]?.lifetimeBoundaries)).toBe(true);
     expect(() => (first.bindings as unknown[]).push({})).toThrow();
   });
 });
