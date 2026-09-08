@@ -3,12 +3,10 @@
 #include <optional>
 #include <flight/runtime.hpp>
 
-namespace flighthq_golden {
+static_assert(flight::runtime_contract.compiler_contract == "flight-runtime-contract/2", "Flight compiler/runtime contract mismatch");
+static_assert(flight::runtime_contract.cpp_abi == 1, "Flight C++ runtime ABI mismatch");
 
-struct name_count {
-  flight::String name;
-  double count;
-};
+namespace flighthq_golden {
 
 struct Item {
   flight::String name;
@@ -17,7 +15,7 @@ struct Item {
 
 inline double busiest_count(flight::Array<Item> items) {
   std::optional<Item> best = std::nullopt;
-  for (name_count item : items) {
+  for (auto item : items) {
     if ((!best.has_value() || (item.count > best.value().count))) {
       best = item;
     }

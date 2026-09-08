@@ -3,10 +3,14 @@
 #include <optional>
 #include <flight/runtime.hpp>
 
+static_assert(flight::runtime_contract.compiler_contract == "flight-runtime-contract/2", "Flight compiler/runtime contract mismatch");
+static_assert(flight::runtime_contract.cpp_abi == 1, "Flight C++ runtime ABI mismatch");
+
 namespace flighthq_golden {
 
 inline double scale(double value, std::optional<double> factor = std::nullopt) {
-  return (value * factor);
+  factor = factor.value_or(2.0);
+  return (value * factor.value());
 }
 
 } // namespace flighthq_golden

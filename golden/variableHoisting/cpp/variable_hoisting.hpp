@@ -3,6 +3,9 @@
 #include <tuple>
 #include <flight/runtime.hpp>
 
+static_assert(flight::runtime_contract.compiler_contract == "flight-runtime-contract/2", "Flight compiler/runtime contract mismatch");
+static_assert(flight::runtime_contract.cpp_abi == 1, "Flight C++ runtime ABI mismatch");
+
 namespace flighthq_golden {
 
 inline double select_nested() {
@@ -40,7 +43,7 @@ inline flight::String select_pattern(std::tuple<double, flight::String> values) 
 
 inline void increment_values(flight::Array<double> values) {
   double value;
-  for (double variable_hoisting_iteration_value : values) {
+  for (auto variable_hoisting_iteration_value : values) {
     value = variable_hoisting_iteration_value;
     value += 1.0;
   }

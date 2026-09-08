@@ -1,0 +1,6 @@
+add_executable(flight_cpp_runtime_benchmark runtime_benchmark.cpp)
+target_link_libraries(flight_cpp_runtime_benchmark PRIVATE Flight::Cpp)
+flight_cpp_set_project_warnings(flight_cpp_runtime_benchmark)
+
+add_test(NAME flight_cpp.performance COMMAND flight_cpp_runtime_benchmark)
+set_tests_properties(flight_cpp.performance PROPERTIES LABELS performance TIMEOUT 30)

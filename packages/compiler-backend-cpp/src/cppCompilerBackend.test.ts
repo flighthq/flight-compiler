@@ -98,6 +98,121 @@ describe('emitIrModuleCpp', () => {
 
     expect(emitted.contents).toContain('return std::fmod(left, right)');
     expect(emitted.contents).toContain('return flight::Error(message)');
+    expect(emitted.contents).toContain('static_assert(flight::runtime_contract.cpp_abi == 1');
+  });
+
+  it('uses portable runtime constants and semantic containers for static iteration and rest values', () => {
+    const result = lower(
+      'portable.ts',
+      'export function area(radius: number): number { return Math.PI * radius * radius; } export function sum(...values: number[]): number { let total = 0; for (const value of values) total += value; return total; } export function keys(): string { for (const key in { first: 1 }) return key; return ""; }',
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+
+    expect(emitted.contents).toContain('flight::pi');
+    expect(emitted.contents).toContain('sum(flight::Array<double> values)');
+    expect(emitted.contents).toContain('flight::Array<flight::String>');
+    expect(emitted.contents).not.toContain('M_PI');
+    expect(emitted.contents).not.toContain('std::vector');
+  });
+
+  it('preserves numeric and string enum members as scoped portable values', () => {
+    const result = lower(
+      'enums.ts',
+      'export enum Level { Low = 1, High = 2 } export enum Lane { Fast = "fast", Safe = "safe" } export function lane(): Lane { return Lane.Fast; }',
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+
+    expect(emitted.contents).toContain('Low = 1');
+    expect(emitted.contents).not.toContain('Low = 1.0');
+    expect(emitted.contents).toContain('struct Lane');
+    expect(emitted.contents).toContain('inline const Lane Lane::Fast{flight::String("fast")}');
+    expect(emitted.contents).toContain('return Lane::Fast');
+  });
+
+  it('materializes default parameter values before their typed uses', () => {
+    const result = lower(
+      'default.ts',
+      'export function scale(value: number, factor: number = 2): number { return value * factor; }',
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+
+    expect(emitted.contents).toContain('std::optional<double> factor = std::nullopt');
+    expect(emitted.contents).toContain('factor = factor.value_or(2.0)');
+    expect(emitted.contents).toContain('value * factor.value()');
+  });
+
+  it('retains absence when an indexed generic value is stored before coalescing', () => {
+    const result = lower(
+      'generic-index.ts',
+      'export function first<Value>(values: readonly Value[], fallback: Value): Value { const value = values[0]; return value ?? fallback; }',
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+
+    expect(emitted.contents).toContain('std::optional<Value> value = values.get(0.0)');
+    expect(emitted.contents).toContain('return value.value_or(fallback)');
+  });
+
+  it('refuses multi-member unions until variant access has neutral lowering evidence', () => {
+    const result = lower(
+      'union.ts',
+      'export function describe(value: string | number): string { return typeof value === "string" ? value : value.toString(); }',
+    );
+
+    expect(() => emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' })).toThrow(
+      'multi-member unions require C++ narrowing and variant-access lowering',
+    );
+  });
+
+  it('refuses mutating closures until capture lifetime is explicit', () => {
+    const result = lower(
+      'closure.ts',
+      'export function counter(): () => number { let count = 0; return () => { count += 1; return count; }; }',
+    );
+
+    expect(() => emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' })).toThrow(
+      'mutating closures require C++ capture-lifetime lowering',
+    );
+  });
+
+  it('allows mutation owned entirely by a closure', () => {
+    const result = lower(
+      'local-mutation.ts',
+      'export function make(): () => number { return () => { let local = 0; local += 1; return local; }; }',
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+
+    expect(emitted.contents).toContain('local += 1.0');
+  });
+
+  it('captures lexical this explicitly under C++20', () => {
+    const result = lower(
+      'this-capture.ts',
+      'export class Counter { value = 1; reader(): () => number { return () => this.value; } }',
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+
+    expect(emitted.contents).toContain('[=, this]() { return this->value; }');
+  });
+
+  it('makes non-void fallthrough an explicit failure instead of undefined behavior', () => {
+    const result = lower(
+      'completion.ts',
+      'enum Choice { First, Second } export function choose(value: Choice): number { switch (value) { case Choice.First: return 1; case Choice.Second: return 2; } }',
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+
+    expect(emitted.contents).toContain('throw std::logic_error("Flight function completed without a value")');
+  });
+
+  it('refuses defaulted derived constructors until values can precede base initialization', () => {
+    const result = lower(
+      'derived-default.ts',
+      'class Base { constructor(value: number) {} } export class Derived extends Base { constructor(value = 1) { super(value); } }',
+    );
+
+    expect(() => emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' })).toThrow(
+      'derived constructor default parameters require pre-base-initializer lowering',
+    );
   });
 
   it('places module types before values that use them and makes header definitions inline', () => {

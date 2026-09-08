@@ -4,6 +4,8 @@
 #include <cstdint>
 #include <string_view>
 
+#include <flight/version.hpp>
+
 namespace flight {
 
 enum class RuntimeCapabilityStatus : std::uint8_t {
@@ -25,7 +27,7 @@ struct RuntimeContract {
 
 inline constexpr RuntimeContract runtime_contract{
     .compiler_contract = "flight-runtime-contract/2",
-    .cpp_abi = 1,
+    .cpp_abi = abi_version,
     .task_contract = "flight-runtime-task-capability-abi/1",
 };
 

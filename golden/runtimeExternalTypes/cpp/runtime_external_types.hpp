@@ -2,14 +2,15 @@
 #pragma once
 #include <flight/runtime.hpp>
 
+static_assert(flight::runtime_contract.compiler_contract == "flight-runtime-contract/2", "Flight compiler/runtime contract mismatch");
+static_assert(flight::runtime_contract.cpp_abi == 1, "Flight C++ runtime ABI mismatch");
+
 namespace flighthq_golden {
 
-struct values_task_bytes {
+struct RuntimeTypes {
   flight::Map<flight::String, double> values;
   flight::Task<double> task;
   flight::Uint8Array bytes;
 };
-
-using RuntimeTypes = values_task_bytes;
 
 } // namespace flighthq_golden

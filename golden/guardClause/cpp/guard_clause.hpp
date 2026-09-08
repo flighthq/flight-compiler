@@ -2,6 +2,9 @@
 #pragma once
 #include <flight/runtime.hpp>
 
+static_assert(flight::runtime_contract.compiler_contract == "flight-runtime-contract/2", "Flight compiler/runtime contract mismatch");
+static_assert(flight::runtime_contract.cpp_abi == 1, "Flight C++ runtime ABI mismatch");
+
 namespace flighthq_golden {
 
 inline double safe_sqrt(double value) {
@@ -28,7 +31,7 @@ inline flight::String classify(double value) {
 }
 
 inline double first_positive(flight::Array<double> values) {
-  for (double value : values) {
+  for (auto value : values) {
     if ((value > 0.0)) {
       return value;
     }
@@ -38,7 +41,7 @@ inline double first_positive(flight::Array<double> values) {
 
 inline double bounded_sum(flight::Array<double> values, double limit) {
   double total = 0.0;
-  for (double value : values) {
+  for (auto value : values) {
     if (((total + value) > limit)) {
       return total;
     }

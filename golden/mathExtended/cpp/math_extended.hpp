@@ -2,10 +2,13 @@
 #pragma once
 #include <flight/runtime.hpp>
 
+static_assert(flight::runtime_contract.compiler_contract == "flight-runtime-contract/2", "Flight compiler/runtime contract mismatch");
+static_assert(flight::runtime_contract.cpp_abi == 1, "Flight C++ runtime ABI mismatch");
+
 namespace flighthq_golden {
 
 inline double circle_area(double radius) {
-  return ((M_PI * radius) * radius);
+  return ((flight::pi * radius) * radius);
 }
 
 inline double hypotenuse(double a, double b) {
@@ -17,7 +20,7 @@ inline double ceil_divide(double numerator, double denominator) {
 }
 
 inline double degrees_to_radians(double degrees) {
-  return ((degrees * M_PI) / 180.0);
+  return ((degrees * flight::pi) / 180.0);
 }
 
 inline double absolute_value(double value) {

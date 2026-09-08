@@ -4,6 +4,9 @@
 #include <tuple>
 #include <flight/runtime.hpp>
 
+static_assert(flight::runtime_contract.compiler_contract == "flight-runtime-contract/2", "Flight compiler/runtime contract mismatch");
+static_assert(flight::runtime_contract.cpp_abi == 1, "Flight C++ runtime ABI mismatch");
+
 namespace flighthq_golden {
 
 template <typename T>
@@ -72,7 +75,7 @@ inline flight::Array<bool> select_nested_mixed_rest(std::tuple<double, flight::S
 }
 
 inline double select_rows(Rows<std::tuple<double, double>> rows) {
-  for (std::tuple<double, double> array_pattern_value : rows) {
+  for (auto array_pattern_value : rows) {
     const double first = std::get<0>(array_pattern_value);
     const double second = std::get<1>(array_pattern_value);
     return first;

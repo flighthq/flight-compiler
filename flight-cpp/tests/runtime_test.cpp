@@ -78,12 +78,17 @@ void test_array() {
   check(tail.size() == 2 && tail[0] == 1.0, "array slice normalizes negative boundaries");
   check(mapped.join(flight::String("|")) == flight::String("0|1|5"),
         "array join returns the semantic string type");
+  check(flight::Array<double>{1.0e-6, 1.0e21}.join(flight::String(",")) ==
+            flight::String("0.000001,1e+21"),
+        "array join uses source numeric formatting");
 }
 
 void test_contract() {
   check(flight::runtime_contract.compiler_contract == "flight-runtime-contract/2",
         "runtime advertises the compiler contract it implements");
   check(flight::runtime_contract.cpp_abi == 1, "runtime C++ ABI is explicit");
+  check(flight::runtime_contract.cpp_abi == flight::abi_version && FLIGHT_CPP_ABI_VERSION == 1,
+        "runtime contract and public version header agree on the C++ ABI");
   check(flight::runtime_contract.task_contract == "flight-runtime-task-capability-abi/1",
         "task capability ABI is explicit");
   check(flight::runtime_capability_status("array") == flight::RuntimeCapabilityStatus::initial,
@@ -99,6 +104,19 @@ void test_error() {
   check(error.message() == flight::String("expected") && std::string(error.what()) == "expected",
         "error preserves its semantic and native messages");
   check(flight::Error::name() == flight::String("Error"), "error exposes its source-language name");
+}
+
+void test_host() {
+  const auto previous_executor = flight::current_executor();
+  const auto executor = std::make_shared<flight::QueueExecutor>();
+  const auto unicode = std::make_shared<TestUnicodeService>();
+  {
+    const flight::HostScope scope({.executor = executor, .unicode = unicode});
+    check(flight::current_executor() == executor, "host scope installs its task executor");
+    check(flight::String(u"\u00C4").to_lower() == flight::String(u"\u00E4"),
+          "host scope installs its Unicode service");
+  }
+  check(flight::current_executor() == previous_executor, "host scope restores the previous executor");
 }
 
 void test_date() {
@@ -148,6 +166,9 @@ void test_presence_and_math() {
   check(std::signbit(flight::sign(-0.0)), "Math.sign preserves negative zero");
   check(std::isnan(flight::sign(std::numeric_limits<double>::quiet_NaN())),
         "Math.sign preserves NaN");
+  check(std::abs(flight::pi - std::acos(-1.0)) < 1.0e-15 &&
+            std::abs(flight::e - std::exp(1.0)) < 1.0e-15,
+        "Math constants are portable and retain double precision");
 }
 
 void test_set() {
@@ -342,6 +363,7 @@ int main() {
   test_contract();
   test_date();
   test_error();
+  test_host();
   test_map();
   test_presence_and_math();
   test_set();

@@ -2,11 +2,14 @@
 #pragma once
 #include <flight/runtime.hpp>
 
+static_assert(flight::runtime_contract.compiler_contract == "flight-runtime-contract/2", "Flight compiler/runtime contract mismatch");
+static_assert(flight::runtime_contract.cpp_abi == 1, "Flight C++ runtime ABI mismatch");
+
 namespace flighthq_golden {
 
 inline double sum_until(flight::Array<double> values, double limit) {
   double total = 0.0;
-  for (double value : values) {
+  for (auto value : values) {
     if (((total + value) > limit)) {
       break;
     }
@@ -17,7 +20,7 @@ inline double sum_until(flight::Array<double> values, double limit) {
 
 inline double count_positive(flight::Array<double> values) {
   double count = 0.0;
-  for (double value : values) {
+  for (auto value : values) {
     if ((value > 0.0)) {
       count = (count + 1.0);
     }
@@ -26,7 +29,7 @@ inline double count_positive(flight::Array<double> values) {
 }
 
 inline double find_first_negative(flight::Array<double> values) {
-  for (double value : values) {
+  for (auto value : values) {
     if ((value < 0.0)) {
       return value;
     }

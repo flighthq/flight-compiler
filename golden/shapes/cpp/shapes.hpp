@@ -2,6 +2,9 @@
 #pragma once
 #include <flight/runtime.hpp>
 
+static_assert(flight::runtime_contract.compiler_contract == "flight-runtime-contract/2", "Flight compiler/runtime contract mismatch");
+static_assert(flight::runtime_contract.cpp_abi == 1, "Flight C++ runtime ABI mismatch");
+
 namespace flighthq_golden {
 
 struct Range {
@@ -10,10 +13,10 @@ struct Range {
 };
 
 enum class Mode {
-  Fast = 1.0,
-  Safe = 2.0,
-  Strict = 8.0,
-  Debug = 9.0,
+  Fast = 1,
+  Safe = 2,
+  Strict = 8,
+  Debug = 9,
 };
 
 inline Range widen(Range range, double by) {

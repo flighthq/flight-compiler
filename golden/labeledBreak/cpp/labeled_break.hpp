@@ -2,6 +2,9 @@
 #pragma once
 #include <flight/runtime.hpp>
 
+static_assert(flight::runtime_contract.compiler_contract == "flight-runtime-contract/2", "Flight compiler/runtime contract mismatch");
+static_assert(flight::runtime_contract.cpp_abi == 1, "Flight C++ runtime ABI mismatch");
+
 namespace flighthq_golden {
 
 inline double find_pair(flight::Array<double> values, double target) {
@@ -34,7 +37,7 @@ inline double find_pair(flight::Array<double> values, double target) {
 
 inline double first_above(flight::Array<flight::Array<double>> matrix, double threshold) {
   double result = -1.0;
-  for (flight::Array<double> row : matrix) {
+  for (auto row : matrix) {
     for (auto cell : row) {
       if ((cell > threshold)) {
         result = cell;

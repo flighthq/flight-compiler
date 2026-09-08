@@ -4,6 +4,9 @@
 #include <tuple>
 #include <flight/runtime.hpp>
 
+static_assert(flight::runtime_contract.compiler_contract == "flight-runtime-contract/2", "Flight compiler/runtime contract mismatch");
+static_assert(flight::runtime_contract.cpp_abi == 1, "Flight C++ runtime ABI mismatch");
+
 namespace flighthq_golden {
 
 template <typename Value>
@@ -18,7 +21,7 @@ inline Value unwrap(Box<Value> box) {
 
 template <typename Value>
 inline Value first_of(flight::Array<Value> values, Value fallback) {
-  Value first = values.element(0.0);
+  std::optional<Value> first = values.get(0.0);
   return first.value_or(fallback);
 }
 

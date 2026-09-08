@@ -28,6 +28,7 @@ const markdownFiles = [
   path.join(root, 'README.md'),
   ...walkMarkdown(path.join(root, 'agents')),
   ...walkMarkdown(path.join(root, 'docs')),
+  ...walkMarkdown(path.join(root, 'flight-cpp')),
   path.join(root, 'packages', 'tool-compiler', 'README.md'),
 ];
 for (const file of markdownFiles) checkLocalLinks(file);

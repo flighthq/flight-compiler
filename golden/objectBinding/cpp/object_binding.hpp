@@ -2,14 +2,15 @@
 #pragma once
 #include <flight/runtime.hpp>
 
+static_assert(flight::runtime_contract.compiler_contract == "flight-runtime-contract/2", "Flight compiler/runtime contract mismatch");
+static_assert(flight::runtime_contract.cpp_abi == 1, "Flight C++ runtime ABI mismatch");
+
 namespace flighthq_golden {
 
-struct other_value {
+struct Shape {
   bool other;
   double value;
 };
-
-using Shape = other_value;
 
 inline double project(Shape parameter_pattern_value, Shape source) {
   double value;

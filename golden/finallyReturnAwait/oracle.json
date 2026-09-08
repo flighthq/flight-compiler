@@ -1,1 +1,10 @@
-[{ "call": "attempt", "arguments": [{ "task": 6 }, []], "returns": "number", "awaits": true, "rustRef": [1] }]
+[
+  {
+    "call": "attempt",
+    "arguments": [{ "task": 6 }, []],
+    "returns": "number",
+    "awaits": true,
+    "rustRef": [1],
+    "cppTypes": ["flight::Task<double>", "flight::Array<double>"]
+  }
+]

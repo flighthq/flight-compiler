@@ -3,6 +3,9 @@
 #include <functional>
 #include <flight/runtime.hpp>
 
+static_assert(flight::runtime_contract.compiler_contract == "flight-runtime-contract/2", "Flight compiler/runtime contract mismatch");
+static_assert(flight::runtime_contract.cpp_abi == 1, "Flight C++ runtime ABI mismatch");
+
 namespace flighthq_golden {
 
 inline double sum(flight::Array<double> values) {
@@ -15,7 +18,7 @@ inline double product(flight::Array<double> values) {
 
 inline double max_value(flight::Array<double> values) {
   double best = 0.0;
-  for (double v : values) {
+  for (auto v : values) {
     if ((v > best)) {
       best = v;
     }

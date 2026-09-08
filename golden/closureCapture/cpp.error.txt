@@ -1,0 +1,1 @@
+cpp emission failed for @flighthq/golden/packages/golden/src/closureCapture.ts: mutating closures require C++ capture-lifetime lowering

@@ -2,6 +2,9 @@
 #pragma once
 #include <flight/runtime.hpp>
 
+static_assert(flight::runtime_contract.compiler_contract == "flight-runtime-contract/2", "Flight compiler/runtime contract mismatch");
+static_assert(flight::runtime_contract.cpp_abi == 1, "Flight C++ runtime ABI mismatch");
+
 namespace flighthq_golden {
 
 inline flight::String conditional_reassign(double value) {
@@ -29,7 +32,7 @@ inline double swap_values(double a, double b) {
 inline double accumulate(flight::Array<double> values) {
   double sum = 0.0;
   double count = 0.0;
-  for (double v : values) {
+  for (auto v : values) {
     sum += v;
     count += 1.0;
   }

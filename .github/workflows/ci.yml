@@ -29,24 +29,30 @@ jobs:
         include:
           - compiler: GCC
             os: ubuntu-latest
-            cmake-args: -DCMAKE_CXX_COMPILER=g++
+            cmake-args: -DCMAKE_CXX_COMPILER=g++ -DFLIGHT_CPP_BUILD_BENCHMARKS=ON
           - compiler: GCC ASan+UBSan
             os: ubuntu-latest
             cmake-args: -DCMAKE_CXX_COMPILER=g++ -DCMAKE_BUILD_TYPE=Debug -DFLIGHT_CPP_ENABLE_SANITIZERS=ON
           - compiler: Clang
             os: ubuntu-latest
             cmake-args: -DCMAKE_CXX_COMPILER=clang++
+          - compiler: Clang shared ABI
+            os: ubuntu-latest
+            cmake-args: -DCMAKE_CXX_COMPILER=clang++ -DBUILD_SHARED_LIBS=ON
           - compiler: AppleClang
             os: macos-latest
             cmake-args: -DCMAKE_CXX_COMPILER=clang++
           - compiler: MSVC
             os: windows-latest
             cmake-args: ''
+          - compiler: MSVC shared ABI
+            os: windows-latest
+            cmake-args: -DBUILD_SHARED_LIBS=ON
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - name: Configure runtime
-        run: cmake -S flight-cpp -B flight-cpp/build -DBUILD_TESTING=ON -DCMAKE_BUILD_TYPE=Release ${{ matrix.cmake-args }}
+        run: cmake -S flight-cpp -B flight-cpp/build -DBUILD_TESTING=ON -DFLIGHT_CPP_WARNINGS_AS_ERRORS=ON -DCMAKE_BUILD_TYPE=Release ${{ matrix.cmake-args }}
       - name: Build runtime
         run: cmake --build flight-cpp/build --config Release
       - name: Test runtime
@@ -85,6 +91,29 @@ jobs:
       - run: npm run format:check
         if: always()
       - run: npm run lint
+        if: always()
+
+  cpp-conformance:
+    name: C++ whole-corpus conformance
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          cache: npm
+          node-version: 22
+      - run: npm ci
+      - run: npm run golden:check
+        if: always()
+      - run: npm run cpp:abi:check
+        if: always()
+      - run: npm run cpp:exceptions:check
+        if: always()
+      - run: npm run cpp:release:check
+        if: always()
+      - run: npm run compile:check
+        if: always()
+      - run: npm run oracle:check
         if: always()
 
   typecheck:

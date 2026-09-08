@@ -1,1 +1,8 @@
-[{ "call": "busiestCount", "arguments": [[]], "returns": "number" }]
+[
+  {
+    "call": "busiestCount",
+    "arguments": [[]],
+    "returns": "number",
+    "cppTypes": ["flight::Array<flighthq_golden::Item>"]
+  }
+]

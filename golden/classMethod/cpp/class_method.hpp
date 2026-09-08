@@ -2,6 +2,9 @@
 #pragma once
 #include <flight/runtime.hpp>
 
+static_assert(flight::runtime_contract.compiler_contract == "flight-runtime-contract/2", "Flight compiler/runtime contract mismatch");
+static_assert(flight::runtime_contract.cpp_abi == 1, "Flight C++ runtime ABI mismatch");
+
 namespace flighthq_golden {
 
 struct Rectangle {
@@ -27,7 +30,7 @@ struct Rectangle {
 
 inline double total_area(flight::Array<Rectangle> rects) {
   double sum = 0.0;
-  for (Rectangle rect : rects) {
+  for (auto rect : rects) {
     sum = (sum + rect.area());
   }
   return sum;

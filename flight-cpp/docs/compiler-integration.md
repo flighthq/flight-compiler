@@ -3,21 +3,23 @@
 The C++ backend has an explicit `runtimeProfile` election:
 
 - `flight-cpp` maps TypeScript arrays, maps, sets, strings, typed arrays, promises, and dates to the namespaced semantic runtime and includes `<flight/runtime.hpp>` automatically.
-- `standard-library` is the default compatibility profile for compiler users that do not adopt this runtime. It retains the provisional STL-oriented representation and does not claim TypeScript-equivalent collection semantics.
+- `standard-library` is the compatibility default of the low-level backend API. It retains the provisional STL-oriented representation and does not claim TypeScript-equivalent collection semantics.
+
+The packaged `flight-compile --target cpp` command elects `flight-cpp` by default. A caller must ask explicitly for `--runtime-profile standard-library` to receive provisional STL output.
 
 `runtimeHeader` overrides the automatic header spelling without changing the selected bindings, which lets an embedding codebase vendor or wrap the runtime. Adding methods to namespace `std` remains undefined behavior and is not an acceptable bridge.
 
 The compiler owns `tests/generated/semantic_runtime.hpp`: a package test regenerates it from `semantic_runtime.ts` and refuses drift, while CMake compiles and executes it against this runtime. Run `npm run cpp:conformance:update` at the repository root after an intentional emitter change.
 
-## Maturity sequence
+## Current maturity boundary
 
-1. Expand the generated fixture into the same behavioral oracle corpus used by TypeScript, Haxe, and Rust, including aliasing, NaN, negative zero, missing values, exceptions, and module initialization.
-2. Enrich member capability data beyond spelling so it records return shape, absence, mutation, callback, exception, and header requirements.
-3. Carry inferred constructor and generic-call result types in neutral IR so `new Promise(...)` and contextually typed empty collections do not require explicit source type arguments.
-4. Add a pinned production Unicode service, time-zone policy, cancellation policy, sanitizers, 32-bit coverage, Debug/Release coverage, and ABI compatibility checks.
-5. Graduate the target only after all relevant emitted programs compile and execute on GCC, Clang, AppleClang, and MSVC through both the source-tree and installed-package paths.
+The versioned [`flight-portable-typescript/1`](../conformance/portable-typescript-v1.json) profile is the input contract. The compiler refuses code outside the boundary instead of emitting source known to be invalid. Every present refusal is named in the [exception ledger](../conformance/known-exceptions.json), including the compiler/IR capability that must remove it.
 
-## Planned binding changes
+The generated golden corpus uses the semantic profile. Native compilation accepts GCC or Clang and includes the real runtime rather than a permissive stub. The behavioral oracle executes the same fixture calls under Node and native C++ and compares canonical answers whenever a C++ compiler is available. CI additionally builds runtime and installed consumers with GCC, Clang, AppleClang, and MSVC.
+
+Remaining graduation work is intentionally narrow: remove the exception ledger through neutral union/capture evidence, select production Unicode and time-zone providers, prove a supported 32-bit configuration, and hold performance/ABI compatibility gates over at least one release-candidate cycle.
+
+## Binding profiles
 
 | TypeScript surface | Current provisional target | Semantic target |
 | --- | --- | --- |

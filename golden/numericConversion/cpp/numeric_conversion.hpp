@@ -2,6 +2,9 @@
 #pragma once
 #include <flight/runtime.hpp>
 
+static_assert(flight::runtime_contract.compiler_contract == "flight-runtime-contract/2", "Flight compiler/runtime contract mismatch");
+static_assert(flight::runtime_contract.cpp_abi == 1, "Flight C++ runtime ABI mismatch");
+
 namespace flighthq_golden {
 
 inline double clamp_value(double value, double min, double max) {
@@ -29,7 +32,7 @@ inline double average(flight::Array<double> values) {
     return 0.0;
   }
   double sum = 0.0;
-  for (double value : values) {
+  for (auto value : values) {
     sum = (sum + value);
   }
   return (sum / count);

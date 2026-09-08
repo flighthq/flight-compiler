@@ -1,0 +1,1 @@
+cpp emission failed for @flighthq/golden/packages/golden/src/variableForInHoisting.ts: uninitialized variable key requires inferred type evidence

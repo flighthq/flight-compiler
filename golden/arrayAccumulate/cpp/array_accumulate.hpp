@@ -2,12 +2,15 @@
 #pragma once
 #include <flight/runtime.hpp>
 
+static_assert(flight::runtime_contract.compiler_contract == "flight-runtime-contract/2", "Flight compiler/runtime contract mismatch");
+static_assert(flight::runtime_contract.cpp_abi == 1, "Flight C++ runtime ABI mismatch");
+
 namespace flighthq_golden {
 
 inline flight::Array<double> running_sum(flight::Array<double> values) {
   flight::Array<double> result = flight::Array<double>{};
   double sum = 0.0;
-  for (double value : values) {
+  for (auto value : values) {
     sum = (sum + value);
     result.push(sum);
   }
@@ -16,7 +19,7 @@ inline flight::Array<double> running_sum(flight::Array<double> values) {
 
 inline flight::Array<double> filter_positive(flight::Array<double> values) {
   flight::Array<double> result = flight::Array<double>{};
-  for (double value : values) {
+  for (auto value : values) {
     if ((value > 0.0)) {
       result.push(value);
     }
@@ -26,7 +29,7 @@ inline flight::Array<double> filter_positive(flight::Array<double> values) {
 
 inline double sum_squares(flight::Array<double> values) {
   double total = 0.0;
-  for (double value : values) {
+  for (auto value : values) {
     total = (total + (value * value));
   }
   return total;

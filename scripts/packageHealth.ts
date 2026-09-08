@@ -51,6 +51,7 @@ const packageRules: Readonly<Record<string, PackageRule>> = {
     dependencies: [
       'compiler-canonical-form',
       'compiler-emission',
+      'compiler-ir-traversal',
       'compiler-lowering',
       'compiler-runtime-contract',
       'compiler-types',

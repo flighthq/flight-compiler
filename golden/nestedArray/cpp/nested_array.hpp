@@ -2,6 +2,9 @@
 #pragma once
 #include <flight/runtime.hpp>
 
+static_assert(flight::runtime_contract.compiler_contract == "flight-runtime-contract/2", "Flight compiler/runtime contract mismatch");
+static_assert(flight::runtime_contract.cpp_abi == 1, "Flight C++ runtime ABI mismatch");
+
 namespace flighthq_golden {
 
 inline double sum_row(flight::Array<flight::Array<double>> grid, double row) {
@@ -14,7 +17,7 @@ inline double sum_row(flight::Array<flight::Array<double>> grid, double row) {
 
 inline flight::Array<double> flatten(flight::Array<flight::Array<double>> grid) {
   flight::Array<double> result = flight::Array<double>{};
-  for (flight::Array<double> row : grid) {
+  for (auto row : grid) {
     for (auto value : row) {
       result.push(value);
     }

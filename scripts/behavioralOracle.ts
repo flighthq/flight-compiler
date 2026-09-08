@@ -9,8 +9,8 @@ import ts from 'typescript';
 // Does the emitted source do what the source language does?
 //
 // `compile:check` proves the output is a program. This proves it is the same program: each fixture's
-// own TypeScript is run under Node and its answers become the expected values, then the emitted Haxe
-// and Rust are built and run and compared against them. The source language is the oracle because it
+// own TypeScript is run under Node and its answers become the expected values, then the emitted C++,
+// Haxe, and Rust are built and run and compared against them. The source language is the oracle because it
 // is the behavioral source of truth; a target that disagrees with it is wrong however well it
 // compiles.
 //
@@ -19,7 +19,7 @@ import ts from 'typescript';
 // every Haxe backend renders a value the same way. Proving that needs hxcpp and a C++ toolchain.
 //
 // Arguments are scalars, arrays of scalars, and tasks. A record argument would have to be rendered
-// as each target spells a record — including its type name in Rust — which is worth doing when a
+// as each target spells a record — including its type name in C++ and Rust — which is worth doing when a
 // fixture needs it and is not done yet; such a fixture takes compile coverage only.
 //
 // A fixture opts in with `oracle.json`. Values are compared as canonical text rather than by each
@@ -37,6 +37,7 @@ interface OracleCase {
   readonly arguments: readonly unknown[];
   readonly awaits?: boolean;
   readonly call: string;
+  readonly cppTypes?: readonly (string | null)[];
   readonly returns: OracleValueKind;
   readonly rustRef?: readonly number[];
 }
@@ -68,9 +69,11 @@ const fixtures = readdirSync(goldenDirectory, { withFileTypes: true })
 
 const haxeAvailable = hasCommand('haxe');
 const rustAvailable = hasCommand('rustc') && hasCommand('cc');
+const cppCompiler = ['c++', 'g++', 'clang++'].find(hasCommand);
 const divergences: OracleDivergence[] = [];
 const workspace = mkdtempSync(path.join(tmpdir(), 'flight-oracle-'));
 let compared = 0;
+let cppExcluded = 0;
 
 try {
   for (const fixture of fixtures) {
@@ -83,6 +86,11 @@ try {
     }
     if (rustAvailable && existsSync(path.join(goldenDirectory, fixture, 'rust'))) {
       compare(fixture, 'rust', expected, runRustOracle(fixture, cases));
+    }
+    if (cppCompiler && existsSync(path.join(goldenDirectory, fixture, 'cpp'))) {
+      compare(fixture, 'cpp', expected, runCppOracle(fixture, cases, cppCompiler));
+    } else if (cppCompiler) {
+      cppExcluded += 1;
     }
   }
 } finally {
@@ -99,11 +107,15 @@ if (divergences.length > 0) {
   process.exit(1);
 }
 
-const skipped = [...(haxeAvailable ? [] : ['haxe']), ...(rustAvailable ? [] : ['rust'])];
+const skipped = [
+  ...(haxeAvailable ? [] : ['haxe']),
+  ...(rustAvailable ? [] : ['rust']),
+  ...(cppCompiler ? [] : ['cpp']),
+];
 process.stdout.write(
   `Emitted source agrees with the source language: ${String(compared)} answers across ${String(fixtures.length)} fixtures${
     skipped.length > 0 ? ` (${skipped.join(', ')} not installed, skipped)` : ''
-  }.\n`,
+  }${cppExcluded > 0 ? ` (${String(cppExcluded)} C++ fixture(s) excluded by structured emission refusal)` : ''}.\n`,
 );
 
 function compare(fixture: string, target: string, expected: readonly string[], actual: readonly string[]): void {
@@ -256,6 +268,141 @@ function runRustOracle(fixture: string, cases: readonly OracleCase[]): readonly 
   );
   if (built.status !== 0) throw new Error(`${fixture} rust oracle build failed:\n${built.stderr ?? ''}`);
   return runLines(path.join(directory, 'oracle'), [], directory, `${fixture} rust`);
+}
+
+function runCppOracle(fixture: string, cases: readonly OracleCase[], compiler: string): readonly string[] {
+  const directory = path.join(workspace, fixture, 'cpp');
+  cpSync(path.join(goldenDirectory, fixture, 'cpp'), directory, { recursive: true });
+  cpSync(path.join(supportDirectory, 'cpp'), directory, { recursive: true });
+  const headers = readdirSync(directory)
+    .filter((entry) => entry.endsWith('.hpp') && entry !== 'helper.hpp')
+    .sort();
+  if (headers.length === 0) throw new Error(`${fixture} has no emitted C++ header`);
+  const arrayHints = collectCppArrayHints(cases);
+  writeFileSync(
+    path.join(directory, 'main.cpp'),
+    [
+      ...headers.map((header) => `#include ${JSON.stringify(header)}`),
+      '#include <flight/runtime.hpp>',
+      '#include <cmath>',
+      '#include <iomanip>',
+      '#include <iostream>',
+      '#include <sstream>',
+      '#include <string>',
+      '',
+      'std::string say(double value) {',
+      '  if (std::isnan(value)) return "NaN";',
+      '  if (std::isinf(value)) return value < 0.0 ? "-Infinity" : "Infinity";',
+      '  if (value == 0.0 || value == std::trunc(value)) return flight::String::from_number(value).to_utf8();',
+      '  std::ostringstream output;',
+      '  output << std::fixed << std::setprecision(6) << value;',
+      '  auto rendered = output.str();',
+      "  while (rendered.ends_with('0')) rendered.pop_back();",
+      "  if (rendered.ends_with('.')) rendered.pop_back();",
+      '  return rendered;',
+      '}',
+      'std::string say(bool value) { return value ? "true" : "false"; }',
+      'std::string say(const flight::String& value) { return value.to_utf8(); }',
+      'template <typename Value>',
+      'std::string say(const flight::Array<Value>& values) {',
+      '  std::string rendered = "[";',
+      '  bool first = true;',
+      '  for (const auto& value : values) {',
+      '    if (!first) rendered += ", ";',
+      '    rendered += say(value);',
+      '    first = false;',
+      '  }',
+      '  return rendered + "]";',
+      '}',
+      '',
+      'int main() {',
+      ...cases.map((oracleCase) => {
+        const arguments_ = oracleCase.arguments.map((argument, index) =>
+          renderCppValue(
+            argument,
+            oracleCase.cppTypes?.[index] ?? arrayHints.get(`${oracleCase.call}:${String(index)}`),
+          ),
+        );
+        const invocation = `flighthq_golden::${toSnakeCase(oracleCase.call)}(${arguments_.join(', ')})`;
+        const value = oracleCase.awaits ? `${invocation}.get()` : invocation;
+        return `  std::cout << say(${value}) << '\\n';`;
+      }),
+      '}',
+    ].join('\n'),
+  );
+  const built = spawnSync(
+    compiler,
+    [
+      '-std=c++20',
+      '-pthread',
+      '-I',
+      path.join(root, 'flight-cpp', 'include'),
+      '-I',
+      directory,
+      '-o',
+      'oracle',
+      'main.cpp',
+    ],
+    { cwd: directory, encoding: 'utf8' },
+  );
+  if (built.status !== 0) {
+    throw new Error(`${fixture} C++ oracle build failed with ${compiler}:\n${built.stdout ?? ''}${built.stderr ?? ''}`);
+  }
+  return runLines(path.join(directory, 'oracle'), [], directory, `${fixture} C++`);
+}
+
+function collectCppArrayHints(cases: readonly OracleCase[]): ReadonlyMap<string, string> {
+  const hints = new Map<string, string>();
+  for (const oracleCase of cases) {
+    oracleCase.arguments.forEach((argument, index) => {
+      if (!Array.isArray(argument) || argument.length === 0) return;
+      const type = inferCppValueType(argument);
+      if (type) hints.set(`${oracleCase.call}:${String(index)}`, type);
+    });
+  }
+  return hints;
+}
+
+function inferCppValueType(value: unknown): string | undefined {
+  if (Array.isArray(value)) {
+    const element = value.map(inferCppValueType).find((candidate) => candidate !== undefined);
+    return element ? `flight::Array<${element}>` : undefined;
+  }
+  if (typeof value === 'boolean') return 'bool';
+  if (typeof value === 'number') return 'double';
+  if (typeof value === 'string') return 'flight::String';
+  if (isTaskArgument(value)) return inferCppValueType(value.task);
+  if (isRejectedTaskArgument(value)) return inferCppValueType(value.rejects);
+  return undefined;
+}
+
+function renderCppValue(value: unknown, hint?: string | null): string {
+  if (isTaskArgument(value)) {
+    const type = unwrapCppTaskType(hint) ?? inferCppValueType(value.task);
+    if (!type) throw new Error('C++ oracle task argument needs a scalar settled type');
+    return `flight::Task<${type}>::ready(${renderCppValue(value.task)})`;
+  }
+  if (isRejectedTaskArgument(value)) {
+    const type = unwrapCppTaskType(hint) ?? inferCppValueType(value.rejects);
+    if (!type) throw new Error('C++ oracle rejection argument needs a scalar rejection type');
+    return `flight::Task<${type}>::reject(${renderCppValue(value.rejects)})`;
+  }
+  if (Array.isArray(value)) {
+    const arrayType = inferCppValueType(value) ?? hint;
+    if (!arrayType?.startsWith('flight::Array<')) {
+      throw new Error('C++ oracle empty array needs a same-call nonempty type example');
+    }
+    return `${arrayType}{${value.map((item) => renderCppValue(item)).join(', ')}}`;
+  }
+  if (typeof value === 'string') return `flight::String(${JSON.stringify(value)})`;
+  if (typeof value === 'number') return Number.isInteger(value) ? `${String(value)}.0` : String(value);
+  if (typeof value === 'boolean') return String(value);
+  throw new Error(`C++ oracle cannot render ${JSON.stringify(value)}`);
+}
+
+function unwrapCppTaskType(type: string | null | undefined): string | undefined {
+  const match = /^flight::Task<(?<value>.+)>$/u.exec(type ?? '');
+  return match?.groups?.value;
 }
 
 function runLines(command: string, args: readonly string[], cwd: string, subject: string): readonly string[] {

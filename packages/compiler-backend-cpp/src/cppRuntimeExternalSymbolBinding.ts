@@ -91,8 +91,8 @@ const cppFlightRuntimeExternalSymbolBindings = [
   {
     kind: 'native',
     members: [
-      { sourceMember: 'E', targetName: 'M_E' },
-      { sourceMember: 'PI', targetName: 'M_PI' },
+      { sourceMember: 'E', targetName: 'flight::e' },
+      { sourceMember: 'PI', targetName: 'flight::pi' },
       { sourceMember: 'abs', targetName: 'std::abs' },
       { sourceMember: 'ceil', targetName: 'std::ceil' },
       { sourceMember: 'cos', targetName: 'std::cos' },

@@ -13,6 +13,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <type_traits>
 #include <utility>
 #include <vector>
@@ -207,9 +208,14 @@ class Array {
     return value;
   }
 
+  size_type push(Value value) {
+    values_->push_back(std::move(value));
+    return size();
+  }
+
   template <typename... Items>
     requires(std::constructible_from<Value, Items&&> && ...)
-  size_type push(Items&&... items) {
+  size_type push(Items&&... items) requires(sizeof...(Items) != 1) {
     (values_->emplace_back(std::forward<Items>(items)), ...);
     return size();
   }
@@ -324,6 +330,10 @@ class Array {
   [[nodiscard]] static StringValue stringify(const Value& value) {
     if constexpr (std::constructible_from<StringValue, Value>) {
       return StringValue(value);
+    } else if constexpr (std::same_as<Value, bool> && requires { StringValue::from_utf8(std::string_view{}); }) {
+      return StringValue::from_utf8(value ? "true" : "false");
+    } else if constexpr (std::is_arithmetic_v<Value> && requires { StringValue::from_number(double{}); }) {
+      return StringValue::from_number(static_cast<double>(value));
     } else if constexpr (std::is_arithmetic_v<Value>) {
       std::ostringstream output;
       if constexpr (std::same_as<Value, bool>) output << std::boolalpha;

@@ -113,7 +113,8 @@ if (hasCommand('rustc', ['--version'])) {
   reports.push('rustc not installed (skipped)');
 }
 
-if (hasCommand('g++', ['--version'])) {
+const cppCompiler = ['c++', 'g++', 'clang++'].find((command) => hasCommand(command, ['--version']));
+if (cppCompiler) {
   const cppFixtures = fixtures.filter((fixture) => existsSync(path.join(goldenDirectory, fixture, 'cpp')));
   for (const fixture of cppFixtures) {
     const emitted = path.join(goldenDirectory, fixture, 'cpp');
@@ -122,13 +123,15 @@ if (hasCommand('g++', ['--version'])) {
     checked += headers.length;
     for (const header of headers) {
       const result = spawnSync(
-        'g++',
+        cppCompiler,
         [
           '-std=c++20',
           '-fsyntax-only',
           '-pthread',
           '-I',
           path.join(root, 'flight-cpp', 'include'),
+          '-I',
+          path.join(supportDirectory, 'cpp'),
           '-x',
           'c++-header',
           path.join(emitted, header),
@@ -142,9 +145,9 @@ if (hasCommand('g++', ['--version'])) {
       if (result.status !== 0) failures.push({ fixture: `cpp/${fixture}/${header}`, output: output.trim() });
     }
   }
-  reports.push(`cpp ${String(cppFixtures.length)} fixtures`);
+  reports.push(`cpp ${String(cppFixtures.length)} fixtures (${cppCompiler})`);
 } else {
-  reports.push('g++ not installed (skipped)');
+  reports.push('C++ compiler not installed (skipped)');
 }
 
 if (failures.length > 0) {

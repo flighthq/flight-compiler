@@ -13,7 +13,16 @@ import type { ReadinessFixtureOutcome } from './readinessRuleGrouping.js';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const goldenDirectory = path.join(root, 'golden');
+const cppProfile = JSON.parse(
+  readFileSync(path.join(root, 'flight-cpp', 'conformance', 'portable-typescript-v1.json'), 'utf8'),
+) as { profile: string; supportStatus: string };
 const targets = ['cpp', 'haxe', 'rust'] as const;
+const json = process.argv.slice(2).includes('--json');
+const unknownArguments = process.argv.slice(2).filter((argument) => argument !== '--json');
+if (unknownArguments.length > 0) {
+  process.stderr.write(`Unknown readiness option(s): ${unknownArguments.join(', ')}\n`);
+  process.exit(1);
+}
 const fixtures = readdirSync(goldenDirectory, { withFileTypes: true })
   .filter((entry) => entry.isDirectory() && existsSync(path.join(goldenDirectory, entry.name, 'input.ts')))
   .map((entry) => entry.name)
@@ -41,13 +50,18 @@ for (const fixture of fixtures) {
   }
 }
 
-const lines: string[] = [`Readiness over ${String(fixtures.length)} golden fixtures.`, ''];
-for (const target of targets) {
+const targetReports = targets.map((target) => {
   const forTarget = outcomes.filter((outcome) => outcome.target === target);
   const emitted = forTarget.filter((outcome) => outcome.verdict === 'emitted').length;
-  const share = ((emitted / forTarget.length) * 100).toFixed(1);
-  lines.push(`${target}: ${String(emitted)}/${String(forTarget.length)} emit (${share}%)`);
-}
+  return {
+    emitted,
+    emissionShare: Number(((emitted / forTarget.length) * 100).toFixed(1)),
+    ...(target === 'cpp' ? { profile: cppProfile.profile, supportStatus: cppProfile.supportStatus } : {}),
+    refused: forTarget.length - emitted,
+    target,
+    total: forTarget.length,
+  };
+});
 
 const divergent = fixtures.filter((fixture) => {
   const verdicts = targets.map(
@@ -55,11 +69,36 @@ const divergent = fixtures.filter((fixture) => {
   );
   return new Set(verdicts).size > 1;
 });
+const blockingRules = collectReadinessRuleCounts(outcomes);
+if (json) {
+  process.stdout.write(
+    `${JSON.stringify(
+      {
+        blockingRules,
+        corpusFixtures: fixtures.length,
+        divergentFixtures: divergent,
+        schema: 'flight-compiler-readiness/1',
+        targets: targetReports,
+      },
+      null,
+      2,
+    )}\n`,
+  );
+  process.exit(0);
+}
+
+const lines: string[] = [`Emission readiness over ${String(fixtures.length)} golden fixtures.`, ''];
+for (const report of targetReports) {
+  lines.push(
+    `${report.target}: ${String(report.emitted)}/${String(report.total)} emit (${report.emissionShare.toFixed(1)}%)${'profile' in report ? `; ${report.profile} is ${report.supportStatus}` : ''}`,
+  );
+}
+
 lines.push('', `Divergent fixtures, where targets disagree on emit vs. refuse: ${String(divergent.length)}`);
 for (const fixture of divergent) lines.push(`  ${fixture}`);
 
 lines.push('', 'Blocking rules, most fixtures first:');
-for (const entry of collectReadinessRuleCounts(outcomes)) {
+for (const entry of blockingRules) {
   lines.push(`  ${String(entry.fixtures.length).padStart(2)} ${entry.target}  ${entry.rule}`);
   lines.push(`     ${entry.fixtures.join(', ')}`);
 }

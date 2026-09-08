@@ -1,0 +1,63 @@
+{
+  "schema": "flight-cpp-conformance-exceptions/1",
+  "profile": "flight-portable-typescript/1",
+  "target": "cpp",
+  "exceptions": [
+    {
+      "fixture": "closureCapture",
+      "phase": "emission",
+      "owner": "compiler-analysis",
+      "rule": "mutating closures require C++ capture-lifetime lowering",
+      "reason": "The IR does not yet distinguish an escaping capture from a same-frame mutable borrow."
+    },
+    {
+      "fixture": "discriminatedUnion",
+      "phase": "emission",
+      "owner": "compiler-ir",
+      "rule": "multi-member unions require C++ narrowing and variant-access lowering",
+      "reason": "The backend needs target-neutral alternative selection at each narrowed use."
+    },
+    {
+      "fixture": "nameCollision",
+      "phase": "emission",
+      "owner": "compiler-emission",
+      "rule": "public declarations share fixed C++ target name foo_bar",
+      "reason": "Public target-name disambiguation is intentionally refused until its ABI spelling is versioned."
+    },
+    {
+      "fixture": "nestedClosure",
+      "phase": "emission",
+      "owner": "compiler-analysis",
+      "rule": "mutating closures require C++ capture-lifetime lowering",
+      "reason": "The IR does not yet distinguish an escaping capture from a same-frame mutable borrow."
+    },
+    {
+      "fixture": "runtimeExternalTypeMissing",
+      "phase": "emission",
+      "owner": "runtime-contract",
+      "rule": "runtime external symbol binding plan is incomplete (missing: WeakMap[type])",
+      "reason": "WeakMap has no elected ownership and lifetime contract for native targets."
+    },
+    {
+      "fixture": "typeNarrowing",
+      "phase": "emission",
+      "owner": "compiler-ir",
+      "rule": "multi-member unions require C++ narrowing and variant-access lowering",
+      "reason": "The backend needs target-neutral primitive-alternative evidence at each narrowed use."
+    },
+    {
+      "fixture": "typeofNarrowing",
+      "phase": "emission",
+      "owner": "compiler-ir",
+      "rule": "multi-member unions require C++ narrowing and variant-access lowering",
+      "reason": "The backend needs target-neutral primitive-alternative evidence at each narrowed use."
+    },
+    {
+      "fixture": "variableForInHoisting",
+      "phase": "emission",
+      "owner": "compiler-lowering",
+      "rule": "uninitialized variable key requires inferred type evidence",
+      "reason": "Variable-hoisting lowering must retain the string type of a for-in binding."
+    }
+  ]
+}

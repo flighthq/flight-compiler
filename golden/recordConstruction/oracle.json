@@ -1,1 +1,8 @@
-[{ "call": "tailSize", "arguments": [[], 0], "returns": "number" }]
+[
+  {
+    "call": "tailSize",
+    "arguments": [[], 0],
+    "returns": "number",
+    "cppTypes": ["flight::Array<flighthq_golden::Entry>", null]
+  }
+]

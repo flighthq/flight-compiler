@@ -10,9 +10,9 @@ The package's intended ownership is the complete source-compilation path:
 - deterministic, identity-based semantic patches and patch audits
 - coverage and API inventory models
 - compiler orchestration and target-backend infrastructure
-- concrete Haxe and Rust lowering and source emission
+- concrete C++, Haxe, and Rust lowering and source emission
 
-[flight-hx](https://github.com/flighthq/flight-hx) is the first integration target; [flight-rs](https://github.com/flighthq/flight-rs) is the second. Those repositories retain their target ecosystem: runtime and standard-library support, project layout, examples, and integration tests. Compiler-owned target rules and emitters live here so both ports use one versioned toolchain.
+[flight-hx](https://github.com/flighthq/flight-hx) and [flight-rs](https://github.com/flighthq/flight-rs) remain integration targets. The incubating [flight-cpp](flight-cpp/README.md) runtime is versioned here with the compiler until its generated-code boundary is mature enough to extract. Target repositories retain their ecosystem, project layout, examples, and integration tests; compiler-owned target rules and emitters stay here so every port uses one versioned toolchain.
 
 Development follows Flight's package-per-domain architecture. Private `@flighthq/compiler-*` workspaces isolate contracts, analysis, provenance, completion, patches, structural semantics, emission, target backends, and orchestration; the public `packages/tool-compiler` workspace assembles them into one self-contained artifact. The repository root is a private development workspace. Source trees are flat, contracts are centralized in `compiler-types`, and implementations use functions and plain data instead of classes.
 

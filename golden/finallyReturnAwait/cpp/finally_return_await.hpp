@@ -3,7 +3,11 @@
 #include <coroutine>
 #include <exception>
 #include <optional>
+#include <stdexcept>
 #include <flight/runtime.hpp>
+
+static_assert(flight::runtime_contract.compiler_contract == "flight-runtime-contract/2", "Flight compiler/runtime contract mismatch");
+static_assert(flight::runtime_contract.cpp_abi == 1, "Flight C++ runtime ABI mismatch");
 
 namespace flighthq_golden {
 
@@ -19,6 +23,8 @@ inline flight::Task<double> attempt(flight::Task<double> task, flight::Array<dou
   log.push(1.0);
   if (finally_exception) std::rethrow_exception(finally_exception);
   if (finally_return.has_value()) co_return finally_return.value();
+  co_await std::suspend_never{};
+  throw std::logic_error("Flight async function completed without a value");
 }
 
 } // namespace flighthq_golden
