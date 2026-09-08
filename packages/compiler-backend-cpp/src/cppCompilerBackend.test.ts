@@ -1916,4 +1916,89 @@ describe('emitIrModuleCpp', () => {
     const result = lower('number-call.ts', 'export function toNum(x: string): number { return Number(x); }');
     expect(() => emitIrModuleCpp(result.module)).toThrow(/runtime external symbol binding plan is incomplete/);
   });
+
+  it('emits negated nullish comparison as has_value without prefix', () => {
+    const result = lower('not-null.ts', 'export function isPresent(x: number | null): boolean { return x !== null; }');
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toMatch(/[^!]has_value\(\)/);
+  });
+
+  it('detects return in if-otherwise only when consequent has no return', () => {
+    const result = lower(
+      'if-otherwise-return.ts',
+      `export function check(x: number): number {
+        try {
+          if (x > 0) {
+            const y: number = x;
+          } else {
+            return -x;
+          }
+        } finally {
+          const z: number = 0;
+        }
+        return 0;
+      }`,
+    );
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('finally_return');
+  });
+
+  it('detects return in nested try-catch inside try-finally', () => {
+    const result = lower(
+      'nested-try-catch.ts',
+      `export function nested(): number {
+        try {
+          try {
+            throw new Error('test');
+          } catch (e) {
+            return 0;
+          }
+        } finally {
+          const z: number = 0;
+        }
+      }`,
+    );
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('finally_return');
+    expect(emitted.contents).toContain('catch');
+  });
+
+  it('emits for-of without explicit type annotation as auto', () => {
+    const result = lower(
+      'for-of-auto.ts',
+      `export function sum(items: number[]): number {
+        let total: number = 0;
+        for (const item of items) { total += item; }
+        return total;
+      }`,
+    );
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('for (');
+    expect(emitted.contents).toContain('item');
+  });
+
+  it('emits parameter without explicit type as auto', () => {
+    const result = lower('param-auto.ts', 'export function identity<T>(value: T): T { return value; }');
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('template');
+    expect(emitted.contents).toContain('value');
+  });
+
+  it('emits variable declaration without initializer', () => {
+    const result = lower('no-init.ts', 'export let count: number;');
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('double count');
+    expect(emitted.contents).not.toContain('= ');
+  });
+
+  it('emits class field without explicit type annotation', () => {
+    const result = lower(
+      'field-no-type.ts',
+      `export class Counter {
+        count = 0;
+      }`,
+    );
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('count');
+  });
 });
