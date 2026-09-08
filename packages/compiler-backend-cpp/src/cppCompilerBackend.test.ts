@@ -3562,9 +3562,8 @@ describe('emitIrModuleCpp', () => {
       (d: { kind: string; binding?: { name: string } }) => d.kind === 'class' && d.binding?.name === 'Child',
     );
     if (child?.kind === 'class' && child.classConstructor) {
-      child.classConstructor.body = child.classConstructor.body.filter(
-        (s: { kind: string }) => s.kind !== 'expression',
-      );
+      const filtered = child.classConstructor.body.filter((s: { kind: string }) => s.kind !== 'expression');
+      (child.classConstructor as unknown as { body: typeof filtered }).body = filtered;
     }
     const output = emitIrModuleCpp(module).contents;
     expect(output).toContain('Child');
