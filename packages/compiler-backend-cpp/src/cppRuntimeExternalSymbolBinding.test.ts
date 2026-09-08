@@ -43,6 +43,22 @@ describe('createCompilerRuntimeExternalSymbolBindingPlanCpp', () => {
     (first.bindings as unknown[]).pop();
     expect(second.bindings).toHaveLength(32);
   });
+
+  it('elects semantic containers and strings as flight-cpp runtime capabilities', () => {
+    const plan = createCompilerRuntimeExternalSymbolBindingPlanCpp('flight-cpp');
+
+    expect(plan.bindings).toHaveLength(34);
+    expect(plan.bindings).toContainEqual({
+      capability: 'array',
+      externalSymbol: { sourceName: 'Array', space: 'type' },
+      kind: 'runtime',
+    });
+    expect(plan.bindings).toContainEqual({
+      capability: 'string',
+      externalSymbol: { sourceName: 'String', space: 'value' },
+      kind: 'runtime',
+    });
+  });
 });
 
 describe('getCompilerRuntimeExternalSymbolTargetCpp', () => {
@@ -72,6 +88,18 @@ describe('getCompilerRuntimeExternalSymbolTargetCpp', () => {
     expect(getCompilerRuntimeExternalSymbolTargetCpp('Boolean', 'value')).toBeUndefined();
     expect(getCompilerRuntimeExternalSymbolTargetCpp('Unmapped', 'value')).toBeUndefined();
   });
+
+  it.each([
+    ['Array', 'type', 'flight::Array'],
+    ['Date', 'value', 'flight::Date'],
+    ['Map', 'type', 'flight::Map'],
+    ['Promise', 'type', 'flight::Task'],
+    ['Set', 'value', 'flight::Set'],
+    ['String', 'type', 'flight::String'],
+    ['Uint8ClampedArray', 'value', 'flight::Uint8ClampedArray'],
+  ] as const)('maps %s in %s space to the semantic runtime target %s', (sourceName, space, targetName) => {
+    expect(getCompilerRuntimeExternalSymbolTargetCpp(sourceName, space, 'flight-cpp')).toBe(targetName);
+  });
 });
 
 describe('getCompilerRuntimeExternalMemberTargetCpp', () => {
@@ -94,5 +122,6 @@ describe('isCompilerRuntimeExternalSymbolProvidedCpp', () => {
     expect(isCompilerRuntimeExternalSymbolProvidedCpp('Promise', 'type')).toBe(true);
     expect(isCompilerRuntimeExternalSymbolProvidedCpp('Map', 'type')).toBe(false);
     expect(isCompilerRuntimeExternalSymbolProvidedCpp('NotASymbol', 'type')).toBe(false);
+    expect(isCompilerRuntimeExternalSymbolProvidedCpp('Map', 'type', 'flight-cpp')).toBe(true);
   });
 });

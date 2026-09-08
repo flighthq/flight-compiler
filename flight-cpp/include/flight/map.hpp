@@ -2,9 +2,12 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <functional>
 #include <initializer_list>
+#include <iterator>
 #include <memory>
 #include <optional>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -24,6 +27,15 @@ class Map {
     for (const auto& [key, value] : entries) set(key, value);
   }
 
+  template <typename Range>
+    requires requires(const Range& range) {
+      std::begin(range);
+      std::end(range);
+    }
+  explicit Map(const Range& entries) : Map() {
+    for (const auto& entry : entries) set(std::get<0>(entry), std::get<1>(entry));
+  }
+
   [[nodiscard]] auto begin() const noexcept { return entries_->begin(); }
   [[nodiscard]] auto end() const noexcept { return entries_->end(); }
 
@@ -36,6 +48,11 @@ class Map {
   }
 
   [[nodiscard]] bool empty() const noexcept { return entries_->empty(); }
+
+  template <typename Function>
+  void for_each(Function function) const {
+    for (const auto& [key, value] : *entries_) std::invoke(function, value, key);
+  }
 
   bool erase(const Key& key) {
     const auto entry = find(key);

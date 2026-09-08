@@ -12,6 +12,7 @@
 #include <memory>
 #include <optional>
 #include <span>
+#include <stdexcept>
 #include <type_traits>
 #include <utility>
 #include <vector>
@@ -61,6 +62,14 @@ class TypedArray {
   TypedArray(std::initializer_list<Value> values)
       : length_(values.size()), storage_(std::make_shared<std::vector<Value>>(values)) {}
 
+  template <typename Range>
+    requires requires(const Range& range) {
+      std::begin(range);
+      std::end(range);
+    }
+  explicit TypedArray(const Range& values)
+      : TypedArray(std::begin(values), std::end(values)) {}
+
   [[nodiscard]] const Value& operator[](size_type index) const noexcept { return (*storage_)[offset_ + index]; }
   [[nodiscard]] Value& operator[](size_type index) noexcept { return (*storage_)[offset_ + index]; }
 
@@ -91,6 +100,24 @@ class TypedArray {
   }
 
   [[nodiscard]] size_type size() const noexcept { return length_; }
+
+  template <typename Range>
+    requires requires(const Range& range) {
+      std::begin(range);
+      std::end(range);
+    }
+  void set(const Range& source, std::ptrdiff_t offset = 0) {
+    if (offset < 0 || static_cast<size_type>(offset) > length_) {
+      throw std::range_error("flight::TypedArray set offset is outside the view");
+    }
+    std::vector<Value> snapshot;
+    for (const auto& value : source) snapshot.emplace_back(value);
+    const auto target = static_cast<size_type>(offset);
+    if (snapshot.size() > length_ - target) {
+      throw std::range_error("flight::TypedArray source does not fit the view");
+    }
+    std::move(snapshot.begin(), snapshot.end(), begin() + static_cast<std::ptrdiff_t>(target));
+  }
 
   [[nodiscard]] std::span<const Value> span() const noexcept {
     const auto* data = storage_->data();

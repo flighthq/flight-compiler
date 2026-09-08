@@ -14,7 +14,7 @@ std::string fizzbuzz(double n) {
   if (((n - (5.0 * std::floor((n / 5.0)))) == 0.0)) {
     return "Buzz";
   }
-  return n.to_string();
+  return std::to_string(n);
 }
 
 std::string letter_grade(double score) {

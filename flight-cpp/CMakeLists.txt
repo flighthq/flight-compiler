@@ -10,6 +10,8 @@ project(
 include(CMakePackageConfigHelpers)
 include(CTest)
 
+option(FLIGHT_CPP_ENABLE_SANITIZERS "Enable AddressSanitizer and UndefinedBehaviorSanitizer" OFF)
+
 add_library(flight_cpp INTERFACE)
 add_library(Flight::Cpp ALIAS flight_cpp)
 set_target_properties(flight_cpp PROPERTIES EXPORT_NAME Cpp)
@@ -20,6 +22,14 @@ target_include_directories(
     "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
     "$<INSTALL_INTERFACE:include>"
 )
+
+if(FLIGHT_CPP_ENABLE_SANITIZERS)
+  if(MSVC)
+    message(FATAL_ERROR "FLIGHT_CPP_ENABLE_SANITIZERS currently requires GCC, Clang, or AppleClang")
+  endif()
+  target_compile_options(flight_cpp INTERFACE -fsanitize=address,undefined -fno-omit-frame-pointer)
+  target_link_options(flight_cpp INTERFACE -fsanitize=address,undefined)
+endif()
 
 if(BUILD_TESTING)
   add_subdirectory(tests)

@@ -76,6 +76,25 @@ describe('getCompilerCppAmbientMemberBinding', () => {
     });
   });
 
+  it('elects direct semantic-runtime methods for the flight-cpp profile', () => {
+    expect(getCompilerCppAmbientMemberBinding({ name: 'map', receiver: 'array' }, 'flight-cpp')).toEqual({
+      kind: 'method',
+      targetName: 'map',
+    });
+    expect(getCompilerCppAmbientMemberBinding({ name: 'get', receiver: 'map' }, 'flight-cpp')).toEqual({
+      kind: 'method',
+      targetName: 'get',
+    });
+    expect(getCompilerCppAmbientMemberBinding({ name: 'includes', receiver: 'string' }, 'flight-cpp')).toEqual({
+      kind: 'method',
+      targetName: 'includes',
+    });
+    expect(getCompilerCppAmbientMemberBinding({ name: 'catch', receiver: 'task' }, 'flight-cpp')).toEqual({
+      kind: 'method',
+      targetName: 'catch_error',
+    });
+  });
+
   it('answers nothing for a member with no agreed spelling, so emission refuses rather than guesses', () => {
     expect(getCompilerCppAmbientMemberBinding({ name: 'sort', receiver: 'array' })).toBeUndefined();
     expect(getCompilerCppAmbientMemberBinding({ name: 'toFixed', receiver: 'number' })).toBeUndefined();

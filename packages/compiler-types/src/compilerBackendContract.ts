@@ -47,7 +47,14 @@ export interface HaxeCompilerBackendOptions {
   readonly upstreamCommit?: string | undefined;
 }
 
+export type CppCompilerRuntimeProfile = 'flight-cpp' | 'standard-library';
+
 export interface CppCompilerBackendOptions {
+  /**
+   * Runtime representation elected by the backend. `standard-library` preserves the provisional
+   * container mapping for generic consumers; `flight-cpp` elects the semantic runtime contract.
+   */
+  readonly runtimeProfile?: CppCompilerRuntimeProfile | undefined;
   readonly runtimeHeader?: string | undefined;
   readonly upstreamCommit?: string | undefined;
 }

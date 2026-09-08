@@ -6,6 +6,7 @@
 // cannot say whether a symbol is unsupported or merely unmet, which is the ambiguity the foundations
 // audit warns about, so aspirational names are removed until a demonstrated target path returns them.
 export type CompilerRuntimeCapabilityName =
+  | 'array'
   | 'date'
   | 'float32-array'
   | 'float64-array'
@@ -14,6 +15,7 @@ export type CompilerRuntimeCapabilityName =
   | 'int32-array'
   | 'map'
   | 'set'
+  | 'string'
   | 'task'
   | 'uint8-array'
   | 'uint8-clamped-array'

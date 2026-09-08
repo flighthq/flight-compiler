@@ -68,6 +68,16 @@ void test_array() {
   check(mapped.size() == 3 && mapped[2] == 5.0, "array map creates transformed storage");
   const auto filtered = mapped.filter([](double value) { return value > 0.0; });
   check(filtered.size() == 2, "array filter preserves matching values");
+  check(mapped.every([](double value, double index) { return value >= index; }),
+        "array callbacks receive TypeScript numeric indexes");
+  check(mapped.find_index([](double value) { return value == 5.0; }) == 2,
+        "array find_index returns a numeric position sentinel");
+  check(mapped.reduce([](double total, double value) { return total + value; }, 0.0) == 6.0,
+        "array reduce preserves accumulator order");
+  const auto tail = mapped.slice(-2);
+  check(tail.size() == 2 && tail[0] == 1.0, "array slice normalizes negative boundaries");
+  check(mapped.join(flight::String("|")) == flight::String("0|1|5"),
+        "array join returns the semantic string type");
 }
 
 void test_contract() {
@@ -88,7 +98,13 @@ void test_date() {
   const FlightDate epoch(0.0);
   check(epoch.get_time() == 0.0, "date retains epoch milliseconds");
   check(epoch.get_full_year() == 1970.0, "date exposes its UTC calendar year");
+  check(epoch.get_month() == 0.0 && epoch.get_date() == 1.0 && epoch.get_day() == 4.0,
+        "date exposes zero-based UTC month and Sunday-based weekday");
+  check(epoch.get_hours() == 0.0 && epoch.get_minutes() == 0.0 && epoch.get_seconds() == 0.0 &&
+            epoch.get_milliseconds() == 0.0,
+        "date exposes UTC time fields");
   check(epoch.to_isostring() == "1970-01-01T00:00:00.000Z", "date formats an ISO UTC instant");
+  check(std::isfinite(FlightDate::now()), "date now returns epoch milliseconds");
   check(FlightDate(1.9).get_time() == 1.0, "date applies integer TimeClip semantics");
   check(std::isnan(FlightDate(8.64e15 + 1.0).get_time()), "date clips instants outside the valid range");
 }
@@ -109,6 +125,12 @@ void test_map() {
   check(std::isnan(independent.begin()->first), "map iteration retains insertion order after erase");
   alias.clear();
   check(independent.size() == 2 && values.empty(), "map clone creates independent ordered storage");
+  std::string visited;
+  independent.for_each([&](const std::string& value, double key) {
+    static_cast<void>(key);
+    visited += value;
+  });
+  check(visited == "nanzero", "map for_each visits value then key in insertion order");
 }
 
 void test_presence_and_math() {
@@ -129,8 +151,11 @@ void test_set() {
   alias.add(4.0);
   check(values.has(4.0), "set copies retain reference identity");
   const auto independent = values.clone();
+  std::size_t visits = 0;
+  independent.for_each([&](double) { ++visits; });
   values.clear();
-  check(independent.size() == 3 && values.empty(), "set clone creates independent ordered storage");
+  check(independent.size() == 3 && values.empty() && visits == 3,
+        "set clone and for_each preserve independent ordered storage");
 }
 
 void test_string() {
@@ -149,6 +174,14 @@ void test_string() {
         "string prefix and suffix checks accept UTF-8 boundaries");
   check(flight::String("ABC").to_lower() == flight::String("abc"),
         "ASCII case conversion is deterministic without a provider");
+  check(flight::String("ab").pad_start(5, "01") == flight::String("010ab"),
+        "string pad_start truncates repeated fill at UTF-16 boundaries");
+  check(flight::String("ab").repeat(3) == flight::String("ababab"),
+        "string repeat uses code-unit-preserving concatenation");
+  check(flight::String("flight").substring(4, 1) == flight::String("lig"),
+        "string substring clamps and swaps its boundaries");
+  check(flight::String::from_char_code(65, 0xD83D, 0xDE00).length() == 3,
+        "from_char_code preserves exact UTF-16 code units");
 
   bool provider_required = false;
   try {
@@ -175,6 +208,8 @@ void test_typed_array() {
   copy[0] = 9;
   check(values[1] == 7 && copy[0] == 9, "typed-array slice copies its selected range");
   check(values.at(-1) == std::optional<std::int16_t>(3), "typed-array negative access addresses the tail");
+  view.set(flight::Int16Array{8, 9});
+  check(values[1] == 8 && values[2] == 9, "typed-array set snapshots and writes through a shared view");
 
   const flight::Uint8ClampedArray clamped{-1.0, 0.5, 1.5, 2.5, 300.0};
   check(static_cast<std::uint8_t>(clamped[0]) == 0 &&
@@ -246,6 +281,15 @@ void test_task() {
     resolve(FlightTask<int>::ready(12));
   });
   check(assimilated.get() == 12, "task resolver assimilates another task");
+
+  const auto resolve_only = FlightTask<int>::create([](auto resolve) { resolve(13); });
+  check(resolve_only.get() == 13, "task construction accepts an omitted reject callback");
+
+  check(flight::resolve_task(14).get() == 14 && flight::resolve_task<int>(15).get() == 15,
+        "Promise resolve helpers support inferred and explicit result types");
+  const auto all = flight::all_tasks(flight::Array{FlightTask<int>::ready(3), FlightTask<int>::ready(4)}).get();
+  check(all.size() == 2 && all[0] == 3 && all[1] == 4,
+        "Promise all helper bridges semantic arrays and tasks");
 
   const auto preserved_rejection = value_rejection.finally([] {});
   const auto preserved_settlement = preserved_rejection.settle();

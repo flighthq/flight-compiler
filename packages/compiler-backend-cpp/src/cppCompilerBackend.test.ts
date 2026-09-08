@@ -1,3 +1,7 @@
+import { readFileSync, writeFileSync } from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
 import ts from 'typescript';
 
 import { isBackendEmissionFailure } from '../../compiler-emission/src/index.js';
@@ -54,6 +58,15 @@ describe('emitIrModuleCpp', () => {
     expect(emitted.contents).toContain('return');
   });
 
+  it('lowers number toString as a free conversion rather than an imaginary number method', () => {
+    const result = lower('text.ts', 'export function text(value: number): string { return value.toString(); }');
+
+    expect(emitIrModuleCpp(result.module).contents).toContain('return std::to_string(value)');
+    expect(emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents).toContain(
+      'return flight::String::from_utf8(std::to_string(value))',
+    );
+  });
+
   it('emits an interface as a C++ struct with properties', () => {
     const result = lower('point.ts', 'export interface Point { x: number; y: number }');
     const emitted = emitIrModuleCpp(result.module);
@@ -69,6 +82,75 @@ describe('emitIrModuleCpp', () => {
     expect(emitted.contents).toContain('FlightTask<double> fetch_data()');
     expect(emitted.contents).toContain('co_return');
     expect(emitted.contents).toContain('#include <coroutine>');
+  });
+
+  it('elects the flight-cpp semantic runtime as one coherent profile', () => {
+    const result = lower(
+      'semantic-runtime.ts',
+      'export async function update(values: number[], labels: Map<string, number>, seen: Set<string>): Promise<string> { values.push(1); labels.set("size", values.length); seen.add("size"); return "done"; }',
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+
+    expect(emitted.contents).toContain('#include <flight/runtime.hpp>');
+    expect(emitted.contents).toContain(
+      'flight::Task<flight::String> update(flight::Array<double> values, flight::Map<flight::String, double> labels, flight::Set<flight::String> seen)',
+    );
+    expect(emitted.contents).toContain('values.push(1.0)');
+    expect(emitted.contents).toContain('labels.set(flight::String("size"), static_cast<double>(values.size()))');
+    expect(emitted.contents).toContain('seen.add(flight::String("size"))');
+    expect(emitted.contents).toContain('co_return flight::String("done")');
+    expect(emitted.contents).not.toContain('std::vector');
+    expect(emitted.contents).not.toContain('std::unordered_');
+  });
+
+  it('lets a consumer override the semantic runtime header without changing its bindings', () => {
+    const result = lower('text.ts', 'export function text(value: string): string { return value.trim(); }');
+    const emitted = emitIrModuleCpp(result.module, {
+      runtimeHeader: 'vendor/flight_runtime.hpp',
+      runtimeProfile: 'flight-cpp',
+    });
+
+    expect(emitted.contents).toContain('#include "vendor/flight_runtime.hpp"');
+    expect(emitted.contents).not.toContain('#include <flight/runtime.hpp>');
+    expect(emitted.contents).toContain('flight::String text(flight::String value)');
+    expect(emitted.contents).toContain('return value.trim()');
+  });
+
+  it('lowers semantic-runtime constructors and static operations to concrete C++ entry points', () => {
+    const result = lower(
+      'statics.ts',
+      'export function code(): string { return String.fromCharCode(65); } export function stamp(): number { return Date.now(); } export function resolved(value: number): Promise<number> { return Promise.resolve<number>(value); } export function rejected(): Promise<number> { return Promise.reject<number>("no"); } export function combined(tasks: Promise<number>[]): Promise<number[]> { return Promise.all(tasks); } export function pending(): Promise<number> { return new Promise<number>((resolve) => resolve(1)); }',
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+
+    expect(emitted.contents).toContain('return flight::String::from_char_code(65.0)');
+    expect(emitted.contents).toContain('return flight::Date::now()');
+    expect(emitted.contents).toContain('return flight::resolve_task<double>(value)');
+    expect(emitted.contents).toContain('return flight::reject_task<double>(flight::String("no"))');
+    expect(emitted.contents).toContain('return flight::all_tasks(tasks)');
+    expect(emitted.contents).toContain('return flight::Task<double>::create(');
+  });
+
+  it('keeps the native conformance header equal to flight-cpp profile output', () => {
+    const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
+    const directory = path.join(root, 'flight-cpp', 'tests', 'generated');
+    const sourceFile = ts.createSourceFile(
+      '/flight/packages/cpp-conformance/src/semantic-runtime.ts',
+      readFileSync(path.join(directory, 'semantic_runtime.ts'), 'utf8'),
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const result = lowerTypeScriptSource(sourceFile, {
+      packageName: '@flighthq/cpp-conformance',
+      upstreamDirectory: '/flight',
+    });
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+    const contents = emitted.contents.endsWith('\n') ? emitted.contents : `${emitted.contents}\n`;
+    const outputPath = path.join(directory, emitted.path);
+
+    expect(emitted.path).toBe('semantic_runtime.hpp');
+    if (process.env.FLIGHT_CPP_CONFORMANCE_UPDATE === '1') writeFileSync(outputPath, contents);
+    expect(readFileSync(outputPath, 'utf8')).toBe(contents);
   });
 
   it('emits co_await for await expressions in async functions', () => {

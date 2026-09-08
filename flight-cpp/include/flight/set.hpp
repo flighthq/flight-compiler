@@ -2,7 +2,9 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <functional>
 #include <initializer_list>
+#include <iterator>
 #include <memory>
 #include <utility>
 #include <vector>
@@ -23,6 +25,15 @@ class Set {
     for (const auto& value : values) add(value);
   }
 
+  template <typename Range>
+    requires requires(const Range& range) {
+      std::begin(range);
+      std::end(range);
+    }
+  explicit Set(const Range& values) : Set() {
+    for (const auto& value : values) add(value);
+  }
+
   Set& add(Value value) {
     if (!has(value)) values_->push_back(std::move(value));
     return *this;
@@ -40,6 +51,11 @@ class Set {
   }
 
   [[nodiscard]] bool empty() const noexcept { return values_->empty(); }
+
+  template <typename Function>
+  void for_each(Function function) const {
+    for (const auto& value : *values_) std::invoke(function, value);
+  }
 
   bool erase(const Value& value) {
     const auto found = find(value);

@@ -15,6 +15,7 @@
 #include <utility>
 #include <vector>
 
+#include <flight/array.hpp>
 #include <flight/executor.hpp>
 #include <flight/rejection.hpp>
 
@@ -349,7 +350,13 @@ class Task {
     auto task = pending(std::move(executor));
     try {
       ExecutorScope scope(task.executor_);
-      std::invoke(std::forward<Initializer>(initializer), Resolver(task.state_), Rejecter(task.state_));
+      if constexpr (std::invocable<Initializer&&, Resolver, Rejecter>) {
+        std::invoke(std::forward<Initializer>(initializer), Resolver(task.state_), Rejecter(task.state_));
+      } else {
+        static_assert(std::invocable<Initializer&&, Resolver>,
+                      "flight::Task initializer must accept resolve and optionally reject");
+        std::invoke(std::forward<Initializer>(initializer), Resolver(task.state_));
+      }
     } catch (...) {
       task.state_->reject(Rejection::from_exception(std::current_exception()));
     }
@@ -752,5 +759,39 @@ struct Task<Value>::promise_type : detail::TaskPromiseResult<Value> {
   std::shared_ptr<Executor> executor_;
   std::weak_ptr<detail::CoroutineOwner> owner_;
 };
+
+template <typename Value>
+[[nodiscard]] Task<Array<Value>> all_tasks(const Array<Task<Value>>& tasks) {
+  std::vector<Task<Value>> values;
+  values.reserve(tasks.size());
+  for (const auto& task : tasks) values.push_back(task);
+  return Task<Value>::join_all(std::move(values)).then([](std::vector<Value> settled) {
+    return Array<Value>(std::make_move_iterator(settled.begin()),
+                        std::make_move_iterator(settled.end()));
+  });
+}
+
+template <typename Value, typename Reason>
+[[nodiscard]] Task<Value> reject_task(Reason&& reason) {
+  return Task<Value>::reject(std::forward<Reason>(reason));
+}
+
+template <typename Value>
+[[nodiscard]] Task<Value> resolve_task(Task<Value> task) {
+  return task;
+}
+
+template <typename Value>
+  requires(!detail::is_task_result<Value>)
+[[nodiscard]] Task<std::remove_cvref_t<Value>> resolve_task(Value&& value) {
+  using Resolved = std::remove_cvref_t<Value>;
+  return Task<Resolved>::resolve(std::forward<Value>(value));
+}
+
+template <typename Value>
+  requires(!detail::is_task_result<Value>)
+[[nodiscard]] Task<Value> resolve_task(const Value& value) {
+  return Task<Value>::resolve(value);
+}
 
 } // namespace flight

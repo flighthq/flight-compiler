@@ -1,6 +1,8 @@
 #pragma once
 
 #include <algorithm>
+#include <cmath>
+#include <concepts>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -9,6 +11,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <type_traits>
 #include <utility>
 
 #include <flight/array.hpp>
@@ -63,11 +66,21 @@ class String {
   String() = default;
   String(const char* utf8) : String(std::string_view(utf8)) {}
   String(const char16_t* value) : value_(value) {}
+  String(std::string utf8) : value_(decode_utf8(utf8)) {}
   String(std::string_view utf8) : value_(decode_utf8(utf8)) {}
   String(std::u16string value) : value_(std::move(value)) {}
   String(std::u16string_view value) : value_(value) {}
 
   [[nodiscard]] static String from_utf8(std::string_view value) { return String(value); }
+
+  template <typename... Codes>
+    requires(std::is_arithmetic_v<Codes> && ...)
+  [[nodiscard]] static String from_char_code(Codes... codes) {
+    std::u16string result;
+    result.reserve(sizeof...(Codes));
+    (result.push_back(to_uint16(static_cast<double>(codes))), ...);
+    return String(std::move(result));
+  }
 
   [[nodiscard]] std::optional<char16_t> at(std::ptrdiff_t index) const noexcept {
     const auto normalized = normalize_element_index(index);
@@ -78,6 +91,26 @@ class String {
   [[nodiscard]] const_iterator end() const noexcept { return value_.end(); }
   [[nodiscard]] bool empty() const noexcept { return value_.empty(); }
 
+  [[nodiscard]] String char_at(std::ptrdiff_t index) const {
+    if (index < 0 || static_cast<size_type>(index) >= size()) return String();
+    return String(std::u16string(1, value_[static_cast<size_type>(index)]));
+  }
+
+  [[nodiscard]] double char_code_at(std::ptrdiff_t index) const noexcept {
+    if (index < 0 || static_cast<size_type>(index) >= size()) {
+      return std::numeric_limits<double>::quiet_NaN();
+    }
+    return static_cast<double>(value_[static_cast<size_type>(index)]);
+  }
+
+  template <typename... Values>
+    requires(std::same_as<std::remove_cvref_t<Values>, String> && ...)
+  [[nodiscard]] String concat(const Values&... values) const {
+    auto result = value_;
+    (result.append(values.value_), ...);
+    return String(std::move(result));
+  }
+
   [[nodiscard]] bool ends_with(const String& suffix) const noexcept {
     return value_.ends_with(suffix.value_);
   }
@@ -86,8 +119,9 @@ class String {
     return value_.find(searched.value_) != std::u16string::npos;
   }
 
-  [[nodiscard]] std::ptrdiff_t index_of(const String& searched, size_type from = 0) const noexcept {
-    const auto found = value_.find(searched.value_, std::min(from, size()));
+  [[nodiscard]] std::ptrdiff_t index_of(const String& searched, std::ptrdiff_t from = 0) const noexcept {
+    const auto start = from <= 0 ? size_type{0} : std::min(static_cast<size_type>(from), size());
+    const auto found = value_.find(searched.value_, start);
     return found == std::u16string::npos ? -1 : static_cast<std::ptrdiff_t>(found);
   }
 
@@ -104,7 +138,37 @@ class String {
 
   [[nodiscard]] size_type length() const noexcept { return value_.size(); }
 
+  [[nodiscard]] std::ptrdiff_t last_index_of(const String& searched) const noexcept {
+    const auto found = value_.rfind(searched.value_);
+    return found == std::u16string::npos ? -1 : static_cast<std::ptrdiff_t>(found);
+  }
+
   [[nodiscard]] const std::u16string& native() const noexcept { return value_; }
+
+  [[nodiscard]] String pad_start(std::ptrdiff_t target_length, const String& fill = String(" ")) const {
+    if (target_length <= 0 || static_cast<size_type>(target_length) <= size() || fill.empty()) return *this;
+    const auto required = static_cast<size_type>(target_length) - size();
+    std::u16string padding;
+    padding.reserve(required);
+    while (padding.size() < required) {
+      const auto remaining = required - padding.size();
+      padding.append(fill.value_, 0, std::min(remaining, fill.size()));
+    }
+    padding.append(value_);
+    return String(std::move(padding));
+  }
+
+  [[nodiscard]] String repeat(std::ptrdiff_t count) const {
+    if (count < 0) throw std::range_error("flight::String repeat count must be nonnegative");
+    std::u16string result;
+    const auto repetitions = static_cast<size_type>(count);
+    if (!value_.empty() && repetitions > result.max_size() / value_.size()) {
+      throw std::length_error("flight::String repeat result is too large");
+    }
+    result.reserve(value_.size() * repetitions);
+    for (size_type index = 0; index < repetitions; ++index) result.append(value_);
+    return String(std::move(result));
+  }
 
   [[nodiscard]] String replace(const String& searched, const String& replacement) const {
     auto result = value_;
@@ -151,6 +215,15 @@ class String {
     return value_.starts_with(prefix.value_);
   }
 
+  [[nodiscard]] String substring(
+      std::ptrdiff_t begin_index,
+      std::ptrdiff_t end_index = std::numeric_limits<std::ptrdiff_t>::max()) const {
+    auto first = normalize_substring_boundary(begin_index);
+    auto last = normalize_substring_boundary(end_index);
+    if (first > last) std::swap(first, last);
+    return String(value_.substr(first, last - first));
+  }
+
   [[nodiscard]] String to_lower() const {
     return convert_case(false);
   }
@@ -193,6 +266,11 @@ class String {
   }
 
   [[nodiscard]] friend bool operator==(const String&, const String&) noexcept = default;
+
+  String& operator+=(const String& other) {
+    value_.append(other.value_);
+    return *this;
+  }
 
   [[nodiscard]] friend String operator+(const String& left, const String& right) {
     auto value = left.value_;
@@ -286,6 +364,18 @@ class String {
            unit == 0x1680 || (unit >= 0x2000 && unit <= 0x200A) || unit == 0x2028 ||
            unit == 0x2029 || unit == 0x202F || unit == 0x205F || unit == 0x3000 ||
            unit == 0xFEFF;
+  }
+
+  [[nodiscard]] size_type normalize_substring_boundary(std::ptrdiff_t index) const noexcept {
+    if (index <= 0) return 0;
+    return std::min(static_cast<size_type>(index), size());
+  }
+
+  [[nodiscard]] static char16_t to_uint16(double value) noexcept {
+    if (!std::isfinite(value) || value == 0.0) return 0;
+    auto reduced = std::fmod(std::trunc(value), 65536.0);
+    if (reduced < 0.0) reduced += 65536.0;
+    return static_cast<char16_t>(reduced);
   }
 
   [[nodiscard]] size_type normalize_boundary(std::ptrdiff_t index) const noexcept {

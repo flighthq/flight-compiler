@@ -28,6 +28,7 @@ import {
 import type {
   CompilerBackend,
   CppCompilerBackendOptions,
+  CppCompilerRuntimeProfile,
   EmittedFile,
   IrBinaryOperator,
   IrBinaryOperatorSemantics,
@@ -111,7 +112,7 @@ function emitIrModuleCppWithContext(
     createCompilerLoweringPassSwitchFallthrough(),
     createCompilerLoweringPassSwitchSuspension(),
   ]);
-  assertRuntimeExternalSymbolBindingsCpp(module);
+  assertRuntimeExternalSymbolBindingsCpp(module, options);
   let targetNames: Map<string, string>;
   try {
     targetNames = new Map(
@@ -151,7 +152,11 @@ function emitIrModuleCppWithContext(
   for (const include of sortedIncludes) {
     lines.push(`#include <${include}>`);
   }
-  if (options.runtimeHeader) lines.push(`#include "${options.runtimeHeader}"`);
+  if (options.runtimeHeader) {
+    lines.push(`#include "${options.runtimeHeader}"`);
+  } else if (getCppRuntimeProfile(options) === 'flight-cpp') {
+    lines.push('#include <flight/runtime.hpp>');
+  }
   if (imports.length > 0) lines.push('', ...imports);
   const namespaceName = convertPackageNameToCppNamespace(module.packageName);
   lines.push('', `namespace ${namespaceName} {`);
@@ -245,7 +250,7 @@ function emitEnum(declaration: Readonly<IrEnumDeclaration>, context: EmitContext
   if (allStringValues) return emitStringEnumCpp(declaration, context);
   const lines: string[] = [`enum class ${name} {`];
   for (const member of declaration.members) {
-    const value = member.value !== undefined ? ` = ${emitLiteral(member.value)}` : '';
+    const value = member.value !== undefined ? ` = ${emitLiteral(member.value, context)}` : '';
     lines.push(`  ${safeCppTypeName(member.name)}${value},`);
   }
   lines.push('};');
@@ -253,9 +258,8 @@ function emitEnum(declaration: Readonly<IrEnumDeclaration>, context: EmitContext
 }
 
 function emitStringEnumCpp(declaration: Readonly<IrEnumDeclaration>, context: EmitContext): string[] {
-  context.includes.add('string');
   const name = getBindingTargetName(declaration.binding, context);
-  return [`using ${name} = std::string;`];
+  return [`using ${name} = ${emitCppStringType(context)};`];
 }
 
 function emitFunction(declaration: Readonly<IrFunctionDeclaration>, outer: EmitContext): string[] {
@@ -304,8 +308,7 @@ function emitTypeAlias(declaration: Readonly<IrTypeAliasDeclaration>, context: E
 }
 
 function emitStringLiteralUnionCpp(declaration: Readonly<IrTypeAliasDeclaration>, context: EmitContext): string[] {
-  context.includes.add('string');
-  return [`using ${getBindingTargetName(declaration.binding, context)} = std::string;`];
+  return [`using ${getBindingTargetName(declaration.binding, context)} = ${emitCppStringType(context)};`];
 }
 
 function emitVariableDeclaration(declaration: Readonly<IrVariableDeclaration>, context: EmitContext): string[] {
@@ -333,8 +336,11 @@ function emitVariable(variable: Readonly<IrVariable>, context: EmitContext): str
 function emitExpression(expression: Readonly<IrExpression>, context: EmitContext): string {
   switch (expression.kind) {
     case 'array': {
-      context.includes.add('vector');
       const elements = expression.elements.map((element) => (element ? emitExpression(element, context) : '{}'));
+      if (getCppRuntimeProfile(context.options) === 'flight-cpp') {
+        return `flight::Array{${elements.join(', ')}}`;
+      }
+      context.includes.add('vector');
       return `std::vector{${elements.join(', ')}}`;
     }
     case 'assignment': {
@@ -404,8 +410,21 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
       return `(${left} ${op} ${right})`;
     }
     case 'call': {
+      if (
+        expression.callee.kind === 'property' &&
+        expression.callee.member?.receiver === 'number' &&
+        expression.callee.member.name === 'toString'
+      ) {
+        const value = `std::to_string(${emitExpression(expression.callee.object, context)})`;
+        if (getCppRuntimeProfile(context.options) === 'flight-cpp') return `flight::String::from_utf8(${value})`;
+        context.includes.add('string');
+        return value;
+      }
       if (expression.callee.kind === 'property' && expression.callee.member) {
-        const binding = getCompilerCppAmbientMemberBinding(expression.callee.member);
+        const binding = getCompilerCppAmbientMemberBinding(
+          expression.callee.member,
+          getCppRuntimeProfile(context.options),
+        );
         if (binding && binding.kind === 'sizeMethod') {
           const receiver = emitExpression(expression.callee.object, context);
           return `static_cast<double>(${receiver}${memberOp(expression.callee.object)}${binding.targetName}())`;
@@ -413,16 +432,8 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
         if (binding && binding.kind === 'method') {
           const receiver = emitExpression(expression.callee.object, context);
           const args = expression.arguments.map((argument) => emitExpression(argument, context));
-          return `${receiver}${memberOp(expression.callee.object)}${binding.targetName}(${args.join(', ')})`;
+          return `${receiver}${memberOp(expression.callee.object)}${binding.targetName}${emitCppTypeArguments(expression.typeArguments, context)}(${args.join(', ')})`;
         }
-      }
-      if (
-        expression.callee.kind === 'property' &&
-        expression.callee.member?.receiver === 'number' &&
-        expression.callee.member.name === 'toString'
-      ) {
-        context.includes.add('string');
-        return `std::to_string(${emitExpression(expression.callee.object, context)})`;
       }
       if (
         expression.arguments.length === 1 &&
@@ -445,7 +456,7 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
           ? `(${emitExpression(expression.callee, context)})`
           : emitExpression(expression.callee, context);
       const args = expression.arguments.map((argument) => emitExpression(argument, context));
-      return `${callee}(${args.join(', ')})`;
+      return `${callee}${emitCppTypeArguments(expression.typeArguments, context)}(${args.join(', ')})`;
     }
     case 'cast':
       return `static_cast<${emitType(expression.type, context)}>(${emitExpression(expression.expression, context)})`;
@@ -483,7 +494,7 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
       return emitIdentifierReference(expression.reference, context);
     }
     case 'literal':
-      return emitLiteral(expression.value);
+      return emitLiteral(expression.value, context);
     case 'new': {
       if (expression.callee.kind !== 'identifier') {
         emissionError(context, 'qualified constructors require C++ type-path lowering');
@@ -491,7 +502,18 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
       const typeName = emitIdentifierReference(expression.callee.reference, context);
       if (typeName === 'std::runtime_error') context.includes.add('stdexcept');
       const args = expression.arguments.map((argument) => emitExpression(argument, context));
-      return `${typeName}(${args.join(', ')})`;
+      const typeArguments = emitCppTypeArguments(expression.typeArguments, context);
+      if (
+        getCppRuntimeProfile(context.options) === 'flight-cpp' &&
+        expression.callee.reference.kind === 'ambient' &&
+        expression.callee.reference.name === 'Promise'
+      ) {
+        if (expression.typeArguments.length !== 1) {
+          emissionError(context, 'flight-cpp Promise construction requires one explicit type argument');
+        }
+        return `${typeName}${typeArguments}::create(${args.join(', ')})`;
+      }
+      return `${typeName}${typeArguments}(${args.join(', ')})`;
     }
     case 'object': {
       const members = expression.members
@@ -501,7 +523,7 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
     }
     case 'property': {
       if (expression.member) {
-        const binding = getCompilerCppAmbientMemberBinding(expression.member);
+        const binding = getCompilerCppAmbientMemberBinding(expression.member, getCppRuntimeProfile(context.options));
         if (binding && binding.kind === 'sizeMethod') {
           const receiver = emitExpression(expression.object, context);
           return `static_cast<double>(${receiver}${memberOp(expression.object)}${binding.targetName}())`;
@@ -511,7 +533,11 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
         }
       }
       if (expression.object.kind === 'identifier' && expression.object.reference.kind === 'ambient') {
-        const member = getCompilerRuntimeExternalMemberTargetCpp(expression.object.reference.name, expression.name);
+        const member = getCompilerRuntimeExternalMemberTargetCpp(
+          expression.object.reference.name,
+          expression.name,
+          getCppRuntimeProfile(context.options),
+        );
         if (member) return member;
       }
       const enumeration = getIrExpressionEnumDeclaration(expression.object, context);
@@ -525,13 +551,18 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
     case 'spread':
       emissionError(context, 'spreading an unbounded collection requires a fold or a variadic target');
     case 'template': {
-      context.includes.add('string');
+      const flightRuntime = getCppRuntimeProfile(context.options) === 'flight-cpp';
+      if (!flightRuntime) context.includes.add('string');
       const parts = expression.parts.map((part) =>
         typeof part === 'string'
-          ? `std::string(${JSON.stringify(part)})`
-          : `std::to_string(${emitExpression(part, context)})`,
+          ? flightRuntime
+            ? `flight::String(${JSON.stringify(part)})`
+            : `std::string(${JSON.stringify(part)})`
+          : flightRuntime
+            ? `flight::String::from_utf8(std::to_string(${emitExpression(part, context)}))`
+            : `std::to_string(${emitExpression(part, context)})`,
       );
-      return parts.length === 0 ? 'std::string()' : parts.join(' + ');
+      return parts.length === 0 ? (flightRuntime ? 'flight::String()' : 'std::string()') : parts.join(' + ');
     }
     case 'tuple': {
       context.includes.add('tuple');
@@ -818,6 +849,9 @@ function emitTryFinallyCpp(
 function emitType(type: Readonly<IrType>, context: EmitContext): string {
   switch (type.kind) {
     case 'array':
+      if (getCppRuntimeProfile(context.options) === 'flight-cpp') {
+        return `flight::Array<${emitType(type.element, context)}>`;
+      }
       context.includes.add('vector');
       return `std::vector<${emitType(type.element, context)}>`;
     case 'function': {
@@ -833,7 +867,11 @@ function emitType(type: Readonly<IrType>, context: EmitContext): string {
     case 'intersection':
       emissionError(context, 'intersection types require C++ multiple-inheritance lowering');
     case 'literal':
-      return typeof type.value === 'boolean' ? 'bool' : typeof type.value === 'number' ? 'double' : 'std::string';
+      return typeof type.value === 'boolean'
+        ? 'bool'
+        : typeof type.value === 'number'
+          ? 'double'
+          : emitCppStringType(context);
     case 'named': {
       const sourceName = type.reference.kind === 'ambient' ? type.reference.name : undefined;
       if ((sourceName === 'Readonly' || sourceName === 'Required') && type.typeArguments[0]) {
@@ -864,10 +902,7 @@ function emitType(type: Readonly<IrType>, context: EmitContext): string {
       return structName;
     }
     case 'primitive':
-      if (type.name === 'string') {
-        context.includes.add('string');
-        return 'std::string';
-      }
+      if (type.name === 'string') return emitCppStringType(context);
       if (type.name === 'void') return 'void';
       return {
         bigint: 'int64_t',
@@ -944,7 +979,11 @@ function emitIdentifierReference(
   context: EmitContext,
 ): string {
   if (reference.kind === 'ambient') {
-    const target = getCompilerRuntimeExternalSymbolTargetCpp(reference.name, 'value');
+    const target = getCompilerRuntimeExternalSymbolTargetCpp(
+      reference.name,
+      'value',
+      getCppRuntimeProfile(context.options),
+    );
     if (target) return target;
     return reference.name;
   }
@@ -972,7 +1011,7 @@ function memberOp(object: Readonly<IrExpression>): string {
   return isThisAccess(object) ? '->' : '.';
 }
 
-function emitLiteral(value: boolean | null | number | string): string {
+function emitLiteral(value: boolean | null | number | string, context: EmitContext): string {
   if (value === null) return 'nullptr';
   if (typeof value === 'boolean') return value ? 'true' : 'false';
   if (typeof value === 'number') {
@@ -982,13 +1021,24 @@ function emitLiteral(value: boolean | null | number | string): string {
     const text = String(value);
     return /[.eE]/u.test(text) ? text : `${text}.0`;
   }
-  return JSON.stringify(value);
+  const literal = JSON.stringify(value);
+  return getCppRuntimeProfile(context.options) === 'flight-cpp' ? `flight::String(${literal})` : literal;
 }
 
 function emitStringConcatenation(expression: Readonly<IrExpression>, context: EmitContext): string {
-  context.includes.add('string');
+  if (getCppRuntimeProfile(context.options) !== 'flight-cpp') context.includes.add('string');
   const parts = collectStringParts(expression, context);
   return parts.join(' + ');
+}
+
+function emitCppStringType(context: EmitContext): string {
+  if (getCppRuntimeProfile(context.options) === 'flight-cpp') return 'flight::String';
+  context.includes.add('string');
+  return 'std::string';
+}
+
+function emitCppTypeArguments(types: readonly Readonly<IrType>[], context: EmitContext): string {
+  return types.length === 0 ? '' : `<${types.map((type) => emitType(type, context)).join(', ')}>`;
 }
 
 function collectStringParts(expression: Readonly<IrExpression>, context: EmitContext): string[] {
@@ -1078,7 +1128,11 @@ function emitPostfixUnaryOperator(operator: string): string {
 
 function getTypeReferenceTargetName(type: Readonly<IrType & { kind: 'named' }>, context: EmitContext): string {
   if (type.reference.kind === 'ambient') {
-    const target = getCompilerRuntimeExternalSymbolTargetCpp(type.reference.name, 'type');
+    const target = getCompilerRuntimeExternalSymbolTargetCpp(
+      type.reference.name,
+      'type',
+      getCppRuntimeProfile(context.options),
+    );
     if (target) return target;
     return type.reference.name;
   }
@@ -1087,6 +1141,10 @@ function getTypeReferenceTargetName(type: Readonly<IrType & { kind: 'named' }>, 
 
 function getBindingTargetName(binding: Readonly<{ id: string; name: string }>, context: EmitContext): string {
   return context.targetNames.get(binding.id) ?? safeCppName(binding.name);
+}
+
+function getCppRuntimeProfile(options: Readonly<CppCompilerBackendOptions>): CppCompilerRuntimeProfile {
+  return options.runtimeProfile ?? 'standard-library';
 }
 
 function getIrTaskAwaitedTypeCpp(type: Readonly<IrType>, context: EmitContext): Readonly<IrType> {
@@ -1140,10 +1198,13 @@ function getIrExpressionEnumDeclaration(
   ) as IrEnumDeclaration | undefined;
 }
 
-function assertRuntimeExternalSymbolBindingsCpp(module: Readonly<IrModule>): void {
+function assertRuntimeExternalSymbolBindingsCpp(
+  module: Readonly<IrModule>,
+  options: Readonly<CppCompilerBackendOptions> = {},
+): void {
   const completeness = analyzeCompilerRuntimeExternalSymbolCompleteness(
     collectIrModulesRuntimeExternalSymbolIdentities([module]),
-    createCompilerRuntimeExternalSymbolBindingPlanCpp(),
+    createCompilerRuntimeExternalSymbolBindingPlanCpp(getCppRuntimeProfile(options)),
   );
   if (completeness.kind === 'complete') return;
   const problems = [

@@ -19,7 +19,7 @@ double apply_twice(double value, std::function<double(double)> transform) {
 }
 
 std::vector<std::string> filter_and_map(std::vector<double> items, double threshold) {
-  return items.filter([=](double item) { return (item > threshold); }).map([=](double item) { return item.to_string(); });
+  return items.filter([=](double item) { return (item > threshold); }).map([=](double item) { return std::to_string(item); });
 }
 
 } // namespace flighthq_golden

@@ -5,7 +5,7 @@
 namespace flighthq_golden {
 
 std::string number_to_string(double value) {
-  return value.to_string();
+  return std::to_string(value);
 }
 
 double string_length(std::string text) {

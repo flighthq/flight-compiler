@@ -30,6 +30,9 @@ jobs:
           - compiler: GCC
             os: ubuntu-latest
             cmake-args: -DCMAKE_CXX_COMPILER=g++
+          - compiler: GCC ASan+UBSan
+            os: ubuntu-latest
+            cmake-args: -DCMAKE_CXX_COMPILER=g++ -DCMAKE_BUILD_TYPE=Debug -DFLIGHT_CPP_ENABLE_SANITIZERS=ON
           - compiler: Clang
             os: ubuntu-latest
             cmake-args: -DCMAKE_CXX_COMPILER=clang++

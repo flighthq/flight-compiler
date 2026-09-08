@@ -9,7 +9,7 @@ std::string greet_user(std::string name) {
 }
 
 std::string format_pair(std::string key, double value) {
-  return key + "=" + value.to_string();
+  return key + "=" + std::to_string(value);
 }
 
 std::string repeat(std::string text, double count) {
