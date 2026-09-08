@@ -2233,6 +2233,133 @@ describe('emitIrModuleRust', () => {
     expect(output).toContain('unwrap_or(-1.0)');
   });
 
+  it('emits optional parameter call with None for missing argument', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'optional-call.ts',
+        'export function greet(name: string, title?: string): string { return name; } export function test(): string { return greet("world"); }',
+      ).module,
+    ).contents;
+    expect(output).toContain('None');
+  });
+
+  it('emits default parameter with Option wrapping in signature', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'default-call.ts',
+        'export function add(a: number, b: number = 10.0): number { return a + b; } export function test(): number { return add(5.0); }',
+      ).module,
+    ).contents;
+    expect(output).toContain('unwrap_or_else');
+    expect(output).toContain('10.0');
+  });
+
+  it('emits generic function with type parameters', () => {
+    const output = emitIrModuleRust(
+      lower('generic-fn.ts', 'export function identity<T>(value: T): T { return value; }').module,
+    ).contents;
+    expect(output).toContain('<T: Clone>');
+    expect(output).toContain('value: T');
+    expect(output).toContain('-> T');
+  });
+
+  it('emits generic class with type parameters', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'generic-class.ts',
+        'export class Wrapper<T> { value: T; constructor(value: T) { this.value = value; } get(): T { return this.value; } }',
+      ).module,
+    ).contents;
+    expect(output).toContain('struct Wrapper<T: Clone>');
+    expect(output).toContain('impl<T: Clone>');
+  });
+
+  it('emits array find as into_iter().find()', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'array-find.ts',
+        'export function first(items: number[]): number | undefined { return items.find((x: number): boolean => x > 0.0); }',
+      ).module,
+    ).contents;
+    expect(output).toContain('into_iter()');
+    expect(output).toContain('.find(');
+  });
+
+  it('emits Map operations with Rust HashMap methods', () => {
+    const output = emitIrModuleRust(
+      lower('map-ops.ts', 'export function ops(m: Map<string, number>): void { m.set("a", 1.0); m.delete("b"); }')
+        .module,
+    ).contents;
+    expect(output).toContain('.insert(');
+    expect(output).toContain('.remove(');
+  });
+
+  it('emits Set operations with Rust HashSet methods', () => {
+    const output = emitIrModuleRust(
+      lower('set-ops.ts', 'export function ops(s: Set<string>): void { s.add("a"); s.delete("b"); s.has("c"); }')
+        .module,
+    ).contents;
+    expect(output).toContain('.insert(');
+    expect(output).toContain('.remove(');
+    expect(output).toContain('.contains(');
+  });
+
+  it('emits Map has as contains_key', () => {
+    const output = emitIrModuleRust(
+      lower('map-has.ts', 'export function check(m: Map<string, number>, key: string): boolean { return m.has(key); }')
+        .module,
+    ).contents;
+    expect(output).toContain('.contains_key(');
+  });
+
+  it('emits Map size as len() with f64 cast', () => {
+    const output = emitIrModuleRust(
+      lower('map-size.ts', 'export function count(m: Map<string, number>): number { return m.size; }').module,
+    ).contents;
+    expect(output).toContain('.len()');
+    expect(output).toContain('as f64');
+  });
+
+  it('emits Set size as len() with f64 cast', () => {
+    const output = emitIrModuleRust(
+      lower('set-size.ts', 'export function count(s: Set<string>): number { return s.size; }').module,
+    ).contents;
+    expect(output).toContain('.len()');
+  });
+
+  it('emits array unshift as insert(0)', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'array-unshift.ts',
+        'export function prepend(items: number[], value: number): void { items.unshift(value); }',
+      ).module,
+    ).contents;
+    expect(output).toContain('.insert(0');
+  });
+
+  it('emits Map get as get with cloned()', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'map-get.ts',
+        'export function lookup(m: Map<string, number>, key: string): number | undefined { return m.get(key); }',
+      ).module,
+    ).contents;
+    expect(output).toContain('.get(');
+    expect(output).toContain('.cloned()');
+  });
+
+  it('emits class with trait impl for abstract base', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'abstract-trait.ts',
+        'export abstract class Shape { abstract area(): number; perimeter(): number { return 0.0; } } export class Square extends Shape { side: number; constructor(s: number) { super(); this.side = s; } area(): number { return this.side * this.side; } }',
+      ).module,
+    ).contents;
+    expect(output).toContain('trait Shape');
+    expect(output).toContain('impl Shape for Square');
+    expect(output).toContain('fn area(');
+  });
+
   it('emits concrete class inheritance as composition with base field delegation', () => {
     const result = lower(
       'class-inheritance.ts',
