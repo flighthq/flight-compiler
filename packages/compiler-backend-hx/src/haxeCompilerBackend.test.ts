@@ -7410,3 +7410,185 @@ describe('emitIrModuleHaxe optional struct property', () => {
     expect(output).toContain('= null');
   });
 });
+
+describe('emitIrModuleHaxe template expression', () => {
+  it('emits template with adjacent interpolations as Std.string concatenation', () => {
+    const output = emitIrModuleHaxe(
+      lower('template-adjacent.ts', 'export function join(a: number, b: number): string { return `${a}${b}`; }').module,
+    ).contents;
+    expect(output).toContain('Std.string(');
+    expect(output).toContain(' + ');
+  });
+});
+
+describe('emitIrModuleHaxe assignment operator lowering', () => {
+  it('refuses logical-and assignment as requiring semantic lowering', () => {
+    expect(() =>
+      emitIrModuleHaxe(
+        lower(
+          'logical-assign.ts',
+          'export function coerce(x: boolean): boolean { let v: boolean = x; v &&= true; return v; }',
+        ).module,
+      ),
+    ).toThrow('requires Haxe semantic lowering');
+  });
+
+  it('refuses nullish-coalescing assignment as requiring semantic lowering', () => {
+    expect(() =>
+      emitIrModuleHaxe(
+        lower(
+          'nullish-assign.ts',
+          'export function fallback(x: number | null): number { let v: number | null = x; v ??= 0; return v ?? 0; }',
+        ).module,
+      ),
+    ).toThrow('requires Haxe semantic lowering');
+  });
+});
+
+describe('emitIrModuleHaxe unsigned right shift', () => {
+  it('emits unsigned right shift through Std.int wrapping', () => {
+    const output = emitIrModuleHaxe(
+      lower('unsigned-shift.ts', 'export function shift(x: number, n: number): number { return x >>> n; }').module,
+    ).contents;
+    expect(output).toContain('Std.int(');
+    expect(output).toContain('>>>');
+  });
+});
+
+describe('emitIrModuleHaxe undefined default value', () => {
+  it('emits undefined default expression with null fallback', () => {
+    const output = emitIrModuleHaxe(
+      lower(
+        'undef-default.ts',
+        `export function withDefault(x: number | undefined, fallback: number): number {
+           return x ?? fallback;
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('??');
+  });
+});
+
+describe('emitIrModuleHaxe module variable declaration', () => {
+  it('emits mutable module variable with explicit type annotation', () => {
+    const output = emitIrModuleHaxe(lower('module-var.ts', 'export let counter: number = 0;').module).contents;
+    expect(output).toContain('var counter:Float = 0;');
+  });
+
+  it('refuses module variable without initializer', () => {
+    expect(() => emitIrModuleHaxe(lower('no-init.ts', 'export let counter: number;').module)).toThrow(
+      'requires an initializer',
+    );
+  });
+});
+
+describe('emitIrModuleHaxe Error subclass', () => {
+  it('refuses Error subclass without resolvable base class ABI', () => {
+    expect(() =>
+      emitIrModuleHaxe(
+        lower(
+          'error-subclass.ts',
+          `export class AppError extends Error {
+             code: number = 0;
+           }`,
+        ).module,
+      ),
+    ).toThrow('implicit derived constructor requires inherited-ABI forwarding');
+  });
+});
+
+describe('emitIrModuleHaxe derived class with implicit constructor', () => {
+  it('emits implicit derived constructor forwarding base parameters', () => {
+    const output = emitIrModuleHaxe(
+      lower(
+        'derived-class.ts',
+        `export class Base {
+           constructor(public label: string) {}
+         }
+         export class Child extends Base {
+           count: number = 0;
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('public function new(');
+    expect(output).toContain('super(');
+  });
+});
+
+describe('emitIrModuleHaxe nullable return', () => {
+  it('refuses returning a nullable binding without narrowing evidence', () => {
+    expect(() =>
+      emitIrModuleHaxe(
+        lower(
+          'nullable-return.ts',
+          `export function first(items: number[]): number {
+             let found: number | undefined = undefined;
+             for (const item of items) { found = item; }
+             return found;
+           }`,
+        ).module,
+      ),
+    ).toThrow('returning a nullable binding requires Haxe narrowing evidence');
+  });
+});
+
+describe('emitIrModuleHaxe interface function property', () => {
+  it('emits interface with function-typed property as method signature', () => {
+    const output = emitIrModuleHaxe(
+      lower(
+        'fn-prop-iface.ts',
+        `export interface Handler {
+           process(input: string): number;
+         }
+         export class Impl implements Handler {
+           process(input: string): number { return input.length; }
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('public function process(');
+  });
+});
+
+describe('emitIrModuleHaxe class extends external base', () => {
+  it('walks override methods across module-declared base classes', () => {
+    const output = emitIrModuleHaxe(
+      lower(
+        'override-walk.ts',
+        `export class Base {
+           greet(): string { return "hello"; }
+         }
+         export class Child extends Base {
+           greet(): string { return "hi"; }
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('override');
+    expect(output).toContain('function greet');
+  });
+});
+
+describe('emitIrModuleHaxe nullish comparison', () => {
+  it('emits null equality check dropping the ambient undefined literal', () => {
+    const output = emitIrModuleHaxe(
+      lower('null-check.ts', `export function isPresent(x: number | null): boolean { return x !== null; }`).module,
+    ).contents;
+    expect(output).toContain('!= null');
+  });
+});
+
+describe('emitIrModuleHaxe exponentiation operators', () => {
+  it('emits binary exponentiation as Math.pow', () => {
+    const output = emitIrModuleHaxe(
+      lower('power.ts', 'export function square(x: number): number { return x ** 2; }').module,
+    ).contents;
+    expect(output).toContain('Math.pow(');
+  });
+
+  it('emits exponentiation assignment as Math.pow assignment', () => {
+    const output = emitIrModuleHaxe(
+      lower('power-assign.ts', 'export function cube(x: number): number { let v: number = x; v **= 3; return v; }')
+        .module,
+    ).contents;
+    expect(output).toContain('Math.pow(');
+  });
+});
