@@ -1,8 +1,8 @@
 import ts from 'typescript';
 
-import type { IrModule } from '../../compiler-types/src/index.js';
 import { isBackendEmissionFailure } from '../../compiler-emission/src/index.js';
 import { lowerTypeScriptSource } from '../../compiler-semantic/src/index.js';
+import type { IrModule } from '../../compiler-types/src/index.js';
 import { createHaxeCompilerBackend, emitIrModuleHaxe } from './haxeCompilerBackend.js';
 
 function lower(file: string, source: string) {
