@@ -15,8 +15,10 @@ describe('getIrTypeOperatorValueDomain', () => {
     expect(getIrTypeOperatorValueDomain({ kind: 'unknown', source: 'any' })).toBe('unknown');
     expect(getIrTypeOperatorValueDomain(undefined)).toBe('unknown');
     expect(getIrTypeOperatorValueDomain({ kind: 'never' })).toBe('unknown');
-    expect(getIrTypeOperatorValueDomain({ kind: 'named', name: 'Date', packageName: '', source: '' })).toBe('unknown');
-    expect(getIrTypeOperatorValueDomain({ kind: 'intersection', types: [] })).toBe('unknown');
+    expect(
+      getIrTypeOperatorValueDomain({ kind: 'named', name: 'Date', packageName: '', source: '' } as unknown as IrType),
+    ).toBe('unknown');
+    expect(getIrTypeOperatorValueDomain({ kind: 'intersection', types: [] } as unknown as IrType)).toBe('unknown');
     expect(getIrTypeOperatorValueDomain({ kind: 'keyof', type: { kind: 'unknown', source: 'any' } })).toBe('unknown');
     expect(
       getIrTypeOperatorValueDomain({
@@ -31,7 +33,7 @@ describe('getIrTypeOperatorValueDomain', () => {
         name: 'value',
         packageName: '',
         source: '',
-      }),
+      } as unknown as IrType),
     ).toBe('unknown');
   });
 

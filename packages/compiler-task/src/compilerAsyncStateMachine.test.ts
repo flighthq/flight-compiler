@@ -878,7 +878,7 @@ describe('analyzeIrModuleAsyncStateMachines', () => {
   it('uses a synthetic origin when the module has no declarations', () => {
     const base = lower('export default async (): Promise<number> => await Promise.resolve(1);');
     const clone = structuredClone(base);
-    clone.declarations = [];
+    (clone as unknown as { declarations: unknown[] }).declarations = [];
     const analysis = analyzeIrModuleAsyncStateMachines(clone);
 
     expect(analysis.machines).toHaveLength(1);
@@ -932,10 +932,10 @@ describe('analyzeIrModuleAsyncStateMachines', () => {
     if (!tryStmt || !('finallyBody' in tryStmt) || !tryStmt.finallyBody || tryStmt.finallyBody.kind !== 'block') {
       throw new Error('Expected try/finally');
     }
-    tryStmt.finallyBody.statements = [
+    (tryStmt.finallyBody as unknown as { statements: unknown[] }).statements = [
       { expression: { kind: 'literal', value: 1 }, kind: 'return' },
       { expression: { kind: 'literal', value: 2 }, kind: 'expression' },
-    ] as typeof tryStmt.finallyBody.statements;
+    ];
     const analysis = analyzeIrModuleAsyncStateMachines(clone);
 
     expect(analysis.machines).toEqual([]);
