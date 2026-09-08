@@ -17,6 +17,7 @@ describe('convertPackageNameToCppNamespace', () => {
     expect(() => convertPackageNameToCppNamespace('@flighthq/math/private')).toThrow(
       'Cannot map invalid npm package name',
     );
+    expect(() => convertPackageNameToCppNamespace('@flighthq/---')).toThrow('Cannot map empty npm package name');
   });
 });
 
@@ -41,6 +42,9 @@ describe('convertSourcePathToCppFileName', () => {
     );
     expect(() => convertSourcePathToCppFileName('packages/signals/src/.ts')).toThrow(
       'Cannot map non-runtime TypeScript source path',
+    );
+    expect(() => convertSourcePathToCppFileName('packages/signals/src/---.ts')).toThrow(
+      'Cannot map empty TypeScript source name',
     );
   });
 

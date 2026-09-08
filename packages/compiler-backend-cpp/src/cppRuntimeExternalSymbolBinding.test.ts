@@ -114,6 +114,7 @@ describe('getCompilerRuntimeExternalMemberTargetCpp', () => {
     expect(getCompilerRuntimeExternalMemberTargetCpp('Math', 'atan2')).toBeUndefined();
     expect(getCompilerRuntimeExternalMemberTargetCpp('Array', 'from')).toBeUndefined();
     expect(getCompilerRuntimeExternalMemberTargetCpp('Date', 'now')).toBeUndefined();
+    expect(getCompilerRuntimeExternalMemberTargetCpp('Unmapped', 'method')).toBeUndefined();
   });
 });
 
