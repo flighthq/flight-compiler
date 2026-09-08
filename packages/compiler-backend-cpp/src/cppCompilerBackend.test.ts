@@ -2179,6 +2179,44 @@ describe('emitIrModuleCpp', () => {
     expect(emitted.contents).toContain('finally_return');
   });
 
+  it('detects return in if-without-else inside try-finally', () => {
+    const result = lower(
+      'if-no-else-return.ts',
+      `export async function run(flag: boolean, x: number): Promise<number> {
+        try {
+          if (flag) {
+            return x + 1;
+          }
+        } finally {
+          x += 1;
+        }
+        return x;
+      }`,
+    );
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('finally_return');
+  });
+
+  it('detects return in try nested inside try-finally', () => {
+    const result = lower(
+      'nested-try-return.ts',
+      `export async function run(x: number): Promise<number> {
+        try {
+          try {
+            return x + 1;
+          } finally {
+            x += 1;
+          }
+        } finally {
+          x += 2;
+        }
+        return x;
+      }`,
+    );
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('finally_return');
+  });
+
   it('detects return inside finally body for catch-and-rethrow', () => {
     const result = lower(
       'finally-return.ts',
@@ -2295,5 +2333,224 @@ describe('emitIrModuleCpp', () => {
     const result = lowerPackage('@flighthq/ui', 'app.tsx', 'export function render(): string { return "hello"; }');
     const emitted = emitIrModuleCpp(result.module);
     expect(emitted.path).toBe('app.hpp');
+  });
+
+  it('emits nullish coalescing as value_or', () => {
+    const result = lower(
+      'nullish-coalesce.ts',
+      'export function fallback(a: number | undefined): number { return a ?? 0; }',
+    );
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('.value_or(');
+    expect(emitted.contents).toContain('#include <optional>');
+  });
+
+  it('emits != undefined nullish comparison as negated has_value', () => {
+    const result = lower(
+      'nullish-neq.ts',
+      'export function present(value: number | undefined): boolean { return value != undefined; }',
+    );
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('.has_value()');
+    expect(emitted.contents).not.toContain('!value');
+  });
+
+  it('emits enum with implicit member values', () => {
+    const result = lower('auto-enum.ts', 'export enum Color { Red, Green, Blue }');
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('enum class');
+    expect(emitted.contents).toContain('Red');
+    expect(emitted.contents).toContain('Green');
+    expect(emitted.contents).toContain('Blue');
+  });
+
+  it('emits optional parameter as std::optional with default', () => {
+    const result = lower(
+      'optional-param.ts',
+      'export function greet(name: string, greeting?: string): string { return (greeting ?? "Hello") + " " + name; }',
+    );
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('std::optional<');
+    expect(emitted.contents).toContain('std::nullopt');
+  });
+
+  it('emits rest parameter as std::vector', () => {
+    const result = lower(
+      'rest-param.ts',
+      'export function sum(...values: number[]): number { let total = 0; for (const v of values) { total += v; } return total; }',
+    );
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('std::vector<double>');
+  });
+
+  it('emits forOf loop with typed variable', () => {
+    const result = lower(
+      'for-of-basic.ts',
+      'export function total(values: number[]): number { let sum = 0; for (const v of values) { sum += v; } return sum; }',
+    );
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('for (');
+    expect(emitted.contents).toContain(' : ');
+  });
+
+  it('emits forIn with preserve evaluation wrapping object', () => {
+    const result = lower(
+      'for-in-preserve.ts',
+      `export function keys(obj: { a: number; b: number }): string {
+        let result = "";
+        for (const key in obj) { result += key; }
+        return result;
+      }`,
+    );
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('std::vector<std::string>');
+  });
+
+  it('emits forIn with discard evaluation ordering', () => {
+    const result = lower(
+      'for-in-discard.ts',
+      `export function keys(): string {
+        let result = "";
+        for (const key in { x: 1, y: 2 }) { result += key; }
+        return result;
+      }`,
+    );
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('std::vector<std::string>');
+  });
+
+  it('emits class field without explicit type as auto', () => {
+    const result = lower(
+      'field-auto.ts',
+      'export class Counter { count: number = 0; increment(): void { this.count += 1; } }',
+    );
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('count');
+  });
+
+  it('emits binary === as == in C++', () => {
+    const result = lower('strict-eq.ts', 'export function same(a: number, b: number): boolean { return a === b; }');
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('==');
+  });
+
+  it('emits binary !== as != in C++', () => {
+    const result = lower(
+      'strict-neq.ts',
+      'export function different(a: number, b: number): boolean { return a !== b; }',
+    );
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('!=');
+  });
+
+  it('emits power assignment with explicit rewrite', () => {
+    const result = lower(
+      'power-assign.ts',
+      'export function square(x: number): number { let v = x; v **= 2; return v; }',
+    );
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('v =');
+  });
+
+  it('refuses missing ambient runtime symbol binding', () => {
+    const result = lower('unknown-ambient.ts', 'export function read(): number { return parseInt("42"); }');
+    expect(() => emitIrModuleCpp(result.module)).toThrow('runtime external symbol binding plan is incomplete');
+  });
+
+  it('emits try-catch return detection through if-else branches', () => {
+    const result = lower(
+      'try-if-return.ts',
+      `export async function process(flag: boolean): Promise<number> {
+        try {
+          if (flag) {
+            return 1;
+          } else {
+            return 2;
+          }
+        } finally {
+          flag;
+        }
+      }`,
+    );
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('co_return');
+  });
+
+  it('emits try-catch with return in catch for finally detection', () => {
+    const result = lower(
+      'try-catch-return.ts',
+      `export async function safe(x: number): Promise<number> {
+        try {
+          return x;
+        } catch (e) {
+          return 0;
+        } finally {
+          x;
+        }
+      }`,
+    );
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('catch');
+    expect(emitted.contents).toContain('co_return');
+  });
+
+  it('emits switch case local break targeting the switch label', () => {
+    const result = lower(
+      'switch-label-break.ts',
+      `export function classify(x: number): string {
+        switch (x) {
+          case 0: return "zero";
+          case 1: return "one";
+          default: { const msg = "other"; return msg; }
+        }
+      }`,
+    );
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('switch');
+    expect(emitted.contents).toContain('"zero"');
+  });
+
+  it('emits variable declaration without explicit type as auto', () => {
+    const result = lower(
+      'auto-variable.ts',
+      'export function identity<T>(value: T): T { const result: T = value; return result; }',
+    );
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('template');
+  });
+
+  it('emits import resolution for relative specifier without extension', () => {
+    const result = lower(
+      'with-import.ts',
+      `import { helper } from './helper.js';
+       export function use(): number { return helper(); }`,
+    );
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('#include "helper.hpp"');
+  });
+
+  it('emits tuple spread with null element and optional wrapping', () => {
+    const result = lower(
+      'tuple-spread-opt.ts',
+      `export function merge(a: [number, string], b: [boolean]): [number, string, boolean] {
+        return [...a, ...b];
+      }`,
+    );
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('std::make_tuple');
+    expect(emitted.contents).toContain('#include <tuple>');
+  });
+
+  it('emits type parameter fallback to pascal case binding name', () => {
+    const result = lower('type-params.ts', `export function wrap<T>(value: T): T { return value; }`);
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('template');
+    expect(emitted.contents).toContain('typename');
+  });
+
+  it('emits binding target name fallback to safe cpp name', () => {
+    const result = lower('binding-fallback.ts', 'export function create_item(): number { return 1; }');
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('create_item');
   });
 });
