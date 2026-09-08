@@ -12,7 +12,7 @@ import {
   normalizeSourceTextGrouping,
   isCompilerTargetNameAllocationFailure,
 } from '../../compiler-emission/src/index.js';
-import { analyzeIrStatementSubtreeTraversal } from '../../compiler-ir-traversal/src/index.js';
+import { analyzeIrModuleTraversal, analyzeIrStatementSubtreeTraversal } from '../../compiler-ir-traversal/src/index.js';
 import {
   createIrClassInitializationPlan,
   createCompilerLoweringPassAwaitConditionHoisting,
@@ -103,6 +103,7 @@ interface PrimitiveUnionEnum {
 interface EmitContext {
   abstractFieldNames: ReadonlySet<string>;
   anonymousObjectRecords: Map<string, Readonly<{ name: string; properties: readonly IrObjectTypeProperty[] }>>;
+  arrayElementBindingIds: ReadonlySet<string>;
   compositionBase?: Readonly<{ baseDeclaration: IrClassDeclaration; fieldName: string }> | undefined;
   cellWrappedBindingIds: ReadonlySet<string>;
   // Which bindings the module rebinds. Rust needs `mut` on a parameter that is assigned to, and the
@@ -219,6 +220,7 @@ function emitIrModuleRustWithContext(
     abstractFieldNames: new Set(),
     accessorClassNames,
     anonymousObjectRecords: new Map(),
+    arrayElementBindingIds: collectIrModuleArrayElementBindingIdsRust(module),
     cellWrappedBindingIds,
     classBindingNames,
     borrowedParameterPositions,
@@ -1643,6 +1645,40 @@ function emitReturnedExpressionRust(expression: Readonly<IrExpression>, context:
   return source;
 }
 
+function collectIrModuleArrayElementBindingIdsRust(module: Readonly<IrModule>): ReadonlySet<string> {
+  const candidates = new Set<string>();
+  const coalesceTargets = new Set<string>();
+  analyzeIrModuleTraversal(module, {
+    variable(variable) {
+      if (
+        'binding' in variable &&
+        variable.initializer?.kind === 'element' &&
+        !variable.initializer.optional &&
+        variable.initializer.semantics.receivers.includes('array')
+      ) {
+        candidates.add(variable.binding.id);
+      }
+      return undefined;
+    },
+    expression(expression) {
+      if (
+        expression.kind === 'binary' &&
+        expression.operator === '??' &&
+        expression.left.kind === 'identifier' &&
+        expression.left.reference.kind === 'binding'
+      ) {
+        coalesceTargets.add(expression.left.reference.binding.id);
+      }
+      return undefined;
+    },
+  });
+  const ids = new Set<string>();
+  for (const id of candidates) {
+    if (coalesceTargets.has(id)) ids.add(id);
+  }
+  return ids;
+}
+
 function collectCellCapturedBindingIdsRust(
   expression: Readonly<IrExpression>,
   context: EmitContext,
@@ -2269,15 +2305,16 @@ function emitVariable(variable: Readonly<IrVariable>, context: EmitContext): str
     const init = variable.initializer ? emitExpression(variable.initializer, context) : '0.0';
     return `let ${name}: Rc<Cell<${type}>> = Rc::new(Cell::new(${init}));`;
   }
+  const isArrayElementBinding = 'binding' in variable && context.arrayElementBindingIds.has(variable.binding.id);
   const type =
     variable.type && !(variable.initializer?.kind === 'objectRest' && variable.type.kind === 'object')
-      ? `: ${emitType(variable.type, context)}`
+      ? `: ${isArrayElementBinding ? `Option<${emitType(variable.type, context)}>` : emitType(variable.type, context)}`
       : '';
   const isCallbackInitializer = variable.type?.kind === 'function' && variable.initializer?.kind === 'function';
   if (isCallbackInitializer) context.needsRcImport.add('Rc');
   const isNullableArrayElement =
     'binding' in variable &&
-    context.nullableBindingIds.has(variable.binding.id) &&
+    (context.nullableBindingIds.has(variable.binding.id) || isArrayElementBinding) &&
     variable.initializer?.kind === 'element' &&
     !variable.initializer.optional &&
     variable.initializer.semantics.receivers.includes('array');
@@ -2579,7 +2616,8 @@ function isIrExpressionOptionShapedRust(expression: Readonly<IrExpression>, cont
   if (
     expression.kind === 'identifier' &&
     expression.reference.kind === 'binding' &&
-    context.nullableBindingIds.has(expression.reference.binding.id)
+    (context.nullableBindingIds.has(expression.reference.binding.id) ||
+      context.arrayElementBindingIds.has(expression.reference.binding.id))
   )
     return true;
   return expression.kind === 'undefinedDefault';

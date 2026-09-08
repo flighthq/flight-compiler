@@ -1439,6 +1439,17 @@ describe('emitIrModuleRust', () => {
     expect(output).toContain('value.as_str().to_uppercase()');
   });
 
+  it('emits array element binding as Option when used with nullish coalesce', () => {
+    const result = lower(
+      'array-element-coalesce.ts',
+      'export function firstOf<Value>(values: Value[], fallback: Value): Value { const first: Value = values[0]; return first ?? fallback; }',
+    );
+    const output = emitIrModuleRust(result.module).contents;
+    expect(output).toContain('Option<Value>');
+    expect(output).toContain('values.get(0).cloned()');
+    expect(output).toContain('unwrap_or_else');
+  });
+
   it('emits concrete class inheritance as composition with base field delegation', () => {
     const result = lower(
       'class-inheritance.ts',
