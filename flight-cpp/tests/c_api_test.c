@@ -75,6 +75,18 @@ int main(void) {
   if (flight_cpp_error_create_utf8(NULL, 0, NULL) != FLIGHT_CPP_STATUS_INVALID_ARGUMENT ||
       flight_cpp_error_message(NULL, NULL) != FLIGHT_CPP_STATUS_INVALID_ARGUMENT)
     return 25;
+  size = 99;
+  if (flight_cpp_string_utf8_size(NULL, &size) != FLIGHT_CPP_STATUS_INVALID_ARGUMENT || size != 0)
+    return 26;
+  written = 99;
+  if (flight_cpp_string_copy_utf8(NULL, NULL, 0, &written) != FLIGHT_CPP_STATUS_INVALID_ARGUMENT ||
+      written != 0)
+    return 27;
+  written = 99;
+  if (flight_cpp_string_copy_utf8(NULL, output, sizeof(output), &written) !=
+          FLIGHT_CPP_STATUS_INVALID_ARGUMENT ||
+      written != 0)
+    return 28;
   flight_cpp_error_release(NULL);
   return 0;
 }

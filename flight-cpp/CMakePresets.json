@@ -31,17 +31,20 @@
   "buildPresets": [
     {
       "name": "development",
-      "configurePreset": "development"
+      "configurePreset": "development",
+      "configuration": "Debug"
     },
     {
       "name": "release",
-      "configurePreset": "release"
+      "configurePreset": "release",
+      "configuration": "Release"
     }
   ],
   "testPresets": [
     {
       "name": "development",
       "configurePreset": "development",
+      "configuration": "Debug",
       "output": {
         "outputOnFailure": true
       }
@@ -49,6 +52,7 @@
     {
       "name": "release",
       "configurePreset": "release",
+      "configuration": "Release",
       "output": {
         "outputOnFailure": true
       }

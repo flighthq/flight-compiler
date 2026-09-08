@@ -19,10 +19,10 @@ const cmakeGraph = filesUnder(cppRoot, (name) => name === 'CMakeLists.txt')
   .join('\n');
 const ci = readFileSync(path.join(root, '.github', 'workflows', 'ci.yml'), 'utf8');
 const presets = JSON.parse(readCpp('CMakePresets.json')) as {
-  buildPresets?: readonly { name?: string }[];
+  buildPresets?: readonly { configuration?: string; name?: string }[];
   cmakeMinimumRequired?: { major?: number; minor?: number };
   configurePresets?: readonly { binaryDir?: string; name?: string }[];
-  testPresets?: readonly { name?: string }[];
+  testPresets?: readonly { configuration?: string; name?: string }[];
   version?: number;
 };
 
@@ -80,13 +80,14 @@ if (presets.version !== 2 || presets.cmakeMinimumRequired?.major !== 3 || preset
   failures.push('CMakePresets.json must remain usable with the declared CMake 3.20 floor');
 }
 for (const name of ['development', 'release']) {
+  const configuration = name === 'development' ? 'Debug' : 'Release';
   if (!presets.configurePresets?.some((preset) => preset.name === name && preset.binaryDir?.includes('/out/cmake/'))) {
     failures.push(`CMake configure preset ${name} is absent or writes outside flight-cpp/out/cmake`);
   }
-  if (!presets.buildPresets?.some((preset) => preset.name === name))
-    failures.push(`CMake build preset ${name} is absent`);
-  if (!presets.testPresets?.some((preset) => preset.name === name))
-    failures.push(`CMake test preset ${name} is absent`);
+  if (!presets.buildPresets?.some((preset) => preset.name === name && preset.configuration === configuration))
+    failures.push(`CMake build preset ${name} does not select ${configuration}`);
+  if (!presets.testPresets?.some((preset) => preset.name === name && preset.configuration === configuration))
+    failures.push(`CMake test preset ${name} does not select ${configuration}`);
 }
 
 for (const os of ['ubuntu-latest', 'macos-latest', 'windows-latest']) {

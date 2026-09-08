@@ -127,7 +127,9 @@ flight_cpp_status flight_cpp_string_retain(flight_cpp_string* value) { return re
 void flight_cpp_string_release(flight_cpp_string* value) { release_handle(value); }
 
 flight_cpp_status flight_cpp_string_utf8_size(const flight_cpp_string* value, size_t* size) {
-  if (!value || !size) return FLIGHT_CPP_STATUS_INVALID_ARGUMENT;
+  if (!size) return FLIGHT_CPP_STATUS_INVALID_ARGUMENT;
+  *size = 0;
+  if (!value) return FLIGHT_CPP_STATUS_INVALID_ARGUMENT;
   try {
     *size = value->value.to_utf8().size();
     return FLIGHT_CPP_STATUS_OK;
@@ -141,7 +143,9 @@ flight_cpp_status flight_cpp_string_copy_utf8(
     char* output,
     size_t capacity,
     size_t* written) {
-  if (!value || !written || (!output && capacity != 0)) return FLIGHT_CPP_STATUS_INVALID_ARGUMENT;
+  if (!written) return FLIGHT_CPP_STATUS_INVALID_ARGUMENT;
+  *written = 0;
+  if (!value || (!output && capacity != 0)) return FLIGHT_CPP_STATUS_INVALID_ARGUMENT;
   try {
     const std::string encoded = value->value.to_utf8();
     *written = encoded.size();
