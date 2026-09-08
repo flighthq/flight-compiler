@@ -2316,3 +2316,264 @@ describe('emitIrModuleHaxe tuple and spread coverage', () => {
     expect(output).toContain('?.');
   });
 });
+
+describe('emitIrModuleHaxe control flow coverage', () => {
+  it('emits labeled while with break targeting outer', () => {
+    const result = lower(
+      'labeled-break.ts',
+      `
+        export function search(values: number[]): number {
+          let found: number = -1;
+          outer: while (true) {
+            for (const v of values) {
+              if (v > 10) { found = v; break outer; }
+            }
+            break;
+          }
+          return found;
+        }
+      `,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('ControlFlowState');
+  });
+
+  it('emits try-catch without finally', () => {
+    const result = lower(
+      'try-catch.ts',
+      `
+        export function safe(value: number): number {
+          try {
+            return value;
+          } catch (e) {
+            return 0;
+          }
+        }
+      `,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('try {');
+    expect(output).toContain('catch (');
+  });
+
+  it('emits for-in with closed key plan', () => {
+    const result = lower(
+      'for-in-keys.ts',
+      `
+        export interface Point { x: number; y: number; }
+        export function keys(p: Point): void { for (const k in p) k; }
+      `,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('for (');
+  });
+});
+
+describe('emitIrModuleHaxe spread and call coverage', () => {
+  it('emits spread call as Reflect.callMethod', () => {
+    const result = lower(
+      'spread-call.ts',
+      'export function apply(fn: (...args: number[]) => number, args: number[]): number { return fn(...args); }',
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('Reflect.callMethod(');
+  });
+
+  it('emits spread call with fixed and spread arguments', () => {
+    const result = lower(
+      'spread-mixed.ts',
+      'export function apply(fn: (a: number, ...args: number[]) => number, args: number[]): number { return fn(1, ...args); }',
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('Reflect.callMethod(');
+    expect(output).toContain('.concat(');
+  });
+});
+
+describe('emitIrModuleHaxe type alias coverage', () => {
+  it('emits type alias for non-object type as typedef', () => {
+    const result = lower('type-alias-simple.ts', 'export type ID = string;');
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('typedef ID = String;');
+  });
+
+  it('emits type alias for union of records as flattened anonymous type', () => {
+    const result = lower(
+      'union-records.ts',
+      `
+        export interface A { x: number; y: number; }
+        export interface B { x: number; z: number; }
+        export type AB = A | B;
+      `,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('typedef AB');
+  });
+
+  it('emits type alias for string literal union as enum abstract', () => {
+    const result = lower('string-union-alias.ts', 'export type Direction = "up" | "down" | "left" | "right";');
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('enum abstract Direction(String)');
+    expect(output).toContain('"up"');
+  });
+});
+
+describe('emitIrModuleHaxe class inheritance coverage', () => {
+  it('emits base class field names as inherited in derived class', () => {
+    const result = lower(
+      'inherited-fields.ts',
+      `
+        export class Base {
+          x: number = 0;
+          y: number = 0;
+        }
+        export class Derived extends Base {
+          z: number = 0;
+        }
+      `,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('class Base');
+    expect(output).toContain('class Derived extends Base');
+  });
+
+  it('emits method override across two-level inheritance', () => {
+    const result = lower(
+      'deep-override.ts',
+      `
+        export class A { run(): number { return 1; } }
+        export class B extends A { override run(): number { return 2; } }
+        export class C extends B { override run(): number { return 3; } }
+      `,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('override');
+  });
+
+  it('emits abstract method without body', () => {
+    const result = lower(
+      'abstract-method.ts',
+      `
+        export abstract class Handler {
+          abstract process(value: number): string;
+          name: string = "handler";
+        }
+      `,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('abstract function process(value:Float):String;');
+  });
+});
+
+describe('emitIrModuleHaxe identifier and import coverage', () => {
+  it('emits super keyword in method call', () => {
+    const result = lower(
+      'super-call.ts',
+      `
+        export class Base {
+          value: number;
+          constructor(v: number) { this.value = v; }
+        }
+        export class Child extends Base {
+          constructor() { super(42); }
+        }
+      `,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('super(42)');
+  });
+
+  it('emits this keyword in method body', () => {
+    const result = lower(
+      'this-access.ts',
+      `
+        export class Counter {
+          count: number = 0;
+          increment(): void { this.count = this.count + 1; }
+        }
+      `,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('this.count');
+  });
+
+  it('emits object literal with named properties', () => {
+    const result = lower(
+      'object-literal.ts',
+      `
+        export interface Point { x: number; y: number; }
+        export function origin(): Point { return { x: 0, y: 0 }; }
+      `,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('x: 0');
+    expect(output).toContain('y: 0');
+  });
+
+  it('emits scoped import from relative module', () => {
+    const result = lower(
+      'import.ts',
+      `
+        import { add } from "./add.js";
+        export function double(n: number): number { return add(n, n); }
+      `,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('import ');
+  });
+});
+
+describe('emitIrModuleHaxe type emission edge cases', () => {
+  it('emits never type as Dynamic', () => {
+    const result = lower('never-type.ts', 'export function fail(): never { throw new Error("fail"); }');
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('Dynamic');
+  });
+
+  it('emits unknown type as Dynamic', () => {
+    const result = lower('unknown-type.ts', 'export function identity(x: unknown): unknown { return x; }');
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('Dynamic');
+  });
+
+  it('emits null union type as Null<T>', () => {
+    const result = lower('null-union.ts', 'export function maybe(x: number | null): number | null { return x; }');
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('Null<Float>');
+  });
+
+  it('emits array type with element type', () => {
+    const result = lower('array-type.ts', 'export function first(values: string[]): string { return values[0]; }');
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('Array<String>');
+  });
+
+  it('emits function type with parameters and return', () => {
+    const result = lower(
+      'fn-type.ts',
+      'export function apply(fn: (a: number) => string, value: number): string { return fn(value); }',
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('(Float)->String');
+  });
+});
