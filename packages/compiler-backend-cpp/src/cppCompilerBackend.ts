@@ -2241,7 +2241,10 @@ function collectIrModuleArrayElementBindingIdsCpp(
             : expression.right.kind === 'identifier' && expression.right.reference.kind === 'binding'
               ? expression.right
               : undefined;
-        if (operand) nullishUsed.add(operand.reference.binding.id);
+        if (operand) {
+          const ref = operand.reference;
+          if (ref.kind === 'binding') nullishUsed.add(ref.binding.id);
+        }
       }
       return undefined;
     },

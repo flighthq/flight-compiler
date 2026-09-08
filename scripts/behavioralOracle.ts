@@ -85,6 +85,101 @@ interface OracleDivergence {
   readonly target: string;
 }
 
+const cppKeywords = new Set([
+  'alignas',
+  'alignof',
+  'and',
+  'and_eq',
+  'asm',
+  'auto',
+  'bitand',
+  'bitor',
+  'bool',
+  'break',
+  'case',
+  'catch',
+  'char',
+  'char8_t',
+  'char16_t',
+  'char32_t',
+  'class',
+  'co_await',
+  'co_return',
+  'co_yield',
+  'compl',
+  'concept',
+  'const',
+  'const_cast',
+  'consteval',
+  'constexpr',
+  'constinit',
+  'continue',
+  'decltype',
+  'default',
+  'delete',
+  'do',
+  'double',
+  'dynamic_cast',
+  'else',
+  'enum',
+  'explicit',
+  'export',
+  'extern',
+  'false',
+  'float',
+  'for',
+  'friend',
+  'goto',
+  'if',
+  'inline',
+  'int',
+  'long',
+  'mutable',
+  'namespace',
+  'new',
+  'noexcept',
+  'not',
+  'not_eq',
+  'nullptr',
+  'operator',
+  'or',
+  'or_eq',
+  'private',
+  'protected',
+  'public',
+  'register',
+  'reinterpret_cast',
+  'requires',
+  'return',
+  'short',
+  'signed',
+  'sizeof',
+  'static',
+  'static_assert',
+  'static_cast',
+  'struct',
+  'switch',
+  'template',
+  'this',
+  'thread_local',
+  'throw',
+  'true',
+  'try',
+  'typedef',
+  'typeid',
+  'typename',
+  'union',
+  'unsigned',
+  'using',
+  'virtual',
+  'void',
+  'volatile',
+  'wchar_t',
+  'while',
+  'xor',
+  'xor_eq',
+]);
+
 const fixtures = readdirSync(goldenDirectory, { withFileTypes: true })
   .filter((entry) => entry.isDirectory() && existsSync(path.join(goldenDirectory, entry.name, 'oracle.json')))
   .map((entry) => entry.name)
@@ -390,6 +485,7 @@ function runCppOracle(
           ),
         );
         const invocation = `flighthq_golden::${oracleCase.cppCall ?? toSnakeCase(oracleCase.call)}(${arguments_.join(', ')})`;
+
         const value = oracleCase.awaits ? `${invocation}.get()` : invocation;
         return `  std::cout << say(${value}) << '\\n';`;
       }),
@@ -453,7 +549,8 @@ function renderCppValue(value: unknown, hint?: string | null): string {
     if (!arrayType?.startsWith('flight::Array<')) {
       throw new Error('C++ oracle empty array needs a same-call nonempty type example');
     }
-    return `${arrayType}{${value.map((item) => renderCppValue(item)).join(', ')}}`;
+    const elementType = arrayType.slice('flight::Array<'.length, -1);
+    return `${arrayType}{${value.map((item) => renderCppValue(item, elementType)).join(', ')}}`;
   }
   if (typeof value === 'string') return `flight::String(${JSON.stringify(value)})`;
   if (typeof value === 'number') return Number.isInteger(value) ? `${String(value)}.0` : String(value);
@@ -511,6 +608,11 @@ function renderRustValue(value: unknown): string {
 
 function toSnakeCase(value: string): string {
   return value.replaceAll(/([a-z0-9])([A-Z])/gu, '$1_$2').toLowerCase();
+}
+
+function toCppName(value: string): string {
+  const name = toSnakeCase(value);
+  return cppKeywords.has(name) ? `${name}_` : name;
 }
 
 function hasCommand(command: string): boolean {
