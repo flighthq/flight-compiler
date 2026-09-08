@@ -55,6 +55,7 @@ const packageRules: Readonly<Record<string, PackageRule>> = {
       'compiler-ir-traversal',
       'compiler-lowering',
       'compiler-runtime-contract',
+      'compiler-structural',
       'compiler-types',
     ],
     description: 'C++ lowering, naming, and source emission backend',

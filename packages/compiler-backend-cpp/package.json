@@ -24,6 +24,7 @@
     "@flighthq/compiler-ir-traversal": "*",
     "@flighthq/compiler-lowering": "*",
     "@flighthq/compiler-runtime-contract": "*",
+    "@flighthq/compiler-structural": "*",
     "@flighthq/compiler-types": "*"
   },
   "devDependencies": {

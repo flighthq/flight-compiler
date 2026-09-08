@@ -1,6 +1,10 @@
 export { createCppCompilerBackend, emitIrModuleCpp } from './cppCompilerBackend.js';
 export { createIrModuleClosureCapturePlanCpp } from './cppClosureCapturePlan.js';
 export {
+  createIrTypeReferenceRepresentationPlanCpp,
+  createIrTypeReferenceRepresentationPlannerCpp,
+} from './cppReferenceRepresentationPlan.js';
+export {
   convertPackageNameToCppNamespace,
   convertSourcePathToCppFileName,
   isCppCompilerKeyword,
