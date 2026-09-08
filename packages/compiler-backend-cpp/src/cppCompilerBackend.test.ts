@@ -3674,4 +3674,100 @@ describe('emitIrModuleCpp', () => {
     ).contents;
     expect(output).toContain('Base::greet()');
   });
+
+  it('emits rest parameter as std::vector', () => {
+    const output = emitIrModuleCpp(
+      lower('rest-param.ts', `export function sum(...nums: number[]): number { return nums[0]; }`).module,
+    ).contents;
+    expect(output).toContain('std::vector<double>');
+    expect(output).toContain('nums');
+  });
+
+  it('emits try-finally with return inside if-else', () => {
+    const output = emitIrModuleCpp(
+      lower(
+        'try-if-return.ts',
+        `export function check(x: number): number {
+           try {
+             if (x > 0) { return x; } else { return -x; }
+           } finally {
+             x = 0;
+           }
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('return');
+  });
+
+  it('emits array length as size cast to double', () => {
+    const output = emitIrModuleCpp(
+      lower('arr-len.ts', `export function len(items: number[]): number { return items.length; }`).module,
+    ).contents;
+    expect(output).toContain('static_cast<double>');
+    expect(output).toContain('size()');
+  });
+
+  it('emits string length as size method', () => {
+    const output = emitIrModuleCpp(
+      lower('str-len.ts', `export function len(s: string): number { return s.length; }`).module,
+    ).contents;
+    expect(output).toContain('static_cast<double>');
+  });
+
+  it('emits generic type parameter as typename', () => {
+    const output = emitIrModuleCpp(
+      lower('generic-fn.ts', `export function identity<T>(value: T): T { return value; }`).module,
+    ).contents;
+    expect(output).toContain('template');
+    expect(output).toContain('typename');
+  });
+
+  it('emits switch as if-else chain with switch_value', () => {
+    const output = emitIrModuleCpp(
+      lower(
+        'switch-break.ts',
+        `export function label(x: number): string {
+           switch (x) {
+             case 1: return 'one';
+             case 2: return 'two';
+             default: return 'other';
+           }
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('switch_value');
+    expect(output).toContain('"one"');
+    expect(output).toContain('"two"');
+    expect(output).toContain('"other"');
+  });
+
+  it('emits if-else statement with otherwise branch', () => {
+    const output = emitIrModuleCpp(
+      lower(
+        'if-else.ts',
+        `export function abs(x: number): number {
+           if (x >= 0) { return x; } else { return -x; }
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('if');
+    expect(output).toContain('else');
+  });
+
+  it('emits tuple spread elements', () => {
+    const result = lower(
+      'tuple-spread.ts',
+      `export function first(pair: [number, string]): number { return pair[0]; }`,
+    );
+    const output = emitIrModuleCpp(result.module).contents;
+    expect(output).toContain('pair');
+  });
+
+  it('emits enum member without explicit value', () => {
+    const output = emitIrModuleCpp(lower('enum-implicit.ts', `export enum Color { Red, Green, Blue }`).module).contents;
+    expect(output).toContain('enum');
+    expect(output).toContain('Red');
+    expect(output).toContain('Green');
+    expect(output).toContain('Blue');
+  });
 });
