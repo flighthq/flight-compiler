@@ -1,16 +1,46 @@
 #pragma once
 
+#include <chrono>
 #include <concepts>
+#include <condition_variable>
 #include <coroutine>
+#include <cstddef>
 #include <exception>
+#include <functional>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <stdexcept>
 #include <type_traits>
 #include <utility>
 #include <vector>
 
+#include <flight/executor.hpp>
+#include <flight/rejection.hpp>
+
 namespace flight {
+
+enum class TaskStatus {
+  pending,
+  fulfilled,
+  rejected,
+};
+
+template <typename Value>
+struct TaskSettlement {
+  TaskStatus status;
+  std::optional<Value> value;
+  std::optional<Rejection> rejection;
+};
+
+template <>
+struct TaskSettlement<void> {
+  TaskStatus status;
+  std::optional<Rejection> rejection;
+};
+
+template <typename Value>
+class Task;
 
 namespace detail {
 
@@ -25,21 +55,205 @@ class CoroutineOwner {
     if (coroutine_) coroutine_.destroy();
   }
 
-  [[nodiscard]] std::coroutine_handle<> coroutine() const noexcept { return coroutine_; }
-
  private:
   std::coroutine_handle<> coroutine_;
 };
 
-[[noreturn]] inline void throw_task_error(std::exception_ptr error) {
-  if (!error) throw std::invalid_argument("flight::Task::reject requires an exception");
-  std::rethrow_exception(error);
-}
+template <typename Value>
+class TaskState {
+ public:
+  bool fulfill(Value value) {
+    return complete(TaskStatus::fulfilled, std::optional<Value>(std::move(value)), std::nullopt);
+  }
+
+  bool reject(Rejection rejection) {
+    return complete(TaskStatus::rejected, std::nullopt, std::optional<Rejection>(std::move(rejection)));
+  }
+
+  [[nodiscard]] Rejection rejection() const {
+    std::lock_guard lock(mutex_);
+    if (status_ != TaskStatus::rejected || !rejection_) {
+      throw std::logic_error("flight::Task is not rejected");
+    }
+    return *rejection_;
+  }
+
+  [[nodiscard]] Value result() const {
+    std::lock_guard lock(mutex_);
+    if (status_ == TaskStatus::rejected && rejection_) rejection_->rethrow();
+    if (status_ != TaskStatus::fulfilled || !value_) {
+      throw std::logic_error("flight::Task result is not ready");
+    }
+    return *value_;
+  }
+
+  [[nodiscard]] TaskSettlement<Value> settlement() const {
+    std::lock_guard lock(mutex_);
+    return {.status = status_, .value = value_, .rejection = rejection_};
+  }
+
+  [[nodiscard]] TaskStatus status() const {
+    std::lock_guard lock(mutex_);
+    return status_;
+  }
+
+  void subscribe(std::function<void()> continuation) {
+    bool invoke = false;
+    {
+      std::lock_guard lock(mutex_);
+      if (status_ == TaskStatus::pending) {
+        continuations_.push_back(std::move(continuation));
+      } else {
+        invoke = true;
+      }
+    }
+    if (invoke) continuation();
+  }
+
+  void wait_briefly() const {
+    std::unique_lock lock(mutex_);
+    condition_.wait_for(lock, std::chrono::milliseconds(1), [&] { return status_ != TaskStatus::pending; });
+  }
+
+ private:
+  bool complete(TaskStatus status, std::optional<Value> value, std::optional<Rejection> rejection) {
+    std::vector<std::function<void()>> continuations;
+    {
+      std::lock_guard lock(mutex_);
+      if (status_ != TaskStatus::pending) return false;
+      status_ = status;
+      value_ = std::move(value);
+      rejection_ = std::move(rejection);
+      continuations = std::move(continuations_);
+    }
+    condition_.notify_all();
+    for (auto& continuation : continuations) continuation();
+    return true;
+  }
+
+  mutable std::condition_variable condition_;
+  std::vector<std::function<void()>> continuations_;
+  std::optional<Rejection> rejection_;
+  mutable std::mutex mutex_;
+  TaskStatus status_ = TaskStatus::pending;
+  std::optional<Value> value_;
+};
+
+template <>
+class TaskState<void> {
+ public:
+  bool fulfill() { return complete(TaskStatus::fulfilled, std::nullopt); }
+
+  bool reject(Rejection rejection) {
+    return complete(TaskStatus::rejected, std::optional<Rejection>(std::move(rejection)));
+  }
+
+  [[nodiscard]] Rejection rejection() const {
+    std::lock_guard lock(mutex_);
+    if (status_ != TaskStatus::rejected || !rejection_) {
+      throw std::logic_error("flight::Task is not rejected");
+    }
+    return *rejection_;
+  }
+
+  void result() const {
+    std::lock_guard lock(mutex_);
+    if (status_ == TaskStatus::rejected && rejection_) rejection_->rethrow();
+    if (status_ != TaskStatus::fulfilled) throw std::logic_error("flight::Task result is not ready");
+  }
+
+  [[nodiscard]] TaskSettlement<void> settlement() const {
+    std::lock_guard lock(mutex_);
+    return {.status = status_, .rejection = rejection_};
+  }
+
+  [[nodiscard]] TaskStatus status() const {
+    std::lock_guard lock(mutex_);
+    return status_;
+  }
+
+  void subscribe(std::function<void()> continuation) {
+    bool invoke = false;
+    {
+      std::lock_guard lock(mutex_);
+      if (status_ == TaskStatus::pending) {
+        continuations_.push_back(std::move(continuation));
+      } else {
+        invoke = true;
+      }
+    }
+    if (invoke) continuation();
+  }
+
+  void wait_briefly() const {
+    std::unique_lock lock(mutex_);
+    condition_.wait_for(lock, std::chrono::milliseconds(1), [&] { return status_ != TaskStatus::pending; });
+  }
+
+ private:
+  bool complete(TaskStatus status, std::optional<Rejection> rejection) {
+    std::vector<std::function<void()>> continuations;
+    {
+      std::lock_guard lock(mutex_);
+      if (status_ != TaskStatus::pending) return false;
+      status_ = status;
+      rejection_ = std::move(rejection);
+      continuations = std::move(continuations_);
+    }
+    condition_.notify_all();
+    for (auto& continuation : continuations) continuation();
+    return true;
+  }
+
+  mutable std::condition_variable condition_;
+  std::vector<std::function<void()>> continuations_;
+  std::optional<Rejection> rejection_;
+  mutable std::mutex mutex_;
+  TaskStatus status_ = TaskStatus::pending;
+};
+
+template <typename Result>
+struct TaskResult {
+  static constexpr bool is_task = false;
+  using Type = std::remove_cvref_t<Result>;
+};
 
 template <typename Value>
-[[noreturn]] Value unreachable_task_value() {
-  throw std::logic_error("unreachable task result");
-}
+struct TaskResult<Task<Value>> {
+  static constexpr bool is_task = true;
+  using Type = Value;
+};
+
+template <typename Result>
+using TaskResultValue = typename TaskResult<std::remove_cvref_t<Result>>::Type;
+
+template <typename Result>
+inline constexpr bool is_task_result = TaskResult<std::remove_cvref_t<Result>>::is_task;
+
+template <typename Value>
+class TaskPromiseResult {
+ public:
+  explicit TaskPromiseResult(std::shared_ptr<TaskState<Value>> state) : state_(std::move(state)) {}
+
+  template <typename Result>
+    requires std::constructible_from<Value, Result&&>
+  void return_value(Result&& result) {
+    state_->fulfill(Value(std::forward<Result>(result)));
+  }
+
+ protected:
+  std::shared_ptr<TaskState<Value>> state_;
+};
+
+template <>
+class TaskPromiseResult<void> {
+ public:
+  explicit TaskPromiseResult(std::shared_ptr<TaskState<void>> state) : state_(std::move(state)) {}
+  void return_void() { state_->fulfill(); }
+
+ protected:
+  std::shared_ptr<TaskState<void>> state_;
+};
 
 } // namespace detail
 
@@ -48,21 +262,80 @@ class Task {
  public:
   struct promise_type;
 
- private:
-  using Handle = std::coroutine_handle<promise_type>;
-
- public:
-  class Awaiter {
+  class Rejecter {
    public:
-    explicit Awaiter(std::shared_ptr<detail::CoroutineOwner> owner) noexcept
-        : owner_(std::move(owner)) {}
+    void operator()(Rejection rejection) const { state_->reject(std::move(rejection)); }
 
-    [[nodiscard]] bool await_ready() const noexcept;
-    bool await_suspend(std::coroutine_handle<> continuation);
-    Value await_resume() const;
+    void operator()(std::exception_ptr exception) const {
+      state_->reject(Rejection::from_exception(std::move(exception)));
+    }
+
+    template <typename Reason>
+      requires(!std::same_as<std::remove_cvref_t<Reason>, Rejection> &&
+               !std::same_as<std::remove_cvref_t<Reason>, std::exception_ptr>)
+    void operator()(Reason&& reason) const {
+      state_->reject(Rejection::from_value(std::forward<Reason>(reason)));
+    }
 
    private:
-    std::shared_ptr<detail::CoroutineOwner> owner_;
+    friend class Task;
+    explicit Rejecter(std::shared_ptr<detail::TaskState<Value>> state) : state_(std::move(state)) {}
+    std::shared_ptr<detail::TaskState<Value>> state_;
+  };
+
+  class Resolver {
+   public:
+    template <typename Resolved>
+      requires(!std::is_void_v<Value> && std::constructible_from<Value, Resolved&&>)
+    void operator()(Resolved&& value) const {
+      state_->fulfill(Value(std::forward<Resolved>(value)));
+    }
+
+    void operator()() const requires std::is_void_v<Value> { state_->fulfill(); }
+    void operator()(Task task) const;
+
+   private:
+    friend class Task;
+    explicit Resolver(std::shared_ptr<detail::TaskState<Value>> state) : state_(std::move(state)) {}
+    std::shared_ptr<detail::TaskState<Value>> state_;
+  };
+
+  class Awaiter {
+   public:
+    Awaiter(std::shared_ptr<detail::TaskState<Value>> state,
+            std::shared_ptr<detail::CoroutineOwner> source_owner) noexcept
+        : source_owner_(std::move(source_owner)), state_(std::move(state)) {}
+
+    [[nodiscard]] constexpr bool await_ready() const noexcept { return false; }
+
+    template <typename Promise>
+      requires requires(Promise& promise) {
+        { promise.flight_executor() } -> std::same_as<std::shared_ptr<Executor>>;
+        { promise.flight_owner() } -> std::same_as<std::shared_ptr<detail::CoroutineOwner>>;
+      }
+    void await_suspend(std::coroutine_handle<Promise> continuation) {
+      auto owner = continuation.promise().flight_owner();
+      if (!owner) throw std::logic_error("flight::Task continuation has no coroutine owner");
+      auto executor = continuation.promise().flight_executor();
+      state_->subscribe([continuation, executor = std::move(executor), owner = std::move(owner)] {
+        Task::post(executor, [continuation, owner] {
+          static_cast<void>(owner);
+          if (!continuation.done()) continuation.resume();
+        });
+      });
+    }
+
+    Value await_resume() const {
+      if constexpr (std::is_void_v<Value>) {
+        state_->result();
+      } else {
+        return state_->result();
+      }
+    }
+
+   private:
+    std::shared_ptr<detail::CoroutineOwner> source_owner_;
+    std::shared_ptr<detail::TaskState<Value>> state_;
   };
 
   Task(const Task&) noexcept = default;
@@ -70,203 +343,414 @@ class Task {
   Task& operator=(const Task&) noexcept = default;
   Task& operator=(Task&&) noexcept = default;
 
-  [[nodiscard]] static Task<std::vector<Value>> join_all(std::vector<Task> tasks);
-  [[nodiscard]] static Task ready(Value value);
-  [[nodiscard]] static Task reject(std::exception_ptr error);
-
-  [[nodiscard]] Value get() const;
-  [[nodiscard]] bool is_ready() const noexcept;
-  [[nodiscard]] Awaiter operator co_await() const& noexcept { return Awaiter(owner_); }
-  [[nodiscard]] Awaiter operator co_await() && noexcept { return Awaiter(std::move(owner_)); }
-
- private:
-  explicit Task(std::shared_ptr<detail::CoroutineOwner> owner) noexcept : owner_(std::move(owner)) {}
-
-  [[nodiscard]] static Handle handle(const std::shared_ptr<detail::CoroutineOwner>& owner) noexcept {
-    return Handle::from_address(owner->coroutine().address());
+  template <typename Initializer>
+  [[nodiscard]] static Task create(Initializer&& initializer,
+                                   std::shared_ptr<Executor> executor = current_executor()) {
+    auto task = pending(std::move(executor));
+    try {
+      ExecutorScope scope(task.executor_);
+      std::invoke(std::forward<Initializer>(initializer), Resolver(task.state_), Rejecter(task.state_));
+    } catch (...) {
+      task.state_->reject(Rejection::from_exception(std::current_exception()));
+    }
+    return task;
   }
 
-  [[nodiscard]] static Value result(const std::shared_ptr<detail::CoroutineOwner>& owner);
+  template <typename Resolved = Value>
+    requires(!std::is_void_v<Value> && std::constructible_from<Value, Resolved&&>)
+  [[nodiscard]] static Task ready(Resolved&& value,
+                                  std::shared_ptr<Executor> executor = current_executor()) {
+    auto task = pending(std::move(executor));
+    task.state_->fulfill(Value(std::forward<Resolved>(value)));
+    return task;
+  }
 
+  [[nodiscard]] static Task ready(std::shared_ptr<Executor> executor = current_executor())
+    requires std::is_void_v<Value>
+  {
+    auto task = pending(std::move(executor));
+    task.state_->fulfill();
+    return task;
+  }
+
+  [[nodiscard]] static Task resolve(Task task) { return task; }
+
+  template <typename Resolved = Value>
+    requires(!std::is_void_v<Value> && std::constructible_from<Value, Resolved&&>)
+  [[nodiscard]] static Task resolve(Resolved&& value,
+                                    std::shared_ptr<Executor> executor = current_executor()) {
+    return ready(std::forward<Resolved>(value), std::move(executor));
+  }
+
+  [[nodiscard]] static Task resolve(std::shared_ptr<Executor> executor = current_executor())
+    requires std::is_void_v<Value>
+  {
+    return ready(std::move(executor));
+  }
+
+  [[nodiscard]] static Task reject(Rejection rejection,
+                                   std::shared_ptr<Executor> executor = current_executor()) {
+    auto task = pending(std::move(executor));
+    task.state_->reject(std::move(rejection));
+    return task;
+  }
+
+  [[nodiscard]] static Task reject(std::exception_ptr exception,
+                                   std::shared_ptr<Executor> executor = current_executor()) {
+    return reject(Rejection::from_exception(std::move(exception)), std::move(executor));
+  }
+
+  template <typename Reason>
+    requires(!std::same_as<std::remove_cvref_t<Reason>, Rejection> &&
+             !std::same_as<std::remove_cvref_t<Reason>, std::exception_ptr>)
+  [[nodiscard]] static Task reject(Reason&& reason,
+                                   std::shared_ptr<Executor> executor = current_executor()) {
+    return reject(Rejection::from_value(std::forward<Reason>(reason)), std::move(executor));
+  }
+
+  template <typename Joined = Value>
+    requires(!std::is_void_v<Value> && std::same_as<Joined, Value>)
+  [[nodiscard]] static Task<std::vector<Joined>> join_all(
+      std::vector<Task> tasks, std::shared_ptr<Executor> executor = current_executor()) {
+    auto output = Task<std::vector<Joined>>::pending(std::move(executor));
+    if (tasks.empty()) {
+      output.state_->fulfill({});
+      return output;
+    }
+
+    struct JoinState {
+      std::mutex mutex;
+      std::size_t remaining;
+      bool settled = false;
+      std::vector<std::optional<Joined>> values;
+    };
+    auto join = std::make_shared<JoinState>();
+    join->remaining = tasks.size();
+    join->values.resize(tasks.size());
+    for (std::size_t index = 0; index < tasks.size(); ++index) {
+      auto source = tasks[index];
+      source.state_->subscribe([source, output_state = output.state_, executor = output.executor_, join, index] {
+        post(executor, [source, output_state, join, index] {
+          if (source.status() == TaskStatus::rejected) {
+            bool reject = false;
+            {
+              std::lock_guard lock(join->mutex);
+              if (!join->settled) {
+                join->settled = true;
+                reject = true;
+              }
+            }
+            if (reject) output_state->reject(source.state_->rejection());
+            return;
+          }
+
+          std::optional<std::vector<Joined>> values;
+          {
+            std::lock_guard lock(join->mutex);
+            if (join->settled) return;
+            join->values[index] = source.state_->result();
+            --join->remaining;
+            if (join->remaining == 0) {
+              join->settled = true;
+              values.emplace();
+              values->reserve(join->values.size());
+              for (auto& value : join->values) values->push_back(std::move(*value));
+            }
+          }
+          if (values) output_state->fulfill(std::move(*values));
+        });
+      });
+    }
+    return output;
+  }
+
+  [[nodiscard]] static Task join_all(std::vector<Task> tasks,
+                                     std::shared_ptr<Executor> executor = current_executor())
+    requires std::is_void_v<Value>
+  {
+    auto output = pending(std::move(executor));
+    if (tasks.empty()) {
+      output.state_->fulfill();
+      return output;
+    }
+
+    struct JoinState {
+      std::mutex mutex;
+      std::size_t remaining;
+      bool settled = false;
+    };
+    auto join = std::make_shared<JoinState>();
+    join->remaining = tasks.size();
+    for (const auto& source : tasks) {
+      source.state_->subscribe([source, output_state = output.state_, executor = output.executor_, join] {
+        post(executor, [source, output_state, join] {
+          if (source.status() == TaskStatus::rejected) {
+            bool reject = false;
+            {
+              std::lock_guard lock(join->mutex);
+              if (!join->settled) {
+                join->settled = true;
+                reject = true;
+              }
+            }
+            if (reject) output_state->reject(source.state_->rejection());
+            return;
+          }
+
+          bool fulfill = false;
+          {
+            std::lock_guard lock(join->mutex);
+            if (join->settled) return;
+            --join->remaining;
+            if (join->remaining == 0) {
+              join->settled = true;
+              fulfill = true;
+            }
+          }
+          if (fulfill) output_state->fulfill();
+        });
+      });
+    }
+    return output;
+  }
+
+  template <typename Joined = Value>
+    requires(!std::is_void_v<Value> && std::same_as<Joined, Value>)
+  [[nodiscard]] static Task<std::vector<Joined>> all(
+      std::vector<Task> tasks, std::shared_ptr<Executor> executor = current_executor()) {
+    return join_all(std::move(tasks), std::move(executor));
+  }
+
+  [[nodiscard]] static Task all(std::vector<Task> tasks,
+                                std::shared_ptr<Executor> executor = current_executor())
+    requires std::is_void_v<Value>
+  {
+    return join_all(std::move(tasks), std::move(executor));
+  }
+
+  template <typename Function>
+    requires(!std::is_void_v<Value> && std::copy_constructible<std::remove_cvref_t<Function>>)
+  [[nodiscard]] auto then(Function function) const
+      -> Task<detail::TaskResultValue<std::invoke_result_t<Function&, Value>>> {
+    using Output = detail::TaskResultValue<std::invoke_result_t<Function&, Value>>;
+    auto output = Task<Output>::pending(executor_);
+    auto source = *this;
+    state_->subscribe([source, output_state = output.state_, executor = executor_, function = std::move(function)]() mutable {
+      post(executor, [source, output_state, function = std::move(function)]() mutable {
+        if (source.status() == TaskStatus::rejected) {
+          output_state->reject(source.state_->rejection());
+          return;
+        }
+        settle_invocation<Output>(output_state, [&] { return std::invoke(function, source.state_->result()); });
+      });
+    });
+    return output;
+  }
+
+  template <typename Function>
+    requires(std::is_void_v<Value> && std::copy_constructible<std::remove_cvref_t<Function>>)
+  [[nodiscard]] auto then(Function function) const
+      -> Task<detail::TaskResultValue<std::invoke_result_t<Function&>>> {
+    using Output = detail::TaskResultValue<std::invoke_result_t<Function&>>;
+    auto output = Task<Output>::pending(executor_);
+    auto source = *this;
+    state_->subscribe([source, output_state = output.state_, executor = executor_, function = std::move(function)]() mutable {
+      post(executor, [source, output_state, function = std::move(function)]() mutable {
+        if (source.status() == TaskStatus::rejected) {
+          output_state->reject(source.state_->rejection());
+          return;
+        }
+        source.state_->result();
+        settle_invocation<Output>(output_state, [&] { return std::invoke(function); });
+      });
+    });
+    return output;
+  }
+
+  template <typename Function>
+    requires std::copy_constructible<std::remove_cvref_t<Function>>
+  [[nodiscard]] Task catch_error(Function function) const {
+    using Result = std::invoke_result_t<Function&, const Rejection&>;
+    static_assert(std::same_as<detail::TaskResultValue<Result>, Value>,
+                  "a task rejection handler must preserve the task value type");
+    auto output = pending(executor_);
+    auto source = *this;
+    state_->subscribe([source, output_state = output.state_, executor = executor_, function = std::move(function)]() mutable {
+      post(executor, [source, output_state, function = std::move(function)]() mutable {
+        if (source.status() == TaskStatus::fulfilled) {
+          source.copy_settlement_to(output_state);
+          return;
+        }
+        const auto rejection = source.state_->rejection();
+        settle_invocation<Value>(output_state, [&] { return std::invoke(function, rejection); });
+      });
+    });
+    return output;
+  }
+
+  template <typename Function>
+    requires std::copy_constructible<std::remove_cvref_t<Function>>
+  [[nodiscard]] Task finally(Function function) const {
+    using Result = std::invoke_result_t<Function&>;
+    auto output = pending(executor_);
+    auto source = *this;
+    state_->subscribe([source, output_state = output.state_, executor = executor_, function = std::move(function)]() mutable {
+      post(executor, [source, output_state, executor, function = std::move(function)]() mutable {
+        try {
+          if constexpr (detail::is_task_result<Result>) {
+            auto cleanup = std::invoke(function);
+            cleanup.state_->subscribe([cleanup, source, output_state, executor] {
+              post(executor, [cleanup, source, output_state] {
+                if (cleanup.status() == TaskStatus::rejected) {
+                  output_state->reject(cleanup.state_->rejection());
+                } else {
+                  source.copy_settlement_to(output_state);
+                }
+              });
+            });
+          } else {
+            if constexpr (std::is_void_v<Result>) {
+              std::invoke(function);
+            } else {
+              static_cast<void>(std::invoke(function));
+            }
+            source.copy_settlement_to(output_state);
+          }
+        } catch (...) {
+          output_state->reject(Rejection::from_exception(std::current_exception()));
+        }
+      });
+    });
+    return output;
+  }
+
+  Value get() const {
+    while (status() == TaskStatus::pending) {
+      if (executor_->run_one()) continue;
+      state_->wait_briefly();
+    }
+    if constexpr (std::is_void_v<Value>) {
+      state_->result();
+    } else {
+      return state_->result();
+    }
+  }
+
+  [[nodiscard]] std::shared_ptr<Executor> executor() const noexcept { return executor_; }
+  [[nodiscard]] bool is_ready() const { return status() != TaskStatus::pending; }
+  [[nodiscard]] TaskSettlement<Value> settle() const {
+    try {
+      if constexpr (std::is_void_v<Value>) {
+        get();
+      } else {
+        static_cast<void>(get());
+      }
+    } catch (...) {
+    }
+    return state_->settlement();
+  }
+  [[nodiscard]] TaskStatus status() const { return state_->status(); }
+
+  [[nodiscard]] Awaiter operator co_await() const& noexcept { return Awaiter(state_, owner_); }
+  [[nodiscard]] Awaiter operator co_await() && noexcept { return Awaiter(state_, std::move(owner_)); }
+
+ private:
+  template <typename>
+  friend class Task;
+
+  Task(std::shared_ptr<detail::TaskState<Value>> state, std::shared_ptr<Executor> executor,
+       std::shared_ptr<detail::CoroutineOwner> owner = {})
+      : executor_(std::move(executor)), owner_(std::move(owner)), state_(std::move(state)) {
+    if (!executor_) throw std::invalid_argument("flight::Task requires an executor");
+  }
+
+  [[nodiscard]] static Task pending(std::shared_ptr<Executor> executor) {
+    return Task(std::make_shared<detail::TaskState<Value>>(), std::move(executor));
+  }
+
+  static void post(const std::shared_ptr<Executor>& executor, std::function<void()> operation) {
+    executor->post([executor, operation = std::move(operation)]() mutable {
+      ExecutorScope scope(executor);
+      operation();
+    });
+  }
+
+  void copy_settlement_to(const std::shared_ptr<detail::TaskState<Value>>& output) const {
+    if (status() == TaskStatus::rejected) {
+      output->reject(state_->rejection());
+    } else if constexpr (std::is_void_v<Value>) {
+      state_->result();
+      output->fulfill();
+    } else {
+      output->fulfill(state_->result());
+    }
+  }
+
+  void forward_to(const std::shared_ptr<detail::TaskState<Value>>& output) const {
+    if (state_ == output) {
+      output->reject(Rejection::from_exception(
+          std::make_exception_ptr(std::logic_error("flight::Task cannot resolve itself"))));
+      return;
+    }
+    auto source = *this;
+    state_->subscribe([source, output] { source.copy_settlement_to(output); });
+  }
+
+  template <typename Output, typename Invocation>
+  static void settle_invocation(const std::shared_ptr<detail::TaskState<Output>>& output,
+                                Invocation&& invocation) {
+    using Result = std::invoke_result_t<Invocation&>;
+    try {
+      if constexpr (detail::is_task_result<Result>) {
+        auto task = std::invoke(invocation);
+        task.forward_to(output);
+      } else if constexpr (std::is_void_v<Result>) {
+        std::invoke(invocation);
+        output->fulfill();
+      } else {
+        output->fulfill(Output(std::invoke(invocation)));
+      }
+    } catch (...) {
+      output->reject(Rejection::from_exception(std::current_exception()));
+    }
+  }
+
+  std::shared_ptr<Executor> executor_;
   std::shared_ptr<detail::CoroutineOwner> owner_;
+  std::shared_ptr<detail::TaskState<Value>> state_;
 };
 
 template <typename Value>
-struct Task<Value>::promise_type {
-  std::exception_ptr error;
-  std::optional<Value> value;
+void Task<Value>::Resolver::operator()(Task task) const {
+  task.forward_to(state_);
+}
+
+template <typename Value>
+struct Task<Value>::promise_type : detail::TaskPromiseResult<Value> {
+  promise_type()
+      : detail::TaskPromiseResult<Value>(std::make_shared<detail::TaskState<Value>>()),
+        executor_(current_executor()) {}
 
   [[nodiscard]] Task get_return_object() {
-    return Task(std::make_shared<detail::CoroutineOwner>(Handle::from_promise(*this)));
+    auto owner = std::make_shared<detail::CoroutineOwner>(
+        std::coroutine_handle<promise_type>::from_promise(*this));
+    owner_ = owner;
+    return Task(this->state_, executor_, std::move(owner));
   }
 
   [[nodiscard]] constexpr std::suspend_never initial_suspend() const noexcept { return {}; }
   [[nodiscard]] constexpr std::suspend_always final_suspend() const noexcept { return {}; }
 
-  template <typename Result>
-    requires std::constructible_from<Value, Result&&>
-  void return_value(Result&& result) noexcept(std::is_nothrow_constructible_v<Value, Result&&>) {
-    value.emplace(std::forward<Result>(result));
+  [[nodiscard]] std::shared_ptr<Executor> flight_executor() const { return executor_; }
+  [[nodiscard]] std::shared_ptr<detail::CoroutineOwner> flight_owner() const { return owner_.lock(); }
+
+  void unhandled_exception() {
+    this->state_->reject(Rejection::from_exception(std::current_exception()));
   }
 
-  void unhandled_exception() noexcept { error = std::current_exception(); }
-};
-
-template <typename Value>
-bool Task<Value>::Awaiter::await_ready() const noexcept {
-  return Task::handle(owner_).done();
-}
-
-template <typename Value>
-bool Task<Value>::Awaiter::await_suspend(std::coroutine_handle<> continuation) {
-  static_cast<void>(continuation);
-  throw std::logic_error("pending flight::Task requires an executor");
-}
-
-template <typename Value>
-Value Task<Value>::Awaiter::await_resume() const {
-  return Task::result(owner_);
-}
-
-template <typename Value>
-Task<std::vector<Value>> Task<Value>::join_all(std::vector<Task> tasks) {
-  std::vector<Value> values;
-  values.reserve(tasks.size());
-  for (const auto& task : tasks) values.push_back(co_await task);
-  co_return values;
-}
-
-template <typename Value>
-Task<Value> Task<Value>::ready(Value value) {
-  co_return value;
-}
-
-template <typename Value>
-Task<Value> Task<Value>::reject(std::exception_ptr error) {
-  detail::throw_task_error(error);
-  co_return detail::unreachable_task_value<Value>();
-}
-
-template <typename Value>
-Value Task<Value>::get() const {
-  return result(owner_);
-}
-
-template <typename Value>
-bool Task<Value>::is_ready() const noexcept {
-  return handle(owner_).done();
-}
-
-template <typename Value>
-Value Task<Value>::result(const std::shared_ptr<detail::CoroutineOwner>& owner) {
-  const auto coroutine = handle(owner);
-  if (!coroutine.done()) throw std::logic_error("flight::Task result is not ready");
-  if (coroutine.promise().error) std::rethrow_exception(coroutine.promise().error);
-  if (!coroutine.promise().value) throw std::logic_error("flight::Task completed without a value");
-  return *coroutine.promise().value;
-}
-
-template <>
-class Task<void> {
- public:
-  struct promise_type;
-
  private:
-  using Handle = std::coroutine_handle<promise_type>;
-
- public:
-  class Awaiter {
-   public:
-    explicit Awaiter(std::shared_ptr<detail::CoroutineOwner> owner) noexcept
-        : owner_(std::move(owner)) {}
-
-    [[nodiscard]] bool await_ready() const noexcept;
-    bool await_suspend(std::coroutine_handle<> continuation);
-    void await_resume() const;
-
-   private:
-    std::shared_ptr<detail::CoroutineOwner> owner_;
-  };
-
-  Task(const Task&) noexcept = default;
-  Task(Task&&) noexcept = default;
-  Task& operator=(const Task&) noexcept = default;
-  Task& operator=(Task&&) noexcept = default;
-
-  [[nodiscard]] static Task join_all(std::vector<Task> tasks);
-  [[nodiscard]] static Task ready();
-  [[nodiscard]] static Task reject(std::exception_ptr error);
-
-  void get() const;
-  [[nodiscard]] bool is_ready() const noexcept;
-  [[nodiscard]] Awaiter operator co_await() const& noexcept { return Awaiter(owner_); }
-  [[nodiscard]] Awaiter operator co_await() && noexcept { return Awaiter(std::move(owner_)); }
-
- private:
-  explicit Task(std::shared_ptr<detail::CoroutineOwner> owner) noexcept : owner_(std::move(owner)) {}
-
-  [[nodiscard]] static Handle handle(const std::shared_ptr<detail::CoroutineOwner>& owner) noexcept;
-  static void result(const std::shared_ptr<detail::CoroutineOwner>& owner);
-
-  std::shared_ptr<detail::CoroutineOwner> owner_;
+  std::shared_ptr<Executor> executor_;
+  std::weak_ptr<detail::CoroutineOwner> owner_;
 };
-
-struct Task<void>::promise_type {
-  std::exception_ptr error;
-
-  [[nodiscard]] Task get_return_object() {
-    return Task(std::make_shared<detail::CoroutineOwner>(Handle::from_promise(*this)));
-  }
-
-  [[nodiscard]] constexpr std::suspend_never initial_suspend() const noexcept { return {}; }
-  [[nodiscard]] constexpr std::suspend_always final_suspend() const noexcept { return {}; }
-  constexpr void return_void() const noexcept {}
-  void unhandled_exception() noexcept { error = std::current_exception(); }
-};
-
-inline bool Task<void>::Awaiter::await_ready() const noexcept {
-  return Task::handle(owner_).done();
-}
-
-inline bool Task<void>::Awaiter::await_suspend(std::coroutine_handle<> continuation) {
-  static_cast<void>(continuation);
-  throw std::logic_error("pending flight::Task requires an executor");
-}
-
-inline void Task<void>::Awaiter::await_resume() const {
-  Task::result(owner_);
-}
-
-inline Task<void> Task<void>::join_all(std::vector<Task> tasks) {
-  for (const auto& task : tasks) co_await task;
-  co_return;
-}
-
-inline Task<void> Task<void>::ready() {
-  co_return;
-}
-
-inline Task<void> Task<void>::reject(std::exception_ptr error) {
-  detail::throw_task_error(error);
-  co_return;
-}
-
-inline void Task<void>::get() const {
-  result(owner_);
-}
-
-inline bool Task<void>::is_ready() const noexcept {
-  return handle(owner_).done();
-}
-
-inline auto Task<void>::handle(const std::shared_ptr<detail::CoroutineOwner>& owner) noexcept -> Handle {
-  return Handle::from_address(owner->coroutine().address());
-}
-
-inline void Task<void>::result(const std::shared_ptr<detail::CoroutineOwner>& owner) {
-  const auto coroutine = handle(owner);
-  if (!coroutine.done()) throw std::logic_error("flight::Task result is not ready");
-  if (coroutine.promise().error) std::rethrow_exception(coroutine.promise().error);
-}
 
 } // namespace flight

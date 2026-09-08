@@ -26,17 +26,20 @@ struct RuntimeContract {
 inline constexpr RuntimeContract runtime_contract{
     .compiler_contract = "flight-runtime-contract/2",
     .cpp_abi = 1,
-    .task_contract = "flight-runtime-task-coroutine/1",
+    .task_contract = "flight-runtime-task-capability-abi/1",
 };
 
 inline constexpr std::array runtime_capabilities{
     RuntimeCapability{"array", RuntimeCapabilityStatus::initial},
     RuntimeCapability{"date", RuntimeCapabilityStatus::initial},
+    RuntimeCapability{"executor", RuntimeCapabilityStatus::initial},
     RuntimeCapability{"map", RuntimeCapabilityStatus::initial},
+    RuntimeCapability{"set", RuntimeCapabilityStatus::initial},
+    RuntimeCapability{"string-code-units", RuntimeCapabilityStatus::initial},
     RuntimeCapability{"task-coroutine", RuntimeCapabilityStatus::initial},
-    RuntimeCapability{"set", RuntimeCapabilityStatus::planned},
-    RuntimeCapability{"string-unicode", RuntimeCapabilityStatus::planned},
-    RuntimeCapability{"task-promise-operations", RuntimeCapabilityStatus::planned},
+    RuntimeCapability{"typed-array", RuntimeCapabilityStatus::initial},
+    RuntimeCapability{"unicode-case-service", RuntimeCapabilityStatus::planned},
+    RuntimeCapability{"task-promise-operations", RuntimeCapabilityStatus::initial},
 };
 
 constexpr RuntimeCapabilityStatus runtime_capability_status(std::string_view name) noexcept {

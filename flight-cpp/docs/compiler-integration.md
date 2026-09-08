@@ -21,7 +21,8 @@ Arrays, maps, sets, and strings need a semantic lowering change before this runt
 | `Date` | `FlightDate` | `flight::Date` through the compatibility alias until the emitter migrates |
 | `Array<T>` | `std::vector<T>` | `flight::Array<T>` |
 | `Map<K, V>` | `std::unordered_map<K, V>` | `flight::Map<K, V>` |
-| `Set<T>` | `std::unordered_set<T>` | planned `flight::Set<T>` |
-| `string` | `std::string` | planned UTF-aware `flight::String` with an explicit encoding contract |
+| `Set<T>` | `std::unordered_set<T>` | `flight::Set<T>` |
+| typed arrays | `std::vector<element>` | `flight::TypedArray<element>` aliases with view identity |
+| `string` | `std::string` | UTF-16 `flight::String` with explicit UTF-8 and Unicode-service boundaries |
 
 The compiler owns the decision and lowering tables. `flight-cpp` owns their maintained implementations, headers, packaging, and behavioral conformance. Neither side should parse or infer the other's source.

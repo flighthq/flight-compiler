@@ -15,11 +15,16 @@ set(
   contract
   date
   equality
+  executor
   map
   math
   presence
+  rejection
+  set
+  string
   runtime
   task
+  typed_array
   version
 )
 

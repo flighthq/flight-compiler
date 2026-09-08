@@ -2,7 +2,7 @@
 
 `flight-cpp` is the incubating C++20 runtime for TypeScript compiled by Flight Compiler. It lives in the compiler repository while the generated-code boundary is still changing quickly, but it is deliberately an independent CMake project so it can move to its own repository without a build-system migration.
 
-This is a working foundation, not a production-support claim. Version 0.1.0 provides tested initial representations for shared arrays and maps, explicit `undefined`/`null` presence, SameValueZero equality, UTC date instants, and eager shared coroutine tasks. Unicode strings, sets, full Promise operations, executor scheduling, cancellation, time zones, and generated-program conformance are still open.
+This is a working foundation, not a production-support claim. Version 0.1.0 provides tested representations for shared arrays, insertion-ordered maps and sets, typed-array views, explicit `undefined`/`null` presence, SameValueZero equality, UTF-16 strings, UTC date instants, and shared coroutine tasks. Tasks use an explicit non-reentrant executor and implement first-settlement-wins construction, exact rejection values, queued continuation, recovery, cleanup, assimilation, and ordered aggregation. Full Unicode case conversion is supplied through a host service; cancellation, time zones, and generated-program conformance remain open.
 
 ## Build
 
