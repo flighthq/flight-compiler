@@ -251,4 +251,9 @@ describe('normalizeSourceTextGrouping', () => {
     // A comma inside a string literal is text, not a separator.
     expect(normalizeSourceTextGrouping('("a,b".to_owned())')).toBe('"a,b".to_owned()');
   });
+
+  it('preserves escaped characters inside quoted strings and keeps unbalanced-depth groups', () => {
+    expect(normalizeSourceTextGrouping('("a\\"b")')).toBe('"a\\"b"');
+    expect(normalizeSourceTextGrouping('((a)')).toBe('((a)');
+  });
 });

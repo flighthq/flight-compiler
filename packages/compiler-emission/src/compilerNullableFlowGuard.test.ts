@@ -119,6 +119,73 @@ describe('collectIrModuleNullableBindingIds', () => {
     expect(ids).not.toContain('a');
   });
 
+  it('collects named variables whose type admits an absent value', () => {
+    const number: IrType = { kind: 'primitive', name: 'number' };
+    const optional: IrType = { kind: 'union', types: [number, { kind: 'undefined' }] };
+    const origin: CompilerSourceOrigin = {
+      column: 1,
+      fingerprint: `sha256:${'0'.repeat(64)}`,
+      line: 1,
+      packageName: '@flighthq/math',
+      source: 'variable.ts',
+    };
+    const module: IrModule = {
+      declarations: [
+        {
+          async: false,
+          binding: { ...origin, id: 'read', kind: 'function', name: 'read', scope: 'module', space: 'value' } as const,
+          body: [
+            {
+              declarations: [
+                {
+                  binding: {
+                    ...origin,
+                    id: 'nullable',
+                    kind: 'variable',
+                    name: 'nullable',
+                    scope: 'block',
+                    space: 'value',
+                  } as const,
+                  mutable: false,
+                  type: optional,
+                },
+                {
+                  binding: {
+                    ...origin,
+                    id: 'plain',
+                    kind: 'variable',
+                    name: 'plain',
+                    scope: 'block',
+                    space: 'value',
+                  } as const,
+                  mutable: false,
+                  type: number,
+                },
+              ],
+              kind: 'variable' as const,
+            },
+          ],
+          exported: true,
+          kind: 'function',
+          origin,
+          overloads: [],
+          parameters: [],
+          returns: number,
+          typeParameters: [],
+        },
+      ],
+      exports: [],
+      imports: [],
+      name: 'Variable',
+      packageName: '@flighthq/math',
+      source: 'variable.ts',
+    };
+
+    const ids = [...collectIrModuleNullableBindingIds(module)];
+    expect(ids).toContain('nullable');
+    expect(ids).not.toContain('plain');
+  });
+
   it('excludes optional parameters that have a default initializer', () => {
     const number: IrType = { kind: 'primitive', name: 'number' };
     const origin: CompilerSourceOrigin = {
