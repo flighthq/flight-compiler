@@ -2083,6 +2083,156 @@ describe('emitIrModuleRust', () => {
     expect(output).toContain('3.14159');
   });
 
+  it('emits class getter and setter as separate methods', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'accessor.ts',
+        'export class Box { private _value: number; constructor(v: number) { this._value = v; } get value(): number { return this._value; } set value(v: number) { this._value = v; } }',
+      ).module,
+    ).contents;
+    expect(output).toContain('fn value(');
+    expect(output).toContain('fn set_value(');
+  });
+
+  it('emits interface with data properties as trait accessors', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'iface-data-trait.ts',
+        'export interface Named { name: string; greet(): string; } export class User implements Named { name: string; constructor(name: string) { this.name = name; } greet(): string { return this.name; } }',
+      ).module,
+    ).contents;
+    expect(output).toContain('trait Named');
+    expect(output).toContain('fn name(&self) -> String');
+    expect(output).toContain('fn greet(&self) -> String');
+    expect(output).toContain('impl Named for User');
+  });
+
+  it('emits class with field initializer auto-constructor', () => {
+    const output = emitIrModuleRust(
+      lower('field-init.ts', 'export class Settings { width: number = 100.0; height: number = 200.0; }').module,
+    ).contents;
+    expect(output).toContain('fn new() -> Self');
+    expect(output).toContain('width:');
+    expect(output).toContain('height:');
+  });
+
+  it('emits mutable variable with mut binding', () => {
+    const output = emitIrModuleRust(
+      lower('mut-var.ts', 'export function mutate(): number { let x: number = 1.0; x = 2.0; x = 3.0; return x; }')
+        .module,
+    ).contents;
+    expect(output).toContain('let mut ');
+  });
+
+  it('emits if-else statement blocks', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'if-else.ts',
+        'export function classify(x: number): string { if (x > 0.0) { return "positive"; } else { return "non-positive"; } }',
+      ).module,
+    ).contents;
+    expect(output).toContain('if ');
+    expect(output).toContain('else {');
+  });
+
+  it('emits block statement with braces', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'block.ts',
+        'export function scoped(): number { let x: number = 1.0; { let y: number = 2.0; x = y; } return x; }',
+      ).module,
+    ).contents;
+    expect(output).toContain('{');
+    expect(output).toContain('}');
+  });
+
+  it('emits array reduce as into_iter().fold()', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'reduce.ts',
+        'export function sum(items: number[]): number { return items.reduce((acc: number, x: number): number => acc + x, 0.0); }',
+      ).module,
+    ).contents;
+    expect(output).toContain('into_iter()');
+    expect(output).toContain('.fold(');
+  });
+
+  it('emits number toString as to_string()', () => {
+    const output = emitIrModuleRust(
+      lower('num-tostring.ts', 'export function text(n: number): string { return n.toString(); }').module,
+    ).contents;
+    expect(output).toContain('.to_string()');
+  });
+
+  it('emits array reverse as reverse()', () => {
+    const output = emitIrModuleRust(
+      lower('array-reverse.ts', 'export function flip(items: number[]): void { items.reverse(); }').module,
+    ).contents;
+    expect(output).toContain('.reverse()');
+  });
+
+  it('emits array shift as remove(0)', () => {
+    const output = emitIrModuleRust(
+      lower('array-shift.ts', 'export function dequeue(items: number[]): void { items.shift(); }').module,
+    ).contents;
+    expect(output).toContain('.remove(0)');
+  });
+
+  it('emits string lastIndexOf as rfind', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'string-lastindexof.ts',
+        'export function last(s: string, sub: string): number { return s.lastIndexOf(sub); }',
+      ).module,
+    ).contents;
+    expect(output).toContain('.rfind(');
+    expect(output).toContain('unwrap_or(-1.0)');
+  });
+
+  it('emits type alias to simple type', () => {
+    const output = emitIrModuleRust(
+      lower('type-alias.ts', 'export type Count = number; export function zero(): Count { return 0.0; }').module,
+    ).contents;
+    expect(output).toContain('pub type Count = f64');
+  });
+
+  it('emits class implementing interface with impl for block', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'impl-trait.ts',
+        'export interface Runnable { run(): void; } export class Task implements Runnable { done: boolean; constructor() { this.done = false; } run(): void { this.done = true; } }',
+      ).module,
+    ).contents;
+    expect(output).toContain('impl Runnable for Task');
+  });
+
+  it('emits async function with async fn keyword', () => {
+    const output = emitIrModuleRust(
+      lower('async-fn.ts', 'export async function fetch(url: string): Promise<string> { return url; }').module,
+    ).contents;
+    expect(output).toContain('async fn');
+    expect(output).toContain('-> String');
+  });
+
+  it('emits expression statement with semicolon', () => {
+    const output = emitIrModuleRust(
+      lower('expr-stmt.ts', 'export function side(items: number[]): void { items.push(1.0); }').module,
+    ).contents;
+    expect(output).toContain('.push(');
+    expect(output).toMatch(/push\([^)]*\);/);
+  });
+
+  it('emits array lastIndexOf as iter().rposition()', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'array-lastindexof.ts',
+        'export function lastIdx(items: string[], needle: string): number { return items.lastIndexOf(needle); }',
+      ).module,
+    ).contents;
+    expect(output).toContain('.rposition(');
+    expect(output).toContain('unwrap_or(-1.0)');
+  });
+
   it('emits concrete class inheritance as composition with base field delegation', () => {
     const result = lower(
       'class-inheritance.ts',
