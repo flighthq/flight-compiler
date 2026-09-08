@@ -161,7 +161,7 @@ describe('emitIrModuleCpp', () => {
     const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
 
     expect(emitted.contents).toContain('#include <variant>');
-    expect(emitted.contents).toContain('std::variant<flight::String, double> value');
+    expect(emitted.contents).toContain('std::variant<double, flight::String> value');
     expect(emitted.contents).toContain('std::holds_alternative<flight::String>(value)');
     expect(emitted.contents).toContain('std::get<flight::String>(value)');
     expect(emitted.contents).toContain('std::get<double>(value)');
@@ -805,7 +805,7 @@ describe('emitIrModuleCpp', () => {
     );
     const emitted = emitIrModuleCpp(result.module);
 
-    expect(emitted.contents).toContain('std::variant<double, std::string, bool> input');
+    expect(emitted.contents).toContain('std::variant<bool, double, std::string> input');
     expect(emitted.contents).toContain('return std::get<double>(input)');
   });
 
@@ -1873,7 +1873,7 @@ describe('emitIrModuleCpp', () => {
     expect(emitted.contents).toContain('std::get<Square>(shape).side');
   });
 
-  it('refuses ambiguous variant representations, open discriminants, and nullable multi-value unions', () => {
+  it('collapses equivalent alternatives, emits optional variants, and still refuses unproven member access', () => {
     const duplicate = lower(
       'duplicate.ts',
       'type Numeric = number; export function duplicate(value: Numeric | number): Numeric | number { return value; }',
@@ -1892,14 +1892,121 @@ describe('emitIrModuleCpp', () => {
       'export function maybe(value: string | number | undefined): string | number | undefined { return value; }',
     );
 
-    expect(() => emitIrModuleCpp(duplicate.module)).toThrow(
-      'multi-member union alternatives must have unique C++ representations',
-    );
+    expect(emitIrModuleCpp(duplicate.module).contents).toContain('double duplicate(double value)');
     expect(() => emitIrModuleCpp(open.module)).toThrow(
       'property kind on a C++ variant requires proven union member access',
     );
-    expect(() => emitIrModuleCpp(nullable.module)).toThrow(
-      'unions combining multiple values with null or undefined require optional-variant lowering',
+    expect(emitIrModuleCpp(nullable.module).contents).toContain(
+      'std::optional<std::variant<double, std::string>> maybe(std::optional<std::variant<double, std::string>> value)',
+    );
+  });
+
+  it('constructs heterogeneous conditional union arms explicitly', () => {
+    const result = lower(
+      'conditional-union.ts',
+      'export function choose(flag: boolean): string | number { return flag ? "x" : 1; }',
+    );
+    const output = emitIrModuleCpp(result.module).contents;
+
+    expect(output).toContain('std::variant<double, std::string> choose(bool flag)');
+    expect(output).toContain(
+      'flag ? std::variant<double, std::string>{std::in_place_type<std::string>, "x"} : std::variant<double, std::string>{std::in_place_type<double>, 1.0}',
+    );
+  });
+
+  it('constructs optional variant values and undefined absence explicitly', () => {
+    const result = lower(
+      'optional-variant.ts',
+      `export function choose(flag: number): string | number | undefined {
+        if (flag === 0) return undefined;
+        return flag > 0 ? "x" : 1;
+      }`,
+    );
+    const output = emitIrModuleCpp(result.module).contents;
+
+    expect(output).toContain('std::optional<std::variant<double, std::string>> choose(double flag)');
+    expect(output).toContain('return std::nullopt');
+    expect(output).toContain(
+      'std::optional<std::variant<double, std::string>>{std::in_place, std::in_place_type<std::string>, "x"}',
+    );
+    expect(output).toContain(
+      'std::optional<std::variant<double, std::string>>{std::in_place, std::in_place_type<double>, 1.0}',
+    );
+  });
+
+  it('propagates union construction through array, object, and call-argument contexts', () => {
+    const result = lower(
+      'nested-union.ts',
+      `interface Box { value: string | number; }
+       function accept(value: string | number): number { return 1; }
+       export function nested(flag: boolean): number {
+         const values: Array<string | number> = [flag ? "array" : 1];
+         const box: Box = { value: flag ? "object" : 2 };
+         return accept(flag ? "argument" : 3) + values.length + box.value.toString().length;
+       }`,
+    );
+    const output = emitIrModuleCpp(result.module).contents;
+
+    expect(output).toContain('std::vector<std::variant<double, std::string>> values');
+    expect(output).toContain('std::in_place_type<std::string>, "array"');
+    expect(output).toContain('std::in_place_type<double>, 2.0');
+    expect(output).toContain('std::in_place_type<std::string>, "argument"');
+  });
+
+  it('preserves null and undefined as distinct flight-cpp variant alternatives', () => {
+    const result = lower(
+      'dual-sentinel.ts',
+      `export function choose(flag: number): number | null | undefined {
+         if (flag < 0) return null;
+         if (flag === 0) return undefined;
+         return 1;
+       }
+       export function isNull(value: number | null | undefined): boolean { return value === null; }
+       export function isNullish(value: number | null | undefined): boolean { return value == null; }
+       export function read(value: number | null | undefined): number {
+         if (value == null) return 0;
+         return value;
+       }`,
+    );
+    const output = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    expect(output).toContain('std::variant<double, flight::Null, flight::Undefined>');
+    expect(output).toContain('std::in_place_type<flight::Null>, flight::null');
+    expect(output).toContain('std::in_place_type<flight::Undefined>, flight::undefined');
+    expect(output).toContain('std::in_place_type<double>, 1.0');
+    expect(output).toContain('std::holds_alternative<flight::Null>(value)');
+    expect(output).toContain('std::holds_alternative<flight::Undefined>(value)');
+    expect(output).toContain('return std::get<double>(value)');
+  });
+
+  it('uses distinct standard sentinel alternatives without the flight-cpp runtime', () => {
+    const result = lower(
+      'generic-dual-sentinel.ts',
+      'export function choose(flag: boolean): number | null | undefined { return flag ? null : undefined; }',
+    );
+    const output = emitIrModuleCpp(result.module).contents;
+
+    expect(output).toContain('#include <cstddef>');
+    expect(output).toContain('std::variant<double, std::nullptr_t, std::monostate>');
+    expect(output).toContain('std::in_place_type<std::nullptr_t>, nullptr');
+    expect(output).toContain('std::in_place_type<std::monostate>, std::monostate{}');
+  });
+
+  it('refuses dual-sentinel coalescing and optional chaining until presence projection is lowered', () => {
+    const coalesce = lower(
+      'dual-coalesce.ts',
+      'export function read(value: number | null | undefined): number { return value ?? 0; }',
+    );
+    const optionalChain = lower(
+      'dual-chain.ts',
+      'export function text(value: number | null | undefined): string | undefined { return value?.toString(); }',
+    );
+
+    expect(() => emitIrModuleCpp(coalesce.module)).toThrow(
+      'dual-sentinel nullish coalescing requires presence projection lowering',
+    );
+    expect(() => emitIrModuleCpp(optionalChain.module)).toThrow(
+      'dual-sentinel optional chaining requires presence projection lowering',
     );
   });
 

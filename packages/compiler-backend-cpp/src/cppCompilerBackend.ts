@@ -71,6 +71,7 @@ import {
   getCompilerRuntimeExternalMemberTargetCpp,
   getCompilerRuntimeExternalSymbolTargetCpp,
 } from './cppRuntimeExternalSymbolBinding.js';
+import { createCppUnionRepresentationPlan } from './cppUnionRepresentationPlan.js';
 
 interface AnonymousStruct {
   name: string;
@@ -78,7 +79,8 @@ interface AnonymousStruct {
 }
 
 interface CppVariantRepresentation {
-  alternatives: readonly Readonly<{ member: IrType; representationKey: string; targetType: string }>[];
+  alternatives: readonly Readonly<{ members: readonly IrType[]; targetType: string }>[];
+  direct: boolean;
 }
 
 interface EmitContext {
@@ -547,7 +549,12 @@ function emitExpression(
   expression: Readonly<IrExpression>,
   context: EmitContext,
   expectedType?: Readonly<IrType> | undefined,
+  constructExpectedUnion = true,
 ): string {
+  if (expectedType && constructExpectedUnion) {
+    const constructed = emitContextualUnionExpressionCpp(expression, expectedType, context);
+    if (constructed) return constructed;
+  }
   switch (expression.kind) {
     case 'array': {
       const expectedArray = expectedType?.kind === 'array' ? expectedType : undefined;
@@ -572,7 +579,8 @@ function emitExpression(
       ) {
         return `${emitExpression(expression.left, context)} += ${emitExpression(expression.right, context)}`;
       }
-      const right = emitExpression(expression.right, context);
+      const assignmentType = getIrAssignmentTargetTypeCpp(expression.left, context);
+      const right = emitExpression(expression.right, context, assignmentType);
       if (expression.operator === '=' && expression.left.kind === 'property') {
         const setter = getIrExpressionClassAccessorCpp(expression.left.object, expression.left.name, 'set', context);
         if (setter) {
@@ -589,15 +597,14 @@ function emitExpression(
         return emitUnionMemberTestCpp(expression.semantics.unionMemberTest, context);
       }
       if (expression.semantics.nullishComparison) {
-        context.includes.add('optional');
-        const operand =
-          expression.left.kind === 'identifier' && expression.left.reference.kind === 'ambient'
-            ? expression.right
-            : expression.left;
-        const negated = expression.operator === '!=' || expression.operator === '!==';
-        return `${negated ? '' : '!'}${emitExpression(operand, context)}.has_value()`;
+        return emitNullishComparisonCpp(expression, context);
       }
       if (expression.operator === '??') {
+        const leftType = getIrExpressionBindingTypeCpp(expression.left, context);
+        const union = leftType ? getIrUnionTypeCpp(leftType, context, new Set()) : undefined;
+        if (union && getCppUnionRepresentationPlan(union, context).kind === 'dualSentinelVariant') {
+          emissionError(context, 'dual-sentinel nullish coalescing requires presence projection lowering');
+        }
         context.includes.add('optional');
         return `${emitOptionalExpressionCpp(expression.left, context, expectedType)}.value_or(${emitExpression(expression.right, context, expectedType)})`;
       }
@@ -668,7 +675,9 @@ function emitExpression(
         }
         if (binding && binding.kind === 'method') {
           const receiver = emitExpression(expression.callee.object, context);
-          const args = expression.arguments.map((argument) => emitExpression(argument, context));
+          const args = expression.arguments.map((argument, index) =>
+            emitExpression(argument, context, getIrCallArgumentExpectedTypeCpp(expression, index, context)),
+          );
           return `${receiver}${memberOp(expression.callee.object)}${binding.targetName}${emitCppTypeArguments(expression.typeArguments, context)}(${args.join(', ')})`;
         }
       }
@@ -692,7 +701,9 @@ function emitExpression(
         expression.callee.kind === 'function'
           ? `(${emitExpression(expression.callee, context)})`
           : emitExpression(expression.callee, context);
-      const args = expression.arguments.map((argument) => emitExpression(argument, context));
+      const args = expression.arguments.map((argument, index) =>
+        emitExpression(argument, context, getIrCallArgumentExpectedTypeCpp(expression, index, context)),
+      );
       return `${callee}${emitCppTypeArguments(expression.typeArguments, context)}(${args.join(', ')})`;
     }
     case 'cast': {
@@ -703,7 +714,7 @@ function emitExpression(
       );
     }
     case 'conditional':
-      return `(${emitExpression(expression.condition, context)} ? ${emitExpression(expression.whenTrue, context)} : ${emitExpression(expression.whenFalse, context)})`;
+      return `(${emitExpression(expression.condition, context)} ? ${emitExpression(expression.whenTrue, context, expectedType)} : ${emitExpression(expression.whenFalse, context, expectedType)})`;
     case 'element': {
       if (expression.optional) return emitOptionalElementExpressionCpp(expression, context);
       if (expression.semantics.receivers.includes('tuple')) {
@@ -764,6 +775,16 @@ function emitExpression(
         expression.reference.kind === 'binding' &&
         context.nullableBindingIds.has(expression.reference.binding.id)
       ) {
+        const bindingType = context.bindingTypes.get(expression.reference.binding.id);
+        const union = bindingType ? getIrUnionTypeCpp(bindingType, context, new Set()) : undefined;
+        const plan = union ? getCppUnionRepresentationPlan(union, context) : undefined;
+        if (plan?.kind === 'dualSentinelVariant') {
+          if (plan.valueSlots.length !== 1) {
+            emissionError(context, 'dual-sentinel presence narrowing requires one remaining C++ value domain');
+          }
+          context.includes.add('variant');
+          return `std::get<${plan.valueSlots[0]!.targetType}>(${emitIdentifierReference(expression.reference, context)})`;
+        }
         context.includes.add('optional');
         return `${emitIdentifierReference(expression.reference, context)}.value()`;
       }
@@ -774,14 +795,16 @@ function emitExpression(
       return emitIdentifierReference(expression.reference, context);
     }
     case 'literal':
-      return emitLiteral(expression.value, context);
+      return emitLiteralWithExpectedTypeCpp(expression.value, expectedType, context);
     case 'new': {
       if (expression.callee.kind !== 'identifier') {
         emissionError(context, 'qualified constructors require C++ type-path lowering');
       }
       const typeName = emitIdentifierReference(expression.callee.reference, context);
       if (typeName === 'std::runtime_error') context.includes.add('stdexcept');
-      const args = expression.arguments.map((argument) => emitExpression(argument, context));
+      const args = expression.arguments.map((argument, index) =>
+        emitExpression(argument, context, getIrInvocationArgumentExpectedTypeCpp(expression, index)),
+      );
       const typeArguments = emitCppTypeArguments(expression.typeArguments, context);
       if (
         getCppRuntimeProfile(context.options) === 'flight-cpp' &&
@@ -798,7 +821,10 @@ function emitExpression(
     case 'object': {
       const members = expression.members
         .filter((member): member is typeof member & { kind: 'property' } => member.kind === 'property')
-        .map((member) => `.${safeCppName(member.name)} = ${emitExpression(member.value, context)}`);
+        .map(
+          (member) =>
+            `.${safeCppName(member.name)} = ${emitExpression(member.value, context, getIrObjectPropertyTypeCpp(expression.type, member.name, context))}`,
+        );
       return `{${members.join(', ')}}`;
     }
     case 'property': {
@@ -867,12 +893,13 @@ function emitExpression(
     }
     case 'tuple': {
       context.includes.add('tuple');
-      const elements = expression.elements.map((element) => {
+      const expectedTuple = expectedType?.kind === 'tuple' ? expectedType : undefined;
+      const elements = expression.elements.map((element, index) => {
         if (!element.expression) {
           context.includes.add('optional');
           return 'std::nullopt';
         }
-        const emitted = emitExpression(element.expression, context);
+        const emitted = emitExpression(element.expression, context, expectedTuple?.elements[index]?.type);
         if (element.optional) {
           context.includes.add('optional');
           return `std::make_optional(${emitted})`;
@@ -902,8 +929,7 @@ function emitExpression(
       return expression.postfix ? `${operand}${operator}` : `${operator}${operand}`;
     }
     case 'undefinedValue':
-      context.includes.add('optional');
-      return 'std::nullopt';
+      return emitUndefinedWithExpectedTypeCpp(expectedType, context);
     case 'undefinedDefault': {
       context.includes.add('optional');
       return `${emitExpression(expression.value, context)}.value_or(${emitExpression(expression.fallback, context)})`;
@@ -1272,14 +1298,8 @@ function emitType(type: Readonly<IrType>, context: EmitContext): string {
       });
       return `std::tuple<${elements.join(', ')}>`;
     }
-    case 'union': {
-      const concrete = type.types.filter((item) => item.kind !== 'null' && item.kind !== 'undefined');
-      if (concrete.length === 1 && concrete.length !== type.types.length) {
-        context.includes.add('optional');
-        return `std::optional<${emitType(concrete[0]!, context)}>`;
-      }
-      return emitVariantTypeCpp(type, context);
-    }
+    case 'union':
+      return emitUnionTypeCpp(type, context);
     case 'unknown':
       if (type.source === 'this' && context.currentClass) {
         return getBindingTargetName(context.currentClass.binding, context);
@@ -1288,9 +1308,71 @@ function emitType(type: Readonly<IrType>, context: EmitContext): string {
   }
 }
 
-function emitVariantTypeCpp(type: Readonly<Extract<IrType, { kind: 'union' }>>, context: EmitContext): string {
-  const representation = getCppVariantRepresentation(type, context);
-  return `std::variant<${representation.alternatives.map((alternative) => alternative.targetType).join(', ')}>`;
+function emitUnionTypeCpp(type: Readonly<Extract<IrType, { kind: 'union' }>>, context: EmitContext): string {
+  const plan = getCppUnionRepresentationPlan(type, context);
+  const valueTypes = plan.valueSlots.map((slot) => slot.targetType);
+  switch (plan.kind) {
+    case 'singleValue':
+      return valueTypes[0]!;
+    case 'optionalSingle':
+      context.includes.add('optional');
+      return `std::optional<${valueTypes[0]!}>`;
+    case 'multiVariant':
+      context.includes.add('variant');
+      return `std::variant<${valueTypes.join(', ')}>`;
+    case 'optionalVariant':
+      context.includes.add('optional');
+      context.includes.add('variant');
+      return `std::optional<std::variant<${valueTypes.join(', ')}>>`;
+    case 'dualSentinelVariant': {
+      context.includes.add('variant');
+      const sentinels = getCppDualSentinelTargetTypes(context);
+      return `std::variant<${[...valueTypes, sentinels.null, sentinels.undefined].join(', ')}>`;
+    }
+  }
+}
+
+function getCppDualSentinelTargetTypes(context: EmitContext): Readonly<{ null: string; undefined: string }> {
+  if (getCppRuntimeProfile(context.options) === 'flight-cpp') {
+    return { null: 'flight::Null', undefined: 'flight::Undefined' };
+  }
+  context.includes.add('cstddef');
+  return { null: 'std::nullptr_t', undefined: 'std::monostate' };
+}
+
+function emitNullishComparisonCpp(
+  expression: Readonly<Extract<IrExpression, { kind: 'binary' }>>,
+  context: EmitContext,
+): string {
+  const evidence = expression.semantics.nullishComparison;
+  if (!evidence) emissionError(context, 'nullish comparison requires semantic evidence');
+  const operand =
+    expression.left.kind === 'identifier' && expression.left.reference.kind === 'ambient'
+      ? expression.right
+      : expression.left;
+  const operandType =
+    operand.kind === 'identifier' && operand.reference.kind === 'binding'
+      ? context.bindingTypes.get(operand.reference.binding.id)
+      : undefined;
+  const union = operandType ? getIrUnionTypeCpp(operandType, context, new Set()) : undefined;
+  const plan = union ? getCppUnionRepresentationPlan(union, context) : undefined;
+  if (evidence.admitsNull && evidence.admitsUndefined) {
+    if (!plan || plan.kind !== 'dualSentinelVariant') {
+      emissionError(context, 'nullish comparison admitting null and undefined requires dual-sentinel union evidence');
+    }
+    context.includes.add('variant');
+    const sentinels = getCppDualSentinelTargetTypes(context);
+    const value = emitExpression(operand, context);
+    const selected = evidence.literal === 'null' ? sentinels.null : sentinels.undefined;
+    const strict = expression.operator === '===' || expression.operator === '!==';
+    const test = strict
+      ? `std::holds_alternative<${selected}>(${value})`
+      : `(std::holds_alternative<${sentinels.null}>(${value}) || std::holds_alternative<${sentinels.undefined}>(${value}))`;
+    return expression.operator === '!=' || expression.operator === '!==' ? `!(${test})` : test;
+  }
+  context.includes.add('optional');
+  const negated = expression.operator === '!=' || expression.operator === '!==';
+  return `${negated ? '' : '!'}${emitExpression(operand, context)}.has_value()`;
 }
 
 function emitUnionMemberAssertionCpp(
@@ -1303,11 +1385,12 @@ function emitUnionMemberAssertionCpp(
   if (!union) return undefined;
   const representation = getCppVariantRepresentation(union, context);
   const alternatives = representation.alternatives.filter((alternative) =>
-    isDeepStrictEqual(alternative.member, assertedType),
+    alternative.members.some((member) => isDeepStrictEqual(member, assertedType)),
   );
   if (alternatives.length !== 1) {
     emissionError(context, 'type assertion target must identify exactly one C++ variant alternative');
   }
+  if (representation.direct) return emitIdentifierReference(expression.reference, context);
   return `std::get<${alternatives[0]!.targetType}>(${emitIdentifierReference(expression.reference, context)})`;
 }
 
@@ -1316,12 +1399,14 @@ function emitUnionMemberTestCpp(evidence: Readonly<IrUnionMemberTestEvidence>, c
   if (!union) emissionError(context, 'union member test requires a C++ variant binding');
   const representation = getCppVariantRepresentation(union, context);
   const alternatives = representation.alternatives.filter((alternative) =>
-    isDeepStrictEqual(alternative.member, evidence.member),
+    alternative.members.some((member) => isDeepStrictEqual(member, evidence.member)),
   );
   if (alternatives.length !== 1) {
     emissionError(context, 'union member test must identify exactly one C++ variant alternative');
   }
-  const test = `std::holds_alternative<${alternatives[0]!.targetType}>(${emitBindingValueCpp(evidence.binding, context)})`;
+  const test = representation.direct
+    ? 'true'
+    : `std::holds_alternative<${alternatives[0]!.targetType}>(${emitBindingValueCpp(evidence.binding, context)})`;
   return evidence.whenResult ? test : `!${test}`;
 }
 
@@ -1333,12 +1418,13 @@ function emitNarrowedUnionMemberCpp(
   const union = getIrBindingVariantUnionTypeCpp(expression.reference.binding.id, context);
   if (!union) return undefined;
   const representation = getCppVariantRepresentation(union, context);
-  const alternatives = representation.alternatives.filter(
-    (alternative) => getIrUnionMemberNameCpp(alternative.member) === expression.narrowedMember,
+  const alternatives = representation.alternatives.filter((alternative) =>
+    alternative.members.some((member) => getIrUnionMemberNameCpp(member) === expression.narrowedMember),
   );
   if (alternatives.length !== 1) {
     emissionError(context, `narrowed member ${expression.narrowedMember} must identify one C++ variant alternative`);
   }
+  if (representation.direct) return emitIdentifierReference(expression.reference, context);
   return `std::get<${alternatives[0]!.targetType}>(${emitIdentifierReference(expression.reference, context)})`;
 }
 
@@ -1346,46 +1432,289 @@ function getCppVariantRepresentation(
   type: Readonly<Extract<IrType, { kind: 'union' }>>,
   context: EmitContext,
 ): CppVariantRepresentation {
-  if (type.types.some((member) => member.kind === 'null' || member.kind === 'undefined')) {
-    emissionError(context, 'unions combining multiple values with null or undefined require optional-variant lowering');
+  const plan = getCppUnionRepresentationPlan(type, context);
+  if (plan.kind === 'optionalSingle' || plan.kind === 'optionalVariant' || plan.kind === 'dualSentinelVariant') {
+    emissionError(context, 'nullable union member access requires presence-aware C++ narrowing');
   }
-  if (type.types.some((member) => !isIrTypeCppVariantAlternative(member, context, new Set()))) {
-    emissionError(context, 'multi-member union contains an unsupported C++ variant alternative');
-  }
-  const alternatives = type.types.map((member) => {
-    const targetType = emitType(member, context);
-    return {
-      member,
-      representationKey: getIrTypeCppVariantRepresentationKey(member, targetType, context, new Set()),
-      targetType,
-    };
-  });
-  if (new Set(alternatives.map((alternative) => alternative.representationKey)).size !== alternatives.length) {
-    emissionError(context, 'multi-member union alternatives must have unique C++ representations');
-  }
-  context.includes.add('variant');
-  return { alternatives };
+  if (plan.kind === 'multiVariant') context.includes.add('variant');
+  return {
+    alternatives: plan.valueSlots.map((slot) => ({
+      members: slot.sourceAlternatives,
+      targetType: slot.targetType,
+    })),
+    direct: plan.kind === 'singleValue',
+  };
 }
 
-function getIrTypeCppVariantRepresentationKey(
-  type: Readonly<IrType>,
-  targetType: string,
+function getCppUnionRepresentationPlan(
+  type: Readonly<Extract<IrType, { kind: 'union' }>>,
   context: EmitContext,
-  seen: ReadonlySet<string>,
+): Exclude<ReturnType<typeof createCppUnionRepresentationPlan>, { kind: 'refused' }> {
+  const plan = createCppUnionRepresentationPlan(type, {
+    resolveAliasTarget(typeReference) {
+      if (typeReference.reference.kind !== 'binding' || typeReference.typeArguments.length > 0) return undefined;
+      const bindingId = typeReference.reference.binding.id;
+      const alias = context.module.declarations.find(
+        (declaration) => declaration.kind === 'typeAlias' && declaration.binding.id === bindingId,
+      );
+      return alias?.kind === 'typeAlias' ? alias.type : undefined;
+    },
+    resolveTargetType(runtimeType) {
+      return emitType(runtimeType, context);
+    },
+  });
+  if (plan.kind === 'refused') {
+    const targetTypes = plan.collisions.map((collision) => collision.targetType).join(', ');
+    emissionError(context, `union has distinct runtime domains erased by C++ target type ${targetTypes}`);
+  }
+  return plan;
+}
+
+function emitContextualUnionExpressionCpp(
+  expression: Readonly<IrExpression>,
+  expectedType: Readonly<IrType>,
+  context: EmitContext,
+): string | undefined {
+  const union = getIrUnionTypeCpp(expectedType, context, new Set());
+  if (!union || expression.kind === 'conditional') return undefined;
+  const plan = getCppUnionRepresentationPlan(union, context);
+  if (expression.kind === 'undefinedValue') {
+    return emitCppUnionSentinelConstruction('undefined', union, plan.kind, context);
+  }
+  if (expression.kind === 'literal' && expression.value === null) {
+    return emitCppUnionSentinelConstruction('null', union, plan.kind, context);
+  }
+  assertIrExpressionHasNoDualSentinelOptionalChainCpp(expression, context);
+  if (
+    (expression.kind === 'call' && (expression.optional || expression.semantics.optionalChain)) ||
+    (expression.kind === 'element' && (expression.optional || expression.semantics.optionalChain)) ||
+    (expression.kind === 'property' && (expression.optional || expression.optionalChain))
+  ) {
+    return undefined;
+  }
+  const expressionType = getIrExpressionTypeForUnionConstructionCpp(expression, plan.valueSlots, context);
+  if (!expressionType) {
+    if (plan.kind === 'singleValue') return undefined;
+    emissionError(context, `contextual ${plan.kind} construction requires expression type evidence`);
+  }
+  const expressionUnion = getIrUnionTypeCpp(expressionType, context, new Set());
+  if (expressionUnion) {
+    if (isDeepStrictEqual(getCppUnionRepresentationPlan(expressionUnion, context), plan)) return undefined;
+    emissionError(context, 'contextual C++ union conversion requires equivalent source union evidence');
+  }
+  const runtimeType = getIrTypeRuntimeDomainCpp(expressionType, context, new Set());
+  if (!runtimeType) {
+    emissionError(context, `contextual ${plan.kind} construction requires one runtime value domain`);
+  }
+  const targetType = emitType(runtimeType, context);
+  const valueSlot = plan.valueSlots.findIndex((slot) => slot.targetType === targetType);
+  if (valueSlot < 0) {
+    emissionError(context, `contextual union value type ${targetType} is not a represented runtime domain`);
+  }
+  const emitted = emitExpression(expression, context, runtimeType, false);
+  if (plan.kind === 'singleValue') return emitted;
+  if (plan.kind === 'optionalSingle') {
+    context.includes.add('optional');
+    return `std::optional<${targetType}>{${emitted}}`;
+  }
+  const unionType = emitUnionTypeCpp(union, context);
+  if (plan.kind === 'optionalVariant') {
+    return `${unionType}{std::in_place, std::in_place_type<${targetType}>, ${emitted}}`;
+  }
+  return `${unionType}{std::in_place_type<${targetType}>, ${emitted}}`;
+}
+
+function emitCppUnionSentinelConstruction(
+  sentinel: 'null' | 'undefined',
+  union: Readonly<Extract<IrType, { kind: 'union' }>>,
+  planKind: Exclude<ReturnType<typeof createCppUnionRepresentationPlan>, { kind: 'refused' }>['kind'],
+  context: EmitContext,
 ): string {
-  if (type.kind !== 'named' || type.reference.kind !== 'binding' || type.typeArguments.length > 0) return targetType;
+  if (planKind === 'optionalSingle' || planKind === 'optionalVariant') {
+    context.includes.add('optional');
+    return 'std::nullopt';
+  }
+  if (planKind !== 'dualSentinelVariant') {
+    emissionError(context, `${sentinel} is not represented by the contextual C++ union`);
+  }
+  const sentinels = getCppDualSentinelTargetTypes(context);
+  const targetType = sentinels[sentinel];
+  const value =
+    getCppRuntimeProfile(context.options) === 'flight-cpp'
+      ? `flight::${sentinel}`
+      : sentinel === 'null'
+        ? 'nullptr'
+        : 'std::monostate{}';
+  return `${emitUnionTypeCpp(union, context)}{std::in_place_type<${targetType}>, ${value}}`;
+}
+
+function getIrExpressionTypeForUnionConstructionCpp(
+  expression: Readonly<IrExpression>,
+  valueSlots: readonly Readonly<{ runtimeType: IrType }>[],
+  context: EmitContext,
+): Readonly<IrType> | undefined {
+  switch (expression.kind) {
+    case 'array':
+      return getSingleIrTypeKindCpp(valueSlots, 'array');
+    case 'assignment':
+      return getIrAssignmentTargetTypeCpp(expression.left, context);
+    case 'binary':
+      return getIrOperatorValueDomainTypeCpp(expression.semantics.result);
+    case 'call':
+      return getIrCallReturnTypeCpp(expression, context);
+    case 'cast':
+      return expression.type;
+    case 'function':
+      return {
+        kind: 'function',
+        parameters: expression.parameters.map((parameter) => {
+          const common = { name: parameter.binding.name, type: parameter.type };
+          if (parameter.optional) return { ...common, optional: true, rest: false } as const;
+          if (parameter.rest) return { ...common, optional: false, rest: true } as const;
+          return { ...common, optional: false, rest: false } as const;
+        }),
+        returns: expression.returns,
+        typeParameters: expression.typeParameters,
+      };
+    case 'identifier': {
+      if (expression.reference.kind !== 'binding') return undefined;
+      const declaredType = context.bindingTypes.get(expression.reference.binding.id);
+      if (!declaredType || !expression.narrowedMember) return declaredType;
+      const union = getIrUnionTypeCpp(declaredType, context, new Set());
+      return (
+        union?.types.find((member) => getIrUnionMemberNameCpp(member) === expression.narrowedMember) ?? declaredType
+      );
+    }
+    case 'literal':
+      return typeof expression.value === 'boolean'
+        ? { kind: 'primitive', name: 'boolean' }
+        : typeof expression.value === 'number'
+          ? { kind: 'primitive', name: 'number' }
+          : typeof expression.value === 'string'
+            ? { kind: 'primitive', name: 'string' }
+            : { kind: 'null' };
+    case 'new':
+      return expression.callee.kind === 'identifier' && expression.callee.reference.kind === 'binding'
+        ? {
+            kind: 'named',
+            reference: { binding: expression.callee.reference.binding, kind: 'binding', path: [] },
+            typeArguments: expression.typeArguments,
+          }
+        : undefined;
+    case 'object':
+      return expression.type;
+    case 'tuple':
+      return getSingleIrTypeKindCpp(valueSlots, 'tuple');
+    case 'unary':
+      return getIrOperatorValueDomainTypeCpp(expression.semantics.result);
+    case 'undefinedValue':
+      return { kind: 'undefined' };
+    default:
+      return undefined;
+  }
+}
+
+function getIrTypeRuntimeDomainCpp(
+  type: Readonly<IrType>,
+  context: EmitContext,
+  resolvingAliases: ReadonlySet<string>,
+): Readonly<IrType> | undefined {
+  if (type.kind === 'literal') {
+    return {
+      kind: 'primitive',
+      name: typeof type.value === 'boolean' ? 'boolean' : typeof type.value === 'number' ? 'number' : 'string',
+    };
+  }
+  if (type.kind !== 'named' || type.reference.kind !== 'binding' || type.typeArguments.length > 0) return type;
   const bindingId = type.reference.binding.id;
-  if (seen.has(bindingId)) return targetType;
+  if (resolvingAliases.has(bindingId)) return type;
   const alias = context.module.declarations.find(
     (declaration) => declaration.kind === 'typeAlias' && declaration.binding.id === bindingId,
   );
-  if (alias?.kind !== 'typeAlias' || alias.type.kind === 'object') return targetType;
-  const nextSeen = new Set(seen);
-  nextSeen.add(bindingId);
-  const aliasTarget = getIrUnionTypeStringLiteralValues(alias.type)
-    ? emitCppStringType(context)
-    : emitType(alias.type, context);
-  return getIrTypeCppVariantRepresentationKey(alias.type, aliasTarget, context, nextSeen);
+  if (alias?.kind !== 'typeAlias') return type;
+  const nextResolvingAliases = new Set(resolvingAliases);
+  nextResolvingAliases.add(bindingId);
+  return getIrTypeRuntimeDomainCpp(alias.type, context, nextResolvingAliases);
+}
+
+function getSingleIrTypeKindCpp<Kind extends IrType['kind']>(
+  valueSlots: readonly Readonly<{ runtimeType: IrType }>[],
+  kind: Kind,
+): Readonly<Extract<IrType, { kind: Kind }>> | undefined {
+  const matches = valueSlots.map((slot) => slot.runtimeType).filter((type) => type.kind === kind);
+  return matches.length === 1 ? (matches[0] as Readonly<Extract<IrType, { kind: Kind }>>) : undefined;
+}
+
+function getIrOperatorValueDomainTypeCpp(domain: IrBinaryOperatorSemantics['result']): Readonly<IrType> | undefined {
+  return domain === 'bigint' ||
+    domain === 'boolean' ||
+    domain === 'number' ||
+    domain === 'string' ||
+    domain === 'symbol'
+    ? { kind: 'primitive', name: domain }
+    : domain === 'null' || domain === 'undefined'
+      ? { kind: domain }
+      : undefined;
+}
+
+function getIrCallReturnTypeCpp(
+  expression: Readonly<Extract<IrExpression, { kind: 'call' }>>,
+  context: EmitContext,
+): Readonly<IrType> | undefined {
+  if (expression.callee.kind === 'function') return expression.callee.returns;
+  if (expression.callee.kind !== 'identifier' || expression.callee.reference.kind !== 'binding') return undefined;
+  const bindingId = expression.callee.reference.binding.id;
+  const declaration = context.module.declarations.find(
+    (candidate) => candidate.kind === 'function' && candidate.binding.id === bindingId,
+  );
+  return declaration?.kind === 'function' ? declaration.returns : undefined;
+}
+
+function getIrCallArgumentExpectedTypeCpp(
+  expression: Readonly<Extract<IrExpression, { kind: 'call' }>>,
+  index: number,
+  context: EmitContext,
+): Readonly<IrType> | undefined {
+  const semanticType = getIrInvocationArgumentExpectedTypeCpp(expression, index);
+  if (semanticType) return semanticType;
+  if (expression.callee.kind === 'function') return expression.callee.parameters[index]?.type;
+  if (expression.callee.kind !== 'identifier' || expression.callee.reference.kind !== 'binding') return undefined;
+  const bindingId = expression.callee.reference.binding.id;
+  const declaration = context.module.declarations.find(
+    (candidate) => candidate.kind === 'function' && candidate.binding.id === bindingId,
+  );
+  return declaration?.kind === 'function' ? declaration.parameters[index]?.type : undefined;
+}
+
+function getIrInvocationArgumentExpectedTypeCpp(
+  expression: Readonly<Extract<IrExpression, { kind: 'call' | 'new' }>>,
+  index: number,
+): Readonly<IrType> | undefined {
+  const provided = [
+    ...(expression.semantics.defaultParameters?.provided ?? []),
+    ...(expression.semantics.optionalParameters?.provided ?? []),
+  ].find((argument) => argument.position === index);
+  return provided?.parameterType;
+}
+
+function getIrObjectPropertyTypeCpp(
+  type: Readonly<IrType>,
+  propertyName: string,
+  context: EmitContext,
+): Readonly<IrType> | undefined {
+  if (type.kind === 'object') return type.properties.find((property) => property.name === propertyName)?.type;
+  if (type.kind !== 'named' || type.reference.kind !== 'binding' || type.typeArguments.length > 0) return undefined;
+  const bindingId = type.reference.binding.id;
+  const declaration = context.module.declarations.find(
+    (candidate) =>
+      (candidate.kind === 'interface' || candidate.kind === 'typeAlias') && candidate.binding.id === bindingId,
+  );
+  if (declaration?.kind === 'interface') {
+    return declaration.properties.find((property) => property.name === propertyName)?.type;
+  }
+  return declaration?.kind === 'typeAlias'
+    ? getIrObjectPropertyTypeCpp(declaration.type, propertyName, context)
+    : undefined;
 }
 
 function getIrBindingVariantUnionTypeCpp(
@@ -1401,9 +1730,16 @@ function getIrVariantUnionTypeCpp(
   context: EmitContext,
   seen: ReadonlySet<string>,
 ): Extract<IrType, { kind: 'union' }> | undefined {
-  if (type.kind === 'union') {
-    return type.types.some((member) => member.kind === 'null' || member.kind === 'undefined') ? undefined : type;
-  }
+  const union = getIrUnionTypeCpp(type, context, seen);
+  return union?.types.some((member) => member.kind === 'null' || member.kind === 'undefined') ? undefined : union;
+}
+
+function getIrUnionTypeCpp(
+  type: Readonly<IrType>,
+  context: EmitContext,
+  seen: ReadonlySet<string>,
+): Extract<IrType, { kind: 'union' }> | undefined {
+  if (type.kind === 'union') return type;
   if (type.kind !== 'named' || type.reference.kind !== 'binding' || type.typeArguments.length > 0) return undefined;
   const bindingId = type.reference.binding.id;
   if (seen.has(bindingId)) return undefined;
@@ -1413,41 +1749,13 @@ function getIrVariantUnionTypeCpp(
   if (alias?.kind !== 'typeAlias') return undefined;
   const nextSeen = new Set(seen);
   nextSeen.add(bindingId);
-  return getIrVariantUnionTypeCpp(alias.type, context, nextSeen);
+  return getIrUnionTypeCpp(alias.type, context, nextSeen);
 }
 
 function getIrUnionMemberNameCpp(type: Readonly<IrType>): string | undefined {
   if (type.kind === 'primitive') return type.name;
   if (type.kind !== 'named') return undefined;
   return type.reference.kind === 'binding' ? type.reference.binding.name : type.reference.name;
-}
-
-function isIrTypeCppVariantAlternative(
-  type: Readonly<IrType>,
-  context: EmitContext,
-  seen: ReadonlySet<string>,
-): boolean {
-  if (type.kind === 'primitive') return type.name !== 'void';
-  if (
-    type.kind === 'array' ||
-    type.kind === 'function' ||
-    type.kind === 'literal' ||
-    type.kind === 'object' ||
-    type.kind === 'tuple'
-  ) {
-    return true;
-  }
-  if (type.kind !== 'named') return false;
-  if (type.reference.kind !== 'binding' || type.typeArguments.length > 0) return true;
-  const bindingId = type.reference.binding.id;
-  if (seen.has(bindingId)) return false;
-  const alias = context.module.declarations.find(
-    (declaration) => declaration.kind === 'typeAlias' && declaration.binding.id === bindingId,
-  );
-  if (alias?.kind !== 'typeAlias') return true;
-  const nextSeen = new Set(seen);
-  nextSeen.add(bindingId);
-  return alias.type.kind !== 'union' && isIrTypeCppVariantAlternative(alias.type, context, nextSeen);
 }
 
 function declarationPriorityCpp(declaration: Readonly<IrDeclaration>): number {
@@ -1581,6 +1889,22 @@ function emitAssignmentTargetCpp(expression: Readonly<IrExpression>, context: Em
   return emitExpression(expression, context);
 }
 
+function getIrAssignmentTargetTypeCpp(
+  expression: Readonly<IrExpression>,
+  context: EmitContext,
+): Readonly<IrType> | undefined {
+  return getIrExpressionBindingTypeCpp(expression, context);
+}
+
+function getIrExpressionBindingTypeCpp(
+  expression: Readonly<IrExpression>,
+  context: EmitContext,
+): Readonly<IrType> | undefined {
+  return expression.kind === 'identifier' && expression.reference.kind === 'binding'
+    ? context.bindingTypes.get(expression.reference.binding.id)
+    : undefined;
+}
+
 function emitOptionalExpressionCpp(
   expression: Readonly<IrExpression>,
   context: EmitContext,
@@ -1611,12 +1935,40 @@ function emitOptionalExpressionCpp(
   return emitExpression(expression, context);
 }
 
+function assertIrOptionalChainReceiverIsSingleSentinelCpp(type: Readonly<IrType>, context: EmitContext): void {
+  const union = getIrUnionTypeCpp(type, context, new Set());
+  if (union && getCppUnionRepresentationPlan(union, context).kind === 'dualSentinelVariant') {
+    emissionError(context, 'dual-sentinel optional chaining requires presence projection lowering');
+  }
+}
+
+function assertIrExpressionHasNoDualSentinelOptionalChainCpp(
+  expression: Readonly<IrExpression>,
+  context: EmitContext,
+): void {
+  if (expression.kind === 'call') {
+    if (expression.semantics.optionalChain) {
+      assertIrOptionalChainReceiverIsSingleSentinelCpp(expression.semantics.optionalChain.receiverType, context);
+    }
+    assertIrExpressionHasNoDualSentinelOptionalChainCpp(expression.callee, context);
+    return;
+  }
+  if (expression.kind === 'element' && expression.semantics.optionalChain) {
+    assertIrOptionalChainReceiverIsSingleSentinelCpp(expression.semantics.optionalChain.receiverType, context);
+    return;
+  }
+  if (expression.kind === 'property' && expression.optionalChain) {
+    assertIrOptionalChainReceiverIsSingleSentinelCpp(expression.optionalChain.receiverType, context);
+  }
+}
+
 function emitOptionalCallExpressionCpp(
   expression: Readonly<Extract<IrExpression, { kind: 'call' }>>,
   context: EmitContext,
 ): string {
   const semantics = expression.semantics.optionalChain;
   if (!semantics) emissionError(context, 'optional call lacks neutral optional-chain evidence');
+  assertIrOptionalChainReceiverIsSingleSentinelCpp(semantics.receiverType, context);
   if (semantics.receiverNullish === 'excluded') {
     return emitExpression({ ...expression, optional: false }, context);
   }
@@ -1633,6 +1985,7 @@ function emitOptionalElementExpressionCpp(
 ): string {
   const semantics = expression.semantics.optionalChain;
   if (!semantics) emissionError(context, 'optional element access lacks neutral optional-chain evidence');
+  assertIrOptionalChainReceiverIsSingleSentinelCpp(semantics.receiverType, context);
   if (semantics.receiverNullish === 'excluded') {
     return emitExpression({ ...expression, optional: false }, context);
   }
@@ -1659,6 +2012,7 @@ function emitOptionalPropertyExpressionCpp(
 ): string {
   const semantics = expression.optionalChain;
   if (!semantics) emissionError(context, 'optional property access lacks neutral optional-chain evidence');
+  assertIrOptionalChainReceiverIsSingleSentinelCpp(semantics.receiverType, context);
   const indexesRuntimeCollection =
     expression.object.kind === 'element' &&
     getCppRuntimeProfile(context.options) === 'flight-cpp' &&
@@ -1781,8 +2135,7 @@ function emitImplicitCompletionCpp(statements: readonly IrStatement[], context: 
   const voidReturn = returnType.kind === 'primitive' && returnType.name === 'void';
   if (!context.async && voidReturn) return [];
   if (hasIrTypeAbsentMember(returnType)) {
-    context.includes.add('optional');
-    return [`${context.async ? 'co_return' : 'return'} std::nullopt;`];
+    return [`${context.async ? 'co_return' : 'return'} ${emitUndefinedWithExpectedTypeCpp(returnType, context)};`];
   }
   if (context.async && voidReturn) return ['co_return;'];
   context.includes.add('stdexcept');
@@ -1894,6 +2247,27 @@ function memberOp(object: Readonly<IrExpression>): string {
   return isThisAccess(object) ? '->' : '.';
 }
 
+function emitLiteralWithExpectedTypeCpp(
+  value: boolean | null | number | string,
+  expectedType: Readonly<IrType> | undefined,
+  context: EmitContext,
+): string {
+  if (value !== null) return emitLiteral(value, context);
+  const union = expectedType ? getIrUnionTypeCpp(expectedType, context, new Set()) : undefined;
+  if (!union) return emitLiteral(value, context);
+  const plan = getCppUnionRepresentationPlan(union, context);
+  if (plan.kind === 'dualSentinelVariant') {
+    if (getCppRuntimeProfile(context.options) === 'flight-cpp') return 'flight::null';
+    context.includes.add('cstddef');
+    return 'nullptr';
+  }
+  if (plan.sentinels.null === 'optionalAbsence') {
+    context.includes.add('optional');
+    return 'std::nullopt';
+  }
+  return emitLiteral(value, context);
+}
+
 function emitLiteral(value: boolean | null | number | string, context: EmitContext): string {
   if (value === null) return 'nullptr';
   if (typeof value === 'boolean') return value ? 'true' : 'false';
@@ -1906,6 +2280,20 @@ function emitLiteral(value: boolean | null | number | string, context: EmitConte
   }
   const literal = JSON.stringify(value);
   return getCppRuntimeProfile(context.options) === 'flight-cpp' ? `flight::String(${literal})` : literal;
+}
+
+function emitUndefinedWithExpectedTypeCpp(expectedType: Readonly<IrType> | undefined, context: EmitContext): string {
+  const union = expectedType ? getIrUnionTypeCpp(expectedType, context, new Set()) : undefined;
+  if (union) {
+    const plan = getCppUnionRepresentationPlan(union, context);
+    if (plan.kind === 'dualSentinelVariant') {
+      if (getCppRuntimeProfile(context.options) === 'flight-cpp') return 'flight::undefined';
+      context.includes.add('variant');
+      return 'std::monostate{}';
+    }
+  }
+  context.includes.add('optional');
+  return 'std::nullopt';
 }
 
 function emitStringConcatenation(expression: Readonly<IrExpression>, context: EmitContext): string {
