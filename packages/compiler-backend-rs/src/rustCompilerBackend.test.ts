@@ -1463,6 +1463,45 @@ describe('emitIrModuleRust', () => {
     expect(output).not.toContain('settlement');
   });
 
+  it('emits async try/catch as task settlement match', () => {
+    const result = lower(
+      'try-catch-async.ts',
+      'export async function attempt(task: Promise<number>, fallback: number): Promise<number> { let result: number = 0; try { result = await task; } catch { result = fallback; } return result; }',
+    );
+    const output = emitIrModuleRust(result.module).contents;
+    expect(output).toContain('.settle()');
+    expect(output).toContain('Ok(__value)');
+    expect(output).toContain('result = __value;');
+    expect(output).toContain('Err(_)');
+    expect(output).toContain('result = fallback;');
+    expect(output).not.toContain('catch_unwind');
+  });
+
+  it('emits async try/finally with settlement and re-panic', () => {
+    const result = lower(
+      'try-finally-async.ts',
+      'export async function attempt(task: Promise<number>): Promise<number> { let result: number = 0; let done: boolean = false; try { result = await task; } finally { done = true; } return done ? result : result; }',
+    );
+    const output = emitIrModuleRust(result.module).contents;
+    expect(output).toContain('let __try_result = ');
+    expect(output).toContain('.settle();');
+    expect(output).toContain('done = true;');
+    expect(output).toContain('Ok(__value)');
+    expect(output).toContain('Err(__error) => panic!');
+  });
+
+  it('emits async try/return/finally with deferred return', () => {
+    const result = lower(
+      'try-return-finally-async.ts',
+      'export async function attempt(task: Promise<number>, log: number[]): Promise<number> { try { return await task; } finally { log.push(1); } }',
+    );
+    const output = emitIrModuleRust(result.module).contents;
+    expect(output).toContain('let __try_result = ');
+    expect(output).toContain('.settle();');
+    expect(output).toContain('Ok(__value) => return __value,');
+    expect(output).toContain('Err(__error) => panic!');
+  });
+
   it('emits concrete class inheritance as composition with base field delegation', () => {
     const result = lower(
       'class-inheritance.ts',

@@ -1906,6 +1906,109 @@ function hasIrStatementSubtreeAwaitRust(statement: Readonly<IrStatement>): boole
   return found;
 }
 
+function emitAsyncTryCatchRust(statement: Extract<IrStatement, { kind: 'try' }>, context: EmitContext): string[] {
+  const tryStatements = statement.tryBody.kind === 'block' ? statement.tryBody.statements : [statement.tryBody];
+  const awaitIndex = tryStatements.findIndex(
+    (s) =>
+      (s.kind === 'expression' && s.expression.kind === 'assignment' && s.expression.right.kind === 'await') ||
+      (s.kind === 'return' && s.expression?.kind === 'await'),
+  );
+  if (awaitIndex === -1) {
+    emissionError(context, 'async try/catch requires a recognizable await assignment or return');
+    return [];
+  }
+  const awaitStatement = tryStatements[awaitIndex]!;
+  const preStatements = tryStatements.slice(0, awaitIndex);
+  const postStatements = tryStatements.slice(awaitIndex + 1);
+  const isReturn = awaitStatement.kind === 'return';
+  let awaitTarget: Readonly<IrExpression> | undefined;
+  let assignmentExpression: Readonly<Extract<IrExpression, { kind: 'assignment' }>> | undefined;
+  if (awaitStatement.kind === 'return' && awaitStatement.expression?.kind === 'await') {
+    awaitTarget = awaitStatement.expression.expression;
+  } else if (
+    awaitStatement.kind === 'expression' &&
+    awaitStatement.expression.kind === 'assignment' &&
+    awaitStatement.expression.right.kind === 'await'
+  ) {
+    assignmentExpression = awaitStatement.expression;
+    awaitTarget = awaitStatement.expression.right.expression;
+  }
+  if (!awaitTarget) {
+    emissionError(context, 'async try/catch requires a direct await expression');
+    return [];
+  }
+  const settleExpr = `${emitOwnedOperandRust(awaitTarget, context)}.settle()`;
+  const lines: string[] = [];
+  lines.push(...emitStatements(preStatements, context));
+  if (statement.catchClause) {
+    const catchBinding = statement.catchClause.binding ? safeRustValueName(statement.catchClause.binding.name) : '_';
+    lines.push(`match ${settleExpr} {`);
+    if (isReturn) {
+      lines.push(
+        ...indentSourceLines([
+          'Ok(__value) => {',
+          ...indentSourceLines([...emitStatements(postStatements, context), 'return __value;']),
+          '}',
+        ]),
+      );
+    } else {
+      const okBody: string[] = [];
+      if (assignmentExpression) {
+        okBody.push(
+          `${emitExpression(assignmentExpression.left, context)} ${emitAssignmentOperatorRust(assignmentExpression.operator, assignmentExpression.semantics, context)} __value;`,
+        );
+      }
+      okBody.push(...emitStatements(postStatements, context));
+      lines.push(...indentSourceLines(['Ok(__value) => {', ...indentSourceLines(okBody), '}']));
+    }
+    lines.push(
+      ...indentSourceLines([
+        `Err(${catchBinding}) => {`,
+        ...indentSourceLines(emitStatementBody(statement.catchClause.body, context)),
+        '}',
+      ]),
+    );
+    lines.push('}');
+    if (statement.finallyBody) {
+      lines.push(...emitStatementBody(statement.finallyBody, context));
+    }
+  } else if (statement.finallyBody) {
+    lines.push(`let __try_result = ${settleExpr};`);
+    lines.push(...emitStatementBody(statement.finallyBody, context));
+    if (isReturn) {
+      lines.push('match __try_result {');
+      lines.push(
+        ...indentSourceLines([
+          'Ok(__value) => return __value,',
+          'Err(__error) => panic!("unhandled task rejection: {}", __error),',
+        ]),
+      );
+      lines.push('}');
+    } else {
+      lines.push('match __try_result {');
+      const okBody: string[] = [];
+      if (assignmentExpression) {
+        okBody.push(
+          `${emitExpression(assignmentExpression.left, context)} ${emitAssignmentOperatorRust(assignmentExpression.operator, assignmentExpression.semantics, context)} __value;`,
+        );
+      }
+      okBody.push(...emitStatements(postStatements, context));
+      lines.push(
+        ...indentSourceLines([
+          'Ok(__value) => {',
+          ...indentSourceLines(okBody),
+          '}',
+          'Err(__error) => panic!("unhandled task rejection: {}", __error),',
+        ]),
+      );
+      lines.push('}');
+    }
+  } else {
+    emissionError(context, 'async try without catch or finally');
+  }
+  return lines;
+}
+
 function hasIrExpressionThisReferenceRust(expression: Readonly<IrExpression>): boolean {
   let found = false;
   analyzeIrStatementSubtreeTraversal(
@@ -2098,8 +2201,12 @@ function emitStatement(statement: Readonly<IrStatement>, context: EmitContext): 
       return [`panic!("{:?}", ${emitExpression(thrown, context)});`];
     }
     case 'try': {
-      if (statement.finallyBody || hasIrStatementSubtreeAwaitRust(statement.tryBody)) {
-        emissionError(context, 'try/catch/finally requires a Rust task settlement that carries rejection');
+      const hasAwait = hasIrStatementSubtreeAwaitRust(statement.tryBody);
+      if (hasAwait) {
+        return emitAsyncTryCatchRust(statement, context);
+      }
+      if (statement.finallyBody) {
+        emissionError(context, 'synchronous try/finally requires catch_unwind with resume_unwind');
       }
       const catchBinding = statement.catchClause
         ? statement.catchClause.binding

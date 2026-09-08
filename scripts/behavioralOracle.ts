@@ -38,6 +38,7 @@ interface OracleCase {
   readonly awaits?: boolean;
   readonly call: string;
   readonly returns: OracleValueKind;
+  readonly rustRef?: readonly number[];
 }
 
 // A settled task argument. Async is the machinery with the most moving parts and the least chance of
@@ -216,19 +217,34 @@ function runRustOracle(fixture: string, cases: readonly OracleCase[]): readonly 
       '    }',
       '}',
       'fn main() {',
-      ...cases.map((oracleCase) => {
-        const invocation = `${modules[0] ?? 'fixture'}::${toSnakeCase(oracleCase.call)}(${oracleCase.arguments.map(renderRustValue).join(', ')})`;
+      ...cases.flatMap((oracleCase, caseIndex) => {
+        const refPositions = new Set(oracleCase.rustRef ?? []);
+        const bindings: string[] = [];
+        const args = oracleCase.arguments.map((arg, argIndex) => {
+          if (refPositions.has(argIndex)) {
+            const name = `__ref_${String(caseIndex)}_${String(argIndex)}`;
+            bindings.push(`    let mut ${name} = ${renderRustValue(arg)};`);
+            return `&mut ${name}`;
+          }
+          return renderRustValue(arg);
+        });
+        const invocation = `${modules[0] ?? 'fixture'}::${toSnakeCase(oracleCase.call)}(${args.join(', ')})`;
         const call = oracleCase.awaits ? `flight_runtime::block_on(${invocation})` : invocation;
+        let printLine: string;
         switch (oracleCase.returns) {
           case 'number':
-            return `    println!("{}", say_number(${call}));`;
+            printLine = `    println!("{}", say_number(${call}));`;
+            break;
           case 'numbers':
-            return `    println!("[{}]", ${call}.into_iter().map(say_number).collect::<Vec<_>>().join(", "));`;
+            printLine = `    println!("[{}]", ${call}.into_iter().map(say_number).collect::<Vec<_>>().join(", "));`;
+            break;
           case 'strings':
-            return `    println!("[{}]", ${call}.join(", "));`;
+            printLine = `    println!("[{}]", ${call}.join(", "));`;
+            break;
           default:
-            return `    println!("{}", ${call});`;
+            printLine = `    println!("{}", ${call});`;
         }
+        return [...bindings, printLine];
       }),
       '}',
     ].join('\n'),
@@ -275,7 +291,9 @@ function renderHaxeValue(value: unknown): string {
 
 function renderRustValue(value: unknown): string {
   if (isTaskArgument(value)) return `flight_runtime::FlightTask::ready(${renderRustValue(value.task)})`;
-  if (isRejectedTaskArgument(value)) throw new Error('a rejected task has no Rust settlement yet');
+  if (isRejectedTaskArgument(value))
+    return `flight_runtime::FlightTask::reject(${JSON.stringify(String(value.rejects))})`;
+
   if (Array.isArray(value)) return `vec![${value.map(renderRustValue).join(', ')}]`;
   if (typeof value === 'string') return `${JSON.stringify(value)}.to_owned()`;
   if (typeof value === 'number') return Number.isInteger(value) ? `${String(value)}.0` : String(value);

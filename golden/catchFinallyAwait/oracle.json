@@ -1,4 +1,4 @@
 [
-  { "call": "attempt", "arguments": [{ "task": 4 }, []], "returns": "number", "awaits": true },
-  { "call": "attempt", "arguments": [{ "rejects": 0 }, []], "returns": "number", "awaits": true }
+  { "call": "attempt", "arguments": [{ "task": 4 }, []], "returns": "number", "awaits": true, "rustRef": [1] },
+  { "call": "attempt", "arguments": [{ "rejects": 0 }, []], "returns": "number", "awaits": true, "rustRef": [1] }
 ]

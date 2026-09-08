@@ -11,18 +11,27 @@ use std::pin::Pin;
 use std::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
 
 #[derive(Clone, Debug)]
-pub struct FlightTask<T: Clone>(T);
+pub struct FlightTask<T: Clone>(Result<T, String>);
 
 impl<T: Clone> FlightTask<T> {
     pub fn ready(value: T) -> Self {
-        FlightTask(value)
+        FlightTask(Ok(value))
+    }
+    pub fn reject(error: impl Into<String>) -> Self {
+        FlightTask(Err(error.into()))
+    }
+    pub fn settle(self) -> Result<T, String> {
+        self.0
     }
 }
 
 impl<T: Clone> Future for FlightTask<T> {
     type Output = T;
     fn poll(self: Pin<&mut Self>, _context: &mut Context<'_>) -> Poll<Self::Output> {
-        Poll::Ready(self.0.clone())
+        match &self.0 {
+            Ok(value) => Poll::Ready(value.clone()),
+            Err(e) => panic!("unhandled task rejection: {}", e),
+        }
     }
 }
 

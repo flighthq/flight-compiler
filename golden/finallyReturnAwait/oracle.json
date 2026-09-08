@@ -1,1 +1,1 @@
-[{ "call": "attempt", "arguments": [{ "task": 6 }, []], "returns": "number", "awaits": true }]
+[{ "call": "attempt", "arguments": [{ "task": 6 }, []], "returns": "number", "awaits": true, "rustRef": [1] }]
