@@ -1771,4 +1771,149 @@ describe('emitIrModuleCpp', () => {
     const emitted = emitIrModuleCpp(result.module);
     expect(emitted.contents).toContain('[=]');
   });
+
+  it('emits abstract method with parameters as pure virtual', () => {
+    const result = lower(
+      'abstract-method.ts',
+      `export abstract class Shape {
+        abstract area(scale: number): number;
+      }`,
+    );
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('virtual');
+    expect(emitted.contents).toContain('double scale');
+    expect(emitted.contents).toContain('= 0;');
+  });
+
+  it('escapes C++ keywords in method and field names', () => {
+    const result = lower(
+      'keyword-name.ts',
+      `export class Store {
+        register: string = '';
+        virtual(): number { return 0; }
+      }`,
+    );
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('register_');
+    expect(emitted.contents).toContain('virtual_');
+  });
+
+  it('strips local break from switch case statements', () => {
+    const result = lower(
+      'switch-break.ts',
+      `export function label(x: number): string {
+        let result = '';
+        switch (x) {
+          case 0: result = 'zero'; break;
+          case 1: result = 'one'; break;
+          default: result = 'other';
+        }
+        return result;
+      }`,
+    );
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('switch_value');
+    expect(emitted.contents).not.toContain('break;');
+    expect(emitted.contents).toContain('result');
+  });
+
+  it('emits this return type as class name in class context', () => {
+    const result = lower(
+      'this-type.ts',
+      `export class Builder {
+        value: number = 0;
+        set(n: number): this { this.value = n; return this; }
+      }`,
+    );
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('Builder set(');
+  });
+
+  it('skips non-super statements before extracting super call', () => {
+    const result = lower(
+      'super-skip.ts',
+      `export class Base { constructor(public x: number) {} }
+       export class Derived extends Base {
+         constructor(x: number) {
+           const doubled: number = x * 2;
+           super(doubled);
+         }
+       }`,
+    );
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('Base(');
+    expect(emitted.contents).toContain('doubled');
+  });
+
+  it('detects return in catch body inside try-catch-finally', () => {
+    const result = lower(
+      'try-catch-finally-return.ts',
+      `export function parse(s: string): number {
+        try {
+          throw new Error(s);
+        } catch (e) {
+          return 0;
+        } finally {
+          const x: number = 1;
+        }
+      }`,
+    );
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('finally_return');
+    expect(emitted.contents).toContain('finally_exception');
+    expect(emitted.contents).toContain('catch');
+  });
+
+  it('detects return in if-else branches inside try-finally', () => {
+    const result = lower(
+      'if-else-try-return.ts',
+      `export function abs(x: number): number {
+        try {
+          if (x > 0) {
+            return x;
+          } else {
+            return -x;
+          }
+        } finally {
+          const y: number = 0;
+        }
+      }`,
+    );
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('finally_return');
+    expect(emitted.contents).toContain('if (');
+    expect(emitted.contents).toContain('else');
+  });
+
+  it('generates unique names when multiple switches collide', () => {
+    const result = lower(
+      'multi-switch.ts',
+      `export function multi(x: number, y: number): string {
+        let a: string = '';
+        switch (x) { case 0: a = 'x'; break; default: a = 'other'; }
+        let b: string = '';
+        switch (y) { case 0: b = 'y'; break; default: b = 'other'; }
+        return a + b;
+      }`,
+    );
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('switch_value');
+    expect(emitted.contents).toContain('switch_value_2');
+  });
+
+  it('generates collision-free anonymous struct names for same-property-name types', () => {
+    const result = lower(
+      'struct-collision.ts',
+      `export function numPt(): { x: number; y: number } { return { x: 1, y: 2 }; }
+       export function strPt(): { x: string; y: string } { return { x: 'a', y: 'b' }; }`,
+    );
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('x_y');
+    expect(emitted.contents).toContain('x_y_1');
+  });
+
+  it('throws on missing runtime external symbol binding', () => {
+    const result = lower('number-call.ts', 'export function toNum(x: string): number { return Number(x); }');
+    expect(() => emitIrModuleCpp(result.module)).toThrow(/runtime external symbol binding plan is incomplete/);
+  });
 });
