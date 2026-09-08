@@ -808,6 +808,35 @@ describe('createCompilerLoweringPassSwitchFallthrough', () => {
     expect(pass.verifyIrModule(output)).toMatchObject({ kind: 'valid' });
   });
 
+  it('lowers fallthrough with function expression initializer in switch case', () => {
+    const pass = createCompilerLoweringPassSwitchFallthrough();
+    const output = lowerIrModuleWithCompilerPasses(
+      lower(
+        'func-expr-case.ts',
+        `
+          export function dispatch(mode: number): () => number {
+            let handler: () => number;
+            switch (mode) {
+              case 0:
+                handler = function (): number { return 0; };
+                break;
+              case 1:
+              case 2:
+                handler = function (): number { return mode; };
+                break;
+              default:
+                handler = function (): number { return -1; };
+            }
+            return handler;
+          }
+        `,
+      ),
+      [createCompilerLoweringPassBindingPattern(), createCompilerLoweringPassVariableHoisting(), pass],
+    );
+
+    expect(pass.verifyIrModule(output)).toMatchObject({ kind: 'valid' });
+  });
+
   it('lowers fallthrough in default export function expressions', () => {
     const pass = createCompilerLoweringPassSwitchFallthrough();
     const output = lowerIrModuleWithCompilerPasses(

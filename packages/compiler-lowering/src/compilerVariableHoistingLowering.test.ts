@@ -1068,6 +1068,50 @@ describe('createCompilerLoweringPassVariableHoisting', () => {
     expect(pass.verifyIrModule(module)).toEqual({ kind: 'valid' });
   });
 
+  it('hoists var initialized with function expression', () => {
+    const output = lowerIrModuleWithCompilerPasses(
+      lower(
+        'function-expr-init.ts',
+        `
+          export function create(): () => number {
+            var maker: () => number = function (): number { return 1; };
+            return maker;
+          }
+        `,
+      ),
+      [createCompilerLoweringPassBindingPattern(), createCompilerLoweringPassVariableHoisting()],
+    );
+    expect(createCompilerLoweringPassVariableHoisting().verifyIrModule(output)).toEqual({ kind: 'valid' });
+    const body = getFunctionBody(output, 'create');
+    expect(getNamedVariable(getVariableStatement(body[0]).declarations[0])).toMatchObject({
+      binding: { name: 'maker' },
+    });
+  });
+
+  it('hoists var inside switch case with function expression', () => {
+    const output = lowerIrModuleWithCompilerPasses(
+      lower(
+        'switch-func-init.ts',
+        `
+          export function pick(x: number): () => number {
+            switch (x) {
+              case 1: {
+                var handler: () => number = function (): number { return x; };
+                return handler;
+              }
+              default: {
+                var fallback: () => number = function (): number { return 0; };
+                return fallback;
+              }
+            }
+          }
+        `,
+      ),
+      [createCompilerLoweringPassBindingPattern(), createCompilerLoweringPassVariableHoisting()],
+    );
+    expect(createCompilerLoweringPassVariableHoisting().verifyIrModule(output)).toEqual({ kind: 'valid' });
+  });
+
   it('elects observable undefined entry state only for an undefined-bearing variable domain', () => {
     const output = lowerIrModuleWithCompilerPasses(
       lower(

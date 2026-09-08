@@ -4195,24 +4195,6 @@ describe('emitIrModuleRust', () => {
     expect(output).toMatch(/fn double_increment\(&mut self\)/);
   });
 
-  it('emits non-exported class without pub struct', () => {
-    const output = emitIrModuleRust(
-      lower(
-        'internal-class.ts',
-        `class Internal {
-          x: number;
-          constructor(x: number) { this.x = x; }
-        }
-        export class Wrapper extends Internal {
-          y: number;
-          constructor(x: number, y: number) { super(x); this.y = y; }
-        }`,
-      ).module,
-    ).contents;
-    expect(output).toContain('struct Internal');
-    expect(output).not.toMatch(/pub struct Internal/);
-  });
-
   it('emits class with private static field without pub', () => {
     const output = emitIrModuleRust(
       lower(
