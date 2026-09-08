@@ -2508,4 +2508,230 @@ describe('emitIrModuleRust', () => {
     ).contents;
     expect(output).toContain('HashMap');
   });
+
+  it('emits array join with borrowed separator', () => {
+    const output = emitIrModuleRust(
+      lower('arr-join.ts', 'export function join(items: string[]): string { return items.join(", "); }').module,
+    ).contents;
+    expect(output).toContain('.join(');
+  });
+
+  it('emits array slice with range bounds', () => {
+    const output = emitIrModuleRust(
+      lower('arr-slice.ts', 'export function mid(items: number[]): number[] { return items.slice(1, 3); }').module,
+    ).contents;
+    expect(output).toContain('.to_vec()');
+  });
+
+  it('emits array slice with start only', () => {
+    const output = emitIrModuleRust(
+      lower('arr-slice-start.ts', 'export function tail(items: number[]): number[] { return items.slice(1); }').module,
+    ).contents;
+    expect(output).toContain('..].to_vec()');
+  });
+
+  it('emits array concat as extend', () => {
+    const output = emitIrModuleRust(
+      lower('arr-concat.ts', 'export function merge(a: number[], b: number[]): number[] { return a.concat(b); }')
+        .module,
+    ).contents;
+    expect(output).toContain('__concat');
+    expect(output).toContain('.extend(');
+  });
+
+  it('emits string charAt as chars().nth()', () => {
+    const output = emitIrModuleRust(
+      lower('str-charat.ts', 'export function first(s: string): string { return s.charAt(0); }').module,
+    ).contents;
+    expect(output).toContain('.chars().nth(');
+    expect(output).toContain('.unwrap_or_default()');
+  });
+
+  it('emits string charCodeAt as chars().nth() with u32 cast', () => {
+    const output = emitIrModuleRust(
+      lower('str-charcodeat.ts', 'export function code(s: string): number { return s.charCodeAt(0); }').module,
+    ).contents;
+    expect(output).toContain('.chars().nth(');
+    expect(output).toContain('u32 as f64');
+  });
+
+  it('emits string substring as range slice', () => {
+    const output = emitIrModuleRust(
+      lower('str-substring.ts', 'export function sub(s: string): string { return s.substring(1, 3); }').module,
+    ).contents;
+    expect(output).toContain('.to_string()');
+  });
+
+  it('emits closure with body statements', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'closure-body.ts',
+        'export function run(items: number[]): number[] { return items.map((x: number): number => { const y = x + 1; return y; }); }',
+      ).module,
+    ).contents;
+    expect(output).toContain('|');
+    expect(output).toContain('let');
+  });
+
+  it('emits class with mutable self for this assignment', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'mut-self.ts',
+        'export class Counter { count: number; constructor() { this.count = 0; } increment(): void { this.count = this.count + 1; } }',
+      ).module,
+    ).contents;
+    expect(output).toContain('&mut self');
+  });
+
+  it('emits imports from relative specifiers', () => {
+    const result = lowerPackage(
+      '@flighthq/core',
+      'use.ts',
+      "import { add } from './math.js'; export function double(x: number): number { return add(x, x); }",
+    );
+    const output = emitIrModuleRust(result.module).contents;
+    expect(output).toContain('use crate::');
+  });
+
+  it('emits break and continue with label targets', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'labeled-loop.ts',
+        'export function scan(grid: number[][]): number { let total = 0; outer: for (const row of grid) { for (const cell of row) { if (cell < 0) continue outer; if (cell > 99) break outer; total = total + cell; } } return total; }',
+      ).module,
+    ).contents;
+    expect(output).toContain("'outer");
+    expect(output).toContain("break 'outer");
+    expect(output).toContain("continue 'outer");
+  });
+
+  it('emits switch default case as else clause', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'switch-default.ts',
+        'export function label(n: number): string { switch (n) { case 1: return "one"; case 2: return "two"; default: return "other"; } }',
+      ).module,
+    ).contents;
+    expect(output).toContain('else {');
+    expect(output).toContain('"other"');
+  });
+
+  it('emits abstract class with concrete default methods', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'abstract-default.ts',
+        'export abstract class Shape { abstract area(): number; describe(): string { return "shape"; } }',
+      ).module,
+    ).contents;
+    expect(output).toContain('trait Shape');
+    expect(output).toContain('fn area(&self) -> f64;');
+    expect(output).toContain('fn describe(&self) -> String');
+    expect(output).toContain('"shape"');
+  });
+
+  it('emits class extending concrete base as composition', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'composition.ts',
+        [
+          'export class Base { x: number; constructor(x: number) { this.x = x; } }',
+          'export class Child extends Base { y: number; constructor(x: number, y: number) { super(x); this.y = y; } }',
+        ].join('\n'),
+      ).module,
+    ).contents;
+    expect(output).toContain('base:');
+    expect(output).toContain('Base::new(');
+  });
+
+  it('emits class extending stateless abstract base', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'abstract-impl.ts',
+        [
+          'export abstract class Shape { abstract area(): number; }',
+          'export class Circle extends Shape { radius: number; constructor(r: number) { super(); this.radius = r; } area(): number { return 3.14 * this.radius * this.radius; } }',
+        ].join('\n'),
+      ).module,
+    ).contents;
+    expect(output).toContain('trait Shape');
+    expect(output).toContain('impl Shape for Circle');
+  });
+
+  it('emits optional property chain as map/and_then', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'optional-prop.ts',
+        'export function name(user: { name: string } | null): string | null { return user?.name; }',
+      ).module,
+    ).contents;
+    expect(output).toContain('.as_ref().');
+    expect(output).toContain('optional_chain_value');
+  });
+
+  it('emits unary plus on number as identity', () => {
+    const output = emitIrModuleRust(
+      lower('unary-plus.ts', 'export function id(x: number): number { return +x; }').module,
+    ).contents;
+    expect(output).not.toContain('+ x');
+    expect(output).toContain('return x');
+  });
+
+  it('emits indexedAccess type as opaque host type', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'indexed-type.ts',
+        'interface Config { host: string } export function get(c: Config[keyof Config]): string { return c; }',
+      ).module,
+    ).contents;
+    expect(output).toBeDefined();
+  });
+
+  it('emits symbol primitive type as FlightSymbol', () => {
+    const output = emitIrModuleRust(
+      lower('symbol-type.ts', 'export function id(s: symbol): symbol { return s; }').module,
+    ).contents;
+    expect(output).toContain('FlightSymbol');
+  });
+
+  it('refuses mutable module variable with synchronization error', () => {
+    expect(() => emitIrModuleRust(lower('mod-var-mut.ts', 'export let counter: number = 0;').module)).toThrow(
+      'synchronization',
+    );
+  });
+
+  it('emits type alias with type parameters', () => {
+    const output = emitIrModuleRust(
+      lower('generic-alias.ts', 'export type Pair<A, B> = { first: A; second: B; };').module,
+    ).contents;
+    expect(output).toContain('struct Pair');
+    expect(output).toContain(': Clone');
+  });
+
+  it('emits class with static method accessed via type path', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'static-method.ts',
+        'export class Factory { static create(): number { return 42.0; } } export function make(): number { return Factory.create(); }',
+      ).module,
+    ).contents;
+    expect(output).toContain('Factory::create()');
+  });
+
+  it('emits object literal with optional property as Some', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'obj-optional.ts',
+        'interface Opts { name: string; age?: number; } export function defaults(): Opts { return { name: "test" }; }',
+      ).module,
+    ).contents;
+    expect(output).toContain('age: None');
+  });
+
+  it('emits variable with undefined initial value as deferred binding', () => {
+    const output = emitIrModuleRust(
+      lower('var-undef-init.ts', 'export function maybe(): number | null { let x: number | null; x = 42.0; return x; }')
+        .module,
+    ).contents;
+    expect(output).toContain('let x: Option<f64>');
+  });
 });
