@@ -115,12 +115,12 @@ describe('emitIrModuleHaxe', () => {
     );
   });
 
-  it('emits explicit type and value runtime bindings and rejects incomplete symbol spaces first', () => {
+  it('emits explicit type and value runtime bindings for all bound ambient symbols', () => {
     const supported = lower(
       'external-types.ts',
       'export function preserve(values: Map<string, number>, bytes: Uint8Array, task: Promise<number>): Promise<number> { values; bytes; return task; }',
     );
-    const missing = lower('external-missing.ts', 'export type operator = WeakMap; export type operator_ = WeakMap;');
+    const weakMap = lower('external-weakmap.ts', 'export function store(map: WeakMap<object, number>): void { map; }');
     const values = lower(
       'external-values.ts',
       'export function create(): Promise<number> { const values = new Map<string, number>(); const bytes = new Uint8Array(3); values; bytes; return Promise.resolve(1); }',
@@ -129,6 +129,7 @@ describe('emitIrModuleHaxe', () => {
     const custom = emitIrModuleHaxe(supported.module, { runtimeModule: 'custom.runtime' }).contents;
     const valueOutput = emitIrModuleHaxe(values.module).contents;
     const customValueOutput = emitIrModuleHaxe(values.module, { runtimeModule: 'custom.runtime' }).contents;
+    const weakMapOutput = emitIrModuleHaxe(weakMap.module).contents;
 
     expect(output).toContain('values:flighthq._internal._Map<String, Float>');
     expect(output).toContain('bytes:flighthq._internal._UInt8Array');
@@ -140,9 +141,7 @@ describe('emitIrModuleHaxe', () => {
     expect(customValueOutput).toContain('new custom.runtime._UInt8Array(3)');
     expect(customValueOutput).toContain('new custom.runtime._Map()');
     expect(customValueOutput).toContain('custom.runtime._Promise.resolve(1)');
-    expect(() => emitIrModuleHaxe(missing.module)).toThrow(
-      'runtime external symbol binding plan is incomplete (missing: WeakMap[type])',
-    );
+    expect(weakMapOutput).toContain('flighthq._internal._WeakMap');
   });
 
   it('refuses runtime constructor arities absent from the versioned Haxe ABI plan', () => {
@@ -811,10 +810,12 @@ describe('emitIrModuleHaxe', () => {
     expect(output).toContain('return operator_ + operator__2;');
   });
 
-  it('refuses public type collisions introduced by Haxe normalization', () => {
+  it('disambiguates public type collisions introduced by Haxe normalization', () => {
     const result = lower('type-collisions.ts', 'export type operator = number; export type operator_ = operator;');
+    const emitted = emitIrModuleHaxe(result.module);
 
-    expect(() => emitIrModuleHaxe(result.module)).toThrow('public declarations share fixed Haxe target name Operator');
+    expect(emitted.contents).toContain('Operator');
+    expect(emitted.contents).toContain('Operator_2');
   });
 
   it('preserves public source spellings when Haxe normalization does not collide', () => {

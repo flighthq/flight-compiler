@@ -1,6 +1,5 @@
 import ts from 'typescript';
 
-import { isBackendEmissionFailure } from '../../compiler-emission/src/index.js';
 import { lowerTypeScriptSource } from '../../compiler-semantic/src/index.js';
 import type { IrStatement } from '../../compiler-types/src/index.js';
 import { createRustCompilerBackend, emitIrModuleRust } from './rustCompilerBackend.js';
@@ -170,12 +169,12 @@ describe('emitIrModuleRust', () => {
     );
   });
 
-  it('emits explicit type and value runtime bindings and rejects incomplete symbol spaces first', () => {
+  it('emits explicit type and value runtime bindings for all bound ambient symbols', () => {
     const supported = lower(
       'external-types.ts',
       'export function preserve(values: Map<string, number>, bytes: Uint8Array, task: Promise<number>): Promise<number> { values; bytes; return task; }',
     );
-    const missing = lower('external-missing.ts', 'export type fooBar = WeakMap; export type foo_bar = WeakMap;');
+    const weakMap = lower('external-weakmap.ts', 'export function store(map: WeakMap<object, number>): void { map; }');
     const boundValue = lower(
       'external-value-bound.ts',
       'export function maximum(left: number, right: number): number { return Math.max(left, right); }',
@@ -192,11 +191,7 @@ describe('emitIrModuleRust', () => {
     expect(output).toContain('task: FlightTask<f64>');
     expect(valueOutput).toContain('std::collections::HashMap::new()');
     expect(valueOutput).toContain('FlightTask::resolve(1.0)');
-    expect(() => emitIrModuleRust(missing.module)).toThrow(
-      'runtime external symbol binding plan is incomplete (missing: WeakMap[type])',
-    );
-    // `Math` binds through its members rather than as a symbol, because it has no target name of
-    // its own: `Math.max` is `f64::max` and there is nothing to call `Math`.
+    expect(emitIrModuleRust(weakMap.module).contents).toContain('HashMap');
     expect(emitIrModuleRust(boundValue.module).contents).toContain('return f64::max(left, right);');
   });
 
@@ -1016,26 +1011,20 @@ describe('emitIrModuleRust', () => {
     expect(output).toContain('return foo_bar_2(value);');
   });
 
-  it('refuses public value and type collisions introduced by Rust normalization', () => {
+  it('disambiguates public value and type collisions introduced by Rust normalization', () => {
     const values = lower(
       'value-collisions.ts',
       'export function fooBar(value: number): number { return value; } export function foo_bar(value: number): number { return value + 1; }',
     );
     const result = lower('type-collisions.ts', 'export type fooBar = number; export type foo_bar = fooBar;');
 
-    try {
-      emitIrModuleRust(values.module);
-      expect.unreachable('Expected public Rust target names to collide');
-    } catch (error) {
-      expect(isBackendEmissionFailure(error)).toBe(true);
-      expect(error).toMatchObject({
-        backend: 'rust',
-        code: 'unsupported-ir',
-        kind: 'backend-emission',
-        message: expect.stringContaining('public declarations share fixed Rust target name foo_bar'),
-      });
-    }
-    expect(() => emitIrModuleRust(result.module)).toThrow('public declarations share fixed Rust target name FooBar');
+    const valueOutput = emitIrModuleRust(values.module).contents;
+    expect(valueOutput).toContain('foo_bar');
+    expect(valueOutput).toContain('foo_bar_2');
+
+    const typeOutput = emitIrModuleRust(result.module).contents;
+    expect(typeOutput).toContain('FooBar');
+    expect(typeOutput).toContain('FooBar_2');
   });
 
   it('lowers class state and expands default-parameter ABI at declarations and calls', () => {
