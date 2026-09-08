@@ -2596,35 +2596,38 @@ describe('emitIrModuleCpp', () => {
 
   it('refuses async closures before coroutine lowering', () => {
     const result = lower('async-closure.ts', 'export function run(): void { return; }');
-    const module = structuredClone(result.module);
-    const fn = module.declarations.find((d) => d.kind === 'function')!;
-    if (fn.kind === 'function') {
-      fn.body = [
+    const fn = result.module.declarations.find((d) => d.kind === 'function')!;
+    if (fn.kind !== 'function') throw new Error('Expected function');
+    const patched = {
+      ...fn,
+      body: [
         {
-          kind: 'expression',
+          kind: 'expression' as const,
           expression: {
-            kind: 'function',
+            kind: 'function' as const,
             async: true,
             parameters: [],
             body: [],
             expression: undefined,
             typeParameters: [],
-            returnType: { kind: 'primitive', name: 'void' },
+            returnType: { kind: 'primitive' as const, name: 'void' as const },
           },
         } as any,
-      ];
-    }
+      ],
+    };
+    const module = { ...result.module, declarations: [patched] };
     expect(() => emitIrModuleCpp(module)).toThrow();
   });
 
   it('refuses for-of with await before async iteration lowering', () => {
     const result = lower('for-await.ts', 'export function run(): void { return; }');
-    const module = structuredClone(result.module);
-    const fn = module.declarations.find((d) => d.kind === 'function')!;
-    if (fn.kind === 'function') {
-      fn.body = [
+    const fn = result.module.declarations.find((d) => d.kind === 'function')!;
+    if (fn.kind !== 'function') throw new Error('Expected function');
+    const patched = {
+      ...fn,
+      body: [
         {
-          kind: 'forOf',
+          kind: 'forOf' as const,
           await: true,
           variable: {
             binding: {
@@ -2641,46 +2644,47 @@ describe('emitIrModuleCpp', () => {
             },
             mutable: false,
           },
-          expression: { kind: 'literal', value: 0 },
-          body: { kind: 'block', statements: [] },
+          expression: { kind: 'literal' as const, value: 0 },
+          body: { kind: 'block' as const, statements: [] },
         } as any,
-      ];
-    }
+      ],
+    };
+    const module = { ...result.module, declarations: [patched] };
     expect(() => emitIrModuleCpp(module)).toThrow();
   });
 
   it('emits runtime external symbol binding plan completeness failures', () => {
     const result = lower('ext.ts', 'export const x: number = 1;');
-    const module = structuredClone(result.module);
-    module.declarations.push({
-      kind: 'function',
+    const extraDecl = {
+      kind: 'function' as const,
       binding: {
         id: 'fn-ext',
-        kind: 'variable',
+        kind: 'variable' as const,
         name: 'use',
         line: 1,
         column: 1,
         fingerprint: '',
         packageName: '',
-        scope: 'module',
+        scope: 'module' as const,
         source: '',
-        space: 'value',
+        space: 'value' as const,
       },
       async: false,
       typeParameters: [],
       parameters: [],
-      returnType: { kind: 'primitive', name: 'void' },
+      returnType: { kind: 'primitive' as const, name: 'void' as const },
       body: [
         {
-          kind: 'expression',
+          kind: 'expression' as const,
           expression: {
-            kind: 'identifier',
-            reference: { kind: 'ambient', name: 'NonExistentGlobal' },
-            presence: 'definite',
+            kind: 'identifier' as const,
+            reference: { kind: 'ambient' as const, name: 'NonExistentGlobal' },
+            presence: 'definite' as const,
           },
         },
       ],
-    } as any);
+    };
+    const module = { ...result.module, declarations: [...result.module.declarations, extraDecl] as any };
     expect(() => emitIrModuleCpp(module)).toThrow();
   });
 });
