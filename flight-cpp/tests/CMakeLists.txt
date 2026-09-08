@@ -8,3 +8,24 @@ else()
 endif()
 
 add_test(NAME flight_cpp.runtime COMMAND flight_cpp_runtime_tests)
+
+set(
+  flight_cpp_public_headers
+  array
+  contract
+  date
+  equality
+  map
+  math
+  presence
+  runtime
+  task
+  version
+)
+
+foreach(header IN LISTS flight_cpp_public_headers)
+  set(source "${CMAKE_CURRENT_BINARY_DIR}/header_${header}_test.cpp")
+  file(GENERATE OUTPUT "${source}" CONTENT "#include <flight/${header}.hpp>\n")
+  add_library("flight_cpp_header_${header}_test" OBJECT "${source}")
+  target_link_libraries("flight_cpp_header_${header}_test" PRIVATE Flight::Cpp)
+endforeach()

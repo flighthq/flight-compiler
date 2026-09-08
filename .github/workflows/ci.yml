@@ -21,6 +21,42 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  cpp-runtime:
+    name: C++ runtime (${{ matrix.compiler }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - compiler: GCC
+            os: ubuntu-latest
+            cmake-args: -DCMAKE_CXX_COMPILER=g++
+          - compiler: Clang
+            os: ubuntu-latest
+            cmake-args: -DCMAKE_CXX_COMPILER=clang++
+          - compiler: AppleClang
+            os: macos-latest
+            cmake-args: -DCMAKE_CXX_COMPILER=clang++
+          - compiler: MSVC
+            os: windows-latest
+            cmake-args: ''
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure runtime
+        run: cmake -S flight-cpp -B flight-cpp/build -DBUILD_TESTING=ON -DCMAKE_BUILD_TYPE=Release ${{ matrix.cmake-args }}
+      - name: Build runtime
+        run: cmake --build flight-cpp/build --config Release
+      - name: Test runtime
+        run: ctest --test-dir flight-cpp/build --build-config Release --output-on-failure
+      - name: Install runtime
+        run: cmake --install flight-cpp/build --config Release --prefix flight-cpp/out/install
+      - name: Configure installed consumer
+        run: cmake -S flight-cpp/tests/consumer -B flight-cpp/out/consumer -DCMAKE_PREFIX_PATH=${{ github.workspace }}/flight-cpp/out/install -DCMAKE_BUILD_TYPE=Release
+      - name: Build installed consumer
+        run: cmake --build flight-cpp/out/consumer --config Release
+      - name: Test installed consumer
+        run: ctest --test-dir flight-cpp/out/consumer --build-config Release --output-on-failure
+
   quality:
     name: Quality gates
     runs-on: ubuntu-latest
