@@ -100,6 +100,163 @@ describe('analyzeFlightWorkspace', () => {
     }
   });
 
+  it('resolves class, enum, namespace, default export, namespace import, and star masking', () => {
+    const upstream = createUpstreamFixture();
+    try {
+      write(
+        upstream,
+        'packages/types/src/Kind.ts',
+        'export class Kind { readonly value = 1; }\nexport enum Axis { X, Y }\nexport namespace Scope { export const depth = 1; }\n',
+      );
+      write(
+        upstream,
+        'packages/types/src/defaultExport.ts',
+        "import * as ns from './Kind.js';\nexport default class DefaultKind { readonly axis = ns.Axis.X; }\n",
+      );
+      write(
+        upstream,
+        'packages/types/src/index.ts',
+        "export { Mode } from './Mode.js';\nexport type { Shape } from './Shape.js';\nexport { createValue } from './value.js';\n" +
+          "import { createOtherValue as createRenamedValue } from './other.js';\nexport { createRenamedValue as createPublicValue };\n" +
+          "export { createValue as createDirectAlias } from './value.js';\n" +
+          "export { Kind, Axis, Scope } from './Kind.js';\nexport { default as DefaultKind } from './defaultExport.js';\n" +
+          "export * as KindNamespace from './Kind.js';\n",
+      );
+      git(upstream, 'add', '.');
+      git(upstream, 'commit', '-m', 'kinds');
+
+      const inventory = analyzeFlightWorkspace({ upstreamDirectory: upstream });
+      const inventoryByName = new Map(inventory.packages.map((item) => [item.name, item]));
+      const root = resolvePackageExportLane(inventoryByName, '@flighthq/types');
+      const exportNames = root.exports.map((e) => e.name).sort();
+
+      expect(exportNames).toContain('Kind');
+      expect(exportNames).toContain('Axis');
+      expect(exportNames).toContain('Scope');
+      expect(exportNames).toContain('DefaultKind');
+      expect(exportNames).toContain('KindNamespace');
+      expect(root.exports.find((e) => e.name === 'Kind')).toMatchObject({ kind: 'class', runtime: true });
+      expect(root.exports.find((e) => e.name === 'Axis')).toMatchObject({ kind: 'enum', runtime: true });
+      expect(root.exports.find((e) => e.name === 'Scope')).toMatchObject({ kind: 'namespace', runtime: true });
+      expect(root.exports.find((e) => e.name === 'DefaultKind')).toMatchObject({ kind: 'class', runtime: true });
+      expect(root.exports.find((e) => e.name === 'KindNamespace')).toMatchObject({ kind: 'namespace' });
+    } finally {
+      rmSync(upstream, { force: true, recursive: true });
+    }
+  });
+
+  it('resolves export conflicts and star export masking', () => {
+    const upstream = createUpstreamFixture();
+    try {
+      write(upstream, 'packages/types/src/conflict-a.ts', 'export function conflicted(): string { return "a"; }\n');
+      write(upstream, 'packages/types/src/conflict-b.ts', 'export function conflicted(): string { return "b"; }\n');
+      write(
+        upstream,
+        'packages/types/src/index.ts',
+        "export * from './conflict-a.js';\nexport * from './conflict-b.js';\nexport { createValue } from './value.js';\n" +
+          "export type { Shape } from './Shape.js';\nexport { Mode } from './Mode.js';\n" +
+          "import { createOtherValue as createRenamedValue } from './other.js';\nexport { createRenamedValue as createPublicValue };\n" +
+          "export { createValue as createDirectAlias } from './value.js';\n",
+      );
+      git(upstream, 'add', '.');
+      git(upstream, 'commit', '-m', 'conflicts');
+
+      const inventory = analyzeFlightWorkspace({ upstreamDirectory: upstream });
+      const inventoryByName = new Map(inventory.packages.map((item) => [item.name, item]));
+      const root = resolvePackageExportLane(inventoryByName, '@flighthq/types');
+
+      expect(root.exportConflicts.length).toBeGreaterThan(0);
+      expect(root.exportConflicts[0]?.name).toBe('conflicted');
+    } finally {
+      rmSync(upstream, { force: true, recursive: true });
+    }
+  });
+
+  it('resolves a .tsx source extension', () => {
+    const upstream = createUpstreamFixture();
+    try {
+      write(
+        upstream,
+        'tsconfig.json',
+        JSON.stringify({
+          compilerOptions: {
+            jsx: 'react',
+            module: 'ESNext',
+            moduleResolution: 'Bundler',
+            paths: {
+              '@flighthq/types': ['./packages/types/src/index.ts'],
+              '@flighthq/types/*': ['./packages/types/src/*'],
+            },
+            strict: true,
+            target: 'ES2022',
+          },
+          include: ['packages/**/*.ts', 'packages/**/*.tsx'],
+        }),
+      );
+      write(upstream, 'packages/types/src/Component.tsx', 'export function Component(): number { return 1; }\n');
+      write(
+        upstream,
+        'packages/types/src/index.ts',
+        "export { Mode } from './Mode.js';\nexport type { Shape } from './Shape.js';\nexport { createValue } from './value.js';\n" +
+          "export { Component } from './Component.js';\n" +
+          "import { createOtherValue as createRenamedValue } from './other.js';\nexport { createRenamedValue as createPublicValue };\n" +
+          "export { createValue as createDirectAlias } from './value.js';\n",
+      );
+      git(upstream, 'add', '.');
+      git(upstream, 'commit', '-m', 'tsx');
+
+      const inventory = analyzeFlightWorkspace({ upstreamDirectory: upstream });
+      const inventoryByName = new Map(inventory.packages.map((item) => [item.name, item]));
+      const root = resolvePackageExportLane(inventoryByName, '@flighthq/types');
+
+      expect(root.exports.find((e) => e.name === 'Component')).toMatchObject({ kind: 'function', runtime: true });
+    } finally {
+      rmSync(upstream, { force: true, recursive: true });
+    }
+  });
+
+  it('fails on an unresolvable package specifier in an export declaration', () => {
+    const upstream = createUpstreamFixture();
+    try {
+      write(upstream, 'packages/types/src/index.ts', "export { value } from 'bare-specifier';\n");
+      git(upstream, 'add', '.');
+      git(upstream, 'commit', '-m', 'bad specifier');
+
+      expectInventoryFailure(
+        () => analyzeFlightWorkspace({ upstreamDirectory: upstream }),
+        'unsupported-package-specifier',
+      );
+    } finally {
+      rmSync(upstream, { force: true, recursive: true });
+    }
+  });
+
+  it('fails on an unknown package in an export re-export', () => {
+    const upstream = createUpstreamFixture();
+    try {
+      write(upstream, 'packages/types/src/index.ts', "export { value } from '@flighthq/nonexistent';\n");
+      git(upstream, 'add', '.');
+      git(upstream, 'commit', '-m', 'unknown package');
+
+      expectInventoryFailure(() => analyzeFlightWorkspace({ upstreamDirectory: upstream }), 'unknown-package');
+    } finally {
+      rmSync(upstream, { force: true, recursive: true });
+    }
+  });
+
+  it('fails on a module that cannot be resolved to a source file', () => {
+    const upstream = createUpstreamFixture();
+    try {
+      write(upstream, 'packages/types/src/index.ts', "export { value } from './nonexistent.js';\n");
+      git(upstream, 'add', '.');
+      git(upstream, 'commit', '-m', 'missing source');
+
+      expectInventoryFailure(() => analyzeFlightWorkspace({ upstreamDirectory: upstream }), 'unresolved-source');
+    } finally {
+      rmSync(upstream, { force: true, recursive: true });
+    }
+  });
+
   it('refuses a program file that resolves outside the upstream checkout', () => {
     const upstream = createUpstreamFixture();
     const outside = mkdtempSync(path.join(os.tmpdir(), 'flight-compiler-outside-'));
