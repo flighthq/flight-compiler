@@ -4558,3 +4558,99 @@ describe('emitIrModuleHaxe tupleRest expression', () => {
     expect(output).toContain('.slice(');
   });
 });
+
+describe('emitIrModuleHaxe cross-depth labeled break control flow', () => {
+  it('emits state-based control flow when breaking from inner to outer loop', () => {
+    const result = lower(
+      'cross-depth-break.ts',
+      `export function search(matrix: number[][]): number {
+         let found: number = -1;
+         outer: for (const row of matrix) {
+           for (const cell of row) {
+             if (cell === 42) {
+               found = cell;
+               break outer;
+             }
+           }
+         }
+         return found;
+       }`,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('ControlFlowState');
+    expect(output).toContain('== 1');
+  });
+
+  it('emits state-based continue propagation across loop depths', () => {
+    const result = lower(
+      'cross-depth-continue.ts',
+      `export function skipNeg(matrix: number[][]): number {
+         let sum: number = 0;
+         outer: for (const row of matrix) {
+           for (const cell of row) {
+             if (cell < 0) continue outer;
+             sum += cell;
+           }
+         }
+         return sum;
+       }`,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('ControlFlowState');
+    expect(output).toContain('== 2');
+  });
+});
+
+describe('emitIrModuleHaxe array reduce with fold binding', () => {
+  it('emits Lambda.fold with exchanged closure for array reduce', () => {
+    const result = lower(
+      'array-reduce.ts',
+      `export function total(items: number[]): number {
+         return items.reduce((acc: number, item: number) => acc + item, 0);
+       }`,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('fold');
+  });
+});
+
+describe('emitIrModuleHaxe undefined-initialized variable', () => {
+  it('emits Dynamic null for hoisted variable whose type includes undefined', () => {
+    const result = lower(
+      'undef-init.ts',
+      `export function init(): number {
+         var x: number | undefined;
+         if (x !== undefined) { return x; }
+         x = 5;
+         return x;
+       }`,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('Dynamic');
+    expect(output).toContain('null');
+  });
+});
+
+describe('emitIrModuleHaxe do-while with label', () => {
+  it('emits labeled do-while loop with control flow boundary', () => {
+    const result = lower(
+      'labeled-do-while.ts',
+      `export function countdown(start: number): number {
+         let i: number = start;
+         loop: do {
+           i -= 1;
+           if (i === 5) break loop;
+         } while (i > 0);
+         return i;
+       }`,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('do {');
+    expect(output).toContain('while');
+  });
+});

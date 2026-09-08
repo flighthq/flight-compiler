@@ -673,6 +673,32 @@ describe('analyzeFlightWorkspace', () => {
     }
   });
 
+  it('resolves a TSX source file that the TypeScript program does not include', () => {
+    const upstream = createUpstreamFixture();
+    try {
+      write(upstream, 'packages/types/src/Component.tsx', 'export function Component(): number { return 1; }\n');
+      write(
+        upstream,
+        'packages/types/src/index.ts',
+        "export { Mode } from './Mode.js';\nexport type { Shape } from './Shape.js';\nexport { createValue } from './value.js';\n" +
+          "import { createOtherValue as createRenamedValue } from './other.js';\nexport { createRenamedValue as createPublicValue };\n" +
+          "export { createValue as createDirectAlias } from './value.js';\n" +
+          "export { Component } from './Component.js';\n",
+      );
+      git(upstream, 'add', '.');
+      git(upstream, 'commit', '-m', 'tsx source');
+
+      const inventory = analyzeFlightWorkspace({ upstreamDirectory: upstream });
+      const inventoryByName = new Map(inventory.packages.map((item) => [item.name, item]));
+      const root = resolvePackageExportLane(inventoryByName, '@flighthq/types');
+
+      expect(root.exports.find((e) => e.name === 'Component')).toMatchObject({ kind: 'function' });
+      expect(root.exports.find((e) => e.name === 'Component')?.source).toMatch(/Component\.tsx$/u);
+    } finally {
+      rmSync(upstream, { force: true, recursive: true });
+    }
+  });
+
   it('refuses a program file that resolves outside the upstream checkout', () => {
     const upstream = createUpstreamFixture();
     const outside = mkdtempSync(path.join(os.tmpdir(), 'flight-compiler-outside-'));
