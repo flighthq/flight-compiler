@@ -8877,6 +8877,611 @@ it('lowers module-level scope for source-file declarations', () => {
   ]);
 });
 
+// --- Untested arm coverage batch 2: evidence paths, binding patterns, tuple expressions ---
+
+it('lowers named tuple member evidence with dotDotDot and question tokens through binding', () => {
+  const result = lower(
+    'named-tuple-evidence-binding.ts',
+    `
+      export function extract(
+        [first, ...rest]: [first: number, ...rest: string[]]
+      ): string[] {
+        return rest;
+      }
+    `,
+  );
+  expect(result.diagnostics).toEqual([]);
+});
+
+it('lowers named tuple with optional member through evidence binding', () => {
+  const result = lower(
+    'named-tuple-optional-binding.ts',
+    `
+      export function extract(
+        [a, b]: [required: number, optional?: string]
+      ): number {
+        return a;
+      }
+    `,
+  );
+  expect(result.diagnostics).toEqual([]);
+});
+
+it('lowers union type evidence through destructuring parameter annotation', () => {
+  const result = lower(
+    'union-evidence-param.ts',
+    `
+      export function extract({ x }: { x: number | string }): number | string {
+        return x;
+      }
+    `,
+  );
+  expect(result.diagnostics).toEqual([]);
+});
+
+it('lowers intersection type evidence through destructuring parameter annotation', () => {
+  const result = lower(
+    'intersection-evidence-param.ts',
+    `
+      interface A { a: number; }
+      interface B { b: string; }
+      export function extract({ a, b }: A & B): number {
+        return a;
+      }
+    `,
+  );
+  expect(result.diagnostics).toEqual([]);
+});
+
+it('lowers type literal evidence through destructuring parameter annotation', () => {
+  const result = lower(
+    'type-literal-evidence-param.ts',
+    `
+      export function extract({ x, y }: { x: number; y: string }): number {
+        return x;
+      }
+    `,
+  );
+  expect(result.diagnostics).toEqual([]);
+});
+
+it('lowers readonly tuple evidence through parameter annotation', () => {
+  const result = lower(
+    'readonly-tuple-evidence.ts',
+    `
+      export function first([a]: readonly [number, string]): number {
+        return a;
+      }
+    `,
+  );
+  expect(result.diagnostics).toEqual([]);
+});
+
+it('lowers readonly array evidence through parameter annotation', () => {
+  const result = lower(
+    'readonly-array-evidence.ts',
+    `
+      export function first([a]: readonly number[]): number {
+        return a;
+      }
+    `,
+  );
+  expect(result.diagnostics).toEqual([]);
+});
+
+it('lowers Array<T> evidence through parameter annotation', () => {
+  const result = lower(
+    'array-generic-evidence.ts',
+    `
+      export function first([a]: Array<number>): number {
+        return a;
+      }
+    `,
+  );
+  expect(result.diagnostics).toEqual([]);
+});
+
+it('lowers ReadonlyArray<T> evidence through parameter annotation', () => {
+  const result = lower(
+    'readonlyarray-evidence.ts',
+    `
+      export function first([a]: ReadonlyArray<number>): number {
+        return a;
+      }
+    `,
+  );
+  expect(result.diagnostics).toEqual([]);
+});
+
+it('lowers interface heritage evidence through alias resolution', () => {
+  const result = lower(
+    'interface-alias-heritage.ts',
+    `
+      interface A { x: number; }
+      type AAlias = A;
+      export function extract(
+        { x }: AAlias
+      ): number {
+        return x;
+      }
+    `,
+  );
+  expect(result.diagnostics).toEqual([]);
+});
+
+it('lowers function type evidence for parameter with initializer but no type', () => {
+  const result = lower(
+    'function-type-evidence-default.ts',
+    `
+      interface Handler { callback: (value: number, scale?: number) => string; }
+      export function use({ callback }: Handler): string {
+        return callback(42);
+      }
+    `,
+  );
+  expect(result.diagnostics).toEqual([]);
+});
+
+it('lowers function return type evidence for named tuple result', () => {
+  const result = lower(
+    'return-type-named-tuple.ts',
+    `
+      export function pair(): [x: number, y: string] {
+        return [1, "a"];
+      }
+    `,
+  );
+  expect(result.diagnostics).toEqual([]);
+});
+
+it('lowers contextual tuple expression with extra trailing optional elements', () => {
+  const result = lower(
+    'tuple-trailing-optional.ts',
+    `
+      export function partial(): [number, string?, boolean?] {
+        return [1] as [number, string?, boolean?];
+      }
+    `,
+  );
+  expect(result.diagnostics).toEqual([]);
+});
+
+it('lowers contextual tuple expression with spread from tuple', () => {
+  const result = lower(
+    'tuple-spread-expression.ts',
+    `
+      export function combine(
+        a: [number],
+        b: [string, boolean]
+      ): [number, string, boolean] {
+        return [...a, ...b] as [number, string, boolean];
+      }
+    `,
+  );
+  expect(result.diagnostics).toEqual([]);
+});
+
+it('resolves checker type evidence for void return', () => {
+  const result = lower(
+    'checker-void-evidence.ts',
+    `
+      export function process(items: number[]): void {
+        items.forEach((x) => { x; });
+      }
+    `,
+  );
+  expect(result.diagnostics).toEqual([]);
+});
+
+it('resolves checker type evidence for undefined literal', () => {
+  const result = lower(
+    'checker-undefined-evidence.ts',
+    `
+      export function find(items: number[]): number | undefined {
+        return items.find((x) => x > 0);
+      }
+    `,
+  );
+  expect(result.diagnostics).toEqual([]);
+});
+
+it('resolves operator domain for bigint-like type', () => {
+  const result = lower(
+    'bigint-operator-domain.ts',
+    `
+      export function add(a: bigint, b: bigint): bigint {
+        return a + b;
+      }
+    `,
+  );
+  expect(result.diagnostics).toEqual([]);
+});
+
+it('resolves operator domain for symbol-like type', () => {
+  const result = lower(
+    'symbol-operator-domain.ts',
+    `
+      export function describe(s: symbol): string {
+        return s.toString();
+      }
+    `,
+  );
+  expect(result.diagnostics).toEqual([]);
+});
+
+it('resolves indexed receiver for tuple type via declaration', () => {
+  const result = lower(
+    'tuple-receiver-index.ts',
+    `
+      export function get(t: [number, string], i: number): any {
+        return t[i];
+      }
+    `,
+  );
+  expect(result.diagnostics).toEqual([]);
+});
+
+it('resolves indexed receiver for type literal through declaration', () => {
+  const result = lower(
+    'type-literal-receiver.ts',
+    `
+      export function get(obj: { a: number; b: number }, key: string): number {
+        return (obj as any)[key];
+      }
+    `,
+  );
+  expect(result.diagnostics).toEqual([]);
+});
+
+it('resolves indexed receiver from union type annotation', () => {
+  const result = lower(
+    'union-receiver-index.ts',
+    `
+      export function get(items: number[] | string[], i: number): any {
+        return items[i];
+      }
+    `,
+  );
+  expect(result.diagnostics).toEqual([]);
+});
+
+it('resolves coalesce expression type evidence when both sides match', () => {
+  const result = lower(
+    'coalesce-both-match.ts',
+    `
+      export function safe(x: number | null): number {
+        const result: number = x ?? 0;
+        return result;
+      }
+    `,
+  );
+  expect(result.diagnostics).toEqual([]);
+});
+
+it('resolves element access expression type evidence with numeric index', () => {
+  const result = lower(
+    'element-access-numeric-evidence.ts',
+    `
+      export function first(items: [number, string]): number {
+        const result = items[0];
+        return result;
+      }
+    `,
+  );
+  expect(result.diagnostics).toEqual([]);
+});
+
+it('lowers iterable element evidence from type alias for-of', () => {
+  const result = lower(
+    'for-of-alias-evidence.ts',
+    `
+      type StringList = string[];
+      export function join(items: StringList): string {
+        let result = "";
+        for (const item of items) {
+          result += item;
+        }
+        return result;
+      }
+    `,
+  );
+  expect(result.diagnostics).toEqual([]);
+});
+
+it('lowers iterable element evidence through readonly Array type', () => {
+  const result = lower(
+    'for-of-readonly-evidence.ts',
+    `
+      export function sum(items: readonly number[]): number {
+        let total = 0;
+        for (const item of items) {
+          total += item;
+        }
+        return total;
+      }
+    `,
+  );
+  expect(result.diagnostics).toEqual([]);
+});
+
+it('lowers iterable element evidence from parenthesized type', () => {
+  const result = lower(
+    'for-of-parens-evidence.ts',
+    `
+      export function sum(items: (number[])): number {
+        let total = 0;
+        for (const item of items) {
+          total += item;
+        }
+        return total;
+      }
+    `,
+  );
+  expect(result.diagnostics).toEqual([]);
+});
+
+it('resolves present value domain from element access array binding', () => {
+  const result = lower(
+    'present-domain-element.ts',
+    `
+      export function coalesce(items: number[], i: number): number {
+        return items[i] ?? -1;
+      }
+    `,
+  );
+  expect(result.diagnostics).toEqual([]);
+});
+
+it('lowers export unsupported declaration as diagnostic', () => {
+  const result = lower(
+    'export-unsupported-syntax.ts',
+    `
+      export const x = 1;
+    `,
+  );
+  expect(result.diagnostics).toEqual([]);
+});
+
+it('lowers typed array set element access with bracket notation', () => {
+  const result = lower(
+    'typed-array-set-bracket.ts',
+    `
+      export function fill(dst: Float32Array, src: Float32Array): void {
+        dst["set"](src);
+      }
+    `,
+  );
+  expect(result.diagnostics).toEqual([]);
+});
+
+it('resolves indexed receiver from any keyword type', () => {
+  const result = lower(
+    'any-receiver.ts',
+    `
+      export function get(obj: any, key: string): any {
+        return obj[key];
+      }
+    `,
+  );
+  expect(result.diagnostics).toEqual([]);
+});
+
+it('resolves operator domain for object type flags', () => {
+  const result = lower(
+    'object-operator-domain.ts',
+    `
+      export function read(obj: object, key: string): any {
+        return (obj as any)[key];
+      }
+    `,
+  );
+  expect(result.diagnostics).toEqual([]);
+});
+
+it('lowers type-only import clause binding', () => {
+  const result = lower(
+    'type-only-import-clause.ts',
+    `
+      import type DefaultType from "./other";
+      export function use(x: DefaultType): any { return x; }
+    `,
+  );
+  expect(result.diagnostics).toEqual([]);
+});
+
+it('lowers import with both default and named bindings', () => {
+  const result = lower(
+    'import-default-named.ts',
+    `
+      import def, { named } from "./other";
+      export function use(): any { return def; }
+    `,
+  );
+  expect(result.diagnostics).toEqual([]);
+});
+
+it('resolves indexed receiver from symbol key coercion', () => {
+  const result = lower(
+    'symbol-key-index.ts',
+    `
+      const key = Symbol("key");
+      export function get(obj: Record<symbol, number>): number {
+        return obj[key];
+      }
+    `,
+  );
+  expect(result.diagnostics).toEqual([]);
+});
+
+it('resolves binding declaration scope for let inside block inside function', () => {
+  const result = lower(
+    'block-scope-binding.ts',
+    `
+      export function process(): number {
+        if (true) {
+          let x = 42;
+          return x;
+        }
+        return 0;
+      }
+    `,
+  );
+  expect(result.diagnostics).toEqual([]);
+});
+
+it('resolves hasValueNamespaceMembers for nested module declaration', () => {
+  const result = lower(
+    'nested-namespace-value.ts',
+    `
+      namespace Outer {
+        namespace Inner {
+          export function helper(): number { return 1; }
+        }
+      }
+      export const x = 1;
+    `,
+  );
+  expect(result.diagnostics).toMatchObject([{ code: 'unsupported-typescript' }]);
+});
+
+it('lowers property access member from interface member type evidence', () => {
+  const result = lower(
+    'interface-member-evidence.ts',
+    `
+      interface Data {
+        items: number[];
+        label: string;
+      }
+      export function process(d: Data): number {
+        return d.items.length;
+      }
+    `,
+  );
+  expect(result.diagnostics).toEqual([]);
+});
+
+it('resolves narrowed presence for union type with absent member', () => {
+  const result = lower(
+    'narrowed-presence.ts',
+    `
+      export function process(x: number | undefined): number {
+        if (x === undefined) return 0;
+        return x;
+      }
+    `,
+  );
+  expect(result.diagnostics).toEqual([]);
+});
+
+it('resolves object construction target from type alias resolution', () => {
+  const result = lower(
+    'construction-target-alias.ts',
+    `
+      type Pair = { a: number; b: string };
+      export function create(): Pair {
+        return { a: 1, b: "x" };
+      }
+    `,
+  );
+  expect(result.diagnostics).toEqual([]);
+});
+
+it('lowers destructuring assignment expression as completion value', () => {
+  const result = lower(
+    'destructure-assign-expr.ts',
+    `
+      export function swap(): [number, number] {
+        let a = 1;
+        let b = 2;
+        const result = ([b, a] = [a, b] as [number, number]);
+        return result;
+      }
+    `,
+  );
+  expect(result.diagnostics).toEqual([]);
+});
+
+it('lowers class with overloaded constructor', () => {
+  const result = lower(
+    'class-overloaded-constructor.ts',
+    `
+      export class Wrapper {
+        value: number;
+        constructor(value: number);
+        constructor(value: string);
+        constructor(value: number | string) {
+          this.value = typeof value === "number" ? value : Number(value);
+        }
+      }
+    `,
+  );
+  expect(result.diagnostics).toEqual([]);
+});
+
+it('lowers class with no constructor body', () => {
+  const result = lower(
+    'class-no-constructor.ts',
+    `
+      export class Simple {
+        value: number = 0;
+      }
+    `,
+  );
+  expect(result.diagnostics).toEqual([]);
+});
+
+it('resolves indexed receiver from parens in type annotation', () => {
+  const result = lower(
+    'parens-type-receiver.ts',
+    `
+      export function first(items: (number[])): number {
+        return items[0];
+      }
+    `,
+  );
+  expect(result.diagnostics).toEqual([]);
+});
+
+it('resolves indexed receiver through type operator readonly', () => {
+  const result = lower(
+    'readonly-receiver.ts',
+    `
+      export function first(items: readonly number[]): number {
+        return items[0];
+      }
+    `,
+  );
+  expect(result.diagnostics).toEqual([]);
+});
+
+it('resolves default parameter semantics with spread arguments', () => {
+  const result = lower(
+    'default-param-spread.ts',
+    `
+      function greet(name: string, greeting: string = "Hello"): string {
+        return greeting + " " + name;
+      }
+      export function use(args: [string, string]): string {
+        return greet(...args);
+      }
+    `,
+  );
+  expect(result.diagnostics).toEqual([]);
+});
+
+it('lowers class with implements clause', () => {
+  const result = lower(
+    'class-implements.ts',
+    `
+      interface Runnable { run(): void; }
+      export class Worker implements Runnable {
+        run(): void { }
+      }
+    `,
+  );
+  expect(result.diagnostics).toEqual([]);
+});
+
 function getVariableBinding(value: unknown): IrBindingIdentity {
   if (typeof value !== 'object' || value === null || !('binding' in value)) {
     throw new Error('Expected named variable');
