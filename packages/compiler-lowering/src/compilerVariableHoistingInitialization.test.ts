@@ -343,6 +343,243 @@ describe('validateIrFunctionVariableInitialization', () => {
       validateIrFunctionVariableInitialization(declaration.body, getFunctionVariables(declaration), declaration.origin),
     ).toThrow('function-scoped variable value may be read before initialization');
   });
+
+  it('tracks initialization through diverse expression kinds', () => {
+    const declaration = lowerFunction(`
+      export function compute(
+        flag: boolean,
+        items: number[],
+        obj: { x: number },
+        fn: (n: number) => number,
+      ): number {
+        var value: number;
+        obj.x = (value = 1);
+        items[0] = value;
+        const arr = [value, ...items];
+        const sum = value + 1;
+        fn(value);
+        new Error(String(value));
+        const ternary = flag ? value : 0;
+        const indexed = items[value];
+        const composed = { y: value, [String(value)]: 1, ...obj };
+        const prop = obj.x;
+        const msg = \`count: \${value}\`;
+        const neg = -value;
+        const not = !flag;
+        typeof value;
+        value++;
+        return value;
+      }
+    `);
+
+    expect(
+      validateIrFunctionVariableInitialization(declaration.body, getFunctionVariables(declaration), declaration.origin),
+    ).toBeUndefined();
+  });
+
+  it('tracks initialization through while loops and for-expression initializers', () => {
+    for (const source of [
+      `
+        export function whileVar(): number {
+          var value: number;
+          value = 1;
+          while (value > 0) { value -= 1; }
+          return value;
+        }
+      `,
+      `
+        export function forExprInit(): number {
+          var value: number;
+          value = 0;
+          for (value += 1; value < 10; value++) { break; }
+          return value;
+        }
+      `,
+    ]) {
+      const declaration = lowerFunction(source);
+
+      expect(
+        validateIrFunctionVariableInitialization(
+          declaration.body,
+          getFunctionVariables(declaration),
+          declaration.origin,
+        ),
+      ).toBeUndefined();
+    }
+  });
+
+  it('tracks var iteration variables in forIn and forOf loops', () => {
+    for (const source of [
+      `
+        export function forOfVar(items: number[]): void {
+          for (var item of items) { item; }
+        }
+      `,
+      `
+        export function forInVar(obj: Record<string, number>): void {
+          for (var key in obj) { key; }
+        }
+      `,
+    ]) {
+      const declaration = lowerFunction(source);
+
+      expect(
+        validateIrFunctionVariableInitialization(
+          declaration.body,
+          getFunctionVariables(declaration),
+          declaration.origin,
+        ),
+      ).toBeUndefined();
+    }
+  });
+
+  it('collects deferred closures from diverse statement containers', () => {
+    const declaration = lowerFunction(`
+      export function collect(): number {
+        var value: number;
+        value = 1;
+        { const inBlock = (): number => value; inBlock; }
+        if (true) { const inIf = (): number => value; inIf; }
+        else { const inElse = (): number => value; inElse; }
+        for (let i = 0; i < 1; i++) { const inFor = (): number => value; inFor; }
+        for (const k in {}) { const inForIn = (): number => value; inForIn; }
+        for (const item of [1]) { const inForOf = (): number => value; item; inForOf; }
+        while (false) { const inWhile = (): number => value; inWhile; }
+        do { const inDo = (): number => value; inDo; } while (false);
+        try { const inTry = (): number => value; inTry; }
+        catch { const inCatch = (): number => value; inCatch; }
+        finally { const inFinally = (): number => value; inFinally; }
+        switch (0) { case 0: const inSwitch = (): number => value; inSwitch; break; }
+        return value;
+      }
+    `);
+
+    expect(
+      validateIrFunctionVariableInitialization(declaration.body, getFunctionVariables(declaration), declaration.origin),
+    ).toBeUndefined();
+  });
+
+  it('validates closure captures through diverse expression and statement visitors', () => {
+    const declaration = lowerFunction(`
+      export async function captures(task: Promise<number>): Promise<number> {
+        var value: number;
+        value = 1;
+        const complex = async (): Promise<number> => {
+          const arr = [value, ...[]];
+          const obj = { x: value, [String(value)]: 1, ...{y: 2} };
+          const ternary = value > 0 ? value : 0;
+          const elem = arr[0];
+          const prop = obj.x;
+          const tpl = \`\${value}\`;
+          const neg = -value;
+          const not = !true;
+          typeof value;
+          const casted = value as number;
+          const awaited = await task;
+          const inner = (): number => value;
+          if (value > 0) { value; } else { 0; }
+          for (let i = 0; i < 1; i++) { value; }
+          for (const k in obj) { k; }
+          for (const item of arr) { item; }
+          for (value += 1; value < 10;) { break; }
+          while (false) { value; }
+          do { value; } while (false);
+          try { value; } catch { 0; } finally { 0; }
+          switch (value) { case 0: value; break; default: 0; }
+          { value; }
+          value + 1;
+          throw new Error(String(value));
+        };
+        return await complex();
+      }
+    `);
+
+    expect(
+      validateIrFunctionVariableInitialization(declaration.body, getFunctionVariables(declaration), declaration.origin),
+    ).toBeUndefined();
+  });
+
+  it('tracks initialization through await, cast, spread, and IIFE expressions', () => {
+    const declaration = lowerFunction(`
+      export async function awaitCast(task: Promise<number>, items: number[]): Promise<number> {
+        var value: number;
+        value = await task;
+        const casted = value as number;
+        const spread = [...items];
+        return casted + spread.length;
+      }
+    `);
+
+    expect(
+      validateIrFunctionVariableInitialization(declaration.body, getFunctionVariables(declaration), declaration.origin),
+    ).toBeUndefined();
+  });
+
+  it('propagates break, continue, and return through try/catch inside loops', () => {
+    for (const source of [
+      `
+        export function tryBreak(): number {
+          var value: number;
+          for (;;) { try { value = 1; break; } catch { value = 2; break; } }
+          return value;
+        }
+      `,
+      `
+        export function tryContinue(): number {
+          var value: number;
+          value = 0;
+          for (let i = 0; i < 1; i++) {
+            try { value += 1; continue; } catch { value = 0; continue; }
+          }
+          return value;
+        }
+      `,
+      `
+        export function tryReturn(): number {
+          var value: number;
+          while (true) { try { value = 1; return value; } catch { return 0; } }
+        }
+      `,
+    ]) {
+      const declaration = lowerFunction(source);
+
+      expect(
+        validateIrFunctionVariableInitialization(
+          declaration.body,
+          getFunctionVariables(declaration),
+          declaration.origin,
+        ),
+      ).toBeUndefined();
+    }
+  });
+
+  it('rejects while-loop reads and switch-without-default paths before initialization', () => {
+    for (const source of [
+      `
+        export function whileRead(): void {
+          while (value > 0) { break; }
+          var value: number = 1;
+        }
+      `,
+      `
+        export function switchNoDefault(mode: number): number {
+          var value: number;
+          switch (mode) { case 0: value = 1; break; }
+          return value;
+        }
+      `,
+    ]) {
+      const declaration = lowerFunction(source);
+
+      expect(() =>
+        validateIrFunctionVariableInitialization(
+          declaration.body,
+          getFunctionVariables(declaration),
+          declaration.origin,
+        ),
+      ).toThrow('function-scoped variable value may be read before initialization');
+    }
+  });
 });
 
 function getFunctionVariables(declaration: Readonly<IrFunctionDeclaration>): ReadonlyMap<string, IrNamedVariable> {
