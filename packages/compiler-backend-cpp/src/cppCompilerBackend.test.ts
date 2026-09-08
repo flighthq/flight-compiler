@@ -2968,4 +2968,126 @@ describe('emitIrModuleCpp', () => {
     expect(output).toContain('max_element');
     expect(output).toContain('#include <algorithm>');
   });
+
+  it('emits variadic tuple rest with std::get and tuple include', () => {
+    const output = emitIrModuleCpp(
+      lower(
+        'variadic-rest.ts',
+        `export function head(items: [number, ...number[]]): number[] { const [, ...rest] = items; return rest; }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('#include <tuple>');
+  });
+
+  it('detects return in if-otherwise for try-finally deferred return', () => {
+    const output = emitIrModuleCpp(
+      lower(
+        'if-else-return.ts',
+        `export async function pick(cond: boolean, a: Promise<number>, b: Promise<number>): Promise<number> {
+          try {
+            if (cond) { let x: number = 0; } else { return await a; }
+          } finally { let c: number = 0; }
+          return await b;
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('finally_return');
+  });
+
+  it('detects return in nested try-finally for outer deferred return', () => {
+    const output = emitIrModuleCpp(
+      lower(
+        'nested-try-finally-return.ts',
+        `export async function nested(a: Promise<number>, b: Promise<number>): Promise<number> {
+          try {
+            try { let x: number = 0; } finally { return await a; }
+          } finally { let y: number = 0; }
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('finally_return');
+  });
+
+  it('emits switch case with labeled break targeting the switch', () => {
+    const output = emitIrModuleCpp(
+      lower(
+        'labeled-switch.ts',
+        `export function dispatch(x: number): number {
+          let result: number = 0;
+          outer: switch (x) {
+            case 1: result = 10; break outer;
+            default: result = 0;
+          }
+          return result;
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('switch');
+  });
+
+  it('emits forOf loop over array', () => {
+    const output = emitIrModuleCpp(
+      lower(
+        'for-of-loop.ts',
+        `export function sum(items: number[]): number { let total: number = 0; for (const item of items) { total = total + item; } return total; }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('for (');
+    expect(output).toContain(' : ');
+  });
+
+  it('emits variable without type annotation as auto', () => {
+    const output = emitIrModuleCpp(
+      lower('auto-var.ts', `export function calc(): number { const x = 42; return x; }`).module,
+    ).contents;
+    expect(output).toContain('auto');
+  });
+
+  it('emits enum member without explicit value', () => {
+    const output = emitIrModuleCpp(lower('enum-no-value.ts', `export enum Color { Red, Green, Blue }`).module).contents;
+    expect(output).toContain('enum class Color');
+    expect(output).toContain('Red');
+  });
+
+  it('emits forIn loop with ordered key iteration', () => {
+    const result = lower(
+      'for-in-ordered.ts',
+      `export function keys(obj: { a: number; b: number }): string {
+        let result: string = '';
+        for (const k in obj) { result = result + k; }
+        return result;
+      }`,
+    );
+    const output = emitIrModuleCpp(result.module).contents;
+    expect(output).toContain('std::vector<std::string>');
+  });
+
+  it('emits new Error with stdexcept include', () => {
+    const output = emitIrModuleCpp(
+      lower('new-error.ts', `export function fail(msg: string): never { throw new Error(msg); }`).module,
+    ).contents;
+    expect(output).toContain('std::runtime_error');
+    expect(output).toContain('#include <stdexcept>');
+  });
+
+  it('emits optional parameter with std::nullopt default', () => {
+    const output = emitIrModuleCpp(
+      lower(
+        'optional-param.ts',
+        `export function greet(name: string, prefix?: string): string { return (prefix ?? '') + name; }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('std::optional');
+    expect(output).toContain('std::nullopt');
+  });
+
+  it('emits rest parameter as vector', () => {
+    const output = emitIrModuleCpp(
+      lower(
+        'rest-param.ts',
+        `export function total(...nums: number[]): number { let s: number = 0; for (const n of nums) { s = s + n; } return s; }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('std::vector');
+  });
 });

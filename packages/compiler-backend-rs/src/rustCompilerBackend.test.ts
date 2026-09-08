@@ -4747,4 +4747,222 @@ describe('emitIrModuleRust', () => {
     ).contents;
     expect(output).toContain('None');
   });
+
+  it('emits composition constructor for class extending concrete base', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'composition.ts',
+        `export class Base {
+           x: number;
+           constructor(x: number) { this.x = x; }
+           get_x(): number { return this.x; }
+         }
+         export class Child extends Base {
+           y: string;
+           constructor(x: number, y: string) { super(x); this.y = y; }
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('base: Base');
+    expect(output).toContain('Base::new(');
+  });
+
+  it('emits tagged union enum for union of named interfaces', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'tagged-union.ts',
+        `export interface Circle { kind: string; radius: number; }
+         export interface Square { kind: string; side: number; }
+         export type Shape = Circle | Square;
+         export function getKind(s: Shape): string { return s.kind; }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('enum Shape');
+    expect(output).toContain('Circle');
+    expect(output).toContain('Square');
+  });
+
+  it('emits abstract class with default method body', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'abstract-default.ts',
+        `export abstract class Animal {
+           abstract name(): string;
+           greet(): string { return this.name(); }
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('trait Animal');
+    expect(output).toContain('fn name(&self)');
+    expect(output).toContain('fn greet(&self)');
+  });
+
+  it('emits abstract field as trait accessor', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'abstract-field.ts',
+        `export abstract class Labeled {
+           abstract readonly label: string;
+           describe(): string { return this.label; }
+         }
+         export class Tag extends Labeled {
+           label: string;
+           constructor(label: string) { this.label = label; }
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('trait Labeled');
+    expect(output).toContain('fn label(&self)');
+    expect(output).toContain('impl Labeled for Tag');
+  });
+
+  it('emits data property accessor for interface implemented by class', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'trait-data.ts',
+        `export interface Named { name: string; }
+         export class Person implements Named {
+           name: string;
+           constructor(name: string) { this.name = name; }
+           greet(): string { return this.name; }
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('trait Named');
+    expect(output).toContain('impl Named for Person');
+    expect(output).toContain('self.name.clone()');
+  });
+
+  it('emits cell-wrapped compound assignment in closure', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'cell-compound.ts',
+        `export function counter(): () => number {
+           let count = 0;
+           return () => { count += 1; return count; };
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('.set(');
+    expect(output).toContain('.get()');
+  });
+
+  it('emits class with field initializers and no explicit constructor', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'field-init-only.ts',
+        `export class Config {
+           enabled: boolean = true;
+           count: number = 0;
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('fn new()');
+    expect(output).toContain('true');
+  });
+
+  it('emits do-while loop', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'do-while.ts',
+        `export function countdown(n: number): number {
+           let i = n;
+           do { i = i - 1; } while (i > 0);
+           return i;
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('loop');
+    expect(output).toContain('break');
+  });
+
+  it('emits for-of loop over array', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'for-of.ts',
+        `export function sum(items: number[]): number {
+           let total = 0;
+           for (const item of items) { total = total + item; }
+           return total;
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('for');
+    expect(output).toContain('items');
+  });
+
+  it('emits undefined default with fallback', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'undef-default.ts',
+        `export function fallback(x: number | undefined): number {
+           const y: number = x ?? 0;
+           return y;
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('unwrap_or_else');
+  });
+
+  it('emits primitive union parameter with typeof narrowing', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'prim-union.ts',
+        `export function describe(value: string | number): string {
+           if (typeof value === "string") { return value; }
+           return "number";
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('StrOrF64');
+  });
+
+  it('throws for abstract class carrying state', () => {
+    expect(() =>
+      emitIrModuleRust(
+        lower(
+          'abstract-state.ts',
+          `export abstract class Heavy {
+             count: number = 0;
+             abstract name(): string;
+           }`,
+        ).module,
+      ),
+    ).toThrow('carries state a Rust trait cannot hold');
+  });
+
+  it('emits template expression with interpolation', () => {
+    const output = emitIrModuleRust(
+      lower('template.ts', 'export function greet(name: string): string { return `hello ${name}`; }').module,
+    ).contents;
+    expect(output).toContain('format!');
+  });
+
+  it('emits borrowed narrowed receiver on property access', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'narrowed-prop.ts',
+        `export interface Info { name: string; }
+         export function getName(info: Info | undefined): string {
+           if (info !== undefined) { return info.name; }
+           return "none";
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('unwrap()');
+  });
+
+  it('emits clone for self field of non-copy type', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'self-field-clone.ts',
+        `export class Container {
+           items: string[];
+           constructor(items: string[]) { this.items = items; }
+           getItems(): string[] { return this.items; }
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('self.items.clone()');
+  });
 });
