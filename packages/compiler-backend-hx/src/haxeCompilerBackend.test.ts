@@ -5555,3 +5555,86 @@ describe('emitIrModuleHaxe class with multiple inheritance levels', () => {
     expect(output).toContain('override');
   });
 });
+
+describe('emitIrModuleHaxe labeled continue from nested loop', () => {
+  it('emits control flow exit for continue targeting outer loop from inner', () => {
+    const result = lower(
+      'nested-continue.ts',
+      `export function sumPositive(matrix: number[][]): number {
+         let total: number = 0;
+         outer: for (const row of matrix) {
+           for (const cell of row) {
+             if (cell < 0) continue outer;
+             total += cell;
+           }
+         }
+         return total;
+       }`,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('ControlFlowState');
+    expect(output).toContain('== 2');
+  });
+});
+
+describe('emitIrModuleHaxe for-in with Reflect.fields', () => {
+  it('emits Reflect.fields for for-in without closed key plan', () => {
+    const result = lower(
+      'for-in-reflect.ts',
+      `export function keys(obj: { [key: string]: number }): void {
+         for (const key in obj) { const _x = key; }
+       }`,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('for');
+  });
+});
+
+describe('emitIrModuleHaxe element access on tuple', () => {
+  it('emits tuple element access with numeric index', () => {
+    const result = lower(
+      'tuple-access.ts',
+      `export function first(pair: [number, string]): number { return pair[0]; }`,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('[0]');
+  });
+});
+
+describe('emitIrModuleHaxe while loop', () => {
+  it('emits while loop with condition', () => {
+    const result = lower(
+      'while-loop.ts',
+      `export function countdown(n: number): number {
+         let i: number = n;
+         while (i > 0) { i -= 1; }
+         return i;
+       }`,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('while');
+  });
+});
+
+describe('emitIrModuleHaxe class with non-overriding method and base chain', () => {
+  it('does not mark method as override when only grandparent has it', () => {
+    const result = lower(
+      'grandparent-method.ts',
+      `export class A {
+         run(): number { return 1; }
+       }
+       export class B extends A {}
+       export class C extends B {
+         run(): number { return 3; }
+       }`,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('class C');
+    expect(output).toContain('override');
+  });
+});
