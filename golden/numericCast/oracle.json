@@ -1,0 +1,17 @@
+[
+  { "call": "roundDown", "arguments": [3.7], "returns": "number" },
+  { "call": "roundDown", "arguments": [-3.7], "returns": "number" },
+  { "call": "roundDown", "arguments": [5], "returns": "number" },
+  { "call": "roundUp", "arguments": [3.2], "returns": "number" },
+  { "call": "roundUp", "arguments": [-3.2], "returns": "number" },
+  { "call": "roundUp", "arguments": [5], "returns": "number" },
+  { "call": "rounded", "arguments": [3.4], "returns": "number" },
+  { "call": "rounded", "arguments": [3.6], "returns": "number" },
+  { "call": "rounded", "arguments": [-3.4], "returns": "number" },
+  { "call": "absolute", "arguments": [5], "returns": "number" },
+  { "call": "absolute", "arguments": [-5], "returns": "number" },
+  { "call": "absolute", "arguments": [0], "returns": "number" },
+  { "call": "integerPart", "arguments": [3.7], "returns": "number" },
+  { "call": "integerPart", "arguments": [-3.7], "returns": "number" },
+  { "call": "integerPart", "arguments": [0], "returns": "number" }
+]

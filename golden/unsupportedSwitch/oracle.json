@@ -1,0 +1,6 @@
+[
+  { "call": "classify", "arguments": [1], "returns": "number" },
+  { "call": "classify", "arguments": [2], "returns": "number" },
+  { "call": "classify", "arguments": [3], "returns": "number" },
+  { "call": "classify", "arguments": [0], "returns": "number" }
+]

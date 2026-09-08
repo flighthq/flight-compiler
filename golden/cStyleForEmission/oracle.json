@@ -1,0 +1,6 @@
+[
+  { "call": "total", "arguments": [5], "returns": "number" },
+  { "call": "total", "arguments": [1], "returns": "number" },
+  { "call": "total", "arguments": [0], "returns": "number" },
+  { "call": "total", "arguments": [10], "returns": "number" }
+]

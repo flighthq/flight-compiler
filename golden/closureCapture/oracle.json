@@ -1,0 +1,5 @@
+[
+  { "call": "accumulate", "arguments": [[1, 2, 3]], "returns": "number" },
+  { "call": "accumulate", "arguments": [[10, 20, 30]], "returns": "number" },
+  { "call": "accumulate", "arguments": [[]], "returns": "number" }
+]

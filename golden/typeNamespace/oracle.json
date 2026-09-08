@@ -1,0 +1,4 @@
+[
+  { "call": "getDefaultName", "arguments": [], "returns": "string" },
+  { "call": "getDefaultValue", "arguments": [], "returns": "number" }
+]

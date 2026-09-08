@@ -1,0 +1,5 @@
+[
+  { "call": "resolve", "arguments": [7], "returns": "number" },
+  { "call": "resolve", "arguments": [0], "returns": "number" },
+  { "call": "resolve", "arguments": [-3], "returns": "number" }
+]

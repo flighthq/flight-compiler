@@ -1,0 +1,5 @@
+[
+  { "call": "local", "arguments": [42], "returns": "number" },
+  { "call": "local", "arguments": [0], "returns": "number" },
+  { "call": "local", "arguments": [-1], "returns": "number" }
+]
