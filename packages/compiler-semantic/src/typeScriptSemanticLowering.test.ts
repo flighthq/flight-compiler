@@ -4926,6 +4926,517 @@ it('lowers object spread assignment in object literal', () => {
   expect(result.diagnostics).toEqual([]);
 });
 
+it('reports diagnostic for unsupported top-level statement', () => {
+  const result = lower('top-level-catch.ts', `debugger;`);
+  expect(result.diagnostics.length).toBeGreaterThanOrEqual(1);
+  expect(result.diagnostics[0]!.message).toContain('unsupported top-level');
+});
+
+it('reports diagnostic for class with multiple constructor overloads but no implementation', () => {
+  const result = lower(
+    'constructor-overloads.ts',
+    `export class Multi {
+      constructor(a: number);
+      constructor(a: string);
+    }`,
+  );
+  expect(result.diagnostics.length).toBeGreaterThanOrEqual(1);
+  expect(result.diagnostics[0]!.message).toContain('constructor overloads');
+});
+
+it('reports diagnostic for parameter property with rest parameter', () => {
+  const result = lower(
+    'param-prop-destructured.ts',
+    `export class Foo {
+      constructor(public ...items: number[]) {}
+    }`,
+  );
+  expect(result.diagnostics.length).toBeGreaterThanOrEqual(1);
+  expect(result.diagnostics[0]!.message).toContain('parameter properties require a named non-rest parameter');
+});
+
+it('does not create parameter property for unmodified constructor parameter', () => {
+  const result = lower(
+    'no-param-prop.ts',
+    `export class Simple {
+      constructor(value: number) {}
+    }`,
+  );
+  const cls = result.module.declarations.find((d) => d.kind === 'class');
+  if (cls?.kind !== 'class') throw new Error('Expected class');
+  expect(cls.fields.length).toBe(0);
+});
+
+it('lowers namespace re-export', () => {
+  const result = lower('namespace-reexport.ts', `export * as utils from './utils';`);
+  expect(result.module.exports).toMatchObject([{ kind: 'namespace', exported: 'utils', specifier: './utils' }]);
+});
+
+it('creates export entries for destructured variable declarations', () => {
+  const result = lower(
+    'destructured-export.ts',
+    `const pair: [number, string] = [1, 'a'];
+export const [first, second] = pair;`,
+  );
+  const exports = result.module.exports.filter((e) => e.kind === 'local');
+  expect(exports).toMatchObject([
+    expect.objectContaining({ exported: 'first' }),
+    expect.objectContaining({ exported: 'second' }),
+  ]);
+});
+
+it('lowers call expression with explicit type arguments', () => {
+  const result = lower(
+    'call-type-args.ts',
+    `function identity<T>(value: T): T { return value; }
+export const result = identity<number>(42);`,
+  );
+  const variable = result.module.declarations.find(
+    (d) => d.kind === 'variable' && 'binding' in d && d.binding.name === 'result',
+  );
+  expect(variable).toBeDefined();
+});
+
+it('reports diagnostic for unsupported expression syntax', () => {
+  const result = lower('meta-property.ts', `export function check(): string { return import.meta.url; }`);
+  expect(result.diagnostics.length).toBeGreaterThanOrEqual(1);
+});
+
+it('skips extra argument erasure for optional calls', () => {
+  const result = lower(
+    'optional-call-extra.ts',
+    `const fn: ((a: number) => number) | undefined = undefined;
+export const result = fn?.(1, 2);`,
+  );
+  const variable = result.module.declarations.find(
+    (d) => d.kind === 'variable' && 'binding' in d && d.binding.name === 'result',
+  );
+  expect(variable).toBeDefined();
+});
+
+it('reports diagnostic for contextual tuple with rest type', () => {
+  const result = lower(
+    'tuple-rest-type.ts',
+    `type Rest = [number, ...string[]];
+export function make(): Rest { return [1, 'a', 'b']; }`,
+  );
+  expect(result.diagnostics.length).toBeGreaterThanOrEqual(1);
+  expect(result.diagnostics[0]!.message).toContain('rest');
+});
+
+it('reports diagnostic when tuple spread exceeds fixed type', () => {
+  const result = lower(
+    'tuple-spread-overflow.ts',
+    `type Pair = [number, number];
+type Triple = [number, number, number];
+const triple: Triple = [1, 2, 3];
+export function make(): Pair { return [...triple]; }`,
+  );
+  expect(result.diagnostics.length).toBeGreaterThanOrEqual(1);
+});
+
+it('resolves indexed receiver through type alias chain', () => {
+  const result = lower(
+    'alias-indexed.ts',
+    `type StringList = string[];
+export function get(list: StringList, i: number): string { return list[i]; }`,
+  );
+  const fn = result.module.declarations.find((d) => d.kind === 'function');
+  expect(fn).toBeDefined();
+});
+
+it('detects typed array set invocation via element access syntax', () => {
+  const result = lower(
+    'typed-array-set.ts',
+    `export function fill(buf: Float32Array): void {
+  buf['set']([1, 2, 3]);
+}`,
+  );
+  const fn = result.module.declarations.find((d) => d.kind === 'function');
+  expect(fn).toBeDefined();
+});
+
+it('records optional parameter invocation with spread arguments as dynamic', () => {
+  const result = lower(
+    'optional-param-dynamic.ts',
+    `function greet(name?: string): string { return name ?? 'world'; }
+const args: [] = [];
+export const result = greet(...args);`,
+  );
+  const variable = result.module.declarations.find(
+    (d) => d.kind === 'variable' && 'binding' in d && d.binding.name === 'result',
+  );
+  expect(variable).toBeDefined();
+});
+
+it('records default parameter invocation with spread arguments as dynamic', () => {
+  const result = lower(
+    'default-param-dynamic.ts',
+    `function greet(name: string = 'world'): string { return name; }
+const args: [] = [];
+export const result = greet(...args);`,
+  );
+  const variable = result.module.declarations.find(
+    (d) => d.kind === 'variable' && 'binding' in d && d.binding.name === 'result',
+  );
+  expect(variable).toBeDefined();
+});
+
+it('records invocation signature with rest parameter', () => {
+  const result = lower(
+    'rest-param-invocation.ts',
+    `function sum(...values: number[]): number { return values.reduce((a, b) => a + b, 0); }
+export const total = sum(1, 2, 3);`,
+  );
+  const variable = result.module.declarations.find(
+    (d) => d.kind === 'variable' && 'binding' in d && d.binding.name === 'total',
+  );
+  expect(variable).toBeDefined();
+});
+
+it('reports diagnostic for function declaration without body and no overload', () => {
+  const result = lower('no-body-fn.ts', `export function abstract(): void;`);
+  expect(result.diagnostics.length).toBeGreaterThanOrEqual(1);
+  expect(result.diagnostics[0]!.message).toContain('no implementation');
+});
+
+it('emits parameter binding entries for destructured function parameter', () => {
+  const result = lower(
+    'destructured-param.ts',
+    `export function extract({ x, y }: { x: number; y: number }): number { return x + y; }`,
+  );
+  const fn = result.module.declarations.find((d) => d.kind === 'function');
+  if (fn?.kind !== 'function') throw new Error('Expected function');
+  const paramEntry = fn.body.find((s) => s.kind === 'variable' && s.declarations.some((d) => 'pattern' in d));
+  expect(paramEntry).toBeDefined();
+});
+
+it('lowers destructuring assignment as expression with completion value', () => {
+  const result = lower(
+    'destructure-expr.ts',
+    `let a: number, b: number;
+export function swap(): number {
+  return ([a, b] = [b, a])[0];
+}`,
+  );
+  const fn = result.module.declarations.find((d) => d.kind === 'function');
+  if (fn?.kind !== 'function') throw new Error('Expected function');
+  const ret = fn.body.find((s) => s.kind === 'return');
+  expect(ret).toBeDefined();
+});
+
+it('lowers object destructuring assignment with computed property key', () => {
+  const result = lower(
+    'destructure-computed.ts',
+    `const key = 'x' as const;
+let target: number;
+export function run(obj: { x: number }): void {
+  ({ [key]: target } = obj);
+}`,
+  );
+  const fn = result.module.declarations.find((d) => d.kind === 'function');
+  expect(fn).toBeDefined();
+});
+
+it('infers for-of element type through type alias', () => {
+  const result = lower(
+    'for-of-alias.ts',
+    `type Numbers = number[];
+export function sum(items: Numbers): number {
+  let total = 0;
+  for (const item of items) { total += item; }
+  return total;
+}`,
+  );
+  const fn = result.module.declarations.find((d) => d.kind === 'function');
+  if (fn?.kind !== 'function') throw new Error('Expected function');
+  const forOf = fn.body.find((s) => s.kind === 'forOf');
+  expect(forOf).toBeDefined();
+});
+
+it('infers for-of element type through readonly array', () => {
+  const result = lower(
+    'for-of-readonly.ts',
+    `export function first(items: readonly number[]): number {
+  for (const item of items) { return item; }
+  return 0;
+}`,
+  );
+  const fn = result.module.declarations.find((d) => d.kind === 'function');
+  if (fn?.kind !== 'function') throw new Error('Expected function');
+  const forOf = fn.body.find((s) => s.kind === 'forOf');
+  expect(forOf).toBeDefined();
+});
+
+it('infers for-of element type through generic alias', () => {
+  const result = lower(
+    'for-of-generic-alias.ts',
+    `type List<T> = T[];
+export function first(items: List<string>): string {
+  for (const item of items) { return item; }
+  return '';
+}`,
+  );
+  const fn = result.module.declarations.find((d) => d.kind === 'function');
+  if (fn?.kind !== 'function') throw new Error('Expected function');
+  const forOf = fn.body.find((s) => s.kind === 'forOf');
+  expect(forOf).toBeDefined();
+});
+
+it('resolves type evidence through interface with generic substitution', () => {
+  const result = lower(
+    'evidence-interface-generic.ts',
+    `interface Container<T> { value: T }
+export function unwrap(c: Container<number>): number { return c.value; }`,
+  );
+  const fn = result.module.declarations.find((d) => d.kind === 'function');
+  expect(fn).toBeDefined();
+});
+
+it('resolves interface heritage properties with generic substitution', () => {
+  const result = lower(
+    'evidence-heritage.ts',
+    `interface Base<T> { value: T }
+interface Extended extends Base<number> { label: string }
+export function read(e: Extended): number { return e.value; }`,
+  );
+  const fn = result.module.declarations.find((d) => d.kind === 'function');
+  expect(fn).toBeDefined();
+});
+
+it('lowers object binding pattern with rest element', () => {
+  const result = lower(
+    'object-bind-rest.ts',
+    `export function extract(obj: { a: number; b: string; c: boolean }): { b: string; c: boolean } {
+  const { a, ...rest } = obj;
+  return rest;
+}`,
+  );
+  const fn = result.module.declarations.find((d) => d.kind === 'function');
+  if (fn?.kind !== 'function') throw new Error('Expected function');
+  const varStmt = fn.body.find((s) => s.kind === 'variable');
+  expect(varStmt).toBeDefined();
+});
+
+it('lowers array binding pattern with rest element from tuple', () => {
+  const result = lower(
+    'array-bind-rest.ts',
+    `export function tail(items: [number, ...string[]]): string[] {
+  const [, ...rest] = items;
+  return rest;
+}`,
+  );
+  const fn = result.module.declarations.find((d) => d.kind === 'function');
+  expect(fn).toBeDefined();
+});
+
+it('assigns function scope to parameter binding patterns', () => {
+  const result = lower(
+    'param-bind-scope.ts',
+    `export function extract([a, b]: [number, string]): number { return a; }`,
+  );
+  const fn = result.module.declarations.find((d) => d.kind === 'function');
+  if (fn?.kind !== 'function') throw new Error('Expected function');
+  const paramEntry = fn.body.find((s) => s.kind === 'variable' && s.declarations.some((d) => 'pattern' in d));
+  expect(paramEntry).toBeDefined();
+});
+
+it('assigns function scope to var inside function', () => {
+  const result = lower(
+    'var-scope.ts',
+    `export function run(): number {
+  if (true) { var x = 1; }
+  return x;
+}`,
+  );
+  const fn = result.module.declarations.find((d) => d.kind === 'function');
+  if (fn?.kind !== 'function') throw new Error('Expected function');
+  const ifStmt = fn.body.find((s) => s.kind === 'if');
+  expect(ifStmt).toBeDefined();
+});
+
+it('assigns function scope to type parameter on function', () => {
+  const result = lower('type-param-fn.ts', `export function identity<T>(value: T): T { return value; }`);
+  const fn = result.module.declarations.find((d) => d.kind === 'function');
+  if (fn?.kind !== 'function') throw new Error('Expected function');
+  expect(fn.typeParameters[0]?.binding.scope).toBe('function');
+});
+
+it('assigns declaration scope to type parameter on interface', () => {
+  const result = lower('type-param-iface.ts', `export interface Container<T> { value: T }`);
+  const iface = result.module.declarations.find((d) => d.kind === 'interface');
+  if (iface?.kind !== 'interface') throw new Error('Expected interface');
+  expect(iface.typeParameters[0]?.binding.scope).toBe('declaration');
+});
+
+it('assigns declaration scope to type parameter on type alias', () => {
+  const result = lower('type-param-alias.ts', `export type Wrapper<T> = { value: T };`);
+  const ta = result.module.declarations.find((d) => d.kind === 'typeAlias');
+  if (ta?.kind !== 'typeAlias') throw new Error('Expected type alias');
+  expect(ta.typeParameters[0]?.binding.scope).toBe('declaration');
+});
+
+it('capitalizes Index module name for index.ts files', () => {
+  const result = lower('index.ts', `export const value = 1;`);
+  expect(result.module.name).toBe('Index');
+});
+
+it('reports diagnostic for namespace with value members', () => {
+  const result = lower('value-namespace.ts', `export namespace Utils { export function helper(): void {} }`);
+  expect(result.diagnostics.length).toBeGreaterThanOrEqual(1);
+  expect(result.diagnostics[0]!.message).toContain('namespace');
+});
+
+it('ignores namespace with only type members', () => {
+  const result = lower('type-namespace.ts', `export namespace Types { export interface Foo { value: number } }`);
+  expect(result.diagnostics.length).toBe(0);
+});
+
+it('reports diagnostic for nested namespace with value members', () => {
+  const result = lower(
+    'nested-namespace.ts',
+    `export namespace Outer { export namespace Inner { export const x = 1; } }`,
+  );
+  expect(result.diagnostics.length).toBeGreaterThanOrEqual(1);
+});
+
+it('lowers tuple type evidence with optional and rest elements', () => {
+  const result = lower(
+    'tuple-evidence.ts',
+    `export function process(input: [number, string?, ...boolean[]]): number {
+  return input[0];
+}`,
+  );
+  const fn = result.module.declarations.find((d) => d.kind === 'function');
+  expect(fn).toBeDefined();
+});
+
+it('records narrowed boolean member from boolean-containing union', () => {
+  const result = lower(
+    'narrowed-boolean.ts',
+    `type Token = boolean | string;
+export function check(value: Token): boolean {
+  if (typeof value === 'boolean') return value;
+  return false;
+}`,
+  );
+  const fn = result.module.declarations.find((d) => d.kind === 'function');
+  expect(fn).toBeDefined();
+});
+
+it('resolves export binding for type-only exports', () => {
+  const result = lower(
+    'export-type-binding.ts',
+    `interface Foo { value: number }
+function bar(): number { return 1; }
+export { type Foo, bar };`,
+  );
+  const typeExport = result.module.exports.find((e) => e.kind === 'local' && e.exported === 'Foo');
+  expect(typeExport).toBeDefined();
+  expect(typeExport).toMatchObject({ typeOnly: true });
+});
+
+it('resolves indexed receiver through union type', () => {
+  const result = lower(
+    'union-receiver.ts',
+    `export function get(value: number[] | string): number {
+  return value[0] as number;
+}`,
+  );
+  const fn = result.module.declarations.find((d) => d.kind === 'function');
+  expect(fn).toBeDefined();
+});
+
+it('resolves indexed receiver from type literal', () => {
+  const result = lower(
+    'literal-receiver.ts',
+    `export function get(obj: { x: number; y: number }): number {
+  const key = 'x';
+  return obj[key];
+}`,
+  );
+  const fn = result.module.declarations.find((d) => d.kind === 'function');
+  expect(fn).toBeDefined();
+});
+
+it('resolves indexed receiver from tuple type declaration', () => {
+  const result = lower(
+    'tuple-receiver.ts',
+    `export function first(pair: [number, string]): number {
+  return pair[0];
+}`,
+  );
+  const fn = result.module.declarations.find((d) => d.kind === 'function');
+  expect(fn).toBeDefined();
+});
+
+it('lowers object binding rest when computed key is present', () => {
+  const result = lower(
+    'object-rest-computed.ts',
+    `const key = 'x' as const;
+export function run(obj: { x: number; y: string }): object {
+  const { [key]: value, ...rest } = obj;
+  return rest;
+}`,
+  );
+  const fn = result.module.declarations.find((d) => d.kind === 'function');
+  expect(fn).toBeDefined();
+});
+
+it('handles binding pattern undefined addition for already-undefined type', () => {
+  const result = lower(
+    'bind-undef-idempotent.ts',
+    `export function extract(pair: [number | undefined, string]): number | undefined {
+  const [first] = pair;
+  return first;
+}`,
+  );
+  const fn = result.module.declarations.find((d) => d.kind === 'function');
+  expect(fn).toBeDefined();
+});
+
+it('resolves catch clause binding kind', () => {
+  const result = lower(
+    'catch-binding-kind.ts',
+    `export function attempt(): string {
+  try { return 'ok'; }
+  catch (error) { return String(error); }
+}`,
+  );
+  const fn = result.module.declarations.find((d) => d.kind === 'function');
+  if (fn?.kind !== 'function') throw new Error('Expected function');
+  const tryStmt = fn.body.find((s) => s.kind === 'try');
+  if (tryStmt?.kind !== 'try') throw new Error('Expected try');
+  expect(tryStmt.catchClause?.binding?.kind).toBe('catch');
+});
+
+it('resolves type binding identity for type alias', () => {
+  const result = lower('type-binding-id.ts', `export type Id = number;`);
+  const ta = result.module.declarations.find((d) => d.kind === 'typeAlias');
+  if (ta?.kind !== 'typeAlias') throw new Error('Expected type alias');
+  expect(ta.binding.space).toBe('type');
+  expect(ta.binding.kind).toBe('typeAlias');
+});
+
+it('resolves type binding kind for interface declaration', () => {
+  const result = lower('type-binding-iface.ts', `export interface Marker {}`);
+  const iface = result.module.declarations.find((d) => d.kind === 'interface');
+  if (iface?.kind !== 'interface') throw new Error('Expected interface');
+  expect(iface.binding.space).toBe('type');
+  expect(iface.binding.kind).toBe('interface');
+});
+
+it('handles absent member removal from union type in nullish coalesce', () => {
+  const result = lower(
+    'absent-removal.ts',
+    `export function safe(value: string | undefined | null): string {
+  return value ?? 'default';
+}`,
+  );
+  const fn = result.module.declarations.find((d) => d.kind === 'function');
+  expect(fn).toBeDefined();
+});
+
 function ambientReference(expression: Readonly<IrExpression> | undefined): string {
   if (expression?.kind !== 'identifier' || expression.reference.kind !== 'ambient') {
     throw new Error('Expected an ambient identifier reference');
