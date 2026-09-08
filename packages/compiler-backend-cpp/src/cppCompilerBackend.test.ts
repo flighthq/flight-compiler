@@ -1988,6 +1988,31 @@ describe('emitIrModuleCpp', () => {
     expect(emitted.contents).toContain('-=');
   });
 
+  it('emits bitwise compound assignment with int32 casts', () => {
+    const result = lower(
+      'bitwise-assign.ts',
+      'export function mask(value: number, m: number): number { let r: number = value; r &= m; r |= 1; r ^= 255; r <<= 2; r >>= 1; return r; }',
+    );
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('static_cast<double>(static_cast<int32_t>(r) & static_cast<int32_t>(m))');
+    expect(emitted.contents).toContain('static_cast<double>(static_cast<int32_t>(r) | static_cast<int32_t>(1.0))');
+    expect(emitted.contents).toContain('static_cast<double>(static_cast<int32_t>(r) ^ static_cast<int32_t>(255.0))');
+    expect(emitted.contents).toContain('static_cast<double>(static_cast<int32_t>(r) << static_cast<int32_t>(2.0))');
+    expect(emitted.contents).toContain('static_cast<double>(static_cast<int32_t>(r) >> static_cast<int32_t>(1.0))');
+    expect(emitted.contents).toContain('#include <cstdint>');
+  });
+
+  it('emits %= compound assignment as std::fmod', () => {
+    const result = lower(
+      'mod-assign.ts',
+      'export function remainder(value: number, divisor: number): number { let r: number = value; r %= divisor; return r; }',
+    );
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('std::fmod(r, divisor)');
+    expect(emitted.contents).toContain('#include <cmath>');
+    expect(emitted.contents).not.toContain('%=');
+  });
+
   it('emits break and continue statements in for-of loop', () => {
     const result = lower(
       'break-continue.ts',
