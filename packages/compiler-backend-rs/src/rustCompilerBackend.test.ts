@@ -1502,6 +1502,133 @@ describe('emitIrModuleRust', () => {
     expect(output).toContain('Err(__error) => panic!');
   });
 
+  it('emits array literals as vec! with optional holes as Default::default', () => {
+    const output = emitIrModuleRust(lower('array-lit.ts', 'export const items: number[] = [1, 2, 3];').module).contents;
+    expect(output).toContain('vec![');
+  });
+
+  it('emits string append as push_str and string-plus-string as format!', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'string-append.ts',
+        'export function build(base: string, suffix: string): string { let result = base; result += suffix; return result + suffix; }',
+      ).module,
+    ).contents;
+    expect(output).toContain('push_str');
+    expect(output).toContain('format!');
+  });
+
+  it('emits bitwise assignment operators with i32 casts', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'bitwise-assign.ts',
+        'export function bits(a: number, b: number): number { let x = a; x &= b; x |= b; x ^= b; x <<= b; x >>= b; return x; }',
+      ).module,
+    ).contents;
+    expect(output).toContain('as i32');
+    expect(output).toContain('as f64');
+  });
+
+  it('emits exponentiation assignment as f64::powf', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'pow-assign.ts',
+        'export function pow(base: number, exp: number): number { let x = base; x **= exp; return x; }',
+      ).module,
+    ).contents;
+    expect(output).toContain('f64::powf');
+  });
+
+  it('emits unsigned right shift assignment with u32 cast', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'urshift-assign.ts',
+        'export function shift(a: number, b: number): number { let x = a; x >>>= b; return x; }',
+      ).module,
+    ).contents;
+    expect(output).toContain('as u32');
+  });
+
+  it('emits unsigned right shift and bitwise binary operators', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'bitwise-binary.ts',
+        'export function ops(a: number, b: number): number { return ((a >>> b) + (a & b) + (a | b) + (a ^ b) + (a << b) + (a >> b)); }',
+      ).module,
+    ).contents;
+    expect(output).toContain('as u32) >>');
+    expect(output).toContain('as i32)');
+  });
+
+  it('emits array join with borrowed separator', () => {
+    const output = emitIrModuleRust(
+      lower('array-join.ts', 'export function joined(items: string[]): string { return items.join(", "); }').module,
+    ).contents;
+    expect(output).toContain('.join(');
+  });
+
+  it('emits array slice as range subscript', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'array-slice.ts',
+        'export function take(items: number[], start: number, end: number): number[] { return items.slice(start, end); }',
+      ).module,
+    ).contents;
+    expect(output).toContain('.to_vec()');
+  });
+
+  it('emits array concat as extend', () => {
+    const output = emitIrModuleRust(
+      lower('array-concat.ts', 'export function merge(a: number[], b: number[]): number[] { return a.concat(b); }')
+        .module,
+    ).contents;
+    expect(output).toContain('extend');
+  });
+
+  it('emits charAt and charCodeAt as chars().nth', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'string-char.ts',
+        'export function chars(s: string): string { const c = s.charAt(0); const n: number = s.charCodeAt(0); return c; }',
+      ).module,
+    ).contents;
+    expect(output).toContain('chars().nth(');
+  });
+
+  it('emits substring as slice with range', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'string-sub.ts',
+        'export function sub(s: string, start: number, end: number): string { return s.substring(start, end); }',
+      ).module,
+    ).contents;
+    expect(output).toContain('.to_string()');
+  });
+
+  it('emits cast expressions as Rust as', () => {
+    const output = emitIrModuleRust(
+      lower('cast.ts', 'export function typed(x: unknown): number { return x as number; }').module,
+    ).contents;
+    expect(output).toContain(' as ');
+  });
+
+  it('emits tuple element access as positional field', () => {
+    const output = emitIrModuleRust(
+      lower('tuple-access.ts', 'export function first(pair: [number, string]): number { return pair[0]; }').module,
+    ).contents;
+    expect(output).toContain('.0');
+  });
+
+  it('emits static class fields as associated constants', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'static-member.ts',
+        'export class Config { static readonly DEFAULT: number = 42; value: number; constructor(v: number) { this.value = v; } } export function read(): number { return Config.DEFAULT; }',
+      ).module,
+    ).contents;
+    expect(output).toContain('Config::');
+  });
+
   it('emits concrete class inheritance as composition with base field delegation', () => {
     const result = lower(
       'class-inheritance.ts',
