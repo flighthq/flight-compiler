@@ -4654,3 +4654,175 @@ describe('emitIrModuleHaxe do-while with label', () => {
     expect(output).toContain('while');
   });
 });
+
+describe('emitIrModuleHaxe empty template literal', () => {
+  it('emits empty string for template with no interpolations and no text', () => {
+    const result = lower('empty-template.ts', 'export const empty: string = ``;');
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('""');
+  });
+});
+
+describe('emitIrModuleHaxe optional structInit property without null type', () => {
+  it('wraps non-null optional property in Null wrapper', () => {
+    const result = lower(
+      'struct-optional.ts',
+      `export interface Config {
+         readonly name: string;
+         readonly timeout?: number;
+       }`,
+    );
+    const output = emitIrModuleHaxe(result.module, { structuralRecords: 'structInit' }).contents;
+
+    expect(output).toContain('structInit');
+    expect(output).toContain('Null<');
+    expect(output).toContain('= null');
+  });
+});
+
+describe('emitIrModuleHaxe rest parameter', () => {
+  it('emits rest parameter with element type from array', () => {
+    const result = lower('rest-param.ts', 'export function sum(...values: number[]): number { return values.length; }');
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('...');
+    expect(output).toContain('values');
+  });
+});
+
+describe('emitIrModuleHaxe continue with label', () => {
+  it('emits labeled continue through control flow state', () => {
+    const result = lower(
+      'labeled-continue.ts',
+      `export function skip(items: number[]): number {
+         let total: number = 0;
+         outer: for (const item of items) {
+           for (const inner of items) {
+             if (inner === 0) continue outer;
+             total += inner;
+           }
+         }
+         return total;
+       }`,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('continue');
+  });
+});
+
+describe('emitIrModuleHaxe spread call with trailing fixed arguments', () => {
+  it('emits concatenated argument arrays for spread with trailing args', () => {
+    const result = lower(
+      'spread-trailing.ts',
+      `export function apply(fn: (...args: number[]) => number, items: number[]): number {
+         return fn(...items, 1);
+       }`,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('concat');
+  });
+});
+
+describe('emitIrModuleHaxe module variable with type annotation', () => {
+  it('emits typed module-level variable declaration', () => {
+    const result = lower('module-var-typed.ts', 'export const MAX_SIZE: number = 100;');
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('MAX_SIZE');
+    expect(output).toContain('100');
+  });
+});
+
+describe('emitIrModuleHaxe nullish comparison on nullable operand', () => {
+  it('emits null equality check for nullable comparison', () => {
+    const result = lower(
+      'nullish-cmp.ts',
+      `export function isPresent(value: number | null): boolean {
+         return value != null;
+       }`,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('null');
+    expect(output).toContain('!=');
+  });
+});
+
+describe('emitIrModuleHaxe class extending external base', () => {
+  it('omits override for method when base class is not in same module', () => {
+    const result = lower(
+      'external-base.ts',
+      `export class Child {
+         run(): number { return 1; }
+       }`,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('class Child');
+    expect(output).toContain('run');
+    expect(output).not.toContain('override');
+  });
+});
+
+describe('emitIrModuleHaxe union type alias with non-object member', () => {
+  it('falls back to Dynamic when union member aliases a non-object type', () => {
+    const result = lower(
+      'union-nonobject.ts',
+      `export type Label = string;
+       export interface Named { readonly name: string; }
+       export type Either = Label | Named;`,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('typedef Either');
+    expect(output).toContain('Dynamic');
+  });
+});
+
+describe('emitIrModuleHaxe async function with carry value through try-finally', () => {
+  it('emits carry binding for non-await return preserved through finally cleanup', () => {
+    const result = lower(
+      'async-carry.ts',
+      `export async function attempt(task: Promise<number>): Promise<number> {
+         const value = await task;
+         try { return value; } finally { value; }
+       }`,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('_Promise');
+    expect(output).toContain('value');
+  });
+});
+
+describe('emitIrModuleHaxe single-type intersection', () => {
+  it('emits the inner type for a single-member intersection', () => {
+    const result = lower(
+      'single-intersection.ts',
+      `export type Branded = { name: string } & {};
+       export function use(value: Branded): string { return value.name; }`,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('name');
+  });
+});
+
+describe('emitIrModuleHaxe for-in with key plan', () => {
+  it('emits for-in loop with preserved key evaluation order', () => {
+    const result = lower(
+      'for-in-keys.ts',
+      `export function keys(obj: { a: number; b: number }): string[] {
+         const result: string[] = [];
+         for (const key in obj) { result.push(key); }
+         return result;
+       }`,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('for');
+  });
+});
