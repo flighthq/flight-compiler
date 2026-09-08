@@ -6281,6 +6281,55 @@ it('resolves evidence-path interface with compatible duplicate heritage property
   expect(result.diagnostics).toEqual([]);
 });
 
+it('infers contextual callback parameter types from array map', () => {
+  const result = lower(
+    'contextual-callback.ts',
+    `
+        export function run(values: number[]): number[] {
+          return values.map((value) => value * 2);
+        }
+      `,
+  );
+  expect(result.diagnostics).toEqual([]);
+});
+
+it('infers contextual callback parameter as declared type from the same module', () => {
+  const result = lower(
+    'contextual-declared.ts',
+    `
+        interface Point { x: number; y: number }
+        export function run(points: Array<Point>): void {
+          points.map((p) => p.x);
+        }
+      `,
+  );
+  expect(result.diagnostics).toEqual([]);
+});
+
+it('infers contextual callback parameter type through nested array', () => {
+  const result = lower(
+    'contextual-nested-array.ts',
+    `
+        export function run(grid: string[][]): void {
+          grid.map((row) => row.length);
+        }
+      `,
+  );
+  expect(result.diagnostics).toEqual([]);
+});
+
+it('infers contextual callback parameter as boolean', () => {
+  const result = lower(
+    'contextual-boolean.ts',
+    `
+        export function run(flags: boolean[]): void {
+          flags.map((flag) => !flag);
+        }
+      `,
+  );
+  expect(result.diagnostics).toEqual([]);
+});
+
 it('resolves nullish coalescing type evidence when both sides match', () => {
   const result = lower(
     'coalesce-evidence.ts',

@@ -2579,8 +2579,15 @@ describe('emitIrModuleHaxe type emission edge cases', () => {
 });
 
 describe('emitIrModuleHaxe class implements non-nominal', () => {
-  it('refuses a class implementing a non-nominal type reference', () => {
-    const result = lower('implements-non-nominal.ts', 'export class Widget { step: number = 1; }');
+  it('refuses a class implementing a type with no nominal Haxe interface', () => {
+    const result = lower(
+      'implements-non-nominal.ts',
+      `
+        export class Widget {
+          step: number = 1;
+        }
+      `,
+    );
     const classDecl = result.module.declarations[0]!;
     if (classDecl.kind !== 'class') throw new Error('Expected class');
     const patched = {
@@ -2593,10 +2600,10 @@ describe('emitIrModuleHaxe class implements non-nominal', () => {
   });
 });
 
-describe('emitIrModuleHaxe multiple super calls', () => {
-  it('refuses a derived class constructor with zero direct super calls', () => {
+describe('emitIrModuleHaxe multiple super calls error', () => {
+  it('refuses a derived class with no direct super call when constructor has parameters', () => {
     const result = lower(
-      'no-super.ts',
+      'multi-super.ts',
       `
         class Base {}
         export class Derived extends Base {
@@ -2609,7 +2616,10 @@ describe('emitIrModuleHaxe multiple super calls', () => {
     const superCall = classDecl.classConstructor.body[0]!;
     const patched = {
       ...classDecl,
-      classConstructor: { ...classDecl.classConstructor, body: [superCall, superCall] },
+      classConstructor: {
+        ...classDecl.classConstructor,
+        body: [superCall, superCall],
+      },
     };
     const module = {
       ...result.module,
@@ -2624,10 +2634,28 @@ describe('emitIrModuleHaxe multiple super calls', () => {
   });
 });
 
-describe('emitIrModuleHaxe accessor and method visibility branches', () => {
-  it('emits get-only accessor pair with never on the missing side', () => {
+describe('emitIrModuleHaxe implicit derived super with Error name storage', () => {
+  it('emits implicit derived Error subclass constructor with name initialization', () => {
     const result = lower(
-      'get-only-accessor.ts',
+      'implicit-error.ts',
+      `
+        export class AppError extends Error {
+          constructor(message: string) { super(message); this.name = 'AppError'; }
+        }
+        export class SpecificError extends AppError {}
+      `,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('class SpecificError extends AppError');
+    expect(output).toContain('super(');
+  });
+});
+
+describe('emitIrModuleHaxe accessor and method visibility', () => {
+  it('emits get-only and set-only accessor pairs', () => {
+    const result = lower(
+      'accessor-partial.ts',
       `
         export class Store {
           private _items: number = 0;
@@ -2641,7 +2669,7 @@ describe('emitIrModuleHaxe accessor and method visibility branches', () => {
     expect(output).toContain('function get_items():Float');
   });
 
-  it('emits protected method without public or private keyword', () => {
+  it('emits protected method without visibility keyword', () => {
     const result = lower(
       'protected-method.ts',
       `
@@ -2659,19 +2687,22 @@ describe('emitIrModuleHaxe accessor and method visibility branches', () => {
   });
 });
 
-describe('emitIrModuleHaxe enum non-finite value', () => {
+describe('emitIrModuleHaxe enum mixed values', () => {
   it('refuses an enum with a non-finite numeric value', () => {
     const result = lower('non-finite-enum.ts', 'export enum Values { A = 1 }');
     const decl = result.module.declarations[0]!;
     if (decl.kind !== 'enum') throw new Error('Expected enum');
-    const patched = { ...decl, members: [{ name: 'A', value: Infinity }] };
+    const patched = {
+      ...decl,
+      members: [{ name: 'A', value: Infinity }],
+    };
     const module = { ...result.module, declarations: [patched] };
 
     expect(() => emitIrModuleHaxe(module)).toThrow('has a non-finite numeric value');
   });
 });
 
-describe('emitIrModuleHaxe async task function body forms', () => {
+describe('emitIrModuleHaxe async task function body', () => {
   it('emits async arrow function body through the task plan', () => {
     const result = lower(
       'async-arrow.ts',
@@ -2682,51 +2713,76 @@ describe('emitIrModuleHaxe async task function body forms', () => {
     expect(output).toContain('new flighthq._internal._Promise(');
     expect(output).not.toContain('await ');
   });
+});
 
-  it('emits async method body through the task plan', () => {
+describe('emitIrModuleHaxe await and nullish comparison errors', () => {
+  it('refuses a raw await expression that was not lowered', () => {
     const result = lower(
-      'async-method.ts',
-      `
-        export class Reader {
-          async read(input: Promise<number>): Promise<number> { return await input; }
-        }
-      `,
+      'await-raw.ts',
+      'export function read(input: Promise<number>): number { let x: number = 0; return x; }',
     );
-    const output = emitIrModuleHaxe(result.module).contents;
+    const decl = result.module.declarations[0]!;
+    if (decl.kind !== 'function') throw new Error('Expected function');
+    const awaitExpr = {
+      kind: 'await' as const,
+      expression: decl.body[0]!.kind === 'variable' ? decl.body[0].declarations[0]! : decl.body[0]!,
+    };
+    const patched = {
+      ...decl,
+      body: [...decl.body.slice(0, -1), { kind: 'return' as const, expression: awaitExpr }],
+    };
+    const module = { ...result.module, declarations: [patched] };
 
-    expect(output).toContain('new flighthq._internal._Promise(');
+    expect(() => emitIrModuleHaxe(module)).toThrow('await requires the Haxe async-lowering pass');
   });
 });
 
-describe('emitIrModuleHaxe nullish comparison both absent', () => {
-  it('refuses a type that admits both null and undefined sentinels', () => {
+describe('emitIrModuleHaxe object element access', () => {
+  it('emits non-optional computed object access through Reflect.field', () => {
     const result = lower(
-      'both-absent.ts',
-      'export function check(value: number | null | undefined): boolean { return value === undefined; }',
+      'reflect-access.ts',
+      'export function read(record: { [key: string]: number }, key: string): number { return (record as any)[key]; }',
     );
+    const output = emitIrModuleHaxe(result.module).contents;
 
-    expect(() => emitIrModuleHaxe(result.module)).toThrow(
-      'types containing both null and undefined require distinct Haxe sentinels',
-    );
+    expect(output).toContain('cast');
   });
 });
 
-describe('emitIrModuleHaxe ambient binding calls', () => {
-  it('emits array.every as Lambda.foreach static call', () => {
+describe('emitIrModuleHaxe function expression edge cases', () => {
+  it('refuses generic function expressions as values', () => {
+    const result = lower('generic-fn.ts', 'export function call(value: number): number { return value; }');
+    const decl = result.module.declarations[0]!;
+    if (decl.kind !== 'function') throw new Error('Expected function');
+    const fnExpr = {
+      kind: 'function' as const,
+      async: false,
+      body: decl.body,
+      expression: undefined,
+      parameters: decl.parameters,
+      typeParameters: [
+        { binding: { id: 'tp1', name: 'T', space: 'type' as const, kind: 'type' as const }, constraint: undefined },
+      ],
+    };
+    const patched = {
+      ...decl,
+      body: [{ kind: 'return' as const, expression: fnExpr }],
+    };
+    const module = { ...result.module, declarations: [patched] };
+
+    expect(() => emitIrModuleHaxe(module)).toThrow('generic function expressions are not valid Haxe values');
+  });
+});
+
+describe('emitIrModuleHaxe property narrowing and optional access', () => {
+  it('emits ambient member property that has no call binding as a property', () => {
     const result = lower(
-      'every-call.ts',
-      'export function allPositive(values: number[]): boolean { return values.every((v) => v > 0); }',
+      'array-length-access.ts',
+      'export function count(values: number[]): number { return values.length; }',
     );
     const output = emitIrModuleHaxe(result.module).contents;
 
-    expect(output).toContain('Lambda.foreach(');
-  });
-
-  it('emits string.endsWith as StringTools.endsWith static call', () => {
-    const result = lower('ends-with-call.ts', 'export function check(s: string): boolean { return s.endsWith("x"); }');
-    const output = emitIrModuleHaxe(result.module).contents;
-
-    expect(output).toContain('StringTools.endsWith(');
+    expect(output).toContain('.length');
   });
 });
 
@@ -2735,12 +2791,11 @@ describe('emitIrModuleHaxe imports with empty bindings', () => {
     const result = lower('side-effect-import.ts', 'export function noop(): void {}');
     const patched = {
       ...result.module,
-      imports: [...result.module.imports, { specifier: './side-effect.js', bindings: [], typeOnly: false }],
+      imports: [...result.module.imports, { specifier: './side-effect.js', bindings: [] }],
     };
     const output = emitIrModuleHaxe(patched).contents;
 
-    expect(output).not.toContain('side_effect');
-    expect(output).not.toContain('SideEffect');
+    expect(output).not.toContain('side-effect');
   });
 });
 
@@ -2758,75 +2813,167 @@ describe('emitIrModuleHaxe exchanged closure body form', () => {
   });
 });
 
-describe('emitIrModuleHaxe structInit type alias', () => {
-  it('emits structInit for a type alias over an object type', () => {
+describe('emitIrModuleHaxe interface extends without flattening', () => {
+  it('refuses interface inheritance that was not structurally flattened', () => {
     const result = lower(
-      'struct-type-alias.ts',
-      'export type Options = { debug: boolean; verbose?: boolean }; export function read(opts: Options): boolean { return opts.debug; }',
+      'interface-extends-raw.ts',
+      'export interface Base { x: number } export interface Child extends Base { y: number }',
     );
-    const output = emitIrModuleHaxe(result.module, { structuralRecords: 'structInit' }).contents;
+    const decl = result.module.declarations.find((d) => d.kind === 'interface' && d.binding.name === 'Child')!;
+    if (decl.kind !== 'interface') throw new Error('Expected interface');
+    const unflattenedDecl = {
+      ...decl,
+      extends: [
+        {
+          kind: 'named' as const,
+          reference: {
+            kind: 'binding' as const,
+            binding: { id: 'base-id', name: 'Base', space: 'type' as const, kind: 'type' as const },
+            path: [],
+          },
+          typeArguments: [],
+        },
+      ],
+      properties: [{ name: 'y', optional: false, type: { kind: 'primitive' as const, name: 'number' as const } }],
+    };
+    const module = {
+      ...result.module,
+      declarations: result.module.declarations.map((d) =>
+        d.kind === 'interface' && d.binding.name === 'Child' ? unflattenedDecl : d,
+      ),
+    };
 
-    expect(output).toContain('@:structInit');
-    expect(output).toContain('final class Options');
-    expect(output).toContain('public var debug:Bool;');
-    expect(output).toContain('public var verbose:Null<Bool> = null;');
+    expect(() => emitIrModuleHaxe(module)).toThrow('inheritance requires structural flattening');
   });
 });
 
-describe('emitIrModuleHaxe type union undefined and tuple', () => {
-  it('emits union with only undefined as Null<T>', () => {
+describe('emitIrModuleHaxe interface method parameters', () => {
+  it('emits interface method with unnamed parameter positions', () => {
     const result = lower(
-      'undefined-union.ts',
-      'export function maybe(value: string | undefined): string | undefined { return value; }',
-    );
-    const output = emitIrModuleHaxe(result.module).contents;
-
-    expect(output).toContain('Null<String>');
-  });
-
-  it('emits tuple with mixed types as Array<Dynamic>', () => {
-    const result = lower('mixed-tuple.ts', 'export function pair(values: [number, string]): void { values; }');
-    const output = emitIrModuleHaxe(result.module).contents;
-
-    expect(output).toContain('Array<Dynamic>');
-  });
-});
-
-describe('emitIrModuleHaxe typeAlias plain', () => {
-  it('emits a plain type alias as a Haxe typedef', () => {
-    const result = lower('type-alias.ts', 'export type Count = number;');
-    const output = emitIrModuleHaxe(result.module).contents;
-
-    expect(output).toContain('typedef Count = Float;');
-  });
-});
-
-describe('emitIrModuleHaxe spread call with fixed arguments after spread', () => {
-  it('emits spread call with fixed arguments concatenated', () => {
-    const result = lower(
-      'spread-mixed.ts',
-      'export function widest(values: number[], first: number): number { return Math.max(first, ...values); }',
+      'interface-method.ts',
+      `
+        export interface Processor { process(value: number): string }
+        export class Impl implements Processor { process(value: number): string { return String(value); } }
+      `,
     );
     const output = emitIrModuleHaxe(result.module).contents;
 
-    expect(output).toContain('Reflect.callMethod(');
-    expect(output).toContain('.concat(');
+    expect(output).toContain('public function process(');
   });
 });
 
-describe('emitIrModuleHaxe return expression and void return', () => {
-  it('emits void return as bare return statement', () => {
-    const result = lower('void-return.ts', 'export function noop(flag: boolean): void { if (flag) return; }');
-    const output = emitIrModuleHaxe(result.module).contents;
+describe('emitIrModuleHaxe ambient value binding', () => {
+  it('refuses an ambient value reference with no Haxe binding', () => {
+    const result = lower('ambient-value.ts', 'export function read(): number { return 1; }');
+    const decl = result.module.declarations[0]!;
+    if (decl.kind !== 'function') throw new Error('Expected function');
+    const patched = {
+      ...decl,
+      body: [
+        {
+          kind: 'return' as const,
+          expression: {
+            kind: 'identifier' as const,
+            reference: { kind: 'ambient' as const, name: 'UnknownGlobal' },
+          },
+        },
+      ],
+    };
+    const module = { ...result.module, declarations: [patched] };
 
-    expect(output).toContain('return;');
+    expect(() => emitIrModuleHaxe(module)).toThrow('external value UnknownGlobal has no Haxe binding');
   });
+});
 
-  it('emits return with a grouped expression', () => {
-    const result = lower('return-expr.ts', 'export function identity(value: number): number { return value; }');
+describe('emitIrModuleHaxe statement for and forIn branches', () => {
+  it('refuses a raw C-style for statement that was not lowered', () => {
+    const result = lower(
+      'for-raw.ts',
+      'export function loop(): number { let s: number = 0; for (let i: number = 0; i < 5; i++) { s = s + i; } return s; }',
+    );
+    const decl = result.module.declarations[0]!;
+    if (decl.kind !== 'function') throw new Error('Expected function');
+    const forStatement = {
+      kind: 'for' as const,
+      initializer: decl.body[0]!,
+      condition: { kind: 'literal' as const, value: true },
+      incrementor: { kind: 'literal' as const, value: 1 },
+      body: { kind: 'block' as const, statements: [], label: undefined },
+    };
+    const patched = {
+      ...decl,
+      body: [decl.body[0]!, forStatement],
+    };
+    const module = { ...result.module, declarations: [patched] };
+
+    expect(() => emitIrModuleHaxe(module)).toThrow('C-style for loops require control-flow lowering');
+  });
+});
+
+describe('emitIrModuleHaxe forOf pattern error', () => {
+  it('refuses a forOf statement with a binding pattern that was not lowered', () => {
+    const result = lower(
+      'for-of-pattern.ts',
+      'export function visit(values: number[]): number { let total: number = 0; for (const v of values) { total += v; } return total; }',
+    );
+    const decl = result.module.declarations[0]!;
+    if (decl.kind !== 'function') throw new Error('Expected function');
+    const forOf = decl.body[1]!;
+    if (forOf.kind !== 'forOf') throw new Error('Expected forOf');
+    const patched = {
+      ...forOf,
+      variable: {
+        pattern: {
+          kind: 'array' as const,
+          elements: [],
+        },
+        type: { kind: 'primitive' as const, name: 'number' as const },
+      },
+    };
+    const module = {
+      ...result.module,
+      declarations: [{ ...decl, body: [decl.body[0]!, patched, decl.body[2]!] }],
+    };
+
+    expect(() => emitIrModuleHaxe(module)).toThrow('binding patterns require destructuring lowering');
+  });
+});
+
+describe('emitIrModuleHaxe return nullable binding error', () => {
+  it('refuses returning a nullable binding without narrowing evidence', () => {
+    const result = lower(
+      'return-nullable.ts',
+      'export function read(value: number | undefined): number { if (value !== undefined) { return value; } return 0; }',
+    );
     const output = emitIrModuleHaxe(result.module).contents;
 
     expect(output).toContain('return value;');
+    expect(output).toContain('return 0;');
+  });
+});
+
+describe('emitIrModuleHaxe try without catch', () => {
+  it('emits try without a catch clause as bare try', () => {
+    const result = lower(
+      'try-no-catch.ts',
+      'export function safe(value: number): number { try { return value; } catch (error) { return 0; } }',
+    );
+    const decl = result.module.declarations[0]!;
+    if (decl.kind !== 'function') throw new Error('Expected function');
+    const tryStmt = decl.body[0]!;
+    if (tryStmt.kind !== 'try') throw new Error('Expected try');
+    const patched = {
+      ...tryStmt,
+      catchClause: undefined,
+    };
+    const module = {
+      ...result.module,
+      declarations: [{ ...decl, body: [patched] }],
+    };
+    const output = emitIrModuleHaxe(module).contents;
+
+    expect(output).toContain('try {');
+    expect(output).not.toContain('catch');
   });
 });
 
@@ -2854,24 +3001,132 @@ describe('emitIrModuleHaxe control flow label exit and propagation', () => {
   });
 });
 
-describe('emitIrModuleHaxe interface method with function type property', () => {
-  it('emits interface method with parameter names', () => {
+describe('emitIrModuleHaxe type indexedAccess and intersection', () => {
+  it('emits indexedAccess type as Dynamic', () => {
+    const result = lower('indexed-access.ts', 'export function read(value: number): void { value; }');
+    const decl = result.module.declarations[0]!;
+    if (decl.kind !== 'function') throw new Error('Expected function');
+    const patched = {
+      ...decl,
+      parameters: [
+        {
+          ...decl.parameters[0]!,
+          type: {
+            kind: 'indexedAccess' as const,
+            object: { kind: 'primitive' as const, name: 'string' as const },
+            index: { kind: 'literal' as const, value: 'length' },
+          },
+        },
+      ],
+    };
+    const module = { ...result.module, declarations: [patched] };
+    const output = emitIrModuleHaxe(module).contents;
+
+    expect(output).toContain('Dynamic');
+  });
+
+  it('emits intersection with one member as that type', () => {
     const result = lower(
-      'interface-method-named.ts',
+      'single-intersection.ts',
       `
-        export interface Processor { process(value: number): string }
-        export class Impl implements Processor { process(value: number): string { return "done"; } }
+        interface A { value: number }
+        export function read(value: A): void { value; }
       `,
     );
-    const output = emitIrModuleHaxe(result.module).contents;
+    const decl = result.module.declarations.find((d) => d.kind === 'function')!;
+    if (decl.kind !== 'function') throw new Error('Expected function');
+    const patched = {
+      ...decl,
+      parameters: [
+        {
+          ...decl.parameters[0]!,
+          type: {
+            kind: 'intersection' as const,
+            types: [decl.parameters[0]!.type],
+          },
+        },
+      ],
+    };
+    const module = {
+      ...result.module,
+      declarations: result.module.declarations.map((d) => (d.kind === 'function' ? patched : d)),
+    };
+    const output = emitIrModuleHaxe(module).contents;
 
-    expect(output).toContain('public function process(');
-    expect(output).toContain('interface Processor');
+    expect(output).toContain('value:A');
+    expect(output).not.toContain('Dynamic');
   });
 });
 
-describe('emitIrModuleHaxe variable declaration without initializer', () => {
-  it('emits module-level mutable variable with var storage', () => {
+describe('emitIrModuleHaxe optional spread call', () => {
+  it('refuses an optional spread call', () => {
+    const result = lower(
+      'spread-optional.ts',
+      'export function widest(values: number[]): number { return Math.max(...values); }',
+    );
+    const decl = result.module.declarations[0]!;
+    if (decl.kind !== 'function') throw new Error('Expected function');
+    const retStmt = decl.body[0]!;
+    if (retStmt.kind !== 'return' || !retStmt.expression) throw new Error('Expected return');
+    const call = retStmt.expression;
+    if (call.kind !== 'call') throw new Error('Expected call');
+    const patched = { ...call, optional: true };
+    const module = {
+      ...result.module,
+      declarations: [{ ...decl, body: [{ ...retStmt, expression: patched }] }],
+    };
+
+    expect(() => emitIrModuleHaxe(module)).toThrow('optional spread call requires Haxe null-safe reflective lowering');
+  });
+
+  it('emits spread call with fixed arguments after spread', () => {
+    const result = lower(
+      'spread-fixed-after.ts',
+      'export function widest(values: number[], first: number): number { return Math.max(first, ...values); }',
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('Reflect.callMethod(');
+    expect(output).toContain('.concat(');
+  });
+});
+
+describe('emitIrModuleHaxe typeAlias emission', () => {
+  it('emits a plain typeAlias as a Haxe typedef', () => {
+    const result = lower('type-alias.ts', 'export type Count = number;');
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('typedef Count = Float;');
+  });
+});
+
+describe('emitIrModuleHaxe dynamic read detection', () => {
+  it('detects a dynamic read through a nullish coalescing operator', () => {
+    const result = lower(
+      'dynamic-read.ts',
+      'export function select(values: [number, string?]): string { const [first, second]: [number, string?] = values; first; return second ?? "default"; }',
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('arrayPatternValue');
+  });
+});
+
+describe('emitIrModuleHaxe structInit type alias and variable emission', () => {
+  it('emits structInit for a type alias over an object type', () => {
+    const result = lower(
+      'struct-type-alias.ts',
+      'export type Options = { debug: boolean; verbose?: boolean }; export function read(opts: Options): boolean { return opts.debug; }',
+    );
+    const output = emitIrModuleHaxe(result.module, { structuralRecords: 'structInit' }).contents;
+
+    expect(output).toContain('@:structInit');
+    expect(output).toContain('final class Options');
+    expect(output).toContain('public var debug:Bool;');
+    expect(output).toContain('public var verbose:Null<Bool> = null;');
+  });
+
+  it('emits module-level mutable variable without initializer error', () => {
     const result = lower('module-var.ts', 'export let count: number = 0;');
     const output = emitIrModuleHaxe(result.module).contents;
 
@@ -2879,39 +3134,49 @@ describe('emitIrModuleHaxe variable declaration without initializer', () => {
   });
 });
 
-describe('emitIrModuleHaxe union of record types flattened', () => {
-  it('emits union of record types as flattened anonymous structure', () => {
+describe('emitIrModuleHaxe type union null/undefined and tuple shared type', () => {
+  it('emits union with only undefined as Null<T>', () => {
     const result = lower(
-      'union-records-flat.ts',
-      `
-        interface Circle { kind: string; radius: number }
-        interface Square { kind: string; side: number }
-        export type Shape = Circle | Square;
-      `,
+      'undefined-union.ts',
+      'export function maybe(value: string | undefined): string | undefined { return value; }',
     );
     const output = emitIrModuleHaxe(result.module).contents;
 
-    expect(output).toContain('typedef Shape = {');
-    expect(output).toContain('kind:String');
+    expect(output).toContain('Null<String>');
+  });
+
+  it('emits tuple with mixed types as Array<Dynamic>', () => {
+    const result = lower('mixed-tuple.ts', 'export function pair(values: [number, string]): void { values; }');
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('Array<Dynamic>');
+  });
+
+  it('emits tuple with optional element as Array<Dynamic>', () => {
+    const result = lower('optional-tuple.ts', 'export function maybe(values: [number, string?]): void { values; }');
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('Array<Dynamic>');
   });
 });
 
-describe('emitIrModuleHaxe try without catch clause', () => {
-  it('emits try block alone when catch clause is removed', () => {
+describe('emitIrModuleHaxe type reference target name and module identifier reference', () => {
+  it('emits type reference with path segments', () => {
     const result = lower(
-      'try-only.ts',
-      'export function safe(value: number): number { try { return value; } catch (error) { return 0; } }',
+      'generic-constraint.ts',
+      'interface HasValue { value: number } export function read<T extends HasValue>(item: T): number { return item.value; }',
     );
-    const decl = result.module.declarations[0]!;
-    if (decl.kind !== 'function') throw new Error('Expected function');
-    const tryStmt = decl.body[0]!;
-    if (tryStmt.kind !== 'try') throw new Error('Expected try');
-    const noCatchTry = { ...tryStmt, catchClause: undefined };
-    (decl as { body: unknown[] }).body = [noCatchTry];
-
     const output = emitIrModuleHaxe(result.module).contents;
 
-    expect(output).toContain('try {');
-    expect(output).toContain('return value;');
+    expect(output).toContain('<T:HasValue>');
+  });
+});
+
+describe('emitIrModuleHaxe return expression coverage', () => {
+  it('emits void return as bare return statement', () => {
+    const result = lower('void-return.ts', 'export function noop(flag: boolean): void { if (flag) return; }');
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('return;');
   });
 });
