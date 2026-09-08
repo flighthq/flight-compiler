@@ -237,6 +237,39 @@ describe('analyzeTypeScriptHostEndpoints', () => {
       rmSync(fixture.directory, { force: true, recursive: true });
     }
   });
+
+  it('sorts uses across multiple manifests by package name and disambiguates same-line sites by column', () => {
+    const directory = mkdtempSync(path.join(os.tmpdir(), 'flight-compiler-host-endpoints-multi-'));
+    try {
+      write(
+        directory,
+        'tsconfig.json',
+        JSON.stringify({ compilerOptions: { strict: true, target: 'ES2022' }, include: ['packages/**/*.ts'] }),
+      );
+      const declarations = 'interface HostApi { value: number }\ndeclare const host: HostApi;\n';
+      write(directory, 'packages/beta/src/index.ts', `${declarations}host.value;\n`);
+      write(directory, 'packages/alpha/src/index.ts', `${declarations}host.value; host.value;\n`);
+      const project = createTypeScriptProject(path.join(directory, 'tsconfig.json'));
+      const inventory = analyzeTypeScriptHostEndpoints({
+        manifests: [
+          { bins: [], dependencies: [], directory: 'packages/beta', name: '@flighthq/beta', version: '0.0.0' },
+          { bins: [], dependencies: [], directory: 'packages/alpha', name: '@flighthq/alpha', version: '0.0.0' },
+        ],
+        project,
+        resolveReceiver: (type, checker) => (checker.typeToString(type) === 'HostApi' ? 'web.host' : undefined),
+        upstreamDirectory: directory,
+      });
+
+      expect(inventory.endpoints).toHaveLength(1);
+      const sites = inventory.endpoints[0]!.sites;
+      expect(sites[0]!.packageName).toBe('@flighthq/alpha');
+      expect(sites[1]!.packageName).toBe('@flighthq/alpha');
+      expect(sites[1]!.column).toBeGreaterThan(sites[0]!.column);
+      expect(sites[2]!.packageName).toBe('@flighthq/beta');
+    } finally {
+      rmSync(directory, { force: true, recursive: true });
+    }
+  });
 });
 
 function createHostEndpointFixture(): { directory: string; manifest: FlightPackageManifest } {
