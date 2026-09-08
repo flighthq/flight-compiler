@@ -14,6 +14,7 @@ describe('createCompilerLoweringPassInterfaceInheritance', () => {
           array: Value[];
           callback: (value: Value) => Value;
           genericCallback: <Inner extends Value = Value>(value: Inner) => Value;
+          plainGeneric: <T>(value: T) => T;
           indexed: Value[keyof Value];
           intersection: Value & { fixed: string };
           key: keyof Value;
@@ -43,6 +44,7 @@ describe('createCompilerLoweringPassInterfaceInheritance', () => {
       'array',
       'callback',
       'genericCallback',
+      'plainGeneric',
       'indexed',
       'intersection',
       'key',
@@ -78,6 +80,14 @@ describe('createCompilerLoweringPassInterfaceInheritance', () => {
               default: { kind: 'primitive', name: 'number' },
             },
           ],
+        },
+      },
+      {
+        type: {
+          kind: 'function',
+          parameters: [{ type: { kind: 'named' } }],
+          returns: { kind: 'named' },
+          typeParameters: [{}],
         },
       },
       {
@@ -228,6 +238,25 @@ describe('createCompilerLoweringPassInterfaceInheritance', () => {
         if (isCompilerLoweringFailure(error)) expect(error.code).toBe('unsupported-ir');
       }
     }
+  });
+
+  it('re-throws non-substitution errors from malformed heritage type parameters', () => {
+    const module = lower(
+      'rethrow.ts',
+      `
+        interface Root<Value> { value: Value; }
+        interface Left extends Root<number> {}
+        export interface Leaf extends Left {}
+      `,
+    );
+    const root = getInterface(module, 'Root');
+    const malformed = replaceInterface(module, root, {
+      typeParameters: [null] as never,
+    });
+    const pass = createCompilerLoweringPassInterfaceInheritance();
+
+    expect(() => pass.lowerIrModule(malformed)).toThrow(TypeError);
+    expect(() => pass.lowerIrModule(malformed)).not.toThrow(expect.objectContaining({ kind: 'compiler-lowering' }));
   });
 });
 

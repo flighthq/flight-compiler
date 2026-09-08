@@ -87,6 +87,19 @@ describe('createCompilerLoweringPassExtraArgumentErasure', () => {
     expect(identities.every((identity) => identity.includes('call-argument'))).toBe(true);
   });
 
+  it('erases extra arguments from calls to functions with default and optional parameters', () => {
+    const module = lower(`
+      function withDefault(value: number, mode: number = 0): number { return value + mode; }
+      function withOptional(value: number, mode?: number): number { return value + (mode ?? 0); }
+      export function read(): number { return withDefault(1, 2, 3) + withOptional(4, 5, 6); }
+    `);
+    const pass = createCompilerLoweringPassExtraArgumentErasure();
+    const output = lowerIrModuleWithCompilerPasses(module, [pass]);
+
+    expect(pass.verifyIrModule(output)).toEqual({ kind: 'valid' });
+    expect(pass.verifyIrModule(module)).toMatchObject({ kind: 'invalid' });
+  });
+
   it('refuses fixed extra calls without safe direct-call erasure evidence', () => {
     const module = lower(`
       export class Picker { choose(value: number): number { return value; } }
