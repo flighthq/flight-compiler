@@ -3161,6 +3161,18 @@ describe('emitIrModuleCpp', () => {
     expect(emitted.contents).toContain('#include <optional>');
   });
 
+  it('emits optional chain on nullable struct without premature unwrap', () => {
+    const result = lower(
+      'opt-chain-struct.ts',
+      'export interface Holder { value: number; } export function read(holder: Holder | undefined): number { return holder?.value ?? 0; }',
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+    expect(emitted.contents).toContain('optional_chain_receiver = holder;');
+    expect(emitted.contents).not.toContain('optional_chain_receiver = holder.value()');
+    expect(emitted.contents).toContain('.has_value()');
+    expect(emitted.contents).toContain('.value_or(0.0)');
+  });
+
   it('emits != undefined nullish comparison as negated has_value', () => {
     const result = lower(
       'nullish-neq.ts',
