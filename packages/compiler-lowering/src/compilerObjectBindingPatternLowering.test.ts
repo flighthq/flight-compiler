@@ -1,7 +1,13 @@
 import ts from 'typescript';
 
 import { lowerTypeScriptSource } from '../../compiler-semantic/src/index.js';
-import type { IrFunctionDeclaration, IrModule, IrStatement } from '../../compiler-types/src/index.js';
+import type {
+  IrExpression,
+  IrFunctionDeclaration,
+  IrModule,
+  IrStatement,
+  IrVariable,
+} from '../../compiler-types/src/index.js';
 import { createCompilerLoweringPassArrayBindingPattern } from './compilerArrayBindingPatternLowering.js';
 import { lowerIrModuleWithCompilerPasses } from './compilerLoweringPass.js';
 import { createCompilerLoweringPassObjectBindingPattern } from './compilerObjectBindingPatternLowering.js';
@@ -266,6 +272,217 @@ describe('createCompilerLoweringPassObjectBindingPattern', () => {
             let total = 0;
             for (const { x } = items[0]!, i = 0; i < 1; ) { total += x; break; }
             return total;
+          }
+        `,
+      ),
+      [createCompilerLoweringPassObjectBindingPattern()],
+    );
+    expect(createCompilerLoweringPassObjectBindingPattern().verifyIrModule(output)).toEqual({ kind: 'valid' });
+  });
+
+  it('covers IR-only expression types via injection in function body', () => {
+    const module = lower(
+      'inject-ir.ts',
+      `export function process(source: { x: number }): number {
+         const { x } = source;
+         return x;
+       }`,
+    );
+    const clone: IrModule = structuredClone(module);
+    const declaration = clone.declarations[0];
+    if (declaration?.kind !== 'function') throw new Error('Expected function');
+    const ref = { binding: declaration.parameters[0]!.binding };
+    const ident: IrExpression = { kind: 'identifier', reference: ref };
+    const namedVar = (name: string, initializer: IrExpression): IrVariable => ({
+      binding: { id: name, name },
+      initializer,
+      mutable: false,
+      type: { kind: 'intrinsic', name: 'number' },
+    });
+
+    declaration.body = [
+      {
+        declarations: [
+          namedVar('a', {
+            elements: [{ expression: ident, optional: false }, { optional: true }],
+            kind: 'tuple',
+          } as IrExpression),
+          namedVar('b', {
+            kind: 'tupleSpread',
+            segments: [
+              { expression: ident, kind: 'spread' },
+              { element: { expression: ident, optional: false as const }, kind: 'element' },
+              { element: { optional: true as const }, kind: 'element' },
+            ],
+            type: { elements: [], kind: 'tuple' },
+          } as IrExpression),
+          namedVar('c', { kind: 'tupleRest', object: ident, start: 0 } as IrExpression),
+          namedVar('d', { kind: 'tupleSuffix', object: ident, start: 0, width: 1 } as IrExpression),
+          namedVar('e', { fallback: ident, kind: 'undefinedDefault', value: ident } as IrExpression),
+          namedVar('f', {
+            excluded: [
+              { kind: 'named', name: 'x' },
+              { kind: 'computed', expression: ident },
+            ],
+            kind: 'objectRest',
+            object: ident,
+          } as IrExpression),
+        ],
+        kind: 'variable' as const,
+      },
+      {
+        expression: {
+          elements: [ident, undefined, ident],
+          kind: 'array',
+        } as IrExpression,
+        kind: 'expression' as const,
+      },
+      ...declaration.body,
+    ];
+
+    const pass = createCompilerLoweringPassObjectBindingPattern();
+    const output = pass.lowerIrModule(clone);
+    expect(pass.verifyIrModule(output)).toEqual({ kind: 'valid' });
+  });
+
+  it('lowers nested object patterns with non-function scope and object rest without explicit type', () => {
+    const output = lowerIrModuleWithCompilerPasses(
+      lower(
+        'nested-rest.ts',
+        `
+          interface Deep { a: number; b: string }
+          export function read(source: { nested: Deep }): number {
+            const { nested: { a, ...rest } } = source;
+            return a + (rest.b ? 1 : 0);
+          }
+        `,
+      ),
+      [createCompilerLoweringPassObjectBindingPattern()],
+    );
+    expect(createCompilerLoweringPassObjectBindingPattern().verifyIrModule(output)).toEqual({ kind: 'valid' });
+  });
+
+  it('lowers object patterns inside for-in iteration variables', () => {
+    const output = lowerIrModuleWithCompilerPasses(
+      lower(
+        'for-in-pattern.ts',
+        `
+          export function visit(items: Record<string, { x: number }>): number {
+            let total = 0;
+            for (const key in items) { const { x } = items[key]!; total += x; }
+            return total;
+          }
+        `,
+      ),
+      [createCompilerLoweringPassObjectBindingPattern()],
+    );
+    expect(createCompilerLoweringPassObjectBindingPattern().verifyIrModule(output)).toEqual({ kind: 'valid' });
+  });
+
+  it('resolves property types on non-optional properties and removes undefined from defaulted unions', () => {
+    const output = lowerIrModuleWithCompilerPasses(
+      lower(
+        'type-resolution.ts',
+        `
+          interface Config {
+            required: number;
+            optionalUnion?: string | number | undefined;
+          }
+          export function read(source: Config): string {
+            const { required, optionalUnion = 'fallback' }: Config = source;
+            return String(required) + optionalUnion;
+          }
+        `,
+      ),
+      [createCompilerLoweringPassObjectBindingPattern()],
+    );
+    const fn = getFunction(output);
+    const statement = getVariableStatement(fn.body[0]);
+    expect(statement.declarations).toMatchObject([
+      { binding: { name: 'objectPatternValue' } },
+      { binding: { name: 'required' }, initializer: { kind: 'property', name: 'required' } },
+      {
+        binding: { name: 'optionalUnion' },
+        initializer: { fallback: { value: 'fallback' }, kind: 'undefinedDefault' },
+      },
+    ]);
+    expect(createCompilerLoweringPassObjectBindingPattern().verifyIrModule(output)).toEqual({ kind: 'valid' });
+  });
+
+  it('lowers object patterns in overloaded functions and default exports', () => {
+    const output = lowerIrModuleWithCompilerPasses(
+      lower(
+        'overload-default.ts',
+        `
+          export function process(source: { x: number }): number;
+          export function process(source: { x: string }): string;
+          export function process(source: { x: number | string }): number | string {
+            const { x } = source;
+            return x;
+          }
+          export default (source: { y: number }): number => {
+            const { y } = source;
+            return y;
+          };
+        `,
+      ),
+      [createCompilerLoweringPassObjectBindingPattern()],
+    );
+    expect(createCompilerLoweringPassObjectBindingPattern().verifyIrModule(output)).toEqual({ kind: 'valid' });
+  });
+
+  it('lowers object patterns in class constructors with parameter properties and empty fields', () => {
+    const output = lowerIrModuleWithCompilerPasses(
+      lower(
+        'class-constructor-fields.ts',
+        `
+          export class Container {
+            label!: string;
+            value = (() => { const { x }: { x: number } = { x: 1 }; return x; })();
+            constructor(source: { name: string }, public id: number) {
+              const { name } = source;
+              this.label = name;
+            }
+          }
+        `,
+      ),
+      [createCompilerLoweringPassObjectBindingPattern()],
+    );
+    expect(createCompilerLoweringPassObjectBindingPattern().verifyIrModule(output)).toEqual({ kind: 'valid' });
+  });
+
+  it('lowers object patterns through diverse for-loop and control-flow branches', () => {
+    const output = lowerIrModuleWithCompilerPasses(
+      lower(
+        'control-flow-variety.ts',
+        `
+          export function branches(
+            source: { x: number },
+            items: Array<{ a: number }>,
+            obj: Record<string, number>,
+          ): void {
+            const { x } = source;
+            if (x > 0) { x; }
+            for (;;) { break; }
+            for (const item of items) { item.a; }
+            for (const key in obj) { key; }
+            return;
+          }
+        `,
+      ),
+      [createCompilerLoweringPassObjectBindingPattern()],
+    );
+    expect(createCompilerLoweringPassObjectBindingPattern().verifyIrModule(output)).toEqual({ kind: 'valid' });
+  });
+
+  it('lowers object patterns with C-style for expression initializers', () => {
+    const output = lowerIrModuleWithCompilerPasses(
+      lower(
+        'for-expression-init.ts',
+        `
+          export function loop(source: { x: number }): void {
+            const { x } = source;
+            for (x; x < 10; ) { break; }
           }
         `,
       ),
