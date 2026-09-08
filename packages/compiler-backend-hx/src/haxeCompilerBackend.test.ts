@@ -4935,3 +4935,126 @@ describe('emitIrModuleHaxe module-level typed variable declaration', () => {
     expect(output).toContain('String');
   });
 });
+
+describe('emitIrModuleHaxe labeled block with same-depth break', () => {
+  it('emits break for labeled block exit at same nesting depth', () => {
+    const result = lower(
+      'labeled-block-break.ts',
+      `export function check(value: number): number {
+         done: {
+           if (value < 0) break done;
+           return value;
+         }
+         return 0;
+       }`,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('do {');
+    expect(output).toContain('while (false)');
+    expect(output).toContain('break');
+  });
+});
+
+describe('emitIrModuleHaxe multi-member intersection type', () => {
+  it('emits Dynamic for intersection of multiple named types', () => {
+    const result = lower(
+      'multi-intersection.ts',
+      `export interface A { a: number; }
+       export interface B { b: string; }
+       export function use(value: A & B): number { return value.a; }`,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('Dynamic');
+  });
+});
+
+describe('emitIrModuleHaxe interface method with unnamed parameter', () => {
+  it('generates argument name for unnamed function parameter in interface', () => {
+    const result = lower(
+      'unnamed-param.ts',
+      `export interface Handler {
+         handle(event: string, callback: (result: number) => void): void;
+       }`,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('handle');
+  });
+});
+
+describe('emitIrModuleHaxe labeled continue at same depth', () => {
+  it('emits continue for labeled loop continue at same nesting depth', () => {
+    const result = lower(
+      'labeled-continue-same.ts',
+      `export function filter(items: number[]): number {
+         let total: number = 0;
+         loop: for (const item of items) {
+           if (item < 0) continue loop;
+           total += item;
+         }
+         return total;
+       }`,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('continue');
+  });
+});
+
+describe('emitIrModuleHaxe nullish comparison with undefined operand', () => {
+  it('emits null check for undefined comparison', () => {
+    const result = lower(
+      'undefined-cmp.ts',
+      `export function hasValue(value: string | undefined): boolean {
+         return value !== undefined;
+       }`,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('!= null');
+  });
+});
+
+describe('emitIrModuleHaxe exponentiation operator', () => {
+  it('emits Math.pow for exponentiation', () => {
+    const result = lower(
+      'exponentiation.ts',
+      'export function power(base: number, exp: number): number { return base ** exp; }',
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('Math.pow');
+  });
+});
+
+describe('emitIrModuleHaxe unsigned right shift', () => {
+  it('emits unsigned right shift operator with Std.int', () => {
+    const result = lower(
+      'unsigned-shift.ts',
+      'export function shift(value: number, bits: number): number { return value >>> bits; }',
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('>>>');
+    expect(output).toContain('Std.int');
+  });
+});
+
+describe('emitIrModuleHaxe try-catch without finally', () => {
+  it('emits try-catch block with Dynamic catch binding', () => {
+    const result = lower(
+      'try-catch.ts',
+      `export function safe(value: number): number {
+         try { return value; }
+         catch (error) { return 0; }
+       }`,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('try');
+    expect(output).toContain('catch');
+    expect(output).toContain('Dynamic');
+  });
+});
