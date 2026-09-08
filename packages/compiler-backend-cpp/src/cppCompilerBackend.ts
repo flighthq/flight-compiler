@@ -2230,8 +2230,21 @@ function collectIrModuleArrayElementBindingIdsCpp(
   module: Readonly<IrModule>,
   bindingTypes: ReadonlyMap<string, Readonly<IrType>>,
 ): ReadonlySet<string> {
-  const result = new Set<string>();
+  const candidates = new Set<string>();
+  const nullishUsed = new Set<string>();
   analyzeIrModuleTraversal(module, {
+    expression(expression) {
+      if (expression.kind === 'binary' && (expression.operator === '??' || expression.semantics.nullishComparison)) {
+        const operand =
+          expression.left.kind === 'identifier' && expression.left.reference.kind === 'binding'
+            ? expression.left
+            : expression.right.kind === 'identifier' && expression.right.reference.kind === 'binding'
+              ? expression.right
+              : undefined;
+        if (operand) nullishUsed.add(operand.reference.binding.id);
+      }
+      return undefined;
+    },
     variable(variable) {
       if (!('binding' in variable) || variable.initializer?.kind !== 'element') return;
       const initializer = variable.initializer;
@@ -2242,9 +2255,13 @@ function collectIrModuleArrayElementBindingIdsCpp(
         initializer.object.kind === 'identifier' &&
         initializer.object.reference.kind === 'binding' &&
         bindingTypes.get(initializer.object.reference.binding.id)?.kind === 'array';
-      if (resolvedReceiver || inferredReceiver) result.add(variable.binding.id);
+      if (resolvedReceiver || inferredReceiver) candidates.add(variable.binding.id);
     },
   });
+  const result = new Set<string>();
+  for (const id of candidates) {
+    if (nullishUsed.has(id)) result.add(id);
+  }
   return result;
 }
 
