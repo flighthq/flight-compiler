@@ -6779,4 +6779,279 @@ describe('emitIrModuleRust', () => {
     const output = emitIrModuleRust(result.module).contents;
     expect(output).toContain('use flighthq_math::');
   });
+
+  it('emits composition base string field access with clone suffix', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'comp-string.ts',
+        `export class Base {
+          name: string;
+          constructor(n: string) { this.name = n; }
+        }
+        export class Child extends Base {
+          extra: number;
+          constructor(n: string) { super(n); this.extra = 0; }
+          getName(): string { return this.name; }
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('self.base.name.clone()');
+  });
+
+  it('emits primitive union narrowed member as deref', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'prim-narrow.ts',
+        `export function describe(x: string | number): string {
+          if (typeof x === "string") { return x; }
+          return "number";
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('as_str()');
+  });
+
+  it('emits discriminated union narrowed field access', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'disc-narrow.ts',
+        `export interface Circle { kind: "circle"; radius: number }
+         export interface Square { kind: "square"; side: number }
+         export type Shape = Circle | Square;
+         export function size(s: Shape): number {
+           if (s.kind === "circle") { return s.radius; }
+           return s.side;
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('enum Shape');
+  });
+
+  it('emits element access on property chain with clone', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'elem-prop.ts',
+        `export function get(items: number[][], i: number): number {
+          return items[0][0];
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('[');
+  });
+
+  it('emits callback variable with Rc wrapper', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'callback-var.ts',
+        `export function makeOp(): (x: number) => number {
+          const fn1 = (x: number): number => x + 1;
+          return fn1;
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('Rc');
+  });
+
+  it('emits cell-wrapped binding for mutated closure capture', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'cell-capture.ts',
+        `export function counter(): () => number {
+          let count: number = 0;
+          const fn1 = (): number => { count = count + 1; return count; };
+          return fn1;
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('Cell');
+  });
+
+  it('emits cell assignment as .set()', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'cell-set.ts',
+        `export function counter(): () => number {
+          let count: number = 0;
+          const inc = (): number => { count = count + 1; return count; };
+          return inc;
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('.set(');
+    expect(output).toContain('.get()');
+  });
+
+  it('emits async function with async fn keyword', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'async-fn.ts',
+        `export async function fetchData(): Promise<number> {
+          return 42;
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('async fn');
+  });
+
+  it('emits await expression as .await', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'await-expr.ts',
+        `export async function compute(p: Promise<number>): Promise<number> {
+          const val: number = await p;
+          return val;
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('.await');
+  });
+
+  it('emits array element binding with coalesce as Option get', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'array-elem.ts',
+        `export function first(items: number[]): number {
+          const x: number | undefined = items[0];
+          return x ?? 0;
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('unwrap_or_else');
+  });
+
+  it('emits symbol type with FlightSymbol', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'symbol-type.ts',
+        `export function identity(s: symbol): symbol {
+          return s;
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('FlightSymbol');
+  });
+
+  it('emits returned array element with clone', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'return-element.ts',
+        `export function head(items: string[]): string {
+          return items[0];
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('.clone()');
+  });
+
+  it('emits undefinedValue as None with Option payload', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'undef-val.ts',
+        `export function empty(): string | undefined {
+          return undefined;
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('None');
+    expect(output).toContain('Option<String>');
+  });
+
+  it('emits undefinedDefault with unwrap_or_else', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'undef-default.ts',
+        `export function safe(x: string | undefined): string {
+          return x ?? "default";
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('unwrap_or_else');
+  });
+
+  it('emits interface with both data and method properties as trait', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'mixed-trait.ts',
+        `export interface Describable {
+          readonly name: string;
+          describe(): string;
+        }
+        export class Thing implements Describable {
+          name: string;
+          constructor() { this.name = "thing"; }
+          describe(): string { return this.name; }
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('trait Describable');
+    expect(output).toContain('fn name(&self) -> String');
+    expect(output).toContain('fn describe(&self');
+  });
+
+  it('emits tuple with optional element as Option', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'opt-tuple.ts',
+        `export function pair(a: number): [number, string?] {
+          return [a];
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('Option<String>');
+  });
+
+  it('emits empty array literal as vec![]', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'empty-arr.ts',
+        `export function empty(): number[] {
+          return [];
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('vec![]');
+  });
+
+  it('emits tuple expression with single element trailing comma', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'single-tuple.ts',
+        `export function wrap(x: number): [number] {
+          return [x];
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain(',)');
+  });
+
+  it('emits rest parameter in function', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'rest-param.ts',
+        `export function sum(...nums: number[]): number {
+          let total: number = 0;
+          for (const n of nums) { total = total + n; }
+          return total;
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('nums: Vec<f64>');
+  });
+
+  it('emits continue statement in loop', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'continue.ts',
+        `export function positives(items: number[]): number[] {
+          const result: number[] = [];
+          for (const item of items) {
+            if (item <= 0) { continue; }
+            result.push(item);
+          }
+          return result;
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('continue;');
+  });
 });
