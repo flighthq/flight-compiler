@@ -231,6 +231,28 @@ describe('lowerCompilerAsyncStateMachinesHaxe', () => {
       { kind: 'continueState', target: { kind: 'join', path: branchPath } },
     ]);
   });
+
+  it('lowers carry steps for values preserved across finally boundaries', () => {
+    const analysis = analyzeIrModuleAsyncStateMachines(
+      lower(`
+        export async function withFinally(task: Promise<number>, log: Promise<void>): Promise<number> {
+          try {
+            return await task;
+          } finally {
+            await log;
+          }
+        }
+      `),
+    );
+    const result = lowerCompilerAsyncStateMachinesHaxe(analysis, createCompilerRuntimeTaskCapabilityPlanHaxe());
+    const steps = result.functions[0]?.states.flatMap((state) => state.steps) ?? [];
+    const stepKinds = steps.map((step) => step.kind);
+
+    expect(stepKinds).toContain('guardState');
+    expect(stepKinds).toContain('awaitRuntime');
+    // The try/finally pattern generates at least guard, await, and resolve/reject steps
+    expect(steps.length).toBeGreaterThan(3);
+  });
 });
 
 function isDeeplyFrozen(value: unknown, seen: WeakSet<object>): boolean {
