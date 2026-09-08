@@ -408,6 +408,213 @@ describe('analyzeFlightWorkspace', () => {
     }
   });
 
+  it('counts source files in nested directories', () => {
+    const upstream = createUpstreamFixture();
+    try {
+      write(upstream, 'packages/types/src/nested/deep.ts', 'export function deepValue(): number { return 42; }\n');
+      write(
+        upstream,
+        'packages/types/src/index.ts',
+        "export { Mode } from './Mode.js';\nexport type { Shape } from './Shape.js';\nexport { createValue } from './value.js';\n" +
+          "import { createOtherValue as createRenamedValue } from './other.js';\nexport { createRenamedValue as createPublicValue };\n" +
+          "export { createValue as createDirectAlias } from './value.js';\n" +
+          "export { deepValue } from './nested/deep.js';\n",
+      );
+      git(upstream, 'add', '.');
+      git(upstream, 'commit', '-m', 'nested and empty');
+
+      const inventory = analyzeFlightWorkspace({ upstreamDirectory: upstream });
+      const inventoryByName = new Map(inventory.packages.map((item) => [item.name, item]));
+      const root = resolvePackageExportLane(inventoryByName, '@flighthq/types');
+      const types = inventoryByName.get('@flighthq/types');
+
+      expect(root.exports.find((e) => e.name === 'deepValue')).toMatchObject({ kind: 'function', runtime: true });
+      expect(types?.sourceFiles).toBeGreaterThanOrEqual(7);
+    } finally {
+      rmSync(upstream, { force: true, recursive: true });
+    }
+  });
+
+  it('skips default exports in star re-exports and deduplicates same-source exports', () => {
+    const upstream = createUpstreamFixture();
+    try {
+      write(
+        upstream,
+        'packages/types/src/withDefault.ts',
+        'export default function defaultOnly(): number { return 1; }\nexport function named(): number { return 2; }\n',
+      );
+      write(
+        upstream,
+        'packages/types/src/index.ts',
+        "export * from './withDefault.js';\nexport * from './withDefault.js';\n" +
+          "export { Mode } from './Mode.js';\nexport type { Shape } from './Shape.js';\nexport { createValue } from './value.js';\n" +
+          "import { createOtherValue as createRenamedValue } from './other.js';\nexport { createRenamedValue as createPublicValue };\n" +
+          "export { createValue as createDirectAlias } from './value.js';\n",
+      );
+      git(upstream, 'add', '.');
+      git(upstream, 'commit', '-m', 'star default skip');
+
+      const inventory = analyzeFlightWorkspace({ upstreamDirectory: upstream });
+      const inventoryByName = new Map(inventory.packages.map((item) => [item.name, item]));
+      const root = resolvePackageExportLane(inventoryByName, '@flighthq/types');
+
+      expect(root.exports.find((e) => e.name === 'named')).toMatchObject({ kind: 'function', runtime: true });
+      expect(root.exports.find((e) => e.name === 'default')).toBeUndefined();
+    } finally {
+      rmSync(upstream, { force: true, recursive: true });
+    }
+  });
+
+  it('resolves export default expression via parseSource export assignment path', () => {
+    const upstream = createUpstreamFixture();
+    try {
+      write(upstream, 'packages/types/src/defaultExpr.ts', 'export default 42;\n');
+      write(
+        upstream,
+        'packages/types/src/index.ts',
+        "export { Mode } from './Mode.js';\nexport type { Shape } from './Shape.js';\nexport { createValue } from './value.js';\n" +
+          "import { createOtherValue as createRenamedValue } from './other.js';\nexport { createRenamedValue as createPublicValue };\n" +
+          "export { createValue as createDirectAlias } from './value.js';\n" +
+          "export { default as defaultExpr } from './defaultExpr.js';\n",
+      );
+      git(upstream, 'add', '.');
+      git(upstream, 'commit', '-m', 'default expression');
+
+      const inventory = analyzeFlightWorkspace({ upstreamDirectory: upstream });
+      const inventoryByName = new Map(inventory.packages.map((item) => [item.name, item]));
+      const root = resolvePackageExportLane(inventoryByName, '@flighthq/types');
+
+      expect(root.exports.find((e) => e.name === 'defaultExpr')).toMatchObject({ kind: 'default', runtime: true });
+    } finally {
+      rmSync(upstream, { force: true, recursive: true });
+    }
+  });
+
+  it('merges export conflicts from star re-exports with resolved conflicts from the export graph', () => {
+    const upstream = createUpstreamFixture();
+    try {
+      write(upstream, 'packages/types/src/source-a.ts', 'export function overlap(): string { return "a"; }\n');
+      write(upstream, 'packages/types/src/source-b.ts', 'export function overlap(): string { return "b"; }\n');
+      write(upstream, 'packages/types/src/barrel-a.ts', "export * from './source-a.js';\n");
+      write(upstream, 'packages/types/src/barrel-b.ts', "export * from './source-b.js';\n");
+      write(
+        upstream,
+        'packages/types/src/index.ts',
+        "export * from './barrel-a.js';\nexport * from './barrel-b.js';\n" +
+          "export { Mode } from './Mode.js';\nexport type { Shape } from './Shape.js';\nexport { createValue } from './value.js';\n" +
+          "import { createOtherValue as createRenamedValue } from './other.js';\nexport { createRenamedValue as createPublicValue };\n" +
+          "export { createValue as createDirectAlias } from './value.js';\n",
+      );
+      git(upstream, 'add', '.');
+      git(upstream, 'commit', '-m', 'transitive conflicts');
+
+      const inventory = analyzeFlightWorkspace({ upstreamDirectory: upstream });
+      const inventoryByName = new Map(inventory.packages.map((item) => [item.name, item]));
+      const root = resolvePackageExportLane(inventoryByName, '@flighthq/types');
+
+      expect(root.exportConflicts.find((c) => c.name === 'overlap')).toBeDefined();
+      expect(root.exportConflicts.find((c) => c.name === 'overlap')?.sources.length).toBe(2);
+    } finally {
+      rmSync(upstream, { force: true, recursive: true });
+    }
+  });
+
+  it('resolves SDK exposure across multiple export lanes with sorting', () => {
+    const upstream = createUpstreamFixture();
+    try {
+      write(
+        upstream,
+        'packages/sdk/package.json',
+        JSON.stringify({
+          exports: {
+            '.': { default: './dist/index.js', types: './dist/index.d.ts' },
+            './extra': { default: './dist/extra.js', types: './dist/extra.d.ts' },
+          },
+          name: '@flighthq/sdk',
+          version: '0.0.0',
+        }),
+      );
+      write(upstream, 'packages/sdk/src/index.ts', "export * from '@flighthq/types';\n");
+      write(upstream, 'packages/sdk/src/extra.ts', "export * from '@flighthq/types';\n");
+      git(upstream, 'add', '.');
+      git(upstream, 'commit', '-m', 'multi sdk lane');
+
+      const inventory = analyzeFlightWorkspace({ upstreamDirectory: upstream });
+      const inventoryByName = new Map(inventory.packages.map((item) => [item.name, item]));
+      const types = inventoryByName.get('@flighthq/types');
+
+      expect(types?.sdkExposures.length).toBeGreaterThanOrEqual(2);
+      const lanes = types?.sdkExposures.map((e) => e.sdkLane);
+      expect(lanes).toEqual([...lanes!].sort());
+    } finally {
+      rmSync(upstream, { force: true, recursive: true });
+    }
+  });
+
+  it('resolves a plain named import re-export and an export variable statement', () => {
+    const upstream = createUpstreamFixture();
+    try {
+      write(
+        upstream,
+        'packages/types/src/plain.ts',
+        'export function plainHelper(): number { return 1; }\nexport const plainConst = 2;\n',
+      );
+      write(
+        upstream,
+        'packages/types/src/reexportPlain.ts',
+        "import { plainHelper } from './plain.js';\nexport { plainHelper };\nexport const localVar: number = 3;\n",
+      );
+      write(
+        upstream,
+        'packages/types/src/index.ts',
+        "export { Mode } from './Mode.js';\nexport type { Shape } from './Shape.js';\nexport { createValue } from './value.js';\n" +
+          "import { createOtherValue as createRenamedValue } from './other.js';\nexport { createRenamedValue as createPublicValue };\n" +
+          "export { createValue as createDirectAlias } from './value.js';\n" +
+          "export { plainHelper } from './reexportPlain.js';\n",
+      );
+      git(upstream, 'add', '.');
+      git(upstream, 'commit', '-m', 'plain import');
+
+      const inventory = analyzeFlightWorkspace({ upstreamDirectory: upstream });
+      const inventoryByName = new Map(inventory.packages.map((item) => [item.name, item]));
+      const root = resolvePackageExportLane(inventoryByName, '@flighthq/types');
+
+      expect(root.exports.find((e) => e.name === 'plainHelper')).toMatchObject({ kind: 'function', runtime: true });
+    } finally {
+      rmSync(upstream, { force: true, recursive: true });
+    }
+  });
+
+  it('resolves an exported variable statement and a type alias declaration', () => {
+    const upstream = createUpstreamFixture();
+    try {
+      write(
+        upstream,
+        'packages/types/src/VarExport.ts',
+        'export const exportedVar: number = 42;\nexport type Alias = string;\n',
+      );
+      write(
+        upstream,
+        'packages/types/src/index.ts',
+        "export { Mode } from './Mode.js';\nexport type { Shape } from './Shape.js';\nexport { createValue } from './value.js';\n" +
+          "import { createOtherValue as createRenamedValue } from './other.js';\nexport { createRenamedValue as createPublicValue };\n" +
+          "export { createValue as createDirectAlias } from './value.js';\n" +
+          "export { exportedVar, Alias } from './VarExport.js';\n",
+      );
+      git(upstream, 'add', '.');
+      git(upstream, 'commit', '-m', 'var export');
+
+      const inventory = analyzeFlightWorkspace({ upstreamDirectory: upstream });
+      const inventoryByName = new Map(inventory.packages.map((item) => [item.name, item]));
+      const root = resolvePackageExportLane(inventoryByName, '@flighthq/types');
+
+      expect(root.exports.find((e) => e.name === 'exportedVar')).toMatchObject({ kind: 'variable', runtime: true });
+      expect(root.exports.find((e) => e.name === 'Alias')).toMatchObject({ kind: 'type', runtime: false });
+    } finally {
+      rmSync(upstream, { force: true, recursive: true });
+    }
+  });
+
   it('refuses a program file that resolves outside the upstream checkout', () => {
     const upstream = createUpstreamFixture();
     const outside = mkdtempSync(path.join(os.tmpdir(), 'flight-compiler-outside-'));

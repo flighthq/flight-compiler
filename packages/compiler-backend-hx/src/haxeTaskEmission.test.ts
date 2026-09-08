@@ -254,6 +254,94 @@ describe('emitCompilerHaxeTaskLoweringFunction', () => {
       }),
     ).toThrow('state graph contains a cycle');
   });
+
+  it('emits guarded try-catch regions with named handler and catch binding', () => {
+    const { lowering, module } = createFixture(`
+      export async function guarded(task: Promise<number>): Promise<number> {
+        try {
+          const value = await task;
+          return value;
+        } catch (error) {
+          return 0;
+        }
+      }
+    `);
+    const source = emitFunction(lowering.functions[0]!, lowering, module).join('\n');
+
+    expect(source).toContain('var taskRejected = function(taskRejection:Dynamic) {');
+    expect(source).toContain('var error = taskRejection;');
+    expect(source).toContain('resolveTask(0);');
+    expect(source).toContain('resolveTask(value);');
+  });
+
+  it('emits guarded try-finally with carrier, cleanup function, and rethrow', () => {
+    const { lowering, module } = createFixture(`
+      export async function cleanup(task: Promise<number>, log: Promise<void>): Promise<number> {
+        try {
+          return await task;
+        } finally {
+          await log;
+        }
+      }
+    `);
+    const source = emitFunction(lowering.functions[0]!, lowering, module).join('\n');
+
+    expect(source).toMatch(/var \w+:Dynamic = null;/u);
+    expect(source).toContain('var taskCleanup = function() {');
+    expect(source).toContain('rejectTask(taskRejection);');
+  });
+
+  it('fails loudly for malformed branch, loop, and guard state graphs', () => {
+    const branching = createFixture(
+      'export async function choose(task: Promise<number>, flag: boolean): Promise<number> { let total: number = 0; if (flag) { total = await task; } return total; }',
+    );
+    const branchPlan = branching.lowering.functions[0]!;
+    expect(() =>
+      emitFunction(
+        { ...branchPlan, states: branchPlan.states.filter((s) => s.identity.kind !== 'join') },
+        branching.lowering,
+        branching.module,
+      ),
+    ).toThrow('has no join state');
+    expect(() =>
+      emitFunction(
+        { ...branchPlan, states: branchPlan.states.filter((s) => s.identity.kind !== 'branchArm') },
+        branching.lowering,
+        branching.module,
+      ),
+    ).toThrow('has no matching state');
+
+    const looping = createFixture(
+      'export async function drain(task: Promise<number>, again: boolean): Promise<number> { let last: number = 0; let pending: boolean = true; while (pending) { last = await task; pending = again; } return last; }',
+    );
+    const loopPlan = looping.lowering.functions[0]!;
+    expect(() =>
+      emitFunction(
+        { ...loopPlan, states: loopPlan.states.filter((s) => s.identity.kind !== 'loopHeader') },
+        looping.lowering,
+        looping.module,
+      ),
+    ).toThrow('has no header state');
+
+    const guarded = createFixture(
+      'export async function guarded(task: Promise<number>): Promise<number> { try { const value = await task; return value; } catch (error) { return 0; } }',
+    );
+    const guardPlan = guarded.lowering.functions[0]!;
+    expect(() =>
+      emitFunction(
+        { ...guardPlan, states: guardPlan.states.filter((s) => s.identity.kind !== 'join') },
+        guarded.lowering,
+        guarded.module,
+      ),
+    ).toThrow('has no join state');
+    expect(() =>
+      emitFunction(
+        { ...guardPlan, states: guardPlan.states.filter((s) => s.identity.kind !== 'catch') },
+        guarded.lowering,
+        guarded.module,
+      ),
+    ).toThrow('has no handler state');
+  });
 });
 
 function createFixture(source: string): {
