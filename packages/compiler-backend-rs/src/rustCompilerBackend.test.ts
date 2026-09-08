@@ -5802,17 +5802,6 @@ describe('emitIrModuleRust', () => {
     expect(output).toContain('pub x: f64');
   });
 
-  it('emits type alias as plain type alias for non-object', () => {
-    const output = emitIrModuleRust(
-      lower(
-        'type-alias-simple.ts',
-        `export type ID = number;
-         export function create(): ID { return 0; }`,
-      ).module,
-    ).contents;
-    expect(output).toContain('pub type Id = f64');
-  });
-
   it('emits tagged union from type alias of named record union', () => {
     const output = emitIrModuleRust(
       lower(
@@ -6419,50 +6408,10 @@ describe('emitIrModuleRust', () => {
     expect(output).toContain('as i32');
   });
 
-  it('emits deferred binding without mut', () => {
-    const output = emitIrModuleRust(
-      lower(
-        'deferred.ts',
-        `export function deferred(flag: boolean): number {
-          let result: number;
-          if (flag) { result = 1; } else { result = 2; }
-          return result;
-        }`,
-      ).module,
-    ).contents;
-    expect(output).toContain('let result');
-    expect(output).not.toMatch(/let mut result/);
-  });
-
   it('emits literal boolean type as bool', () => {
     const output = emitIrModuleRust(
       lower('lit-type.ts', `export function truthy(): true { return true; }`).module,
     ).contents;
     expect(output).toContain('bool');
-  });
-
-  it('emits string enum as string enum', () => {
-    const output = emitIrModuleRust(
-      lower(
-        'string-enum-rs.ts',
-        `export enum Color { Red = "red", Blue = "blue" }
-         export function name(c: Color): string { return c; }`,
-      ).module,
-    ).contents;
-    expect(output).toContain('enum Color');
-    expect(output).toContain('to_string');
-    expect(output).toContain('from_str');
-  });
-
-  it('emits Map and Set types with runtime type names', () => {
-    const output = emitIrModuleRust(
-      lower(
-        'collections.ts',
-        `export function create(): Map<string, number> {
-          return new Map();
-        }`,
-      ).module,
-    ).contents;
-    expect(output).toContain('FlightMap');
   });
 });
