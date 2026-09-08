@@ -1,4 +1,11 @@
-import type { IrBindingIdentity } from '../../compiler-types/src/index.js';
+import type {
+  IrBindingIdentity,
+  IrExpression,
+  IrModule,
+  IrStatement,
+  IrTypeBindingIdentity,
+  IrVariable,
+} from '../../compiler-types/src/index.js';
 import { isCompilerInvariantFailure } from './compilerSourceEmission.js';
 import {
   createCompilerTargetNameAllocation,
@@ -483,4 +490,607 @@ describe('createIrModuleTargetNameAllocation', () => {
       { identity: 'rest', name: 'rest', scope: 'value\0module' },
     ]);
   });
+
+  it('collects import bindings at module scope', () => {
+    const module = createFixtureModule({
+      imports: [
+        {
+          bindings: [{ binding: createBinding('imported', 'imported'), exportName: 'value', kind: 'named' as const }],
+          path: './other.js',
+        },
+      ],
+    });
+
+    const ids = allocateIds(module);
+    expect(ids).toContainEqual({ identity: 'imported', name: 'imported', scope: 'value\0module' });
+  });
+
+  it('collects class binding, type parameters, constructor parameters, constructor body, fields, and methods', () => {
+    const classBinding = { ...createBinding('MyClass', 'MyClass'), kind: 'class' as const, scope: 'module' as const };
+    const typeParam = createTypeBinding('T', 'T');
+    const ctorParam = createBinding('ctorArg', 'ctorArg');
+    const ctorLocal = createBinding('ctorLocal', 'ctorLocal');
+    const ctorDefaultBinding = createBinding('ctorDefault', 'ctorDefault');
+    const fieldInitBinding = createBinding('fieldInit', 'fieldInit');
+    const methodTypeParam = createTypeBinding('U', 'U');
+    const methodParam = createBinding('methodArg', 'methodArg');
+    const methodLocal = createBinding('methodLocal', 'methodLocal');
+    const methodDefaultBinding = createBinding('methodDefault', 'methodDefault');
+    const module = createFixtureModule({
+      declarations: [
+        {
+          binding: classBinding,
+          classConstructor: {
+            body: [variableStatement(ctorLocal, createLiteral(1))],
+            parameters: [
+              { binding: ctorParam, initializer: createFunctionExpression(ctorDefaultBinding), mutable: false },
+            ],
+          },
+          exported: true,
+          extends: undefined,
+          fields: [
+            {
+              binding: createBinding('field', 'field'),
+              initializer: createFunctionExpression(fieldInitBinding),
+              mutable: false,
+            },
+          ],
+          implements: [],
+          kind: 'class' as const,
+          methods: [
+            {
+              binding: createBinding('method', 'method'),
+              body: [variableStatement(methodLocal, createLiteral(2))],
+              overloads: [],
+              parameters: [
+                { binding: methodParam, initializer: createFunctionExpression(methodDefaultBinding), mutable: false },
+              ],
+              returns: primitiveType,
+              thisMode: 'lexical' as const,
+              typeParameters: [{ binding: methodTypeParam, constraint: undefined, default: undefined }],
+            },
+          ],
+          origin: classBinding,
+          typeParameters: [{ binding: typeParam, constraint: undefined, default: undefined }],
+        },
+      ],
+    });
+
+    const ids = allocateIds(module);
+    expect(ids).toContainEqual(expect.objectContaining({ identity: 'MyClass' }));
+    expect(ids).toContainEqual(expect.objectContaining({ identity: 'T' }));
+    expect(ids).toContainEqual(expect.objectContaining({ identity: 'ctorArg' }));
+    expect(ids).toContainEqual(expect.objectContaining({ identity: 'ctorLocal' }));
+    expect(ids).toContainEqual(expect.objectContaining({ identity: 'ctorDefault' }));
+    expect(ids).toContainEqual(expect.objectContaining({ identity: 'fieldInit' }));
+    expect(ids).toContainEqual(expect.objectContaining({ identity: 'U' }));
+    expect(ids).toContainEqual(expect.objectContaining({ identity: 'methodArg' }));
+    expect(ids).toContainEqual(expect.objectContaining({ identity: 'methodLocal' }));
+    expect(ids).toContainEqual(expect.objectContaining({ identity: 'methodDefault' }));
+  });
+
+  it('assigns renamable disposition when class, enum, or variable declarations are not exported', () => {
+    const classBinding = { ...createBinding('Internal', 'Internal'), kind: 'class' as const, scope: 'module' as const };
+    const enumBinding = { ...createBinding('Status', 'Status'), kind: 'enum' as const, scope: 'module' as const };
+    const varBinding = { ...createBinding('local', 'local'), scope: 'module' as const };
+    const module = createFixtureModule({
+      declarations: [
+        {
+          binding: classBinding,
+          exported: false,
+          extends: undefined,
+          fields: [],
+          implements: [],
+          kind: 'class' as const,
+          methods: [],
+          origin: classBinding,
+          typeParameters: [],
+        },
+        { binding: enumBinding, exported: false, kind: 'enum' as const, members: [], origin: enumBinding },
+        {
+          binding: varBinding,
+          declarationKind: 'const' as const,
+          exported: false,
+          kind: 'variable' as const,
+          mutable: false,
+          origin: varBinding,
+        },
+      ],
+    });
+
+    const ids = allocateIds(module);
+    expect(ids).toContainEqual(expect.objectContaining({ identity: 'Internal' }));
+    expect(ids).toContainEqual(expect.objectContaining({ identity: 'Status' }));
+    expect(ids).toContainEqual(expect.objectContaining({ identity: 'local' }));
+  });
+
+  it('collects enum and interface/typeAlias bindings and type parameters', () => {
+    const enumBinding = { ...createBinding('Color', 'Color'), kind: 'enum' as const, scope: 'module' as const };
+    const ifaceBinding = createTypeBinding('Shape', 'Shape');
+    const ifaceTypeParam = createTypeBinding('V', 'V');
+    const aliasBinding = createTypeBinding('Name', 'Name');
+    const aliasTypeParam = createTypeBinding('W', 'W');
+    const module = createFixtureModule({
+      declarations: [
+        { binding: enumBinding, exported: true, kind: 'enum' as const, members: [], origin: enumBinding },
+        {
+          binding: ifaceBinding,
+          exported: false,
+          kind: 'interface' as const,
+          origin: ifaceBinding,
+          typeParameters: [{ binding: ifaceTypeParam, constraint: undefined, default: undefined }],
+        },
+        {
+          binding: aliasBinding,
+          exported: true,
+          kind: 'typeAlias' as const,
+          origin: aliasBinding,
+          type: { kind: 'primitive' as const, name: 'string' as const },
+          typeParameters: [{ binding: aliasTypeParam, constraint: undefined, default: undefined }],
+        },
+      ],
+    });
+
+    const ids = allocateIds(module);
+    expect(ids).toContainEqual(expect.objectContaining({ identity: 'Color' }));
+    expect(ids).toContainEqual(expect.objectContaining({ identity: 'Shape' }));
+    expect(ids).toContainEqual(expect.objectContaining({ identity: 'V' }));
+    expect(ids).toContainEqual(expect.objectContaining({ identity: 'Name' }));
+    expect(ids).toContainEqual(expect.objectContaining({ identity: 'W' }));
+  });
+
+  it('collects function declaration bindings including type parameters and parameter defaults', () => {
+    const fnBinding = { ...createBinding('read', 'read'), kind: 'function' as const, scope: 'module' as const };
+    const fnTypeParam = createTypeBinding('R', 'R');
+    const fnParam = createBinding('input', 'input');
+    const fnLocal = createBinding('result', 'result');
+    const fnDefaultBinding = createBinding('fnDefault', 'fnDefault');
+    const module = createFixtureModule({
+      declarations: [
+        {
+          binding: fnBinding,
+          body: [variableStatement(fnLocal, createLiteral(0))],
+          exported: true,
+          kind: 'function' as const,
+          origin: fnBinding,
+          overloads: [],
+          parameters: [{ binding: fnParam, initializer: createFunctionExpression(fnDefaultBinding), mutable: false }],
+          returns: primitiveType,
+          thisMode: 'lexical' as const,
+          typeParameters: [{ binding: fnTypeParam, constraint: undefined, default: undefined }],
+        },
+      ],
+    });
+
+    const ids = allocateIds(module);
+    expect(ids).toContainEqual(expect.objectContaining({ identity: 'read' }));
+    expect(ids).toContainEqual(expect.objectContaining({ identity: 'R' }));
+    expect(ids).toContainEqual(expect.objectContaining({ identity: 'input' }));
+    expect(ids).toContainEqual(expect.objectContaining({ identity: 'result' }));
+    expect(ids).toContainEqual(expect.objectContaining({ identity: 'fnDefault' }));
+  });
+
+  it('collects variable with pattern binding and initializer expression', () => {
+    const patternLeaf = createBinding('x', 'x');
+    const initBinding = createBinding('initFn', 'initFn');
+    const module = createFixtureModule({
+      declarations: [
+        {
+          declarationKind: 'const' as const,
+          exported: false,
+          initializer: createFunctionExpression(initBinding),
+          kind: 'variable' as const,
+          mutable: false,
+          origin: patternLeaf,
+          pattern: {
+            ...patternLeaf,
+            elements: [{ pattern: { binding: patternLeaf, kind: 'binding' as const } }],
+            kind: 'array' as const,
+            scope: 'module' as const,
+          },
+        },
+      ],
+    });
+
+    const ids = allocateIds(module);
+    expect(ids).toContainEqual(expect.objectContaining({ identity: 'x' }));
+    expect(ids).toContainEqual(expect.objectContaining({ identity: 'initFn' }));
+  });
+
+  it('collects bindings from all expression kinds inside a function body', () => {
+    const fn = (id: string): IrExpression => createFunctionExpression(createBinding(id, id));
+    const ident: IrExpression = { kind: 'identifier' as const, reference: { kind: 'ambient' as const, name: 'x' } };
+    const lit = createLiteral(1);
+
+    const expressions: IrExpression[] = [
+      { elements: [fn('arrayEl'), undefined], kind: 'array' },
+      { kind: 'assignment', left: ident, operator: '=', right: fn('assignRight'), semantics: {} as never },
+      { kind: 'binary', left: fn('binLeft'), operator: '+', right: fn('binRight'), semantics: {} as never },
+      { expression: fn('awaitExpr'), kind: 'await' },
+      { expression: fn('castExpr'), kind: 'cast', type: primitiveType },
+      { expression: fn('spreadExpr'), kind: 'spread' },
+      {
+        arguments: [fn('callArg')],
+        callee: fn('callCallee'),
+        kind: 'call',
+        optional: false,
+        semantics: {},
+        typeArguments: [],
+      },
+      {
+        arguments: [fn('newArg')],
+        callee: fn('newCallee'),
+        kind: 'new',
+        semantics: {},
+        typeArguments: [],
+      },
+      {
+        condition: fn('condCond'),
+        kind: 'conditional',
+        whenFalse: fn('condFalse'),
+        whenTrue: fn('condTrue'),
+      },
+      { index: fn('elemIdx'), kind: 'element', object: fn('elemObj'), semantics: {} as never },
+      {
+        async: false,
+        binding: createBinding('innerFn', 'innerFn'),
+        body: [],
+        expression: fn('fnResult'),
+        kind: 'function',
+        parameters: [
+          { binding: createBinding('fnParam', 'fnParam'), initializer: fn('fnParamDefault'), mutable: false },
+        ],
+        returns: primitiveType,
+        thisMode: 'lexical' as const,
+        typeParameters: [{ binding: createTypeBinding('FT', 'FT'), constraint: undefined, default: undefined }],
+      },
+      { kind: 'identifier', reference: { kind: 'ambient', name: 'ignored' } },
+      lit,
+      { kind: 'regexp', flags: '', pattern: 'x' },
+      { kind: 'undefinedValue', type: { kind: 'undefined' as const } },
+      {
+        kind: 'object',
+        members: [{ kind: 'property' as const, name: 'p', value: lit }],
+        type: { kind: 'unknown' as const, source: 'object' as const },
+      },
+      { kind: 'property', name: 'prop', object: fn('propObj'), semantics: {} as never },
+      {
+        excluded: [
+          { kind: 'named' as const, name: 'a' },
+          { coercion: 'string' as const, expression: fn('restKey'), kind: 'computed' as const },
+        ],
+        kind: 'objectRest',
+        object: fn('restObj'),
+        type: { kind: 'object' as const, properties: [] },
+      },
+      {
+        elements: [{ expression: fn('tupleEl'), optional: false as const }, { optional: true as const }],
+        kind: 'tuple',
+      },
+      {
+        kind: 'tupleSpread',
+        segments: [
+          { element: { expression: fn('tsEl'), optional: false as const }, kind: 'element' as const },
+          { element: { optional: true as const }, kind: 'element' as const },
+          {
+            expression: fn('tsSpread'),
+            kind: 'spread' as const,
+            type: { elements: [], kind: 'tuple' as const, readonly: false },
+          },
+        ],
+        type: { elements: [], kind: 'tuple' as const, readonly: false },
+      },
+      { kind: 'tupleRest', object: fn('tupleRestObj'), start: 0 },
+      { kind: 'tupleSuffix', object: fn('tupleSufObj'), start: 0, width: 1 },
+      { kind: 'unary', operand: fn('unaryOp'), operator: '-', prefix: true },
+      {
+        fallback: fn('udFallback'),
+        kind: 'undefinedDefault',
+        value: fn('udValue'),
+      },
+    ];
+
+    const declBinding = { ...createBinding('host', 'host'), kind: 'function' as const, scope: 'module' as const };
+    const module = createFixtureModule({
+      declarations: [
+        {
+          binding: declBinding,
+          body: expressions.map(
+            (expression, index): IrStatement =>
+              variableStatement(createBinding(`v${String(index)}`, `v${String(index)}`), expression),
+          ),
+          exported: false,
+          kind: 'function' as const,
+          origin: declBinding,
+          overloads: [],
+          parameters: [],
+          returns: primitiveType,
+          thisMode: 'lexical' as const,
+          typeParameters: [],
+        },
+      ],
+    });
+
+    const ids = allocateIds(module);
+    const identities = ids.map((allocation) => allocation.identity);
+    for (const expected of [
+      'arrayEl',
+      'assignRight',
+      'binLeft',
+      'binRight',
+      'awaitExpr',
+      'castExpr',
+      'spreadExpr',
+      'callCallee',
+      'callArg',
+      'newCallee',
+      'newArg',
+      'condCond',
+      'condFalse',
+      'condTrue',
+      'elemIdx',
+      'elemObj',
+      'innerFn',
+      'fnParam',
+      'fnParamDefault',
+      'FT',
+      'fnResult',
+      'propObj',
+      'restObj',
+      'restKey',
+      'tupleEl',
+      'tsEl',
+      'tsSpread',
+      'tupleRestObj',
+      'tupleSufObj',
+      'unaryOp',
+      'udFallback',
+      'udValue',
+    ]) {
+      expect(identities).toContain(expected);
+    }
+  });
+
+  it('collects bindings from all statement kinds inside a function body', () => {
+    const fn = (id: string): IrExpression => createFunctionExpression(createBinding(id, id));
+    const ident: IrExpression = { kind: 'identifier' as const, reference: { kind: 'ambient' as const, name: 'x' } };
+    const lit = createLiteral(1);
+    const noop: IrStatement = { expression: lit, kind: 'expression' };
+
+    const statements: IrStatement[] = [
+      { kind: 'block', statements: [variableStatement(createBinding('blockLocal', 'blockLocal'), lit)] },
+      { kind: 'break' as const },
+      { kind: 'continue' as const },
+      { body: noop, condition: fn('doWhileCond'), kind: 'do' },
+      { body: noop, condition: fn('whileCond'), kind: 'while' },
+      { expression: fn('exprStmt'), kind: 'expression' },
+      { expression: fn('throwExpr'), kind: 'throw' },
+      {
+        body: noop,
+        condition: fn('forCond'),
+        increment: fn('forInc'),
+        initializer: [{ binding: createBinding('forVar', 'forVar'), initializer: lit, mutable: true } as IrVariable],
+        kind: 'for',
+      },
+      {
+        body: noop,
+        initializer: fn('forExprInit'),
+        kind: 'for',
+      },
+      {
+        body: noop,
+        kind: 'forIn',
+        object: fn('forInObj'),
+        variable: { binding: createBinding('forInVar', 'forInVar'), mutable: false } as IrVariable,
+      },
+      {
+        body: noop,
+        iterable: fn('forOfIter'),
+        kind: 'forOf',
+        variable: { binding: createBinding('forOfVar', 'forOfVar'), mutable: false } as IrVariable,
+      },
+      {
+        condition: fn('ifCond'),
+        consequent: variableStatement(createBinding('ifLocal', 'ifLocal'), lit),
+        kind: 'if',
+        otherwise: variableStatement(createBinding('elseLocal', 'elseLocal'), lit),
+      },
+      { expression: fn('retExpr'), kind: 'return' },
+      { kind: 'return' as const },
+      {
+        cases: [
+          {
+            expression: fn('caseExpr'),
+            statements: [variableStatement(createBinding('caseLocal', 'caseLocal'), lit)],
+          },
+          { statements: [noop] },
+        ],
+        expression: fn('switchExpr'),
+        kind: 'switch',
+      },
+      {
+        catchClause: {
+          binding: createBinding('caught', 'caught'),
+          body: variableStatement(createBinding('catchLocal', 'catchLocal'), lit),
+        },
+        finallyBody: variableStatement(createBinding('finallyLocal', 'finallyLocal'), lit),
+        kind: 'try',
+        tryBody: variableStatement(createBinding('tryLocal', 'tryLocal'), lit),
+      },
+      {
+        declarations: [{ binding: createBinding('varDecl', 'varDecl'), initializer: lit, mutable: false }],
+        kind: 'variable',
+      },
+    ];
+
+    const declBinding = {
+      ...createBinding('stmtHost', 'stmtHost'),
+      kind: 'function' as const,
+      scope: 'module' as const,
+    };
+    const module = createFixtureModule({
+      declarations: [
+        {
+          binding: declBinding,
+          body: statements,
+          exported: false,
+          kind: 'function' as const,
+          origin: declBinding,
+          overloads: [],
+          parameters: [],
+          returns: primitiveType,
+          thisMode: 'lexical' as const,
+          typeParameters: [],
+        },
+      ],
+    });
+
+    const ids = allocateIds(module);
+    const identities = ids.map((allocation) => allocation.identity);
+    for (const expected of [
+      'blockLocal',
+      'doWhileCond',
+      'whileCond',
+      'exprStmt',
+      'throwExpr',
+      'forCond',
+      'forInc',
+      'forVar',
+      'forExprInit',
+      'forInObj',
+      'forInVar',
+      'forOfIter',
+      'forOfVar',
+      'ifCond',
+      'ifLocal',
+      'elseLocal',
+      'retExpr',
+      'switchExpr',
+      'caseExpr',
+      'caseLocal',
+      'caught',
+      'catchLocal',
+      'finallyLocal',
+      'tryLocal',
+      'varDecl',
+    ]) {
+      expect(identities).toContain(expected);
+    }
+  });
+
+  it('collects pattern variable bindings in statements', () => {
+    const patternBinding = createBinding('pv', 'pv');
+    const declBinding = { ...createBinding('patHost', 'patHost'), kind: 'function' as const, scope: 'module' as const };
+    const lit = createLiteral(1);
+    const module = createFixtureModule({
+      declarations: [
+        {
+          binding: declBinding,
+          body: [
+            {
+              declarations: [
+                {
+                  initializer: lit,
+                  mutable: false,
+                  pattern: {
+                    ...patternBinding,
+                    elements: [{ pattern: { binding: patternBinding, kind: 'binding' as const } }],
+                    kind: 'array' as const,
+                    scope: 'block' as const,
+                  },
+                } as IrVariable,
+              ],
+              kind: 'variable' as const,
+            },
+          ],
+          exported: false,
+          kind: 'function' as const,
+          origin: declBinding,
+          overloads: [],
+          parameters: [],
+          returns: primitiveType,
+          thisMode: 'lexical' as const,
+          typeParameters: [],
+        },
+      ],
+    });
+
+    const ids = allocateIds(module);
+    expect(ids).toContainEqual(expect.objectContaining({ identity: 'pv' }));
+  });
 });
+
+const primitiveType = { kind: 'primitive' as const, name: 'number' as const };
+
+function allocateIds(module: IrModule): readonly { identity: string; name: string; scope: string }[] {
+  return createIrModuleTargetNameAllocation(module, (candidate) => ({
+    namespace: 'value',
+    preferredName: candidate.name,
+  }));
+}
+
+function createBinding(id: string, name: string): IrBindingIdentity {
+  return {
+    column: 1,
+    fingerprint: `sha256:${'0'.repeat(64)}`,
+    id,
+    kind: 'variable' as const,
+    line: 1,
+    name,
+    packageName: '@flighthq/math',
+    scope: 'function' as const,
+    space: 'value' as const,
+    source: 'value.ts',
+  };
+}
+
+function createTypeBinding(id: string, name: string): IrTypeBindingIdentity {
+  return {
+    column: 1,
+    fingerprint: `sha256:${'0'.repeat(64)}`,
+    id,
+    kind: 'typeParameter' as const,
+    line: 1,
+    name,
+    packageName: '@flighthq/math',
+    scope: 'function' as const,
+    space: 'type' as const,
+    source: 'value.ts',
+  };
+}
+
+function createFixtureModule(overrides: Partial<IrModule>): IrModule {
+  return {
+    declarations: [],
+    exports: [],
+    imports: [],
+    name: 'Fixture',
+    packageName: '@flighthq/math',
+    source: 'fixture.ts',
+    ...overrides,
+  } as IrModule;
+}
+
+function createFunctionExpression(binding: IrBindingIdentity): IrExpression {
+  return {
+    async: false,
+    binding,
+    body: [],
+    kind: 'function' as const,
+    parameters: [],
+    returns: primitiveType,
+    thisMode: 'lexical' as const,
+    typeParameters: [],
+  };
+}
+
+function createLiteral(value: number): IrExpression {
+  return { kind: 'literal' as const, value };
+}
+
+function variableStatement(binding: IrBindingIdentity, initializer: IrExpression): IrStatement {
+  return {
+    declarations: [{ binding, initializer, mutable: false }],
+    kind: 'variable' as const,
+  };
+}
