@@ -7,9 +7,11 @@ import type {
   IrExpression,
   IrModule,
   IrStatement,
+  IrVariable,
 } from '../../compiler-types/src/index.js';
 import { createCompilerLoweringPassCStyleFor } from './compilerCStyleForLowering.js';
 import { isCompilerLoweringFailure, lowerIrModuleWithCompilerPasses } from './compilerLoweringPass.js';
+import { createCompilerLoweringPassObjectBindingPattern } from './compilerObjectBindingPatternLowering.js';
 
 describe('createCompilerLoweringPassCStyleFor', () => {
   it('preserves initializer scope and normalizes omitted conditions and increments', () => {
@@ -321,6 +323,10 @@ describe('createCompilerLoweringPassCStyleFor', () => {
       'array binding default initializer',
       'export function fixture(): void { const [value = () => { for (;;) { break; } }] = []; value; }',
     ],
+    [
+      'array binding rest',
+      'export function fixture(): void { const [first, ...rest] = [() => { for (;;) { break; } }]; first; rest; }',
+    ],
   ])('detects a residual C-style loop in an isolated %s', (name, source) => {
     const module = lower(`residual-${name.replaceAll(' ', '-')}.ts`, source);
 
@@ -425,6 +431,113 @@ describe('createCompilerLoweringPassCStyleFor', () => {
     );
 
     expect(pass.verifyIrModule(output)).toEqual({ kind: 'valid' });
+  });
+
+  it('covers objectRest expression through object-binding-pattern lowering composition', () => {
+    const module = lower(
+      'composed-object.ts',
+      `
+        export function read(source: { value: number; other: boolean }, key: string): number {
+          const { value, [key]: computed, ...rest } = source;
+          for (let i = 0; i < 1; i++) { break; }
+          return value + (computed as number) + (rest.other ? 1 : 0);
+        }
+      `,
+    );
+    const partiallyLowered = lowerIrModuleWithCompilerPasses(module, [
+      createCompilerLoweringPassObjectBindingPattern(),
+    ]);
+    const forPass = createCompilerLoweringPassCStyleFor();
+    expect(forPass.verifyIrModule(partiallyLowered)).toMatchObject({ kind: 'invalid' });
+    const output = lowerIrModuleWithCompilerPasses(partiallyLowered, [forPass]);
+    expect(forPass.verifyIrModule(output)).toEqual({ kind: 'valid' });
+  });
+
+  it('covers tuple, tupleSpread, tupleRest, and tupleSuffix through direct IR injection', () => {
+    const module = lower(
+      'inject.ts',
+      'export function loop(x: number): void { for (let i = 0; i < 1; i++) { break; } }',
+    );
+    const clone = structuredClone(module);
+    const declaration = clone.declarations[0];
+    if (declaration?.kind !== 'function') throw new Error('Expected function');
+    const ref = { binding: declaration.parameters[0]!.binding };
+    const ident: IrExpression = { kind: 'identifier', reference: ref };
+    const namedVar = (name: string, initializer: IrExpression): IrVariable => ({
+      binding: { id: name, name },
+      initializer,
+      mutable: false,
+      type: { kind: 'intrinsic', name: 'number' },
+    });
+
+    declaration.body = [
+      {
+        declarations: [
+          namedVar('a', {
+            elements: [{ expression: ident, optional: false }, { optional: true }],
+            kind: 'tuple',
+          } as IrExpression),
+          namedVar('b', {
+            kind: 'tupleSpread',
+            segments: [
+              { expression: ident, kind: 'spread' },
+              { element: { expression: ident, optional: false as const }, kind: 'element' },
+              { element: { optional: true as const }, kind: 'element' },
+            ],
+            type: { elements: [], kind: 'tuple' },
+          } as IrExpression),
+          namedVar('c', { kind: 'tupleRest', object: ident, start: 0 } as IrExpression),
+          namedVar('d', { kind: 'tupleSuffix', object: ident, start: 0, width: 1 } as IrExpression),
+        ],
+        kind: 'variable' as const,
+      },
+      ...declaration.body,
+    ];
+
+    const pass = createCompilerLoweringPassCStyleFor();
+    expect(pass.verifyIrModule(clone)).toMatchObject({ kind: 'invalid' });
+    const output = pass.lowerIrModule(clone);
+    expect(pass.verifyIrModule(output)).toEqual({ kind: 'valid' });
+  });
+
+  it('returns continue unchanged when its target is not in the context chain', () => {
+    const module = lower(
+      'continue-plain.ts',
+      'export function loop(): void { for (let i = 0; i < 2; i++) { continue; } }',
+    );
+    const clone = structuredClone(module);
+    const declaration = clone.declarations[0];
+    if (declaration?.kind !== 'function') throw new Error('Expected function');
+    const forStmt = declaration.body[0];
+    if (forStmt?.kind !== 'for') throw new Error('Expected for');
+    if (forStmt.body.kind !== 'block') throw new Error('Expected block');
+    const continueStmt = forStmt.body.statements[0];
+    if (continueStmt?.kind !== 'continue') throw new Error('Expected continue');
+    (continueStmt as { target?: unknown }).target = { id: 'ghost', name: 'ghost' };
+
+    const pass = createCompilerLoweringPassCStyleFor();
+    const output = pass.lowerIrModule(clone);
+    expect(pass.verifyIrModule(output)).toEqual({ kind: 'valid' });
+  });
+
+  it('lowers array binding pattern elements with defaults, holes, and rest', () => {
+    const output = lowerIrModuleWithCompilerPasses(
+      lower(
+        'array-binding-variety.ts',
+        `
+          export function loop(items: [number, number | undefined, string, ...boolean[]]): number {
+            let total = 0;
+            for (let i = 0; i < 1; i++) {
+              const [first, second = 0, , ...rest]: [number, number | undefined, string, ...boolean[]] = items;
+              total += first + second + rest.length;
+            }
+            return total;
+          }
+        `,
+      ),
+      [createCompilerLoweringPassCStyleFor()],
+    );
+    expect(createCompilerLoweringPassCStyleFor().verifyIrModule(output)).toEqual({ kind: 'valid' });
   });
 
   it('fails deterministically for empty declaration lists and continues crossing finally', () => {
