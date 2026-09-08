@@ -11,6 +11,9 @@ describe('getIrSwitchCaseCompletion', () => {
       kind: 'localBreak',
     });
     expect(getIrSwitchCaseCompletion({ statements: [{ kind: 'return' }] })).toEqual({ kind: 'abrupt' });
+    expect(getIrSwitchCaseCompletion({ statements: [{ kind: 'continue' }, { kind: 'return' }] })).toEqual({
+      kind: 'abrupt',
+    });
     expect(
       getIrSwitchCaseCompletion({ statements: [{ expression: { kind: 'literal', value: 1 }, kind: 'throw' }] }),
     ).toEqual({ kind: 'abrupt' });
@@ -41,6 +44,178 @@ describe('getIrSwitchCaseCompletion', () => {
       reason: 'switch-local break must be the final direct statement of its clause',
     });
     expect(getIrSwitchCaseCompletion(nested)).toEqual({ kind: 'fallthrough' });
+  });
+
+  it('recognizes abrupt completions nested inside blocks', () => {
+    expect(
+      getIrSwitchCaseCompletion({
+        statements: [{ kind: 'block', statements: [{ kind: 'return' }] }],
+      }),
+    ).toEqual({ kind: 'abrupt' });
+    expect(
+      getIrSwitchCaseCompletion({
+        statements: [{ kind: 'block', statements: [] }],
+      }),
+    ).toEqual({ kind: 'fallthrough' });
+    expect(getIrSwitchCaseCompletion({ statements: [{ kind: 'continue' }] })).toEqual({ kind: 'abrupt' });
+  });
+
+  it('detects switch-target breaks inside if/else, try/catch/finally, blocks, nested switches, and labeled loops', () => {
+    const switchLabel = createLabel('sw');
+    const ifElseBreak: IrSwitchCase = {
+      statements: [
+        {
+          condition: { kind: 'literal', value: true },
+          consequent: { expression: { kind: 'literal', value: 0 }, kind: 'expression' },
+          kind: 'if',
+          otherwise: { kind: 'break', target: switchLabel },
+        },
+      ],
+    };
+    const blockBreak: IrSwitchCase = {
+      statements: [{ kind: 'block', statements: [{ kind: 'break', target: switchLabel }] }],
+    };
+    const tryBreak: IrSwitchCase = {
+      statements: [
+        {
+          kind: 'try',
+          tryBody: { kind: 'break', target: switchLabel },
+        },
+      ],
+    };
+    const catchBreak: IrSwitchCase = {
+      statements: [
+        {
+          kind: 'try',
+          tryBody: { expression: { kind: 'literal', value: 0 }, kind: 'expression' },
+          catchClause: { body: { kind: 'break', target: switchLabel } },
+        },
+      ],
+    };
+    const finallyBreak: IrSwitchCase = {
+      statements: [
+        {
+          kind: 'try',
+          tryBody: { expression: { kind: 'literal', value: 0 }, kind: 'expression' },
+          finallyBody: { kind: 'break', target: switchLabel },
+        },
+      ],
+    };
+    const nestedSwitchBreak: IrSwitchCase = {
+      statements: [
+        {
+          cases: [{ statements: [{ kind: 'break', target: switchLabel }] }],
+          expression: { kind: 'literal', value: 0 },
+          kind: 'switch',
+        },
+      ],
+    };
+    const labeledLoopBreak: IrSwitchCase = {
+      statements: [
+        {
+          body: { kind: 'break', target: switchLabel },
+          condition: { kind: 'literal', value: true },
+          kind: 'do',
+        },
+      ],
+    };
+    const forBreak: IrSwitchCase = {
+      statements: [
+        {
+          body: { kind: 'break', target: switchLabel },
+          kind: 'for',
+        },
+      ],
+    };
+    const forInBreak: IrSwitchCase = {
+      statements: [
+        {
+          body: { kind: 'break', target: switchLabel },
+          kind: 'forIn',
+          object: { kind: 'literal', value: 0 },
+          variable: {
+            binding: { id: 'k', kind: 'variable', name: 'k', scope: 'block', space: 'value' },
+            mutable: false,
+          },
+        },
+      ],
+    };
+    const forOfBreak: IrSwitchCase = {
+      statements: [
+        {
+          body: { kind: 'break', target: switchLabel },
+          iterable: { kind: 'literal', value: 0 },
+          kind: 'forOf',
+          variable: {
+            binding: { id: 'v', kind: 'variable', name: 'v', scope: 'block', space: 'value' },
+            mutable: false,
+          },
+        },
+      ],
+    };
+
+    for (const fixture of [
+      ifElseBreak,
+      blockBreak,
+      tryBreak,
+      catchBreak,
+      finallyBreak,
+      nestedSwitchBreak,
+      labeledLoopBreak,
+      forBreak,
+      forInBreak,
+      forOfBreak,
+    ]) {
+      expect(getIrSwitchCaseCompletion(fixture, switchLabel.id)).toEqual({
+        kind: 'unsupported',
+        reason: 'switch-local break must be the final direct statement of its clause',
+      });
+    }
+  });
+
+  it('visits preceding containers without finding breaks when the clause ends differently', () => {
+    const switchLabel = createLabel('sw');
+    const expression = { expression: { kind: 'literal', value: 0 }, kind: 'expression' } as const;
+    const ifWithoutElse: IrSwitchCase = {
+      statements: [
+        {
+          condition: { kind: 'literal', value: true },
+          consequent: expression,
+          kind: 'if',
+        },
+        { kind: 'break', target: switchLabel },
+      ],
+    };
+    const tryWithoutFinally: IrSwitchCase = {
+      statements: [
+        {
+          kind: 'try',
+          tryBody: expression,
+        },
+        { kind: 'break', target: switchLabel },
+      ],
+    };
+    const nestedSwitchNoLabel: IrSwitchCase = {
+      statements: [
+        {
+          cases: [{ statements: [{ kind: 'break' }] }],
+          expression: { kind: 'literal', value: 0 },
+          kind: 'switch',
+        },
+      ],
+    };
+
+    expect(getIrSwitchCaseCompletion(ifWithoutElse, switchLabel.id)).toEqual({ kind: 'localBreak' });
+    expect(getIrSwitchCaseCompletion(tryWithoutFinally, switchLabel.id)).toEqual({ kind: 'localBreak' });
+    expect(getIrSwitchCaseCompletion(nestedSwitchNoLabel)).toEqual({ kind: 'fallthrough' });
+  });
+
+  it('treats a targeted break as non-local when the switch has no label', () => {
+    const outerLabel = createLabel('outer');
+
+    expect(getIrSwitchCaseCompletion({ statements: [{ kind: 'break', target: outerLabel }] })).toEqual({
+      kind: 'abrupt',
+    });
   });
 
   it('distinguishes a labeled switch break from an exit targeting an outer construct', () => {
