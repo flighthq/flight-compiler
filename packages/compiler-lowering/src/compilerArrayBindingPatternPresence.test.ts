@@ -7,6 +7,63 @@ import { hasIrModuleArrayBindingPattern } from './compilerArrayBindingPatternPre
 import { lowerIrModuleWithCompilerPasses } from './compilerLoweringPass.js';
 
 describe('hasIrModuleArrayBindingPattern', () => {
+  it('detects patterns nested inside every declaration, statement, and expression container', () => {
+    const classSource = lower(
+      'class.ts',
+      `
+        export class Holder {
+          field = (() => { const [x]: [number] = [1]; return x; })();
+          constructor() { const [y]: [number] = [2]; y; }
+          method(): number { const [z]: [number] = [3]; return z; }
+        }
+      `,
+    );
+    const defaultExport = lower('default.ts', 'export default (): number => { const [x]: [number] = [1]; return x; };');
+    const forOfSource = lower(
+      'forOf.ts',
+      'export function read(items: [number][]): void { for (const [x] of items) { x; } }',
+    );
+    const forInSource = lower(
+      'forIn.ts',
+      'export function read(input: Record<string, [number]>): void { for (const key in input) { const [x]: [number] = input[key]!; x; } }',
+    );
+    const ifSource = lower(
+      'if.ts',
+      'export function read(flag: boolean, values: [number]): number { if (flag) { const [x]: [number] = values; return x; } else { const [y]: [number] = values; return y; } }',
+    );
+    const switchSource = lower(
+      'switch.ts',
+      'export function read(mode: number, values: [number]): number { switch (mode) { case 0: { const [x]: [number] = values; return x; } default: { const [y]: [number] = values; return y; } } }',
+    );
+    const trySource = lower(
+      'try.ts',
+      'export function read(values: [number]): number { try { const [x]: [number] = values; return x; } catch { const [y]: [number] = [0]; return y; } finally { const [z]: [number] = [0]; z; } }',
+    );
+    const whileSource = lower(
+      'while.ts',
+      'export function read(values: [number]): number { let result = 0; while (result < 10) { const [x]: [number] = values; result += x; } return result; }',
+    );
+    const doSource = lower(
+      'do.ts',
+      'export function read(values: [number]): number { let result = 0; do { const [x]: [number] = values; result += x; } while (result < 10); return result; }',
+    );
+    const returnSource = lower(
+      'return.ts',
+      'export function read(values: [number]): number { return (() => { const [x]: [number] = values; return x; })(); }',
+    );
+
+    expect(hasIrModuleArrayBindingPattern(classSource)).toBe(true);
+    expect(hasIrModuleArrayBindingPattern(defaultExport)).toBe(true);
+    expect(hasIrModuleArrayBindingPattern(forOfSource)).toBe(true);
+    expect(hasIrModuleArrayBindingPattern(forInSource)).toBe(true);
+    expect(hasIrModuleArrayBindingPattern(ifSource)).toBe(true);
+    expect(hasIrModuleArrayBindingPattern(switchSource)).toBe(true);
+    expect(hasIrModuleArrayBindingPattern(trySource)).toBe(true);
+    expect(hasIrModuleArrayBindingPattern(whileSource)).toBe(true);
+    expect(hasIrModuleArrayBindingPattern(doSource)).toBe(true);
+    expect(hasIrModuleArrayBindingPattern(returnSource)).toBe(true);
+  });
+
   it('finds patterns in declarations and nested expression functions and rejects fully normalized false positives', () => {
     const empty = lower('empty.ts', 'export const value = 1;');
     const declaration = lower(
