@@ -5,9 +5,12 @@ import type {
   CompilerLoweringFailure,
   IrBindingIdentity,
   IrDeclaration,
+  IrExpression,
+  IrFunctionDeclaration,
   IrModule,
   IrNamedVariable,
   IrStatement,
+  IrType,
   IrVariable,
 } from '../../compiler-types/src/index.js';
 import { createCompilerLoweringPassArrayBindingPattern } from './compilerArrayBindingPatternLowering.js';
@@ -662,6 +665,510 @@ describe('createCompilerLoweringPassArrayBindingPattern', () => {
     expect(createCompilerLoweringPassArrayBindingPattern().verifyIrModule(output)).toEqual({ kind: 'valid' });
   });
 
+  it('lowers array patterns in classes without an explicit constructor', () => {
+    const output = lowerIrModuleWithCompilerPasses(
+      lower(
+        'no-constructor.ts',
+        `
+          export class Processor {
+            field = (source: [number]): number => {
+              const [x] = source;
+              return x;
+            };
+            process(source: [number, string]): number {
+              const [value] = source;
+              return value;
+            }
+          }
+        `,
+      ),
+      [createCompilerLoweringPassArrayBindingPattern()],
+    );
+    expect(createCompilerLoweringPassArrayBindingPattern().verifyIrModule(output)).toEqual({ kind: 'valid' });
+  });
+
+  it('walks overloaded function parameters when lowering array patterns', () => {
+    const output = lowerIrModuleWithCompilerPasses(
+      lower(
+        'overloads.ts',
+        `
+          export function read(values: [number], fallback?: number): number;
+          export function read(values: [number, string], fallback?: number): number;
+          export function read(values: [number] | [number, string], fallback = 0): number {
+            const [first]: [number] = [values[0]];
+            return first + fallback;
+          }
+        `,
+      ),
+      [createCompilerLoweringPassArrayBindingPattern()],
+    );
+    expect(createCompilerLoweringPassArrayBindingPattern().verifyIrModule(output)).toEqual({ kind: 'valid' });
+  });
+
+  it('lowers array patterns alongside await expressions and for-loop expression initializers', () => {
+    const output = lowerIrModuleWithCompilerPasses(
+      lower(
+        'async-for-expr.ts',
+        `
+          export async function read(values: [number], p: Promise<number>): Promise<number> {
+            const [x] = values;
+            const result = await p;
+            let total = 0;
+            for (total = x; total < result; total++) {}
+            return total;
+          }
+        `,
+      ),
+      [createCompilerLoweringPassArrayBindingPattern()],
+    );
+    expect(createCompilerLoweringPassArrayBindingPattern().verifyIrModule(output)).toEqual({ kind: 'valid' });
+  });
+
+  it('lowers array patterns alongside sparse array literals', () => {
+    const module = lower(
+      'sparse.ts',
+      `
+        export function read(values: [number]): (number | undefined)[] {
+          const [x] = values;
+          return [undefined, x, undefined];
+        }
+      `,
+    );
+    const pass = createCompilerLoweringPassArrayBindingPattern();
+    const exprModule = structuredClone(module);
+    const fn = exprModule.declarations[0];
+    if (fn?.kind !== 'function') throw new Error('Expected function');
+    const ident: IrExpression = {
+      kind: 'identifier',
+      reference: { binding: fn.parameters[0]!.binding, kind: 'binding' },
+    };
+    fn.body.push({
+      expression: { elements: [undefined, ident, undefined], kind: 'array' } as IrExpression,
+      kind: 'expression',
+    });
+    const output = lowerIrModuleWithCompilerPasses(exprModule, [pass]);
+    expect(pass.verifyIrModule(output)).toEqual({ kind: 'valid' });
+  });
+
+  it('exercises IR-only expression walks through injected tupleSpread, tupleSuffix, tupleRest, and undefinedDefault', () => {
+    const module = lower(
+      'ir-walk.ts',
+      `
+        export function read(values: [number, string]): number {
+          const [a, b] = values;
+          a; b;
+          return 0;
+        }
+      `,
+    );
+    const pass = createCompilerLoweringPassArrayBindingPattern();
+    const injected = structuredClone(module);
+    const fn = injected.declarations[0];
+    if (fn?.kind !== 'function') throw new Error('Expected function');
+    const ident: IrExpression = {
+      kind: 'identifier',
+      reference: { binding: fn.parameters[0]!.binding, kind: 'binding' },
+    };
+    const expr = (expression: IrExpression): IrStatement => ({ expression, kind: 'expression' as const });
+    fn.body.push(
+      expr({ kind: 'tupleRest', object: ident, start: 1 } as IrExpression),
+      expr({ kind: 'tupleSuffix', object: ident, start: 1, width: 1 } as IrExpression),
+      expr({
+        fallback: { kind: 'literal', value: 0 } as IrExpression,
+        kind: 'undefinedDefault',
+        value: ident,
+      } as IrExpression),
+      expr({
+        expression: ident,
+        kind: 'await',
+        semantics: {
+          continuation: 'enqueue-after-settlement',
+          fulfillment: 'resume-normal-with-value',
+          operandEvaluation: 'once-before-suspension',
+          rejection: 'resume-throw-with-reason',
+          schema: 'flight-compiler-await-semantics/1',
+          suspension: 'always-before-continuation',
+          taskResolution: 'normalize-value-task-or-thenable',
+        },
+      } as IrExpression),
+      expr({
+        kind: 'tupleSpread',
+        segments: [
+          {
+            expression: ident,
+            kind: 'spread',
+            type: {
+              elements: [
+                { optional: false, rest: false, type: { kind: 'primitive' as const, name: 'number' as const } },
+              ],
+              kind: 'tuple' as const,
+            },
+          },
+          {
+            element: { expression: ident, optional: false },
+            kind: 'element',
+          },
+          {
+            element: { optional: true },
+            kind: 'element',
+          },
+        ],
+      } as IrExpression),
+    );
+    const output = pass.lowerIrModule(injected);
+    expect(pass.verifyIrModule(output)).toEqual({ kind: 'valid' });
+  });
+
+  it('exercises type resolution helpers with injected unresolved types', () => {
+    const module = lower(
+      'type-inject.ts',
+      `
+        export function read(values: [number, string | undefined]): number {
+          const [a, b = 'fallback'] = values;
+          a; b;
+          return 0;
+        }
+      `,
+    );
+    const pass = createCompilerLoweringPassArrayBindingPattern();
+    const typeOfType: IrType = {
+      kind: 'typeOf',
+      reference: { binding: { id: 'test', kind: 'variable', name: 'test' } as IrBindingIdentity, kind: 'binding' },
+    } as IrType;
+    const unknownType: IrType = { kind: 'unknown', source: 'unknown' } as IrType;
+    const unionOfUnresolved: IrType = { kind: 'union', types: [typeOfType, unknownType] } as IrType;
+    const multiRetained: IrType = {
+      kind: 'union',
+      types: [
+        { kind: 'primitive', name: 'number' } as IrType,
+        { kind: 'primitive', name: 'string' } as IrType,
+        { kind: 'undefined' } as IrType,
+      ],
+    } as IrType;
+    const allUndefined: IrType = {
+      kind: 'union',
+      types: [{ kind: 'undefined' } as IrType, { kind: 'undefined' } as IrType],
+    } as IrType;
+
+    const testTypeOf = structuredClone(module);
+    const fnTypeOf = testTypeOf.declarations[0];
+    if (fnTypeOf?.kind !== 'function') throw new Error('Expected function');
+    const varStmt = fnTypeOf.body[0];
+    if (varStmt?.kind !== 'variable') throw new Error('Expected variable');
+    const patternVar = varStmt.declarations[0];
+    if (!patternVar || !('pattern' in patternVar) || patternVar.pattern.kind !== 'array') {
+      throw new Error('Expected array pattern');
+    }
+    (patternVar.pattern as { type: IrType }).type = {
+      kind: 'tuple',
+      elements: [
+        { optional: false, rest: false, type: typeOfType },
+        { optional: false, rest: false, type: { kind: 'primitive', name: 'number' } as IrType },
+      ],
+    } as IrType;
+    const outputTypeOf = pass.lowerIrModule(testTypeOf);
+    expect(pass.verifyIrModule(outputTypeOf)).toEqual({ kind: 'valid' });
+
+    const testMulti = structuredClone(module);
+    const fnMulti = testMulti.declarations[0];
+    if (fnMulti?.kind !== 'function') throw new Error('Expected function');
+    const varStmtMulti = fnMulti.body[0];
+    if (varStmtMulti?.kind !== 'variable') throw new Error('Expected variable');
+    const patternVarMulti = varStmtMulti.declarations[0];
+    if (!patternVarMulti || !('pattern' in patternVarMulti) || patternVarMulti.pattern.kind !== 'array') {
+      throw new Error('Expected array pattern');
+    }
+    (patternVarMulti.pattern as { type: IrType }).type = {
+      kind: 'tuple',
+      elements: [
+        { optional: false, rest: false, type: { kind: 'primitive', name: 'number' } as IrType },
+        { optional: true, rest: false, type: multiRetained },
+      ],
+    } as IrType;
+    const outputMulti = pass.lowerIrModule(testMulti);
+    const declarations = getFunctionDeclaration(outputMulti, 'read').body[0];
+    if (declarations?.kind !== 'variable') throw new Error('Expected variable');
+    const bVar = declarations.declarations.find(
+      (v): v is IrNamedVariable => !('pattern' in v) && v.binding.name === 'b',
+    );
+    expect(bVar?.type).toEqual({
+      kind: 'union',
+      types: [
+        { kind: 'primitive', name: 'number' },
+        { kind: 'primitive', name: 'string' },
+      ],
+    });
+
+    const testUnion = structuredClone(module);
+    const fnUnion = testUnion.declarations[0] as IrFunctionDeclaration;
+    const varStmtUnion = fnUnion.body[0];
+    if (varStmtUnion?.kind !== 'variable') throw new Error('Expected variable');
+    const patternVarUnion = varStmtUnion.declarations[0];
+    if (!patternVarUnion || !('pattern' in patternVarUnion) || patternVarUnion.pattern.kind !== 'array') {
+      throw new Error('Expected array pattern');
+    }
+    (patternVarUnion.pattern as { type: IrType }).type = {
+      kind: 'tuple',
+      elements: [
+        { optional: false, rest: false, type: { kind: 'primitive', name: 'number' } as IrType },
+        { optional: false, rest: false, type: unionOfUnresolved },
+      ],
+    } as IrType;
+    patternVarUnion.pattern.elements[1]!.initializer = { kind: 'literal', value: 'x' } as IrExpression;
+    expect(() => pass.lowerIrModule(testUnion)).toThrow('requires resolved undefined membership');
+
+    const testNever = structuredClone(module);
+    const fnNever = testNever.declarations[0] as IrFunctionDeclaration;
+    const varStmtNever = fnNever.body[0];
+    if (varStmtNever?.kind !== 'variable') throw new Error('Expected variable');
+    const patternVarNever = varStmtNever.declarations[0];
+    if (!patternVarNever || !('pattern' in patternVarNever) || patternVarNever.pattern.kind !== 'array') {
+      throw new Error('Expected array pattern');
+    }
+    (patternVarNever.pattern as { type: IrType }).type = {
+      kind: 'tuple',
+      elements: [
+        { optional: false, rest: false, type: { kind: 'primitive', name: 'number' } as IrType },
+        { optional: true, rest: false, type: allUndefined },
+      ],
+    } as IrType;
+    const outputNever = pass.lowerIrModule(testNever);
+    const neverDecl = getFunctionDeclaration(outputNever, 'read').body[0];
+    if (neverDecl?.kind !== 'variable') throw new Error('Expected variable');
+    const bNever = neverDecl.declarations.find(
+      (v): v is IrNamedVariable => !('pattern' in v) && v.binding.name === 'b',
+    );
+    expect(bNever?.type).toEqual({ kind: 'never' });
+  });
+
+  it('lowers rest elements that bind to object patterns', () => {
+    const module = lower(
+      'rest-object-pattern.ts',
+      `
+        export function read(values: [number, string, boolean]): boolean {
+          const [first, ...rest]: [number, string, boolean] = values;
+          first; rest;
+          return true;
+        }
+      `,
+    );
+    const pass = createCompilerLoweringPassArrayBindingPattern();
+    const injected = structuredClone(module);
+    const fn = injected.declarations[0];
+    if (fn?.kind !== 'function') throw new Error('Expected function');
+    const varStmt = fn.body[0];
+    if (varStmt?.kind !== 'variable') throw new Error('Expected variable');
+    const patternVar = varStmt.declarations[0];
+    if (!patternVar || !('pattern' in patternVar) || patternVar.pattern.kind !== 'array') {
+      throw new Error('Expected array pattern');
+    }
+    (patternVar.pattern as { rest: unknown }).rest = {
+      kind: 'object',
+      properties: [],
+      scope: 'block',
+    };
+    const output = pass.lowerIrModule(injected);
+    const body = getFunctionDeclaration(output, 'read').body;
+    const declarations = getVariableStatement(body[0]).declarations;
+    const restVar = declarations.find((v) => 'pattern' in v && v.pattern.kind === 'object');
+    expect(restVar).toBeDefined();
+    expect(pass.verifyIrModule(output)).toEqual({ kind: 'valid' });
+  });
+
+  it('lowers pattern binding elements with explicit type annotations', () => {
+    const module = lower(
+      'pattern-type.ts',
+      `
+        export function read(values: [number]): number {
+          const [x] = values;
+          return x;
+        }
+      `,
+    );
+    const pass = createCompilerLoweringPassArrayBindingPattern();
+    const injected = structuredClone(module);
+    const fn = injected.declarations[0];
+    if (fn?.kind !== 'function') throw new Error('Expected function');
+    const varStmt = fn.body[0];
+    if (varStmt?.kind !== 'variable') throw new Error('Expected variable');
+    const patternVar = varStmt.declarations[0];
+    if (!patternVar || !('pattern' in patternVar) || patternVar.pattern.kind !== 'array') {
+      throw new Error('Expected array pattern');
+    }
+    const firstElement = patternVar.pattern.elements[0];
+    if (!firstElement || firstElement.pattern.kind !== 'binding') throw new Error('Expected binding');
+    (firstElement.pattern as { type: IrType }).type = { kind: 'primitive', name: 'number' } as IrType;
+    const output = lowerIrModuleWithCompilerPasses(injected, [pass]);
+    const declarations = getVariableStatement(getFunctionDeclaration(output, 'read').body[0]).declarations;
+    const xVar = declarations.find((v): v is IrNamedVariable => !('pattern' in v) && v.binding.name === 'x');
+    expect(xVar?.type).toEqual({ kind: 'primitive', name: 'number' });
+  });
+
+  it('lowers rest elements with explicit type annotations', () => {
+    const module = lower(
+      'rest-type.ts',
+      `
+        export function split(values: [number, ...string[]]): string[] {
+          const [first, ...rest]: [number, ...string[]] = values;
+          first;
+          return rest;
+        }
+      `,
+    );
+    const pass = createCompilerLoweringPassArrayBindingPattern();
+    const injected = structuredClone(module);
+    const fn = injected.declarations[0];
+    if (fn?.kind !== 'function') throw new Error('Expected function');
+    const varStmt = fn.body[0];
+    if (varStmt?.kind !== 'variable') throw new Error('Expected variable');
+    const patternVar = varStmt.declarations[0];
+    if (!patternVar || !('pattern' in patternVar) || patternVar.pattern.kind !== 'array') {
+      throw new Error('Expected array pattern');
+    }
+    if (!patternVar.pattern.rest || patternVar.pattern.rest.kind !== 'binding') {
+      throw new Error('Expected binding rest');
+    }
+    (patternVar.pattern.rest as { type: IrType }).type = {
+      element: { kind: 'primitive', name: 'string' },
+      kind: 'array',
+    } as IrType;
+    const output = lowerIrModuleWithCompilerPasses(injected, [pass]);
+    const declarations = getVariableStatement(getFunctionDeclaration(output, 'split').body[0]).declarations.map(
+      getNamedVariable,
+    );
+    const restVar = declarations.find((v) => v.binding.name === 'rest');
+    expect(restVar?.type).toEqual({ element: { kind: 'primitive', name: 'string' }, kind: 'array' });
+  });
+
+  it('handles non-array pattern variables and variables without types through injection', () => {
+    const module = lower(
+      'variable-paths.ts',
+      `
+        export function read(values: [number]): number {
+          const [x] = values;
+          return x;
+        }
+      `,
+    );
+    const pass = createCompilerLoweringPassArrayBindingPattern();
+    const injected = structuredClone(module);
+    const fn = injected.declarations[0];
+    if (fn?.kind !== 'function') throw new Error('Expected function');
+    const varStmt = fn.body[0];
+    if (varStmt?.kind !== 'variable') throw new Error('Expected variable');
+    const objectPatternVar: IrVariable = {
+      mutable: false,
+      pattern: { kind: 'object', properties: [], scope: 'block' },
+      type: { kind: 'primitive', name: 'number' } as IrType,
+    } as IrVariable;
+    (varStmt as { declarations: IrVariable[] }).declarations.push(objectPatternVar);
+    const output = pass.lowerIrModule(injected);
+    expect(pass.verifyIrModule(output)).toEqual({ kind: 'valid' });
+  });
+
+  it('lowers array patterns containing object sub-pattern elements', () => {
+    const output = lowerIrModuleWithCompilerPasses(
+      lower(
+        'object-element.ts',
+        `
+          export function read(values: [{ a: number }, string]): number {
+            const [{ a }, label]: [{ a: number }, string] = values;
+            label;
+            return a;
+          }
+        `,
+      ),
+      [createCompilerLoweringPassArrayBindingPattern()],
+    );
+    const body = getFunctionDeclaration(output, 'read').body;
+    const declarations = getVariableStatement(body[0]).declarations;
+    const objectVar = declarations.find((v) => 'pattern' in v && v.pattern.kind === 'object');
+    expect(objectVar).toBeDefined();
+    expect(createCompilerLoweringPassArrayBindingPattern().verifyIrModule(output)).toEqual({ kind: 'valid' });
+  });
+
+  it('produces never type when removing undefined from an all-undefined union', () => {
+    const module = lower(
+      'all-undefined.ts',
+      `
+        export function read(values: [number | undefined]): number {
+          const [x = 0] = values;
+          return x;
+        }
+      `,
+    );
+    const pass = createCompilerLoweringPassArrayBindingPattern();
+    const injected = structuredClone(module);
+    const fn = injected.declarations[0];
+    if (fn?.kind !== 'function') throw new Error('Expected function');
+    const varStmt = fn.body[0];
+    if (varStmt?.kind !== 'variable') throw new Error('Expected variable');
+    const patternVar = varStmt.declarations[0];
+    if (!patternVar || !('pattern' in patternVar) || patternVar.pattern.kind !== 'array') {
+      throw new Error('Expected array pattern');
+    }
+    (patternVar.pattern as { type: IrType }).type = {
+      elements: [
+        {
+          optional: true,
+          rest: false,
+          type: { kind: 'union', types: [{ kind: 'undefined' }, { kind: 'undefined' }] } as IrType,
+        },
+      ],
+      kind: 'tuple',
+    } as IrType;
+    const output = pass.lowerIrModule(injected);
+    const declarations = getVariableStatement(getFunctionDeclaration(output, 'read').body[0]).declarations;
+    const xVar = declarations.find((v): v is IrNamedVariable => !('pattern' in v) && v.binding.name === 'x');
+    expect(xVar?.type).toEqual({ kind: 'never' });
+  });
+
+  it('refuses array pattern variables without any type information', () => {
+    const module = lower(
+      'no-type.ts',
+      `
+        export function read(values: [number]): number {
+          const [x] = values;
+          return x;
+        }
+      `,
+    );
+    const pass = createCompilerLoweringPassArrayBindingPattern();
+    const injected = structuredClone(module);
+    const fn = injected.declarations[0];
+    if (fn?.kind !== 'function') throw new Error('Expected function');
+    const varStmt = fn.body[0];
+    if (varStmt?.kind !== 'variable') throw new Error('Expected variable');
+    const patternVar = varStmt.declarations[0];
+    if (!patternVar || !('pattern' in patternVar) || patternVar.pattern.kind !== 'array') {
+      throw new Error('Expected array pattern');
+    }
+    delete (patternVar.pattern as Record<string, unknown>).type;
+    delete (patternVar as Record<string, unknown>).type;
+    const run = () => pass.lowerIrModule(injected);
+    expectLoweringFailure(run, 'array binding lowering requires a statically known tuple type');
+  });
+
+  it('prepends empty lowered variables as a no-op for empty iteration patterns', () => {
+    const module = lower(
+      'empty-iter.ts',
+      `
+        export function read(values: [number], items: [number][]): number {
+          const [x] = values;
+          for (const [] of items) {}
+          return x;
+        }
+      `,
+    );
+    const pass = createCompilerLoweringPassArrayBindingPattern();
+    const output = lowerIrModuleWithCompilerPasses(module, [pass]);
+    const body = getFunctionDeclaration(output, 'read').body;
+    const forOf = body.find((s): s is Extract<IrStatement, { kind: 'forOf' }> => s.kind === 'forOf');
+    expect(forOf).toBeDefined();
+    expect(forOf?.body.kind).toBe('block');
+    expect(pass.verifyIrModule(output)).toEqual({ kind: 'valid' });
+  });
+
   it.each([
     {
       reason: 'nested variadic array binding rest requires variadic tuple-tail destructuring lowering',
@@ -713,6 +1220,11 @@ describe('createCompilerLoweringPassArrayBindingPattern', () => {
     {
       reason: 'forIn array bindings require iteration destructuring lowering',
       source: 'export function read(values: object): void { for (const [value] in values) value; }',
+    },
+    {
+      reason: 'only array binding patterns can be normalized by this pass',
+      source:
+        'export function read(items: Array<{a: number}>, values: [number]): void { const [x]: [number] = values; for (const {a} of items) { a; x; } }',
     },
   ])('refuses residual semantics explicitly: $reason', ({ reason, source }) => {
     const module = lower('unsupported-pattern.ts', source);
