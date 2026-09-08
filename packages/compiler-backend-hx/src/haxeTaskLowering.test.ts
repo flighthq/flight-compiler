@@ -232,26 +232,22 @@ describe('lowerCompilerAsyncStateMachinesHaxe', () => {
     ]);
   });
 
-  it('lowers carry steps for values preserved across finally boundaries', () => {
+  it('lowers carry steps for non-await return values preserved through try-finally cleanup', () => {
     const analysis = analyzeIrModuleAsyncStateMachines(
       lower(`
-        export async function withFinally(task: Promise<number>, log: Promise<void>): Promise<number> {
-          try {
-            return await task;
-          } finally {
-            await log;
-          }
+        export async function attempt(task: Promise<number>): Promise<number> {
+          const value = await task;
+          try { return value; } finally { value; }
         }
       `),
     );
     const result = lowerCompilerAsyncStateMachinesHaxe(analysis, createCompilerRuntimeTaskCapabilityPlanHaxe());
     const steps = result.functions[0]?.states.flatMap((state) => state.steps) ?? [];
-    const stepKinds = steps.map((step) => step.kind);
+    const carrySteps = steps.filter((step) => step.kind === 'carryValue');
 
-    expect(stepKinds).toContain('guardState');
-    expect(stepKinds).toContain('awaitRuntime');
-    // The try/finally pattern generates at least guard, await, and resolve/reject steps
-    expect(steps.length).toBeGreaterThan(3);
+    expect(carrySteps.length).toBeGreaterThan(0);
+    expect(carrySteps[0]).toHaveProperty('binding');
+    expect(carrySteps[0]).toHaveProperty('value');
   });
 });
 
