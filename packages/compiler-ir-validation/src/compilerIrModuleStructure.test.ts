@@ -1435,6 +1435,50 @@ describe('validateIrModuleStructure', () => {
         } as unknown as IrModule,
         'invalid-node-shape',
       ],
+      [
+        {
+          ...module,
+          declarations: [
+            {
+              ...declaration,
+              body: [
+                {
+                  expression: {
+                    excluded: [{ kind: 'computed', coercion: 'invalid', expression: { kind: 'literal', value: 'a' } }],
+                    kind: 'objectRest',
+                    object: { kind: 'identifier', reference: { binding: parameter.binding, kind: 'binding' } },
+                    type: { kind: 'object', properties: [] },
+                  },
+                  kind: 'return',
+                },
+              ],
+            },
+          ],
+        } as unknown as IrModule,
+        'invalid-node-shape',
+      ],
+      [
+        {
+          ...module,
+          declarations: [
+            {
+              ...declaration,
+              body: [
+                {
+                  expression: {
+                    excluded: [{ kind: 'named', name: '' }],
+                    kind: 'objectRest',
+                    object: { kind: 'identifier', reference: { binding: parameter.binding, kind: 'binding' } },
+                    type: { kind: 'object', properties: [] },
+                  },
+                  kind: 'return',
+                },
+              ],
+            },
+          ],
+        } as unknown as IrModule,
+        'invalid-node-shape',
+      ],
       [{ ...module, declarations: [invalidKind] } as unknown as IrModule, 'unknown-ir-kind'],
       [{ ...module, exports: [invalidKind] } as unknown as IrModule, 'unknown-ir-kind'],
       [
@@ -1498,6 +1542,511 @@ describe('validateIrModuleStructure', () => {
       const result = validateIrModuleStructure(value);
       expect(result.kind).toBe('invalid');
       if (result.kind === 'invalid') expect(result.failures.map((failure) => failure.code)).toContain(code);
+    }
+  });
+
+  it('validates object rest with computed and named excluded keys', () => {
+    const valid = lower(
+      'object-rest.ts',
+      "export function rest(source: { a: number; b: string }): Omit<typeof source, 'a'> { const { a, ...remaining } = source; a; return remaining; }",
+    );
+    expect(validateIrModuleStructure(valid)).toEqual({ kind: 'valid' });
+  });
+
+  it('validates undefined-default expression from destructuring assignment defaults', () => {
+    const valid = lower(
+      'undefined-default.ts',
+      "export function assign(source: { name?: string }): string { let name = ''; ({ name = 'flight' } = source); return name; }",
+    );
+    expect(validateIrModuleStructure(valid)).toEqual({ kind: 'valid' });
+  });
+
+  it('validates call expression type arguments', () => {
+    const valid = lower(
+      'generic-call.ts',
+      'function identity<T>(value: T): T { return value; } export function read(): number { return identity<number>(1); }',
+    );
+    expect(validateIrModuleStructure(valid)).toEqual({ kind: 'valid' });
+  });
+
+  it('validates tuple expression element optional flags and required values', () => {
+    const module = lower('tuple-expression.ts', 'export const pair: [number, string] = [1, "flight"];');
+    expect(validateIrModuleStructure(module)).toEqual({ kind: 'valid' });
+
+    const declaration = module.declarations[0];
+    if (declaration?.kind !== 'variable' || declaration.initializer?.kind !== 'tuple') {
+      throw new Error('Expected tuple expression');
+    }
+    const element = declaration.initializer.elements[0]!;
+
+    const nonBoolOptional = structuredClone(module);
+    const nonBoolDecl = nonBoolOptional.declarations[0];
+    if (nonBoolDecl?.kind !== 'variable' || nonBoolDecl.initializer?.kind !== 'tuple') {
+      throw new Error('Expected tuple');
+    }
+    (nonBoolDecl.initializer.elements[0] as { optional: unknown }).optional = 'false';
+
+    const missingExpression = structuredClone(module);
+    const missingDecl = missingExpression.declarations[0];
+    if (missingDecl?.kind !== 'variable' || missingDecl.initializer?.kind !== 'tuple') {
+      throw new Error('Expected tuple');
+    }
+    (missingDecl.initializer.elements[0] as { expression?: unknown }).expression = undefined;
+
+    for (const variant of [nonBoolOptional, missingExpression]) {
+      const result = validateIrModuleStructure(variant);
+      expect(result.kind).toBe('invalid');
+      if (result.kind === 'invalid') {
+        expect(result.failures.map((failure) => failure.code)).toContain('invalid-node-shape');
+      }
+    }
+  });
+
+  it('validates tuple spread segment element optional and required constraints', () => {
+    const valid = lower(
+      'tuple-spread-element.ts',
+      "type Pair = [number, string]; const pair: Pair = [1, 'flight']; export const value: [boolean, number, string] = [true, ...pair];",
+    );
+    expect(validateIrModuleStructure(valid)).toEqual({ kind: 'valid' });
+
+    const declaration = valid.declarations.find(
+      (item) => item.kind === 'variable' && 'binding' in item && item.binding.name === 'value',
+    );
+    if (declaration?.kind !== 'variable' || declaration.initializer?.kind !== 'tupleSpread') {
+      throw new Error('Expected tuple spread variable');
+    }
+    const segment = declaration.initializer.segments.find((segment) => segment.kind === 'element');
+    if (!segment || segment.kind !== 'element') throw new Error('Expected element segment');
+
+    const nonBoolOptional = structuredClone(valid);
+    const nonBoolDecl = nonBoolOptional.declarations.find(
+      (item) => item.kind === 'variable' && 'binding' in item && item.binding.name === 'value',
+    );
+    if (nonBoolDecl?.kind !== 'variable' || nonBoolDecl.initializer?.kind !== 'tupleSpread') {
+      throw new Error('Expected tuple spread');
+    }
+    const nonBoolSeg = nonBoolDecl.initializer.segments.find((segment) => segment.kind === 'element');
+    if (!nonBoolSeg || nonBoolSeg.kind !== 'element') throw new Error('Expected element');
+    (nonBoolSeg.element as { optional: unknown }).optional = 'false';
+
+    const missingExpression = structuredClone(valid);
+    const missingDecl = missingExpression.declarations.find(
+      (item) => item.kind === 'variable' && 'binding' in item && item.binding.name === 'value',
+    );
+    if (missingDecl?.kind !== 'variable' || missingDecl.initializer?.kind !== 'tupleSpread') {
+      throw new Error('Expected tuple spread');
+    }
+    const missingSeg = missingDecl.initializer.segments.find((segment) => segment.kind === 'element');
+    if (!missingSeg || missingSeg.kind !== 'element') throw new Error('Expected element');
+    (missingSeg.element as { expression?: unknown }).expression = undefined;
+
+    for (const variant of [nonBoolOptional, missingExpression]) {
+      const result = validateIrModuleStructure(variant);
+      expect(result.kind).toBe('invalid');
+      if (result.kind === 'invalid') {
+        expect(result.failures.map((failure) => failure.code)).toContain('invalid-node-shape');
+      }
+    }
+  });
+
+  it('rejects duplicate control-flow label identity', () => {
+    const valid = lower(
+      'nested-labels.ts',
+      'export function scan(): void { outer: for (let i = 0; i < 1; i++) { inner: for (let j = 0; j < 1; j++) { break outer; } } }',
+    );
+    expect(validateIrModuleStructure(valid)).toEqual({ kind: 'valid' });
+
+    const invalid = structuredClone(valid);
+    const declaration = invalid.declarations[0];
+    if (declaration?.kind !== 'function') throw new Error('Expected function');
+    const outerFor = declaration.body[0];
+    if (outerFor?.kind !== 'for' || !outerFor.label) throw new Error('Expected outer for');
+    const innerBlock = outerFor.body;
+    if (innerBlock.kind !== 'block') throw new Error('Expected block body');
+    const innerFor = innerBlock.statements[0];
+    if (innerFor?.kind !== 'for' || !innerFor.label) throw new Error('Expected inner for');
+    (innerFor.label as { id: string }).id = outerFor.label.id;
+
+    const result = validateIrModuleStructure(invalid);
+    expect(result.kind).toBe('invalid');
+    if (result.kind === 'invalid') {
+      expect(result.failures.map((failure) => failure.code)).toContain('invalid-node-shape');
+    }
+  });
+
+  it('validates for-in with closed-record key plan on identifier object', () => {
+    const valid = lower(
+      'for-in-identifier.ts',
+      'export function scan(source: { a: number; b: string }): string { for (const key in source) return key; return ""; }',
+    );
+    expect(validateIrModuleStructure(valid)).toEqual({ kind: 'valid' });
+
+    const invalid = structuredClone(valid);
+    const declaration = invalid.declarations[0];
+    if (declaration?.kind !== 'function' || declaration.body[0]?.kind !== 'forIn') {
+      throw new Error('Expected for-in statement');
+    }
+    if (declaration.body[0].keyPlan?.kind !== 'closedRecord') {
+      throw new Error('Expected closedRecord key plan');
+    }
+    (declaration.body[0] as { keyPlan: { evaluation: string } }).keyPlan.evaluation = 'elide';
+    expect(validateIrModuleStructure(invalid)).toMatchObject({
+      failures: [expect.objectContaining({ code: 'invalid-node-shape', path: expect.stringContaining('.keyPlan') })],
+      kind: 'invalid',
+    });
+  });
+
+  it('validates for-in with non-property members in getIrExpressionStaticForInKeys', () => {
+    const valid = lower(
+      'for-in-spread.ts',
+      'export function scan(source: { a: number }): string { const obj = { ...source }; for (const key in obj) return key; return ""; }',
+    );
+    expect(validateIrModuleStructure(valid)).toEqual({ kind: 'valid' });
+  });
+
+  it('validates control-flow label identity and uniqueness', () => {
+    const valid = lower(
+      'labeled-loop.ts',
+      'export function scan(): void { outer: for (let i = 0; i < 1; i++) { break outer; } }',
+    );
+    expect(validateIrModuleStructure(valid)).toEqual({ kind: 'valid' });
+
+    const declaration = valid.declarations[0];
+    if (declaration?.kind !== 'function') throw new Error('Expected function');
+    const forStatement = declaration.body[0];
+    if (forStatement?.kind !== 'for' || !forStatement.label) throw new Error('Expected labeled for');
+
+    const emptyId = structuredClone(valid);
+    const emptyIdDeclaration = emptyId.declarations[0];
+    if (emptyIdDeclaration?.kind !== 'function') throw new Error('Expected function');
+    const emptyIdFor = emptyIdDeclaration.body[0];
+    if (emptyIdFor?.kind !== 'for' || !emptyIdFor.label) throw new Error('Expected labeled for');
+    (emptyIdFor.label as { id: string }).id = '';
+
+    const emptyName = structuredClone(valid);
+    const emptyNameDeclaration = emptyName.declarations[0];
+    if (emptyNameDeclaration?.kind !== 'function') throw new Error('Expected function');
+    const emptyNameFor = emptyNameDeclaration.body[0];
+    if (emptyNameFor?.kind !== 'for' || !emptyNameFor.label) throw new Error('Expected labeled for');
+    (emptyNameFor.label as { name: string }).name = '';
+
+    for (const module of [emptyId, emptyName]) {
+      const result = validateIrModuleStructure(module);
+      expect(result.kind).toBe('invalid');
+      if (result.kind === 'invalid') {
+        expect(result.failures.map((failure) => failure.code)).toContain('invalid-node-shape');
+      }
+    }
+  });
+
+  it('rejects non-discriminated type evidence', () => {
+    const module = lower('type-evidence.ts', 'export function identity(value: number): number { return value; }');
+    const invalid = structuredClone(module);
+    const declaration = invalid.declarations[0];
+    if (declaration?.kind !== 'function') throw new Error('Expected function');
+    (declaration.parameters[0] as { type: unknown }).type = 'not-a-type-object';
+
+    const result = validateIrModuleStructure(invalid);
+    expect(result.kind).toBe('invalid');
+    if (result.kind === 'invalid') {
+      expect(result.failures.map((failure) => failure.code)).toContain('invalid-node-shape');
+    }
+  });
+
+  it('validates object type property names, optional flags, and readonly flags', () => {
+    const typeModule = lower('object-type.ts', 'export type Shape = { value: number; label: string };');
+    const typeDeclaration = typeModule.declarations[0];
+    if (typeDeclaration?.kind !== 'typeAlias' || typeDeclaration.type.kind !== 'object') {
+      throw new Error('Expected object type alias');
+    }
+    const property = typeDeclaration.type.properties[0]!;
+
+    const emptyName = structuredClone(typeModule);
+    const emptyDecl = emptyName.declarations[0];
+    if (emptyDecl?.kind !== 'typeAlias' || emptyDecl.type.kind !== 'object') throw new Error('Expected object type');
+    (emptyDecl.type.properties[0] as { name: string }).name = '';
+
+    const nonBoolOptional = structuredClone(typeModule);
+    const optDecl = nonBoolOptional.declarations[0];
+    if (optDecl?.kind !== 'typeAlias' || optDecl.type.kind !== 'object') throw new Error('Expected object type');
+    (optDecl.type.properties[0] as { optional: unknown }).optional = 'true';
+
+    const nonBoolReadonly = structuredClone(typeModule);
+    const roDecl = nonBoolReadonly.declarations[0];
+    if (roDecl?.kind !== 'typeAlias' || roDecl.type.kind !== 'object') throw new Error('Expected object type');
+    (roDecl.type.properties[0] as { readonly: unknown }).readonly = 'true';
+
+    for (const module of [emptyName, nonBoolOptional, nonBoolReadonly]) {
+      const result = validateIrModuleStructure(module);
+      expect(result.kind).toBe('invalid');
+      if (result.kind === 'invalid') {
+        expect(result.failures.map((failure) => failure.code)).toContain('invalid-node-shape');
+      }
+    }
+  });
+
+  it('validates object binding pattern scope', () => {
+    const module = lower(
+      'object-binding-scope.ts',
+      'export function read(source: { value: number }): number { const { value } = source; return value; }',
+    );
+    expect(validateIrModuleStructure(module)).toEqual({ kind: 'valid' });
+
+    const invalid = structuredClone(module);
+    const declaration = invalid.declarations[0];
+    if (declaration?.kind !== 'function') throw new Error('Expected function');
+    const variable = declaration.body[0];
+    if (variable?.kind !== 'variable') throw new Error('Expected variable');
+    const destructured = variable.declarations[0];
+    if (!destructured || !('pattern' in destructured) || destructured.pattern.kind !== 'object') {
+      throw new Error('Expected object binding pattern');
+    }
+    (destructured.pattern as { scope: string }).scope = 'module';
+
+    const result = validateIrModuleStructure(invalid);
+    expect(result.kind).toBe('invalid');
+    if (result.kind === 'invalid') {
+      expect(result.failures.map((failure) => failure.code)).toContain('invalid-binding-introduction');
+    }
+  });
+
+  it('validates optional-chain receiver nullish coherence across type kinds', () => {
+    const nullReceiver = lower(
+      'optional-chain-null.ts',
+      'export function read(value: null): undefined { return value?.toString(); }',
+    );
+    expect(validateIrModuleStructure(nullReceiver)).toEqual({ kind: 'valid' });
+
+    const arrayReceiver = lower(
+      'optional-chain-array.ts',
+      'export function read(value?: number[]): number | undefined { return value?.[0]; }',
+    );
+    expect(validateIrModuleStructure(arrayReceiver)).toEqual({ kind: 'valid' });
+
+    const getChainExpression = (module: IrModule) => {
+      const declaration = module.declarations[0];
+      if (declaration?.kind !== 'function') throw new Error('Expected function');
+      const stmt = declaration.body[0];
+      if (stmt?.kind !== 'return' || stmt.expression?.kind !== 'element') throw new Error('Expected element');
+      return stmt.expression;
+    };
+
+    const concreteTypes: Array<Readonly<{ label: string; receiverType: unknown }>> = [
+      { label: 'array', receiverType: { element: { kind: 'primitive', name: 'number' }, kind: 'array' } },
+      {
+        label: 'function',
+        receiverType: {
+          kind: 'function',
+          parameters: [],
+          rest: false,
+          returns: { kind: 'primitive', name: 'void' },
+          thisMode: 'lexical',
+          typeParameters: [],
+        },
+      },
+      { label: 'literal', receiverType: { kind: 'literal', value: 42 } },
+      { label: 'never', receiverType: { kind: 'never' } },
+      { label: 'object', receiverType: { kind: 'object', properties: [] } },
+      { label: 'primitive', receiverType: { kind: 'primitive', name: 'number' } },
+      { label: 'tuple', receiverType: { elements: [], kind: 'tuple' } },
+    ];
+    for (const { label, receiverType } of concreteTypes) {
+      const variant = structuredClone(arrayReceiver);
+      const expr = getChainExpression(variant);
+      const chain = expr.semantics.optionalChain;
+      if (!chain) throw new Error('Expected optional chain');
+      (chain as { receiverType: unknown }).receiverType = receiverType;
+      (chain as { receiverNullish: string }).receiverNullish = 'possible';
+      expect(validateIrModuleStructure(variant), label).toMatchObject({
+        failures: [expect.objectContaining({ path: expect.stringContaining('.optionalChain') })],
+        kind: 'invalid',
+      });
+    }
+
+    const unionWithoutNull = structuredClone(arrayReceiver);
+    const unionExpr = getChainExpression(unionWithoutNull);
+    const unionChain = unionExpr.semantics.optionalChain;
+    if (!unionChain) throw new Error('Expected optional chain');
+    (unionChain as { receiverType: unknown }).receiverType = {
+      kind: 'union',
+      types: [
+        { kind: 'primitive', name: 'number' },
+        { kind: 'primitive', name: 'string' },
+      ],
+    };
+    expect(validateIrModuleStructure(unionWithoutNull)).toEqual({ kind: 'valid' });
+  });
+
+  it('validates provided default-parameter evidence types when evidence is structurally valid', () => {
+    const valid = lower(
+      'classified-default.ts',
+      'function choose(value: number | null = 1): number | null { return value; } export function read(): number | null { return choose(null); }',
+    );
+    expect(validateIrModuleStructure(valid)).toEqual({ kind: 'valid' });
+
+    const invalid = structuredClone(valid);
+    const declaration = invalid.declarations.find(
+      (candidate) => candidate.kind === 'function' && candidate.binding.name === 'read',
+    );
+    const statement = declaration?.kind === 'function' ? declaration.body[0] : undefined;
+    const expression = statement?.kind === 'return' ? statement.expression : undefined;
+    if (expression?.kind !== 'call' || !expression.semantics.defaultParameters?.provided[0]) {
+      throw new Error('Expected classified default call');
+    }
+    (expression.semantics.defaultParameters.provided[0] as { argumentType: unknown }).argumentType = 'not-a-type';
+
+    const result = validateIrModuleStructure(invalid);
+    expect(result.kind).toBe('invalid');
+    if (result.kind === 'invalid') {
+      expect(result.failures.map((failure) => failure.code)).toContain('invalid-node-shape');
+    }
+  });
+
+  it('validates provided optional-parameter evidence types when evidence is structurally valid', () => {
+    const valid = lower(
+      'classified-optional.ts',
+      'function choose(value?: number | null): number | null | undefined { return value; } export function read(): number | null | undefined { return choose(null); }',
+    );
+    expect(validateIrModuleStructure(valid)).toEqual({ kind: 'valid' });
+
+    const invalid = structuredClone(valid);
+    const declaration = invalid.declarations.find(
+      (candidate) => candidate.kind === 'function' && candidate.binding.name === 'read',
+    );
+    const statement = declaration?.kind === 'function' ? declaration.body[0] : undefined;
+    const expression = statement?.kind === 'return' ? statement.expression : undefined;
+    if (expression?.kind !== 'call' || !expression.semantics.optionalParameters?.provided[0]) {
+      throw new Error('Expected classified optional call');
+    }
+    (expression.semantics.optionalParameters.provided[0] as { argumentType: unknown }).argumentType = 'not-a-type';
+
+    const result = validateIrModuleStructure(invalid);
+    expect(result.kind).toBe('invalid');
+    if (result.kind === 'invalid') {
+      expect(result.failures.map((failure) => failure.code)).toContain('invalid-node-shape');
+    }
+  });
+
+  it('validates overload implementation parameter count against optional parameter count', () => {
+    const valid = lower(
+      'overload-optional.ts',
+      'function choose(value: number): number; function choose(value: number, extra?: number): number; function choose(value: number, extra?: number): number { return value; } export function read(): number { return choose(1); }',
+    );
+    expect(validateIrModuleStructure(valid)).toEqual({ kind: 'valid' });
+
+    const invalid = structuredClone(valid);
+    const declaration = invalid.declarations.find(
+      (candidate) => candidate.kind === 'function' && candidate.binding.name === 'read',
+    );
+    const statement = declaration?.kind === 'function' ? declaration.body[0] : undefined;
+    const expression = statement?.kind === 'return' ? statement.expression : undefined;
+    if (expression?.kind !== 'call' || !expression.semantics.overloadImplementation) {
+      throw new Error('Expected overloaded call');
+    }
+    if (!expression.semantics.optionalParameters) throw new Error('Expected optional parameter evidence');
+    (expression.semantics.optionalParameters as { parameterCount: number }).parameterCount = 99;
+
+    const result = validateIrModuleStructure(invalid);
+    expect(result.kind).toBe('invalid');
+    if (result.kind === 'invalid') {
+      expect(result.failures.map((failure) => failure.code)).toContain('invalid-node-shape');
+    }
+  });
+
+  it('rejects optional-parameter evidence with non-array provided field', () => {
+    const valid = lower(
+      'optional-non-array.ts',
+      'function choose(value?: number): number | undefined { return value; } export function read(): number | undefined { return choose(); }',
+    );
+    expect(validateIrModuleStructure(valid)).toEqual({ kind: 'valid' });
+
+    const invalid = structuredClone(valid);
+    const declaration = invalid.declarations.find(
+      (candidate) => candidate.kind === 'function' && candidate.binding.name === 'read',
+    );
+    const statement = declaration?.kind === 'function' ? declaration.body[0] : undefined;
+    const expression = statement?.kind === 'return' ? statement.expression : undefined;
+    if (expression?.kind !== 'call' || !expression.semantics.optionalParameters) {
+      throw new Error('Expected optional call');
+    }
+    (expression.semantics.optionalParameters as { provided: unknown }).provided = 'not-an-array';
+
+    const result = validateIrModuleStructure(invalid);
+    expect(result.kind).toBe('invalid');
+    if (result.kind === 'invalid') {
+      expect(result.failures.map((failure) => failure.code)).toContain('invalid-node-shape');
+    }
+  });
+
+  it('rejects tuple spread result type with rest element', () => {
+    const valid = lower(
+      'tuple-rest-type.ts',
+      "type Pair = [number, string]; const pair: Pair = [1, 'flight']; export const value: [boolean, number, string] = [true, ...pair];",
+    );
+    expect(validateIrModuleStructure(valid)).toEqual({ kind: 'valid' });
+
+    const declaration = valid.declarations.find(
+      (item) => item.kind === 'variable' && 'binding' in item && item.binding.name === 'value',
+    );
+    if (declaration?.kind !== 'variable' || declaration.initializer?.kind !== 'tupleSpread') {
+      throw new Error('Expected tuple spread variable');
+    }
+
+    const invalid = structuredClone(valid);
+    const invalidDecl = invalid.declarations.find(
+      (item) => item.kind === 'variable' && 'binding' in item && item.binding.name === 'value',
+    );
+    if (invalidDecl?.kind !== 'variable' || invalidDecl.initializer?.kind !== 'tupleSpread') {
+      throw new Error('Expected tuple spread');
+    }
+    (invalidDecl.initializer as { type: { elements: unknown[] } }).type.elements = [
+      { optional: false, rest: true, type: { kind: 'primitive', name: 'number' } },
+    ];
+
+    const result = validateIrModuleStructure(invalid);
+    expect(result.kind).toBe('invalid');
+    if (result.kind === 'invalid') {
+      expect(result.failures.map((failure) => failure.code)).toContain('invalid-node-shape');
+    }
+  });
+
+  it('validates individual optional-parameter evidence conditions', () => {
+    const valid = lower(
+      'optional-conditions.ts',
+      'function choose(value?: number | null): number | null | undefined { return value; } export function read(): number | null | undefined { return choose(null); }',
+    );
+    expect(validateIrModuleStructure(valid)).toEqual({ kind: 'valid' });
+
+    const declaration = valid.declarations.find(
+      (candidate) => candidate.kind === 'function' && candidate.binding.name === 'read',
+    );
+    const statement = declaration?.kind === 'function' ? declaration.body[0] : undefined;
+    const expression = statement?.kind === 'return' ? statement.expression : undefined;
+    if (expression?.kind !== 'call' || !expression.semantics.optionalParameters) {
+      throw new Error('Expected optional call');
+    }
+    const base = expression.semantics.optionalParameters;
+
+    const replacements = [
+      { ...base, optional: [0], provided: [{ ...base.provided[0], position: 0, value: 'invalid' }] },
+      { ...base, optional: [0], provided: [{ ...base.provided[0], argumentType: 'bad', position: 0 }] },
+      { ...base, optional: [0], provided: [{ ...base.provided[0], parameterType: 'bad', position: 0 }] },
+    ];
+    for (const replacement of replacements) {
+      const invalid = structuredClone(valid);
+      const decl = invalid.declarations.find(
+        (candidate) => candidate.kind === 'function' && candidate.binding.name === 'read',
+      );
+      const stmt = decl?.kind === 'function' ? decl.body[0] : undefined;
+      const expr = stmt?.kind === 'return' ? stmt.expression : undefined;
+      if (expr?.kind !== 'call') throw new Error('Expected optional call');
+      (expr.semantics as { optionalParameters: unknown }).optionalParameters = replacement;
+
+      const result = validateIrModuleStructure(invalid);
+      expect(result.kind).toBe('invalid');
+      if (result.kind === 'invalid') {
+        expect(result.failures.map((failure) => failure.code)).toContain('invalid-node-shape');
+      }
     }
   });
 });
