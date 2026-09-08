@@ -778,20 +778,21 @@ describe('createCompilerLoweringPassVariableHoisting', () => {
     const declaration = clone.declarations[0];
     if (declaration?.kind !== 'function') throw new Error('Expected function');
     const ref = { binding: declaration.parameters[0]?.binding ?? { id: 'x', name: 'x' }, kind: 'binding' as const };
-    const ident: IrExpression = { kind: 'identifier', reference: ref };
-    const namedVar = (name: string, init: IrExpression): IrVariable => ({
-      binding: { id: name, name },
-      initializer: init,
-      mutable: false,
-      type: { kind: 'intrinsic', name: 'number' },
-    });
-    declaration.body = [
+    const ident: IrExpression = { kind: 'identifier', reference: ref } as unknown as IrExpression;
+    const namedVar = (name: string, init: IrExpression): IrVariable =>
+      ({
+        binding: { id: name, name },
+        initializer: init,
+        mutable: false,
+        type: { kind: 'primitive', name: 'number' },
+      }) as unknown as IrVariable;
+    (declaration as unknown as { body: IrStatement[] }).body = [
       {
         declarations: [
           namedVar('a', {
             elements: [{ expression: ident, optional: false }, { optional: true }],
             kind: 'tuple',
-          } as IrExpression),
+          } as unknown as IrExpression),
           namedVar('b', {
             kind: 'tupleSpread',
             segments: [
@@ -799,13 +800,13 @@ describe('createCompilerLoweringPassVariableHoisting', () => {
               { element: { expression: ident, optional: false }, kind: 'element' },
               { element: { optional: true }, kind: 'element' },
             ],
-            type: { elements: [], kind: 'tuple' },
-          } as IrExpression),
+            type: { elements: [], kind: 'tuple', readonly: false },
+          } as unknown as IrExpression),
           namedVar('c', {
             kind: 'undefinedDefault',
             value: ident,
             fallback: { kind: 'literal', value: 0 },
-          } as IrExpression),
+          } as unknown as IrExpression),
           namedVar('d', {
             excluded: [
               { kind: 'named' as const, name: 'x' },
@@ -814,7 +815,7 @@ describe('createCompilerLoweringPassVariableHoisting', () => {
             kind: 'objectRest',
             object: ident,
             type: { kind: 'unknown', source: 'object' },
-          } as IrExpression),
+          } as unknown as IrExpression),
         ],
         kind: 'variable' as const,
       },
@@ -845,36 +846,37 @@ describe('createCompilerLoweringPassVariableHoisting', () => {
       typeParameters: [],
     } as unknown as IrExpression;
     const ident: IrExpression = { kind: 'literal', value: 0 };
-    const namedVar = (name: string, init: IrExpression): IrVariable => ({
-      binding: { id: name, name },
-      initializer: init,
-      mutable: false,
-      type: { kind: 'intrinsic', name: 'number' },
-    });
-    declaration.body = [
+    const namedVar = (name: string, init: IrExpression): IrVariable =>
+      ({
+        binding: { id: name, name },
+        initializer: init,
+        mutable: false,
+        type: { kind: 'primitive', name: 'number' },
+      }) as unknown as IrVariable;
+    (declaration as unknown as { body: IrStatement[] }).body = [
       {
         declarations: [
           namedVar('a', {
             elements: [{ expression: varFn, optional: false }],
             kind: 'tuple',
-          } as IrExpression),
+          } as unknown as IrExpression),
           namedVar('b', {
             kind: 'tupleSpread',
             segments: [
               { expression: varFn, kind: 'spread' },
               { element: { expression: varFn, optional: false }, kind: 'element' },
             ],
-            type: { elements: [], kind: 'tuple' },
-          } as IrExpression),
-          namedVar('c', { kind: 'undefinedDefault', value: varFn, fallback: varFn } as IrExpression),
+            type: { elements: [], kind: 'tuple', readonly: false },
+          } as unknown as IrExpression),
+          namedVar('c', { kind: 'undefinedDefault', value: varFn, fallback: varFn } as unknown as IrExpression),
           namedVar('d', {
             excluded: [{ expression: varFn, kind: 'computed' as const }],
             kind: 'objectRest',
             object: varFn,
             type: { kind: 'unknown', source: 'object' },
-          } as IrExpression),
-          namedVar('e', { kind: 'tupleRest', object: varFn, start: 0 } as IrExpression),
-          namedVar('f', { kind: 'tupleSuffix', object: varFn, start: 0, width: 1 } as IrExpression),
+          } as unknown as IrExpression),
+          namedVar('e', { kind: 'tupleRest', object: varFn, start: 0 } as unknown as IrExpression),
+          namedVar('f', { kind: 'tupleSuffix', object: varFn, start: 0, width: 1 } as unknown as IrExpression),
         ],
         kind: 'variable' as const,
       },

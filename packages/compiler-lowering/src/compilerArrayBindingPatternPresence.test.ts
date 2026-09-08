@@ -187,7 +187,7 @@ describe('hasIrModuleArrayBindingPattern', () => {
     (variable.pattern as { rest: IrBindingPattern }).rest = {
       elements: [{ binding: variable.pattern.rest!, kind: 'binding', omitted: false, rest: false }],
       kind: 'array',
-    } as IrBindingPattern;
+    } as unknown as IrBindingPattern;
 
     expect(hasIrModuleArrayBindingPattern(injected)).toBe(true);
   });

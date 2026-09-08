@@ -742,7 +742,7 @@ describe('createCompilerLoweringPassArrayBindingPattern', () => {
       kind: 'identifier',
       reference: { binding: fn.parameters[0]!.binding, kind: 'binding' },
     };
-    fn.body.push({
+    (fn.body as IrStatement[]).push({
       expression: { elements: [undefined, ident, undefined], kind: 'array' } as IrExpression,
       kind: 'expression',
     });
@@ -770,7 +770,7 @@ describe('createCompilerLoweringPassArrayBindingPattern', () => {
       reference: { binding: fn.parameters[0]!.binding, kind: 'binding' },
     };
     const expr = (expression: IrExpression): IrStatement => ({ expression, kind: 'expression' as const });
-    fn.body.push(
+    (fn.body as IrStatement[]).push(
       expr({ kind: 'tupleRest', object: ident, start: 1 } as IrExpression),
       expr({ kind: 'tupleSuffix', object: ident, start: 1, width: 1 } as IrExpression),
       expr({
@@ -802,6 +802,7 @@ describe('createCompilerLoweringPassArrayBindingPattern', () => {
                 { optional: false, rest: false, type: { kind: 'primitive' as const, name: 'number' as const } },
               ],
               kind: 'tuple' as const,
+              readonly: false as const,
             },
           },
           {
@@ -813,7 +814,7 @@ describe('createCompilerLoweringPassArrayBindingPattern', () => {
             kind: 'element',
           },
         ],
-      } as IrExpression),
+      } as unknown as IrExpression),
     );
     const output = pass.lowerIrModule(injected);
     expect(pass.verifyIrModule(output)).toEqual({ kind: 'valid' });
@@ -865,6 +866,7 @@ describe('createCompilerLoweringPassArrayBindingPattern', () => {
         { optional: false, rest: false, type: typeOfType },
         { optional: false, rest: false, type: { kind: 'primitive', name: 'number' } as IrType },
       ],
+      readonly: false,
     } as IrType;
     const outputTypeOf = pass.lowerIrModule(testTypeOf);
     expect(pass.verifyIrModule(outputTypeOf)).toEqual({ kind: 'valid' });
@@ -884,6 +886,7 @@ describe('createCompilerLoweringPassArrayBindingPattern', () => {
         { optional: false, rest: false, type: { kind: 'primitive', name: 'number' } as IrType },
         { optional: true, rest: false, type: multiRetained },
       ],
+      readonly: false,
     } as IrType;
     const outputMulti = pass.lowerIrModule(testMulti);
     const declarations = getFunctionDeclaration(outputMulti, 'read').body[0];
@@ -913,8 +916,12 @@ describe('createCompilerLoweringPassArrayBindingPattern', () => {
         { optional: false, rest: false, type: { kind: 'primitive', name: 'number' } as IrType },
         { optional: false, rest: false, type: unionOfUnresolved },
       ],
+      readonly: false,
     } as IrType;
-    patternVarUnion.pattern.elements[1]!.initializer = { kind: 'literal', value: 'x' } as IrExpression;
+    (patternVarUnion.pattern.elements[1] as unknown as { initializer: IrExpression }).initializer = {
+      kind: 'literal',
+      value: 'x',
+    } as IrExpression;
     expect(() => pass.lowerIrModule(testUnion)).toThrow('requires resolved undefined membership');
 
     const testNever = structuredClone(module);
@@ -931,6 +938,7 @@ describe('createCompilerLoweringPassArrayBindingPattern', () => {
         { optional: false, rest: false, type: { kind: 'primitive', name: 'number' } as IrType },
         { optional: true, rest: false, type: allUndefined },
       ],
+      readonly: false,
     } as IrType;
     const outputNever = pass.lowerIrModule(testNever);
     const neverDecl = getFunctionDeclaration(outputNever, 'read').body[0];
@@ -1060,8 +1068,8 @@ describe('createCompilerLoweringPassArrayBindingPattern', () => {
       mutable: false,
       pattern: { kind: 'object', properties: [], scope: 'block' },
       type: { kind: 'primitive', name: 'number' } as IrType,
-    } as IrVariable;
-    (varStmt as { declarations: IrVariable[] }).declarations.push(objectPatternVar);
+    } as unknown as IrVariable;
+    (varStmt as unknown as { declarations: IrVariable[] }).declarations.push(objectPatternVar);
     const output = pass.lowerIrModule(injected);
     expect(pass.verifyIrModule(output)).toEqual({ kind: 'valid' });
   });
@@ -1116,6 +1124,7 @@ describe('createCompilerLoweringPassArrayBindingPattern', () => {
         },
       ],
       kind: 'tuple',
+      readonly: false,
     } as IrType;
     const output = pass.lowerIrModule(injected);
     const declarations = getVariableStatement(getFunctionDeclaration(output, 'read').body[0]).declarations;

@@ -661,8 +661,8 @@ describe('validateIrFunctionVariableInitialization', () => {
         { expression: ident, kind: 'spread' },
         { element: { expression: ident, optional: false }, kind: 'element' },
       ],
-      type: { elements: [], kind: 'tuple' },
-    } as IrExpression;
+      type: { elements: [], kind: 'tuple', readonly: false },
+    } as unknown as IrExpression;
     const tupleRestExpr: IrExpression = { kind: 'tupleRest', object: ident } as IrExpression;
     const tupleSuffixExpr: IrExpression = { kind: 'tupleSuffix', object: ident } as IrExpression;
     const undefinedDefaultExpr: IrExpression = {
@@ -678,7 +678,7 @@ describe('validateIrFunctionVariableInitialization', () => {
       { expression: tupleSuffixExpr, kind: 'expression' },
       { expression: undefinedDefaultExpr, kind: 'expression' },
     ];
-    closureFn.body = [...injectedStatements, ...closureFn.body];
+    (closureFn as unknown as { body: IrStatement[] }).body = [...injectedStatements, ...closureFn.body];
 
     expect(
       validateIrFunctionVariableInitialization(clone.body, getFunctionVariables(clone), clone.origin),
@@ -712,15 +712,15 @@ describe('validateIrFunctionVariableInitialization', () => {
         binding: { id: 'item', name: 'item', scope: 'block' },
         initializer: { kind: 'literal', value: 0 } as IrExpression,
         mutable: false,
-        type: { kind: 'intrinsic', name: 'number' },
+        type: { kind: 'primitive', name: 'number' },
       },
-      iterable: { kind: 'identifier', reference: { kind: 'unresolved', name: 'arr' } } as IrExpression,
+      iterable: { kind: 'identifier', reference: { kind: 'unresolved', name: 'arr' } } as unknown as IrExpression,
       body: { kind: 'block', statements: [] },
-    } as IrStatement;
+    } as unknown as IrStatement;
     if (forInStatement) {
       (forInStatement.variable as unknown as Record<string, unknown>).initializer = { kind: 'literal', value: '' };
     }
-    closureFn.body = [forOfBody, ...closureFn.body];
+    (closureFn as unknown as { body: IrStatement[] }).body = [forOfBody, ...closureFn.body];
 
     expect(
       validateIrFunctionVariableInitialization(clone.body, getFunctionVariables(clone), clone.origin),
