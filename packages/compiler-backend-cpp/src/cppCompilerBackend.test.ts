@@ -1596,4 +1596,179 @@ describe('emitIrModuleCpp', () => {
     const structMatches = emitted.contents.match(/struct \w+/g) ?? [];
     expect(structMatches.length).toBeGreaterThanOrEqual(2);
   });
+
+  it('emits sync try-finally with deferred return in non-async function', () => {
+    const result = lower(
+      'sync-try-finally.ts',
+      'export function safe(x: number): number { try { return x + 1; } finally { let cleanup: number = 0; } }',
+    );
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('finally_return');
+    expect(emitted.contents).toContain('return');
+    expect(emitted.contents).not.toContain('co_return');
+  });
+
+  it('emits switch statement lowered to if-else chain', () => {
+    const result = lower(
+      'switch-break.ts',
+      'export function classify(x: number): string { switch (x) { case 0: return "zero"; case 1: return "one"; default: return "other"; } }',
+    );
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('switch_value');
+  });
+
+  it('emits while loop', () => {
+    const result = lower(
+      'while-loop.ts',
+      'export function countdown(n: number): number { let i: number = n; while (i > 0) { i = i - 1; } return i; }',
+    );
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('while');
+  });
+
+  it('emits type alias as C++ using declaration', () => {
+    const result = lower('alias.ts', 'export type Num = number;');
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('using');
+  });
+
+  it('emits generic function with template parameter', () => {
+    const result = lower('generic.ts', 'export function identity<T>(x: T): T { return x; }');
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('template');
+    expect(emitted.contents).toContain('typename');
+  });
+
+  it('emits try-finally with return only in if-consequent (no otherwise)', () => {
+    const result = lower(
+      'try-if-no-else.ts',
+      'export async function maybeReturn(cond: boolean, task: Promise<number>): Promise<number> { try { if (cond) { return await task; } } finally { let x: number = 0; } return await task; }',
+    );
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('finally_return');
+  });
+
+  it('emits nested try inside try-finally for return detection', () => {
+    const result = lower(
+      'nested-try-return.ts',
+      'export async function nested(task: Promise<number>): Promise<number> { try { try { return await task; } catch (e) { return await task; } } finally { let x: number = 0; } }',
+    );
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('finally_return');
+  });
+
+  it('emits lambda expression with body statements', () => {
+    const result = lower(
+      'lambda-body.ts',
+      'export function apply(arr: number[]): number[] { return arr.filter((x: number): boolean => { return x > 0; }); }',
+    );
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('[=]');
+  });
+
+  it('emits unary plus on number as identity', () => {
+    const result = lower('unary-plus.ts', 'export function pos(x: number): number { return +x; }');
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('return');
+  });
+
+  it('emits bitwise not with int32 cast', () => {
+    const result = lower('bit-not.ts', 'export function flip(x: number): number { return ~x; }');
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('int32_t');
+  });
+
+  it('emits post-increment operator', () => {
+    const result = lower('postinc.ts', 'export function inc(x: number): number { let y: number = x; y++; return y; }');
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('++');
+  });
+
+  it('emits Math.pow as std::pow', () => {
+    const result = lower('math-pow.ts', 'export function cube(x: number): number { return Math.pow(x, 3); }');
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('std::pow');
+  });
+
+  it('emits Math.max with spread as fold over std::max_element', () => {
+    const result = lower(
+      'math-max-spread.ts',
+      'export function maxOf(arr: number[]): number { return Math.max(...arr); }',
+    );
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('std::max_element');
+    expect(emitted.contents).toContain('empty()');
+  });
+
+  it('emits Math.min with spread as fold over std::min_element', () => {
+    const result = lower(
+      'math-min-spread.ts',
+      'export function minOf(arr: number[]): number { return Math.min(...arr); }',
+    );
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('std::min_element');
+  });
+
+  it('emits undefined default expression with .value_or', () => {
+    const result = lower(
+      'default-expr.ts',
+      'export function withDefault(x: number | undefined): number { return x ?? 42; }',
+    );
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('.value_or(');
+  });
+
+  it('emits tuple element access with std::get', () => {
+    const result = lower('tuple-get.ts', 'export function first(pair: [number, string]): number { return pair[0]; }');
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('std::get<0>');
+  });
+
+  it('emits cast expression as static_cast', () => {
+    const result = lower('cast-expr.ts', 'export function toNum(x: unknown): number { return x as number; }');
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('static_cast');
+  });
+
+  it('emits string literal type as string type', () => {
+    const result = lower('literal-type.ts', "export function tag(): 'hello' { return 'hello'; }");
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('std::string');
+  });
+
+  it('emits type alias for string literal union', () => {
+    const result = lower('string-union.ts', "export type Dir = 'up' | 'down' | 'left' | 'right';");
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('using');
+  });
+
+  it('emits array with sparse element as empty initializer', () => {
+    const result = lower('sparse.ts', 'export const x: number = 1;');
+    const module = structuredClone(result.module);
+    const decl = module.declarations[0];
+    if (decl?.kind === 'variable' && !('pattern' in decl)) {
+      (decl as any).initializer = {
+        elements: [{ kind: 'literal', value: 1 }, undefined, { kind: 'literal', value: 3 }],
+        kind: 'array',
+      };
+    }
+    const emitted = emitIrModuleCpp(module);
+    expect(emitted.contents).toContain('{}');
+  });
+
+  it('emits throw statement with new Error', () => {
+    const result = lower('throw.ts', 'export function fail(): never { throw new Error("boom"); }');
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('throw');
+    expect(emitted.contents).toContain('std::runtime_error');
+  });
+
+  it('emits IFE lambda for function expression call', () => {
+    const result = lower(
+      'ife.ts',
+      'export function run(): number { return ((x: number): number => { return x; })(42); }',
+    );
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('[=]');
+  });
 });
