@@ -1,9 +1,10 @@
 import ts from 'typescript';
 
 import { lowerTypeScriptSource } from '../../compiler-semantic/src/index.js';
-import type { IrModule, IrStatement } from '../../compiler-types/src/index.js';
+import type { IrExpression, IrModule, IrStatement, IrVariable } from '../../compiler-types/src/index.js';
 import { createCompilerLoweringPassBindingPattern } from './compilerBindingPatternLowering.js';
 import { isCompilerLoweringFailure, lowerIrModuleWithCompilerPasses } from './compilerLoweringPass.js';
+import { createCompilerLoweringPassObjectBindingPattern } from './compilerObjectBindingPatternLowering.js';
 import { createCompilerLoweringPassSwitchFallthrough } from './compilerSwitchFallthroughLowering.js';
 import { createCompilerLoweringPassVariableHoisting } from './compilerVariableHoistingLowering.js';
 
@@ -446,6 +447,270 @@ describe('createCompilerLoweringPassSwitchFallthrough', () => {
     const declaration = output.declarations[0];
     if (declaration?.kind !== 'function') throw new Error('Expected function');
     expect(declaration.body.some((statement) => statement.kind === 'block')).toBe(true);
+  });
+
+  it('covers IR-only expression types via injection in switch case bodies', () => {
+    const module = lower(
+      'inject-ir.ts',
+      `export function process(value: number): number {
+         let total = 0;
+         switch (value) {
+           case 0: total += 1;
+           case 1: const local = total; return local;
+           default: return 0;
+         }
+       }`,
+    );
+    const clone: IrModule = structuredClone(module);
+    const declaration = clone.declarations[0];
+    if (declaration?.kind !== 'function') throw new Error('Expected function');
+    const switchStmt = declaration.body.find((s) => s.kind === 'switch');
+    if (switchStmt?.kind !== 'switch') throw new Error('Expected switch');
+    const ref = { binding: declaration.parameters[0]!.binding };
+    const ident: IrExpression = { kind: 'identifier', reference: ref };
+    const expr = (expression: IrExpression): IrStatement => ({ expression, kind: 'expression' as const });
+
+    switchStmt.cases[0]!.statements.unshift(
+      expr({
+        excluded: [
+          { kind: 'named', name: 'x' },
+          { kind: 'computed', expression: ident },
+        ],
+        kind: 'objectRest',
+        object: ident,
+      } as IrExpression),
+      expr({
+        elements: [{ expression: ident, optional: false }, { optional: true }],
+        kind: 'tuple',
+      } as IrExpression),
+      expr({
+        kind: 'tupleSpread',
+        segments: [
+          { expression: ident, kind: 'spread' },
+          { element: { expression: ident, optional: false as const }, kind: 'element' },
+          { element: { optional: true as const }, kind: 'element' },
+        ],
+        type: { elements: [], kind: 'tuple' },
+      } as IrExpression),
+      expr({ kind: 'tupleRest', object: ident, start: 0 } as IrExpression),
+      expr({ kind: 'tupleSuffix', object: ident, start: 0, width: 1 } as IrExpression),
+      expr({ fallback: ident, kind: 'undefinedDefault', value: ident } as IrExpression),
+    );
+
+    const pass = createCompilerLoweringPassSwitchFallthrough();
+    const output = pass.lowerIrModule(clone);
+    expect(pass.verifyIrModule(output)).toEqual({ kind: 'valid' });
+  });
+
+  it('covers objectRest expression through object-binding-pattern lowering composition', () => {
+    const module = lower(
+      'composed-object.ts',
+      `export function process(source: { value: number; other: boolean }, key: string): number {
+         let total = 0;
+         const { value, [key]: computed, ...rest } = source;
+         switch (value) {
+           case 0: total += value;
+           case 1: const local = total + (computed as number); return local + (rest.other ? 1 : 0);
+           default: return 0;
+         }
+       }`,
+    );
+    const partiallyLowered = lowerIrModuleWithCompilerPasses(module, [
+      createCompilerLoweringPassObjectBindingPattern(),
+    ]);
+    const pass = createCompilerLoweringPassSwitchFallthrough();
+    const output = pass.lowerIrModule(partiallyLowered);
+    expect(pass.verifyIrModule(output)).toEqual({ kind: 'valid' });
+  });
+
+  it('lowers switch fallthrough inside class constructors with body and skips fields without initializers', () => {
+    const output = lowerIrModuleWithCompilerPasses(
+      lower(
+        'class-constructor-field.ts',
+        `export class Handler {
+           label!: string;
+           constructor(value: number) {
+             switch (value) { case 0: case 1: this.label = 'a'; break; default: this.label = 'b'; }
+           }
+         }`,
+      ),
+      [
+        createCompilerLoweringPassBindingPattern(),
+        createCompilerLoweringPassVariableHoisting(),
+        createCompilerLoweringPassSwitchFallthrough(),
+      ],
+    );
+    expect(createCompilerLoweringPassSwitchFallthrough().verifyIrModule(output)).toEqual({ kind: 'valid' });
+  });
+
+  it('lowers switch fallthrough through sparse arrays', () => {
+    const output = lowerIrModuleWithCompilerPasses(
+      lower(
+        'sparse-array.ts',
+        `export function process(value: number): (number | undefined)[] {
+           switch (value) {
+             case 0:
+             case 1: return [1, , 3];
+             default: return [];
+           }
+         }`,
+      ),
+      [
+        createCompilerLoweringPassBindingPattern(),
+        createCompilerLoweringPassVariableHoisting(),
+        createCompilerLoweringPassSwitchFallthrough(),
+      ],
+    );
+    expect(createCompilerLoweringPassSwitchFallthrough().verifyIrModule(output)).toEqual({ kind: 'valid' });
+  });
+
+  it('detects binding introduction through switch case expressions', () => {
+    const module = lower(
+      'case-expression-binding.ts',
+      `export function process(value: number): number {
+         let total = 0;
+         switch (value) {
+           case 0:
+             total += 1;
+           case 1:
+             switch (total) {
+               case ((): number => 0)(): const inner = total; total = inner; break;
+               default: break;
+             }
+             break;
+           default:
+             return total;
+         }
+         return total;
+       }`,
+    );
+    const output = lowerIrModuleWithCompilerPasses(module, [
+      createCompilerLoweringPassBindingPattern(),
+      createCompilerLoweringPassVariableHoisting(),
+      createCompilerLoweringPassSwitchFallthrough(),
+    ]);
+    const pass = createCompilerLoweringPassSwitchFallthrough();
+    expect(pass.verifyIrModule(output)).toEqual({ kind: 'valid' });
+  });
+
+  it('lowers default export expressions directly', () => {
+    const module = lower(
+      'default-direct.ts',
+      `export default (value: number): number => {
+         switch (value) { case 0: case 1: return 1; default: return 0; }
+       };`,
+    );
+    const pass = createCompilerLoweringPassSwitchFallthrough();
+    const output = pass.lowerIrModule(module);
+    expect(pass.verifyIrModule(output)).toEqual({ kind: 'valid' });
+  });
+
+  it('refuses binding-sensitive state machine when switch lacks origin', () => {
+    const module = lower(
+      'no-origin.ts',
+      `export function process(value: number): number {
+         let total = 0;
+         switch (value) {
+           case 0: total += 1;
+           case 1: const local = total; return local;
+           default: return 0;
+         }
+       }`,
+    );
+    const clone: IrModule = structuredClone(module);
+    const declaration = clone.declarations[0];
+    if (declaration?.kind !== 'function') throw new Error('Expected function');
+    const switchStmt = declaration.body.find((s) => s.kind === 'switch');
+    if (switchStmt?.kind !== 'switch') throw new Error('Expected switch');
+    delete (switchStmt as { origin?: unknown }).origin;
+
+    const pass = createCompilerLoweringPassSwitchFallthrough();
+    try {
+      pass.lowerIrModule(clone);
+      expect.unreachable('Expected lowering failure for missing origin');
+    } catch (error) {
+      expect(isCompilerLoweringFailure(error)).toBe(true);
+      expect(error).toMatchObject({
+        code: 'unsupported-ir',
+        message: expect.stringContaining('binding-sensitive switch fallthrough requires switch source identity'),
+      });
+    }
+  });
+
+  it('refuses unsupported completion in binding-sensitive state machine', () => {
+    const module = lower(
+      'unsupported-state.ts',
+      `export function process(value: number): number {
+         let total = 0;
+         switch (value) {
+           case 0: total += 1;
+           case 1: if (total > 0) break; const local = total; return local;
+           default: return 0;
+         }
+       }`,
+    );
+    const pass = createCompilerLoweringPassSwitchFallthrough();
+    try {
+      lowerIrModuleWithCompilerPasses(module, [
+        createCompilerLoweringPassBindingPattern(),
+        createCompilerLoweringPassVariableHoisting(),
+        pass,
+      ]);
+      expect.unreachable('Expected lowering failure for unsupported completion');
+    } catch (error) {
+      expect(isCompilerLoweringFailure(error)).toBe(true);
+      expect(error).toMatchObject({
+        code: 'unsupported-ir',
+        message: expect.stringContaining('switch-local break must be the final direct statement'),
+      });
+    }
+  });
+
+  it('covers tuple, tupleSpread, tupleRest, tupleSuffix, and undefinedDefault via variable injection', () => {
+    const module = lower(
+      'inject-vars.ts',
+      'export function loop(x: number): void { switch (x) { case 0: case 1: break; default: break; } }',
+    );
+    const clone: IrModule = structuredClone(module);
+    const declaration = clone.declarations[0];
+    if (declaration?.kind !== 'function') throw new Error('Expected function');
+    const ref = { binding: declaration.parameters[0]!.binding };
+    const ident: IrExpression = { kind: 'identifier', reference: ref };
+    const namedVar = (name: string, initializer: IrExpression): IrVariable => ({
+      binding: { id: name, name },
+      initializer,
+      mutable: false,
+      type: { kind: 'intrinsic', name: 'number' },
+    });
+
+    declaration.body = [
+      {
+        declarations: [
+          namedVar('a', {
+            elements: [{ expression: ident, optional: false }, { optional: true }],
+            kind: 'tuple',
+          } as IrExpression),
+          namedVar('b', {
+            kind: 'tupleSpread',
+            segments: [
+              { expression: ident, kind: 'spread' },
+              { element: { expression: ident, optional: false as const }, kind: 'element' },
+              { element: { optional: true as const }, kind: 'element' },
+            ],
+            type: { elements: [], kind: 'tuple' },
+          } as IrExpression),
+          namedVar('c', { kind: 'tupleRest', object: ident, start: 0 } as IrExpression),
+          namedVar('d', { kind: 'tupleSuffix', object: ident, start: 0, width: 1 } as IrExpression),
+          namedVar('e', { fallback: ident, kind: 'undefinedDefault', value: ident } as IrExpression),
+        ],
+        kind: 'variable' as const,
+      },
+      ...declaration.body,
+    ];
+
+    const pass = createCompilerLoweringPassSwitchFallthrough();
+    const output = pass.lowerIrModule(clone);
+    expect(pass.verifyIrModule(output)).toEqual({ kind: 'valid' });
   });
 
   it('passes enum, interface, type alias, and variable-without-initializer declarations unchanged', () => {
