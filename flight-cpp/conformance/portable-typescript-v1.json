@@ -66,6 +66,8 @@
   ],
   "requiredProof": [
     "abi-snapshot",
+    "bazel-platform-toolchain-build",
+    "build-system-parity",
     "deterministic-emission",
     "native-compile",
     "performance-smoke",

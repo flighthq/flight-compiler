@@ -33,6 +33,7 @@
     "golden:check": "vitest run golden",
     "compile:check": "npm run _scripts:build --silent && node ./.script-build/emittedSourceCompile.js",
     "cpp:abi:check": "npm run _scripts:build --silent && node ./.script-build/cppAbiHealth.js",
+    "cpp:build:check": "npm run _scripts:build --silent && node ./.script-build/cppBuildHealth.js",
     "cpp:conformance:update": "npm run _scripts:build --silent && node ./.script-build/cppSemanticRuntimeUpdate.js",
     "cpp:exceptions:check": "npm run _scripts:build --silent && node ./.script-build/cppExceptionLedger.js",
     "cpp:release:check": "npm run _scripts:build --silent && node ./.script-build/cppReleaseHealth.js",

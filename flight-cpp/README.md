@@ -9,10 +9,20 @@ This is a working foundation, not yet a production-support claim. Version 0.1.0 
 The project has no third-party runtime or test dependencies:
 
 ```sh
-cmake -S . -B build -DBUILD_TESTING=ON
-cmake --build build
-ctest --test-dir build --output-on-failure
+cmake --preset development
+cmake --build --preset development
+ctest --preset development
 ```
+
+The presets leave generator and compiler selection to CMake. Pass `-DCMAKE_TOOLCHAIN_FILE=/path/to/toolchain.cmake` at configure time for a cross or pinned toolchain; `CMakeUserPresets.json` is ignored for machine-local settings.
+
+The independent Bazel 9 module builds and runs the same public runtime, C ABI, generated-source, header, and consumer surfaces. Bazelisk selects the checked-in version:
+
+```sh
+bazel --config=local-posix test //:tests
+```
+
+Use `--config=local-msvc` for the default Visual C++ toolchain, or select an arbitrary registered platform and C++ toolchain without changing the Flight graph. The [Bazel build contract](docs/bazel.md) covers local, cross, remote-execution, and reproducibility policy.
 
 GCC and Clang development builds can add `-DFLIGHT_CPP_ENABLE_SANITIZERS=ON` to run the same runtime and generated-program tests under AddressSanitizer and UndefinedBehaviorSanitizer.
 

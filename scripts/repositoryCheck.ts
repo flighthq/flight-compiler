@@ -33,6 +33,7 @@ add('order:check', process.execPath, compiledScript('sourceOrderHealth'));
 add('license:check', process.execPath, compiledScript('licenseProvenanceHealth'));
 add('api:check', process.execPath, [...compiledScript('publicApiReport'), '--check']);
 add('cpp:abi:check', process.execPath, compiledScript('cppAbiHealth'));
+add('cpp:build:check', process.execPath, compiledScript('cppBuildHealth'));
 add('cpp:exceptions:check', process.execPath, compiledScript('cppExceptionLedger'));
 add('cpp:release:check', process.execPath, compiledScript('cppReleaseHealth'));
 add('typecheck', process.execPath, compiledScript('workspaceTypecheck'));

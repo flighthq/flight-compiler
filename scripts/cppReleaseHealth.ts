@@ -63,6 +63,8 @@ if (!cmake.includes('COMPATIBILITY SameMinorVersion')) {
 
 const requiredProof = [
   'abi-snapshot',
+  'bazel-platform-toolchain-build',
+  'build-system-parity',
   'deterministic-emission',
   'gcc-clang-appleclang-msvc',
   'installed-package-consumer',

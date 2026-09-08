@@ -21,6 +21,37 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  bazel-runtime:
+    name: Bazel runtime (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            toolchain_config: local-posix
+          - os: macos-latest
+            toolchain_config: local-posix
+          - os: windows-latest
+            toolchain_config: local-msvc
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      # setup-bazel 0.19.0 is pinned so the build bootstrap is reproducible as well as the Bazel version.
+      - uses: bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86
+        with:
+          bazelisk-cache: true
+          cache-save: ${{ github.event_name != 'pull_request' }}
+          disk-cache: bazel-runtime-${{ matrix.os }}
+          module-root: flight-cpp
+          repository-cache: true
+      - name: Build and test runtime
+        working-directory: flight-cpp
+        run: bazel --config=${{ matrix.toolchain_config }} --config=ci test //...
+      - name: Run Bazel performance smoke gate
+        if: matrix.os == 'ubuntu-latest'
+        working-directory: flight-cpp
+        run: bazel --config=${{ matrix.toolchain_config }} --config=release test //benchmarks:runtime_benchmark
+
   cpp-runtime:
     name: C++ runtime (${{ matrix.compiler }})
     strategy:
@@ -106,6 +137,8 @@ jobs:
       - run: npm run golden:check
         if: always()
       - run: npm run cpp:abi:check
+        if: always()
+      - run: npm run cpp:build:check
         if: always()
       - run: npm run cpp:exceptions:check
         if: always()
