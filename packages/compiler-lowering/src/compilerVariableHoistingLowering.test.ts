@@ -1029,6 +1029,37 @@ describe('createCompilerLoweringPassVariableHoisting', () => {
     expect(createCompilerLoweringPassVariableHoisting().verifyIrModule(output)).toEqual({ kind: 'valid' });
   });
 
+  it('passes enum and interface declarations through unchanged alongside var lowering', () => {
+    const output = lowerIrModuleWithCompilerPasses(
+      lower(
+        'enum-alongside-var.ts',
+        `
+          export enum Status { Active, Inactive }
+          export interface Config { value: number }
+          export type Label = string;
+          export function read(): number {
+            var x: number = 1;
+            return x;
+          }
+        `,
+      ),
+      [createCompilerLoweringPassBindingPattern(), createCompilerLoweringPassVariableHoisting()],
+    );
+    expect(output.declarations.find((declaration) => declaration.kind === 'enum')).toMatchObject({
+      binding: { name: 'Status' },
+      kind: 'enum',
+    });
+    expect(output.declarations.find((declaration) => declaration.kind === 'interface')).toMatchObject({
+      binding: { name: 'Config' },
+      kind: 'interface',
+    });
+    expect(output.declarations.find((declaration) => declaration.kind === 'typeAlias')).toMatchObject({
+      binding: { name: 'Label' },
+      kind: 'typeAlias',
+    });
+    expect(createCompilerLoweringPassVariableHoisting().verifyIrModule(output)).toEqual({ kind: 'valid' });
+  });
+
   it('verifies a module with no variable hoisting residual as valid', () => {
     const module = lower('no-residual.ts', 'export function clean(x: number): number { const y = x + 1; return y; }');
     const pass = createCompilerLoweringPassVariableHoisting();
