@@ -330,6 +330,103 @@ describe('createCompilerLoweringPassCStyleFor', () => {
     });
   });
 
+  it('lowers labeled for, forIn, forOf, do, and while loops and handles targeted continues', () => {
+    const pass = createCompilerLoweringPassCStyleFor();
+    const output = lowerIrModuleWithCompilerPasses(
+      lower(
+        'labeled.ts',
+        `
+          export function labeled(obj: Record<string, number>, items: number[]): void {
+            outer: for (let i = 0; i < 2; i++) {
+              for (let j = 0; j < 2; j++) {
+                if (j > 0) continue outer;
+              }
+            }
+            a: for (const key in obj) { key; break a; }
+            b: for (const item of items) { item; break b; }
+            c: do { break c; } while (false);
+            d: while (false) { break d; }
+          }
+        `,
+      ),
+      [pass],
+    );
+
+    expect(pass.verifyIrModule(output)).toEqual({ kind: 'valid' });
+  });
+
+  it('handles class parameter properties and object destructuring with computed keys and rest', () => {
+    const pass = createCompilerLoweringPassCStyleFor();
+    const output = lowerIrModuleWithCompilerPasses(
+      lower(
+        'patterns.ts',
+        `
+          export class WithParameterProperty {
+            constructor(public value: number) {
+              for (;;) { break; }
+            }
+          }
+          export function patterns(
+            obj: { a: number; b: string },
+            key: string,
+          ): void {
+            const { a, ...rest } = obj;
+            const { [key]: dynamic, b: renamed = (() => { for (;;) { break; } return ''; })() } = obj;
+            a; rest; dynamic; renamed;
+            for (;;) { break; }
+          }
+        `,
+      ),
+      [pass],
+    );
+
+    expect(pass.verifyIrModule(output)).toEqual({ kind: 'valid' });
+  });
+
+  it('resolves targeted continue across nested for loops and returns undefined for unmatched targets', () => {
+    const pass = createCompilerLoweringPassCStyleFor();
+    const output = lowerIrModuleWithCompilerPasses(
+      lower(
+        'nested-labels.ts',
+        `
+          export function nested(): void {
+            outer: for (let i = 0; i < 2; i++) {
+              inner: for (let j = 0; j < 2; j++) {
+                continue inner;
+              }
+            }
+          }
+        `,
+      ),
+      [pass],
+    );
+
+    expect(pass.verifyIrModule(output)).toEqual({ kind: 'valid' });
+  });
+
+  it('marks continue contexts as crossing finally in nested for loops', () => {
+    const pass = createCompilerLoweringPassCStyleFor();
+    const output = lowerIrModuleWithCompilerPasses(
+      lower(
+        'nested-finally.ts',
+        `
+          export function doubleNested(): void {
+            for (let i = 0; i < 2; i++) {
+              for (let j = 0; j < 2; j++) {
+                try {
+                  while (true) { continue; }
+                } finally { j; }
+              }
+            }
+          }
+        `,
+      ),
+      [pass],
+    );
+
+    expect(pass.verifyIrModule(output)).toEqual({ kind: 'valid' });
+  });
+
   it('fails deterministically for empty declaration lists and continues crossing finally', () => {
     const source = lower('malformed.ts', 'export function loop(): void { for (;;) { break; } }');
     const declaration = getFunctionDeclaration(source, 'loop');
