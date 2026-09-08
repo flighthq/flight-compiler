@@ -225,6 +225,140 @@ describe('analyzeIrModuleAsyncStateMachines', () => {
     expect(machine?.completionPaths.paths.some((path) => path.kind === 'return')).toBe(true);
   });
 
+  it('runs do, for, and for-in loops as opaque execute steps when they contain no suspension', () => {
+    const analysis = analyzeIrModuleAsyncStateMachines(
+      lower(`
+        export async function loops(values: number[], record: Record<string, number>): Promise<number> {
+          let total: number = 0;
+          do { total += 1; } while (total < 3);
+          for (let i: number = 0; i < values.length; i = i + 1) total += values[i];
+          for (const key in record) total += record[key];
+          return await Promise.resolve(total);
+        }
+      `),
+    );
+    const machine = analysis.machines[0];
+    const executed = machine?.states.flatMap((state) =>
+      state.steps.filter((step) => step.kind === 'execute').map((step) => step.path.at(-1)),
+    );
+
+    expect(analysis.refusals).toEqual([]);
+    expect(analysis.machines).toHaveLength(1);
+    expect(executed).toEqual([0, 1, 2, 3]);
+  });
+
+  it('marks the join unreachable when both arms of a suspending if leave', () => {
+    const analysis = analyzeIrModuleAsyncStateMachines(
+      lower(`
+        export async function decide(task: Promise<number>, flag: boolean): Promise<number> {
+          if (flag) { return await task; } else { return await task; }
+        }
+      `),
+    );
+    const machine = analysis.machines[0];
+
+    expect(analysis.refusals).toEqual([]);
+    expect(machine?.states.some((state) => state.identity.kind === 'join')).toBe(true);
+    expect(machine?.completionPaths.paths.filter((p) => p.kind === 'return')).toHaveLength(2);
+  });
+
+  it('returns a refusal when a suspension appears in the else arm that fails', () => {
+    const analysis = analyzeIrModuleAsyncStateMachines(
+      lower(`
+        export async function nested(task: Promise<number>, flag: boolean): Promise<number> {
+          let result: number = 0;
+          if (flag) {
+            result = 1;
+          } else {
+            result = 1 + await task;
+          }
+          return result;
+        }
+      `),
+    );
+
+    expect(analysis.refusals).toHaveLength(1);
+    expect(analysis.refusals[0]?.code).toBe('unsupported-suspension-expression');
+  });
+
+  it('carries a non-await return value through the cleanup when a return is inside try/finally', () => {
+    const analysis = analyzeIrModuleAsyncStateMachines(
+      lower(`
+        export async function attempt(task: Promise<number>): Promise<number> {
+          const value = await task;
+          try { return value; } finally { value; }
+        }
+      `),
+    );
+    const steps = (analysis.machines[0]?.states ?? []).flatMap((state) => state.steps);
+
+    expect(analysis.refusals).toEqual([]);
+    expect(steps.filter((step) => step.kind === 'carry')).toHaveLength(1);
+    expect(steps.filter((step) => step.kind === 'carry')[0]).toMatchObject({
+      kind: 'carry',
+      binding: { name: 'cleanupValue' },
+    });
+  });
+
+  it('refuses a suspension in a do-while condition, which has to settle before the next iteration', () => {
+    const analysis = analyzeIrModuleAsyncStateMachines(
+      lower(`
+        export async function poll(task: Promise<boolean>): Promise<void> {
+          do { 1; } while (await task);
+        }
+      `),
+    );
+
+    expect(analysis.refusals).toHaveLength(1);
+    expect(analysis.refusals[0]?.code).toBe('unsupported-suspension-expression');
+  });
+
+  it('refuses a finally body that leaves, because the cleanup must fall through', () => {
+    const analysis = analyzeIrModuleAsyncStateMachines(
+      lower(`
+        export async function bad(task: Promise<number>): Promise<number> {
+          try { return await task; } finally { return 0; }
+        }
+      `),
+    );
+
+    expect(analysis.refusals).toHaveLength(1);
+    expect(analysis.refusals[0]?.code).toBe('unsupported-control-flow');
+  });
+
+  it('refuses a handler whose own suspension fails', () => {
+    const analysis = analyzeIrModuleAsyncStateMachines(
+      lower(`
+        export async function rescue(task: Promise<number>): Promise<number> {
+          try {
+            return await task;
+          } catch {
+            return 1 + await task;
+          }
+        }
+      `),
+    );
+
+    expect(analysis.refusals).toHaveLength(1);
+    expect(analysis.refusals[0]?.code).toBe('unsupported-suspension-expression');
+  });
+
+  it('runs an opaque single-statement arm without refusing it', () => {
+    const analysis = analyzeIrModuleAsyncStateMachines(
+      lower(`
+        export async function guarded(task: Promise<number>): Promise<number> {
+          let result: number = 0;
+          if (true) result = await task;
+          else result = 1;
+          return result;
+        }
+      `),
+    );
+
+    expect(analysis.refusals).toEqual([]);
+    expect(analysis.machines).toHaveLength(1);
+  });
+
   it('walks a suspending block as its own statement list rather than refusing it', () => {
     // A block adds no control flow, so a suspension inside one needs no new state shape. Two awaits
     // in the same block therefore produce two suspensions, which the whole-statement refusal used to
