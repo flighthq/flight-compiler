@@ -17,6 +17,7 @@ describe('convertPackageNameToRustCrateName', () => {
     expect(() => convertPackageNameToRustCrateName('@flighthq/math/private')).toThrow(
       'Cannot map invalid npm package name',
     );
+    expect(() => convertPackageNameToRustCrateName('@flighthq/---')).toThrow('Cannot map empty npm package name');
   });
 });
 
@@ -41,6 +42,9 @@ describe('convertSourcePathToRustModuleName', () => {
     );
     expect(() => convertSourcePathToRustModuleName('packages/signals/src/.ts')).toThrow(
       'Cannot map non-runtime TypeScript source path',
+    );
+    expect(() => convertSourcePathToRustModuleName('packages/signals/src/---.ts')).toThrow(
+      'Cannot map empty TypeScript source name',
     );
   });
 

@@ -201,6 +201,15 @@ describe('collectIrModuleMovedBindingIdsRust', () => {
     `);
     expect(collectIrModuleMovedBindingIdsRust(module).size).toBe(0);
   });
+
+  it('excludes numeric-literal and never Copy types from the moved set', () => {
+    const module = lower(`
+      export function copyLiterals(count: 1, absent: never): number {
+        return count + count;
+      }
+    `);
+    expect(collectIrModuleMovedBindingIdsRust(module).size).toBe(0);
+  });
 });
 
 describe('collectIrModuleReferentMutatedParameterIdsRust', () => {
@@ -219,6 +228,14 @@ describe('collectIrModuleReferentMutatedParameterIdsRust', () => {
       export function populate(entries: Map<string, number>, values: Set<string>): void { entries.set("a", 1); values.add("b"); }
     `);
     expect(namesOf(module, collectIrModuleReferentMutatedParameterIdsRust(module))).toEqual(['entries', 'values']);
+  });
+
+  it('does not propagate mutation through a non-binding argument', () => {
+    const module = lower(`
+      export function bump(cell: { value: number }, next: number): void { cell.value = next; }
+      export function indirect(next: number): void { bump({ value: 0 }, next); }
+    `);
+    expect(namesOf(module, collectIrModuleReferentMutatedParameterIdsRust(module))).toEqual(['cell']);
   });
 
   it('leaves a parameter only read alone, however many times it is read', () => {
