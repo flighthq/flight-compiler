@@ -190,6 +190,20 @@ describe('createIrClassInitializationPlan', () => {
         path: ['declaration', 'fields', 0, 'parameterProperty'],
         value: invalidParameterProperty,
       },
+      {
+        code: 'invalid-parameter-property',
+        path: ['declaration', 'fields', 0, 'parameterProperty'],
+        value: createClass([{ ...createField('value', false), parameterProperty: true } as never], {
+          explicitConstructor: true,
+        }),
+      },
+      {
+        code: 'invalid-parameter-property',
+        path: ['declaration', 'fields', 0, 'parameterProperty'],
+        value: createClass([{ ...createField('value', false), parameterProperty: {} } as never], {
+          explicitConstructor: true,
+        }),
+      },
     ];
 
     for (const fixture of fixtures) {

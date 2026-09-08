@@ -7,7 +7,7 @@ import {
   createCompilerLoweringPassBindingPattern,
   getIrModuleBindingPatternResidualCount,
 } from './compilerBindingPatternLowering.js';
-import { lowerIrModuleWithCompilerPasses } from './compilerLoweringPass.js';
+import { isCompilerLoweringFailure, lowerIrModuleWithCompilerPasses } from './compilerLoweringPass.js';
 
 describe('createCompilerLoweringPassBindingPattern', () => {
   it('normalizes alternating array and object nesting to arbitrary practical depth', () => {
@@ -42,6 +42,49 @@ describe('createCompilerLoweringPassBindingPattern', () => {
     );
 
     expect(createCompilerLoweringPassBindingPattern().verifyIrModule(output)).toEqual({ kind: 'valid' });
+  });
+
+  it('reports invalid through the array verify when array binding patterns remain in the module', () => {
+    const module = lower('export const [value]: [number] = [1];');
+    const pass = createCompilerLoweringPassBindingPattern();
+
+    expect(pass.verifyIrModule(module)).toMatchObject({ kind: 'invalid' });
+  });
+
+  it('throws a stuck-guard failure when pattern residuals do not decrease across a lowering round', () => {
+    const module = lower('export const value: number = 1;');
+    const stuck = structuredClone(module);
+    const binding = {
+      column: 1,
+      fingerprint: `sha256:${'0'.repeat(64)}`,
+      id: 'stuck:binding',
+      kind: 'variable' as const,
+      line: 1,
+      name: 'stuck',
+      packageName: module.packageName,
+      scope: 'block' as const,
+      source: module.source,
+      space: 'value' as const,
+    };
+    stuck.declarations.push({
+      declarationKind: 'const',
+      exported: false,
+      initializer: { kind: 'literal', value: 0 },
+      kind: 'variable',
+      mutable: false,
+      origin: module.declarations[0]!.origin,
+      pattern: { binding, kind: 'binding' },
+      type: { kind: 'primitive', name: 'number' },
+    } as never);
+    const pass = createCompilerLoweringPassBindingPattern();
+
+    expect(getIrModuleBindingPatternResidualCount(stuck)).toBe(1);
+    expect(() => pass.lowerIrModule(stuck)).toThrow(expect.objectContaining({ code: 'unsupported-ir' }));
+    try {
+      pass.lowerIrModule(stuck);
+    } catch (error) {
+      expect(isCompilerLoweringFailure(error)).toBe(true);
+    }
   });
 
   it('does not mistake user strings containing serialized pattern text for structural residuals', () => {
