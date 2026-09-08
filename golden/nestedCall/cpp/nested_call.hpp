@@ -7,7 +7,7 @@ static_assert(flight::runtime_contract.cpp_abi == 1, "Flight C++ runtime ABI mis
 
 namespace flighthq_golden {
 
-inline double double(double x) {
+inline double double_(double x) {
   return (x * 2.0);
 }
 
@@ -20,19 +20,19 @@ inline double square(double x) {
 }
 
 inline double apply_twice(double x) {
-  return double(double(x));
+  return double_(double_(x));
 }
 
 inline double compose_result(double x) {
-  return add_three(double(x));
+  return add_three(double_(x));
 }
 
 inline double pipe_four(double x) {
-  return square(add_three(double(x)));
+  return square(add_three(double_(x)));
 }
 
 inline double nested_arithmetic(double a, double b) {
-  return ((double(a) + square(b)) - add_three((a + b)));
+  return ((double_(a) + square(b)) - add_three((a + b)));
 }
 
 } // namespace flighthq_golden

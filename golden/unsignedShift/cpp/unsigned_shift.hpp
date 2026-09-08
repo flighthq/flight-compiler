@@ -19,9 +19,9 @@ inline double unsigned_shift_assign(double value, double count) {
 }
 
 inline double signed_vs_unsigned(double value) {
-  const double signed = static_cast<double>(static_cast<int32_t>(value) >> static_cast<int32_t>(1.0));
-  const double unsigned = static_cast<double>(static_cast<uint32_t>(static_cast<int32_t>(value)) >> static_cast<uint32_t>(1.0));
-  return (signed + unsigned);
+  const double signed_ = static_cast<double>(static_cast<int32_t>(value) >> static_cast<int32_t>(1.0));
+  const double unsigned_ = static_cast<double>(static_cast<uint32_t>(static_cast<int32_t>(value)) >> static_cast<uint32_t>(1.0));
+  return (signed_ + unsigned_);
 }
 
 } // namespace flighthq_golden

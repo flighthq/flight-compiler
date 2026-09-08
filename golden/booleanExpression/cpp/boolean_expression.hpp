@@ -15,15 +15,15 @@ inline bool double_negate(bool value) {
   return !!value;
 }
 
-inline bool and(bool a, bool b) {
+inline bool and_(bool a, bool b) {
   return (a && b);
 }
 
-inline bool or(bool a, bool b) {
+inline bool or_(bool a, bool b) {
   return (a || b);
 }
 
-inline bool xor(bool a, bool b) {
+inline bool xor_(bool a, bool b) {
   return ((a && !b) || (!a && b));
 }
 

@@ -7,7 +7,7 @@ static_assert(flight::runtime_contract.cpp_abi == 1, "Flight C++ runtime ABI mis
 
 namespace flighthq_golden {
 
-inline double double(double x) {
+inline double double_(double x) {
   return (x * 2.0);
 }
 
@@ -20,15 +20,15 @@ inline double square(double x) {
 }
 
 inline double double_and_add(double value) {
-  return add_one(double(value));
+  return add_one(double_(value));
 }
 
 inline double square_of_double(double value) {
-  return square(double(value));
+  return square(double_(value));
 }
 
 inline double chain_three(double value) {
-  return square(add_one(double(value)));
+  return square(add_one(double_(value)));
 }
 
 inline double sum_of_squares(double a, double b) {

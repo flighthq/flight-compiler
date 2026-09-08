@@ -4,7 +4,6 @@ import { fileURLToPath } from 'node:url';
 
 import ts from 'typescript';
 
-import { isBackendEmissionFailure } from '../../compiler-emission/src/index.js';
 import { lowerTypeScriptSource } from '../../compiler-semantic/src/index.js';
 import type { IrType } from '../../compiler-types/src/index.js';
 import { createCppCompilerBackend, emitIrModuleCpp } from './cppCompilerBackend.js';
@@ -1601,17 +1600,29 @@ describe('emitIrModuleCpp', () => {
     expect(emitted.contents).toContain('||');
   });
 
-  it('rejects two declarations that collide to the same C++ target name', () => {
+  it('uses stable source-identity spelling for colliding public C++ names', () => {
     const result = lower(
       'collision.ts',
       'export function fooBar(): number { return 1; } export function foo_bar(): number { return 2; }',
     );
-    expect(() => emitIrModuleCpp(result.module)).toThrow();
-    try {
-      emitIrModuleCpp(result.module);
-    } catch (error) {
-      expect(isBackendEmissionFailure(error)).toBe(true);
-    }
+    const changedBodies = lower(
+      'collision.ts',
+      'export function fooBar(): number { return 3; } export function foo_bar(): number { return 4; }',
+    );
+    const reversed = lower(
+      'collision.ts',
+      'export function foo_bar(): number { return 2; } export function fooBar(): number { return 1; }',
+    );
+    const emitted = emitIrModuleCpp(result.module);
+    const changed = emitIrModuleCpp(changedBodies.module);
+    const reordered = emitIrModuleCpp(reversed.module);
+
+    expect(emitted.contents).toContain('double foo_bar_flight_value_function_foo_u000042_ar()');
+    expect(emitted.contents).toContain('double foo_bar_flight_value_function_foo_u00005f_bar()');
+    expect(changed.contents).toContain('double foo_bar_flight_value_function_foo_u000042_ar()');
+    expect(changed.contents).toContain('double foo_bar_flight_value_function_foo_u00005f_bar()');
+    expect(reordered.contents).toContain('double foo_bar_flight_value_function_foo_u000042_ar()');
+    expect(reordered.contents).toContain('double foo_bar_flight_value_function_foo_u00005f_bar()');
   });
 
   it('falls back to _internal_ output path when source path does not resolve to a file name', () => {

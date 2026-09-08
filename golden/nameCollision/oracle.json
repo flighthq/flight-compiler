@@ -1,6 +1,26 @@
 [
-  { "call": "fooBar", "arguments": [5], "returns": "number" },
-  { "call": "fooBar", "arguments": [0], "returns": "number" },
-  { "call": "foo_bar", "arguments": [5], "returns": "number" },
-  { "call": "foo_bar", "arguments": [0], "returns": "number" }
+  {
+    "call": "fooBar",
+    "cppCall": "foo_bar_flight_value_function_foo_u000042_ar",
+    "arguments": [5],
+    "returns": "number"
+  },
+  {
+    "call": "fooBar",
+    "cppCall": "foo_bar_flight_value_function_foo_u000042_ar",
+    "arguments": [0],
+    "returns": "number"
+  },
+  {
+    "call": "foo_bar",
+    "cppCall": "foo_bar_flight_value_function_foo_u00005f_bar",
+    "arguments": [5],
+    "returns": "number"
+  },
+  {
+    "call": "foo_bar",
+    "cppCall": "foo_bar_flight_value_function_foo_u00005f_bar",
+    "arguments": [0],
+    "returns": "number"
+  }
 ]

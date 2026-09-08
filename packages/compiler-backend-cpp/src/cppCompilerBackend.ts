@@ -45,6 +45,7 @@ import type {
   IrExpression,
   IrFunctionDeclaration,
   IrImport,
+  IrBindingIdentity,
   IrInterfaceDeclaration,
   IrModule,
   IrParameter,
@@ -52,6 +53,7 @@ import type {
   IrSwitchCase,
   IrType,
   IrTypeAliasDeclaration,
+  IrTypeBindingIdentity,
   IrTypeParameter,
   IrUnionMemberTestEvidence,
   IrVariable,
@@ -132,15 +134,7 @@ function emitIrModuleCppWithContext(
   assertRuntimeExternalSymbolBindingsCpp(module, options);
   let targetNames: Map<string, string>;
   try {
-    targetNames = new Map(
-      createIrModuleTargetNameAllocation(module, (binding) => ({
-        namespace: 'identifier',
-        preferredName:
-          binding.space === 'type' || binding.kind === 'class' || binding.kind === 'enum'
-            ? pascalCase(binding.name)
-            : snakeCase(binding.name),
-      })).map((allocation) => [allocation.identity, allocation.name]),
-    );
+    targetNames = createCppTargetNameMap(module);
   } catch (error) {
     if (isCompilerTargetNameAllocationFailure(error)) {
       throw createBackendEmissionFailure(
@@ -229,6 +223,51 @@ function emitIrModuleCppWithContext(
     contents: lines.join('\n'),
     path: `${convertSourcePathToCppFileName(module.source) ?? `_internal_${snakeCase(module.name)}`}.hpp`,
   };
+}
+
+function createCppTargetNameMap(module: Readonly<IrModule>): Map<string, string> {
+  const collisionBindingIds = new Set<string>();
+  while (true) {
+    try {
+      return new Map(
+        createIrModuleTargetNameAllocation(module, (binding) => ({
+          namespace: 'identifier',
+          preferredName: collisionBindingIds.has(binding.id)
+            ? createCppPublicCollisionName(binding)
+            : getCppPreferredBindingName(binding),
+        })).map((allocation) => [allocation.identity, allocation.name]),
+      );
+    } catch (error) {
+      if (
+        !isCompilerTargetNameAllocationFailure(error) ||
+        error.identities.every((identity) => collisionBindingIds.has(identity))
+      ) {
+        throw error;
+      }
+      error.identities.forEach((identity) => collisionBindingIds.add(identity));
+    }
+  }
+}
+
+function getCppPreferredBindingName(binding: Readonly<IrBindingIdentity | IrTypeBindingIdentity>): string {
+  return binding.space === 'type' || binding.kind === 'class' || binding.kind === 'enum'
+    ? safeCppTypeName(binding.name)
+    : safeCppName(binding.name);
+}
+
+function createCppPublicCollisionName(binding: Readonly<IrBindingIdentity | IrTypeBindingIdentity>): string {
+  const identity = [binding.space, binding.kind, binding.name.normalize('NFC')]
+    .map(encodeCppPublicNameComponent)
+    .join('_');
+  return `${getCppPreferredBindingName(binding)}_flight_${identity}`;
+}
+
+function encodeCppPublicNameComponent(value: string): string {
+  return [...value]
+    .map((character) =>
+      /^[a-z0-9]$/u.test(character) ? character : `_u${character.codePointAt(0)!.toString(16).padStart(6, '0')}_`,
+    )
+    .join('');
 }
 
 function emitDeclaration(declaration: Readonly<IrDeclaration>, context: EmitContext): string[] {

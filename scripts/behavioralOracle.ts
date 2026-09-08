@@ -42,6 +42,7 @@ interface OracleCase {
   readonly arguments: readonly unknown[];
   readonly awaits?: boolean;
   readonly call: string;
+  readonly cppCall?: string;
   readonly cppTypes?: readonly (string | null)[];
   readonly returns: OracleValueKind;
   readonly rustRef?: readonly number[];
@@ -357,7 +358,7 @@ function runCppOracle(fixture: string, cases: readonly OracleCase[], compiler: s
             oracleCase.cppTypes?.[index] ?? arrayHints.get(`${oracleCase.call}:${String(index)}`),
           ),
         );
-        const invocation = `flighthq_golden::${toSnakeCase(oracleCase.call)}(${arguments_.join(', ')})`;
+        const invocation = `flighthq_golden::${oracleCase.cppCall ?? toSnakeCase(oracleCase.call)}(${arguments_.join(', ')})`;
         const value = oracleCase.awaits ? `${invocation}.get()` : invocation;
         return `  std::cout << say(${value}) << '\\n';`;
       }),
