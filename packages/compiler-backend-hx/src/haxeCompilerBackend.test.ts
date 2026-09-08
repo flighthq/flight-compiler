@@ -2893,3 +2893,204 @@ describe('emitIrModuleHaxe return expression coverage', () => {
     expect(output).toContain('return;');
   });
 });
+
+describe('emitIrModuleHaxe rest parameter', () => {
+  it('emits rest parameter with element type and spread syntax', () => {
+    const result = lower('rest-param.ts', 'export function sum(...nums: number[]): number { return nums.length; }');
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('...nums:');
+  });
+});
+
+describe('emitIrModuleHaxe labeled continue', () => {
+  it('emits labeled continue as control-flow state assignment', () => {
+    const result = lower(
+      'labeled-continue.ts',
+      `export function scan(matrix: number[][]): number {
+        let sum = 0;
+        outer: for (const row of matrix) {
+          for (const cell of row) {
+            if (cell < 0) continue outer;
+            sum += cell;
+          }
+        }
+        return sum;
+      }`,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('ControlFlowState');
+    expect(output).toContain('continue;');
+  });
+});
+
+describe('emitIrModuleHaxe class accessor', () => {
+  it('emits getter and setter as Haxe property pair', () => {
+    const result = lower(
+      'class-accessor.ts',
+      `export class Counter {
+        private _value: number = 0;
+        get value(): number { return this._value; }
+        set value(v: number) { this._value = v; }
+      }`,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('(get, set)');
+    expect(output).toContain('get_value');
+    expect(output).toContain('set_value');
+  });
+
+  it('emits getter-only as never-writable Haxe property', () => {
+    const result = lower(
+      'class-getter-only.ts',
+      `export class Box {
+        private _size: number = 0;
+        get size(): number { return this._size; }
+      }`,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('(get, never)');
+  });
+});
+
+describe('emitIrModuleHaxe typeof on right side', () => {
+  it('emits Std.isOfType when typeof appears on the right side of comparison', () => {
+    const result = lower(
+      'typeof-right.ts',
+      'export function check(x: unknown): boolean { return "number" === typeof x; }',
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('Std.isOfType(');
+    expect(output).toContain('Float');
+  });
+});
+
+describe('emitIrModuleHaxe nullish comparison with ambient on left', () => {
+  it('emits null comparison when undefined is on the left side', () => {
+    const result = lower(
+      'nullish-left.ts',
+      'export function check(x: number | undefined): boolean { return undefined === x; }',
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('== null');
+  });
+});
+
+describe('emitIrModuleHaxe function expression call', () => {
+  it('wraps a called function expression in parentheses', () => {
+    const result = lower('iife.ts', 'export const value: number = (function(): number { return 42; })();');
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('(function()');
+  });
+});
+
+describe('emitIrModuleHaxe empty bindings import skip', () => {
+  it('skips imports with zero bindings', () => {
+    const result = lower('side-effect-import.ts', `export function read(): number { return 0; }`);
+    const module = {
+      ...result.module,
+      imports: [...result.module.imports, { specifier: './other.js', bindings: [], typeOnly: false }],
+    };
+    const output = emitIrModuleHaxe(module).contents;
+
+    expect(output).not.toContain('other');
+  });
+});
+
+describe('emitIrModuleHaxe try without catch clause', () => {
+  it('emits try body alone when catch clause is absent', () => {
+    const result = lower(
+      'try-no-catch.ts',
+      'export function safe(value: number): number { try { return value; } catch (error) { return 0; } }',
+    );
+    const decl = result.module.declarations[0]!;
+    if (decl.kind !== 'function') throw new Error('Expected function');
+    const tryStmt = decl.body[0]!;
+    if (tryStmt.kind !== 'try') throw new Error('Expected try');
+    // Remove catchClause with delete, then validate that the module still works
+    const patchedTry = { ...tryStmt };
+    delete (patchedTry as Record<string, unknown>)['catchClause'];
+    const module = {
+      ...result.module,
+      declarations: [{ ...decl, body: [patchedTry] }],
+    };
+    const output = emitIrModuleHaxe(module).contents;
+
+    expect(output).toContain('try {');
+    expect(output).not.toContain('catch (');
+  });
+});
+
+describe('emitIrModuleHaxe interface method with named parameters', () => {
+  it('emits named parameters on interface method signature', () => {
+    const result = lower(
+      'iface-method.ts',
+      `export interface Processor { process(input: number, factor: number): number; }
+       export class Impl implements Processor { process(input: number, factor: number): number { return input * factor; } }`,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('function process(');
+    expect(output).toContain('input:');
+  });
+});
+
+describe('emitIrModuleHaxe interface with structInit', () => {
+  it('emits structInit optional property with null type as Null wrapper', () => {
+    const result = lower(
+      'struct-optional-null.ts',
+      `export interface Options { debug: boolean; verbose?: boolean }
+       export function read(opts: Options): boolean { return opts.debug; }`,
+    );
+    const output = emitIrModuleHaxe(result.module, { structuralRecords: 'structInit' }).contents;
+
+    expect(output).toContain('@:structInit');
+    expect(output).toContain('Null<');
+  });
+});
+
+describe('emitIrModuleHaxe forOf simple iteration', () => {
+  it('emits for-of loop as Haxe for-in', () => {
+    const result = lower(
+      'for-of-simple.ts',
+      'export function total(items: number[]): number { let sum = 0; for (const item of items) { sum += item; } return sum; }',
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('for (');
+    expect(output).toContain(' in ');
+  });
+});
+
+describe('emitIrModuleHaxe conditional expression', () => {
+  it('emits ternary as Haxe conditional', () => {
+    const result = lower('ternary.ts', 'export function pick(flag: boolean): number { return flag ? 1 : 0; }');
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('?');
+    expect(output).toContain(':');
+  });
+});
+
+describe('emitIrModuleHaxe error subclass implicit constructor', () => {
+  it('emits implicit derived constructor for Error subclass with name storage', () => {
+    const result = lower(
+      'error-subclass.ts',
+      `export class BaseError extends Error {
+        constructor(message: string) { super(message); }
+      }
+      export class AppError extends BaseError {}
+      export function fail(): AppError { return new AppError("failed"); }`,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('extends BaseError');
+    expect(output).toContain('super(');
+  });
+});
