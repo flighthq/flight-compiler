@@ -95,6 +95,185 @@ describe('createCompilerLoweringPassObjectBindingPattern', () => {
     });
   });
 
+  it('lowers object patterns in diverse statement containers and expression kinds', () => {
+    const output = lowerIrModuleWithCompilerPasses(
+      lower(
+        'statement-variety.ts',
+        `
+          export function diverse(
+            source: { x: number; y: string },
+            items: Array<{ a: number }>,
+            obj: Record<string, number>,
+            flag: boolean,
+            fn: (n: number) => number,
+          ): number {
+            const { x, y } = source;
+            { x; }
+            if (flag) { x; } else { y; }
+            while (false) { x; }
+            do { x; } while (false);
+            for (let i = 0; i < 1; i++) { x; }
+            for (const key in obj) { key; }
+            switch (x) { case 0: x; break; default: y; break; }
+            try { x; } catch { y; } finally { x; }
+            try { x; } finally { x; }
+            try { x; } catch { y; }
+            const arr = [x, ...items.map((i) => i.a)];
+            const msg = \`\${x} \${y}\`;
+            const ternary = flag ? x : 0;
+            const neg = -x;
+            const composed = { a: x, [y]: 1, ...source };
+            const prop = source.x;
+            const indexed = items[x];
+            const called = fn(x);
+            const instance = new Error(y);
+            const casted = x as number;
+            arr; msg; ternary; neg; composed; prop; indexed; called; instance; casted;
+            return x;
+          }
+        `,
+      ),
+      [createCompilerLoweringPassObjectBindingPattern()],
+    );
+    const pass = createCompilerLoweringPassObjectBindingPattern();
+    expect(pass.verifyIrModule(output)).toEqual({ kind: 'valid' });
+  });
+
+  it('lowers object patterns in for-of iteration variables', () => {
+    const output = lowerIrModuleWithCompilerPasses(
+      lower(
+        'for-of-pattern.ts',
+        `
+          export function visit(items: Array<{ x: number; y: string }>): number {
+            let total = 0;
+            for (const { x, y } of items) { total += x; y; }
+            return total;
+          }
+        `,
+      ),
+      [createCompilerLoweringPassObjectBindingPattern()],
+    );
+    const fn = getFunction(output);
+    const loop = fn.body.find((statement) => statement.kind === 'forOf');
+    if (loop?.kind !== 'forOf') throw new Error('Expected for-of');
+
+    expect(loop.variable).toMatchObject({ binding: { name: 'objectPatternValue' } });
+    expect(loop.body.kind).toBe('block');
+    if (loop.body.kind === 'block') {
+      const varStatement = loop.body.statements[0];
+      expect(varStatement?.kind).toBe('variable');
+      if (varStatement?.kind === 'variable') {
+        expect(varStatement.declarations.some((d) => 'binding' in d && d.binding.name === 'x')).toBe(true);
+        expect(varStatement.declarations.some((d) => 'binding' in d && d.binding.name === 'y')).toBe(true);
+      }
+    }
+    expect(createCompilerLoweringPassObjectBindingPattern().verifyIrModule(output)).toEqual({ kind: 'valid' });
+  });
+
+  it('lowers object patterns in class constructors, methods, field closures, and parameter defaults', () => {
+    const output = lowerIrModuleWithCompilerPasses(
+      lower(
+        'class-pattern.ts',
+        `
+          export class Handler {
+            field = (source: { x: number }): number => {
+              const { x } = source;
+              return x;
+            };
+            constructor(input: { label: string }) {
+              const { label } = input;
+              label;
+            }
+            process(source: { value: number }, limit = 10): number {
+              const { value } = source;
+              return value + limit;
+            }
+          }
+        `,
+      ),
+      [createCompilerLoweringPassObjectBindingPattern()],
+    );
+    const pass = createCompilerLoweringPassObjectBindingPattern();
+    expect(pass.verifyIrModule(output)).toEqual({ kind: 'valid' });
+  });
+
+  it('lowers object patterns in default exports and module-level variable declarations', () => {
+    const output = lowerIrModuleWithCompilerPasses(
+      lower(
+        'default-export-pattern.ts',
+        `
+          export const { x, y }: { x: number; y: string } = { x: 1, y: 'hello' };
+          export default (source: { z: number }): number => {
+            const { z } = source;
+            return z;
+          };
+          function helper(): number { return 1; }
+          export { helper };
+        `,
+      ),
+      [createCompilerLoweringPassObjectBindingPattern()],
+    );
+
+    expect(output.declarations.some((d) => d.kind === 'variable' && 'binding' in d && d.binding.name === 'x')).toBe(
+      true,
+    );
+    expect(output.exports.some((e) => e.kind === 'default')).toBe(true);
+    expect(createCompilerLoweringPassObjectBindingPattern().verifyIrModule(output)).toEqual({ kind: 'valid' });
+  });
+
+  it('preserves types through non-optional properties and removes undefined for defaulted optionals', () => {
+    const output = lowerIrModuleWithCompilerPasses(
+      lower(
+        'type-preservation.ts',
+        `
+          interface Config {
+            required: number;
+            optional?: string;
+            optionalUndef?: number | undefined;
+          }
+          export function read(source: Config): string {
+            const { required, optional = 'fallback', optionalUndef = 0 }: Config = source;
+            return String(required) + optional + optionalUndef;
+          }
+        `,
+      ),
+      [createCompilerLoweringPassObjectBindingPattern()],
+    );
+    const fn = getFunction(output);
+    const statement = getVariableStatement(fn.body[0]);
+
+    expect(statement.declarations).toMatchObject([
+      { binding: { name: 'objectPatternValue' } },
+      { binding: { name: 'required' }, initializer: { kind: 'property', name: 'required' } },
+      {
+        binding: { name: 'optional' },
+        initializer: { fallback: { kind: 'literal', value: 'fallback' }, kind: 'undefinedDefault' },
+      },
+      {
+        binding: { name: 'optionalUndef' },
+        initializer: { fallback: { kind: 'literal', value: 0 }, kind: 'undefinedDefault' },
+      },
+    ]);
+    expect(createCompilerLoweringPassObjectBindingPattern().verifyIrModule(output)).toEqual({ kind: 'valid' });
+  });
+
+  it('lowers object patterns inside for-loop variable initializers', () => {
+    const output = lowerIrModuleWithCompilerPasses(
+      lower(
+        'for-init-pattern.ts',
+        `
+          export function iterate(items: Array<{ x: number }>): number {
+            let total = 0;
+            for (const { x } = items[0]!, i = 0; i < 1; ) { total += x; break; }
+            return total;
+          }
+        `,
+      ),
+      [createCompilerLoweringPassObjectBindingPattern()],
+    );
+    expect(createCompilerLoweringPassObjectBindingPattern().verifyIrModule(output)).toEqual({ kind: 'valid' });
+  });
+
   it('refuses defaults without resolved and distinct undefined evidence', () => {
     const nullable = lower(
       'nullable-default.ts',
