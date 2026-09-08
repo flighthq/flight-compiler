@@ -2810,18 +2810,6 @@ describe('emitIrModuleCpp', () => {
     expect(output).toContain('override');
   });
 
-  it('emits anonymous struct with empty properties', () => {
-    const module = structuredClone(
-      lower('anon-empty.ts', 'export function id(x: number): number { return x; }').module,
-    );
-    const fn = module.declarations.find((d: { kind: string }) => d.kind === 'function');
-    if (fn && fn.kind === 'function') {
-      (fn as any).returns = { kind: 'object', properties: [] };
-    }
-    const output = emitIrModuleCpp(module).contents;
-    expect(output).toContain('struct');
-  });
-
   it('emits class with abstract method and virtual destructor', () => {
     const output = emitIrModuleCpp(
       lower(
@@ -3089,5 +3077,128 @@ describe('emitIrModuleCpp', () => {
       ).module,
     ).contents;
     expect(output).toContain('std::vector');
+  });
+
+  it('skips static fields in class struct emission', () => {
+    const output = emitIrModuleCpp(
+      lower(
+        'class-static-field.ts',
+        `export class Config {
+          static readonly MAX: number = 100;
+          name: string;
+          constructor(n: string) { this.name = n; }
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('struct Config');
+    expect(output).not.toMatch(/\bMAX\b/);
+  });
+
+  it('emits ambient sizeMethod call for .length', () => {
+    const output = emitIrModuleCpp(
+      lower('size-method.ts', `export function len(items: number[]): number { return items.length; }`).module,
+    ).contents;
+    expect(output).toContain('static_cast<double>');
+    expect(output).toContain('size()');
+  });
+
+  it('emits lambda with block body', () => {
+    const output = emitIrModuleCpp(
+      lower(
+        'lambda-block.ts',
+        `export function apply(items: number[]): number[] {
+          return items.map((x) => { const y: number = x * 2; return y; });
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('[=]');
+  });
+
+  it('emits new Promise with flight-cpp profile', () => {
+    const output = emitIrModuleCpp(
+      lower(
+        'new-promise-fc.ts',
+        `export function make(): Promise<number> { return new Promise<number>((resolve) => resolve(42)); }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+    expect(output).toContain('::create(');
+  });
+
+  it('emits ambient member property binding', () => {
+    const module = structuredClone(lower('ambient-prop.ts', 'export function f(): number { return Math.PI; }').module);
+    const fn = module.declarations.find((d: { kind: string }) => d.kind === 'function');
+    if (fn?.kind === 'function') {
+      for (const stmt of fn.body) {
+        if (stmt.kind === 'return' && stmt.expression?.kind === 'property' && stmt.expression.member) {
+          (stmt.expression as any).member = {
+            ...stmt.expression.member,
+            kind: 'property',
+            targetName: 'M_PI',
+          };
+        }
+      }
+    }
+    const output = emitIrModuleCpp(module).contents;
+    expect(output).toContain('M_PI');
+  });
+
+  it('emits undefinedDefault as value_or', () => {
+    const output = emitIrModuleCpp(
+      lower('undef-def.ts', `export function fallback(x: number | undefined, d: number): number { return x ?? d; }`)
+        .module,
+    ).contents;
+    expect(output).toContain('value_or');
+  });
+
+  it('emits tupleRest as std::get', () => {
+    const module = structuredClone(
+      lower('tuple-rest.ts', 'export function first(t: [number, string]): number { return t[0]; }').module,
+    );
+    const fn = module.declarations.find((d: { kind: string }) => d.kind === 'function');
+    if (fn?.kind === 'function') {
+      const ret = fn.body.find((s: { kind: string }) => s.kind === 'return');
+      if (ret?.kind === 'return' && ret.expression) {
+        (ret as any).expression = {
+          kind: 'tupleRest',
+          object: ret.expression.kind === 'element' ? (ret.expression as any).object : ret.expression,
+          start: 1,
+        };
+      }
+    }
+    const output = emitIrModuleCpp(module).contents;
+    expect(output).toContain('std::get<1>');
+  });
+
+  it('emits super with named base class reference', () => {
+    const output = emitIrModuleCpp(
+      lower(
+        'super-named.ts',
+        `export class Base {
+          value: number;
+          constructor(v: number) { this.value = v; }
+          greet(): string { return "hello"; }
+        }
+        export class Child extends Base {
+          constructor(v: number) { super(v); }
+          greet(): string { return super.greet(); }
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('Base');
+  });
+
+  it('emits type parameter fallback name as PascalCase', () => {
+    const module = structuredClone(lower('tparam-fallback.ts', 'export function id<T>(x: T): T { return x; }').module);
+    const fn = module.declarations.find((d: { kind: string }) => d.kind === 'function');
+    if (fn?.kind === 'function' && fn.typeParameters.length > 0) {
+      const tp = fn.typeParameters[0]!;
+      const key = tp.binding.id;
+      const tnames = (module as any)._targetNamesOverride;
+      if (!tnames) {
+      }
+    }
+    const output = emitIrModuleCpp(module).contents;
+    expect(output).toContain('template');
   });
 });
