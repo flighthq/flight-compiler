@@ -99,6 +99,30 @@ describe('hasTypeScriptDeclarationRuntimeBinding', () => {
     expect(hasTypeScriptDeclarationRuntimeBinding(interface_!, {})).toBe(false);
     expect(hasTypeScriptDeclarationRuntimeBinding(constEnum!, {})).toBe(false);
     expect(hasTypeScriptDeclarationRuntimeBinding(constEnum!, { preserveConstEnums: true })).toBe(true);
+    expect(hasTypeScriptDeclarationRuntimeBinding(constEnum!, { isolatedModules: true })).toBe(true);
+  });
+
+  it('rejects ambient declarations within a non-declaration source file', () => {
+    const source = ts.createSourceFile(
+      '/ambient.ts',
+      'declare const external: number; export const value = external;',
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const [declareStatement, variableStatement] = source.statements;
+    if (
+      !declareStatement ||
+      !ts.isVariableStatement(declareStatement) ||
+      !variableStatement ||
+      !ts.isVariableStatement(variableStatement)
+    ) {
+      throw new Error('Expected ambient declaration fixtures');
+    }
+    const ambient = declareStatement.declarationList.declarations[0]!;
+    const concrete = variableStatement.declarationList.declarations[0]!;
+
+    expect(hasTypeScriptDeclarationRuntimeBinding(ambient, {})).toBe(false);
+    expect(hasTypeScriptDeclarationRuntimeBinding(concrete, {})).toBe(true);
   });
 });
 
@@ -107,6 +131,27 @@ describe('isTypeScriptExportExplicitlyTypeOnly', () => {
     withProject(({ checker, source }) => {
       const module = checker.getSymbolAtLocation(source);
       if (!module) throw new Error('Expected index module symbol');
+      const exports = new Map(checker.getExportsOfModule(module).map((symbol) => [symbol.getName(), symbol]));
+
+      expect(isTypeScriptExportExplicitlyTypeOnly(exports.get('Shape')!)).toBe(true);
+      expect(isTypeScriptExportExplicitlyTypeOnly(exports.get('value')!)).toBe(false);
+    });
+  });
+
+  it('returns false for symbols without export specifier declarations', () => {
+    withProject(({ checker, valueSource }) => {
+      const module = checker.getSymbolAtLocation(valueSource);
+      if (!module) throw new Error('Expected value module symbol');
+      const exports = new Map(checker.getExportsOfModule(module).map((symbol) => [symbol.getName(), symbol]));
+
+      expect(isTypeScriptExportExplicitlyTypeOnly(exports.get('value')!)).toBe(false);
+    });
+  });
+
+  it('recognizes per-specifier type-only exports', () => {
+    withPerSpecifierTypeOnly(({ checker, source }) => {
+      const module = checker.getSymbolAtLocation(source);
+      if (!module) throw new Error('Expected module symbol');
       const exports = new Map(checker.getExportsOfModule(module).map((symbol) => [symbol.getName(), symbol]));
 
       expect(isTypeScriptExportExplicitlyTypeOnly(exports.get('Shape')!)).toBe(true);
@@ -148,6 +193,28 @@ function withProject(
     const valueSource = project.program.getSourceFile(path.join(directory, 'src', 'value.ts'));
     if (!source || !valueSource) throw new Error('Expected project source files');
     run({ checker: project.checker, options: project.options, source, valueSource });
+  } finally {
+    rmSync(directory, { force: true, recursive: true });
+  }
+}
+
+function withPerSpecifierTypeOnly(run: (fixture: { checker: ts.TypeChecker; source: ts.SourceFile }) => void): void {
+  const directory = mkdtempSync(path.join(os.tmpdir(), 'flight-compiler-per-specifier-type-only-'));
+  try {
+    write(
+      directory,
+      'tsconfig.json',
+      JSON.stringify({
+        compilerOptions: { module: 'ESNext', moduleResolution: 'Bundler', strict: true, target: 'ES2022' },
+        include: ['src/**/*.ts'],
+      }),
+    );
+    write(directory, 'src/value.ts', 'export const value = 1; export interface Shape {}');
+    write(directory, 'src/index.ts', "export { value, type Shape } from './value.js';");
+    const project = createTypeScriptProject(path.join(directory, 'tsconfig.json'));
+    const source = project.program.getSourceFile(path.join(directory, 'src', 'index.ts'));
+    if (!source) throw new Error('Expected project source file');
+    run({ checker: project.checker, source });
   } finally {
     rmSync(directory, { force: true, recursive: true });
   }

@@ -54,6 +54,56 @@ describe('createTypeScriptProject', () => {
     typeScriptProgramTimeoutMs,
   );
 
+  it(
+    'forwards project references when the configuration declares them',
+    () => {
+      const directory = mkdtempSync(path.join(os.tmpdir(), 'flight-compiler-typescript-project-refs-'));
+      try {
+        write(directory, 'packages/types/src/value.ts', 'export const value: number = 1;\n');
+        write(
+          directory,
+          'packages/types/tsconfig.json',
+          JSON.stringify({
+            compilerOptions: {
+              composite: true,
+              module: 'ESNext',
+              moduleResolution: 'Bundler',
+              skipLibCheck: true,
+              strict: true,
+              target: 'ES2022',
+              types: [],
+            },
+            include: ['src/**/*.ts'],
+          }),
+        );
+        write(directory, 'packages/app/src/index.ts', 'export const entry = 1;\n');
+        write(
+          directory,
+          'packages/app/tsconfig.json',
+          JSON.stringify({
+            compilerOptions: {
+              module: 'ESNext',
+              moduleResolution: 'Bundler',
+              skipLibCheck: true,
+              strict: true,
+              target: 'ES2022',
+              types: [],
+            },
+            include: ['src/**/*.ts'],
+            references: [{ path: '../types' }],
+          }),
+        );
+
+        const project = createTypeScriptProject(path.join(directory, 'packages/app/tsconfig.json'));
+
+        expect(project.options.strict).toBe(true);
+      } finally {
+        rmSync(directory, { force: true, recursive: true });
+      }
+    },
+    typeScriptProgramTimeoutMs,
+  );
+
   it('fails loudly for missing and malformed configuration files', () => {
     const directory = mkdtempSync(path.join(os.tmpdir(), 'flight-compiler-typescript-project-invalid-'));
     try {

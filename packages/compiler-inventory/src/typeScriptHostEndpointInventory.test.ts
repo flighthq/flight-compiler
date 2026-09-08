@@ -254,7 +254,7 @@ function createHostEndpointFixture(): { directory: string; manifest: FlightPacka
   write(
     directory,
     'packages/web/src/index.ts',
-    `${declarations}\nhost.value;\n(host.value) = 1;\nhost.value += 2;\nhost.value++;\n++host.value;\ndelete host.optional;\n(host.run)();\nnew (host.Factory)();\nhost['label'];\nhost[dynamic];\n`,
+    `${declarations}\nhost.value;\n(host.value) = 1;\nhost.value += 2;\nhost.value++;\n--host.value;\ndelete host.optional;\n(host.run)();\nnew (host.Factory)();\nhost['label'];\nhost[dynamic];\n`,
   );
   write(directory, 'packages/web/src/extra.ts', `${declarations}\nhost.value;\n`);
   write(directory, 'packages/web/src/index.test.ts', `${declarations}\nhost.value;\n`);

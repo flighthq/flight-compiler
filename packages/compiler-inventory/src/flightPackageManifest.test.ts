@@ -91,6 +91,7 @@ describe('readFlightPackageManifests', () => {
         options: { packagesDirectory: '..' },
       },
       { code: 'invalid-package-manifest', files: { '/flight/packages/math/package.json': '{ invalid' } },
+      { code: 'invalid-package-manifest', files: { '/flight/packages/math/package.json': '"just a string"' } },
       {
         code: 'invalid-package-manifest',
         files: { '/flight/packages/math/package.json': manifest({ name: '@flighthq/math' }) },
@@ -104,6 +105,16 @@ describe('readFlightPackageManifests', () => {
         files: {
           '/flight/packages/math/package.json': manifest({
             dependencies: { typescript: 5 },
+            name: '@flighthq/math',
+            version: '0.0.0',
+          }),
+        },
+      },
+      {
+        code: 'invalid-package-manifest',
+        files: {
+          '/flight/packages/math/package.json': manifest({
+            dependencies: 'not-an-object',
             name: '@flighthq/math',
             version: '0.0.0',
           }),

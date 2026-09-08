@@ -42,6 +42,22 @@ describe('analyzeFlightPackageExclusions', () => {
     expect(analyzeFlightPackageExclusions({ packages: [createPackageInventory('@flighthq/math')] })).toEqual(new Map());
   });
 
+  it('sorts multiple complete exclusions deterministically by code unit', () => {
+    const hostFacts = {
+      dependencies: [{ kind: 'playwright' as const, specifier: '@playwright/test' }],
+      imports: [
+        { kind: 'playwright' as const, specifier: '@playwright/test' },
+        { kind: 'node' as const, specifier: 'node:path' },
+      ],
+    };
+    const toolA = createPackageInventory('@flighthq/tool-alpha', hostFacts);
+    const toolZ = createPackageInventory('@flighthq/tool-zeta', hostFacts);
+
+    const exclusions = analyzeFlightPackageExclusions({ packages: [toolZ, toolA] });
+
+    expect([...exclusions.keys()]).toEqual(['@flighthq/tool-alpha', '@flighthq/tool-zeta']);
+  });
+
   it('rejects every partial evidence boundary with a stable drift failure', () => {
     const completeHostFacts: PackageHostFacts = {
       dependencies: [{ kind: 'playwright', specifier: '@playwright/test' }],
