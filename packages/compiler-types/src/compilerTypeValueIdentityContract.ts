@@ -1,3 +1,6 @@
+import type { IrModule } from './compilerModuleIntermediateRepresentation.js';
+import type { IrType } from './compilerTypeIntermediateRepresentation.js';
+
 export type CompilerTypeValueIdentity = 'indeterminate' | 'reference' | 'value';
 
 export type CompilerTypeValueIdentityReason =
@@ -23,7 +26,6 @@ export interface CompilerTypeValueIdentityAnalysis {
 }
 
 export interface CompilerTypeValueIdentityAnalyzer {
-  readonly analyze: (type: Readonly<IrType>) => CompilerTypeValueIdentityAnalysis;
+  readonly analyze: (type: Readonly<IrType>, module: Readonly<IrModule>) => CompilerTypeValueIdentityAnalysis;
   readonly schema: 'flight-compiler-type-value-identity-analyzer/1';
 }
-import type { IrType } from './compilerTypeIntermediateRepresentation.js';

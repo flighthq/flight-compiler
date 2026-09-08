@@ -259,18 +259,25 @@ describe('createIrTypeValueIdentityAnalyzer', () => {
   it('reuses one immutable module graph with results equivalent to the single-shot analysis', () => {
     const alias = aliasDeclaration('type:alias', 'Alias', objectType);
     const module = createModule([alias]);
-    const modules = [module];
+    const valueAlias = aliasDeclaration('type:value-alias', 'ValueAlias', numberType);
+    const other = createModule([valueAlias], { name: 'other', source: 'packages/other.ts' });
+    const modules = [module, other];
     const snapshot = structuredClone(modules);
 
-    const analyzer = createIrTypeValueIdentityAnalyzer(module, modules);
+    const analyzer = createIrTypeValueIdentityAnalyzer(modules);
 
     expect(Object.isFrozen(analyzer)).toBe(true);
     expect(analyzer.schema).toBe('flight-compiler-type-value-identity-analyzer/1');
-    expect(analyzer.analyze(numberType)).toEqual(analyzeIrTypeValueIdentity(numberType, module, modules));
-    expect(analyzer.analyze(typeReference(alias.binding))).toEqual(
+    expect(analyzer.analyze(numberType, module)).toEqual(analyzeIrTypeValueIdentity(numberType, module, modules));
+    expect(analyzer.analyze(typeReference(alias.binding), module)).toEqual(
       analyzeIrTypeValueIdentity(typeReference(alias.binding), module, modules),
     );
-    expect(analyzer.analyze(typeReference(alias.binding))).toEqual(analyzer.analyze(typeReference(alias.binding)));
+    expect(analyzer.analyze(typeReference(alias.binding), module)).toEqual(
+      analyzer.analyze(typeReference(alias.binding), module),
+    );
+    expect(analyzer.analyze(typeReference(valueAlias.binding), other)).toEqual(
+      analyzeIrTypeValueIdentity(typeReference(valueAlias.binding), other, modules),
+    );
     expect(modules).toEqual(snapshot);
   });
 });

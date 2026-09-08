@@ -38,6 +38,7 @@ interface IdentityModuleRecord {
 
 interface IdentityModuleSet {
   readonly modules: readonly IdentityModuleRecord[];
+  readonly modulesByIdentity: ReadonlyMap<string, IdentityModuleRecord>;
   readonly resolution: Readonly<CompilerModuleResolutionPlan>;
 }
 
@@ -53,19 +54,18 @@ export function analyzeIrTypeValueIdentity(
   modules: readonly Readonly<IrModule>[] = [module],
   resolution: Readonly<CompilerModuleResolutionPlan> = compilerEmptyModuleResolutionPlan,
 ): CompilerTypeValueIdentityAnalysis {
-  return createIrTypeValueIdentityAnalyzer(module, modules, resolution).analyze(type);
+  return createIrTypeValueIdentityAnalyzer(modules, resolution).analyze(type, module);
 }
 
 export function createIrTypeValueIdentityAnalyzer(
-  module: Readonly<IrModule>,
-  modules: readonly Readonly<IrModule>[] = [module],
+  modules: readonly Readonly<IrModule>[],
   resolution: Readonly<CompilerModuleResolutionPlan> = compilerEmptyModuleResolutionPlan,
 ): CompilerTypeValueIdentityAnalyzer {
   const moduleSet = createIdentityModuleSet(modules, resolution);
-  const subject = getIdentityModuleRecord(module, moduleSet);
-  if (!subject) throw new TypeError('Type value identity subject must belong to the explicit module set');
   return Object.freeze({
-    analyze(type: Readonly<IrType>) {
+    analyze(type: Readonly<IrType>, module: Readonly<IrModule>) {
+      const subject = getIdentityModuleRecord(module, moduleSet);
+      if (!subject) throw new TypeError('Type value identity subject must belong to the explicit module set');
       return analyzeIrTypeValueIdentityInternal(type, { active: new Set(), module: subject, moduleSet });
     },
     schema: 'flight-compiler-type-value-identity-analyzer/1',
@@ -406,7 +406,11 @@ function createIdentityModuleSet(
   if (records.some((record, index) => index > 0 && record.identity === records[index - 1]!.identity)) {
     throw new TypeError('Type value identity module set contains a duplicate module identity');
   }
-  return { modules: records, resolution };
+  return {
+    modules: records,
+    modulesByIdentity: new Map(records.map((record) => [record.identity, record])),
+    resolution,
+  };
 }
 
 function createIdentityModuleRecord(module: Readonly<IrModule>): IdentityModuleRecord {
@@ -479,13 +483,11 @@ function getIdentityModuleRecord(
   module: Readonly<IrModule>,
   moduleSet: Readonly<IdentityModuleSet>,
 ): IdentityModuleRecord | undefined {
-  const source = normalizePathPortable(module.source);
-  return moduleSet.modules.find(
-    (candidate) =>
-      candidate.module.packageName === module.packageName &&
-      candidate.module.name === module.name &&
-      candidate.source === source,
-  );
+  return moduleSet.modulesByIdentity.get(createIdentityModuleKey(module));
+}
+
+function createIdentityModuleKey(module: Readonly<IrModule>): string {
+  return `${module.packageName}\0${normalizePathPortable(module.source)}\0${module.name}`;
 }
 
 function deduplicateIdentityDeclarationLocations(
