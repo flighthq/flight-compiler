@@ -5058,3 +5058,500 @@ describe('emitIrModuleHaxe try-catch without finally', () => {
     expect(output).toContain('Dynamic');
   });
 });
+
+describe('emitIrModuleHaxe additional coverage', () => {
+  it('emits regexp as Haxe regex literal', () => {
+    const output = emitIrModuleHaxe(
+      lower('regexp.ts', `export function test(s: string): boolean { return /^hello/i.test(s); }`).module,
+    ).contents;
+    expect(output).toContain('~/');
+  });
+
+  it('emits bitwise assignment as Std.int cast', () => {
+    const output = emitIrModuleHaxe(
+      lower('bit-assign.ts', `export function mask(x: number, m: number): number { x &= m; return x; }`).module,
+    ).contents;
+    expect(output).toContain('Std.int');
+  });
+
+  it('emits exponentiation assignment as Math.pow', () => {
+    const output = emitIrModuleHaxe(
+      lower('pow-assign.ts', `export function square(x: number): number { x **= 2; return x; }`).module,
+    ).contents;
+    expect(output).toContain('Math.pow');
+  });
+
+  it('emits class with accessor getter and setter', () => {
+    const output = emitIrModuleHaxe(
+      lower(
+        'accessor.ts',
+        `export class Box {
+          private _value: number;
+          constructor(v: number) { this._value = v; }
+          get value(): number { return this._value; }
+          set value(v: number) { this._value = v; }
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('get_value');
+    expect(output).toContain('set_value');
+    expect(output).toContain('get, set');
+  });
+
+  it('emits rest parameter with spread syntax', () => {
+    const output = emitIrModuleHaxe(
+      lower(
+        'rest-param.ts',
+        `export function sum(...values: number[]): number {
+          let total = 0;
+          for (const v of values) total += v;
+          return total;
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('...values');
+  });
+
+  it('emits default parameter as initializer', () => {
+    const output = emitIrModuleHaxe(
+      lower('default-param.ts', `export function greet(name: string = "world"): string { return name; }`).module,
+    ).contents;
+    expect(output).toContain('= "world"');
+  });
+
+  it('emits intersection type as Dynamic for multiple members', () => {
+    const result = lower(
+      'inter.ts',
+      `export interface A { a: number; }
+       export interface B { b: number; }
+       export function use(x: A & B): number { return x.a; }`,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+    expect(output).toContain('Dynamic');
+  });
+
+  it('emits tuple type as Array<Dynamic> for mixed types', () => {
+    const output = emitIrModuleHaxe(
+      lower('tuple-mixed.ts', `export function pair(): [number, string] { return [1, "a"]; }`).module,
+    ).contents;
+    expect(output).toContain('Array<Dynamic>');
+  });
+
+  it('emits class with explicit constructor body', () => {
+    const output = emitIrModuleHaxe(
+      lower(
+        'ctor-body.ts',
+        `export class Point {
+          x: number;
+          y: number;
+          constructor(x: number, y: number) {
+            this.x = x;
+            this.y = y;
+          }
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('public function new(');
+    expect(output).toContain('this.x');
+  });
+
+  it('emits abstract class methods with override', () => {
+    const output = emitIrModuleHaxe(
+      lower(
+        'abstract-override.ts',
+        `export class Base {
+          greet(): string { return "hello"; }
+        }
+        export class Derived extends Base {
+          greet(): string { return "hi"; }
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('override');
+  });
+
+  it('emits base class with subclass empty constructor', () => {
+    const output = emitIrModuleHaxe(
+      lower(
+        'base-subclass.ts',
+        `export class Base {
+          value: number = 0;
+        }
+        export class Child extends Base {
+          extra: number = 1;
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('extends Base');
+  });
+
+  it('emits template literal with mixed parts', () => {
+    const output = emitIrModuleHaxe(
+      lower('template.ts', 'export function greet(name: string): string { return `hello ${name}!`; }').module,
+    ).contents;
+    expect(output).toContain('Std.string');
+  });
+
+  it('emits nullable variable declaration as null', () => {
+    const output = emitIrModuleHaxe(
+      lower(
+        'nullable-var.ts',
+        `export function find(items: number[]): number | undefined {
+          let result: number | undefined = undefined;
+          for (const item of items) { if (item > 0) { result = item; break; } }
+          return result;
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('null');
+  });
+
+  it('emits class implementing interface with data properties', () => {
+    const output = emitIrModuleHaxe(
+      lower(
+        'impl-data.ts',
+        `export interface Named {
+          name: string;
+          greet(): string;
+        }
+        export class Person implements Named {
+          name: string;
+          constructor(n: string) { this.name = n; }
+          greet(): string { return this.name; }
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('implements Named');
+    expect(output).toContain('interface Named');
+  });
+
+  it('emits do-while loop', () => {
+    const output = emitIrModuleHaxe(
+      lower(
+        'do-while.ts',
+        `export function countdown(n: number): number {
+          let i = n;
+          do { i -= 1; } while (i > 0);
+          return i;
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('do {');
+    expect(output).toContain('} while');
+  });
+
+  it('emits type alias as typedef', () => {
+    const output = emitIrModuleHaxe(
+      lower(
+        'type-alias.ts',
+        `export type Num = number;
+         export function add(a: Num, b: Num): Num { return a + b; }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('typedef Num');
+  });
+
+  it('emits string literal union as enum abstract', () => {
+    const output = emitIrModuleHaxe(
+      lower(
+        'str-union.ts',
+        `export type Direction = "up" | "down" | "left" | "right";
+         export function move(d: Direction): string { return d; }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('enum abstract Direction');
+    expect(output).toContain('from String to String');
+  });
+
+  it('emits cast expression as Haxe cast', () => {
+    const module = structuredClone(lower('cast.ts', 'export function id(x: number): number { return x; }').module);
+    const fn = module.declarations.find((d) => d.kind === 'function');
+    if (fn && fn.kind === 'function') {
+      const ret = fn.body.find((s) => s.kind === 'return');
+      if (ret && ret.kind === 'return' && ret.expression) {
+        (ret as { expression: unknown }).expression = {
+          kind: 'cast',
+          expression: ret.expression,
+          type: { kind: 'primitive', name: 'number' },
+        };
+      }
+    }
+    const output = emitIrModuleHaxe(module).contents;
+    expect(output).toContain('cast');
+  });
+
+  it('emits element access on array with non-literal index as Std.int', () => {
+    const output = emitIrModuleHaxe(
+      lower('arr-index.ts', `export function get(items: number[], i: number): number { return items[i]; }`).module,
+    ).contents;
+    expect(output).toContain('Std.int');
+  });
+
+  it('emits for-in with closed key evidence', () => {
+    const output = emitIrModuleHaxe(
+      lower(
+        'for-in.ts',
+        `export interface Dict { a: number; b: number; }
+         export function keys(d: Dict): void {
+          for (const k in d) { const _x = k; }
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('for');
+  });
+
+  it('emits optional parameter as nullable', () => {
+    const output = emitIrModuleHaxe(
+      lower('opt-param.ts', `export function greet(name?: string): string { return name ?? "world"; }`).module,
+    ).contents;
+    expect(output).toContain('?name');
+  });
+
+  it('emits object expression as anonymous struct', () => {
+    const output = emitIrModuleHaxe(
+      lower(
+        'obj-expr.ts',
+        `export interface Point { x: number; y: number; }
+         export function origin(): Point { return { x: 0, y: 0 }; }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('x:');
+    expect(output).toContain('y:');
+  });
+
+  it('emits nullish comparison as null check', () => {
+    const output = emitIrModuleHaxe(
+      lower('nullish.ts', `export function isAbsent(x: number | null): boolean { return x === null; }`).module,
+    ).contents;
+    expect(output).toContain('null');
+  });
+
+  it('emits coalesce operator as ?? in Haxe', () => {
+    const output = emitIrModuleHaxe(
+      lower('coalesce.ts', `export function fallback(x: number | null, d: number): number { return x ?? d; }`).module,
+    ).contents;
+    expect(output).toContain('??');
+  });
+
+  it('emits switch statement as Haxe switch', () => {
+    const output = emitIrModuleHaxe(
+      lower(
+        'switch.ts',
+        `export function describe(n: number): string {
+          switch (n) {
+            case 0: return "zero";
+            case 1: return "one";
+            default: return "other";
+          }
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('switch');
+  });
+
+  it('emits throw new Error as throw', () => {
+    const output = emitIrModuleHaxe(
+      lower('throw.ts', 'export function fail(msg: string): never { throw new Error(msg); }').module,
+    ).contents;
+    expect(output).toContain('throw');
+  });
+
+  it('converts task lowering errors into backend emission failures', () => {
+    const result = lower('task-runtime.ts', 'export async function read(): Promise<number> { return 1; }');
+    try {
+      emitIrModuleHaxe(result.module, { runtimeModule: 'invalid-module' });
+      expect.unreachable('Expected Haxe emission to fail');
+    } catch (error) {
+      expect(isBackendEmissionFailure(error)).toBe(true);
+    }
+  });
+
+  it('emits async function expression through task pipeline', () => {
+    const result = lower(
+      'async-expr.ts',
+      `export const fetch = async (input: Promise<number>): Promise<number> => await input;`,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+    expect(output).toContain('_Promise');
+  });
+
+  it('refuses interface extends', () => {
+    const module = structuredClone(
+      lower(
+        'iface-extends.ts',
+        `export interface Base { x: number; }
+         export function use(b: Base): number { return b.x; }`,
+      ).module,
+    );
+    const iface = module.declarations.find((d) => d.kind === 'interface');
+    if (iface && iface.kind === 'interface') {
+      (iface as { extends: unknown[] }).extends = [
+        { kind: 'named', reference: { kind: 'ambient', name: 'Other' }, typeArguments: [] },
+      ];
+    }
+    expect(() => emitIrModuleHaxe(module)).toThrow('interface');
+  });
+
+  it('emits interface member with function type', () => {
+    const output = emitIrModuleHaxe(
+      lower(
+        'iface-fn.ts',
+        `export interface Callback {
+          run(x: number): number;
+        }
+        export class Runner implements Callback {
+          run(x: number): number { return x + 1; }
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('function run');
+  });
+
+  it('emits type alias for object type as typedef', () => {
+    const output = emitIrModuleHaxe(
+      lower(
+        'obj-alias.ts',
+        `export type Config = { width: number; height: number; };
+         export function area(c: Config): number { return c.width * c.height; }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('typedef Config');
+  });
+
+  it('emits discriminated union type alias as flattened typedef', () => {
+    const output = emitIrModuleHaxe(
+      lower(
+        'disc-union.ts',
+        `export interface Circle { kind: string; radius: number; }
+         export interface Square { kind: string; side: number; }
+         export type Shape = Circle | Square;
+         export function describe(s: Shape): string { return s.kind; }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('typedef Shape');
+  });
+
+  it('emits class static method', () => {
+    const output = emitIrModuleHaxe(
+      lower(
+        'static-method.ts',
+        `export class Utils {
+          static double(x: number): number { return x * 2; }
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('static');
+    expect(output).toContain('double');
+  });
+
+  it('emits exponentiation as Math.pow', () => {
+    const output = emitIrModuleHaxe(
+      lower('pow.ts', `export function power(base: number, exp: number): number { return base ** exp; }`).module,
+    ).contents;
+    expect(output).toContain('Math.pow');
+  });
+
+  it('emits array concat as method call', () => {
+    const output = emitIrModuleHaxe(
+      lower('arr-concat.ts', `export function merge(a: number[], b: number[]): number[] { return a.concat(b); }`)
+        .module,
+    ).contents;
+    expect(output).toContain('concat');
+  });
+
+  it('emits typeof check as Std.is', () => {
+    const output = emitIrModuleHaxe(
+      lower('typeof.ts', `export function isNum(x: number | string): boolean { return typeof x === "number"; }`).module,
+    ).contents;
+    expect(output).toContain('Std.is');
+  });
+
+  it('emits negated typeof check', () => {
+    const output = emitIrModuleHaxe(
+      lower('typeof-neg.ts', `export function isNotNum(x: number | string): boolean { return typeof x !== "number"; }`)
+        .module,
+    ).contents;
+    expect(output).toContain('!Std.is');
+  });
+});
+
+describe('emitIrModuleHaxe simple continue without label', () => {
+  it('emits bare continue for unlabeled continue in for-of loop', () => {
+    const result = lower(
+      'simple-continue.ts',
+      `export function sum(items: number[]): number {
+         let total: number = 0;
+         for (const item of items) {
+           if (item < 0) continue;
+           total += item;
+         }
+         return total;
+       }`,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('continue');
+  });
+});
+
+describe('emitIrModuleHaxe interface with function property implemented by class', () => {
+  it('emits nominal interface when a class implements it', () => {
+    const result = lower(
+      'nominal-interface.ts',
+      `export interface Processor {
+         process(input: number): number;
+       }
+       export class SimpleProcessor implements Processor {
+         process(input: number): number { return input + 1; }
+       }`,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('interface Processor');
+    expect(output).toContain('class SimpleProcessor');
+  });
+});
+
+describe('emitIrModuleHaxe typeof with unmapped type', () => {
+  it('refuses typeof check against unmapped type', () => {
+    const result = lower(
+      'typeof-unmapped.ts',
+      `export function isObj(value: unknown): boolean {
+         return typeof value === "object";
+       }`,
+    );
+
+    expect(() => emitIrModuleHaxe(result.module)).toThrow('semantic lowering');
+  });
+});
+
+describe('emitIrModuleHaxe conditional expression', () => {
+  it('emits ternary conditional expression', () => {
+    const result = lower('ternary.ts', 'export function max(a: number, b: number): number { return a > b ? a : b; }');
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('?');
+    expect(output).toContain(':');
+  });
+});
+
+describe('emitIrModuleHaxe class with multiple inheritance levels', () => {
+  it('marks override on method inherited from grandparent', () => {
+    const result = lower(
+      'multi-inherit.ts',
+      `export class A {
+         run(): number { return 1; }
+       }
+       export class B extends A {
+         run(): number { return 2; }
+       }
+       export class C extends B {
+         run(): number { return 3; }
+       }`,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('class C');
+    expect(output).toContain('override');
+  });
+});
