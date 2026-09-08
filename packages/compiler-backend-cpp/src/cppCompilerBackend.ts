@@ -99,6 +99,7 @@ interface EmitContext {
   returnsAbsent: boolean;
   sharedCaptureTargetNames: ReadonlyMap<string, string>;
   targetNames: ReadonlyMap<string, string>;
+  uninitializedCaptureStorageBindingIds: ReadonlySet<string>;
   generatedNames: Set<string>;
   enclosingReturnType?: Readonly<IrType> | undefined;
 }
@@ -150,6 +151,7 @@ function emitIrModuleCppWithContext(
   const bindingTypes = collectIrModuleBindingTypesCpp(module);
   const closureCapturePlan = createIrModuleClosureCapturePlanCpp(module);
   const sharedCaptureTargetNames = new Map<string, string>();
+  const uninitializedCaptureStorageBindingIds = collectIrModuleUninitializedBindingIdsCpp(module);
   const context: EmitContext = {
     anonymousStructs: new Map(),
     arrayElementBindingIds: collectIrModuleArrayElementBindingIdsCpp(module, bindingTypes),
@@ -163,6 +165,7 @@ function emitIrModuleCppWithContext(
     returnsAbsent: false,
     sharedCaptureTargetNames,
     targetNames,
+    uninitializedCaptureStorageBindingIds,
     generatedNames: new Set(targetNames.values()),
   };
   for (const bindingPlan of closureCapturePlan.bindings) {
@@ -533,14 +536,20 @@ function emitVariable(variable: Readonly<IrVariable>, context: EmitContext): str
   const sharedCaptureTargetName = context.sharedCaptureTargetNames.get(variable.binding.id);
   if (sharedCaptureTargetName) {
     if (!variable.initializer) {
-      emissionError(context, `shared mutable capture ${variable.binding.name} requires initialized storage`);
+      if (variable.initialValue === 'uninitialized' && getCppRuntimeProfile(context.options) === 'flight-cpp') {
+        const storageType = emitOptionalTypeCpp(type, true, context);
+        return `const auto ${sharedCaptureTargetName} = ${emitSharedCaptureCellConstructionCpp(storageType, 'std::nullopt', context)};`;
+      }
+      if (variable.initialValue === 'undefined') {
+        return `const auto ${sharedCaptureTargetName} = ${emitSharedCaptureCellConstructionCpp(type, 'std::nullopt', context)};`;
+      }
+      emissionError(context, `shared mutable capture ${variable.binding.name} requires explicit initial storage`);
     }
     const sharedType = emitOptionalTypeCpp(type, arrayElement, context);
     const sharedInitializer = arrayElement
       ? emitOptionalExpressionCpp(variable.initializer, context, variable.type)
       : emitExpression(variable.initializer, context, variable.type);
-    context.includes.add('memory');
-    return `const auto ${sharedCaptureTargetName} = std::make_shared<${sharedType}>(${sharedInitializer});`;
+    return `const auto ${sharedCaptureTargetName} = ${emitSharedCaptureCellConstructionCpp(sharedType, sharedInitializer, context)};`;
   }
   return `${constness}${emittedType} ${name}${initializer};`;
 }
@@ -572,15 +581,22 @@ function emitExpression(
       return `std::vector{${elements.join(', ')}}`;
     }
     case 'assignment': {
-      if (
-        expression.operator === '+=' &&
-        expression.semantics.left.flow === 'string' &&
-        expression.semantics.right.flow === 'string'
-      ) {
-        return `${emitExpression(expression.left, context)} += ${emitExpression(expression.right, context)}`;
-      }
       const assignmentType = getIrAssignmentTargetTypeCpp(expression.left, context);
       const right = emitExpression(expression.right, context, assignmentType);
+      const sharedCaptureTargetName = getSharedCaptureTargetNameCpp(expression.left, context);
+      if (sharedCaptureTargetName && getCppRuntimeProfile(context.options) === 'flight-cpp') {
+        return emitSharedCaptureAssignmentCpp(
+          sharedCaptureTargetName,
+          expression.operator,
+          right,
+          context.uninitializedCaptureStorageBindingIds.has(
+            expression.left.kind === 'identifier' && expression.left.reference.kind === 'binding'
+              ? expression.left.reference.binding.id
+              : '',
+          ),
+          context,
+        );
+      }
       if (expression.operator === '=' && expression.left.kind === 'property') {
         const setter = getIrExpressionClassAccessorCpp(expression.left.object, expression.left.name, 'set', context);
         if (setter) {
@@ -588,6 +604,20 @@ function emitExpression(
         }
       }
       const left = emitAssignmentTargetCpp(expression.left, context);
+      if (expression.operator === '**=') {
+        context.includes.add('cmath');
+        return emitExpandedAssignmentCpp(left, `std::pow(assignment_target, ${right})`);
+      }
+      if (expression.operator === '>>>=') {
+        context.includes.add('cstdint');
+        return emitExpandedAssignmentCpp(
+          left,
+          `static_cast<double>(static_cast<uint32_t>(static_cast<int32_t>(assignment_target)) >> static_cast<uint32_t>(${right}))`,
+        );
+      }
+      if (expression.operator === '&&=' || expression.operator === '||=' || expression.operator === '??=') {
+        return emitLogicalAssignmentCpp(left, expression.operator, right);
+      }
       return `${left} ${emitAssignmentOperator(expression.operator)} ${right}`;
     }
     case 'await':
@@ -917,6 +947,23 @@ function emitExpression(
       ) {
         emissionError(context, 'typeof on a C++ variant requires proven union member test evidence');
       }
+      const sharedCaptureTargetName = getSharedCaptureTargetNameCpp(expression.operand, context);
+      if (
+        sharedCaptureTargetName &&
+        getCppRuntimeProfile(context.options) === 'flight-cpp' &&
+        (expression.operator === '++' || expression.operator === '--')
+      ) {
+        const bindingValue =
+          expression.operand.kind === 'identifier' &&
+          expression.operand.reference.kind === 'binding' &&
+          context.uninitializedCaptureStorageBindingIds.has(expression.operand.reference.binding.id)
+            ? 'binding_value.value()'
+            : 'binding_value';
+        const mutation = expression.postfix
+          ? `return ${bindingValue}${expression.operator};`
+          : `${expression.operator}${bindingValue}; return ${bindingValue};`;
+        return `${sharedCaptureTargetName}.update_binding([&](auto& binding_value) { ${mutation} })`;
+      }
       const operand = emitExpression(expression.operand, context);
       if (expression.operator === '~') {
         context.includes.add('cstdint');
@@ -979,9 +1026,6 @@ function emitStatement(statement: Readonly<IrStatement>, context: EmitContext): 
       if (!statement.keyPlan) {
         emissionError(context, 'object key iteration requires closed key evidence');
       }
-      if (context.sharedCaptureTargetNames.has(statement.variable.binding.id)) {
-        emissionError(context, 'shared mutable for-in capture requires iteration-storage lowering');
-      }
       if (statement.variable.type?.kind !== 'primitive' || statement.variable.type.name !== 'string') {
         emissionError(context, 'for-in binding requires primitive string type evidence');
       }
@@ -991,28 +1035,37 @@ function emitStatement(statement: Readonly<IrStatement>, context: EmitContext): 
         .map((key) => (flightRuntime ? `flight::String(${JSON.stringify(key)})` : JSON.stringify(key)))
         .join(', ');
       const keyCollection = flightRuntime ? `flight::Array<${keyType}>` : `std::vector<${keyType}>`;
+      const variableName = getBindingTargetName(statement.variable.binding, context);
+      const sharedCaptureTargetName = context.sharedCaptureTargetNames.get(statement.variable.binding.id);
+      const iterationName = sharedCaptureTargetName
+        ? generateUniqueName(`${variableName}_iteration_value`, context)
+        : variableName;
+      const loopBody = sharedCaptureTargetName
+        ? [
+            `const auto ${sharedCaptureTargetName} = ${emitSharedCaptureCellConstructionCpp(keyType, iterationName, context)};`,
+            ...emitStatements([statement.body], context),
+          ]
+        : emitStatements([statement.body], context);
       if (statement.keyPlan.evaluation === 'preserve') {
         const objectName = generateUniqueName('for_in_object', context);
         if (!flightRuntime) context.includes.add('vector');
-        const variableName = getBindingTargetName(statement.variable.binding, context);
         return [
           '{',
           `  auto ${objectName} = ${emitExpression(statement.object, context)};`,
           `  static_cast<void>(${objectName});`,
-          `  for (const ${keyType}& ${variableName} : ${keyCollection}{${keyValues}}) {`,
-          ...indentSourceLines(emitStatements([statement.body], context), 2),
+          `  for (const ${keyType}& ${iterationName} : ${keyCollection}{${keyValues}}) {`,
+          ...indentSourceLines(loopBody, 2),
           '  }',
           '}',
         ];
       }
       if (!flightRuntime) context.includes.add('vector');
-      const variableName = getBindingTargetName(statement.variable.binding, context);
       return [
         ...(statement.keyPlan.evaluation === 'alreadyEvaluated'
           ? [`static_cast<void>(${emitExpression(statement.object, context)});`]
           : []),
-        `for (const ${keyType}& ${variableName} : ${keyCollection}{${keyValues}}) {`,
-        ...indentSourceLines(emitStatements([statement.body], context)),
+        `for (const ${keyType}& ${iterationName} : ${keyCollection}{${keyValues}}) {`,
+        ...indentSourceLines(loopBody),
         '}',
       ];
     }
@@ -1032,11 +1085,10 @@ function emitStatement(statement: Readonly<IrStatement>, context: EmitContext): 
           );
         }
         const iterationValueName = generateUniqueName(`${variableName}_iteration_value`, context);
-        context.includes.add('memory');
         return [
           `for (auto ${iterationValueName} : ${iterable}) {`,
           ...indentSourceLines([
-            `const auto ${sharedCaptureTargetName} = std::make_shared<${emitType(statement.variable.type, context)}>(${iterationValueName});`,
+            `const auto ${sharedCaptureTargetName} = ${emitSharedCaptureCellConstructionCpp(emitType(statement.variable.type, context), iterationValueName, context)};`,
             ...emitStatementBody(statement.body, context),
           ]),
           '}',
@@ -1890,6 +1942,83 @@ function emitAssignmentTargetCpp(expression: Readonly<IrExpression>, context: Em
   return emitExpression(expression, context);
 }
 
+function getSharedCaptureTargetNameCpp(expression: Readonly<IrExpression>, context: EmitContext): string | undefined {
+  return expression.kind === 'identifier' && expression.reference.kind === 'binding'
+    ? context.sharedCaptureTargetNames.get(expression.reference.binding.id)
+    : undefined;
+}
+
+function emitSharedCaptureCellConstructionCpp(type: string, initial: string, context: EmitContext): string {
+  if (getCppRuntimeProfile(context.options) === 'flight-cpp') {
+    return `flight::make_binding_cell(${type}{${initial}})`;
+  }
+  context.includes.add('memory');
+  return `std::make_shared<${type}>(${initial})`;
+}
+
+function emitSharedCaptureAssignmentCpp(
+  target: string,
+  operator: Extract<IrExpression, { kind: 'assignment' }>['operator'],
+  right: string,
+  optionalStorage: boolean,
+  context: EmitContext,
+): string {
+  if (operator === '=') {
+    return optionalStorage
+      ? emitSharedCaptureUpdateCpp(target, `binding_value = ${right};`, 'binding_value.value()')
+      : `${target}.rebind(${right})`;
+  }
+  const bindingValue = optionalStorage ? 'binding_value.value()' : 'binding_value';
+  if (operator === '**=') {
+    context.includes.add('cmath');
+    return emitSharedCaptureUpdateCpp(target, `${bindingValue} = std::pow(${bindingValue}, ${right});`);
+  }
+  if (operator === '>>>=') {
+    context.includes.add('cstdint');
+    return emitSharedCaptureUpdateCpp(
+      target,
+      `${bindingValue} = static_cast<double>(static_cast<uint32_t>(static_cast<int32_t>(${bindingValue})) >> static_cast<uint32_t>(${right}));`,
+    );
+  }
+  if (operator === '&&=') {
+    return emitSharedCaptureUpdateCpp(target, `if (${bindingValue}) ${bindingValue} = ${right};`);
+  }
+  if (operator === '||=') {
+    return emitSharedCaptureUpdateCpp(target, `if (!${bindingValue}) ${bindingValue} = ${right};`);
+  }
+  if (operator === '??=') {
+    return emitSharedCaptureUpdateCpp(
+      target,
+      `if (!binding_value.has_value()) binding_value = ${right};`,
+      'binding_value.value()',
+    );
+  }
+  return emitSharedCaptureUpdateCpp(target, `${bindingValue} ${operator} ${right};`);
+}
+
+function emitSharedCaptureUpdateCpp(target: string, mutation: string, returnExpression = 'binding_value'): string {
+  return `${target}.update_binding([&](auto& binding_value) { ${mutation} return ${returnExpression}; })`;
+}
+
+function emitExpandedAssignmentCpp(left: string, value: string): string {
+  return `([&]() { auto&& assignment_target = ${left}; assignment_target = ${value}; return assignment_target; }())`;
+}
+
+function emitLogicalAssignmentCpp(
+  left: string,
+  operator: Extract<Extract<IrExpression, { kind: 'assignment' }>['operator'], '&&=' | '??=' | '||='>,
+  right: string,
+): string {
+  const condition =
+    operator === '&&='
+      ? 'assignment_target'
+      : operator === '||='
+        ? '!assignment_target'
+        : '!assignment_target.has_value()';
+  const result = operator === '??=' ? 'assignment_target.value()' : 'assignment_target';
+  return `([&]() { auto&& assignment_target = ${left}; if (${condition}) assignment_target = ${right}; return ${result}; }())`;
+}
+
 function getIrAssignmentTargetTypeCpp(
   expression: Readonly<IrExpression>,
   context: EmitContext,
@@ -2118,8 +2247,9 @@ function emitParameterInitializersCpp(parameters: readonly IrParameter[], contex
     if (!sharedCaptureTargetName) continue;
     const parameterType = emitType(parameter.type, context);
     const sharedType = emitOptionalTypeCpp(parameterType, parameter.optional, context);
-    context.includes.add('memory');
-    lines.push(`const auto ${sharedCaptureTargetName} = std::make_shared<${sharedType}>(${parameterTargetName});`);
+    lines.push(
+      `const auto ${sharedCaptureTargetName} = ${emitSharedCaptureCellConstructionCpp(sharedType, parameterTargetName, context)};`,
+    );
     initializedSharedCaptureTargetNames.set(parameter.binding.id, sharedCaptureTargetName);
   }
   return lines;
@@ -2231,8 +2361,26 @@ function emitIdentifierReference(
 
 function emitBindingValueCpp(binding: Readonly<{ id: string; name: string }>, context: EmitContext): string {
   const sharedCaptureTargetName = context.sharedCaptureTargetNames.get(binding.id);
-  if (sharedCaptureTargetName) return `(*${sharedCaptureTargetName})`;
+  if (sharedCaptureTargetName) {
+    const value =
+      getCppRuntimeProfile(context.options) === 'flight-cpp'
+        ? `${sharedCaptureTargetName}.read_binding()`
+        : `(*${sharedCaptureTargetName})`;
+    return context.uninitializedCaptureStorageBindingIds.has(binding.id) ? `${value}.value()` : value;
+  }
   return context.targetNames.get(binding.id) ?? safeCppName(binding.name);
+}
+
+function collectIrModuleUninitializedBindingIdsCpp(module: Readonly<IrModule>): ReadonlySet<string> {
+  const bindingIds = new Set<string>();
+  analyzeIrModuleTraversal(module, {
+    variable(variable) {
+      if ('binding' in variable && variable.initialValue === 'uninitialized') {
+        bindingIds.add(variable.binding.id);
+      }
+    },
+  });
+  return bindingIds;
 }
 
 function isSuperAccess(expression: Readonly<IrExpression>): boolean {

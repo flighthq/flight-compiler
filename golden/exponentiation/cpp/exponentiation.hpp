@@ -26,7 +26,7 @@ inline double square_root(double x) {
 
 inline double accum_power(double base, double exp) {
   double result = base;
-  result = exp;
+  ([&]() { auto&& assignment_target = result; assignment_target = std::pow(assignment_target, exp); return assignment_target; }());
   return result;
 }
 

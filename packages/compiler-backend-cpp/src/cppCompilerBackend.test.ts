@@ -194,10 +194,12 @@ describe('emitIrModuleCpp', () => {
 
     const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
 
-    expect(emitted.contents).toContain('#include <memory>');
-    expect(emitted.contents).toContain('const auto count_capture = std::make_shared<double>(0.0)');
-    expect(emitted.contents).toContain('(*count_capture) += 1.0');
-    expect(emitted.contents).toContain('return (*count_capture)');
+    expect(emitted.contents).not.toContain('#include <memory>');
+    expect(emitted.contents).toContain('const auto count_capture = flight::make_binding_cell(double{0.0})');
+    expect(emitted.contents).toContain(
+      'count_capture.update_binding([&](auto& binding_value) { binding_value += 1.0; return binding_value; })',
+    );
+    expect(emitted.contents).toContain('return count_capture.read_binding()');
   });
 
   it('shares state across sibling closures and outer mutations after closure creation', () => {
@@ -207,8 +209,9 @@ describe('emitIrModuleCpp', () => {
     );
     const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
 
-    expect(emitted.contents).toContain('const auto value_capture = std::make_shared<double>(0.0)');
-    expect(emitted.contents.match(/\(\*value_capture\)/gu)).toHaveLength(3);
+    expect(emitted.contents).toContain('const auto value_capture = flight::make_binding_cell(double{0.0})');
+    expect(emitted.contents.match(/value_capture\.update_binding/gu)).toHaveLength(2);
+    expect(emitted.contents.match(/value_capture\.read_binding/gu)).toHaveLength(1);
   });
 
   it('initializes captured parameter cells in source order after their defaults', () => {
@@ -218,8 +221,10 @@ describe('emitIrModuleCpp', () => {
     );
     const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
     const firstDefault = emitted.contents.indexOf('first = first.value_or(1.0)');
-    const firstCell = emitted.contents.indexOf('first_capture = std::make_shared<std::optional<double>>(first)');
-    const secondDefault = emitted.contents.indexOf('second = second.value_or((*first_capture).value())');
+    const firstCell = emitted.contents.indexOf(
+      'first_capture = flight::make_binding_cell(std::optional<double>{first})',
+    );
+    const secondDefault = emitted.contents.indexOf('second = second.value_or(first_capture.read_binding().value())');
 
     expect(firstDefault).toBeGreaterThan(-1);
     expect(firstCell).toBeGreaterThan(firstDefault);
@@ -233,8 +238,74 @@ describe('emitIrModuleCpp', () => {
     );
     const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
 
-    expect(emitted.contents).toContain('const auto seed_capture = std::make_shared<double>(seed)');
-    expect(emitted.contents).toContain('return [=]() { return ++(*seed_capture); }');
+    expect(emitted.contents).toContain('const auto seed_capture = flight::make_binding_cell(double{seed})');
+    expect(emitted.contents).toContain(
+      'seed_capture.update_binding([&](auto& binding_value) { ++binding_value; return binding_value; })',
+    );
+  });
+
+  it('uses binding-cell operations for reassignment, postfix updates, and logical assignment', () => {
+    const result = lower(
+      'captured-operations.ts',
+      `export function mutate(): () => number {
+         let value = 1;
+         let optional: number | undefined = undefined;
+         return (): number => {
+           const before = value++;
+           value = before + value;
+           optional ??= value;
+           return optional;
+         };
+       }`,
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+
+    expect(emitted.contents).toContain(
+      'value_capture.update_binding([&](auto& binding_value) { return binding_value++; })',
+    );
+    expect(emitted.contents).toContain('value_capture.rebind(');
+    expect(emitted.contents).toContain('flight::make_binding_cell(std::optional<double>{std::nullopt})');
+    expect(emitted.contents).toContain('if (!binding_value.has_value()) binding_value =');
+    expect(emitted.contents).toContain('return optional_capture.read_binding().value()');
+  });
+
+  it('creates a fresh binding cell for each captured block-scoped for-in key', () => {
+    const result = lower(
+      'captured-for-in.ts',
+      `export function readers(value: { first: number; second: number }): Array<() => string> {
+         const result: Array<() => string> = [];
+         for (let key in value) result.push((): string => key);
+         return result;
+       }`,
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+
+    expect(emitted.contents).toContain('for (const flight::String& key_iteration_value');
+    expect(emitted.contents).toContain(
+      'const auto key_capture = flight::make_binding_cell(flight::String{key_iteration_value})',
+    );
+    expect(emitted.contents).toContain('return key_capture.read_binding()');
+  });
+
+  it('shares one pre-loop binding cell across function-scoped captured for-in iterations', () => {
+    const result = lower(
+      'captured-var-for-in.ts',
+      `export function readers(value: { first: number }): Array<() => string> {
+         const result: Array<() => string> = [];
+         for (var key in value) result.push((): string => key);
+         return result;
+       }`,
+    );
+
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+
+    expect(emitted.contents).toContain(
+      'const auto key_capture = flight::make_binding_cell(std::optional<flight::String>{std::nullopt})',
+    );
+    expect(emitted.contents).toContain(
+      'key_capture.update_binding([&](auto& binding_value) { binding_value = variable_hoisting_iteration_value; return binding_value.value(); })',
+    );
+    expect(emitted.contents).toContain('return key_capture.read_binding().value()');
   });
 
   it('refuses captured structural referent mutation without shared object identity', () => {
@@ -2512,24 +2583,28 @@ describe('emitIrModuleCpp', () => {
     expect(emitted.contents).toContain('Down');
   });
 
-  it('emits exponentiation assignment as plain assignment', () => {
+  it('emits exponentiation assignment with the previous target value', () => {
     const result = lower(
       'power-assign.ts',
       'export function power(a: number, b: number): number { a **= b; return a; }',
     );
     const emitted = emitIrModuleCpp(result.module);
-    expect(emitted.contents).toContain('a =');
+    expect(emitted.contents).toContain('auto&& assignment_target = a');
+    expect(emitted.contents).toContain('assignment_target = std::pow(assignment_target, b)');
     expect(emitted.contents).not.toContain('**=');
   });
 
-  it('emits unsigned right shift assignment as plain assignment with uint32_t cast', () => {
+  it('emits unsigned right shift assignment from the previous target value with a uint32_t cast', () => {
     const result = lower(
       'shift-assign.ts',
       'export function shift(a: number, b: number): number { a >>>= b; return a; }',
     );
     const emitted = emitIrModuleCpp(result.module);
     expect(emitted.contents).not.toContain('>>>=');
-    expect(emitted.contents).toContain('a =');
+    expect(emitted.contents).toContain('auto&& assignment_target = a');
+    expect(emitted.contents).toContain(
+      'static_cast<uint32_t>(static_cast<int32_t>(assignment_target)) >> static_cast<uint32_t>(b)',
+    );
   });
 
   it('emits loose equality and inequality operators as C++ == and !=', () => {

@@ -14,7 +14,7 @@ inline double unsigned_shift_right(double value, double count) {
 
 inline double unsigned_shift_assign(double value, double count) {
   double result = value;
-  result = count;
+  ([&]() { auto&& assignment_target = result; assignment_target = static_cast<double>(static_cast<uint32_t>(static_cast<int32_t>(assignment_target)) >> static_cast<uint32_t>(count)); return assignment_target; }());
   return result;
 }
 
