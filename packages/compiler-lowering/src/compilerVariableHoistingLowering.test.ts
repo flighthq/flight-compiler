@@ -3,6 +3,7 @@ import ts from 'typescript';
 import { lowerTypeScriptSource } from '../../compiler-semantic/src/index.js';
 import type {
   CompilerLoweringFailure,
+  IrExpression,
   IrModule,
   IrNamedVariable,
   IrStatement,
@@ -11,6 +12,7 @@ import type {
 import { createCompilerLoweringPassBindingPattern } from './compilerBindingPatternLowering.js';
 import { createCompilerLoweringPassCStyleFor } from './compilerCStyleForLowering.js';
 import { isCompilerLoweringFailure, lowerIrModuleWithCompilerPasses } from './compilerLoweringPass.js';
+import { createCompilerLoweringPassObjectBindingPattern } from './compilerObjectBindingPatternLowering.js';
 import { createCompilerLoweringPassVariableHoisting } from './compilerVariableHoistingLowering.js';
 
 describe('createCompilerLoweringPassVariableHoisting', () => {
@@ -768,6 +770,269 @@ describe('createCompilerLoweringPassVariableHoisting', () => {
 
     expect(getVariableStatement(body[0]).declarations).toMatchObject([{ binding: { name: 'total' } }]);
     expect(createCompilerLoweringPassVariableHoisting().verifyIrModule(output)).toEqual({ kind: 'valid' });
+  });
+
+  it('covers tuple, tupleSpread, and undefinedDefault in the lowering expression walk via IR injection', () => {
+    const module = lower('inject-lowering.ts', 'export function loop(): void { var x: number = 1; x; }');
+    const clone = structuredClone(module);
+    const declaration = clone.declarations[0];
+    if (declaration?.kind !== 'function') throw new Error('Expected function');
+    const ref = { binding: declaration.parameters[0]?.binding ?? { id: 'x', name: 'x' }, kind: 'binding' as const };
+    const ident: IrExpression = { kind: 'identifier', reference: ref };
+    const namedVar = (name: string, init: IrExpression): IrVariable => ({
+      binding: { id: name, name },
+      initializer: init,
+      mutable: false,
+      type: { kind: 'intrinsic', name: 'number' },
+    });
+    declaration.body = [
+      {
+        declarations: [
+          namedVar('a', {
+            elements: [{ expression: ident, optional: false }, { optional: true }],
+            kind: 'tuple',
+          } as IrExpression),
+          namedVar('b', {
+            kind: 'tupleSpread',
+            segments: [
+              { expression: ident, kind: 'spread' },
+              { element: { expression: ident, optional: false }, kind: 'element' },
+              { element: { optional: true }, kind: 'element' },
+            ],
+            type: { elements: [], kind: 'tuple' },
+          } as IrExpression),
+          namedVar('c', {
+            kind: 'undefinedDefault',
+            value: ident,
+            fallback: { kind: 'literal', value: 0 },
+          } as IrExpression),
+          namedVar('d', {
+            excluded: [
+              { kind: 'named' as const, name: 'x' },
+              { expression: ident, kind: 'computed' as const },
+            ],
+            kind: 'objectRest',
+            object: ident,
+            type: { kind: 'unknown', source: 'object' },
+          } as IrExpression),
+        ],
+        kind: 'variable' as const,
+      },
+      ...declaration.body,
+    ];
+    const pass = createCompilerLoweringPassVariableHoisting();
+    const output = pass.lowerIrModule(clone);
+    expect(pass.verifyIrModule(output)).toEqual({ kind: 'valid' });
+  });
+
+  it('detects residual through IR-only expression types in the visitor walk', () => {
+    const module = lower('visitor-residual.ts', 'export function noop(): void {}');
+    const clone = structuredClone(module);
+    const declaration = clone.declarations[0];
+    if (declaration?.kind !== 'function') throw new Error('Expected function');
+    const varFn: IrExpression = {
+      async: false,
+      body: [
+        {
+          declarations: [{ binding: { id: 'v', name: 'v', scope: 'function' }, mutable: true }],
+          kind: 'variable' as const,
+        },
+      ],
+      kind: 'function',
+      parameters: [],
+      returns: { kind: 'primitive', name: 'void' },
+      thisMode: 'lexical',
+      typeParameters: [],
+    } as unknown as IrExpression;
+    const ident: IrExpression = { kind: 'literal', value: 0 };
+    const namedVar = (name: string, init: IrExpression): IrVariable => ({
+      binding: { id: name, name },
+      initializer: init,
+      mutable: false,
+      type: { kind: 'intrinsic', name: 'number' },
+    });
+    declaration.body = [
+      {
+        declarations: [
+          namedVar('a', {
+            elements: [{ expression: varFn, optional: false }],
+            kind: 'tuple',
+          } as IrExpression),
+          namedVar('b', {
+            kind: 'tupleSpread',
+            segments: [
+              { expression: varFn, kind: 'spread' },
+              { element: { expression: varFn, optional: false }, kind: 'element' },
+            ],
+            type: { elements: [], kind: 'tuple' },
+          } as IrExpression),
+          namedVar('c', { kind: 'undefinedDefault', value: varFn, fallback: varFn } as IrExpression),
+          namedVar('d', {
+            excluded: [{ expression: varFn, kind: 'computed' as const }],
+            kind: 'objectRest',
+            object: varFn,
+            type: { kind: 'unknown', source: 'object' },
+          } as IrExpression),
+          namedVar('e', { kind: 'tupleRest', object: varFn, start: 0 } as IrExpression),
+          namedVar('f', { kind: 'tupleSuffix', object: varFn, start: 0, width: 1 } as IrExpression),
+        ],
+        kind: 'variable' as const,
+      },
+    ];
+    const pass = createCompilerLoweringPassVariableHoisting();
+    expect(pass.verifyIrModule(clone)).toMatchObject({ kind: 'invalid' });
+  });
+
+  it('detects binding patterns with computed keys, defaults, and rest as residual', () => {
+    const module = lower(
+      'var-destructuring.ts',
+      `
+        interface Source { value?: number; nested: { text: string }; extra: boolean }
+        export function read(source: Source, key: string): void {
+          var { value = 1, nested: { text }, [key]: computed, ...rest }: Source = source;
+          value; text; computed; rest;
+        }
+      `,
+    );
+    const pass = createCompilerLoweringPassVariableHoisting();
+    expect(pass.verifyIrModule(module)).toMatchObject({ kind: 'invalid' });
+  });
+
+  it('detects array binding patterns with holes, defaults, and rest as residual', () => {
+    const module = lower(
+      'var-array-destructuring.ts',
+      `
+        export function read(values: [number, string, ...boolean[]]): void {
+          var [first, , third = 'fallback', ...remaining]: [number, string, ...boolean[]] = values;
+          first; third; remaining;
+        }
+      `,
+    );
+    const pass = createCompilerLoweringPassVariableHoisting();
+    expect(pass.verifyIrModule(module)).toMatchObject({ kind: 'invalid' });
+  });
+
+  it('maps indexedAccess, intersection, and keyof type domains to unknown', () => {
+    const output = lowerIrModuleWithCompilerPasses(
+      lower(
+        'type-domain-edges.ts',
+        `
+          export function edgeDomains<T extends { x: number }>(
+            inter: T & { y: string },
+            keyed: keyof T,
+            indexed: T['x'],
+          ): void {
+            var interVar: T & { y: string } = inter;
+            var keyedVar: keyof T = keyed;
+            var indexedVar: T['x'] = indexed;
+            interVar; keyedVar; indexedVar;
+          }
+        `,
+      ),
+      [createCompilerLoweringPassBindingPattern(), createCompilerLoweringPassVariableHoisting()],
+    );
+    const body = getFunctionBody(output, 'edgeDomains');
+    const hoisted = getVariableStatement(body[0]).declarations.map(getNamedVariable);
+
+    expect(hoisted.every((v) => v.initialValue === 'uninitialized')).toBe(true);
+    expect(createCompilerLoweringPassVariableHoisting().verifyIrModule(output)).toEqual({ kind: 'valid' });
+  });
+
+  it('handles classes without constructors, field parameter properties, and fields without initializers', () => {
+    const output = lowerIrModuleWithCompilerPasses(
+      lower(
+        'class-edges.ts',
+        `
+          export class Minimal {
+            label: string = 'default';
+          }
+          export class WithParamProp {
+            constructor(public readonly value: number) {
+              var local: number = value;
+              local;
+            }
+          }
+          export class NoInit {
+            declared!: number;
+            method(): void {
+              var x: number = 1;
+              x;
+            }
+          }
+        `,
+      ),
+      [createCompilerLoweringPassBindingPattern(), createCompilerLoweringPassVariableHoisting()],
+    );
+    expect(createCompilerLoweringPassVariableHoisting().verifyIrModule(output)).toEqual({ kind: 'valid' });
+  });
+
+  it('handles function overloads, variable declarations without initializers, and return without expression', () => {
+    const output = lowerIrModuleWithCompilerPasses(
+      lower(
+        'declaration-edges.ts',
+        `
+          export let declared: number;
+          export function overloaded(x: number): number;
+          export function overloaded(x: string): string;
+          export function overloaded(x: number | string): number | string {
+            var result: number | string = x;
+            return result;
+          }
+          export const staticVar: number = (() => {
+            var inner: number = 1;
+            return inner;
+          })();
+          export function earlyReturn(): void {
+            var flag: boolean = true;
+            if (flag) return;
+            flag;
+          }
+          export function sparseArray(): void {
+            var x: number = 1;
+            const arr = [x, , x];
+            arr;
+          }
+          export function uninitializedLet(): void {
+            let later: number;
+            var hoisted: number = 1;
+            later = hoisted;
+          }
+        `,
+      ),
+      [createCompilerLoweringPassBindingPattern(), createCompilerLoweringPassVariableHoisting()],
+    );
+    expect(createCompilerLoweringPassVariableHoisting().verifyIrModule(output)).toEqual({ kind: 'valid' });
+  });
+
+  it('lowers objectRest with computed excluded keys through composition', () => {
+    const output = lowerIrModuleWithCompilerPasses(
+      lower(
+        'computed-rest.ts',
+        `
+          interface Shape { x: number; y: string; z: boolean }
+          export function read(input: Shape, key: string): number {
+            var total: number = 0;
+            const { x, [key]: computed, ...rest } = input;
+            total = x + (computed as number);
+            return total;
+          }
+        `,
+      ),
+      [
+        createCompilerLoweringPassObjectBindingPattern(),
+        createCompilerLoweringPassBindingPattern(),
+        createCompilerLoweringPassVariableHoisting(),
+      ],
+    );
+    const body = getFunctionBody(output, 'read');
+    expect(getVariableStatement(body[0]).declarations).toMatchObject([{ binding: { name: 'total' } }]);
+    expect(createCompilerLoweringPassVariableHoisting().verifyIrModule(output)).toEqual({ kind: 'valid' });
+  });
+
+  it('verifies a module with no variable hoisting residual as valid', () => {
+    const module = lower('no-residual.ts', 'export function clean(x: number): number { const y = x + 1; return y; }');
+    const pass = createCompilerLoweringPassVariableHoisting();
+    expect(pass.verifyIrModule(module)).toEqual({ kind: 'valid' });
   });
 
   it('elects observable undefined entry state only for an undefined-bearing variable domain', () => {
