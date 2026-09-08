@@ -2001,4 +2001,260 @@ describe('emitIrModuleCpp', () => {
     const emitted = emitIrModuleCpp(result.module);
     expect(emitted.contents).toContain('count');
   });
+
+  it('skips static class fields in struct emission', () => {
+    const result = lower(
+      'static-field.ts',
+      `export class Config {
+        static defaultValue: number = 42;
+        name: string = "";
+      }`,
+    );
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('name');
+    expect(emitted.contents).not.toMatch(/struct Config[^}]*default_value/s);
+  });
+
+  it('emits numeric enum members with explicit initializer values', () => {
+    const result = lower('bare-enum.ts', 'export enum Direction { Up, Down, Left, Right }');
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('enum class');
+    expect(emitted.contents).toContain('Up');
+    expect(emitted.contents).toContain('Down');
+  });
+
+  it('emits exponentiation assignment as plain assignment', () => {
+    const result = lower(
+      'power-assign.ts',
+      'export function power(a: number, b: number): number { a **= b; return a; }',
+    );
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('a =');
+    expect(emitted.contents).not.toContain('**=');
+  });
+
+  it('emits unsigned right shift assignment as plain assignment with uint32_t cast', () => {
+    const result = lower(
+      'shift-assign.ts',
+      'export function shift(a: number, b: number): number { a >>>= b; return a; }',
+    );
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).not.toContain('>>>=');
+    expect(emitted.contents).toContain('a =');
+  });
+
+  it('emits loose equality and inequality operators as C++ == and !=', () => {
+    const result = lower(
+      'loose-eq.ts',
+      'export function eq(a: number, b: number): boolean { return a == b; } export function ne(a: number, b: number): boolean { return a != b; }',
+    );
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('==');
+    expect(emitted.contents).toContain('!=');
+  });
+
+  it('emits negated nullish comparison with != operator', () => {
+    const result = lower(
+      'neg-nullish.ts',
+      'export function isPresent(value: number | undefined): boolean { return value != undefined; }',
+    );
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('.has_value()');
+    expect(emitted.contents).not.toContain('!');
+  });
+
+  it('emits array.length call expression as sizeMethod with static_cast', () => {
+    const result = lower('size-call.ts', 'export function count(items: number[]): number { return items.length; }');
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('static_cast<double>');
+    expect(emitted.contents).toContain('.size()');
+  });
+
+  it('emits for-in with preserve evaluation key plan', () => {
+    const result = lower(
+      'for-in-preserve.ts',
+      `export function keys(values: number[]): string { let result = ""; for (const key in { second: 2, first: values.length }) { result += key; } return result; }`,
+    );
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('std::vector');
+    expect(emitted.contents).toContain('"second"');
+    expect(emitted.contents).toContain('"first"');
+  });
+
+  it('emits for-of with auto type when variable lacks annotation', () => {
+    const result = lower(
+      'for-of-auto.ts',
+      'export function sum<T extends number>(items: T[]): number { let total: number = 0; for (const item of items) { total += item; } return total; }',
+    );
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('for (');
+  });
+
+  it('refuses for-of with await as an emission error', () => {
+    const result = lower(
+      'for-await.ts',
+      'export async function collect(source: AsyncIterable<number>): Promise<number> { let total = 0; for await (const x of source) { total += x; } return total; }',
+    );
+    expect(() => emitIrModuleCpp(result.module)).toThrow(expect.objectContaining({ code: 'unsupported-ir' }));
+  });
+
+  it('emits switch case with local break detection', () => {
+    const result = lower(
+      'switch-break.ts',
+      `export function label(x: number): string {
+        switch (x) {
+          case 1: return "one";
+          case 2: { const v = "two"; return v; }
+          default: break;
+        }
+        return "other";
+      }`,
+    );
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('switch');
+    expect(emitted.contents).toContain('"one"');
+    expect(emitted.contents).toContain('"other"');
+  });
+
+  it('emits intersection type as an emission error', () => {
+    const result = lower(
+      'intersection.ts',
+      'interface A { x: number } interface B { y: number } export function test(value: A & B): number { return value.x; }',
+    );
+    expect(() => emitIrModuleCpp(result.module)).toThrow(
+      'intersection types require C++ multiple-inheritance lowering',
+    );
+  });
+
+  it('emits new Promise with flight-cpp profile as Task::create', () => {
+    const result = lower(
+      'promise-new.ts',
+      'export function pending(): Promise<number> { return new Promise<number>((resolve) => resolve(1)); }',
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+    expect(emitted.contents).toContain('::create(');
+  });
+
+  it('detects return in if-otherwise branch for try-finally emission', () => {
+    const result = lower(
+      'if-else-return.ts',
+      `export async function run(flag: boolean, x: number): Promise<number> {
+        try {
+          if (flag) {
+            return x + 1;
+          } else {
+            return x + 2;
+          }
+        } finally {
+          x += 1;
+        }
+      }`,
+    );
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('co_return');
+  });
+
+  it('detects return inside finally body for catch-and-rethrow', () => {
+    const result = lower(
+      'finally-return.ts',
+      `export async function run(x: number): Promise<number> {
+        try {
+          return x + 1;
+        } finally {
+          x += 1;
+        }
+      }`,
+    );
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('co_return');
+  });
+
+  it('emits function parameter without type as auto', () => {
+    const result = lower('param-no-type.ts', 'export function identity<T>(value: T): T { return value; }');
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('template');
+  });
+
+  it('emits tupleRest expression with std::get', () => {
+    const result = lower(
+      'tuple-rest.ts',
+      'export function rest(pair: [number, string, boolean]): boolean { const [, , third] = pair; return third; }',
+    );
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('std::get<');
+    expect(emitted.contents).toContain('#include <tuple>');
+  });
+
+  it('resolves super reference to base class target name', () => {
+    const result = lower(
+      'super-ref.ts',
+      `export class Base {
+        value(): number { return 1; }
+      }
+      export class Derived extends Base {
+        value(): number { return super.value() + 1; }
+      }`,
+    );
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('Base');
+    expect(emitted.contents).toContain('Derived');
+  });
+
+  it('emits class that extends a non-class binding without crashing', () => {
+    const result = lower(
+      'extend-type.ts',
+      `export interface Movable { x: number; y: number }
+       export class Point implements Movable { x: number = 0; y: number = 0; }`,
+    );
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('struct Point');
+  });
+
+  it('generates unique names when for-in appears twice in same module', () => {
+    const result = lower(
+      'double-for-in.ts',
+      `export function keys(values: number[]): string {
+         let result = "";
+         for (const key in { a: values.length }) { result += key; }
+         for (const key in { b: values.length }) { result += key; }
+         return result;
+       }`,
+    );
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('for_in_object');
+    const matches = emitted.contents.match(/for_in_object/g);
+    expect(matches!.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('extracts super call from constructor or returns undefined when absent', () => {
+    const result = lower(
+      'no-super-call.ts',
+      `export class Base { x: number = 0 }
+       export class Child extends Base {
+         y: number = 0;
+         constructor() { super(); this.y = 1; }
+       }`,
+    );
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('struct Child');
+    expect(emitted.contents).toContain('Base');
+  });
+
+  it('emits sizeMethod binding as property access with static_cast', () => {
+    const result = lower('size-prop.ts', 'export function len(s: string): number { return s.length; }');
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('static_cast<double>');
+  });
+
+  it('emits ambient type reference without runtime binding as its source name', () => {
+    const result = lower('ambient-type-ref.ts', 'export function makeError(): Error { return new Error("fail"); }');
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('std::runtime_error');
+  });
+
+  it('emits import with tsx extension', () => {
+    const result = lowerPackage('@flighthq/ui', 'app.tsx', 'export function render(): string { return "hello"; }');
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.path).toBe('app.hpp');
+  });
 });
