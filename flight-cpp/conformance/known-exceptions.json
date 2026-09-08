@@ -4,25 +4,11 @@
   "target": "cpp",
   "exceptions": [
     {
-      "fixture": "closureCapture",
-      "phase": "emission",
-      "owner": "compiler-analysis",
-      "rule": "mutating closures require C++ capture-lifetime lowering",
-      "reason": "The IR does not yet distinguish an escaping capture from a same-frame mutable borrow."
-    },
-    {
       "fixture": "nameCollision",
       "phase": "emission",
       "owner": "compiler-emission",
       "rule": "public declarations share fixed C++ target name foo_bar",
       "reason": "Public target-name disambiguation is intentionally refused until its ABI spelling is versioned."
-    },
-    {
-      "fixture": "nestedClosure",
-      "phase": "emission",
-      "owner": "compiler-analysis",
-      "rule": "mutating closures require C++ capture-lifetime lowering",
-      "reason": "The IR does not yet distinguish an escaping capture from a same-frame mutable borrow."
     },
     {
       "fixture": "runtimeExternalTypeMissing",

@@ -23,7 +23,7 @@
     "dates",
     "default-and-optional-parameters",
     "enums",
-    "functions-and-closures-without-captured-mutation",
+    "functions-and-closures-with-shared-mutable-binding-capture",
     "interfaces-and-structural-records",
     "maps-and-sets",
     "nullish-presence",
@@ -49,8 +49,12 @@
       "rule": "Closed multi-member unions require distinct C++ alternative representations. Typeof and discriminant access requires checker proof; type assertions use checked access. Alternatives that collapse to the same C++ type, and unions combining several values with null or undefined, remain excluded."
     },
     {
-      "id": "no-captured-mutation",
-      "rule": "A closure that mutates captured state remains excluded until capture ownership and escape lifetime are explicit."
+      "id": "captured-referent-identity",
+      "rule": "Captured binding reassignment uses shared cells. Referent mutation is supported only for flight-cpp containers with shared reference identity; value-represented structural objects remain excluded."
+    },
+    {
+      "id": "initialized-capture-storage",
+      "rule": "A captured mutable binding must have initialized, concretely typed storage; uninitialized and captured for-in bindings remain excluded until absence and iteration storage are explicit."
     },
     {
       "id": "resolved-module-graph",

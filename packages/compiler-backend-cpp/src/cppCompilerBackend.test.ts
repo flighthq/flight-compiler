@@ -168,14 +168,65 @@ describe('emitIrModuleCpp', () => {
     expect(emitted.contents).toContain('std::get<double>(value)');
   });
 
-  it('refuses mutating closures until capture lifetime is explicit', () => {
+  it('emits escaping mutable bindings as shared cells selected from closure evidence', () => {
     const result = lower(
       'closure.ts',
       'export function counter(): () => number { let count = 0; return () => { count += 1; return count; }; }',
     );
 
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+
+    expect(emitted.contents).toContain('#include <memory>');
+    expect(emitted.contents).toContain('const auto count_capture = std::make_shared<double>(0.0)');
+    expect(emitted.contents).toContain('(*count_capture) += 1.0');
+    expect(emitted.contents).toContain('return (*count_capture)');
+  });
+
+  it('shares state across sibling closures and outer mutations after closure creation', () => {
+    const result = lower(
+      'shared-closure.ts',
+      'export function observe(): number { let value = 0; const read = (): number => value; const write = (): void => { value += 1; }; value += 2; write(); return read(); }',
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+
+    expect(emitted.contents).toContain('const auto value_capture = std::make_shared<double>(0.0)');
+    expect(emitted.contents.match(/\(\*value_capture\)/gu)).toHaveLength(3);
+  });
+
+  it('initializes captured parameter cells in source order after their defaults', () => {
+    const result = lower(
+      'captured-parameters.ts',
+      'export function make(first = 1, second = first): () => number { return (): number => { first += second; return first; }; }',
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+    const firstDefault = emitted.contents.indexOf('first = first.value_or(1.0)');
+    const firstCell = emitted.contents.indexOf('first_capture = std::make_shared<std::optional<double>>(first)');
+    const secondDefault = emitted.contents.indexOf('second = second.value_or((*first_capture).value())');
+
+    expect(firstDefault).toBeGreaterThan(-1);
+    expect(firstCell).toBeGreaterThan(firstDefault);
+    expect(secondDefault).toBeGreaterThan(firstCell);
+  });
+
+  it('initializes cells in concise outer closures before emitting nested mutation', () => {
+    const result = lower(
+      'nested-parameter.ts',
+      'export function factory(): (seed: number) => () => number { return (seed: number): (() => number) => (): number => ++seed; }',
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+
+    expect(emitted.contents).toContain('const auto seed_capture = std::make_shared<double>(seed)');
+    expect(emitted.contents).toContain('return [=]() { return ++(*seed_capture); }');
+  });
+
+  it('refuses captured structural referent mutation without shared object identity', () => {
+    const result = lower(
+      'referent.ts',
+      'export function mutate(): number { let state = { value: 0 }; const alias = state; const update = (): void => { state.value += 1; }; update(); return alias.value; }',
+    );
+
     expect(() => emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' })).toThrow(
-      'mutating closures require C++ capture-lifetime lowering',
+      'captured referent mutation of state requires a shared C++ reference representation',
     );
   });
 

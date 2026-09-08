@@ -2,6 +2,7 @@
 #pragma once
 #include <coroutine>
 #include <functional>
+#include <memory>
 #include <optional>
 #include <flight/runtime.hpp>
 
@@ -9,6 +10,10 @@ static_assert(flight::runtime_contract.compiler_contract == "flight-runtime-cont
 static_assert(flight::runtime_contract.cpp_abi == 1, "Flight C++ runtime ABI mismatch");
 
 namespace flighthq_cpp_conformance {
+
+struct ForInValues {
+  double value;
+};
 
 inline flight::String summarize(flight::Array<double> values) {
   flight::Array<double> indexed = values.map([=](double value, double index) { return (value + index); });
@@ -24,6 +29,32 @@ inline double update(flight::Map<flight::String, double> labels, flight::Set<fli
 inline double overwrite(flight::Uint8Array values, flight::Array<double> source) {
   values.set(source);
   return values.element(0.0);
+}
+
+inline std::function<double()> create_counter(double initial) {
+  const auto value_capture = std::make_shared<double>(initial);
+  return [=]() {
+  (*value_capture) += 1.0;
+  return (*value_capture);
+};
+}
+
+inline double observe_after_creation() {
+  const auto value_capture_1 = std::make_shared<double>(0.0);
+  std::function<double()> read = [=]() { return (*value_capture_1); };
+  (*value_capture_1) = 7.0;
+  return read();
+}
+
+inline flight::String select_first_key(ForInValues values) {
+  flight::String key;
+  for (const flight::String& variable_hoisting_iteration_value : flight::Array<flight::String>{flight::String("value")}) {
+    {
+      key = variable_hoisting_iteration_value;
+      return key;
+    }
+  }
+  return flight::String("");
 }
 
 inline flight::Task<double> increment(flight::Task<double> value) {

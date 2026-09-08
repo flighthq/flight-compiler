@@ -19,6 +19,7 @@
   },
   "dependencies": {
     "@flighthq/compiler-canonical-form": "*",
+    "@flighthq/compiler-closure": "*",
     "@flighthq/compiler-emission": "*",
     "@flighthq/compiler-ir-traversal": "*",
     "@flighthq/compiler-lowering": "*",

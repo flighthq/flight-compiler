@@ -19,7 +19,11 @@ The generated golden corpus uses the semantic profile. Native compilation accept
 
 Closed multi-member unions elect `std::variant` only when every source alternative has a distinct C++ representation. `typeof` and discriminant guards consume checker-proven union-member evidence, narrowed reads use checked `std::get`, and a source type assertion becomes the same checked access, failing with `std::bad_variant_access` when the runtime alternative disagrees. Duplicate target representations and optional variants remain outside the profile rather than producing ambiguous or nested storage.
 
-Remaining graduation work is intentionally narrow: remove the exception ledger through neutral capture and for-in evidence, select production Unicode and time-zone providers, prove a supported 32-bit configuration, and hold performance/ABI compatibility gates over at least one release-candidate cycle.
+Mutable closure bindings consume the target-neutral capture, escape, and mutation analysis. C++ elects a `std::shared_ptr<T>` cell only when a non-module binding is mutable or the evidence records mutation; lambdas copy that cell, so sibling closures, outer reads, and returned closures retain one binding and its lifetime. Parameters are promoted after default initialization, in source order. Module bindings remain direct and read-only captures remain value copies. This is JavaScript-style serialized state, not an assertion that concurrent calls may mutate a cell without external synchronization.
+
+The cell preserves binding identity, but it cannot manufacture referent identity for values the C++ profile represents by value. Captured mutation of `flight::Array`, `flight::Map`, `flight::Set`, and typed-array referents is supported because their runtime handles already share storage. Captured structural-object referent mutation, uninitialized cells, and for-in capture storage continue to refuse exactly rather than copy or zero-initialize state.
+
+Remaining graduation work is intentionally narrow: finish for-in capture storage, select production Unicode and time-zone providers, prove a supported 32-bit configuration, and hold performance/ABI compatibility gates over at least one release-candidate cycle.
 
 ## Binding profiles
 

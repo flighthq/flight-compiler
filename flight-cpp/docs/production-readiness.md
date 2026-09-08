@@ -30,7 +30,7 @@ Bazel is a supported build contract rather than a wrapper around CMake. Its vers
 ## Explicitly pending
 
 - duplicate C++ union alternatives and unions combining multiple values with absence need an explicit representation beyond the current closed `std::variant` subset;
-- mutable closure capture needs escape and ownership evidence;
+- captured structural-object referent mutation and for-in capture need explicit reference and iteration storage;
 - Unicode case conversion needs an elected production provider;
 - local civil-time `Date` operations need an elected time-zone policy;
 - cancellation needs a source-level contract before a runtime API is introduced;

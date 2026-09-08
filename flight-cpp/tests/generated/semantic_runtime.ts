@@ -14,6 +14,30 @@ export function overwrite(values: Uint8Array, source: number[]): number {
   return values[0];
 }
 
+export function createCounter(initial: number): () => number {
+  let value = initial;
+  return (): number => {
+    value += 1;
+    return value;
+  };
+}
+
+export function observeAfterCreation(): number {
+  let value = 0;
+  const read = (): number => value;
+  value = 7;
+  return read();
+}
+
+export interface ForInValues {
+  value: number;
+}
+
+export function selectFirstKey(values: ForInValues): string {
+  for (var key in values) return key;
+  return '';
+}
+
 export async function increment(value: Promise<number>): Promise<number> {
   return (await value) + 1;
 }
