@@ -1,6 +1,6 @@
 import ts from 'typescript';
 
-import type { CompilerStaticFactAudit, IrModule } from '../../compiler-types/src/index.js';
+import type { CompilerStaticFactAudit, IrExpression, IrModule } from '../../compiler-types/src/index.js';
 import { analyzeIrModulesStaticFacts, combineCompilerStaticFactAudits } from './compilerIrStaticFacts.js';
 import { lowerTypeScriptSource } from './typeScriptSemanticLowering.js';
 
@@ -490,6 +490,48 @@ describe('analyzeIrModulesStaticFacts', () => {
       },
       { context: 'logicalOperand', count: 2, domain: 'boolean', kind: 'truthiness' },
       { context: 'logicalOperand', count: 1, domain: 'object', kind: 'truthiness' },
+    ]);
+  });
+
+  it('classifies IR-only expression domains from lowering passes', () => {
+    const base = lowerTypeScriptSource(
+      ts.createSourceFile(
+        '/flight/packages/math/src/ir-only-domains.ts',
+        'export function inspect(): void { if (true) {} }',
+        ts.ScriptTarget.Latest,
+        true,
+      ),
+      { packageName: '@flighthq/math', upstreamDirectory: '/flight' },
+    );
+    const declaration = base.module.declarations[0];
+    if (declaration?.kind !== 'function' || declaration.body[0]?.kind !== 'if') {
+      throw new Error('Expected function with if statement');
+    }
+    const statement = declaration.body[0];
+    const ident: IrExpression = { kind: 'identifier', reference: { kind: 'ambient', name: 'value' } };
+    const conditions: IrExpression[] = [
+      { kind: 'tupleRest', object: ident, start: 0 },
+      { kind: 'tupleSuffix', object: ident, start: 0, width: 1 },
+      {
+        fallback: { kind: 'literal', value: 0 },
+        kind: 'undefinedDefault',
+        value: { kind: 'undefinedValue', type: { kind: 'undefined' } },
+      },
+      { fallback: { kind: 'literal', value: 0 }, kind: 'undefinedDefault', value: { kind: 'literal', value: 42 } },
+      { fallback: { kind: 'literal', value: 0 }, kind: 'undefinedDefault', value: ident },
+    ];
+    const modules = conditions.map(
+      (condition): IrModule => ({
+        ...base.module,
+        declarations: [{ ...declaration, body: [{ ...statement, condition }] }],
+      }),
+    );
+    const facts = analyzeIrModulesStaticFacts(modules).facts.filter((fact) => fact.kind === 'truthiness');
+
+    expect(facts).toEqual([
+      { context: 'controlFlowCondition', count: 2, domain: 'number', kind: 'truthiness' },
+      { context: 'controlFlowCondition', count: 2, domain: 'object', kind: 'truthiness' },
+      { context: 'controlFlowCondition', count: 1, domain: 'unknown', kind: 'truthiness' },
     ]);
   });
 

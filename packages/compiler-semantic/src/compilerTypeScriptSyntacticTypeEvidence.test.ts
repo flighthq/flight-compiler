@@ -53,6 +53,24 @@ it('follows an inferred const to its initializer, and stops at a self-referentia
   expect(getTypeScriptSyntacticExpressionTypeEvidence(cyclicStatement.expression, cyclic.checker)).toBeUndefined();
 });
 
+it('reads the awaited type out of a PromiseLike type argument', () => {
+  const { checker, source } = createProgram('declare const task: PromiseLike<string>; await task;');
+  const statement = source.statements[1];
+  if (!statement || !ts.isExpressionStatement(statement)) throw new Error('Expected expression statement');
+
+  expect(getTypeScriptSyntacticExpressionTypeEvidence(statement.expression, checker)?.getText(source)).toBe('string');
+});
+
+it('reads the awaited type when the Promise reference uses a qualified name', () => {
+  const { checker, source } = createProgram(
+    'declare namespace Lib { type Promise<T> = { value: T }; } declare const task: Lib.Promise<number>; await task;',
+  );
+  const statement = source.statements[2];
+  if (!statement || !ts.isExpressionStatement(statement)) throw new Error('Expected expression statement');
+
+  expect(getTypeScriptSyntacticExpressionTypeEvidence(statement.expression, checker)?.getText(source)).toBe('number');
+});
+
 it('claims nothing for an await of something that is not a written task type', () => {
   const { checker, source } = createProgram('declare const value: number; await value;');
   const statement = source.statements[1];
@@ -81,6 +99,23 @@ describe('createTypeScriptSyntacticAliasSubstitutions', () => {
     const substitutions = createTypeScriptSyntacticAliasSubstitutions(use.type, declaration, checker, new Map());
 
     expect([...substitutions!.values()].map((type) => type.getText(source))).toEqual(['number', 'string']);
+  });
+
+  it('refuses a reference with fewer arguments than required type parameters without defaults', () => {
+    const { checker, source } = createProgram('type Pair<Left, Right> = [Left, Right]; type Value = Pair<number>;');
+    const declaration = source.statements[0];
+    const use = source.statements[1];
+    if (
+      !declaration ||
+      !ts.isTypeAliasDeclaration(declaration) ||
+      !use ||
+      !ts.isTypeAliasDeclaration(use) ||
+      !ts.isTypeReferenceNode(use.type)
+    ) {
+      throw new Error('Expected alias declarations');
+    }
+
+    expect(createTypeScriptSyntacticAliasSubstitutions(use.type, declaration, checker, new Map())).toBeUndefined();
   });
 
   it('refuses a reference whose arity exceeds the alias declaration', () => {

@@ -14,6 +14,25 @@ describe('getIrTypeOperatorValueDomain', () => {
     ).toBe('object');
     expect(getIrTypeOperatorValueDomain({ kind: 'unknown', source: 'any' })).toBe('unknown');
     expect(getIrTypeOperatorValueDomain(undefined)).toBe('unknown');
+    expect(getIrTypeOperatorValueDomain({ kind: 'never' })).toBe('unknown');
+    expect(getIrTypeOperatorValueDomain({ kind: 'named', name: 'Date', packageName: '', source: '' })).toBe('unknown');
+    expect(getIrTypeOperatorValueDomain({ kind: 'intersection', types: [] })).toBe('unknown');
+    expect(getIrTypeOperatorValueDomain({ kind: 'keyof', type: { kind: 'unknown', source: 'any' } })).toBe('unknown');
+    expect(
+      getIrTypeOperatorValueDomain({
+        kind: 'indexedAccess',
+        index: { kind: 'primitive', name: 'string' },
+        object: { kind: 'unknown', source: 'any' },
+      }),
+    ).toBe('unknown');
+    expect(
+      getIrTypeOperatorValueDomain({
+        kind: 'typeOf',
+        name: 'value',
+        packageName: '',
+        source: '',
+      }),
+    ).toBe('unknown');
   });
 
   it('preserves a common union domain and refuses mixed or unresolved unions', () => {
@@ -68,6 +87,15 @@ describe('getIrBinaryOperatorResultDomain', () => {
     expect(getIrBinaryOperatorResultDomain('-', 'string', 'string')).toBe('unknown');
     expect(getIrBinaryOperatorResultDomain('<', 'unknown', 'unknown')).toBe('unknown');
     expect(getIrBinaryOperatorResultDomain('|', 'bigint', 'bigint')).toBe('unknown');
+    expect(getIrBinaryOperatorResultDomain('%', 'string', 'string')).toBe('unknown');
+    expect(getIrBinaryOperatorResultDomain('*', 'boolean', 'boolean')).toBe('unknown');
+    expect(getIrBinaryOperatorResultDomain('&', 'string', 'number')).toBe('unknown');
+    expect(getIrBinaryOperatorResultDomain('<<', 'bigint', 'bigint')).toBe('unknown');
+    expect(getIrBinaryOperatorResultDomain('>>', 'string', 'string')).toBe('unknown');
+    expect(getIrBinaryOperatorResultDomain('>>>', 'boolean', 'boolean')).toBe('unknown');
+    expect(getIrBinaryOperatorResultDomain('^', 'number', 'string')).toBe('unknown');
+    expect(getIrBinaryOperatorResultDomain('!==', 'number', 'string')).toBe('unknown');
+    expect(getIrBinaryOperatorResultDomain('!=', 'unknown', 'unknown')).toBe('unknown');
     // `??` over operands that agree does decide: the caller passes the left operand's present-value
     // domain, so agreement means both routes produce the same domain.
     expect(getIrBinaryOperatorResultDomain('??', 'number', 'string')).toBe('unknown');

@@ -100,6 +100,40 @@ describe('getTypeScriptInvocationSignatureResolution', () => {
     });
   });
 
+  it('pairs a resolved constructor overload in a class expression with its implementation', () => {
+    const { checker, invocation, source } = createInvocationProgram(
+      [
+        'const Value = class {',
+        '  constructor(value: string);',
+        '  constructor(value: number);',
+        '  constructor(value: string | number) {}',
+        '};',
+        'new Value(1);',
+      ].join('\n'),
+    );
+    const variableStatement = source.statements[0];
+    if (!variableStatement || !ts.isVariableStatement(variableStatement))
+      throw new Error('Expected variable statement');
+    const classExpression = variableStatement.declarationList.declarations[0]?.initializer;
+    if (!classExpression || !ts.isClassExpression(classExpression)) throw new Error('Expected class expression');
+    const resolved = classExpression.members[1];
+    const implementation = classExpression.members[2];
+    if (
+      !resolved ||
+      !ts.isConstructorDeclaration(resolved) ||
+      !implementation ||
+      !ts.isConstructorDeclaration(implementation)
+    ) {
+      throw new Error('Expected constructor overload declarations');
+    }
+
+    expect(getTypeScriptInvocationSignatureResolution(invocation, checker)).toEqual({
+      implementation,
+      overloadIndex: 1,
+      resolved,
+    });
+  });
+
   it('retains an interface method overload when no implementation exists', () => {
     const { checker, invocation, source } = createInvocationProgram(
       [
