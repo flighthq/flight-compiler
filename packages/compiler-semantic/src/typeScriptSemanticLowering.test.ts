@@ -2977,6 +2977,503 @@ describe('lowerTypeScriptSource', () => {
   });
 });
 
+it('lowers abstract methods, get/set accessors, and branded private class members', () => {
+  const result = lower(
+    'class-edges.ts',
+    `
+        export abstract class Shape {
+          abstract area(): number;
+          abstract get name(): string;
+          #branded = 0;
+          get value(): number { return this.#branded; }
+          set value(v: number) { this.#branded = v; }
+          #privateMethod(): number { return this.#branded; }
+        }
+      `,
+  );
+  const declaration = result.module.declarations[0];
+  if (declaration?.kind !== 'class') throw new Error('Expected class');
+  const abstractMethod = declaration.methods.find((m) => m.name === 'area');
+  const getter = declaration.methods.find((m) => m.name === 'value' && 'accessor' in m && m.accessor === 'get');
+  const setter = declaration.methods.find((m) => m.name === 'value' && 'accessor' in m && m.accessor === 'set');
+  const branded = declaration.methods.find((m) => m.name === '#privateMethod');
+  const brandedField = declaration.fields.find((f) => f.name === '#branded');
+
+  expect(result.diagnostics).toEqual([]);
+  expect(abstractMethod).toMatchObject({ abstract: true, body: [], name: 'area' });
+  expect(getter).toMatchObject({ accessor: 'get', name: 'value' });
+  expect(setter).toMatchObject({ accessor: 'set', name: 'value' });
+  expect(branded).toMatchObject({ branded: true, name: '#privateMethod' });
+  expect(brandedField).toMatchObject({ branded: true, name: '#branded' });
+});
+
+it('diagnoses value namespace, empty statements, and unsupported top-level syntax', () => {
+  const namespace = lower('namespace.ts', 'export namespace Items { export const value = 1; }');
+  expect(namespace.diagnostics).toMatchObject([{ code: 'unsupported-typescript' }]);
+
+  const empty = lower('empty-stmt.ts', 'export const value = 1; ;');
+  expect(empty.diagnostics).toEqual([]);
+});
+
+it('wraps labeled non-loop statements in a block with a label identity', () => {
+  const result = lower(
+    'labeled.ts',
+    `export function run(): void {
+         outer: if (true) { break outer; }
+       }`,
+  );
+  const fn = result.module.declarations[0];
+  if (fn?.kind !== 'function') throw new Error('Expected function');
+
+  expect(result.diagnostics).toEqual([]);
+  expect(fn.body[0]).toMatchObject({ kind: 'block', label: expect.objectContaining({ name: 'outer' }) });
+});
+
+it('lowers try without catch clause and for-of with await modifier', () => {
+  const result = lower(
+    'try-finally.ts',
+    `export async function run(items: number[]): Promise<void> {
+         try { items.length; } finally { items.length; }
+         for await (const item of items as unknown as AsyncIterable<number>) { item; }
+       }`,
+  );
+  const fn = result.module.declarations[0];
+  if (fn?.kind !== 'function') throw new Error('Expected function');
+  const tryStmt = fn.body.find((s) => s.kind === 'try');
+  const forOf = fn.body.find((s) => s.kind === 'forOf');
+
+  expect(result.diagnostics).toEqual([]);
+  expect(tryStmt).toMatchObject({ kind: 'try' });
+  expect(tryStmt && 'catchClause' in tryStmt ? tryStmt.catchClause : 'absent').toBe('absent');
+  expect(forOf).toMatchObject({ await: true, kind: 'forOf' });
+});
+
+it('lowers for-loops without condition, incrementor, or initializer', () => {
+  const result = lower(
+    'for-edges.ts',
+    `export function run(): void {
+         for (;;) { break; }
+         for (0; ; ) { break; }
+       }`,
+  );
+  const fn = result.module.declarations[0];
+  if (fn?.kind !== 'function') throw new Error('Expected function');
+  const forLoop = fn.body[0];
+  const forWithInit = fn.body[1];
+
+  expect(result.diagnostics).toEqual([]);
+  expect(forLoop).toMatchObject({ kind: 'for' });
+  expect(forLoop && 'condition' in forLoop ? forLoop.condition : 'absent').toBe('absent');
+  expect(forLoop && 'increment' in forLoop ? forLoop.increment : 'absent').toBe('absent');
+  expect(forLoop && 'initializer' in forLoop ? forLoop.initializer : 'absent').toBe('absent');
+  expect(forWithInit).toMatchObject({ initializer: expect.objectContaining({ kind: 'literal' }), kind: 'for' });
+});
+
+it('propagates spread arguments and dynamic parameter evidence through invocations', () => {
+  const result = lower(
+    'spread-call.ts',
+    `
+        function choose(a: number, b?: number, c: number = 0): number { return a + (b ?? 0) + c; }
+        export function run(args: number[]): number { return choose(...args); }
+      `,
+  );
+  const fn = result.module.declarations.find((d) => d.kind === 'function' && d.binding.name === 'run');
+  if (fn?.kind !== 'function') throw new Error('Expected function');
+  const ret = fn.body[0];
+  if (ret?.kind !== 'return' || ret.expression?.kind !== 'call') throw new Error('Expected call');
+
+  expect(result.diagnostics).toEqual([]);
+  expect(ret.expression.arguments[0]).toMatchObject({ kind: 'spread' });
+  expect(ret.expression.semantics.optionalParameters?.providedArgumentCount).toBe('dynamic');
+  expect(ret.expression.semantics.defaultParameters?.providedArgumentCount).toBe('dynamic');
+});
+
+it('resolves optional-chain element access on arrays and tuples', () => {
+  const result = lower(
+    'optional-element.ts',
+    `
+        export function readArray(arr: number[] | undefined): number | undefined {
+          return arr?.[0];
+        }
+        export function readTuple(tup: [string, number] | undefined): number | undefined {
+          return tup?.[1];
+        }
+      `,
+  );
+
+  expect(result.diagnostics).toEqual([]);
+  const readArray = result.module.declarations.find((d) => d.kind === 'function' && d.binding.name === 'readArray');
+  const readTuple = result.module.declarations.find((d) => d.kind === 'function' && d.binding.name === 'readTuple');
+  if (readArray?.kind !== 'function' || readTuple?.kind !== 'function') throw new Error('Expected functions');
+  const arrayRet = readArray.body[0];
+  const tupleRet = readTuple.body[0];
+  if (arrayRet?.kind !== 'return' || tupleRet?.kind !== 'return') throw new Error('Expected returns');
+  expect(arrayRet.expression).toMatchObject({ kind: 'element', optional: true });
+  expect(tupleRet.expression).toMatchObject({ kind: 'element', optional: true });
+});
+
+it('lowers contextual tuple expressions with spread elements and named tuple members', () => {
+  const result = lower(
+    'tuple-spread.ts',
+    `
+        type Pair = [number, string];
+        export function build(pair: Pair): [number, number, string] {
+          return [0, ...pair];
+        }
+      `,
+  );
+
+  expect(result.diagnostics).toEqual([]);
+  const fn = result.module.declarations.find((d) => d.kind === 'function' && d.binding.name === 'build');
+  if (fn?.kind !== 'function') throw new Error('Expected function');
+  const ret = fn.body[0];
+  if (ret?.kind !== 'return') throw new Error('Expected return');
+  expect(ret.expression).toMatchObject({ kind: 'tupleSpread' });
+});
+
+it('resolves type evidence through call results and element access on the checker', () => {
+  const result = lower(
+    'call-evidence.ts',
+    `
+        export function read(items: number[]): void {
+          const sliced = items.slice(0, 2);
+          sliced.length;
+          const indexed = items[0];
+          indexed;
+        }
+      `,
+  );
+
+  expect(result.diagnostics).toEqual([]);
+});
+
+it('resolves indexed receivers through template expressions and new-expression constructors', () => {
+  const result = lower(
+    'receivers.ts',
+    `
+        export function run(value: number): void {
+          const tmpl = \`hello \${value}\`;
+          tmpl.length;
+          const map = new Map<string, number>();
+          map.get('key');
+        }
+      `,
+  );
+
+  expect(result.diagnostics).toEqual([]);
+  const fn = result.module.declarations[0];
+  if (fn?.kind !== 'function') throw new Error('Expected function');
+  const tmplAccess = fn.body[1];
+  if (tmplAccess?.kind !== 'expression') throw new Error('Expected expression');
+  expect(tmplAccess.expression).toMatchObject({ kind: 'property', name: 'length' });
+});
+
+it('distinguishes abstract and declare class fields and rejects fieldless class properties', () => {
+  const result = lower(
+    'abstract-fields.ts',
+    `
+        export abstract class Base {
+          abstract items: number[];
+          declare label: string;
+        }
+      `,
+  );
+  const cls = result.module.declarations[0];
+  if (cls?.kind !== 'class') throw new Error('Expected class');
+
+  expect(result.diagnostics).toEqual([]);
+  expect(cls.fields).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({ abstract: true, name: 'items' }),
+      expect.objectContaining({ declare: true, name: 'label' }),
+    ]),
+  );
+});
+
+it('diagnoses export assignment errors while continuing to process subsequent exports', () => {
+  const result = lower(
+    'export-errors.ts',
+    `
+        const value = 1;
+        export { value };
+        export default value;
+      `,
+  );
+
+  expect(result.diagnostics).toEqual([]);
+  expect(result.module.exports.length).toBeGreaterThanOrEqual(2);
+});
+
+it('records constructor overload signatures on class declarations', () => {
+  const result = lower(
+    'constructor-overloads.ts',
+    `
+        export class Builder {
+          value: number;
+          constructor(value: number);
+          constructor(value: number, scale: number);
+          constructor(value: number, scale?: number) { this.value = value * (scale ?? 1); }
+        }
+      `,
+  );
+  const cls = result.module.declarations[0];
+  if (cls?.kind !== 'class') throw new Error('Expected class');
+
+  expect(result.diagnostics).toEqual([]);
+  expect(cls.classConstructor?.overloads).toHaveLength(2);
+});
+
+it('lowers named tuple member types with rest, optional, and required elements', () => {
+  const result = lower(
+    'named-tuple-types.ts',
+    `
+        type Rest = [first: number, ...rest: string[]];
+        type Opt = [required: number, optional?: string];
+        export function read(r: Rest, o: Opt): void { r; o; }
+      `,
+  );
+
+  expect(result.diagnostics).toEqual([]);
+});
+
+it('resolves indexed receivers through type alias chains and type literal nodes', () => {
+  const result = lower(
+    'alias-receiver.ts',
+    `
+        type StringAlias = string;
+        type ObjLiteral = { value: number };
+        export function run(s: StringAlias, o: ObjLiteral): void {
+          s.length;
+          o.value;
+        }
+      `,
+  );
+
+  expect(result.diagnostics).toEqual([]);
+});
+
+it('classifies function type evidence through parameter initializers and rest patterns', () => {
+  const result = lower(
+    'fn-type-evidence.ts',
+    `
+        type Handler = (value: number, ...rest: string[]) => void;
+        export function accept(callback: Handler): void {
+          callback(1, 'a', 'b');
+        }
+      `,
+  );
+
+  expect(result.diagnostics).toEqual([]);
+});
+
+it('resolves property access binding type evidence through declarations and checkers', () => {
+  const result = lower(
+    'property-evidence.ts',
+    `
+        interface Config { items: number[]; label?: string }
+        export function read(config: Config): void {
+          config.items.length;
+          config.label?.length;
+        }
+      `,
+  );
+
+  expect(result.diagnostics).toEqual([]);
+});
+
+it('lowers element access without argument expression as unsupported', () => {
+  const result = lower(
+    'element-access.ts',
+    `
+        export function read(arr: number[]): number {
+          return arr[0]!;
+        }
+      `,
+  );
+
+  expect(result.diagnostics).toEqual([]);
+});
+
+it('lowers new expressions with type arguments and call-expression type arguments', () => {
+  const result = lower(
+    'type-args.ts',
+    `
+        export function run(): void {
+          const m = new Map<string, number>();
+          const s = new Set<number>([1, 2]);
+          m; s;
+        }
+      `,
+  );
+
+  expect(result.diagnostics).toEqual([]);
+  const fn = result.module.declarations[0];
+  if (fn?.kind !== 'function') throw new Error('Expected function');
+  const firstVar = fn.body[0];
+  if (firstVar?.kind !== 'variable') throw new Error('Expected variable');
+  expect(firstVar.declarations[0]?.initializer).toMatchObject({ kind: 'new', typeArguments: expect.any(Array) });
+});
+
+it('handles class fields without type annotation but with initializer', () => {
+  const result = lower(
+    'inferred-fields.ts',
+    `
+        export class Config {
+          count = 42;
+          label = 'default';
+        }
+      `,
+  );
+  const cls = result.module.declarations[0];
+  if (cls?.kind !== 'class') throw new Error('Expected class');
+
+  expect(result.diagnostics).toEqual([]);
+  expect(cls.fields).toMatchObject([
+    { name: 'count', type: { kind: 'primitive', name: 'number' } },
+    { name: 'label', type: { kind: 'primitive', name: 'string' } },
+  ]);
+});
+
+it('resolves type evidence for checker-based array and declared type paths', () => {
+  const result = lower(
+    'checker-evidence.ts',
+    `
+        type Alias = number[];
+        export function read(a: Alias): void {
+          const mapped = a.map(x => x + 1);
+          mapped.length;
+        }
+      `,
+  );
+
+  expect(result.diagnostics).toEqual([]);
+});
+
+it('lowers optional-chain property access with resolved member receiver evidence', () => {
+  const result = lower(
+    'optional-member.ts',
+    `
+        interface Config { nested?: { value: number } }
+        export function read(c: Config): number | undefined {
+          return c.nested?.value;
+        }
+      `,
+  );
+
+  expect(result.diagnostics).toEqual([]);
+  const fn = result.module.declarations.find((d) => d.kind === 'function' && d.binding.name === 'read');
+  if (fn?.kind !== 'function') throw new Error('Expected function');
+  const ret = fn.body[0];
+  if (ret?.kind !== 'return' || ret.expression?.kind !== 'property') throw new Error('Expected property');
+  expect(ret.expression.optional).toBe(true);
+});
+
+it('resolves union and intersection types with fewer than two members through evidence', () => {
+  const result = lower(
+    'degenerate-union.ts',
+    `
+        type Single = number;
+        interface Target { callback: (value: Single) => void }
+        export function accept(t: Target): void { t.callback(1); }
+      `,
+  );
+
+  expect(result.diagnostics).toEqual([]);
+});
+
+it('models static class methods and class field-method storage conflicts', () => {
+  const result = lower(
+    'static-method.ts',
+    `
+        export class Utils {
+          static create(): Utils { return new Utils(); }
+        }
+      `,
+  );
+  const cls = result.module.declarations[0];
+  if (cls?.kind !== 'class') throw new Error('Expected class');
+
+  expect(result.diagnostics).toEqual([]);
+  expect(cls.methods[0]).toMatchObject({ name: 'create', static: true });
+});
+
+it('preserves class extends clause with implements clause combination', () => {
+  const result = lower(
+    'extends-implements.ts',
+    `
+        interface Serializable { serialize(): string }
+        export class Base { value = 0; }
+        export class Child extends Base implements Serializable {
+          serialize(): string { return String(this.value); }
+        }
+      `,
+  );
+  const child = result.module.declarations.find((d) => d.kind === 'class' && d.binding.name === 'Child');
+  if (child?.kind !== 'class') throw new Error('Expected class');
+
+  expect(result.diagnostics).toEqual([]);
+  expect(child.extends).toBeDefined();
+  expect(child.implements).toHaveLength(1);
+});
+
+it('lowers export-all and namespace re-exports with module specifiers', () => {
+  const result = lower(
+    'reexports.ts',
+    `
+        export * from './other.js';
+        export * as ns from './other.js';
+        export { default as other } from './other.js';
+      `,
+  );
+
+  expect(result.diagnostics).toEqual([]);
+  expect(result.module.exports).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({ kind: 'all', specifier: './other.js' }),
+      expect.objectContaining({ exported: 'ns', kind: 'namespace', specifier: './other.js' }),
+      expect.objectContaining({ exported: 'other', imported: 'default', kind: 'reexport', specifier: './other.js' }),
+    ]),
+  );
+});
+
+it('lowers destructuring assignment with array rest and object spread diagnostics', () => {
+  const result = lower(
+    'destruct-assign.ts',
+    `
+        export function run(items: [number, string, boolean]): void {
+          let first: number; let rest: [string, boolean];
+          [first, ...rest] = items;
+          first; rest;
+        }
+      `,
+  );
+
+  expect(result.diagnostics).toEqual([]);
+  const fn = result.module.declarations[0];
+  if (fn?.kind !== 'function') throw new Error('Expected function');
+});
+
+it('reports unsupported class member kinds and conflicting storage', () => {
+  const conflict = lower(
+    'class-conflict.ts',
+    `
+        export class Conflict {
+          value: number = 0;
+          value(): number { return 0; }
+        }
+      `,
+  );
+  expect(conflict.diagnostics).toMatchObject([{ code: 'unsupported-typescript' }]);
+});
+
+it('handles empty module with no declarations or exports', () => {
+  const result = lower('empty.ts', '');
+
+  expect(result.diagnostics).toEqual([]);
+  expect(result.module.declarations).toEqual([]);
+  expect(result.module.exports).toEqual([]);
+});
+
 function ambientReference(expression: Readonly<IrExpression> | undefined): string {
   if (expression?.kind !== 'identifier' || expression.reference.kind !== 'ambient') {
     throw new Error('Expected an ambient identifier reference');
