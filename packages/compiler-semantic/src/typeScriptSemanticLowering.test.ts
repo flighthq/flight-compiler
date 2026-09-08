@@ -6060,6 +6060,268 @@ it('classifies symbol-typed property key coercion in element access', () => {
   expect(ret.expression).toMatchObject({ kind: 'element', semantics: expect.objectContaining({ key: 'symbol' }) });
 });
 
+it('lowers named tuple members with optional and rest labels', () => {
+  const result = lower(
+    'named-tuple-inline.ts',
+    `
+        export function accept(value: [first: number, second?: string]): void {}
+      `,
+  );
+  expect(result.diagnostics).toEqual([]);
+  const fn = result.module.declarations[0];
+  if (fn?.kind !== 'function') throw new Error('Expected function');
+  expect(fn.parameters[0]?.type).toMatchObject({
+    kind: 'tuple',
+    elements: [
+      { optional: false, rest: false, type: { kind: 'primitive', name: 'number' } },
+      { optional: true, rest: false, type: { kind: 'primitive', name: 'string' } },
+    ],
+  });
+});
+
+it('lowers named rest tuple member', () => {
+  const result = lower(
+    'named-rest-tuple.ts',
+    `
+        export function accept(value: [first: number, ...rest: string[]]): void {}
+      `,
+  );
+  expect(result.diagnostics).toEqual([]);
+  const fn = result.module.declarations[0];
+  if (fn?.kind !== 'function') throw new Error('Expected function');
+  expect(fn.parameters[0]?.type).toMatchObject({
+    kind: 'tuple',
+    elements: [
+      { optional: false, rest: false },
+      { optional: false, rest: true },
+    ],
+  });
+});
+
+it('lowers inline union and intersection type annotations', () => {
+  const result = lower(
+    'union-intersection.ts',
+    `
+        export function acceptUnion(value: string | number): void {}
+        export function acceptIntersection(value: { a: number } & { b: string }): void {}
+      `,
+  );
+  expect(result.diagnostics).toEqual([]);
+  const unionFn = result.module.declarations.find((d) => d.kind === 'function' && d.binding.name === 'acceptUnion');
+  const interFn = result.module.declarations.find(
+    (d) => d.kind === 'function' && d.binding.name === 'acceptIntersection',
+  );
+  if (unionFn?.kind !== 'function' || interFn?.kind !== 'function') throw new Error('Expected functions');
+  expect(unionFn.parameters[0]?.type).toMatchObject({ kind: 'union' });
+  expect(interFn.parameters[0]?.type).toMatchObject({ kind: 'intersection' });
+});
+
+it('lowers inline type literal return type with properties', () => {
+  const result = lower(
+    'type-literal-ret.ts',
+    `
+        export function get(): { x: number; y: string } { return { x: 1, y: "" }; }
+      `,
+  );
+  expect(result.diagnostics).toEqual([]);
+  const fn = result.module.declarations[0];
+  if (fn?.kind !== 'function') throw new Error('Expected function');
+  expect(fn.returns).toMatchObject({
+    kind: 'object',
+    properties: expect.arrayContaining([
+      expect.objectContaining({ name: 'x' }),
+      expect.objectContaining({ name: 'y' }),
+    ]),
+  });
+});
+
+it('lowers method signatures with rest, optional, and pattern parameters', () => {
+  const result = lower(
+    'method-sig.ts',
+    `
+        export function accept(handler: {
+          spread(...args: string[]): void;
+          maybe(value?: number): void;
+          destructure({ x, y }: { x: number; y: number }): void;
+        }): void {}
+      `,
+  );
+  expect(result.diagnostics).toEqual([]);
+  const fn = result.module.declarations[0];
+  if (fn?.kind !== 'function') throw new Error('Expected function');
+  const handlerType = fn.parameters[0]?.type;
+  if (handlerType?.kind !== 'object') throw new Error('Expected object type');
+  const spread = handlerType.properties.find((p) => p.name === 'spread');
+  const maybe = handlerType.properties.find((p) => p.name === 'maybe');
+  const destructure = handlerType.properties.find((p) => p.name === 'destructure');
+  if (spread?.type.kind !== 'function') throw new Error('Expected function type for spread');
+  if (maybe?.type.kind !== 'function') throw new Error('Expected function type for maybe');
+  if (destructure?.type.kind !== 'function') throw new Error('Expected function type for destructure');
+  expect(spread.type.parameters[0]).toMatchObject({ rest: true });
+  expect(maybe.type.parameters[0]).toMatchObject({ optional: true });
+  expect(destructure.type.parameters[0]).toMatchObject({ name: 'parameterPatternValue' });
+});
+
+it('lowers readonly array and tuple annotations', () => {
+  const result = lower(
+    'readonly-types.ts',
+    `
+        export function acceptArr(value: readonly number[]): void {}
+        export function acceptTuple(value: readonly [number, string]): void {}
+      `,
+  );
+  expect(result.diagnostics).toEqual([]);
+  const arrFn = result.module.declarations.find((d) => d.kind === 'function' && d.binding.name === 'acceptArr');
+  const tupleFn = result.module.declarations.find((d) => d.kind === 'function' && d.binding.name === 'acceptTuple');
+  if (arrFn?.kind !== 'function' || tupleFn?.kind !== 'function') throw new Error('Expected functions');
+  expect(arrFn.parameters[0]?.type).toMatchObject({ kind: 'array', readonly: true });
+  expect(tupleFn.parameters[0]?.type).toMatchObject({ kind: 'tuple', readonly: true });
+});
+
+it('lowers Array<T> and ReadonlyArray<T> reference annotations', () => {
+  const result = lower(
+    'array-ref-types.ts',
+    `
+        export function acceptArray(value: Array<number>): void {}
+        export function acceptReadonly(value: ReadonlyArray<string>): void {}
+      `,
+  );
+  expect(result.diagnostics).toEqual([]);
+  const arrFn = result.module.declarations.find((d) => d.kind === 'function' && d.binding.name === 'acceptArray');
+  const roFn = result.module.declarations.find((d) => d.kind === 'function' && d.binding.name === 'acceptReadonly');
+  if (arrFn?.kind !== 'function' || roFn?.kind !== 'function') throw new Error('Expected functions');
+  expect(arrFn.parameters[0]?.type).toMatchObject({ kind: 'array', readonly: false });
+  expect(roFn.parameters[0]?.type).toMatchObject({ kind: 'array', readonly: true });
+});
+
+it('lowers interface type reference as named type on parameters', () => {
+  const result = lower(
+    'interface-ref.ts',
+    `
+        interface Point { x: number; y: number }
+        export function accept(value: Point): void {}
+      `,
+  );
+  expect(result.diagnostics).toEqual([]);
+  const fn = result.module.declarations.find((d) => d.kind === 'function' && d.binding.name === 'accept');
+  if (fn?.kind !== 'function') throw new Error('Expected function');
+  expect(fn.parameters[0]?.type).toMatchObject({ kind: 'named' });
+});
+
+it('resolves nullish coalescing type evidence when both sides match', () => {
+  const result = lower(
+    'coalesce-evidence.ts',
+    `
+        export function coalesce(value: string | null, fallback: string): string {
+          return value ?? fallback;
+        }
+      `,
+  );
+  expect(result.diagnostics).toEqual([]);
+  const fn = result.module.declarations[0];
+  if (fn?.kind !== 'function') throw new Error('Expected function');
+  const ret = fn.body[0];
+  if (ret?.kind !== 'return') throw new Error('Expected return');
+  expect(ret.expression).toMatchObject({ kind: 'binary', operator: '??' });
+});
+
+it('strips null and undefined from union in nullish coalescing multi-member evidence', () => {
+  const result = lower(
+    'coalesce-multi.ts',
+    `
+        export function strip(value: string | number | null, fallback: string | number): string | number {
+          return value ?? fallback;
+        }
+      `,
+  );
+  expect(result.diagnostics).toEqual([]);
+});
+
+it('resolves binary expression result domain for nullish coalescing operator', () => {
+  const result = lower(
+    'nullish-domain.ts',
+    `
+        export function fallback(value: string | undefined): string {
+          return value ?? "default";
+        }
+      `,
+  );
+  expect(result.diagnostics).toEqual([]);
+  const fn = result.module.declarations[0];
+  if (fn?.kind !== 'function') throw new Error('Expected function');
+  const ret = fn.body[0];
+  if (ret?.kind !== 'return') throw new Error('Expected return');
+  expect(ret.expression).toMatchObject({
+    kind: 'binary',
+    operator: '??',
+    semantics: expect.objectContaining({ result: 'string' }),
+  });
+});
+
+it('resolves nullish coalescing present domain through array element access', () => {
+  const result = lower(
+    'element-coalesce.ts',
+    `
+        export function elementFallback(arr: string[]): string {
+          return arr[0] ?? "default";
+        }
+      `,
+  );
+  expect(result.diagnostics).toEqual([]);
+  const fn = result.module.declarations[0];
+  if (fn?.kind !== 'function') throw new Error('Expected function');
+  const ret = fn.body[0];
+  if (ret?.kind !== 'return') throw new Error('Expected return');
+  expect(ret.expression).toMatchObject({
+    kind: 'binary',
+    operator: '??',
+    semantics: expect.objectContaining({ result: 'string' }),
+  });
+});
+
+it('refuses anonymous default function export with unsupported diagnostic', () => {
+  const result = lower(
+    'anonymous-default.ts',
+    `
+        export default function() { return 1; }
+      `,
+  );
+  expect(result.diagnostics.length).toBeGreaterThan(0);
+  expect(result.diagnostics[0]).toMatchObject({ code: 'unsupported-typescript' });
+});
+
+it('reports value namespace as unsupported', () => {
+  const result = lower(
+    'nested-namespace.ts',
+    `
+        export namespace Outer {
+          export namespace Inner {
+            export function run(): void {}
+          }
+        }
+      `,
+  );
+  expect(result.diagnostics.length).toBeGreaterThan(0);
+  expect(result.diagnostics[0]).toMatchObject({ code: 'unsupported-typescript' });
+});
+
+it('resolves for-of iterable element type through a type alias chain', () => {
+  const result = lower(
+    'for-of-alias.ts',
+    `
+        type Numbers = number[];
+        export function sum(values: Numbers): void {
+          for (const n of values) { void n; }
+        }
+      `,
+  );
+  expect(result.diagnostics).toEqual([]);
+  const fn = result.module.declarations.find((d) => d.kind === 'function' && d.binding.name === 'sum');
+  if (fn?.kind !== 'function') throw new Error('Expected function');
+  const loop = fn.body.find((s) => s.kind === 'forOf');
+  expect(loop).toBeDefined();
+});
+
 function getVariableBinding(value: unknown): IrBindingIdentity {
   if (typeof value !== 'object' || value === null || !('binding' in value)) {
     throw new Error('Expected named variable');
