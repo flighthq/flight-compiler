@@ -202,8 +202,9 @@ describe('createCompilerLoweringPassSwitchSuspension', () => {
 
     const makeModule = (lastStatements: IrStatement[]): IrModule => {
       const cloned = structuredClone(sw);
-      cloned.cases[cloned.cases.length - 1] = { statements: lastStatements };
-      return { ...prepared, declarations: [{ ...fn, body: [cloned] }] };
+      const cases = [...cloned.cases];
+      cases[cases.length - 1] = { statements: lastStatements };
+      return { ...prepared, declarations: [{ ...fn, body: [{ ...cloned, cases }] }] };
     };
 
     const breakInBlock = makeModule([{ kind: 'block', statements: [{ kind: 'break' }] }]);

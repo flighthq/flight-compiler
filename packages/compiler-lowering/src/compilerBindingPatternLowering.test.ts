@@ -66,7 +66,7 @@ describe('createCompilerLoweringPassBindingPattern', () => {
       source: module.source,
       space: 'value' as const,
     };
-    stuck.declarations.push({
+    (stuck.declarations as unknown[]).push({
       declarationKind: 'const',
       exported: false,
       initializer: { kind: 'literal', value: 0 },

@@ -88,7 +88,17 @@ describe('getIrSwitchCaseCompletion', () => {
         {
           kind: 'try',
           tryBody: { expression: { kind: 'literal', value: 0 }, kind: 'expression' },
-          catchClause: { body: { kind: 'break', target: switchLabel } },
+          catchClause: {
+            body: { kind: 'break', target: switchLabel },
+            semantics: {
+              bindingInitialization: { kind: 'discard' },
+              bodyExecution: 'once-per-caught-throw',
+              catchCompletion: 'propagate',
+              interceptedCompletion: 'throw',
+              schema: 'flight-compiler-catch-semantics/1',
+              uncaughtCompletion: 'preserve',
+            },
+          },
         },
       ],
     };
@@ -134,7 +144,18 @@ describe('getIrSwitchCaseCompletion', () => {
           kind: 'forIn',
           object: { kind: 'literal', value: 0 },
           variable: {
-            binding: { id: 'k', kind: 'variable', name: 'k', scope: 'block', space: 'value' },
+            binding: {
+              column: 1,
+              fingerprint: `sha256:${'0'.repeat(64)}` as never,
+              id: 'k',
+              kind: 'variable',
+              line: 1,
+              name: 'k',
+              packageName: '@flighthq/test',
+              scope: 'block',
+              source: 'test.ts',
+              space: 'value',
+            },
             mutable: false,
           },
         },
@@ -143,11 +164,23 @@ describe('getIrSwitchCaseCompletion', () => {
     const forOfBreak: IrSwitchCase = {
       statements: [
         {
+          await: false,
           body: { kind: 'break', target: switchLabel },
           iterable: { kind: 'literal', value: 0 },
           kind: 'forOf',
           variable: {
-            binding: { id: 'v', kind: 'variable', name: 'v', scope: 'block', space: 'value' },
+            binding: {
+              column: 1,
+              fingerprint: `sha256:${'0'.repeat(64)}` as never,
+              id: 'v',
+              kind: 'variable',
+              line: 1,
+              name: 'v',
+              packageName: '@flighthq/test',
+              scope: 'block',
+              source: 'test.ts',
+              space: 'value',
+            },
             mutable: false,
           },
         },
