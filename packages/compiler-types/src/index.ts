@@ -57,6 +57,7 @@ export type * from './compilerTargetNamingContract.js';
 export type * from './compilerTaskOperationSemanticsContract.js';
 export type * from './compilerTraversalObserverContract.js';
 export type * from './compilerTypeIntermediateRepresentation.js';
+export type * from './compilerTypeValueIdentityContract.js';
 export type * from './compilerTypeScriptContract.js';
 export type * from './compilerValueCompletionContract.js';
 export type * from './compilerWorkspaceSourceContract.js';

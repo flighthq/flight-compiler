@@ -17,3 +17,4 @@ export {
   isCompilerStructuralTypeSubstitutionFailure,
   resolveIrTypeStructuralSubstitution,
 } from './compilerStructuralTypeSubstitution.js';
+export { analyzeIrTypeValueIdentity, createIrTypeValueIdentityAnalyzer } from './compilerTypeValueIdentityAnalysis.js';
