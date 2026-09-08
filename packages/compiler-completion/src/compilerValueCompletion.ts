@@ -201,7 +201,7 @@ function normalizeCompilerCompletionValueSource(
         'Carried values require exactly one binding identity',
       );
     }
-    return Object.freeze({ binding: value.binding, kind: 'carried' });
+    return Object.freeze({ binding: Object.freeze({ ...value.binding }), kind: 'carried' });
   }
   if (
     value.kind !== 'expression' ||

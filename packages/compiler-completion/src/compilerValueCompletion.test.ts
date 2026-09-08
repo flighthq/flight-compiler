@@ -200,6 +200,35 @@ describe('createCompilerValueCompletionPathSet', () => {
     expect(input).toEqual(snapshot);
   });
 
+  it('normalizes a carried value when its binding identity is structurally valid', () => {
+    const set = createCompilerValueCompletionPathSet([
+      path('normal', ['body'], { kind: 'carried', binding: { id: 'tmp_0', name: '__result' } } as never),
+    ]);
+
+    expect(set.paths[0]!.value).toEqual({ kind: 'carried', binding: { id: 'tmp_0', name: '__result' } });
+    expect(isDeeplyFrozen(set, new WeakSet())).toBe(true);
+  });
+
+  it('rejects carried values with missing, empty-id, non-object, or extra-field bindings', () => {
+    const carriedCases: Array<Readonly<{ label: string; value: unknown }>> = [
+      { label: 'no binding field', value: { kind: 'carried' } },
+      { label: 'extra field', value: { kind: 'carried', binding: { id: 'x', name: 'y' }, extra: true } },
+      { label: 'null binding', value: { kind: 'carried', binding: null } },
+      { label: 'string binding', value: { kind: 'carried', binding: 'not-an-object' } },
+      { label: 'binding missing id', value: { kind: 'carried', binding: { name: 'y' } } },
+      { label: 'binding non-string id', value: { kind: 'carried', binding: { id: 123, name: 'y' } } },
+      { label: 'binding empty id', value: { kind: 'carried', binding: { id: '', name: 'y' } } },
+      { label: 'binding missing name', value: { kind: 'carried', binding: { id: 'x' } } },
+      { label: 'binding non-string name', value: { kind: 'carried', binding: { id: 'x', name: 42 } } },
+    ];
+
+    for (const { label, value } of carriedCases) {
+      expect(() => createCompilerValueCompletionPathSet([path('normal', ['body'], value as never)]), label).toThrow(
+        expect.objectContaining({ code: 'invalid-completion-value', kind: 'compiler-value-completion' }),
+      );
+    }
+  });
+
   it('keeps Unicode path and target identity exact and orders it by code unit', () => {
     const set = createCompilerValueCompletionPathSet([
       path('break', ['é'], { kind: 'empty' }, 'é'),
