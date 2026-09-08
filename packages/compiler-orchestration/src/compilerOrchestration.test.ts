@@ -324,6 +324,24 @@ describe('compileTypeScriptModules', () => {
     expect(compiledPaths).toEqual([['Alpha.txt', 'Zeta.txt']]);
   });
 
+  it('forwards optional patches and omits absent optional fields without diagnostics', () => {
+    const result = compileTypeScriptModules({
+      backend: fixtureBackend,
+      backendOptions: {},
+      patches: [],
+      sources: [
+        {
+          packageName: '@flighthq/math',
+          sourceFile: parseTypeScriptSource('/flight/packages/math/src/value.ts', 'export const value = 1;'),
+          upstreamDirectory: '/flight',
+        },
+      ],
+    });
+
+    expect(result.compilation.files).toHaveLength(1);
+    expect(result.diagnostics).toEqual([]);
+  });
+
   it('throws a tagged diagnostics failure instead of emitting partial output', () => {
     const sourceFile = parseTypeScriptSource(
       '/flight/packages/math/src/destructure.ts',
@@ -431,6 +449,24 @@ describe('isCompilerDiagnosticsFailure', () => {
     expect(isCompilerDiagnosticsFailure(unknownCode)).toBe(false);
     expect(isCompilerDiagnosticsFailure(missingPackage)).toBe(false);
     expect(isCompilerDiagnosticsFailure(invalidLocation)).toBe(false);
+
+    const numericPackage = Object.assign(new Error('forged'), {
+      diagnostics: [{ ...diagnostic, packageName: 42 }],
+      kind: 'compiler-diagnostics',
+    });
+    const missingSource = Object.assign(new Error('forged'), {
+      diagnostics: [
+        { code: 'unsupported-typescript', column: 1, line: 1, message: 'unsupported', packageName: '@flighthq/math' },
+      ],
+      kind: 'compiler-diagnostics',
+    });
+    const numericSource = Object.assign(new Error('forged'), {
+      diagnostics: [{ ...diagnostic, source: 42 }],
+      kind: 'compiler-diagnostics',
+    });
+    expect(isCompilerDiagnosticsFailure(numericPackage)).toBe(false);
+    expect(isCompilerDiagnosticsFailure(missingSource)).toBe(false);
+    expect(isCompilerDiagnosticsFailure(numericSource)).toBe(false);
   });
 });
 
