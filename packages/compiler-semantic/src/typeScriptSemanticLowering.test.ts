@@ -5936,6 +5936,130 @@ function collectAssignmentExpressions(
   return assignments;
 }
 
+it('resolves indexed receivers through string literal and template expression element access', () => {
+  const result = lower(
+    'string-receiver.ts',
+    `
+        export function run(name: string): void {
+          "hello"[0];
+          \`world \${name}\`[0];
+        }
+      `,
+  );
+  expect(result.diagnostics).toEqual([]);
+  const fn = result.module.declarations[0];
+  if (fn?.kind !== 'function') throw new Error('Expected function');
+  const strAccess = fn.body[0];
+  const tmplAccess = fn.body[1];
+  if (strAccess?.kind !== 'expression' || tmplAccess?.kind !== 'expression') throw new Error('Expected expressions');
+  expect(strAccess.expression).toMatchObject({
+    kind: 'element',
+    semantics: expect.objectContaining({ receivers: expect.arrayContaining(['string']) }),
+  });
+  expect(tmplAccess.expression).toMatchObject({
+    kind: 'element',
+    semantics: expect.objectContaining({ receivers: expect.arrayContaining(['string']) }),
+  });
+});
+
+it('resolves optional-chain element access value evidence for non-array non-tuple receiver', () => {
+  const result = lower(
+    'optional-object.ts',
+    `
+        export function run(obj: any): number {
+          return obj.items?.[0];
+        }
+      `,
+  );
+  expect(result.diagnostics).toEqual([]);
+  const fn = result.module.declarations[0];
+  if (fn?.kind !== 'function') throw new Error('Expected function');
+  const ret = fn.body[0];
+  if (ret?.kind !== 'return') throw new Error('Expected return');
+  expect(ret.expression).toMatchObject({ kind: 'element', optional: true });
+});
+
+it('resolves optional-chain element access on multi-type union receiver as unknown', () => {
+  const result = lower(
+    'optional-union.ts',
+    `
+        export function run(val: number[] | string | undefined): void {
+          val?.[0];
+        }
+      `,
+  );
+  expect(result.diagnostics).toEqual([]);
+});
+
+it('resolves optional-chain tuple element access out of bounds as undefined', () => {
+  const result = lower(
+    'optional-tuple-oob.ts',
+    `
+        export function run(tup: [number, string] | undefined): void {
+          tup?.[5];
+        }
+      `,
+  );
+  expect(result.diagnostics).toEqual([]);
+});
+
+it('resolves new-expression element access through constructor receiver names', () => {
+  const result = lower(
+    'new-receiver.ts',
+    `
+        class Custom { value = 0 }
+        export function run(): void {
+          new Array(5)[0];
+          new Custom()["value"];
+        }
+      `,
+  );
+  expect(result.diagnostics).toEqual([]);
+  const fn = result.module.declarations[1];
+  if (fn?.kind !== 'function') throw new Error('Expected function');
+  const arrayAccess = fn.body[0];
+  if (arrayAccess?.kind !== 'expression') throw new Error('Expected expression');
+  expect(arrayAccess.expression).toMatchObject({
+    kind: 'element',
+    semantics: expect.objectContaining({ receivers: expect.arrayContaining(['array']) }),
+  });
+});
+
+it('lowers contextual tuple expression with trailing optional elements omitted', () => {
+  const result = lower(
+    'tuple-optional.ts',
+    `
+        type OptionalTuple = [number, string?];
+        export function build(): OptionalTuple {
+          return [1];
+        }
+      `,
+  );
+  expect(result.diagnostics).toEqual([]);
+  const fn = result.module.declarations.find((d) => d.kind === 'function' && d.binding.name === 'build');
+  if (fn?.kind !== 'function') throw new Error('Expected function');
+  const ret = fn.body[0];
+  if (ret?.kind !== 'return') throw new Error('Expected return');
+  expect(ret.expression).toMatchObject({ kind: 'tuple' });
+});
+
+it('classifies symbol-typed property key coercion in element access', () => {
+  const result = lower(
+    'symbol-coercion.ts',
+    `
+        export function run(obj: any): unknown {
+          return obj[Symbol.iterator];
+        }
+      `,
+  );
+  expect(result.diagnostics).toEqual([]);
+  const fn = result.module.declarations[0];
+  if (fn?.kind !== 'function') throw new Error('Expected function');
+  const ret = fn.body[0];
+  if (ret?.kind !== 'return') throw new Error('Expected return');
+  expect(ret.expression).toMatchObject({ kind: 'element', semantics: expect.objectContaining({ key: 'symbol' }) });
+});
+
 function getVariableBinding(value: unknown): IrBindingIdentity {
   if (typeof value !== 'object' || value === null || !('binding' in value)) {
     throw new Error('Expected named variable');

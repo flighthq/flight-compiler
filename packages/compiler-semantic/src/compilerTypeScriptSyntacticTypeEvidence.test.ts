@@ -79,6 +79,14 @@ it('claims nothing for an await of something that is not a written task type', (
   expect(getTypeScriptSyntacticExpressionTypeEvidence(statement.expression, checker)).toBeUndefined();
 });
 
+it('claims nothing for an await of a type reference that is neither Promise nor PromiseLike', () => {
+  const { checker, source } = createProgram('declare const task: Observable<string>; await task;');
+  const statement = source.statements[1];
+  if (!statement || !ts.isExpressionStatement(statement)) throw new Error('Expected expression statement');
+
+  expect(getTypeScriptSyntacticExpressionTypeEvidence(statement.expression, checker)).toBeUndefined();
+});
+
 describe('createTypeScriptSyntacticAliasSubstitutions', () => {
   it('binds written arguments and trailing defaults by symbol identity', () => {
     const { checker, source } = createProgram(
