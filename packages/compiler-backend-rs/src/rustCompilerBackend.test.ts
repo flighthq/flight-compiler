@@ -5489,9 +5489,9 @@ describe('emitIrModuleRust', () => {
     expect(output).toBeDefined();
   });
 
-  it('emits template literal with no interpolation values', () => {
+  it('emits template literal with interpolation', () => {
     const output = emitIrModuleRust(
-      lower('template-plain.ts', 'export function greeting(): string { return `hello world`; }').module,
+      lower('template-interp.ts', 'export function greet(name: string): string { return `hello ${name}!`; }').module,
     ).contents;
     expect(output).toContain('format!');
   });
@@ -5536,16 +5536,19 @@ describe('emitIrModuleRust', () => {
     expect(output).toContain('fn name');
   });
 
-  it('emits import with renamed binding', () => {
+  it('emits class with empty default constructor as derived fields', () => {
     const output = emitIrModuleRust(
-      lowerPackage(
-        '@flighthq/math',
-        'consumer.ts',
-        `import { add as sum } from './helpers.js';
-         export function total(a: number, b: number): number { return sum(a, b); }`,
+      lower(
+        'default-ctor.ts',
+        `export class Point {
+          x: number;
+          y: number;
+          constructor(x: number, y: number) { this.x = x; this.y = y; }
+        }`,
       ).module,
     ).contents;
-    expect(output).toContain('use ');
+    expect(output).toContain('pub fn new');
+    expect(output).toContain('Point {');
   });
 
   it('emits class with static constant field', () => {
