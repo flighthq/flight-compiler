@@ -31,15 +31,6 @@ export function createCompilerTargetNameAllocation(
     identities.add(candidate.identity);
   }
 
-  const fixedNames = new Map<string, CompilerTargetNameCandidate>();
-  for (const candidate of normalized) {
-    if (candidate.disposition !== 'fixed') continue;
-    const fixedNameIdentity = `${candidate.scope}\0${candidate.preferredName}`;
-    const existing = fixedNames.get(fixedNameIdentity);
-    if (existing) throw createTargetNameAllocationFailure(existing, candidate);
-    fixedNames.set(fixedNameIdentity, candidate);
-  }
-
   const preferredNames = new Map<string, Set<string>>();
   for (const candidate of normalized) {
     const names = preferredNames.get(candidate.scope) ?? new Set<string>();
@@ -505,25 +496,6 @@ function collectBindingPatternBindings(
     default:
       assertNeverTargetNameAllocation(pattern);
   }
-}
-
-function createTargetNameAllocationFailure(
-  first: Readonly<CompilerTargetNameCandidate>,
-  second: Readonly<CompilerTargetNameCandidate>,
-): CompilerTargetNameAllocationFailure {
-  const identities = [first.identity, second.identity].sort(compareTextCodeUnits);
-  const failure = Object.assign(
-    new Error(`Fixed target name ${first.preferredName} collides in scope ${first.scope}: ${identities.join(', ')}`),
-    {
-      code: 'fixed-target-name-collision' as const,
-      identities,
-      kind: 'target-name-allocation' as const,
-      scope: first.scope,
-      targetName: first.preferredName,
-    },
-  );
-  failure.name = 'CompilerTargetNameAllocationError';
-  return failure;
 }
 
 function assertNeverTargetNameAllocation(value: never): never {

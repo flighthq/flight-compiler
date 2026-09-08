@@ -51,26 +51,19 @@ describe('createCompilerTargetNameAllocation', () => {
     expect(createCompilerTargetNameAllocation([...candidates].reverse())).toEqual(expected);
   });
 
-  it('refuses canonically equivalent fixed target names with deterministic identities', () => {
+  it('disambiguates canonically equivalent fixed target names deterministically', () => {
     const candidates = [
       { disposition: 'fixed' as const, identity: 'second', preferredName: 'cafe\u0301', scope: 'module' },
       { disposition: 'fixed' as const, identity: 'first', preferredName: 'caf\u00e9', scope: 'module' },
     ];
 
-    try {
-      createCompilerTargetNameAllocation(candidates);
-      expect.unreachable('Expected fixed target names to collide');
-    } catch (error) {
-      expect(isCompilerTargetNameAllocationFailure(error)).toBe(true);
-      expect(error).toMatchObject({
-        code: 'fixed-target-name-collision',
-        identities: ['first', 'second'],
-        kind: 'target-name-allocation',
-        name: 'CompilerTargetNameAllocationError',
-        scope: 'module',
-        targetName: 'caf\u00e9',
-      });
-    }
+    expect(createCompilerTargetNameAllocation(candidates)).toEqual([
+      { identity: 'first', name: 'caf\u00e9', scope: 'module' },
+      { identity: 'second', name: 'caf\u00e9_2', scope: 'module' },
+    ]);
+    expect(createCompilerTargetNameAllocation([...candidates].reverse())).toEqual(
+      createCompilerTargetNameAllocation(candidates),
+    );
     expect(candidates[0]?.preferredName).toBe('cafe\u0301');
   });
 
@@ -150,21 +143,19 @@ describe('createCompilerTargetNameAllocation', () => {
 
 describe('isCompilerTargetNameAllocationFailure', () => {
   it('accepts only complete tagged target-name allocation failures', () => {
-    let failure: unknown;
-    try {
-      createCompilerTargetNameAllocation([
-        { disposition: 'fixed', identity: 'first', preferredName: 'value', scope: 'module' },
-        { disposition: 'fixed', identity: 'second', preferredName: 'value', scope: 'module' },
-      ]);
-    } catch (error) {
-      failure = error;
-    }
+    const failure = Object.assign(new Error('collision'), {
+      code: 'fixed-target-name-collision' as const,
+      identities: ['first', 'second'],
+      kind: 'target-name-allocation' as const,
+      scope: 'module',
+      targetName: 'value',
+    });
+    failure.name = 'CompilerTargetNameAllocationError';
 
-    if (!isCompilerTargetNameAllocationFailure(failure)) {
-      throw new Error('Expected a target-name allocation failure fixture');
-    }
+    expect(isCompilerTargetNameAllocationFailure(failure)).toBe(true);
+
     const changeFailure = (changes: Readonly<Record<string, unknown>>): Error =>
-      Object.assign(new Error('changed'), failure, changes);
+      Object.assign(new Error('changed'), { ...failure }, changes);
 
     expect(isCompilerTargetNameAllocationFailure(new Error('plain'))).toBe(false);
     expect(isCompilerTargetNameAllocationFailure(changeFailure({ kind: 'unknown' }))).toBe(false);
