@@ -3942,4 +3942,166 @@ describe('emitIrModuleCpp', () => {
     expect(output).toContain('Green');
     expect(output).toContain('Blue');
   });
+
+  it('emits type alias for object type as struct', () => {
+    const output = emitIrModuleCpp(
+      lower('point-alias.ts', 'export type Point = { x: number; y: number };').module,
+    ).contents;
+    expect(output).toContain('struct Point');
+    expect(output).toContain('double x');
+    expect(output).toContain('double y');
+  });
+
+  it('emits async method with coroutine include', () => {
+    const output = emitIrModuleCpp(
+      lower(
+        'async-method.ts',
+        `export class Fetcher {
+          async fetch(): Promise<number> { return 1; }
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('#include <coroutine>');
+    expect(output).toContain('fetch');
+  });
+
+  it('emits optional call expression as guarded invocation', () => {
+    const output = emitIrModuleCpp(
+      lower(
+        'opt-call.ts',
+        `export function tryCall(fn: (() => number) | undefined): number | undefined { return fn?.(); }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('has_value');
+  });
+
+  it('emits string length as size method with static_cast', () => {
+    const output = emitIrModuleCpp(
+      lower('str-len.ts', 'export function len(s: string): number { return s.length; }').module,
+    ).contents;
+    expect(output).toContain('static_cast<double>');
+    expect(output).toContain('.size()');
+  });
+
+  it('emits optional element access as guarded indexing', () => {
+    const output = emitIrModuleCpp(
+      lower('opt-elem.ts', `export function first(arr: number[] | undefined): number | undefined { return arr?.[0]; }`)
+        .module,
+    ).contents;
+    expect(output).toContain('has_value');
+  });
+
+  it('emits flight-cpp array literal with flight::Array', () => {
+    const output = emitIrModuleCpp(
+      lower('arr-flight.ts', 'export function items(): number[] { return [1, 2, 3]; }').module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+    expect(output).toContain('flight::Array');
+  });
+
+  it('emits switch if-else chain from lowered switch', () => {
+    const output = emitIrModuleCpp(
+      lower(
+        'switch-break.ts',
+        `export function classify(n: number): string {
+          switch (n) {
+            case 0: return 'zero';
+            case 1: return 'one';
+            default: return 'other';
+          }
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('switch_value == 0');
+    expect(output).toContain('switch_value == 1');
+  });
+
+  it('emits try-finally with return in if-else branches', () => {
+    const output = emitIrModuleCpp(
+      lower(
+        'finally-if-else-return.ts',
+        `export function pick(flag: boolean, cleanup: () => void): number {
+          try {
+            if (flag) { return 1; } else { return 2; }
+          } finally {
+            cleanup();
+          }
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('finally_return');
+  });
+
+  it('emits try-finally with nested try containing return', () => {
+    const output = emitIrModuleCpp(
+      lower(
+        'finally-nested-try-return.ts',
+        `export function nested(cleanup: () => void): number {
+          try {
+            try {
+              return 1;
+            } catch (e: unknown) {
+              return 2;
+            }
+          } finally {
+            cleanup();
+          }
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('finally_return');
+  });
+
+  it('emits number.toString as std::to_string', () => {
+    const output = emitIrModuleCpp(
+      lower('num-tostring.ts', 'export function label(n: number): string { return n.toString(); }').module,
+    ).contents;
+    expect(output).toContain('std::to_string');
+  });
+
+  it('emits anonymous struct with optional property', () => {
+    const output = emitIrModuleCpp(
+      lower('anon-opt.ts', `export function build(): { name: string; age?: number } { return { name: 'test' }; }`)
+        .module,
+    ).contents;
+    expect(output).toContain('struct');
+    expect(output).toContain('name');
+    expect(output).toContain('optional');
+  });
+
+  it('emits forIn with object expression preservation', () => {
+    const output = emitIrModuleCpp(
+      lower(
+        'forin-preserve.ts',
+        `export function keys(a: number, b: number): string {
+          let result: string = '';
+          for (const k in { x: a, y: b }) { result = k; }
+          return result;
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('for');
+    expect(output).toContain('vector');
+  });
+
+  it('emits type alias with generic parameters for object type', () => {
+    const output = emitIrModuleCpp(
+      lower('generic-alias.ts', 'export type Pair<T> = { first: T; second: T };').module,
+    ).contents;
+    expect(output).toContain('template');
+    expect(output).toContain('struct Pair');
+  });
+
+  it('emits lambda with block body', () => {
+    const output = emitIrModuleCpp(
+      lower(
+        'lambda-block.ts',
+        `export function apply(items: number[]): number[] {
+          return items.filter((x: number): boolean => { return x > 0; });
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('[=]');
+    expect(output).toContain('return');
+  });
 });
