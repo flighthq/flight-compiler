@@ -17,7 +17,7 @@ inline double busiest_count(flight::Array<Item> items) {
   std::optional<Item> best = std::nullopt;
   for (auto item : items) {
     if ((!best.has_value() || (item.count > best.value().count))) {
-      best = item;
+      best = std::optional<Item>{item};
     }
   }
   return (!best.has_value() ? 0.0 : best.value().count);

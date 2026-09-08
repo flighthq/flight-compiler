@@ -292,6 +292,7 @@ describe('collectIrModulesRuntimeExternalSymbolIdentities', () => {
                 ],
                 providedArgumentCount: 1,
               },
+              resultType: named('SemanticResult'),
               signature: { parameterCount: 1, providedArgumentCount: 1 },
             },
             typeArguments: [],
@@ -305,6 +306,7 @@ describe('collectIrModulesRuntimeExternalSymbolIdentities', () => {
       { sourceName: 'SemanticArgument', space: 'type' },
       { sourceName: 'SemanticParameter', space: 'type' },
       { sourceName: 'SemanticReceiver', space: 'type' },
+      { sourceName: 'SemanticResult', space: 'type' },
       { sourceName: 'SemanticValue', space: 'type' },
       { sourceName: 'invoke', space: 'value' },
     ]);

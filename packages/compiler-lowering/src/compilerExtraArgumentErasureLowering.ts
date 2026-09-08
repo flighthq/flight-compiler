@@ -69,6 +69,7 @@ function createIrCallExpressionExtraArgumentErasure(
     kind: 'call',
     optional: false,
     semantics: {
+      resultType: evidence.resultType,
       statementValue: createIrStatementValueCallSemantics(),
     },
     typeArguments: [],

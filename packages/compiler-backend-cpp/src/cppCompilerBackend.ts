@@ -1661,6 +1661,7 @@ function getIrCallReturnTypeCpp(
   expression: Readonly<Extract<IrExpression, { kind: 'call' }>>,
   context: EmitContext,
 ): Readonly<IrType> | undefined {
+  if (expression.semantics.resultType.kind !== 'unknown') return expression.semantics.resultType;
   if (expression.callee.kind === 'function') return expression.callee.returns;
   if (expression.callee.kind !== 'identifier' || expression.callee.reference.kind !== 'binding') return undefined;
   const bindingId = expression.callee.reference.binding.id;

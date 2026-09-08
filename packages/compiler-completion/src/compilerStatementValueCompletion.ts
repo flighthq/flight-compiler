@@ -13,7 +13,9 @@ export function isIrCallExpressionStatementValueCarrier(expression: Readonly<IrE
   if (expression.kind !== 'call' || !isIrStatementValueCallSemantics(expression.semantics.statementValue)) {
     return false;
   }
-  if (Object.keys(expression.semantics).length !== 1) return false;
+  if (Object.keys(expression.semantics).length !== 2 || !Object.hasOwn(expression.semantics, 'resultType')) {
+    return false;
+  }
   if (
     expression.callee.kind !== 'function' ||
     expression.callee.async ||

@@ -152,6 +152,25 @@ describe('emitIrModuleCpp', () => {
     expect(emitted.contents).toContain('return value.value_or(fallback)');
   });
 
+  it('passes through checker-proven optional calls and preserves named iteration elements', () => {
+    const result = lower(
+      'optional-results.ts',
+      `interface Item { value: number; }
+       export function retain(entries: Map<string, number>, values: number[], items: Item[]): void {
+         const mapped: number | undefined = entries.get('key');
+         const found: number | undefined = values.find((value: number): boolean => value > 0);
+         let best: Item | undefined = undefined;
+         for (const item of items) { if (best === undefined) best = item; }
+       }`,
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+
+    expect(emitted.contents).toContain('const std::optional<double> mapped = entries.get(flight::String("key"))');
+    expect(emitted.contents).toContain('const std::optional<double> found = values.find(');
+    expect(emitted.contents).toContain('std::optional<Item> best = std::nullopt');
+    expect(emitted.contents).toContain('best = std::optional<Item>{item}');
+  });
+
   it('emits checker-proven typeof narrowing through an elected variant representation', () => {
     const result = lower(
       'union.ts',

@@ -28,7 +28,7 @@ describe('isIrCallExpressionStatementValueCarrier', () => {
     const callee = valid.callee;
     const invalid: IrExpression[] = [
       { kind: 'literal', value: 1 },
-      { ...valid, semantics: {} },
+      { ...valid, semantics: { resultType: { kind: 'primitive', name: 'number' } } },
       { ...valid, semantics: { ...valid.semantics, signature: { parameterCount: 0, providedArgumentCount: 0 } } },
       { ...valid, callee: { kind: 'identifier', reference: { kind: 'ambient', name: 'carrier' } } },
       { ...valid, callee: { ...callee, async: true } },
@@ -85,7 +85,10 @@ function carrier(): IrExpression {
     },
     kind: 'call',
     optional: false,
-    semantics: { statementValue: createIrStatementValueCallSemantics() },
+    semantics: {
+      resultType: { kind: 'primitive', name: 'number' },
+      statementValue: createIrStatementValueCallSemantics(),
+    },
     typeArguments: [],
   };
 }

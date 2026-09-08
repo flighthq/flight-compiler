@@ -747,7 +747,7 @@ describe('createIrModuleTargetNameAllocation', () => {
         callee: fn('callCallee'),
         kind: 'call',
         optional: false,
-        semantics: {},
+        semantics: { resultType: primitiveType },
         typeArguments: [],
       },
       {

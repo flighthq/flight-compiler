@@ -51,6 +51,11 @@ export interface IrInvocationSignatureSemantics {
 export interface IrCallSemantics extends IrInvocationSemantics {
   readonly extraArguments?: IrExtraArgumentErasureSemantics | undefined;
   readonly optionalChain?: IrOptionalChainSemantics | undefined;
+  // The checker-resolved result belongs to the call rather than its callee: overload selection,
+  // generic instantiation, and ambient methods can all make two calls through the same written
+  // member produce different types. Backends use this evidence to preserve result containers such
+  // as `T | undefined` without re-resolving source declarations or guessing from member names.
+  readonly resultType: IrType;
   readonly statementValue?: IrStatementValueCallSemantics | undefined;
   readonly typedArraySet?: IrTypedArraySetSemantics | undefined;
 }

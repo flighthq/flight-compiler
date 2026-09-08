@@ -197,7 +197,7 @@ describe('analyzeIrModuleTraversal', () => {
     expect(bindingPatterns).toEqual(expect.arrayContaining(['array', 'binding']));
     expect(parameters).toBe(8);
     expect(signatures).toBeGreaterThanOrEqual(7);
-    expect(typeParameters).toBe(5);
+    expect(typeParameters).toBe(6);
     expect(variables).toBeGreaterThanOrEqual(10);
     expect(expressions).toEqual(
       expect.objectContaining(
@@ -401,6 +401,19 @@ describe('analyzeIrModuleTraversal', () => {
     expect(paths).toEqual([['exports', 0, 'expression', 'semantics', 'extraArguments', 'resultType']]);
   });
 
+  it('visits checker-resolved call result evidence at its semantic path', () => {
+    const module = lower('function value(): number { return 1; } export default value();');
+    const paths: Array<readonly (number | string)[]> = [];
+
+    analyzeIrModuleTraversal(module, {
+      type(_type, path) {
+        if (path.at(-1) === 'resultType' && !path.includes('extraArguments')) paths.push(path);
+      },
+    });
+
+    expect(paths).toEqual([['exports', 0, 'expression', 'semantics', 'resultType']]);
+  });
+
   it('visits provided default-argument type evidence at canonical semantic paths', () => {
     const module = lower(`
       function choose(value: number | null = 1): number | null { return value; }
@@ -498,6 +511,7 @@ describe('analyzeIrModuleTraversal', () => {
             provided: [{ argumentType: numberType, parameterType: numberType, position: 0, value: 'value' }],
             providedArgumentCount: 1,
           },
+          resultType: { kind: 'union', types: [numberType, { kind: 'undefined' }] },
         },
         typeArguments: [numberType],
       },

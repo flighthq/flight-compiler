@@ -494,6 +494,7 @@ function visitExpression(expression: Readonly<IrExpression>, path: string, state
       break;
     case 'call':
       validateIrOptionalChainEvidence(expression.optional, expression.semantics.optionalChain, path, state);
+      visitType(expression.semantics.resultType, `${path}.semantics.resultType`, state);
       validateIrInvocationSignatureEvidence(expression, path, state);
       validateIrDefaultParameterInvocationEvidence(expression, path, state);
       validateIrExtraArgumentErasureEvidence(expression, path, state);

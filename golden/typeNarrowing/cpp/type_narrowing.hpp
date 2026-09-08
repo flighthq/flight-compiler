@@ -8,14 +8,14 @@ static_assert(flight::runtime_contract.cpp_abi == 1, "Flight C++ runtime ABI mis
 
 namespace flighthq_golden {
 
-inline flight::String describe_type(std::variant<flight::String, double> value) {
+inline flight::String describe_type(std::variant<double, flight::String> value) {
   if (std::holds_alternative<flight::String>(value)) {
     return flight::String("string of length ") + flight::to_string(static_cast<double>(std::get<flight::String>(value).length())) + flight::String("");
   }
   return flight::String("number: ") + flight::to_string(std::get<double>(value)) + flight::String("");
 }
 
-inline flight::String format_value(std::variant<flight::String, double, bool> value) {
+inline flight::String format_value(std::variant<bool, double, flight::String> value) {
   if (std::holds_alternative<flight::String>(value)) {
     return std::get<flight::String>(value).to_upper();
   }

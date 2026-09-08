@@ -248,6 +248,11 @@ function analyzeIrExpressionTraversal(
       expression.typeArguments.forEach((type, index) =>
         analyzeIrTypeTraversal(type, observer, createIrTraversalPath(path, 'typeArguments', index)),
       );
+      analyzeIrTypeTraversal(
+        expression.semantics.resultType,
+        observer,
+        createIrTraversalPath(path, 'semantics', 'resultType'),
+      );
       analyzeIrOptionalChainTraversal(
         expression.semantics.optionalChain,
         observer,

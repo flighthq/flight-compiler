@@ -1163,6 +1163,9 @@ function lowerCallSemantics(
 ): IrCallSemantics {
   const semantics: IrCallSemantics = {
     ...lowerInvocationSemantics(node, signature, context),
+    resultType:
+      getTypeScriptCheckerTypeEvidence(context.checker.getTypeAtLocation(node), context, 0) ??
+      inferInitializerType(node, context),
   };
   const access = node.expression;
   const receiver = ts.isPropertyAccessExpression(access)
@@ -1878,6 +1881,7 @@ function lowerTypeScriptDestructuringAssignmentExpression(
     kind: 'call',
     optional: false,
     semantics: {
+      resultType: returns,
       statementValue: createIrStatementValueCallSemantics(),
     },
     typeArguments: [],
@@ -2382,7 +2386,22 @@ function lowerTypeScriptForOfElementType(expression: ts.Expression, context: Low
   const iterableType = getTypeScriptSyntacticExpressionTypeEvidence(expression, context.checker);
   if (!iterableType) return undefined;
   const element = getTypeScriptTypeNodeIterableElementEvidence(iterableType, context, new Set());
-  return element ? lowerTypeScriptTypeNodeEvidence(element.type, context, new Set(), element.substitutions) : undefined;
+  if (!element) return undefined;
+  // Preserve the written identity of directly exposed interfaces/classes. Expanding an interface
+  // into an anonymous structural object here loses the fact that `for (const item of items: Item[])`
+  // produces an Item. Aliases and substituted parameters still take the evidence path so tuple and
+  // generic iterable elements retain their concrete shapes.
+  if (element.substitutions.size === 0 && ts.isTypeReferenceNode(element.type)) {
+    const symbol = context.checker.getSymbolAtLocation(element.type.typeName);
+    if (
+      symbol?.declarations?.some(
+        (declaration) => ts.isInterfaceDeclaration(declaration) || ts.isClassDeclaration(declaration),
+      )
+    ) {
+      return lowerType(element.type, context);
+    }
+  }
+  return lowerTypeScriptTypeNodeEvidence(element.type, context, new Set(), element.substitutions);
 }
 
 function lowerTypeScriptExpressionTypeEvidence(
@@ -3371,6 +3390,14 @@ function getTypeScriptCheckerTypeEvidence(
 ): Readonly<IrType> | undefined {
   const checker = context.checker;
   if (depth > 4) return undefined;
+  if (type.isUnion()) {
+    const members = type.types.flatMap((member) => {
+      const lowered = getTypeScriptCheckerTypeEvidence(member, context, depth + 1);
+      return lowered ? [lowered] : [];
+    });
+    if (members.length !== type.types.length || members.length === 0) return undefined;
+    return commonType([members[0]!, ...members.slice(1)]);
+  }
   if (type.flags & ts.TypeFlags.BooleanLike) return { kind: 'primitive', name: 'boolean' };
   if (type.flags & ts.TypeFlags.NumberLike) return { kind: 'primitive', name: 'number' };
   if (type.flags & ts.TypeFlags.StringLike) return { kind: 'primitive', name: 'string' };

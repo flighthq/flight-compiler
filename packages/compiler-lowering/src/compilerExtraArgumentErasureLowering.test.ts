@@ -118,6 +118,7 @@ function expectIrCallExpressionStatementValueCarrier(expression: Readonly<IrExpr
   }
   expect(expression.arguments).toEqual([]);
   expect(expression.semantics).toEqual({
+    resultType: expression.callee.returns,
     statementValue: {
       abruptCompletion: 'propagate',
       asyncContext: 'inherit',

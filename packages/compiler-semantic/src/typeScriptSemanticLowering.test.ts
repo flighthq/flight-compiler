@@ -1570,11 +1570,11 @@ describe('lowerTypeScriptSource', () => {
           : undefined,
       ),
     ).toEqual([
-      { typedArraySet: { receivers: ['float32Array', 'uint8Array'] } },
-      { typedArraySet: { receivers: ['bigInt64Array'] } },
-      { signature: { parameterCount: 1, providedArgumentCount: 1 } },
-      {},
-      {},
+      { resultType: { kind: 'unknown', source: 'any' }, typedArraySet: { receivers: ['float32Array', 'uint8Array'] } },
+      { resultType: { kind: 'unknown', source: 'any' }, typedArraySet: { receivers: ['bigInt64Array'] } },
+      { resultType: { kind: 'primitive', name: 'void' }, signature: { parameterCount: 1, providedArgumentCount: 1 } },
+      { resultType: { kind: 'unknown', source: 'any' } },
+      { resultType: { kind: 'unknown', source: 'any' } },
     ]);
   });
 
@@ -7020,6 +7020,37 @@ it('lowers invocation signature semantics with no arguments', () => {
     `,
   );
   expect(result.diagnostics).toEqual([]);
+});
+
+it('records checker-instantiated and ambient optional call result types', () => {
+  const result = lower(
+    'call-results.ts',
+    `function identity<Value>(value: Value): Value { return value; }
+     export function read(values: Map<string, number>): number | undefined {
+       identity<number>(1);
+       return values.get('key');
+     }`,
+  );
+  const declaration = result.module.declarations.find(
+    (candidate) => candidate.kind === 'function' && candidate.binding.name === 'read',
+  );
+  if (declaration?.kind !== 'function') throw new Error('Expected read function');
+  const identityCall = declaration.body[0];
+  const mapReturn = declaration.body[1];
+  if (
+    identityCall?.kind !== 'expression' ||
+    identityCall.expression.kind !== 'call' ||
+    mapReturn?.kind !== 'return' ||
+    mapReturn.expression?.kind !== 'call'
+  ) {
+    throw new Error('Expected call expressions');
+  }
+
+  expect(identityCall.expression.semantics.resultType).toEqual({ kind: 'primitive', name: 'number' });
+  expect(mapReturn.expression.semantics.resultType).toEqual({
+    kind: 'union',
+    types: [{ kind: 'undefined' }, { kind: 'primitive', name: 'number' }],
+  });
 });
 
 it('resolves type reference through a type alias for indexed receivers', () => {
