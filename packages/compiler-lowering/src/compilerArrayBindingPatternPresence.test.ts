@@ -64,6 +64,33 @@ describe('hasIrModuleArrayBindingPattern', () => {
     expect(hasIrModuleArrayBindingPattern(returnSource)).toBe(true);
   });
 
+  it('detects array patterns nested inside object patterns with computed keys, defaults, and rest', () => {
+    const nested = lower(
+      'object-nested.ts',
+      `
+        interface Source { items: [number]; computed: [string]; rest: { nested: [boolean] } }
+        export function read(source: Source, key: string): number {
+          const { items: [first], [key]: computed, ...rest }: Source = source;
+          first; computed; rest;
+          return 0;
+        }
+      `,
+    );
+    const nestedDefault = lower(
+      'object-nested-default.ts',
+      `
+        interface Cfg { items?: [number] }
+        export function read(source: Cfg): number {
+          const { items: [first] = [0] }: Cfg = source;
+          return first;
+        }
+      `,
+    );
+
+    expect(hasIrModuleArrayBindingPattern(nested)).toBe(true);
+    expect(hasIrModuleArrayBindingPattern(nestedDefault)).toBe(true);
+  });
+
   it('finds patterns in declarations and nested expression functions and rejects fully normalized false positives', () => {
     const empty = lower('empty.ts', 'export const value = 1;');
     const declaration = lower(
