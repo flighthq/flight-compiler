@@ -6656,3 +6656,330 @@ describe('emitIrModuleHaxe string equality', () => {
     expect(output).toContain('==');
   });
 });
+
+describe('emitIrModuleHaxe narrowed primitive property access', () => {
+  it('emits cast for narrowed string property access', () => {
+    const output = emitIrModuleHaxe(
+      lower(
+        'narrow-str.ts',
+        `export function len(x: string | number): number {
+           if (typeof x === 'string') { return x.length; }
+           return x as number;
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('cast');
+    expect(output).toContain('String');
+  });
+});
+
+describe('emitIrModuleHaxe narrowed declared type property access', () => {
+  it('emits cast for narrowed interface member access', () => {
+    const output = emitIrModuleHaxe(
+      lower(
+        'narrow-iface.ts',
+        `interface Dog { kind: 'dog'; bark: number }
+         interface Cat { kind: 'cat'; meow: number }
+         type Pet = Dog | Cat;
+         export function sound(p: Pet): number {
+           if (p.kind === 'dog') { return p.bark; }
+           return p.meow;
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('cast');
+  });
+});
+
+describe('emitIrModuleHaxe union flattened properties type', () => {
+  it('emits union with named member types as flattened properties', () => {
+    const output = emitIrModuleHaxe(
+      lower(
+        'union-flat.ts',
+        `interface A { x: number; y: number }
+         interface B { x: number; z: number }
+         export function getX(val: A | B): number { return val.x; }`,
+      ).module,
+    ).contents;
+    expect(output).toBeDefined();
+  });
+});
+
+describe('emitIrModuleHaxe rest parameter non-array type', () => {
+  it('emits rest parameter when type is tuple-like', () => {
+    const output = emitIrModuleHaxe(
+      lower('rest-tuple.ts', 'export function first(...items: [number, ...number[]]): number { return items[0]; }')
+        .module,
+    ).contents;
+    expect(output).toContain('...items');
+  });
+});
+
+describe('emitIrModuleHaxe optional spread call', () => {
+  it('refuses optional spread call requiring null-safe reflective lowering', () => {
+    expect(() =>
+      emitIrModuleHaxe(
+        lower(
+          'opt-spread.ts',
+          `export function call(fn: ((...args: number[]) => number) | undefined, args: number[]): number | undefined {
+             return fn?.(...args);
+           }`,
+        ).module,
+      ),
+    ).toThrow('null-safe reflective');
+  });
+});
+
+describe('emitIrModuleHaxe class method override', () => {
+  it('emits override keyword for inherited method', () => {
+    const output = emitIrModuleHaxe(
+      lower(
+        'override.ts',
+        `export class Base {
+           value(): number { return 0; }
+         }
+         export class Child extends Base {
+           override value(): number { return 1; }
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('override');
+  });
+});
+
+describe('emitIrModuleHaxe function type parameter', () => {
+  it('emits generic function with type parameter', () => {
+    const output = emitIrModuleHaxe(
+      lower('generic-fn.ts', 'export function id<T>(x: T): T { return x; }').module,
+    ).contents;
+    expect(output).toContain('<T');
+  });
+});
+
+describe('emitIrModuleHaxe variable module declaration', () => {
+  it('emits module-level variable declaration', () => {
+    const output = emitIrModuleHaxe(lower('mod-var.ts', 'export const PI = 3.14;').module).contents;
+    expect(output).toContain('PI');
+    expect(output).toContain('3.14');
+  });
+
+  it('emits mutable module-level variable', () => {
+    const output = emitIrModuleHaxe(lower('mod-let.ts', 'export let counter = 0;').module).contents;
+    expect(output).toContain('counter');
+    expect(output).toContain('var');
+  });
+});
+
+describe('emitIrModuleHaxe class with accessor pair', () => {
+  it('emits getter and setter using Haxe property syntax', () => {
+    const output = emitIrModuleHaxe(
+      lower(
+        'accessor-pair.ts',
+        `export class Container {
+           private _count: number;
+           constructor() { this._count = 0; }
+           get count(): number { return this._count; }
+           set count(value: number) { this._count = value; }
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('get_count');
+    expect(output).toContain('set_count');
+    expect(output).toContain('get, set');
+  });
+});
+
+describe('emitIrModuleHaxe Error subclass without explicit constructor', () => {
+  it('refuses Error subclass without constructor due to inherited-ABI forwarding', () => {
+    expect(() =>
+      emitIrModuleHaxe(lower('error-implicit.ts', 'export class CustomError extends Error {}').module),
+    ).toThrow('inherited-ABI');
+  });
+});
+
+describe('emitIrModuleHaxe assignment expression', () => {
+  it('emits simple assignment with = operator', () => {
+    const output = emitIrModuleHaxe(
+      lower('assign.ts', 'export function set(x: number): number { let y = 0; y = x; return y; }').module,
+    ).contents;
+    expect(output).toContain('=');
+  });
+});
+
+describe('emitIrModuleHaxe string addition', () => {
+  it('emits string concatenation with + operator', () => {
+    const output = emitIrModuleHaxe(
+      lower('str-add.ts', 'export function concat(a: string, b: string): string { return a + b; }').module,
+    ).contents;
+    expect(output).toContain('+');
+  });
+});
+
+describe('emitIrModuleHaxe optional parameter', () => {
+  it('emits optional parameter with default value', () => {
+    const output = emitIrModuleHaxe(
+      lower('opt-param.ts', 'export function opt(x: number, y?: number): number { return y ?? x; }').module,
+    ).contents;
+    expect(output).toContain('y');
+    expect(output).toContain('??');
+  });
+});
+
+describe('emitIrModuleHaxe parameter with initializer', () => {
+  it('emits parameter with default value', () => {
+    const output = emitIrModuleHaxe(
+      lower('default-param.ts', 'export function greet(name: string = "world"): string { return name; }').module,
+    ).contents;
+    expect(output).toContain('= "world"');
+  });
+});
+
+describe('emitIrModuleHaxe cast expression', () => {
+  it('emits cast for type assertion', () => {
+    const output = emitIrModuleHaxe(
+      lower('cast-expr.ts', 'export function asNum(x: unknown): number { return x as number; }').module,
+    ).contents;
+    expect(output).toContain('cast');
+    expect(output).toContain('Float');
+  });
+});
+
+describe('emitIrModuleHaxe class static field', () => {
+  it('emits static field on class', () => {
+    const output = emitIrModuleHaxe(
+      lower(
+        'static-field.ts',
+        `export class Counter {
+           static count: number = 0;
+           static increment(): void { Counter.count++; }
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('static');
+    expect(output).toContain('count');
+  });
+});
+
+describe('emitIrModuleHaxe class implementing simple interface', () => {
+  it('emits class with nominal interface implementation', () => {
+    const output = emitIrModuleHaxe(
+      lower(
+        'iface-impl.ts',
+        `export interface Sized { size(): number }
+         export class Box implements Sized {
+           size(): number { return 1; }
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('interface Sized');
+    expect(output).toContain('implements Sized');
+  });
+});
+
+describe('emitIrModuleHaxe array type in return position', () => {
+  it('emits Array<T> for array return type', () => {
+    const output = emitIrModuleHaxe(
+      lower('arr-return.ts', 'export function items(): number[] { return [1, 2, 3]; }').module,
+    ).contents;
+    expect(output).toContain('Array<Float>');
+  });
+});
+
+describe('emitIrModuleHaxe function type emission', () => {
+  it('emits function type as Haxe arrow type', () => {
+    const output = emitIrModuleHaxe(
+      lower('fn-type.ts', 'export function apply(fn: (x: number) => number, val: number): number { return fn(val); }')
+        .module,
+    ).contents;
+    expect(output).toContain('->');
+  });
+});
+
+describe('emitIrModuleHaxe array literal creation', () => {
+  it('emits array literal with typed elements', () => {
+    const output = emitIrModuleHaxe(
+      lower('arr-lit.ts', 'export function nums(): number[] { return [1, 2, 3]; }').module,
+    ).contents;
+    expect(output).toContain('[1');
+  });
+});
+
+describe('emitIrModuleHaxe if-else statement', () => {
+  it('emits if-else with both branches', () => {
+    const output = emitIrModuleHaxe(
+      lower('if-else.ts', 'export function abs(x: number): number { if (x < 0) { return -x; } else { return x; } }')
+        .module,
+    ).contents;
+    expect(output).toContain('if (');
+    expect(output).toContain('else');
+  });
+});
+
+describe('emitIrModuleHaxe not-equal comparison', () => {
+  it('emits strict inequality between number operands', () => {
+    const output = emitIrModuleHaxe(
+      lower('neq.ts', 'export function neq(a: number, b: number): boolean { return a !== b; }').module,
+    ).contents;
+    expect(output).toContain('!=');
+  });
+});
+
+describe('emitIrModuleHaxe class implements interface', () => {
+  it('emits class with implements clause', () => {
+    const output = emitIrModuleHaxe(
+      lower(
+        'class-impl.ts',
+        `export interface Printable {
+           print(): number;
+         }
+         export class Doc implements Printable {
+           print(): number { return 0; }
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('implements');
+    expect(output).toContain('Printable');
+  });
+});
+
+describe('emitIrModuleHaxe new expression', () => {
+  it('emits new expression with constructor arguments', () => {
+    const output = emitIrModuleHaxe(
+      lower(
+        'new-expr.ts',
+        `export class Pt { x: number; y: number; constructor(x: number, y: number) { this.x = x; this.y = y; } }
+         export function origin(): Pt { return new Pt(0, 0); }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('new Pt(');
+  });
+});
+
+describe('emitIrModuleHaxe abstract class', () => {
+  it('emits abstract class declaration', () => {
+    const output = emitIrModuleHaxe(
+      lower(
+        'abstract-class.ts',
+        `export abstract class Shape {
+           abstract area(): number;
+           describe(): string { return "shape"; }
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('function area');
+    expect(output).toContain('function describe');
+  });
+});
+
+describe('emitIrModuleHaxe relative import resolution', () => {
+  it('emits import statement for relative module', () => {
+    const output = emitIrModuleHaxe(
+      lower(
+        'import-mod.ts',
+        `import { helper } from './helper.js';
+         export function use(): number { return helper(); }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('import');
+  });
+});
