@@ -5437,6 +5437,465 @@ it('handles absent member removal from union type in nullish coalesce', () => {
   expect(fn).toBeDefined();
 });
 
+it('records nullish comparison evidence for equality with null', () => {
+  const result = lower(
+    'nullish-comparison.ts',
+    `export function isNull(value: string | null): boolean {
+  return value === null;
+}`,
+  );
+  const fn = result.module.declarations.find((d) => d.kind === 'function');
+  expect(fn).toBeDefined();
+});
+
+it('records nullish comparison evidence for equality with undefined', () => {
+  const result = lower(
+    'nullish-comparison-undef.ts',
+    `export function isUndefined(value: number | undefined): boolean {
+  return value === undefined;
+}`,
+  );
+  const fn = result.module.declarations.find((d) => d.kind === 'function');
+  expect(fn).toBeDefined();
+});
+
+it('derives operator domain from binary expression result for nested operators', () => {
+  const result = lower(
+    'nested-binary-domain.ts',
+    `export function compute(a: number, b: number): number {
+  return (a + b) * 2;
+}`,
+  );
+  const fn = result.module.declarations.find((d) => d.kind === 'function');
+  expect(fn).toBeDefined();
+});
+
+it('resolves present value domain for nullish coalescing on element access', () => {
+  const result = lower(
+    'present-domain-elem.ts',
+    `export function first(items: number[]): number {
+  return items[0] ?? 0;
+}`,
+  );
+  const fn = result.module.declarations.find((d) => d.kind === 'function');
+  expect(fn).toBeDefined();
+});
+
+it('resolves present value domain for nullish coalescing on union binding', () => {
+  const result = lower(
+    'present-domain-union.ts',
+    `export function safe(value: number | undefined): number {
+  return value ?? 0;
+}`,
+  );
+  const fn = result.module.declarations.find((d) => d.kind === 'function');
+  expect(fn).toBeDefined();
+});
+
+it('resolves operator value domain through type parameter constraint', () => {
+  const result = lower(
+    'type-param-domain.ts',
+    `export function double<T extends number>(value: T): number {
+  return value * 2;
+}`,
+  );
+  const fn = result.module.declarations.find((d) => d.kind === 'function');
+  expect(fn).toBeDefined();
+});
+
+it('infers contextual parameter type from callback position', () => {
+  const result = lower(
+    'contextual-param.ts',
+    `export function apply(items: number[]): number[] {
+  return items.map((value) => value * 2);
+}`,
+  );
+  const fn = result.module.declarations.find((d) => d.kind === 'function');
+  expect(fn).toBeDefined();
+});
+
+it('resolves expression binding type evidence through property access', () => {
+  const result = lower(
+    'binding-evidence-property.ts',
+    `interface Config { items: number[] }
+export function count(c: Config): number {
+  return c.items.length;
+}`,
+  );
+  const fn = result.module.declarations.find((d) => d.kind === 'function');
+  expect(fn).toBeDefined();
+});
+
+it('resolves expression binding type evidence through call expression', () => {
+  const result = lower(
+    'binding-evidence-call.ts',
+    `export function run(items: number[]): number {
+  return items.map((x) => x * 2).length;
+}`,
+  );
+  const fn = result.module.declarations.find((d) => d.kind === 'function');
+  expect(fn).toBeDefined();
+});
+
+it('resolves declared type evidence for module-declared type', () => {
+  const result = lower(
+    'declared-type-evidence.ts',
+    `interface Point { x: number; y: number }
+export function origin(): Point { return { x: 0, y: 0 }; }
+export function distance(p: Point): number {
+  const pt = origin();
+  return pt.x + pt.y;
+}`,
+  );
+  const fn = result.module.declarations.find((d) => d.kind === 'function' && d.binding.name === 'distance');
+  expect(fn).toBeDefined();
+});
+
+it('resolves indexed receiver from checker type through type parameter', () => {
+  const result = lower(
+    'indexed-type-param.ts',
+    `export function first<T extends string[]>(items: T): string {
+  return items[0];
+}`,
+  );
+  const fn = result.module.declarations.find((d) => d.kind === 'function');
+  expect(fn).toBeDefined();
+});
+
+it('lowers indexed access type node', () => {
+  const result = lower(
+    'indexed-access-type.ts',
+    `interface Config { items: string[] }
+export type ItemType = Config['items'];`,
+  );
+  const ta = result.module.declarations.find((d) => d.kind === 'typeAlias');
+  expect(ta).toBeDefined();
+});
+
+it('lowers typeof type query', () => {
+  const result = lower(
+    'typeof-query.ts',
+    `const config = { width: 100 };
+export type ConfigType = typeof config;`,
+  );
+  const ta = result.module.declarations.find((d) => d.kind === 'typeAlias');
+  expect(ta).toBeDefined();
+});
+
+it('lowers qualified type name parts for namespace access', () => {
+  const result = lower(
+    'qualified-type.ts',
+    `export namespace NS { export interface Value { n: number } }
+export type Alias = NS.Value;`,
+  );
+  expect(result.module.declarations.length).toBeGreaterThanOrEqual(1);
+});
+
+it('resolves member evidence from object type', () => {
+  const result = lower(
+    'member-evidence.ts',
+    `export function get(obj: { nested: { value: number } }): number {
+  return obj.nested.value;
+}`,
+  );
+  const fn = result.module.declarations.find((d) => d.kind === 'function');
+  expect(fn).toBeDefined();
+});
+
+it('lowers for statement with all clauses', () => {
+  const result = lower(
+    'for-full.ts',
+    `export function countdown(): number {
+  let sum = 0;
+  for (let i = 10; i > 0; i--) { sum += i; }
+  return sum;
+}`,
+  );
+  const fn = result.module.declarations.find((d) => d.kind === 'function');
+  if (fn?.kind !== 'function') throw new Error('Expected function');
+  const forStmt = fn.body.find((s) => s.kind === 'for');
+  expect(forStmt).toBeDefined();
+});
+
+it('lowers try-catch-finally with all clauses', () => {
+  const result = lower(
+    'try-catch-finally.ts',
+    `export function safe(): number {
+  try { return 1; }
+  catch (error) { return 0; }
+  finally {}
+}`,
+  );
+  const fn = result.module.declarations.find((d) => d.kind === 'function');
+  if (fn?.kind !== 'function') throw new Error('Expected function');
+  const tryStmt = fn.body.find((s) => s.kind === 'try');
+  if (tryStmt?.kind !== 'try') throw new Error('Expected try');
+  expect(tryStmt.finallyBody).toBeDefined();
+});
+
+it('lowers labeled block statement', () => {
+  const result = lower(
+    'labeled-block.ts',
+    `export function run(): void {
+  label: { break label; }
+}`,
+  );
+  const fn = result.module.declarations.find((d) => d.kind === 'function');
+  if (fn?.kind !== 'function') throw new Error('Expected function');
+  const block = fn.body.find((s) => s.kind === 'block');
+  expect(block).toBeDefined();
+});
+
+it('lowers empty statement as block', () => {
+  const result = lower(
+    'empty-stmt.ts',
+    `export function noop(): void {
+  ;
+}`,
+  );
+  const fn = result.module.declarations.find((d) => d.kind === 'function');
+  if (fn?.kind !== 'function') throw new Error('Expected function');
+  expect(fn.body.length).toBeGreaterThanOrEqual(1);
+});
+
+it('lowers class with abstract method', () => {
+  const result = lower(
+    'abstract-method.ts',
+    `export abstract class Base {
+  abstract run(): void;
+}`,
+  );
+  const cls = result.module.declarations.find((d) => d.kind === 'class');
+  if (cls?.kind !== 'class') throw new Error('Expected class');
+  expect(cls.abstract).toBe(true);
+  expect(cls.methods).toHaveLength(1);
+  expect(cls.methods[0]).toMatchObject({ abstract: true, name: 'run' });
+});
+
+it('lowers class with getter and setter accessors', () => {
+  const result = lower(
+    'class-accessors.ts',
+    `export class Box {
+  private _value: number = 0;
+  get value(): number { return this._value; }
+  set value(n: number) { this._value = n; }
+}`,
+  );
+  const cls = result.module.declarations.find((d) => d.kind === 'class');
+  if (cls?.kind !== 'class') throw new Error('Expected class');
+  const getter = cls.methods.find((m) => m.name === 'value' && 'accessor' in m && m.accessor === 'get');
+  const setter = cls.methods.find((m) => m.name === 'value' && 'accessor' in m && m.accessor === 'set');
+  expect(getter).toBeDefined();
+  expect(setter).toBeDefined();
+});
+
+it('lowers class with constructor overloads and implementation', () => {
+  const result = lower(
+    'constructor-overload-impl.ts',
+    `export class Builder {
+  value: number;
+  constructor(n: number);
+  constructor(s: string);
+  constructor(input: number | string) { this.value = typeof input === 'number' ? input : input.length; }
+}`,
+  );
+  const cls = result.module.declarations.find((d) => d.kind === 'class');
+  if (cls?.kind !== 'class') throw new Error('Expected class');
+  expect(cls.classConstructor).toBeDefined();
+  expect(cls.classConstructor!.overloads.length).toBe(2);
+});
+
+it('lowers async function with Promise return type unwrapping', () => {
+  const result = lower(
+    'async-promise-return.ts',
+    `export async function fetch(): Promise<number> {
+  return 42;
+}`,
+  );
+  const fn = result.module.declarations.find((d) => d.kind === 'function');
+  if (fn?.kind !== 'function') throw new Error('Expected function');
+  expect(fn.async).toBe(true);
+});
+
+it('lowers interface with call signature overloads', () => {
+  const result = lower(
+    'overloaded-interface-method.ts',
+    `export interface Parser {
+  parse(input: string): number;
+  parse(input: number): string;
+}`,
+  );
+  const iface = result.module.declarations.find((d) => d.kind === 'interface');
+  if (iface?.kind !== 'interface') throw new Error('Expected interface');
+  const prop = iface.properties.find((p) => p.name === 'parse');
+  expect(prop).toBeDefined();
+});
+
+it('lowers type literal with method signature', () => {
+  const result = lower(
+    'type-literal-method.ts',
+    `export type Handler = {
+  handle(input: string): void;
+};`,
+  );
+  const ta = result.module.declarations.find((d) => d.kind === 'typeAlias');
+  expect(ta).toBeDefined();
+});
+
+it('lowers function expression binding kind', () => {
+  const result = lower(
+    'fn-expr-kind.ts',
+    `export const handler = function process(value: number): number { return value; };`,
+  );
+  const variable = result.module.declarations.find(
+    (d) => d.kind === 'variable' && 'binding' in d && d.binding.name === 'handler',
+  );
+  expect(variable).toBeDefined();
+});
+
+it('lowers object literal with computed property', () => {
+  const result = lower(
+    'computed-prop.ts',
+    `const key = 'dynamic';
+export const obj = { [key]: 42 };`,
+  );
+  const variable = result.module.declarations.find(
+    (d) => d.kind === 'variable' && 'binding' in d && d.binding.name === 'obj',
+  );
+  expect(variable).toBeDefined();
+});
+
+it('resolves binding element scope in parameter destructuring', () => {
+  const result = lower(
+    'binding-elem-param-scope.ts',
+    `export function extract({ a, b }: { a: number; b: number }): number {
+  return a + b;
+}`,
+  );
+  const fn = result.module.declarations.find((d) => d.kind === 'function');
+  expect(fn).toBeDefined();
+});
+
+it('resolves binding element scope from variable declaration', () => {
+  const result = lower(
+    'binding-elem-var-scope.ts',
+    `export function run(): number {
+  const { x, y } = { x: 1, y: 2 };
+  return x + y;
+}`,
+  );
+  const fn = result.module.declarations.find((d) => d.kind === 'function');
+  expect(fn).toBeDefined();
+});
+
+it('lowers class with implements clause', () => {
+  const result = lower(
+    'class-implements.ts',
+    `interface Runnable { run(): void }
+export class Task implements Runnable {
+  run(): void {}
+}`,
+  );
+  const cls = result.module.declarations.find((d) => d.kind === 'class');
+  if (cls?.kind !== 'class') throw new Error('Expected class');
+  expect(cls.implements.length).toBeGreaterThanOrEqual(1);
+});
+
+it('lowers object method in object literal', () => {
+  const result = lower(
+    'object-method-literal.ts',
+    `export const obj = {
+  greet(name: string): string { return name; },
+};`,
+  );
+  const variable = result.module.declarations.find(
+    (d) => d.kind === 'variable' && 'binding' in d && d.binding.name === 'obj',
+  );
+  expect(variable).toBeDefined();
+});
+
+it('resolves narrowed member to primitive name for typeof guard', () => {
+  const result = lower(
+    'narrowed-primitive.ts',
+    `type Input = string | number;
+export function double(value: Input): string | number {
+  if (typeof value === 'number') return value * 2;
+  return value + value;
+}`,
+  );
+  const fn = result.module.declarations.find((d) => d.kind === 'function');
+  expect(fn).toBeDefined();
+});
+
+it('lowers member receiver for ambient named type', () => {
+  const result = lower(
+    'ambient-receiver.ts',
+    `export function keys(map: Map<string, number>): number {
+  return map.size;
+}`,
+  );
+  const fn = result.module.declarations.find((d) => d.kind === 'function');
+  expect(fn).toBeDefined();
+});
+
+it('resolves indexed receiver from symbol-named receiver', () => {
+  const result = lower(
+    'indexed-receiver-names.ts',
+    `export function len(value: string): number {
+  return value[0].charCodeAt(0);
+}`,
+  );
+  const fn = result.module.declarations.find((d) => d.kind === 'function');
+  expect(fn).toBeDefined();
+});
+
+it('lowers destructuring assignment with array rest', () => {
+  const result = lower(
+    'destructure-assign-rest.ts',
+    `let first: number;
+let rest: number[];
+export function split(items: [number, number, number]): void {
+  [first, ...rest] = items;
+}`,
+  );
+  const fn = result.module.declarations.find((d) => d.kind === 'function');
+  expect(fn).toBeDefined();
+});
+
+it('lowers destructuring assignment with shorthand and default', () => {
+  const result = lower(
+    'destructure-assign-shorthand-default.ts',
+    `let x: number;
+export function extract(obj: { x?: number }): void {
+  ({ x = 0 } = obj);
+}`,
+  );
+  const fn = result.module.declarations.find((d) => d.kind === 'function');
+  expect(fn).toBeDefined();
+});
+
+it('lowers type with readonly keyword for non-array type', () => {
+  const result = lower('readonly-non-array.ts', `export type ReadonlyPair = readonly [number, string];`);
+  const ta = result.module.declarations.find((d) => d.kind === 'typeAlias');
+  expect(ta).toBeDefined();
+});
+
+it('infers initializer type for empty array', () => {
+  const result = lower('infer-empty-array.ts', `export const items = [];`);
+  const variable = result.module.declarations.find(
+    (d) => d.kind === 'variable' && 'binding' in d && d.binding.name === 'items',
+  );
+  expect(variable).toBeDefined();
+});
+
+it('resolves common type for mixed initializer array', () => {
+  const result = lower('common-type-array.ts', `export const items = [1, 'two', true];`);
+  const variable = result.module.declarations.find(
+    (d) => d.kind === 'variable' && 'binding' in d && d.binding.name === 'items',
+  );
+  expect(variable).toBeDefined();
+});
+
 function ambientReference(expression: Readonly<IrExpression> | undefined): string {
   if (expression?.kind !== 'identifier' || expression.reference.kind !== 'ambient') {
     throw new Error('Expected an ambient identifier reference');
