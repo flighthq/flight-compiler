@@ -8,6 +8,7 @@ import type {
   IrExpression,
   IrModule,
   IrStatement,
+  IrType,
   IrVariableDeclaration,
 } from '../../compiler-types/src/index.js';
 import { validateIrModuleStructure } from './compilerIrModuleStructure.js';
@@ -1735,6 +1736,41 @@ describe('validateIrModuleStructure', () => {
       failures: [expect.objectContaining({ code: 'invalid-node-shape', path: expect.stringContaining('.keyPlan') })],
       kind: 'invalid',
     });
+  });
+
+  it('requires primitive string type evidence on for-in bindings', () => {
+    const valid = lower(
+      'for-in-binding-type.ts',
+      'export function scan(source: { a: number }): string { for (const key in source) return key; return ""; }',
+    );
+    const missing = structuredClone(valid);
+    const wrong = structuredClone(valid);
+    const missingDeclaration = missing.declarations[0];
+    const wrongDeclaration = wrong.declarations[0];
+    if (
+      missingDeclaration?.kind !== 'function' ||
+      missingDeclaration.body[0]?.kind !== 'forIn' ||
+      wrongDeclaration?.kind !== 'function' ||
+      wrongDeclaration.body[0]?.kind !== 'forIn'
+    ) {
+      throw new Error('Expected for-in statements');
+    }
+    delete (missingDeclaration.body[0].variable as { type?: IrType }).type;
+    (wrongDeclaration.body[0].variable as { type: IrType }).type = { kind: 'primitive', name: 'number' };
+
+    expect(validateIrModuleStructure(valid)).toEqual({ kind: 'valid' });
+    for (const module of [missing, wrong]) {
+      expect(validateIrModuleStructure(module)).toMatchObject({
+        failures: [
+          expect.objectContaining({
+            code: 'invalid-node-shape',
+            path: expect.stringContaining('.variable.type'),
+            reason: 'for-in binding requires primitive string type evidence',
+          }),
+        ],
+        kind: 'invalid',
+      });
+    }
   });
 
   it('validates for-in with non-property members in getIrExpressionStaticForInKeys', () => {

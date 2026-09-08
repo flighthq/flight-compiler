@@ -9,6 +9,24 @@ import {
 } from './compilerIntermediateRepresentationTraversal.js';
 
 describe('analyzeIrModuleTraversal', () => {
+  it('visits for-in binding type evidence at the variable type path', () => {
+    const module = lower(`
+      export function first(source: { value: number }): string {
+        for (const key in source) return key;
+        return '';
+      }
+    `);
+    const paths: Array<readonly (number | string)[]> = [];
+
+    analyzeIrModuleTraversal(module, {
+      type(type, path) {
+        if (type.kind === 'primitive' && type.name === 'string' && path.includes('variable')) paths.push(path);
+      },
+    });
+
+    expect(paths).toEqual([['declarations', 0, 'body', 0, 'variable', 'type']]);
+  });
+
   it('visits the type carried by union member test evidence', () => {
     const module = lower(
       `interface Circle { kind: 'circle'; radius: number; }

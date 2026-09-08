@@ -292,11 +292,16 @@ describe('createCompilerLoweringPassVariableHoisting', () => {
     const carrier = getNamedVariable(loop.variable);
 
     expect(getVariableStatement(body[0]).declarations).toMatchObject([
-      { binding: { name: 'key', scope: 'function' }, mutable: true },
+      {
+        binding: { name: 'key', scope: 'function' },
+        mutable: true,
+        type: { kind: 'primitive', name: 'string' },
+      },
     ]);
     expect(carrier).toMatchObject({
       binding: { name: 'variableHoistingIterationValue', scope: 'block' },
       mutable: false,
+      type: { kind: 'primitive', name: 'string' },
     });
     expect(loop.body).toMatchObject({
       kind: 'block',

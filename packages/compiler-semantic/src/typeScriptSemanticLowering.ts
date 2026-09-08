@@ -1717,7 +1717,9 @@ function lowerStatement(node: ts.Statement, context: LoweringContext): IrStateme
     const variable = lowerVariables(
       node.initializer,
       context,
-      ts.isForOfStatement(node) ? lowerTypeScriptForOfElementType(node.expression, context) : undefined,
+      ts.isForOfStatement(node)
+        ? lowerTypeScriptForOfElementType(node.expression, context)
+        : { kind: 'primitive', name: 'string' },
     )[0]!;
     return ts.isForOfStatement(node)
       ? {

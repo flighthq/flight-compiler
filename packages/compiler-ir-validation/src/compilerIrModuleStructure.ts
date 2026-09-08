@@ -1174,6 +1174,14 @@ function visitStatement(statement: Readonly<IrStatement>, path: string, state: I
         }
         visitLexicalScope('block', path, state, () => {
           visitVariable(statement.variable, `${path}.variable`, ['block', 'function'], state);
+          if (statement.variable.type?.kind !== 'primitive' || statement.variable.type.name !== 'string') {
+            addFailure(
+              'invalid-node-shape',
+              `${path}.variable.type`,
+              'for-in binding requires primitive string type evidence',
+              state,
+            );
+          }
           visitStatement(statement.body, `${path}.body`, state);
         });
         break;

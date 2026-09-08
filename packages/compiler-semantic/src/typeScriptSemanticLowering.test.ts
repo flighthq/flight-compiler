@@ -1322,6 +1322,7 @@ describe('lowerTypeScriptSource', () => {
     expect(result.diagnostics).toEqual([]);
     expect(fixedLoop).toMatchObject({
       keyPlan: { evaluation: 'elide', keys: ['2', '10', 'second', 'first'], kind: 'objectLiteral' },
+      variable: { type: { kind: 'primitive', name: 'string' } },
     });
     // An optional property means a key that may or may not be present, so the shape is not closed.
     expect(dynamic.body[0]?.kind === 'forIn' ? dynamic.body[0].keyPlan : 'not-for-in').toBeUndefined();
@@ -1332,6 +1333,7 @@ describe('lowerTypeScriptSource', () => {
     // parameter rather than a literal.
     expect(declared?.kind === 'function' ? declared.body[0] : undefined).toMatchObject({
       keyPlan: { evaluation: 'alreadyEvaluated', keys: ['value'], kind: 'closedRecord' },
+      variable: { type: { kind: 'primitive', name: 'string' } },
     });
     expect(dynamic.body[1]).toMatchObject({
       keyPlan: { evaluation: 'preserve', keys: ['value'], kind: 'objectLiteral' },
