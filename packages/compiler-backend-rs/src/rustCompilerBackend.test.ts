@@ -3046,4 +3046,143 @@ describe('emitIrModuleRust', () => {
     const output = emitIrModuleRust(result.module).contents;
     expect(output).toContain('use crate::');
   });
+
+  it('emits array element return as clone', () => {
+    const output = emitIrModuleRust(
+      lower('elem-return.ts', 'export function first(items: string[]): string { return items[0]; }').module,
+    ).contents;
+    expect(output).toContain('.clone()');
+  });
+
+  it('emits function with returned closure as Rc', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'return-closure.ts',
+        'export function maker(): (x: number) => number { return (x: number): number => x + 1; }',
+      ).module,
+    ).contents;
+    expect(output).toContain('Rc::new(');
+  });
+
+  it('emits tagged union with shared field accessor', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'tagged-shared.ts',
+        [
+          'export interface Circle { kind: string; radius: number; }',
+          'export interface Square { kind: string; side: number; }',
+          'export type Shape = Circle | Square;',
+          'export function getKind(s: Shape): string { return s.kind; }',
+        ].join('\n'),
+      ).module,
+    ).contents;
+    expect(output).toContain('enum Shape');
+    expect(output).toContain('fn kind(&self)');
+    expect(output).toContain('match self');
+  });
+
+  it('emits primitive union type as enum name', () => {
+    const output = emitIrModuleRust(
+      lower('prim-union-type.ts', 'export function accept(x: string | number): string | number { return x; }').module,
+    ).contents;
+    expect(output).toContain('StrOrF64');
+  });
+
+  it('emits class with multiple inherent and trait methods', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'multi-method.ts',
+        [
+          'export interface Measurable { measure(): number; }',
+          'export class Widget implements Measurable {',
+          '  width: number;',
+          '  constructor(w: number) { this.width = w; }',
+          '  measure(): number { return this.width; }',
+          '  describe(): string { return "widget"; }',
+          '}',
+        ].join('\n'),
+      ).module,
+    ).contents;
+    expect(output).toContain('impl Measurable for Widget');
+    expect(output).toContain('fn describe(');
+  });
+
+  it('emits variable bound to function expression as Rc closure', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'fn-var.ts',
+        'export function run(): number { const add: (a: number, b: number) => number = (a: number, b: number): number => a + b; return add(1, 2); }',
+      ).module,
+    ).contents;
+    expect(output).toContain('Rc::new(');
+  });
+
+  it('emits Math.floor via f64 method', () => {
+    const output = emitIrModuleRust(
+      lower('math-floor.ts', 'export function floor(x: number): number { return Math.floor(x); }').module,
+    ).contents;
+    expect(output).toContain('f64::floor');
+  });
+
+  it('emits Math.abs via f64 method', () => {
+    const output = emitIrModuleRust(
+      lower('math-abs.ts', 'export function abs(x: number): number { return Math.abs(x); }').module,
+    ).contents;
+    expect(output).toContain('f64::abs');
+  });
+
+  it('emits Math.sqrt via f64 method', () => {
+    const output = emitIrModuleRust(
+      lower('math-sqrt.ts', 'export function root(x: number): number { return Math.sqrt(x); }').module,
+    ).contents;
+    expect(output).toContain('f64::sqrt');
+  });
+
+  it('rejects array findIndex without a Rust ambient member binding', () => {
+    expect(() =>
+      emitIrModuleRust(
+        lower(
+          'arr-findindex.ts',
+          'export function idx(items: number[]): number { return items.findIndex((x: number): boolean => x > 0); }',
+        ).module,
+      ),
+    ).toThrow(/array member findIndex has no Rust binding/);
+  });
+
+  it('emits object type as anonymous record struct', () => {
+    const output = emitIrModuleRust(
+      lower('anon-record.ts', 'export function point(): { x: number; y: number } { return { x: 1, y: 2 }; }').module,
+    ).contents;
+    expect(output).toContain('pub struct');
+    expect(output).toContain('pub x: f64');
+    expect(output).toContain('pub y: f64');
+  });
+
+  it('emits array with sparse elements as Default::default()', () => {
+    const output = emitIrModuleRust(
+      lower('sparse-arr.ts', 'export function sparse(): number[] { return [1, 2, 3]; }').module,
+    ).contents;
+    expect(output).toContain('vec![');
+  });
+
+  it('emits comparison operators between numbers', () => {
+    const output = emitIrModuleRust(
+      lower('compare-ops.ts', 'export function gt(a: number, b: number): boolean { return a > b; }').module,
+    ).contents;
+    expect(output).toContain('>');
+  });
+
+  it('emits logical AND/OR between booleans', () => {
+    const output = emitIrModuleRust(
+      lower('logical-ops.ts', 'export function both(a: boolean, b: boolean): boolean { return a && b; }').module,
+    ).contents;
+    expect(output).toContain('&&');
+  });
+
+  it('emits strict equality between same types', () => {
+    const output = emitIrModuleRust(
+      lower('strict-eq.ts', 'export function same(a: number, b: number): boolean { return a === b; }').module,
+    ).contents;
+    expect(output).toContain('==');
+  });
 });
