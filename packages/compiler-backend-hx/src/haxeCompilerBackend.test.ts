@@ -5692,3 +5692,235 @@ describe('emitIrModuleHaxe class with non-overriding method and base chain', () 
     expect(output).toContain('override');
   });
 });
+
+describe('emitIrModuleHaxe bare continue without label', () => {
+  it('emits continue statement inside a for-of loop', () => {
+    const result = lower(
+      'bare-continue.ts',
+      `export function skip(items: number[]): number {
+         let total: number = 0;
+         for (const item of items) {
+           if (item < 0) continue;
+           total += item;
+         }
+         return total;
+       }`,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('continue');
+  });
+});
+
+describe('emitIrModuleHaxe loose inequality with null admits only undefined', () => {
+  it('emits direct comparison when operand admits only undefined', () => {
+    const result = lower(
+      'nullish-single.ts',
+      `export function present(value: number | undefined): boolean {
+         return value != null;
+       }`,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('!=');
+    expect(output).toContain('null');
+  });
+});
+
+describe('emitIrModuleHaxe indexedAccess type emission', () => {
+  it('emits Dynamic for indexed access type', () => {
+    const result = lower(
+      'indexed-type.ts',
+      `interface Options { width: number; height: number; }
+       export function getWidth(opt: Options): Options["width"] { return opt.width; }`,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('Dynamic');
+  });
+});
+
+describe('emitIrModuleHaxe do-while loop', () => {
+  it('emits do-while with condition', () => {
+    const result = lower(
+      'do-while.ts',
+      `export function halve(n: number): number {
+         let value: number = n;
+         do { value = Math.floor(value / 2); } while (value > 1);
+         return value;
+       }`,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('do {');
+    expect(output).toContain('while');
+  });
+});
+
+describe('emitIrModuleHaxe negated typeof check', () => {
+  it('emits negated Std.isOfType for typeof !== comparison', () => {
+    const result = lower(
+      'typeof-negated.ts',
+      `export function notString(value: string | number): boolean {
+         return typeof value !== 'string';
+       }`,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('!Std.isOfType');
+  });
+});
+
+describe('emitIrModuleHaxe strict equality between number operands', () => {
+  it('emits direct strict equality for matching number domains', () => {
+    const result = lower(
+      'strict-eq.ts',
+      `export function eq(a: number, b: number): boolean {
+         return a === b;
+       }`,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('==');
+  });
+});
+
+describe('emitIrModuleHaxe labeled do-while with break', () => {
+  it('emits control flow state for labeled do-while break', () => {
+    const result = lower(
+      'labeled-do-while.ts',
+      `export function find(items: number[]): number {
+         let result: number = -1;
+         outer: do {
+           for (const item of items) {
+             if (item > 10) { result = item; break outer; }
+           }
+         } while (false);
+         return result;
+       }`,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('ControlFlowState');
+  });
+});
+
+describe('emitIrModuleHaxe undefined default expression', () => {
+  it('emits default value for optional destructuring element', () => {
+    const result = lower(
+      'undef-default.ts',
+      `export function first(pair: [number, number?]): number {
+         const [a, b = 0] = pair;
+         return a + b;
+       }`,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('??');
+  });
+});
+
+describe('emitIrModuleHaxe class field initialization in explicit constructor', () => {
+  it('emits field initializations in class with explicit constructor', () => {
+    const result = lower(
+      'ctor-field.ts',
+      `export class Item {
+         readonly label: string = "default";
+         constructor(public readonly value: number) {}
+       }`,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('label');
+    expect(output).toContain('default');
+  });
+});
+
+describe('emitIrModuleHaxe tuple spread with trailing omitted optional elements', () => {
+  it('emits null for omitted trailing optional elements in a tuple spread', () => {
+    const result = lower(
+      'tuple-spread-opt.ts',
+      `type Result = [boolean, number, string?, string?];
+       export function combine(a: [number]): Result {
+         return [true, ...a];
+       }`,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('null');
+    expect(output).toContain('true');
+  });
+});
+
+describe('emitIrModuleHaxe loose equality without nullish literal', () => {
+  it('refuses loose equality between non-nullish values', () => {
+    const result = lower(
+      'loose-eq.ts',
+      `export function check(a: number, b: number): boolean {
+         return a == b;
+       }`,
+    );
+
+    expect(() => emitIrModuleHaxe(result.module)).toThrow('type-directed lowering');
+  });
+});
+
+describe('emitIrModuleHaxe bitwise not on number', () => {
+  it('emits bitwise complement with Std.int wrapping', () => {
+    const result = lower(
+      'bitwise-not.ts',
+      `export function invert(n: number): number {
+         return ~n;
+       }`,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('~');
+    expect(output).toContain('Std.int');
+  });
+});
+
+describe('emitIrModuleHaxe string concatenation operator', () => {
+  it('emits direct string addition', () => {
+    const result = lower(
+      'string-concat.ts',
+      `export function greet(name: string): string {
+         return "hello " + name;
+       }`,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('+');
+    expect(output).toContain('hello');
+  });
+});
+
+describe('emitIrModuleHaxe strict boolean equality', () => {
+  it('emits direct strict equality for boolean operands', () => {
+    const result = lower(
+      'bool-eq.ts',
+      `export function same(a: boolean, b: boolean): boolean {
+         return a === b;
+       }`,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('==');
+  });
+});
+
+describe('emitIrModuleHaxe nullish coalescing on mixed tuple element', () => {
+  it('casts dynamic read through nullish coalescing from mixed tuple', () => {
+    const result = lower(
+      'tuple-coalesce-cast.ts',
+      `export function safe(pair: [number, string]): number {
+         const x: number = pair[0] ?? 0;
+         return x;
+       }`,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('cast');
+    expect(output).toContain('??');
+  });
+});
