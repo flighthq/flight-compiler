@@ -4965,4 +4965,390 @@ describe('emitIrModuleRust', () => {
     ).contents;
     expect(output).toContain('self.items.clone()');
   });
+
+  it('emits cell-wrapped plain assignment with set()', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'cell-assign.ts',
+        `export function resettable(): () => number {
+           let count = 0;
+           return () => { count = 5; return count; };
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('.set(5');
+  });
+
+  it('emits string += as push_str', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'str-append.ts',
+        `export function build(prefix: string, suffix: string): string {
+           let result = prefix;
+           result += suffix;
+           return result;
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('push_str');
+  });
+
+  it('emits non-exported function without pub', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'non-exported.ts',
+        `function helper(x: number): number { return x + 1; }
+         export function run(x: number): number { return helper(x); }`,
+      ).module,
+    ).contents;
+    expect(output).not.toMatch(/pub fn helper/u);
+    expect(output).toMatch(/fn helper/u);
+    expect(output).toMatch(/pub fn run/u);
+  });
+
+  it('emits non-exported enum without pub', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'non-exported-enum.ts',
+        `enum Dir { Up, Down }
+         export function isUp(d: Dir): boolean { return d === Dir.Up; }`,
+      ).module,
+    ).contents;
+    expect(output).not.toMatch(/pub enum Dir/u);
+    expect(output).toMatch(/enum Dir/u);
+  });
+
+  it('emits labeled break in loop', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'labeled-break.ts',
+        `export function findFirst(grid: number[][]): number {
+           let result = -1;
+           outer: for (const row of grid) {
+             for (const cell of row) {
+               if (cell > 0) { result = cell; break outer; }
+             }
+           }
+           return result;
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain("'outer");
+    expect(output).toContain("break 'outer");
+  });
+
+  it('emits for-of iteration', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'for-of.ts',
+        `export function sum(items: number[]): number {
+           let total = 0;
+           for (const item of items) { total += item; }
+           return total;
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('for');
+    expect(output).toContain('in');
+  });
+
+  it('emits switch with default and multiple cases', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'switch-cases.ts',
+        `export function describe(n: number): string {
+           switch (n) {
+             case 0: return "zero";
+             case 1: return "one";
+             default: return "other";
+           }
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('else');
+    expect(output).toContain('"other"');
+  });
+
+  it('emits throw with new Error as panic', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'throw-err.ts',
+        `export function fail(msg: string): never {
+           throw new Error(msg);
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('panic!');
+  });
+
+  it('emits conditional ternary expression', () => {
+    const output = emitIrModuleRust(
+      lower('ternary.ts', `export function abs(x: number): number { return x >= 0 ? x : -x; }`).module,
+    ).contents;
+    expect(output).toContain('if');
+    expect(output).toContain('else');
+  });
+
+  it('emits while loop with condition', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'while-cond.ts',
+        `export function countdown(n: number): number {
+           let x = n;
+           while (x > 0) { x -= 1; }
+           return x;
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('while');
+  });
+
+  it('emits infinite while(true) loop as Rust loop', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'inf-loop.ts',
+        `export function spin(): number {
+           let x = 0;
+           while (true) { x += 1; if (x > 100) { return x; } }
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('loop');
+  });
+
+  it('emits class with static constant field', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'static-const.ts',
+        `export class Constants {
+           static readonly MAX: number = 100;
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('const');
+    expect(output).toContain('100');
+  });
+
+  it('emits non-exported class without pub struct', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'internal-class.ts',
+        `class Internal {
+           value: number;
+           constructor(value: number) { this.value = value; }
+         }
+         export function make(): number { const x = new Internal(42); return x.value; }`,
+      ).module,
+    ).contents;
+    expect(output).not.toMatch(/pub struct Internal/u);
+    expect(output).toMatch(/struct Internal/u);
+  });
+
+  it('emits bitwise AND assignment as i32 cast round-trip', () => {
+    const output = emitIrModuleRust(
+      lower('bitand-assign.ts', `export function mask(x: number, m: number): number { x &= m; return x; }`).module,
+    ).contents;
+    expect(output).toContain('as i32');
+  });
+
+  it('emits bitwise OR assignment as i32 cast round-trip', () => {
+    const output = emitIrModuleRust(
+      lower('bitor-assign.ts', `export function setFlag(x: number, flag: number): number { x |= flag; return x; }`)
+        .module,
+    ).contents;
+    expect(output).toContain('as i32');
+  });
+
+  it('emits exponentiation as f64::powf', () => {
+    const output = emitIrModuleRust(
+      lower('power.ts', `export function square(x: number): number { return x ** 2; }`).module,
+    ).contents;
+    expect(output).toContain('f64::powf');
+  });
+
+  it('emits unsigned right shift as u32 cast', () => {
+    const output = emitIrModuleRust(
+      lower('unsigned-shift.ts', `export function ursh(x: number, n: number): number { return x >>> n; }`).module,
+    ).contents;
+    expect(output).toContain('as u32');
+  });
+
+  it('emits exponentiation assignment as f64::powf', () => {
+    const output = emitIrModuleRust(
+      lower('pow-assign.ts', `export function squareInPlace(x: number): number { x **= 2; return x; }`).module,
+    ).contents;
+    expect(output).toContain('f64::powf');
+  });
+
+  it('emits unsigned right shift assignment as u32 cast', () => {
+    const output = emitIrModuleRust(
+      lower('ursh-assign.ts', `export function urshAssign(x: number, n: number): number { x >>>= n; return x; }`)
+        .module,
+    ).contents;
+    expect(output).toContain('as u32');
+  });
+
+  it('emits bitwise NOT as i32 cast round-trip', () => {
+    const output = emitIrModuleRust(
+      lower('bitnot.ts', `export function complement(x: number): number { return ~x; }`).module,
+    ).contents;
+    expect(output).toContain('as i32');
+  });
+
+  it('emits array element access with computed index', () => {
+    const output = emitIrModuleRust(
+      lower('arr-index.ts', `export function nth(items: number[], i: number): number { return items[i]; }`).module,
+    ).contents;
+    expect(output).toContain('as usize');
+  });
+
+  it('emits cast expression', () => {
+    const output = emitIrModuleRust(
+      lower('cast.ts', `export function coerce(x: number): number { return x as number; }`).module,
+    ).contents;
+    expect(output).toContain('fn coerce');
+  });
+
+  it('emits string charAt as chars().nth()', () => {
+    const output = emitIrModuleRust(
+      lower('char-at.ts', `export function first(s: string): string { return s.charAt(0); }`).module,
+    ).contents;
+    expect(output).toContain('chars().nth(');
+  });
+
+  it('emits string charCodeAt as chars().nth() with u32 cast', () => {
+    const output = emitIrModuleRust(
+      lower('char-code-at.ts', `export function code(s: string): number { return s.charCodeAt(0); }`).module,
+    ).contents;
+    expect(output).toContain('chars().nth(');
+    expect(output).toContain('as u32');
+  });
+
+  it('emits string substring as range slice', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'substring.ts',
+        `export function mid(s: string, start: number, end: number): string { return s.substring(start, end); }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('as usize');
+    expect(output).toContain('to_string');
+  });
+
+  it('emits array join with separator', () => {
+    const output = emitIrModuleRust(
+      lower('join.ts', `export function csv(items: string[]): string { return items.join(","); }`).module,
+    ).contents;
+    expect(output).toContain('.join(');
+  });
+
+  it('emits array slice with start', () => {
+    const output = emitIrModuleRust(
+      lower('slice.ts', `export function tail(items: number[]): number[] { return items.slice(1); }`).module,
+    ).contents;
+    expect(output).toContain('to_vec');
+  });
+
+  it('emits array concat', () => {
+    const output = emitIrModuleRust(
+      lower('concat.ts', `export function merge(a: number[], b: number[]): number[] { return a.concat(b); }`).module,
+    ).contents;
+    expect(output).toContain('extend');
+  });
+
+  it('emits type alias for object type as struct', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'type-alias-obj.ts',
+        `export type Point = { x: number; y: number; };
+         export function origin(): Point { return { x: 0, y: 0 }; }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('struct Point');
+  });
+
+  it('emits non-exported type alias without pub', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'type-alias-internal.ts',
+        `type Pair = { a: number; b: number; };
+         export function make(): Pair { return { a: 1, b: 2 }; }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('struct');
+  });
+
+  it('emits tuple type as Rust tuple', () => {
+    const output = emitIrModuleRust(
+      lower('tuple-type.ts', `export function pair(a: number, b: string): [number, string] { return [a, b]; }`).module,
+    ).contents;
+    expect(output).toContain('(f64, String)');
+  });
+
+  it('emits optional tuple element as Option', () => {
+    const output = emitIrModuleRust(
+      lower('opt-tuple.ts', `export function maybe(x: number): [number, string?] { return [x]; }`).module,
+    ).contents;
+    expect(output).toContain('Option<String>');
+  });
+
+  it('emits Readonly<T> as passthrough type', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'readonly.ts',
+        `export interface Data { x: number; }
+         export function freeze(d: Data): Readonly<Data> { return d; }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('fn freeze');
+  });
+
+  it('emits never type as !', () => {
+    const output = emitIrModuleRust(
+      lower('never.ts', `export function throwAlways(): never { throw new Error("always"); }`).module,
+    ).contents;
+    expect(output).toContain('-> !');
+  });
+
+  it('emits async function with await', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'async-fn.ts',
+        `export async function fetchValue(p: Promise<number>): Promise<number> {
+           const value = await p;
+           return value;
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('async fn');
+    expect(output).toContain('.await');
+  });
+
+  it('emits mutating method with &mut self', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'mutating-method.ts',
+        `export class Counter {
+           count: number;
+           constructor() { this.count = 0; }
+           increment(): void { this.count += 1; }
+           value(): number { return this.count; }
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('&mut self');
+    expect(output).toContain('&self');
+  });
+
+  it('emits function body closure without expression shorthand', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'closure-body.ts',
+        `export function apply(items: number[]): number[] {
+           return items.map((x) => { return x + 1; });
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('|');
+  });
 });
