@@ -620,6 +620,59 @@ describe('analyzeFlightWorkspace', () => {
     }
   });
 
+  it('skips top-level expression statements and unnamed declarations in source files', () => {
+    const upstream = createUpstreamFixture();
+    try {
+      write(
+        upstream,
+        'packages/types/src/sideEffect.ts',
+        "console.log('side effect');\nexport function sideEffectHelper(): number { return 1; }\n",
+      );
+      write(
+        upstream,
+        'packages/types/src/index.ts',
+        "export { Mode } from './Mode.js';\nexport type { Shape } from './Shape.js';\nexport { createValue } from './value.js';\n" +
+          "import { createOtherValue as createRenamedValue } from './other.js';\nexport { createRenamedValue as createPublicValue };\n" +
+          "export { createValue as createDirectAlias } from './value.js';\n" +
+          "export { sideEffectHelper } from './sideEffect.js';\n",
+      );
+      git(upstream, 'add', '.');
+      git(upstream, 'commit', '-m', 'expression statement');
+
+      const inventory = analyzeFlightWorkspace({ upstreamDirectory: upstream });
+      const inventoryByName = new Map(inventory.packages.map((item) => [item.name, item]));
+      const root = resolvePackageExportLane(inventoryByName, '@flighthq/types');
+
+      expect(root.exports.find((e) => e.name === 'sideEffectHelper')).toMatchObject({
+        kind: 'function',
+        runtime: true,
+      });
+    } finally {
+      rmSync(upstream, { force: true, recursive: true });
+    }
+  });
+
+  it('skips SDK export declarations without a module specifier', () => {
+    const upstream = createUpstreamFixture();
+    try {
+      write(
+        upstream,
+        'packages/sdk/src/index.ts',
+        "const localValue = 42;\nexport { localValue };\nexport * from '@flighthq/types';\n",
+      );
+      git(upstream, 'add', '.');
+      git(upstream, 'commit', '-m', 'sdk local export');
+
+      const inventory = analyzeFlightWorkspace({ upstreamDirectory: upstream });
+      const inventoryByName = new Map(inventory.packages.map((item) => [item.name, item]));
+      const types = inventoryByName.get('@flighthq/types');
+
+      expect(types?.sdkExposures).toEqual([{ sdkLane: '@flighthq/sdk', target: '@flighthq/types' }]);
+    } finally {
+      rmSync(upstream, { force: true, recursive: true });
+    }
+  });
+
   it('refuses a program file that resolves outside the upstream checkout', () => {
     const upstream = createUpstreamFixture();
     const outside = mkdtempSync(path.join(os.tmpdir(), 'flight-compiler-outside-'));
