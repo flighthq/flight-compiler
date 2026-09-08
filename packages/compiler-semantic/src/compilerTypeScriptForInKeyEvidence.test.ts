@@ -83,6 +83,95 @@ describe('getTypeScriptForInKeyEvidence', () => {
       ),
     ).toBeUndefined();
   });
+
+  it('returns undefined when an object literal contains a computed property name', () => {
+    expect(planFor('for (const key in { ["computed"]: 1 }) key;')).toBeUndefined();
+  });
+
+  it('unwraps parenthesized expressions in the declared-shape path', () => {
+    expect(planFor('declare const values: { only: number }; for (const key in (values)) key;')).toEqual({
+      evaluation: 'alreadyEvaluated',
+      keys: ['only'],
+      kind: 'closedRecord',
+    });
+  });
+
+  it('enters and exits the closed-record parenthesized unwrap without proving closure', () => {
+    expect(planFor('const values = { first: 1 }; for (const key in (values)) key;')).toBeUndefined();
+  });
+
+  it('refuses a non-identifier expression in both the closed-record and declared-shape paths', () => {
+    expect(
+      planFor('declare const obj: { values: { key: number } }; for (const key in obj.values) key;'),
+    ).toBeUndefined();
+  });
+
+  it('refuses when the symbol declaration is neither a parameter nor a variable', () => {
+    expect(planFor('function values() {} for (const key in values) key;')).toBeUndefined();
+  });
+
+  it('reads keys from a parameter with a closed type annotation', () => {
+    const { checker, source } = createProgram(
+      'function iterate(values: { first: number; second: number }) { for (const key in values) key; }',
+    );
+    const fn = source.statements[0];
+    if (!fn || !ts.isFunctionDeclaration(fn)) throw new Error('Expected function declaration');
+    const loop = fn.body?.statements[0];
+    if (!loop || !ts.isForInStatement(loop)) throw new Error('Expected for-in statement');
+    expect(getTypeScriptForInKeyEvidence(loop.expression, checker, source, getPropertyName)).toEqual({
+      evaluation: 'alreadyEvaluated',
+      keys: ['first', 'second'],
+      kind: 'closedRecord',
+    });
+  });
+
+  it('refuses an empty interface and a generic type reference for the declared-shape path', () => {
+    expect(planFor('interface Empty {} declare const values: Empty; for (const key in values) key;')).toBeUndefined();
+    expect(
+      planFor('interface Box<T> { value: T } declare const values: Box<number>; for (const key in values) key;'),
+    ).toBeUndefined();
+  });
+
+  it('resolves a type alias to its underlying shape members', () => {
+    expect(
+      planFor(
+        'type Shape = { first: number; second: number }; declare const values: Shape; for (const key in values) key;',
+      ),
+    ).toEqual({
+      evaluation: 'alreadyEvaluated',
+      keys: ['first', 'second'],
+      kind: 'closedRecord',
+    });
+  });
+
+  it('refuses a type reference that resolves to neither an interface nor a type alias', () => {
+    expect(
+      planFor('class Values { first = 1 } declare const values: Values; for (const key in values) key;'),
+    ).toBeUndefined();
+  });
+
+  it('refuses a closed record whose initializer is not an object literal or has computed keys', () => {
+    expect(
+      planFor(
+        'declare function makeRecord(): { key: number }; const values = makeRecord(); for (const key in values) key;',
+      ),
+    ).toBeUndefined();
+  });
+
+  it('detects delete, increment, decrement, and method-call mutations as escapes on a const record', () => {
+    expect(planFor('const values = { first: 1 }; delete values.first; for (const key in values) key;')).toBeUndefined();
+    expect(planFor('const values = { count: 1 }; values.count++; for (const key in values) key;')).toBeUndefined();
+    expect(planFor('const values = { count: 1 }; --values.count; for (const key in values) key;')).toBeUndefined();
+    expect(
+      planFor('const values = { method: function() { return 1; } }; values.method(); for (const key in values) key;'),
+    ).toBeUndefined();
+  });
+
+  it('refuses a generic type alias in the declared-shape path', () => {
+    expect(
+      planFor('type Box<T> = { value: T }; declare const values: Box<number>; for (const key in values) key;'),
+    ).toBeUndefined();
+  });
 });
 
 function createProgram(text: string): Readonly<{ checker: ts.TypeChecker; source: ts.SourceFile }> {
