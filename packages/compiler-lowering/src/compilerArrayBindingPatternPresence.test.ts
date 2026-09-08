@@ -135,6 +135,31 @@ describe('hasIrModuleArrayBindingPattern', () => {
     expect(hasIrModuleArrayBindingPattern(bindingThenArray)).toBe(true);
     expect(hasIrModuleArrayBindingPattern(noRest)).toBe(true);
   });
+
+  it('detects array patterns through computed keys and rest in object patterns', () => {
+    const computed = lower(
+      'computed-key.ts',
+      `
+        export function read(source: Record<string, [number]>, key: string): number {
+          const { [key]: [first] } = source;
+          return first;
+        }
+      `,
+    );
+    const rest = lower(
+      'rest-array.ts',
+      `
+        interface Outer { nested: { items: [number] } }
+        export function read(source: Outer): number {
+          const { nested: { items: [first] } }: Outer = source;
+          return first;
+        }
+      `,
+    );
+
+    expect(hasIrModuleArrayBindingPattern(computed)).toBe(true);
+    expect(hasIrModuleArrayBindingPattern(rest)).toBe(true);
+  });
 });
 
 function lower(file: string, source: string): IrModule {
