@@ -3568,4 +3568,110 @@ describe('emitIrModuleCpp', () => {
     const output = emitIrModuleCpp(module).contents;
     expect(output).toContain('Child');
   });
+
+  it('skips static fields in class struct emission', () => {
+    const output = emitIrModuleCpp(
+      lower(
+        'static-field.ts',
+        `export class Counter {
+          static instances: number = 0;
+          count: number;
+          constructor() { this.count = 0; }
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('double count;');
+    expect(output).not.toContain('instances');
+  });
+
+  it('emits lambda with block body when expression body is absent', () => {
+    const module = structuredClone(
+      lower(
+        'block-lambda.ts',
+        `export function apply(items: number[]): number[] {
+          return items.map((x: number): number => { const y = x * 2; return y; });
+        }`,
+      ).module,
+    );
+    const output = emitIrModuleCpp(module).contents;
+    expect(output).toContain('[=]');
+    expect(output).toContain('return');
+  });
+
+  it('detects return in if-otherwise inside try-finally', () => {
+    const output = emitIrModuleCpp(
+      lower(
+        'if-else-return.ts',
+        `export function check(condition: boolean, cleanup: () => void): number {
+          try {
+            if (condition) {
+              cleanup();
+            } else {
+              return 1;
+            }
+          } finally {
+            cleanup();
+          }
+          return 0;
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('finally_return');
+    expect(output).toContain('finally_exception');
+  });
+
+  it('detects return in nested finally body inside outer try-finally', () => {
+    const output = emitIrModuleCpp(
+      lower(
+        'finally-return.ts',
+        `export function nested(cleanup: () => void): number {
+          try {
+            try {
+              cleanup();
+            } finally {
+              return 1;
+            }
+          } finally {
+            cleanup();
+          }
+          return 0;
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('finally_return');
+  });
+
+  it('emits auto type for variable declaration without type annotation via IR injection', () => {
+    const module = structuredClone(lower('untyped-var.ts', 'export const value: number = 42;').module);
+    const decl = module.declarations.find((d: { kind: string }) => d.kind === 'variable');
+    if (decl?.kind === 'variable') {
+      delete (decl as Record<string, unknown>).type;
+    }
+    const output = emitIrModuleCpp(module).contents;
+    expect(output).toContain('const auto value');
+  });
+
+  it('emits optional parameter with std::optional wrapper via IR injection', () => {
+    const module = structuredClone(
+      lower('opt-param.ts', 'export function greet(name: string): string { return name; }').module,
+    );
+    const fn = module.declarations.find((d: { kind: string }) => d.kind === 'function');
+    if (fn?.kind === 'function' && fn.parameters[0]) {
+      (fn.parameters[0] as Record<string, unknown>).optional = true;
+    }
+    const output = emitIrModuleCpp(module).contents;
+    expect(output).toContain('std::optional');
+    expect(output).toContain('std::nullopt');
+  });
+
+  it('resolves super reference through named base class', () => {
+    const output = emitIrModuleCpp(
+      lower(
+        'super-base.ts',
+        `export class Base { greet(): string { return 'hello'; } }
+         export class Child extends Base { greet(): string { return super.greet(); } }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('Base::greet()');
+  });
 });
