@@ -1,0 +1,5 @@
+[
+  { "call": "filterAndMap", "arguments": [[1, 5, 3, 8, 2], 3], "returns": "strings" },
+  { "call": "filterAndMap", "arguments": [[10, 20, 30], 15], "returns": "strings" },
+  { "call": "filterAndMap", "arguments": [[1, 2, 3], 5], "returns": "strings" }
+]

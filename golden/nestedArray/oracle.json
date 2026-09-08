@@ -1,0 +1,36 @@
+[
+  {
+    "call": "sumRow",
+    "arguments": [
+      [
+        [1, 2, 3],
+        [4, 5, 6]
+      ],
+      0
+    ],
+    "returns": "number"
+  },
+  {
+    "call": "sumRow",
+    "arguments": [
+      [
+        [1, 2, 3],
+        [4, 5, 6]
+      ],
+      1
+    ],
+    "returns": "number"
+  },
+  { "call": "sumRow", "arguments": [[[10]], 0], "returns": "number" },
+  {
+    "call": "flatten",
+    "arguments": [
+      [
+        [1, 2],
+        [3, 4]
+      ]
+    ],
+    "returns": "numbers"
+  },
+  { "call": "flatten", "arguments": [[[10, 20, 30]]], "returns": "numbers" }
+]

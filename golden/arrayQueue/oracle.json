@@ -1,0 +1,5 @@
+[
+  { "call": "dequeue", "arguments": [[1, 2, 3]], "returns": "number", "rustRef": [0] },
+  { "call": "dequeue", "arguments": [[5]], "returns": "number", "rustRef": [0] },
+  { "call": "dequeue", "arguments": [[10, 20]], "returns": "number", "rustRef": [0] }
+]

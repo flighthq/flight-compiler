@@ -1,0 +1,6 @@
+[
+  { "call": "fooBar", "arguments": [5], "returns": "number" },
+  { "call": "fooBar", "arguments": [0], "returns": "number" },
+  { "call": "foo_bar", "arguments": [5], "returns": "number" },
+  { "call": "foo_bar", "arguments": [0], "returns": "number" }
+]
