@@ -4371,4 +4371,218 @@ describe('emitIrModuleRust', () => {
     ).contents;
     expect(output).toContain('OpaqueHostValue');
   });
+
+  it('emits narrowed nullable property access as unwrap borrow', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'narrow-prop.ts',
+        `export interface Item { value: number; }
+         export function read(x: Item | null): number {
+          if (x !== null) { return x.value; }
+          return 0;
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('unwrap');
+  });
+
+  it('emits optional property chain as map/and_then', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'opt-prop.ts',
+        `export interface Obj { value: number; }
+         export function safe(o: Obj | null): number | undefined { return o?.value; }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('map');
+    expect(output).toContain('optional_chain_value');
+  });
+
+  it('emits assignment to nullable binding as Some-wrapped', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'nullable-assign.ts',
+        `export function update(items: number[]): number | undefined {
+          let result: number | undefined = undefined;
+          for (const item of items) { result = item; }
+          return result;
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('Some(');
+  });
+
+  it('emits cell-wrapped compound assignment as get/set round-trip', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'cell-compound.ts',
+        `export function accumulate(): () => number {
+          let sum = 0;
+          return () => { sum += 10; return sum; };
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('.get()');
+    expect(output).toContain('.set(');
+  });
+
+  it('emits string replace as Rust replace', () => {
+    const output = emitIrModuleRust(
+      lower('str-replace.ts', `export function fix(s: string): string { return s.replace("old", "new"); }`).module,
+    ).contents;
+    expect(output).toContain('replace');
+  });
+
+  it('emits string endsWith as ends_with', () => {
+    const output = emitIrModuleRust(
+      lower('str-ends.ts', `export function check(s: string, suffix: string): boolean { return s.endsWith(suffix); }`)
+        .module,
+    ).contents;
+    expect(output).toContain('ends_with');
+  });
+
+  it('emits string toUpperCase as to_uppercase', () => {
+    const output = emitIrModuleRust(
+      lower('str-upper.ts', `export function up(s: string): string { return s.toUpperCase(); }`).module,
+    ).contents;
+    expect(output).toContain('to_uppercase');
+  });
+
+  it('emits array reduce as into_iter().fold()', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'arr-reduce.ts',
+        `export function sum(items: number[]): number {
+          return items.reduce((acc, x) => acc + x, 0);
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('fold');
+  });
+
+  it('emits array map with function reference as wrapper closure', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'arr-map-ref.ts',
+        `export function double(x: number): number { return x * 2; }
+         export function apply(items: number[]): number[] { return items.map(double); }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('into_iter()');
+    expect(output).toContain('map');
+  });
+
+  it('emits class with extends and composition field access', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'composition-field.ts',
+        `export class Base {
+          x: number;
+          constructor(x: number) { this.x = x; }
+          getX(): number { return this.x; }
+        }
+        export class Child extends Base {
+          y: number;
+          constructor(x: number, y: number) { super(x); this.y = y; }
+          sum(): number { return this.x + this.y; }
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('base');
+  });
+
+  it('emits interface with data property as trait accessor', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'iface-data.ts',
+        `export interface Named {
+          name: string;
+          greet(): string;
+        }
+        export class Person implements Named {
+          name: string;
+          constructor(name: string) { this.name = name; }
+          greet(): string { return this.name; }
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('trait Named');
+    expect(output).toContain('fn name(&self)');
+  });
+
+  it('emits for-of loop over array with borrow prefix', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'for-of-borrow.ts',
+        `export function sumArr(matrix: number[][]): number {
+          let total = 0;
+          for (const row of matrix) { total += row.length; }
+          return total;
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('for');
+  });
+
+  it('emits symbol type as FlightSymbol', () => {
+    const module = structuredClone(lower('symbol.ts', 'export function id(x: number): number { return x; }').module);
+    const fn = module.declarations.find((d) => d.kind === 'function');
+    if (fn && fn.kind === 'function') {
+      (fn as { returns: { kind: string; name: string } }).returns = { kind: 'primitive', name: 'symbol' } as never;
+    }
+    const output = emitIrModuleRust(module).contents;
+    expect(output).toContain('FlightSymbol');
+  });
+
+  it('emits Readonly<T> type as T passthrough', () => {
+    const output = emitIrModuleRust(
+      lower('readonly.ts', `export function copy(items: Readonly<number[]>): number { return items[0]; }`).module,
+    ).contents;
+    expect(output).toContain('Vec<f64>');
+  });
+
+  it('emits Required<T> type as T passthrough', () => {
+    const module = structuredClone(lower('required.ts', 'export function id(x: number): number { return x; }').module);
+    const fn = module.declarations.find((d) => d.kind === 'function');
+    if (fn && fn.kind === 'function') {
+      (fn as { returns: { kind: string; reference: unknown; typeArguments: unknown[] } }).returns = {
+        kind: 'named',
+        reference: { kind: 'ambient', name: 'Required' },
+        typeArguments: [{ kind: 'primitive', name: 'number' }],
+      } as never;
+    }
+    const output = emitIrModuleRust(module).contents;
+    expect(output).toContain('f64');
+  });
+
+  it('emits array with sparse element as Default::default()', () => {
+    const module = structuredClone(lower('sparse.ts', 'export function arr(): number[] { return [1, 2]; }').module);
+    const fn = module.declarations.find((d) => d.kind === 'function');
+    if (fn && fn.kind === 'function') {
+      const ret = fn.body.find((s) => s.kind === 'return') as IrStatement & { kind: 'return' };
+      if (ret?.expression?.kind === 'array') {
+        (ret.expression as { elements: unknown[] }).elements = [
+          ret.expression.elements[0],
+          undefined,
+          ret.expression.elements[1],
+        ];
+      }
+    }
+    const output = emitIrModuleRust(module).contents;
+    expect(output).toContain('Default::default()');
+  });
+
+  it('emits return with narrowed-present identifier as unwrap', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'narrow-return.ts',
+        `export function first(items: number[]): number | undefined {
+          const found = items.find((x) => x > 0);
+          if (found !== undefined) return found;
+          return undefined;
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('find');
+  });
 });
