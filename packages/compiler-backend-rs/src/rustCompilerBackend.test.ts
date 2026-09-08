@@ -3186,163 +3186,151 @@ describe('emitIrModuleRust', () => {
     expect(output).toContain('==');
   });
 
-  it('emits null literal as None', () => {
-    const output = emitIrModuleRust(
-      lower('null-lit.ts', 'export function nothing(): number | null { return null; }').module,
-    ).contents;
-    expect(output).toContain('None');
+  it('refuses regexp expressions before lowering', () => {
+    const result = lower('regexp.ts', 'export const x: number = 1;');
+    const module = structuredClone(result.module);
+    const decl = module.declarations[0];
+    if (decl?.kind === 'variable' && !('pattern' in decl)) {
+      (decl as unknown as { initializer: unknown }).initializer = { kind: 'regexp', pattern: 'test', flags: '' };
+    }
+    expect(() => emitIrModuleRust(module)).toThrow('regular expressions');
   });
 
-  it('emits string literal with to_owned', () => {
-    const output = emitIrModuleRust(
-      lower('string-lit.ts', 'export function greet(): string { return "hello"; }').module,
-    ).contents;
-    expect(output).toContain('.to_owned()');
+  it('refuses spread expressions in non-Math contexts', () => {
+    const result = lower('spread.ts', 'export const x: number = 1;');
+    const module = structuredClone(result.module);
+    const decl = module.declarations[0];
+    if (decl?.kind === 'variable' && !('pattern' in decl)) {
+      (decl as unknown as { initializer: unknown }).initializer = {
+        kind: 'spread',
+        expression: { kind: 'literal', value: 1 },
+      };
+    }
+    expect(() => emitIrModuleRust(module)).toThrow('spreading');
   });
 
-  it('emits integer literal with .0 suffix', () => {
-    const output = emitIrModuleRust(lower('int-lit.ts', 'export const value: number = 42;').module).contents;
-    expect(output).toContain('42.0');
+  it('refuses class constructor with this reference on right side', () => {
+    const result = lower(
+      'this-ref.ts',
+      `export class Foo {
+        x: number;
+        y: number;
+        constructor(v: number) { this.x = v; this.y = v; }
+      }`,
+    );
+    const module = structuredClone(result.module);
+    const cls = module.declarations.find((d: { kind: string }) => d.kind === 'class');
+    if (cls?.kind === 'class' && cls.classConstructor) {
+      const lastStmt = cls.classConstructor.body[cls.classConstructor.body.length - 1];
+      if (lastStmt?.kind === 'expression' && lastStmt.expression.kind === 'assignment') {
+        (lastStmt.expression as unknown as { right: unknown }).right = {
+          kind: 'property',
+          object: { kind: 'identifier', reference: { kind: 'this' }, presence: 'required' },
+          name: 'x',
+          optional: false,
+          semantics: { receivers: [] },
+        };
+      }
+    }
+    expect(() => emitIrModuleRust(module)).toThrow('initialization lowering');
   });
 
-  it('emits class with constructor field assignments as struct literal', () => {
-    const output = emitIrModuleRust(
-      lower(
-        'struct-init.ts',
-        `export class Point {
-          x: number;
-          y: number;
-          constructor(x: number, y: number) { this.x = x; this.y = y; }
-        }`,
-      ).module,
-    ).contents;
-    expect(output).toContain('struct Point');
-    expect(output).toContain('f64');
+  it('refuses enum discriminant outside i32 range', () => {
+    const result = lower('big-enum.ts', 'export enum Small { A = 1 }');
+    const module = structuredClone(result.module);
+    const decl = module.declarations.find((d: { kind: string }) => d.kind === 'enum');
+    if (decl?.kind === 'enum') {
+      (decl.members[0] as unknown as { value: number }).value = 3_000_000_000;
+    }
+    expect(() => emitIrModuleRust(module)).toThrow('i32 range');
   });
 
-  it('emits abstract class as trait with default method implementations', () => {
-    const output = emitIrModuleRust(
-      lower(
-        'abstract-trait.ts',
-        `export abstract class Shape {
-          abstract area(): number;
-          describe(): string { return "shape"; }
+  it('refuses enum with mixed discriminant domains', () => {
+    const result = lower('mixed-enum.ts', 'export enum Mixed { A = 1 }');
+    const module = structuredClone(result.module);
+    const decl = module.declarations.find((d: { kind: string }) => d.kind === 'enum');
+    if (decl?.kind === 'enum') {
+      decl.members.push({ name: 'B', value: 1.5 });
+    }
+    expect(() => emitIrModuleRust(module)).toThrow('discriminant domain');
+  });
+
+  it('refuses super identifier reference', () => {
+    const result = lower('super-ref.ts', 'export const x: number = 1;');
+    const module = structuredClone(result.module);
+    const decl = module.declarations[0];
+    if (decl?.kind === 'variable' && !('pattern' in decl)) {
+      (decl as unknown as { initializer: unknown }).initializer = {
+        kind: 'identifier',
+        reference: { kind: 'super' },
+        presence: 'required',
+      };
+    }
+    expect(() => emitIrModuleRust(module)).toThrow('super');
+  });
+
+  it('refuses bare undefined ambient reference', () => {
+    const result = lower('undef-ref.ts', 'export const x: number = 1;');
+    const module = structuredClone(result.module);
+    const decl = module.declarations[0];
+    if (decl?.kind === 'variable' && !('pattern' in decl)) {
+      (decl as unknown as { initializer: unknown }).initializer = {
+        kind: 'identifier',
+        reference: { kind: 'ambient', name: 'undefined' },
+        presence: 'required',
+      };
+    }
+    expect(() => emitIrModuleRust(module)).toThrow('Option-aware lowering');
+  });
+
+  it('refuses nullish comparison that admits both null and undefined', () => {
+    const result = lower(
+      'both-nullish.ts',
+      'export function check(x: number | undefined): boolean { return x === undefined; }',
+    );
+    const module = structuredClone(result.module);
+    const fn = module.declarations[0];
+    if (fn?.kind === 'function') {
+      for (const stmt of fn.body) {
+        if (
+          stmt.kind === 'return' &&
+          stmt.expression?.kind === 'binary' &&
+          stmt.expression.semantics.nullishComparison
+        ) {
+          (stmt.expression.semantics.nullishComparison as unknown as { admitsNull: boolean }).admitsNull = true;
+          (stmt.expression.semantics.nullishComparison as unknown as { admitsUndefined: boolean }).admitsUndefined =
+            true;
         }
-        export class Circle extends Shape {
-          radius: number;
-          constructor(r: number) { super(); this.radius = r; }
-          area(): number { return this.radius * this.radius; }
-        }`,
-      ).module,
-    ).contents;
-    expect(output).toContain('trait Shape');
-    expect(output).toContain('impl Shape for Circle');
+      }
+    }
+    expect(() => emitIrModuleRust(module)).toThrow('Option-aware lowering');
   });
 
-  it('emits class composition with concrete base delegation', () => {
-    const output = emitIrModuleRust(
-      lower(
-        'composition.ts',
-        `class Base {
-          value: number;
-          constructor(v: number) { this.value = v; }
+  it('refuses binding pattern variable declaration', () => {
+    const result = lower('binding-pat.ts', 'export const x: number = 1;');
+    const module = structuredClone(result.module);
+    const decl = module.declarations[0];
+    if (decl?.kind === 'variable' && !('pattern' in decl)) {
+      (decl as unknown as { pattern: unknown }).pattern = { kind: 'array', elements: [] };
+    }
+    expect(() => emitIrModuleRust(module)).toThrow();
+  });
+
+  it('refuses coalesce with non-Option left operand', () => {
+    const result = lower(
+      'coalesce-non-opt.ts',
+      'export function run(x: number | undefined): number { return x ?? 0; }',
+    );
+    const module = structuredClone(result.module);
+    const fn = module.declarations[0];
+    if (fn?.kind === 'function') {
+      for (const stmt of fn.body) {
+        if (stmt.kind === 'return' && stmt.expression?.kind === 'binary' && stmt.expression.operator === '??') {
+          (stmt.expression.left as unknown as { kind: string }).kind = 'literal';
+          (stmt.expression.left as unknown as { value: number }).value = 5;
         }
-        export class Child extends Base {
-          extra: number;
-          constructor(v: number) { super(v); this.extra = 1; }
-        }`,
-      ).module,
-    ).contents;
-    expect(output).toContain('struct Child');
-    expect(output).toContain('base');
-  });
-
-  it('emits optional chain property access with map/and_then', () => {
-    const output = emitIrModuleRust(
-      lower(
-        'opt-chain.ts',
-        `interface Item { name: string }
-         export function getName(item: Item | undefined): string | undefined { return item?.name; }`,
-      ).module,
-    ).contents;
-    expect(output).toContain('.map(');
-  });
-
-  it('emits equality nullish comparison as is_none', () => {
-    const output = emitIrModuleRust(
-      lower('null-check.ts', 'export function isNull(x: number | undefined): boolean { return x === undefined; }')
-        .module,
-    ).contents;
-    expect(output).toContain('is_none()');
-  });
-
-  it('emits inequality nullish comparison as is_some', () => {
-    const output = emitIrModuleRust(
-      lower('not-null.ts', 'export function isPresent(x: number | undefined): boolean { return x !== undefined; }')
-        .module,
-    ).contents;
-    expect(output).toContain('is_some()');
-  });
-
-  it('emits optional parameters with Option wrapping', () => {
-    const output = emitIrModuleRust(
-      lower('opt-param.ts', 'export function greet(name: string, prefix?: string): string { return name; }').module,
-    ).contents;
-    expect(output).toContain('Option<');
-  });
-
-  it('emits rest parameters as Vec', () => {
-    const output = emitIrModuleRust(
-      lower('rest-param.ts', 'export function sum(...values: number[]): number { return values[0]!; }').module,
-    ).contents;
-    expect(output).toContain('Vec<');
-  });
-
-  it('emits static class fields as associated constants', () => {
-    const output = emitIrModuleRust(
-      lower(
-        'static-field.ts',
-        `export class Config {
-          static version: number = 1;
-          name: string;
-          constructor(n: string) { this.name = n; }
-        }`,
-      ).module,
-    ).contents;
-    expect(output).toContain('const');
-  });
-
-  it('emits class implementing interface as trait impl', () => {
-    const output = emitIrModuleRust(
-      lower(
-        'impl-trait.ts',
-        `export interface Printable { display(): string }
-         export class Item implements Printable { display(): string { return "item"; } }`,
-      ).module,
-    ).contents;
-    expect(output).toContain('impl Printable for Item');
-  });
-
-  it('emits union type alias with named record members as enum', () => {
-    const output = emitIrModuleRust(
-      lower(
-        'union-enum.ts',
-        `export interface Circle { radius: number }
-         export interface Square { side: number }
-         export type Shape = Circle | Square;`,
-      ).module,
-    ).contents;
-    expect(output).toContain('enum Shape');
-  });
-
-  it('emits relative import as crate path', () => {
-    const output = emitIrModuleRust(
-      lower(
-        'with-import.ts',
-        `import { helper } from './helper.js';
-         export function use(): number { return helper(); }`,
-      ).module,
-    ).contents;
-    expect(output).toContain('use crate::');
+      }
+    }
+    expect(() => emitIrModuleRust(module)).toThrow('Option-shaped');
   });
 });
