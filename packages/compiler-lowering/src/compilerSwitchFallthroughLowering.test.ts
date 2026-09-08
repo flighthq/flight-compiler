@@ -324,6 +324,157 @@ describe('createCompilerLoweringPassSwitchFallthrough', () => {
     expect(block?.kind === 'block' && block.label).toBeDefined();
   });
 
+  it('elects state machine when binding introduction is only inside try-finally', () => {
+    const output = lowerIrModuleWithCompilerPasses(
+      lower(
+        'try-finally-binding.ts',
+        `export function analyze(value: number): number {
+           let total = 0;
+           switch (value) {
+             case 0:
+               total += 1;
+             case 1:
+               try { total += 2; } finally { const x = total; total = x; }
+               break;
+             default:
+               return total;
+           }
+           return total;
+         }`,
+      ),
+      [
+        createCompilerLoweringPassBindingPattern(),
+        createCompilerLoweringPassVariableHoisting(),
+        createCompilerLoweringPassSwitchFallthrough(),
+      ],
+    );
+    const pass = createCompilerLoweringPassSwitchFallthrough();
+    expect(pass.verifyIrModule(output)).toEqual({ kind: 'valid' });
+    const declaration = output.declarations[0];
+    if (declaration?.kind !== 'function') throw new Error('Expected function');
+    expect(declaration.body.some((statement) => statement.kind === 'block')).toBe(true);
+  });
+
+  it('elects state machine when binding introduction is only inside a nested switch', () => {
+    const output = lowerIrModuleWithCompilerPasses(
+      lower(
+        'nested-switch-binding.ts',
+        `export function analyze(value: number): number {
+           let total = 0;
+           switch (value) {
+             case 0:
+               total += 1;
+             case 1:
+               switch (total) { case 0: const y = total; total = y; break; default: total = 3; break; }
+               break;
+             default:
+               return total;
+           }
+           return total;
+         }`,
+      ),
+      [
+        createCompilerLoweringPassBindingPattern(),
+        createCompilerLoweringPassVariableHoisting(),
+        createCompilerLoweringPassSwitchFallthrough(),
+      ],
+    );
+    const pass = createCompilerLoweringPassSwitchFallthrough();
+    expect(pass.verifyIrModule(output)).toEqual({ kind: 'valid' });
+    const declaration = output.declarations[0];
+    if (declaration?.kind !== 'function') throw new Error('Expected function');
+    expect(declaration.body.some((statement) => statement.kind === 'block')).toBe(true);
+  });
+
+  it('elects state machine when binding introduction is only in a return expression containing a function', () => {
+    const output = lowerIrModuleWithCompilerPasses(
+      lower(
+        'return-function-binding.ts',
+        `export function analyze(value: number): number {
+           let total = 0;
+           switch (value) {
+             case 0:
+               total += 1;
+             case 1:
+               return ((): number => total)();
+             default:
+               return total;
+           }
+         }`,
+      ),
+      [
+        createCompilerLoweringPassBindingPattern(),
+        createCompilerLoweringPassVariableHoisting(),
+        createCompilerLoweringPassSwitchFallthrough(),
+      ],
+    );
+    const pass = createCompilerLoweringPassSwitchFallthrough();
+    expect(pass.verifyIrModule(output)).toEqual({ kind: 'valid' });
+    const declaration = output.declarations[0];
+    if (declaration?.kind !== 'function') throw new Error('Expected function');
+    expect(declaration.body.some((statement) => statement.kind === 'block')).toBe(true);
+  });
+
+  it('scans void returns and simple cases during binding introduction election', () => {
+    const output = lowerIrModuleWithCompilerPasses(
+      lower(
+        'void-return-binding.ts',
+        `export function analyze(value: number): void {
+           let total = 0;
+           switch (value) {
+             case 0:
+               return;
+             case 1:
+               total += 1;
+             case 2:
+               const y = total;
+               total = y;
+               break;
+             default:
+               return;
+           }
+         }`,
+      ),
+      [
+        createCompilerLoweringPassBindingPattern(),
+        createCompilerLoweringPassVariableHoisting(),
+        createCompilerLoweringPassSwitchFallthrough(),
+      ],
+    );
+    const pass = createCompilerLoweringPassSwitchFallthrough();
+    expect(pass.verifyIrModule(output)).toEqual({ kind: 'valid' });
+    const declaration = output.declarations[0];
+    if (declaration?.kind !== 'function') throw new Error('Expected function');
+    expect(declaration.body.some((statement) => statement.kind === 'block')).toBe(true);
+  });
+
+  it('passes enum, interface, type alias, and variable-without-initializer declarations unchanged', () => {
+    const output = lowerIrModuleWithCompilerPasses(
+      lower(
+        'passthrough.ts',
+        `export enum Status { Active, Inactive }
+         export interface Shape { area(): number; }
+         export type Pair = [number, string];
+         export let counter: number;
+         export const processor = (value: number): number => {
+           switch (value) { case 0: case 1: return 1; default: return 0; }
+         };
+         export default (value: number): number => {
+           switch (value) { case 0: case 1: return 1; default: return 0; }
+         };`,
+      ),
+      [
+        createCompilerLoweringPassBindingPattern(),
+        createCompilerLoweringPassVariableHoisting(),
+        createCompilerLoweringPassSwitchFallthrough(),
+      ],
+    );
+    expect(createCompilerLoweringPassSwitchFallthrough().verifyIrModule(output)).toEqual({ kind: 'valid' });
+    expect(output.declarations.some((d) => d.kind === 'enum')).toBe(true);
+    expect(output.declarations.some((d) => d.kind === 'interface')).toBe(true);
+    expect(output.declarations.some((d) => d.kind === 'typeAlias')).toBe(true);
+  });
+
   it('exits the state loop before continuing its enclosing loop and keeps multiple machine identities unique', () => {
     const output = lowerIrModuleWithCompilerPasses(
       lower(
