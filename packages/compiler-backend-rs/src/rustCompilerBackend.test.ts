@@ -7054,4 +7054,233 @@ describe('emitIrModuleRust', () => {
     ).contents;
     expect(output).toContain('continue;');
   });
+
+  it('emits string charAt as chars().nth()', () => {
+    const output = emitIrModuleRust(
+      lower('char-at.ts', 'export function first(s: string): string { return s.charAt(0); }').module,
+    ).contents;
+    expect(output).toContain('.chars().nth(');
+    expect(output).toContain('unwrap_or_default');
+  });
+
+  it('emits string charCodeAt as chars().nth() with f64 cast', () => {
+    const output = emitIrModuleRust(
+      lower('char-code.ts', 'export function code(s: string): number { return s.charCodeAt(0); }').module,
+    ).contents;
+    expect(output).toContain('.chars().nth(');
+    expect(output).toContain('f64::NAN');
+  });
+
+  it('emits string substring as slice with to_string', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'substr.ts',
+        'export function mid(s: string, start: number, end: number): string { return s.substring(start, end); }',
+      ).module,
+    ).contents;
+    expect(output).toContain('as usize');
+    expect(output).toContain('.to_string()');
+  });
+
+  it('emits string substring with one argument as open range', () => {
+    const output = emitIrModuleRust(
+      lower('substr-one.ts', 'export function tail(s: string, start: number): string { return s.substring(start); }')
+        .module,
+    ).contents;
+    expect(output).toContain('as usize..');
+    expect(output).toContain('.to_string()');
+  });
+
+  it('emits array join with separator argument', () => {
+    const output = emitIrModuleRust(
+      lower('join.ts', 'export function csv(items: string[]): string { return items.join(","); }').module,
+    ).contents;
+    expect(output).toContain('.join(');
+  });
+
+  it('emits array slice with start and end', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'slice.ts',
+        'export function mid(items: number[], start: number, end: number): number[] { return items.slice(start, end); }',
+      ).module,
+    ).contents;
+    expect(output).toContain('.to_vec()');
+    expect(output).toContain('as usize');
+  });
+
+  it('emits array slice with no arguments as clone', () => {
+    const output = emitIrModuleRust(
+      lower('slice-clone.ts', 'export function copy(items: number[]): number[] { return items.slice(); }').module,
+    ).contents;
+    expect(output).toContain('.clone()');
+  });
+
+  it('emits array concat with extend', () => {
+    const output = emitIrModuleRust(
+      lower('concat.ts', 'export function merge(a: number[], b: number[]): number[] { return a.concat(b); }').module,
+    ).contents;
+    expect(output).toContain('__concat');
+    expect(output).toContain('extend');
+  });
+
+  it('emits class implementing interface as trait impl', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'implements.ts',
+        `export interface Greeter { greet(): string }
+        export class HelloGreeter implements Greeter {
+          greet(): string { return "hello"; }
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('impl Greeter for HelloGreeter');
+  });
+
+  it('emits class with concrete base as composition struct', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'composition.ts',
+        `export class Base {
+          value: number;
+          constructor(v: number) { this.value = v; }
+        }
+        export class Child extends Base {
+          extra: number;
+          constructor(v: number, e: number) { super(v); this.extra = e; }
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('base: Base');
+    expect(output).toContain('Base::new(');
+  });
+
+  it('emits class with abstract base as trait implementation', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'abstract-impl.ts',
+        `export abstract class Shape {
+          abstract area(): number;
+        }
+        export class Circle extends Shape {
+          radius: number;
+          constructor(r: number) { super(); this.radius = r; }
+          area(): number { return 3.14 * this.radius * this.radius; }
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('trait Shape');
+    expect(output).toContain('impl Shape for Circle');
+  });
+
+  it('emits negated nullish comparison with is_some', () => {
+    const output = emitIrModuleRust(
+      lower('is-some.ts', 'export function present(x: number | undefined): boolean { return x != undefined; }').module,
+    ).contents;
+    expect(output).toContain('.is_some()');
+  });
+
+  it('emits element access on tuple receiver with positional field', () => {
+    const output = emitIrModuleRust(
+      lower('tuple-access.ts', 'export function first(pair: [number, string]): number { return pair[0]; }').module,
+    ).contents;
+    expect(output).toContain('.0');
+  });
+
+  it('emits template literal with format! macro', () => {
+    const output = emitIrModuleRust(
+      lower('template.ts', 'export function greet(name: string): string { return `hello ${name}`; }').module,
+    ).contents;
+    expect(output).toContain('format!');
+  });
+
+  it('emits tuple expression with single trailing comma', () => {
+    const output = emitIrModuleRust(
+      lower('single-tuple.ts', 'export function wrap(x: number): [number] { return [x]; }').module,
+    ).contents;
+    expect(output).toContain(',)');
+  });
+
+  it('emits undefinedDefault as unwrap_or_else', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'undef-default.ts',
+        'export function fallback(pair: [number, number?]): number { const [a, b = 0] = pair; return a + b; }',
+      ).module,
+    ).contents;
+    expect(output).toContain('unwrap_or_else');
+  });
+
+  it('emits class with interface that has data properties as trait getters', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'trait-data.ts',
+        `export interface Named { readonly name: string }
+        export class Person implements Named {
+          name: string;
+          constructor(n: string) { this.name = n; }
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('impl Named for Person');
+  });
+
+  it('emits class constructor field assignments for new() associated fn', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'ctor-fields.ts',
+        `export class Point {
+          x: number;
+          y: number;
+          constructor(x: number, y: number) { this.x = x; this.y = y; }
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('fn new(');
+    expect(output).toContain('Self {');
+  });
+
+  it('emits static const field on class', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'static-const.ts',
+        `export class Config {
+          static MAX: number = 100;
+          value: number;
+          constructor(v: number) { this.value = v; }
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('const MAX');
+  });
+
+  it('emits field initializer plan as new() when all fields have initializers', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'init-plan.ts',
+        `export class Counter {
+          count: number = 0;
+          name: string = "default";
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('fn new()');
+    expect(output).toContain('Self {');
+  });
+
+  it('emits mutating method with &mut self receiver', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'mut-self.ts',
+        `export class Counter {
+          count: number;
+          constructor() { this.count = 0; }
+          increment(): void { this.count = this.count + 1; }
+          get(): number { return this.count; }
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('&mut self');
+    expect(output).toContain('&self');
+  });
 });
