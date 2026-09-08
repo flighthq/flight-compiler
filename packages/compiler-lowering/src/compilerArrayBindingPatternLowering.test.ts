@@ -13,6 +13,7 @@ import type {
 import { createCompilerLoweringPassArrayBindingPattern } from './compilerArrayBindingPatternLowering.js';
 import { createCompilerLoweringPassCStyleFor } from './compilerCStyleForLowering.js';
 import { isCompilerLoweringFailure, lowerIrModuleWithCompilerPasses } from './compilerLoweringPass.js';
+import { createCompilerLoweringPassObjectBindingPattern } from './compilerObjectBindingPatternLowering.js';
 
 describe('createCompilerLoweringPassArrayBindingPattern', () => {
   it('lowers fixed and nested array bindings with one deterministic temporary per required tuple', () => {
@@ -455,6 +456,210 @@ describe('createCompilerLoweringPassArrayBindingPattern', () => {
     expect(singleBindings).toMatchObject([{ binding: { name: 'value' }, initializer: { kind: 'element' } }]);
     expect(single.body.statements[1]).toMatchObject({ expression: { reference: { binding: { name: 'value' } } } });
     expect(pass.verifyIrModule(output)).toEqual({ kind: 'valid' });
+  });
+
+  it('lowers array patterns in diverse statement containers and expression kinds', () => {
+    const output = lowerIrModuleWithCompilerPasses(
+      lower(
+        'statement-variety.ts',
+        `
+          export function diverse(
+            source: [number, string],
+            items: Array<{ a: number }>,
+            obj: Record<string, number>,
+            flag: boolean,
+            fn: (n: number) => number,
+          ): number {
+            const [x, y] = source;
+            { x; }
+            if (flag) { x; } else { y; }
+            while (false) { x; }
+            do { x; } while (false);
+            for (let i = 0; i < 1; i++) { x; }
+            for (const key in obj) { key; }
+            switch (x) { case 0: x; break; default: y; break; }
+            try { x; } catch { y; } finally { x; }
+            try { x; } finally { x; }
+            try { x; } catch { y; }
+            const arr = [x, ...items.map((i) => i.a)];
+            const msg = \`\${x} \${y}\`;
+            const ternary = flag ? x : 0;
+            const neg = -x;
+            const composed = { a: x, [y]: 1, ...source };
+            const prop = source[0];
+            const indexed = items[x];
+            const called = fn(x);
+            const instance = new Error(y);
+            const casted = x as number;
+            const assigned = (flag as unknown as number) + x;
+            arr; msg; ternary; neg; composed; prop; indexed; called; instance; casted; assigned;
+            return x;
+          }
+        `,
+      ),
+      [createCompilerLoweringPassArrayBindingPattern()],
+    );
+    expect(createCompilerLoweringPassArrayBindingPattern().verifyIrModule(output)).toEqual({ kind: 'valid' });
+  });
+
+  it('lowers array patterns in class constructors, methods, field closures, and default exports', () => {
+    const output = lowerIrModuleWithCompilerPasses(
+      lower(
+        'class-pattern.ts',
+        `
+          export class Handler {
+            field = (source: [number]): number => {
+              const [x] = source;
+              return x;
+            };
+            constructor(input: [string]) {
+              const [label] = input;
+              label;
+            }
+            process(source: [number], limit = 10): number {
+              const [value] = source;
+              return value + limit;
+            }
+          }
+          export default (source: [number]): number => {
+            const [z] = source;
+            return z;
+          };
+          function helper(): number { return 1; }
+          export { helper };
+        `,
+      ),
+      [createCompilerLoweringPassArrayBindingPattern()],
+    );
+    expect(createCompilerLoweringPassArrayBindingPattern().verifyIrModule(output)).toEqual({ kind: 'valid' });
+  });
+
+  it('lowers array patterns in for-loop variable initializers and for-in/for-of without patterns', () => {
+    const output = lowerIrModuleWithCompilerPasses(
+      lower(
+        'for-variety.ts',
+        `
+          export function iterate(items: Array<[number]>, obj: Record<string, number>): number {
+            let total = 0;
+            for (const [x]: [number] = items[0]!, i = 0; i < 1; ) { total += x; break; }
+            for (const item of items) { total += item[0]; }
+            for (const key in obj) { total += obj[key]!; }
+            return total;
+          }
+        `,
+      ),
+      [createCompilerLoweringPassArrayBindingPattern()],
+    );
+    expect(createCompilerLoweringPassArrayBindingPattern().verifyIrModule(output)).toEqual({ kind: 'valid' });
+  });
+
+  it('composes with object-binding-pattern lowering through IR-only expression kinds', () => {
+    const output = lowerIrModuleWithCompilerPasses(
+      lower(
+        'compose-object.ts',
+        `
+          interface Cfg { x?: number; nested: { y: string } }
+          export function compose(source: [Cfg], key: string): number {
+            const [cfg]: [Cfg] = source;
+            const { x = 1, nested: { y }, [key]: computed, ...rest }: Cfg = cfg;
+            return x + Number(y) + Number(computed) + Number(rest);
+          }
+        `,
+      ),
+      [createCompilerLoweringPassObjectBindingPattern(), createCompilerLoweringPassArrayBindingPattern()],
+    );
+    expect(createCompilerLoweringPassArrayBindingPattern().verifyIrModule(output)).toEqual({ kind: 'valid' });
+  });
+
+  it('passes enum, interface, and type alias declarations unchanged', () => {
+    const output = lowerIrModuleWithCompilerPasses(
+      lower(
+        'passthrough.ts',
+        `
+          export enum Color { Red, Green, Blue }
+          export interface Shape { area(): number; }
+          export type Pair = [number, string];
+          export function read(source: Pair): number {
+            const [first]: Pair = source;
+            return first;
+          }
+        `,
+      ),
+      [createCompilerLoweringPassArrayBindingPattern()],
+    );
+    expect(output.declarations.some((d) => d.kind === 'enum')).toBe(true);
+    expect(output.declarations.some((d) => d.kind === 'interface')).toBe(true);
+    expect(output.declarations.some((d) => d.kind === 'typeAlias')).toBe(true);
+    expect(createCompilerLoweringPassArrayBindingPattern().verifyIrModule(output)).toEqual({ kind: 'valid' });
+  });
+
+  it('handles class parameter properties and fields without initializers', () => {
+    const output = lowerIrModuleWithCompilerPasses(
+      lower(
+        'param-property.ts',
+        `
+          export class Container {
+            label!: string;
+            constructor(public readonly values: [number]) {
+              const [first]: [number] = values;
+              first;
+            }
+            process(source: [number]): number {
+              const [value] = source;
+              return value;
+            }
+          }
+        `,
+      ),
+      [createCompilerLoweringPassArrayBindingPattern()],
+    );
+    expect(createCompilerLoweringPassArrayBindingPattern().verifyIrModule(output)).toEqual({ kind: 'valid' });
+  });
+
+  it('lowers array patterns through return expressions, void returns, if without else, and switch', () => {
+    const output = lowerIrModuleWithCompilerPasses(
+      lower(
+        'return-variety.ts',
+        `
+          export function returnsVoid(source: [number]): void {
+            const [x] = source;
+            if (x > 0) { return; }
+            x;
+          }
+          export function returnsSwitch(source: [number]): number {
+            const [x] = source;
+            switch (x) { case 0: return x; default: return -x; }
+          }
+        `,
+      ),
+      [createCompilerLoweringPassArrayBindingPattern()],
+    );
+    expect(createCompilerLoweringPassArrayBindingPattern().verifyIrModule(output)).toEqual({ kind: 'valid' });
+  });
+
+  it('preserves object binding patterns within array pattern rest variables', () => {
+    const output = lowerIrModuleWithCompilerPasses(
+      lower(
+        'rest-object.ts',
+        `
+          export function split(values: [number, { key: string }, boolean]): { key: string } {
+            const [, ...tail]: [number, { key: string }, boolean] = values;
+            return tail[0];
+          }
+        `,
+      ),
+      [createCompilerLoweringPassArrayBindingPattern()],
+    );
+    const declarations = getVariableStatement(getFunctionDeclaration(output, 'split').body[0]).declarations.map(
+      getNamedVariable,
+    );
+
+    const tail = declarations.find((d) => d.binding.name === 'tail');
+    expect(tail).toMatchObject({
+      binding: { name: 'tail' },
+      initializer: { kind: 'tupleSuffix', start: 1, width: 2 },
+    });
+    expect(createCompilerLoweringPassArrayBindingPattern().verifyIrModule(output)).toEqual({ kind: 'valid' });
   });
 
   it.each([
