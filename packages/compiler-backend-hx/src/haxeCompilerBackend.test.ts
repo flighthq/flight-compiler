@@ -1,5 +1,6 @@
 import ts from 'typescript';
 
+import type { IrModule } from '../../compiler-types/src/index.js';
 import { isBackendEmissionFailure } from '../../compiler-emission/src/index.js';
 import { lowerTypeScriptSource } from '../../compiler-semantic/src/index.js';
 import { createHaxeCompilerBackend, emitIrModuleHaxe } from './haxeCompilerBackend.js';
@@ -2596,7 +2597,9 @@ describe('emitIrModuleHaxe class implements non-nominal', () => {
     };
     const module = { ...result.module, declarations: [patched] };
 
-    expect(() => emitIrModuleHaxe(module)).toThrow('implements a type with no nominal Haxe interface');
+    expect(() => emitIrModuleHaxe(module as unknown as IrModule)).toThrow(
+      'implements a type with no nominal Haxe interface',
+    );
   });
 });
 
@@ -3092,5 +3095,211 @@ describe('emitIrModuleHaxe error subclass implicit constructor', () => {
 
     expect(output).toContain('extends BaseError');
     expect(output).toContain('super(');
+  });
+});
+
+describe('emitIrModuleHaxe union type flattening', () => {
+  it('flattens a union of two interfaces into a Haxe anonymous type', () => {
+    const result = lower(
+      'union-flatten.ts',
+      `export interface Left { x: number; y: string }
+       export interface Right { x: number; z: boolean }
+       export function read(value: Left | Right): number { return value.x; }`,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('x:');
+  });
+});
+
+describe('emitIrModuleHaxe template literal emission', () => {
+  it('emits template literal with interpolated expressions as string concatenation', () => {
+    const result = lower(
+      'template-literal.ts',
+      'export function greet(name: string): string { return `hello ${name} world`; }',
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('Std.string(');
+    expect(output).toContain('+');
+  });
+
+  it('emits empty template literal as empty string', () => {
+    const result = lower('template-empty.ts', 'export function empty(): string { return ``; }');
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('""');
+  });
+});
+
+describe('emitIrModuleHaxe deep labeled break propagation', () => {
+  it('propagates labeled break through multiple nesting levels', () => {
+    const result = lower(
+      'deep-label.ts',
+      `export function search(matrix: number[][], target: number): boolean {
+        let found = false;
+        outer: for (const row of matrix) {
+          for (const cell of row) {
+            if (cell === target) { found = true; break outer; }
+          }
+        }
+        return found;
+      }`,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('ControlFlowState');
+    expect(output).toContain('break;');
+  });
+});
+
+describe('emitIrModuleHaxe abstract class', () => {
+  it('emits abstract class keyword', () => {
+    const result = lower(
+      'abstract-class.ts',
+      `export abstract class Shape { abstract area(): number; }
+       export class Circle extends Shape { radius: number = 1; area(): number { return 3.14 * this.radius * this.radius; } }`,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('class Shape');
+    expect(output).toContain('class Circle extends Shape');
+  });
+});
+
+describe('emitIrModuleHaxe typeAlias type declaration', () => {
+  it('emits typeAlias as Haxe typedef', () => {
+    const result = lower(
+      'type-alias-decl.ts',
+      `export type Callback = (value: number) => void;
+       export function call(cb: Callback): void { cb(42); }`,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('typedef Callback');
+  });
+});
+
+describe('emitIrModuleHaxe tuple destructure', () => {
+  it('destructures a fixed-length tuple into positional variables', () => {
+    const result = lower(
+      'tuple-destructure.ts',
+      `export function pick(values: [number, number, number]): number {
+        const [first, second, third]: [number, number, number] = values;
+        return first + second + third;
+      }`,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('arrayPatternValue');
+  });
+});
+
+describe('emitIrModuleHaxe do-while loop', () => {
+  it('emits do-while loop as Haxe do-while', () => {
+    const result = lower(
+      'do-while.ts',
+      'export function countdown(n: number): number { let x: number = n; do { x -= 1; } while (x > 0); return x; }',
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('do {');
+    expect(output).toContain('} while (');
+  });
+});
+
+describe('emitIrModuleHaxe while loop', () => {
+  it('emits while loop as Haxe while', () => {
+    const result = lower(
+      'while-loop.ts',
+      'export function count(limit: number): number { let n: number = 0; while (n < limit) { n += 1; } return n; }',
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('while (');
+  });
+});
+
+describe('emitIrModuleHaxe throw statement', () => {
+  it('emits throw expression', () => {
+    const result = lower('throw-stmt.ts', 'export function fail(msg: string): never { throw new Error(msg); }');
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('throw ');
+  });
+});
+
+describe('emitIrModuleHaxe switch statement', () => {
+  it('emits switch with case clauses', () => {
+    const result = lower(
+      'switch-stmt.ts',
+      `export function label(code: number): string {
+        switch (code) {
+          case 0: return "zero";
+          case 1: return "one";
+          default: return "other";
+        }
+      }`,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('switch (');
+  });
+});
+
+describe('emitIrModuleHaxe if-else statement', () => {
+  it('emits if-else with both branches', () => {
+    const result = lower(
+      'if-else.ts',
+      'export function abs(n: number): number { if (n < 0) { return -n; } else { return n; } }',
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('if (');
+    expect(output).toContain('else {');
+  });
+});
+
+describe('emitIrModuleHaxe array literal', () => {
+  it('emits array literal expression', () => {
+    const result = lower('array-literal.ts', 'export function list(): number[] { return [1, 2, 3]; }');
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('[1, 2, 3]');
+  });
+});
+
+describe('emitIrModuleHaxe string literal union', () => {
+  it('emits string literal union as Haxe enum abstract over String', () => {
+    const result = lower(
+      'string-union.ts',
+      `export type Direction = "north" | "south" | "east" | "west";
+       export function read(d: Direction): string { return d; }`,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('enum abstract Direction');
+    expect(output).toContain('String');
+  });
+});
+
+describe('emitIrModuleHaxe optional parameter', () => {
+  it('emits optional parameter with question mark prefix', () => {
+    const result = lower(
+      'optional-param.ts',
+      'export function greet(name?: string): string { return name ?? "world"; }',
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('?name:');
+  });
+});
+
+describe('emitIrModuleHaxe default parameter', () => {
+  it('emits parameter with default value', () => {
+    const result = lower('default-param.ts', 'export function greet(name: string = "world"): string { return name; }');
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('name:String = ');
   });
 });

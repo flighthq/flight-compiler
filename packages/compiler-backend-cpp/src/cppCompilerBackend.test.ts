@@ -926,7 +926,7 @@ describe('emitIrModuleCpp', () => {
     const module = structuredClone(result.module);
     const decl = module.declarations[0];
     if (decl?.kind === 'variable' && !('pattern' in decl)) {
-      decl.initializer = { kind: 'literal', value: NaN };
+      (decl as unknown as { initializer: unknown }).initializer = { kind: 'literal', value: NaN };
     }
     const emitted = emitIrModuleCpp(module);
     expect(emitted.contents).toContain('std::numeric_limits<double>::quiet_NaN()');
@@ -934,7 +934,7 @@ describe('emitIrModuleCpp', () => {
     const module2 = structuredClone(result.module);
     const decl2 = module2.declarations[0];
     if (decl2?.kind === 'variable' && !('pattern' in decl2)) {
-      decl2.initializer = { kind: 'literal', value: Infinity };
+      (decl2 as unknown as { initializer: unknown }).initializer = { kind: 'literal', value: Infinity };
     }
     const emitted2 = emitIrModuleCpp(module2);
     expect(emitted2.contents).toContain('std::numeric_limits<double>::infinity()');
@@ -942,7 +942,7 @@ describe('emitIrModuleCpp', () => {
     const module3 = structuredClone(result.module);
     const decl3 = module3.declarations[0];
     if (decl3?.kind === 'variable' && !('pattern' in decl3)) {
-      decl3.initializer = { kind: 'literal', value: -Infinity };
+      (decl3 as unknown as { initializer: unknown }).initializer = { kind: 'literal', value: -Infinity };
     }
     const emitted3 = emitIrModuleCpp(module3);
     expect(emitted3.contents).toContain('-std::numeric_limits<double>::infinity()');
@@ -953,7 +953,7 @@ describe('emitIrModuleCpp', () => {
     const module = structuredClone(result.module);
     const decl = module.declarations[0];
     if (decl?.kind === 'variable' && !('pattern' in decl)) {
-      decl.initializer = { kind: 'literal', value: null };
+      (decl as unknown as { initializer: unknown }).initializer = { kind: 'literal', value: null };
     }
     const emitted = emitIrModuleCpp(module);
     expect(emitted.contents).toContain('nullptr');
@@ -1138,7 +1138,7 @@ describe('emitIrModuleCpp', () => {
       space: 'value' as const,
     };
     const binding2 = { ...binding, id: 'b:2', fingerprint: 'sha256:b', line: 2 };
-    module.declarations = [
+    (module as unknown as { declarations: unknown[] }).declarations = [
       {
         kind: 'variable',
         binding,
