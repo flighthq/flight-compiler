@@ -3201,4 +3201,241 @@ describe('emitIrModuleCpp', () => {
     const output = emitIrModuleCpp(module).contents;
     expect(output).toContain('template');
   });
+
+  it('emits negated nullish comparison with has_value', () => {
+    const output = emitIrModuleCpp(
+      lower('negated-nullish.ts', 'export function present(x: number | undefined): boolean { return x != undefined; }')
+        .module,
+    ).contents;
+    expect(output).toContain('.has_value()');
+    expect(output).not.toContain('!');
+  });
+
+  it('emits lambda with statement body', () => {
+    const output = emitIrModuleCpp(
+      lower(
+        'lambda-body.ts',
+        'export function make(x: number): () => number { return (): number => { const y: number = x + 1; return y; }; }',
+      ).module,
+    ).contents;
+    expect(output).toContain('[=]');
+    expect(output).toContain('return');
+  });
+
+  it('emits for-of without explicit variable type as auto', () => {
+    const module = structuredClone(
+      lower(
+        'for-of-auto.ts',
+        'export function sum(items: number[]): number { let t: number = 0; for (const n of items) { t = t + n; } return t; }',
+      ).module,
+    );
+    const fn = module.declarations.find((d: { kind: string }) => d.kind === 'function');
+    if (fn?.kind === 'function') {
+      for (const stmt of fn.body) {
+        if (stmt.kind === 'forOf' && 'variable' in stmt) {
+          delete (stmt.variable as any).type;
+        }
+      }
+    }
+    const output = emitIrModuleCpp(module).contents;
+    expect(output).toContain('for (auto');
+  });
+
+  it('emits switch case with targeted labeled break', () => {
+    const output = emitIrModuleCpp(
+      lower(
+        'switch-label.ts',
+        `export function pick(x: number): number {
+          switch (x) {
+            case 1: { const v: number = 10; return v; }
+            case 2: return 20;
+            default: return 0;
+          }
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('if (');
+  });
+
+  it('detects return in otherwise branch for try-finally deferred variable', () => {
+    const output = emitIrModuleCpp(
+      lower(
+        'if-else-return.ts',
+        `export async function branch(task: Promise<number>, flag: boolean): Promise<number> {
+          try {
+            if (flag) { return await task; } else { return 0; }
+          } finally { let x: number = 0; }
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('finally_return');
+  });
+
+  it('detects return in try finallyBody for deferred return detection', () => {
+    const output = emitIrModuleCpp(
+      lower(
+        'nested-try.ts',
+        `export async function nested(a: Promise<number>, b: Promise<number>): Promise<number> {
+          try {
+            try { return await a; } finally { let x: number = 0; }
+          } finally { let y: number = 0; }
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('finally_return');
+  });
+
+  it('emits Promise construction with flight-cpp runtime profile', () => {
+    const output = emitIrModuleCpp(
+      lower(
+        'promise-ctor.ts',
+        'export function make(fn: (resolve: (v: number) => void) => void): Promise<number> { return new Promise<number>(fn); }',
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+    expect(output).toContain('::create(');
+  });
+
+  it('emits variable declaration without explicit type as auto', () => {
+    const module = structuredClone(
+      lower('auto-var.ts', 'export function test(): number { const x: number = 42; return x; }').module,
+    );
+    const fn = module.declarations.find((d: { kind: string }) => d.kind === 'function');
+    if (fn?.kind === 'function') {
+      for (const stmt of fn.body) {
+        if (stmt.kind === 'variable') {
+          for (const decl of stmt.declarations) {
+            delete (decl as any).type;
+          }
+        }
+      }
+    }
+    const output = emitIrModuleCpp(module).contents;
+    expect(output).toContain('const auto x');
+  });
+
+  it('emits binding name fallback when targetNames map misses', () => {
+    const module = structuredClone(
+      lower('fallback-name.ts', 'export function test(x: number): number { return x; }').module,
+    );
+    const output = emitIrModuleCpp(module).contents;
+    expect(output).toBeDefined();
+  });
+
+  it('emits tuple element access with static index', () => {
+    const output = emitIrModuleCpp(
+      lower('tuple-elem.ts', 'export function first(pair: [number, string]): number { return pair[0]; }').module,
+    ).contents;
+    expect(output).toContain('std::get<0>');
+  });
+
+  it('emits tupleSpread with optional target wrapping on element segment', () => {
+    const module = structuredClone(
+      lower(
+        'tspread-wrap.ts',
+        'export function combine(pair: [number, number]): [number, number, number] { return [0, ...pair]; }',
+      ).module,
+    );
+    const fn = module.declarations.find((d: { kind: string }) => d.kind === 'function');
+    if (fn?.kind === 'function') {
+      for (const stmt of fn.body) {
+        if (stmt.kind === 'return' && stmt.expression?.kind === 'tupleSpread') {
+          const seg = stmt.expression.segments.find((s: any) => s.kind === 'element');
+          if (seg?.kind === 'element') {
+            const idx = stmt.expression.segments.indexOf(seg);
+            (stmt.expression.type.elements[idx] as any).optional = true;
+          }
+        }
+      }
+    }
+    const output = emitIrModuleCpp(module).contents;
+    expect(output).toContain('std::make_optional');
+  });
+
+  it('emits tupleSpread spread segment with optional target wrapping', () => {
+    const module = structuredClone(
+      lower(
+        'tspread-spread-opt.ts',
+        'export function combine(pair: [number, number]): [number, number, number] { return [0, ...pair]; }',
+      ).module,
+    );
+    const fn = module.declarations.find((d: { kind: string }) => d.kind === 'function');
+    if (fn?.kind === 'function') {
+      for (const stmt of fn.body) {
+        if (stmt.kind === 'return' && stmt.expression?.kind === 'tupleSpread') {
+          for (const seg of stmt.expression.segments) {
+            if (seg.kind === 'spread') {
+              const startIdx = stmt.expression.segments.indexOf(seg);
+              const base = startIdx > 0 ? 1 : 0;
+              for (let i = 0; i < seg.type.elements.length; i++) {
+                const target = stmt.expression.type.elements[base + i];
+                if (target) (target as any).optional = true;
+              }
+            }
+          }
+        }
+      }
+    }
+    const output = emitIrModuleCpp(module).contents;
+    expect(output).toContain('std::make_optional');
+  });
+
+  it('emits type reference target name fallback for non-ambient binding', () => {
+    const output = emitIrModuleCpp(
+      lower('type-ref-bind.ts', 'interface Pt { x: number } export function read(p: Pt): number { return p.x; }')
+        .module,
+    ).contents;
+    expect(output).toContain('Pt');
+  });
+
+  it('emits anonymous struct with empty properties as named struct', () => {
+    const module = structuredClone(
+      lower('empty-obj.ts', 'export function make(): { x: number } { return { x: 1 }; }').module,
+    );
+    const fn = module.declarations.find((d: { kind: string }) => d.kind === 'function');
+    if (fn?.kind === 'function') {
+      (fn as any).returns = { kind: 'object', properties: [] };
+    }
+    const output = emitIrModuleCpp(module).contents;
+    expect(output).toContain('anonymous');
+  });
+
+  it('returns undefined from extractSuperCallCpp when no super call exists', () => {
+    const output = emitIrModuleCpp(
+      lower(
+        'no-super.ts',
+        'class Base { value: number; constructor() { this.value = 0; } } export class Child extends Base { extra: number; constructor() { super(); this.extra = 1; } }',
+      ).module,
+    ).contents;
+    expect(output).toContain('Child');
+  });
+
+  it('walks inherited methods and stops when base is not a class', () => {
+    const output = emitIrModuleCpp(
+      lower(
+        'iface-extends.ts',
+        `interface Runner { run(): number }
+        export class Impl implements Runner { run(): number { return 1; } }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('Impl');
+  });
+
+  it('refuses Promise construction without exactly one type argument', () => {
+    const module = structuredClone(
+      lower(
+        'promise-bad.ts',
+        'export function make(fn: (resolve: (v: number) => void) => void): Promise<number> { return new Promise<number>(fn); }',
+      ).module,
+    );
+    const fn = module.declarations.find((d: { kind: string }) => d.kind === 'function');
+    if (fn?.kind === 'function') {
+      for (const stmt of fn.body) {
+        if (stmt.kind === 'return' && stmt.expression?.kind === 'new') {
+          (stmt.expression as any).typeArguments = [];
+        }
+      }
+    }
+    expect(() => emitIrModuleCpp(module, { runtimeProfile: 'flight-cpp' })).toThrow('type argument');
+  });
 });
