@@ -1,0 +1,10 @@
+[
+  { "call": "getName", "arguments": [{ "$type": "Named", "name": "hello" }], "returns": "string" },
+  { "call": "getName", "arguments": [{ "$type": "Named", "name": "" }], "returns": "string" },
+  { "call": "getValue", "arguments": [{ "$type": "Valued", "value": 42 }], "returns": "number" },
+  { "call": "getValue", "arguments": [{ "$type": "Valued", "value": -1 }], "returns": "number" },
+  { "call": "formatNamed", "arguments": [{ "$type": "Named", "name": "test" }], "returns": "string" },
+  { "call": "isPositive", "arguments": [{ "$type": "Valued", "value": 5 }], "returns": "boolean" },
+  { "call": "isPositive", "arguments": [{ "$type": "Valued", "value": 0 }], "returns": "boolean" },
+  { "call": "isPositive", "arguments": [{ "$type": "Valued", "value": -3 }], "returns": "boolean" }
+]

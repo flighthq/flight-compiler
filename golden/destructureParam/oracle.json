@@ -1,0 +1,8 @@
+[
+  { "call": "area", "arguments": [{ "$type": "Rectangle", "height": 5, "width": 10 }], "returns": "number" },
+  { "call": "area", "arguments": [{ "$type": "Rectangle", "height": 0, "width": 7 }], "returns": "number" },
+  { "call": "perimeter", "arguments": [{ "$type": "Rectangle", "height": 3, "width": 4 }], "returns": "number" },
+  { "call": "diagonal", "arguments": [{ "$type": "Rectangle", "height": 4, "width": 3 }], "returns": "number" },
+  { "call": "isSquare", "arguments": [{ "$type": "Rectangle", "height": 5, "width": 5 }], "returns": "boolean" },
+  { "call": "isSquare", "arguments": [{ "$type": "Rectangle", "height": 3, "width": 4 }], "returns": "boolean" }
+]

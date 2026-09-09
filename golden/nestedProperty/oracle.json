@@ -1,0 +1,23 @@
+[
+  {
+    "call": "area",
+    "arguments": [
+      { "$type": "Rect", "origin": { "$type": "Point", "x": 0, "y": 0 }, "size": { "$type": "Point", "x": 5, "y": 3 } }
+    ],
+    "returns": "number"
+  },
+  {
+    "call": "area",
+    "arguments": [
+      { "$type": "Rect", "origin": { "$type": "Point", "x": 1, "y": 1 }, "size": { "$type": "Point", "x": 0, "y": 10 } }
+    ],
+    "returns": "number"
+  },
+  {
+    "call": "diagonal",
+    "arguments": [
+      { "$type": "Rect", "origin": { "$type": "Point", "x": 0, "y": 0 }, "size": { "$type": "Point", "x": 3, "y": 4 } }
+    ],
+    "returns": "number"
+  }
+]
