@@ -1,0 +1,18 @@
+[
+  {
+    "construct": "Counter",
+    "constructArgs": [],
+    "call": "advance",
+    "arguments": [5],
+    "returns": "number",
+    "targets": ["cpp"]
+  },
+  {
+    "construct": "Counter",
+    "constructArgs": [],
+    "call": "advance",
+    "arguments": [0],
+    "returns": "number",
+    "targets": ["cpp"]
+  }
+]
