@@ -10801,35 +10801,35 @@ describe('emitIrModuleRust bitwise binary operators', () => {
 });
 
 describe('emitIrModuleRust assignment operator refusal', () => {
-  it('refuses &&= requiring semantic lowering', () => {
-    expect(() =>
-      emitIrModuleRust(
-        lower('and-assign.ts', `export function use(x: boolean): boolean { let v: boolean = x; v &&= true; return v; }`)
-          .module,
-      ),
-    ).toThrow(/semantic lowering/u);
+  it('emits &&= on boolean as conditional assignment', () => {
+    const output = emitIrModuleRust(
+      lower('and-assign.ts', `export function use(x: boolean): boolean { let v: boolean = x; v &&= true; return v; }`)
+        .module,
+    ).contents;
+    expect(output).toContain('if v {');
+    expect(output).toContain('v = true');
   });
 
-  it('refuses ??= requiring semantic lowering', () => {
-    expect(() =>
-      emitIrModuleRust(
-        lower(
-          'nullish-assign.ts',
-          `export function use(x: number | null): number | null { let v: number | null = x; v ??= 0; return v; }`,
-        ).module,
-      ),
-    ).toThrow(/semantic lowering/u);
+  it('emits ??= on nullable as Option conditional assignment', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'nullish-assign.ts',
+        `export function use(x: number | null): number | null { let v: number | null = x; v ??= 0; return v; }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('is_none()');
+    expect(output).toContain('Some(');
   });
 
-  it('refuses ||= requiring semantic lowering', () => {
-    expect(() =>
-      emitIrModuleRust(
-        lower(
-          'or-logical-assign.ts',
-          `export function use(x: boolean): boolean { let v: boolean = x; v ||= false; return v; }`,
-        ).module,
-      ),
-    ).toThrow(/semantic lowering/u);
+  it('emits ||= on boolean as negated conditional assignment', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'or-logical-assign.ts',
+        `export function use(x: boolean): boolean { let v: boolean = x; v ||= false; return v; }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('if !v {');
+    expect(output).toContain('v = false');
   });
 });
 
@@ -11014,32 +11014,34 @@ describe('emitIrModuleRust cell-wrapped closure capture', () => {
     expect(output).toContain('.get()');
   });
 
-  it('refuses cell-wrapped ||= on non-boolean domains', () => {
-    expect(() =>
-      emitIrModuleRust(
-        lower(
-          'cell-or.ts',
-          `export function makeOr(): () => number {
-             let value: number = 0;
-             return () => { value ||= 5; return value; };
-           }`,
-        ).module,
-      ),
-    ).toThrow('requires Rust type-directed lowering');
+  it('emits cell-wrapped ||= on number as truthiness-checked set', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'cell-or.ts',
+        `export function makeOr(): () => number {
+           let value: number = 0;
+           return () => { value ||= 5; return value; };
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('.get() == 0.0');
+    expect(output).toContain('.is_nan()');
+    expect(output).toContain('.set(');
   });
 
-  it('refuses cell-wrapped &&= on non-boolean domains', () => {
-    expect(() =>
-      emitIrModuleRust(
-        lower(
-          'cell-and.ts',
-          `export function makeAnd(): () => number {
-             let value: number = 1;
-             return () => { value &&= 0; return value; };
-           }`,
-        ).module,
-      ),
-    ).toThrow('requires Rust type-directed lowering');
+  it('emits cell-wrapped &&= on number as truthiness-checked set', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'cell-and.ts',
+        `export function makeAnd(): () => number {
+           let value: number = 1;
+           return () => { value &&= 0; return value; };
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('.get() != 0.0');
+    expect(output).toContain('.is_nan()');
+    expect(output).toContain('.set(');
   });
 });
 

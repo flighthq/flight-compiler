@@ -1,1 +1,1 @@
-rust emission failed for @flighthq/golden/packages/golden/src/closureCompoundAssignment.ts: operator ||= on number and number requires Rust type-directed lowering
+rust emission failed for @flighthq/golden/packages/golden/src/closureCompoundAssignment.ts: operator ??= on unknown and string requires Rust type-directed lowering

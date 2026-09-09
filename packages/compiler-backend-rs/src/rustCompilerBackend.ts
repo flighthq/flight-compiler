@@ -698,6 +698,19 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
           const binaryOp = expression.operator.slice(0, -1);
           return `${name}.set((((${name}.get() as i32) ${binaryOp} (${right} as i32)) as f64))`;
         }
+        if (expression.operator === '||=' || expression.operator === '&&=') {
+          if (expression.semantics.left.flow === 'boolean') {
+            const condition = expression.operator === '||=' ? `!${name}.get()` : `${name}.get()`;
+            return `{ if ${condition} { ${name}.set(${right}); } ${name}.get() }`;
+          }
+          if (expression.semantics.left.flow === 'number') {
+            const condition =
+              expression.operator === '||='
+                ? `${name}.get() == 0.0 || ${name}.get().is_nan()`
+                : `${name}.get() != 0.0 && !${name}.get().is_nan()`;
+            return `{ if ${condition} { ${name}.set(${right}); } ${name}.get() }`;
+          }
+        }
         if (!isAssignmentOperatorDirectRust(expression.operator, expression.semantics)) {
           emissionError(
             context,
@@ -754,6 +767,41 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
         const left = emitExpression(expression.left, context);
         const right = emitExpression(expression.right, context);
         return `${left} = ((((${left} as i32) as u32) >> (${right} as u32)) as f64)`;
+      }
+      if (expression.operator === '||=' || expression.operator === '&&=') {
+        const left = emitExpression(expression.left, context);
+        const right = emitExpression(expression.right, context);
+        if (expression.semantics.left.flow === 'boolean') {
+          const condition = expression.operator === '||=' ? `!${left}` : left;
+          return `{ if ${condition} { ${left} = ${right}; } ${left} }`;
+        }
+        if (expression.semantics.left.flow === 'number') {
+          const condition =
+            expression.operator === '||='
+              ? `${left} == 0.0 || ${left}.is_nan()`
+              : `${left} != 0.0 && !${left}.is_nan()`;
+          return `{ if ${condition} { ${left} = ${right}; } ${left} }`;
+        }
+        if (expression.semantics.left.flow === 'string') {
+          const condition = expression.operator === '||=' ? `${left}.is_empty()` : `!${left}.is_empty()`;
+          return `{ if ${condition} { ${left} = ${right}; } ${left} }`;
+        }
+        emissionError(
+          context,
+          `operator ${expression.operator} on ${expression.semantics.left.flow} requires Rust semantic lowering`,
+        );
+      }
+      if (expression.operator === '??=') {
+        const left = emitExpression(expression.left, context);
+        const right = emitExpression(expression.right, context);
+        if (
+          expression.left.kind === 'identifier' &&
+          expression.left.reference.kind === 'binding' &&
+          context.nullableBindingIds.has(expression.left.reference.binding.id)
+        ) {
+          return `{ if ${left}.is_none() { ${left} = Some(${right}); } ${left}.clone().unwrap() }`;
+        }
+        emissionError(context, 'operator ??= requires a nullable Rust target');
       }
       const left = emitExpression(expression.left, context);
       const right = emitOptionalTargetOperandRust(expression.left, expression.right, context);
@@ -3439,7 +3487,7 @@ const rustBinaryOperatorEmission = {
   '>=': '>=',
   '>>': '>>',
   '>>>': undefined,
-  '??': '??',
+  '??': undefined,
   '^': '^',
   in: undefined,
   instanceof: undefined,
