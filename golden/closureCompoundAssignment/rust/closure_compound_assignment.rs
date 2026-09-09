@@ -2,6 +2,7 @@
 #![forbid(unsafe_code)]
 
 use std::cell::Cell;
+use std::cell::RefCell;
 use std::rc::Rc;
 
 pub fn captured_power(base: f64) -> Rc<dyn Fn() -> f64> {
@@ -38,12 +39,12 @@ pub fn captured_and(initial: f64) -> Rc<dyn Fn(f64) -> f64> {
 }
 
 pub fn captured_nullish(initial: Option<String>) -> Rc<dyn Fn(String) -> String> {
-  let value: Rc<Cell<Option<String>>> = Rc::new(Cell::new(initial));
+  let value: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(initial));
   return {
   let value = Rc::clone(&value);
   Rc::new(move |fallback| {
-  { if value.get().is_none() { value.set(Some(fallback)); } value.get().clone().unwrap() };
-  return value.get();
+  { if value.borrow().is_none() { *value.borrow_mut() = Some(fallback); } value.borrow().clone().unwrap() };
+  return value.borrow().clone().unwrap();
 })
 };
 }

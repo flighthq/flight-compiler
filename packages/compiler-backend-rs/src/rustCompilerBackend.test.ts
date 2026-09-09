@@ -4535,18 +4535,34 @@ describe('emitIrModuleRust', () => {
     expect(output).toContain('.set(');
   });
 
-  it('emits cell-wrapped nullish assignment as Option conditional set', () => {
+  it('emits cell-wrapped nullish assignment as Option conditional set for Copy types', () => {
     const output = emitIrModuleRust(
       lower(
         'cell-nullish.ts',
-        `export function fill(): () => string {
-          let value: string | null = null;
-          return (fallback: string) => { value ??= fallback; return value!; };
+        `export function fill(): () => number {
+          let value: number | null = null;
+          return (fallback: number) => { value ??= fallback; return value!; };
         }`,
       ).module,
     ).contents;
     expect(output).toContain('.get().is_none()');
     expect(output).toContain('.set(Some(');
+  });
+
+  it('emits ref-cell-wrapped nullish assignment with borrow for non-Copy types', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'cell-nullish-str.ts',
+        `export function fill(): (fallback: string) => string {
+          let value: string | null = null;
+          return (fallback: string) => { value ??= fallback; return value!; };
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('Rc<RefCell<Option<String>>>');
+    expect(output).toContain('.borrow().is_none()');
+    expect(output).toContain('*value.borrow_mut() = Some(');
+    expect(output).toContain('.borrow().clone().unwrap()');
   });
 
   it('emits string replace as Rust replace', () => {

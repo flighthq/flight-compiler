@@ -114,6 +114,7 @@ interface EmitContext {
   asyncTryStatements: ReadonlySet<object>;
   compositionBase?: Readonly<{ baseDeclaration: IrClassDeclaration; fieldName: string }> | undefined;
   cellWrappedBindingIds: ReadonlySet<string>;
+  refCellWrappedBindingIds: ReadonlySet<string>;
   // Which bindings the module rebinds. Rust needs `mut` on a parameter that is assigned to, and the
   // ownership analysis already decides that for every binding in the module.
   movedBindingIds: ReadonlySet<string>;
@@ -135,6 +136,7 @@ interface EmitContext {
   module: Readonly<IrModule>;
   needsCellImport: Set<'Cell'>;
   needsRcImport: Set<'Rc'>;
+  needsRefCellImport: Set<'RefCell'>;
   nullableBindingIds: ReadonlySet<string>;
   objectRestRecords: Map<string, Readonly<{ name: string; properties: readonly IrObjectTypeProperty[] }>>;
   options: Readonly<RustCompilerBackendOptions>;
@@ -211,16 +213,27 @@ function emitIrModuleRustWithContext(
     throw error;
   }
   const closureEvidence = analyzeIrModuleClosureEvidence(module);
+  const bindingTypes = collectIrModuleBindingTypesRust(module);
+  const allCellWrappedIds = closureEvidence.closures
+    .filter(
+      (closure) =>
+        closure.origin.kind === 'functionExpression' &&
+        !closure.valueUses.every((use) => use.kind === 'directInvocation'),
+    )
+    .flatMap((closure) =>
+      closure.captures.filter((capture) => capture.mutation !== 'none').map((capture) => capture.binding.id),
+    );
   const cellWrappedBindingIds = new Set(
-    closureEvidence.closures
-      .filter(
-        (closure) =>
-          closure.origin.kind === 'functionExpression' &&
-          !closure.valueUses.every((use) => use.kind === 'directInvocation'),
-      )
-      .flatMap((closure) =>
-        closure.captures.filter((capture) => capture.mutation !== 'none').map((capture) => capture.binding.id),
-      ),
+    allCellWrappedIds.filter((id) => {
+      const type = bindingTypes.get(id);
+      return !type || isIrTypeCopyRust(type);
+    }),
+  );
+  const refCellWrappedBindingIds = new Set(
+    allCellWrappedIds.filter((id) => {
+      const type = bindingTypes.get(id);
+      return type !== undefined && !isIrTypeCopyRust(type);
+    }),
   );
   const accessorClassNames = new Map<string, string>();
   const classBindingNames = new Map<string, string>();
@@ -236,6 +249,7 @@ function emitIrModuleRustWithContext(
     arrayElementBindingIds: collectIrModuleArrayElementBindingIdsRust(module),
     asyncTryStatements,
     cellWrappedBindingIds,
+    refCellWrappedBindingIds,
     classBindingNames,
     borrowedParameterPositions,
     deferredBindingIds: new Set(
@@ -262,10 +276,11 @@ function emitIrModuleRustWithContext(
     ),
     referentMutatedParameterIds: collectIrModuleReferentMutatedParameterIdsRust(module),
     taggedUnionBindingNames,
-    bindingTypes: collectIrModuleBindingTypesRust(module),
+    bindingTypes,
     module,
     needsCellImport: new Set(),
     needsRcImport: new Set(),
+    needsRefCellImport: new Set(),
     nullableBindingIds: collectIrModuleNullableBindingIds(module),
     objectRestRecords: new Map(),
     options,
@@ -324,6 +339,7 @@ function emitIrModuleRustWithContext(
       : [];
   const stdImports: string[] = [];
   if (context.needsCellImport.size > 0) stdImports.push('use std::cell::Cell;');
+  if (context.needsRefCellImport.size > 0) stdImports.push('use std::cell::RefCell;');
   if (context.needsRcImport.size > 0) stdImports.push('use std::rc::Rc;');
   if (runtimeImports.length > 0 || imports.length > 0 || stdImports.length > 0)
     lines.push('', ...stdImports, ...runtimeImports, ...imports);
@@ -714,10 +730,16 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
           }
         }
         if (expression.operator === '??=') {
-          if (context.nullableBindingIds.has(expression.left.reference.binding.id)) {
+          if (
+            context.nullableBindingIds.has(expression.left.reference.binding.id) &&
+            (expression.semantics.right.flow === 'number' || expression.semantics.right.flow === 'boolean')
+          ) {
             return `{ if ${name}.get().is_none() { ${name}.set(Some(${right})); } ${name}.get().clone().unwrap() }`;
           }
-          emissionError(context, 'operator ??= on cell-wrapped binding requires a nullable Rust target');
+          emissionError(
+            context,
+            `operator ${expression.operator} on ${expression.semantics.left.flow} and ${expression.semantics.right.flow} requires Rust type-directed lowering`,
+          );
         }
         if (!isAssignmentOperatorDirectRust(expression.operator, expression.semantics)) {
           emissionError(
@@ -727,6 +749,25 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
         }
         const op = expression.operator.slice(0, -1);
         return `${name}.set(${name}.get() ${op} ${normalizeSourceTextGrouping(right)})`;
+      }
+      if (
+        expression.left.kind === 'identifier' &&
+        expression.left.reference.kind === 'binding' &&
+        context.refCellWrappedBindingIds.has(expression.left.reference.binding.id)
+      ) {
+        const name = emitIdentifierReferenceRust(expression.left.reference, context);
+        const right = emitExpression(expression.right, context);
+        if (expression.operator === '=') return `${name}.replace(${right})`;
+        if (expression.operator === '??=') {
+          if (context.nullableBindingIds.has(expression.left.reference.binding.id)) {
+            return `{ if ${name}.borrow().is_none() { *${name}.borrow_mut() = Some(${right}); } ${name}.borrow().clone().unwrap() }`;
+          }
+          emissionError(context, 'operator ??= on ref-cell-wrapped binding requires a nullable Rust target');
+        }
+        emissionError(
+          context,
+          `operator ${expression.operator} on non-Copy ref-cell-wrapped binding requires Rust type-directed lowering`,
+        );
       }
       if (
         expression.operator === '=' &&
@@ -1089,6 +1130,18 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
     case 'identifier': {
       if (expression.reference.kind === 'binding' && context.cellWrappedBindingIds.has(expression.reference.binding.id))
         return `${emitIdentifierReferenceRust(expression.reference, context)}.get()`;
+      if (
+        expression.reference.kind === 'binding' &&
+        context.refCellWrappedBindingIds.has(expression.reference.binding.id)
+      ) {
+        const target = emitIdentifierReferenceRust(expression.reference, context);
+        if (
+          expression.presence === 'narrowedPresent' &&
+          context.nullableBindingIds.has(expression.reference.binding.id)
+        )
+          return `${target}.borrow().clone().unwrap()`;
+        return `${target}.borrow().clone()`;
+      }
       if (
         expression.presence === 'narrowedPresent' &&
         expression.reference.kind === 'binding' &&
@@ -1960,14 +2013,19 @@ function collectCellCapturedBindingIdsRust(
   expression: Readonly<IrExpression>,
   context: EmitContext,
 ): readonly string[] {
-  if (expression.kind !== 'function' || context.cellWrappedBindingIds.size === 0) return [];
+  if (
+    expression.kind !== 'function' ||
+    (context.cellWrappedBindingIds.size === 0 && context.refCellWrappedBindingIds.size === 0)
+  )
+    return [];
   const found = new Set<string>();
   const observer = {
     expression(expr: Readonly<IrExpression>) {
       if (
         expr.kind === 'identifier' &&
         expr.reference.kind === 'binding' &&
-        context.cellWrappedBindingIds.has(expr.reference.binding.id)
+        (context.cellWrappedBindingIds.has(expr.reference.binding.id) ||
+          context.refCellWrappedBindingIds.has(expr.reference.binding.id))
       ) {
         found.add(expr.reference.binding.id);
       }
@@ -2756,6 +2814,14 @@ function emitVariable(variable: Readonly<IrVariable>, context: EmitContext): str
     const init = variable.initializer ? emitExpression(variable.initializer, context) : '0.0';
     return `let ${name}: Rc<Cell<${type}>> = Rc::new(Cell::new(${init}));`;
   }
+  if (context.refCellWrappedBindingIds.has(variable.binding.id)) {
+    context.needsRefCellImport.add('RefCell');
+    context.needsRcImport.add('Rc');
+    const name = getBindingTargetNameRust(variable.binding, context);
+    const type = variable.type ? emitType(variable.type, context) : 'String';
+    const init = variable.initializer ? emitExpression(variable.initializer, context) : 'Default::default()';
+    return `let ${name}: Rc<RefCell<${type}>> = Rc::new(RefCell::new(${init}));`;
+  }
   if (variable.type && variable.initializer) {
     const targetEnum = resolvePrimitiveUnionEnumRust(variable.type, context);
     if (targetEnum) {
@@ -3426,6 +3492,15 @@ function emitPrimitiveUnionEnumRust(union: PrimitiveUnionEnum): string[] {
 
 function isIrCastTargetNumericRust(type: Readonly<IrType>): boolean {
   if (type.kind === 'primitive') return type.name === 'number' || type.name === 'boolean';
+  return false;
+}
+
+function isIrTypeCopyRust(type: Readonly<IrType>): boolean {
+  if (type.kind === 'primitive') return type.name === 'number' || type.name === 'boolean';
+  if (type.kind === 'union') {
+    const nonNull = type.types.filter((member) => member.kind !== 'null' && member.kind !== 'undefined');
+    return nonNull.length === 1 && isIrTypeCopyRust(nonNull[0]);
+  }
   return false;
 }
 
