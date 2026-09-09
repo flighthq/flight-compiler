@@ -40,7 +40,7 @@ describe('createCppCompilerBackend', () => {
   it('emits through createEmissionSession without module resolution', () => {
     const backend = createCppCompilerBackend();
     const module = lower('value.ts', 'export const value = 1;').module;
-    const session = backend.createEmissionSession({ modules: [module], options: {} });
+    const session = backend.createEmissionSession!({ modules: [module], options: {} });
 
     expect(session.emitModule(module)).toEqual([emitIrModuleCpp(module)]);
   });
@@ -58,7 +58,7 @@ describe('createCppCompilerBackend', () => {
     };
     const backend = createCppCompilerBackend();
     const modules = [consumer, model];
-    const session = backend.createEmissionSession({
+    const session = backend.createEmissionSession!({
       moduleResolution,
       modules,
       options: { runtimeProfile: 'flight-cpp' },
@@ -6373,7 +6373,13 @@ describe('emitIrModuleCpp reexport emission', () => {
       ],
       schema: 'flight-compiler-module-resolution/1',
     };
-    const emitted = emitIrModuleCpp(facade, { moduleResolution: resolution, modules: [facade, target] });
-    expect(emitted.contents).toContain('using');
+    const backend = createCppCompilerBackend();
+    const session = backend.createEmissionSession!({
+      moduleResolution: resolution,
+      modules: [facade, target],
+      options: {},
+    });
+    const emitted = session.emitModule(facade);
+    expect(emitted[0]?.contents).toContain('using');
   });
 });
