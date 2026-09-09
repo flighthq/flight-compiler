@@ -7842,3 +7842,115 @@ describe('emitIrModuleHaxe postfix unary operator on non-number', () => {
     expect(() => emitIrModuleHaxe(module)).toThrow('requires Haxe type-directed lowering');
   });
 });
+
+describe('emitIrModuleHaxe exponentiation binary operator', () => {
+  it('emits Math.pow for exponentiation', () => {
+    const output = emitIrModuleHaxe(
+      lower('pow.ts', 'export function square(n: number): number { return n ** 2; }').module,
+    ).contents;
+    expect(output).toContain('Math.pow(');
+  });
+});
+
+describe('emitIrModuleHaxe unsigned right shift', () => {
+  it('emits unsigned right shift with Std.int cast', () => {
+    const output = emitIrModuleHaxe(
+      lower('urshr.ts', 'export function shift(a: number, b: number): number { return a >>> b; }').module,
+    ).contents;
+    expect(output).toContain('Std.int(');
+    expect(output).toContain('>>>');
+  });
+});
+
+describe('emitIrModuleHaxe bitwise assignment operator', () => {
+  it('emits bitwise AND assignment with Std.int cast', () => {
+    const output = emitIrModuleHaxe(
+      lower('bitwise-assign.ts', 'export function mask(x: number, m: number): number { x &= m; return x; }').module,
+    ).contents;
+    expect(output).toContain('Std.int(');
+    expect(output).toContain('&');
+  });
+});
+
+describe('emitIrModuleHaxe exponentiation assignment operator', () => {
+  it('emits Math.pow for exponentiation assignment', () => {
+    const output = emitIrModuleHaxe(
+      lower('pow-assign.ts', 'export function cube(x: number): number { x **= 3; return x; }').module,
+    ).contents;
+    expect(output).toContain('Math.pow(');
+  });
+});
+
+describe('emitIrModuleHaxe bitwise binary operators', () => {
+  it('emits Std.int wrapping for bitwise AND', () => {
+    const output = emitIrModuleHaxe(
+      lower('bitwise-and.ts', 'export function band(a: number, b: number): number { return a & b; }').module,
+    ).contents;
+    expect(output).toContain('Std.int(');
+    expect(output).toContain('&');
+  });
+});
+
+describe('emitIrModuleHaxe prefix unary operator on non-number', () => {
+  it('refuses a prefix operator on a non-number operand', () => {
+    const result = lower(
+      'prefix-op.ts',
+      'export function dec(value: number): number { let x = value; --x; return x; }',
+    );
+    const fn = result.module.declarations.find((d) => d.kind === 'function');
+    if (fn?.kind !== 'function') throw new Error('Expected function');
+    const modified = {
+      ...fn,
+      body: fn.body.map((stmt) => {
+        if (stmt.kind !== 'expression' || stmt.expression.kind !== 'unary') return stmt;
+        return {
+          ...stmt,
+          expression: {
+            ...stmt.expression,
+            semantics: {
+              ...stmt.expression.semantics,
+              operand: { flow: 'string' as const },
+              result: 'string' as const,
+            },
+          },
+        };
+      }),
+    };
+    const module: IrModule = {
+      ...result.module,
+      declarations: result.module.declarations.map((d) => (d === fn ? modified : d)) as IrModule['declarations'],
+    };
+    expect(() => emitIrModuleHaxe(module)).toThrow('requires Haxe type-directed lowering');
+  });
+});
+
+describe('emitIrModuleHaxe binary operator on non-matching types', () => {
+  it('refuses a non-direct binary operator', () => {
+    const result = lower('bad-binary.ts', 'export function add(a: number, b: number): number { return a + b; }');
+    const fn = result.module.declarations.find((d) => d.kind === 'function');
+    if (fn?.kind !== 'function') throw new Error('Expected function');
+    const modified = {
+      ...fn,
+      body: fn.body.map((stmt) => {
+        if (stmt.kind !== 'return' || !stmt.expression || stmt.expression.kind !== 'binary') return stmt;
+        return {
+          ...stmt,
+          expression: {
+            ...stmt.expression,
+            semantics: {
+              ...stmt.expression.semantics,
+              left: { flow: 'object' as const },
+              right: { flow: 'object' as const },
+              result: 'object' as const,
+            },
+          },
+        };
+      }),
+    };
+    const module: IrModule = {
+      ...result.module,
+      declarations: result.module.declarations.map((d) => (d === fn ? modified : d)) as IrModule['declarations'],
+    };
+    expect(() => emitIrModuleHaxe(module)).toThrow('requires Haxe type-directed lowering');
+  });
+});
