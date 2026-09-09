@@ -281,12 +281,21 @@ describe('emitIrModuleRust', () => {
   it('refuses runtime constructor arities absent from the versioned Rust ABI plan', () => {
     const result = lower(
       'runtime-constructor-argument.ts',
-      'export function create(): Uint8Array { return new Uint8Array(3); }',
+      'export function create(): Array<number> { return new Array(3); }',
     );
 
     expect(() => emitIrModuleRust(result.module)).toThrow(
-      'runtime external constructor ABI plan is incomplete (missing: Uint8Array[value](1))',
+      'runtime external constructor ABI plan is incomplete (missing: Array[value](1))',
     );
+  });
+
+  it('emits typed array constructors with all declared fixed arities', () => {
+    const result = lower(
+      'typed-array-constructor.ts',
+      'export function create(): Uint8Array { return new Uint8Array(3); }',
+    );
+
+    expect(emitIrModuleRust(result.module).contents).toContain('Vec<u8>::new(3.0)');
   });
 
   it('elects fixed array binding lowering and reports residual destructuring semantics', () => {
