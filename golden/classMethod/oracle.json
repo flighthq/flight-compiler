@@ -1,0 +1,30 @@
+[
+  {
+    "construct": "Rectangle",
+    "constructArgs": [3, 4],
+    "call": "area",
+    "arguments": [],
+    "returns": "number"
+  },
+  {
+    "construct": "Rectangle",
+    "constructArgs": [3, 4],
+    "call": "perimeter",
+    "arguments": [],
+    "returns": "number"
+  },
+  {
+    "construct": "Rectangle",
+    "constructArgs": [5, 5],
+    "call": "isSquare",
+    "arguments": [],
+    "returns": "boolean"
+  },
+  {
+    "construct": "Rectangle",
+    "constructArgs": [3, 7],
+    "call": "isSquare",
+    "arguments": [],
+    "returns": "boolean"
+  }
+]

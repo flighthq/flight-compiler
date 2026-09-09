@@ -489,7 +489,10 @@ function runCppOracle(
             oracleCase.cppTypes?.[index] ?? arrayHints.get(`${oracleCase.call}:${String(index)}`),
           ),
         );
-        const invocation = `flighthq_golden::${oracleCase.cppCall ?? toSnakeCase(oracleCase.call)}(${arguments_.join(', ')})`;
+        const cppName = oracleCase.cppCall ?? toSnakeCase(oracleCase.call);
+        const invocation = oracleCase.construct
+          ? `flighthq_golden::${oracleCase.construct}(${(oracleCase.constructArgs ?? []).map((arg) => renderCppValue(arg)).join(', ')}).${cppName}(${arguments_.join(', ')})`
+          : `flighthq_golden::${cppName}(${arguments_.join(', ')})`;
 
         const value = oracleCase.awaits ? `${invocation}.get()` : invocation;
         return `  std::cout << say(${value}) << '\\n';`;
