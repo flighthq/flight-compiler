@@ -1,0 +1,48 @@
+[
+  { "call": "timestamp", "arguments": [{ "date": 0 }], "returns": "number", "targets": ["cpp"] },
+  { "call": "timestamp", "arguments": [{ "date": 1.9 }], "returns": "number", "targets": ["cpp"] },
+  { "call": "timestamp", "arguments": [{ "date": -1.9 }], "returns": "number", "targets": ["cpp"] },
+  {
+    "call": "timestamp",
+    "arguments": [{ "date": 8640000000000000 }],
+    "returns": "number",
+    "targets": ["cpp"]
+  },
+  {
+    "call": "timestamp",
+    "arguments": [{ "date": -8640000000000000 }],
+    "returns": "number",
+    "targets": ["cpp"]
+  },
+  {
+    "call": "timestamp",
+    "arguments": [{ "date": 8640000000000001 }],
+    "returns": "number",
+    "targets": ["cpp"]
+  },
+  {
+    "call": "timestamp",
+    "arguments": [{ "date": -8640000000000001 }],
+    "returns": "number",
+    "targets": ["cpp"]
+  },
+  { "call": "format", "arguments": [{ "date": 0 }], "returns": "string", "targets": ["cpp"] },
+  {
+    "call": "format",
+    "arguments": [{ "date": 951782400123 }],
+    "returns": "string",
+    "targets": ["cpp"]
+  },
+  {
+    "call": "format",
+    "arguments": [{ "date": -8640000000000000 }],
+    "returns": "string",
+    "targets": ["cpp"]
+  },
+  {
+    "call": "format",
+    "arguments": [{ "date": 8640000000000000 }],
+    "returns": "string",
+    "targets": ["cpp"]
+  }
+]

@@ -26,9 +26,10 @@ import {
 // rather than proven: what this gate establishes for Haxe is that the lowering is right, not that
 // every Haxe backend renders a value the same way. Proving that needs hxcpp and a C++ toolchain.
 //
-// Arguments are scalars, arrays of scalars, and tasks. A record argument would have to be rendered
-// as each target spells a record — including its type name in C++ and Rust — which is worth doing when a
-// fixture needs it and is not done yet; such a fixture takes compile coverage only.
+// Arguments are scalars, arrays of scalars, tasks, and target-selected Date instants. A record argument
+// would have to be rendered as each target spells a record — including its type name in C++ and Rust —
+// which is worth doing when a fixture needs it and is not done yet; such a fixture takes compile
+// coverage only.
 //
 // A fixture opts in with `oracle.json`. Values are compared as canonical text rather than by each
 // language's own formatting, because `1` and `1.0` and `1.000000` are the same answer — and because
@@ -65,6 +66,15 @@ function isTaskArgument(value: unknown): value is { task: unknown } {
 // without one the whole `catch`/`finally` lowering is untested however many cases succeed.
 function isRejectedTaskArgument(value: unknown): value is { rejects: unknown } {
   return typeof value === 'object' && value !== null && 'rejects' in value;
+}
+
+function isDateArgument(value: unknown): value is { date: number } {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    'date' in value &&
+    typeof (value as Readonly<{ date?: unknown }>).date === 'number'
+  );
 }
 
 interface OracleDivergence {
@@ -410,6 +420,7 @@ function inferCppValueType(value: unknown): string | undefined {
     return element ? `flight::Array<${element}>` : undefined;
   }
   if (typeof value === 'boolean') return 'bool';
+  if (isDateArgument(value)) return 'flight::Date';
   if (typeof value === 'number') return 'double';
   if (typeof value === 'string') return 'flight::String';
   if (isTaskArgument(value)) return inferCppValueType(value.task);
@@ -418,6 +429,7 @@ function inferCppValueType(value: unknown): string | undefined {
 }
 
 function renderCppValue(value: unknown, hint?: string | null): string {
+  if (isDateArgument(value)) return `flight::Date(${renderCppValue(value.date)})`;
   if (isTaskArgument(value)) {
     const type = unwrapCppTaskType(hint) ?? inferCppValueType(value.task);
     if (!type) throw new Error('C++ oracle task argument needs a scalar settled type');
@@ -465,6 +477,7 @@ function haxeModuleType(fixture: string): string {
 }
 
 function renderTypeScriptValue(value: unknown): string {
+  if (isDateArgument(value)) return `new Date(${JSON.stringify(value.date)})`;
   if (isTaskArgument(value)) return `Promise.resolve(${JSON.stringify(value.task)})`;
   if (isRejectedTaskArgument(value)) return `Promise.reject(${JSON.stringify(value.rejects)})`;
   return JSON.stringify(value);

@@ -602,6 +602,29 @@ describe('emitIrModuleCpp', () => {
     expect(emitted.contents).toContain('return flight::Task<double>::create(');
   });
 
+  it('preserves Date construction, formatting, and TimeClip access', () => {
+    const result = lower(
+      'date.ts',
+      `export function timestamp(milliseconds: number): number { return new Date(milliseconds).getTime(); }
+       export function format(milliseconds: number): string { return new Date(milliseconds).toISOString(); }`,
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+
+    expect(emitted.contents).toContain('return flight::Date(milliseconds).get_time()');
+    expect(emitted.contents).toContain('return flight::Date(milliseconds).to_isostring()');
+  });
+
+  it('compares Date parameters through runtime reference identity', () => {
+    const result = lower(
+      'date-identity.ts',
+      'export function same(left: Date, right: Date): boolean { return left === right; }',
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+
+    expect(emitted.contents).toContain('bool same(flight::Date left, flight::Date right)');
+    expect(emitted.contents).toContain('return (left == right)');
+  });
+
   // The runtime is a separate repository that pins this one and is pinned back; its committed header
   // is the shared artifact. The assertion stays here because an emitter change is what moves it, and
   // it reads the pinned checkout so a tree without one still runs the rest of the suite.
