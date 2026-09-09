@@ -4,7 +4,6 @@
     "constructArgs": [],
     "call": "getValue",
     "arguments": [],
-    "returns": "number",
-    "targets": ["cpp", "rust"]
+    "returns": "number"
   }
 ]

@@ -5,7 +5,6 @@
     "call": "advance",
     "arguments": [5],
     "returns": "number",
-    "targets": ["cpp", "rust"],
     "rustTraits": ["Advancer"]
   },
   {
@@ -14,7 +13,6 @@
     "call": "advance",
     "arguments": [0],
     "returns": "number",
-    "targets": ["cpp", "rust"],
     "rustTraits": ["Advancer"]
   },
   {
@@ -23,7 +21,6 @@
     "call": "advance",
     "arguments": [-3],
     "returns": "number",
-    "targets": ["cpp", "rust"],
     "rustTraits": ["Advancer"]
   }
 ]

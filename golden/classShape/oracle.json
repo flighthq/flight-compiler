@@ -4,15 +4,13 @@
     "constructArgs": [],
     "call": "advance",
     "arguments": [5],
-    "returns": "number",
-    "targets": ["cpp", "rust"]
+    "returns": "number"
   },
   {
     "construct": "Counter",
     "constructArgs": [],
     "call": "advance",
     "arguments": [0],
-    "returns": "number",
-    "targets": ["cpp", "rust"]
+    "returns": "number"
   }
 ]
