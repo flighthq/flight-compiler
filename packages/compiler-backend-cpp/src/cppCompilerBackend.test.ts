@@ -1540,6 +1540,7 @@ describe('emitIrModuleCpp', () => {
     expect(emitted.contents).toContain('flight::Array');
     expect(emitted.contents).not.toContain('std::vector');
   });
+
   it('refuses hole-producing arrays in the dense flight-cpp runtime profile', () => {
     const sparse = lower('sparse-flight.ts', 'export function values(): number[] { return [1, , 3]; }');
     expect(() => emitIrModuleCpp(sparse.module, { runtimeProfile: 'flight-cpp' })).toThrow(
