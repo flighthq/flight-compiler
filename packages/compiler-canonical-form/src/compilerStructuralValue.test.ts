@@ -45,6 +45,12 @@ describe('normalizeCompilerStructuralValueCanonical', () => {
     }
   });
 
+  it('rejects arrays with an accessor at a valid index even when indices and length are intact', () => {
+    const withAccessor: unknown[] = [1, 2, 3];
+    Object.defineProperty(withAccessor, '1', { get: () => 2, enumerable: true, configurable: true });
+    expect(() => normalizeCompilerStructuralValueCanonical(withAccessor)).toThrow(TypeError);
+  });
+
   it('rejects arrays with a non-enumerable own property even when indices are intact', () => {
     const withHidden: unknown[] = [1];
     Object.defineProperty(withHidden, 'secret', { value: 42, enumerable: false });
