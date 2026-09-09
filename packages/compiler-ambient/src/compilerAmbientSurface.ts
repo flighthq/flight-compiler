@@ -281,6 +281,132 @@ interface Console {
 }
 declare var console: Console;
 
+interface Int8Array {
+  readonly length: number;
+  [index: number]: number;
+  slice(begin?: number, end?: number): Int8Array;
+  subarray(begin?: number, end?: number): Int8Array;
+}
+
+interface Int8ArrayConstructor {
+  new (): Int8Array;
+  new (length: number): Int8Array;
+  new (array: number[]): Int8Array;
+}
+declare var Int8Array: Int8ArrayConstructor;
+
+interface Uint8Array {
+  readonly length: number;
+  [index: number]: number;
+  slice(begin?: number, end?: number): Uint8Array;
+  subarray(begin?: number, end?: number): Uint8Array;
+}
+
+interface Uint8ArrayConstructor {
+  new (): Uint8Array;
+  new (length: number): Uint8Array;
+  new (array: number[]): Uint8Array;
+}
+declare var Uint8Array: Uint8ArrayConstructor;
+
+interface Uint8ClampedArray {
+  readonly length: number;
+  [index: number]: number;
+  slice(begin?: number, end?: number): Uint8ClampedArray;
+  subarray(begin?: number, end?: number): Uint8ClampedArray;
+}
+
+interface Uint8ClampedArrayConstructor {
+  new (): Uint8ClampedArray;
+  new (length: number): Uint8ClampedArray;
+  new (array: number[]): Uint8ClampedArray;
+}
+declare var Uint8ClampedArray: Uint8ClampedArrayConstructor;
+
+interface Int16Array {
+  readonly length: number;
+  [index: number]: number;
+  slice(begin?: number, end?: number): Int16Array;
+  subarray(begin?: number, end?: number): Int16Array;
+}
+
+interface Int16ArrayConstructor {
+  new (): Int16Array;
+  new (length: number): Int16Array;
+  new (array: number[]): Int16Array;
+}
+declare var Int16Array: Int16ArrayConstructor;
+
+interface Uint16Array {
+  readonly length: number;
+  [index: number]: number;
+  slice(begin?: number, end?: number): Uint16Array;
+  subarray(begin?: number, end?: number): Uint16Array;
+}
+
+interface Uint16ArrayConstructor {
+  new (): Uint16Array;
+  new (length: number): Uint16Array;
+  new (array: number[]): Uint16Array;
+}
+declare var Uint16Array: Uint16ArrayConstructor;
+
+interface Int32Array {
+  readonly length: number;
+  [index: number]: number;
+  slice(begin?: number, end?: number): Int32Array;
+  subarray(begin?: number, end?: number): Int32Array;
+}
+
+interface Int32ArrayConstructor {
+  new (): Int32Array;
+  new (length: number): Int32Array;
+  new (array: number[]): Int32Array;
+}
+declare var Int32Array: Int32ArrayConstructor;
+
+interface Uint32Array {
+  readonly length: number;
+  [index: number]: number;
+  slice(begin?: number, end?: number): Uint32Array;
+  subarray(begin?: number, end?: number): Uint32Array;
+}
+
+interface Uint32ArrayConstructor {
+  new (): Uint32Array;
+  new (length: number): Uint32Array;
+  new (array: number[]): Uint32Array;
+}
+declare var Uint32Array: Uint32ArrayConstructor;
+
+interface Float32Array {
+  readonly length: number;
+  [index: number]: number;
+  slice(begin?: number, end?: number): Float32Array;
+  subarray(begin?: number, end?: number): Float32Array;
+}
+
+interface Float32ArrayConstructor {
+  new (): Float32Array;
+  new (length: number): Float32Array;
+  new (array: number[]): Float32Array;
+}
+declare var Float32Array: Float32ArrayConstructor;
+
+interface Float64Array {
+  readonly length: number;
+  [index: number]: number;
+  slice(begin?: number, end?: number): Float64Array;
+  subarray(begin?: number, end?: number): Float64Array;
+}
+
+interface Float64ArrayConstructor {
+  new (): Float64Array;
+  new (length: number): Float64Array;
+  new (array: number[]): Float64Array;
+}
+declare var Float64Array: Float64ArrayConstructor;
+
 // The mapped and conditional type aliases the language provides — \`Partial\`, \`Record\`, \`Pick\` and
 // their relatives — are deliberately absent. The backends already recognise them by name as ambient
 // references and decide a spelling from that; declaring them here would make the checker resolve

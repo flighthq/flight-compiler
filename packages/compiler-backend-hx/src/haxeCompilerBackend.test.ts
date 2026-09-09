@@ -1519,6 +1519,16 @@ describe('emitIrModuleHaxe expression coverage', () => {
 
     expect(output).toContain('a != b');
   });
+
+  it('emits strict inequality for object domain as reference comparison', () => {
+    const result = lower(
+      'object-inequality.ts',
+      'export function different(a: Uint8Array, b: Uint8Array): boolean { return a !== b; }',
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('a != b');
+  });
 });
 
 describe('emitIrModuleHaxe class coverage', () => {

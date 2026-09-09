@@ -28,6 +28,18 @@ describe('createCompilerAmbientSurfaceSource', () => {
     expect(source).toContain('interface WeakMap<K extends object, V>');
   });
 
+  it('declares the typed array index signatures the type-directed operator layer requires', () => {
+    const source = createCompilerAmbientSurfaceSource();
+
+    expect(source).toContain('interface Uint8Array');
+    expect(source).toContain('interface Int8Array');
+    expect(source).toContain('interface Float32Array');
+    expect(source).toContain('interface Uint8ClampedArray');
+    expect(source).toContain('[index: number]: number;');
+    expect(source).toContain('subarray(begin?: number, end?: number): Uint8Array;');
+    expect(source).toContain('slice(begin?: number, end?: number): Float32Array;');
+  });
+
   it('returns the same text every call, because it is analysis input rather than state', () => {
     expect(createCompilerAmbientSurfaceSource()).toBe(createCompilerAmbientSurfaceSource());
   });

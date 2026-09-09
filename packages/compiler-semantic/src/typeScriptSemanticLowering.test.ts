@@ -1574,7 +1574,17 @@ describe('lowerTypeScriptSource', () => {
       { resultType: { kind: 'unknown', source: 'any' }, typedArraySet: { receivers: ['bigInt64Array'] } },
       { resultType: { kind: 'primitive', name: 'void' }, signature: { parameterCount: 1, providedArgumentCount: 1 } },
       { resultType: { kind: 'unknown', source: 'any' } },
-      { resultType: { kind: 'unknown', source: 'any' } },
+      {
+        optionalParameters: {
+          omitted: [0, 1],
+          optional: [0, 1],
+          parameterCount: 2,
+          provided: [],
+          providedArgumentCount: 0,
+        },
+        resultType: { kind: 'unknown', source: 'any' },
+        signature: { parameterCount: 2, providedArgumentCount: 0 },
+      },
     ]);
   });
 

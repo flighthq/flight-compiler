@@ -598,6 +598,23 @@ describe('analyzeIrModulesStaticFacts', () => {
         receivers: ['uint16Array', 'uint32Array'],
         widths: [16, 32],
       },
+      {
+        count: 1,
+        kind: 'numericArithmetic',
+        left: { declared: 'number', flow: 'number' },
+        operation: 'assignment',
+        operator: '+=',
+        result: 'number',
+        right: { declared: 'number', flow: 'number' },
+      },
+      {
+        count: 1,
+        kind: 'numericArithmetic',
+        operand: { declared: 'number', flow: 'number' },
+        operation: 'postfixUnary',
+        operator: '++',
+        result: 'number',
+      },
     ]);
   });
 });

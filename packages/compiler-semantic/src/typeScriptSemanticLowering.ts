@@ -2284,6 +2284,7 @@ function lowerTypeScriptTypeProperties(
       });
       continue;
     }
+    if (ts.isIndexSignatureDeclaration(member)) continue;
     if (ts.isMethodSignature(member)) {
       if (loweredMethods.has(member)) continue;
       const name = propertyName(member.name, context);

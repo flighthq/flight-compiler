@@ -1848,7 +1848,10 @@ function isBinaryOperatorDirectHaxe(
     return (
       semantics.left.flow === semantics.right.flow &&
       semantics.result === 'boolean' &&
-      (semantics.left.flow === 'boolean' || semantics.left.flow === 'number' || semantics.left.flow === 'string')
+      (semantics.left.flow === 'boolean' ||
+        semantics.left.flow === 'number' ||
+        semantics.left.flow === 'object' ||
+        semantics.left.flow === 'string')
     );
   }
   if (operator === '&' || operator === '|' || operator === '^' || operator === '<<' || operator === '>>') {
