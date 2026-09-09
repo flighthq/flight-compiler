@@ -1,0 +1,9 @@
+[
+  { "call": "signedRangeConstruction", "arguments": [], "returns": "numbers", "targets": ["cpp"] },
+  { "call": "unsignedModuloWrites", "arguments": [], "returns": "numbers", "targets": ["cpp"] },
+  { "call": "clampedTies", "arguments": [], "returns": "numbers", "targets": ["cpp"] },
+  { "call": "float32Overflow", "arguments": [], "returns": "numbers", "targets": ["cpp"] },
+  { "call": "subarrayAliasesStorage", "arguments": [], "returns": "numbers", "targets": ["cpp"] },
+  { "call": "sliceCopiesStorage", "arguments": [], "returns": "numbers", "targets": ["cpp"] },
+  { "call": "viewsHaveDistinctIdentity", "arguments": [], "returns": "boolean", "targets": ["cpp"] }
+]
