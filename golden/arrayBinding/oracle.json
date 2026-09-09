@@ -1,0 +1,11 @@
+[
+  { "call": "select", "arguments": [[1, 2, 3]], "returns": "number", "targets": ["haxe"] },
+  { "call": "select", "arguments": [[10, 20, 30]], "returns": "number", "targets": ["haxe"] },
+  { "call": "selectDefault", "arguments": [[5]], "returns": "number", "targets": ["haxe"] },
+  { "call": "selectDefault", "arguments": [[]], "returns": "number", "targets": ["haxe"] },
+  { "call": "selectRest", "arguments": [[1, 2, 3, 4]], "returns": "numbers", "targets": ["haxe"] },
+  { "call": "selectRest", "arguments": [[1]], "returns": "numbers", "targets": ["haxe"] },
+  { "call": "selectNestedDefault", "arguments": [[[7]]], "returns": "number", "targets": ["haxe"] },
+  { "call": "selectNestedDefault", "arguments": [[]], "returns": "number", "targets": ["haxe"] },
+  { "call": "selectNestedRest", "arguments": [[1, "hello", true]], "returns": "string", "targets": ["haxe"] }
+]

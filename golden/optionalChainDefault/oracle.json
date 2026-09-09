@@ -1,0 +1,26 @@
+[
+  {
+    "call": "firstKey",
+    "arguments": [
+      [
+        { "$type": "Entry", "key": "alpha" },
+        { "$type": "Entry", "key": "beta" }
+      ]
+    ],
+    "returns": "string",
+    "cppTypes": ["flight::Array<flighthq_golden::Entry>"]
+  },
+  {
+    "call": "firstKey",
+    "arguments": [[]],
+    "returns": "string",
+    "cppTypes": ["flight::Array<flighthq_golden::Entry>"],
+    "targets": ["cpp", "haxe"]
+  },
+  {
+    "call": "firstKey",
+    "arguments": [[{ "$type": "Entry", "key": "" }]],
+    "returns": "string",
+    "cppTypes": ["flight::Array<flighthq_golden::Entry>"]
+  }
+]

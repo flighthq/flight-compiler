@@ -1,0 +1,32 @@
+[
+  {
+    "call": "area",
+    "arguments": [{ "$type": "Circle", "kind": "circle", "radius": 5 }],
+    "returns": "number",
+    "targets": ["cpp", "haxe"]
+  },
+  {
+    "call": "area",
+    "arguments": [{ "$type": "Circle", "kind": "circle", "radius": 0 }],
+    "returns": "number",
+    "targets": ["cpp", "haxe"]
+  },
+  {
+    "call": "area",
+    "arguments": [{ "$type": "Square", "kind": "square", "side": 4 }],
+    "returns": "number",
+    "targets": ["cpp", "haxe"]
+  },
+  {
+    "call": "area",
+    "arguments": [{ "$type": "Square", "kind": "square", "side": 0 }],
+    "returns": "number",
+    "targets": ["cpp", "haxe"]
+  },
+  {
+    "call": "area",
+    "arguments": [{ "$type": "Circle", "kind": "circle", "radius": 1 }],
+    "returns": "number",
+    "targets": ["cpp", "haxe"]
+  }
+]

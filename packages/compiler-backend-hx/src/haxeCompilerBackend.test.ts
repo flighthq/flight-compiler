@@ -4198,6 +4198,42 @@ describe('emitIrModuleHaxe re-export facade', () => {
     expect(output).toContain('Helper.helper(value)');
   });
 
+  it('forwards optional parameter in value re-export', () => {
+    const helper = lower('helper.ts', 'export function helper(value?: number): number { return value ?? 0; }');
+    const facade = lower('facade.ts', `export { helper } from './helper.js';`);
+    const backend = createHaxeCompilerBackend();
+    const files = backend.emitModule(facade.module, { modules: [facade.module, helper.module], options: {} });
+    const output = files[0]!.contents;
+    expect(output).toContain('?value:');
+  });
+
+  it('forwards parameter with default in value re-export', () => {
+    const helper = lower('helper.ts', 'export function helper(value: number = 5): number { return value; }');
+    const facade = lower('facade.ts', `export { helper } from './helper.js';`);
+    const backend = createHaxeCompilerBackend();
+    const files = backend.emitModule(facade.module, { modules: [facade.module, helper.module], options: {} });
+    const output = files[0]!.contents;
+    expect(output).toContain('value:Float = 5');
+  });
+
+  it('forwards rest parameter in value re-export', () => {
+    const helper = lower('helper.ts', 'export function helper(...values: number[]): number { return values.length; }');
+    const facade = lower('facade.ts', `export { helper } from './helper.js';`);
+    const backend = createHaxeCompilerBackend();
+    const files = backend.emitModule(facade.module, { modules: [facade.module, helper.module], options: {} });
+    const output = files[0]!.contents;
+    expect(output).toContain('...values:Float');
+  });
+
+  it('refuses value re-export when exported name is not a function', () => {
+    const helper = lower('helper.ts', 'export const value: number = 42;');
+    const facade = lower('facade.ts', `export { value } from './helper.js';`);
+    const backend = createHaxeCompilerBackend();
+    expect(() => backend.emitModule(facade.module, { modules: [facade.module, helper.module], options: {} })).toThrow(
+      're-exporting the value',
+    );
+  });
+
   it('refuses value re-export when sibling module is not available', () => {
     const facade = lower('facade.ts', `export { helper } from './helper.js';`);
 
