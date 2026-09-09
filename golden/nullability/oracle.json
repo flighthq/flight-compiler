@@ -1,0 +1,7 @@
+[
+  { "call": "widen", "arguments": [5, 10], "returns": "number", "targets": ["cpp", "haxe"] },
+  { "call": "widen", "arguments": [0, 99], "returns": "number", "targets": ["cpp", "haxe"] },
+  { "call": "label", "arguments": ["hello"], "returns": "string", "targets": ["cpp", "haxe"] },
+  { "call": "label", "arguments": [""], "returns": "string", "targets": ["cpp", "haxe"] },
+  { "call": "label", "arguments": [null], "returns": "string", "targets": ["haxe"] }
+]

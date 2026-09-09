@@ -1,0 +1,7 @@
+[
+  { "call": "sum", "arguments": [1, 2, 3], "returns": "number", "targets": ["haxe"] },
+  { "call": "sum", "arguments": [], "returns": "number", "targets": ["haxe"] },
+  { "call": "sum", "arguments": [0], "returns": "number", "targets": ["haxe"] },
+  { "call": "counted", "arguments": [5, 10, 15], "returns": "number", "targets": ["haxe"] },
+  { "call": "counted", "arguments": [], "returns": "number", "targets": ["haxe"] }
+]
