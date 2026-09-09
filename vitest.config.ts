@@ -10,8 +10,8 @@ export default defineConfig({
       thresholds: {
         branches: 95.5,
         functions: 99,
-        lines: 97.75,
-        statements: 96.75,
+        lines: 97.9,
+        statements: 97,
       },
     },
     environment: 'node',
