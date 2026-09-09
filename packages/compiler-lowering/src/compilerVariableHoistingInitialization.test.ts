@@ -742,6 +742,20 @@ describe('validateIrFunctionVariableInitialization', () => {
     ).toBeUndefined();
   });
 
+  it('skips function expressions in deferred-closure children without descending', () => {
+    const declaration = lowerFunction(`
+      export function select(): number {
+        var value: number = 0;
+        var callback: () => number = function(): number { return value; };
+        return callback();
+      }
+    `);
+
+    expect(
+      validateIrFunctionVariableInitialization(declaration.body, getFunctionVariables(declaration), declaration.origin),
+    ).toBeUndefined();
+  });
+
   it('covers assignment target fallthrough for non-standard targets via injection', () => {
     const declaration = lowerFunction(`
       export function assign(): number {

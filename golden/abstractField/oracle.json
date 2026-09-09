@@ -1,0 +1,18 @@
+[
+  {
+    "construct": "Button",
+    "constructArgs": [],
+    "call": "describe",
+    "arguments": [],
+    "returns": "string",
+    "targets": ["haxe"]
+  },
+  {
+    "construct": "Button",
+    "constructArgs": [],
+    "call": "getVersion",
+    "arguments": [],
+    "returns": "number",
+    "targets": ["haxe"]
+  }
+]

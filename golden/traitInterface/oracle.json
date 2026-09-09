@@ -14,5 +14,13 @@
     "arguments": [0],
     "returns": "number",
     "targets": ["cpp"]
+  },
+  {
+    "construct": "Counter",
+    "constructArgs": [],
+    "call": "advance",
+    "arguments": [-3],
+    "returns": "number",
+    "targets": ["cpp"]
   }
 ]
