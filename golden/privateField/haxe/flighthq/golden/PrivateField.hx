@@ -4,6 +4,8 @@ package flighthq.golden;
 class Counter {
   public var count:Float = 0;
 
+  public function new() {}
+
   public function increment():Void {
     this.count += 1;
   }

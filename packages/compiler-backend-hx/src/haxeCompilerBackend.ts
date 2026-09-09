@@ -349,7 +349,7 @@ function emitClass(declaration: Readonly<IrClassDeclaration>, context: EmitConte
     );
     lines.push(...indentSourceLines(body, 2), '  }');
   }
-  if (!declaration.classConstructor && hasIrModuleSubclassHaxe(declaration, context)) {
+  if (!declaration.classConstructor && !implicitDerivedBaseParameters) {
     if (declaration.fields.length > 0 || requiresErrorNameStorage) lines.push('');
     lines.push('  public function new() {}');
   }
@@ -1458,16 +1458,6 @@ function isIrExpressionDynamicReadHaxe(expression: Readonly<IrExpression>, conte
     object?.kind === 'identifier' &&
     object.reference.kind === 'binding' &&
     context.dynamicBindingIds.has(object.reference.binding.id)
-  );
-}
-
-function hasIrModuleSubclassHaxe(declaration: Readonly<IrClassDeclaration>, context: EmitContext): boolean {
-  return context.module.declarations.some(
-    (candidate) =>
-      candidate.kind === 'class' &&
-      candidate.extends?.kind === 'named' &&
-      candidate.extends.reference.kind === 'binding' &&
-      candidate.extends.reference.binding.id === declaration.binding.id,
   );
 }
 

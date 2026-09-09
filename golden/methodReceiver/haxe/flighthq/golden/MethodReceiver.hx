@@ -6,6 +6,8 @@ class Counter {
 
   public var step:Float;
 
+  public function new() {}
+
   public function read():Float {
     return this.total;
   }

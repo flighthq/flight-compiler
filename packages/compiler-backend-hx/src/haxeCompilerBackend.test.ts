@@ -311,6 +311,17 @@ describe('emitIrModuleHaxe', () => {
     expect(buttonSection).toContain('this.name = "button"');
   });
 
+  it('emits default constructor for leaf class without explicit constructor', () => {
+    const result = lower(
+      'leaf-class.ts',
+      'export class Counter { step: number = 1; advance(by: number): number { return by + this.step; } }',
+    );
+    const emitted = emitIrModuleHaxe(result.module);
+
+    expect(emitted.contents).toContain('public function new() {}');
+    expect(emitted.contents).toContain('var step:Float = 1');
+  });
+
   it('refuses derived constructor shapes whose field timing cannot be preserved', () => {
     const conditional = lower(
       'conditional-super.ts',

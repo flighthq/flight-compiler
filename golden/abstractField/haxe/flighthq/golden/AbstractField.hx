@@ -31,6 +31,8 @@ class DeclareExample {
 
   public var value:Float = 0;
 
+  public function new() {}
+
   public function getLabel():String {
     return this.label;
   }
