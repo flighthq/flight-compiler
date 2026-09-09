@@ -63,9 +63,7 @@ function createPackageExclusionClaim(item: Readonly<PackageInventory>): PackageE
   const missing: string[] = [];
   if (item.bins.length === 0) missing.push('missing tooling bin lane');
   if (item.sdkExposures.length > 0) missing.push('present in SDK export lanes');
-  if (nodeImports.length === 0) missing.push('missing production node import');
-  if (playwrightDependencies.length === 0) missing.push('missing Playwright production dependency');
-  if (playwrightImports.length === 0) missing.push('missing production Playwright import');
+  if (nodeImports.length === 0 && playwrightImports.length === 0) missing.push('missing production host import');
   if (unsupportedDependencies.length > 0) {
     missing.push(`unsupported host dependencies (${formatHostModules(unsupportedDependencies)})`);
   }
@@ -73,6 +71,7 @@ function createPackageExclusionClaim(item: Readonly<PackageInventory>): PackageE
     missing.push(`unsupported host imports (${formatHostModules(unsupportedImports)})`);
   }
 
+  const hasPlaywright = playwrightDependencies.length > 0 && playwrightImports.length > 0;
   return {
     ...(missing.length === 0
       ? {
@@ -83,8 +82,8 @@ function createPackageExclusionClaim(item: Readonly<PackageInventory>): PackageE
               hostImports: item.hostFacts.imports.map((reference) => ({ ...reference })),
               sdkExposures: item.sdkExposures.map((exposure) => ({ ...exposure })),
             },
-            reason: `Tooling package with ${String(item.bins.length)} bin lane, no SDK exposure, and production host use limited to Node and Playwright.`,
-            rule: 'node-playwright-tooling' as const,
+            reason: `Tooling package with ${String(item.bins.length)} bin lane, no SDK exposure, and production host use limited to ${hasPlaywright ? 'Node and Playwright' : 'Node'}.`,
+            rule: hasPlaywright ? ('node-playwright-tooling' as const) : ('node-tooling' as const),
           },
         }
       : {}),

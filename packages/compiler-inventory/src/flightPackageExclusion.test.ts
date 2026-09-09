@@ -58,6 +58,31 @@ describe('analyzeFlightPackageExclusions', () => {
     expect([...exclusions.keys()]).toEqual(['@flighthq/tool-alpha', '@flighthq/tool-zeta']);
   });
 
+  it('excludes bin-only tooling packages without Playwright as node-tooling', () => {
+    const pipeline = createPackageInventory('@flighthq/tool-pipeline', {
+      dependencies: [],
+      imports: [{ kind: 'node', specifier: 'node:path' }],
+    });
+
+    const exclusions = analyzeFlightPackageExclusions({ packages: [pipeline] });
+
+    expect([...exclusions]).toEqual([
+      [
+        '@flighthq/tool-pipeline',
+        {
+          evidence: {
+            bins: [{ name: 'capture', target: './dist/cli.js' }],
+            hostDependencies: [],
+            hostImports: [{ kind: 'node', specifier: 'node:path' }],
+            sdkExposures: [],
+          },
+          reason: 'Tooling package with 1 bin lane, no SDK exposure, and production host use limited to Node.',
+          rule: 'node-tooling',
+        },
+      ],
+    ]);
+  });
+
   it('rejects every partial evidence boundary with a stable drift failure', () => {
     const completeHostFacts: PackageHostFacts = {
       dependencies: [{ kind: 'playwright', specifier: '@playwright/test' }],

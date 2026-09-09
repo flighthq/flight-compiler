@@ -87,7 +87,7 @@ export interface PackageExclusionEvidence {
 export interface PackageExclusion {
   readonly evidence: PackageExclusionEvidence;
   readonly reason: string;
-  readonly rule: 'node-playwright-tooling';
+  readonly rule: 'node-playwright-tooling' | 'node-tooling';
 }
 
 export interface PackageInventory {
