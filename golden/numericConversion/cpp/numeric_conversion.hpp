@@ -22,7 +22,7 @@ inline double lerp(double start, double end, double t) {
 }
 
 inline double round_to_places(double value, double places) {
-  const double factor = std::pow(10.0, places);
+  const double factor = flight::power(10.0, places);
   return (flight::round((value * factor)) / factor);
 }
 
