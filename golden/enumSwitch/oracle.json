@@ -2,41 +2,49 @@
   {
     "call": "isVertical",
     "arguments": [{ "$stringEnum": "Direction", "variant": "Up", "value": "up" }],
-    "returns": "boolean"
+    "returns": "boolean",
+    "targets": ["haxe"]
   },
   {
     "call": "isVertical",
     "arguments": [{ "$stringEnum": "Direction", "variant": "Left", "value": "left" }],
-    "returns": "boolean"
+    "returns": "boolean",
+    "targets": ["haxe"]
   },
   {
     "call": "isVertical",
     "arguments": [{ "$stringEnum": "Direction", "variant": "Down", "value": "down" }],
-    "returns": "boolean"
+    "returns": "boolean",
+    "targets": ["haxe"]
   },
   {
     "call": "isVertical",
     "arguments": [{ "$stringEnum": "Direction", "variant": "Right", "value": "right" }],
-    "returns": "boolean"
+    "returns": "boolean",
+    "targets": ["haxe"]
   },
   {
     "call": "directionLabel",
     "arguments": [{ "$stringEnum": "Direction", "variant": "Up", "value": "up" }],
-    "returns": "string"
+    "returns": "string",
+    "targets": ["haxe"]
   },
   {
     "call": "directionLabel",
     "arguments": [{ "$stringEnum": "Direction", "variant": "Down", "value": "down" }],
-    "returns": "string"
+    "returns": "string",
+    "targets": ["haxe"]
   },
   {
     "call": "directionLabel",
     "arguments": [{ "$stringEnum": "Direction", "variant": "Left", "value": "left" }],
-    "returns": "string"
+    "returns": "string",
+    "targets": ["haxe"]
   },
   {
     "call": "directionLabel",
     "arguments": [{ "$stringEnum": "Direction", "variant": "Right", "value": "right" }],
-    "returns": "string"
+    "returns": "string",
+    "targets": ["haxe"]
   }
 ]
