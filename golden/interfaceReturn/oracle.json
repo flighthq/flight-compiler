@@ -22,5 +22,41 @@
       { "$type": "Point", "x": 0, "y": 0 }
     ],
     "returns": "number"
+  },
+  {
+    "call": "origin",
+    "arguments": [],
+    "returns": "number",
+    "returnField": "x"
+  },
+  {
+    "call": "origin",
+    "arguments": [],
+    "returns": "number",
+    "returnField": "y"
+  },
+  {
+    "call": "fromValues",
+    "arguments": [7, 11],
+    "returns": "number",
+    "returnField": "x"
+  },
+  {
+    "call": "fromValues",
+    "arguments": [7, 11],
+    "returns": "number",
+    "returnField": "y"
+  },
+  {
+    "call": "translate",
+    "arguments": [{ "$type": "Point", "x": 1, "y": 2 }, 3, 4],
+    "returns": "number",
+    "returnField": "x"
+  },
+  {
+    "call": "translate",
+    "arguments": [{ "$type": "Point", "x": 1, "y": 2 }, 3, 4],
+    "returns": "number",
+    "returnField": "y"
   }
 ]
