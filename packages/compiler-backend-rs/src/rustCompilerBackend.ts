@@ -171,7 +171,7 @@ function emitIrModuleRustWithContext(
     createCompilerLoweringPassBindingPattern(),
     createCompilerLoweringPassVariableHoisting(),
     createCompilerLoweringPassCStyleFor(),
-    createCompilerLoweringPassInterfaceInheritance(),
+    createCompilerLoweringPassInterfaceInheritance(sourceModules, moduleResolution),
     createCompilerLoweringPassSwitchFallthrough(),
     createCompilerLoweringPassSwitchSuspension(),
   ]);

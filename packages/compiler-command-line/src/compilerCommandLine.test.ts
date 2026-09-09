@@ -60,7 +60,7 @@ describe('compileCompilerCommandLineRequest', () => {
           source('model.ts', 'export interface Model { value: number }'),
           source(
             'consumer.ts',
-            "import type { Model } from './model.js'; export function same(left: Model, right: Model): boolean { return left === right; }",
+            "import type { Model } from './model.js'; export interface Extended extends Model { label: string } export function same(left: Model, right: Model): boolean { return left === right; }",
           ),
         ],
         written,
@@ -71,6 +71,8 @@ describe('compileCompilerCommandLineRequest', () => {
     expect(result).toMatchObject({ emitted: 2, exitCode: 0, refusals: [] });
     expect(written.get('/out/consumer.hpp')).toContain('#include "model.hpp"');
     expect(written.get('/out/consumer.hpp')).toContain('flight::Ref<Model>');
+    expect(written.get('/out/consumer.hpp')).toContain('double value;');
+    expect(written.get('/out/consumer.hpp')).toContain('flight::String label;');
   });
 
   it('reports without failing when asked to report', () => {

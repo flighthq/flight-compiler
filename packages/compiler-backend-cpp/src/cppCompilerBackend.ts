@@ -162,7 +162,7 @@ function emitIrModuleCppWithContext(
     createCompilerLoweringPassBindingPattern(),
     createCompilerLoweringPassVariableHoisting(),
     createCompilerLoweringPassCStyleFor(),
-    createCompilerLoweringPassInterfaceInheritance(),
+    createCompilerLoweringPassInterfaceInheritance(sourceModules, moduleResolution),
     createCompilerLoweringPassSwitchFallthrough(),
     createCompilerLoweringPassSwitchSuspension(),
   ]);

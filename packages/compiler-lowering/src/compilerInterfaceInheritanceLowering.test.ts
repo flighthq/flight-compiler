@@ -1,7 +1,12 @@
 import ts from 'typescript';
 
 import { lowerTypeScriptSource } from '../../compiler-semantic/src/index.js';
-import type { IrInterfaceDeclaration, IrModule, IrTypeReference } from '../../compiler-types/src/index.js';
+import type {
+  CompilerModuleResolutionPlan,
+  IrInterfaceDeclaration,
+  IrModule,
+  IrTypeReference,
+} from '../../compiler-types/src/index.js';
 import { createCompilerLoweringPassInterfaceInheritance } from './compilerInterfaceInheritanceLowering.js';
 import { isCompilerLoweringFailure, lowerIrModuleWithCompilerPasses } from './compilerLoweringPass.js';
 
@@ -258,6 +263,60 @@ describe('createCompilerLoweringPassInterfaceInheritance', () => {
     expect(() => pass.lowerIrModule(malformed)).toThrow(TypeError);
     expect(() => pass.lowerIrModule(malformed)).not.toThrow(expect.objectContaining({ kind: 'compiler-lowering' }));
   });
+
+  it('flattens imported generic heritage through namespace and reexport graph routes', () => {
+    const base = lowerInPackage(
+      '@flighthq/model',
+      'model',
+      'base.ts',
+      'export interface Base<Value> { value: Value; }',
+    );
+    const barrel = lowerInPackage(
+      '@flighthq/shared',
+      'shared',
+      'index.ts',
+      "export type { Base as Renamed } from '@flighthq/model';",
+    );
+    const derived = lowerInPackage(
+      '@flighthq/app',
+      'app',
+      'derived.ts',
+      "import type * as Shared from '@flighthq/shared'; export interface Derived extends Shared.Renamed<string> { active: boolean; }",
+    );
+    const resolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          importer: identity(barrel),
+          specifier: '@flighthq/model',
+          target: { packageName: base.packageName, source: base.source },
+        },
+        {
+          importer: identity(derived),
+          specifier: '@flighthq/shared',
+          target: { packageName: barrel.packageName, source: barrel.source },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const pass = createCompilerLoweringPassInterfaceInheritance([derived, barrel, base], resolution);
+    const output = lowerIrModuleWithCompilerPasses(derived, [pass], { verificationDepth: 'idempotence' });
+
+    expect(getInterface(output, 'Derived')).toMatchObject({
+      extends: [],
+      properties: [
+        { name: 'value', type: { kind: 'primitive', name: 'string' } },
+        { name: 'active', type: { kind: 'primitive', name: 'boolean' } },
+      ],
+    });
+    expect(derived).toEqual(
+      lowerInPackage(
+        '@flighthq/app',
+        'app',
+        'derived.ts',
+        "import type * as Shared from '@flighthq/shared'; export interface Derived extends Shared.Renamed<string> { active: boolean; }",
+      ),
+    );
+  });
 });
 
 function getInterface(module: Readonly<IrModule>, name: string): Readonly<IrInterfaceDeclaration> {
@@ -274,6 +333,17 @@ function lower(file: string, source: string): IrModule {
     ts.createSourceFile(`/flight/packages/lowering/src/${file}`, source, ts.ScriptTarget.Latest, true),
     { packageName: '@flighthq/lowering', upstreamDirectory: '/flight' },
   ).module;
+}
+
+function lowerInPackage(packageName: string, packageDirectory: string, file: string, source: string): IrModule {
+  return lowerTypeScriptSource(
+    ts.createSourceFile(`/flight/packages/${packageDirectory}/src/${file}`, source, ts.ScriptTarget.Latest, true),
+    { packageName, upstreamDirectory: '/flight' },
+  ).module;
+}
+
+function identity(module: Readonly<IrModule>) {
+  return { name: module.name, packageName: module.packageName, source: module.source };
 }
 
 function replaceInterface(

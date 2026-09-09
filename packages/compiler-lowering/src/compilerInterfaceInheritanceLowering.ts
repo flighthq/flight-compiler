@@ -1,5 +1,6 @@
 import { isDeepStrictEqual } from 'node:util';
 
+import { compareTextCodeUnits, normalizePathPortable } from '../../compiler-canonical-form/src/index.js';
 import { analyzeIrModuleTraversal } from '../../compiler-ir-traversal/src/index.js';
 import {
   createIrTypeParameterSubstitutionPlan,
@@ -8,6 +9,8 @@ import {
 } from '../../compiler-structural/src/index.js';
 import type {
   CompilerLoweringPass,
+  CompilerModuleIdentity,
+  CompilerModuleResolutionPlan,
   CompilerStructuralTypeSubstitutionPlan,
   IrInterfaceDeclaration,
   IrModule,
@@ -19,16 +22,38 @@ import type {
 import { createCompilerLoweringFailure } from './compilerLoweringPass.js';
 
 interface InterfaceInheritanceLoweringContext {
-  readonly interfaces: ReadonlyMap<string, Readonly<IrInterfaceDeclaration>>;
+  readonly module: InterfaceInheritanceModuleRecord;
+  readonly moduleSet: InterfaceInheritanceModuleSet;
+  readonly subject: Readonly<IrModule>;
+}
+
+interface InterfaceInheritanceDeclarationLocation {
+  readonly declaration: Readonly<IrInterfaceDeclaration>;
+  readonly identity: string;
+  readonly module: InterfaceInheritanceModuleRecord;
+}
+
+interface InterfaceInheritanceModuleRecord {
+  readonly identity: string;
+  readonly interfaces: ReadonlyMap<string, InterfaceInheritanceDeclarationLocation>;
   readonly module: Readonly<IrModule>;
+  readonly source: string;
+}
+
+interface InterfaceInheritanceModuleSet {
+  readonly modules: readonly InterfaceInheritanceModuleRecord[];
+  readonly resolution: Readonly<CompilerModuleResolutionPlan>;
 }
 
 const compilerLoweringPassNameInterfaceInheritance = 'interface-inheritance';
 
-export function createCompilerLoweringPassInterfaceInheritance(): CompilerLoweringPass {
+export function createCompilerLoweringPassInterfaceInheritance(
+  modules: readonly Readonly<IrModule>[] = [],
+  resolution: Readonly<CompilerModuleResolutionPlan> = compilerEmptyModuleResolutionPlan,
+): CompilerLoweringPass {
   return {
     idempotent: true,
-    lowerIrModule: lowerIrModuleInterfaceInheritance,
+    lowerIrModule: (module) => lowerIrModuleInterfaceInheritance(module, modules, resolution),
     name: compilerLoweringPassNameInterfaceInheritance,
     runsAfter: [],
     verifyIrModule(module) {
@@ -45,13 +70,15 @@ export function createCompilerLoweringPassInterfaceInheritance(): CompilerLoweri
   };
 }
 
-function lowerIrModuleInterfaceInheritance(module: Readonly<IrModule>): IrModule {
-  const interfaces = new Map(
-    module.declarations.flatMap((declaration) =>
-      declaration.kind === 'interface' ? [[declaration.binding.id, declaration] as const] : [],
-    ),
-  );
-  const context: InterfaceInheritanceLoweringContext = { interfaces, module };
+function lowerIrModuleInterfaceInheritance(
+  module: Readonly<IrModule>,
+  modules: readonly Readonly<IrModule>[],
+  resolution: Readonly<CompilerModuleResolutionPlan>,
+): IrModule {
+  const moduleSet = createInterfaceInheritanceModuleSet(module, modules, resolution);
+  const subject = getInterfaceInheritanceModuleRecord(module, moduleSet);
+  if (!subject) throw new TypeError('Interface inheritance subject must belong to the explicit module set');
+  const context: InterfaceInheritanceLoweringContext = { module: subject, moduleSet, subject: module };
   return {
     ...module,
     declarations: module.declarations.map((declaration) =>
@@ -66,7 +93,7 @@ function lowerIrInterfaceDeclarationInheritance(
 ): IrInterfaceDeclaration {
   const inherited = declaration.extends.length > 0;
   const properties = getIrInterfaceDeclarationPropertiesFlattened(
-    declaration,
+    getInterfaceInheritanceDeclarationLocation(declaration, context.module),
     createIrTypeParameterSubstitutionPlan([], []),
     new Set(),
     context,
@@ -81,22 +108,23 @@ function lowerIrInterfaceDeclarationInheritance(
 }
 
 function getIrInterfaceDeclarationPropertiesFlattened(
-  declaration: Readonly<IrInterfaceDeclaration>,
+  location: Readonly<InterfaceInheritanceDeclarationLocation>,
   substitutions: Readonly<CompilerStructuralTypeSubstitutionPlan>,
   ancestors: ReadonlySet<string>,
   context: InterfaceInheritanceLoweringContext,
 ): readonly IrObjectTypeProperty[] {
-  if (ancestors.has(declaration.binding.id)) {
+  const declaration = location.declaration;
+  if (ancestors.has(location.identity)) {
     failIrInterfaceInheritanceLowering(
-      context.module,
+      context.subject,
       `interface ${declaration.binding.name} has cyclic structural inheritance`,
     );
   }
-  const nextAncestors = new Set(ancestors).add(declaration.binding.id);
+  const nextAncestors = new Set(ancestors).add(location.identity);
   const properties: IrObjectTypeProperty[] = [];
   for (const reference of declaration.extends) {
-    const base = getIrInterfaceDeclarationBase(reference, declaration, context);
-    const baseSubstitutions = getIrInterfaceTypeSubstitutionPlan(reference, base, substitutions, context);
+    const base = getIrInterfaceDeclarationBase(reference, location, context);
+    const baseSubstitutions = getIrInterfaceTypeSubstitutionPlan(reference, base.declaration, substitutions, context);
     for (const property of getIrInterfaceDeclarationPropertiesFlattened(
       base,
       baseSubstitutions,
@@ -119,23 +147,61 @@ function getIrInterfaceDeclarationPropertiesFlattened(
 
 function getIrInterfaceDeclarationBase(
   reference: Readonly<IrTypeReference>,
-  declaration: Readonly<IrInterfaceDeclaration>,
+  location: Readonly<InterfaceInheritanceDeclarationLocation>,
   context: InterfaceInheritanceLoweringContext,
-): Readonly<IrInterfaceDeclaration> {
-  if (reference.reference.kind !== 'binding' || reference.reference.path.length > 0) {
+): Readonly<InterfaceInheritanceDeclarationLocation> {
+  const declaration = location.declaration;
+  if (reference.reference.kind !== 'binding') {
     return failIrInterfaceInheritanceLowering(
-      context.module,
+      context.subject,
       `interface ${declaration.binding.name} inherits a nonlocal interface that cannot be structurally resolved`,
     );
   }
-  const base = context.interfaces.get(reference.reference.binding.id);
-  if (!base) {
+  const bindingReference = reference.reference;
+  if (bindingReference.binding.kind !== 'import') {
+    if (bindingReference.path.length > 0) {
+      return failIrInterfaceInheritanceLowering(
+        context.subject,
+        `interface ${declaration.binding.name} inherits a nonlocal interface that cannot be structurally resolved`,
+      );
+    }
+    const base = location.module.interfaces.get(bindingReference.binding.id);
+    if (base) return base;
     return failIrInterfaceInheritanceLowering(
-      context.module,
-      `interface ${declaration.binding.name} inherits unavailable interface ${reference.reference.binding.name}`,
+      context.subject,
+      `interface ${declaration.binding.name} inherits unavailable interface ${bindingReference.binding.name}`,
     );
   }
-  return base;
+  const imported = location.module.module.imports.flatMap((entry) =>
+    entry.bindings
+      .filter((candidate) => candidate.binding.id === bindingReference.binding.id)
+      .flatMap((candidate) => {
+        if (candidate.imported === '*' && bindingReference.path.length === 1) {
+          return [{ exportName: bindingReference.path[0]!, specifier: entry.specifier }];
+        }
+        return bindingReference.path.length === 0 && candidate.imported !== '*'
+          ? [{ exportName: candidate.imported, specifier: entry.specifier }]
+          : [];
+      }),
+  );
+  const bases = deduplicateInterfaceInheritanceDeclarationLocations(
+    imported.flatMap(({ exportName, specifier }) =>
+      getInterfaceInheritanceSpecifierModules(location.module, specifier, context.moduleSet).flatMap((module) =>
+        getInterfaceInheritanceExportLocations(module, exportName, context.moduleSet, new Set()),
+      ),
+    ),
+  );
+  if (bases.length === 1) return bases[0]!;
+  if (bases.length > 1) {
+    return failIrInterfaceInheritanceLowering(
+      context.subject,
+      `interface ${declaration.binding.name} inherits ambiguous interface ${bindingReference.binding.name}`,
+    );
+  }
+  return failIrInterfaceInheritanceLowering(
+    context.subject,
+    `interface ${declaration.binding.name} inherits unavailable interface ${bindingReference.binding.name}`,
+  );
 }
 
 function getIrInterfaceTypeSubstitutionPlan(
@@ -153,7 +219,7 @@ function getIrInterfaceTypeSubstitutionPlan(
     if (isCompilerStructuralTypeSubstitutionFailure(error)) {
       if (error.code === 'too-many-type-arguments') {
         return failIrInterfaceInheritanceLowering(
-          context.module,
+          context.subject,
           `interface ${declaration.binding.name} receives too many heritage type arguments`,
         );
       }
@@ -161,7 +227,7 @@ function getIrInterfaceTypeSubstitutionPlan(
         const index = typeof error.path[1] === 'number' ? error.path[1] : -1;
         const parameter = declaration.typeParameters[index];
         return failIrInterfaceInheritanceLowering(
-          context.module,
+          context.subject,
           `interface ${declaration.binding.name} requires heritage type argument ${parameter?.binding.name ?? 'unknown'}`,
         );
       }
@@ -183,10 +249,172 @@ function addIrInterfacePropertyFlattened(
   }
   if (!isDeepStrictEqual(existing, property)) {
     failIrInterfaceInheritanceLowering(
-      context.module,
+      context.subject,
       `interface ${declaration.binding.name} inherits incompatible property ${property.name}`,
     );
   }
+}
+
+function createInterfaceInheritanceModuleSet(
+  subject: Readonly<IrModule>,
+  modules: readonly Readonly<IrModule>[],
+  resolution: Readonly<CompilerModuleResolutionPlan>,
+): InterfaceInheritanceModuleSet {
+  const subjectIdentity = getInterfaceInheritanceModuleIdentity(subject);
+  const sourceModules = [
+    ...modules.filter((module) => getInterfaceInheritanceModuleIdentity(module) !== subjectIdentity),
+    subject,
+  ];
+  const records = sourceModules.map(createInterfaceInheritanceModuleRecord).sort(compareInterfaceInheritanceRecords);
+  if (records.some((record, index) => index > 0 && record.identity === records[index - 1]!.identity)) {
+    throw new TypeError('Interface inheritance module set contains a duplicate module identity');
+  }
+  return { modules: records, resolution };
+}
+
+function createInterfaceInheritanceModuleRecord(module: Readonly<IrModule>): InterfaceInheritanceModuleRecord {
+  const identity = getInterfaceInheritanceModuleIdentity(module);
+  const record: { interfaces: Map<string, InterfaceInheritanceDeclarationLocation> } & Omit<
+    InterfaceInheritanceModuleRecord,
+    'interfaces'
+  > = {
+    identity,
+    interfaces: new Map(),
+    module,
+    source: normalizePathPortable(module.source),
+  };
+  for (const declaration of module.declarations) {
+    if (declaration.kind !== 'interface') continue;
+    if (record.interfaces.has(declaration.binding.id)) {
+      throw new TypeError('Interface inheritance module contains a duplicate interface identity');
+    }
+    record.interfaces.set(declaration.binding.id, {
+      declaration,
+      identity: `${identity}\0${declaration.binding.id}`,
+      module: record,
+    });
+  }
+  return record;
+}
+
+function getInterfaceInheritanceModuleRecord(
+  module: Readonly<IrModule>,
+  moduleSet: Readonly<InterfaceInheritanceModuleSet>,
+): InterfaceInheritanceModuleRecord | undefined {
+  const identity = getInterfaceInheritanceModuleIdentity(module);
+  return moduleSet.modules.find((candidate) => candidate.identity === identity);
+}
+
+function getInterfaceInheritanceDeclarationLocation(
+  declaration: Readonly<IrInterfaceDeclaration>,
+  module: Readonly<InterfaceInheritanceModuleRecord>,
+): InterfaceInheritanceDeclarationLocation {
+  const location = module.interfaces.get(declaration.binding.id);
+  if (!location) throw new TypeError('Interface declaration must belong to its lowering module');
+  return location;
+}
+
+function getInterfaceInheritanceExportLocations(
+  module: Readonly<InterfaceInheritanceModuleRecord>,
+  exportName: string,
+  moduleSet: Readonly<InterfaceInheritanceModuleSet>,
+  seen: ReadonlySet<string>,
+): readonly InterfaceInheritanceDeclarationLocation[] {
+  const query = `${module.identity}\0${exportName}`;
+  if (seen.has(query)) return [];
+  const nextSeen = new Set(seen).add(query);
+  const locations = [...module.interfaces.values()].filter(
+    (location) => location.declaration.exported && location.declaration.binding.name === exportName,
+  );
+  for (const exported of module.module.exports) {
+    if (exported.kind === 'local' && exported.exported === exportName) {
+      const location = module.interfaces.get(exported.binding.id);
+      if (location) locations.push(location);
+    }
+    if (exported.kind === 'reexport' && exported.exported === exportName) {
+      for (const target of getInterfaceInheritanceSpecifierModules(module, exported.specifier, moduleSet)) {
+        locations.push(...getInterfaceInheritanceExportLocations(target, exported.imported, moduleSet, nextSeen));
+      }
+    }
+    if (exported.kind === 'all' && exportName !== 'default') {
+      for (const target of getInterfaceInheritanceSpecifierModules(module, exported.specifier, moduleSet)) {
+        locations.push(...getInterfaceInheritanceExportLocations(target, exportName, moduleSet, nextSeen));
+      }
+    }
+  }
+  return deduplicateInterfaceInheritanceDeclarationLocations(locations);
+}
+
+function getInterfaceInheritanceSpecifierModules(
+  from: Readonly<InterfaceInheritanceModuleRecord>,
+  specifier: string,
+  moduleSet: Readonly<InterfaceInheritanceModuleSet>,
+): readonly InterfaceInheritanceModuleRecord[] {
+  const candidates = getInterfaceInheritanceSpecifierSourceCandidates(from.source, specifier);
+  const matching = moduleSet.resolution.edges.filter((edge) => edge.specifier === specifier);
+  const exact = matching.filter(
+    (edge) => edge.importer && getInterfaceInheritanceModuleIdentity(edge.importer) === from.identity,
+  );
+  const resolutionTargets = (exact.length > 0 ? exact : matching.filter((edge) => !edge.importer)).map(
+    (edge) => `${edge.target.packageName}\0${normalizePathPortable(edge.target.source)}`,
+  );
+  return moduleSet.modules.filter(
+    (candidate) =>
+      (candidate.module.packageName === from.module.packageName && candidates.has(candidate.source)) ||
+      resolutionTargets.includes(`${candidate.module.packageName}\0${candidate.source}`),
+  );
+}
+
+function getInterfaceInheritanceSpecifierSourceCandidates(source: string, specifier: string): ReadonlySet<string> {
+  const normalized = normalizePathPortable(specifier);
+  if (normalized !== '.' && normalized !== '..' && !normalized.startsWith('./') && !normalized.startsWith('../')) {
+    return new Set();
+  }
+  const parts = source.split('/');
+  parts.pop();
+  for (const part of normalized.split('/')) {
+    if (part === '' || part === '.') continue;
+    if (part === '..') {
+      if (parts.length === 0) return new Set();
+      parts.pop();
+    } else {
+      parts.push(part);
+    }
+  }
+  const resolved = parts.join('/');
+  const candidates = new Set([resolved]);
+  for (const [emitted, sourceExtension] of [
+    ['.cjs', '.cts'],
+    ['.js', '.ts'],
+    ['.jsx', '.tsx'],
+    ['.mjs', '.mts'],
+  ] as const) {
+    if (resolved.endsWith(emitted)) candidates.add(`${resolved.slice(0, -emitted.length)}${sourceExtension}`);
+  }
+  if (!/\.[^/]+$/u.test(resolved)) {
+    candidates.add(`${resolved}.ts`);
+    candidates.add(`${resolved}/index.ts`);
+  }
+  return candidates;
+}
+
+function deduplicateInterfaceInheritanceDeclarationLocations(
+  locations: readonly InterfaceInheritanceDeclarationLocation[],
+): InterfaceInheritanceDeclarationLocation[] {
+  return [...new Map(locations.map((location) => [location.identity, location])).values()].sort((left, right) =>
+    compareTextCodeUnits(left.identity, right.identity),
+  );
+}
+
+function compareInterfaceInheritanceRecords(
+  left: Readonly<InterfaceInheritanceModuleRecord>,
+  right: Readonly<InterfaceInheritanceModuleRecord>,
+): number {
+  return compareTextCodeUnits(left.identity, right.identity);
+}
+
+function getInterfaceInheritanceModuleIdentity(identity: Readonly<CompilerModuleIdentity>): string {
+  return `${identity.packageName}\0${normalizePathPortable(identity.source)}\0${identity.name}`;
 }
 
 function rebindIrInterfacePropertyTypeParameters(
@@ -338,3 +566,8 @@ function rebindIrTypeInterfaceInheritance(
 function failIrInterfaceInheritanceLowering(module: Readonly<IrModule>, message: string): never {
   throw createCompilerLoweringFailure('unsupported-ir', compilerLoweringPassNameInterfaceInheritance, module, message);
 }
+
+const compilerEmptyModuleResolutionPlan: CompilerModuleResolutionPlan = Object.freeze({
+  edges: Object.freeze([]),
+  schema: 'flight-compiler-module-resolution/1',
+});
