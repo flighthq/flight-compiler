@@ -26,13 +26,15 @@ export function compileIrModules<BackendOptions>(
   validateModuleIdentities(options.modules);
   const patched = applySemanticPatchSet(options.modules, options.patches ?? [], options.backend.name);
   const modules = [...patched.modules].sort(compareModules);
+  const emitContext = {
+    ...(options.moduleResolution ? { moduleResolution: options.moduleResolution } : {}),
+    modules,
+    options: options.backendOptions,
+  };
+  const emissionSession = options.backend.createEmissionSession?.(emitContext);
   const files = modules
     .flatMap((module) =>
-      options.backend.emitModule(module, {
-        modules,
-        options: options.backendOptions,
-        ...(options.moduleResolution ? { moduleResolution: options.moduleResolution } : {}),
-      }),
+      emissionSession ? emissionSession.emitModule(module) : options.backend.emitModule(module, emitContext),
     )
     .map(normalizeEmittedFile)
     .sort(compareEmittedFiles);

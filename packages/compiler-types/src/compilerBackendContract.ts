@@ -8,6 +8,8 @@ export interface EmittedFileIdentity {
 
 export interface EmittedFile extends EmittedFileIdentity {
   readonly contents: string;
+  /** Target dependency spellings required to compile this file, such as C++ include paths. */
+  readonly dependencies?: readonly string[] | undefined;
 }
 
 export interface BackendEmitContext<Options> {
@@ -17,8 +19,19 @@ export interface BackendEmitContext<Options> {
 }
 
 export interface CompilerBackend<Options = Record<string, never>> {
+  /**
+   * Optionally prepares graph-wide analysis once. Orchestration uses this session for every module
+   * in the request, while `emitModule` remains the single-module compatibility entry point.
+   */
+  readonly createEmissionSession?:
+    | ((context: BackendEmitContext<Options>) => CompilerBackendEmissionSession)
+    | undefined;
   readonly emitModule: (module: Readonly<IrModule>, context: BackendEmitContext<Options>) => readonly EmittedFile[];
   readonly name: string;
+}
+
+export interface CompilerBackendEmissionSession {
+  readonly emitModule: (module: Readonly<IrModule>) => readonly EmittedFile[];
 }
 
 export interface BackendCompilation {

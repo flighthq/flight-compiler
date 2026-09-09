@@ -258,7 +258,7 @@ describe('analyzeIrTypeValueIdentity', () => {
       kind: 'union',
       types: [
         { kind: 'unknown', source: 'object' },
-        { kind: 'unknown', source: 'expression' },
+        { kind: 'unknown', source: 'unknown' },
       ],
     } as const satisfies IrType;
     const result = analyzeIrTypeValueIdentity(sameReason, module);
@@ -488,6 +488,66 @@ describe('analyzeIrTypeValueIdentity', () => {
     });
   });
 
+  it('scopes repeated resolution specifiers to their explicit importer identity', () => {
+    const valueTarget = createModule([aliasDeclaration('type:value-model', 'Model', numberType, [], true)], {
+      name: 'value-model',
+      packageName: '@workspace/value-model',
+      source: 'value/model.ts',
+    });
+    const referenceTarget = createModule([{ ...classDeclaration('type:reference-model', 'Model'), exported: true }], {
+      name: 'reference-model',
+      packageName: '@workspace/reference-model',
+      source: 'reference/model.ts',
+    });
+    const valueImport = typeBinding('type:value-import', 'Model', 'import');
+    const referenceImport = typeBinding('type:reference-import', 'Model', 'import');
+    const valueConsumer = createModule([], {
+      imports: [
+        {
+          bindings: [{ binding: valueImport, imported: 'Model', typeOnly: true }],
+          specifier: '@model',
+          typeOnly: true,
+        },
+      ],
+      name: 'value-consumer',
+      source: 'consumer/value.ts',
+    });
+    const referenceConsumer = createModule([], {
+      imports: [
+        {
+          bindings: [{ binding: referenceImport, imported: 'Model', typeOnly: true }],
+          specifier: '@model',
+          typeOnly: true,
+        },
+      ],
+      name: 'reference-consumer',
+      source: 'consumer/reference.ts',
+    });
+    const resolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          importer: valueConsumer,
+          specifier: '@model',
+          target: { packageName: valueTarget.packageName, source: valueTarget.source },
+        },
+        {
+          importer: referenceConsumer,
+          specifier: '@model',
+          target: { packageName: referenceTarget.packageName, source: referenceTarget.source },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const modules = [valueTarget, referenceTarget, valueConsumer, referenceConsumer];
+
+    expect(analyzeIrTypeValueIdentity(typeReference(valueImport), valueConsumer, modules, resolution)).toMatchObject({
+      identity: 'value',
+    });
+    expect(
+      analyzeIrTypeValueIdentity(typeReference(referenceImport), referenceConsumer, modules, resolution),
+    ).toMatchObject({ identity: 'reference' });
+  });
+
   it('resolves parent directory traversal and extensionless specifiers', () => {
     const model = classDeclaration('value:deep-model', 'DeepModel');
     const exported: IrModule['declarations'][number] = { ...model, exported: true };
@@ -551,8 +611,10 @@ describe('analyzeIrTypeValueIdentity', () => {
 
   it('collects type parameters from function declarations for constraint analysis', () => {
     const param = typeBinding('type:fn-param', 'T', 'typeParameter');
-    const fn = functionDeclaration('value:generic-fn', 'transform');
-    (fn as { typeParameters: IrTypeParameter[] }).typeParameters = [{ binding: param, constraint: objectType }];
+    const fn = {
+      ...functionDeclaration('value:generic-fn', 'transform'),
+      typeParameters: [{ binding: param, constraint: objectType }],
+    };
     const module = createModule([fn]);
     expect(analyzeIrTypeValueIdentity(typeReference(param), module)).toMatchObject({
       identity: 'reference',

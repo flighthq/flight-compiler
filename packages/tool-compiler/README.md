@@ -10,7 +10,7 @@ The package's intended ownership is the complete source-compilation path:
 - deterministic, identity-based semantic patches and patch audits
 - coverage and API inventory models
 - compiler orchestration and target-backend infrastructure
-- concrete Haxe and Rust lowering and source emission
+- concrete C++, Haxe, and Rust lowering and source emission
 
 [flight-hx](https://github.com/flighthq/flight-hx) is the first integration target; [flight-rs](https://github.com/flighthq/flight-rs) is the second. Those repositories retain their target ecosystem: runtime and standard-library support, project layout, examples, and integration tests. Compiler-owned target rules and emitters live here so both ports use one versioned toolchain.
 
@@ -33,6 +33,10 @@ Compile a directory directly. The C++ command elects the semantic `flight-cpp` r
 ```sh
 flight-compile src --target cpp --out generated
 ```
+
+Programmatic package and workspace compilation uses `compileTypeScriptPackageGraph`. Its versioned graph names package roots, declared package dependencies, entry modules, and exact importer-to-module edges. The result contains normalized output, a deterministic per-module refusal ledger, source-to-output ownership, required include paths, and the module initialization plan. C++ callers can supply `packageTargets` and `externalBindings` without adding SDL, Dawn, native GL, or another host SDK to the compiler.
+
+See [C++ package compilation](https://github.com/flighthq/flight-compiler/blob/main/docs/cpp-package-compilation.md) for the request and downstream boundary.
 
 ```ts
 import { analyzeFlightWorkspace } from '@flighthq/tool-compiler';

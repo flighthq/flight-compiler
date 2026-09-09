@@ -134,13 +134,25 @@ describe('isCompilerInvariantFailure', () => {
 
 describe('normalizeEmittedFile', () => {
   it('composes content and path normalization without mutating caller input', () => {
-    const file = { contents: 'one\r\ntwo  \r\n\r\n', path: 'generated\\cafe\u0301.hx' };
+    const file = {
+      contents: 'one\r\ntwo  \r\n\r\n',
+      dependencies: ['flight\\types.hpp', 'algorithm', 'algorithm'],
+      path: 'generated\\cafe\u0301.hx',
+    };
 
     expect(normalizeEmittedFile(file)).toEqual({
       contents: 'one\ntwo  \n',
+      dependencies: ['algorithm', 'flight/types.hpp'],
       path: 'generated/café.hx',
     });
-    expect(file).toEqual({ contents: 'one\r\ntwo  \r\n\r\n', path: 'generated\\cafe\u0301.hx' });
+    expect(file).toEqual({
+      contents: 'one\r\ntwo  \r\n\r\n',
+      dependencies: ['flight\\types.hpp', 'algorithm', 'algorithm'],
+      path: 'generated\\cafe\u0301.hx',
+    });
+    expect(() => normalizeEmittedFile({ contents: '', dependencies: ['../private.hpp'], path: 'value.hpp' })).toThrow(
+      expect.objectContaining({ code: 'unsafe-emitted-path' }),
+    );
   });
 });
 

@@ -1,25 +1,19 @@
 import { createCppCompilerBackend } from '../../compiler-backend-cpp/src/index.js';
 import { createHaxeCompilerBackend } from '../../compiler-backend-hx/src/index.js';
 import { createRustCompilerBackend } from '../../compiler-backend-rs/src/index.js';
-import { isBackendEmissionFailure } from '../../compiler-emission/src/index.js';
-import {
-  compileTypeScriptModules,
-  isCompilerDiagnosticsFailure,
-  parseTypeScriptSource,
-} from '../../compiler-orchestration/src/index.js';
+import { compileTypeScriptPackageGraph, parseTypeScriptSource } from '../../compiler-orchestration/src/index.js';
 import type {
-  CompilerBackend,
   CompilerCommandLineCapabilities,
+  CompilerCommandLineRefusal,
   CompilerCommandLineRequest,
   CompilerCommandLineResult,
 } from '../../compiler-types/src/index.js';
 
 // Pointing the compiler at a directory.
 //
-// Every module is compiled on its own and its outcome recorded, rather than the whole run failing on
-// the first module the compiler cannot lower. Pointed at a codebase this compiler has never seen,
-// what one wants is the list of what it could not do — a run that stops at the first refusal answers
-// a question nobody asked.
+// All modules enter one graph compilation so sibling identities and graph-wide backend analysis are
+// available. Each module still has its own outcome: pointed at an unfamiliar codebase, what one
+// wants is the complete refusal report rather than a run that stops at the first unsupported form.
 //
 // The filesystem arrives as a capability record so the decision layer stays testable and so this
 // stays the only place in the package that touches it.
@@ -54,16 +48,40 @@ export function compileCompilerCommandLineRequest(
     capabilities.writeError(`No TypeScript modules under ${parsed.sourceDirectory}\n`);
     return { emitted: 0, exitCode: 2, refusals: [] };
   }
-  const refusals: { module: string; reason: string }[] = [];
-  let emitted = 0;
-  for (const source of sources) {
-    const outcome = compileOneModule(source, parsed, backend, backendOptions, capabilities);
-    if (outcome.kind === 'emitted') {
-      emitted += 1;
-      continue;
-    }
-    refusals.push({ module: source.moduleName, reason: outcome.reason });
+  const result = compileTypeScriptPackageGraph({
+    backend,
+    backendOptions,
+    graph: {
+      entries: [],
+      moduleDependencies: [],
+      packages: [{ dependencies: [], name: parsed.packageName, root: parsed.sourceDirectory }],
+      schema: 'flight-compiler-package-graph/1',
+    },
+    sources: sources.map((source) => ({
+      packageName: parsed.packageName,
+      packageRoot: parsed.sourceDirectory,
+      sourceFile: parseTypeScriptSource(source.sourcePath, source.contents),
+      upstreamDirectory: parsed.sourceDirectory,
+    })),
+  });
+  for (const file of result.compilation.files) {
+    capabilities.writeOutputFile(parsed.outputDirectory, file.path, file.contents);
   }
+  const emitted = result.report.modules.filter((module) => module.status === 'emitted').length;
+  const refusals = result.report.modules.flatMap((module): CompilerCommandLineRefusal[] => {
+    const refusal = module.refusals[0];
+    if (!refusal) return [];
+    return [
+      {
+        code: refusal.code,
+        ...(refusal.column === undefined ? {} : { column: refusal.column }),
+        ...(refusal.line === undefined ? {} : { line: refusal.line }),
+        module: module.module.source,
+        reason: refusal.message,
+        stage: refusal.stage,
+      },
+    ];
+  });
   capabilities.write(createCompilerCommandLineReport(emitted, refusals));
   return { emitted, exitCode: refusals.length > 0 && !parsed.reportOnly ? 1 : 0, refusals };
 }
@@ -103,39 +121,6 @@ const commandLineUsage = `Usage: flight-compile <source-directory> --target <cpp
   --runtime-profile <id>  C++ runtime profile: flight-cpp or standard-library (default: flight-cpp)
   --runtime-header <path> Override the flight-cpp runtime include spelling
   --report                Report refusals without failing the run`;
-
-function compileOneModule(
-  source: Readonly<{ contents: string; moduleName: string; sourcePath: string }>,
-  request: ParsedCompilerCommandLineRequest,
-  backend: CompilerBackend<Record<string, unknown>>,
-  backendOptions: Readonly<Record<string, unknown>>,
-  capabilities: Readonly<CompilerCommandLineCapabilities>,
-): Readonly<{ kind: 'emitted' } | { kind: 'refused'; reason: string }> {
-  try {
-    const result = compileTypeScriptModules({
-      backend,
-      backendOptions,
-      sources: [
-        {
-          packageName: request.packageName,
-          sourceFile: parseTypeScriptSource(source.sourcePath, source.contents),
-          upstreamDirectory: request.sourceDirectory,
-        },
-      ],
-    });
-    for (const file of result.compilation.files) {
-      capabilities.writeOutputFile(request.outputDirectory, file.path, file.contents);
-    }
-    return { kind: 'emitted' };
-  } catch (error) {
-    if (isBackendEmissionFailure(error)) return { kind: 'refused', reason: error.message };
-    if (isCompilerDiagnosticsFailure(error)) {
-      return { kind: 'refused', reason: error.diagnostics[0]?.message ?? 'lowering produced diagnostics' };
-    }
-    if (error instanceof Error) return { kind: 'refused', reason: error.message };
-    throw error;
-  }
-}
 
 interface ParsedCompilerCommandLineRequest {
   readonly outputDirectory: string;

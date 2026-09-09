@@ -169,7 +169,7 @@ Implement compiler facts and behavior in this repository's architecture; outside
 
 Use npm, not pnpm or Yarn. Node.js 22 or newer is required. Script names follow [the npm script naming grammar](agents/conventions/npm-scripts.md), where `:check` is the non-writing mode of a verb rather than a subject.
 
-- `flight-compile <directory> --target <cpp|haxe|rust> --out <directory>`: point the compiler at a codebase. Every module is compiled on its own and its outcome recorded, so a run reports everything it could not lower rather than stopping at the first refusal; `--report` reports without failing. Published as the package's `bin`.
+- `flight-compile <directory> --target <cpp|haxe|rust> --out <directory>`: point the compiler at a codebase. Sources are lowered into one module graph and share backend analysis, while every module retains its own outcome so a run reports everything it could not lower rather than stopping at the first refusal; `--report` reports without failing. Published as the package's `bin`.
 - `npm run fix`: apply Oxlint fixes and Oxfmt formatting after edits.
 - `npm run check`: complete deterministic gate; run before handoff. Every registered gate runs even after an earlier one fails, and the failures are reported together.
 - `npm run test`: run Vitest once.

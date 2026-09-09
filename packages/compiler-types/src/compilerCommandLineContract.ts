@@ -2,6 +2,8 @@
 //
 // The filesystem and the output stream arrive as capabilities so that the decision layer — which
 // modules to compile, what to report, what to exit with — can be exercised without a disk.
+import type { CompilerPackageCompilationRefusalCode } from './compilerPackageCompilationContract.js';
+
 export interface CompilerCommandLineRequest {
   readonly argv: readonly string[];
 }
@@ -21,8 +23,12 @@ export interface CompilerCommandLineCapabilities {
 }
 
 export interface CompilerCommandLineRefusal {
+  readonly code: CompilerPackageCompilationRefusalCode;
+  readonly column?: number | undefined;
+  readonly line?: number | undefined;
   readonly module: string;
   readonly reason: string;
+  readonly stage: 'dependency' | 'emission' | 'initialization' | 'lowering';
 }
 
 export interface CompilerCommandLineResult {

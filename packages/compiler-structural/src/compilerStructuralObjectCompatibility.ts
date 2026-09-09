@@ -2,6 +2,7 @@ import { compareTextCodeUnits, normalizePathPortable } from '../../compiler-cano
 import { analyzeIrModuleTraversal } from '../../compiler-ir-traversal/src/index.js';
 import type {
   CompilerIrTraversalPath,
+  CompilerModuleIdentity,
   CompilerModuleResolutionPlan,
   CompilerStructuralObjectCompatibilityDiagnostic,
   CompilerStructuralObjectCompatibilityDisposition,
@@ -407,9 +408,13 @@ function getStructuralSpecifierModules(
   moduleSet: Readonly<StructuralModuleSet>,
 ): readonly StructuralModuleRecord[] {
   const candidates = getStructuralSpecifierSourceCandidates(from.source, specifier);
-  const resolutionTargets = moduleSet.resolution.edges
-    .filter((edge) => edge.specifier === specifier)
-    .map((edge) => `${edge.target.packageName}\0${normalizePathPortable(edge.target.source)}`);
+  const matching = moduleSet.resolution.edges.filter((edge) => edge.specifier === specifier);
+  const exact = matching.filter(
+    (edge) => edge.importer && getStructuralModuleIdentityKey(edge.importer) === from.identity,
+  );
+  const resolutionTargets = (exact.length > 0 ? exact : matching.filter((edge) => !edge.importer)).map(
+    (edge) => `${edge.target.packageName}\0${normalizePathPortable(edge.target.source)}`,
+  );
   return moduleSet.modules.filter(
     (candidate) =>
       (candidate.module.packageName === from.module.packageName && candidates.has(candidate.source)) ||
@@ -470,6 +475,9 @@ function validateCompilerModuleResolutionPlan(resolution: Readonly<CompilerModul
   }
   const specifiers = new Set<string>();
   for (const edge of resolution.edges) {
+    const importer = edge?.importer;
+    const importerKey = importer ? getStructuralModuleIdentityKey(importer) : '';
+    const resolutionKey = `${importerKey}\0${edge?.specifier ?? ''}`;
     if (
       !edge ||
       typeof edge.specifier !== 'string' ||
@@ -479,12 +487,23 @@ function validateCompilerModuleResolutionPlan(resolution: Readonly<CompilerModul
       edge.target.packageName.length === 0 ||
       typeof edge.target.source !== 'string' ||
       edge.target.source.length === 0 ||
-      specifiers.has(edge.specifier)
+      (importer !== undefined &&
+        (typeof importer.packageName !== 'string' ||
+          importer.packageName.length === 0 ||
+          typeof importer.source !== 'string' ||
+          importer.source.length === 0 ||
+          typeof importer.name !== 'string' ||
+          importer.name.length === 0)) ||
+      specifiers.has(resolutionKey)
     ) {
       throw new TypeError('Structural module resolution plan contains an invalid or duplicate edge');
     }
-    specifiers.add(edge.specifier);
+    specifiers.add(resolutionKey);
   }
+}
+
+function getStructuralModuleIdentityKey(identity: Readonly<CompilerModuleIdentity>): string {
+  return `${identity.packageName}\0${normalizePathPortable(identity.source)}\0${identity.name}`;
 }
 
 function createStructuralModuleRecord(module: Readonly<IrModule>): StructuralModuleRecord {

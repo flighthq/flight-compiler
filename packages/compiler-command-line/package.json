@@ -17,7 +17,6 @@
     "@flighthq/compiler-backend-hx": "*",
     "@flighthq/compiler-backend-rs": "*",
     "@flighthq/compiler-canonical-form": "*",
-    "@flighthq/compiler-emission": "*",
     "@flighthq/compiler-orchestration": "*",
     "@flighthq/compiler-types": "*"
   },

@@ -48,7 +48,29 @@ describe('compileCompilerCommandLineRequest', () => {
     expect(result.emitted).toBe(1);
     expect(result.exitCode).toBe(1);
     expect(result.refusals).toHaveLength(1);
-    expect(result.refusals[0]?.module).toBe('bad.ts');
+    expect(result.refusals[0]).toMatchObject({ code: 'unsupported-ir', module: 'bad.ts', stage: 'emission' });
+  });
+
+  it('compiles sibling imports as one graph so cross-module type identity reaches the backend', () => {
+    const written = new Map<string, string>();
+    const result = compileCompilerCommandLineRequest(
+      { argv: ['/src', '--target', 'cpp', '--out', '/out'] },
+      capabilities(
+        [
+          source('model.ts', 'export interface Model { value: number }'),
+          source(
+            'consumer.ts',
+            "import type { Model } from './model.js'; export function same(left: Model, right: Model): boolean { return left === right; }",
+          ),
+        ],
+        written,
+        [],
+      ),
+    );
+
+    expect(result).toMatchObject({ emitted: 2, exitCode: 0, refusals: [] });
+    expect(written.get('/out/consumer.hpp')).toContain('#include "model.hpp"');
+    expect(written.get('/out/consumer.hpp')).toContain('flight::Ref<Model>');
   });
 
   it('reports without failing when asked to report', () => {

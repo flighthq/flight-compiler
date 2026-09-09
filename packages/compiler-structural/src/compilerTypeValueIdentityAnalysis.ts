@@ -1,5 +1,6 @@
 import { compareTextCodeUnits, normalizePathPortable } from '../../compiler-canonical-form/src/index.js';
 import type {
+  CompilerModuleIdentity,
   CompilerModuleResolutionPlan,
   CompilerTypeValueIdentityAnalysis,
   CompilerTypeValueIdentityAnalyzer,
@@ -352,9 +353,11 @@ function getIdentitySpecifierModules(
   moduleSet: Readonly<IdentityModuleSet>,
 ): readonly IdentityModuleRecord[] {
   const candidates = getIdentitySpecifierSourceCandidates(from.source, specifier);
-  const resolutionTargets = moduleSet.resolution.edges
-    .filter((edge) => edge.specifier === specifier)
-    .map((edge) => `${edge.target.packageName}\0${normalizePathPortable(edge.target.source)}`);
+  const matching = moduleSet.resolution.edges.filter((edge) => edge.specifier === specifier);
+  const exact = matching.filter((edge) => edge.importer && getIdentityModuleKey(edge.importer) === from.identity);
+  const resolutionTargets = (exact.length > 0 ? exact : matching.filter((edge) => !edge.importer)).map(
+    (edge) => `${edge.target.packageName}\0${normalizePathPortable(edge.target.source)}`,
+  );
   return moduleSet.modules.filter(
     (candidate) =>
       (candidate.module.packageName === from.module.packageName && candidates.has(candidate.source)) ||
@@ -525,6 +528,9 @@ function validateIdentityModuleResolutionPlan(resolution: Readonly<CompilerModul
   }
   const specifiers = new Set<string>();
   for (const edge of resolution.edges) {
+    const importer = edge?.importer;
+    const importerKey = importer ? getIdentityModuleKey(importer) : '';
+    const resolutionKey = `${importerKey}\0${edge?.specifier ?? ''}`;
     if (
       !edge ||
       typeof edge.specifier !== 'string' ||
@@ -534,12 +540,23 @@ function validateIdentityModuleResolutionPlan(resolution: Readonly<CompilerModul
       edge.target.packageName.length === 0 ||
       typeof edge.target.source !== 'string' ||
       edge.target.source.length === 0 ||
-      specifiers.has(edge.specifier)
+      (importer !== undefined &&
+        (typeof importer.packageName !== 'string' ||
+          importer.packageName.length === 0 ||
+          typeof importer.source !== 'string' ||
+          importer.source.length === 0 ||
+          typeof importer.name !== 'string' ||
+          importer.name.length === 0)) ||
+      specifiers.has(resolutionKey)
     ) {
       throw new TypeError('Type value identity module resolution plan contains an invalid or duplicate edge');
     }
-    specifiers.add(edge.specifier);
+    specifiers.add(resolutionKey);
   }
+}
+
+function getIdentityModuleKey(identity: Readonly<CompilerModuleIdentity>): string {
+  return `${identity.packageName}\0${normalizePathPortable(identity.source)}\0${identity.name}`;
 }
 
 const compilerEmptyModuleResolutionPlan: CompilerModuleResolutionPlan = Object.freeze({

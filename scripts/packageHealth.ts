@@ -67,7 +67,6 @@ const packageRules: Readonly<Record<string, PackageRule>> = {
       'compiler-backend-hx',
       'compiler-backend-rs',
       'compiler-canonical-form',
-      'compiler-emission',
       'compiler-orchestration',
       'compiler-types',
     ],
@@ -154,6 +153,7 @@ const packageRules: Readonly<Record<string, PackageRule>> = {
     dependencies: [
       'compiler-canonical-form',
       'compiler-emission',
+      'compiler-module',
       'compiler-patch',
       'compiler-semantic',
       'compiler-types',

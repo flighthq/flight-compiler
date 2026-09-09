@@ -1,0 +1,561 @@
+import { createBackendEmissionFailure } from '../../compiler-emission/src/index.js';
+import type {
+  CompilerBackend,
+  CompilerModuleIdentity,
+  CompilerPackageGraph,
+  TypeScriptPackageGraphSource,
+} from '../../compiler-types/src/index.js';
+import { parseTypeScriptSource } from './compilerOrchestration.js';
+import { compileTypeScriptPackageGraph, isCompilerPackageGraphFailure } from './compilerPackageCompilation.js';
+
+describe('compileTypeScriptPackageGraph', () => {
+  it('compiles a cross-package graph once with explicit C++ identity and a build manifest', () => {
+    const model = source('@flighthq/types', 'types', 'model.ts', 'export interface Model { value: number }');
+    const renderer = source(
+      '@flighthq/render-wgpu',
+      'render-wgpu',
+      'renderer.ts',
+      "import type { Model } from '@flighthq/types'; export function render(model: Model): Model { return model; }",
+    );
+    const modelIdentity = identity(model, 'Model');
+    const rendererIdentity = identity(renderer, 'Renderer');
+    const backend: CompilerBackend = {
+      createEmissionSession: ({ modules }) => ({
+        emitModule(module) {
+          expect(modules).toHaveLength(2);
+          return module.packageName === '@flighthq/types'
+            ? [{ contents: 'model', dependencies: ['flight/runtime.hpp'], path: 'flight/types/model.hpp' }]
+            : [
+                {
+                  contents: 'renderer',
+                  dependencies: ['flight/types/model.hpp', 'flight/runtime.hpp'],
+                  path: 'flight/render_wgpu/renderer.hpp',
+                },
+              ];
+        },
+      }),
+      emitModule: () => {
+        throw new Error('compatibility entry point must not be used');
+      },
+      name: 'cpp',
+    };
+    const result = compileTypeScriptPackageGraph({
+      backend,
+      backendOptions: {},
+      graph: graph(
+        [rendererIdentity],
+        [
+          {
+            importer: rendererIdentity,
+            specifier: '@flighthq/types',
+            target: modelIdentity,
+          },
+        ],
+        [
+          { dependencies: [], name: '@flighthq/types', root: model.packageRoot },
+          {
+            dependencies: ['@flighthq/types'],
+            name: '@flighthq/render-wgpu',
+            root: renderer.packageRoot,
+          },
+        ],
+      ),
+      sources: [renderer, model],
+    });
+
+    expect(result.compilation.files.map((file) => file.path)).toEqual([
+      'flight/render_wgpu/renderer.hpp',
+      'flight/types/model.hpp',
+    ]);
+    expect(result.report).toMatchObject({
+      backend: 'cpp',
+      schema: 'flight-compiler-package-report/1',
+    });
+    expect(result.report.files).toContainEqual({
+      dependencies: ['flight/runtime.hpp', 'flight/types/model.hpp'],
+      module: rendererIdentity,
+      path: 'flight/render_wgpu/renderer.hpp',
+    });
+    expect(result.report.initialization.entries).toEqual([rendererIdentity]);
+    expect(result.report.initialization.modules.map((module) => module.module)).toEqual([
+      modelIdentity,
+      rendererIdentity,
+    ]);
+    expect(result.report.packages).toEqual([
+      {
+        dependencies: ['@flighthq/types'],
+        modules: [expect.objectContaining({ module: rendererIdentity, status: 'emitted' })],
+        name: '@flighthq/render-wgpu',
+        outputFiles: ['flight/render_wgpu/renderer.hpp'],
+      },
+      {
+        dependencies: [],
+        modules: [expect.objectContaining({ module: modelIdentity, status: 'emitted' })],
+        name: '@flighthq/types',
+        outputFiles: ['flight/types/model.hpp'],
+      },
+    ]);
+  });
+
+  it('reuses one backend emission session and keeps partial output dependency-closed', () => {
+    const good = source('@local/source', 'source', 'good.ts', 'export const good = 1;');
+    const bad = source('@local/source', 'source', 'bad.ts', 'export const bad = 1;');
+    const dependent = source(
+      '@local/source',
+      'source',
+      'dependent.ts',
+      "import { bad } from './bad.js'; export const value = bad;",
+    );
+    const goodIdentity = identity(good, 'Good');
+    const badIdentity = identity(bad, 'Bad');
+    const dependentIdentity = identity(dependent, 'Dependent');
+    let sessions = 0;
+    const backend: CompilerBackend = {
+      createEmissionSession: () => {
+        sessions += 1;
+        return {
+          emitModule(module) {
+            if (module.name === 'Bad') throw createBackendEmissionFailure('fixture', module, 'unsupported bad value');
+            return [{ contents: module.name, path: `${module.name}.txt` }];
+          },
+        };
+      },
+      emitModule: () => {
+        throw new Error('compatibility entry point must not be used');
+      },
+      name: 'fixture',
+    };
+    const result = compileTypeScriptPackageGraph({
+      backend,
+      backendOptions: {},
+      graph: graph(
+        [goodIdentity, badIdentity, dependentIdentity],
+        [{ importer: dependentIdentity, specifier: './bad.js', target: badIdentity }],
+        [{ dependencies: [], name: '@local/source', root: good.packageRoot }],
+      ),
+      sources: [dependent, bad, good],
+    });
+
+    expect(sessions).toBe(1);
+    expect(result.compilation.files).toEqual([{ contents: 'Good\n', path: 'Good.txt' }]);
+    expect(result.report.modules).toEqual([
+      expect.objectContaining({
+        module: badIdentity,
+        refusals: [expect.objectContaining({ code: 'unsupported-ir', stage: 'emission' })],
+        status: 'refused',
+      }),
+      expect.objectContaining({
+        module: dependentIdentity,
+        refusals: [expect.objectContaining({ code: 'dependency-refused', stage: 'dependency' })],
+        status: 'refused',
+      }),
+      expect.objectContaining({ module: goodIdentity, outputFiles: ['Good.txt'], status: 'emitted' }),
+    ]);
+    expect(result.report.initialization.entries).toEqual([goodIdentity]);
+  });
+
+  it('records stable lowering codes and source locations while emitting unaffected modules', () => {
+    const good = source('@local/source', 'source', 'good.ts', 'export const good = 1;');
+    const bad = source(
+      '@local/source',
+      'source',
+      'bad.ts',
+      'export const retained = 1;\ndoSomething();\ndoSomethingElse();',
+    );
+    const backend: CompilerBackend = {
+      emitModule: (module) => [{ contents: module.name, path: `${module.name}.txt` }],
+      name: 'fixture',
+    };
+    const result = compileTypeScriptPackageGraph({
+      backend,
+      backendOptions: {},
+      graph: graph(
+        [identity(good, 'Good'), identity(bad, 'Bad')],
+        [],
+        [{ dependencies: [], name: '@local/source', root: good.packageRoot }],
+      ),
+      sources: [bad, good],
+    });
+
+    expect(result.compilation.files.map((file) => file.path)).toEqual(['Good.txt']);
+    expect(result.report.modules[0]).toMatchObject({
+      module: identity(bad, 'Bad'),
+      refusals: [
+        {
+          code: 'unsupported-typescript',
+          column: 1,
+          line: 2,
+          message: expect.any(String),
+          stage: 'lowering',
+        },
+        {
+          code: 'unsupported-typescript',
+          column: 1,
+          line: 3,
+          message: expect.any(String),
+          stage: 'lowering',
+        },
+      ],
+      status: 'refused',
+    });
+  });
+
+  it('is deterministic under source, package, entry, and dependency permutation', () => {
+    const alpha = source('@local/source', 'source', 'alpha.ts', 'export const alpha = 1;');
+    const beta = source(
+      '@local/source',
+      'source',
+      'beta.ts',
+      "import { alpha } from './alpha.js'; export const beta = alpha;",
+    );
+    const alphaIdentity = identity(alpha, 'Alpha');
+    const betaIdentity = identity(beta, 'Beta');
+    const dependency = { importer: betaIdentity, specifier: './alpha.js', target: alphaIdentity };
+    const backend: CompilerBackend = {
+      emitModule: (module) => [{ contents: module.name, path: `${module.name}.txt` }],
+      name: 'fixture',
+    };
+    const compile = (sources: readonly TypeScriptPackageGraphSource[], entries: readonly CompilerModuleIdentity[]) =>
+      compileTypeScriptPackageGraph({
+        backend,
+        backendOptions: {},
+        graph: graph(entries, [dependency], [{ dependencies: [], name: '@local/source', root: alpha.packageRoot }]),
+        sources,
+      }).report;
+
+    expect(compile([alpha, beta], [alphaIdentity, betaIdentity])).toEqual(
+      compile([beta, alpha], [betaIdentity, alphaIdentity]),
+    );
+  });
+
+  it('turns independent backend failures and output collisions into per-module refusals', () => {
+    const collisionA = source('@local/source', 'source', 'collision-a.ts', 'export const valueA = 1;');
+    const collisionB = source('@local/source', 'source', 'collision-b.ts', 'export const valueB = 1;');
+    const unsafe = source('@local/source', 'source', 'unsafe.ts', 'export const unsafe = 1;');
+    const broken = source('@local/source', 'source', 'broken.ts', 'export const broken = 1;');
+    const backend: CompilerBackend = {
+      emitModule(module) {
+        if (module.name === 'Unsafe') return [{ contents: 'unsafe', path: '../unsafe.txt' }];
+        if (module.name === 'Broken') throw new Error('fixture backend crashed');
+        return [{ contents: module.name, path: 'SAME.txt' }];
+      },
+      name: 'fixture',
+    };
+    const result = compileTypeScriptPackageGraph({
+      backend,
+      backendOptions: {},
+      graph: graph([], [], [{ dependencies: [], name: '@local/source', root: collisionA.packageRoot }]),
+      sources: [broken, collisionB, unsafe, collisionA],
+    });
+
+    expect(result.compilation.files).toEqual([]);
+    expect(result.report.entries).toHaveLength(4);
+    expect(
+      result.report.modules.map((module) => [module.module.name, module.refusals[0]?.code, module.refusals[0]?.stage]),
+    ).toEqual([
+      ['Broken', 'internal-error', 'emission'],
+      ['Collision-a', 'duplicate-emitted-path', 'emission'],
+      ['Collision-b', 'duplicate-emitted-path', 'emission'],
+      ['Unsafe', 'unsafe-emitted-path', 'emission'],
+    ]);
+  });
+
+  it('validates the final package output with the configured parser and target compiler', () => {
+    const value = source('@local/source', 'source', 'value.ts', 'export const value = 1;');
+    const events: string[] = [];
+    const backend: CompilerBackend = {
+      emitModule: () => [{ contents: 'value', path: 'Value.txt' }],
+      name: 'fixture',
+    };
+    const compile = (supportsSyntax: boolean, supportsCompilation: boolean) =>
+      compileTypeScriptPackageGraph({
+        backend,
+        backendOptions: {},
+        graph: graph([], [], [{ dependencies: [], name: '@local/source', root: value.packageRoot }]),
+        sourceParser: {
+          name: 'fixture-parser',
+          parseEmittedSource(file) {
+            events.push(`parse:${file.path}`);
+            return [];
+          },
+          supportsEmittedSource: () => supportsSyntax,
+        },
+        sources: [value],
+        targetCompilationSmoke: {
+          compileEmittedSources(files) {
+            events.push(`compile:${files.map((file) => file.path).join(',')}`);
+            return [];
+          },
+          name: 'fixture-compiler',
+          supportsEmittedSource: () => supportsCompilation,
+        },
+      });
+
+    expect(compile(true, true).compilation.files.map((file) => file.path)).toEqual(['Value.txt']);
+    expect(events).toEqual(['parse:Value.txt', 'compile:Value.txt']);
+    expect(() => compile(false, true)).toThrow(
+      expect.objectContaining({ code: 'insufficient-emitted-source-syntax-files', kind: 'compiler-invariant' }),
+    );
+    expect(() => compile(true, false)).toThrow(
+      expect.objectContaining({ code: 'insufficient-target-compilation-smoke-files', kind: 'compiler-invariant' }),
+    );
+  });
+
+  it('refuses an unplannable module initialization while preserving an unrelated entry', () => {
+    const invalid = source('@local/source', 'source', 'invalid.ts', 'export const value = 1; export default value;');
+    const valid = source('@local/source', 'source', 'valid.ts', 'export const valid = 1;');
+    const result = compileTypeScriptPackageGraph({
+      backend: {
+        emitModule: (module) => [{ contents: module.name, path: `${module.name}.txt` }],
+        name: 'fixture',
+      },
+      backendOptions: {},
+      graph: graph([], [], [{ dependencies: [], name: '@local/source', root: invalid.packageRoot }]),
+      sources: [invalid, valid],
+    });
+
+    expect(result.compilation.files).toEqual([{ contents: 'Valid\n', path: 'Valid.txt' }]);
+    expect(result.report.modules).toEqual([
+      expect.objectContaining({
+        module: identity(invalid, 'Invalid'),
+        refusals: [expect.objectContaining({ code: 'unsupported-default-expression-order', stage: 'initialization' })],
+        status: 'refused',
+      }),
+      expect.objectContaining({ module: identity(valid, 'Valid'), status: 'emitted' }),
+    ]);
+  });
+
+  it('infers exact, global, and relative module resolution edges into one graph', () => {
+    const model = source('@local/model', 'model', 'model.ts', 'export const model = 1;');
+    const exact = source(
+      '@local/source',
+      'source',
+      'exact.ts',
+      "import { model } from '@model'; export const exact = model;",
+    );
+    const global = source(
+      '@local/source',
+      'source',
+      'global.ts',
+      "import { model } from '@global-model'; export const global = model;",
+    );
+    const relative = source(
+      '@local/source',
+      'source',
+      'relative.ts',
+      "import { exact } from './exact'; export const relative = exact;",
+    );
+    const modelIdentity = identity(model, 'Model');
+    const exactIdentity = identity(exact, 'Exact');
+    const globalIdentity = identity(global, 'Global');
+    const relativeIdentity = identity(relative, 'Relative');
+    const result = compileTypeScriptPackageGraph({
+      backend: {
+        emitModule: (module) => [{ contents: module.name, path: `${module.name}.txt` }],
+        name: 'fixture',
+      },
+      backendOptions: {},
+      graph: graph(
+        [exactIdentity, globalIdentity, relativeIdentity],
+        [],
+        [
+          { dependencies: [], name: '@local/model', root: model.packageRoot },
+          { dependencies: ['@local/model'], name: '@local/source', root: exact.packageRoot },
+        ],
+      ),
+      moduleResolution: {
+        edges: [
+          {
+            importer: exactIdentity,
+            specifier: '@model',
+            target: { packageName: modelIdentity.packageName, source: modelIdentity.source },
+          },
+          {
+            specifier: '@global-model',
+            target: { packageName: modelIdentity.packageName, source: modelIdentity.source },
+          },
+        ],
+        schema: 'flight-compiler-module-resolution/1',
+      },
+      sources: [relative, global, model, exact],
+    });
+
+    expect(result.report.initialization.groups.map((group) => group.modules)).toEqual([
+      [modelIdentity],
+      [exactIdentity],
+      [globalIdentity],
+      [relativeIdentity],
+    ]);
+  });
+});
+
+describe('isCompilerPackageGraphFailure', () => {
+  it('recognizes a package-root mismatch as tagged graph input failure', () => {
+    const value = source('@local/source', 'source', 'value.ts', 'export const value = 1;');
+    let received: unknown;
+    try {
+      compileTypeScriptPackageGraph({
+        backend: { emitModule: () => [], name: 'fixture' },
+        backendOptions: {},
+        graph: graph(
+          [identity(value, 'Value')],
+          [],
+          [{ dependencies: [], name: '@local/source', root: '/flight/packages/other' }],
+        ),
+        sources: [value],
+      });
+    } catch (error) {
+      received = error;
+    }
+
+    expect(isCompilerPackageGraphFailure(received)).toBe(true);
+    expect(received).toMatchObject({ code: 'package-root-mismatch', kind: 'compiler-package-graph' });
+    expect(isCompilerPackageGraphFailure(new Error('other'))).toBe(false);
+  });
+
+  it('rejects malformed package, source, entry, and module dependency shapes with stable codes', () => {
+    const value = source('@local/source', 'source', 'value.ts', 'export const value = 1;');
+    const valueIdentity = identity(value, 'Value');
+    const package_ = { dependencies: [] as readonly string[], name: '@local/source', root: value.packageRoot };
+    const missingIdentity = { ...valueIdentity, source: 'packages/source/src/missing.ts' };
+    const attempts: readonly [string, () => unknown][] = [
+      [
+        'invalid-graph',
+        () =>
+          compileTypeScriptPackageGraph({
+            backend: { emitModule: () => [], name: 'fixture' },
+            backendOptions: {},
+            graph: null as never,
+            sources: [value],
+          }),
+      ],
+      [
+        'invalid-package',
+        () =>
+          compileTypeScriptPackageGraph({
+            backend: { emitModule: () => [], name: 'fixture' },
+            backendOptions: {},
+            graph: graph([], [], [null as never]),
+            sources: [value],
+          }),
+      ],
+      [
+        'duplicate-package',
+        () =>
+          compileTypeScriptPackageGraph({
+            backend: { emitModule: () => [], name: 'fixture' },
+            backendOptions: {},
+            graph: graph([], [], [package_, package_]),
+            sources: [value],
+          }),
+      ],
+      [
+        'invalid-package-dependency',
+        () =>
+          compileTypeScriptPackageGraph({
+            backend: { emitModule: () => [], name: 'fixture' },
+            backendOptions: {},
+            graph: graph([], [], [{ ...package_, dependencies: ['@local/source'] }]),
+            sources: [value],
+          }),
+      ],
+      [
+        'invalid-source',
+        () =>
+          compileTypeScriptPackageGraph({
+            backend: { emitModule: () => [], name: 'fixture' },
+            backendOptions: {},
+            graph: graph([], [], [package_]),
+            sources: [null as never],
+          }),
+      ],
+      [
+        'unknown-package',
+        () =>
+          compileTypeScriptPackageGraph({
+            backend: { emitModule: () => [], name: 'fixture' },
+            backendOptions: {},
+            graph: graph([], [], [package_]),
+            sources: [{ ...value, packageName: '@local/unknown' }],
+          }),
+      ],
+      [
+        'invalid-entry',
+        () =>
+          compileTypeScriptPackageGraph({
+            backend: { emitModule: () => [], name: 'fixture' },
+            backendOptions: {},
+            graph: graph([missingIdentity], [], [package_]),
+            sources: [value],
+          }),
+      ],
+      [
+        'duplicate-entry',
+        () =>
+          compileTypeScriptPackageGraph({
+            backend: { emitModule: () => [], name: 'fixture' },
+            backendOptions: {},
+            graph: graph([valueIdentity, valueIdentity], [], [package_]),
+            sources: [value],
+          }),
+      ],
+      [
+        'invalid-module-dependency',
+        () =>
+          compileTypeScriptPackageGraph({
+            backend: { emitModule: () => [], name: 'fixture' },
+            backendOptions: {},
+            graph: graph(
+              [valueIdentity],
+              [{ importer: valueIdentity, specifier: './missing.js', target: missingIdentity }],
+              [package_],
+            ),
+            sources: [value],
+          }),
+      ],
+    ];
+
+    for (const [code, attempt] of attempts) {
+      let received: unknown;
+      try {
+        attempt();
+        expect.unreachable(`Expected ${code}`);
+      } catch (error) {
+        received = error;
+      }
+      expect(isCompilerPackageGraphFailure(received)).toBe(true);
+      expect(received).toMatchObject({ code, kind: 'compiler-package-graph' });
+    }
+  });
+});
+
+function graph(
+  entries: readonly CompilerModuleIdentity[],
+  moduleDependencies: CompilerPackageGraph['moduleDependencies'],
+  packages: CompilerPackageGraph['packages'],
+): CompilerPackageGraph {
+  return { entries, moduleDependencies, packages, schema: 'flight-compiler-package-graph/1' };
+}
+
+function identity(source: Readonly<TypeScriptPackageGraphSource>, name: string): CompilerModuleIdentity {
+  return {
+    name,
+    packageName: source.packageName,
+    source: source.sourceFile.fileName.slice('/flight/'.length),
+  };
+}
+
+function source(
+  packageName: string,
+  packageDirectory: string,
+  fileName: string,
+  contents: string,
+): TypeScriptPackageGraphSource {
+  const packageRoot = `/flight/packages/${packageDirectory}`;
+  return {
+    packageName,
+    packageRoot,
+    sourceFile: parseTypeScriptSource(`${packageRoot}/src/${fileName}`, contents),
+    upstreamDirectory: '/flight',
+  };
+}

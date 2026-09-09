@@ -1,6 +1,8 @@
-import type { CompilerSourceIdentity } from './compilerSourceIdentity.js';
+import type { CompilerModuleIdentity, CompilerSourceIdentity } from './compilerSourceIdentity.js';
 
 export interface CompilerModuleResolutionEdge {
+  /** Absent means a workspace-wide package export; present means one importer's exact request. */
+  readonly importer?: CompilerModuleIdentity | undefined;
   readonly specifier: string;
   readonly target: CompilerSourceIdentity;
 }

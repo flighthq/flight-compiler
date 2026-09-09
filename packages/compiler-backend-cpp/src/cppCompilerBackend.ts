@@ -39,6 +39,7 @@ import {
 import type {
   CompilerBackend,
   CompilerCppReferenceRepresentationPlanner,
+  CompilerModuleIdentity,
   CompilerModuleResolutionPlan,
   CppCompilerBackendOptions,
   CppCompilerRuntimeProfile,
@@ -121,6 +122,18 @@ interface EmitContext {
 
 export function createCppCompilerBackend(): CompilerBackend<CppCompilerBackendOptions> {
   return {
+    createEmissionSession({ moduleResolution, modules, options }) {
+      const referenceRepresentationPlanner = moduleResolution
+        ? createIrTypeReferenceRepresentationPlannerCpp(modules, moduleResolution)
+        : createIrTypeReferenceRepresentationPlannerCpp(modules);
+      return Object.freeze({
+        emitModule(module: Readonly<IrModule>) {
+          return [
+            emitIrModuleCppWithContext(module, options, modules, moduleResolution, referenceRepresentationPlanner),
+          ];
+        },
+      });
+    },
     emitModule(module, { moduleResolution, modules, options }) {
       return [emitIrModuleCppWithContext(module, options, modules, moduleResolution)];
     },
@@ -140,6 +153,7 @@ function emitIrModuleCppWithContext(
   options: Readonly<CppCompilerBackendOptions>,
   sourceModules: readonly Readonly<IrModule>[],
   moduleResolution?: Readonly<CompilerModuleResolutionPlan> | undefined,
+  referenceRepresentationPlanner?: CompilerCppReferenceRepresentationPlanner | undefined,
 ): EmittedFile {
   const module = lowerIrModuleWithCompilerPasses(sourceModule, [
     createCompilerLoweringPassExtraArgumentErasure(),
@@ -181,9 +195,11 @@ function emitIrModuleCppWithContext(
     ...(moduleResolution ? { moduleResolution } : {}),
     nullableBindingIds: collectIrModuleNullableBindingIds(module),
     options,
-    referenceRepresentationPlanner: moduleResolution
-      ? createIrTypeReferenceRepresentationPlannerCpp(sourceModules, moduleResolution)
-      : createIrTypeReferenceRepresentationPlannerCpp(sourceModules),
+    referenceRepresentationPlanner:
+      referenceRepresentationPlanner ??
+      (moduleResolution
+        ? createIrTypeReferenceRepresentationPlannerCpp(sourceModules, moduleResolution)
+        : createIrTypeReferenceRepresentationPlannerCpp(sourceModules)),
     returnsAbsent: false,
     sharedCaptureTargetNames,
     sourceModules,
@@ -251,8 +267,15 @@ function emitIrModuleCppWithContext(
   if (reexports.length > 0) lines.push('', ...reexports);
   declarations.forEach((declaration) => lines.push('', ...declaration));
   lines.push('', `} // namespace ${namespaceName}`);
+  const runtimeDependency =
+    options.runtimeHeader ?? (getCppRuntimeProfile(options) === 'flight-cpp' ? 'flight/runtime.hpp' : undefined);
   return {
     contents: lines.join('\n'),
+    dependencies: [
+      ...context.includes,
+      ...imports.map(getCppIncludeDirectivePath),
+      ...(runtimeDependency ? [runtimeDependency] : []),
+    ],
     path: getCppModuleFilePath(module, options),
   };
 }
@@ -2886,8 +2909,16 @@ function getCppModuleIncludeDirective(
   return includePrefix ? `#include <${path}>` : `#include "${path}"`;
 }
 
+function getCppIncludeDirectivePath(directive: string): string {
+  return directive.slice('#include '.length + 1, -1);
+}
+
 function getCppResolvedImportModule(specifier: string, context: EmitContext): Readonly<IrModule> | undefined {
-  const targets = context.moduleResolution?.edges.filter((edge) => edge.specifier === specifier) ?? [];
+  const matching = context.moduleResolution?.edges.filter((edge) => edge.specifier === specifier) ?? [];
+  const exact = matching.filter(
+    (edge) => edge.importer && isCppCompilerModuleIdentityEqual(edge.importer, context.module),
+  );
+  const targets = exact.length > 0 ? exact : matching.filter((edge) => !edge.importer);
   if (targets.length === 1) {
     const target = targets[0]!.target;
     return context.sourceModules.find(
@@ -2904,6 +2935,17 @@ function getCppResolvedImportModule(specifier: string, context: EmitContext): Re
   return context.sourceModules.find(
     (module) =>
       module.packageName === context.module.packageName && candidates.has(path.posix.normalize(module.source)),
+  );
+}
+
+function isCppCompilerModuleIdentityEqual(
+  left: Readonly<CompilerModuleIdentity>,
+  right: Readonly<CompilerModuleIdentity>,
+): boolean {
+  return (
+    left.packageName === right.packageName &&
+    path.posix.normalize(left.source) === path.posix.normalize(right.source) &&
+    left.name === right.name
   );
 }
 

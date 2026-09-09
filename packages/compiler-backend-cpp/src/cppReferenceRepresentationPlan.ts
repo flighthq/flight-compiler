@@ -7,6 +7,7 @@ import {
 import type {
   CompilerCppReferenceRepresentationPlan,
   CompilerCppReferenceRepresentationPlanner,
+  CompilerModuleIdentity,
   CompilerModuleResolutionPlan,
   CompilerTypeValueIdentityAnalysis,
   IrDeclaration,
@@ -311,9 +312,13 @@ function getReferenceSpecifierModulesCpp(
   moduleSet: Readonly<ReferenceModuleSet>,
 ): readonly ReferenceModuleRecord[] {
   const candidates = getReferenceSpecifierSourceCandidatesCpp(from.source, specifier);
-  const resolutionTargets = moduleSet.resolution.edges
-    .filter((edge) => edge.specifier === specifier)
-    .map((edge) => `${edge.target.packageName}\0${normalizePathPortable(edge.target.source)}`);
+  const matching = moduleSet.resolution.edges.filter((edge) => edge.specifier === specifier);
+  const exact = matching.filter(
+    (edge) => edge.importer && createReferenceModuleKeyCpp(edge.importer) === from.identity,
+  );
+  const resolutionTargets = (exact.length > 0 ? exact : matching.filter((edge) => !edge.importer)).map(
+    (edge) => `${edge.target.packageName}\0${normalizePathPortable(edge.target.source)}`,
+  );
   return moduleSet.modules.filter(
     (candidate) =>
       (candidate.module.packageName === from.module.packageName && candidates.has(candidate.source)) ||
@@ -392,7 +397,7 @@ function getReferenceModuleRecordCpp(
   return moduleSet.modulesByIdentity.get(createReferenceModuleKeyCpp(module));
 }
 
-function createReferenceModuleKeyCpp(module: Readonly<IrModule>): string {
+function createReferenceModuleKeyCpp(module: Readonly<CompilerModuleIdentity>): string {
   return `${module.packageName}\0${normalizePathPortable(module.source)}\0${module.name}`;
 }
 

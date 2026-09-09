@@ -1,4 +1,4 @@
-import { normalizePathPortable } from '../../compiler-canonical-form/src/index.js';
+import { compareTextCodeUnits, normalizePathPortable } from '../../compiler-canonical-form/src/index.js';
 import type {
   BackendEmissionFailure,
   BackendEmissionFailureCode,
@@ -81,6 +81,11 @@ export function isCompilerInvariantFailure(value: unknown): value is CompilerInv
 export function normalizeEmittedFile(file: Readonly<EmittedFile>): EmittedFile {
   return {
     contents: normalizeEmittedFileContents(file.contents),
+    ...(file.dependencies
+      ? {
+          dependencies: [...new Set(file.dependencies.map(normalizeEmittedFileDependency))].sort(compareTextCodeUnits),
+        }
+      : {}),
     path: normalizeEmittedFilePath(file.path),
   };
 }
@@ -144,6 +149,23 @@ function isUnsafePortablePathSegment(segment: string): boolean {
     /[ .]$/u.test(segment) ||
     /^(?:AUX|COM[1-9]|CON|LPT[1-9]|NUL|PRN)(?:\..*)?$/iu.test(segment)
   );
+}
+
+function normalizeEmittedFileDependency(value: string): string {
+  const normalized = normalizePathPortable(value).normalize('NFC');
+  if (
+    normalized.length === 0 ||
+    normalized.startsWith('/') ||
+    normalized.split('/').some((segment) => segment.length === 0 || segment === '.' || segment === '..') ||
+    /[<>"\r\n]/u.test(normalized)
+  ) {
+    throw createCompilerInvariantFailure(
+      'unsafe-emitted-path',
+      value,
+      `Backend emitted an unsafe dependency path: ${value}`,
+    );
+  }
+  return normalized;
 }
 
 function validateEmittedFileContents(contents: string): void {
