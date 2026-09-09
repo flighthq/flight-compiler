@@ -75,6 +75,84 @@ describe('analyzeCompilerRuntimeTaskCapabilityCompleteness', () => {
     expect(result.kind).toBe('complete');
     expect(result.capabilities).toHaveLength(6);
   });
+
+  it('rejects each individual invalid capability property in isolation', () => {
+    const plan = createPlan();
+    const cleanup = plan.capabilities.find((capability) => capability.capability === 'cleanup')!;
+    const construct = plan.capabilities.find((capability) => capability.capability === 'construct')!;
+    const continuation = plan.capabilities.find((capability) => capability.capability === 'continue')!;
+
+    const invalidCleanupInvocation = {
+      ...cleanup,
+      invocation: 'staticMethod',
+    } as unknown as CompilerRuntimeTaskCapability;
+    const invalidCleanupMember = { ...cleanup, memberName: '' } as unknown as CompilerRuntimeTaskCapability;
+    const invalidCleanupOperation = { ...cleanup, operation: 'then' } as unknown as CompilerRuntimeTaskCapability;
+
+    for (const broken of [invalidCleanupInvocation, invalidCleanupMember, invalidCleanupOperation]) {
+      const result = analyzeCompilerRuntimeTaskCapabilityCompleteness(createRequirements([]), {
+        ...plan,
+        capabilities: plan.capabilities.map((c) => (c.capability === 'cleanup' ? broken : c)),
+      });
+      expect(result).toMatchObject({ invalidCapabilities: ['cleanup'] });
+    }
+
+    const invalidConstructSemantics = {
+      ...construct,
+      completionSemantics: 'wrong',
+    } as unknown as CompilerRuntimeTaskCapability;
+    const invalidConstructInvocation = {
+      ...construct,
+      executorInvocation: 'wrong',
+    } as unknown as CompilerRuntimeTaskCapability;
+    const invalidConstructParams = {
+      ...construct,
+      executorParameters: ['resolve'],
+    } as unknown as CompilerRuntimeTaskCapability;
+
+    for (const broken of [invalidConstructSemantics, invalidConstructInvocation, invalidConstructParams]) {
+      const result = analyzeCompilerRuntimeTaskCapabilityCompleteness(createRequirements([]), {
+        ...plan,
+        capabilities: plan.capabilities.map((c) => (c.capability === 'construct' ? broken : c)),
+      });
+      expect(result).toMatchObject({ invalidCapabilities: ['construct'] });
+    }
+
+    const invalidContinueAwait = {
+      ...continuation,
+      awaitSemantics: 'wrong',
+    } as unknown as CompilerRuntimeTaskCapability;
+    const invalidContinueInvocation = {
+      ...continuation,
+      invocation: 'staticMethod',
+    } as unknown as CompilerRuntimeTaskCapability;
+    const invalidContinueOperation = {
+      ...continuation,
+      operation: 'catch',
+    } as unknown as CompilerRuntimeTaskCapability;
+
+    for (const broken of [invalidContinueAwait, invalidContinueInvocation, invalidContinueOperation]) {
+      const result = analyzeCompilerRuntimeTaskCapabilityCompleteness(createRequirements([]), {
+        ...plan,
+        capabilities: plan.capabilities.map((c) => (c.capability === 'continue' ? broken : c)),
+      });
+      expect(result).toMatchObject({ invalidCapabilities: ['continue'] });
+    }
+  });
+
+  it('reports incomplete when only one failure category has entries', () => {
+    const plan = createPlan();
+    const construct = plan.capabilities.find((capability) => capability.capability === 'construct')!;
+    const duplicatedPlan = { ...plan, capabilities: [construct, construct, ...plan.capabilities] };
+    const result = analyzeCompilerRuntimeTaskCapabilityCompleteness(createRequirements([]), duplicatedPlan);
+
+    expect(result.kind).toBe('incomplete');
+    expect(result).toMatchObject({
+      duplicateCapabilities: ['construct'],
+      invalidCapabilities: [],
+      missingCapabilities: [],
+    });
+  });
 });
 
 describe('collectCompilerRuntimeTaskCapabilityRequirements', () => {
@@ -154,6 +232,71 @@ describe('isCompilerRuntimeTaskCapabilityAnalysisMismatchFailure', () => {
       }),
     ).toBe(false);
   });
+
+  it('rejects errors that match all but one required property', () => {
+    const validModule = { name: 'task', packageName: '@flighthq/task', source: 'task.ts' };
+    const base = Object.assign(new Error('mismatch'), {
+      code: 'module-identity',
+      kind: 'runtime-task-capability-analysis-mismatch',
+      stateMachineModule: validModule,
+      taskInventoryModule: validModule,
+    });
+    expect(isCompilerRuntimeTaskCapabilityAnalysisMismatchFailure(base)).toBe(true);
+
+    const wrongCode = Object.assign(new Error('m'), {
+      code: 'other',
+      kind: 'runtime-task-capability-analysis-mismatch',
+      stateMachineModule: validModule,
+      taskInventoryModule: validModule,
+    });
+    expect(isCompilerRuntimeTaskCapabilityAnalysisMismatchFailure(wrongCode)).toBe(false);
+
+    const missingTaskModule = Object.assign(new Error('m'), {
+      code: 'module-identity',
+      kind: 'runtime-task-capability-analysis-mismatch',
+      stateMachineModule: validModule,
+    });
+    expect(isCompilerRuntimeTaskCapabilityAnalysisMismatchFailure(missingTaskModule)).toBe(false);
+
+    const invalidTaskModule = Object.assign(new Error('m'), {
+      code: 'module-identity',
+      kind: 'runtime-task-capability-analysis-mismatch',
+      stateMachineModule: validModule,
+      taskInventoryModule: { name: 42, packageName: 'pkg', source: 'a.ts' },
+    });
+    expect(isCompilerRuntimeTaskCapabilityAnalysisMismatchFailure(invalidTaskModule)).toBe(false);
+
+    const invalidTaskModulePackage = Object.assign(new Error('m'), {
+      code: 'module-identity',
+      kind: 'runtime-task-capability-analysis-mismatch',
+      stateMachineModule: validModule,
+      taskInventoryModule: { name: 'task', packageName: 42, source: 'a.ts' },
+    });
+    expect(isCompilerRuntimeTaskCapabilityAnalysisMismatchFailure(invalidTaskModulePackage)).toBe(false);
+
+    const invalidTaskModuleSource = Object.assign(new Error('m'), {
+      code: 'module-identity',
+      kind: 'runtime-task-capability-analysis-mismatch',
+      stateMachineModule: validModule,
+      taskInventoryModule: { name: 'task', packageName: 'pkg', source: 42 },
+    });
+    expect(isCompilerRuntimeTaskCapabilityAnalysisMismatchFailure(invalidTaskModuleSource)).toBe(false);
+
+    const missingStateMachineModule = Object.assign(new Error('m'), {
+      code: 'module-identity',
+      kind: 'runtime-task-capability-analysis-mismatch',
+      taskInventoryModule: validModule,
+    });
+    expect(isCompilerRuntimeTaskCapabilityAnalysisMismatchFailure(missingStateMachineModule)).toBe(false);
+
+    const invalidStateMachineModule = Object.assign(new Error('m'), {
+      code: 'module-identity',
+      kind: 'runtime-task-capability-analysis-mismatch',
+      stateMachineModule: { name: 42, packageName: 'pkg', source: 'a.ts' },
+      taskInventoryModule: validModule,
+    });
+    expect(isCompilerRuntimeTaskCapabilityAnalysisMismatchFailure(invalidStateMachineModule)).toBe(false);
+  });
 });
 
 describe('isCompilerRuntimeTaskCapabilityContractMismatchFailure', () => {
@@ -180,6 +323,35 @@ describe('isCompilerRuntimeTaskCapabilityContractMismatchFailure', () => {
         received: 'flight-runtime-task-capability-abi/2',
       }),
     ).toBe(false);
+  });
+
+  it('rejects errors that match all but one required property', () => {
+    const base = Object.assign(new Error('m'), {
+      expected: 'flight-runtime-task-capability-abi/1',
+      kind: 'runtime-task-capability-contract-mismatch',
+      received: 'flight-runtime-task-capability-abi/2',
+    });
+    expect(isCompilerRuntimeTaskCapabilityContractMismatchFailure(base)).toBe(true);
+
+    const wrongExpected = Object.assign(new Error('m'), {
+      expected: 'flight-runtime-task-capability-abi/2',
+      kind: 'runtime-task-capability-contract-mismatch',
+      received: 'flight-runtime-task-capability-abi/2',
+    });
+    expect(isCompilerRuntimeTaskCapabilityContractMismatchFailure(wrongExpected)).toBe(false);
+
+    const missingReceived = Object.assign(new Error('m'), {
+      expected: 'flight-runtime-task-capability-abi/1',
+      kind: 'runtime-task-capability-contract-mismatch',
+    });
+    expect(isCompilerRuntimeTaskCapabilityContractMismatchFailure(missingReceived)).toBe(false);
+
+    const nonStringReceived = Object.assign(new Error('m'), {
+      expected: 'flight-runtime-task-capability-abi/1',
+      kind: 'runtime-task-capability-contract-mismatch',
+      received: 42,
+    });
+    expect(isCompilerRuntimeTaskCapabilityContractMismatchFailure(nonStringReceived)).toBe(false);
   });
 });
 
