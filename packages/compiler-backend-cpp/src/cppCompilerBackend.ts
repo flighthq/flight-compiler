@@ -2207,12 +2207,15 @@ function getIrUnionMemberNameCpp(type: Readonly<IrType>): string | undefined {
 }
 
 function declarationPriorityCpp(declaration: Readonly<IrDeclaration>): number {
-  return declaration.kind === 'class' ||
+  if (
+    declaration.kind === 'class' ||
     declaration.kind === 'typeAlias' ||
     declaration.kind === 'interface' ||
     declaration.kind === 'enum'
-    ? 0
-    : 1;
+  )
+    return 0;
+  if (declaration.kind === 'function' && !declaration.exported) return 1;
+  return 2;
 }
 
 function emitBindingConstnessCpp(mutable: boolean, type: Readonly<IrType> | undefined): string {
@@ -2975,7 +2978,8 @@ function emitReexportsCpp(module: Readonly<IrModule>, context: EmitContext): str
         ? `${getCppCompilerPackageNamespace(targetModule.packageName, context.options.packageTargets)}::${targetName}`
         : targetName;
     if (exported.typeOnly) {
-      return exported.exported === exported.imported && targetModule?.packageName === module.packageName
+      return exported.exported === exported.imported &&
+        (!targetModule || targetModule.packageName === module.packageName)
         ? []
         : [`using ${safeCppTypeName(exported.exported)} = ${qualified};`];
     }

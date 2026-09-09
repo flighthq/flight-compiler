@@ -8,6 +8,10 @@ static_assert(flight::runtime_contract.cpp_abi == 1, "Flight C++ runtime ABI mis
 
 namespace flighthq_golden {
 
+inline flight::String produce(bool flag) {
+  return (flag ? flight::String("on") : flight::String("off"));
+}
+
 inline std::variant<double, flight::String> from_call(bool flag) {
   const std::variant<double, flight::String> value = std::variant<double, flight::String>{std::in_place_type<flight::String>, produce(flag)};
   return std::variant<double, flight::String>{std::in_place_type<flight::String>, std::get<flight::String>(value)};
@@ -31,10 +35,6 @@ inline std::variant<double, flight::String> from_unary(double n) {
 inline std::variant<double, flight::String> from_cast(auto input) {
   const std::variant<double, flight::String> value = std::variant<double, flight::String>{std::in_place_type<flight::String>, static_cast<flight::String>(input)};
   return std::variant<double, flight::String>{std::in_place_type<flight::String>, std::get<flight::String>(value)};
-}
-
-inline flight::String produce(bool flag) {
-  return (flag ? flight::String("on") : flight::String("off"));
 }
 
 } // namespace flighthq_golden

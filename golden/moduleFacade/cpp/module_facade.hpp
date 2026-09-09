@@ -9,7 +9,6 @@ static_assert(flight::runtime_contract.cpp_abi == 1, "Flight C++ runtime ABI mis
 
 namespace flighthq_golden {
 
-using Shape = Shape;
 using Round = Circle;
 
 inline double local(double value) {
