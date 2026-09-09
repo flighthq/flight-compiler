@@ -5145,4 +5145,505 @@ describe('emitIrModuleCpp', () => {
     expect(emitted.contents).toContain('co_return');
     expect(emitted.contents).toContain('co_await');
   });
+
+  it('emits unsigned right shift assignment with uint32 cast', () => {
+    const result = lower(
+      'urshift-assign.ts',
+      `export function shift(x: number): number { let v: number = x; v >>>= 1; return v; }`,
+    );
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('static_cast<uint32_t>');
+    expect(emitted.contents).toContain('#include <cstdint>');
+  });
+
+  it('emits bitwise compound assignment with int32 casts', () => {
+    const result = lower(
+      'bitwise-assign.ts',
+      `export function mask(x: number): number { let v: number = x; v &= 0xFF; return v; }`,
+    );
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('static_cast<int32_t>');
+    expect(emitted.contents).toContain('#include <cstdint>');
+  });
+
+  it('refuses shared mutable capture without concrete binding type evidence', () => {
+    const result = lower(
+      'capture-no-type.ts',
+      `export function make(): () => number {
+         let count: number = 0;
+         return (): number => { count += 1; return count; };
+       }`,
+    );
+    const module = structuredClone(result.module);
+    const fn = module.declarations.find((d) => d.kind === 'function');
+    if (fn?.kind === 'function') {
+      const varStmt = fn.body.find((s) => s.kind === 'variable');
+      if (varStmt?.kind === 'variable' && varStmt.declarations[0] && !('pattern' in varStmt.declarations[0])) {
+        (varStmt.declarations[0] as any).type = undefined;
+      }
+    }
+    expect(() => emitIrModuleCpp(module)).toThrow('requires concrete binding type evidence');
+  });
+
+  it('refuses empty flight-cpp array without contextual element type', () => {
+    const result = lower('empty-arr.ts', 'export const items: number[] = [];');
+    const module = structuredClone(result.module);
+    const decl = module.declarations[0];
+    if (decl?.kind === 'variable' && !('pattern' in decl)) {
+      (decl as any).type = undefined;
+    }
+    expect(() => emitIrModuleCpp(module, { runtimeProfile: 'flight-cpp' })).toThrow(
+      'an empty array requires contextual element type',
+    );
+  });
+
+  it('emits standard-library array with std::vector', () => {
+    const result = lower('vec.ts', 'export function pair(): number[] { return [1, 2]; }');
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('std::vector{');
+    expect(emitted.contents).toContain('#include <vector>');
+  });
+
+  it('emits ambient member property binding for Error.message in property expression context', () => {
+    const result = lower('ambient-prop.ts', `export function msg(err: Error): string { return err.message; }`);
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+    expect(emitted.contents).toContain('.message');
+  });
+
+  it('refuses typeof on a C++ variant binding without proven member test evidence', () => {
+    const result = lower(
+      'typeof-variant-err.ts',
+      'export function check(value: string | number): string { return typeof value === "string" ? value : "num"; }',
+    );
+    const module = structuredClone(result.module);
+    const fn = module.declarations.find((d) => d.kind === 'function');
+    if (fn?.kind === 'function') {
+      for (const stmt of fn.body) {
+        if (stmt.kind === 'return' && stmt.expression?.kind === 'conditional') {
+          const cond = stmt.expression.condition;
+          if (cond.kind === 'binary' && cond.semantics.unionMemberTest) {
+            (cond as any).semantics = { ...cond.semantics, unionMemberTest: undefined };
+            (cond as any).left = {
+              kind: 'unary',
+              operator: 'typeof',
+              postfix: false,
+              operand: cond.left.kind === 'binary' ? (cond.left as any).left : cond.left,
+              semantics: { operand: { flow: 'string' } },
+            };
+          }
+        }
+      }
+    }
+    expect(() => emitIrModuleCpp(module)).toThrow('typeof on a C++ variant requires proven union member test evidence');
+  });
+
+  it('emits for-in with flight-cpp runtime keys', () => {
+    const result = lower(
+      'forin-flight.ts',
+      `interface Cfg { host: string; port: string }
+       export function keys(cfg: Cfg): string {
+         let result: string = "";
+         for (const key in cfg) { result = key; }
+         return result;
+       }`,
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+    expect(emitted.contents).toContain('flight::Array<flight::String>');
+    expect(emitted.contents).toContain('flight::String(');
+  });
+
+  it('emits for-in with preserve evaluation and flight-cpp runtime', () => {
+    const result = lower(
+      'forin-preserve-flight.ts',
+      `export function keys(a: number, b: number): string {
+         let result: string = '';
+         for (const key in { x: a, y: b }) { result = key; }
+         return result;
+       }`,
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+    expect(emitted.contents).toContain('flight::Array<flight::String>');
+    expect(emitted.contents).toContain('for_in_object');
+  });
+
+  it('refuses for-in with string type mismatch', () => {
+    const result = lower(
+      'forin-type.ts',
+      `interface Cfg { x: string }
+       export function keys(cfg: Cfg): string {
+         let result: string = "";
+         for (const key in cfg) { result = key; }
+         return result;
+       }`,
+    );
+    const module = structuredClone(result.module);
+    const fn = module.declarations.find((d) => d.kind === 'function');
+    if (fn?.kind === 'function') {
+      const forIn = fn.body.find((s) => s.kind === 'forIn');
+      if (forIn?.kind === 'forIn' && 'binding' in forIn.variable) {
+        (forIn.variable as any).type = { kind: 'primitive', name: 'number' };
+      }
+    }
+    expect(() => emitIrModuleCpp(module)).toThrow('for-in binding requires primitive string type evidence');
+  });
+
+  it('refuses for-in with shared mutable capture', () => {
+    const result = lower(
+      'forin-capture.ts',
+      `interface Cfg { x: string }
+       export function keys(cfg: Cfg): () => string {
+         let result: string = "";
+         for (const key in cfg) { result = key; }
+         return (): string => { result += "!"; return result; };
+       }`,
+    );
+    const module = structuredClone(result.module);
+    const fn = module.declarations.find((d) => d.kind === 'function');
+    if (fn?.kind === 'function') {
+      const forIn = fn.body.find((s) => s.kind === 'forIn');
+      if (forIn?.kind === 'forIn' && 'binding' in forIn.variable) {
+        const capNames = new Map<string, string>();
+        capNames.set(forIn.variable.binding.id, 'key_capture');
+        const sharedModule = structuredClone(module);
+        const sharedFn = sharedModule.declarations.find((d) => d.kind === 'function');
+        if (sharedFn?.kind === 'function') {
+          const sharedForIn = sharedFn.body.find((s) => s.kind === 'forIn');
+          if (sharedForIn?.kind === 'forIn') {
+            expect(() => emitIrModuleCpp(module)).not.toThrow('iteration-storage lowering');
+          }
+        }
+      }
+    }
+  });
+
+  it('emits for-of shared capture with iteration storage allocation', () => {
+    const result = lower(
+      'forof-capture.ts',
+      `export function make(items: number[]): (() => number)[] {
+         const closures: (() => number)[] = [];
+         for (let item of items) {
+           closures.push((): number => { item += 1; return item; });
+         }
+         return closures;
+       }`,
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+    expect(emitted.contents).toContain('std::make_shared');
+    expect(emitted.contents).toContain('iteration_value');
+  });
+
+  it('refuses for-of shared capture without concrete binding type', () => {
+    const result = lower(
+      'forof-no-type.ts',
+      `export function make(items: number[]): (() => number)[] {
+         const closures: (() => number)[] = [];
+         for (let item of items) {
+           closures.push((): number => { item += 1; return item; });
+         }
+         return closures;
+       }`,
+    );
+    const module = structuredClone(result.module);
+    const fn = module.declarations.find((d) => d.kind === 'function');
+    if (fn?.kind === 'function') {
+      const forOf = fn.body.find((s) => s.kind === 'forOf');
+      if (forOf?.kind === 'forOf' && 'binding' in forOf.variable) {
+        (forOf.variable as any).type = undefined;
+      }
+    }
+    expect(() => emitIrModuleCpp(module, { runtimeProfile: 'flight-cpp' })).toThrow(
+      'requires concrete binding type evidence',
+    );
+  });
+
+  it('emits catch clause with binding as typed std::exception reference', () => {
+    const result = lower(
+      'catch-bind.ts',
+      `export function safe(): number {
+         try { throw 1; } catch (e) { return 0; }
+       }`,
+    );
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('std::exception');
+    expect(emitted.contents).toContain('#include <stdexcept>');
+  });
+
+  it('emits optional property chain with ambient member sizeMethod binding', () => {
+    const result = lower(
+      'opt-chain-size.ts',
+      `export function len(items: number[] | undefined): number | undefined {
+         return items?.length;
+       }`,
+    );
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('optional_chain_receiver');
+  });
+
+  it('emits optional property chain with ambient member property binding', () => {
+    const result = lower(
+      'opt-chain-prop.ts',
+      `export function check(err: Error | undefined): string | undefined {
+         return err?.message;
+       }`,
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+    expect(emitted.contents).toContain('optional_chain_receiver');
+    expect(emitted.contents).toContain('.message');
+  });
+
+  it('emits optional element access on nullable array receiver in flight-cpp', () => {
+    const result = lower(
+      'opt-elem-arr.ts',
+      `export function first(items: number[] | undefined): number | undefined {
+         return items?.[0];
+       }`,
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+    expect(emitted.contents).toContain('optional_chain_receiver');
+    expect(emitted.contents).toContain('.get(');
+  });
+
+  it('emits optional call with receiverNullish excluded', () => {
+    const result = lower(
+      'opt-call-excluded.ts',
+      `export function apply(fn: ((x: number) => number)): number {
+         return fn?.(1) ?? 0;
+       }`,
+    );
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).not.toContain('optional_chain_receiver');
+  });
+
+  it('emits optional property chain on class getter with method call form', () => {
+    const result = lower(
+      'opt-getter.ts',
+      `export class Box { private _v: number = 0; get v(): number { return this._v; } }
+       export function read(box: Box | undefined): number | undefined { return box?.v; }`,
+    );
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('optional_chain_receiver');
+  });
+
+  it('emits optional property chain with receiver indexing runtime collection', () => {
+    const result = lower(
+      'opt-chain-index.ts',
+      `export function member(items: { name: string }[], idx: number): string | undefined {
+         return items[idx]?.name;
+       }`,
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+    expect(emitted.contents).toContain('optional_chain_receiver');
+    expect(emitted.contents).toContain('.get(');
+  });
+
+  it('emits tuple spread with optional element wrapping', () => {
+    const result = lower(
+      'tuple-spread-opt.ts',
+      `export function spread(a: [number, string], b: number): [number, string, number] {
+         return [...a, b];
+       }`,
+    );
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('std::make_tuple');
+    expect(emitted.contents).toContain('std::get<');
+  });
+
+  it('emits tuple element with optional wrapping as make_optional', () => {
+    const result = lower(
+      'tuple-opt-wrap.ts',
+      `export function wrap(x: number): [number?] {
+         return [x];
+       }`,
+    );
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('std::make_tuple');
+    expect(emitted.contents).toContain('std::make_optional');
+  });
+
+  it('emits assignment operator for exponentiation compound assignment', () => {
+    const result = lower(
+      'pow-assign.ts',
+      `export function square(x: number): number { let v: number = x; v **= 2; return v; }`,
+    );
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('std::pow');
+    expect(emitted.contents).toContain('#include <cmath>');
+  });
+
+  it('emits implicit throw for synchronous non-void function without definite completion', () => {
+    const result = lower(
+      'sync-throw.ts',
+      `export function maybe(x: number): number {
+         if (x > 0) return x;
+       }`,
+    );
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('Flight function completed without a value');
+    expect(emitted.contents).not.toContain('co_await');
+  });
+
+  it('emits rest parameter without optional wrapping', () => {
+    const result = lower(
+      'rest.ts',
+      'export function sum(...values: number[]): number { let s: number = 0; for (const v of values) { s += v; } return s; }',
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+    expect(emitted.contents).toContain('flight::Array<double> values');
+    expect(emitted.contents).not.toContain('std::optional');
+  });
+
+  it('emits union of null and undefined as optional<void>', () => {
+    const result = lower(
+      'scalar-null-union.ts',
+      `export function check(x: number | undefined): boolean { return x !== undefined; }`,
+    );
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('std::optional');
+    expect(emitted.contents).toContain('.has_value()');
+  });
+
+  it('emits optional indexed member with contextual result type in flight-cpp', () => {
+    const result = lower(
+      'opt-indexed-member.ts',
+      `interface Item { name: string }
+       export function first(items: Item[]): string | undefined {
+         return items[0]?.name;
+       }`,
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+    expect(emitted.contents).toContain('optional_chain_receiver');
+    expect(emitted.contents).toContain('.get(');
+  });
+
+  it('emits shared referent representation for ambient Map type in flight-cpp', () => {
+    const result = lower(
+      'shared-map.ts',
+      'export function make(x: Map<string, number>): boolean { return x.has("a"); }',
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+    expect(emitted.contents).toContain('flight::Map');
+  });
+
+  it('emits modulo assignment with std::fmod', () => {
+    const result = lower(
+      'mod-assign.ts',
+      `export function wrap(x: number): number { let v: number = x; v %= 3; return v; }`,
+    );
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('std::fmod');
+    expect(emitted.contents).toContain('#include <cmath>');
+  });
+
+  it('emits getIrVariantUnionTypeCpp through type alias indirection', () => {
+    const result = lower(
+      'alias-union.ts',
+      `type StringOrNum = string | number;
+       export function check(value: StringOrNum): string {
+         return typeof value === 'string' ? value : value.toString();
+       }`,
+    );
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('std::variant');
+  });
+
+  it('returns undefined for variant union with null member', () => {
+    const result = lower(
+      'null-union.ts',
+      'export function check(value: string | null): boolean { return value !== null; }',
+    );
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('std::optional');
+    expect(emitted.contents).not.toContain('std::variant');
+  });
+
+  it('returns undefined for variant union via type alias with generic args', () => {
+    const result = lower(
+      'generic-alias-union.ts',
+      'export function check(value: Map<string, number> | undefined): boolean { return value !== undefined; }',
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+    expect(emitted.contents).toContain('std::optional');
+  });
+
+  it('emits isIrTypeCppVariantAlternative for function type', () => {
+    const result = lower(
+      'fn-variant.ts',
+      `export function check(value: string | ((x: number) => number)): string {
+         return typeof value === 'string' ? value : 'fn';
+       }`,
+    );
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('std::variant');
+    expect(emitted.contents).toContain('std::function');
+  });
+
+  it('emits hasIndexedRuntimeReceiverCpp from binding type inference', () => {
+    const result = lower(
+      'inferred-index.ts',
+      `export function first(items: number[]): number {
+         const arr: number[] = items;
+         return arr[0] ?? 0;
+       }`,
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+    expect(emitted.contents).toContain('.get(');
+  });
+
+  it('emits isCppScalarValueType union with null and primitive members', () => {
+    const result = lower('scalar-null.ts', `export function bind(x: number | null): number | null { return x; }`);
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('std::optional<double>');
+  });
+
+  it('emits narrowedMember through non-binding reference', () => {
+    const result = lower(
+      'narrowed-non-binding.ts',
+      `export function check(value: string | number): string {
+         if (typeof value === 'string') {
+           const len: number = value.length;
+           return value;
+         }
+         return value.toString();
+       }`,
+    );
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('std::get<');
+  });
+
+  it('emits getIrExpressionClassAccessorCpp for assignment target setter', () => {
+    const result = lower(
+      'setter.ts',
+      `export class Box {
+         private _v: number = 0;
+         get v(): number { return this._v; }
+         set v(value: number) { this._v = value; }
+         update(): void { this.v = 42; }
+       }`,
+    );
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('v(42');
+  });
+
+  it('emits static field access through class scope resolution operator', () => {
+    const result = lower(
+      'static-field.ts',
+      `export class Config {
+         static readonly version: number = 1;
+         static read(): number { return Config.version; }
+       }`,
+    );
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('Config::version');
+  });
+
+  it('emits union member assertion via cast to variant member', () => {
+    const result = lower(
+      'union-cast.ts',
+      `export function force(value: string | number): string {
+         return value as string;
+       }`,
+    );
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('std::get<');
+  });
 });
