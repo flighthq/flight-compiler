@@ -12453,3 +12453,120 @@ describe('emitIrModuleRust module-level constant', () => {
     expect(output).toContain('f64');
   });
 });
+
+describe('emitIrModuleRust primitive type alias', () => {
+  it('emits type alias for primitive type', () => {
+    const output = emitIrModuleRust(lower('num-alias.ts', 'export type Num = number;').module).contents;
+    expect(output).toContain('pub type Num = f64;');
+  });
+});
+
+describe('emitIrModuleRust class with interface data property and method', () => {
+  it('emits trait with data accessor and method when interface has both', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'trait-data.ts',
+        'export interface HasLabel { label: string; describe(): string; } export class Widget implements HasLabel { label: string; constructor(label: string) { this.label = label; } describe(): string { return this.label; } }',
+      ).module,
+    ).contents;
+    expect(output).toContain('trait HasLabel');
+    expect(output).toContain('fn label(&self) -> String;');
+    expect(output).toContain('fn describe(&self)');
+    expect(output).toContain('impl HasLabel for Widget');
+  });
+});
+
+describe('emitIrModuleRust class composition with concrete base', () => {
+  it('emits struct with base field and delegating constructor for concrete inheritance', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'composition.ts',
+        'export class Base { x: number; constructor(x: number) { this.x = x; } } export class Child extends Base { y: number; constructor(x: number, y: number) { super(x); this.y = y; } }',
+      ).module,
+    ).contents;
+    expect(output).toContain('base: Base');
+    expect(output).toContain('pub fn new(');
+  });
+});
+
+describe('emitIrModuleRust array map with variable callback', () => {
+  it('emits into_iter().map() with wrapper for variable callback', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'map-var.ts',
+        'export function apply(items: number[], f: (x: number) => number): number[] { return items.map(f); }',
+      ).module,
+    ).contents;
+    expect(output).toContain('into_iter()');
+    expect(output).toContain('.map(');
+    expect(output).toContain('.collect::<Vec<_>>()');
+  });
+});
+
+describe('emitIrModuleRust nullable coalesce on optional chain', () => {
+  it('emits unwrap_or_else for nullish coalesce on option-shaped operand', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'coalesce.ts',
+        'export function safe(value: string | null, fallback: string): string { return value ?? fallback; }',
+      ).module,
+    ).contents;
+    expect(output).toContain('.unwrap_or_else(');
+  });
+});
+
+describe('emitIrModuleRust default and optional parameter calls', () => {
+  it('emits Some wrapping for call with default parameters', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'default-call.ts',
+        'function add(a: number, b: number = 10.0): number { return a + b; } export function run(): number { return add(5.0); }',
+      ).module,
+    ).contents;
+    expect(output).toContain('Option<');
+    expect(output).toContain('unwrap_or_else');
+  });
+
+  it('emits None for omitted optional argument in call', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'optional-call.ts',
+        'function greet(name: string, suffix?: string): string { return name; } export function run(): string { return greet("hi"); }',
+      ).module,
+    ).contents;
+    expect(output).toContain('None');
+  });
+});
+
+describe('emitIrModuleRust for-in loop with key plan', () => {
+  it('emits for-in as closed key iteration', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'for-in.ts',
+        'export function keys(obj: { a: number; b: number }): string[] { const result: string[] = []; for (const key in obj) { result.push(key); } return result; }',
+      ).module,
+    ).contents;
+    expect(output).toContain('for ');
+    expect(output).toContain('.to_owned()');
+  });
+});
+
+describe('emitIrModuleRust unary plus on number', () => {
+  it('emits identity for unary + on number operand', () => {
+    const output = emitIrModuleRust(
+      lower('unary-plus.ts', 'export function identity(n: number): number { return +n; }').module,
+    ).contents;
+    expect(output).not.toContain('+n');
+    expect(output).toContain('n');
+  });
+});
+
+describe('emitIrModuleRust bitwise not operator', () => {
+  it('emits integer cast bitwise not', () => {
+    const output = emitIrModuleRust(
+      lower('bitwise-not.ts', 'export function invert(n: number): number { return ~n; }').module,
+    ).contents;
+    expect(output).toContain('as i32');
+    expect(output).toContain('as f64');
+  });
+});
