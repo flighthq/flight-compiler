@@ -494,6 +494,34 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
         const right = emitExpression(expression.right, context);
         return `${left} = Math.pow(${left}, ${right})`;
       }
+      if (expression.operator === '||=' || expression.operator === '&&=') {
+        const left = emitExpression(expression.left, context);
+        const right = emitExpression(expression.right, context);
+        if (expression.semantics.left.flow === 'boolean') {
+          const condition = expression.operator === '||=' ? `!${left}` : left;
+          return `{ if (${condition}) ${left} = ${right}; ${left}; }`;
+        }
+        if (expression.semantics.left.flow === 'number') {
+          const condition =
+            expression.operator === '||='
+              ? `${left} == 0.0 || Math.isNaN(${left})`
+              : `${left} != 0.0 && !Math.isNaN(${left})`;
+          return `{ if (${condition}) ${left} = ${right}; ${left}; }`;
+        }
+        if (expression.semantics.left.flow === 'string') {
+          const condition = expression.operator === '||=' ? `${left} == ""` : `${left} != ""`;
+          return `{ if (${condition}) ${left} = ${right}; ${left}; }`;
+        }
+        emissionError(
+          context,
+          `operator ${expression.operator} on ${expression.semantics.left.flow} requires Haxe semantic lowering`,
+        );
+      }
+      if (expression.operator === '??=') {
+        const left = emitExpression(expression.left, context);
+        const right = emitExpression(expression.right, context);
+        return `{ if (${left} == null) ${left} = ${right}; ${left}; }`;
+      }
       const left = emitExpression(expression.left, context);
       const right = emitExpression(expression.right, context);
       return `${left} ${emitAssignmentOperatorHaxe(expression.operator, expression.semantics, context)} ${right}`;

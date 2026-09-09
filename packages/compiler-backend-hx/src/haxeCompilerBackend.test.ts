@@ -7515,26 +7515,25 @@ describe('emitIrModuleHaxe template expression', () => {
 });
 
 describe('emitIrModuleHaxe assignment operator lowering', () => {
-  it('refuses logical-and assignment as requiring semantic lowering', () => {
-    expect(() =>
-      emitIrModuleHaxe(
-        lower(
-          'logical-assign.ts',
-          'export function coerce(x: boolean): boolean { let v: boolean = x; v &&= true; return v; }',
-        ).module,
-      ),
-    ).toThrow('requires Haxe semantic lowering');
+  it('emits logical-and assignment as conditional assignment', () => {
+    const output = emitIrModuleHaxe(
+      lower(
+        'logical-assign.ts',
+        'export function coerce(x: boolean): boolean { let v: boolean = x; v &&= true; return v; }',
+      ).module,
+    ).contents;
+    expect(output).toContain('if (v)');
+    expect(output).toContain('v = true');
   });
 
-  it('refuses nullish-coalescing assignment as requiring semantic lowering', () => {
-    expect(() =>
-      emitIrModuleHaxe(
-        lower(
-          'nullish-assign.ts',
-          'export function fallback(x: number | null): number { let v: number | null = x; v ??= 0; return v ?? 0; }',
-        ).module,
-      ),
-    ).toThrow('requires Haxe semantic lowering');
+  it('emits nullish-coalescing assignment as null check', () => {
+    const output = emitIrModuleHaxe(
+      lower(
+        'nullish-assign.ts',
+        'export function fallback(x: number | null): number { let v: number | null = x; v ??= 0; return v ?? 0; }',
+      ).module,
+    ).contents;
+    expect(output).toContain('== null');
   });
 });
 
