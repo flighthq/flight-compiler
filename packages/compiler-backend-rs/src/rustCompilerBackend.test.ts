@@ -3166,6 +3166,30 @@ describe('emitIrModuleRust', () => {
     expect(output).toContain('StrOrF64::Str(produce())');
   });
 
+  it('clones narrowed string from primitive union instead of dereferencing', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'narrow-clone.ts',
+        'export function extract(value: string | number): string { if (typeof value === "string") { return value; } return "fallback"; }',
+      ).module,
+    ).contents;
+    expect(output).toContain('value.as_str().clone()');
+    expect(output).not.toContain('*value.as_str()');
+  });
+
+  it('emits type assertion cast on primitive union as accessor', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'union-assert.ts',
+        'export function cast_str(value: string | number): string { return value as string; }\nexport function cast_num(value: string | number): number { return value as number; }',
+      ).module,
+    ).contents;
+    expect(output).toContain('value.as_str().clone()');
+    expect(output).toContain('*value.as_f64()');
+    expect(output).not.toContain('value as String');
+    expect(output).not.toContain('value as f64');
+  });
+
   it('emits class with multiple inherent and trait methods', () => {
     const output = emitIrModuleRust(
       lower(
@@ -11514,11 +11538,12 @@ describe('emitIrModuleRust unary plus on number', () => {
 });
 
 describe('emitIrModuleRust cast expression', () => {
-  it('emits explicit type cast with as keyword', () => {
+  it('emits primitive union cast as variant accessor', () => {
     const output = emitIrModuleRust(
       lower('cast.ts', `export function narrow(x: number | string): number { return x as number; }`).module,
     ).contents;
-    expect(output).toContain(' as ');
+    expect(output).toContain('*x.as_f64()');
+    expect(output).not.toContain('x as f64');
   });
 });
 

@@ -33,7 +33,7 @@ impl std::fmt::Display for StrOrF64 {
 
 pub fn narrow_typeof(value: StrOrF64) -> String {
   if matches!(value, StrOrF64::Str(_)) {
-    return *value.as_str();
+    return value.as_str().clone();
   }
   return (*value.as_f64()).to_string();
 }
@@ -47,15 +47,15 @@ pub fn narrow_typeof_number(value: StrOrF64) -> f64 {
 
 pub fn narrow_branch(value: StrOrF64, flag: bool) -> String {
   if flag && matches!(value, StrOrF64::Str(_)) {
-    return *value.as_str();
+    return value.as_str().clone();
   }
   return "default".to_owned();
 }
 
 pub fn assert_string(value: StrOrF64) -> String {
-  return value as String;
+  return value.as_str().clone();
 }
 
 pub fn assert_number(value: StrOrF64) -> f64 {
-  return value as f64;
+  return *value.as_f64();
 }

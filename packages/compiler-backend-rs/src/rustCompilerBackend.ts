@@ -1052,8 +1052,11 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
       }
       return `${expression.callee.kind === 'function' ? `(${emitExpression(expression.callee, context)})` : emitExpression(expression.callee, context)}(${emitCallArgumentsRust(expression, context).join(', ')})`;
 
-    case 'cast':
+    case 'cast': {
+      const unionCast = emitPrimitiveUnionCastRust(expression, context);
+      if (unionCast) return unionCast;
       return `(${emitExpression(expression.expression, context)} as ${emitType(expression.type, context)})`;
+    }
     case 'conditional':
       return `if ${emitExpression(expression.condition, context)} { ${emitExpression(expression.whenTrue, context)} } else { ${emitExpression(expression.whenFalse, context)} }`;
     case 'element':
@@ -1084,7 +1087,8 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
       )
         return `${emitIdentifierReferenceRust(expression.reference, context)}.clone().unwrap()`;
       const narrowedReceiver = emitPrimitiveUnionNarrowedReceiverRust(expression, context);
-      if (narrowedReceiver) return `*${narrowedReceiver}`;
+      if (narrowedReceiver)
+        return expression.narrowedMember === 'string' ? `${narrowedReceiver}.clone()` : `*${narrowedReceiver}`;
       return emitIdentifierReferenceRust(expression.reference, context);
     }
     case 'literal':
@@ -3409,6 +3413,21 @@ function emitPrimitiveUnionEnumRust(union: PrimitiveUnionEnum): string[] {
     '}',
   ];
   return lines;
+}
+
+function emitPrimitiveUnionCastRust(
+  expression: Readonly<Extract<IrExpression, { kind: 'cast' }>>,
+  context: EmitContext,
+): string | undefined {
+  if (expression.type.kind !== 'primitive') return undefined;
+  const targetName = expression.type.name;
+  const primitiveUnion = getIrExpressionPrimitiveUnionRust(expression.expression, context);
+  if (!primitiveUnion) return undefined;
+  const variant = primitiveUnion.variants.find((v) => v.primitiveKind === targetName);
+  if (!variant) return undefined;
+  const emitted = emitExpression(expression.expression, context);
+  if (variant.primitiveKind === 'string') return `${emitted}.as_${snakeCase(variant.variantName)}().clone()`;
+  return `*${emitted}.as_${snakeCase(variant.variantName)}()`;
 }
 
 function emitPrimitiveUnionNarrowedReceiverRust(
