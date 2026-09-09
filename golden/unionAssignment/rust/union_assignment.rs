@@ -33,12 +33,12 @@ impl std::fmt::Display for StrOrF64 {
 
 pub fn assign_string(text: String) -> StrOrF64 {
   let mut value: StrOrF64 = StrOrF64::Str(text);
-  return *value.as_str();
+  return value;
 }
 
 pub fn assign_number(n: f64) -> StrOrF64 {
   let mut value: StrOrF64 = StrOrF64::F64(n);
-  return *value.as_f64();
+  return value;
 }
 
 pub fn reassign(flag: bool) -> StrOrF64 {

@@ -35,7 +35,7 @@ impl std::fmt::Display for StrOrF64 {
 
 pub fn from_call(flag: bool) -> StrOrF64 {
   let value: StrOrF64 = StrOrF64::Str(produce(flag));
-  return *value.as_str();
+  return value;
 }
 
 pub fn from_conditional(flag: bool) -> StrOrF64 {
@@ -45,17 +45,17 @@ pub fn from_conditional(flag: bool) -> StrOrF64 {
 
 pub fn from_binary(a: f64, b: f64) -> StrOrF64 {
   let value: StrOrF64 = StrOrF64::F64((a + b));
-  return *value.as_f64();
+  return value;
 }
 
 pub fn from_unary(n: f64) -> StrOrF64 {
   let value: StrOrF64 = StrOrF64::F64(-n);
-  return *value.as_f64();
+  return value;
 }
 
 pub fn from_cast(input: OpaqueHostValue) -> StrOrF64 {
   let value: StrOrF64 = StrOrF64::Str((input as String));
-  return *value.as_str();
+  return value;
 }
 
 fn produce(flag: bool) -> String {

@@ -2448,6 +2448,13 @@ function emitStatement(statement: Readonly<IrStatement>, context: EmitContext): 
       if (statement.expression && context.enclosingReturnType) {
         const targetEnum = resolvePrimitiveUnionEnumRust(context.enclosingReturnType, context);
         if (targetEnum) {
+          if (
+            statement.expression.kind === 'identifier' &&
+            statement.expression.reference.kind === 'binding' &&
+            context.primitiveUnionBindingIds.get(statement.expression.reference.binding.id) === targetEnum.name
+          ) {
+            return [`return ${emitIdentifierReferenceRust(statement.expression.reference, context)};`];
+          }
           const wrapped = emitPrimitiveUnionConstructionRust(statement.expression, targetEnum, context);
           if (wrapped) return [`return ${wrapped};`];
         }
