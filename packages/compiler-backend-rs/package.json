@@ -25,6 +25,7 @@
     "@flighthq/compiler-lowering": "*",
     "@flighthq/compiler-runtime-contract": "*",
     "@flighthq/compiler-structural": "*",
+    "@flighthq/compiler-task": "*",
     "@flighthq/compiler-types": "*"
   },
   "devDependencies": {

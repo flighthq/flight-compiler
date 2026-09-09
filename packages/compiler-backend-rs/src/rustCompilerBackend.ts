@@ -12,7 +12,11 @@ import {
   normalizeSourceTextGrouping,
   isCompilerTargetNameAllocationFailure,
 } from '../../compiler-emission/src/index.js';
-import { analyzeIrModuleTraversal, analyzeIrStatementSubtreeTraversal } from '../../compiler-ir-traversal/src/index.js';
+import {
+  analyzeIrModuleTraversal,
+  analyzeIrStatementSubtreeTraversal,
+  getIrModuleTraversalPathValue,
+} from '../../compiler-ir-traversal/src/index.js';
 import {
   createIrClassInitializationPlan,
   createCompilerLoweringPassAwaitConditionHoisting,
@@ -35,8 +39,11 @@ import {
   analyzeIrModuleStructuralObjectCompatibilityAcrossModules,
   createIrObjectTypeShapeIdentity,
 } from '../../compiler-structural/src/index.js';
+import { analyzeIrModuleAsyncStateMachines } from '../../compiler-task/src/index.js';
 import type {
+  CompilerAsyncStateMachineAnalysis,
   CompilerBackend,
+  CompilerIrTraversalPath,
   CompilerModuleResolutionPlan,
   EmittedFile,
   RustCompilerBackendOptions,
@@ -104,6 +111,7 @@ interface EmitContext {
   abstractFieldNames: ReadonlySet<string>;
   anonymousObjectRecords: Map<string, Readonly<{ name: string; properties: readonly IrObjectTypeProperty[] }>>;
   arrayElementBindingIds: ReadonlySet<string>;
+  asyncTryStatements: ReadonlySet<object>;
   compositionBase?: Readonly<{ baseDeclaration: IrClassDeclaration; fieldName: string }> | undefined;
   cellWrappedBindingIds: ReadonlySet<string>;
   // Which bindings the module rebinds. Rust needs `mut` on a parameter that is assigned to, and the
@@ -173,6 +181,8 @@ function emitIrModuleRustWithContext(
   );
   assertRuntimeExternalSymbolBindingsRust(module);
   assertRuntimeExternalConstructorAbiRust(module);
+  const asyncAnalysis = analyzeIrModuleAsyncStateMachines(module);
+  const asyncTryStatements = collectAsyncTryStatementsRust(module, asyncAnalysis);
   const constantIdentities = new Set(
     module.declarations.flatMap((declaration) =>
       declaration.kind === 'variable' && !declaration.mutable && !('pattern' in declaration)
@@ -221,6 +231,7 @@ function emitIrModuleRustWithContext(
     accessorClassNames,
     anonymousObjectRecords: new Map(),
     arrayElementBindingIds: collectIrModuleArrayElementBindingIdsRust(module),
+    asyncTryStatements,
     cellWrappedBindingIds,
     classBindingNames,
     borrowedParameterPositions,
@@ -1895,15 +1906,33 @@ function isIrStatementSuperConstructorCallRust(statement: Readonly<IrStatement>)
   );
 }
 
-function hasIrStatementSubtreeAwaitRust(statement: Readonly<IrStatement>): boolean {
-  let found = false;
-  analyzeIrStatementSubtreeTraversal(statement, {
-    expression(node) {
-      if (node.kind === 'await') found = true;
-      return undefined;
-    },
-  });
-  return found;
+function collectAsyncTryStatementsRust(
+  module: Readonly<IrModule>,
+  analysis: Readonly<CompilerAsyncStateMachineAnalysis>,
+): ReadonlySet<object> {
+  const result = new Set<object>();
+  for (const machine of analysis.machines) {
+    for (const state of machine.states) {
+      for (const step of state.steps) {
+        if (step.kind !== 'suspend' || step.rejectState === undefined) continue;
+        const tryStatement = getEnclosingTryStatementRust(module, step.path);
+        if (tryStatement) result.add(tryStatement);
+      }
+    }
+  }
+  return result;
+}
+
+function getEnclosingTryStatementRust(
+  module: Readonly<IrModule>,
+  suspensionPath: CompilerIrTraversalPath,
+): object | undefined {
+  for (let i = suspensionPath.length - 1; i >= 0; i--) {
+    if (suspensionPath[i] === 'tryBody') {
+      return getIrModuleTraversalPathValue(module, suspensionPath.slice(0, i)) as object;
+    }
+  }
+  return undefined;
 }
 
 function emitAsyncTryCatchRust(statement: Extract<IrStatement, { kind: 'try' }>, context: EmitContext): string[] {
@@ -2201,8 +2230,7 @@ function emitStatement(statement: Readonly<IrStatement>, context: EmitContext): 
       return [`panic!("{:?}", ${emitExpression(thrown, context)});`];
     }
     case 'try': {
-      const hasAwait = hasIrStatementSubtreeAwaitRust(statement.tryBody);
-      if (hasAwait) {
+      if (context.asyncTryStatements.has(statement)) {
         return emitAsyncTryCatchRust(statement, context);
       }
       if (statement.finallyBody) {

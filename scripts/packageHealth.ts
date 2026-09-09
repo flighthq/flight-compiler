@@ -96,6 +96,7 @@ const packageRules: Readonly<Record<string, PackageRule>> = {
       'compiler-lowering',
       'compiler-runtime-contract',
       'compiler-structural',
+      'compiler-task',
       'compiler-types',
     ],
     description: 'Rust lowering, naming, and source emission backend',
