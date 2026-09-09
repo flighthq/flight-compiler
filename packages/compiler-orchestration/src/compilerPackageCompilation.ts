@@ -12,7 +12,7 @@ import {
   isCompilerModuleEvaluationFailure,
 } from '../../compiler-module/src/index.js';
 import { applySemanticPatchSet } from '../../compiler-patch/src/index.js';
-import { lowerTypeScriptSource } from '../../compiler-semantic/src/index.js';
+import { lowerTypeScriptSources } from '../../compiler-semantic/src/index.js';
 import type {
   CompileTypeScriptPackageGraphOptions,
   CompilerDiagnostic,
@@ -40,8 +40,13 @@ export function compileTypeScriptPackageGraph<BackendOptions>(
   options: Readonly<CompileTypeScriptPackageGraphOptions<BackendOptions>>,
 ): CompilerPackageCompilationResult {
   const packages = validateCompilerPackageGraphPackages(options.graph, options.sources);
-  const lowered = options.sources.map(({ packageRoot: _packageRoot, sourceFile, ...loweringOptions }) =>
-    lowerTypeScriptSource(sourceFile, loweringOptions),
+  const semanticResolution = createCompilerPackageGraphModuleResolution(
+    options.graph.moduleDependencies,
+    options.moduleResolution,
+  );
+  const lowered = lowerTypeScriptSources(
+    options.sources.map(({ packageRoot: _packageRoot, ...source }) => source),
+    semanticResolution,
   );
   validateCompilerPackageGraphModuleIdentities(lowered.map((result) => result.module));
   validateCompilerPackageGraphReferences(options.graph.entries, options.graph.moduleDependencies, lowered, packages);

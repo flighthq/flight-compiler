@@ -156,7 +156,7 @@ describe('createCompilerLoweringPassInterfaceInheritance', () => {
     const module = lower(
       'failures.ts',
       `
-        type Alias = { other: string };
+        type Alias = string;
         interface Root<Value> { value: Value; }
         interface Left extends Root<number> {}
         interface Right extends Root<number> {}
@@ -207,6 +207,7 @@ describe('createCompilerLoweringPassInterfaceInheritance', () => {
             kind: 'binding',
             path: [],
           },
+          typeArguments: [],
         },
       ],
     });
@@ -231,7 +232,7 @@ describe('createCompilerLoweringPassInterfaceInheritance', () => {
       [tooManyArguments, 'receives too many heritage type arguments'],
       [unresolved, 'inherits a nonlocal interface'],
       [qualified, 'inherits a nonlocal interface'],
-      [unavailable, 'inherits unavailable interface Alias'],
+      [unavailable, 'heritage type alias Alias is not object-shaped'],
       [cyclic, 'has cyclic structural inheritance'],
       [incompatible, 'inherits incompatible property value'],
     ] as const) {
@@ -353,6 +354,56 @@ describe('createCompilerLoweringPassInterfaceInheritance', () => {
         { name: 'value', type: { kind: 'primitive', name: 'number' } },
         { name: 'enabled', type: { kind: 'primitive', name: 'boolean' } },
         { name: 'label', type: { kind: 'primitive', name: 'string' } },
+      ],
+    });
+  });
+
+  it('flattens generic object and intersection type aliases used as heritage', () => {
+    const module = lower(
+      'alias-heritage.ts',
+      `
+        type Positioned<Value> = { value: Value };
+        type Named = { label: string };
+        type Model<Value> = Positioned<Value> & Named;
+        export interface Derived extends Model<number> { active: boolean; }
+      `,
+    );
+    const pass = createCompilerLoweringPassInterfaceInheritance([module]);
+
+    const output = lowerIrModuleWithCompilerPasses(module, [pass], { verificationDepth: 'idempotence' });
+
+    expect(getInterface(output, 'Derived')).toMatchObject({
+      extends: [],
+      properties: [
+        { name: 'value', type: { kind: 'primitive', name: 'number' } },
+        { name: 'label', type: { kind: 'primitive', name: 'string' } },
+        { name: 'active', type: { kind: 'primitive', name: 'boolean' } },
+      ],
+    });
+  });
+
+  it('flattens the public instance shape of class heritage', () => {
+    const module = lower(
+      'class-heritage.ts',
+      `
+        class Base<Value> {
+          value: Value;
+          read(): Value { return this.value; }
+        }
+        export interface Derived extends Base<number> { active: boolean; }
+      `,
+    );
+    const output = lowerIrModuleWithCompilerPasses(module, [createCompilerLoweringPassInterfaceInheritance([module])]);
+
+    expect(getInterface(output, 'Derived')).toMatchObject({
+      extends: [],
+      properties: [
+        { name: 'value', type: { kind: 'primitive', name: 'number' } },
+        {
+          name: 'read',
+          type: { kind: 'function', parameters: [], returns: { kind: 'primitive', name: 'number' } },
+        },
+        { name: 'active', type: { kind: 'primitive', name: 'boolean' } },
       ],
     });
   });

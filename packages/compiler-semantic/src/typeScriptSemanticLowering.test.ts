@@ -1,7 +1,7 @@
 import ts from 'typescript';
 
 import type { IrBindingIdentity, IrExpression, IrStatement } from '../../compiler-types/src/index.js';
-import { lowerTypeScriptSource } from './typeScriptSemanticLowering.js';
+import { lowerTypeScriptSource, lowerTypeScriptSources } from './typeScriptSemanticLowering.js';
 
 function lower(file: string, source: string) {
   const sourceFile = ts.createSourceFile(`/flight/packages/math/src/${file}`, source, ts.ScriptTarget.Latest, true);
@@ -1094,6 +1094,79 @@ describe('lowerTypeScriptSource', () => {
     }
     expect(heritageParameter.reference).toMatchObject({ binding: { id: parameter?.id }, kind: 'binding' });
     expect(methodReturn.returns.reference).toMatchObject({ binding: { id: parameter?.id }, kind: 'binding' });
+  });
+
+  it('uses shared module analysis for imported interface heritage evidence', () => {
+    const base = ts.createSourceFile(
+      '/flight/packages/model/src/base.ts',
+      'export interface Base<Value> { value: Value; }',
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const derived = ts.createSourceFile(
+      '/flight/packages/app/src/derived.ts',
+      "import type { Base } from '@flight/model'; interface Derived extends Base<number> { label: string; } export function read({ value }: Derived): number { return value; }",
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const [, result] = lowerTypeScriptSources(
+      [
+        { packageName: '@flight/model', sourceFile: base, upstreamDirectory: '/flight' },
+        { packageName: '@flight/app', sourceFile: derived, upstreamDirectory: '/flight' },
+      ],
+      {
+        edges: [
+          {
+            importer: {
+              name: 'Derived',
+              packageName: '@flight/app',
+              source: 'packages/app/src/derived.ts',
+            },
+            specifier: '@flight/model',
+            target: { packageName: '@flight/model', source: 'packages/model/src/base.ts' },
+          },
+        ],
+        schema: 'flight-compiler-module-resolution/1',
+      },
+    );
+
+    expect(result!.diagnostics).toEqual([]);
+    expect(result!.module.declarations).toContainEqual(
+      expect.objectContaining({ binding: expect.objectContaining({ name: 'Derived' }), kind: 'interface' }),
+    );
+  });
+
+  it('extracts interface heritage evidence from object and intersection aliases', () => {
+    const result = lower(
+      'alias-heritage.ts',
+      `
+        type Positioned<Value> = { value: Value };
+        type Named = { label: string };
+        type Combined<Value> = Positioned<Value> & Named;
+        interface Model extends Combined<number> { active: boolean; }
+        export function read({ value, label, active }: Model): string {
+          return label + String(value) + String(active);
+        }
+      `,
+    );
+
+    expect(result.diagnostics).toEqual([]);
+  });
+
+  it('extracts interface heritage evidence from public class instances', () => {
+    const result = lower(
+      'class-heritage.ts',
+      `
+        class Base<Value> {
+          value: Value;
+          read(): Value { return this.value; }
+        }
+        interface Model extends Base<number> { active: boolean; }
+        export function read({ value, active }: Model): number { return active ? value : 0; }
+      `,
+    );
+
+    expect(result.diagnostics).toEqual([]);
   });
 
   it('resolves type-only imports, dual-space imports, and shadowed type parameters by identity', () => {

@@ -8,7 +8,7 @@ import {
   validateCompilerTargetCompilationSmoke,
 } from '../../compiler-emission/src/index.js';
 import { applySemanticPatchSet } from '../../compiler-patch/src/index.js';
-import { lowerTypeScriptSource } from '../../compiler-semantic/src/index.js';
+import { lowerTypeScriptSources } from '../../compiler-semantic/src/index.js';
 import type {
   CompileIrModulesOptions,
   CompileIrModulesResult,
@@ -75,9 +75,7 @@ export function compileIrModules<BackendOptions>(
 export function compileTypeScriptModules<BackendOptions>(
   options: Readonly<CompileTypeScriptModulesOptions<BackendOptions>>,
 ): CompileIrModulesResult {
-  const lowered = options.sources.map(({ sourceFile, ...loweringOptions }) =>
-    lowerTypeScriptSource(sourceFile, loweringOptions),
-  );
+  const lowered = lowerTypeScriptSources(options.sources, options.moduleResolution);
   const diagnostics = lowered.flatMap((result) => result.diagnostics);
   if (diagnostics.length > 0) throw createCompilerDiagnosticsFailure(diagnostics);
   return compileIrModules({

@@ -12,10 +12,13 @@ import type {
   CompilerModuleIdentity,
   CompilerModuleResolutionPlan,
   CompilerStructuralTypeSubstitutionPlan,
+  IrClassDeclaration,
+  IrClassMethod,
   IrInterfaceDeclaration,
   IrModule,
   IrObjectTypeProperty,
   IrType,
+  IrTypeAliasDeclaration,
   IrTypeBindingIdentity,
   IrTypeReference,
 } from '../../compiler-types/src/index.js';
@@ -28,17 +31,19 @@ interface InterfaceInheritanceLoweringContext {
 }
 
 interface InterfaceInheritanceDeclarationLocation {
-  readonly declaration: Readonly<IrInterfaceDeclaration>;
+  readonly declaration: Readonly<InterfaceInheritanceStructuralDeclaration>;
   readonly identity: string;
   readonly module: InterfaceInheritanceModuleRecord;
 }
 
 interface InterfaceInheritanceModuleRecord {
+  readonly declarations: ReadonlyMap<string, InterfaceInheritanceDeclarationLocation>;
   readonly identity: string;
-  readonly interfaces: ReadonlyMap<string, InterfaceInheritanceDeclarationLocation>;
   readonly module: Readonly<IrModule>;
   readonly source: string;
 }
+
+type InterfaceInheritanceStructuralDeclaration = IrClassDeclaration | IrInterfaceDeclaration | IrTypeAliasDeclaration;
 
 interface InterfaceInheritanceModuleSet {
   readonly modules: readonly InterfaceInheritanceModuleRecord[];
@@ -125,6 +130,17 @@ function getIrInterfaceDeclarationPropertiesFlattened(
     );
   }
   const nextAncestors = new Set(ancestors).add(location.identity);
+  if (declaration.kind === 'class') {
+    return getIrInterfaceHeritageClassPropertiesFlattened(location, nextAncestors, substitutions, context);
+  }
+  if (declaration.kind === 'typeAlias') {
+    return getIrInterfaceHeritageTypePropertiesFlattened(
+      resolveIrTypeStructuralSubstitution(declaration.type, substitutions),
+      location,
+      nextAncestors,
+      context,
+    );
+  }
   const properties: IrObjectTypeProperty[] = [];
   for (const reference of declaration.extends) {
     const base = getIrInterfaceDeclarationBase(reference, location, context);
@@ -149,6 +165,123 @@ function getIrInterfaceDeclarationPropertiesFlattened(
   return properties;
 }
 
+function getIrInterfaceHeritageClassPropertiesFlattened(
+  location: Readonly<InterfaceInheritanceDeclarationLocation>,
+  ancestors: ReadonlySet<string>,
+  substitutions: Readonly<CompilerStructuralTypeSubstitutionPlan>,
+  context: InterfaceInheritanceLoweringContext,
+): readonly IrObjectTypeProperty[] {
+  const declaration = location.declaration;
+  if (declaration.kind !== 'class') throw new TypeError('Class heritage location must contain a class');
+  const properties: IrObjectTypeProperty[] = [];
+  if (declaration.extends) {
+    const base = getIrInterfaceDeclarationBase(declaration.extends, location, context);
+    const baseSubstitutions = getIrInterfaceTypeSubstitutionPlan(
+      declaration.extends,
+      base.declaration,
+      substitutions,
+      context,
+    );
+    for (const property of getIrInterfaceDeclarationPropertiesFlattened(base, baseSubstitutions, ancestors, context)) {
+      addIrInterfacePropertyFlattened(property, declaration, properties, context);
+    }
+  }
+  for (const field of declaration.fields) {
+    if (field.static) continue;
+    if (field.visibility !== 'public' || field.branded) {
+      return failIrInterfaceInheritanceLowering(
+        context.subject,
+        `class ${declaration.binding.name} heritage has nominal field ${field.name}`,
+      );
+    }
+    addIrInterfacePropertyFlattened(
+      {
+        name: field.name,
+        optional: field.optional,
+        readonly: field.readonly,
+        type: resolveIrTypeStructuralSubstitution(field.type, substitutions),
+      },
+      declaration,
+      properties,
+      context,
+    );
+  }
+  for (const method of declaration.methods) {
+    if (method.static) continue;
+    if (method.visibility !== 'public' || method.branded || method.accessor) {
+      return failIrInterfaceInheritanceLowering(
+        context.subject,
+        `class ${declaration.binding.name} heritage has unsupported method ${method.name}`,
+      );
+    }
+    const signatures = [...method.overloads, method].map((signature) =>
+      resolveIrTypeStructuralSubstitution(getIrInterfaceHeritageClassMethodType(signature), substitutions),
+    );
+    const [first, second, ...rest] = signatures;
+    addIrInterfacePropertyFlattened(
+      {
+        name: method.name,
+        optional: false,
+        readonly: true,
+        type: first && second ? { kind: 'intersection', types: [first, second, ...rest] } : first!,
+      },
+      declaration,
+      properties,
+      context,
+    );
+  }
+  return properties;
+}
+
+function getIrInterfaceHeritageClassMethodType(
+  signature: Readonly<Pick<IrClassMethod, 'parameters' | 'returns' | 'typeParameters'>>,
+): Extract<IrType, { kind: 'function' }> {
+  return {
+    kind: 'function',
+    parameters: signature.parameters.map((parameter) => {
+      const value = { name: parameter.binding.name, type: parameter.type };
+      if (parameter.rest) return { ...value, optional: false, rest: true };
+      return parameter.optional
+        ? { ...value, optional: true, rest: false }
+        : { ...value, optional: false, rest: false };
+    }),
+    returns: signature.returns,
+    typeParameters: signature.typeParameters,
+  };
+}
+
+function getIrInterfaceHeritageTypePropertiesFlattened(
+  type: Readonly<IrType>,
+  location: Readonly<InterfaceInheritanceDeclarationLocation>,
+  ancestors: ReadonlySet<string>,
+  context: InterfaceInheritanceLoweringContext,
+): readonly IrObjectTypeProperty[] {
+  if (type.kind === 'object') return type.properties;
+  if (type.kind === 'named') {
+    const base = getIrInterfaceDeclarationBase(type, location, context);
+    const substitutions = getIrInterfaceTypeSubstitutionPlan(
+      type,
+      base.declaration,
+      createIrTypeParameterSubstitutionPlan([], []),
+      context,
+    );
+    return getIrInterfaceDeclarationPropertiesFlattened(base, substitutions, ancestors, context);
+  }
+  if (type.kind === 'intersection') {
+    const properties: IrObjectTypeProperty[] = [];
+    for (const member of type.types) {
+      for (const property of getIrInterfaceHeritageTypePropertiesFlattened(member, location, ancestors, context)) {
+        addIrInterfacePropertyFlattened(property, location.declaration, properties, context);
+      }
+    }
+    return properties;
+  }
+  return failIrInterfaceInheritanceLowering(
+    context.subject,
+    `heritage type alias ${location.declaration.binding.name} is not object-shaped`,
+  );
+}
+
 function getIrInterfaceDeclarationBase(
   reference: Readonly<IrTypeReference>,
   location: Readonly<InterfaceInheritanceDeclarationLocation>,
@@ -169,7 +302,7 @@ function getIrInterfaceDeclarationBase(
         `interface ${declaration.binding.name} inherits a nonlocal interface that cannot be structurally resolved`,
       );
     }
-    const base = location.module.interfaces.get(bindingReference.binding.id);
+    const base = location.module.declarations.get(bindingReference.binding.id);
     if (base) return base;
     return failIrInterfaceInheritanceLowering(
       context.subject,
@@ -210,7 +343,7 @@ function getIrInterfaceDeclarationBase(
 
 function getIrInterfaceTypeSubstitutionPlan(
   reference: Readonly<IrTypeReference>,
-  declaration: Readonly<IrInterfaceDeclaration>,
+  declaration: Readonly<InterfaceInheritanceStructuralDeclaration>,
   outerSubstitutions: Readonly<CompilerStructuralTypeSubstitutionPlan>,
   context: InterfaceInheritanceLoweringContext,
 ): CompilerStructuralTypeSubstitutionPlan {
@@ -242,7 +375,7 @@ function getIrInterfaceTypeSubstitutionPlan(
 
 function addIrInterfacePropertyFlattened(
   property: Readonly<IrObjectTypeProperty>,
-  declaration: Readonly<IrInterfaceDeclaration>,
+  declaration: Readonly<InterfaceInheritanceStructuralDeclaration>,
   properties: IrObjectTypeProperty[],
   context: InterfaceInheritanceLoweringContext,
 ): void {
@@ -278,21 +411,21 @@ function createInterfaceInheritanceModuleSet(
 
 function createInterfaceInheritanceModuleRecord(module: Readonly<IrModule>): InterfaceInheritanceModuleRecord {
   const identity = getInterfaceInheritanceModuleIdentity(module);
-  const record: { interfaces: Map<string, InterfaceInheritanceDeclarationLocation> } & Omit<
+  const record: { declarations: Map<string, InterfaceInheritanceDeclarationLocation> } & Omit<
     InterfaceInheritanceModuleRecord,
-    'interfaces'
+    'declarations'
   > = {
+    declarations: new Map(),
     identity,
-    interfaces: new Map(),
     module,
     source: normalizePathPortable(module.source),
   };
   for (const declaration of module.declarations) {
-    if (declaration.kind !== 'interface') continue;
-    if (record.interfaces.has(declaration.binding.id)) {
-      throw new TypeError('Interface inheritance module contains a duplicate interface identity');
+    if (declaration.kind !== 'class' && declaration.kind !== 'interface' && declaration.kind !== 'typeAlias') continue;
+    if (record.declarations.has(declaration.binding.id)) {
+      throw new TypeError('Interface inheritance module contains a duplicate structural declaration identity');
     }
-    record.interfaces.set(declaration.binding.id, {
+    record.declarations.set(declaration.binding.id, {
       declaration,
       identity: `${identity}\0${declaration.binding.id}`,
       module: record,
@@ -313,8 +446,10 @@ function getInterfaceInheritanceDeclarationLocation(
   declaration: Readonly<IrInterfaceDeclaration>,
   module: Readonly<InterfaceInheritanceModuleRecord>,
 ): InterfaceInheritanceDeclarationLocation {
-  const location = module.interfaces.get(declaration.binding.id);
-  if (!location) throw new TypeError('Interface declaration must belong to its lowering module');
+  const location = module.declarations.get(declaration.binding.id);
+  if (!location || location.declaration.kind !== 'interface') {
+    throw new TypeError('Interface declaration must belong to its lowering module');
+  }
   return location;
 }
 
@@ -327,12 +462,12 @@ function getInterfaceInheritanceExportLocations(
   const query = `${module.identity}\0${exportName}`;
   if (seen.has(query)) return [];
   const nextSeen = new Set(seen).add(query);
-  const locations = [...module.interfaces.values()].filter(
+  const locations = [...module.declarations.values()].filter(
     (location) => location.declaration.exported && location.declaration.binding.name === exportName,
   );
   for (const exported of module.module.exports) {
     if (exported.kind === 'local' && exported.exported === exportName) {
-      const location = module.interfaces.get(exported.binding.id);
+      const location = module.declarations.get(exported.binding.id);
       if (location) locations.push(location);
     }
     if (exported.kind === 'reexport' && exported.exported === exportName) {

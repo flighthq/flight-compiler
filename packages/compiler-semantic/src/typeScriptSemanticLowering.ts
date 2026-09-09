@@ -20,6 +20,7 @@ import {
 } from '../../compiler-structural/src/index.js';
 import type {
   CompilerDiagnostic,
+  CompilerModuleResolutionPlan,
   CompilerSourceOrigin,
   IrAssignmentOperator,
   IrAssignmentOperatorSemantics,
@@ -76,6 +77,7 @@ import type {
   IrVariable,
   IrVariableDeclaration,
   TypeScriptLoweringResult,
+  TypeScriptModuleInput,
   TypeScriptInvocationSignatureResolution,
   LowerTypeScriptSourceOptions,
 } from '../../compiler-types/src/index.js';
@@ -104,7 +106,13 @@ interface LoweringContext {
 
 interface TypeScriptAnalysis {
   checker: ts.TypeChecker;
-  sourceFile: ts.SourceFile;
+  sourceFiles: readonly ts.SourceFile[];
+}
+
+interface TypeScriptAnalysisModuleRecord {
+  readonly fileName: string;
+  readonly packageName: string;
+  readonly source: string;
 }
 
 interface UnsupportedSyntaxFailure extends Error {
@@ -118,16 +126,34 @@ export function lowerTypeScriptSource(
   sourceFile: ts.SourceFile,
   options: Readonly<LowerTypeScriptSourceOptions>,
 ): TypeScriptLoweringResult {
-  const analysis = createTypeScriptAnalysis(sourceFile);
+  const analysis = createTypeScriptAnalysis([{ ...options, sourceFile }], compilerEmptyModuleResolutionPlan);
+  return lowerTypeScriptSourceWithAnalysis(analysis.sourceFiles[0]!, options, analysis.checker);
+}
+
+export function lowerTypeScriptSources(
+  sources: readonly Readonly<TypeScriptModuleInput>[],
+  moduleResolution: Readonly<CompilerModuleResolutionPlan> = compilerEmptyModuleResolutionPlan,
+): readonly TypeScriptLoweringResult[] {
+  const analysis = createTypeScriptAnalysis(sources, moduleResolution);
+  return sources.map((source, index) =>
+    lowerTypeScriptSourceWithAnalysis(analysis.sourceFiles[index]!, source, analysis.checker),
+  );
+}
+
+function lowerTypeScriptSourceWithAnalysis(
+  sourceFile: ts.SourceFile,
+  options: Readonly<LowerTypeScriptSourceOptions>,
+  checker: ts.TypeChecker,
+): TypeScriptLoweringResult {
   const context: LoweringContext = {
     bindingTypes: new Map(),
     bindings: new Map(),
-    checker: analysis.checker,
+    checker,
     diagnostics: [],
     options,
     returnTargetTypes: [],
     returnTypes: [],
-    sourceFile: analysis.sourceFile,
+    sourceFile,
     typeBindings: new Map(),
   };
   const declarations: IrDeclaration[] = [];
@@ -2687,8 +2713,14 @@ function lowerTypeScriptInterfacePropertiesEvidence(
         unresolved?.flags && unresolved.flags & ts.SymbolFlags.Alias
           ? context.checker.getAliasedSymbol(unresolved)
           : unresolved;
-      const base = symbol?.declarations?.find(ts.isInterfaceDeclaration);
-      if (!symbol || !base) unsupported(heritage, 'syntactic interface heritage requires an interface reference');
+      const base = symbol?.declarations?.find(
+        (candidate): candidate is ts.ClassDeclaration | ts.InterfaceDeclaration | ts.TypeAliasDeclaration =>
+          ts.isClassDeclaration(candidate) ||
+          ts.isInterfaceDeclaration(candidate) ||
+          ts.isTypeAliasDeclaration(candidate),
+      );
+      if (!symbol || !base) unsupported(heritage, 'syntactic interface heritage requires an object type declaration');
+      const baseName = base.name?.text ?? '<anonymous-class>';
       if (seen.has(symbol)) unsupported(heritage, `interface ${declaration.name.text} has cyclic heritage`);
       const nextSubstitutions = createTypeScriptSyntacticDeclarationSubstitutions(
         heritage,
@@ -2697,18 +2729,106 @@ function lowerTypeScriptInterfacePropertiesEvidence(
         substitutions,
       );
       if (!nextSubstitutions) {
-        unsupported(heritage, `interface ${base.name.text} heritage type arguments cannot be substituted`);
+        unsupported(heritage, `interface ${baseName} heritage type arguments cannot be substituted`);
       }
       const nextSeen = new Set(seen);
       nextSeen.add(symbol);
-      lowerTypeScriptInterfacePropertiesEvidence(base, context, nextSeen, nextSubstitutions).forEach((property) =>
-        mergeProperty(property, heritage),
-      );
+      const inherited = ts.isInterfaceDeclaration(base)
+        ? lowerTypeScriptInterfacePropertiesEvidence(base, context, nextSeen, nextSubstitutions)
+        : ts.isClassDeclaration(base)
+          ? lowerTypeScriptClassPropertiesEvidence(base, context, nextSeen, nextSubstitutions)
+          : getTypeScriptHeritageObjectProperties(
+              lowerTypeScriptTypeNodeEvidence(base.type, context, nextSeen, nextSubstitutions),
+            );
+      if (!inherited) unsupported(heritage, `interface heritage type alias ${baseName} is not object-shaped`);
+      inherited.forEach((property) => mergeProperty(property, heritage));
     }
   }
   lowerTypeScriptTypePropertiesEvidence(declaration.members, context, seen, substitutions).forEach((property) =>
     mergeProperty(property, declaration),
   );
+  return properties;
+}
+
+function lowerTypeScriptClassPropertiesEvidence(
+  declaration: ts.ClassDeclaration,
+  context: LoweringContext,
+  _seen: ReadonlySet<ts.Symbol>,
+  substitutions: ReadonlyMap<ts.Symbol, ts.TypeNode>,
+): readonly IrObjectTypeProperty[] {
+  const properties: IrObjectTypeProperty[] = [];
+  const methodNames = new Set<string>();
+  for (const member of declaration.members) {
+    if (
+      hasModifier(member, ts.SyntaxKind.StaticKeyword) ||
+      hasModifier(member, ts.SyntaxKind.PrivateKeyword) ||
+      hasModifier(member, ts.SyntaxKind.ProtectedKeyword) ||
+      ts.isConstructorDeclaration(member)
+    ) {
+      continue;
+    }
+    if (ts.isPropertyDeclaration(member)) {
+      if (!member.type && !member.initializer)
+        unsupported(member, 'class heritage field requires a type or initializer');
+      properties.push({
+        name: propertyName(member.name, context),
+        optional: member.questionToken !== undefined,
+        readonly: hasModifier(member, ts.SyntaxKind.ReadonlyKeyword),
+        type: member.type
+          ? lowerTypeScriptTypeNodeEvidence(member.type, context, new Set(), substitutions)
+          : inferInitializerType(member.initializer!, context),
+      });
+      continue;
+    }
+    if (ts.isMethodDeclaration(member)) {
+      const name = propertyName(member.name, context);
+      if (methodNames.has(name)) continue;
+      methodNames.add(name);
+      const methods = declaration.members.filter(
+        (candidate): candidate is ts.MethodDeclaration =>
+          ts.isMethodDeclaration(candidate) &&
+          !hasModifier(candidate, ts.SyntaxKind.StaticKeyword) &&
+          !hasModifier(candidate, ts.SyntaxKind.PrivateKeyword) &&
+          !hasModifier(candidate, ts.SyntaxKind.ProtectedKeyword) &&
+          propertyName(candidate.name, context) === name,
+      );
+      const types = methods.map((method) =>
+        lowerTypeScriptFunctionTypeEvidence(method, context, new Set(), substitutions),
+      );
+      const [first, second, ...rest] = types;
+      properties.push({
+        name,
+        optional: member.questionToken !== undefined,
+        readonly: true,
+        type: first && second ? { kind: 'intersection', types: [first, second, ...rest] } : first!,
+      });
+      continue;
+    }
+    if (ts.isGetAccessorDeclaration(member) && member.type) {
+      properties.push({
+        name: propertyName(member.name, context),
+        optional: false,
+        readonly: true,
+        type: lowerTypeScriptTypeNodeEvidence(member.type, context, new Set(), substitutions),
+      });
+    }
+  }
+  return properties;
+}
+
+function getTypeScriptHeritageObjectProperties(type: Readonly<IrType>): readonly IrObjectTypeProperty[] | undefined {
+  if (type.kind === 'object') return type.properties;
+  if (type.kind !== 'intersection') return undefined;
+  const properties: IrObjectTypeProperty[] = [];
+  for (const member of type.types) {
+    const inherited = getTypeScriptHeritageObjectProperties(member);
+    if (!inherited) return undefined;
+    for (const property of inherited) {
+      const existing = properties.find((candidate) => candidate.name === property.name);
+      if (!existing) properties.push(property);
+      else if (JSON.stringify(existing) !== JSON.stringify(property)) return undefined;
+    }
+  }
   return properties;
 }
 
@@ -3529,12 +3649,12 @@ function isTypeScriptParameterProperty(node: ts.ParameterDeclaration): boolean {
   ].some((kind) => hasModifier(node, kind));
 }
 
-function createTypeScriptAnalysis(sourceFile: ts.SourceFile): TypeScriptAnalysis {
-  const analysisSourceFile = ts.createSourceFile(
-    sourceFile.fileName,
-    sourceFile.text,
-    sourceFile.languageVersion,
-    true,
+function createTypeScriptAnalysis(
+  sources: readonly Readonly<TypeScriptModuleInput>[],
+  moduleResolution: Readonly<CompilerModuleResolutionPlan>,
+): TypeScriptAnalysis {
+  const analysisSourceFiles = sources.map(({ sourceFile }) =>
+    ts.createSourceFile(sourceFile.fileName, sourceFile.text, sourceFile.languageVersion, true),
   );
   // The only library the analysis checker sees is the one this compiler declares. `noLib` stays on
   // so nothing from the machine's installed definitions can leak in and be typed against a member no
@@ -3542,30 +3662,100 @@ function createTypeScriptAnalysis(sourceFile: ts.SourceFile): TypeScriptAnalysis
   const surfaceFile = ts.createSourceFile(
     getCompilerAmbientSurfaceFileName(),
     createCompilerAmbientSurfaceSource(),
-    analysisSourceFile.languageVersion,
+    analysisSourceFiles[0]?.languageVersion ?? ts.ScriptTarget.Latest,
     true,
   );
   const options: ts.CompilerOptions = {
     noLib: true,
     noResolve: true,
     strictNullChecks: true,
-    target: analysisSourceFile.languageVersion,
+    target: analysisSourceFiles[0]?.languageVersion ?? ts.ScriptTarget.Latest,
   };
-  const files = new Map([
-    [analysisSourceFile.fileName, analysisSourceFile],
-    [surfaceFile.fileName, surfaceFile],
-  ]);
+  const files = new Map(analysisSourceFiles.map((sourceFile) => [sourceFile.fileName, sourceFile] as const));
+  files.set(surfaceFile.fileName, surfaceFile);
+  const modules: readonly TypeScriptAnalysisModuleRecord[] = sources.map((source) => ({
+    fileName: source.sourceFile.fileName,
+    packageName: source.packageName,
+    source: relativeSource(source.sourceFile.fileName, source.upstreamDirectory),
+  }));
   const host = ts.createCompilerHost(options, true);
   host.fileExists = (file) => files.has(file);
   host.getSourceFile = (file) => files.get(file);
   host.readFile = (file) => files.get(file)?.text;
+  host.resolveModuleNames = (moduleNames, containingFile) =>
+    moduleNames.map((specifier) =>
+      resolveTypeScriptAnalysisModule(specifier, containingFile, modules, moduleResolution),
+    );
   host.writeFile = () => undefined;
   const program = ts.createProgram({
     host,
     options,
-    rootNames: [surfaceFile.fileName, analysisSourceFile.fileName],
+    rootNames: [surfaceFile.fileName, ...analysisSourceFiles.map((sourceFile) => sourceFile.fileName)],
   });
-  return { checker: program.getTypeChecker(), sourceFile: analysisSourceFile };
+  return {
+    checker: program.getTypeChecker(),
+    sourceFiles: analysisSourceFiles.map((sourceFile) => program.getSourceFile(sourceFile.fileName)!),
+  };
+}
+
+function resolveTypeScriptAnalysisModule(
+  specifier: string,
+  containingFile: string,
+  modules: readonly TypeScriptAnalysisModuleRecord[],
+  moduleResolution: Readonly<CompilerModuleResolutionPlan>,
+): ts.ResolvedModule | undefined {
+  const importer = modules.find((module) => module.fileName === containingFile);
+  if (!importer) return undefined;
+  const matching = moduleResolution.edges.filter((edge) => edge.specifier === specifier);
+  const exact = matching.filter(
+    (edge) =>
+      edge.importer?.packageName === importer.packageName &&
+      normalizePathPortable(edge.importer.source) === normalizePathPortable(importer.source),
+  );
+  const targets = (exact.length > 0 ? exact : matching.filter((edge) => !edge.importer)).flatMap((edge) =>
+    modules.filter(
+      (module) =>
+        module.packageName === edge.target.packageName &&
+        normalizePathPortable(module.source) === normalizePathPortable(edge.target.source),
+    ),
+  );
+  const relativeCandidates = getTypeScriptAnalysisRelativeCandidates(containingFile, specifier);
+  const candidates = [
+    ...targets,
+    ...modules.filter(
+      (module) => module.packageName === importer.packageName && relativeCandidates.has(module.fileName),
+    ),
+  ];
+  const resolved = [...new Map(candidates.map((candidate) => [candidate.fileName, candidate])).values()];
+  return resolved.length === 1
+    ? {
+        isExternalLibraryImport: false,
+        resolvedFileName: resolved[0]!.fileName,
+      }
+    : undefined;
+}
+
+function getTypeScriptAnalysisRelativeCandidates(containingFile: string, specifier: string): ReadonlySet<string> {
+  if (specifier !== '.' && specifier !== '..' && !specifier.startsWith('./') && !specifier.startsWith('../')) {
+    return new Set();
+  }
+  const resolved = normalizePathPortable(path.resolve(path.dirname(containingFile), specifier));
+  const candidates = new Set([resolved]);
+  for (const [emitted, sourceExtension] of [
+    ['.cjs', '.cts'],
+    ['.js', '.ts'],
+    ['.jsx', '.tsx'],
+    ['.mjs', '.mts'],
+  ] as const) {
+    if (resolved.endsWith(emitted)) candidates.add(`${resolved.slice(0, -emitted.length)}${sourceExtension}`);
+  }
+  if (!/\.[^/]+$/u.test(resolved)) {
+    for (const extension of ['.cts', '.mts', '.ts', '.tsx']) {
+      candidates.add(`${resolved}${extension}`);
+      candidates.add(`${resolved}/index${extension}`);
+    }
+  }
+  return candidates;
 }
 
 function lowerIdentifierReference(node: ts.Identifier, context: LoweringContext): IrIdentifierReference {
@@ -3945,3 +4135,8 @@ function visibility(node: ts.Node): 'private' | 'protected' | 'public' {
   if (hasModifier(node, ts.SyntaxKind.ProtectedKeyword)) return 'protected';
   return 'public';
 }
+
+const compilerEmptyModuleResolutionPlan: CompilerModuleResolutionPlan = Object.freeze({
+  edges: Object.freeze([]),
+  schema: 'flight-compiler-module-resolution/1',
+});
