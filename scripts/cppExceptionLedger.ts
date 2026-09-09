@@ -2,6 +2,7 @@ import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { resolveDependency } from './dependencyLock.js';
 import { parseReadinessRefusalRule } from './readinessRuleGrouping.js';
 
 interface CppConformanceException {
@@ -21,7 +22,14 @@ interface CppConformanceExceptionLedger {
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const goldenDirectory = path.join(root, 'golden');
-const ledgerFile = path.join(root, 'flight-cpp', 'conformance', 'known-exceptions.json');
+// The ledger belongs to the runtime repository, which owns every declared C++ refusal. The gate
+// belongs here, because a refusal changes when the compiler changes and this is where that edit
+// happens. An absent checkout is reported and skipped so a fresh clone stays runnable.
+const ledgerFile = path.join(resolveDependency(root, 'flight-cpp').directory, 'conformance', 'known-exceptions.json');
+if (!existsSync(ledgerFile)) {
+  process.stdout.write('flight-cpp is not rehydrated (skipped); run `npm run rehydrate`.\n');
+  process.exit(0);
+}
 const ledger = JSON.parse(readFileSync(ledgerFile, 'utf8')) as CppConformanceExceptionLedger;
 const failures: string[] = [];
 

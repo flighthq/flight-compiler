@@ -4,6 +4,8 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { resolveDependency } from './dependencyLock.js';
+
 // Does the emitted source actually compile?
 //
 // Every other gate reads the compiler's output; this one hands it to the target's own compiler. That
@@ -20,6 +22,7 @@ import { fileURLToPath } from 'node:url';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const goldenDirectory = path.join(root, 'golden');
 const supportDirectory = path.join(goldenDirectory, 'support');
+const cppRuntime = resolveDependency(root, 'flight-cpp');
 
 interface TargetCompileFailure {
   readonly fixture: string;
@@ -113,7 +116,10 @@ if (hasCommand('rustc', ['--version'])) {
   reports.push('rustc not installed (skipped)');
 }
 
-const cppCompiler = ['c++', 'g++', 'clang++'].find((command) => hasCommand(command, ['--version']));
+const cppRuntimeInclude = path.join(cppRuntime.directory, 'include');
+const cppCompiler = existsSync(cppRuntimeInclude)
+  ? ['c++', 'g++', 'clang++'].find((command) => hasCommand(command, ['--version']))
+  : undefined;
 if (cppCompiler) {
   const cppFixtures = fixtures.filter((fixture) => existsSync(path.join(goldenDirectory, fixture, 'cpp')));
   for (const fixture of cppFixtures) {
@@ -129,7 +135,7 @@ if (cppCompiler) {
           '-fsyntax-only',
           '-pthread',
           '-I',
-          path.join(root, 'flight-cpp', 'include'),
+          cppRuntimeInclude,
           '-I',
           path.join(supportDirectory, 'cpp'),
           '-x',
@@ -146,8 +152,10 @@ if (cppCompiler) {
     }
   }
   reports.push(`cpp ${String(cppFixtures.length)} fixtures (${cppCompiler})`);
-} else {
+} else if (existsSync(cppRuntimeInclude)) {
   reports.push('C++ compiler not installed (skipped)');
+} else {
+  reports.push('flight-cpp not rehydrated (skipped)');
 }
 
 if (failures.length > 0) {

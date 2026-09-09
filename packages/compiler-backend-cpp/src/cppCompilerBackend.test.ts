@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -386,27 +386,40 @@ describe('emitIrModuleCpp', () => {
     expect(emitted.contents).toContain('return flight::Task<double>::create(');
   });
 
-  it('keeps the native conformance header equal to flight-cpp profile output', () => {
-    const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
-    const directory = path.join(root, 'flight-cpp', 'tests', 'generated');
-    const sourceFile = ts.createSourceFile(
-      '/flight/packages/cpp-conformance/src/semantic-runtime.ts',
-      readFileSync(path.join(directory, 'semantic_runtime.ts'), 'utf8'),
-      ts.ScriptTarget.Latest,
-      true,
-    );
-    const result = lowerTypeScriptSource(sourceFile, {
-      packageName: '@flighthq/cpp-conformance',
-      upstreamDirectory: '/flight',
-    });
-    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
-    const contents = emitted.contents.endsWith('\n') ? emitted.contents : `${emitted.contents}\n`;
-    const outputPath = path.join(directory, emitted.path);
+  // The runtime is a separate repository that pins this one and is pinned back; its committed header
+  // is the shared artifact. The assertion stays here because an emitter change is what moves it, and
+  // it reads the pinned checkout so a tree without one still runs the rest of the suite.
+  const conformanceDirectory = path.join(
+    path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..'),
+    '.dependencies',
+    'flight-cpp',
+    'tests',
+    'generated',
+  );
 
-    expect(emitted.path).toBe('semantic_runtime.hpp');
-    if (process.env.FLIGHT_CPP_CONFORMANCE_UPDATE === '1') writeFileSync(outputPath, contents);
-    expect(readFileSync(outputPath, 'utf8')).toBe(contents);
-  });
+  it.skipIf(!existsSync(conformanceDirectory))(
+    'keeps the native conformance header equal to flight-cpp profile output',
+    () => {
+      const directory = conformanceDirectory;
+      const sourceFile = ts.createSourceFile(
+        '/flight/packages/cpp-conformance/src/semantic-runtime.ts',
+        readFileSync(path.join(directory, 'semantic_runtime.ts'), 'utf8'),
+        ts.ScriptTarget.Latest,
+        true,
+      );
+      const result = lowerTypeScriptSource(sourceFile, {
+        packageName: '@flighthq/cpp-conformance',
+        upstreamDirectory: '/flight',
+      });
+      const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+      const contents = emitted.contents.endsWith('\n') ? emitted.contents : `${emitted.contents}\n`;
+      const outputPath = path.join(directory, emitted.path);
+
+      expect(emitted.path).toBe('semantic_runtime.hpp');
+      if (process.env.FLIGHT_CPP_CONFORMANCE_UPDATE === '1') writeFileSync(outputPath, contents);
+      expect(readFileSync(outputPath, 'utf8')).toBe(contents);
+    },
+  );
 
   it('emits co_await for await expressions in async functions', () => {
     const result = lower(

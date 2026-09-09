@@ -2,6 +2,7 @@ import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { resolveDependency } from './dependencyLock.js';
 import { collectReadinessRuleCounts, parseReadinessRefusalRule } from './readinessRuleGrouping.js';
 import type { ReadinessFixtureOutcome } from './readinessRuleGrouping.js';
 
@@ -13,9 +14,16 @@ import type { ReadinessFixtureOutcome } from './readinessRuleGrouping.js';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const goldenDirectory = path.join(root, 'golden');
-const cppProfile = JSON.parse(
-  readFileSync(path.join(root, 'flight-cpp', 'conformance', 'portable-typescript-v1.json'), 'utf8'),
-) as { profile: string; supportStatus: string };
+// The C++ profile is the runtime repository's declaration, so it is read from the pinned checkout
+// when one is present. This instrument reports; an absent checkout costs it two labels, not a run.
+const cppProfileFile = path.join(
+  resolveDependency(root, 'flight-cpp').directory,
+  'conformance',
+  'portable-typescript-v1.json',
+);
+const cppProfile = existsSync(cppProfileFile)
+  ? (JSON.parse(readFileSync(cppProfileFile, 'utf8')) as { profile: string; supportStatus: string })
+  : undefined;
 const targets = ['cpp', 'haxe', 'rust'] as const;
 const json = process.argv.slice(2).includes('--json');
 const unknownArguments = process.argv.slice(2).filter((argument) => argument !== '--json');
@@ -56,7 +64,7 @@ const targetReports = targets.map((target) => {
   return {
     emitted,
     emissionShare: Number(((emitted / forTarget.length) * 100).toFixed(1)),
-    ...(target === 'cpp' ? { profile: cppProfile.profile, supportStatus: cppProfile.supportStatus } : {}),
+    ...(target === 'cpp' && cppProfile ? { profile: cppProfile.profile, supportStatus: cppProfile.supportStatus } : {}),
     refused: forTarget.length - emitted,
     target,
     total: forTarget.length,

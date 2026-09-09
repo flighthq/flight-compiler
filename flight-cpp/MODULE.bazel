@@ -1,8 +1,0 @@
-module(
-    name = "flight_cpp",
-    version = "0.1.0",
-    compatibility_level = 0,
-    bazel_compatibility = [">=9.2.0"],
-)
-
-# The runtime and its tests deliberately have no external Bazel dependencies.

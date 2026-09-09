@@ -21,82 +21,6 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  bazel-runtime:
-    name: Bazel runtime (${{ matrix.os }})
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-latest
-            toolchain_config: local-posix
-          - os: macos-latest
-            toolchain_config: local-posix
-          - os: windows-latest
-            toolchain_config: local-msvc
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@v4
-      # setup-bazel 0.19.0 is pinned so the build bootstrap is reproducible as well as the Bazel version.
-      - uses: bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86
-        with:
-          bazelisk-cache: true
-          cache-save: ${{ github.event_name != 'pull_request' }}
-          disk-cache: bazel-runtime-${{ matrix.os }}
-          module-root: flight-cpp
-          repository-cache: true
-      - name: Build and test runtime
-        working-directory: flight-cpp
-        run: bazel --config=${{ matrix.toolchain_config }} --config=ci test //...
-      - name: Run Bazel performance smoke gate
-        if: matrix.os == 'ubuntu-latest'
-        working-directory: flight-cpp
-        run: bazel --config=${{ matrix.toolchain_config }} --config=release test //benchmarks:runtime_benchmark
-
-  cpp-runtime:
-    name: C++ runtime (${{ matrix.compiler }})
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - compiler: GCC
-            os: ubuntu-latest
-            cmake-args: -DCMAKE_CXX_COMPILER=g++ -DFLIGHT_CPP_BUILD_BENCHMARKS=ON
-          - compiler: GCC ASan+UBSan
-            os: ubuntu-latest
-            cmake-args: -DCMAKE_CXX_COMPILER=g++ -DCMAKE_BUILD_TYPE=Debug -DFLIGHT_CPP_ENABLE_SANITIZERS=ON
-          - compiler: Clang
-            os: ubuntu-latest
-            cmake-args: -DCMAKE_CXX_COMPILER=clang++
-          - compiler: Clang shared ABI
-            os: ubuntu-latest
-            cmake-args: -DCMAKE_CXX_COMPILER=clang++ -DBUILD_SHARED_LIBS=ON
-          - compiler: AppleClang
-            os: macos-latest
-            cmake-args: -DCMAKE_CXX_COMPILER=clang++
-          - compiler: MSVC
-            os: windows-latest
-            cmake-args: ''
-          - compiler: MSVC shared ABI
-            os: windows-latest
-            cmake-args: -DBUILD_SHARED_LIBS=ON
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@v4
-      - name: Configure runtime
-        run: cmake -S flight-cpp -B flight-cpp/build -DBUILD_TESTING=ON -DFLIGHT_CPP_WARNINGS_AS_ERRORS=ON -DCMAKE_BUILD_TYPE=Release ${{ matrix.cmake-args }}
-      - name: Build runtime
-        run: cmake --build flight-cpp/build --config Release
-      - name: Test runtime
-        run: ctest --test-dir flight-cpp/build --build-config Release --output-on-failure
-      - name: Install runtime
-        run: cmake --install flight-cpp/build --config Release --prefix flight-cpp/out/install
-      - name: Configure installed consumer
-        run: cmake -S flight-cpp/tests/consumer -B flight-cpp/out/consumer -DCMAKE_PREFIX_PATH=${{ github.workspace }}/flight-cpp/out/install -DCMAKE_BUILD_TYPE=Release
-      - name: Build installed consumer
-        run: cmake --build flight-cpp/out/consumer --config Release
-      - name: Test installed consumer
-        run: ctest --test-dir flight-cpp/out/consumer --build-config Release --output-on-failure
-
   quality:
     name: Quality gates
     runs-on: ubuntu-latest
@@ -134,15 +58,11 @@ jobs:
           cache: npm
           node-version: 22
       - run: npm ci
+      - name: Rehydrate the pinned runtime
+        run: npm run rehydrate
       - run: npm run golden:check
         if: always()
-      - run: npm run cpp:abi:check
-        if: always()
-      - run: npm run cpp:build:check
-        if: always()
       - run: npm run cpp:exceptions:check
-        if: always()
-      - run: npm run cpp:release:check
         if: always()
       - run: npm run compile:check
         if: always()

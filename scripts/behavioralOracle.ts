@@ -6,6 +6,8 @@ import { fileURLToPath } from 'node:url';
 
 import ts from 'typescript';
 
+import { resolveDependency } from './dependencyLock.js';
+
 // Does the emitted source do what the source language does?
 //
 // `compile:check` proves the output is a program. This proves it is the same program: each fixture's
@@ -73,7 +75,11 @@ const fixtures = readdirSync(goldenDirectory, { withFileTypes: true })
 
 const haxeAvailable = hasCommand('haxe');
 const rustAvailable = hasCommand('rustc') && hasCommand('cc');
-const cppCompiler = ['c++', 'g++', 'clang++'].find(hasCommand);
+// The runtime lives in its own repository now, so the C++ lane needs a rehydrated checkout as well
+// as a toolchain. An absent checkout is reported and skipped, exactly like an absent compiler.
+const cppRuntimeInclude = path.join(resolveDependency(root, 'flight-cpp').directory, 'include');
+const cppRuntimeAvailable = existsSync(cppRuntimeInclude);
+const cppCompiler = cppRuntimeAvailable ? ['c++', 'g++', 'clang++'].find(hasCommand) : undefined;
 const divergences: OracleDivergence[] = [];
 const workspace = mkdtempSync(path.join(tmpdir(), 'flight-oracle-'));
 let compared = 0;
@@ -117,7 +123,7 @@ if (divergences.length > 0) {
 const skipped = [
   ...(haxeAvailable ? [] : ['haxe']),
   ...(rustAvailable ? [] : ['rust']),
-  ...(cppCompiler ? [] : ['cpp']),
+  ...(cppCompiler ? [] : [cppRuntimeAvailable ? 'cpp' : 'cpp (flight-cpp not rehydrated)']),
 ];
 process.stdout.write(
   `Emitted source agrees with the source language: ${String(compared)} answers across ${String(fixtures.length)} fixtures${
@@ -360,17 +366,7 @@ function runCppOracle(fixture: string, cases: readonly OracleCase[], compiler: s
   );
   const built = spawnSync(
     compiler,
-    [
-      '-std=c++20',
-      '-pthread',
-      '-I',
-      path.join(root, 'flight-cpp', 'include'),
-      '-I',
-      directory,
-      '-o',
-      'oracle',
-      'main.cpp',
-    ],
+    ['-std=c++20', '-pthread', '-I', cppRuntimeInclude, '-I', directory, '-o', 'oracle', 'main.cpp'],
     { cwd: directory, encoding: 'utf8' },
   );
   if (built.status !== 0) {
