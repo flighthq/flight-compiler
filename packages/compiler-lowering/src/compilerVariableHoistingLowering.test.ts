@@ -323,6 +323,51 @@ describe('createCompilerLoweringPassVariableHoisting', () => {
     });
   });
 
+  it('omits type from iteration carrier and uses unknown domain for untyped for-of variables', () => {
+    const output = lowerIrModuleWithCompilerPasses(
+      lower(
+        'for-of-untyped-hoisting.ts',
+        `
+          export function visit(values: any): void {
+            for (var item of values) { item; }
+          }
+        `,
+      ),
+      [createCompilerLoweringPassBindingPattern(), createCompilerLoweringPassVariableHoisting()],
+    );
+    const body = getFunctionBody(output, 'visit');
+    const loop = getForOfStatement(body[1]);
+    const carrier = getNamedVariable(loop.variable);
+
+    expect(getVariableStatement(body[0]).declarations).toMatchObject([
+      { binding: { name: 'item', scope: 'function' }, mutable: true },
+    ]);
+    expect(getVariableStatement(body[0]).declarations[0]).not.toHaveProperty('type');
+    expect(carrier).toMatchObject({
+      binding: { name: 'variableHoistingIterationValue', scope: 'block' },
+      mutable: false,
+    });
+    expect(carrier).not.toHaveProperty('type');
+    expect(loop.body).toMatchObject({
+      kind: 'block',
+      statements: [
+        {
+          expression: {
+            kind: 'assignment',
+            left: { reference: { binding: { name: 'item' } } },
+            right: { reference: { binding: carrier.binding } },
+            semantics: {
+              left: { declared: 'unknown', flow: 'unknown' },
+              result: 'unknown',
+              right: { declared: 'unknown', flow: 'unknown' },
+            },
+          },
+        },
+        { kind: 'expression' },
+      ],
+    });
+  });
+
   it('refuses to over-type an untyped redeclaration from later for-in evidence', () => {
     const run = () =>
       lowerIrModuleWithCompilerPasses(
