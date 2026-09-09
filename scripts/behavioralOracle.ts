@@ -6,13 +6,13 @@ import { fileURLToPath } from 'node:url';
 
 import ts from 'typescript';
 
-import { resolveDependency } from './dependencyLock.js';
 import {
   createCppExecutableArguments,
   findCppCompilerToolchain,
   getCppExecutableName,
   type CppCompilerToolchain,
 } from './cppToolchain.js';
+import { resolveDependency } from './dependencyLock.js';
 
 // Does the emitted source do what the source language does?
 //
@@ -399,10 +399,7 @@ function runCppOracle(
   const executable = getCppExecutableName(toolchain, 'oracle');
   const built = spawnSync(
     toolchain.command,
-    createCppExecutableArguments(toolchain, 'main.cpp', executable, [
-      cppRuntimeInclude,
-      directory,
-    ]),
+    createCppExecutableArguments(toolchain, 'main.cpp', executable, [cppRuntimeInclude, directory]),
     { cwd: directory, encoding: 'utf8' },
   );
   if (built.status !== 0) {

@@ -4,8 +4,8 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { resolveDependency } from './dependencyLock.js';
 import { createCppSyntaxOnlyArguments, findCppCompilerToolchain } from './cppToolchain.js';
+import { resolveDependency } from './dependencyLock.js';
 
 // Does the emitted source actually compile?
 //
