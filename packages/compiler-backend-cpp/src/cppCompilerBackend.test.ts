@@ -5739,3 +5739,362 @@ describe('emitIrModuleCpp', () => {
     expect(emitted.contents).toContain('fn(value)');
   });
 });
+
+describe('emitIrModuleCpp try-finally with return', () => {
+  it('emits try-finally with return capture variable', () => {
+    const result = lower(
+      'try-finally-return.ts',
+      `export function safeParse(x: number): number {
+         try {
+           return x + 1;
+         } finally {
+           x + 2;
+         }
+       }`,
+    );
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('finally_exception');
+    expect(emitted.contents).toContain('finally_return');
+    expect(emitted.contents).toContain('exception');
+  });
+});
+
+describe('emitIrModuleCpp try-catch with await in catch', () => {
+  it('emits try-catch-await rewrite with caught flag', () => {
+    const result = lower(
+      'try-catch-await.ts',
+      `export async function retry(): Promise<number> {
+         try {
+           return 1;
+         } catch {
+           const result = await Promise.resolve(2);
+           return result;
+         }
+       }`,
+    );
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('caught');
+    expect(emitted.contents).toContain('co_await');
+  });
+});
+
+describe('emitIrModuleCpp exponentiation assignment', () => {
+  it('emits power assignment with std::pow rewrap', () => {
+    const result = lower(
+      'pow-assign.ts',
+      `export function cube(x: number): number {
+         let n = x;
+         n **= 3;
+         return n;
+       }`,
+    );
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('pow');
+  });
+});
+
+describe('emitIrModuleCpp unsigned right shift assignment', () => {
+  it('emits unsigned right shift assignment with u32 cast', () => {
+    const result = lower(
+      'urshr-assign.ts',
+      `export function shift(x: number): number {
+         let n = x;
+         n >>>= 2;
+         return n;
+       }`,
+    );
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('static_cast');
+  });
+});
+
+describe('emitIrModuleCpp for-in with binding pattern', () => {
+  it('refuses for-in with binding pattern before destructuring lowering', () => {
+    const result = lower(
+      'for-in-pattern.ts',
+      `export function keys(obj: { a: number; b: number }): string[] {
+         const result: string[] = [];
+         for (const key in obj) {
+           result.push(key);
+         }
+         return result;
+       }`,
+    );
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('for');
+  });
+});
+
+describe('emitIrModuleCpp for-of with async iteration', () => {
+  it('refuses async for-of before coroutine lowering', () => {
+    const result = lower(
+      'async-for-of.ts',
+      `export function sum(arr: number[]): number {
+         let total = 0;
+         for (const item of arr) {
+           total += item;
+         }
+         return total;
+       }`,
+    );
+    const fn = result.module.declarations.find((d) => d.kind === 'function');
+    if (fn?.kind !== 'function') throw new Error('Expected function');
+    const modified = {
+      ...fn,
+      body: fn.body.map((stmt) => (stmt.kind === 'forOf' ? { ...stmt, await: true } : stmt)),
+    };
+    const module = {
+      ...result.module,
+      declarations: result.module.declarations.map((d) =>
+        d === fn ? modified : d,
+      ) as typeof result.module.declarations,
+    };
+    expect(() => emitIrModuleCpp(module)).toThrow('async iteration requires C++ coroutine lowering');
+  });
+});
+
+describe('emitIrModuleCpp C-style for loop refusal', () => {
+  it('refuses C-style for loops before control-flow lowering', () => {
+    const result = lower(
+      'for-loop.ts',
+      `export function count(n: number): number {
+         let sum = 0;
+         for (let i = 0; i < n; i++) {
+           sum += i;
+         }
+         return sum;
+       }`,
+    );
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('while');
+  });
+});
+
+describe('emitIrModuleCpp implicit completion absent return', () => {
+  it('emits std::nullopt for function returning optional without explicit return', () => {
+    const result = lower(
+      'absent-return.ts',
+      `export function find(arr: number[], target: number): number | undefined {
+         for (const item of arr) {
+           if (item === target) return item;
+         }
+       }`,
+    );
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('std::nullopt');
+  });
+});
+
+describe('emitIrModuleCpp async implicit completion', () => {
+  it('emits co_return for async void function without explicit return', () => {
+    const result = lower(
+      'async-void-return.ts',
+      `export async function doWork(): Promise<void> {
+         const x = await Promise.resolve(1);
+         x + 1;
+       }`,
+    );
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('co_return');
+  });
+});
+
+describe('emitIrModuleCpp super reference with binding', () => {
+  it('emits super reference using base class target name', () => {
+    const result = lower(
+      'super-ref.ts',
+      `export class Base {
+         greet(): string { return "hello"; }
+       }
+       export class Child extends Base {
+         greet(): string { return super.greet() + " world"; }
+       }`,
+    );
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('Base::greet');
+  });
+});
+
+describe('emitIrModuleCpp lexical-this closure in class', () => {
+  it('emits this capture in class method closure', () => {
+    const result = lower(
+      'this-closure.ts',
+      `export class Counter {
+         count: number = 0;
+         increment(): () => void {
+           return (): void => { this.count += 1; };
+         }
+       }`,
+    );
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('[=, this]');
+  });
+});
+
+describe('emitIrModuleCpp size method binding', () => {
+  it('emits .size() with static_cast for array length in call position', () => {
+    const result = lower(
+      'array-length-call.ts',
+      `export function len(arr: number[]): number {
+         return arr.length;
+       }`,
+    );
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('static_cast<double>');
+    expect(emitted.contents).toContain('size()');
+  });
+});
+
+describe('emitIrModuleCpp flight-cpp array with contextual type', () => {
+  it('emits flight::Array with element type for non-empty arrays', () => {
+    const result = lower(
+      'flight-arr.ts',
+      `export function nums(): number[] {
+         return [1, 2, 3];
+       }`,
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+    expect(emitted.contents).toContain('flight::Array');
+  });
+});
+
+describe('emitIrModuleCpp qualified constructor refusal', () => {
+  it('refuses new expression with non-identifier callee', () => {
+    const result = lower(
+      'new-expr.ts',
+      `export class Foo { value: number = 0; }
+       export function make(): Foo {
+         return new Foo();
+       }`,
+    );
+    const fn = result.module.declarations.find((d) => d.kind === 'function');
+    if (fn?.kind !== 'function') throw new Error('Expected function');
+    const modified = {
+      ...fn,
+      body: fn.body.map((stmt) => {
+        if (stmt.kind !== 'return' || !stmt.expression || stmt.expression.kind !== 'new') return stmt;
+        return {
+          ...stmt,
+          expression: {
+            ...stmt.expression,
+            callee: {
+              ...stmt.expression.callee,
+              kind: 'property' as const,
+              name: 'Foo',
+              object: stmt.expression.callee,
+              optional: false,
+            },
+          },
+        };
+      }),
+    };
+    const module = {
+      ...result.module,
+      declarations: result.module.declarations.map((d) =>
+        d === fn ? modified : d,
+      ) as typeof result.module.declarations,
+    };
+    expect(() => emitIrModuleCpp(module)).toThrow('qualified constructors require C++ type-path lowering');
+  });
+});
+
+describe('emitIrModuleCpp isCppScalarValueType with union', () => {
+  it('emits const for immutable nullable scalar variable', () => {
+    const result = lower('nullable-scalar.ts', `export const value: number | null = 42;`);
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('const');
+    expect(emitted.contents).toContain('optional');
+  });
+});
+
+describe('emitIrModuleCpp tuple spread', () => {
+  it('emits tuple spread with std::make_tuple and std::get', () => {
+    const result = lower(
+      'tuple-spread.ts',
+      `export function spread(a: [number, string], b: boolean): [number, string, boolean] {
+         return [...a, b];
+       }`,
+    );
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('std::make_tuple');
+    expect(emitted.contents).toContain('std::get');
+  });
+});
+
+describe('emitIrModuleCpp async function return type', () => {
+  it('emits async function with co_await and co_return', () => {
+    const result = lower(
+      'async-fn.ts',
+      `export async function fetchValue(): Promise<number> {
+         const x = await Promise.resolve(42);
+         return x;
+       }`,
+    );
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('co_await');
+    expect(emitted.contents).toContain('co_return');
+  });
+});
+
+describe('emitIrModuleCpp inherited methods collection', () => {
+  it('collects inherited method names from base class chain', () => {
+    const result = lower(
+      'inherit-methods.ts',
+      `export class Animal {
+         speak(): string { return "..."; }
+       }
+       export class Dog extends Animal {
+         speak(): string { return "woof"; }
+         fetch(): string { return "ball"; }
+       }`,
+    );
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('virtual');
+    expect(emitted.contents).toContain('speak');
+  });
+});
+
+describe('emitIrModuleCpp defaulted parameter', () => {
+  it('emits optional with value_or for defaulted parameter', () => {
+    const result = lower(
+      'default-param.ts',
+      `export function greet(name: string = "world"): string {
+         return name;
+       }`,
+    );
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('std::optional');
+    expect(emitted.contents).toContain('value_or');
+  });
+});
+
+describe('emitIrModuleCpp variant union parameter type', () => {
+  it('emits std::variant for string | number union type', () => {
+    const result = lower(
+      'variant-param.ts',
+      `export function identity(x: string | number): string | number {
+         return x;
+       }`,
+    );
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('std::variant');
+  });
+});
+
+describe('emitIrModuleCpp do-while loop', () => {
+  it('emits do-while loop structure', () => {
+    const result = lower(
+      'do-while.ts',
+      `export function countdown(start: number): number {
+         let n = start;
+         do {
+           n -= 1;
+         } while (n > 0);
+         return n;
+       }`,
+    );
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('do {');
+    expect(emitted.contents).toContain('} while');
+  });
+});
