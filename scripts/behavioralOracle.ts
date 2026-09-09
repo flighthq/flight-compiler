@@ -26,10 +26,10 @@ import { resolveDependency } from './dependencyLock.js';
 // rather than proven: what this gate establishes for Haxe is that the lowering is right, not that
 // every Haxe backend renders a value the same way. Proving that needs hxcpp and a C++ toolchain.
 //
-// Arguments are scalars, arrays of scalars, tasks, and target-selected Date instants. A record argument
-// would have to be rendered as each target spells a record — including its type name in C++ and Rust —
-// which is worth doing when a fixture needs it and is not done yet; such a fixture takes compile
-// coverage only.
+// Arguments are scalars, arrays of scalars, records ($type), string enums ($stringEnum), tasks,
+// and target-selected Date instants. A record-returning function is tested through `returnField`,
+// which accesses one field of the result and compares the scalar; full record serialization is
+// not needed.
 //
 // A fixture opts in with `oracle.json`. Values are compared as canonical text rather than by each
 // language's own formatting, because `1` and `1.0` and `1.000000` are the same answer — and because
@@ -53,6 +53,7 @@ interface OracleCase {
   readonly constructArgs?: readonly unknown[];
   readonly cppCall?: string;
   readonly cppTypes?: readonly (string | null)[];
+  readonly returnField?: string;
   readonly returns: OracleValueKind;
   readonly rustRef?: readonly number[];
   readonly targets?: readonly OracleTarget[];
@@ -314,7 +315,9 @@ function runTypeScriptOracle(fixture: string, cases: readonly OracleCase[]): rea
         const call = oracleCase.construct
           ? `new fixture.${oracleCase.construct}(${(oracleCase.constructArgs ?? []).map(renderTypeScriptValue).join(', ')}).${oracleCase.call}(${methodArgs})`
           : `fixture.${oracleCase.call}(${methodArgs})`;
-        return `console.log(say(${oracleCase.awaits ? `await ${call}` : call}));`;
+        const expr = oracleCase.awaits ? `await ${call}` : call;
+        const access = oracleCase.returnField ? `(${expr}).${oracleCase.returnField}` : expr;
+        return `console.log(say(${access}));`;
       }),
     ].join('\n'),
   );
@@ -351,10 +354,11 @@ function runHaxeOracle(fixture: string, cases: readonly OracleCase[]): readonly 
           const call = oracleCase.construct
             ? `(new ${haxeModuleType(fixture)}.${oracleCase.construct}(${(oracleCase.constructArgs ?? []).map(renderHaxeValue).join(', ')})).${oracleCase.call}(${methodArgs})`
             : `${haxeModuleType(fixture)}.${oracleCase.call}(${methodArgs})`;
-          // Chained rather than fired together, so the answers arrive in the order they were asked.
+          const field = oracleCase.returnField ?? '';
+          const access = field ? `(${call}).${field}` : call;
           return oracleCase.awaits
-            ? `    step = step.then((_) -> ${call}.then((value) -> js.Lib.global.console.log(say(value))));`
-            : `    step = step.then((_) -> js.Lib.global.console.log(say(${call})));`;
+            ? `    step = step.then((_) -> ${call}.then((value) -> js.Lib.global.console.log(say(${field ? `value.${field}` : 'value'}))));`
+            : `    step = step.then((_) -> js.Lib.global.console.log(say(${access})));`;
         })(),
       ),
       '  }',
@@ -416,19 +420,21 @@ function runRustOracle(fixture: string, cases: readonly OracleCase[]): readonly 
           : `${rustModule}::${rustName}(${args.join(', ')})`;
 
         const call = oracleCase.awaits ? `flight_runtime::block_on(${invocation})` : invocation;
+        const rustField = oracleCase.returnField ? toSnakeCase(oracleCase.returnField) : '';
+        const access = rustField ? `(${call}).${rustField}` : call;
         let printLine: string;
         switch (oracleCase.returns) {
           case 'number':
-            printLine = `    println!("{}", say_number(${call}));`;
+            printLine = `    println!("{}", say_number(${access}));`;
             break;
           case 'numbers':
-            printLine = `    println!("[{}]", ${call}.into_iter().map(say_number).collect::<Vec<_>>().join(", "));`;
+            printLine = `    println!("[{}]", ${access}.into_iter().map(say_number).collect::<Vec<_>>().join(", "));`;
             break;
           case 'strings':
-            printLine = `    println!("[{}]", ${call}.join(", "));`;
+            printLine = `    println!("[{}]", ${access}.join(", "));`;
             break;
           default:
-            printLine = `    println!("{}", ${call});`;
+            printLine = `    println!("{}", ${access});`;
         }
         return [...bindings, printLine];
       }),
@@ -519,7 +525,9 @@ function runCppOracle(
           : `flighthq_golden::${cppName}(${arguments_.join(', ')})`;
 
         const value = oracleCase.awaits ? `${invocation}.get()` : invocation;
-        return `  std::cout << say(${value}) << '\\n';`;
+        const cppField = oracleCase.returnField ? toCppName(oracleCase.returnField) : '';
+        const cppAccess = cppField ? `(${value}).${cppField}` : value;
+        return `  std::cout << say(${cppAccess}) << '\\n';`;
       }),
       '}',
     ].join('\n'),

@@ -1,0 +1,26 @@
+[
+  {
+    "call": "widen",
+    "arguments": [{ "$type": "Range", "max": 10, "min": 0 }, 2],
+    "returns": "number",
+    "returnField": "max"
+  },
+  {
+    "call": "widen",
+    "arguments": [{ "$type": "Range", "max": 10, "min": 0 }, 2],
+    "returns": "number",
+    "returnField": "min"
+  },
+  {
+    "call": "widen",
+    "arguments": [{ "$type": "Range", "max": 5, "min": 5 }, 0],
+    "returns": "number",
+    "returnField": "max"
+  },
+  {
+    "call": "widen",
+    "arguments": [{ "$type": "Range", "max": 5, "min": 5 }, 0],
+    "returns": "number",
+    "returnField": "min"
+  }
+]
