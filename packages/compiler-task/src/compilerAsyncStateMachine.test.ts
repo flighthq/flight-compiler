@@ -957,6 +957,25 @@ describe('analyzeIrModuleAsyncStateMachines', () => {
     expect(analysis.machines[0]?.completionPaths.paths.some((p) => p.kind === 'return')).toBe(true);
   });
 
+  it('refuses a try statement with neither catch nor finally', () => {
+    const base = lower(`
+      export async function bare(task: Promise<number>): Promise<number> {
+        try { return await task; } catch { return 0; }
+      }
+    `);
+    const clone = structuredClone(base);
+    const fn = clone.declarations[0];
+    if (fn?.kind !== 'function') throw new Error('Expected function');
+    const tryStmt = fn.body[0];
+    if (!tryStmt || tryStmt.kind !== 'try') throw new Error('Expected try');
+    delete (tryStmt as Record<string, unknown>).catchClause;
+    delete (tryStmt as Record<string, unknown>).finallyBody;
+    const analysis = analyzeIrModuleAsyncStateMachines(clone);
+
+    expect(analysis.machines).toEqual([]);
+    expect(analysis.refusals.some((refusal) => refusal.code === 'unsupported-control-flow')).toBe(true);
+  });
+
   it('is deterministic, deeply immutable, and vacuous for a module without async scopes', () => {
     const module = lower('export function read(value: number): number { return value; }');
     const first = analyzeIrModuleAsyncStateMachines(module);
