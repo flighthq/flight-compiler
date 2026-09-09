@@ -1540,6 +1540,21 @@ describe('emitIrModuleCpp', () => {
     expect(emitted.contents).toContain('flight::Array');
     expect(emitted.contents).not.toContain('std::vector');
   });
+  it('refuses hole-producing arrays in the dense flight-cpp runtime profile', () => {
+    const sparse = lower('sparse-flight.ts', 'export function values(): number[] { return [1, , 3]; }');
+    expect(() => emitIrModuleCpp(sparse.module, { runtimeProfile: 'flight-cpp' })).toThrow(
+      'sparse array literals are outside the dense flight-cpp array profile',
+    );
+
+    const sized = lower(
+      'array-length-flight.ts',
+      'export function values(length: number): number[] { return new Array<number>(length); }',
+    );
+    expect(() => emitIrModuleCpp(sized.module, { runtimeProfile: 'flight-cpp' })).toThrow(
+      'Array length construction is outside the dense flight-cpp array profile',
+    );
+  });
+
 
   it('emits tuple literal with absent element as std::nullopt', () => {
     const result = lower('tuple-absent.ts', 'export function partial(): [number, number?] { return [1]; }');

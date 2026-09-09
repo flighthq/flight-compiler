@@ -595,6 +595,12 @@ function emitExpression(
   switch (expression.kind) {
     case 'array': {
       const expectedArray = expectedType?.kind === 'array' ? expectedType : undefined;
+      if (
+        getCppRuntimeProfile(context.options) === 'flight-cpp' &&
+        expression.elements.some((element) => element === undefined)
+      ) {
+        emissionError(context, 'sparse array literals are outside the dense flight-cpp array profile');
+      }
       const elements = expression.elements.map((element) =>
         element ? emitExpression(element, context, expectedArray?.element) : '{}',
       );
@@ -894,6 +900,14 @@ function emitExpression(
         emitExpression(argument, context, getIrInvocationArgumentExpectedTypeCpp(expression, index)),
       );
       const typeArguments = emitCppTypeArguments(expression.typeArguments, context);
+      if (
+        getCppRuntimeProfile(context.options) === 'flight-cpp' &&
+        expression.callee.reference.kind === 'ambient' &&
+        expression.callee.reference.name === 'Array' &&
+        args.length > 0
+      ) {
+        emissionError(context, 'Array length construction is outside the dense flight-cpp array profile');
+      }
       if (
         getCppRuntimeProfile(context.options) === 'flight-cpp' &&
         expression.callee.reference.kind === 'ambient' &&
