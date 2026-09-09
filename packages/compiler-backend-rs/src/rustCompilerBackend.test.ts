@@ -2162,6 +2162,14 @@ describe('emitIrModuleRust', () => {
     expect(output).toContain('.to_string()');
   });
 
+  it('emits String(value) as value.to_string()', () => {
+    const output = emitIrModuleRust(
+      lower('string-conversion.ts', 'export function convert(n: number): string { return String(n); }').module,
+    ).contents;
+    expect(output).toContain('.to_string()');
+    expect(output).not.toContain('String(');
+  });
+
   it('emits array reverse as reverse()', () => {
     const output = emitIrModuleRust(
       lower('array-reverse.ts', 'export function flip(items: number[]): void { items.reverse(); }').module,

@@ -122,6 +122,8 @@ const rustRuntimeExternalSymbolBindings = [
   { capability: 'task', kind: 'runtime', sourceName: 'Promise', space: 'value', targetName: 'FlightTask' },
   { kind: 'native', sourceName: 'Set', space: 'type', targetName: 'std::collections::HashSet' },
   { kind: 'native', sourceName: 'Set', space: 'value', targetName: 'std::collections::HashSet' },
+  { kind: 'native', sourceName: 'String', space: 'type', targetName: 'String' },
+  { kind: 'native', sourceName: 'String', space: 'value', targetName: 'String' },
   { kind: 'native', sourceName: 'Uint16Array', space: 'type', targetName: 'Vec<u16>' },
   { kind: 'native', sourceName: 'Uint16Array', space: 'value', targetName: 'Vec<u16>' },
   { kind: 'native', sourceName: 'Uint32Array', space: 'type', targetName: 'Vec<u32>' },

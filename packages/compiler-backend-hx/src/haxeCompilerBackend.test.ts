@@ -1387,6 +1387,14 @@ describe('emitIrModuleHaxe expression coverage', () => {
     expect(output).toContain('[1, null, 3]');
   });
 
+  it('emits String(value) as Std.string(value)', () => {
+    const output = emitIrModuleHaxe(
+      lower('string-conversion.ts', 'export function convert(n: number): string { return String(n); }').module,
+    ).contents;
+    expect(output).toContain('Std.string(');
+    expect(output).not.toContain('String(n)');
+  });
+
   it('emits cast expression as Haxe cast', () => {
     const result = lower(
       'cast-expression.ts',

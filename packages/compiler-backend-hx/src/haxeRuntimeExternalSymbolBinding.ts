@@ -136,6 +136,8 @@ const haxeRuntimeExternalSymbolBindings = [
   { capability: 'task', kind: 'runtime', sourceName: 'Promise', space: 'value', targetName: '_Promise' },
   { capability: 'set', kind: 'runtime', sourceName: 'Set', space: 'type', targetName: '_Set' },
   { capability: 'set', kind: 'runtime', sourceName: 'Set', space: 'value', targetName: '_Set' },
+  { kind: 'native', sourceName: 'String', space: 'type', targetName: 'String' },
+  { kind: 'native', sourceName: 'String', space: 'value', targetName: 'String' },
   {
     capability: 'uint16-array',
     kind: 'runtime',

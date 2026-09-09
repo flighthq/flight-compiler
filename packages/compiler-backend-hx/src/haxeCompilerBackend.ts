@@ -626,6 +626,14 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
         }
       }
       if (expression.semantics.statementValue) return emitStatementValueExpressionHaxe(expression, context);
+      if (
+        expression.callee.kind === 'identifier' &&
+        expression.callee.reference.kind === 'ambient' &&
+        expression.callee.reference.name === 'String' &&
+        expression.arguments.length === 1
+      ) {
+        return `Std.string(${emitExpression(expression.arguments[0]!, context)})`;
+      }
       if (expression.arguments.some((argument) => argument.kind === 'spread')) {
         return emitSpreadCallHaxe(expression, context);
       }

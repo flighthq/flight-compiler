@@ -1023,6 +1023,14 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
           return `${spreadOperand}.iter().cloned().fold(${foldTarget.identity}, ${foldTarget.folder})`;
         }
       }
+      if (
+        expression.callee.kind === 'identifier' &&
+        expression.callee.reference.kind === 'ambient' &&
+        expression.callee.reference.name === 'String' &&
+        expression.arguments.length === 1
+      ) {
+        return `${emitExpression(expression.arguments[0]!, context)}.to_string()`;
+      }
       return `${expression.callee.kind === 'function' ? `(${emitExpression(expression.callee, context)})` : emitExpression(expression.callee, context)}(${emitCallArgumentsRust(expression, context).join(', ')})`;
 
     case 'cast':
