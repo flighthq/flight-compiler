@@ -34,28 +34,28 @@ impl std::fmt::Display for StrOrF64 {
 }
 
 pub fn from_call(flag: bool) -> StrOrF64 {
-  let value: StrOrF64 = produce(flag);
-  return value;
+  let value: StrOrF64 = StrOrF64::Str(produce(flag));
+  return *value.as_str();
 }
 
 pub fn from_conditional(flag: bool) -> StrOrF64 {
-  let value: StrOrF64 = if flag { "yes".to_owned() } else { 0.0 };
+  let value: StrOrF64 = if flag { StrOrF64::Str("yes".to_owned()) } else { StrOrF64::F64(0.0) };
   return value;
 }
 
 pub fn from_binary(a: f64, b: f64) -> StrOrF64 {
-  let value: StrOrF64 = a + b;
-  return value;
+  let value: StrOrF64 = StrOrF64::F64((a + b));
+  return *value.as_f64();
 }
 
 pub fn from_unary(n: f64) -> StrOrF64 {
-  let value: StrOrF64 = -n;
-  return value;
+  let value: StrOrF64 = StrOrF64::F64(-n);
+  return *value.as_f64();
 }
 
 pub fn from_cast(input: OpaqueHostValue) -> StrOrF64 {
-  let value: StrOrF64 = input as String;
-  return value;
+  let value: StrOrF64 = StrOrF64::Str((input as String));
+  return *value.as_str();
 }
 
 fn produce(flag: bool) -> String {

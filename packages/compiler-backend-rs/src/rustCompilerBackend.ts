@@ -129,6 +129,7 @@ interface EmitContext {
   referentMutatedBindingIds: ReadonlySet<string>;
   referentMutatedParameterIds: ReadonlySet<string>;
   taggedUnionBindingNames: ReadonlyMap<string, string>;
+  bindingTypes: ReadonlyMap<string, Readonly<IrType>>;
   reboundBindingIds: ReadonlySet<string>;
   generatedNames: Set<string>;
   module: Readonly<IrModule>;
@@ -261,6 +262,7 @@ function emitIrModuleRustWithContext(
     ),
     referentMutatedParameterIds: collectIrModuleReferentMutatedParameterIdsRust(module),
     taggedUnionBindingNames,
+    bindingTypes: collectIrModuleBindingTypesRust(module),
     module,
     needsCellImport: new Set(),
     needsRcImport: new Set(),
@@ -802,6 +804,22 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
           return `{ if ${left}.is_none() { ${left} = Some(${right}); } ${left}.clone().unwrap() }`;
         }
         emissionError(context, 'operator ??= requires a nullable Rust target');
+      }
+      if (
+        expression.operator === '=' &&
+        expression.left.kind === 'identifier' &&
+        expression.left.reference.kind === 'binding'
+      ) {
+        const enumName = context.primitiveUnionBindingIds.get(expression.left.reference.binding.id);
+        if (enumName) {
+          const targetEnum = [...context.primitiveUnionEnums.values()].find((e) => e.name === enumName);
+          if (targetEnum) {
+            const wrapped = emitPrimitiveUnionConstructionRust(expression.right, targetEnum, context);
+            if (wrapped) {
+              return `${emitExpression(expression.left, context)} = ${wrapped}`;
+            }
+          }
+        }
       }
       const left = emitExpression(expression.left, context);
       const right = emitOptionalTargetOperandRust(expression.left, expression.right, context);
@@ -1834,6 +1852,96 @@ function collectIrModuleArrayElementBindingIdsRust(module: Readonly<IrModule>): 
   return ids;
 }
 
+function collectIrModuleBindingTypesRust(module: Readonly<IrModule>): ReadonlyMap<string, Readonly<IrType>> {
+  const result = new Map<string, Readonly<IrType>>();
+  analyzeIrModuleTraversal(module, {
+    parameter(parameter) {
+      result.set(parameter.binding.id, parameter.type);
+    },
+    variable(variable) {
+      if ('binding' in variable && variable.type) {
+        result.set(variable.binding.id, variable.type);
+      }
+    },
+  });
+  return result;
+}
+
+function resolvePrimitiveUnionEnumRust(type: Readonly<IrType>, context: EmitContext): PrimitiveUnionEnum | undefined {
+  if (type.kind !== 'union') return undefined;
+  const concrete = type.types.filter((t) => t.kind !== 'null' && t.kind !== 'undefined');
+  if (concrete.length < 2) return undefined;
+  return getOrCreatePrimitiveUnionEnumRust(concrete, context);
+}
+
+function inferIrExpressionPrimitiveKindRust(
+  expression: Readonly<IrExpression>,
+  context: EmitContext,
+): string | undefined {
+  switch (expression.kind) {
+    case 'literal':
+      return typeof expression.value === 'string'
+        ? 'string'
+        : typeof expression.value === 'number'
+          ? 'number'
+          : typeof expression.value === 'boolean'
+            ? 'boolean'
+            : undefined;
+    case 'template':
+      return 'string';
+    case 'binary': {
+      const result = expression.semantics.result;
+      return result === 'string' || result === 'number' || result === 'boolean' ? result : undefined;
+    }
+    case 'unary': {
+      const result = expression.semantics.result;
+      return result === 'string' || result === 'number' || result === 'boolean' ? result : undefined;
+    }
+    case 'call': {
+      const resultType = expression.semantics.resultType;
+      return resultType.kind === 'primitive' &&
+        (resultType.name === 'string' || resultType.name === 'number' || resultType.name === 'boolean')
+        ? resultType.name
+        : undefined;
+    }
+    case 'cast':
+      return expression.type.kind === 'primitive' &&
+        (expression.type.name === 'string' || expression.type.name === 'number' || expression.type.name === 'boolean')
+        ? expression.type.name
+        : undefined;
+    case 'identifier': {
+      if (expression.reference.kind !== 'binding') return undefined;
+      const bindingType = context.bindingTypes.get(expression.reference.binding.id);
+      if (!bindingType || bindingType.kind !== 'primitive') return undefined;
+      return bindingType.name === 'string' || bindingType.name === 'number' || bindingType.name === 'boolean'
+        ? bindingType.name
+        : undefined;
+    }
+    default:
+      return undefined;
+  }
+}
+
+function emitPrimitiveUnionConstructionRust(
+  expression: Readonly<IrExpression>,
+  targetEnum: PrimitiveUnionEnum,
+  context: EmitContext,
+): string | undefined {
+  if (expression.kind === 'conditional') {
+    const condition = emitExpression(expression.condition, context);
+    const whenTrue = emitPrimitiveUnionConstructionRust(expression.whenTrue, targetEnum, context);
+    const whenFalse = emitPrimitiveUnionConstructionRust(expression.whenFalse, targetEnum, context);
+    if (whenTrue === undefined || whenFalse === undefined) return undefined;
+    return `if ${condition} { ${whenTrue} } else { ${whenFalse} }`;
+  }
+  const emitted = emitOwnedOperandRust(expression, context);
+  const primitiveKind = inferIrExpressionPrimitiveKindRust(expression, context);
+  if (!primitiveKind) return undefined;
+  const variant = targetEnum.variants.find((v) => v.primitiveKind === primitiveKind);
+  if (!variant) return undefined;
+  return `${targetEnum.name}::${variant.variantName}(${emitted})`;
+}
+
 function collectCellCapturedBindingIdsRust(
   expression: Readonly<IrExpression>,
   context: EmitContext,
@@ -2337,6 +2445,13 @@ function emitStatement(statement: Readonly<IrStatement>, context: EmitContext): 
       ) {
         emissionError(context, 'returning a nullable binding requires Rust narrowing evidence');
       }
+      if (statement.expression && context.enclosingReturnType) {
+        const targetEnum = resolvePrimitiveUnionEnumRust(context.enclosingReturnType, context);
+        if (targetEnum) {
+          const wrapped = emitPrimitiveUnionConstructionRust(statement.expression, targetEnum, context);
+          if (wrapped) return [`return ${wrapped};`];
+        }
+      }
       return [
         `return${statement.expression ? ` ${normalizeSourceTextGrouping(emitReturnedExpressionRust(statement.expression, context))}` : ''};`,
       ];
@@ -2619,6 +2734,17 @@ function emitVariable(variable: Readonly<IrVariable>, context: EmitContext): str
     const type = variable.type ? emitType(variable.type, context) : 'f64';
     const init = variable.initializer ? emitExpression(variable.initializer, context) : '0.0';
     return `let ${name}: Rc<Cell<${type}>> = Rc::new(Cell::new(${init}));`;
+  }
+  if (variable.type && variable.initializer) {
+    const targetEnum = resolvePrimitiveUnionEnumRust(variable.type, context);
+    if (targetEnum) {
+      const wrapped = emitPrimitiveUnionConstructionRust(variable.initializer, targetEnum, context);
+      if (wrapped) {
+        const deferred = !variable.initializer && context.deferredBindingIds.has(variable.binding.id);
+        const mutable = (variable.mutable && !deferred) || context.referentMutatedBindingIds.has(variable.binding.id);
+        return `let ${mutable ? 'mut ' : ''}${getBindingTargetNameRust(variable.binding, context)}: ${emitType(variable.type, context)} = ${wrapped};`;
+      }
+    }
   }
   const isArrayElementBinding = 'binding' in variable && context.arrayElementBindingIds.has(variable.binding.id);
   const type =
@@ -3230,7 +3356,22 @@ function collectPrimitiveUnionBindingsRust(module: Readonly<IrModule>, context: 
         context.primitiveUnionBindingIds.set(parameter.binding.id, enumRecord.name);
       }
     }
+    if (declaration.returns.kind === 'union') {
+      const concrete = declaration.returns.types.filter((t) => t.kind !== 'null' && t.kind !== 'undefined');
+      if (concrete.length >= 2) getOrCreatePrimitiveUnionEnumRust(concrete, context);
+    }
   }
+  analyzeIrModuleTraversal(module, {
+    variable(variable) {
+      if (!('binding' in variable) || !variable.type || variable.type.kind !== 'union') return;
+      const concrete = variable.type.types.filter((t) => t.kind !== 'null' && t.kind !== 'undefined');
+      if (concrete.length < 2) return;
+      const enumRecord = getOrCreatePrimitiveUnionEnumRust(concrete, context);
+      if (enumRecord) {
+        context.primitiveUnionBindingIds.set(variable.binding.id, enumRecord.name);
+      }
+    },
+  });
 }
 
 function emitPrimitiveUnionEnumRust(union: PrimitiveUnionEnum): string[] {

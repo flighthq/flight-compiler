@@ -3094,6 +3094,67 @@ describe('emitIrModuleRust', () => {
     expect(output).toContain('StrOrF64');
   });
 
+  it('wraps string initializer in primitive union variant constructor', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'union-init-str.ts',
+        'export function wrap(text: string): string | number { let v: string | number = text; return v; }',
+      ).module,
+    ).contents;
+    expect(output).toContain('StrOrF64::Str(text)');
+  });
+
+  it('wraps number initializer in primitive union variant constructor', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'union-init-num.ts',
+        'export function wrap(n: number): string | number { let v: string | number = n; return v; }',
+      ).module,
+    ).contents;
+    expect(output).toContain('StrOrF64::F64(n)');
+  });
+
+  it('wraps assignment to primitive union binding in variant constructor', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'union-assign.ts',
+        'export function reassign(flag: boolean): string | number { let v: string | number = "a"; if (flag) { v = 42; } return v; }',
+      ).module,
+    ).contents;
+    expect(output).toContain('v = StrOrF64::F64(42.0)');
+  });
+
+  it('wraps return of primitive value from union-returning function', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'union-return.ts',
+        'export function pick(flag: boolean): string | number { if (flag) return "yes"; return 0; }',
+      ).module,
+    ).contents;
+    expect(output).toContain('return StrOrF64::Str("yes".to_owned())');
+    expect(output).toContain('return StrOrF64::F64(0.0)');
+  });
+
+  it('wraps each branch of conditional assigned to primitive union', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'union-cond.ts',
+        'export function choose(flag: boolean): string | number { const v: string | number = flag ? "a" : 1; return v; }',
+      ).module,
+    ).contents;
+    expect(output).toContain('if flag { StrOrF64::Str("a".to_owned()) } else { StrOrF64::F64(1.0) }');
+  });
+
+  it('wraps call result in primitive union variant constructor', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'union-call.ts',
+        'function produce(): string { return "x"; }\nexport function wrap(): string | number { const v: string | number = produce(); return v; }',
+      ).module,
+    ).contents;
+    expect(output).toContain('StrOrF64::Str(produce())');
+  });
+
   it('emits class with multiple inherent and trait methods', () => {
     const output = emitIrModuleRust(
       lower(
