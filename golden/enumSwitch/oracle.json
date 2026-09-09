@@ -1,0 +1,42 @@
+[
+  {
+    "call": "isVertical",
+    "arguments": [{ "$stringEnum": "Direction", "variant": "Up", "value": "up" }],
+    "returns": "boolean"
+  },
+  {
+    "call": "isVertical",
+    "arguments": [{ "$stringEnum": "Direction", "variant": "Left", "value": "left" }],
+    "returns": "boolean"
+  },
+  {
+    "call": "isVertical",
+    "arguments": [{ "$stringEnum": "Direction", "variant": "Down", "value": "down" }],
+    "returns": "boolean"
+  },
+  {
+    "call": "isVertical",
+    "arguments": [{ "$stringEnum": "Direction", "variant": "Right", "value": "right" }],
+    "returns": "boolean"
+  },
+  {
+    "call": "directionLabel",
+    "arguments": [{ "$stringEnum": "Direction", "variant": "Up", "value": "up" }],
+    "returns": "string"
+  },
+  {
+    "call": "directionLabel",
+    "arguments": [{ "$stringEnum": "Direction", "variant": "Down", "value": "down" }],
+    "returns": "string"
+  },
+  {
+    "call": "directionLabel",
+    "arguments": [{ "$stringEnum": "Direction", "variant": "Left", "value": "left" }],
+    "returns": "string"
+  },
+  {
+    "call": "directionLabel",
+    "arguments": [{ "$stringEnum": "Direction", "variant": "Right", "value": "right" }],
+    "returns": "string"
+  }
+]

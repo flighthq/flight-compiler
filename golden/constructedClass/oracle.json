@@ -1,4 +1,32 @@
 [
   { "call": "originLength", "arguments": [], "returns": "number" },
-  { "call": "describedAt", "arguments": [2, 3], "returns": "string" }
+  { "call": "describedAt", "arguments": [2, 3], "returns": "string" },
+  {
+    "construct": "Point",
+    "constructArgs": [3, 4],
+    "call": "length",
+    "arguments": [],
+    "returns": "number"
+  },
+  {
+    "construct": "Point",
+    "constructArgs": [0, 0],
+    "call": "length",
+    "arguments": [],
+    "returns": "number"
+  },
+  {
+    "construct": "Point",
+    "constructArgs": [3, 4],
+    "call": "describe",
+    "arguments": [],
+    "returns": "string"
+  },
+  {
+    "construct": "Point",
+    "constructArgs": [3, 4],
+    "call": "bare",
+    "arguments": [],
+    "returns": "string"
+  }
 ]

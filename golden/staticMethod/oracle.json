@@ -1,0 +1,16 @@
+[
+  {
+    "construct": "Counter",
+    "constructArgs": [5],
+    "call": "value",
+    "arguments": [],
+    "returns": "number"
+  },
+  {
+    "construct": "Counter",
+    "constructArgs": [0],
+    "call": "value",
+    "arguments": [],
+    "returns": "number"
+  }
+]

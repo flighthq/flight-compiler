@@ -49,6 +49,8 @@ interface OracleCase {
   readonly arguments: readonly unknown[];
   readonly awaits?: boolean;
   readonly call: string;
+  readonly construct?: string;
+  readonly constructArgs?: readonly unknown[];
   readonly cppCall?: string;
   readonly cppTypes?: readonly (string | null)[];
   readonly returns: OracleValueKind;
@@ -78,7 +80,19 @@ function isDateArgument(value: unknown): value is { date: number } {
 }
 
 function isRecordArgument(value: unknown): value is Readonly<Record<string, unknown>> & { $type: string } {
-  return typeof value === 'object' && value !== null && !Array.isArray(value) && '$type' in value;
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    !Array.isArray(value) &&
+    '$type' in value &&
+    !('$stringEnum' in value)
+  );
+}
+
+function isStringEnumArgument(value: unknown): value is { $stringEnum: string; variant: string; value: string } {
+  return (
+    typeof value === 'object' && value !== null && '$stringEnum' in value && 'variant' in value && 'value' in value
+  );
 }
 
 interface OracleDivergence {
@@ -296,7 +310,10 @@ function runTypeScriptOracle(fixture: string, cases: readonly OracleCase[]): rea
       "      ? `[${Array.from(value).map(say).join(', ')}]`",
       '      : String(value);',
       ...cases.map((oracleCase) => {
-        const call = `fixture.${oracleCase.call}(${oracleCase.arguments.map(renderTypeScriptValue).join(', ')})`;
+        const methodArgs = oracleCase.arguments.map(renderTypeScriptValue).join(', ');
+        const call = oracleCase.construct
+          ? `new fixture.${oracleCase.construct}(${(oracleCase.constructArgs ?? []).map(renderTypeScriptValue).join(', ')}).${oracleCase.call}(${methodArgs})`
+          : `fixture.${oracleCase.call}(${methodArgs})`;
         return `console.log(say(${oracleCase.awaits ? `await ${call}` : call}));`;
       }),
     ].join('\n'),
@@ -330,7 +347,10 @@ function runHaxeOracle(fixture: string, cases: readonly OracleCase[]): readonly 
       '    var step:flighthq._internal._Promise<Dynamic> = flighthq._internal._Promise.resolve(null);',
       ...cases.map((oracleCase) =>
         ((): string => {
-          const call = `${haxeModuleType(fixture)}.${oracleCase.call}(${oracleCase.arguments.map(renderHaxeValue).join(', ')})`;
+          const methodArgs = oracleCase.arguments.map(renderHaxeValue).join(', ');
+          const call = oracleCase.construct
+            ? `(new ${haxeModuleType(fixture)}.${oracleCase.construct}(${(oracleCase.constructArgs ?? []).map(renderHaxeValue).join(', ')})).${oracleCase.call}(${methodArgs})`
+            : `${haxeModuleType(fixture)}.${oracleCase.call}(${methodArgs})`;
           // Chained rather than fired together, so the answers arrive in the order they were asked.
           return oracleCase.awaits
             ? `    step = step.then((_) -> ${call}.then((value) -> js.Lib.global.console.log(say(value))));`
@@ -390,7 +410,11 @@ function runRustOracle(fixture: string, cases: readonly OracleCase[]): readonly 
           }
           return renderRustValue(arg, rustModule);
         });
-        const invocation = `${modules[0] ?? 'fixture'}::${toSnakeCase(oracleCase.call)}(${args.join(', ')})`;
+        const rustName = oracleCase.rustCall ?? toSnakeCase(oracleCase.call);
+        const invocation = oracleCase.construct
+          ? `${rustModule}::${oracleCase.construct}::new(${(oracleCase.constructArgs ?? []).map((arg) => renderRustValue(arg, rustModule)).join(', ')}).${rustName}(${args.join(', ')})`
+          : `${rustModule}::${rustName}(${args.join(', ')})`;
+
         const call = oracleCase.awaits ? `flight_runtime::block_on(${invocation})` : invocation;
         let printLine: string;
         switch (oracleCase.returns) {
@@ -542,6 +566,9 @@ function inferCppValueType(value: unknown): string | undefined {
 
 function renderCppValue(value: unknown, hint?: string | null): string {
   if (isDateArgument(value)) return `flight::Date(${renderCppValue(value.date)})`;
+  if (isStringEnumArgument(value)) {
+    return `flighthq_golden::${value.$stringEnum}::${value.variant}`;
+  }
   if (isRecordArgument(value)) {
     const fields = Object.entries(value)
       .filter(([key]) => key !== '$type')
@@ -599,6 +626,7 @@ function haxeModuleType(fixture: string): string {
 
 function renderTypeScriptValue(value: unknown): string {
   if (isDateArgument(value)) return `new Date(${JSON.stringify(value.date)})`;
+  if (isStringEnumArgument(value)) return JSON.stringify(value.value);
   if (isTaskArgument(value)) return `Promise.resolve(${JSON.stringify(value.task)})`;
   if (isRejectedTaskArgument(value)) return `Promise.reject(${JSON.stringify(value.rejects)})`;
   if (isRecordArgument(value)) {
@@ -611,6 +639,7 @@ function renderTypeScriptValue(value: unknown): string {
 }
 
 function renderHaxeValue(value: unknown): string {
+  if (isStringEnumArgument(value)) return JSON.stringify(value.value);
   if (isRecordArgument(value)) {
     const fields = Object.entries(value)
       .filter(([key]) => key !== '$type')
@@ -624,6 +653,10 @@ function renderHaxeValue(value: unknown): string {
 }
 
 function renderRustValue(value: unknown, rustModule?: string): string {
+  if (isStringEnumArgument(value)) {
+    const module = rustModule ?? 'fixture';
+    return `${module}::${value.$stringEnum}::${value.variant}`;
+  }
   if (isRecordArgument(value)) {
     const module = rustModule ?? 'fixture';
     const fields = Object.entries(value)
