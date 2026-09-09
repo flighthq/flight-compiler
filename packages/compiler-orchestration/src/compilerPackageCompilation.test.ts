@@ -456,6 +456,136 @@ describe('compileTypeScriptPackageGraph', () => {
     ]);
   });
 
+  it('rejects duplicate module identities from identical sources', () => {
+    const value = source('@local/source', 'source', 'value.ts', 'export const value = 1;');
+    expect(() =>
+      compileTypeScriptPackageGraph({
+        backend: { emitModule: () => [], name: 'fixture' },
+        backendOptions: {},
+        graph: graph([], [], [{ dependencies: [], name: '@local/source', root: value.packageRoot }]),
+        sources: [value, value],
+      }),
+    ).toThrow(expect.objectContaining({ code: 'duplicate-module-identity', kind: 'compiler-invariant' }));
+  });
+
+  it('extracts dependency edges from re-export specifiers', () => {
+    const dep = source('@local/source', 'source', 'dep.ts', 'export const dep = 1;');
+    const reexporter = source('@local/source', 'source', 'reexporter.ts', "export * from './dep.js';");
+    const backend: CompilerBackend = {
+      emitModule: (module) => [{ contents: module.name, path: `${module.name}.txt` }],
+      name: 'fixture',
+    };
+    const result = compileTypeScriptPackageGraph({
+      backend,
+      backendOptions: {},
+      graph: graph(
+        [identity(reexporter, 'Reexporter')],
+        [],
+        [{ dependencies: [], name: '@local/source', root: dep.packageRoot }],
+      ),
+      sources: [reexporter, dep],
+    });
+
+    expect(result.report.initialization.groups.map((group) => group.modules.map((m) => m.name))).toEqual([
+      ['Dep'],
+      ['Reexporter'],
+    ]);
+  });
+
+  it('skips unresolvable relative re-export specifiers in dependency edges', () => {
+    const value = source(
+      '@local/source',
+      'source',
+      'value.ts',
+      "export * from './nonexistent.js'; export const value = 1;",
+    );
+    const backend: CompilerBackend = {
+      emitModule: (module) => [{ contents: module.name, path: `${module.name}.txt` }],
+      name: 'fixture',
+    };
+    const result = compileTypeScriptPackageGraph({
+      backend,
+      backendOptions: {},
+      graph: graph([], [], [{ dependencies: [], name: '@local/source', root: value.packageRoot }]),
+      sources: [value],
+    });
+
+    expect(result.report.modules).toHaveLength(1);
+    expect(result.report.modules[0]?.module.name).toBe('Value');
+  });
+
+  it('skips bare specifiers without resolution plan edges', () => {
+    const dep = source('@local/dep', 'dep', 'dep.ts', 'export const dep = 1;');
+    const value = source('@local/source', 'source', 'value.ts', "export * from '@local/dep'; export const value = 1;");
+    const backend: CompilerBackend = {
+      emitModule: (module) => [{ contents: module.name, path: `${module.name}.txt` }],
+      name: 'fixture',
+    };
+    const result = compileTypeScriptPackageGraph({
+      backend,
+      backendOptions: {},
+      graph: graph(
+        [],
+        [],
+        [
+          { dependencies: [], name: '@local/dep', root: dep.packageRoot },
+          { dependencies: ['@local/dep'], name: '@local/source', root: value.packageRoot },
+        ],
+      ),
+      sources: [value, dep],
+    });
+
+    expect(result.report.modules.map((m) => m.module.name).sort()).toEqual(['Dep', 'Value']);
+  });
+
+  it('returns undefined for ambiguous relative resolution matching multiple local modules', () => {
+    const depFile = source('@local/source', 'source', 'dep.ts', 'export const dep = 1;');
+    const depIndex = source('@local/source', 'source', 'dep/index.ts', 'export const depIndex = 1;');
+    const consumer = source(
+      '@local/source',
+      'source',
+      'consumer.ts',
+      "import { dep } from './dep'; export const value = dep;",
+    );
+    const backend: CompilerBackend = {
+      emitModule: (module) => [{ contents: module.name, path: `${module.name}.txt` }],
+      name: 'fixture',
+    };
+    const result = compileTypeScriptPackageGraph({
+      backend,
+      backendOptions: {},
+      graph: graph(
+        [identity(consumer, 'Consumer')],
+        [],
+        [{ dependencies: [], name: '@local/source', root: depFile.packageRoot }],
+      ),
+      sources: [consumer, depFile, depIndex],
+    });
+
+    expect(
+      result.report.initialization.groups.every((group) => group.modules.length <= 1 || group.modules.length >= 3),
+    ).toBe(true);
+  });
+
+  it('sorts lowering diagnostics by column when package, source, and line match', () => {
+    const value = source('@local/source', 'source', 'value.ts', 'export const retained = 1;\ndoAlpha(); doBeta();');
+    const backend: CompilerBackend = {
+      emitModule: (module) => [{ contents: module.name, path: `${module.name}.txt` }],
+      name: 'fixture',
+    };
+    const result = compileTypeScriptPackageGraph({
+      backend,
+      backendOptions: {},
+      graph: graph([], [], [{ dependencies: [], name: '@local/source', root: value.packageRoot }]),
+      sources: [value],
+    });
+
+    const refusals = result.report.modules[0]?.refusals ?? [];
+    expect(refusals).toHaveLength(2);
+    expect(refusals[0]!.column).toBeLessThan(refusals[1]!.column!);
+    expect(refusals[0]!.line).toBe(refusals[1]!.line);
+  });
+
   it('infers exact, global, and relative module resolution edges into one graph', () => {
     const model = source('@local/model', 'model', 'model.ts', 'export const model = 1;');
     const exact = source(
