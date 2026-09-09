@@ -1,16 +1,19 @@
 import { describe, expect, it } from 'vitest';
 
 import type {
+  CompilerModuleResolutionPlan,
   CompilerSourceOrigin,
   IrBindingIdentity,
   IrClassDeclaration,
   IrEnumDeclaration,
+  IrFunctionDeclaration,
   IrInterfaceDeclaration,
   IrModule,
   IrType,
   IrTypeAliasDeclaration,
   IrTypeBindingIdentity,
   IrTypeParameter,
+  IrVariableDeclaration,
 } from '../../compiler-types/src/index.js';
 import { analyzeIrTypeValueIdentity, createIrTypeValueIdentityAnalyzer } from './compilerTypeValueIdentityAnalysis.js';
 
@@ -176,6 +179,44 @@ describe('analyzeIrTypeValueIdentity', () => {
     });
   });
 
+  it('classifies value-side type queries without confusing values and their result types', () => {
+    const class_ = classDeclaration('value:type-of-class', 'Model');
+    const enum_ = enumDeclaration('value:type-of-enum', 'Mode');
+    const function_ = functionDeclaration('value:type-of-function', 'create');
+    const numeric = variableDeclaration('value:type-of-number', 'count', numberType);
+    const object = variableDeclaration('value:type-of-object', 'state', objectType);
+    const unknown = variableDeclaration('value:type-of-unknown', 'external');
+    const missing = valueBinding('value:type-of-missing', 'missing', 'variable');
+    const module = createModule([class_, enum_, function_, numeric, object, unknown]);
+
+    for (const declaration of [class_, enum_, function_]) {
+      expect(analyzeIrTypeValueIdentity(typeOf(declaration.binding), module)).toMatchObject({
+        identity: 'reference',
+        reason: 'declared-reference',
+      });
+    }
+    expect(analyzeIrTypeValueIdentity(typeOf(numeric.binding), module)).toEqual(
+      analyzeIrTypeValueIdentity(numberType, module),
+    );
+    expect(analyzeIrTypeValueIdentity(typeOf(object.binding), module)).toEqual(
+      analyzeIrTypeValueIdentity(objectType, module),
+    );
+    expect(analyzeIrTypeValueIdentity(typeOf(unknown.binding), module)).toMatchObject({
+      identity: 'indeterminate',
+      reason: 'unknown-type',
+    });
+    for (const type of [typeOf(missing), typeOf(class_.binding, ['prototype']), typeOfAmbient('Missing')]) {
+      expect(analyzeIrTypeValueIdentity(type, module)).toMatchObject({
+        identity: 'indeterminate',
+        reason: 'unresolved-reference',
+      });
+    }
+    expect(analyzeIrTypeValueIdentity(typeOfAmbient('Date'), module)).toMatchObject({
+      identity: 'reference',
+      reason: 'known-ambient-reference',
+    });
+  });
+
   it('resolves imported aliases through deterministic re-export evidence without changing it', () => {
     const model = aliasDeclaration('type:model', 'Model', objectType, [], true);
     const source = createModule([model], {
@@ -280,6 +321,72 @@ describe('createIrTypeValueIdentityAnalyzer', () => {
     );
     expect(modules).toEqual(snapshot);
   });
+
+  it('rejects malformed graphs and resolution plans before identity analysis', () => {
+    const module = createModule([]);
+    expect(() => createIrTypeValueIdentityAnalyzer({} as unknown as readonly IrModule[])).toThrow(
+      'Type value identity module set must be an array',
+    );
+    for (const resolution of [
+      null,
+      {},
+      { edges: [], schema: 'other' },
+      { edges: {}, schema: 'flight-compiler-module-resolution/1' },
+    ]) {
+      expect(() =>
+        createIrTypeValueIdentityAnalyzer([module], resolution as unknown as CompilerModuleResolutionPlan),
+      ).toThrow('Type value identity module resolution plan is invalid');
+    }
+
+    const invalidEdges = [
+      null,
+      { specifier: '', target: { packageName: '@flighthq/model', source: 'model.ts' } },
+      { specifier: '@flighthq/model' },
+      { specifier: '@flighthq/model', target: { packageName: '', source: 'model.ts' } },
+      { specifier: '@flighthq/model', target: { packageName: '@flighthq/model', source: '' } },
+    ];
+    for (const edge of invalidEdges) {
+      expect(() =>
+        createIrTypeValueIdentityAnalyzer([module], {
+          edges: [edge] as unknown as CompilerModuleResolutionPlan['edges'],
+          schema: 'flight-compiler-module-resolution/1',
+        }),
+      ).toThrow('Type value identity module resolution plan contains an invalid or duplicate edge');
+    }
+
+    const edge = {
+      specifier: '@flighthq/model',
+      target: { packageName: '@flighthq/model', source: 'model.ts' },
+    } as const;
+    expect(() =>
+      createIrTypeValueIdentityAnalyzer([module], {
+        edges: [edge, edge],
+        schema: 'flight-compiler-module-resolution/1',
+      }),
+    ).toThrow('Type value identity module resolution plan contains an invalid or duplicate edge');
+    expect(() => createIrTypeValueIdentityAnalyzer([module, structuredClone(module)])).toThrow(
+      'Type value identity module set contains a duplicate module identity',
+    );
+
+    const duplicate = classDeclaration('value:duplicate', 'Duplicate');
+    expect(() => createIrTypeValueIdentityAnalyzer([createModule([duplicate, duplicate])])).toThrow(
+      'Type value identity module contains a duplicate declaration identity',
+    );
+    const parameter = { binding: typeBinding('type:duplicate', 'T', 'typeParameter') };
+    expect(() =>
+      createIrTypeValueIdentityAnalyzer([
+        createModule([
+          interfaceDeclaration('type:first-owner', 'First', [parameter]),
+          interfaceDeclaration('type:second-owner', 'Second', [parameter]),
+        ]),
+      ]),
+    ).toThrow('Type value identity module contains a duplicate type parameter identity');
+
+    const analyzer = createIrTypeValueIdentityAnalyzer([module]);
+    expect(() => analyzer.analyze(numberType, createModule([], { name: 'outside' }))).toThrow(
+      'Type value identity subject must belong to the explicit module set',
+    );
+  });
 });
 
 function aliasDeclaration(
@@ -341,6 +448,21 @@ function enumDeclaration(id: string, name: string): IrEnumDeclaration {
   };
 }
 
+function functionDeclaration(id: string, name: string): IrFunctionDeclaration {
+  return {
+    async: false,
+    binding: valueBinding(id, name, 'function'),
+    body: [],
+    exported: false,
+    kind: 'function',
+    origin: sourceOrigin(),
+    overloads: [],
+    parameters: [],
+    returns: numberType,
+    typeParameters: [],
+  };
+}
+
 function interfaceDeclaration(
   id: string,
   name: string,
@@ -385,10 +507,34 @@ function typeReference(
   return { kind: 'named', reference: { binding, kind: 'binding', path: [] }, typeArguments };
 }
 
+function typeOf(binding: IrBindingIdentity, path: readonly string[] = []): IrType {
+  return { kind: 'typeOf', reference: { binding, kind: 'binding', path } };
+}
+
+function typeOfAmbient(name: string): IrType {
+  return { kind: 'typeOf', reference: { kind: 'ambient', name } };
+}
+
+function variableDeclaration(
+  id: string,
+  name: string,
+  type?: IrType,
+): IrVariableDeclaration & Readonly<{ binding: IrBindingIdentity }> {
+  return {
+    binding: valueBinding(id, name, 'variable'),
+    declarationKind: 'const',
+    exported: false,
+    kind: 'variable',
+    mutable: false,
+    origin: sourceOrigin(),
+    type,
+  };
+}
+
 function valueBinding(
   id: string,
   name: string,
-  kind: Extract<IrBindingIdentity['kind'], 'class' | 'enum'>,
+  kind: Extract<IrBindingIdentity['kind'], 'class' | 'enum' | 'function' | 'variable'>,
 ): IrBindingIdentity {
   return { ...sourceOrigin(), id, kind, name, scope: 'module', space: 'value' };
 }
