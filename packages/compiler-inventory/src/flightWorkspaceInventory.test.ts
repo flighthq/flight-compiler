@@ -766,6 +766,37 @@ describe('analyzeFlightWorkspace', () => {
       rmSync(upstream, { force: true, recursive: true });
     }
   });
+
+  it('converges a multi-pass export graph where named re-exports shadow star candidates', () => {
+    const upstream = createUpstreamFixture();
+    try {
+      write(upstream, 'packages/types/src/source.ts', 'export function shared(): number { return 1; }\n');
+      write(upstream, 'packages/types/src/direct.ts', 'export function shared(): string { return "b"; }\n');
+      write(upstream, 'packages/types/src/chain.ts', "export * from './source.js';\n");
+      write(
+        upstream,
+        'packages/types/src/index.ts',
+        "export { shared } from './chain.js';\nexport * from './direct.js';\n" +
+          "export { Mode } from './Mode.js';\nexport type { Shape } from './Shape.js';\nexport { createValue } from './value.js';\n" +
+          "import { createOtherValue as createRenamedValue } from './other.js';\nexport { createRenamedValue as createPublicValue };\n" +
+          "export { createValue as createDirectAlias } from './value.js';\n",
+      );
+      git(upstream, 'add', '.');
+      git(upstream, 'commit', '-m', 'multi-pass convergence');
+
+      const inventory = analyzeFlightWorkspace({ upstreamDirectory: upstream });
+      const inventoryByName = new Map(inventory.packages.map((item) => [item.name, item]));
+      const root = resolvePackageExportLane(inventoryByName, '@flighthq/types');
+
+      expect(root.exports.find((e) => e.name === 'shared')).toMatchObject({
+        kind: 'function',
+        runtime: true,
+        source: 'packages/types/src/source.ts',
+      });
+    } finally {
+      rmSync(upstream, { force: true, recursive: true });
+    }
+  });
 });
 
 function expectInventoryFailure(run: () => unknown, code: CompilerInventoryFailureCode): void {

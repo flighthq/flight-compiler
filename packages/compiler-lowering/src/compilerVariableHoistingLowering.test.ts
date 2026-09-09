@@ -943,6 +943,126 @@ describe('createCompilerLoweringPassVariableHoisting', () => {
     expect(pass.verifyIrModule(module)).toMatchObject({ kind: 'invalid' });
   });
 
+  it('detects residual in injected object and array patterns with nested structure', () => {
+    const module = lower('inject-residual.ts', 'export function read(): void { const x = 1; x; }');
+    const clone = structuredClone(module);
+    const declaration = clone.declarations[0];
+    if (declaration?.kind !== 'function') throw new Error('Expected function');
+    const binding = (name: string, scope: string) =>
+      ({ id: name, name, scope }) as unknown as IrNamedVariable['binding'];
+    const objectPattern: IrVariable = {
+      initializer: { kind: 'literal', value: 0 } as unknown as IrExpression,
+      mutable: true,
+      pattern: {
+        kind: 'object',
+        properties: [
+          {
+            initializer: { kind: 'literal', value: 0 } as unknown as IrExpression,
+            key: { expression: { kind: 'literal', value: 'key' }, kind: 'computed' } as unknown as {
+              expression: IrExpression;
+              kind: 'computed';
+            },
+            pattern: { binding: binding('computed', 'function'), kind: 'binding' },
+          },
+          {
+            key: { kind: 'named', name: 'value' },
+            pattern: { binding: binding('value', 'function'), kind: 'binding' },
+          },
+        ],
+        rest: { binding: binding('rest', 'function'), kind: 'binding' },
+        scope: 'function',
+      },
+      type: { kind: 'unknown', source: 'object' },
+    } as unknown as IrVariable;
+    const arrayPattern: IrVariable = {
+      initializer: { kind: 'literal', value: 0 } as unknown as IrExpression,
+      mutable: true,
+      pattern: {
+        elements: [
+          {
+            initializer: { kind: 'literal', value: 42 } as unknown as IrExpression,
+            pattern: { binding: binding('first', 'function'), kind: 'binding' },
+          },
+          undefined,
+          { pattern: { binding: binding('third', 'function'), kind: 'binding' } },
+        ],
+        kind: 'array',
+        rest: { binding: binding('tail', 'function'), kind: 'binding' },
+        scope: 'function',
+      },
+      type: { kind: 'unknown', source: 'array' },
+    } as unknown as IrVariable;
+    (declaration as unknown as { body: IrStatement[] }).body = [
+      { declarations: [objectPattern, arrayPattern], kind: 'variable' as const },
+      ...declaration.body,
+    ];
+    const pass = createCompilerLoweringPassVariableHoisting();
+    expect(pass.verifyIrModule(clone)).toMatchObject({ kind: 'invalid' });
+  });
+
+  it('lowers block-scoped object and array patterns in a for-loop initializer via direct pass invocation', () => {
+    const module = lower('for-pattern.ts', 'export function read(): void { var x: number = 1; x; }');
+    const clone = structuredClone(module);
+    const declaration = clone.declarations[0];
+    if (declaration?.kind !== 'function') throw new Error('Expected function');
+    const binding = (name: string) => ({ id: name, name, scope: 'block' }) as unknown as IrNamedVariable['binding'];
+    const varIdent: IrExpression = {
+      kind: 'identifier',
+      reference: { binding: binding('source'), kind: 'binding' },
+    } as unknown as IrExpression;
+    const objectPattern: IrVariable = {
+      initializer: varIdent,
+      mutable: false,
+      pattern: {
+        kind: 'object',
+        properties: [
+          {
+            initializer: { kind: 'literal', value: 0 } as unknown as IrExpression,
+            key: { expression: { kind: 'literal', value: 'key' }, kind: 'computed' } as unknown as {
+              expression: IrExpression;
+              kind: 'computed';
+            },
+            pattern: { binding: binding('computed'), kind: 'binding' },
+          },
+          {
+            key: { kind: 'named', name: 'value' },
+            pattern: { binding: binding('value'), kind: 'binding' },
+          },
+        ],
+        rest: { binding: binding('rest'), kind: 'binding' },
+        scope: 'block',
+      },
+      type: { kind: 'unknown', source: 'object' },
+    } as unknown as IrVariable;
+    const arrayPattern: IrVariable = {
+      initializer: varIdent,
+      mutable: false,
+      pattern: {
+        elements: [
+          {
+            initializer: { kind: 'literal', value: 42 } as unknown as IrExpression,
+            pattern: { binding: binding('first'), kind: 'binding' },
+          },
+          undefined,
+          { pattern: { binding: binding('third'), kind: 'binding' } },
+        ],
+        kind: 'array',
+        rest: { binding: binding('tail'), kind: 'binding' },
+        scope: 'block',
+      },
+      type: { kind: 'unknown', source: 'array' },
+    } as unknown as IrVariable;
+    const forLoop: IrStatement = {
+      body: { kind: 'block', statements: [] },
+      initializer: [objectPattern, arrayPattern],
+      kind: 'for',
+    } as unknown as IrStatement;
+    (declaration as unknown as { body: IrStatement[] }).body = [forLoop, ...declaration.body];
+    const pass = createCompilerLoweringPassVariableHoisting();
+    const output = pass.lowerIrModule(clone);
+    expect(pass.verifyIrModule(output)).toEqual({ kind: 'valid' });
+  });
+
   it('maps indexedAccess, intersection, and keyof type domains to unknown', () => {
     const output = lowerIrModuleWithCompilerPasses(
       lower(
