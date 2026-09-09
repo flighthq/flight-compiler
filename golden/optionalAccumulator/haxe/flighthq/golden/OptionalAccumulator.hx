@@ -6,9 +6,9 @@ typedef Item = { name:String, count:Float };
 function busiestCount(items:Array<Item>):Float {
   var best:Null<Item> = null;
   for (item in items) {
-    if ((best == null) || (item.count > cast(best, Item).count)) {
+    if ((best == null) || (item.count > cast(best).count)) {
       best = item;
     }
   }
-  return (best == null) ? 0 : cast(best, Item).count;
+  return (best == null) ? 0 : cast(best).count;
 }

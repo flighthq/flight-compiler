@@ -17,7 +17,7 @@ function selectDefault(values:Array<Dynamic>):Float {
 
 function selectRest(values:Array<Dynamic>):Array<Float> {
   final arrayPatternValue:Array<Dynamic> = values;
-  final rest:Array<Float> = cast(arrayPatternValue.slice(1), Array<Float>);
+  final rest:Array<Float> = cast(arrayPatternValue.slice(1));
   return rest;
 }
 
@@ -61,7 +61,7 @@ function selectMixedRest(values:Array<Dynamic>):Array<Dynamic> {
 function selectNestedMixedRest(values:Array<Dynamic>):Array<Bool> {
   final arrayPatternValue:Array<Dynamic> = values;
   final arrayPatternValue_2:Array<Dynamic> = arrayPatternValue.slice(1);
-  final tail:Array<Bool> = cast(arrayPatternValue_2.slice(1), Array<Bool>);
+  final tail:Array<Bool> = cast(arrayPatternValue_2.slice(1));
   return tail;
 }
 

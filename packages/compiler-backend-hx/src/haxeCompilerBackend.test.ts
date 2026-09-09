@@ -450,7 +450,7 @@ describe('emitIrModuleHaxe', () => {
       'final first:Float = arrayPatternValue[0] ?? 0;',
     );
     expect(emitIrModuleHaxe(rest.module).contents).toContain(
-      'final rest:Array<Float> = cast(arrayPatternValue.slice(1), Array<Float>);',
+      'final rest:Array<Float> = cast(arrayPatternValue.slice(1));',
     );
     expect(emitIrModuleHaxe(nestedDefault.module).contents).toContain('(arrayPatternValue[0] ?? [1])');
     expect(emitIrModuleHaxe(fixedRest.module).contents).toContain(
@@ -1431,6 +1431,31 @@ describe('emitIrModuleHaxe expression coverage', () => {
     const output = emitIrModuleHaxe(result.module).contents;
 
     expect(output).toContain('cast(record, Dynamic)');
+  });
+
+  it('emits untyped cast when target type is array with element type', () => {
+    const result = lower(
+      'cast-array.ts',
+      'export function toNumbers(values: unknown[]): number[] { return values as number[]; }',
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('cast(values)');
+    expect(output).not.toContain('Array<Float>)');
+  });
+
+  it('emits untyped cast when target is typedef interface', () => {
+    const result = lower(
+      'cast-typedef.ts',
+      `
+        interface Item { count: number; }
+        export function read(value: unknown): number { return (value as Item).count; }
+      `,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('cast(value)');
+    expect(output).not.toContain('cast(value, Item)');
   });
 
   it('emits undefined-default as null-coalescing', () => {

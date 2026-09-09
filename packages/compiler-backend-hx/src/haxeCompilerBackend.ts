@@ -640,7 +640,7 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
       return `${expression.callee.kind === 'function' ? `(${emitExpression(expression.callee, context)})` : emitExpression(expression.callee, context)}${expression.optional ? '?.' : ''}(${emitCallArgumentsHaxe(expression, context)})`;
     }
     case 'cast':
-      return `cast(${emitExpression(expression.expression, context)}, ${emitType(expression.type, context)})`;
+      return emitCastExpressionHaxe(expression, context);
     case 'conditional':
       return `(${emitExpression(expression.condition, context)} ? ${emitExpression(expression.whenTrue, context)} : ${emitExpression(expression.whenFalse, context)})`;
     case 'element':
@@ -722,8 +722,15 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
           ? (getIrModuleDeclaredTypeNameHaxe(expression.object.narrowedMember, context) ??
             getHaxePrimitiveNarrowedTypeName(expression.object.narrowedMember))
           : undefined;
+      const narrowedIsTypedef =
+        narrowed !== undefined &&
+        expression.object.kind === 'identifier' &&
+        expression.object.narrowedMember !== undefined &&
+        isIrNarrowedMemberTypedefHaxe(expression.object.narrowedMember, context);
       const object = narrowed
-        ? `cast(${emitExpression(expression.object, context)}, ${narrowed})`
+        ? narrowedIsTypedef
+          ? `cast(${emitExpression(expression.object, context)})`
+          : `cast(${emitExpression(expression.object, context)}, ${narrowed})`
         : emitExpression(expression.object, context);
       return `${object}${expression.optional ? '?.' : '.'}${safeHaxeName(expression.name)}`;
     }
@@ -1013,6 +1020,37 @@ function hasIrModuleClassImplementingHaxe(
           implemented.reference.binding.id === declaration.binding.id,
       ),
   );
+}
+
+function emitCastExpressionHaxe(
+  expression: Readonly<Extract<IrExpression, { kind: 'cast' }>>,
+  context: EmitContext,
+): string {
+  const inner = emitExpression(expression.expression, context);
+  if (isIrCastTargetUntypedHaxe(expression.type, context)) return `cast(${inner})`;
+  return `cast(${inner}, ${emitType(expression.type, context)})`;
+}
+
+function isIrCastTargetTypedefHaxe(type: Readonly<IrType>, context: EmitContext): boolean {
+  if (type.kind !== 'named' || type.reference.kind !== 'binding') return false;
+  const declaration = context.module.declarations.find(
+    (candidate) => candidate.kind === 'interface' && candidate.binding.id === type.reference.binding.id,
+  );
+  if (!declaration || declaration.kind !== 'interface') return false;
+  return !hasIrModuleClassImplementingHaxe(declaration, context);
+}
+
+function isIrCastTargetUntypedHaxe(type: Readonly<IrType>, context: EmitContext): boolean {
+  if (type.kind === 'array') return true;
+  return isIrCastTargetTypedefHaxe(type, context);
+}
+
+function isIrNarrowedMemberTypedefHaxe(name: string, context: EmitContext): boolean {
+  const declaration = context.module.declarations.find(
+    (candidate) => candidate.kind === 'interface' && candidate.binding.name === name,
+  );
+  if (!declaration || declaration.kind !== 'interface') return false;
+  return !hasIrModuleClassImplementingHaxe(declaration, context);
 }
 
 function emitIdentifierReferenceHaxe(reference: Readonly<IrIdentifierReference>, context: EmitContext): string {
@@ -1690,7 +1728,7 @@ function emitVariable(variable: Readonly<IrVariable>, context: EmitContext): str
     variable.initializer !== undefined &&
     isIrExpressionDynamicReadHaxe(variable.initializer, context);
   const initializer = variable.initializer
-    ? ` = ${restCast ? `cast(${emitExpression(variable.initializer, context)}, ${emitType(variable.type!, context)})` : normalizeSourceTextGrouping(emitExpression(variable.initializer, context))}`
+    ? ` = ${restCast ? (isIrCastTargetUntypedHaxe(variable.type!, context) ? `cast(${emitExpression(variable.initializer, context)})` : `cast(${emitExpression(variable.initializer, context)}, ${emitType(variable.type!, context)})`) : normalizeSourceTextGrouping(emitExpression(variable.initializer, context))}`
     : '';
   return `${variable.mutable ? 'var' : 'final'} ${getBindingTargetNameHaxe(variable.binding, context)}${type}${initializer};`;
 }
