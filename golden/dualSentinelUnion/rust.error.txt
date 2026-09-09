@@ -1,0 +1,1 @@
+rust emission failed for @flighthq/golden/packages/golden/src/dualSentinelUnion.ts: types containing both null and undefined require distinct Rust sentinels

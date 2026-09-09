@@ -1,0 +1,46 @@
+[
+  {
+    "call": "assign_string",
+    "arguments": ["hello"],
+    "returns": "string"
+  },
+  {
+    "call": "assign_number",
+    "arguments": [42],
+    "returns": "number"
+  },
+  {
+    "call": "reassign",
+    "arguments": [true],
+    "returns": "number"
+  },
+  {
+    "call": "reassign",
+    "arguments": [false],
+    "returns": "string"
+  },
+  {
+    "call": "assign_null",
+    "arguments": ["hello"],
+    "returns": "string",
+    "targets": ["haxe", "rust"],
+    "rustOptional": [0]
+  },
+  {
+    "call": "assign_null",
+    "arguments": [null],
+    "returns": "string",
+    "targets": ["haxe", "rust"],
+    "rustOptional": [0]
+  },
+  {
+    "call": "return_member",
+    "arguments": [true],
+    "returns": "string"
+  },
+  {
+    "call": "return_member",
+    "arguments": [false],
+    "returns": "number"
+  }
+]
