@@ -138,7 +138,7 @@ describe('emitIrModuleCpp', () => {
 
     expect(emitted.contents).toContain('return std::fmod(left, right)');
     expect(emitted.contents).toContain('return flight::Error(message)');
-    expect(emitted.contents).toContain('static_assert(flight::runtime_contract.cpp_abi == 2');
+    expect(emitted.contents).toContain('static_assert(flight::runtime_contract.cpp_abi == 1');
   });
 
   it('uses overflow-safe source bitwise semantics in the runtime profile', () => {
