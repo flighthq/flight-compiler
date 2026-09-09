@@ -8,15 +8,15 @@ static_assert(flight::runtime_contract.cpp_abi == 2, "Flight C++ runtime ABI mis
 namespace flighthq_golden {
 
 inline double minimum(double a, double b) {
-  return std::min(a, b);
+  return flight::minimum(a, b);
 }
 
 inline double maximum(double a, double b) {
-  return std::max(a, b);
+  return flight::maximum(a, b);
 }
 
 inline double clamp(double value, double low, double high) {
-  return std::max(low, std::min(value, high));
+  return flight::maximum(low, flight::minimum(value, high));
 }
 
 inline double abs_distance(double a, double b) {

@@ -8,7 +8,7 @@ static_assert(flight::runtime_contract.cpp_abi == 2, "Flight C++ runtime ABI mis
 namespace flighthq_golden {
 
 inline double widest(double first, double second) {
-  return std::max(first, std::abs(second));
+  return flight::maximum(first, std::abs(second));
 }
 
 } // namespace flighthq_golden

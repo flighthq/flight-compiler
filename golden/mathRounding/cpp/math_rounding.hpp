@@ -24,7 +24,7 @@ inline double round_half(double x) {
 }
 
 inline double clamp_floor(double value, double min, double max) {
-  return std::floor(std::max(min, std::min(max, value)));
+  return std::floor(flight::maximum(min, flight::minimum(max, value)));
 }
 
 inline double distance_from_origin(double x, double y) {
