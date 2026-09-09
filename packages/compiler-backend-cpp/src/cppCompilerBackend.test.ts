@@ -1895,14 +1895,29 @@ describe('emitIrModuleCpp', () => {
     expect(emitted.contents).toContain('||');
   });
 
-  it('disambiguates colliding public C++ names with numeric suffix', () => {
+  it('uses stable source-identity spelling for colliding public C++ names', () => {
     const result = lower(
       'collision.ts',
       'export function fooBar(): number { return 1; } export function foo_bar(): number { return 2; }',
     );
+    const changedBodies = lower(
+      'collision.ts',
+      'export function fooBar(): number { return 3; } export function foo_bar(): number { return 4; }',
+    );
+    const reversed = lower(
+      'collision.ts',
+      'export function foo_bar(): number { return 2; } export function fooBar(): number { return 1; }',
+    );
     const emitted = emitIrModuleCpp(result.module);
-    expect(emitted.contents).toContain('foo_bar()');
-    expect(emitted.contents).toContain('foo_bar_2()');
+    const changed = emitIrModuleCpp(changedBodies.module);
+    const reordered = emitIrModuleCpp(reversed.module);
+
+    expect(emitted.contents).toContain('double foo_bar_flight_value_function_foo_u000042_ar()');
+    expect(emitted.contents).toContain('double foo_bar_flight_value_function_foo_u00005f_bar()');
+    expect(changed.contents).toContain('double foo_bar_flight_value_function_foo_u000042_ar()');
+    expect(changed.contents).toContain('double foo_bar_flight_value_function_foo_u00005f_bar()');
+    expect(reordered.contents).toContain('double foo_bar_flight_value_function_foo_u000042_ar()');
+    expect(reordered.contents).toContain('double foo_bar_flight_value_function_foo_u00005f_bar()');
   });
 
   it('falls back to _internal_ output path when source path does not resolve to a file name', () => {
@@ -1995,26 +2010,39 @@ describe('emitIrModuleCpp', () => {
     expect(emitted.contents).toContain('-=');
   });
 
-  it('emits bitwise compound assignment operators', () => {
+  it('emits bitwise compound assignment with int32 casts', () => {
     const result = lower(
       'bitwise-assign.ts',
       'export function mask(value: number, m: number): number { let r: number = value; r &= m; r |= 1; r ^= 255; r <<= 2; r >>= 1; return r; }',
     );
     const emitted = emitIrModuleCpp(result.module);
-    expect(emitted.contents).toContain('r &= m');
-    expect(emitted.contents).toContain('r |= 1.0');
-    expect(emitted.contents).toContain('r ^= 255.0');
-    expect(emitted.contents).toContain('r <<= 2.0');
-    expect(emitted.contents).toContain('r >>= 1.0');
+    expect(emitted.contents).toContain(
+      'static_cast<double>(static_cast<int32_t>(assignment_target) & static_cast<int32_t>(m))',
+    );
+    expect(emitted.contents).toContain(
+      'static_cast<double>(static_cast<int32_t>(assignment_target) | static_cast<int32_t>(1.0))',
+    );
+    expect(emitted.contents).toContain(
+      'static_cast<double>(static_cast<int32_t>(assignment_target) ^ static_cast<int32_t>(255.0))',
+    );
+    expect(emitted.contents).toContain(
+      'static_cast<double>(static_cast<int32_t>(assignment_target) << static_cast<int32_t>(2.0))',
+    );
+    expect(emitted.contents).toContain(
+      'static_cast<double>(static_cast<int32_t>(assignment_target) >> static_cast<int32_t>(1.0))',
+    );
+    expect(emitted.contents).toContain('#include <cstdint>');
   });
 
-  it('emits %= compound assignment', () => {
+  it('emits %= compound assignment as std::fmod', () => {
     const result = lower(
       'mod-assign.ts',
       'export function remainder(value: number, divisor: number): number { let r: number = value; r %= divisor; return r; }',
     );
     const emitted = emitIrModuleCpp(result.module);
-    expect(emitted.contents).toContain('r %= divisor');
+    expect(emitted.contents).toContain('std::fmod(assignment_target, divisor)');
+    expect(emitted.contents).toContain('#include <cmath>');
+    expect(emitted.contents).not.toContain('%=');
   });
 
   it('emits break and continue statements in for-of loop', () => {
@@ -4767,8 +4795,8 @@ describe('emitIrModuleCpp', () => {
     const emitted = emitIrModuleCpp(
       lower('collide.ts', 'export const value: number = 1; export const Value: number = 2;').module,
     );
-    expect(emitted.contents).toContain('value');
-    expect(emitted.contents).toContain('value_2');
+    expect(emitted.contents).toContain('value_flight_value_variable_value');
+    expect(emitted.contents).toContain('value_flight_value_variable__u000056_alue');
   });
 
   it('refuses variable declaration with injected pattern via lowering-plan validation', () => {
@@ -4809,11 +4837,11 @@ describe('emitIrModuleCpp', () => {
     expect(() => emitIrModuleCpp(module)).toThrow('requires inferred type evidence');
   });
 
-  it('emits ambient method binding .pop() with value_or fallback in flight-cpp', () => {
+  it('emits ambient method binding .pop() with optional unwrap in flight-cpp', () => {
     const result = lower('pop.ts', 'export function last(items: number[]): number { return items.pop() ?? -1; }');
     const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
     expect(emitted.contents).toContain('.pop()');
-    expect(emitted.contents).toContain('.value_or(-1.0)');
+    expect(emitted.contents).toContain('.value()');
   });
 
   it('emits ambient sizeMethod binding in call expression context', () => {
@@ -4852,10 +4880,10 @@ describe('emitIrModuleCpp', () => {
     expect(emitted.contents).toContain('std::holds_alternative');
   });
 
-  it('emits double negation as consecutive unary minus', () => {
+  it('emits unary postfix with parenthesized consecutive same-sign operator', () => {
     const result = lower('double-neg.ts', 'export function neg(x: number): number { return -(-x); }');
     const emitted = emitIrModuleCpp(result.module);
-    expect(emitted.contents).toContain('--x');
+    expect(emitted.contents).toContain('-(');
   });
 
   it('refuses for-in without closed key evidence', () => {
@@ -5036,19 +5064,18 @@ describe('emitIrModuleCpp', () => {
     expect(() => emitIrModuleCpp(module)).toThrow('lowering-plan');
   });
 
-  it('refuses optional element access without contextual type evidence', () => {
+  it('emits optional element access via ambient member binding', () => {
     const result = lower(
       'opt-prop.ts',
       `export function first(items: number[]): number | undefined {
          return items[0];
        }`,
     );
-    expect(() => emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' })).toThrow(
-      'contextual optionalSingle construction requires expression type evidence',
-    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+    expect(emitted.contents).toContain('.element(');
   });
 
-  it('refuses unsupported variant alternative through type alias', () => {
+  it('refuses unchecked typeof discrimination through a variant type alias', () => {
     expect(() =>
       emitIrModuleCpp(
         lower(
@@ -5161,13 +5188,14 @@ describe('emitIrModuleCpp', () => {
     expect(emitted.contents).toContain('#include <cstdint>');
   });
 
-  it('emits bitwise compound assignment with direct operators', () => {
+  it('emits bitwise compound assignment with int32 casts', () => {
     const result = lower(
       'bitwise-assign.ts',
       `export function mask(x: number): number { let v: number = x; v &= 0xFF; return v; }`,
     );
     const emitted = emitIrModuleCpp(result.module);
-    expect(emitted.contents).toContain('v &= 255.0');
+    expect(emitted.contents).toContain('static_cast<int32_t>');
+    expect(emitted.contents).toContain('#include <cstdint>');
   });
 
   it('refuses shared mutable capture without concrete binding type evidence', () => {
@@ -5528,13 +5556,14 @@ describe('emitIrModuleCpp', () => {
     expect(emitted.contents).toContain('flight::Map');
   });
 
-  it('emits modulo compound assignment with direct operator', () => {
+  it('emits modulo assignment with std::fmod', () => {
     const result = lower(
       'mod-assign.ts',
       `export function wrap(x: number): number { let v: number = x; v %= 3; return v; }`,
     );
     const emitted = emitIrModuleCpp(result.module);
-    expect(emitted.contents).toContain('v %= 3.0');
+    expect(emitted.contents).toContain('std::fmod');
+    expect(emitted.contents).toContain('#include <cmath>');
   });
 
   it('emits getIrVariantUnionTypeCpp through type alias indirection', () => {

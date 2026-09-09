@@ -26,10 +26,10 @@ import { resolveDependency } from './dependencyLock.js';
 // rather than proven: what this gate establishes for Haxe is that the lowering is right, not that
 // every Haxe backend renders a value the same way. Proving that needs hxcpp and a C++ toolchain.
 //
-// Arguments are scalars, arrays of scalars, records ($type), string enums ($stringEnum), tasks,
-// and target-selected Date instants. A record-returning function is tested through `returnField`,
-// which accesses one field of the result and compares the scalar; full record serialization is
-// not needed.
+// Arguments are scalars, arrays of scalars, tasks, target-selected Date instants, records ($type),
+// and string enums ($stringEnum).
+// A record-returning function is tested through `returnField`, which accesses one field of the
+// result and compares the scalar; full record serialization is not needed.
 //
 // A fixture opts in with `oracle.json`. Values are compared as canonical text rather than by each
 // language's own formatting, because `1` and `1.0` and `1.000000` are the same answer — and because
@@ -434,7 +434,6 @@ function runRustOracle(fixture: string, cases: readonly OracleCase[]): readonly 
         const invocation = oracleCase.construct
           ? `${rustModule}::${oracleCase.construct}::new(${(oracleCase.constructArgs ?? []).map((arg) => renderRustValue(arg, rustModule)).join(', ')}).${rustName}(${args.join(', ')})`
           : `${rustModule}::${rustName}(${args.join(', ')})`;
-
         const call = oracleCase.awaits ? `flight_runtime::block_on(${invocation})` : invocation;
         const rustField = oracleCase.returnField ? toSnakeCase(oracleCase.returnField) : '';
         const access = rustField ? `(${call}).${rustField}` : call;
@@ -535,11 +534,10 @@ function runCppOracle(
             oracleCase.cppTypes?.[index] ?? arrayHints.get(`${oracleCase.call}:${String(index)}`),
           ),
         );
-        const cppName = oracleCase.cppCall ?? toSnakeCase(oracleCase.call);
+        const cppName = oracleCase.cppCall ?? toCppName(oracleCase.call);
         const invocation = oracleCase.construct
           ? `flighthq_golden::${oracleCase.construct}(${(oracleCase.constructArgs ?? []).map((arg) => renderCppValue(arg)).join(', ')}).${cppName}(${arguments_.join(', ')})`
           : `flighthq_golden::${cppName}(${arguments_.join(', ')})`;
-
         const value = oracleCase.awaits ? `${invocation}.get()` : invocation;
         const cppField = oracleCase.returnField ? toCppName(oracleCase.returnField) : '';
         const cppAccess = cppField ? `(${value}).${cppField}` : value;

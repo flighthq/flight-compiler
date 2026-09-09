@@ -45,6 +45,7 @@ import type {
   EmittedFile,
   IrBinaryOperator,
   IrBinaryOperatorSemantics,
+  IrBindingPattern,
   IrCatchClause,
   IrClassDeclaration,
   IrControlFlowLabelIdentity,
@@ -254,27 +255,44 @@ function emitIrModuleCppWithContext(
 }
 
 function createCppTargetNameMap(module: Readonly<IrModule>): Map<string, string> {
-  const collisionBindingIds = new Set<string>();
-  while (true) {
-    try {
-      return new Map(
-        createIrModuleTargetNameAllocation(module, (binding) => ({
-          namespace: 'identifier',
-          preferredName: collisionBindingIds.has(binding.id)
-            ? createCppPublicCollisionName(binding)
-            : getCppPreferredBindingName(binding),
-        })).map((allocation) => [allocation.identity, allocation.name]),
-      );
-    } catch (error) {
-      if (
-        !isCompilerTargetNameAllocationFailure(error) ||
-        error.identities.every((identity) => collisionBindingIds.has(identity))
-      ) {
-        throw error;
-      }
-      error.identities.forEach((identity) => collisionBindingIds.add(identity));
+  const publicNameGroups = new Map<string, (IrBindingIdentity | IrTypeBindingIdentity)[]>();
+  for (const declaration of module.declarations) {
+    if (!declaration.exported) continue;
+    for (const binding of collectCppPublicDeclarationBindings(declaration)) {
+      const preferredName = getCppPreferredBindingName(binding).normalize('NFC');
+      const group = publicNameGroups.get(preferredName) ?? [];
+      group.push(binding);
+      publicNameGroups.set(preferredName, group);
     }
   }
+  const collisionBindingIds = new Set(
+    [...publicNameGroups.values()]
+      .filter((group) => group.length > 1)
+      .flatMap((group) => group.map((binding) => binding.id)),
+  );
+  return new Map(
+    createIrModuleTargetNameAllocation(module, (binding) => ({
+      namespace: 'identifier',
+      preferredName: collisionBindingIds.has(binding.id)
+        ? createCppPublicCollisionName(binding)
+        : getCppPreferredBindingName(binding),
+    })).map((allocation) => [allocation.identity, allocation.name]),
+  );
+}
+
+function collectCppPublicDeclarationBindings(
+  declaration: Readonly<IrDeclaration>,
+): readonly (IrBindingIdentity | IrTypeBindingIdentity)[] {
+  return 'binding' in declaration ? [declaration.binding] : collectCppBindingPatternBindings(declaration.pattern);
+}
+
+function collectCppBindingPatternBindings(pattern: Readonly<IrBindingPattern>): readonly IrBindingIdentity[] {
+  if (pattern.kind === 'binding') return [pattern.binding];
+  const children =
+    pattern.kind === 'array'
+      ? pattern.elements.flatMap((element) => (element ? collectCppBindingPatternBindings(element.pattern) : []))
+      : pattern.properties.flatMap((property) => collectCppBindingPatternBindings(property.pattern));
+  return pattern.rest ? [...children, ...collectCppBindingPatternBindings(pattern.rest)] : children;
 }
 
 function getCppPreferredBindingName(binding: Readonly<IrBindingIdentity | IrTypeBindingIdentity>): string {
@@ -663,6 +681,10 @@ function emitExpression(
         context.includes.add('cmath');
         return emitExpandedAssignmentCpp(left, `std::pow(assignment_target, ${right})`);
       }
+      if (expression.operator === '%=') {
+        context.includes.add('cmath');
+        return emitExpandedAssignmentCpp(left, `std::fmod(assignment_target, ${right})`);
+      }
       if (expression.operator === '>>>=') {
         if (getCppRuntimeProfile(context.options) === 'flight-cpp') {
           return emitExpandedAssignmentCpp(left, `flight::unsigned_right_shift(assignment_target, ${right})`);
@@ -674,8 +696,15 @@ function emitExpression(
         );
       }
       const bitwiseOperator = getCppBitwiseAssignmentOperator(expression.operator);
-      if (bitwiseOperator && getCppRuntimeProfile(context.options) === 'flight-cpp') {
-        return emitExpandedAssignmentCpp(left, emitBitwiseOperationCpp(bitwiseOperator, 'assignment_target', right));
+      if (bitwiseOperator) {
+        if (getCppRuntimeProfile(context.options) === 'flight-cpp') {
+          return emitExpandedAssignmentCpp(left, emitBitwiseOperationCpp(bitwiseOperator, 'assignment_target', right));
+        }
+        context.includes.add('cstdint');
+        return emitExpandedAssignmentCpp(
+          left,
+          `static_cast<double>(static_cast<int32_t>(assignment_target) ${bitwiseOperator} static_cast<int32_t>(${right}))`,
+        );
       }
       if (expression.operator === '&&=' || expression.operator === '||=' || expression.operator === '??=') {
         return emitLogicalAssignmentCpp(left, expression.operator, right);
@@ -786,7 +815,16 @@ function emitExpression(
           const args = expression.arguments.map((argument, index) =>
             emitExpression(argument, context, getIrCallArgumentExpectedTypeCpp(expression, index, context)),
           );
-          return `${receiver}${memberOp(expression.callee.object, context)}${binding.targetName}${emitCppTypeArguments(expression.typeArguments, context)}(${args.join(', ')})`;
+          const call = `${receiver}${memberOp(expression.callee.object, context)}${binding.targetName}${emitCppTypeArguments(expression.typeArguments, context)}(${args.join(', ')})`;
+          if (
+            getCppRuntimeProfile(context.options) === 'flight-cpp' &&
+            cppOptionalArrayMethods.has(expression.callee.member.name) &&
+            expression.callee.member.receiver === 'array' &&
+            (!expectedType || !irTypeIncludesUndefinedCpp(expectedType))
+          ) {
+            return `${call}.value()`;
+          }
+          return call;
         }
       }
       if (
@@ -1095,13 +1133,16 @@ function emitExpression(
       const operator = expression.postfix
         ? emitPostfixUnaryOperator(expression.operator)
         : emitPrefixUnaryOperator(expression.operator);
+      if (!expression.postfix && (operator === '-' || operator === '+') && operand.startsWith(operator)) {
+        return `${operator}(${operand})`;
+      }
       return expression.postfix ? `${operand}${operator}` : `${operator}${operand}`;
     }
     case 'undefinedValue':
       return emitUndefinedWithExpectedTypeCpp(expectedType, context);
     case 'undefinedDefault': {
       context.includes.add('optional');
-      return `${emitExpression(expression.value, context)}.value_or(${emitExpression(expression.fallback, context)})`;
+      return `${emitOptionalReferenceCpp(expression.value, context)}.value_or(${emitExpression(expression.fallback, context)})`;
     }
     case 'tupleRest': {
       context.includes.add('tuple');
@@ -1739,6 +1780,13 @@ function emitContextualUnionExpressionCpp(
   ) {
     return undefined;
   }
+  if (
+    expression.kind === 'element' &&
+    getCppRuntimeProfile(context.options) === 'flight-cpp' &&
+    hasIndexedRuntimeReceiverCpp(expression, context)
+  ) {
+    return undefined;
+  }
   const expressionType = getIrExpressionTypeForUnionConstructionCpp(expression, plan.valueSlots, context);
   if (!expressionType) {
     if (plan.kind === 'singleValue') return undefined;
@@ -2283,6 +2331,12 @@ function collectIrModuleArrayElementBindingIdsCpp(
   return result;
 }
 
+function irTypeIncludesUndefinedCpp(type: Readonly<IrType>): boolean {
+  if (type.kind === 'undefined') return true;
+  if (type.kind === 'union') return type.types.some((member) => member.kind === 'undefined');
+  return false;
+}
+
 function irFunctionExpressionUsesThisCpp(expression: Readonly<Extract<IrExpression, { kind: 'function' }>>): boolean {
   let usesThis = false;
   const observer = {
@@ -2341,6 +2395,13 @@ function emitAssignmentTargetCpp(expression: Readonly<IrExpression>, context: Em
     (context.nullableBindingIds.has(expression.reference.binding.id) ||
       context.defaultedParameterIds.has(expression.reference.binding.id))
   ) {
+    return emitIdentifierReference(expression.reference, context);
+  }
+  return emitExpression(expression, context);
+}
+
+function emitOptionalReferenceCpp(expression: Readonly<IrExpression>, context: EmitContext): string {
+  if (expression.kind === 'identifier' && expression.reference.kind === 'binding') {
     return emitIdentifierReference(expression.reference, context);
   }
   return emitExpression(expression, context);
@@ -2630,7 +2691,7 @@ function emitOptionalChainReceiverCpp(expression: Readonly<IrExpression>, contex
   ) {
     return `${emitExpression(expression.object, context)}.get(${emitExpression(expression.index, context)})`;
   }
-  return emitExpression(expression, context);
+  return emitOptionalReferenceCpp(expression, context);
 }
 
 function emitOptionalChainPayloadTypeCpp(type: Readonly<IrType>, context: EmitContext): string {
@@ -3352,6 +3413,8 @@ function isSuperCallStatement(statement: Readonly<IrStatement>): boolean {
 function emissionError(context: EmitContext, message: string): never {
   throw createBackendEmissionFailure('cpp', context.module, message);
 }
+
+const cppOptionalArrayMethods = new Set(['shift', 'pop']);
 
 const cppMathSpreadFoldTargets: Readonly<Record<string, { algorithm: string; identity: string; runtime: string }>> = {
   max: {
