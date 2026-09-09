@@ -11743,3 +11743,223 @@ describe('emitIrModuleRust while true loop', () => {
     expect(output).not.toContain('while true');
   });
 });
+
+describe('emitIrModuleRust tagged union type alias', () => {
+  it('emits a union of named interfaces as a Rust enum with accessors', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'tagged-union.ts',
+        `export interface Circle { radius: number; }
+         export interface Square { side: number; }
+         export type Shape = Circle | Square;
+         export function area(shape: Shape): number { return 0; }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('enum Shape');
+    expect(output).toContain('Circle(Circle)');
+    expect(output).toContain('Square(Square)');
+    expect(output).toContain('fn as_circle');
+    expect(output).toContain('fn as_square');
+  });
+});
+
+describe('emitIrModuleRust tagged union with shared properties', () => {
+  it('generates shared property accessors for properties present in all variants', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'shared-union.ts',
+        `export interface Dog { name: string; legs: number; }
+         export interface Cat { name: string; indoor: boolean; }
+         export type Pet = Dog | Cat;
+         export function label(pet: Pet): string { return pet.name; }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('enum Pet');
+    expect(output).toContain('fn name(&self) -> String');
+  });
+});
+
+describe('emitIrModuleRust abstract class as trait', () => {
+  it('emits abstract class with methods as Rust trait with default implementations', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'abstract-class.ts',
+        `export abstract class Renderer {
+           abstract render(): string;
+           prefix(): string { return ">> "; }
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('trait Renderer');
+    expect(output).toContain('fn render(&self) -> String;');
+    expect(output).toContain('fn prefix(&self) -> String {');
+  });
+});
+
+describe('emitIrModuleRust abstract class subclass trait impl', () => {
+  it('emits subclass with inherited trait impl block', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'abstract-impl.ts',
+        `export abstract class Formatter {
+           abstract format(value: number): string;
+         }
+         export class HexFormatter extends Formatter {
+           format(value: number): string { return value.toString(); }
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('trait Formatter');
+    expect(output).toContain('impl Formatter for HexFormatter');
+  });
+});
+
+describe('emitIrModuleRust enum declaration', () => {
+  it('emits TypeScript enum as Rust struct with associated constants', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'enum-decl.ts',
+        `export enum Color { Red = 0, Green = 1, Blue = 2 }
+         export function pick(c: Color): number { return c; }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('Color');
+  });
+});
+
+describe('emitIrModuleRust for-of loop', () => {
+  it('emits for-of over array as for-in loop', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'for-of.ts',
+        `export function sum(items: number[]): number { let total: number = 0; for (const item of items) { total = total + item; } return total; }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('for');
+    expect(output).toContain('in');
+  });
+});
+
+describe('emitIrModuleRust lent operand for mutated parameter', () => {
+  it('emits &mut for parameter the function mutates through', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'mut-param.ts',
+        `export interface Cell { value: number; }
+         export function set(cell: Cell, n: number): void { cell.value = n; }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('&mut');
+  });
+});
+
+describe('emitIrModuleRust class composition constructor', () => {
+  it('emits field delegation for class extending concrete base', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'composition.ts',
+        `export class Base {
+           x: number;
+           constructor(x: number) { this.x = x; }
+         }
+         export class Derived extends Base {
+           y: number;
+           constructor(x: number, y: number) { super(x); this.y = y; }
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('base:');
+  });
+});
+
+describe('emitIrModuleRust multiple runtime use imports', () => {
+  it('emits braced use tree when multiple runtime types are used', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'multi-runtime.ts',
+        `export function run(p: Promise<number>, q: Promise<string>): Promise<number> { return p; }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('use flight_runtime::');
+  });
+});
+
+describe('emitIrModuleRust function type emission', () => {
+  it('emits function type as Rc<dyn Fn>', () => {
+    const output = emitIrModuleRust(
+      lower('fn-type.ts', `export function apply(f: (x: number) => number, value: number): number { return f(value); }`)
+        .module,
+    ).contents;
+    expect(output).toContain('Rc<dyn Fn(');
+  });
+});
+
+describe('emitIrModuleRust rebound binding mut', () => {
+  it('emits mut for a parameter the body reassigns', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'rebound.ts',
+        'export function clamp(value: number, max: number): number { let v = value; if (v > max) { v = max; } return v; }',
+      ).module,
+    ).contents;
+    expect(output).toContain('let mut v');
+  });
+});
+
+describe('emitIrModuleRust string concatenation', () => {
+  it('emits string + string as format! concatenation', () => {
+    const output = emitIrModuleRust(
+      lower('str-concat.ts', 'export function greet(name: string): string { return "hello " + name; }').module,
+    ).contents;
+    expect(output).toContain('format!');
+  });
+});
+
+describe('emitIrModuleRust type alias for object type', () => {
+  it('emits type alias with object type as pub struct', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'type-alias-obj.ts',
+        `export type Pair = { first: number; second: number; };
+         export function sum(p: Pair): number { return p.first + p.second; }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('pub struct Pair');
+    expect(output).toContain('first: f64');
+    expect(output).toContain('second: f64');
+  });
+});
+
+describe('emitIrModuleRust optional record property', () => {
+  it('emits optional interface property as Option field', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'optional-prop.ts',
+        `export interface Config { name: string; timeout?: number; }
+         export function create(name: string): Config { return { name }; }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('Option<f64>');
+  });
+});
+
+describe('emitIrModuleRust labeled break', () => {
+  it('emits labeled break with Rust lifetime label', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'labeled-break.ts',
+        `export function search(matrix: number[][]): number {
+           let found: number = -1;
+           outer: for (const row of matrix) {
+             for (const item of row) {
+               if (item > 10) { found = item; break outer; }
+             }
+           }
+           return found;
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain("'outer");
+    expect(output).toContain('break');
+  });
+});
