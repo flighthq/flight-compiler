@@ -5674,13 +5674,14 @@ describe('emitIrModuleCpp', () => {
     expect(emitted.contents).toContain('caught');
   });
 
-  it('detects containsReturnStatement through if-else otherwise branch', () => {
+  it('evaluates containsReturnStatement false branch for if without else', () => {
     const result = lower(
-      'return-in-else.ts',
+      'if-no-else.ts',
       `export async function pick(task: Promise<number>): Promise<number> {
          try {
            const x: number = await task;
-           if (x > 0) { return x; } else { return 0; }
+           if (x > 0) { let a: number = x; }
+           return x;
          } finally { let y: number = 1; }
        }`,
     );
@@ -5688,12 +5689,13 @@ describe('emitIrModuleCpp', () => {
     expect(emitted.contents).toContain('finally_return');
   });
 
-  it('detects containsReturnStatement through nested try finallyBody', () => {
+  it('evaluates containsReturnStatement false branch for try without finally', () => {
     const result = lower(
-      'return-in-finally.ts',
+      'try-no-finally.ts',
       `export async function nested(task: Promise<number>): Promise<number> {
          try {
-           try { let x: number = await task; } finally { return 0; }
+           try { let x: number = await task; } catch { let z: number = 0; }
+           return 0;
          } finally { let y: number = 1; }
        }`,
     );
@@ -5705,12 +5707,12 @@ describe('emitIrModuleCpp', () => {
     const result = lower(
       'negated-typeof.ts',
       `export function process(value: string | number): number {
-         if (typeof value === 'string') { return value.length; }
-         return value;
+         if (typeof value !== 'string') { return value; }
+         return value.length;
        }`,
     );
     const emitted = emitIrModuleCpp(result.module);
-    expect(emitted.contents).toContain('std::holds_alternative');
+    expect(emitted.contents).toContain('!std::holds_alternative');
   });
 
   it('emits optional property chain with no ambient member and no accessor', () => {
