@@ -11143,7 +11143,7 @@ describe('emitIrModuleRust class implements interface as trait', () => {
     expect(output).toContain('fn name(&self) -> String;');
   });
 
-  it('refuses a class that implements a non-binding type reference', () => {
+  it('refuses a class that implements a non-binding type reference via primitive implements entry', () => {
     const result = lower(
       'non-binding-impl.ts',
       `export interface Marker { tag(): string }
@@ -11157,7 +11157,12 @@ describe('emitIrModuleRust class implements interface as trait', () => {
       const modified = {
         ...module,
         declarations: module.declarations.map((d) =>
-          d === classDecl ? { ...d, implements: [{ kind: 'primitive' as const, name: 'string' }] } : d,
+          d === classDecl
+            ? {
+                ...d,
+                implements: [{ kind: 'primitive' as const, name: 'string' as const }],
+              }
+            : d,
         ),
       };
       expect(() => emitIrModuleRust(modified)).toThrow('implements a type with no Rust trait');
@@ -11419,21 +11424,20 @@ describe('emitIrModuleRust new expression with non-identifier callee', () => {
     const funcDecl = module.declarations.find((d) => d.kind === 'function' && d.binding.name === 'make');
     if (funcDecl?.kind === 'function') {
       const returnStmt = funcDecl.body.find((s) => s.kind === 'return');
-      if (returnStmt?.kind === 'return' && returnStmt.value?.kind === 'new') {
+      if (returnStmt?.kind === 'return' && returnStmt.expression?.kind === 'new') {
         const modifiedFunc = {
           ...funcDecl,
           body: funcDecl.body.map((s) =>
-            s.kind === 'return' && s.value?.kind === 'new'
+            s.kind === 'return' && s.expression?.kind === 'new'
               ? {
                   ...s,
-                  value: {
-                    ...s.value,
+                  expression: {
+                    ...s.expression,
                     callee: {
                       kind: 'property' as const,
-                      object: s.value.callee,
+                      object: s.expression.callee,
                       name: 'Inner',
                       optional: false,
-                      type: s.value.callee.type,
                       semantics: { receivers: [] },
                     },
                   },
