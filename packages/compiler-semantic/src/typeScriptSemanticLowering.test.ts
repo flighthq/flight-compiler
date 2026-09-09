@@ -10839,6 +10839,426 @@ it('lowers export assignment default expression', () => {
   expect(result.module.exports).toMatchObject([{ kind: 'default' }]);
 });
 
+it('records export = assignment as a diagnostic rather than crashing', () => {
+  const result = lower(
+    'export-equals.ts',
+    `
+      const value = 42;
+      export = value;
+    `,
+  );
+  expect(result.diagnostics.length).toBeGreaterThan(0);
+  expect(result.diagnostics[0]!.message).toContain('export = assignments are not ECMAScript exports');
+});
+
+it('records unsupported top-level statement as a diagnostic', () => {
+  const result = lower(
+    'top-level-for.ts',
+    `
+      export function noop(): void {}
+      for (let i = 0; i < 10; i++) {}
+    `,
+  );
+  expect(result.diagnostics.length).toBeGreaterThan(0);
+  expect(result.diagnostics[0]!.message).toContain('unsupported top-level');
+});
+
+it('lowers array destructuring with sparse (omitted) elements', () => {
+  const result = lower(
+    'sparse-destructure.ts',
+    `
+      export function second(pair: [number, number]): number {
+        const [, b] = pair;
+        return b;
+      }
+    `,
+  );
+  expect(result.diagnostics).toEqual([]);
+});
+
+it('lowers typeof expression with property access path', () => {
+  const result = lower(
+    'typeof-property.ts',
+    `
+      const config = { port: 8080 };
+      export function getPort(value: typeof config.port): number { return value; }
+    `,
+  );
+  expect(result.diagnostics).toEqual([]);
+});
+
+it('lowers a type-only namespace declaration without diagnostics', () => {
+  const result = lower(
+    'type-namespace.ts',
+    `
+      export namespace Shapes {
+        export interface Circle { radius: number }
+      }
+    `,
+  );
+  expect(result.diagnostics).toEqual([]);
+});
+
+it('reports value namespace declarations as unsupported', () => {
+  const result = lower(
+    'value-namespace.ts',
+    `
+      export namespace Utils {
+        export function add(a: number, b: number): number { return a + b; }
+      }
+    `,
+  );
+  expect(result.diagnostics.length).toBeGreaterThan(0);
+  expect(result.diagnostics[0]!.message).toContain('namespace');
+});
+
+it('records nested value namespace as unsupported', () => {
+  const result = lower(
+    'nested-namespace.ts',
+    `
+      export namespace Outer {
+        export namespace Inner {
+          export function id(x: number): number { return x; }
+        }
+      }
+    `,
+  );
+  expect(result.diagnostics.length).toBeGreaterThan(0);
+});
+
+it('lowers contextual callback parameter types through checker evidence', () => {
+  const result = lower(
+    'callback-param.ts',
+    `
+      export function doubled(values: number[]): number[] {
+        return values.map((value) => value * 2);
+      }
+    `,
+  );
+  expect(result.diagnostics).toEqual([]);
+  const fn = result.module.declarations.find((d) => d.kind === 'function' && d.binding.name === 'doubled');
+  expect(fn).toBeDefined();
+});
+
+it('lowers nullish coalescing with binding type evidence for present value domain', () => {
+  const result = lower(
+    'nullish-coalesce.ts',
+    `
+      export function fallback(value: number | null | undefined): number {
+        return value ?? 0;
+      }
+    `,
+  );
+  expect(result.diagnostics).toEqual([]);
+});
+
+it('lowers element access on array for present value domain', () => {
+  const result = lower(
+    'element-access-domain.ts',
+    `
+      export function first(values: number[]): number {
+        return values[0] ?? 0;
+      }
+    `,
+  );
+  expect(result.diagnostics).toEqual([]);
+});
+
+it('lowers nullish equality comparison with null literal', () => {
+  const result = lower(
+    'null-comparison.ts',
+    `
+      export function isNull(value: string | null): boolean {
+        return value === null;
+      }
+    `,
+  );
+  expect(result.diagnostics).toEqual([]);
+});
+
+it('lowers re-export with specifier', () => {
+  const result = lower(
+    'reexport.ts',
+    `
+      export { something } from './other';
+    `,
+  );
+  expect(result.module.exports).toMatchObject([{ kind: 'reexport', specifier: './other' }]);
+});
+
+it('lowers export all with specifier', () => {
+  const result = lower(
+    'export-all.ts',
+    `
+      export * from './other';
+    `,
+  );
+  expect(result.module.exports).toMatchObject([{ kind: 'all', specifier: './other' }]);
+});
+
+it('lowers namespace re-export', () => {
+  const result = lower(
+    'namespace-reexport.ts',
+    `
+      export * as other from './other';
+    `,
+  );
+  expect(result.module.exports).toMatchObject([{ kind: 'namespace', exported: 'other', specifier: './other' }]);
+});
+
+it('records function overload signatures without implementation as a diagnostic', () => {
+  const result = lower(
+    'orphan-overloads.ts',
+    `
+      export function choose(value: string): string;
+      export function choose(value: number): number;
+    `,
+  );
+  expect(result.diagnostics.length).toBeGreaterThan(0);
+  expect(result.diagnostics[0]!.message).toContain('has no implementation');
+});
+
+it('infers operator domain from nested binary expression without checker types', () => {
+  const result = lower(
+    'nested-operator.ts',
+    `
+      export function add(a: number, b: number, c: number): number {
+        return (a + b) * c;
+      }
+    `,
+  );
+  expect(result.diagnostics).toEqual([]);
+});
+
+it('lowers indexed access type', () => {
+  const result = lower(
+    'indexed-access-type.ts',
+    `
+      interface Data { items: string[] }
+      export function first(d: Data): Data['items'] { return d.items; }
+    `,
+  );
+  expect(result.diagnostics).toEqual([]);
+});
+
+it('lowers keyof type operator', () => {
+  const result = lower(
+    'keyof-type.ts',
+    `
+      interface Point { x: number; y: number }
+      export function getKey(): keyof Point { return 'x'; }
+    `,
+  );
+  expect(result.diagnostics).toEqual([]);
+});
+
+it('lowers readonly array type operator', () => {
+  const result = lower(
+    'readonly-array-type.ts',
+    `
+      export function items(): readonly number[] { return [1, 2, 3]; }
+    `,
+  );
+  expect(result.diagnostics).toEqual([]);
+});
+
+it('lowers type query (typeof) on simple identifier', () => {
+  const result = lower(
+    'typeof-id.ts',
+    `
+      const value = 42;
+      export function same(x: typeof value): number { return x; }
+    `,
+  );
+  expect(result.diagnostics).toEqual([]);
+});
+
+it('lowers type-only export specifier', () => {
+  const result = lower(
+    'type-only-export.ts',
+    `
+      interface Shape { area: number }
+      export { type Shape };
+    `,
+  );
+  const shapeExport = result.module.exports.find((e) => e.kind === 'local' && e.exported === 'Shape');
+  expect(shapeExport).toBeDefined();
+  if (shapeExport?.kind === 'local') {
+    expect(shapeExport.typeOnly).toBe(true);
+  }
+});
+
+it('lowers interface extending another interface with inherited properties', () => {
+  const result = lower(
+    'interface-extends.ts',
+    `
+      interface Base { x: number }
+      export interface Derived extends Base { y: number }
+    `,
+  );
+  expect(result.diagnostics).toEqual([]);
+  const iface = result.module.declarations.find((d) => d.kind === 'interface' && d.binding.name === 'Derived');
+  expect(iface?.kind).toBe('interface');
+  if (iface?.kind === 'interface') {
+    expect(iface.extends).toBeDefined();
+  }
+});
+
+it('lowers for-of loop over type alias of array', () => {
+  const result = lower(
+    'for-of-alias.ts',
+    `
+      type Numbers = number[];
+      export function sum(items: Numbers): number {
+        let total = 0;
+        for (const n of items) { total = total + n; }
+        return total;
+      }
+    `,
+  );
+  expect(result.diagnostics).toEqual([]);
+});
+
+it('lowers for-of over readonly array type', () => {
+  const result = lower(
+    'for-of-readonly.ts',
+    `
+      export function sum(items: readonly number[]): number {
+        let total = 0;
+        for (const n of items) { total = total + n; }
+        return total;
+      }
+    `,
+  );
+  expect(result.diagnostics).toEqual([]);
+});
+
+it('lowers indexed access on new Map expression', () => {
+  const result = lower(
+    'new-map-index.ts',
+    `
+      export function get(key: string): string | undefined {
+        return new Map<string, string>().get(key);
+      }
+    `,
+  );
+  expect(result.diagnostics).toEqual([]);
+});
+
+it('lowers indexed access on string literal', () => {
+  const result = lower(
+    'string-index.ts',
+    `
+      export function charAt(s: string): string {
+        return s[0]!;
+      }
+    `,
+  );
+  expect(result.diagnostics).toEqual([]);
+});
+
+it('lowers indexed access on object literal', () => {
+  const result = lower(
+    'object-index.ts',
+    `
+      export function get(key: string): any {
+        return ({ a: 1, b: 2 } as any)[key];
+      }
+    `,
+  );
+  expect(result.diagnostics).toEqual([]);
+});
+
+it('lowers void-returning contextual callback parameter type', () => {
+  const result = lower(
+    'void-callback.ts',
+    `
+      export function each(values: number[]): void {
+        values.forEach((value) => { value; });
+      }
+    `,
+  );
+  expect(result.diagnostics).toEqual([]);
+});
+
+it('lowers discriminant union narrowing with string property', () => {
+  const result = lower(
+    'discriminant-union.ts',
+    `
+      interface Circle { kind: 'circle'; radius: number }
+      interface Square { kind: 'square'; side: number }
+      type Shape = Circle | Square;
+      export function area(shape: Shape): number {
+        if (shape.kind === 'circle') return shape.radius * shape.radius;
+        return shape.side * shape.side;
+      }
+    `,
+  );
+  expect(result.diagnostics).toEqual([]);
+});
+
+it('lowers typeof union narrowing', () => {
+  const result = lower(
+    'typeof-narrow.ts',
+    `
+      export function stringify(value: string | number): string {
+        if (typeof value === 'string') return value;
+        return String(value);
+      }
+    `,
+  );
+  expect(result.diagnostics).toEqual([]);
+});
+
+it('lowers type alias that unwraps to array for indexed receivers', () => {
+  const result = lower(
+    'type-alias-array-receiver.ts',
+    `
+      type Items = number[];
+      export function first(items: Items): number { return items[0]!; }
+    `,
+  );
+  expect(result.diagnostics).toEqual([]);
+});
+
+it('lowers union type in indexed receiver set', () => {
+  const result = lower(
+    'union-receiver.ts',
+    `
+      export function get(input: string | number[]): any {
+        return input[0];
+      }
+    `,
+  );
+  expect(result.diagnostics).toEqual([]);
+});
+
+it('lowers object destructuring rest element with known properties', () => {
+  const result = lower(
+    'object-rest.ts',
+    `
+      export function rest(obj: { a: number; b: string; c: boolean }): { b: string; c: boolean } {
+        const { a, ...remaining } = obj;
+        a;
+        return remaining;
+      }
+    `,
+  );
+  expect(result.diagnostics).toEqual([]);
+});
+
+it('lowers tuple type with optional element', () => {
+  const result = lower(
+    'tuple-optional.ts',
+    `
+      export function first(pair: [number, string?]): number {
+        return pair[0];
+      }
+    `,
+  );
+  expect(result.diagnostics).toEqual([]);
+});
+
 function getVariableBinding(value: unknown): IrBindingIdentity {
   if (typeof value !== 'object' || value === null || !('binding' in value)) {
     throw new Error('Expected named variable');
