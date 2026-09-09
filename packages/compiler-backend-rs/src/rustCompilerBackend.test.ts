@@ -10831,6 +10831,46 @@ describe('emitIrModuleRust assignment operator refusal', () => {
     expect(output).toContain('if !v {');
     expect(output).toContain('v = false');
   });
+
+  it('emits ||= on number as truthiness-checked assignment', () => {
+    const output = emitIrModuleRust(
+      lower('or-num-assign.ts', `export function use(x: number): number { let v: number = x; v ||= 5; return v; }`)
+        .module,
+    ).contents;
+    expect(output).toContain('v == 0.0 || v.is_nan()');
+    expect(output).toContain('v = 5.0');
+  });
+
+  it('emits &&= on number as truthiness-checked assignment', () => {
+    const output = emitIrModuleRust(
+      lower('and-num-assign.ts', `export function use(x: number): number { let v: number = x; v &&= 0; return v; }`)
+        .module,
+    ).contents;
+    expect(output).toContain('v != 0.0 && !v.is_nan()');
+    expect(output).toContain('v = 0.0');
+  });
+
+  it('emits ||= on string as emptiness-checked assignment', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'or-str-assign.ts',
+        `export function use(x: string): string { let v: string = x; v ||= "fallback"; return v; }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('v.is_empty()');
+    expect(output).toContain('v = "fallback".to_owned()');
+  });
+
+  it('emits &&= on string as non-empty-checked assignment', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'and-str-assign.ts',
+        `export function use(x: string): string { let v: string = x; v &&= "replaced"; return v; }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('!v.is_empty()');
+    expect(output).toContain('v = "replaced".to_owned()');
+  });
 });
 
 describe('emitIrModuleRust string concatenation assignment', () => {
@@ -11012,6 +11052,34 @@ describe('emitIrModuleRust cell-wrapped closure capture', () => {
     expect(output).toContain('as i32)');
     expect(output).toContain('.set(');
     expect(output).toContain('.get()');
+  });
+
+  it('emits cell-wrapped ||= on boolean as negated set', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'cell-or-bool.ts',
+        `export function makeOr(): () => boolean {
+           let value: boolean = false;
+           return () => { value ||= true; return value; };
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('!value.get()');
+    expect(output).toContain('.set(');
+  });
+
+  it('emits cell-wrapped &&= on boolean as conditional set', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'cell-and-bool.ts',
+        `export function makeAnd(): () => boolean {
+           let value: boolean = true;
+           return () => { value &&= false; return value; };
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('value.get()');
+    expect(output).toContain('.set(');
   });
 
   it('emits cell-wrapped ||= on number as truthiness-checked set', () => {
