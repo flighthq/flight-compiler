@@ -100,6 +100,30 @@ describe('createCompilerLoweringPassExtraArgumentErasure', () => {
     expect(pass.verifyIrModule(module)).toMatchObject({ kind: 'invalid' });
   });
 
+  it('preserves calls whose extra-argument evidence lacks a complete signature', () => {
+    const module = lower(`
+      function choose(value: number): number { return value; }
+      export function read(): number { return choose(1, 2); }
+    `);
+    const pass = createCompilerLoweringPassExtraArgumentErasure();
+    const injected = structuredClone(module);
+    const read = injected.declarations.find((d) => d.kind === 'function' && d.binding.name === 'read');
+    if (read?.kind !== 'function') throw new Error('Expected read function');
+    const ret = read.body.find((s) => s.kind === 'return');
+    if (ret?.kind !== 'return' || !ret.expression || ret.expression.kind !== 'call') {
+      throw new Error('Expected return call');
+    }
+    delete (ret.expression.semantics as unknown as Record<string, unknown>).signature;
+    const output = pass.lowerIrModule(injected);
+    const outRead = output.declarations.find((d) => d.kind === 'function' && d.binding.name === 'read');
+    if (outRead?.kind !== 'function') throw new Error('Expected output read');
+    const outRet = outRead.body.find((s) => s.kind === 'return');
+    if (outRet?.kind !== 'return' || !outRet.expression || outRet.expression.kind !== 'call') {
+      throw new Error('Expected output return call');
+    }
+    expect(outRet.expression.arguments).toHaveLength(2);
+  });
+
   it('refuses fixed extra calls without safe direct-call erasure evidence', () => {
     const module = lower(`
       export class Picker { choose(value: number): number { return value; } }

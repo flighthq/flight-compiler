@@ -1132,6 +1132,86 @@ describe('createCompilerLoweringPassArrayBindingPattern', () => {
     expect(xVar?.type).toEqual({ kind: 'never' });
   });
 
+  it('falls back to tuple element type when individual binding and rest types are absent', () => {
+    const module = lower(
+      'type-fallback.ts',
+      `
+        export function split(values: [number, ...string[]]): string[] {
+          const [first, ...rest]: [number, ...string[]] = values;
+          first;
+          return rest;
+        }
+      `,
+    );
+    const pass = createCompilerLoweringPassArrayBindingPattern();
+    const injected = structuredClone(module);
+    const fn = injected.declarations[0];
+    if (fn?.kind !== 'function') throw new Error('Expected function');
+    const varStmt = fn.body[0];
+    if (varStmt?.kind !== 'variable') throw new Error('Expected variable');
+    const patternVar = varStmt.declarations[0];
+    if (!patternVar || !('pattern' in patternVar) || patternVar.pattern.kind !== 'array') {
+      throw new Error('Expected array pattern');
+    }
+    const firstElement = patternVar.pattern.elements[0];
+    if (!firstElement || firstElement.pattern.kind !== 'binding') throw new Error('Expected binding');
+    delete (firstElement.pattern as unknown as Record<string, unknown>).type;
+    if (patternVar.pattern.rest?.kind === 'binding') {
+      delete (patternVar.pattern.rest as unknown as Record<string, unknown>).type;
+    }
+    const output = pass.lowerIrModule(injected);
+    const declarations = getVariableStatement(getFunctionDeclaration(output, 'split').body[0]).declarations.map(
+      getNamedVariable,
+    );
+    const firstVar = declarations.find((v) => v.binding.name === 'first');
+    const restVar = declarations.find((v) => v.binding.name === 'rest');
+    expect(firstVar?.type).toEqual({ kind: 'primitive', name: 'number' });
+    expect(restVar?.type).toMatchObject({ kind: 'array' });
+  });
+
+  it('falls back to source type when for-of and pattern variable types are absent', () => {
+    const module = lower(
+      'forof-fallback.ts',
+      `
+        export function visit(rows: [number][]): void {
+          for (const [x] of rows) { x; }
+        }
+      `,
+    );
+    const pass = createCompilerLoweringPassArrayBindingPattern();
+    const injected = structuredClone(module);
+    const fn = injected.declarations[0];
+    if (fn?.kind !== 'function') throw new Error('Expected function');
+    const forOf = fn.body.find((s): s is Extract<IrStatement, { kind: 'forOf' }> => s.kind === 'forOf');
+    if (!forOf) throw new Error('Expected forOf');
+    delete (forOf.variable as unknown as Record<string, unknown>).type;
+    const output = pass.lowerIrModule(injected);
+    expect(pass.verifyIrModule(output)).toEqual({ kind: 'valid' });
+  });
+
+  it('falls back to source type when destructured variable type is absent', () => {
+    const module = lower(
+      'var-type-fallback.ts',
+      `
+        export function read(values: [number]): number {
+          const [x] = values;
+          return x;
+        }
+      `,
+    );
+    const pass = createCompilerLoweringPassArrayBindingPattern();
+    const injected = structuredClone(module);
+    const fn = injected.declarations[0];
+    if (fn?.kind !== 'function') throw new Error('Expected function');
+    const varStmt = fn.body[0];
+    if (varStmt?.kind !== 'variable') throw new Error('Expected variable');
+    const patternVar = varStmt.declarations[0];
+    if (!patternVar || !('pattern' in patternVar)) throw new Error('Expected pattern');
+    delete (patternVar as unknown as Record<string, unknown>).type;
+    const output = pass.lowerIrModule(injected);
+    expect(pass.verifyIrModule(output)).toEqual({ kind: 'valid' });
+  });
+
   it('refuses array pattern variables without any type information', () => {
     const module = lower(
       'no-type.ts',
