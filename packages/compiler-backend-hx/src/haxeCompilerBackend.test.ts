@@ -7800,13 +7800,15 @@ describe('emitIrModuleHaxe for-of with async iteration', () => {
       'for-of.ts',
       'export function total(items: number[]): number { let s = 0; for (const x of items) { s += x; } return s; }',
     );
+    const fn = result.module.declarations.find((d) => d.kind === 'function');
+    if (fn?.kind !== 'function') throw new Error('Expected function');
+    const modified = {
+      ...fn,
+      body: fn.body.map((stmt) => (stmt.kind === 'forOf' ? { ...stmt, await: true } : stmt)),
+    };
     const module: IrModule = {
       ...result.module,
-      declarations: result.module.declarations.map((d) => {
-        if (d.kind !== 'function') return d;
-        const body = d.body.map((stmt) => (stmt.kind === 'forOf' ? { ...stmt, await: true } : stmt));
-        return { ...d, body };
-      }),
+      declarations: result.module.declarations.map((d) => (d === fn ? modified : d)) as IrModule['declarations'],
     };
     expect(() => emitIrModuleHaxe(module)).toThrow('async iteration requires the Haxe async-lowering pass');
   });
@@ -7818,22 +7820,24 @@ describe('emitIrModuleHaxe postfix unary operator on non-number', () => {
       'postfix-op.ts',
       'export function inc(value: number): number { let x = value; x++; return x; }',
     );
+    const fn = result.module.declarations.find((d) => d.kind === 'function');
+    if (fn?.kind !== 'function') throw new Error('Expected function');
+    const modified = {
+      ...fn,
+      body: fn.body.map((stmt) => {
+        if (stmt.kind !== 'expression' || stmt.expression.kind !== 'unary') return stmt;
+        return {
+          ...stmt,
+          expression: {
+            ...stmt.expression,
+            semantics: { ...stmt.expression.semantics, operand: { flow: 'string' as const } },
+          },
+        };
+      }),
+    };
     const module: IrModule = {
       ...result.module,
-      declarations: result.module.declarations.map((d) => {
-        if (d.kind !== 'function') return d;
-        const body = d.body.map((stmt) => {
-          if (stmt.kind !== 'expression' || stmt.expression.kind !== 'unary') return stmt;
-          return {
-            ...stmt,
-            expression: {
-              ...stmt.expression,
-              semantics: { ...stmt.expression.semantics, operand: { flow: 'string' as const } },
-            },
-          };
-        });
-        return { ...d, body };
-      }),
+      declarations: result.module.declarations.map((d) => (d === fn ? modified : d)) as IrModule['declarations'],
     };
     expect(() => emitIrModuleHaxe(module)).toThrow('requires Haxe type-directed lowering');
   });
