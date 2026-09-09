@@ -101,6 +101,7 @@ describe('getIrStatementListCompletionSet', () => {
         { kind: 'block', label: owner, statements: [{ kind: 'continue', target: owner }] },
         [{ kind: 'continue', target: 'label:owner' }],
       ],
+      [{ kind: 'block', label: owner, statements: [{ kind: 'continue' }] }, [{ kind: 'continue' }]],
     ];
 
     for (const [statement, expected] of fixtures) {
@@ -230,6 +231,16 @@ describe('getIrStatementListCompletionSet', () => {
       { kind: 'normal' },
       { kind: 'throw' },
     ]);
+    expect(
+      getIrStatementListCompletionSet([
+        { cases: [{ expression, statements: [{ kind: 'break' }] }], expression, kind: 'switch' },
+      ]).completions,
+    ).toEqual([{ kind: 'normal' }, { kind: 'throw' }]);
+    expect(
+      getIrStatementListCompletionSet([
+        { cases: [{ expression, statements: [{ kind: 'continue' }] }], expression, kind: 'switch' },
+      ]).completions,
+    ).toEqual([{ kind: 'normal' }, { kind: 'continue' }, { kind: 'throw' }]);
   });
 
   it('composes try, catch, and finally in language order', () => {
