@@ -252,6 +252,314 @@ describe('analyzeIrTypeValueIdentity', () => {
     expect([source, barrel, subject]).toEqual(snapshot);
   });
 
+  it('preserves indeterminate reason when compound members share one, disambiguates otherwise', () => {
+    const module = createModule([]);
+    const sameReason = {
+      kind: 'union',
+      types: [
+        { kind: 'unknown', source: 'object' },
+        { kind: 'unknown', source: 'expression' },
+      ],
+    } as const satisfies IrType;
+    const result = analyzeIrTypeValueIdentity(sameReason, module);
+    expect(result).toMatchObject({ identity: 'indeterminate', reason: 'unknown-type' });
+
+    const differentReasons = {
+      kind: 'union',
+      types: [
+        { kind: 'unknown', source: 'object' },
+        { index: numberType, kind: 'indexedAccess', object: objectType },
+      ],
+    } as const satisfies IrType;
+    expect(analyzeIrTypeValueIdentity(differentReasons, module)).toMatchObject({
+      identity: 'indeterminate',
+      reason: 'ambiguous-compound',
+    });
+  });
+
+  it('returns indeterminate for type parameters with qualified path or type arguments', () => {
+    const param = typeBinding('type:param', 'T', 'typeParameter');
+    const declaration = interfaceDeclaration('type:owner', 'Owner', [{ binding: param }]);
+    const module = createModule([declaration]);
+    const withPath: IrType = {
+      kind: 'named',
+      reference: { binding: param, kind: 'binding', path: ['nested'] },
+      typeArguments: [],
+    };
+    expect(analyzeIrTypeValueIdentity(withPath, module)).toMatchObject({
+      identity: 'indeterminate',
+      reason: 'unresolved-reference',
+    });
+    const withArgs: IrType = {
+      kind: 'named',
+      reference: { binding: param, kind: 'binding', path: [] },
+      typeArguments: [numberType],
+    };
+    expect(analyzeIrTypeValueIdentity(withArgs, module)).toMatchObject({
+      identity: 'indeterminate',
+      reason: 'unresolved-reference',
+    });
+  });
+
+  it('returns indeterminate for typeof on interface and typeAlias declarations', () => {
+    const iface = interfaceDeclaration('type:iface', 'Shape');
+    const alias = aliasDeclaration('type:alias', 'Alias', numberType);
+    const module = createModule([iface, alias]);
+
+    const ifaceValueRef = valueBinding('type:iface', 'Shape', 'variable');
+    const aliasValueRef = valueBinding('type:alias', 'Alias', 'variable');
+    expect(analyzeIrTypeValueIdentity(typeOf(ifaceValueRef), module)).toMatchObject({
+      identity: 'indeterminate',
+      reason: 'unresolved-reference',
+    });
+    expect(analyzeIrTypeValueIdentity(typeOf(aliasValueRef), module)).toMatchObject({
+      identity: 'indeterminate',
+      reason: 'unresolved-reference',
+    });
+  });
+
+  it('detects cyclic type parameter constraints', () => {
+    const paramA = typeBinding('type:param-a', 'A', 'typeParameter');
+    const paramB = typeBinding('type:param-b', 'B', 'typeParameter');
+    const declaration = interfaceDeclaration('type:cyclic-constraint', 'Cyclic', [
+      {
+        binding: paramA,
+        constraint: { kind: 'named', reference: { binding: paramB, kind: 'binding', path: [] }, typeArguments: [] },
+      },
+      {
+        binding: paramB,
+        constraint: { kind: 'named', reference: { binding: paramA, kind: 'binding', path: [] }, typeArguments: [] },
+      },
+    ]);
+    const module = createModule([declaration]);
+    expect(analyzeIrTypeValueIdentity(typeReference(paramA), module)).toMatchObject({
+      identity: 'indeterminate',
+      reason: 'cyclic-reference',
+    });
+  });
+
+  it('returns indeterminate for named type with non-binding reference kind', () => {
+    const module = createModule([]);
+    const nonBinding: IrType = {
+      kind: 'named',
+      reference: { kind: 'ambient', name: 'NonExistent' },
+      typeArguments: [],
+    };
+    expect(analyzeIrTypeValueIdentity(nonBinding, module)).toMatchObject({
+      identity: 'indeterminate',
+      reason: 'unresolved-reference',
+    });
+  });
+
+  it('returns indeterminate for local binding with qualified path or missing declaration', () => {
+    const class_ = classDeclaration('value:local', 'Model');
+    const module = createModule([class_]);
+    const withPath: IrType = {
+      kind: 'named',
+      reference: { binding: class_.binding, kind: 'binding', path: ['nested'] },
+      typeArguments: [],
+    };
+    expect(analyzeIrTypeValueIdentity(withPath, module)).toMatchObject({
+      identity: 'indeterminate',
+      reason: 'unresolved-reference',
+    });
+    const missingBinding = valueBinding('value:missing', 'Missing', 'variable');
+    const missingRef: IrType = {
+      kind: 'named',
+      reference: { binding: missingBinding, kind: 'binding', path: [] },
+      typeArguments: [],
+    };
+    expect(analyzeIrTypeValueIdentity(missingRef, module)).toMatchObject({
+      identity: 'indeterminate',
+      reason: 'unresolved-reference',
+    });
+  });
+
+  it('resolves namespace import star with qualified member path', () => {
+    const model = classDeclaration('value:ns-model', 'Model');
+    const exported: IrModule['declarations'][number] = { ...model, exported: true };
+    const source = createModule([exported], { name: 'types', source: 'packages/types.ts' });
+    const ns = typeBinding('type:ns', 'Types', 'import');
+    const subject = createModule([], {
+      imports: [
+        { bindings: [{ binding: ns, imported: '*', typeOnly: true }], specifier: './types.js', typeOnly: true },
+      ],
+      name: 'consumer',
+      source: 'packages/consumer.ts',
+    });
+    const nsAccess: IrType = {
+      kind: 'named',
+      reference: { binding: ns, kind: 'binding', path: ['Model'] },
+      typeArguments: [],
+    };
+    expect(analyzeIrTypeValueIdentity(nsAccess, subject, [source, subject])).toMatchObject({
+      identity: 'reference',
+      reason: 'declared-reference',
+    });
+  });
+
+  it('resolves local exports and named re-exports through module export records', () => {
+    const iface = interfaceDeclaration('type:local-exported', 'Schema');
+    const localSource = createModule([iface], {
+      exports: [{ binding: iface.binding, exported: 'Schema', kind: 'local', typeOnly: true }],
+      name: 'schema',
+      source: 'packages/schema.ts',
+    });
+    const reexportBarrel = createModule([], {
+      exports: [{ exported: 'Schema', imported: 'Schema', kind: 'reexport', specifier: './schema.js', typeOnly: true }],
+      name: 'reexport-barrel',
+      source: 'packages/reexport-barrel.ts',
+    });
+    const imported = typeBinding('type:reexported', 'Schema', 'import');
+    const subject = createModule([], {
+      imports: [
+        {
+          bindings: [{ binding: imported, imported: 'Schema', typeOnly: true }],
+          specifier: './reexport-barrel.js',
+          typeOnly: true,
+        },
+      ],
+      name: 'consumer',
+      source: 'packages/consumer.ts',
+    });
+    expect(
+      analyzeIrTypeValueIdentity(typeReference(imported), subject, [localSource, reexportBarrel, subject]),
+    ).toMatchObject({
+      identity: 'reference',
+      reason: 'declared-reference',
+    });
+  });
+
+  it('detects cyclic cross-module re-export chains', () => {
+    const alpha = createModule([], {
+      exports: [{ exported: 'Model', imported: 'Model', kind: 'reexport', specifier: './beta.js', typeOnly: true }],
+      name: 'alpha',
+      source: 'packages/alpha.ts',
+    });
+    const beta = createModule([], {
+      exports: [{ exported: 'Model', imported: 'Model', kind: 'reexport', specifier: './alpha.js', typeOnly: true }],
+      name: 'beta',
+      source: 'packages/beta.ts',
+    });
+    const imported = typeBinding('type:cyclic-import', 'Model', 'import');
+    const subject = createModule([], {
+      imports: [
+        {
+          bindings: [{ binding: imported, imported: 'Model', typeOnly: true }],
+          specifier: './alpha.js',
+          typeOnly: true,
+        },
+      ],
+      name: 'cycle-consumer',
+      source: 'packages/cycle-consumer.ts',
+    });
+    expect(analyzeIrTypeValueIdentity(typeReference(imported), subject, [alpha, beta, subject])).toMatchObject({
+      identity: 'indeterminate',
+    });
+  });
+
+  it('resolves through resolution plan edges for bare package specifiers', () => {
+    const model = classDeclaration('value:ext-model', 'ExtModel');
+    const exported: IrModule['declarations'][number] = { ...model, exported: true };
+    const target = createModule([exported], {
+      name: 'ext-model',
+      packageName: '@flighthq/model',
+      source: 'src/model.ts',
+    });
+    const imported = typeBinding('type:ext-import', 'ExtModel', 'import');
+    const subject = createModule([], {
+      imports: [
+        {
+          bindings: [{ binding: imported, imported: 'ExtModel', typeOnly: true }],
+          specifier: '@flighthq/model',
+          typeOnly: true,
+        },
+      ],
+      name: 'ext-consumer',
+      source: 'packages/ext-consumer.ts',
+    });
+    const resolution: CompilerModuleResolutionPlan = {
+      edges: [{ specifier: '@flighthq/model', target: { packageName: '@flighthq/model', source: 'src/model.ts' } }],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    expect(analyzeIrTypeValueIdentity(typeReference(imported), subject, [target, subject], resolution)).toMatchObject({
+      identity: 'reference',
+      reason: 'declared-reference',
+    });
+  });
+
+  it('resolves parent directory traversal and extensionless specifiers', () => {
+    const model = classDeclaration('value:deep-model', 'DeepModel');
+    const exported: IrModule['declarations'][number] = { ...model, exported: true };
+    const deep = createModule([exported], { name: 'deep', source: 'packages/models/deep.ts' });
+    const imported = typeBinding('type:deep-import', 'DeepModel', 'import');
+    const subject = createModule([], {
+      imports: [
+        {
+          bindings: [{ binding: imported, imported: 'DeepModel', typeOnly: true }],
+          specifier: '../models/deep.js',
+          typeOnly: true,
+        },
+      ],
+      name: 'sibling-consumer',
+      source: 'packages/sibling/consumer.ts',
+    });
+    expect(analyzeIrTypeValueIdentity(typeReference(imported), subject, [deep, subject])).toMatchObject({
+      identity: 'reference',
+      reason: 'declared-reference',
+    });
+
+    const indexModule = createModule([exported], { name: 'index-model', source: 'packages/shared/index.ts' });
+    const indexImported = typeBinding('type:index-import', 'DeepModel', 'import');
+    const indexConsumer = createModule([], {
+      imports: [
+        {
+          bindings: [{ binding: indexImported, imported: 'DeepModel', typeOnly: true }],
+          specifier: './shared',
+          typeOnly: true,
+        },
+      ],
+      name: 'index-consumer',
+      source: 'packages/index-consumer.ts',
+    });
+    expect(
+      analyzeIrTypeValueIdentity(typeReference(indexImported), indexConsumer, [indexModule, indexConsumer]),
+    ).toMatchObject({ identity: 'reference', reason: 'declared-reference' });
+  });
+
+  it('returns empty candidates when parent traversal goes above root', () => {
+    const model = classDeclaration('value:root-model', 'RootModel');
+    const exported: IrModule['declarations'][number] = { ...model, exported: true };
+    const target = createModule([exported], { name: 'root-target', source: 'root.ts' });
+    const imported = typeBinding('type:root-import', 'RootModel', 'import');
+    const subject = createModule([], {
+      imports: [
+        {
+          bindings: [{ binding: imported, imported: 'RootModel', typeOnly: true }],
+          specifier: '../../above-root.js',
+          typeOnly: true,
+        },
+      ],
+      name: 'root-consumer',
+      source: 'consumer.ts',
+    });
+    expect(analyzeIrTypeValueIdentity(typeReference(imported), subject, [target, subject])).toMatchObject({
+      identity: 'indeterminate',
+      reason: 'unresolved-reference',
+    });
+  });
+
+  it('collects type parameters from function declarations for constraint analysis', () => {
+    const param = typeBinding('type:fn-param', 'T', 'typeParameter');
+    const fn = functionDeclaration('value:generic-fn', 'transform');
+    (fn as { typeParameters: IrTypeParameter[] }).typeParameters = [{ binding: param, constraint: objectType }];
+    const module = createModule([fn]);
+    expect(analyzeIrTypeValueIdentity(typeReference(param), module)).toMatchObject({
+      identity: 'reference',
+      reason: 'intrinsic-reference',
+    });
+  });
+
   it('refuses ambiguous export-star identity and never forwards a default through a star', () => {
     const left = createModule([aliasDeclaration('type:left-model', 'Model', objectType, [], true)], {
       name: 'left',
