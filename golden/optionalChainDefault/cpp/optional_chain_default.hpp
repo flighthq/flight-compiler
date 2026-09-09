@@ -8,12 +8,12 @@ static_assert(flight::runtime_contract.cpp_abi == 2, "Flight C++ runtime ABI mis
 
 namespace flighthq_golden {
 
-struct Entry {
+struct Entry : public flight::ReferenceEnabled {
   flight::String key;
 };
 
-inline flight::String first_key(flight::Array<Entry> entries) {
-  return ([&]() -> std::optional<flight::String> { auto optional_chain_receiver = entries.get(0.0); if (!optional_chain_receiver.has_value()) return std::nullopt; return optional_chain_receiver.value().key; }()).value_or(flight::String("none"));
+inline flight::String first_key(flight::Array<flight::Ref<Entry>> entries) {
+  return ([&]() -> std::optional<flight::String> { auto optional_chain_receiver = entries.get(0.0); if (!optional_chain_receiver.has_value()) return std::nullopt; return optional_chain_receiver.value()->key; }()).value_or(flight::String("none"));
 }
 
 } // namespace flighthq_golden

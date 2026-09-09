@@ -21,7 +21,8 @@ export type CompilerRuntimeCapabilityName =
   | 'uint8-array'
   | 'uint8-clamped-array'
   | 'uint16-array'
-  | 'uint32-array';
+  | 'uint32-array'
+  | 'weak-map';
 
 export type CompilerRuntimeContractVersion = 'flight-runtime-contract/2';
 

@@ -7,11 +7,11 @@ static_assert(flight::runtime_contract.cpp_abi == 2, "Flight C++ runtime ABI mis
 
 namespace flighthq_golden {
 
-struct Values {
+struct Values : public flight::ReferenceEnabled {
   double value;
 };
 
-inline flight::String select_first_key(Values values) {
+inline flight::String select_first_key(flight::Ref<Values> values) {
   flight::String key;
   static_cast<void>(values);
   for (const flight::String& variable_hoisting_iteration_value : flight::Array<flight::String>{flight::String("value")}) {

@@ -7,7 +7,7 @@ static_assert(flight::runtime_contract.cpp_abi == 2, "Flight C++ runtime ABI mis
 
 namespace flighthq_golden {
 
-struct Point {
+struct Point : public flight::ReferenceEnabled {
   double x;
   double y;
   Point(double x, double y) {
@@ -25,16 +25,16 @@ struct Point {
   }
 };
 
-inline Point origin() {
-  return Point(0.0, 0.0);
+inline flight::Ref<Point> origin() {
+  return flight::make_ref<Point>(0.0, 0.0);
 }
 
 inline double origin_length() {
-  return origin().length();
+  return origin()->length();
 }
 
 inline flight::String described_at(double x, double y) {
-  return Point(x, y).describe();
+  return flight::make_ref<Point>(x, y)->describe();
 }
 
 } // namespace flighthq_golden

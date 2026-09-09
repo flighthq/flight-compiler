@@ -7,26 +7,26 @@ static_assert(flight::runtime_contract.cpp_abi == 2, "Flight C++ runtime ABI mis
 
 namespace flighthq_golden {
 
-struct Point {
+struct Point : public flight::ReferenceEnabled {
   double x;
   double y;
 };
 
-inline Point origin() {
-  return {.x = 0.0, .y = 0.0};
+inline flight::Ref<Point> origin() {
+  return flight::make_ref<Point>(Point{.x = 0.0, .y = 0.0});
 }
 
-inline Point from_values(double x, double y) {
-  return {.x = x, .y = y};
+inline flight::Ref<Point> from_values(double x, double y) {
+  return flight::make_ref<Point>(Point{.x = x, .y = y});
 }
 
-inline Point translate(Point p, double dx, double dy) {
-  return {.x = (p.x + dx), .y = (p.y + dy)};
+inline flight::Ref<Point> translate(flight::Ref<Point> p, double dx, double dy) {
+  return flight::make_ref<Point>(Point{.x = (p->x + dx), .y = (p->y + dy)});
 }
 
-inline double distance(Point a, Point b) {
-  const double dx = (a.x - b.x);
-  const double dy = (a.y - b.y);
+inline double distance(flight::Ref<Point> a, flight::Ref<Point> b) {
+  const double dx = (a->x - b->x);
+  const double dy = (a->y - b->y);
   return std::sqrt(((dx * dx) + (dy * dy)));
 }
 

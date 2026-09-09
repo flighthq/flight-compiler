@@ -7,7 +7,7 @@ static_assert(flight::runtime_contract.cpp_abi == 2, "Flight C++ runtime ABI mis
 
 namespace flighthq_golden {
 
-struct Counter {
+struct Counter : public flight::ReferenceEnabled {
   double count;
   inline static const double zero = 0.0;
   Counter(double count) {
@@ -19,15 +19,15 @@ struct Counter {
   void value(double next) {
     this->count = next;
   }
-  static Counter make() {
-    return Counter(0.0);
+  static flight::Ref<Counter> make() {
+    return flight::make_ref<Counter>(0.0);
   }
 };
 
 inline double read_back() {
-  Counter counter = Counter::make();
-  counter.value(7.0);
-  return (counter.value() + Counter::zero);
+  flight::Ref<Counter> counter = Counter::make();
+  counter->value(7.0);
+  return (counter->value() + Counter::zero);
 }
 
 } // namespace flighthq_golden

@@ -7,7 +7,7 @@ static_assert(flight::runtime_contract.cpp_abi == 2, "Flight C++ runtime ABI mis
 
 namespace flighthq_golden {
 
-struct Range {
+struct Range : public flight::ReferenceEnabled {
   double max;
   double min;
 };
@@ -19,8 +19,8 @@ enum class Mode {
   Debug = 9,
 };
 
-inline Range widen(Range range, double by) {
-  return {.max = (range.max + by), .min = (range.min - by)};
+inline flight::Ref<Range> widen(flight::Ref<Range> range, double by) {
+  return flight::make_ref<Range>(Range{.max = (range->max + by), .min = (range->min - by)});
 }
 
 } // namespace flighthq_golden

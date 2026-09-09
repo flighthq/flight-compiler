@@ -7,22 +7,22 @@ static_assert(flight::runtime_contract.cpp_abi == 2, "Flight C++ runtime ABI mis
 
 namespace flighthq_golden {
 
-struct Config {
+struct Config : public flight::ReferenceEnabled {
   double width;
   double height;
   flight::String label;
 };
 
-inline double get_area(Config config) {
-  return (config.width * config.height);
+inline double get_area(flight::Ref<Config> config) {
+  return (config->width * config->height);
 }
 
-inline flight::String get_label(Config config) {
-  return config.label;
+inline flight::String get_label(flight::Ref<Config> config) {
+  return config->label;
 }
 
-inline double get_perimeter(Config config) {
-  return (2.0 * (config.width + config.height));
+inline double get_perimeter(flight::Ref<Config> config) {
+  return (2.0 * (config->width + config->height));
 }
 
 } // namespace flighthq_golden

@@ -7,19 +7,19 @@ static_assert(flight::runtime_contract.cpp_abi == 2, "Flight C++ runtime ABI mis
 
 namespace flighthq_golden {
 
-struct Shape {
+struct Shape : public flight::ReferenceEnabled {
   bool other;
   double value;
 };
 
-inline double project(Shape parameter_pattern_value, Shape source) {
+inline double project(flight::Ref<Shape> parameter_pattern_value, flight::Ref<Shape> source) {
   double value;
-  Shape object_pattern_value = parameter_pattern_value;
-  value = object_pattern_value.value;
+  flight::Ref<Shape> object_pattern_value = parameter_pattern_value;
+  value = object_pattern_value->value;
   double assigned = 0.0;
   {
-    Shape destructuring_assignment_value = source;
-    assigned = destructuring_assignment_value.value;
+    flight::Ref<Shape> destructuring_assignment_value = source;
+    assigned = destructuring_assignment_value->value;
   }
   return (value + assigned);
 }

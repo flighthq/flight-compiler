@@ -10,13 +10,13 @@ static_assert(flight::runtime_contract.cpp_abi == 2, "Flight C++ runtime ABI mis
 namespace flighthq_golden {
 
 template <typename Value>
-struct Box {
+struct Box : public flight::ReferenceEnabled {
   Value contents;
 };
 
 template <typename Value>
-inline Value unwrap(Box<Value> box) {
-  return box.contents;
+inline Value unwrap(flight::Ref<Box<Value>> box) {
+  return box->contents;
 }
 
 template <typename Value>

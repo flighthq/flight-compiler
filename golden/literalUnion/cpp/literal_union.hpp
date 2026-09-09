@@ -9,17 +9,17 @@ namespace flighthq_golden {
 
 using Lane = flight::String;
 
-struct Route {
+struct Route : public flight::ReferenceEnabled {
   Lane lane;
   double cost;
 };
 
-inline bool is_fast(Route route) {
-  return (route.lane == flight::String("fast"));
+inline bool is_fast(flight::Ref<Route> route) {
+  return (route->lane == flight::String("fast"));
 }
 
-inline flight::String lane_name(Route route) {
-  return route.lane;
+inline flight::String lane_name(flight::Ref<Route> route) {
+  return route->lane;
 }
 
 inline flight::String describe(Lane lane) {

@@ -7,7 +7,7 @@ static_assert(flight::runtime_contract.cpp_abi == 2, "Flight C++ runtime ABI mis
 
 namespace flighthq_golden {
 
-struct Base {
+struct Base : public flight::ReferenceEnabled {
   double value;
   Base(double value) {
     this->value = value;
@@ -29,13 +29,13 @@ struct Child : public Base {
 };
 
 inline flight::String create_child(double value, flight::String label) {
-  Child child = Child(value, label);
-  return child.describe();
+  flight::Ref<Child> child = flight::make_ref<Child>(value, label);
+  return child->describe();
 }
 
 inline double base_doubled(double value) {
-  Base base = Base(value);
-  return base.doubled();
+  flight::Ref<Base> base = flight::make_ref<Base>(value);
+  return base->doubled();
 }
 
 } // namespace flighthq_golden

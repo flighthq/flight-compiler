@@ -5,6 +5,8 @@
 static_assert(flight::runtime_contract.compiler_contract == "flight-runtime-contract/2", "Flight compiler/runtime contract mismatch");
 static_assert(flight::runtime_contract.cpp_abi == 2, "Flight C++ runtime ABI mismatch");
 
+#include "helper.hpp"
+
 namespace flighthq_golden {
 
 } // namespace flighthq_golden

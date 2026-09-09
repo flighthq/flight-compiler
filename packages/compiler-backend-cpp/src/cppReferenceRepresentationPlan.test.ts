@@ -312,16 +312,17 @@ describe('createIrTypeReferenceRepresentationPlannerCpp', () => {
     });
   });
 
-  it('refuses an identity-resolved facade until representation routing can follow reexports', () => {
+  it('follows named reexports through resolved facade modules', () => {
     const model = lower('model.ts', 'export interface Shape { value: number }');
     const barrel = lower('barrel.ts', "export type { Shape } from './model.js';");
     const consumer = lower('consumer.ts', "import type { Shape } from './barrel.js'; export type Alias = Shape;");
     const planner = createIrTypeReferenceRepresentationPlannerCpp([consumer, barrel, model]);
 
     expect(planner.plan(declarationType(consumer, 'Alias'), consumer)).toMatchObject({
+      category: 'interface',
       identity: { identity: 'reference', reason: 'declared-reference' },
-      kind: 'refused',
-      reason: 'unresolvedReferenceRepresentation',
+      kind: 'represented',
+      valueRepresentation: 'flightReference',
     });
   });
 

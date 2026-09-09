@@ -7,7 +7,7 @@ static_assert(flight::runtime_contract.cpp_abi == 2, "Flight C++ runtime ABI mis
 
 namespace flighthq_golden {
 
-struct Counter {
+struct Counter : public flight::ReferenceEnabled {
   double step = 1.0;
   flight::String label = flight::String("counter");
   double advance(double by) {

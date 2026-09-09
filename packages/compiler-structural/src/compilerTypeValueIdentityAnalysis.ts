@@ -607,6 +607,7 @@ const compilerKnownAmbientReferenceTypes = new Set([
   'Uint8Array',
   'Uint8ClampedArray',
   'WeakMap',
+  'WeakMapConstructor',
   'WeakSet',
 ]);
 

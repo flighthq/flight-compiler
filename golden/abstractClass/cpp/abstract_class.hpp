@@ -7,7 +7,7 @@ static_assert(flight::runtime_contract.cpp_abi == 2, "Flight C++ runtime ABI mis
 
 namespace flighthq_golden {
 
-struct Shape {
+struct Shape : public flight::ReferenceEnabled {
   virtual ~Shape() = default;
   virtual double area() = 0;
   virtual double describe() {

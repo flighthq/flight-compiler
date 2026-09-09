@@ -12,17 +12,17 @@ enum class Level {
   High = 2,
 };
 
-struct Named {
+struct Named : public flight::ReferenceEnabled {
   flight::String name;
 };
 
-struct Tagged {
+struct Tagged : public flight::ReferenceEnabled {
   flight::String name;
   double tag;
 };
 
-inline flight::String describe(Tagged value) {
-  return value.name;
+inline flight::String describe(flight::Ref<Tagged> value) {
+  return value->name;
 }
 
 inline Level highest() {

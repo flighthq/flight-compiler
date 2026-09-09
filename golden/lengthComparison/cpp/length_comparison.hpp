@@ -7,7 +7,7 @@ static_assert(flight::runtime_contract.cpp_abi == 2, "Flight C++ runtime ABI mis
 
 namespace flighthq_golden {
 
-struct width_height {
+struct width_height : public flight::ReferenceEnabled {
   double width;
   double height;
 };
@@ -16,8 +16,8 @@ inline bool is_empty(flight::Array<double> values) {
   return (static_cast<double>(values.size()) < 1.0);
 }
 
-inline double width_of(width_height shape) {
-  return (shape.width * shape.height);
+inline double width_of(flight::Ref<width_height> shape) {
+  return (shape->width * shape->height);
 }
 
 } // namespace flighthq_golden

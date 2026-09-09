@@ -8,11 +8,11 @@ static_assert(flight::runtime_contract.cpp_abi == 2, "Flight C++ runtime ABI mis
 
 namespace flighthq_golden {
 
-struct Advancer {
+struct Advancer : public flight::ReferenceEnabled {
   std::function<double(double)> advance;
 };
 
-struct Counter {
+struct Counter : public flight::ReferenceEnabled {
   double step = 1.0;
   double advance(double by) {
     return (by + this->step);

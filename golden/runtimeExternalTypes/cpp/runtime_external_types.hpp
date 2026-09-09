@@ -7,7 +7,7 @@ static_assert(flight::runtime_contract.cpp_abi == 2, "Flight C++ runtime ABI mis
 
 namespace flighthq_golden {
 
-struct RuntimeTypes {
+struct RuntimeTypes : public flight::ReferenceEnabled {
   flight::Map<flight::String, double> values;
   flight::Task<double> task;
   flight::Uint8Array bytes;

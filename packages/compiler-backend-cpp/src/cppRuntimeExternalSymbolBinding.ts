@@ -283,6 +283,14 @@ const cppFlightRuntimeExternalSymbolBindings = [
     space: 'value',
     targetName: 'flight::Uint8ClampedArray',
   },
+  { capability: 'weak-map', kind: 'runtime', sourceName: 'WeakMap', space: 'type', targetName: 'flight::WeakMap' },
+  {
+    capability: 'weak-map',
+    kind: 'runtime',
+    sourceName: 'WeakMap',
+    space: 'value',
+    targetName: 'flight::WeakMap',
+  },
 ] as const satisfies readonly CppRuntimeExternalSymbolBinding[];
 
 const cppRuntimeExternalSymbolBindings = [

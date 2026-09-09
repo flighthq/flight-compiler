@@ -8,7 +8,7 @@ static_assert(flight::runtime_contract.cpp_abi == 2, "Flight C++ runtime ABI mis
 namespace flighthq_golden {
 
 template <typename Left, typename Right>
-struct Pair {
+struct Pair : public flight::ReferenceEnabled {
   Left left;
   Right right;
 };

@@ -7,27 +7,27 @@ static_assert(flight::runtime_contract.cpp_abi == 2, "Flight C++ runtime ABI mis
 
 namespace flighthq_golden {
 
-struct Point {
+struct Point : public flight::ReferenceEnabled {
   double x;
   double y;
 };
 
-inline Point translate(Point point, double dx, double dy) {
-  return {.x = (point.x + dx), .y = (point.y + dy)};
+inline flight::Ref<Point> translate(flight::Ref<Point> point, double dx, double dy) {
+  return flight::make_ref<Point>(Point{.x = (point->x + dx), .y = (point->y + dy)});
 }
 
-inline Point scale(Point point, double factor) {
-  return {.x = (point.x * factor), .y = (point.y * factor)};
+inline flight::Ref<Point> scale(flight::Ref<Point> point, double factor) {
+  return flight::make_ref<Point>(Point{.x = (point->x * factor), .y = (point->y * factor)});
 }
 
-inline double distance(Point a, Point b) {
-  const double dx = (a.x - b.x);
-  const double dy = (a.y - b.y);
+inline double distance(flight::Ref<Point> a, flight::Ref<Point> b) {
+  const double dx = (a->x - b->x);
+  const double dy = (a->y - b->y);
   return std::sqrt(((dx * dx) + (dy * dy)));
 }
 
-inline Point midpoint(Point a, Point b) {
-  return {.x = ((a.x + b.x) / 2.0), .y = ((a.y + b.y) / 2.0)};
+inline flight::Ref<Point> midpoint(flight::Ref<Point> a, flight::Ref<Point> b) {
+  return flight::make_ref<Point>(Point{.x = ((a->x + b->x) / 2.0), .y = ((a->y + b->y) / 2.0)});
 }
 
 } // namespace flighthq_golden

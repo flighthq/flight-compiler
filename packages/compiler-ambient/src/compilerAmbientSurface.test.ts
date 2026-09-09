@@ -25,6 +25,7 @@ describe('createCompilerAmbientSurfaceSource', () => {
     expect(source).toContain('map<U>(project: (value: T, index: number) => U): U[];');
     expect(source).toContain('join(separator?: string): string;');
     expect(source).toContain('toUpperCase(): string;');
+    expect(source).toContain('interface WeakMap<K extends object, V>');
   });
 
   it('returns the same text every call, because it is analysis input rather than state', () => {

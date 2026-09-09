@@ -264,7 +264,7 @@ function getReferenceDeclarationResolutionCpp(
   const locations = deduplicateReferenceDeclarationLocationsCpp(
     imports.flatMap(({ exportName, specifier }) =>
       getReferenceSpecifierModulesCpp(module, specifier, moduleSet).flatMap((target) =>
-        getReferenceDirectExportLocationsCpp(target, exportName),
+        getReferenceExportLocationsCpp(target, exportName, moduleSet, new Set()),
       ),
     ),
   );
@@ -272,10 +272,16 @@ function getReferenceDeclarationResolutionCpp(
   return { kind: 'indeterminate' };
 }
 
-function getReferenceDirectExportLocationsCpp(
+function getReferenceExportLocationsCpp(
   module: Readonly<ReferenceModuleRecord>,
   exportName: string,
+  moduleSet: Readonly<ReferenceModuleSet>,
+  seen: ReadonlySet<string>,
 ): readonly ReferenceDeclarationLocation[] {
+  const identity = `${module.identity}\0${exportName}`;
+  if (seen.has(identity)) return [];
+  const nextSeen = new Set(seen);
+  nextSeen.add(identity);
   const locations = [...module.declarations.values()].filter(
     (location) => location.declaration.exported && location.declaration.binding.name === exportName,
   );
@@ -283,6 +289,16 @@ function getReferenceDirectExportLocationsCpp(
     if (exported.kind === 'local' && exported.exported === exportName) {
       const location = module.declarations.get(exported.binding.id);
       if (location) locations.push(location);
+    }
+    if (exported.kind === 'reexport' && exported.exported === exportName) {
+      for (const target of getReferenceSpecifierModulesCpp(module, exported.specifier, moduleSet)) {
+        locations.push(...getReferenceExportLocationsCpp(target, exported.imported, moduleSet, nextSeen));
+      }
+    }
+    if (exported.kind === 'all') {
+      for (const target of getReferenceSpecifierModulesCpp(module, exported.specifier, moduleSet)) {
+        locations.push(...getReferenceExportLocationsCpp(target, exportName, moduleSet, nextSeen));
+      }
     }
   }
   return deduplicateReferenceDeclarationLocationsCpp(locations);

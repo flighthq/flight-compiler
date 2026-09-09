@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import ts from 'typescript';
 
 import { lowerTypeScriptSource } from '../../compiler-semantic/src/index.js';
-import type { IrType } from '../../compiler-types/src/index.js';
+import type { CompilerModuleResolutionPlan, IrType } from '../../compiler-types/src/index.js';
 import { createCppCompilerBackend, emitIrModuleCpp } from './cppCompilerBackend.js';
 
 function lower(file: string, source: string) {
@@ -35,6 +35,46 @@ describe('createCppCompilerBackend', () => {
     expect(first).not.toBe(second);
     expect(first.name).toBe('cpp');
     expect(first.emitModule(module, { modules: [module], options: {} })).toEqual([emitIrModuleCpp(module)]);
+  });
+
+  it('uses the resolved module graph for imported reference representation', () => {
+    const model = lowerPackage('@flighthq/models', 'model.ts', 'export interface Model { value: number }').module;
+    const barrel = lowerPackage('@flighthq/models', 'barrel.ts', "export type { Model } from './model.js';").module;
+    const consumer = lowerPackage(
+      '@flighthq/consumer',
+      'consumer.ts',
+      "import type { Model } from '@flighthq/models'; export function same(left: Model, right: Model): boolean { return left === right; }",
+    ).module;
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          specifier: '@flighthq/models',
+          target: { packageName: barrel.packageName, source: barrel.source },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const backend = createCppCompilerBackend();
+    const modules = [consumer, barrel, model];
+    const emitted = backend.emitModule(consumer, {
+      moduleResolution,
+      modules,
+      options: { runtimeProfile: 'flight-cpp' },
+    });
+    const facade = backend.emitModule(barrel, {
+      moduleResolution,
+      modules,
+      options: { runtimeProfile: 'flight-cpp' },
+    });
+
+    expect(emitted[0]?.contents).toContain('#include "barrel.hpp"');
+    expect(emitted[0]?.contents).toContain(
+      'bool same(flight::Ref<flighthq_models::Model> left, flight::Ref<flighthq_models::Model> right)',
+    );
+    expect(facade[0]?.contents).toContain('#include "model.hpp"');
+    expect(() => emitIrModuleCpp(consumer, { runtimeProfile: 'flight-cpp' })).toThrow(
+      'imported type Model has indeterminateIdentity',
+    );
   });
 });
 
@@ -167,8 +207,8 @@ describe('emitIrModuleCpp', () => {
 
     expect(emitted.contents).toContain('const std::optional<double> mapped = entries.get(flight::String("key"))');
     expect(emitted.contents).toContain('const std::optional<double> found = values.find(');
-    expect(emitted.contents).toContain('std::optional<Item> best = std::nullopt');
-    expect(emitted.contents).toContain('best = std::optional<Item>{item}');
+    expect(emitted.contents).toContain('std::optional<flight::Ref<Item>> best = std::nullopt');
+    expect(emitted.contents).toContain('best = std::optional<flight::Ref<Item>>{item}');
   });
 
   it('emits checker-proven typeof narrowing through an elected variant representation', () => {
@@ -308,25 +348,94 @@ describe('emitIrModuleCpp', () => {
     expect(emitted.contents).toContain('return key_capture.read_binding().value()');
   });
 
-  it('refuses captured structural referent mutation without shared object identity', () => {
+  it('preserves captured structural referent mutation through shared object identity', () => {
     const result = lower(
       'referent.ts',
       'export function mutate(): number { let state = { value: 0 }; const alias = state; const update = (): void => { state.value += 1; }; update(); return alias.value; }',
     );
 
-    expect(() => emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' })).toThrow(
-      'captured referent mutation of state requires a shared C++ reference representation',
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+
+    expect(emitted.contents).toContain('flight::make_ref<value>(value{.value = 0.0})');
+    expect(emitted.contents).toContain(
+      'flight::make_binding_cell(flight::Ref<value>{flight::make_ref<value>(value{.value = 0.0})})',
     );
+    expect(emitted.contents).toContain('state_capture.read_binding()->value += 1.0');
+    expect(emitted.contents).toContain('return alias->value');
   });
 
-  it('refuses module structural referent mutation without shared object identity', () => {
+  it('preserves module structural referent mutation through shared object identity', () => {
     const result = lower(
       'module-referent.ts',
       'const state = { value: 0 }; export function update(): void { state.value += 1; }',
     );
 
-    expect(() => emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' })).toThrow(
-      'captured referent mutation of state requires a shared C++ reference representation',
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+
+    expect(emitted.contents).toContain('inline flight::Ref<value> state');
+    expect(emitted.contents).toContain('state->value += 1.0');
+  });
+
+  it('represents structural values as identity-preserving flight references', () => {
+    const result = lower(
+      'structural-identity.ts',
+      `interface State { value: number }
+       export function aliases(): boolean {
+         const state: State = { value: 1 };
+         const alias = state;
+         alias.value = 2;
+         return state === alias;
+       }`,
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+
+    expect(emitted.contents).toContain('flight::Ref<State> state = flight::make_ref<State>(State{.value = 1.0})');
+    expect(emitted.contents).toContain('alias->value = 2.0');
+    expect(emitted.contents).toContain('return (state == alias)');
+  });
+
+  it('substitutes generic structural fields before constructing reference storage', () => {
+    const result = lower(
+      'generic-structural.ts',
+      'interface Box<T> { value: T } export function empty(): Box<number[]> { return { value: [] }; }',
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+
+    expect(emitted.contents).toContain('struct Box : public flight::ReferenceEnabled');
+    expect(emitted.contents).toContain('flight::Ref<Box<flight::Array<double>>> empty()');
+    expect(emitted.contents).toContain(
+      'flight::make_ref<Box<flight::Array<double>>>(Box<flight::Array<double>>{.value = flight::Array<double>{}})',
+    );
+  });
+
+  it('emits WeakMap only for reference keys and proven reference-free values', () => {
+    const supported = lower(
+      'weak-map.ts',
+      `interface Key { id: number }
+       export function lookup(values: WeakMap<Key, number>, key: Key): number | undefined {
+         return values.get(key);
+       }
+       export function create(key: Key): WeakMap<Key, number> {
+         const values = new WeakMap<Key, number>();
+         values.set(key, 1);
+         return values;
+       }`,
+    );
+    const invalidKey = lower('weak-map-key.ts', 'export type Invalid = WeakMap<string, number>;');
+    const invalidValue = lower(
+      'weak-map-value.ts',
+      'interface Key { id: number } interface Value { id: number } export type Invalid = WeakMap<Key, Value>;',
+    );
+    const emitted = emitIrModuleCpp(supported.module, { runtimeProfile: 'flight-cpp' });
+
+    expect(emitted.contents).toContain('flight::WeakMap<flight::Ref<Key>, double> values');
+    expect(emitted.contents).toContain('flight::Ref<Key> key');
+    expect(emitted.contents).toContain('return values.get(key)');
+    expect(() => emitIrModuleCpp(invalidKey.module, { runtimeProfile: 'flight-cpp' })).toThrow(
+      'flight-cpp WeakMap key requires a proven flight reference representation',
+    );
+    expect(() => emitIrModuleCpp(invalidValue.module, { runtimeProfile: 'flight-cpp' })).toThrow(
+      'flight-cpp WeakMap value requires a proven reference-free representation',
     );
   });
 
@@ -400,10 +509,28 @@ describe('emitIrModuleCpp', () => {
     expect(emitted.contents.indexOf('struct Counter')).toBeLessThan(emitted.contents.indexOf('inline double read'));
     expect(emitted.contents).toContain('double count = 1.0');
     expect(emitted.contents).toContain('inline static const double zero = 0.0');
-    expect(emitted.contents).toContain('static Counter make()');
-    expect(emitted.contents).toContain('counter.value(7.0)');
-    expect(emitted.contents).toContain('counter.value() + Counter::zero');
-    expect(emitted.contents).not.toContain('const Counter counter');
+    expect(emitted.contents).toContain('static flight::Ref<Counter> make()');
+    expect(emitted.contents).toContain('return flight::make_ref<Counter>()');
+    expect(emitted.contents).toContain('counter->value(7.0)');
+    expect(emitted.contents).toContain('counter->value() + Counter::zero');
+    expect(emitted.contents).not.toContain('const flight::Ref<Counter> counter');
+  });
+
+  it('recovers an owning reference when a class returns or compares this', () => {
+    const result = lower(
+      'self.ts',
+      `export class Chain {
+         self(): Chain { return this; }
+         same(other: Chain): boolean { return this === other; }
+       }
+       export function create(): Chain { return new Chain().self(); }`,
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+
+    expect(emitted.contents).toContain('struct Chain : public flight::ReferenceEnabled');
+    expect(emitted.contents).toContain('return flight::ref_from_this(*this)');
+    expect(emitted.contents).toContain('(flight::ref_from_this(*this) == other)');
+    expect(emitted.contents).toContain('flight::make_ref<Chain>()->self()');
   });
 
   it('evaluates nullable property receivers once and safely projects indexed values', () => {
@@ -416,7 +543,7 @@ describe('emitIrModuleCpp', () => {
     expect(emitted.contents).toContain('auto optional_chain_receiver = entries.get(0.0)');
     expect(emitted.contents).toContain('auto optional_chain_receiver = entry');
     expect(emitted.contents).toContain('if (!optional_chain_receiver.has_value()) return std::nullopt');
-    expect(emitted.contents).toContain('optional_chain_receiver.value().key');
+    expect(emitted.contents).toContain('optional_chain_receiver.value()->key');
   });
 
   it('emits async functions with C++20 coroutine syntax', () => {

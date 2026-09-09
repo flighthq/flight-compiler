@@ -9,14 +9,14 @@ static_assert(flight::runtime_contract.cpp_abi == 2, "Flight C++ runtime ABI mis
 
 namespace flighthq_golden {
 
-struct Options {
+struct Options : public flight::ReferenceEnabled {
   std::optional<double> retries;
   flight::String label;
 };
 
-inline flight::String summarize(Options options) {
-  const double retries = options.retries.value_or(0.0);
-  return flight::String("") + flight::to_string(options.label) + flight::String(":") + flight::to_string(retries) + flight::String("");
+inline flight::String summarize(flight::Ref<Options> options) {
+  const double retries = options->retries.value_or(0.0);
+  return flight::String("") + flight::to_string(options->label) + flight::String(":") + flight::to_string(retries) + flight::String("");
 }
 
 inline flight::String pick(bool flag, flight::String first, flight::String second) {

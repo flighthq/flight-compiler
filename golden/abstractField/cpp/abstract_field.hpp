@@ -7,7 +7,7 @@ static_assert(flight::runtime_contract.cpp_abi == 2, "Flight C++ runtime ABI mis
 
 namespace flighthq_golden {
 
-struct Component {
+struct Component : public flight::ReferenceEnabled {
   flight::String name;
   double version;
   virtual ~Component() = default;
@@ -24,7 +24,7 @@ struct Button : public Component {
   double version = 1.0;
 };
 
-struct DeclareExample {
+struct DeclareExample : public flight::ReferenceEnabled {
   flight::String label;
   double value = 0.0;
   flight::String get_label() {

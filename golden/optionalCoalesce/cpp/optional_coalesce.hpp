@@ -8,12 +8,12 @@ static_assert(flight::runtime_contract.cpp_abi == 2, "Flight C++ runtime ABI mis
 
 namespace flighthq_golden {
 
-struct Holder {
+struct Holder : public flight::ReferenceEnabled {
   double value;
 };
 
-inline double read(std::optional<Holder> holder) {
-  return ([&]() -> std::optional<double> { auto optional_chain_receiver = holder; if (!optional_chain_receiver.has_value()) return std::nullopt; return optional_chain_receiver.value().value; }()).value_or(0.0);
+inline double read(std::optional<flight::Ref<Holder>> holder) {
+  return ([&]() -> std::optional<double> { auto optional_chain_receiver = holder; if (!optional_chain_receiver.has_value()) return std::nullopt; return optional_chain_receiver.value()->value; }()).value_or(0.0);
 }
 
 } // namespace flighthq_golden

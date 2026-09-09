@@ -7,18 +7,18 @@ static_assert(flight::runtime_contract.cpp_abi == 2, "Flight C++ runtime ABI mis
 
 namespace flighthq_golden {
 
-struct Entry {
+struct Entry : public flight::ReferenceEnabled {
   flight::String key;
   double value;
 };
 
-inline flight::Array<Entry> appended(flight::Array<Entry> entries, flight::String key, double value) {
-  flight::Array<Entry> next = entries.slice();
-  next.push({.key = key, .value = value});
+inline flight::Array<flight::Ref<Entry>> appended(flight::Array<flight::Ref<Entry>> entries, flight::String key, double value) {
+  flight::Array<flight::Ref<Entry>> next = entries.slice();
+  next.push(flight::make_ref<Entry>(Entry{.key = key, .value = value}));
   return next;
 }
 
-inline double tail_size(flight::Array<Entry> entries, double index) {
+inline double tail_size(flight::Array<flight::Ref<Entry>> entries, double index) {
   return static_cast<double>(entries.slice(index).size());
 }
 

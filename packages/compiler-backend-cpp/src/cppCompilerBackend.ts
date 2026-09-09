@@ -31,8 +31,14 @@ import {
   analyzeCompilerRuntimeExternalSymbolCompleteness,
   collectIrModulesRuntimeExternalSymbolIdentities,
 } from '../../compiler-runtime-contract/src/index.js';
+import {
+  createIrTypeParameterSubstitutionPlan,
+  resolveIrTypeStructuralSubstitution,
+} from '../../compiler-structural/src/index.js';
 import type {
   CompilerBackend,
+  CompilerCppReferenceRepresentationPlanner,
+  CompilerModuleResolutionPlan,
   CppCompilerBackendOptions,
   CppCompilerRuntimeProfile,
   EmittedFile,
@@ -44,7 +50,6 @@ import type {
   IrEnumDeclaration,
   IrExpression,
   IrFunctionDeclaration,
-  IrImport,
   IrBindingIdentity,
   IrInterfaceDeclaration,
   IrModule,
@@ -66,6 +71,7 @@ import {
   convertSourcePathToCppFileName,
   isCppCompilerKeyword,
 } from './cppCompilerIdentity.js';
+import { createIrTypeReferenceRepresentationPlannerCpp } from './cppReferenceRepresentationPlan.js';
 import {
   createCompilerRuntimeExternalSymbolBindingPlanCpp,
   getCompilerRuntimeExternalMemberTargetCpp,
@@ -94,10 +100,13 @@ interface EmitContext {
   finallyReturnVar?: string | undefined;
   includes: Set<string>;
   module: Readonly<IrModule>;
+  moduleResolution?: Readonly<CompilerModuleResolutionPlan> | undefined;
   nullableBindingIds: ReadonlySet<string>;
   options: Readonly<CppCompilerBackendOptions>;
+  referenceRepresentationPlanner: CompilerCppReferenceRepresentationPlanner;
   returnsAbsent: boolean;
   sharedCaptureTargetNames: ReadonlyMap<string, string>;
+  sourceModules: readonly Readonly<IrModule>[];
   targetNames: ReadonlyMap<string, string>;
   uninitializedCaptureStorageBindingIds: ReadonlySet<string>;
   generatedNames: Set<string>;
@@ -106,8 +115,8 @@ interface EmitContext {
 
 export function createCppCompilerBackend(): CompilerBackend<CppCompilerBackendOptions> {
   return {
-    emitModule(module, { options }) {
-      return [emitIrModuleCppWithContext(module, options)];
+    emitModule(module, { moduleResolution, modules, options }) {
+      return [emitIrModuleCppWithContext(module, options, modules, moduleResolution)];
     },
     name: 'cpp',
   };
@@ -117,12 +126,14 @@ export function emitIrModuleCpp(
   sourceModule: Readonly<IrModule>,
   options: Readonly<CppCompilerBackendOptions> = {},
 ): EmittedFile {
-  return emitIrModuleCppWithContext(sourceModule, options);
+  return emitIrModuleCppWithContext(sourceModule, options, [sourceModule]);
 }
 
 function emitIrModuleCppWithContext(
   sourceModule: Readonly<IrModule>,
   options: Readonly<CppCompilerBackendOptions>,
+  sourceModules: readonly Readonly<IrModule>[],
+  moduleResolution?: Readonly<CompilerModuleResolutionPlan> | undefined,
 ): EmittedFile {
   const module = lowerIrModuleWithCompilerPasses(sourceModule, [
     createCompilerLoweringPassExtraArgumentErasure(),
@@ -160,10 +171,15 @@ function emitIrModuleCppWithContext(
     defaultedParameterIds: new Set(),
     includes: new Set<string>(),
     module,
+    ...(moduleResolution ? { moduleResolution } : {}),
     nullableBindingIds: collectIrModuleNullableBindingIds(module),
     options,
+    referenceRepresentationPlanner: moduleResolution
+      ? createIrTypeReferenceRepresentationPlannerCpp(sourceModules, moduleResolution)
+      : createIrTypeReferenceRepresentationPlannerCpp(sourceModules),
     returnsAbsent: false,
     sharedCaptureTargetNames,
+    sourceModules,
     targetNames,
     uninitializedCaptureStorageBindingIds,
     generatedNames: new Set(targetNames.values()),
@@ -192,7 +208,8 @@ function emitIrModuleCppWithContext(
   const declarations = [...module.declarations]
     .sort((left, right) => declarationPriorityCpp(left) - declarationPriorityCpp(right))
     .map((declaration) => emitDeclaration(declaration, context));
-  const imports = emitImports(module.imports, context);
+  const imports = emitImports(module, context);
+  const reexports = emitReexportsCpp(module, context);
   const lines = [createCompilerGeneratedFileHeader(module, '//', options.upstreamCommit)];
   lines.push('#pragma once');
   const sortedIncludes = [...context.includes].sort();
@@ -216,17 +233,20 @@ function emitIrModuleCppWithContext(
   lines.push('', `namespace ${namespaceName} {`);
   for (const struct of context.anonymousStructs.values()) {
     lines.push('');
-    lines.push(`struct ${struct.name} {`);
+    lines.push(
+      `struct ${struct.name}${getCppRuntimeProfile(context.options) === 'flight-cpp' ? ' : public flight::ReferenceEnabled' : ''} {`,
+    );
     for (const property of struct.properties) {
       lines.push(`  ${emitOptionalTypeCpp(property.type, property.optional, context)} ${property.name};`);
     }
     lines.push('};');
   }
+  if (reexports.length > 0) lines.push('', ...reexports);
   declarations.forEach((declaration) => lines.push('', ...declaration));
   lines.push('', `} // namespace ${namespaceName}`);
   return {
     contents: lines.join('\n'),
-    path: `${convertSourcePathToCppFileName(module.source) ?? `_internal_${snakeCase(module.name)}`}.hpp`,
+    path: `${getCppModuleFileName(module)}.hpp`,
   };
 }
 
@@ -296,7 +316,11 @@ function emitClass(declaration: Readonly<IrClassDeclaration>, outer: EmitContext
   const context: EmitContext = { ...outer, currentClass: declaration };
   const name = getBindingTargetName(declaration.binding, context);
   const typeParams = emitTypeParameters(declaration.typeParameters, context);
-  const extendsClause = declaration.extends ? ` : public ${emitType(declaration.extends, context)}` : '';
+  const extendsClause = declaration.extends
+    ? ` : public ${emitType(declaration.extends, context, 'storage')}`
+    : getCppRuntimeProfile(context.options) === 'flight-cpp'
+      ? ' : public flight::ReferenceEnabled'
+      : '';
   const overriddenMethods = getIrClassInheritedMethodNamesCpp(declaration, context);
   const hasSubclass = hasIrModuleSubclassCpp(declaration, context);
   const lines: string[] = [];
@@ -463,7 +487,9 @@ function emitInterface(declaration: Readonly<IrInterfaceDeclaration>, context: E
   const typeParams = emitTypeParameters(declaration.typeParameters, context);
   const lines: string[] = [];
   if (typeParams) lines.push(`template ${typeParams}`);
-  lines.push(`struct ${name} {`);
+  lines.push(
+    `struct ${name}${getCppRuntimeProfile(context.options) === 'flight-cpp' ? ' : public flight::ReferenceEnabled' : ''} {`,
+  );
   for (const property of declaration.properties) {
     const propType = emitOptionalTypeCpp(emitType(property.type, context), property.optional, context);
     lines.push(`  ${propType} ${safeCppName(property.name)};`);
@@ -480,7 +506,9 @@ function emitTypeAlias(declaration: Readonly<IrTypeAliasDeclaration>, context: E
     const typeParams = emitTypeParameters(declaration.typeParameters, context);
     const lines: string[] = [];
     if (typeParams) lines.push(`template ${typeParams}`);
-    lines.push(`struct ${name} {`);
+    lines.push(
+      `struct ${name}${getCppRuntimeProfile(context.options) === 'flight-cpp' ? ' : public flight::ReferenceEnabled' : ''} {`,
+    );
     for (const property of declaration.type.properties) {
       const propertyType = emitOptionalTypeCpp(emitType(property.type, context), property.optional, context);
       lines.push(`  ${propertyType} ${safeCppName(property.name)};`);
@@ -600,7 +628,7 @@ function emitExpression(
       if (expression.operator === '=' && expression.left.kind === 'property') {
         const setter = getIrExpressionClassAccessorCpp(expression.left.object, expression.left.name, 'set', context);
         if (setter) {
-          return `${emitExpression(expression.left.object, context)}${memberOp(expression.left.object)}${safeCppName(expression.left.name)}(${right})`;
+          return `${emitExpression(expression.left.object, context)}${memberOp(expression.left.object, context)}${safeCppName(expression.left.name)}(${right})`;
         }
       }
       const left = emitAssignmentTargetCpp(expression.left, context);
@@ -672,8 +700,15 @@ function emitExpression(
         expression.operator === '^' ||
         expression.operator === '<<' ||
         expression.operator === '>>';
-      const left = emitExpression(expression.left, context);
-      const right = emitExpression(expression.right, context);
+      const equality =
+        expression.operator === '==' ||
+        expression.operator === '===' ||
+        expression.operator === '!=' ||
+        expression.operator === '!==';
+      const leftType = equality ? getIrExpressionTypeEvidenceCpp(expression.left, context) : undefined;
+      const rightType = equality ? getIrExpressionTypeEvidenceCpp(expression.right, context) : undefined;
+      const left = emitExpression(expression.left, context, isThisAccess(expression.left) ? rightType : undefined);
+      const right = emitExpression(expression.right, context, isThisAccess(expression.right) ? leftType : undefined);
       if (bitwise) {
         context.includes.add('cstdint');
         return `static_cast<double>(static_cast<int32_t>(${left}) ${op} static_cast<int32_t>(${right}))`;
@@ -701,14 +736,14 @@ function emitExpression(
         );
         if (binding && binding.kind === 'sizeMethod') {
           const receiver = emitExpression(expression.callee.object, context);
-          return `static_cast<double>(${receiver}${memberOp(expression.callee.object)}${binding.targetName}())`;
+          return `static_cast<double>(${receiver}${memberOp(expression.callee.object, context)}${binding.targetName}())`;
         }
         if (binding && binding.kind === 'method') {
           const receiver = emitExpression(expression.callee.object, context);
           const args = expression.arguments.map((argument, index) =>
             emitExpression(argument, context, getIrCallArgumentExpectedTypeCpp(expression, index, context)),
           );
-          return `${receiver}${memberOp(expression.callee.object)}${binding.targetName}${emitCppTypeArguments(expression.typeArguments, context)}(${args.join(', ')})`;
+          return `${receiver}${memberOp(expression.callee.object, context)}${binding.targetName}${emitCppTypeArguments(expression.typeArguments, context)}(${args.join(', ')})`;
         }
       }
       if (
@@ -795,6 +830,13 @@ function emitExpression(
     }
     case 'identifier': {
       if (
+        expression.reference.kind === 'this' &&
+        expectedType &&
+        hasFlightReferenceRepresentationCpp(expectedType, context)
+      ) {
+        return 'flight::ref_from_this(*this)';
+      }
+      if (
         expression.reference.kind === 'binding' &&
         context.defaultedParameterIds.has(expression.reference.binding.id)
       ) {
@@ -846,16 +888,41 @@ function emitExpression(
         }
         return `${typeName}${typeArguments}::create(${args.join(', ')})`;
       }
+      const constructedType: IrType | undefined =
+        expression.callee.reference.kind === 'binding'
+          ? {
+              kind: 'named',
+              reference: { binding: expression.callee.reference.binding, kind: 'binding', path: [] },
+              typeArguments: expression.typeArguments,
+            }
+          : undefined;
+      if (
+        constructedType &&
+        getCppRuntimeProfile(context.options) === 'flight-cpp' &&
+        hasFlightReferenceRepresentationCpp(constructedType, context)
+      ) {
+        return `flight::make_ref<${typeName}${typeArguments}>(${args.join(', ')})`;
+      }
       return `${typeName}${typeArguments}(${args.join(', ')})`;
     }
     case 'object': {
+      const constructionType =
+        expectedType && hasFlightReferenceRepresentationCpp(expectedType, context) ? expectedType : expression.type;
       const members = expression.members
         .filter((member): member is typeof member & { kind: 'property' } => member.kind === 'property')
         .map(
           (member) =>
-            `.${safeCppName(member.name)} = ${emitExpression(member.value, context, getIrObjectPropertyTypeCpp(expression.type, member.name, context))}`,
+            `.${safeCppName(member.name)} = ${emitExpression(member.value, context, getIrObjectPropertyTypeCpp(constructionType, member.name, context))}`,
         );
-      return `{${members.join(', ')}}`;
+      const initializer = `{${members.join(', ')}}`;
+      if (
+        getCppRuntimeProfile(context.options) === 'flight-cpp' &&
+        hasFlightReferenceRepresentationCpp(constructionType, context)
+      ) {
+        const storageType = emitType(constructionType, context, 'storage');
+        return `flight::make_ref<${storageType}>(${storageType}${initializer})`;
+      }
+      return initializer;
     }
     case 'property': {
       if (expression.optional) return emitOptionalPropertyExpressionCpp(expression, context);
@@ -863,10 +930,10 @@ function emitExpression(
         const binding = getCompilerCppAmbientMemberBinding(expression.member, getCppRuntimeProfile(context.options));
         if (binding && binding.kind === 'sizeMethod') {
           const receiver = emitExpression(expression.object, context);
-          return `static_cast<double>(${receiver}${memberOp(expression.object)}${binding.targetName}())`;
+          return `static_cast<double>(${receiver}${memberOp(expression.object, context)}${binding.targetName}())`;
         }
         if (binding && binding.kind === 'property') {
-          return `${emitExpression(expression.object, context)}${memberOp(expression.object)}${binding.targetName}`;
+          return `${emitExpression(expression.object, context)}${memberOp(expression.object, context)}${binding.targetName}`;
         }
       }
       if (expression.object.kind === 'identifier' && expression.object.reference.kind === 'ambient') {
@@ -899,9 +966,9 @@ function emitExpression(
         return `${getBindingTargetName(enumeration.binding, context)}::${safeCppTypeName(expression.name)}`;
       }
       if (getIrExpressionClassAccessorCpp(expression.object, expression.name, 'get', context)) {
-        return `${emitExpression(expression.object, context)}${memberOp(expression.object)}${safeCppName(expression.name)}()`;
+        return `${emitExpression(expression.object, context)}${memberOp(expression.object, context)}${safeCppName(expression.name)}()`;
       }
-      return `${emitExpression(expression.object, context)}${memberOp(expression.object)}${safeCppName(expression.name)}`;
+      return `${emitExpression(expression.object, context)}${memberOp(expression.object, context)}${safeCppName(expression.name)}`;
     }
     case 'regexp':
       emissionError(context, 'regular expressions require a downstream standard-library mapping');
@@ -1269,7 +1336,22 @@ function emitTryFinallyCpp(
   return lines;
 }
 
-function emitType(type: Readonly<IrType>, context: EmitContext): string {
+function emitType(type: Readonly<IrType>, context: EmitContext, representation: 'storage' | 'value' = 'value'): string {
+  if (
+    type.kind === 'named' &&
+    type.reference.kind === 'ambient' &&
+    (type.reference.name === 'Readonly' || type.reference.name === 'Required') &&
+    type.typeArguments[0]
+  ) {
+    return emitType(type.typeArguments[0], context, representation);
+  }
+  if (
+    representation === 'value' &&
+    getCppRuntimeProfile(context.options) === 'flight-cpp' &&
+    hasFlightReferenceRepresentationCpp(type, context)
+  ) {
+    return `flight::Ref<${emitType(type, context, 'storage')}>`;
+  }
   switch (type.kind) {
     case 'array':
       if (getCppRuntimeProfile(context.options) === 'flight-cpp') {
@@ -1297,11 +1379,21 @@ function emitType(type: Readonly<IrType>, context: EmitContext): string {
           : emitCppStringType(context);
     case 'named': {
       const sourceName = type.reference.kind === 'ambient' ? type.reference.name : undefined;
-      if ((sourceName === 'Readonly' || sourceName === 'Required') && type.typeArguments[0]) {
-        return emitType(type.typeArguments[0], context);
+      if (
+        getCppRuntimeProfile(context.options) === 'flight-cpp' &&
+        type.reference.kind === 'binding' &&
+        type.reference.binding.kind === 'import'
+      ) {
+        const plan = context.referenceRepresentationPlanner.plan(type, context.module);
+        if (plan.kind === 'refused') {
+          emissionError(context, `imported type ${type.reference.binding.name} has ${plan.reason}`);
+        }
       }
       if (sourceName === 'Partial' && type.typeArguments[0]) {
         emissionError(context, 'Partial<T> requires C++ optional-field lowering');
+      }
+      if (sourceName === 'WeakMap' && getCppRuntimeProfile(context.options) === 'flight-cpp') {
+        assertWeakMapTypeArgumentsCpp(type.typeArguments, context);
       }
       const mapped = getTypeReferenceTargetName(type, context);
       const arguments_ = type.typeArguments.map((argument) => emitType(argument, context));
@@ -1357,6 +1449,20 @@ function emitType(type: Readonly<IrType>, context: EmitContext): string {
         return getBindingTargetName(context.currentClass.binding, context);
       }
       return 'auto';
+  }
+}
+
+function assertWeakMapTypeArgumentsCpp(typeArguments: readonly IrType[], context: EmitContext): void {
+  if (typeArguments.length !== 2 || !typeArguments[0] || !typeArguments[1]) {
+    emissionError(context, 'flight-cpp WeakMap requires explicit key and value type arguments');
+  }
+  const key = context.referenceRepresentationPlanner.plan(typeArguments[0], context.module);
+  if (key.kind !== 'represented' || key.valueRepresentation !== 'flightReference') {
+    emissionError(context, 'flight-cpp WeakMap key requires a proven flight reference representation');
+  }
+  const value = context.referenceRepresentationPlanner.plan(typeArguments[1], context.module);
+  if (value.kind !== 'represented' || value.identity.identity !== 'value') {
+    emissionError(context, 'flight-cpp WeakMap value requires a proven reference-free representation');
   }
 }
 
@@ -1756,18 +1862,131 @@ function getIrObjectPropertyTypeCpp(
   context: EmitContext,
 ): Readonly<IrType> | undefined {
   if (type.kind === 'object') return type.properties.find((property) => property.name === propertyName)?.type;
-  if (type.kind !== 'named' || type.reference.kind !== 'binding' || type.typeArguments.length > 0) return undefined;
+  if (type.kind !== 'named' || type.reference.kind !== 'binding') return undefined;
   const bindingId = type.reference.binding.id;
   const declaration = context.module.declarations.find(
     (candidate) =>
-      (candidate.kind === 'interface' || candidate.kind === 'typeAlias') && candidate.binding.id === bindingId,
+      (candidate.kind === 'class' || candidate.kind === 'interface' || candidate.kind === 'typeAlias') &&
+      candidate.binding.id === bindingId,
   );
+  if (declaration?.kind === 'class') {
+    const field = declaration.fields.find((candidate) => candidate.name === propertyName);
+    const propertyType =
+      field?.type ??
+      declaration.methods.find((candidate) => candidate.name === propertyName && candidate.accessor === 'get')?.returns;
+    return propertyType
+      ? resolveIrTypeStructuralSubstitution(
+          propertyType,
+          createIrTypeParameterSubstitutionPlan(declaration.typeParameters, type.typeArguments),
+        )
+      : undefined;
+  }
   if (declaration?.kind === 'interface') {
-    return declaration.properties.find((property) => property.name === propertyName)?.type;
+    const propertyType = declaration.properties.find((property) => property.name === propertyName)?.type;
+    return propertyType
+      ? resolveIrTypeStructuralSubstitution(
+          propertyType,
+          createIrTypeParameterSubstitutionPlan(declaration.typeParameters, type.typeArguments),
+        )
+      : undefined;
   }
   return declaration?.kind === 'typeAlias'
-    ? getIrObjectPropertyTypeCpp(declaration.type, propertyName, context)
+    ? getIrObjectPropertyTypeCpp(
+        resolveIrTypeStructuralSubstitution(
+          declaration.type,
+          createIrTypeParameterSubstitutionPlan(declaration.typeParameters, type.typeArguments),
+        ),
+        propertyName,
+        context,
+      )
     : undefined;
+}
+
+function getIrExpressionTypeEvidenceCpp(
+  expression: Readonly<IrExpression>,
+  context: EmitContext,
+): Readonly<IrType> | undefined {
+  switch (expression.kind) {
+    case 'array':
+      return undefined;
+    case 'assignment':
+      return getIrAssignmentTargetTypeCpp(expression.left, context);
+    case 'await': {
+      const operandType = getIrExpressionTypeEvidenceCpp(expression.expression, context);
+      return operandType?.kind === 'named' &&
+        operandType.reference.kind === 'ambient' &&
+        operandType.reference.name === 'Promise'
+        ? getIrTaskAwaitedTypeCpp(operandType, context)
+        : undefined;
+    }
+    case 'call':
+      return getIrCallReturnTypeCpp(expression, context);
+    case 'cast':
+      return expression.type;
+    case 'conditional':
+      return (
+        getIrExpressionTypeEvidenceCpp(expression.whenTrue, context) ??
+        getIrExpressionTypeEvidenceCpp(expression.whenFalse, context)
+      );
+    case 'function':
+      return {
+        kind: 'function',
+        parameters: expression.parameters.map((parameter) => {
+          const common = { name: parameter.binding.name, type: parameter.type };
+          if (parameter.optional) return { ...common, optional: true, rest: false } as const;
+          if (parameter.rest) return { ...common, optional: false, rest: true } as const;
+          return { ...common, optional: false, rest: false } as const;
+        }),
+        returns: expression.returns,
+        typeParameters: expression.typeParameters,
+      };
+    case 'identifier': {
+      if (expression.reference.kind === 'this' && context.currentClass) {
+        return {
+          kind: 'named',
+          reference: { binding: context.currentClass.binding, kind: 'binding', path: [] },
+          typeArguments: [],
+        };
+      }
+      if (expression.reference.kind !== 'binding') return undefined;
+      const declaredType = context.bindingTypes.get(expression.reference.binding.id);
+      if (!declaredType || !expression.narrowedMember) return declaredType;
+      return (
+        getIrUnionTypeCpp(declaredType, context, new Set())?.types.find(
+          (member) => getIrUnionMemberNameCpp(member) === expression.narrowedMember,
+        ) ?? declaredType
+      );
+    }
+    case 'new':
+      return expression.callee.kind === 'identifier' && expression.callee.reference.kind === 'binding'
+        ? {
+            kind: 'named',
+            reference: { binding: expression.callee.reference.binding, kind: 'binding', path: [] },
+            typeArguments: expression.typeArguments,
+          }
+        : undefined;
+    case 'object':
+      return expression.type;
+    case 'property': {
+      const objectType = getIrExpressionTypeEvidenceCpp(expression.object, context);
+      return objectType ? getIrObjectPropertyTypeCpp(objectType, expression.name, context) : undefined;
+    }
+    case 'binary':
+    case 'element':
+    case 'literal':
+    case 'objectRest':
+    case 'regexp':
+    case 'spread':
+    case 'template':
+    case 'tuple':
+    case 'tupleRest':
+    case 'tupleSpread':
+    case 'tupleSuffix':
+    case 'unary':
+    case 'undefinedDefault':
+    case 'undefinedValue':
+      return undefined;
+  }
 }
 
 function getIrBindingVariantUnionTypeCpp(
@@ -1854,15 +2073,83 @@ function collectIrModuleBindingClassesCpp(
 
 function collectIrModuleBindingTypesCpp(module: Readonly<IrModule>): ReadonlyMap<string, Readonly<IrType>> {
   const result = new Map<string, Readonly<IrType>>();
+  const inferred = new Map<string, Readonly<IrExpression>>();
   analyzeIrModuleTraversal(module, {
     parameter(parameter) {
       result.set(parameter.binding.id, parameter.type);
     },
     variable(variable) {
-      if ('binding' in variable && variable.type) result.set(variable.binding.id, variable.type);
+      if (!('binding' in variable)) return;
+      if (variable.type) result.set(variable.binding.id, variable.type);
+      if (variable.initializer) inferred.set(variable.binding.id, variable.initializer);
     },
   });
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const [bindingId, initializer] of inferred) {
+      const existing = result.get(bindingId);
+      if (existing && existing.kind !== 'unknown') continue;
+      const type = inferIrExpressionTypeCpp(initializer, result);
+      if (!type) continue;
+      result.set(bindingId, type);
+      changed = true;
+    }
+  }
   return result;
+}
+
+function inferIrExpressionTypeCpp(
+  expression: Readonly<IrExpression>,
+  bindingTypes: ReadonlyMap<string, Readonly<IrType>>,
+): Readonly<IrType> | undefined {
+  switch (expression.kind) {
+    case 'assignment':
+      return expression.left.kind === 'identifier' && expression.left.reference.kind === 'binding'
+        ? bindingTypes.get(expression.left.reference.binding.id)
+        : undefined;
+    case 'call':
+      return expression.semantics.resultType.kind === 'unknown' ? undefined : expression.semantics.resultType;
+    case 'cast':
+      return expression.type;
+    case 'conditional':
+      return (
+        inferIrExpressionTypeCpp(expression.whenTrue, bindingTypes) ??
+        inferIrExpressionTypeCpp(expression.whenFalse, bindingTypes)
+      );
+    case 'identifier':
+      return expression.reference.kind === 'binding' ? bindingTypes.get(expression.reference.binding.id) : undefined;
+    case 'new':
+      return expression.callee.kind === 'identifier' && expression.callee.reference.kind === 'binding'
+        ? {
+            kind: 'named',
+            reference: { binding: expression.callee.reference.binding, kind: 'binding', path: [] },
+            typeArguments: expression.typeArguments,
+          }
+        : undefined;
+    case 'object':
+      return expression.type;
+    case 'undefinedValue':
+      return expression.type;
+    case 'array':
+    case 'await':
+    case 'binary':
+    case 'element':
+    case 'function':
+    case 'literal':
+    case 'objectRest':
+    case 'property':
+    case 'regexp':
+    case 'spread':
+    case 'template':
+    case 'tuple':
+    case 'tupleRest':
+    case 'tupleSpread':
+    case 'tupleSuffix':
+    case 'unary':
+    case 'undefinedDefault':
+      return undefined;
+  }
 }
 
 function collectIrModuleArrayElementBindingIdsCpp(
@@ -2152,20 +2439,26 @@ function emitOptionalPropertyExpressionCpp(
   }
   const payload = emitOptionalChainPayloadTypeCpp(semantics.valueType, context);
   const object = emitOptionalChainReceiverCpp(expression.object, context);
+  const memberOperator = hasFlightReferenceRepresentationCpp(
+    emitOptionalChainPayloadIrTypeCpp(semantics.receiverType, context),
+    context,
+  )
+    ? '->'
+    : '.';
   let projected: string;
   if (expression.member) {
     const binding = getCompilerCppAmbientMemberBinding(expression.member, getCppRuntimeProfile(context.options));
     if (binding?.kind === 'sizeMethod') {
-      projected = 'static_cast<double>(optional_chain_receiver.value().size())';
+      projected = `static_cast<double>(optional_chain_receiver.value()${memberOperator}size())`;
     } else if (binding?.kind === 'property') {
-      projected = `optional_chain_receiver.value().${binding.targetName}`;
+      projected = `optional_chain_receiver.value()${memberOperator}${binding.targetName}`;
     } else {
-      projected = `optional_chain_receiver.value().${safeCppName(expression.name)}`;
+      projected = `optional_chain_receiver.value()${memberOperator}${safeCppName(expression.name)}`;
     }
   } else if (getIrExpressionClassAccessorCpp(expression.object, expression.name, 'get', context)) {
-    projected = `optional_chain_receiver.value().${safeCppName(expression.name)}()`;
+    projected = `optional_chain_receiver.value()${memberOperator}${safeCppName(expression.name)}()`;
   } else {
-    projected = `optional_chain_receiver.value().${safeCppName(expression.name)}`;
+    projected = `optional_chain_receiver.value()${memberOperator}${safeCppName(expression.name)}`;
   }
   context.includes.add('optional');
   return `([&]() -> std::optional<${payload}> { auto optional_chain_receiver = ${object}; if (!optional_chain_receiver.has_value()) return std::nullopt; return ${projected}; }())`;
@@ -2183,7 +2476,11 @@ function emitOptionalChainReceiverCpp(expression: Readonly<IrExpression>, contex
 }
 
 function emitOptionalChainPayloadTypeCpp(type: Readonly<IrType>, context: EmitContext): string {
-  return emitType(hasIrTypeAbsentMember(type) ? getOptionalPayloadTypeCpp(type, context) : type, context);
+  return emitType(emitOptionalChainPayloadIrTypeCpp(type, context), context);
+}
+
+function emitOptionalChainPayloadIrTypeCpp(type: Readonly<IrType>, context: EmitContext): Readonly<IrType> {
+  return hasIrTypeAbsentMember(type) ? getOptionalPayloadTypeCpp(type, context) : type;
 }
 
 function getOptionalPayloadTypeCpp(type: Readonly<IrType>, context: EmitContext): Readonly<IrType> {
@@ -2215,10 +2512,14 @@ function hasIndexedRuntimeReceiverCpp(
 
 function hasSharedReferentRepresentationCpp(type: Readonly<IrType>, context: EmitContext): boolean {
   if (getCppRuntimeProfile(context.options) !== 'flight-cpp') return false;
-  if (type.kind === 'array') return true;
-  return (
-    type.kind === 'named' && type.reference.kind === 'ambient' && cppSharedReferentRuntimeTypes.has(type.reference.name)
-  );
+  const plan = context.referenceRepresentationPlanner.plan(type, context.module);
+  return plan.kind === 'represented' && plan.identity.identity === 'reference';
+}
+
+function hasFlightReferenceRepresentationCpp(type: Readonly<IrType>, context: EmitContext): boolean {
+  if (getCppRuntimeProfile(context.options) !== 'flight-cpp') return false;
+  const plan = context.referenceRepresentationPlanner.plan(type, context.module);
+  return plan.kind === 'represented' && plan.valueRepresentation === 'flightReference';
 }
 
 function getExpectedReturnTypeCpp(context: EmitContext): Readonly<IrType> | undefined {
@@ -2317,16 +2618,86 @@ function emitParameter(parameter: Readonly<IrParameter>, context: EmitContext): 
   return `${type} ${name}`;
 }
 
-function emitImports(imports: readonly IrImport[], context: EmitContext): string[] {
-  return imports.flatMap((importItem) => {
-    if (!importItem.specifier.startsWith('.')) return [];
+function emitImports(module: Readonly<IrModule>, context: EmitContext): string[] {
+  const specifiers = [
+    ...module.imports.map((item) => item.specifier),
+    ...module.exports.flatMap((item) =>
+      item.kind === 'all' || item.kind === 'namespace' || item.kind === 'reexport' ? [item.specifier] : [],
+    ),
+  ];
+  return [...new Set(specifiers)].flatMap((specifier) => {
+    const targetModule = getCppResolvedImportModule(specifier, context);
+    if (targetModule) return [`#include "${getCppModuleFileName(targetModule)}.hpp"`];
+    if (!specifier.startsWith('.')) return [];
     const target = path.posix.normalize(
-      path.posix.join(path.posix.dirname(context.module.source), importItem.specifier.replace(/\.[cm]?js$/u, '.ts')),
+      path.posix.join(path.posix.dirname(context.module.source), specifier.replace(/\.[cm]?js$/u, '.ts')),
     );
     const resolved = /\.tsx?$/u.test(target) ? target : `${target}.ts`;
     const fileName = convertSourcePathToCppFileName(resolved);
     if (!fileName) return [];
     return [`#include "${fileName}.hpp"`];
+  });
+}
+
+function getCppModuleFileName(module: Readonly<IrModule>): string {
+  return convertSourcePathToCppFileName(module.source) ?? `_internal_${snakeCase(module.name)}`;
+}
+
+function getCppResolvedImportModule(specifier: string, context: EmitContext): Readonly<IrModule> | undefined {
+  const targets = context.moduleResolution?.edges.filter((edge) => edge.specifier === specifier) ?? [];
+  if (targets.length === 1) {
+    const target = targets[0]!.target;
+    return context.sourceModules.find(
+      (module) =>
+        module.packageName === target.packageName &&
+        path.posix.normalize(module.source) === path.posix.normalize(target.source),
+    );
+  }
+  if (!specifier.startsWith('.')) return undefined;
+  const source = path.posix.normalize(
+    path.posix.join(path.posix.dirname(context.module.source), specifier.replace(/\.[cm]?js$/u, '.ts')),
+  );
+  const candidates = new Set([source, `${source}.ts`, `${source}/index.ts`]);
+  return context.sourceModules.find(
+    (module) =>
+      module.packageName === context.module.packageName && candidates.has(path.posix.normalize(module.source)),
+  );
+}
+
+function emitReexportsCpp(module: Readonly<IrModule>, context: EmitContext): string[] {
+  return module.exports.flatMap((exported) => {
+    if (exported.kind === 'namespace') {
+      const targetModule = getCppResolvedImportModule(exported.specifier, context);
+      if (!targetModule) emissionError(context, `namespace reexport ${exported.exported} requires module resolution`);
+      return [
+        `namespace ${safeCppName(exported.exported)} = ${convertPackageNameToCppNamespace(targetModule.packageName)};`,
+      ];
+    }
+    if (exported.kind === 'all') {
+      const targetModule = getCppResolvedImportModule(exported.specifier, context);
+      if (targetModule && targetModule.packageName !== module.packageName) {
+        emissionError(context, 'cross-package export-all requires explicit named reexports for C++');
+      }
+      return [];
+    }
+    if (exported.kind !== 'reexport') return [];
+    const targetModule = getCppResolvedImportModule(exported.specifier, context);
+    const targetName = targetModule
+      ? getCppResolvedExportTargetName(targetModule, exported.imported)
+      : pascalCase(exported.imported);
+    const qualified =
+      targetModule && targetModule.packageName !== module.packageName
+        ? `${convertPackageNameToCppNamespace(targetModule.packageName)}::${targetName}`
+        : targetName;
+    if (exported.typeOnly) {
+      return exported.exported === exported.imported && targetModule?.packageName === module.packageName
+        ? []
+        : [`using ${safeCppTypeName(exported.exported)} = ${qualified};`];
+    }
+    if (exported.exported !== exported.imported) {
+      emissionError(context, `renamed value reexport ${exported.exported} requires callable or storage alias lowering`);
+    }
+    return targetModule && targetModule.packageName !== module.packageName ? [`using ${qualified};`] : [];
   });
 }
 
@@ -2356,6 +2727,8 @@ function emitIdentifierReference(
     }
     return 'super';
   }
+  const imported = getCppImportedBindingTargetName(reference.binding.id, [], context);
+  if (imported) return imported;
   return emitBindingValueCpp(reference.binding, context);
 }
 
@@ -2391,9 +2764,11 @@ function isThisAccess(expression: Readonly<IrExpression>): boolean {
   return expression.kind === 'identifier' && expression.reference.kind === 'this';
 }
 
-function memberOp(object: Readonly<IrExpression>): string {
+function memberOp(object: Readonly<IrExpression>, context: EmitContext): string {
   if (isSuperAccess(object)) return '::';
-  return isThisAccess(object) ? '->' : '.';
+  if (isThisAccess(object)) return '->';
+  const type = getIrExpressionTypeEvidenceCpp(object, context);
+  return type && hasFlightReferenceRepresentationCpp(type, context) ? '->' : '.';
 }
 
 function emitLiteralWithExpectedTypeCpp(
@@ -2556,7 +2931,42 @@ function getTypeReferenceTargetName(type: Readonly<IrType & { kind: 'named' }>, 
     if (target) return target;
     return type.reference.name;
   }
+  const imported = getCppImportedBindingTargetName(type.reference.binding.id, type.reference.path, context);
+  if (imported) return imported;
   return context.targetNames.get(type.reference.binding.id) ?? pascalCase(type.reference.binding.name);
+}
+
+function getCppImportedBindingTargetName(
+  bindingId: string,
+  referencePath: readonly string[],
+  context: EmitContext,
+): string | undefined {
+  for (const importItem of context.module.imports) {
+    const importedBinding = importItem.bindings.find((candidate) => candidate.binding.id === bindingId);
+    if (!importedBinding) continue;
+    const importedName = importedBinding.imported === '*' ? referencePath[0] : importedBinding.imported;
+    if (!importedName) return undefined;
+    const targetModule = getCppResolvedImportModule(importItem.specifier, context);
+    if (!targetModule) {
+      return context.targetNames.get(bindingId) ?? safeCppName(importedBinding.binding.name);
+    }
+    const targetName = getCppResolvedExportTargetName(targetModule, importedName);
+    if (targetModule.packageName === context.module.packageName) return targetName;
+    return `${convertPackageNameToCppNamespace(targetModule.packageName)}::${targetName}`;
+  }
+  return undefined;
+}
+
+function getCppResolvedExportTargetName(module: Readonly<IrModule>, exportedName: string): string {
+  const directBindingId = module.declarations.flatMap((declaration) =>
+    'binding' in declaration && declaration.exported && declaration.binding.name === exportedName
+      ? [declaration.binding.id]
+      : [],
+  )[0];
+  const local = module.exports.find((exported) => exported.kind === 'local' && exported.exported === exportedName);
+  const bindingId = directBindingId ?? (local?.kind === 'local' ? local.binding.id : undefined);
+  if (!bindingId) return pascalCase(exportedName);
+  return createCppTargetNameMap(module).get(bindingId) ?? pascalCase(exportedName);
 }
 
 function getBindingTargetName(binding: Readonly<{ id: string; name: string }>, context: EmitContext): string {
@@ -2762,17 +3172,3 @@ const cppMathSpreadFoldTargets: Readonly<Record<string, { algorithm: string; ide
   max: { algorithm: 'std::max_element', identity: '-std::numeric_limits<double>::infinity()' },
   min: { algorithm: 'std::min_element', identity: 'std::numeric_limits<double>::infinity()' },
 };
-
-const cppSharedReferentRuntimeTypes = new Set([
-  'Float32Array',
-  'Float64Array',
-  'Int16Array',
-  'Int32Array',
-  'Int8Array',
-  'Map',
-  'Set',
-  'Uint16Array',
-  'Uint32Array',
-  'Uint8Array',
-  'Uint8ClampedArray',
-]);

@@ -3308,6 +3308,7 @@ function getIrResolvedMemberReceiver(type: Readonly<IrType> | undefined): IrReso
       Map: 'map',
       Promise: 'task',
       Set: 'set',
+      WeakMap: 'map',
     };
     return ambientReceivers[type.reference.name];
   }

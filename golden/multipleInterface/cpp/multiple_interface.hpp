@@ -7,28 +7,28 @@ static_assert(flight::runtime_contract.cpp_abi == 2, "Flight C++ runtime ABI mis
 
 namespace flighthq_golden {
 
-struct Named {
+struct Named : public flight::ReferenceEnabled {
   flight::String name;
 };
 
-struct Valued {
+struct Valued : public flight::ReferenceEnabled {
   double value;
 };
 
-inline flight::String get_name(Named item) {
-  return item.name;
+inline flight::String get_name(flight::Ref<Named> item) {
+  return item->name;
 }
 
-inline double get_value(Valued item) {
-  return item.value;
+inline double get_value(flight::Ref<Valued> item) {
+  return item->value;
 }
 
-inline flight::String format_named(Named item) {
-  return flight::String("item: ") + item.name;
+inline flight::String format_named(flight::Ref<Named> item) {
+  return flight::String("item: ") + item->name;
 }
 
-inline bool is_positive(Valued item) {
-  return (item.value > 0.0);
+inline bool is_positive(flight::Ref<Valued> item) {
+  return (item->value > 0.0);
 }
 
 } // namespace flighthq_golden
