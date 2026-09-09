@@ -109,6 +109,49 @@ describe('createCompilerLoweringPassCatchAwaitHoisting', () => {
     expect(pass.verifyIrModule(output)).toEqual({ kind: 'valid' });
   });
 
+  it('recurses into class constructor bodies', () => {
+    const pass = createCompilerLoweringPassCatchAwaitHoisting();
+    const output = lowerIrModuleWithCompilerPasses(
+      lower(`
+        export class Service {
+          value: number;
+          constructor(private task: Promise<number>, private backup: Promise<number>) {
+            this.value = 0;
+          }
+          async fetch(): Promise<number> {
+            try { return await this.task; } catch { return await this.backup; }
+          }
+        }
+      `),
+      [pass],
+    );
+    const declaration = output.declarations[0];
+
+    expect(declaration?.kind).toBe('class');
+    if (declaration?.kind === 'class') {
+      expect(declaration.classConstructor).toBeDefined();
+    }
+    expect(pass.verifyIrModule(output)).toEqual({ kind: 'valid' });
+  });
+
+  it('passes through try-finally without a catch clause', () => {
+    const pass = createCompilerLoweringPassCatchAwaitHoisting();
+    const output = lowerIrModuleWithCompilerPasses(
+      lower(
+        'export async function cleanup(task: Promise<number>, log: number[]): Promise<number> { try { return await task; } finally { log.push(1); } }',
+      ),
+      [pass],
+    );
+    const declaration = output.declarations[0];
+    const tryStmt = declaration?.kind === 'function' ? declaration.body.find((s) => s.kind === 'try') : undefined;
+
+    expect(tryStmt).toMatchObject({ kind: 'try', finallyBody: { kind: 'block' } });
+    if (tryStmt?.kind === 'try') {
+      expect(tryStmt.catchClause).toBeUndefined();
+    }
+    expect(pass.verifyIrModule(output)).toEqual({ kind: 'valid' });
+  });
+
   it('reaches declaration types that have no catch-await (enum, interface, typeAlias, variable)', () => {
     const pass = createCompilerLoweringPassCatchAwaitHoisting();
     const module = lower(`

@@ -858,6 +858,28 @@ describe('createCompilerLoweringPassSwitchFallthrough', () => {
 
     expect(pass.verifyIrModule(output)).toMatchObject({ kind: 'valid' });
   });
+
+  it('visits function expressions in switch case bodies without descending', () => {
+    const pass = createCompilerLoweringPassSwitchFallthrough();
+    const output = lowerIrModuleWithCompilerPasses(
+      lower(
+        'switch-function-expr.ts',
+        `
+          export function dispatch(value: number): () => number {
+            let result: () => number = function(): number { return 0; };
+            switch (value) {
+              case 1: result = function(): number { return 1; }; break;
+              case 2: result = function(): number { return 2; }; break;
+            }
+            return result;
+          }
+        `,
+      ),
+      [createCompilerLoweringPassBindingPattern(), createCompilerLoweringPassVariableHoisting(), pass],
+    );
+
+    expect(pass.verifyIrModule(output)).toMatchObject({ kind: 'valid' });
+  });
 });
 
 function getFunctionSwitch(module: Readonly<IrModule>): Extract<IrStatement, { kind: 'switch' }> {
