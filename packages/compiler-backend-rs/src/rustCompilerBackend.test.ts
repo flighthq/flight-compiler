@@ -4535,6 +4535,20 @@ describe('emitIrModuleRust', () => {
     expect(output).toContain('.set(');
   });
 
+  it('emits cell-wrapped nullish assignment as Option conditional set', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'cell-nullish.ts',
+        `export function fill(): () => string {
+          let value: string | null = null;
+          return (fallback: string) => { value ??= fallback; return value!; };
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('.get().is_none()');
+    expect(output).toContain('.set(Some(');
+  });
+
   it('emits string replace as Rust replace', () => {
     const output = emitIrModuleRust(
       lower('str-replace.ts', `export function fix(s: string): string { return s.replace("old", "new"); }`).module,

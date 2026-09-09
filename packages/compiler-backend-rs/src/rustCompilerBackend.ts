@@ -713,6 +713,12 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
             return `{ if ${condition} { ${name}.set(${right}); } ${name}.get() }`;
           }
         }
+        if (expression.operator === '??=') {
+          if (context.nullableBindingIds.has(expression.left.reference.binding.id)) {
+            return `{ if ${name}.get().is_none() { ${name}.set(Some(${right})); } ${name}.get().clone().unwrap() }`;
+          }
+          emissionError(context, 'operator ??= on cell-wrapped binding requires a nullable Rust target');
+        }
         if (!isAssignmentOperatorDirectRust(expression.operator, expression.semantics)) {
           emissionError(
             context,
