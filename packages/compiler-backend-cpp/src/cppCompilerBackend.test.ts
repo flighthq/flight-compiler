@@ -37,6 +37,38 @@ describe('createCppCompilerBackend', () => {
     expect(first.emitModule(module, { modules: [module], options: {} })).toEqual([emitIrModuleCpp(module)]);
   });
 
+  it('emits through createEmissionSession without module resolution', () => {
+    const backend = createCppCompilerBackend();
+    const module = lower('value.ts', 'export const value = 1;').module;
+    const session = backend.createEmissionSession({ modules: [module], options: {} });
+
+    expect(session.emitModule(module)).toEqual([emitIrModuleCpp(module)]);
+  });
+
+  it('emits through createEmissionSession with module resolution', () => {
+    const model = lowerPackage('@flighthq/models', 'model.ts', 'export interface Model { value: number }').module;
+    const consumer = lowerPackage(
+      '@flighthq/consumer',
+      'consumer.ts',
+      "import type { Model } from '@flighthq/models'; export function use(m: Model): number { return m.value; }",
+    ).module;
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [{ specifier: '@flighthq/models', target: { packageName: model.packageName, source: model.source } }],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const backend = createCppCompilerBackend();
+    const modules = [consumer, model];
+    const session = backend.createEmissionSession({
+      moduleResolution,
+      modules,
+      options: { runtimeProfile: 'flight-cpp' },
+    });
+
+    const emitted = session.emitModule(consumer);
+    expect(emitted[0]?.contents).toContain('#include "model.hpp"');
+    expect(emitted[0]?.contents).toContain('flighthq_models::Model');
+  });
+
   it('uses the resolved module graph for imported reference representation', () => {
     const model = lowerPackage('@flighthq/models', 'model.ts', 'export interface Model { value: number }').module;
     const barrel = lowerPackage('@flighthq/models', 'barrel.ts', "export type { Model } from './model.js';").module;
@@ -6196,5 +6228,90 @@ describe('emitIrModuleCpp do-while loop', () => {
     const emitted = emitIrModuleCpp(result.module);
     expect(emitted.contents).toContain('do {');
     expect(emitted.contents).toContain('} while');
+  });
+});
+
+describe('emitIrModuleCpp dual-sentinel nullish comparison', () => {
+  it('emits strict null test on dual-sentinel variant using holds_alternative', () => {
+    const result = lower(
+      'dual-null-test.ts',
+      `export function is_null(value: string | null | undefined): boolean {
+         return value === null;
+       }`,
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+    expect(emitted.contents).toContain('std::holds_alternative<');
+    expect(emitted.contents).toContain('flight::Null');
+  });
+
+  it('emits strict undefined test on dual-sentinel variant', () => {
+    const result = lower(
+      'dual-undefined-test.ts',
+      `export function is_undef(value: string | null | undefined): boolean {
+         return value === undefined;
+       }`,
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+    expect(emitted.contents).toContain('std::holds_alternative<');
+    expect(emitted.contents).toContain('flight::Undefined');
+  });
+
+  it('emits loose nullish test combining both sentinel alternatives', () => {
+    const result = lower(
+      'dual-loose-null.ts',
+      `export function is_nullish(value: string | null | undefined): boolean {
+         return value == null;
+       }`,
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+    expect(emitted.contents).toContain('flight::Null');
+    expect(emitted.contents).toContain('flight::Undefined');
+    expect(emitted.contents).toContain('||');
+  });
+
+  it('emits negated loose nullish test with !=', () => {
+    const result = lower(
+      'dual-not-null.ts',
+      `export function is_present(value: string | null | undefined): boolean {
+         return value != null;
+       }`,
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+    expect(emitted.contents).toContain('!(');
+  });
+});
+
+describe('emitIrModuleCpp literal in union context', () => {
+  it('emits null as flight::null for dual-sentinel union', () => {
+    const result = lower(
+      'null-in-dual.ts',
+      `export function make_null(): string | null | undefined {
+         return null;
+       }`,
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+    expect(emitted.contents).toContain('flight::null');
+  });
+
+  it('emits undefined as flight::undefined for dual-sentinel union', () => {
+    const result = lower(
+      'undef-in-dual.ts',
+      `export function make_undef(): string | null | undefined {
+         return undefined;
+       }`,
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+    expect(emitted.contents).toContain('flight::undefined');
+  });
+
+  it('emits null as std::nullopt for optional-single union', () => {
+    const result = lower(
+      'null-in-optional.ts',
+      `export function make_null(): string | null {
+         return null;
+       }`,
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+    expect(emitted.contents).toContain('std::nullopt');
   });
 });
