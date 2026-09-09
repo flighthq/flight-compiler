@@ -4837,11 +4837,11 @@ describe('emitIrModuleCpp', () => {
     expect(() => emitIrModuleCpp(module)).toThrow('requires inferred type evidence');
   });
 
-  it('emits ambient method binding .pop() with optional unwrap in flight-cpp', () => {
+  it('preserves optional array results until a nullish fallback consumes them', () => {
     const result = lower('pop.ts', 'export function last(items: number[]): number { return items.pop() ?? -1; }');
     const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
-    expect(emitted.contents).toContain('.pop()');
-    expect(emitted.contents).toContain('.value()');
+    expect(emitted.contents).toContain('.pop().value_or(-1.0)');
+    expect(emitted.contents).not.toContain('.pop().value().value_or');
   });
 
   it('emits ambient sizeMethod binding in call expression context', () => {
@@ -4880,10 +4880,10 @@ describe('emitIrModuleCpp', () => {
     expect(emitted.contents).toContain('std::holds_alternative');
   });
 
-  it('emits unary postfix with parenthesized consecutive same-sign operator', () => {
+  it('parenthesizes consecutive unary minus to avoid pre-decrement', () => {
     const result = lower('double-neg.ts', 'export function neg(x: number): number { return -(-x); }');
     const emitted = emitIrModuleCpp(result.module);
-    expect(emitted.contents).toContain('-(');
+    expect(emitted.contents).toContain('return -(-x);');
   });
 
   it('refuses for-in without closed key evidence', () => {

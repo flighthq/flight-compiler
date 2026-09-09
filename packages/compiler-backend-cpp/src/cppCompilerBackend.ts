@@ -820,7 +820,8 @@ function emitExpression(
             getCppRuntimeProfile(context.options) === 'flight-cpp' &&
             cppOptionalArrayMethods.has(expression.callee.member.name) &&
             expression.callee.member.receiver === 'array' &&
-            (!expectedType || !irTypeIncludesUndefinedCpp(expectedType))
+            expectedType &&
+            !irTypeIncludesUndefinedCpp(expectedType)
           ) {
             return `${call}.value()`;
           }
@@ -1142,7 +1143,7 @@ function emitExpression(
       return emitUndefinedWithExpectedTypeCpp(expectedType, context);
     case 'undefinedDefault': {
       context.includes.add('optional');
-      return `${emitOptionalReferenceCpp(expression.value, context)}.value_or(${emitExpression(expression.fallback, context)})`;
+      return `${emitExpression(expression.value, context)}.value_or(${emitExpression(expression.fallback, context)})`;
     }
     case 'tupleRest': {
       context.includes.add('tuple');
@@ -2400,13 +2401,6 @@ function emitAssignmentTargetCpp(expression: Readonly<IrExpression>, context: Em
   return emitExpression(expression, context);
 }
 
-function emitOptionalReferenceCpp(expression: Readonly<IrExpression>, context: EmitContext): string {
-  if (expression.kind === 'identifier' && expression.reference.kind === 'binding') {
-    return emitIdentifierReference(expression.reference, context);
-  }
-  return emitExpression(expression, context);
-}
-
 function getSharedCaptureTargetNameCpp(expression: Readonly<IrExpression>, context: EmitContext): string | undefined {
   return expression.kind === 'identifier' && expression.reference.kind === 'binding'
     ? context.sharedCaptureTargetNames.get(expression.reference.binding.id)
@@ -2691,7 +2685,7 @@ function emitOptionalChainReceiverCpp(expression: Readonly<IrExpression>, contex
   ) {
     return `${emitExpression(expression.object, context)}.get(${emitExpression(expression.index, context)})`;
   }
-  return emitOptionalReferenceCpp(expression, context);
+  return emitExpression(expression, context);
 }
 
 function emitOptionalChainPayloadTypeCpp(type: Readonly<IrType>, context: EmitContext): string {

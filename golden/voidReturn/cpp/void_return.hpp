@@ -21,7 +21,7 @@ inline void apply_discount(flight::Array<double> prices, double factor) {
 
 inline void clear_array(flight::Array<double> values) {
   while ((static_cast<double>(values.size()) > 0.0)) {
-    values.pop().value();
+    values.pop();
   }
 }
 
