@@ -317,6 +317,100 @@ describe('createCompilerLoweringPassInterfaceInheritance', () => {
       ),
     );
   });
+
+  it('resolves named imports through relative star exports and source extension mappings', () => {
+    const base = lowerInPackage(
+      '@flighthq/model',
+      'model',
+      'base.cts',
+      'interface Base { value: number; } export type { Base };',
+    );
+    const mixin = lowerInPackage(
+      '@flighthq/model',
+      'model',
+      'mixin.ts',
+      'export interface Mixin { enabled: boolean; }',
+    );
+    const barrel = lowerInPackage(
+      '@flighthq/model',
+      'model',
+      'nested/index.ts',
+      "export * from '../base.cjs'; export * from '../mixin';",
+    );
+    const derived = lowerInPackage(
+      '@flighthq/model',
+      'model',
+      'consumer.ts',
+      "import type { Base, Mixin } from './nested'; export interface Derived extends Base, Mixin { label: string; }",
+    );
+    const pass = createCompilerLoweringPassInterfaceInheritance([derived, barrel, mixin, base]);
+
+    const output = lowerIrModuleWithCompilerPasses(derived, [pass], { verificationDepth: 'idempotence' });
+
+    expect(getInterface(output, 'Derived')).toMatchObject({
+      extends: [],
+      properties: [
+        { name: 'value', type: { kind: 'primitive', name: 'number' } },
+        { name: 'enabled', type: { kind: 'primitive', name: 'boolean' } },
+        { name: 'label', type: { kind: 'primitive', name: 'string' } },
+      ],
+    });
+  });
+
+  it('refuses missing, ambiguous, and cyclic imported heritage deterministically', () => {
+    const unavailable = lowerInPackage(
+      '@flighthq/app',
+      'app',
+      'unavailable.ts',
+      "import type { Missing } from './missing.js'; export interface Derived extends Missing {}",
+    );
+    expect(() =>
+      lowerIrModuleWithCompilerPasses(unavailable, [createCompilerLoweringPassInterfaceInheritance([unavailable])]),
+    ).toThrow('inherits unavailable interface Missing');
+
+    const first = lowerInPackage('@flight/first', 'first', 'base.ts', 'export interface Base { first: string; }');
+    const second = lowerInPackage('@flight/second', 'second', 'base.ts', 'export interface Base { second: string; }');
+    const ambiguous = lowerInPackage(
+      '@flighthq/app',
+      'app',
+      'ambiguous.ts',
+      "import type { Base } from '@flight/shared'; export interface Derived extends Base {}",
+    );
+    const ambiguousResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          specifier: '@flight/shared',
+          target: { packageName: first.packageName, source: first.source },
+        },
+        {
+          specifier: '@flight/shared',
+          target: { packageName: second.packageName, source: second.source },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    expect(() =>
+      lowerIrModuleWithCompilerPasses(ambiguous, [
+        createCompilerLoweringPassInterfaceInheritance([ambiguous, first, second], ambiguousResolution),
+      ]),
+    ).toThrow('inherits ambiguous interface Base');
+
+    const left = lowerInPackage(
+      '@flighthq/cycle',
+      'cycle',
+      'left.ts',
+      "import type { Right } from './right.js'; export interface Left extends Right {}",
+    );
+    const right = lowerInPackage(
+      '@flighthq/cycle',
+      'cycle',
+      'right.ts',
+      "import type { Left } from './left.js'; export interface Right extends Left {}",
+    );
+    expect(() =>
+      lowerIrModuleWithCompilerPasses(left, [createCompilerLoweringPassInterfaceInheritance([left, right])]),
+    ).toThrow('has cyclic structural inheritance');
+  });
 });
 
 function getInterface(module: Readonly<IrModule>, name: string): Readonly<IrInterfaceDeclaration> {

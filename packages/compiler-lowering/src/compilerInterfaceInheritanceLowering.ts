@@ -51,9 +51,13 @@ export function createCompilerLoweringPassInterfaceInheritance(
   modules: readonly Readonly<IrModule>[] = [],
   resolution: Readonly<CompilerModuleResolutionPlan> = compilerEmptyModuleResolutionPlan,
 ): CompilerLoweringPass {
+  let moduleRecords: readonly InterfaceInheritanceModuleRecord[] | undefined;
   return {
     idempotent: true,
-    lowerIrModule: (module) => lowerIrModuleInterfaceInheritance(module, modules, resolution),
+    lowerIrModule(module) {
+      moduleRecords ??= modules.map(createInterfaceInheritanceModuleRecord);
+      return lowerIrModuleInterfaceInheritance(module, moduleRecords, resolution);
+    },
     name: compilerLoweringPassNameInterfaceInheritance,
     runsAfter: [],
     verifyIrModule(module) {
@@ -72,10 +76,10 @@ export function createCompilerLoweringPassInterfaceInheritance(
 
 function lowerIrModuleInterfaceInheritance(
   module: Readonly<IrModule>,
-  modules: readonly Readonly<IrModule>[],
+  moduleRecords: readonly InterfaceInheritanceModuleRecord[],
   resolution: Readonly<CompilerModuleResolutionPlan>,
 ): IrModule {
-  const moduleSet = createInterfaceInheritanceModuleSet(module, modules, resolution);
+  const moduleSet = createInterfaceInheritanceModuleSet(module, moduleRecords, resolution);
   const subject = getInterfaceInheritanceModuleRecord(module, moduleSet);
   if (!subject) throw new TypeError('Interface inheritance subject must belong to the explicit module set');
   const context: InterfaceInheritanceLoweringContext = { module: subject, moduleSet, subject: module };
@@ -257,15 +261,15 @@ function addIrInterfacePropertyFlattened(
 
 function createInterfaceInheritanceModuleSet(
   subject: Readonly<IrModule>,
-  modules: readonly Readonly<IrModule>[],
+  moduleRecords: readonly InterfaceInheritanceModuleRecord[],
   resolution: Readonly<CompilerModuleResolutionPlan>,
 ): InterfaceInheritanceModuleSet {
   const subjectIdentity = getInterfaceInheritanceModuleIdentity(subject);
-  const sourceModules = [
-    ...modules.filter((module) => getInterfaceInheritanceModuleIdentity(module) !== subjectIdentity),
-    subject,
+  const records = [
+    ...moduleRecords.filter((record) => record.identity !== subjectIdentity),
+    moduleRecords.find((record) => record.module === subject) ?? createInterfaceInheritanceModuleRecord(subject),
   ];
-  const records = sourceModules.map(createInterfaceInheritanceModuleRecord).sort(compareInterfaceInheritanceRecords);
+  records.sort(compareInterfaceInheritanceRecords);
   if (records.some((record, index) => index > 0 && record.identity === records[index - 1]!.identity)) {
     throw new TypeError('Interface inheritance module set contains a duplicate module identity');
   }
