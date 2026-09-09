@@ -83,6 +83,17 @@ describe('compileCompilerCommandLineRequest', () => {
     expect(result.exitCode).toBe(0);
   });
 
+  it('passes the root-package option through to the Haxe backend', () => {
+    const written = new Map<string, string>();
+    const result = compileCompilerCommandLineRequest(
+      { argv: ['/src', '--target', 'haxe', '--out', '/out', '--root-package', 'com.example'] },
+      capabilities([source('value.ts', 'export function value(): number { return 1; }')], written, []),
+    );
+
+    expect(result).toMatchObject({ emitted: 1, exitCode: 0, refusals: [] });
+    expect([...written.keys()][0]).toContain('com/example');
+  });
+
   it('elects the semantic C++ runtime by default and permits an explicit compatibility profile', () => {
     const semantic = new Map<string, string>();
     const standard = new Map<string, string>();
@@ -118,6 +129,20 @@ describe('compileCompilerCommandLineRequest', () => {
       ['/src', '--target', 'rust', '--out', '/out', '--root-package', 'flight'],
       ['/src', '--target', 'rust', '--out', '/out', '--unknown', 'value'],
       ['/src', '/other', '--target', 'rust', '--out', '/out'],
+      ['/src', '--target', 'cpp', '--out', '/out', '--target', 'haxe'],
+      ['/src', '--target', 'cpp', '--out'],
+      ['/src', '--target', 'haxe'],
+      [
+        '/src',
+        '--target',
+        'cpp',
+        '--out',
+        '/out',
+        '--runtime-profile',
+        'standard-library',
+        '--runtime-header',
+        'custom.hpp',
+      ],
     ];
 
     for (const argv of invalidRequests) {
@@ -134,6 +159,10 @@ describe('compileCompilerCommandLineRequest', () => {
     expect(errors.join('')).toContain('--root-package requires --target haxe');
     expect(errors.join('')).toContain('Unknown option --unknown');
     expect(errors.join('')).toContain('Exactly one source directory is required');
+    expect(errors.join('')).toContain('may be supplied once');
+    expect(errors.join('')).toContain('requires a value');
+    expect(errors.join('')).toContain('--out is required');
+    expect(errors.join('')).toContain('--runtime-header requires the flight-cpp runtime profile');
   });
 
   it('refuses an incomplete invocation with the usage rather than a stack', () => {
@@ -175,6 +204,15 @@ describe('createCompilerCommandLineReport', () => {
 
     expect(report).toContain('1 module(s) emitted, 3 refused.');
     expect(report.indexOf('2x no binding for reduce')).toBeLessThan(report.indexOf('1x unsupported'));
+  });
+
+  it('breaks ties by reason text when two rules block the same number of modules', () => {
+    const report = createCompilerCommandLineReport(0, [
+      { module: 'a.ts', reason: 'zebra reason' },
+      { module: 'b.ts', reason: 'alpha reason' },
+    ]);
+
+    expect(report.indexOf('alpha reason')).toBeLessThan(report.indexOf('zebra reason'));
   });
 
   it('samples the modules behind a reason rather than listing every one', () => {
