@@ -200,7 +200,7 @@ Tests should use temporary fixture workspaces and assert both success and fail-l
 
 See [the testing conventions](agents/conventions/testing.md) for test structure, instrument choice, and the named shapes in which a green run proves nothing. Bedrock tests are example-driven specifications, not coverage decoration. Test empty values, boundary values, malformed values, platform path differences, input immutability, deterministic ordering, idempotence where meaningful, and every tagged failure code. For normalization, test formatting-equivalent inputs and meaningfully distinct near-neighbors side by side.
 
-Coverage thresholds are enforced ratchets, not aspirational targets: the current 95.5% branches, 99% functions, 97.9% lines, and 97% statements floors sit immediately below the measured baseline (95.58 / 99.09 / 97.93 / 97.00 on 2026-09-09) so regressions fail promptly. Maintain or raise them as exercised compiler surface grows. Lowering a threshold requires an explicit architectural justification.
+Coverage thresholds are enforced ratchets, not aspirational targets: the current 95.5% branches, 99% functions, 97.9% lines, and 97% statements floors sit immediately below the measured baseline (95.59 / 99.09 / 97.94 / 97.01 on 2026-09-09) so regressions fail promptly. Maintain or raise them as exercised compiler surface grows. Lowering a threshold requires an explicit architectural justification.
 
 Run `npm run fix` before committing and `npm run check` after committing so the verification applies to the exact carried tree.
 
