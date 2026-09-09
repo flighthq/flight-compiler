@@ -14,5 +14,47 @@
       { "$type": "Point", "x": 1, "y": 1 }
     ],
     "returns": "number"
+  },
+  {
+    "call": "translate",
+    "arguments": [{ "$type": "Point", "x": 1, "y": 2 }, 3, 4],
+    "returns": "number",
+    "returnField": "x"
+  },
+  {
+    "call": "translate",
+    "arguments": [{ "$type": "Point", "x": 1, "y": 2 }, 3, 4],
+    "returns": "number",
+    "returnField": "y"
+  },
+  {
+    "call": "scale",
+    "arguments": [{ "$type": "Point", "x": 3, "y": 5 }, 2],
+    "returns": "number",
+    "returnField": "x"
+  },
+  {
+    "call": "scale",
+    "arguments": [{ "$type": "Point", "x": 3, "y": 5 }, 2],
+    "returns": "number",
+    "returnField": "y"
+  },
+  {
+    "call": "midpoint",
+    "arguments": [
+      { "$type": "Point", "x": 0, "y": 0 },
+      { "$type": "Point", "x": 10, "y": 6 }
+    ],
+    "returns": "number",
+    "returnField": "x"
+  },
+  {
+    "call": "midpoint",
+    "arguments": [
+      { "$type": "Point", "x": 0, "y": 0 },
+      { "$type": "Point", "x": 10, "y": 6 }
+    ],
+    "returns": "number",
+    "returnField": "y"
   }
 ]
