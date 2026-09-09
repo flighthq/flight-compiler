@@ -6,6 +6,7 @@ export type CompilerCppReferenceRepresentationCategory =
   | 'anonymousObject'
   | 'array'
   | 'class'
+  | 'date'
   | 'interface'
   | 'map'
   | 'objectAlias'

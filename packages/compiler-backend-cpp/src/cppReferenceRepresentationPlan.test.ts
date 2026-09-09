@@ -88,6 +88,7 @@ describe('createIrTypeReferenceRepresentationPlanCpp', () => {
       [ambientType('ReadonlySet', [numberType]), 'set', 'object'],
       [ambientType('Promise', [numberType]), 'task', 'object'],
       [ambientType('PromiseLike', [numberType]), 'task', 'object'],
+      [ambientType('Date'), 'date', 'object'],
       [ambientType('WeakMap', [objectType, numberType]), 'weakMap', 'object'],
       [ambientType('Uint8Array'), 'typedArray', 'view'],
     ] as const satisfies readonly (readonly [IrType, string, string])[];
@@ -199,7 +200,7 @@ describe('createIrTypeReferenceRepresentationPlanCpp', () => {
         reason: 'unsupportedReferenceForm',
       });
     }
-    for (const type of [ambientType('Date'), ambientType('WeakSet'), ambientType('BigInt64Array')]) {
+    for (const type of [ambientType('WeakSet'), ambientType('BigInt64Array')]) {
       expect(createIrTypeReferenceRepresentationPlanCpp(type, module)).toMatchObject({
         kind: 'refused',
         reason: 'unsupportedAmbientReference',

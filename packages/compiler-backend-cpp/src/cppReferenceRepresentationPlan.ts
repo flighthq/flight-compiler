@@ -235,6 +235,7 @@ function getCppRuntimeReferenceCategory(
   if (cppSetReferenceTypes.has(sourceName)) return 'set';
   if (cppTaskReferenceTypes.has(sourceName)) return 'task';
   if (cppTypedArrayReferenceTypes.has(sourceName)) return 'typedArray';
+  if (sourceName === 'Date') return 'date';
   if (sourceName === 'WeakMap') return 'weakMap';
   return undefined;
 }
