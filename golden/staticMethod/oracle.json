@@ -12,5 +12,12 @@
     "call": "value",
     "arguments": [],
     "returns": "number"
+  },
+  {
+    "construct": "Counter",
+    "constructArgs": [99],
+    "call": "value",
+    "arguments": [],
+    "returns": "number"
   }
 ]

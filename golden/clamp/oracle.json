@@ -1,5 +1,7 @@
 [
   { "call": "clamp", "arguments": [5, 0, 10], "returns": "number" },
   { "call": "clamp", "arguments": [-3, 0, 10], "returns": "number" },
-  { "call": "clamp", "arguments": [42, 0, 10], "returns": "number" }
+  { "call": "clamp", "arguments": [42, 0, 10], "returns": "number" },
+  { "call": "clamp", "arguments": [0, 0, 10], "returns": "number" },
+  { "call": "clamp", "arguments": [10, 0, 10], "returns": "number" }
 ]
