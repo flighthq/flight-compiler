@@ -370,6 +370,43 @@ describe('analyzeFlightWorkspace', () => {
     }
   });
 
+  it('limits tooling exclusion policy to an explicit target package closure', () => {
+    const upstream = createUpstreamFixture();
+    try {
+      write(
+        upstream,
+        'packages/tool-registry/package.json',
+        JSON.stringify({
+          bin: { registry: './dist/cli.js' },
+          dependencies: { electron: '*' },
+          exports: { '.': { default: './dist/index.js', types: './dist/index.d.ts' } },
+          name: '@flighthq/tool-registry',
+          version: '0.0.0',
+        }),
+      );
+      write(
+        upstream,
+        'packages/tool-registry/src/index.ts',
+        "import process from 'node:process'; process.exitCode = 0;\n",
+      );
+
+      expectInventoryFailure(() => analyzeFlightWorkspace({ upstreamDirectory: upstream }), 'package-exclusion-drift');
+      const inventory = analyzeFlightWorkspace({
+        targetPackageNames: ['@flighthq/types'],
+        upstreamDirectory: upstream,
+      });
+
+      expect(inventory.packages.map((item) => item.name)).toEqual(['@flighthq/types']);
+      expect(inventory.summary.packages).toBe(1);
+      expectInventoryFailure(
+        () => analyzeFlightWorkspace({ targetPackageNames: ['@flighthq/missing'], upstreamDirectory: upstream }),
+        'unknown-package',
+      );
+    } finally {
+      rmSync(upstream, { force: true, recursive: true });
+    }
+  });
+
   it('resolves an export default function and export default expression', () => {
     const upstream = createUpstreamFixture();
     try {

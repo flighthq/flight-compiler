@@ -133,6 +133,8 @@ export interface AnalyzeFlightWorkspaceOptions {
   readonly packageScope?: string | undefined;
   readonly packagesDirectory?: string | undefined;
   readonly sdkPackageName?: string | undefined;
+  /** Explicit package closure to return and subject to tooling-exclusion policy. */
+  readonly targetPackageNames?: readonly string[] | undefined;
   readonly tsconfigPath?: string | undefined;
   readonly upstreamDirectory: string;
 }

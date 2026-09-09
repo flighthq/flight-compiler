@@ -162,11 +162,25 @@ export function analyzeFlightWorkspace(options: Readonly<AnalyzeFlightWorkspaceO
       sdkIncluded: packageSdkExposures.length > 0,
     };
   });
+  const targetPackageNames = options.targetPackageNames
+    ? new Set(options.targetPackageNames)
+    : new Set(exposedPackageInventories.map((item) => item.name));
+  const missingTargetPackageNames = [...targetPackageNames]
+    .filter((name) => !inventoryByName.has(name))
+    .sort(compareTextCodeUnits);
+  if (missingTargetPackageNames.length > 0) {
+    throw createCompilerInventoryFailure(
+      'unknown-package',
+      missingTargetPackageNames.join(','),
+      `Target package closure contains unknown package(s): ${missingTargetPackageNames.join(', ')}`,
+    );
+  }
+  const targetPackageInventories = exposedPackageInventories.filter((item) => targetPackageNames.has(item.name));
   const exclusions = analyzeFlightPackageExclusions({
     ...(options.expectedExclusionPackageNames ? { expectedPackageNames: options.expectedExclusionPackageNames } : {}),
-    packages: exposedPackageInventories,
+    packages: targetPackageInventories,
   });
-  const completedPackageInventories = exposedPackageInventories.map(
+  const completedPackageInventories = targetPackageInventories.map(
     (item): PackageInventory => ({ ...item, exclusion: exclusions.get(item.name) ?? null }),
   );
 
