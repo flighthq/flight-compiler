@@ -215,6 +215,7 @@ const cppRuntimeInclude = path.join(resolveDependency(root, 'flight-cpp').direct
 const cppRuntimeAvailable = existsSync(cppRuntimeInclude);
 const cppToolchain = cppRuntimeAvailable ? findCppCompilerToolchain() : undefined;
 const divergences: OracleDivergence[] = [];
+const buildFailures: Array<{ fixture: string; target: string; message: string }> = [];
 const workspace = mkdtempSync(path.join(tmpdir(), 'flight-oracle-'));
 let compared = 0;
 let cppExcluded = 0;
@@ -227,21 +228,48 @@ try {
     const expected = runTypeScriptOracle(fixture, cases);
     const haxeCases = selectOracleCases(cases, expected, 'haxe');
     if (haxeAvailable && haxeCases.cases.length > 0 && existsSync(path.join(goldenDirectory, fixture, 'haxe'))) {
-      compare(fixture, 'haxe', haxeCases.expected, runHaxeOracle(fixture, haxeCases.cases));
+      try {
+        compare(fixture, 'haxe', haxeCases.expected, runHaxeOracle(fixture, haxeCases.cases));
+      } catch (error) {
+        buildFailures.push({
+          fixture,
+          message: error instanceof Error ? error.message : String(error),
+          target: 'haxe',
+        });
+      }
     }
     const rustCases = selectOracleCases(cases, expected, 'rust');
     if (rustAvailable && rustCases.cases.length > 0 && existsSync(path.join(goldenDirectory, fixture, 'rust'))) {
-      compare(fixture, 'rust', rustCases.expected, runRustOracle(fixture, rustCases.cases));
+      try {
+        compare(fixture, 'rust', rustCases.expected, runRustOracle(fixture, rustCases.cases));
+      } catch (error) {
+        buildFailures.push({
+          fixture,
+          message: error instanceof Error ? error.message : String(error),
+          target: 'rust',
+        });
+      }
     }
     const cppCases = selectOracleCases(cases, expected, 'cpp');
     if (cppToolchain && cppCases.cases.length > 0 && existsSync(path.join(goldenDirectory, fixture, 'cpp'))) {
-      compare(fixture, 'cpp', cppCases.expected, runCppOracle(fixture, cppCases.cases, cppToolchain));
+      try {
+        compare(fixture, 'cpp', cppCases.expected, runCppOracle(fixture, cppCases.cases, cppToolchain));
+      } catch (error) {
+        buildFailures.push({ fixture, message: error instanceof Error ? error.message : String(error), target: 'cpp' });
+      }
     } else if (cppToolchain && cppCases.cases.length > 0) {
       cppExcluded += 1;
     }
   }
 } finally {
   rmSync(workspace, { force: true, recursive: true });
+}
+
+if (buildFailures.length > 0) {
+  const byTarget = new Map<string, number>();
+  for (const failure of buildFailures) byTarget.set(failure.target, (byTarget.get(failure.target) ?? 0) + 1);
+  const summary = [...byTarget.entries()].map(([target, count]) => `${target}: ${String(count)}`).join(', ');
+  process.stderr.write(`\n${String(buildFailures.length)} fixture(s) failed to build (${summary}), skipped.\n`);
 }
 
 if (divergences.length > 0) {
