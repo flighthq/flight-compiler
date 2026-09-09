@@ -1,6 +1,8 @@
 import {
   convertPackageNameToCppNamespace,
   convertSourcePathToCppFileName,
+  getCppCompilerPackageIncludePrefix,
+  getCppCompilerPackageNamespace,
   isCppCompilerKeyword,
 } from './cppCompilerIdentity.js';
 
@@ -50,6 +52,46 @@ describe('convertSourcePathToCppFileName', () => {
 
   it('escapes C++ keyword file identities', () => {
     expect(convertSourcePathToCppFileName('packages/signals/src/class.ts')).toBe('class_');
+  });
+});
+
+describe('getCppCompilerPackageIncludePrefix', () => {
+  it('returns a validated installed include prefix without inventing one for an unmapped package', () => {
+    const targets = {
+      '@flighthq/render-wgpu': { includePrefix: 'flight/render_wgpu', namespace: 'flight::render_wgpu' },
+    };
+
+    expect(getCppCompilerPackageIncludePrefix('@flighthq/render-wgpu', targets)).toBe('flight/render_wgpu');
+    expect(getCppCompilerPackageIncludePrefix('@flighthq/types', targets)).toBeUndefined();
+    expect(() =>
+      getCppCompilerPackageIncludePrefix('@flighthq/render-wgpu', {
+        '@flighthq/render-wgpu': { includePrefix: '../private', namespace: 'flight::render_wgpu' },
+      }),
+    ).toThrow('Invalid C++ include prefix');
+  });
+});
+
+describe('getCppCompilerPackageNamespace', () => {
+  it('uses explicit target identity and preserves deterministic fallback identity', () => {
+    const targets = {
+      '@flighthq/types': { includePrefix: 'flight/types', namespace: 'flight::types' },
+    };
+
+    expect(getCppCompilerPackageNamespace('@flighthq/types', targets)).toBe('flight::types');
+    expect(getCppCompilerPackageNamespace('@flighthq/math', targets)).toBe('flighthq_math');
+  });
+
+  it('rejects malformed or reserved namespace components', () => {
+    expect(() =>
+      getCppCompilerPackageNamespace('@flighthq/types', {
+        '@flighthq/types': { includePrefix: 'flight/types', namespace: 'flight::class' },
+      }),
+    ).toThrow('Invalid C++ namespace');
+    expect(() =>
+      getCppCompilerPackageNamespace('@flighthq/types', {
+        '@flighthq/types': { includePrefix: 'flight/types', namespace: 'flight::render-wgpu' },
+      }),
+    ).toThrow('Invalid C++ namespace');
   });
 });
 

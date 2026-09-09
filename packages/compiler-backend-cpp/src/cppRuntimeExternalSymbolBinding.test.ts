@@ -1,9 +1,27 @@
 import {
   createCompilerRuntimeExternalSymbolBindingPlanCpp,
+  getCompilerExternalBindingConstructionCpp,
+  getCompilerExternalBindingHeadersCpp,
   getCompilerRuntimeExternalMemberTargetCpp,
   getCompilerRuntimeExternalSymbolTargetCpp,
   isCompilerRuntimeExternalSymbolProvidedCpp,
 } from './cppRuntimeExternalSymbolBinding.js';
+
+const externalBindings = {
+  bindings: [
+    {
+      construction: { kind: 'factory' as const, targetName: 'host::create_surface' },
+      headers: ['host/surface.hpp'],
+      members: [{ sourceMember: 'preferredFormat', targetName: 'host::preferred_format' }],
+      nullability: 'non-null' as const,
+      ownership: 'shared' as const,
+      sourceName: 'NativeSurface',
+      space: 'value' as const,
+      targetName: 'host::Surface',
+    },
+  ],
+  schema: 'flight-cpp-external-bindings/1' as const,
+};
 
 describe('createCompilerRuntimeExternalSymbolBindingPlanCpp', () => {
   it('elects type and value decisions under the versioned runtime contract', () => {
@@ -69,6 +87,49 @@ describe('createCompilerRuntimeExternalSymbolBindingPlanCpp', () => {
       kind: 'runtime',
     });
   });
+
+  it('adds downstream native bindings without making them runtime capabilities', () => {
+    const plan = createCompilerRuntimeExternalSymbolBindingPlanCpp('flight-cpp', externalBindings);
+
+    expect(plan.bindings).toContainEqual({
+      externalSymbol: { sourceName: 'NativeSurface', space: 'value' },
+      kind: 'native',
+    });
+  });
+
+  it('rejects malformed manifests and unsafe header spellings', () => {
+    expect(() =>
+      createCompilerRuntimeExternalSymbolBindingPlanCpp('flight-cpp', {
+        bindings: [],
+        schema: 'other' as 'flight-cpp-external-bindings/1',
+      }),
+    ).toThrow('flight-cpp-external-bindings/1');
+    expect(() =>
+      createCompilerRuntimeExternalSymbolBindingPlanCpp('flight-cpp', {
+        bindings: [{ ...externalBindings.bindings[0]!, headers: ['../host.hpp'] }],
+        schema: 'flight-cpp-external-bindings/1',
+      }),
+    ).toThrow('malformed');
+  });
+});
+
+describe('getCompilerExternalBindingConstructionCpp', () => {
+  it('returns an explicit constructor or factory mapping only for a downstream value binding', () => {
+    expect(getCompilerExternalBindingConstructionCpp('NativeSurface', externalBindings)).toEqual({
+      kind: 'factory',
+      targetName: 'host::create_surface',
+    });
+    expect(getCompilerExternalBindingConstructionCpp('Missing', externalBindings)).toBeUndefined();
+  });
+});
+
+describe('getCompilerExternalBindingHeadersCpp', () => {
+  it('returns the headers owned by an exact downstream type/value-space binding', () => {
+    expect(getCompilerExternalBindingHeadersCpp('NativeSurface', 'value', externalBindings)).toEqual([
+      'host/surface.hpp',
+    ]);
+    expect(getCompilerExternalBindingHeadersCpp('NativeSurface', 'type', externalBindings)).toEqual([]);
+  });
 });
 
 describe('getCompilerRuntimeExternalSymbolTargetCpp', () => {
@@ -99,6 +160,18 @@ describe('getCompilerRuntimeExternalSymbolTargetCpp', () => {
   it('has no crossed-space or unknown fallback', () => {
     expect(getCompilerRuntimeExternalSymbolTargetCpp('Boolean', 'value')).toBeUndefined();
     expect(getCompilerRuntimeExternalSymbolTargetCpp('Unmapped', 'value')).toBeUndefined();
+  });
+
+  it('resolves downstream native symbols and static members in their exact spaces', () => {
+    expect(getCompilerRuntimeExternalSymbolTargetCpp('NativeSurface', 'value', 'flight-cpp', externalBindings)).toBe(
+      'host::Surface',
+    );
+    expect(
+      getCompilerRuntimeExternalMemberTargetCpp('NativeSurface', 'preferredFormat', 'flight-cpp', externalBindings),
+    ).toBe('host::preferred_format');
+    expect(
+      getCompilerRuntimeExternalSymbolTargetCpp('NativeSurface', 'type', 'flight-cpp', externalBindings),
+    ).toBeUndefined();
   });
 
   it.each([

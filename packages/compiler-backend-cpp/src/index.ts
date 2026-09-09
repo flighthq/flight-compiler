@@ -7,6 +7,8 @@ export {
 export {
   convertPackageNameToCppNamespace,
   convertSourcePathToCppFileName,
+  getCppCompilerPackageIncludePrefix,
+  getCppCompilerPackageNamespace,
   isCppCompilerKeyword,
 } from './cppCompilerIdentity.js';
 export {

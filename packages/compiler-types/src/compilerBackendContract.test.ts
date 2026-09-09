@@ -31,11 +31,43 @@ describe('compiler backend contracts', () => {
     expect(compilation).toEqual({ backend: 'haxe', files: [file] });
     expect(rustOptions).toEqual({ opaqueHostType: 'FlightHostValue', upstreamCommit: 'a'.repeat(40) });
     const cppOptions: CppCompilerBackendOptions = {
+      externalBindings: {
+        bindings: [
+          {
+            headers: ['host/gl.hpp'],
+            nullability: 'non-null',
+            ownership: 'borrowed',
+            sourceName: 'WebGL2RenderingContext',
+            space: 'type',
+            targetName: 'host::GlContext&',
+          },
+        ],
+        schema: 'flight-cpp-external-bindings/1',
+      },
+      packageTargets: {
+        '@flighthq/types': { includePrefix: 'flight/types', namespace: 'flight::types' },
+      },
       runtimeHeader: 'flight_runtime.h',
       runtimeProfile: 'flight-cpp',
       upstreamCommit: 'a'.repeat(40),
     };
     expect(cppOptions).toEqual({
+      externalBindings: {
+        bindings: [
+          {
+            headers: ['host/gl.hpp'],
+            nullability: 'non-null',
+            ownership: 'borrowed',
+            sourceName: 'WebGL2RenderingContext',
+            space: 'type',
+            targetName: 'host::GlContext&',
+          },
+        ],
+        schema: 'flight-cpp-external-bindings/1',
+      },
+      packageTargets: {
+        '@flighthq/types': { includePrefix: 'flight/types', namespace: 'flight::types' },
+      },
       runtimeHeader: 'flight_runtime.h',
       runtimeProfile: 'flight-cpp',
       upstreamCommit: 'a'.repeat(40),

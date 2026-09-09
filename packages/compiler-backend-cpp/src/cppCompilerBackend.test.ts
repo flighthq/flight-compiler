@@ -76,6 +76,33 @@ describe('createCppCompilerBackend', () => {
       'imported type Model has indeterminateIdentity',
     );
   });
+
+  it('applies explicit package namespace and installed include identity across a module graph', () => {
+    const model = lowerPackage('@flighthq/types', 'model.ts', 'export interface Model { value: number }').module;
+    const consumer = lowerPackage(
+      '@flighthq/render-wgpu',
+      'renderer.ts',
+      "import type { Model } from '@flighthq/types'; export function render(model: Model): Model { return model; }",
+    ).module;
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [{ specifier: '@flighthq/types', target: { packageName: model.packageName, source: model.source } }],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const packageTargets = {
+      '@flighthq/render-wgpu': { includePrefix: 'flight/render_wgpu', namespace: 'flight::render_wgpu' },
+      '@flighthq/types': { includePrefix: 'flight/types', namespace: 'flight::types' },
+    };
+    const emitted = createCppCompilerBackend().emitModule(consumer, {
+      moduleResolution,
+      modules: [consumer, model],
+      options: { packageTargets, runtimeProfile: 'flight-cpp' },
+    })[0]!;
+
+    expect(emitted.path).toBe('flight/render_wgpu/renderer.hpp');
+    expect(emitted.contents).toContain('#include <flight/types/model.hpp>');
+    expect(emitted.contents).toContain('namespace flight::render_wgpu {');
+    expect(emitted.contents).toContain('flight::Ref<flight::types::Model>');
+  });
 });
 
 describe('emitIrModuleCpp', () => {
@@ -87,6 +114,47 @@ describe('emitIrModuleCpp', () => {
     expect(emitted.contents).toContain('#pragma once');
     expect(emitted.contents).toContain('namespace flighthq_');
     expect(emitted.contents).toContain('const');
+  });
+
+  it('binds reachable target-native ambient types, values, headers, members, and factories', () => {
+    const result = lower(
+      'native-surface.ts',
+      `export function same(surface: NativeSurface): NativeSurface { return surface; }
+export function create(): NativeSurface { return new NativeSurface(); }
+export function preferred(): number { return NativeSurface.preferredFormat; }`,
+    );
+    const externalBindings = {
+      bindings: [
+        {
+          headers: ['host/surface.hpp'],
+          nullability: 'non-null' as const,
+          ownership: 'shared' as const,
+          sourceName: 'NativeSurface',
+          space: 'type' as const,
+          targetName: 'host::Surface',
+        },
+        {
+          construction: { kind: 'factory' as const, targetName: 'host::create_surface' },
+          headers: ['host/surface.hpp'],
+          members: [{ sourceMember: 'preferredFormat', targetName: 'host::preferred_format' }],
+          nullability: 'non-null' as const,
+          ownership: 'shared' as const,
+          sourceName: 'NativeSurface',
+          space: 'value' as const,
+          targetName: 'host::Surface',
+        },
+      ],
+      schema: 'flight-cpp-external-bindings/1' as const,
+    };
+
+    expect(() => emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' })).toThrow(
+      'missing: NativeSurface[type], NativeSurface[value]',
+    );
+    const emitted = emitIrModuleCpp(result.module, { externalBindings, runtimeProfile: 'flight-cpp' });
+    expect(emitted.contents.match(/#include <host\/surface\.hpp>/gu)).toHaveLength(1);
+    expect(emitted.contents).toContain('host::Surface same(host::Surface surface)');
+    expect(emitted.contents).toContain('return host::create_surface()');
+    expect(emitted.contents).toContain('return host::preferred_format');
   });
 
   it('emits a function with parameters', () => {

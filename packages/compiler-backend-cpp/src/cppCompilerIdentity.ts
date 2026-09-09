@@ -1,6 +1,7 @@
 import path from 'node:path';
 
 import { normalizePathPortable } from '../../compiler-canonical-form/src/index.js';
+import type { CppCompilerPackageTarget } from '../../compiler-types/src/index.js';
 
 export function convertPackageNameToCppNamespace(packageName: string): string {
   const scopeSeparator = packageName.indexOf('/');
@@ -41,6 +42,34 @@ export function convertSourcePathToCppFileName(sourcePath: string): string | und
   return isCppCompilerKeyword(moduleName) ? `${moduleName}_` : moduleName;
 }
 
+export function getCppCompilerPackageIncludePrefix(
+  packageName: string,
+  packageTargets: Readonly<Record<string, Readonly<CppCompilerPackageTarget>>> = {},
+): string | undefined {
+  const target = packageTargets[packageName];
+  if (!target) return undefined;
+  if (!isCppCompilerIncludePrefix(target.includePrefix)) {
+    throw new TypeError(`Invalid C++ include prefix for ${packageName}: ${target.includePrefix}`);
+  }
+  return target.includePrefix;
+}
+
+export function getCppCompilerPackageNamespace(
+  packageName: string,
+  packageTargets: Readonly<Record<string, Readonly<CppCompilerPackageTarget>>> = {},
+): string {
+  const target = packageTargets[packageName];
+  if (!target) return convertPackageNameToCppNamespace(packageName);
+  const components = target.namespace.split('::');
+  if (
+    components.length === 0 ||
+    components.some((component) => !/^[A-Za-z_][A-Za-z0-9_]*$/u.test(component) || isCppCompilerKeyword(component))
+  ) {
+    throw new TypeError(`Invalid C++ namespace for ${packageName}: ${target.namespace}`);
+  }
+  return target.namespace;
+}
+
 export function isCppCompilerKeyword(value: string): boolean {
   return cppCompilerKeywords.has(value);
 }
@@ -51,6 +80,17 @@ function snakeCase(value: string): string {
     .replace(/[^A-Za-z0-9]+/gu, '_')
     .replace(/^_+|_+$/gu, '')
     .toLowerCase();
+}
+
+function isCppCompilerIncludePrefix(value: string): boolean {
+  return (
+    value.length > 0 &&
+    value === normalizePathPortable(value) &&
+    !value.startsWith('/') &&
+    !value.endsWith('/') &&
+    !/[<>"\r\n]/u.test(value) &&
+    value.split('/').every((segment) => segment.length > 0 && segment !== '.' && segment !== '..')
+  );
 }
 
 const cppCompilerKeywords = new Set([

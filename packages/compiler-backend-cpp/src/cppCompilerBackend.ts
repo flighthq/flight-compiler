@@ -70,13 +70,16 @@ import type {
 import { getCompilerCppAmbientMemberBinding } from './cppAmbientMemberBinding.js';
 import { createIrModuleClosureCapturePlanCpp } from './cppClosureCapturePlan.js';
 import {
-  convertPackageNameToCppNamespace,
   convertSourcePathToCppFileName,
+  getCppCompilerPackageIncludePrefix,
+  getCppCompilerPackageNamespace,
   isCppCompilerKeyword,
 } from './cppCompilerIdentity.js';
 import { createIrTypeReferenceRepresentationPlannerCpp } from './cppReferenceRepresentationPlan.js';
 import {
   createCompilerRuntimeExternalSymbolBindingPlanCpp,
+  getCompilerExternalBindingConstructionCpp,
+  getCompilerExternalBindingHeadersCpp,
   getCompilerRuntimeExternalMemberTargetCpp,
   getCompilerRuntimeExternalSymbolTargetCpp,
 } from './cppRuntimeExternalSymbolBinding.js';
@@ -233,7 +236,7 @@ function emitIrModuleCppWithContext(
     );
   }
   if (imports.length > 0) lines.push('', ...imports);
-  const namespaceName = convertPackageNameToCppNamespace(module.packageName);
+  const namespaceName = getCppCompilerPackageNamespace(module.packageName, options.packageTargets);
   lines.push('', `namespace ${namespaceName} {`);
   for (const struct of context.anonymousStructs.values()) {
     lines.push('');
@@ -250,7 +253,7 @@ function emitIrModuleCppWithContext(
   lines.push('', `} // namespace ${namespaceName}`);
   return {
     contents: lines.join('\n'),
-    path: `${getCppModuleFileName(module)}.hpp`,
+    path: getCppModuleFilePath(module, options),
   };
 }
 
@@ -958,6 +961,13 @@ function emitExpression(
         emissionError(context, 'qualified constructors require C++ type-path lowering');
       }
       const typeName = emitIdentifierReference(expression.callee.reference, context);
+      const externalConstruction =
+        expression.callee.reference.kind === 'ambient'
+          ? getCompilerExternalBindingConstructionCpp(
+              expression.callee.reference.name,
+              context.options.externalBindings,
+            )
+          : undefined;
       if (typeName === 'std::runtime_error') context.includes.add('stdexcept');
       const args = expression.arguments.map((argument, index) =>
         emitExpression(argument, context, getIrInvocationArgumentExpectedTypeCpp(expression, index)),
@@ -980,6 +990,9 @@ function emitExpression(
           emissionError(context, 'flight-cpp Promise construction requires one explicit type argument');
         }
         return `${typeName}${typeArguments}::create(${args.join(', ')})`;
+      }
+      if (externalConstruction) {
+        return `${externalConstruction.targetName}${typeArguments}(${args.join(', ')})`;
       }
       const constructedType: IrType | undefined =
         expression.callee.reference.kind === 'binding'
@@ -1030,10 +1043,12 @@ function emitExpression(
         }
       }
       if (expression.object.kind === 'identifier' && expression.object.reference.kind === 'ambient') {
+        addCppExternalBindingHeaders(expression.object.reference.name, 'value', context);
         const member = getCompilerRuntimeExternalMemberTargetCpp(
           expression.object.reference.name,
           expression.name,
           getCppRuntimeProfile(context.options),
+          context.options.externalBindings,
         );
         if (member) return member;
       }
@@ -2840,7 +2855,7 @@ function emitImports(module: Readonly<IrModule>, context: EmitContext): string[]
   ];
   return [...new Set(specifiers)].flatMap((specifier) => {
     const targetModule = getCppResolvedImportModule(specifier, context);
-    if (targetModule) return [`#include "${getCppModuleFileName(targetModule)}.hpp"`];
+    if (targetModule) return [getCppModuleIncludeDirective(targetModule, context.options)];
     if (!specifier.startsWith('.')) return [];
     const target = path.posix.normalize(
       path.posix.join(path.posix.dirname(context.module.source), specifier.replace(/\.[cm]?js$/u, '.ts')),
@@ -2854,6 +2869,21 @@ function emitImports(module: Readonly<IrModule>, context: EmitContext): string[]
 
 function getCppModuleFileName(module: Readonly<IrModule>): string {
   return convertSourcePathToCppFileName(module.source) ?? `_internal_${snakeCase(module.name)}`;
+}
+
+function getCppModuleFilePath(module: Readonly<IrModule>, options: Readonly<CppCompilerBackendOptions>): string {
+  const fileName = `${getCppModuleFileName(module)}.hpp`;
+  const includePrefix = getCppCompilerPackageIncludePrefix(module.packageName, options.packageTargets);
+  return includePrefix ? `${includePrefix}/${fileName}` : fileName;
+}
+
+function getCppModuleIncludeDirective(
+  module: Readonly<IrModule>,
+  options: Readonly<CppCompilerBackendOptions>,
+): string {
+  const includePrefix = getCppCompilerPackageIncludePrefix(module.packageName, options.packageTargets);
+  const path = `${includePrefix ? `${includePrefix}/` : ''}${getCppModuleFileName(module)}.hpp`;
+  return includePrefix ? `#include <${path}>` : `#include "${path}"`;
 }
 
 function getCppResolvedImportModule(specifier: string, context: EmitContext): Readonly<IrModule> | undefined {
@@ -2883,7 +2913,7 @@ function emitReexportsCpp(module: Readonly<IrModule>, context: EmitContext): str
       const targetModule = getCppResolvedImportModule(exported.specifier, context);
       if (!targetModule) emissionError(context, `namespace reexport ${exported.exported} requires module resolution`);
       return [
-        `namespace ${safeCppName(exported.exported)} = ${convertPackageNameToCppNamespace(targetModule.packageName)};`,
+        `namespace ${safeCppName(exported.exported)} = ${getCppCompilerPackageNamespace(targetModule.packageName, context.options.packageTargets)};`,
       ];
     }
     if (exported.kind === 'all') {
@@ -2900,7 +2930,7 @@ function emitReexportsCpp(module: Readonly<IrModule>, context: EmitContext): str
       : pascalCase(exported.imported);
     const qualified =
       targetModule && targetModule.packageName !== module.packageName
-        ? `${convertPackageNameToCppNamespace(targetModule.packageName)}::${targetName}`
+        ? `${getCppCompilerPackageNamespace(targetModule.packageName, context.options.packageTargets)}::${targetName}`
         : targetName;
     if (exported.typeOnly) {
       return exported.exported === exported.imported && targetModule?.packageName === module.packageName
@@ -2924,10 +2954,12 @@ function emitIdentifierReference(
   context: EmitContext,
 ): string {
   if (reference.kind === 'ambient') {
+    addCppExternalBindingHeaders(reference.name, 'value', context);
     const target = getCompilerRuntimeExternalSymbolTargetCpp(
       reference.name,
       'value',
       getCppRuntimeProfile(context.options),
+      context.options.externalBindings,
     );
     if (target) return target;
     return reference.name;
@@ -3136,10 +3168,12 @@ function emitPostfixUnaryOperator(operator: string): string {
 
 function getTypeReferenceTargetName(type: Readonly<IrType & { kind: 'named' }>, context: EmitContext): string {
   if (type.reference.kind === 'ambient') {
+    addCppExternalBindingHeaders(type.reference.name, 'type', context);
     const target = getCompilerRuntimeExternalSymbolTargetCpp(
       type.reference.name,
       'type',
       getCppRuntimeProfile(context.options),
+      context.options.externalBindings,
     );
     if (target) return target;
     return type.reference.name;
@@ -3165,7 +3199,7 @@ function getCppImportedBindingTargetName(
     }
     const targetName = getCppResolvedExportTargetName(targetModule, importedName);
     if (targetModule.packageName === context.module.packageName) return targetName;
-    return `${convertPackageNameToCppNamespace(targetModule.packageName)}::${targetName}`;
+    return `${getCppCompilerPackageNamespace(targetModule.packageName, context.options.packageTargets)}::${targetName}`;
   }
   return undefined;
 }
@@ -3247,7 +3281,7 @@ function assertRuntimeExternalSymbolBindingsCpp(
 ): void {
   const completeness = analyzeCompilerRuntimeExternalSymbolCompleteness(
     collectIrModulesRuntimeExternalSymbolIdentities([module]),
-    createCompilerRuntimeExternalSymbolBindingPlanCpp(getCppRuntimeProfile(options)),
+    createCompilerRuntimeExternalSymbolBindingPlanCpp(getCppRuntimeProfile(options), options.externalBindings),
   );
   if (completeness.kind === 'complete') return;
   const problems = [
@@ -3263,6 +3297,12 @@ function assertRuntimeExternalSymbolBindingsCpp(
     module,
     `runtime external symbol binding plan is incomplete (${problems.join('; ')})`,
   );
+}
+
+function addCppExternalBindingHeaders(sourceName: string, space: 'type' | 'value', context: EmitContext): void {
+  for (const header of getCompilerExternalBindingHeadersCpp(sourceName, space, context.options.externalBindings)) {
+    context.includes.add(header);
+  }
 }
 
 function generateUniqueName(base: string, context: EmitContext): string {

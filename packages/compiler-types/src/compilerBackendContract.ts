@@ -49,7 +49,37 @@ export interface HaxeCompilerBackendOptions {
 
 export type CppCompilerRuntimeProfile = 'flight-cpp' | 'standard-library';
 
+export interface CppCompilerExternalBindingConstruction {
+  readonly kind: 'constructor' | 'factory';
+  readonly targetName: string;
+}
+
+export interface CppCompilerExternalBinding {
+  readonly construction?: CppCompilerExternalBindingConstruction | undefined;
+  readonly headers: readonly string[];
+  readonly members?: readonly Readonly<{ sourceMember: string; targetName: string }>[] | undefined;
+  readonly nullability: 'non-null' | 'nullable';
+  readonly ownership: 'borrowed' | 'owned' | 'shared' | 'value';
+  readonly sourceName: string;
+  readonly space: 'type' | 'value';
+  readonly targetName: string;
+}
+
+export interface CppCompilerExternalBindingManifest {
+  readonly bindings: readonly CppCompilerExternalBinding[];
+  readonly schema: 'flight-cpp-external-bindings/1';
+}
+
+export interface CppCompilerPackageTarget {
+  readonly includePrefix: string;
+  readonly namespace: string;
+}
+
 export interface CppCompilerBackendOptions {
+  /** Target-native bindings supplied by the embedding package rather than the compiler runtime. */
+  readonly externalBindings?: Readonly<CppCompilerExternalBindingManifest> | undefined;
+  /** Installed include and public namespace identity for each source package. */
+  readonly packageTargets?: Readonly<Record<string, Readonly<CppCompilerPackageTarget>>> | undefined;
   /**
    * Runtime representation elected by the backend. `standard-library` preserves the provisional
    * container mapping for generic consumers; `flight-cpp` elects the semantic runtime contract.

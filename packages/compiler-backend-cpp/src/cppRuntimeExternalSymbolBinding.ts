@@ -4,6 +4,9 @@ import type {
   CompilerRuntimeExternalSymbolBinding,
   CompilerRuntimeExternalSymbolBindingPlan,
   CompilerRuntimeExternalSymbolSpace,
+  CppCompilerExternalBinding,
+  CppCompilerExternalBindingConstruction,
+  CppCompilerExternalBindingManifest,
   CppCompilerRuntimeProfile,
 } from '../../compiler-types/src/index.js';
 
@@ -14,6 +17,8 @@ type CppRuntimeExternalSymbolBinding =
       sourceName: string;
       space: CompilerRuntimeExternalSymbolSpace;
       targetName: string;
+      headers?: readonly string[] | undefined;
+      construction?: CppCompilerExternalBindingConstruction | undefined;
     }>
   | Readonly<{
       capability: CompilerRuntimeCapabilityName;
@@ -22,13 +27,16 @@ type CppRuntimeExternalSymbolBinding =
       sourceName: string;
       space: CompilerRuntimeExternalSymbolSpace;
       targetName: string;
+      headers?: readonly string[] | undefined;
+      construction?: CppCompilerExternalBindingConstruction | undefined;
     }>;
 
 export function createCompilerRuntimeExternalSymbolBindingPlanCpp(
   runtimeProfile: CppCompilerRuntimeProfile = 'standard-library',
+  externalBindings?: Readonly<CppCompilerExternalBindingManifest> | undefined,
 ): CompilerRuntimeExternalSymbolBindingPlan {
   return {
-    bindings: getCppRuntimeExternalSymbolBindings(runtimeProfile).map((binding) =>
+    bindings: getCppRuntimeExternalSymbolBindings(runtimeProfile, externalBindings).map((binding) =>
       binding.kind === 'runtime'
         ? {
             capability: binding.capability,
@@ -44,15 +52,38 @@ export function createCompilerRuntimeExternalSymbolBindingPlanCpp(
   };
 }
 
+export function getCompilerExternalBindingConstructionCpp(
+  sourceName: string,
+  externalBindings?: Readonly<CppCompilerExternalBindingManifest> | undefined,
+): CppCompilerExternalBindingConstruction | undefined {
+  return getCppCompilerExternalBindings(externalBindings).find(
+    (binding) => binding.sourceName === sourceName.normalize('NFC') && binding.space === 'value',
+  )?.construction;
+}
+
+export function getCompilerExternalBindingHeadersCpp(
+  sourceName: string,
+  space: CompilerRuntimeExternalSymbolSpace,
+  externalBindings?: Readonly<CppCompilerExternalBindingManifest> | undefined,
+): readonly string[] {
+  return (
+    getCppCompilerExternalBindings(externalBindings).find(
+      (binding) => binding.sourceName === sourceName.normalize('NFC') && binding.space === space,
+    )?.headers ?? []
+  );
+}
+
 export function getCompilerRuntimeExternalMemberTargetCpp(
   sourceName: string,
   member: string,
   runtimeProfile: CppCompilerRuntimeProfile = 'standard-library',
+  externalBindings?: Readonly<CppCompilerExternalBindingManifest> | undefined,
 ): string | undefined {
   const normalized = sourceName.normalize('NFC');
-  const binding: CppRuntimeExternalSymbolBinding | undefined = getCppRuntimeExternalSymbolBindings(runtimeProfile).find(
-    (candidate) => candidate.sourceName === normalized && candidate.space === 'value',
-  );
+  const binding: CppRuntimeExternalSymbolBinding | undefined = getCppRuntimeExternalSymbolBindings(
+    runtimeProfile,
+    externalBindings,
+  ).find((candidate) => candidate.sourceName === normalized && candidate.space === 'value');
   if (!binding) return undefined;
   return binding.members?.find((candidate) => candidate.sourceMember === member.normalize('NFC'))?.targetName;
 }
@@ -61,9 +92,10 @@ export function getCompilerRuntimeExternalSymbolTargetCpp(
   sourceName: string,
   space: CompilerRuntimeExternalSymbolSpace,
   runtimeProfile: CppCompilerRuntimeProfile = 'standard-library',
+  externalBindings?: Readonly<CppCompilerExternalBindingManifest> | undefined,
 ): string | undefined {
   const normalized = sourceName.normalize('NFC');
-  return getCppRuntimeExternalSymbolBindings(runtimeProfile).find(
+  return getCppRuntimeExternalSymbolBindings(runtimeProfile, externalBindings).find(
     (candidate) => candidate.sourceName === normalized && candidate.space === space,
   )?.targetName;
 }
@@ -72,10 +104,11 @@ export function isCompilerRuntimeExternalSymbolProvidedCpp(
   sourceName: string,
   space: CompilerRuntimeExternalSymbolSpace,
   runtimeProfile: CppCompilerRuntimeProfile = 'standard-library',
+  externalBindings?: Readonly<CppCompilerExternalBindingManifest> | undefined,
 ): boolean {
   const normalized = sourceName.normalize('NFC');
   return (
-    getCppRuntimeExternalSymbolBindings(runtimeProfile).find(
+    getCppRuntimeExternalSymbolBindings(runtimeProfile, externalBindings).find(
       (candidate) => candidate.sourceName === normalized && candidate.space === space,
     )?.kind === 'runtime'
   );
@@ -83,9 +116,87 @@ export function isCompilerRuntimeExternalSymbolProvidedCpp(
 
 function getCppRuntimeExternalSymbolBindings(
   runtimeProfile: CppCompilerRuntimeProfile,
+  externalBindings?: Readonly<CppCompilerExternalBindingManifest> | undefined,
 ): readonly CppRuntimeExternalSymbolBinding[] {
-  return runtimeProfile === 'flight-cpp' ? cppFlightRuntimeExternalSymbolBindings : cppRuntimeExternalSymbolBindings;
+  const runtime =
+    runtimeProfile === 'flight-cpp' ? cppFlightRuntimeExternalSymbolBindings : cppRuntimeExternalSymbolBindings;
+  return [...runtime, ...getCppCompilerExternalBindings(externalBindings)];
 }
+
+function getCppCompilerExternalBindings(
+  manifest?: Readonly<CppCompilerExternalBindingManifest> | undefined,
+): readonly CppRuntimeExternalSymbolBinding[] {
+  if (!manifest) return [];
+  if (manifest.schema !== 'flight-cpp-external-bindings/1' || !Array.isArray(manifest.bindings)) {
+    throw new TypeError('C++ external bindings require flight-cpp-external-bindings/1');
+  }
+  return manifest.bindings.map((binding: Readonly<CppCompilerExternalBinding>, index: number) => {
+    const subject = `C++ external binding ${String(index)}`;
+    if (
+      !binding ||
+      typeof binding.sourceName !== 'string' ||
+      binding.sourceName.length === 0 ||
+      (binding.space !== 'type' && binding.space !== 'value') ||
+      typeof binding.targetName !== 'string' ||
+      binding.targetName.length === 0 ||
+      !Array.isArray(binding.headers) ||
+      binding.headers.some((header: unknown) => !isCppExternalBindingHeader(header)) ||
+      (binding.nullability !== 'non-null' && binding.nullability !== 'nullable') ||
+      !cppExternalBindingOwnerships.has(binding.ownership)
+    ) {
+      throw new TypeError(`${subject} is malformed`);
+    }
+    if (
+      binding.members?.some(
+        (member: Readonly<{ sourceMember: string; targetName: string }>) =>
+          !member ||
+          typeof member.sourceMember !== 'string' ||
+          member.sourceMember.length === 0 ||
+          typeof member.targetName !== 'string' ||
+          member.targetName.length === 0,
+      )
+    ) {
+      throw new TypeError(`${subject} has malformed static-member mappings`);
+    }
+    if (
+      binding.construction &&
+      (binding.space !== 'value' ||
+        (binding.construction.kind !== 'constructor' && binding.construction.kind !== 'factory') ||
+        typeof binding.construction.targetName !== 'string' ||
+        binding.construction.targetName.length === 0)
+    ) {
+      throw new TypeError(`${subject} has a malformed construction mapping`);
+    }
+    return {
+      ...(binding.construction ? { construction: { ...binding.construction } } : {}),
+      headers: [...binding.headers],
+      kind: 'native' as const,
+      ...(binding.members
+        ? {
+            members: binding.members.map((member: Readonly<{ sourceMember: string; targetName: string }>) => ({
+              ...member,
+            })),
+          }
+        : {}),
+      sourceName: binding.sourceName.normalize('NFC'),
+      space: binding.space,
+      targetName: binding.targetName,
+    };
+  });
+}
+
+function isCppExternalBindingHeader(value: unknown): value is string {
+  return (
+    typeof value === 'string' &&
+    value.length > 0 &&
+    !value.startsWith('/') &&
+    !value.includes('\\') &&
+    !/[<>"\r\n]/u.test(value) &&
+    value.split('/').every((segment) => segment.length > 0 && segment !== '.' && segment !== '..')
+  );
+}
+
+const cppExternalBindingOwnerships = new Set(['borrowed', 'owned', 'shared', 'value']);
 
 const cppFlightRuntimeExternalSymbolBindings = [
   {
