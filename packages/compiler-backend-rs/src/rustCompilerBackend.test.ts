@@ -11143,7 +11143,7 @@ describe('emitIrModuleRust class implements interface as trait', () => {
     expect(output).toContain('fn name(&self) -> String;');
   });
 
-  it('refuses a class that implements a non-binding type reference via primitive implements entry', () => {
+  it('refuses a class that implements an unknown ambient type reference', () => {
     const result = lower(
       'non-binding-impl.ts',
       `export interface Marker { tag(): string }
@@ -11171,7 +11171,7 @@ describe('emitIrModuleRust class implements interface as trait', () => {
             : d,
         ),
       };
-      expect(() => emitIrModuleRust(modified)).toThrow('implements a type with no Rust trait');
+      expect(() => emitIrModuleRust(modified)).toThrow('runtime external symbol binding plan is incomplete');
     }
   });
 });
