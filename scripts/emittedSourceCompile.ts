@@ -71,8 +71,8 @@ if (hasCommand('rustc', ['--version'])) {
       if (modules.length === 0) continue;
       checked += modules.length;
       const crate = path.join(workspace, fixture);
-      cpSync(emitted, crate, { recursive: true });
       cpSync(path.join(supportDirectory, 'rust'), crate, { recursive: true });
+      cpSync(emitted, crate, { recursive: true });
       // The runtime contract is a separate crate, which is what the emitted `use` says, so it is
       // built as one. Sibling modules stay modules of this crate, which is what `crate::` says.
       // `--extern` takes a built dependency, not metadata, and recognises it by its `lib*.rlib`
@@ -89,7 +89,7 @@ if (hasCommand('rustc', ['--version'])) {
       }
       writeFileSync(
         path.join(crate, 'lib.rs'),
-        `${['helper', ...modules].map((module) => `pub mod ${module};`).join('\n')}\n`,
+        `${[...(modules.includes('helper') ? [] : ['helper']), ...modules].map((module) => `pub mod ${module};`).join('\n')}\n`,
       );
       const result = spawnSync(
         'rustc',
