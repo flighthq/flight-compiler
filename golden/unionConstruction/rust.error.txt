@@ -1,0 +1,1 @@
+rust emission failed for @flighthq/golden/packages/golden/src/unionConstruction.ts: cast to primitive requires Rust type-directed lowering
