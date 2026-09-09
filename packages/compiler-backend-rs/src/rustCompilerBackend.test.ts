@@ -11096,3 +11096,440 @@ describe('emitIrModuleRust labeled break and continue', () => {
     expect(output).toContain("break 'outer");
   });
 });
+
+describe('emitIrModuleRust scoped package import module path', () => {
+  it('converts scoped package import specifiers to Rust crate paths', () => {
+    const output = emitIrModuleRust(
+      lowerPackage(
+        '@flighthq/core',
+        'uses-types.ts',
+        `import type { Item } from '@flighthq/types/item';
+         export function name(item: Item): string { return item.name; }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('use ');
+  });
+});
+
+describe('emitIrModuleRust class implements interface as trait', () => {
+  it('emits trait impl block with method signatures from the implemented interface', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'class-trait.ts',
+        `export interface Advancer { advance(n: number): number }
+         export class Counter implements Advancer {
+           count: number;
+           constructor(start: number) { this.count = start; }
+           advance(n: number): number { this.count = this.count + n; return this.count; }
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('impl Advancer for Counter');
+    expect(output).toContain('fn advance(');
+  });
+
+  it('emits trait data property as accessor method', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'data-trait.ts',
+        `export interface Named { readonly name: string }
+         export class Tag implements Named {
+           name: string;
+           constructor(n: string) { this.name = n; }
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('trait Named');
+    expect(output).toContain('fn name(&self) -> String;');
+  });
+
+  it('refuses a class that implements a non-binding type reference', () => {
+    const result = lower(
+      'non-binding-impl.ts',
+      `export interface Marker { tag(): string }
+       export class Impl implements Marker {
+         tag(): string { return "ok"; }
+       }`,
+    );
+    const module = result.module;
+    const classDecl = module.declarations.find((d) => d.kind === 'class' && d.binding.name === 'Impl');
+    if (classDecl?.kind === 'class') {
+      const modified = {
+        ...module,
+        declarations: module.declarations.map((d) =>
+          d === classDecl ? { ...d, implements: [{ kind: 'primitive' as const, name: 'string' }] } : d,
+        ),
+      };
+      expect(() => emitIrModuleRust(modified)).toThrow('implements a type with no Rust trait');
+    }
+  });
+});
+
+describe('emitIrModuleRust Math spread fold', () => {
+  it('emits Math.min/max with spread as iter fold', () => {
+    const output = emitIrModuleRust(
+      lower('math-spread.ts', `export function smallest(items: number[]): number { return Math.min(...items); }`)
+        .module,
+    ).contents;
+    expect(output).toContain('.iter().cloned().fold(');
+  });
+});
+
+describe('emitIrModuleRust class with field initializers', () => {
+  it('emits associated new for a class whose fields all have initializers', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'auto-init.ts',
+        `export class Counter {
+           count: number = 0;
+           label: string = "default";
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('fn new()');
+    expect(output).toContain('count: 0.0');
+    expect(output).toContain('label: "default"');
+  });
+});
+
+describe('emitIrModuleRust static class fields', () => {
+  it('emits static fields as associated constants', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'static-field.ts',
+        `export class Config {
+           static readonly MAX: number = 100;
+           value: number;
+           constructor(v: number) { this.value = v; }
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('const MAX: f64 = 100.0;');
+  });
+});
+
+describe('emitIrModuleRust nullish comparison', () => {
+  it('emits is_none for === null on an optional value', () => {
+    const output = emitIrModuleRust(
+      lower('null-check.ts', `export function absent(x: number | null): boolean { return x === null; }`).module,
+    ).contents;
+    expect(output).toContain('is_none()');
+  });
+
+  it('emits is_some for !== undefined on an optional value', () => {
+    const output = emitIrModuleRust(
+      lower('undef-check.ts', `export function present(x: number | undefined): boolean { return x !== undefined; }`)
+        .module,
+    ).contents;
+    expect(output).toContain('is_some()');
+  });
+});
+
+describe('emitIrModuleRust coalesce operator', () => {
+  it('emits unwrap_or_else for ?? on optional chain result', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'coalesce.ts',
+        `export interface Box { value: number }
+         export function read(b: Box | undefined): number { return b?.value ?? 0; }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('unwrap_or_else');
+  });
+});
+
+describe('emitIrModuleRust template literal brace escaping', () => {
+  it('escapes curly braces in template literal text parts', () => {
+    const output = emitIrModuleRust(
+      lower('template-brace.ts', 'export function greet(name: string): string { return `hello ${name}!`; }').module,
+    ).contents;
+    expect(output).toContain('format!(');
+    expect(output).toContain('name');
+  });
+});
+
+describe('emitIrModuleRust unary plus on number', () => {
+  it('passes through the operand without emitting an operator', () => {
+    const output = emitIrModuleRust(
+      lower('unary-plus.ts', 'export function identity(x: number): number { return +x; }').module,
+    ).contents;
+    expect(output).toContain('return x;');
+    expect(output).not.toContain('return +x;');
+  });
+});
+
+describe('emitIrModuleRust cast expression', () => {
+  it('emits explicit type cast with as keyword', () => {
+    const output = emitIrModuleRust(
+      lower('cast.ts', `export function narrow(x: number | string): number { return x as number; }`).module,
+    ).contents;
+    expect(output).toContain(' as ');
+  });
+});
+
+describe('emitIrModuleRust array method bindings', () => {
+  it('emits array.join as .join with borrowed text', () => {
+    const output = emitIrModuleRust(
+      lower('array-join.ts', `export function joined(items: string[]): string { return items.join(", "); }`).module,
+    ).contents;
+    expect(output).toContain('.join(');
+  });
+
+  it('emits array.slice with range bounds and .to_vec()', () => {
+    const output = emitIrModuleRust(
+      lower('array-slice.ts', `export function tail(items: number[]): number[] { return items.slice(1); }`).module,
+    ).contents;
+    expect(output).toContain('as usize..].to_vec()');
+  });
+
+  it('emits array.slice with two bounds', () => {
+    const output = emitIrModuleRust(
+      lower('array-slice-range.ts', `export function middle(items: number[]): number[] { return items.slice(1, 3); }`)
+        .module,
+    ).contents;
+    expect(output).toContain('as usize..3');
+    expect(output).toContain('.to_vec()');
+  });
+
+  it('emits array.concat as extend', () => {
+    const output = emitIrModuleRust(
+      lower('array-concat.ts', `export function merge(a: number[], b: number[]): number[] { return a.concat(b); }`)
+        .module,
+    ).contents;
+    expect(output).toContain('__concat');
+    expect(output).toContain('.extend(');
+  });
+
+  it('emits array.indexOf as iter position search', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'index-of.ts',
+        `export function find(items: string[], target: string): number { return items.indexOf(target); }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('.iter().position(');
+    expect(output).toContain('unwrap_or(-1.0)');
+  });
+});
+
+describe('emitIrModuleRust string method bindings', () => {
+  it('emits string.charAt as chars().nth()', () => {
+    const output = emitIrModuleRust(
+      lower('char-at.ts', `export function first(s: string): string { return s.charAt(0); }`).module,
+    ).contents;
+    expect(output).toContain('.chars().nth(');
+    expect(output).toContain('unwrap_or_default()');
+  });
+
+  it('emits string.charCodeAt as chars().nth() with u32 cast', () => {
+    const output = emitIrModuleRust(
+      lower('char-code.ts', `export function code(s: string): number { return s.charCodeAt(0); }`).module,
+    ).contents;
+    expect(output).toContain('.chars().nth(');
+    expect(output).toContain('as u32 as f64');
+  });
+
+  it('emits string.substring as slice with range bounds', () => {
+    const output = emitIrModuleRust(
+      lower('substring.ts', `export function sub(s: string): string { return s.substring(1, 3); }`).module,
+    ).contents;
+    expect(output).toContain('as usize..3');
+    expect(output).toContain('.to_string()');
+  });
+
+  it('emits string.indexOf as sentinel search with find', () => {
+    const output = emitIrModuleRust(
+      lower('string-index.ts', `export function pos(s: string, target: string): number { return s.indexOf(target); }`)
+        .module,
+    ).contents;
+    expect(output).toContain('.find(');
+    expect(output).toContain('unwrap_or(-1.0)');
+  });
+
+  it('emits string.split as splitCollect', () => {
+    const output = emitIrModuleRust(
+      lower('string-split.ts', `export function parts(s: string): string[] { return s.split(","); }`).module,
+    ).contents;
+    expect(output).toContain('.split(');
+    expect(output).toContain('.collect::<Vec<String>>()');
+  });
+});
+
+describe('emitIrModuleRust transitive method mutation', () => {
+  it('marks a caller of a mutating method as &mut self transitively', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'transitive-mut.ts',
+        `export class Counter {
+           count: number;
+           constructor() { this.count = 0; }
+           increment(): void { this.count = this.count + 1; }
+           incrementTwice(): void { this.increment(); this.increment(); }
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('fn increment(&mut self)');
+    expect(output).toContain('fn increment_twice(&mut self)');
+  });
+});
+
+describe('emitIrModuleRust element mutation through this', () => {
+  it('marks a method that writes through this[index] as &mut self', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'element-mut.ts',
+        `export class Buffer {
+           data: number[];
+           constructor() { this.data = []; }
+           set(index: number, value: number): void { this.data[index] = value; }
+           get(index: number): number { return this.data[index]!; }
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('fn set(&mut self');
+    expect(output).toContain('fn get(&self');
+  });
+});
+
+describe('emitIrModuleRust class static member access', () => {
+  it('emits static field access as Type::CONSTANT', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'static-access.ts',
+        `export class Config {
+           static readonly MAX: number = 100;
+           value: number;
+           constructor(v: number) { this.value = v; }
+         }
+         export function limit(): number { return Config.MAX; }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('Config::MAX');
+  });
+});
+
+describe('emitIrModuleRust new expression with non-identifier callee', () => {
+  it('refuses qualified constructors', () => {
+    const result = lower(
+      'new-ctor.ts',
+      `export class Box { value: number; constructor(v: number) { this.value = v; } }
+       export function make(): Box { return new Box(1); }`,
+    );
+    const module = result.module;
+    const funcDecl = module.declarations.find((d) => d.kind === 'function' && d.binding.name === 'make');
+    if (funcDecl?.kind === 'function') {
+      const returnStmt = funcDecl.body.find((s) => s.kind === 'return');
+      if (returnStmt?.kind === 'return' && returnStmt.value?.kind === 'new') {
+        const modifiedFunc = {
+          ...funcDecl,
+          body: funcDecl.body.map((s) =>
+            s.kind === 'return' && s.value?.kind === 'new'
+              ? {
+                  ...s,
+                  value: {
+                    ...s.value,
+                    callee: {
+                      kind: 'property' as const,
+                      object: s.value.callee,
+                      name: 'Inner',
+                      optional: false,
+                      type: s.value.callee.type,
+                      semantics: { receivers: [] },
+                    },
+                  },
+                }
+              : s,
+          ),
+        };
+        const modified = {
+          ...module,
+          declarations: module.declarations.map((d) => (d === funcDecl ? modifiedFunc : d)),
+        };
+        expect(() => emitIrModuleRust(modified)).toThrow('qualified constructors require Rust type-path lowering');
+      }
+    }
+  });
+});
+
+describe('emitIrModuleRust import emission', () => {
+  it('emits use statements for cross-module imports', () => {
+    const result = lowerPackage(
+      '@flighthq/core',
+      'consumer.ts',
+      `import { helper } from './util.js'; export function run(): number { return helper(); }`,
+    );
+    const output = emitIrModuleRust(result.module).contents;
+    expect(output).toContain('use crate::');
+    expect(output).toContain('helper');
+  });
+
+  it('refuses namespace and default imports', () => {
+    const result = lowerPackage(
+      '@flighthq/core',
+      'ns-import.ts',
+      `import * as util from './util.js'; export function run(): number { return util.helper(); }`,
+    );
+    expect(() => emitIrModuleRust(result.module)).toThrow('imports require explicit Rust mapping');
+  });
+});
+
+describe('emitIrModuleRust reexport emission', () => {
+  it('emits pub use for named reexports', () => {
+    const result = lowerPackage('@flighthq/core', 'facade.ts', `export { helper } from './util.js';`);
+    const output = emitIrModuleRust(result.module).contents;
+    expect(output).toContain('pub use crate::');
+  });
+});
+
+describe('emitIrModuleRust reduce with argument reorder', () => {
+  it('emits array.reduce as fold with reordered arguments', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'reduce.ts',
+        `export function sum(items: number[]): number {
+           return items.reduce((acc: number, item: number): number => acc + item, 0);
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('.into_iter().fold(');
+  });
+});
+
+describe('emitIrModuleRust array filter with borrowed element', () => {
+  it('emits filter as into_iter().filter() with borrowed element closure', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'filter.ts',
+        `export function positives(items: number[]): number[] {
+           return items.filter((x: number): boolean => x > 0);
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('.into_iter().filter(');
+    expect(output).toContain('.collect::<Vec<_>>()');
+  });
+});
+
+describe('emitIrModuleRust safeRustValueName edge cases', () => {
+  it('escapes Rust keywords in emitted identifiers', () => {
+    const output = emitIrModuleRust(
+      lower('keyword-field.ts', `export function type_(x: number): number { return x; }`).module,
+    ).contents;
+    expect(output).toContain('fn type_');
+  });
+
+  it('strips private field hash prefix in emitted names', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'private-hash.ts',
+        `export class Box {
+           #value: number;
+           constructor(v: number) { this.#value = v; }
+           read(): number { return this.#value; }
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('value:');
+    expect(output).not.toContain('#value');
+  });
+});
