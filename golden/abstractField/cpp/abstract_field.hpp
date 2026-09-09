@@ -20,8 +20,10 @@ struct Component : public flight::ReferenceEnabled {
 };
 
 struct Button : public Component {
-  flight::String name = flight::String("button");
-  double version = 1.0;
+  Button() {
+    this->name = flight::String("button");
+    this->version = 1.0;
+  }
 };
 
 struct DeclareExample : public flight::ReferenceEnabled {

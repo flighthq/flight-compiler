@@ -325,11 +325,21 @@ function emitClass(declaration: Readonly<IrClassDeclaration>, outer: EmitContext
       ? ' : public flight::ReferenceEnabled'
       : '';
   const overriddenMethods = getIrClassInheritedMethodNamesCpp(declaration, context);
+  const inheritedAbstractFields = getIrClassInheritedAbstractFieldNamesCpp(declaration, context);
   const hasSubclass = hasIrModuleSubclassCpp(declaration, context);
   const lines: string[] = [];
   if (typeParams) lines.push(`template ${typeParams}`);
   lines.push(`struct ${name}${extendsClause} {`);
+  const baseFieldInits: string[] = [];
   for (const field of declaration.fields) {
+    if (!field.static && inheritedAbstractFields.has(field.name)) {
+      if (field.initializer) {
+        baseFieldInits.push(
+          `    this->${safeCppName(field.name)} = ${emitExpression(field.initializer, context, field.type)};`,
+        );
+      }
+      continue;
+    }
     const fieldType = emitOptionalTypeCpp(emitType(field.type, context), field.optional, context);
     const initializer = field.initializer ? ` = ${emitExpression(field.initializer, context, field.type)}` : '';
     const staticPrefix = field.static ? 'inline static ' : '';
@@ -369,6 +379,7 @@ function emitClass(declaration: Readonly<IrClassDeclaration>, outer: EmitContext
       ? declaration.classConstructor.body.filter((statement) => !isSuperCallStatement(statement))
       : declaration.classConstructor.body;
     lines.push(`  ${name}(${params})${initList} {`);
+    lines.push(...baseFieldInits);
     lines.push(
       ...indentSourceLines(
         [
@@ -378,6 +389,10 @@ function emitClass(declaration: Readonly<IrClassDeclaration>, outer: EmitContext
         2,
       ),
     );
+    lines.push('  }');
+  } else if (baseFieldInits.length > 0) {
+    lines.push(`  ${name}() {`);
+    lines.push(...baseFieldInits);
     lines.push('  }');
   }
   if (hasSubclass || declaration.abstract) {
@@ -2320,6 +2335,14 @@ function emitAssignmentTargetCpp(expression: Readonly<IrExpression>, context: Em
   ) {
     return `${emitExpression(expression.object, context)}.element(${emitExpression(expression.index, context)})`;
   }
+  if (
+    expression.kind === 'identifier' &&
+    expression.reference.kind === 'binding' &&
+    (context.nullableBindingIds.has(expression.reference.binding.id) ||
+      context.defaultedParameterIds.has(expression.reference.binding.id))
+  ) {
+    return emitIdentifierReference(expression.reference, context);
+  }
   return emitExpression(expression, context);
 }
 
@@ -3274,6 +3297,33 @@ function getIrClassInheritedMethodNamesCpp(
     if (target?.kind !== 'class') break;
     for (const method of target.methods) {
       names.add(method.name);
+    }
+    base = target.extends;
+  }
+  return names;
+}
+
+function getIrClassInheritedAbstractFieldNamesCpp(
+  declaration: Readonly<IrClassDeclaration>,
+  context: EmitContext,
+): ReadonlySet<string> {
+  const names = new Set<string>();
+  let base = declaration.extends;
+  const visited = new Set<string>();
+  while (
+    base &&
+    base.kind === 'named' &&
+    base.reference.kind === 'binding' &&
+    !visited.has(base.reference.binding.id)
+  ) {
+    visited.add(base.reference.binding.id);
+    const reference = base.reference;
+    const target = context.module.declarations.find(
+      (candidate) => candidate.kind === 'class' && candidate.binding.id === reference.binding.id,
+    );
+    if (target?.kind !== 'class') break;
+    for (const field of target.fields) {
+      if (field.abstract) names.add(field.name);
     }
     base = target.extends;
   }

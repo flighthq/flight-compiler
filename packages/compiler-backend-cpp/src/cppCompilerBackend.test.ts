@@ -1940,6 +1940,28 @@ describe('emitIrModuleCpp', () => {
     expect(emitted.contents).toContain('virtual');
   });
 
+  it('initializes abstract field overrides in derived constructor', () => {
+    const result = lower(
+      'abstract-field.ts',
+      `export abstract class Component {
+        abstract name: string;
+        abstract readonly version: number;
+        public describe(): string { return this.name; }
+        public getVersion(): number { return this.version; }
+      }
+      export class Button extends Component {
+        name: string = 'button';
+        readonly version: number = 1;
+      }`,
+    );
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('struct Button : public Component');
+    expect(emitted.contents).toContain('Button()');
+    expect(emitted.contents).toContain('this->name =');
+    expect(emitted.contents).toContain('this->version =');
+    expect(emitted.contents).not.toMatch(/struct Button[^}]*flight::String name/s);
+  });
+
   it('emits string enum as struct with string value', () => {
     const result = lower('status.ts', "export enum Status { Active = 'ACTIVE', Inactive = 'INACTIVE' }");
     const emitted = emitIrModuleCpp(result.module);
