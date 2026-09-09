@@ -11259,6 +11259,119 @@ it('lowers tuple type with optional element', () => {
   expect(result.diagnostics).toEqual([]);
 });
 
+it('lowers new expression without parentheses when constructor has default parameters', () => {
+  const result = lower(
+    'new-no-parens.ts',
+    `
+      class Widget {
+        size: number;
+        constructor(size: number = 10) {
+          this.size = size;
+        }
+      }
+      export function create(): Widget {
+        return new Widget;
+      }
+    `,
+  );
+  expect(result.diagnostics).toEqual([]);
+  const fn = result.module.declarations.find((d) => d.kind === 'function');
+  expect(fn).toBeDefined();
+});
+
+it('lowers overloaded function calls with correct signature resolution', () => {
+  const result = lower(
+    'overloaded-call.ts',
+    `
+      function format(value: number): string;
+      function format(value: string): string;
+      function format(value: number | string): string {
+        return String(value);
+      }
+      export function formatNumber(): string {
+        return format(42);
+      }
+      export function formatString(): string {
+        return format("hello");
+      }
+    `,
+  );
+  expect(result.diagnostics).toEqual([]);
+  const format = result.module.declarations.find((d) => d.kind === 'function' && d.binding.name === 'format');
+  expect(format).toMatchObject({ kind: 'function', overloads: [expect.anything(), expect.anything()] });
+});
+
+it('lowers exported object destructuring binding pattern', () => {
+  const result = lower(
+    'exported-destructure.ts',
+    `
+      const source = { x: 1, y: 2, z: 3 };
+      export const { x, y } = source;
+    `,
+  );
+  expect(result.diagnostics).toEqual([]);
+  const exports = result.module.exports.filter((e) => e.kind === 'local');
+  expect(exports).toMatchObject([
+    { exported: 'x', kind: 'local' },
+    { exported: 'y', kind: 'local' },
+  ]);
+});
+
+it('lowers for-in statement with inline variable declaration', () => {
+  const result = lower(
+    'for-in.ts',
+    `
+      export function keys(obj: { a: number; b: string }): string[] {
+        const result: string[] = [];
+        for (const key in obj) {
+          result.push(key);
+        }
+        return result;
+      }
+    `,
+  );
+  expect(result.diagnostics).toEqual([]);
+  const fn = result.module.declarations.find((d) => d.kind === 'function');
+  if (fn?.kind !== 'function') throw new Error('Expected function');
+  const forIn = fn.body.find((s) => s.kind === 'forIn');
+  expect(forIn).toBeDefined();
+});
+
+it('lowers overloaded method calls on class instances', () => {
+  const result = lower(
+    'overloaded-method.ts',
+    `
+      class Formatter {
+        render(value: number): string;
+        render(value: boolean): string;
+        render(value: number | boolean): string {
+          return String(value);
+        }
+      }
+      export function renderNumber(f: Formatter): string {
+        return f.render(42);
+      }
+    `,
+  );
+  expect(result.diagnostics).toEqual([]);
+});
+
+it('lowers element access on new expression result for indexed receiver evidence', () => {
+  const result = lower(
+    'new-element-access.ts',
+    `
+      export function first(): number {
+        return new Array<number>(3)[0]!;
+      }
+    `,
+  );
+  expect(result.diagnostics).toEqual([]);
+  const fn = result.module.declarations.find((d) => d.kind === 'function');
+  if (fn?.kind !== 'function') throw new Error('Expected function');
+  const ret = fn.body.find((s) => s.kind === 'return');
+  expect(ret).toBeDefined();
+});
+
 function getVariableBinding(value: unknown): IrBindingIdentity {
   if (typeof value !== 'object' || value === null || !('binding' in value)) {
     throw new Error('Expected named variable');
