@@ -20,6 +20,32 @@ const fixtureBackend: CompilerBackend = {
 };
 
 describe('compileIrModules', () => {
+  it('uses backend emission session when provided instead of per-module entry point', () => {
+    const module = createModule('Value');
+    const calls: string[] = [];
+    const backend: CompilerBackend = {
+      createEmissionSession: ({ modules }) => {
+        calls.push(`session:${modules.length}`);
+        return {
+          emitModule(subject) {
+            calls.push(`emit:${subject.name}`);
+            return [{ contents: subject.name, path: `${subject.name}.txt` }];
+          },
+        };
+      },
+      emitModule: () => {
+        calls.push('compat');
+        return [{ contents: '', path: 'compat.txt' }];
+      },
+      name: 'session-fixture',
+    };
+
+    const result = compileIrModules({ backend, backendOptions: {}, modules: [module] });
+
+    expect(calls).toEqual(['session:1', 'emit:Value']);
+    expect(result.compilation.files.map((file) => file.path)).toEqual(['Value.txt']);
+  });
+
   it('orders modules and emitted files deterministically without mutating caller input', () => {
     const zeta = createModule('Zeta');
     const alpha = createModule('Alpha');

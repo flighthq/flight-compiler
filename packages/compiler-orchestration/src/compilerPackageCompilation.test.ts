@@ -325,6 +325,137 @@ describe('compileTypeScriptPackageGraph', () => {
     ]);
   });
 
+  it('rethrows unrecognized errors from backend emission as-is', () => {
+    const value = source('@local/source', 'source', 'value.ts', 'export const value = 1;');
+    const sentinel = { customError: true };
+    const backend: CompilerBackend = {
+      emitModule: () => {
+        throw sentinel;
+      },
+      name: 'fixture',
+    };
+
+    expect(() =>
+      compileTypeScriptPackageGraph({
+        backend,
+        backendOptions: {},
+        graph: graph([], [], [{ dependencies: [], name: '@local/source', root: value.packageRoot }]),
+        sources: [value],
+      }),
+    ).toThrow(sentinel);
+  });
+
+  it('resolves relative imports through extension mapping (.js to .ts, .cjs to .cts, .mjs to .mts, .jsx to .tsx)', () => {
+    const dep = source('@local/source', 'source', 'dep.ts', 'export const dep = 1;');
+    const importer = source(
+      '@local/source',
+      'source',
+      'importer.ts',
+      "import { dep } from './dep.js'; export const value = dep;",
+    );
+    const backend: CompilerBackend = {
+      emitModule: (module) => [{ contents: module.name, path: `${module.name}.txt` }],
+      name: 'fixture',
+    };
+    const result = compileTypeScriptPackageGraph({
+      backend,
+      backendOptions: {},
+      graph: graph(
+        [identity(importer, 'Importer')],
+        [],
+        [{ dependencies: [], name: '@local/source', root: dep.packageRoot }],
+      ),
+      sources: [importer, dep],
+    });
+
+    expect(result.report.initialization.groups.map((group) => group.modules)).toEqual([
+      [identity(dep, 'Dep')],
+      [identity(importer, 'Importer')],
+    ]);
+  });
+
+  it('resolves relative imports without extensions via .ts suffix and index.ts fallback', () => {
+    const child = source('@local/source', 'source', 'sub/child.ts', 'export const child = 1;');
+    const index = source('@local/source', 'source', 'lib/index.ts', 'export const lib = 1;');
+    const consumer = source(
+      '@local/source',
+      'source',
+      'consumer.ts',
+      "import { child } from './sub/child'; import { lib } from './lib'; export const value = child + lib;",
+    );
+    const backend: CompilerBackend = {
+      emitModule: (module) => [{ contents: module.name, path: `${module.name}.txt` }],
+      name: 'fixture',
+    };
+    const result = compileTypeScriptPackageGraph({
+      backend,
+      backendOptions: {},
+      graph: graph(
+        [identity(consumer, 'Consumer')],
+        [],
+        [{ dependencies: [], name: '@local/source', root: child.packageRoot }],
+      ),
+      sources: [consumer, child, index],
+    });
+
+    expect(result.report.initialization.groups.map((group) => group.modules.map((m) => m.name))).toEqual([
+      ['Index'],
+      ['Child'],
+      ['Consumer'],
+    ]);
+  });
+
+  it('resolves parent-directory relative imports with .. segments', () => {
+    const shared = source('@local/source', 'source', 'shared.ts', 'export const shared = 1;');
+    const deep = source(
+      '@local/source',
+      'source',
+      'sub/deep.ts',
+      "import { shared } from '../shared.js'; export const value = shared;",
+    );
+    const backend: CompilerBackend = {
+      emitModule: (module) => [{ contents: module.name, path: `${module.name}.txt` }],
+      name: 'fixture',
+    };
+    const result = compileTypeScriptPackageGraph({
+      backend,
+      backendOptions: {},
+      graph: graph(
+        [identity(deep, 'Deep')],
+        [],
+        [{ dependencies: [], name: '@local/source', root: shared.packageRoot }],
+      ),
+      sources: [deep, shared],
+    });
+
+    expect(result.report.initialization.groups.map((group) => group.modules.map((m) => m.name))).toEqual([
+      ['Shared'],
+      ['Deep'],
+    ]);
+  });
+
+  it('sorts lowering diagnostics by package, source, line, column, code, and message', () => {
+    const a = source('@local/source', 'source', 'alpha.ts', 'export const retained = 1;\ndoAlpha();\ndoBeta();');
+    const b = source('@local/source', 'source', 'beta.ts', 'export const retained = 1;\ndoBeta();\ndoAlpha();');
+    const backend: CompilerBackend = {
+      emitModule: (module) => [{ contents: module.name, path: `${module.name}.txt` }],
+      name: 'fixture',
+    };
+    const result = compileTypeScriptPackageGraph({
+      backend,
+      backendOptions: {},
+      graph: graph([], [], [{ dependencies: [], name: '@local/source', root: a.packageRoot }]),
+      sources: [b, a],
+    });
+
+    expect(result.diagnostics.map((d) => `${d.source}:${String(d.line)}`)).toEqual([
+      expect.stringContaining('alpha.ts:2'),
+      expect.stringContaining('alpha.ts:3'),
+      expect.stringContaining('beta.ts:2'),
+      expect.stringContaining('beta.ts:3'),
+    ]);
+  });
+
   it('infers exact, global, and relative module resolution edges into one graph', () => {
     const model = source('@local/model', 'model', 'model.ts', 'export const model = 1;');
     const exact = source(
