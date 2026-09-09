@@ -11160,7 +11160,13 @@ describe('emitIrModuleRust class implements interface as trait', () => {
           d === classDecl
             ? {
                 ...d,
-                implements: [{ kind: 'primitive' as const, name: 'string' as const }],
+                implements: [
+                  {
+                    kind: 'named' as const,
+                    reference: { kind: 'ambient' as const, name: 'UnknownTrait' },
+                    typeArguments: [],
+                  },
+                ],
               }
             : d,
         ),
