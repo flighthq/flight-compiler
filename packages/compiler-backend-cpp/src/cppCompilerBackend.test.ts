@@ -5646,4 +5646,94 @@ describe('emitIrModuleCpp', () => {
     const emitted = emitIrModuleCpp(result.module);
     expect(emitted.contents).toContain('std::get<');
   });
+
+  it('emits try-catch-await without binding as bool guard pattern', () => {
+    const result = lower(
+      'catch-await-no-binding.ts',
+      `export async function safe(task: Promise<number>): Promise<number> {
+         try { return await task; }
+         catch { return await Promise.resolve(0); }
+       }`,
+    );
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('caught');
+    expect(emitted.contents).toContain('co_await');
+  });
+
+  it('emits try-finally with catch-await inside finally wrapper', () => {
+    const result = lower(
+      'finally-catch-await.ts',
+      `export async function safe(task: Promise<number>): Promise<number> {
+         try { return await task; }
+         catch { return await Promise.resolve(0); }
+         finally { let cleanup: number = 1; }
+       }`,
+    );
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('finally_exception');
+    expect(emitted.contents).toContain('caught');
+  });
+
+  it('detects containsReturnStatement through if-else otherwise branch', () => {
+    const result = lower(
+      'return-in-else.ts',
+      `export async function pick(task: Promise<number>): Promise<number> {
+         try {
+           const x: number = await task;
+           if (x > 0) { return x; } else { return 0; }
+         } finally { let y: number = 1; }
+       }`,
+    );
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('finally_return');
+  });
+
+  it('detects containsReturnStatement through nested try finallyBody', () => {
+    const result = lower(
+      'return-in-finally.ts',
+      `export async function nested(task: Promise<number>): Promise<number> {
+         try {
+           try { let x: number = await task; } finally { return 0; }
+         } finally { let y: number = 1; }
+       }`,
+    );
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('finally_return');
+  });
+
+  it('emits negated union member test with whenResult false', () => {
+    const result = lower(
+      'negated-typeof.ts',
+      `export function process(value: string | number): number {
+         if (typeof value === 'string') { return value.length; }
+         return value;
+       }`,
+    );
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('std::holds_alternative');
+  });
+
+  it('emits optional property chain with no ambient member and no accessor', () => {
+    const result = lower(
+      'optional-plain-prop.ts',
+      `export interface Point { x: number; y: number }
+       export function getX(p: Point | undefined): number | undefined {
+         return p?.x;
+       }`,
+    );
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('optional_chain_receiver');
+    expect(emitted.contents).toContain('.x');
+  });
+
+  it('emits optional call with non-nullish receiver as direct call', () => {
+    const result = lower(
+      'optional-direct-call.ts',
+      `export function invoke(fn: (x: number) => number, value: number): number {
+         return fn?.(value);
+       }`,
+    );
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('fn(value)');
+  });
 });

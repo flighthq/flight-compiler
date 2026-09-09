@@ -4087,6 +4087,23 @@ describe('emitIrModuleHaxe discriminated union narrowing with cast', () => {
     expect(output).toContain('cast');
     expect(output).toContain('radius');
   });
+
+  it('casts narrowed identifier to declared type alias when accessing union member', () => {
+    const result = lower(
+      'discriminated-type-alias.ts',
+      `export type Circle = { readonly kind: 'circle'; readonly radius: number; };
+       export type Square = { readonly kind: 'square'; readonly side: number; };
+       export type Shape = Circle | Square;
+       export function area(shape: Shape): number {
+         if (shape.kind === 'circle') { return shape.radius; }
+         return shape.side;
+       }`,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('cast');
+    expect(output).toContain('radius');
+  });
 });
 
 describe('emitIrModuleHaxe spread call expression', () => {
@@ -7757,5 +7774,22 @@ describe('emitIrModuleHaxe exponentiation operators', () => {
     expect(output).toContain('*=');
     expect(output).toContain('/=');
     expect(output).toContain('%=');
+  });
+});
+
+describe('emitIrModuleHaxe Haxe keyword escaping in exported names', () => {
+  it('escapes Haxe keywords in exported function names', () => {
+    const result = lower('keyword-escape.ts', `export function cast(value: number): number { return value; }`);
+    const output = emitIrModuleHaxe(result.module).contents;
+    expect(output).toContain('function cast_(');
+  });
+});
+
+describe('emitIrModuleHaxe mutable module variable without type', () => {
+  it('emits mutable module variable declaration without type annotation', () => {
+    const result = lower('no-type-var.ts', 'export let count = 0;');
+    const output = emitIrModuleHaxe(result.module).contents;
+    expect(output).toContain('var');
+    expect(output).toContain('0');
   });
 });
