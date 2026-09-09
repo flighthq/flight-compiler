@@ -397,6 +397,16 @@ describe('analyzeIrTypeValueIdentity', () => {
       identity: 'reference',
       reason: 'declared-reference',
     });
+
+    const bareNs: IrType = {
+      kind: 'named',
+      reference: { binding: ns, kind: 'binding', path: [] },
+      typeArguments: [],
+    };
+    expect(analyzeIrTypeValueIdentity(bareNs, subject, [source, subject])).toMatchObject({
+      identity: 'indeterminate',
+      reason: 'unresolved-reference',
+    });
   });
 
   it('resolves local exports and named re-exports through module export records', () => {
