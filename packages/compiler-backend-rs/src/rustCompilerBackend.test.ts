@@ -12227,3 +12227,135 @@ describe('emitIrModuleRust string substring two args', () => {
     expect(output).toContain('.to_string()');
   });
 });
+
+describe('emitIrModuleRust optional parameter', () => {
+  it('emits Option wrapper for optional parameter', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'opt-param.ts',
+        `export function greet(name?: string): string {
+           return name ?? "world";
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('Option<');
+    expect(output).toContain('unwrap_or_else');
+  });
+});
+
+describe('emitIrModuleRust rest parameter', () => {
+  it('emits Vec for rest parameter', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'rest-param.ts',
+        `export function total(...values: number[]): number {
+           let sum: number = 0;
+           for (const v of values) { sum += v; }
+           return sum;
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('Vec<f64>');
+  });
+});
+
+describe('emitIrModuleRust rebound parameter', () => {
+  it('emits mut binding for reassigned parameter', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'rebound-param.ts',
+        `export function clamp(x: number): number {
+           if (x < 0) { x = 0; }
+           return x;
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('mut x');
+  });
+});
+
+describe('emitIrModuleRust generic function', () => {
+  it('emits Clone-bounded type parameter for generic function', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'generic.ts',
+        `export function identity<T>(x: T): T {
+           return x;
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('T: Clone');
+  });
+});
+
+describe('emitIrModuleRust object expression', () => {
+  it('emits struct literal for object expression', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'obj-expr.ts',
+        `export interface Point { x: number; y: number; }
+         export function origin(): Point {
+           return { x: 0, y: 0 };
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('Point {');
+  });
+});
+
+describe('emitIrModuleRust continue statement', () => {
+  it('emits continue in loop body', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'continue-stmt.ts',
+        `export function positives(arr: number[]): number[] {
+           const result: number[] = [];
+           for (const x of arr) {
+             if (x <= 0) { continue; }
+             result.push(x);
+           }
+           return result;
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('continue;');
+  });
+});
+
+describe('emitIrModuleRust if-else statement', () => {
+  it('emits if-else block', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'if-else.ts',
+        `export function abs(x: number): number {
+           if (x >= 0) { return x; }
+           else { return -x; }
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('if');
+    expect(output).toContain('else {');
+  });
+});
+
+describe('emitIrModuleRust Math spread fold', () => {
+  it('emits fold for Math.max with spread', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'math-spread.ts',
+        `export function maxOf(arr: number[]): number {
+           return Math.max(...arr);
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('.fold(');
+  });
+});
+
+describe('emitIrModuleRust module-level constant', () => {
+  it('emits const for module-level variable declaration', () => {
+    const output = emitIrModuleRust(lower('mod-const.ts', `export const PI: number = 3.14;`).module).contents;
+    expect(output).toContain('pub const');
+    expect(output).toContain('f64');
+  });
+});
