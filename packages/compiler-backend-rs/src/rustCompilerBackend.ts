@@ -1055,6 +1055,9 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
     case 'cast': {
       const unionCast = emitPrimitiveUnionCastRust(expression, context);
       if (unionCast) return unionCast;
+      if (!isIrCastTargetNumericRust(expression.type)) {
+        emissionError(context, `cast to ${expression.type.kind} requires Rust type-directed lowering`);
+      }
       return `(${emitExpression(expression.expression, context)} as ${emitType(expression.type, context)})`;
     }
     case 'conditional':
@@ -3413,6 +3416,11 @@ function emitPrimitiveUnionEnumRust(union: PrimitiveUnionEnum): string[] {
     '}',
   ];
   return lines;
+}
+
+function isIrCastTargetNumericRust(type: Readonly<IrType>): boolean {
+  if (type.kind === 'primitive') return type.name === 'number' || type.name === 'boolean';
+  return false;
 }
 
 function emitPrimitiveUnionCastRust(

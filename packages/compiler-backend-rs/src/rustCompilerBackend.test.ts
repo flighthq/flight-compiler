@@ -11998,6 +11998,14 @@ describe('emitIrModuleRust cast expression', () => {
     ).contents;
     expect(output).toContain(' as ');
   });
+
+  it('refuses cast to non-numeric type', () => {
+    expect(() =>
+      emitIrModuleRust(
+        lower('cast-str.ts', 'export function asStr(x: unknown): string { return x as string; }').module,
+      ),
+    ).toThrow('cast to primitive requires Rust type-directed lowering');
+  });
 });
 
 describe('emitIrModuleRust while true loop', () => {
