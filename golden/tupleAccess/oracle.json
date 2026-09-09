@@ -1,0 +1,17 @@
+[
+  {
+    "call": "first",
+    "arguments": [[10, "hello"]],
+    "returns": "number"
+  },
+  {
+    "call": "second",
+    "arguments": [[10, "hello"]],
+    "returns": "string"
+  },
+  {
+    "call": "sum_pair",
+    "arguments": [[3, 7]],
+    "returns": "number"
+  }
+]

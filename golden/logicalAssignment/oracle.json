@@ -1,0 +1,42 @@
+[
+  {
+    "call": "or_assign",
+    "arguments": [0, 5],
+    "returns": "number"
+  },
+  {
+    "call": "or_assign",
+    "arguments": [3, 5],
+    "returns": "number"
+  },
+  {
+    "call": "and_assign",
+    "arguments": [0, 5],
+    "returns": "number"
+  },
+  {
+    "call": "and_assign",
+    "arguments": [3, 5],
+    "returns": "number"
+  },
+  {
+    "call": "or_assign_expr",
+    "arguments": [0, 5],
+    "returns": "number"
+  },
+  {
+    "call": "or_assign_expr",
+    "arguments": [3, 5],
+    "returns": "number"
+  },
+  {
+    "call": "and_assign_expr",
+    "arguments": [0, 5],
+    "returns": "number"
+  },
+  {
+    "call": "and_assign_expr",
+    "arguments": [3, 5],
+    "returns": "number"
+  }
+]
