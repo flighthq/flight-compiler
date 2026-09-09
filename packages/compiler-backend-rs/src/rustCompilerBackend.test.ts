@@ -2170,6 +2170,17 @@ describe('emitIrModuleRust', () => {
     expect(output).not.toContain('String(');
   });
 
+  it('parenthesizes dereference in String(value) to avoid precedence error', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'string-deref.ts',
+        'export function convert(value: string | number): string { if (typeof value === "number") { return String(value); } return value; }',
+      ).module,
+    ).contents;
+    expect(output).toContain('(*value.as_f64()).to_string()');
+    expect(output).not.toContain('*value.as_f64().to_string()');
+  });
+
   it('emits array reverse as reverse()', () => {
     const output = emitIrModuleRust(
       lower('array-reverse.ts', 'export function flip(items: number[]): void { items.reverse(); }').module,

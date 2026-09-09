@@ -35,7 +35,7 @@ pub fn narrow_typeof(value: StrOrF64) -> String {
   if matches!(value, StrOrF64::Str(_)) {
     return *value.as_str();
   }
-  return *value.as_f64().to_string();
+  return (*value.as_f64()).to_string();
 }
 
 pub fn narrow_typeof_number(value: StrOrF64) -> f64 {

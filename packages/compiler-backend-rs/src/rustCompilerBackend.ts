@@ -1047,7 +1047,8 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
         expression.callee.reference.name === 'String' &&
         expression.arguments.length === 1
       ) {
-        return `${emitExpression(expression.arguments[0]!, context)}.to_string()`;
+        const operand = emitExpression(expression.arguments[0]!, context);
+        return operand.startsWith('*') ? `(${operand}).to_string()` : `${operand}.to_string()`;
       }
       return `${expression.callee.kind === 'function' ? `(${emitExpression(expression.callee, context)})` : emitExpression(expression.callee, context)}(${emitCallArgumentsRust(expression, context).join(', ')})`;
 
