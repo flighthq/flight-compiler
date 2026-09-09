@@ -268,6 +268,172 @@ describe('analyzeIrModuleClosureEvidence', () => {
     ).not.toContain('iteration');
     expect(both).toBeDefined();
   });
+  it('excludes type-only exports and non-binding declarations from the exported binding set', () => {
+    const evidence = analyzeIrModuleClosureEvidence(
+      lower(`
+        export type Opaque = number;
+        interface Local { value: number }
+        const hidden = () => 1;
+        export { type Local };
+        export default () => 2;
+      `),
+    );
+    const defaultClosure = evidence.closures.find((closure) => closure.path[0] === 'exports');
+    expect(defaultClosure?.escape).toBe('mayEscape');
+    expect(defaultClosure?.valueUses).toEqual([expect.objectContaining({ kind: 'exported' })]);
+    const hiddenClosure = evidence.closures.find(
+      (closure) => closure.origin.kind === 'functionExpression' && closure.path[0] !== 'exports',
+    );
+    expect(hiddenClosure?.escape).toBe('knownNonEscaping');
+    expect(hiddenClosure?.valueUses.some((use) => use.kind === 'exported')).toBe(false);
+  });
+
+  it('marks class constructors as non-async even when methods are async', () => {
+    const evidence = analyzeIrModuleClosureEvidence(
+      lower(`
+        let state: number = 0;
+        export class Worker {
+          constructor(value: number) { state = value; }
+          async run(): Promise<number> { return state; }
+        }
+      `),
+    );
+    const constructor = evidence.closures.find((closure) => closure.origin.kind === 'classConstructor');
+    const method = evidence.closures.find((closure) => closure.origin.kind === 'classMethod');
+    expect(constructor?.async).toBe(false);
+    expect(method?.async).toBe(true);
+  });
+
+  it('registers enum declarations as bindings available for capture', () => {
+    const evidence = analyzeIrModuleClosureEvidence(
+      lower(`
+        enum Direction { up, down }
+        export const reader = (): number => Direction.up;
+      `),
+    );
+    const reader = evidence.closures.find((closure) => closure.origin.kind === 'functionExpression');
+    expect(reader?.captures.some((capture) => capture.binding.name === 'Direction')).toBe(true);
+  });
+
+  it('tracks variable-function host bindings for storedBinding classification', () => {
+    const evidence = analyzeIrModuleClosureEvidence(
+      lower(`
+        export function outer(seed: number): number {
+          const fn = function inner(value: number): number { return value + seed; };
+          return fn(seed);
+        }
+      `),
+    );
+    const fn = evidence.closures.find(
+      (closure) => closure.origin.kind === 'functionExpression' && closure.origin.binding?.name === 'inner',
+    );
+    expect(fn?.valueUses.some((use) => use.kind === 'storedBinding')).toBe(true);
+    expect(fn?.valueUses.some((use) => use.kind === 'directInvocation')).toBe(true);
+  });
+
+  it('adds try-catch bindings only when a catch clause with a binding exists', () => {
+    const evidence = analyzeIrModuleClosureEvidence(
+      lower(`
+        export function trapping(seed: number): () => number {
+          let result: number = seed;
+          try { result = seed + 1; } finally { result = seed; }
+          try { throw seed; } catch (error) { return () => error as number; }
+          return () => result;
+        }
+      `),
+    );
+    const caughtClosure = evidence.closures.find((closure) =>
+      closure.captures.some((capture) => capture.binding.name === 'error'),
+    );
+    expect(caughtClosure).toBeDefined();
+    const resultClosure = evidence.closures.find((closure) =>
+      closure.captures.some((capture) => capture.binding.name === 'result'),
+    );
+    expect(resultClosure?.captures.find((capture) => capture.binding.name === 'result')).toMatchObject({
+      mutation: 'none',
+    });
+  });
+
+  it('detects delete and increment/decrement as referent mutations on distinct operand kinds', () => {
+    const evidence = analyzeIrModuleClosureEvidence(
+      lower(`
+        export function mutations(record: { count: number; extra?: number }): () => number {
+          return () => {
+            record.count++;
+            record.count--;
+            delete record.extra;
+            return record.count;
+          };
+        }
+      `),
+    );
+    const closure = evidence.closures.find((candidate) => candidate.origin.kind === 'functionExpression');
+    const capture = closure?.captures.find((c) => c.binding.name === 'record');
+    expect(capture?.mutation).toBe('referentMutated');
+  });
+
+  it('distinguishes assignment to a plain binding from assignment to a property', () => {
+    const evidence = analyzeIrModuleClosureEvidence(
+      lower(`
+        export function assign(seed: number): () => number {
+          let plain: number = seed;
+          const record: { value: number } = { value: 0 };
+          const closure = () => plain + record.value;
+          plain = seed + 1;
+          record.value = seed;
+          return closure;
+        }
+      `),
+    );
+    const closure = evidence.closures.find((candidate) => candidate.origin.kind === 'functionExpression');
+    const plain = closure?.captures.find((c) => c.binding.name === 'plain');
+    const record = closure?.captures.find((c) => c.binding.name === 'record');
+    expect(plain?.outsideMutations).toEqual([
+      expect.objectContaining({ kind: 'rebind', lexicalRelation: 'afterCreation' }),
+    ]);
+    expect(record?.outsideMutations).toEqual([
+      expect.objectContaining({ kind: 'referentMutation', lexicalRelation: 'afterCreation' }),
+    ]);
+  });
+
+  it('reports for-await-of as a suspension point for lifetime analysis', () => {
+    const evidence = analyzeIrModuleClosureEvidence(
+      lower(`
+        export function consume(items: number[]): () => Promise<number> {
+          let total: number = 0;
+          return async () => {
+            for await (const item of items) total += item;
+            return total;
+          };
+        }
+      `),
+    );
+    const closure = evidence.closures.find((candidate) => candidate.async);
+    const capture = closure?.captures.find((c) => c.binding.name === 'total');
+    expect(capture?.lifetimeBoundaries).toContain('suspension');
+    expect(capture?.lifetimeBoundaries).toContain('closureEscape');
+  });
+
+  it('distinguishes for-in body, for initializer, and for-of variable iteration lifetime correctly', () => {
+    const evidence = analyzeIrModuleClosureEvidence(
+      lower(`
+        export function loops(): Array<() => unknown> {
+          const results: Array<() => unknown> = [];
+          for (const key in { a: 1 }) results.push(() => key);
+          for (let i: number = 0; i < 1; i++) { const v: number = i; results.push(() => v); }
+          for (const val of [1]) results.push(() => val);
+          return results;
+        }
+      `),
+    );
+    const forInCapture = evidence.closures.flatMap((c) => c.captures).find((c) => c.binding.name === 'key');
+    const forBodyCapture = evidence.closures.flatMap((c) => c.captures).find((c) => c.binding.name === 'v');
+    const forOfCapture = evidence.closures.flatMap((c) => c.captures).find((c) => c.binding.name === 'val');
+    expect(forInCapture?.lifetimeBoundaries).toContain('iteration');
+    expect(forBodyCapture?.lifetimeBoundaries).toContain('iteration');
+    expect(forOfCapture?.lifetimeBoundaries).toContain('iteration');
+  });
+
   it('does not over-report escape, mutation, or lifetime for closures that do none of it', () => {
     // The near-neighbours matter more than the positive cases here. Rust ownership will be elected
     // from this evidence, and an over-reported escape or mutation costs a borrow that the source
