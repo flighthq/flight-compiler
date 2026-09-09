@@ -268,24 +268,41 @@ describe('analyzeIrModuleClosureEvidence', () => {
     ).not.toContain('iteration');
     expect(both).toBeDefined();
   });
-  it('excludes type-only exports and non-binding declarations from the exported binding set', () => {
+  it('excludes type-only local exports from the exported binding set', () => {
     const evidence = analyzeIrModuleClosureEvidence(
       lower(`
-        export type Opaque = number;
-        interface Local { value: number }
-        const hidden = () => 1;
-        export { type Local };
-        export default () => 2;
+        let state: number = 0;
+        const typeOnlyExported = (): number => state;
+        const runtimeExported = (): number => state;
+        export { type typeOnlyExported, runtimeExported };
       `),
     );
-    const defaultClosure = evidence.closures.find((closure) => closure.path[0] === 'exports');
-    expect(defaultClosure?.escape).toBe('mayEscape');
-    expect(defaultClosure?.valueUses).toEqual([expect.objectContaining({ kind: 'exported' })]);
-    const hiddenClosure = evidence.closures.find(
-      (closure) => closure.origin.kind === 'functionExpression' && closure.path[0] !== 'exports',
+    const typeOnly = evidence.closures.find(
+      (closure) =>
+        closure.origin.kind === 'functionExpression' && !closure.valueUses.some((u) => u.kind === 'exported'),
     );
-    expect(hiddenClosure?.escape).toBe('knownNonEscaping');
-    expect(hiddenClosure?.valueUses.some((use) => use.kind === 'exported')).toBe(false);
+    const runtime = evidence.closures.find(
+      (closure) => closure.origin.kind === 'functionExpression' && closure.valueUses.some((u) => u.kind === 'exported'),
+    );
+    expect(typeOnly).toBeDefined();
+    expect(runtime).toBeDefined();
+    expect(typeOnly?.escape).toBe('knownNonEscaping');
+    expect(runtime?.escape).toBe('mayEscape');
+  });
+
+  it('tracks module-level variable-function host for exported classification', () => {
+    const evidence = analyzeIrModuleClosureEvidence(
+      lower(`
+        let state: number = 0;
+        const updater = (): number => ++state;
+        export { updater };
+      `),
+    );
+    const updater = evidence.closures.find(
+      (closure) => closure.origin.kind === 'functionExpression' && closure.valueUses.some((u) => u.kind === 'exported'),
+    );
+    expect(updater).toBeDefined();
+    expect(updater?.escape).toBe('mayEscape');
   });
 
   it('marks class constructors as non-async even when methods are async', () => {
@@ -396,6 +413,24 @@ describe('analyzeIrModuleClosureEvidence', () => {
     ]);
   });
 
+  it('does not treat non-await for-of as a suspension point inside an async closure', () => {
+    const evidence = analyzeIrModuleClosureEvidence(
+      lower(`
+        export function wrap(): () => Promise<number> {
+          let total: number = 0;
+          return async () => {
+            for (const item of [1, 2]) total += item;
+            return total;
+          };
+        }
+      `),
+    );
+    const closure = evidence.closures.find((candidate) => candidate.async);
+    const capture = closure?.captures.find((c) => c.binding.name === 'total');
+    expect(capture?.lifetimeBoundaries).toContain('closureEscape');
+    expect(capture?.lifetimeBoundaries).not.toContain('suspension');
+  });
+
   it('reports for-await-of as a suspension point for lifetime analysis', () => {
     const evidence = analyzeIrModuleClosureEvidence(
       lower(`
@@ -432,6 +467,7 @@ describe('analyzeIrModuleClosureEvidence', () => {
     expect(forInCapture?.lifetimeBoundaries).toContain('iteration');
     expect(forBodyCapture?.lifetimeBoundaries).toContain('iteration');
     expect(forOfCapture?.lifetimeBoundaries).toContain('iteration');
+    expect(forOfCapture?.lifetimeBoundaries).not.toContain('suspension');
   });
 
   it('does not over-report escape, mutation, or lifetime for closures that do none of it', () => {
