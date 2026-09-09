@@ -1,0 +1,26 @@
+[
+  {
+    "construct": "Square",
+    "constructArgs": [5],
+    "call": "area",
+    "arguments": [],
+    "returns": "number",
+    "targets": ["haxe", "cpp"]
+  },
+  {
+    "construct": "Square",
+    "constructArgs": [3],
+    "call": "area",
+    "arguments": [],
+    "returns": "number",
+    "targets": ["haxe", "cpp"]
+  },
+  {
+    "construct": "Square",
+    "constructArgs": [5],
+    "call": "describe",
+    "arguments": [],
+    "returns": "number",
+    "targets": ["haxe", "cpp"]
+  }
+]

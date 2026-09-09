@@ -1,0 +1,10 @@
+[
+  {
+    "construct": "Counter",
+    "constructArgs": [],
+    "call": "getCount",
+    "arguments": [],
+    "returns": "number",
+    "targets": ["cpp", "rust"]
+  }
+]
