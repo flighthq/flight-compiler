@@ -4,5 +4,22 @@
     "arguments": [[]],
     "returns": "number",
     "cppTypes": ["flight::Array<flighthq_golden::Item>"]
+  },
+  {
+    "call": "busiestCount",
+    "arguments": [[{ "$type": "Item", "name": "a", "count": 5 }]],
+    "returns": "number",
+    "targets": ["haxe", "rust"]
+  },
+  {
+    "call": "busiestCount",
+    "arguments": [
+      [
+        { "$type": "Item", "name": "a", "count": 3 },
+        { "$type": "Item", "name": "b", "count": 7 }
+      ]
+    ],
+    "returns": "number",
+    "targets": ["haxe", "rust"]
   }
 ]

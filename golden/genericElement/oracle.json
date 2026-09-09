@@ -1,4 +1,5 @@
 [
   { "call": "firstOf", "arguments": [["hello", "world"], "fallback"], "returns": "string" },
-  { "call": "firstOf", "arguments": [[], "fallback"], "returns": "string" }
+  { "call": "firstOf", "arguments": [[], "fallback"], "returns": "string" },
+  { "call": "firstOf", "arguments": [["only"], "fallback"], "returns": "string" }
 ]

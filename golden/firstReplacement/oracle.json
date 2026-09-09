@@ -1,1 +1,6 @@
-[{ "call": "swapped", "arguments": ["banana"], "returns": "string" }]
+[
+  { "call": "swapped", "arguments": ["banana"], "returns": "string" },
+  { "call": "swapped", "arguments": ["aardvark"], "returns": "string" },
+  { "call": "swapped", "arguments": ["hello"], "returns": "string" },
+  { "call": "swapped", "arguments": [""], "returns": "string" }
+]

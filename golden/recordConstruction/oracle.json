@@ -4,5 +4,23 @@
     "arguments": [[], 0],
     "returns": "number",
     "cppTypes": ["flight::Array<flighthq_golden::Entry>", null]
+  },
+  {
+    "call": "tailSize",
+    "arguments": [[{ "$type": "Entry", "key": "a", "value": 1 }], 0],
+    "returns": "number",
+    "cppTypes": ["flight::Array<flighthq_golden::Entry>", null]
+  },
+  {
+    "call": "tailSize",
+    "arguments": [
+      [
+        { "$type": "Entry", "key": "a", "value": 1 },
+        { "$type": "Entry", "key": "b", "value": 2 }
+      ],
+      1
+    ],
+    "returns": "number",
+    "cppTypes": ["flight::Array<flighthq_golden::Entry>", null]
   }
 ]
