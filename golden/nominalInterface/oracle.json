@@ -5,7 +5,8 @@
     "call": "advance",
     "arguments": [5],
     "returns": "number",
-    "targets": ["cpp"]
+    "targets": ["cpp", "rust"],
+    "rustTraits": ["Advancer"]
   },
   {
     "construct": "Counter",
@@ -13,7 +14,8 @@
     "call": "advance",
     "arguments": [0],
     "returns": "number",
-    "targets": ["cpp"]
+    "targets": ["cpp", "rust"],
+    "rustTraits": ["Advancer"]
   },
   {
     "construct": "Counter",
@@ -21,6 +23,7 @@
     "call": "advance",
     "arguments": [-3],
     "returns": "number",
-    "targets": ["cpp"]
+    "targets": ["cpp", "rust"],
+    "rustTraits": ["Advancer"]
   }
 ]

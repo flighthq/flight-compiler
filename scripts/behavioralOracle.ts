@@ -55,7 +55,10 @@ interface OracleCase {
   readonly cppTypes?: readonly (string | null)[];
   readonly returnField?: string;
   readonly returns: OracleValueKind;
+  readonly rustCall?: string;
+  readonly rustOptional?: readonly number[];
   readonly rustRef?: readonly number[];
+  readonly rustTraits?: readonly string[];
   readonly targets?: readonly OracleTarget[];
 }
 
@@ -391,6 +394,7 @@ function runRustOracle(fixture: string, cases: readonly OracleCase[]): readonly 
     path.join(directory, 'main.rs'),
     [
       ...['helper', ...modules].map((module) => `mod ${module};`),
+      ...collectRustTraitUses(cases, modules[0] ?? 'fixture'),
       'fn say_number(value: f64) -> String {',
       '    if value == 0.0 && value.is_sign_negative() {',
       '        "-0".to_owned()',
@@ -404,16 +408,28 @@ function runRustOracle(fixture: string, cases: readonly OracleCase[]): readonly 
       'fn main() {',
       ...cases.flatMap((oracleCase, caseIndex) => {
         const refPositions = new Set(oracleCase.rustRef ?? []);
+        const optionalPositions = new Set(oracleCase.rustOptional ?? []);
         const rustModule = modules[0] ?? 'fixture';
         const bindings: string[] = [];
-        const args = oracleCase.arguments.map((arg, argIndex) => {
-          if (refPositions.has(argIndex)) {
+        const maxArg =
+          optionalPositions.size > 0
+            ? Math.max(oracleCase.arguments.length - 1, ...oracleCase.rustOptional!)
+            : oracleCase.arguments.length - 1;
+        const args: string[] = [];
+        for (let argIndex = 0; argIndex <= maxArg; argIndex++) {
+          const arg = oracleCase.arguments[argIndex];
+          if (argIndex >= oracleCase.arguments.length && optionalPositions.has(argIndex)) {
+            args.push('None');
+          } else if (refPositions.has(argIndex)) {
             const name = `__ref_${String(caseIndex)}_${String(argIndex)}`;
             bindings.push(`    let mut ${name} = ${renderRustValue(arg, rustModule)};`);
-            return `&mut ${name}`;
+            args.push(`&mut ${name}`);
+          } else if (optionalPositions.has(argIndex)) {
+            args.push(arg === null || arg === undefined ? 'None' : `Some(${renderRustValue(arg, rustModule)})`);
+          } else {
+            args.push(renderRustValue(arg, rustModule));
           }
-          return renderRustValue(arg, rustModule);
-        });
+        }
         const rustName = oracleCase.rustCall ?? toSnakeCase(oracleCase.call);
         const invocation = oracleCase.construct
           ? `${rustModule}::${oracleCase.construct}::new(${(oracleCase.constructArgs ?? []).map((arg) => renderRustValue(arg, rustModule)).join(', ')}).${rustName}(${args.join(', ')})`
@@ -680,6 +696,14 @@ function renderRustValue(value: unknown, rustModule?: string): string {
   if (typeof value === 'string') return `${JSON.stringify(value)}.to_owned()`;
   if (typeof value === 'number') return Number.isInteger(value) ? `${String(value)}.0` : String(value);
   return String(value);
+}
+
+function collectRustTraitUses(cases: readonly OracleCase[], rustModule: string): readonly string[] {
+  const traits = new Set<string>();
+  for (const oracleCase of cases) {
+    for (const trait of oracleCase.rustTraits ?? []) traits.add(trait);
+  }
+  return [...traits].sort().map((trait) => `use ${rustModule}::${trait};`);
 }
 
 function toSnakeCase(value: string): string {

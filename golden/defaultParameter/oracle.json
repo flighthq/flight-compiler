@@ -1,6 +1,24 @@
 [
-  { "call": "scale", "arguments": [5, 3], "returns": "number", "targets": ["cpp", "haxe"] },
-  { "call": "scale", "arguments": [0, 10], "returns": "number", "targets": ["cpp", "haxe"] },
-  { "call": "scale", "arguments": [-2, 4], "returns": "number", "targets": ["cpp", "haxe"] },
-  { "call": "scale", "arguments": [5], "returns": "number", "targets": ["cpp", "haxe"] }
+  {
+    "call": "scale",
+    "arguments": [5, 3],
+    "returns": "number",
+    "targets": ["cpp", "haxe", "rust"],
+    "rustOptional": [1]
+  },
+  {
+    "call": "scale",
+    "arguments": [0, 10],
+    "returns": "number",
+    "targets": ["cpp", "haxe", "rust"],
+    "rustOptional": [1]
+  },
+  {
+    "call": "scale",
+    "arguments": [-2, 4],
+    "returns": "number",
+    "targets": ["cpp", "haxe", "rust"],
+    "rustOptional": [1]
+  },
+  { "call": "scale", "arguments": [5], "returns": "number", "targets": ["cpp", "haxe", "rust"], "rustOptional": [1] }
 ]

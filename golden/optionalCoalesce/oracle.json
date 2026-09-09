@@ -3,8 +3,15 @@
     "call": "read",
     "arguments": [{ "$type": "Holder", "value": 42 }],
     "returns": "number",
-    "targets": ["cpp", "haxe"]
+    "targets": ["cpp", "haxe", "rust"],
+    "rustOptional": [0]
   },
-  { "call": "read", "arguments": [{ "$type": "Holder", "value": 0 }], "returns": "number", "targets": ["cpp", "haxe"] },
-  { "call": "read", "arguments": [null], "returns": "number", "targets": ["haxe"] }
+  {
+    "call": "read",
+    "arguments": [{ "$type": "Holder", "value": 0 }],
+    "returns": "number",
+    "targets": ["cpp", "haxe", "rust"],
+    "rustOptional": [0]
+  },
+  { "call": "read", "arguments": [null], "returns": "number", "targets": ["haxe", "rust"], "rustOptional": [0] }
 ]

@@ -5,7 +5,8 @@
     "call": "describe",
     "arguments": [],
     "returns": "string",
-    "targets": ["haxe"]
+    "targets": ["haxe", "rust"],
+    "rustTraits": ["Component"]
   },
   {
     "construct": "Button",
@@ -13,6 +14,7 @@
     "call": "getVersion",
     "arguments": [],
     "returns": "number",
-    "targets": ["haxe"]
+    "targets": ["haxe", "rust"],
+    "rustTraits": ["Component"]
   }
 ]

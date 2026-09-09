@@ -5,7 +5,8 @@
     "call": "area",
     "arguments": [],
     "returns": "number",
-    "targets": ["haxe", "cpp"]
+    "targets": ["haxe", "cpp", "rust"],
+    "rustTraits": ["Shape"]
   },
   {
     "construct": "Square",
@@ -13,7 +14,8 @@
     "call": "area",
     "arguments": [],
     "returns": "number",
-    "targets": ["haxe", "cpp"]
+    "targets": ["haxe", "cpp", "rust"],
+    "rustTraits": ["Shape"]
   },
   {
     "construct": "Square",
@@ -21,6 +23,7 @@
     "call": "describe",
     "arguments": [],
     "returns": "number",
-    "targets": ["haxe", "cpp"]
+    "targets": ["haxe", "cpp", "rust"],
+    "rustTraits": ["Shape"]
   }
 ]
