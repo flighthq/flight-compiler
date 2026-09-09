@@ -17,19 +17,30 @@ This includes concrete Haxe and Rust compiler backends. A backend may define tar
 Compiler domains are private workspaces with intentionally flat source trees:
 
 ```text
-compiler-types
+compiler-canonical-form + compiler-types
   <- compiler-provenance
+  <- compiler-emission
+  <- compiler-runtime-contract
+  <- compiler-completion
+  <- compiler-ir-traversal
+       <- compiler-closure
+       <- compiler-structural
+       <- compiler-module
+       <- compiler-task
+  <- compiler-ir-validation
+  <- compiler-lowering
   <- compiler-inventory
   <- compiler-semantic
   <- compiler-patch
-  <- compiler-emission
-       <- compiler-backend-hx
-       <- compiler-backend-rs
+  <- compiler-backend-cpp
+  <- compiler-backend-hx
+  <- compiler-backend-rs
   <- compiler-orchestration
+  <- compiler-command-line
        -> public @flighthq/tool-compiler facade
 ```
 
-The diagram shows architectural direction rather than every direct edge. `compiler-types` owns all shared contracts, including the neutral IR and backend interfaces. No other workspace exports its own interface or type alias. Workspaces declare every cross-package edge, may not form runtime cycles, and import another workspace only through its flat `src/index.js` boundary.
+The diagram shows architectural direction rather than every direct edge; see `agents/compiler-foundations.md` for the complete dependency floor. `compiler-types` owns all shared contracts, including the neutral IR and backend interfaces. `compiler-canonical-form` owns dependency-free portable text order and path form. No other workspace exports its own interface or type alias. Workspaces declare every cross-package edge, may not form runtime cycles, and import another workspace only through its flat `src/index.js` boundary.
 
 Flat source trees keep navigation shallow without forcing a domain into one large implementation file. A package can be decomposed into focused sibling files while its contract and dependency lifecycle remain cohesive. A new package is reserved for a genuinely separate domain boundary, not file length alone.
 
@@ -66,4 +77,4 @@ Haxe is first because `flight-hx` has the broader semantic analyzer and an upstr
 
 The initial compiler slice intentionally fails on constructs whose existing target repositories still lower with target-fused logic. Each migration adds a neutral regression or a backend regression before moving the corresponding rule. Unsupported syntax is never emitted approximately or omitted without a structured diagnostic.
 
-`npm run check` intentionally executes unit tests in two lanes: isolated workspace runs catch undeclared dependencies and leaky package boundaries, while the aggregate run measures repository-wide coverage. The enforced ratchets sit immediately below the measured baseline (73% branches, 89% functions, 84% lines, and 81% statements). Raising those thresholds accompanies future compiler surface growth; lowering one requires an explicit architectural justification.
+`npm run check` intentionally executes unit tests in two lanes: isolated workspace runs catch undeclared dependencies and leaky package boundaries, while the aggregate run measures repository-wide coverage. The enforced ratchets sit immediately below the measured baseline. Raising those thresholds accompanies future compiler surface growth; lowering one requires an explicit architectural justification.
