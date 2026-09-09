@@ -2398,6 +2398,17 @@ describe('emitIrModuleCpp', () => {
     expect(emitted.contents).toContain('return flight::round(x)');
   });
 
+  it('emits Math min and max through semantic wrappers for direct and spread calls', () => {
+    const result = lower(
+      'semantic-min-max.ts',
+      'export function bounds(a: number, b: number): number { return Math.min(a, Math.max(a, b)); } export function widest(values: number[]): number { return Math.max(...values); }',
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+    expect(emitted.contents).toContain('return flight::minimum(a, flight::maximum(a, b))');
+    expect(emitted.contents).toContain('return flight::maximum(values)');
+    expect(emitted.contents).not.toContain('std::max_element');
+  });
+
   it('emits Math.max with spread as fold over std::max_element', () => {
     const result = lower(
       'math-max-spread.ts',

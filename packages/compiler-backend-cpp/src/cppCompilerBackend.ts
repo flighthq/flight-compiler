@@ -757,6 +757,9 @@ function emitExpression(
         const spreadOperand = emitExpression(expression.arguments[0]!.expression, context);
         const foldTarget = cppMathSpreadFoldTargets[expression.callee.name];
         if (foldTarget) {
+          if (getCppRuntimeProfile(context.options) === 'flight-cpp') {
+            return `${foldTarget.runtime}(${spreadOperand})`;
+          }
           context.includes.add('algorithm');
           context.includes.add('limits');
           return `${spreadOperand}.empty() ? ${foldTarget.identity} : *${foldTarget.algorithm}(${spreadOperand}.begin(), ${spreadOperand}.end())`;
@@ -3168,7 +3171,15 @@ function emissionError(context: EmitContext, message: string): never {
   throw createBackendEmissionFailure('cpp', context.module, message);
 }
 
-const cppMathSpreadFoldTargets: Readonly<Record<string, { algorithm: string; identity: string }>> = {
-  max: { algorithm: 'std::max_element', identity: '-std::numeric_limits<double>::infinity()' },
-  min: { algorithm: 'std::min_element', identity: 'std::numeric_limits<double>::infinity()' },
+const cppMathSpreadFoldTargets: Readonly<Record<string, { algorithm: string; identity: string; runtime: string }>> = {
+  max: {
+    algorithm: 'std::max_element',
+    identity: '-std::numeric_limits<double>::infinity()',
+    runtime: 'flight::maximum',
+  },
+  min: {
+    algorithm: 'std::min_element',
+    identity: 'std::numeric_limits<double>::infinity()',
+    runtime: 'flight::minimum',
+  },
 };
