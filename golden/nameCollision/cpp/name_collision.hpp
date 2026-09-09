@@ -7,11 +7,11 @@ static_assert(flight::runtime_contract.cpp_abi == 2, "Flight C++ runtime ABI mis
 
 namespace flighthq_golden {
 
-inline double foo_bar_flight_value_function_foo_u000042_ar(double value) {
+inline double foo_bar(double value) {
   return value;
 }
 
-inline double foo_bar_flight_value_function_foo_u00005f_bar(double value) {
+inline double foo_bar_2(double value) {
   return (value + 1.0);
 }
 

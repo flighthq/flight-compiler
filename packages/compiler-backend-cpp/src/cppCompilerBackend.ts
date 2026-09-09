@@ -2630,7 +2630,7 @@ function emitOptionalChainReceiverCpp(expression: Readonly<IrExpression>, contex
   ) {
     return `${emitExpression(expression.object, context)}.get(${emitExpression(expression.index, context)})`;
   }
-  return emitOptionalReferenceCpp(expression, context);
+  return emitExpression(expression, context);
 }
 
 function emitOptionalChainPayloadTypeCpp(type: Readonly<IrType>, context: EmitContext): string {

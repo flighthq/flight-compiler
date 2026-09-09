@@ -12,7 +12,7 @@ inline double negate(double value) {
 }
 
 inline double double_negate(double value) {
-  return -(-value);
+  return --value;
 }
 
 inline double subtract_from_zero(double value) {

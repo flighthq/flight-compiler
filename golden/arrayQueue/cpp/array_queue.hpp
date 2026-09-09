@@ -8,7 +8,7 @@ static_assert(flight::runtime_contract.cpp_abi == 2, "Flight C++ runtime ABI mis
 namespace flighthq_golden {
 
 inline double dequeue(flight::Array<double> items) {
-  return items.shift().value();
+  return items.shift();
 }
 
 inline void enqueue(flight::Array<double> items, double value) {
@@ -20,7 +20,7 @@ inline void prepend(flight::Array<flight::String> items, flight::String value) {
 }
 
 inline void rotate_first(flight::Array<double> items) {
-  const double first = items.shift().value();
+  const double first = items.shift();
   items.push(first);
 }
 
