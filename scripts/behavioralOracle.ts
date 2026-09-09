@@ -566,7 +566,9 @@ function unwrapCppTaskType(type: string | null | undefined): string | undefined 
 function runLines(command: string, args: readonly string[], cwd: string, subject: string): readonly string[] {
   const result = spawnSync(command, [...args], { cwd, encoding: 'utf8' });
   if (result.status !== 0) throw new Error(`${subject} run failed:\n${result.stderr ?? ''}`);
-  return (result.stdout ?? '').trimEnd().split('\n');
+  const lines = (result.stdout ?? '').split('\n');
+  if (lines.length > 0 && lines[lines.length - 1] === '') lines.pop();
+  return lines;
 }
 
 function haxeModuleType(fixture: string): string {
