@@ -1,0 +1,12 @@
+[
+  {
+    "call": "selectFirstKey",
+    "arguments": [{ "$type": "Values", "value": 42 }],
+    "returns": "string"
+  },
+  {
+    "call": "selectFirstKey",
+    "arguments": [{ "$type": "Values", "value": 0 }],
+    "returns": "string"
+  }
+]

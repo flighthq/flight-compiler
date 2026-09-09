@@ -1,0 +1,17 @@
+[
+  {
+    "call": "describe",
+    "arguments": [{ "$type": "Tagged", "name": "alpha", "tag": 1 }],
+    "returns": "string"
+  },
+  {
+    "call": "describe",
+    "arguments": [{ "$type": "Tagged", "name": "", "tag": 0 }],
+    "returns": "string"
+  },
+  {
+    "call": "highest",
+    "arguments": [],
+    "returns": "number"
+  }
+]

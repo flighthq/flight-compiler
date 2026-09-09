@@ -1,0 +1,26 @@
+[
+  {
+    "call": "project",
+    "arguments": [
+      { "$type": "Shape", "other": true, "value": 10 },
+      { "$type": "Shape", "other": false, "value": 20 }
+    ],
+    "returns": "number"
+  },
+  {
+    "call": "project",
+    "arguments": [
+      { "$type": "Shape", "other": false, "value": 0 },
+      { "$type": "Shape", "other": true, "value": 0 }
+    ],
+    "returns": "number"
+  },
+  {
+    "call": "project",
+    "arguments": [
+      { "$type": "Shape", "other": true, "value": -5 },
+      { "$type": "Shape", "other": false, "value": 7 }
+    ],
+    "returns": "number"
+  }
+]

@@ -1,0 +1,26 @@
+[
+  {
+    "call": "distance",
+    "arguments": [
+      { "$type": "Point", "x": 0, "y": 0 },
+      { "$type": "Point", "x": 3, "y": 4 }
+    ],
+    "returns": "number"
+  },
+  {
+    "call": "distance",
+    "arguments": [
+      { "$type": "Point", "x": 1, "y": 2 },
+      { "$type": "Point", "x": 4, "y": 6 }
+    ],
+    "returns": "number"
+  },
+  {
+    "call": "distance",
+    "arguments": [
+      { "$type": "Point", "x": 0, "y": 0 },
+      { "$type": "Point", "x": 0, "y": 0 }
+    ],
+    "returns": "number"
+  }
+]
