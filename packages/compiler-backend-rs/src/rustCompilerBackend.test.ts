@@ -12071,3 +12071,159 @@ describe('emitIrModuleRust unsigned right shift', () => {
     expect(output).toContain('as u32');
   });
 });
+
+describe('emitIrModuleRust try catch without binding', () => {
+  it('emits catch_unwind with anonymous catch variable', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'try-anon.ts',
+        `export function safe(arr: number[]): number {
+           try {
+             return arr[0]!;
+           } catch {
+             return -1;
+           }
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('catch_unwind');
+    expect(output).toContain('Err(_)');
+  });
+});
+
+describe('emitIrModuleRust throw new Error', () => {
+  it('emits panic with single-argument new Error throw', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'throw-err.ts',
+        `export function fail(msg: string): never {
+           throw new Error(msg);
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('panic!');
+  });
+});
+
+describe('emitIrModuleRust switch with default', () => {
+  it('emits if-else chain with default branch', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'switch-default.ts',
+        `export function describe(n: number): string {
+           switch (n) {
+             case 0: return "zero";
+             case 1: return "one";
+             default: return "other";
+           }
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('else {');
+  });
+});
+
+describe('emitIrModuleRust bitwise and operator', () => {
+  it('emits bitwise and with i32 casts', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'bitand.ts',
+        `export function mask(a: number, b: number): number {
+           return a & b;
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('as i32');
+    expect(output).toContain('as f64');
+  });
+});
+
+describe('emitIrModuleRust bitwise left shift', () => {
+  it('emits left shift with i32 casts', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'shl.ts',
+        `export function shift(a: number, b: number): number {
+           return a << b;
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('<<');
+    expect(output).toContain('as i32');
+  });
+});
+
+describe('emitIrModuleRust array concat', () => {
+  it('emits extend for array concat', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'concat.ts',
+        `export function merge(a: number[], b: number[]): number[] {
+           return a.concat(b);
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('extend');
+    expect(output).toContain('__concat');
+  });
+});
+
+describe('emitIrModuleRust string charAt', () => {
+  it('emits chars nth for charAt', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'char-at.ts',
+        `export function first(s: string): string {
+           return s.charAt(0);
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('.chars().nth(');
+    expect(output).toContain('unwrap_or_default');
+  });
+});
+
+describe('emitIrModuleRust string charCodeAt', () => {
+  it('emits chars nth with u32 cast for charCodeAt', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'char-code.ts',
+        `export function code(s: string, i: number): number {
+           return s.charCodeAt(i);
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('.chars().nth(');
+    expect(output).toContain('as u32 as f64');
+  });
+});
+
+describe('emitIrModuleRust string substring one arg', () => {
+  it('emits open-ended slice for single-arg substring', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'substr-one.ts',
+        `export function tail(s: string): string {
+           return s.substring(1);
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('as usize..]');
+    expect(output).toContain('.to_string()');
+  });
+});
+
+describe('emitIrModuleRust string substring two args', () => {
+  it('emits bounded slice for two-arg substring', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'substr-two.ts',
+        `export function mid(s: string): string {
+           return s.substring(1, 3);
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('as usize..3');
+    expect(output).toContain('.to_string()');
+  });
+});
