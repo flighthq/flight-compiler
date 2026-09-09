@@ -7,6 +7,12 @@ import { fileURLToPath } from 'node:url';
 import ts from 'typescript';
 
 import { resolveDependency } from './dependencyLock.js';
+import {
+  createCppExecutableArguments,
+  findCppCompilerToolchain,
+  getCppExecutableName,
+  type CppCompilerToolchain,
+} from './cppToolchain.js';
 
 // Does the emitted source do what the source language does?
 //
@@ -80,7 +86,7 @@ const rustAvailable = hasCommand('rustc') && hasCommand('cc');
 // as a toolchain. An absent checkout is reported and skipped, exactly like an absent compiler.
 const cppRuntimeInclude = path.join(resolveDependency(root, 'flight-cpp').directory, 'include');
 const cppRuntimeAvailable = existsSync(cppRuntimeInclude);
-const cppCompiler = cppRuntimeAvailable ? ['c++', 'g++', 'clang++'].find(hasCommand) : undefined;
+const cppToolchain = cppRuntimeAvailable ? findCppCompilerToolchain() : undefined;
 const divergences: OracleDivergence[] = [];
 const workspace = mkdtempSync(path.join(tmpdir(), 'flight-oracle-'));
 let compared = 0;
@@ -101,9 +107,9 @@ try {
       compare(fixture, 'rust', rustCases.expected, runRustOracle(fixture, rustCases.cases));
     }
     const cppCases = selectOracleCases(cases, expected, 'cpp');
-    if (cppCompiler && cppCases.cases.length > 0 && existsSync(path.join(goldenDirectory, fixture, 'cpp'))) {
-      compare(fixture, 'cpp', cppCases.expected, runCppOracle(fixture, cppCases.cases, cppCompiler));
-    } else if (cppCompiler && cppCases.cases.length > 0) {
+    if (cppToolchain && cppCases.cases.length > 0 && existsSync(path.join(goldenDirectory, fixture, 'cpp'))) {
+      compare(fixture, 'cpp', cppCases.expected, runCppOracle(fixture, cppCases.cases, cppToolchain));
+    } else if (cppToolchain && cppCases.cases.length > 0) {
       cppExcluded += 1;
     }
   }
@@ -124,7 +130,7 @@ if (divergences.length > 0) {
 const skipped = [
   ...(haxeAvailable ? [] : ['haxe']),
   ...(rustAvailable ? [] : ['rust']),
-  ...(cppCompiler ? [] : [cppRuntimeAvailable ? 'cpp' : 'cpp (flight-cpp not rehydrated)']),
+  ...(cppToolchain ? [] : [cppRuntimeAvailable ? 'cpp' : 'cpp (flight-cpp not rehydrated)']),
 ];
 process.stdout.write(
   `Emitted source agrees with the source language: ${String(compared)} answers across ${String(fixtures.length)} fixtures${
@@ -304,7 +310,11 @@ function runRustOracle(fixture: string, cases: readonly OracleCase[]): readonly 
   return runLines(path.join(directory, 'oracle'), [], directory, `${fixture} rust`);
 }
 
-function runCppOracle(fixture: string, cases: readonly OracleCase[], compiler: string): readonly string[] {
+function runCppOracle(
+  fixture: string,
+  cases: readonly OracleCase[],
+  toolchain: Readonly<CppCompilerToolchain>,
+): readonly string[] {
   const directory = path.join(workspace, fixture, 'cpp');
   cpSync(path.join(goldenDirectory, fixture, 'cpp'), directory, { recursive: true });
   cpSync(path.join(supportDirectory, 'cpp'), directory, { recursive: true });
@@ -365,15 +375,21 @@ function runCppOracle(fixture: string, cases: readonly OracleCase[], compiler: s
       '}',
     ].join('\n'),
   );
+  const executable = getCppExecutableName(toolchain, 'oracle');
   const built = spawnSync(
-    compiler,
-    ['-std=c++20', '-pthread', '-I', cppRuntimeInclude, '-I', directory, '-o', 'oracle', 'main.cpp'],
+    toolchain.command,
+    createCppExecutableArguments(toolchain, 'main.cpp', executable, [
+      cppRuntimeInclude,
+      directory,
+    ]),
     { cwd: directory, encoding: 'utf8' },
   );
   if (built.status !== 0) {
-    throw new Error(`${fixture} C++ oracle build failed with ${compiler}:\n${built.stdout ?? ''}${built.stderr ?? ''}`);
+    throw new Error(
+      `${fixture} C++ oracle build failed with ${toolchain.command} (${toolchain.family}):\n${built.stdout ?? ''}${built.stderr ?? ''}`,
+    );
   }
-  return runLines(path.join(directory, 'oracle'), [], directory, `${fixture} C++`);
+  return runLines(path.join(directory, executable), [], directory, `${fixture} C++`);
 }
 
 function collectCppArrayHints(cases: readonly OracleCase[]): ReadonlyMap<string, string> {

@@ -5,6 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { resolveDependency } from './dependencyLock.js';
+import { createCppSyntaxOnlyArguments, findCppCompilerToolchain } from './cppToolchain.js';
 
 // Does the emitted source actually compile?
 //
@@ -117,10 +118,9 @@ if (hasCommand('rustc', ['--version'])) {
 }
 
 const cppRuntimeInclude = path.join(cppRuntime.directory, 'include');
-const cppCompiler = existsSync(cppRuntimeInclude)
-  ? ['c++', 'g++', 'clang++'].find((command) => hasCommand(command, ['--version']))
-  : undefined;
-if (cppCompiler) {
+const cppRuntimeAvailable = existsSync(cppRuntimeInclude);
+const cppToolchain = cppRuntimeAvailable ? findCppCompilerToolchain() : undefined;
+if (cppToolchain) {
   const cppFixtures = fixtures.filter((fixture) => existsSync(path.join(goldenDirectory, fixture, 'cpp')));
   for (const fixture of cppFixtures) {
     const emitted = path.join(goldenDirectory, fixture, 'cpp');
@@ -129,19 +129,11 @@ if (cppCompiler) {
     checked += headers.length;
     for (const header of headers) {
       const result = spawnSync(
-        cppCompiler,
-        [
-          '-std=c++20',
-          '-fsyntax-only',
-          '-pthread',
-          '-I',
+        cppToolchain.command,
+        createCppSyntaxOnlyArguments(cppToolchain, path.join(emitted, header), [
           cppRuntimeInclude,
-          '-I',
           path.join(supportDirectory, 'cpp'),
-          '-x',
-          'c++-header',
-          path.join(emitted, header),
-        ],
+        ]),
         {
           cwd: emitted,
           encoding: 'utf8',
@@ -151,8 +143,8 @@ if (cppCompiler) {
       if (result.status !== 0) failures.push({ fixture: `cpp/${fixture}/${header}`, output: output.trim() });
     }
   }
-  reports.push(`cpp ${String(cppFixtures.length)} fixtures (${cppCompiler})`);
-} else if (existsSync(cppRuntimeInclude)) {
+  reports.push(`cpp ${String(cppFixtures.length)} fixtures (${cppToolchain.command}, ${cppToolchain.family})`);
+} else if (cppRuntimeAvailable) {
   reports.push('C++ compiler not installed (skipped)');
 } else {
   reports.push('flight-cpp not rehydrated (skipped)');

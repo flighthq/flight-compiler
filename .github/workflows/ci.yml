@@ -68,6 +68,54 @@ jobs:
         if: always()
       - run: npm run oracle:check
         if: always()
+  cpp-generated-corpus:
+    name: C++ generated corpus (${{ matrix.compiler }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - compiler: GCC
+            compiler_command: g++
+            compiler_family: gnu
+            os: ubuntu-latest
+          - compiler: Clang
+            compiler_command: clang++
+            compiler_family: gnu
+            os: ubuntu-latest
+          - compiler: AppleClang
+            compiler_command: c++
+            compiler_family: gnu
+            os: macos-latest
+          - compiler: MSVC
+            compiler_command: cl
+            compiler_family: msvc
+            os: windows-latest
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          cache: npm
+          node-version: 22
+      - run: npm ci
+      - name: Rehydrate the pinned runtime
+        run: npm run rehydrate
+      # v1.13.0 is pinned to the verified release commit rather than its movable v1 tag.
+      - name: Enable MSVC developer environment
+        if: matrix.compiler_family == 'msvc'
+        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756
+      - name: Compile every emitted C++ fixture
+        env:
+          FLIGHT_CPP_CXX: ${{ matrix.compiler_command }}
+          FLIGHT_CPP_CXX_FAMILY: ${{ matrix.compiler_family }}
+          FLIGHT_CPP_REQUIRE_CXX: 1
+        run: npm run compile:check
+      - name: Run every eligible C++ source oracle
+        env:
+          FLIGHT_CPP_CXX: ${{ matrix.compiler_command }}
+          FLIGHT_CPP_CXX_FAMILY: ${{ matrix.compiler_family }}
+          FLIGHT_CPP_REQUIRE_CXX: 1
+        run: npm run oracle:check
 
   typecheck:
     name: Typecheck
