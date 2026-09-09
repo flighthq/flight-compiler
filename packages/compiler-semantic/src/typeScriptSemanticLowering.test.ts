@@ -10532,10 +10532,8 @@ it('lowers binding declaration with var scope at module level', () => {
   );
   expect(result.diagnostics).toEqual([]);
   const decl = result.module.declarations[0];
-  if (decl?.kind !== 'variable') throw new Error('Expected variable');
-  const variable = decl.declarations[0];
-  if (!variable || 'pattern' in variable) throw new Error('Expected named variable');
-  expect(variable.binding.scope).toBe('module');
+  if (decl?.kind !== 'variable' || 'pattern' in decl) throw new Error('Expected named variable');
+  expect(decl.binding.scope).toBe('module');
 });
 
 it('collects binding identities from exported destructuring pattern', () => {
