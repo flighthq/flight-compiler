@@ -2,7 +2,7 @@
 #![forbid(unsafe_code)]
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Direction {
+pub enum Direction {
   Up,
   Down,
   Left,
@@ -10,7 +10,7 @@ enum Direction {
 }
 
 impl Direction {
-  fn as_str(&self) -> &'static str {
+  pub fn as_str(&self) -> &'static str {
     match self {
       Direction::Up => "up",
       Direction::Down => "down",
@@ -19,7 +19,7 @@ impl Direction {
     }
   }
 
-  fn from_str(value: &str) -> Option<Self> {
+  pub fn from_str(value: &str) -> Option<Self> {
     match value {
       "up" => Some(Direction::Up),
       "down" => Some(Direction::Down),

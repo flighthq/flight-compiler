@@ -118,6 +118,7 @@ interface EmitContext {
   // ownership analysis already decides that for every binding in the module.
   movedBindingIds: ReadonlySet<string>;
   accessorClassNames: ReadonlyMap<string, string>;
+  apiReferencedBindingIds: ReadonlySet<string>;
   classBindingNames: ReadonlyMap<string, string>;
   enclosingReturnType?: Readonly<IrType> | undefined;
   runtimeTypeNames: Set<string>;
@@ -230,6 +231,7 @@ function emitIrModuleRustWithContext(
     abstractFieldNames: new Set(),
     accessorClassNames,
     anonymousObjectRecords: new Map(),
+    apiReferencedBindingIds: collectIrModuleApiReferencedBindingIdsRust(module),
     arrayElementBindingIds: collectIrModuleArrayElementBindingIdsRust(module),
     asyncTryStatements,
     cellWrappedBindingIds,
@@ -406,9 +408,11 @@ function emitClass(declaration: Readonly<IrClassDeclaration>, context: EmitConte
   ) {
     emissionError(context, `class ${declaration.binding.name} partially initializes its fields`);
   }
+  const structVisibility =
+    declaration.exported || context.apiReferencedBindingIds.has(declaration.binding.id) ? 'pub ' : '';
   const lines = [
     '#[derive(Clone, Debug)]',
-    `${declaration.exported ? 'pub ' : ''}struct ${getBindingTargetNameRust(declaration.binding, context)}${emitTypeParameters(declaration.typeParameters, context)} {`,
+    `${structVisibility}struct ${getBindingTargetNameRust(declaration.binding, context)}${emitTypeParameters(declaration.typeParameters, context)} {`,
   ];
   if (concreteBase) {
     lines.push(`    ${safeRustValueName('base')}: ${getBindingTargetNameRust(concreteBase.binding, context)},`);
@@ -431,7 +435,7 @@ function emitClass(declaration: Readonly<IrClassDeclaration>, context: EmitConte
   );
   if (constructorFields && declaration.classConstructor) {
     associated.push(
-      `  ${declaration.exported ? 'pub ' : ''}fn new(${declaration.classConstructor.parameters.map((parameter) => emitParameter(parameter, context)).join(', ')}) -> Self {`,
+      `  ${structVisibility}fn new(${declaration.classConstructor.parameters.map((parameter) => emitParameter(parameter, context)).join(', ')}) -> Self {`,
       '    Self {',
       ...constructorFields.map(
         (field) => `      ${safeRustValueName(field.name)}: ${emitOwnedOperandRust(field.value, context)},`,
@@ -442,7 +446,7 @@ function emitClass(declaration: Readonly<IrClassDeclaration>, context: EmitConte
   }
   if (compositionInit && concreteBase && declaration.classConstructor) {
     associated.push(
-      `  ${declaration.exported ? 'pub ' : ''}fn new(${declaration.classConstructor.parameters.map((parameter) => emitParameter(parameter, context)).join(', ')}) -> Self {`,
+      `  ${structVisibility}fn new(${declaration.classConstructor.parameters.map((parameter) => emitParameter(parameter, context)).join(', ')}) -> Self {`,
       '    Self {',
       `      ${safeRustValueName('base')}: ${getBindingTargetNameRust(concreteBase.binding, context)}::new(${compositionInit.superArguments.map((argument) => emitOwnedOperandRust(argument, context)).join(', ')}),`,
       ...compositionInit.childFields.map(
@@ -457,7 +461,7 @@ function emitClass(declaration: Readonly<IrClassDeclaration>, context: EmitConte
       (field) => declaration.fields[field.fieldIndex] && !declaration.fields[field.fieldIndex]!.static,
     );
     associated.push(
-      `  ${declaration.exported ? 'pub ' : ''}fn new() -> Self {`,
+      `  ${structVisibility}fn new() -> Self {`,
       '    Self {',
       ...instanceOrder.map((field) => {
         const source = declaration.fields[field.fieldIndex]!;
@@ -609,10 +613,11 @@ function emitEnum(declaration: Readonly<IrEnumDeclaration>, context: EmitContext
   if (values.some((value) => Number(value) < -2_147_483_648 || Number(value) > 2_147_483_647)) {
     emissionError(context, `enum ${declaration.binding.name} has a discriminant outside the Rust i32 range`);
   }
+  const visibility = declaration.exported || context.apiReferencedBindingIds.has(declaration.binding.id) ? 'pub ' : '';
   const lines = [
     '#[derive(Clone, Copy, Debug, PartialEq, Eq)]',
     '#[repr(i32)]',
-    `${declaration.exported ? 'pub ' : ''}enum ${getBindingTargetNameRust(declaration.binding, context)} {`,
+    `${visibility}enum ${getBindingTargetNameRust(declaration.binding, context)} {`,
   ];
   declaration.members.forEach((member) => {
     lines.push(`  ${safeRustTypeName(member.name)} = ${String(member.value)},`);
@@ -626,7 +631,7 @@ function emitEnum(declaration: Readonly<IrEnumDeclaration>, context: EmitContext
 // value as the enum: code compares against it and constructs from it.
 function emitStringEnumRust(declaration: Readonly<IrEnumDeclaration>, context: EmitContext): string[] {
   const name = getBindingTargetNameRust(declaration.binding, context);
-  const visibility = declaration.exported ? 'pub ' : '';
+  const visibility = declaration.exported || context.apiReferencedBindingIds.has(declaration.binding.id) ? 'pub ' : '';
   return [
     '#[derive(Clone, Copy, Debug, PartialEq, Eq)]',
     `${visibility}enum ${name} {`,
@@ -1318,7 +1323,7 @@ function emitInterface(declaration: Readonly<IrInterfaceDeclaration>, context: E
 }
 
 function emitTraitRust(declaration: Readonly<IrInterfaceDeclaration>, context: EmitContext): string[] {
-  const visibility = declaration.exported ? 'pub ' : '';
+  const visibility = declaration.exported || context.apiReferencedBindingIds.has(declaration.binding.id) ? 'pub ' : '';
   return [
     `${visibility}trait ${getBindingTargetNameRust(declaration.binding, context)}${emitTypeParameters(declaration.typeParameters, context)} {`,
     ...declaration.properties.map((property) => {
@@ -1654,6 +1659,57 @@ function emitReturnedExpressionRust(expression: Readonly<IrExpression>, context:
     return emitCellCloneBlockRust(`Rc::new(move ${source})`, expression, context);
   }
   return source;
+}
+
+function collectIrModuleApiReferencedBindingIdsRust(module: Readonly<IrModule>): ReadonlySet<string> {
+  const ids = new Set<string>();
+  function collectFromType(type: Readonly<IrType>): void {
+    switch (type.kind) {
+      case 'named':
+        if (type.reference.kind === 'binding') ids.add(type.reference.binding.id);
+        for (const arg of type.typeArguments) collectFromType(arg);
+        break;
+      case 'array':
+        collectFromType(type.element);
+        break;
+      case 'function':
+        for (const parameter of type.parameters) collectFromType(parameter.type);
+        collectFromType(type.returns);
+        break;
+      case 'intersection':
+      case 'union':
+        for (const member of type.types) collectFromType(member);
+        break;
+      case 'object':
+        for (const property of type.properties) collectFromType(property.type);
+        break;
+      case 'tuple':
+        for (const element of type.elements) collectFromType(element.type);
+        break;
+      case 'indexedAccess':
+        collectFromType(type.object);
+        collectFromType(type.index);
+        break;
+      case 'keyof':
+        collectFromType(type.type);
+        break;
+    }
+  }
+  for (const declaration of module.declarations) {
+    if (!declaration.exported) continue;
+    if (declaration.kind === 'function') {
+      for (const parameter of declaration.parameters) collectFromType(parameter.type);
+      collectFromType(declaration.returns);
+    } else if (declaration.kind === 'class') {
+      for (const field of declaration.fields) if (field.visibility === 'public') collectFromType(field.type);
+      for (const method of declaration.methods) {
+        if (method.visibility !== 'public') continue;
+        for (const parameter of method.parameters) collectFromType(parameter.type);
+        collectFromType(method.returns);
+      }
+    }
+  }
+  return ids;
 }
 
 function collectIrModuleArrayElementBindingIdsRust(module: Readonly<IrModule>): ReadonlySet<string> {
@@ -2997,7 +3053,7 @@ function emitAbstractClassTraitRust(declaration: Readonly<IrClassDeclaration>, c
   const abstractFields = declaration.fields.filter((field) => field.abstract);
   const fieldNames = new Set(abstractFields.map((field) => field.name));
   const mutating = getIrClassMutatingMethodNamesRust(declaration);
-  const visibility = declaration.exported ? 'pub ' : '';
+  const visibility = declaration.exported || context.apiReferencedBindingIds.has(declaration.binding.id) ? 'pub ' : '';
   const lines = [
     `${visibility}trait ${getBindingTargetNameRust(declaration.binding, context)}${emitTypeParameters(declaration.typeParameters, context)} {`,
   ];

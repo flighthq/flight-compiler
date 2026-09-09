@@ -4791,12 +4791,24 @@ describe('emitIrModuleRust', () => {
     expect(output).toMatch(/pub fn run/u);
   });
 
-  it('emits non-exported enum without pub', () => {
+  it('promotes non-exported enum to pub when referenced by exported function', () => {
     const output = emitIrModuleRust(
       lower(
         'non-exported-enum.ts',
         `enum Dir { Up, Down }
          export function isUp(d: Dir): boolean { return d === Dir.Up; }`,
+      ).module,
+    ).contents;
+    expect(output).toMatch(/pub enum Dir/u);
+  });
+
+  it('emits non-exported enum without pub when unreferenced by exports', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'private-enum.ts',
+        `enum Dir { Up, Down }
+         function isUp(d: Dir): boolean { return d === Dir.Up; }
+         export function test(): boolean { return isUp(Dir.Up); }`,
       ).module,
     ).contents;
     expect(output).not.toMatch(/pub enum Dir/u);
