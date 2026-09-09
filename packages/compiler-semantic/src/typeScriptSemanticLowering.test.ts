@@ -1099,19 +1099,26 @@ describe('lowerTypeScriptSource', () => {
   it('uses shared module analysis for imported interface heritage evidence', () => {
     const base = ts.createSourceFile(
       '/flight/packages/model/src/base.ts',
-      'export interface Base<Value> { value: Value; }',
+      'export interface Base<Value> { value: Value; foreign: Foreign; }',
       ts.ScriptTarget.Latest,
       true,
     );
     const derived = ts.createSourceFile(
       '/flight/packages/app/src/derived.ts',
-      "import type { Base } from '@flight/model'; interface Derived extends Base<number> { label: string; } export function read({ value }: Derived): number { return value; }",
+      "import type { Base } from '@flight/model'; import type { Global } from '@flight/global'; interface Derived extends Base<number>, Global { label: string; } export function read({ value, foreign }: Derived): number { return foreign ? value : 0; }",
       ts.ScriptTarget.Latest,
       true,
     );
-    const [, result] = lowerTypeScriptSources(
+    const global = ts.createSourceFile(
+      '/flight/packages/global/src/global.ts',
+      'export interface Global { global: boolean; }',
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const [, , result] = lowerTypeScriptSources(
       [
         { packageName: '@flight/model', sourceFile: base, upstreamDirectory: '/flight' },
+        { packageName: '@flight/global', sourceFile: global, upstreamDirectory: '/flight' },
         { packageName: '@flight/app', sourceFile: derived, upstreamDirectory: '/flight' },
       ],
       {
@@ -1125,6 +1132,10 @@ describe('lowerTypeScriptSource', () => {
             specifier: '@flight/model',
             target: { packageName: '@flight/model', source: 'packages/model/src/base.ts' },
           },
+          {
+            specifier: '@flight/global',
+            target: { packageName: '@flight/global', source: 'packages/global/src/global.ts' },
+          },
         ],
         schema: 'flight-compiler-module-resolution/1',
       },
@@ -1134,6 +1145,81 @@ describe('lowerTypeScriptSource', () => {
     expect(result!.module.declarations).toContainEqual(
       expect.objectContaining({ binding: expect.objectContaining({ name: 'Derived' }), kind: 'interface' }),
     );
+  });
+
+  it('resolves all supported relative source forms in shared module analysis', () => {
+    const input = (file: string, source: string) => ({
+      packageName: '@flight/model',
+      sourceFile: ts.createSourceFile(`/flight/packages/model/src/${file}`, source, ts.ScriptTarget.Latest, true),
+      upstreamDirectory: '/flight',
+    });
+    const sources = [
+      input('cjs.cts', 'export interface Cjs { cjs: string; }'),
+      input('esm.mts', 'export interface Esm { esm: string; }'),
+      input('jsx.tsx', 'export interface Jsx { jsx: string; }'),
+      input('plain.ts', 'export interface Plain { plain: string; }'),
+      input('nested/index.ts', 'export interface Nested { nested: string; }'),
+      input(
+        'consumer.ts',
+        `
+          import type { Cjs } from './cjs.cjs';
+          import type { Esm } from './esm.mjs';
+          import type { Jsx } from './jsx.jsx';
+          import type { Plain } from './plain';
+          import type { Nested } from './nested';
+          interface Combined extends Cjs, Esm, Jsx, Plain, Nested {}
+          export function read({ cjs, esm, jsx, plain, nested }: Combined): string {
+            return cjs + esm + jsx + plain + nested;
+          }
+        `,
+      ),
+    ];
+
+    const results = lowerTypeScriptSources(sources);
+
+    expect(results.at(-1)!.diagnostics).toEqual([]);
+    expect(lowerTypeScriptSources([])).toEqual([]);
+  });
+
+  it('keeps unresolved and ambiguous graph imports as deterministic heritage diagnostics', () => {
+    const source = (packageName: string, directory: string, file: string, text: string) => ({
+      packageName,
+      sourceFile: ts.createSourceFile(`/flight/packages/${directory}/src/${file}`, text, ts.ScriptTarget.Latest, true),
+      upstreamDirectory: '/flight',
+    });
+    const first = source('@flight/first', 'first', 'base.ts', 'export interface Base { first: string; }');
+    const second = source('@flight/second', 'second', 'base.ts', 'export interface Base { second: string; }');
+    const ambiguous = source(
+      '@flight/app',
+      'app',
+      'ambiguous.ts',
+      "import type { Base } from '@flight/shared'; interface Model extends Base {} export function read(value: Model): void { const {} = value; }",
+    );
+    const missing = source(
+      '@flight/app',
+      'app',
+      'missing.ts',
+      "import type { Missing } from '@flight/missing'; interface Model extends Missing {} export function read(value: Model): void { const {} = value; }",
+    );
+    const results = lowerTypeScriptSources([first, second, ambiguous, missing], {
+      edges: [
+        {
+          specifier: '@flight/shared',
+          target: { packageName: first.packageName, source: 'packages/first/src/base.ts' },
+        },
+        {
+          specifier: '@flight/shared',
+          target: { packageName: second.packageName, source: 'packages/second/src/base.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    });
+
+    for (const result of results.slice(2)) {
+      expect(result.diagnostics).toContainEqual(
+        expect.objectContaining({ message: 'syntactic interface heritage requires an object type declaration' }),
+      );
+    }
   });
 
   it('extracts interface heritage evidence from object and intersection aliases', () => {
@@ -1158,15 +1244,74 @@ describe('lowerTypeScriptSource', () => {
       'class-heritage.ts',
       `
         class Base<Value> {
-          value: Value;
-          read(): Value { return this.value; }
+          static version = 1;
+          private hidden = 1;
+          protected inherited = 1;
+          constructor() {}
+          readonly value = 1;
+          optional?: Value;
+          single(): string { return 'single'; }
+          read(value: Value): Value;
+          read(value: Value, fallback?: Value): Value;
+          read(value: Value, fallback?: Value): Value { return fallback ?? value; }
+          get label(): string { return 'base'; }
+          set label(value: string) {}
         }
         interface Model extends Base<number> { active: boolean; }
-        export function read({ value, active }: Model): number { return active ? value : 0; }
+        export function read({ value, optional, active }: Model): number { return active ? (optional ?? value) : 0; }
       `,
     );
 
     expect(result.diagnostics).toEqual([]);
+  });
+
+  it('refuses non-object and unsubstitutable type-alias heritage with source spans', () => {
+    const scalar = lower(
+      'scalar-heritage.ts',
+      'type Scalar = string; interface Model extends Scalar {} export function read(value: Model): void { const {} = value; }',
+    );
+    const generic = lower(
+      'generic-heritage.ts',
+      'type Base<Value> = { value: Value }; interface Model extends Base {} export function read(value: Model): void { const {} = value; }',
+    );
+
+    expect(scalar.diagnostics).toContainEqual(
+      expect.objectContaining({ message: 'interface heritage type alias Scalar is not object-shaped' }),
+    );
+    expect(generic.diagnostics).toContainEqual(
+      expect.objectContaining({ message: 'interface Base heritage type arguments cannot be substituted' }),
+    );
+  });
+
+  it('refuses cyclic, mixed, and conflicting structural heritage evidence', () => {
+    const cyclic = lower(
+      'cyclic-evidence.ts',
+      'interface Left extends Right {} interface Right extends Left {} export function read(value: Left): void { const {} = value; }',
+    );
+    const mixed = lower(
+      'mixed-evidence.ts',
+      'type Mixed = { value: number } & string; interface Model extends Mixed {} export function read(value: Model): void { const {} = value; }',
+    );
+    const conflicting = lower(
+      'conflicting-evidence.ts',
+      'type Conflict = { value: number } & { value: string }; interface Model extends Conflict {} export function read(value: Model): void { const {} = value; }',
+    );
+    const incompleteClass = lower(
+      'incomplete-class-evidence.ts',
+      'class Base { value; get inferred() { return 1; } } interface Model extends Base {} export function read(value: Model): void { const {} = value; }',
+    );
+
+    expect(cyclic.diagnostics).toContainEqual(
+      expect.objectContaining({ message: expect.stringContaining('has cyclic heritage') }),
+    );
+    for (const result of [mixed, conflicting]) {
+      expect(result.diagnostics).toContainEqual(
+        expect.objectContaining({ message: expect.stringContaining('is not object-shaped') }),
+      );
+    }
+    expect(incompleteClass.diagnostics).toContainEqual(
+      expect.objectContaining({ message: 'class heritage field requires a type or initializer' }),
+    );
   });
 
   it('resolves type-only imports, dual-space imports, and shadowed type parameters by identity', () => {
@@ -2814,6 +2959,17 @@ describe('lowerTypeScriptSource', () => {
     ]);
   });
 
+  it.each([
+    ['object binding rest must be the final element', 'const {...rest, after} = value;'],
+    ['object binding rest cannot have a property name', 'const {...rest: renamed} = value;'],
+    ['object binding rest cannot have a default initializer', 'const {...rest = {}} = value;'],
+    ['array binding rest must be the final element', 'const [...rest, after] = value;'],
+  ])('diagnoses malformed binding patterns: %s', (message, declaration) => {
+    const result = lower('malformed-binding.ts', `const value: any = {}; ${declaration}`);
+
+    expect(result.diagnostics.map((diagnostic) => diagnostic.message)).toContain(message);
+  });
+
   it('classifies module, declaration, function, and block binding scopes without collapsing hoisted variables', () => {
     const result = lower(
       'scopes.ts',
@@ -3129,6 +3285,12 @@ describe('lowerTypeScriptSource', () => {
 
     expect(result.diagnostics).toEqual([]);
     expect(condition).toMatchObject({ kind: 'identifier', narrowedMember: 'boolean' });
+  });
+});
+
+describe('lowerTypeScriptSources', () => {
+  it('returns no module results for an empty source graph', () => {
+    expect(lowerTypeScriptSources([])).toEqual([]);
   });
 });
 

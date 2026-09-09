@@ -408,6 +408,57 @@ describe('createCompilerLoweringPassInterfaceInheritance', () => {
     });
   });
 
+  it('flattens class ancestry and overloads while ignoring static shape', () => {
+    const module = lower(
+      'class-heritage-overloads.ts',
+      `
+        class Parent { parent: string; }
+        class Base extends Parent {
+          static version: number;
+          optional?: number;
+          static create(): Base { return new Base(); }
+          read(value: number): string;
+          read(value: number, suffix?: string): string;
+          read(value: number, suffix?: string, ...flags: boolean[]): string { return String(value); }
+        }
+        export interface Derived extends Base { active: boolean; }
+      `,
+    );
+    const output = lowerIrModuleWithCompilerPasses(module, [createCompilerLoweringPassInterfaceInheritance([module])]);
+    const derived = getInterface(output, 'Derived');
+
+    expect(derived.properties.map((property) => property.name)).toEqual(['parent', 'optional', 'read', 'active']);
+    expect(derived.properties.find((property) => property.name === 'read')).toMatchObject({
+      type: { kind: 'intersection', types: [{ kind: 'function' }, { kind: 'function' }, { kind: 'function' }] },
+    });
+  });
+
+  it('refuses class heritage whose nominal or accessor shape cannot be represented structurally', () => {
+    const nominal = lower(
+      'nominal-class-heritage.ts',
+      'class Base { private secret: number = 0; } export interface Derived extends Base {}',
+    );
+    const accessor = lower(
+      'accessor-class-heritage.ts',
+      'class Base { get value(): number { return 1; } } export interface Derived extends Base {}',
+    );
+
+    expect(() =>
+      lowerIrModuleWithCompilerPasses(nominal, [createCompilerLoweringPassInterfaceInheritance([nominal])]),
+    ).toThrow('class Base heritage has nominal field secret');
+    expect(() =>
+      lowerIrModuleWithCompilerPasses(accessor, [createCompilerLoweringPassInterfaceInheritance([accessor])]),
+    ).toThrow('class Base heritage has unsupported method value');
+  });
+
+  it('refuses a nonstructural local declaration used as interface heritage', () => {
+    const module = lower('enum-heritage.ts', 'enum Kind { Value } export interface Derived extends Kind {}');
+
+    expect(() =>
+      lowerIrModuleWithCompilerPasses(module, [createCompilerLoweringPassInterfaceInheritance([module])]),
+    ).toThrow('inherits unavailable interface Kind');
+  });
+
   it('refuses missing, ambiguous, and cyclic imported heritage deterministically', () => {
     const unavailable = lowerInPackage(
       '@flighthq/app',
@@ -461,6 +512,81 @@ describe('createCompilerLoweringPassInterfaceInheritance', () => {
     expect(() =>
       lowerIrModuleWithCompilerPasses(left, [createCompilerLoweringPassInterfaceInheritance([left, right])]),
     ).toThrow('has cyclic structural inheritance');
+  });
+
+  it('rejects malformed module graphs before flattening heritage', () => {
+    const subject = lower('subject.ts', 'export interface Subject {}');
+    const duplicate = lowerInPackage('@flighthq/model', 'model', 'duplicate.ts', 'export interface Duplicate {}');
+    const duplicateModulePass = createCompilerLoweringPassInterfaceInheritance([
+      subject,
+      duplicate,
+      structuredClone(duplicate),
+    ]);
+
+    expect(() => duplicateModulePass.lowerIrModule(subject)).toThrow(
+      'Interface inheritance module set contains a duplicate module identity',
+    );
+
+    const malformed = {
+      ...subject,
+      declarations: [...subject.declarations, subject.declarations[0]!],
+    };
+    const duplicateDeclarationPass = createCompilerLoweringPassInterfaceInheritance([malformed]);
+
+    expect(() => duplicateDeclarationPass.lowerIrModule(malformed)).toThrow(
+      'Interface inheritance module contains a duplicate structural declaration identity',
+    );
+  });
+
+  it('terminates cyclic star exports and relative imports that escape the package root', () => {
+    const first = lowerInPackage('@flighthq/model', 'model', 'first.ts', "export * from './second.js';");
+    const second = lowerInPackage('@flighthq/model', 'model', 'second.ts', "export * from './first.js';");
+    const cyclicConsumer = lowerInPackage(
+      '@flighthq/model',
+      'model',
+      'cyclic-consumer.ts',
+      "import type { Missing } from './first.js'; export interface Derived extends Missing {}",
+    );
+    expect(() =>
+      lowerIrModuleWithCompilerPasses(cyclicConsumer, [
+        createCompilerLoweringPassInterfaceInheritance([cyclicConsumer, first, second]),
+      ]),
+    ).toThrow('inherits unavailable interface Missing');
+
+    const escapedConsumer = lowerInPackage(
+      '@flighthq/model',
+      'model',
+      'escaped-consumer.ts',
+      "import type { Missing } from '../../../../../../missing.js'; export interface Derived extends Missing {}",
+    );
+    expect(() =>
+      lowerIrModuleWithCompilerPasses(escapedConsumer, [
+        createCompilerLoweringPassInterfaceInheritance([escapedConsumer]),
+      ]),
+    ).toThrow('inherits unavailable interface Missing');
+  });
+
+  it('refuses malformed qualified namespace heritage references', () => {
+    const base = lowerInPackage('@flighthq/model', 'model', 'base.ts', 'export interface Base {}');
+    const derived = lowerInPackage(
+      '@flighthq/model',
+      'model',
+      'derived.ts',
+      "import type * as Shared from './base.js'; export interface Derived extends Shared.Base {}",
+    );
+    const declaration = getInterface(derived, 'Derived');
+    const malformed = replaceInterface(derived, declaration, {
+      extends: [
+        {
+          ...declaration.extends[0]!,
+          reference: { ...declaration.extends[0]!.reference, path: ['Base', 'Nested'] },
+        } as IrTypeReference,
+      ],
+    });
+
+    expect(() =>
+      lowerIrModuleWithCompilerPasses(malformed, [createCompilerLoweringPassInterfaceInheritance([malformed, base])]),
+    ).toThrow('inherits unavailable interface Shared');
   });
 });
 
