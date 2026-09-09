@@ -169,7 +169,11 @@ describe('analyzeTypeScriptHostEndpoints', () => {
       }
 
       expect(isCompilerInventoryFailure(failure)).toBe(true);
-      expect(failure).toMatchObject({ code: 'invalid-host-endpoint-receiver', kind: 'compiler-inventory' });
+      expect(failure).toMatchObject({
+        code: 'invalid-host-endpoint-receiver',
+        kind: 'compiler-inventory',
+        subject: expect.stringMatching(/:4:6$/),
+      });
     } finally {
       rmSync(fixture.directory, { force: true, recursive: true });
     }
