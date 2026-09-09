@@ -672,6 +672,38 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
         const name = emitIdentifierReferenceRust(expression.left.reference, context);
         const right = emitExpression(expression.right, context);
         if (expression.operator === '=') return `${name}.set(${right})`;
+        if (
+          expression.operator === '**=' &&
+          expression.semantics.left.flow === 'number' &&
+          expression.semantics.right.flow === 'number'
+        ) {
+          return `${name}.set(f64::powf(${name}.get(), ${right}))`;
+        }
+        if (
+          expression.operator === '>>>=' &&
+          expression.semantics.left.flow === 'number' &&
+          expression.semantics.right.flow === 'number'
+        ) {
+          return `${name}.set(((((${name}.get() as i32) as u32) >> (${right} as u32)) as f64))`;
+        }
+        if (
+          (expression.operator === '&=' ||
+            expression.operator === '|=' ||
+            expression.operator === '^=' ||
+            expression.operator === '<<=' ||
+            expression.operator === '>>=') &&
+          expression.semantics.left.flow === 'number' &&
+          expression.semantics.right.flow === 'number'
+        ) {
+          const binaryOp = expression.operator.slice(0, -1);
+          return `${name}.set((((${name}.get() as i32) ${binaryOp} (${right} as i32)) as f64))`;
+        }
+        if (!isAssignmentOperatorDirectRust(expression.operator, expression.semantics)) {
+          emissionError(
+            context,
+            `operator ${expression.operator} on ${expression.semantics.left.flow} and ${expression.semantics.right.flow} requires Rust type-directed lowering`,
+          );
+        }
         const op = expression.operator.slice(0, -1);
         return `${name}.set(${name}.get() ${op} ${normalizeSourceTextGrouping(right)})`;
       }

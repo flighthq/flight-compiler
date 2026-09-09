@@ -10968,6 +10968,79 @@ describe('emitIrModuleRust cell-wrapped closure capture', () => {
     expect(output).toContain('Cell');
     expect(output).toContain('Rc');
   });
+
+  it('emits cell-wrapped **= as f64::powf round-trip', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'cell-power.ts',
+        `export function makePower(): () => number {
+           let value: number = 2;
+           return () => { value **= 3; return value; };
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('f64::powf(');
+    expect(output).toContain('.set(');
+    expect(output).toContain('.get()');
+  });
+
+  it('emits cell-wrapped >>>= as unsigned shift round-trip', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'cell-ush.ts',
+        `export function makeShifter(): () => number {
+           let value: number = 255;
+           return () => { value >>>= 1; return value; };
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('as u32) >>');
+    expect(output).toContain('.set(');
+    expect(output).toContain('.get()');
+  });
+
+  it('emits cell-wrapped bitwise &= as i32 cast round-trip', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'cell-band.ts',
+        `export function makeMasker(): () => number {
+           let value: number = 0xff;
+           return () => { value &= 0x0f; return value; };
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('as i32)');
+    expect(output).toContain('.set(');
+    expect(output).toContain('.get()');
+  });
+
+  it('refuses cell-wrapped ||= on non-boolean domains', () => {
+    expect(() =>
+      emitIrModuleRust(
+        lower(
+          'cell-or.ts',
+          `export function makeOr(): () => number {
+             let value: number = 0;
+             return () => { value ||= 5; return value; };
+           }`,
+        ).module,
+      ),
+    ).toThrow('requires Rust type-directed lowering');
+  });
+
+  it('refuses cell-wrapped &&= on non-boolean domains', () => {
+    expect(() =>
+      emitIrModuleRust(
+        lower(
+          'cell-and.ts',
+          `export function makeAnd(): () => number {
+             let value: number = 1;
+             return () => { value &&= 0; return value; };
+           }`,
+        ).module,
+      ),
+    ).toThrow('requires Rust type-directed lowering');
+  });
 });
 
 describe('emitIrModuleRust class with abstract base trait', () => {
