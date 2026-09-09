@@ -252,6 +252,51 @@ describe('analyzeIrTypeValueIdentity', () => {
     expect([source, barrel, subject]).toEqual(snapshot);
   });
 
+  it('refuses ambiguous export-star identity and never forwards a default through a star', () => {
+    const left = createModule([aliasDeclaration('type:left-model', 'Model', objectType, [], true)], {
+      name: 'left',
+      source: 'packages/left.ts',
+    });
+    const right = createModule([aliasDeclaration('type:right-model', 'Model', objectType, [], true)], {
+      name: 'right',
+      source: 'packages/right.ts',
+    });
+    const barrel = createModule([], {
+      exports: [
+        { kind: 'all', specifier: './left.js', typeOnly: true },
+        { kind: 'all', specifier: './right.js', typeOnly: true },
+        { exported: 'Models', kind: 'namespace', specifier: './left.js', typeOnly: true },
+        { expression: { kind: 'literal', value: 1 }, kind: 'default' },
+      ],
+      name: 'barrel',
+      source: 'packages/barrel.ts',
+    });
+    const model = typeBinding('type:ambiguous-model', 'Model', 'import');
+    const default_ = typeBinding('type:star-default', 'DefaultModel', 'import');
+    const subject = createModule([], {
+      imports: [
+        {
+          bindings: [
+            { binding: model, imported: 'Model', typeOnly: true },
+            { binding: default_, imported: 'default', typeOnly: true },
+          ],
+          specifier: './barrel.js',
+          typeOnly: true,
+        },
+      ],
+      name: 'star-subject',
+      source: 'packages/star-subject.ts',
+    });
+    const modules = [subject, barrel, right, left];
+
+    for (const imported of [model, default_]) {
+      expect(analyzeIrTypeValueIdentity(typeReference(imported), subject, modules)).toMatchObject({
+        identity: 'indeterminate',
+        reason: 'unresolved-reference',
+      });
+    }
+  });
+
   it('distinguishes unresolved imports, invalid applications, and cycles deterministically', () => {
     const cycleA = typeBinding('type:cycle-a', 'CycleA', 'typeAlias');
     const cycleB = typeBinding('type:cycle-b', 'CycleB', 'typeAlias');
