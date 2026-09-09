@@ -16,9 +16,6 @@ export function createCompilerAmbientSurfaceSource(): string {
 }
 
 // The file the surface is presented to the checker as. A node reached through it does not belong to
-// the module being lowered, and every reader that walks back to a declaration has to be able to tell.
-
-// The file the surface is presented to the checker as. A node reached through it does not belong to
 // the module being lowered, and every reader that walks back to a declaration compares against this
 // to tell.
 export function getCompilerAmbientSurfaceFileName(): string {
@@ -234,18 +231,6 @@ interface SetConstructor {
   new <T>(values?: readonly T[]): Set<T>;
 }
 declare var Set: SetConstructor;
-
-interface WeakMap<K extends object, V> {
-  delete(key: K): boolean;
-  get(key: K): V | undefined;
-  has(key: K): boolean;
-  set(key: K, value: V): WeakMap<K, V>;
-}
-
-interface WeakMapConstructor {
-  new <K extends object, V>(entries?: readonly (readonly [K, V])[]): WeakMap<K, V>;
-}
-declare var WeakMap: WeakMapConstructor;
 
 interface Date {
   getDate(): number;
