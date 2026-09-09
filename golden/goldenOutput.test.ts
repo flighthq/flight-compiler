@@ -96,10 +96,24 @@ function committedPaths(outputDirectory: string): string[] {
 }
 
 function compile(fixture: string, backendName: (typeof backendNames)[number]): Emitted {
-  const file = path.join(goldenDirectory, fixture, 'input.ts');
+  const fixtureDirectory = path.join(goldenDirectory, fixture);
+  const file = path.join(fixtureDirectory, 'input.ts');
   const sourceFile = parseTypeScriptSource(`/flight/packages/golden/src/${fixture}.ts`, readFileSync(file, 'utf8'));
+  const sources: {
+    packageName: string;
+    sourceFile: ReturnType<typeof parseTypeScriptSource>;
+    upstreamDirectory: string;
+  }[] = [{ packageName: '@flighthq/golden', sourceFile, upstreamDirectory: '/flight' }];
+  for (const entry of readdirSync(fixtureDirectory)) {
+    if (entry === 'input.ts' || !entry.endsWith('.ts')) continue;
+    const siblingName = entry.replace(/\.ts$/u, '');
+    const siblingFile = parseTypeScriptSource(
+      `/flight/packages/golden/src/${siblingName}.ts`,
+      readFileSync(path.join(fixtureDirectory, entry), 'utf8'),
+    );
+    sources.push({ packageName: '@flighthq/golden', sourceFile: siblingFile, upstreamDirectory: '/flight' });
+  }
   try {
-    const sources = [{ packageName: '@flighthq/golden', sourceFile, upstreamDirectory: '/flight' }];
     const result =
       backendName === 'cpp'
         ? compileWithBackend(createCppCompilerBackend(), { runtimeProfile: 'flight-cpp' }, sources)

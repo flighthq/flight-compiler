@@ -93,6 +93,7 @@ interface EmitContext {
   returnsAbsent: boolean;
   dynamicBindingIds: Set<string>;
   packageName: string;
+  sourceModules: readonly Readonly<IrModule>[];
   targetNames: ReadonlyMap<string, string>;
   taskFunctions: WeakMap<object, CompilerHaxeTaskLoweringFunction>;
   taskLowering: Readonly<CompilerHaxeTaskLowering>;
@@ -190,6 +191,7 @@ function emitIrModuleHaxeWithContext(
     dynamicBindingIds: new Set<string>(),
     packageName,
     returnsAbsent: false,
+    sourceModules,
     targetNames,
     taskFunctions: new WeakMap(),
     taskLowering,
@@ -828,27 +830,73 @@ function emitExchangedClosureHaxe(expression: Readonly<IrExpression>, context: E
 }
 
 function emitReexportsHaxe(exports: readonly IrExport[], context: EmitContext): string[] {
-  const lines = new Set<string>();
+  const typeLines = new Set<string>();
+  const valueLines: string[] = [];
   for (const exported of exports) {
     if (exported.kind === 'local') continue;
     if (exported.kind !== 'reexport') {
       emissionError(context, `${exported.kind} exports require Haxe module-facade lowering`);
     }
-    if (!exported.typeOnly) {
-      emissionError(
-        context,
-        `re-exporting the value ${exported.exported} requires the re-exported signature to forward to`,
-      );
-    }
     const modulePath = haxeImportModule(exported.specifier, context);
-    // A module's types occupy their package's namespace, so re-exporting one under the name it
-    // already has inside the same package is both illegal and pointless: that name already resolves
-    // to it. A rename, or a source in another package, is a real alias and is emitted.
+    if (!exported.typeOnly) {
+      valueLines.push(...emitValueReexportForwardingHaxe(exported, modulePath, context));
+      continue;
+    }
     const samePackage = modulePath.slice(0, modulePath.lastIndexOf('.')) === context.packageName;
     if (samePackage && exported.exported === exported.imported) continue;
-    lines.add(`typedef ${safeHaxeTypeName(exported.exported)} = ${modulePath}.${safeHaxeTypeName(exported.imported)};`);
+    typeLines.add(
+      `typedef ${safeHaxeTypeName(exported.exported)} = ${modulePath}.${safeHaxeTypeName(exported.imported)};`,
+    );
   }
-  return [...lines].sort();
+  return [...[...typeLines].sort(), ...valueLines];
+}
+
+function emitValueReexportForwardingHaxe(
+  exported: Readonly<{ exported: string; imported: string; specifier: string }>,
+  modulePath: string,
+  context: EmitContext,
+): string[] {
+  const sourcePath = resolveReexportSourcePathHaxe(exported.specifier, context);
+  const sourceModule = context.sourceModules.find((m) => m.source === sourcePath);
+  if (!sourceModule) {
+    emissionError(
+      context,
+      `re-exporting the value ${exported.exported} requires the re-exported signature to forward to`,
+    );
+  }
+  const declaration = sourceModule.declarations.find(
+    (d): d is IrFunctionDeclaration => d.kind === 'function' && d.binding.name === exported.imported,
+  );
+  if (!declaration) {
+    emissionError(
+      context,
+      `re-exporting the value ${exported.exported} requires the re-exported signature to forward to`,
+    );
+  }
+  const params = declaration.parameters
+    .map((p) => {
+      const name = safeHaxeName(p.binding.name);
+      const type = emitType(p.type, context);
+      if (p.rest) {
+        const elementType = p.type.kind === 'array' ? emitType(p.type.element, context) : type;
+        return `...${name}:${elementType}`;
+      }
+      if (p.initializer) return `${name}:${type} = ${emitExpression(p.initializer, context)}`;
+      return `${p.optional ? '?' : ''}${name}:${type}`;
+    })
+    .join(', ');
+  const args = declaration.parameters.map((p) => safeHaxeName(p.binding.name)).join(', ');
+  const returnType = emitType(declaration.returns, context);
+  const targetName = safeHaxeName(exported.exported);
+  const sourceName = safeHaxeName(exported.imported);
+  return [`function ${targetName}(${params}):${returnType} {`, `  return ${modulePath}.${sourceName}(${args});`, '}'];
+}
+
+function resolveReexportSourcePathHaxe(specifier: string, context: EmitContext): string {
+  if (!specifier.startsWith('.')) return specifier;
+  return path.posix.normalize(
+    path.posix.join(path.posix.dirname(context.module.source), specifier.replace(/\.[cm]?js$/u, '.ts')),
+  );
 }
 
 // A data shape as a class rather than an anonymous structure. Haxe's `@:structInit` keeps the

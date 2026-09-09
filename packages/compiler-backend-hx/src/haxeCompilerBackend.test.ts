@@ -4185,6 +4185,24 @@ describe('emitIrModuleHaxe re-export facade', () => {
 
     expect(() => emitIrModuleHaxe(result.module)).not.toThrow();
   });
+
+  it('emits value re-export as forwarding function when sibling module is available', () => {
+    const helper = lower('helper.ts', 'export function helper(value: number): number { return value + 1; }');
+    const facade = lower('facade.ts', `export { helper } from './helper.js';`);
+    const backend = createHaxeCompilerBackend();
+    const files = backend.emitModule(facade.module, { modules: [facade.module, helper.module], options: {} });
+
+    expect(files).toHaveLength(1);
+    const output = files[0]!.contents;
+    expect(output).toContain('function helper(value:Float):Float');
+    expect(output).toContain('Helper.helper(value)');
+  });
+
+  it('refuses value re-export when sibling module is not available', () => {
+    const facade = lower('facade.ts', `export { helper } from './helper.js';`);
+
+    expect(() => emitIrModuleHaxe(facade.module)).toThrow('re-exporting the value');
+  });
 });
 
 describe('emitIrModuleHaxe narrowedMember with primitive typeof cast', () => {
