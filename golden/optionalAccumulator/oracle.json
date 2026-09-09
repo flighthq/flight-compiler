@@ -9,7 +9,7 @@
     "call": "busiestCount",
     "arguments": [[{ "$type": "Item", "name": "a", "count": 5 }]],
     "returns": "number",
-    "targets": ["haxe", "rust"]
+    "cppTypes": ["flight::Array<flighthq_golden::Item>"]
   },
   {
     "call": "busiestCount",
@@ -20,6 +20,6 @@
       ]
     ],
     "returns": "number",
-    "targets": ["haxe", "rust"]
+    "cppTypes": ["flight::Array<flighthq_golden::Item>"]
   }
 ]

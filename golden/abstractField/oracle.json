@@ -5,7 +5,7 @@
     "call": "describe",
     "arguments": [],
     "returns": "string",
-    "targets": ["haxe", "rust"],
+    "targets": ["haxe", "cpp", "rust"],
     "rustTraits": ["Component"]
   },
   {
@@ -14,7 +14,7 @@
     "call": "getVersion",
     "arguments": [],
     "returns": "number",
-    "targets": ["haxe", "rust"],
+    "targets": ["haxe", "cpp", "rust"],
     "rustTraits": ["Component"]
   }
 ]
