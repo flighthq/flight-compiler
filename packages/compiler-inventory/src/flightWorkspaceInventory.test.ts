@@ -797,6 +797,35 @@ describe('analyzeFlightWorkspace', () => {
       rmSync(upstream, { force: true, recursive: true });
     }
   });
+
+  it('converges when a transitive star re-export grows a candidate set across passes', () => {
+    const upstream = createUpstreamFixture();
+    try {
+      write(upstream, 'packages/types/src/deep.ts', 'export function overlap(): number { return 1; }\n');
+      write(upstream, 'packages/types/src/left.ts', "export * from './deep.js';\n");
+      write(upstream, 'packages/types/src/right.ts', 'export function overlap(): string { return "b"; }\n');
+      write(upstream, 'packages/types/src/barrel.ts', "export * from './left.js';\nexport * from './right.js';\n");
+      write(
+        upstream,
+        'packages/types/src/index.ts',
+        "export * from './barrel.js';\n" +
+          "export { Mode } from './Mode.js';\nexport type { Shape } from './Shape.js';\nexport { createValue } from './value.js';\n" +
+          "import { createOtherValue as createRenamedValue } from './other.js';\nexport { createRenamedValue as createPublicValue };\n" +
+          "export { createValue as createDirectAlias } from './value.js';\n",
+      );
+      git(upstream, 'add', '.');
+      git(upstream, 'commit', '-m', 'transitive star candidate growth');
+
+      const inventory = analyzeFlightWorkspace({ upstreamDirectory: upstream });
+      const inventoryByName = new Map(inventory.packages.map((item) => [item.name, item]));
+      const root = resolvePackageExportLane(inventoryByName, '@flighthq/types');
+
+      expect(root.exportConflicts.find((c) => c.name === 'overlap')).toBeDefined();
+      expect(root.exportConflicts.find((c) => c.name === 'overlap')?.sources.length).toBe(2);
+    } finally {
+      rmSync(upstream, { force: true, recursive: true });
+    }
+  });
 });
 
 function expectInventoryFailure(run: () => unknown, code: CompilerInventoryFailureCode): void {
