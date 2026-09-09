@@ -11543,3 +11543,203 @@ describe('emitIrModuleRust safeRustValueName edge cases', () => {
     expect(output).not.toContain('#value');
   });
 });
+
+describe('emitIrModuleRust template literal with single interpolation', () => {
+  it('emits format! with placeholder for template with one expression', () => {
+    const output = emitIrModuleRust(
+      lower('template-interp.ts', 'export function greet(name: string): string { return `hello ${name}`; }').module,
+    ).contents;
+    expect(output).toContain('format!("hello {}"');
+  });
+});
+
+describe('emitIrModuleRust array slice with zero arguments', () => {
+  it('emits clone() when slice is called with no arguments', () => {
+    const output = emitIrModuleRust(
+      lower('arr-clone.ts', 'export function copy(items: number[]): number[] { return items.slice(); }').module,
+    ).contents;
+    expect(output).toContain('.clone()');
+  });
+});
+
+describe('emitIrModuleRust interface as trait with data properties', () => {
+  it('emits trait accessor method for non-function interface properties', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'trait-data.ts',
+        `export interface Named { name: string; greet(): string; }
+         export class Person implements Named {
+           name: string;
+           constructor(name: string) { this.name = name; }
+           greet(): string { return this.name; }
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('trait Named');
+    expect(output).toContain('fn name(&self) -> String;');
+    expect(output).toContain('fn greet(&self) -> String;');
+  });
+});
+
+describe('emitIrModuleRust prefix unary operators', () => {
+  it('emits prefix negation on number operand', () => {
+    const output = emitIrModuleRust(
+      lower('prefix-neg.ts', 'export function negate(n: number): number { return -n; }').module,
+    ).contents;
+    expect(output).toContain('-n');
+  });
+});
+
+describe('emitIrModuleRust variable initialized to undefined', () => {
+  it('emits None for a variable explicitly initialized to undefined with nullable type', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'undef-init.ts',
+        'export function find(items: number[]): number | undefined { let result: number | undefined = undefined; for (const item of items) { result = item; } return result; }',
+      ).module,
+    ).contents;
+    expect(output).toContain('let mut result: Option<f64> = None;');
+  });
+});
+
+describe('emitIrModuleRust logical NOT on boolean', () => {
+  it('emits logical NOT as prefix exclamation', () => {
+    const output = emitIrModuleRust(
+      lower('logical-not.ts', 'export function flip(b: boolean): boolean { return !b; }').module,
+    ).contents;
+    expect(output).toContain('!b');
+  });
+});
+
+describe('emitIrModuleRust transitive method mutation detection', () => {
+  it('marks a method as mutating when it calls another mutating method', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'transitive-mut.ts',
+        `export class Counter {
+           count: number;
+           constructor() { this.count = 0; }
+           increment(): void { this.count = this.count + 1; }
+           incrementTwice(): void { this.increment(); this.increment(); }
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('fn increment(&mut self)');
+    expect(output).toContain('fn increment_twice(&mut self)');
+  });
+});
+
+describe('emitIrModuleRust bitwise NOT operator', () => {
+  it('emits bitwise NOT as i32 cast round-trip', () => {
+    const output = emitIrModuleRust(
+      lower('bitwise-not.ts', 'export function invert(n: number): number { return ~n; }').module,
+    ).contents;
+    expect(output).toContain('as i32');
+    expect(output).toContain('as f64');
+  });
+});
+
+describe('emitIrModuleRust unary plus on number', () => {
+  it('emits identity for unary plus on number operand', () => {
+    const output = emitIrModuleRust(
+      lower('unary-plus.ts', 'export function identity(n: number): number { return +n; }').module,
+    ).contents;
+    expect(output).not.toContain('+ n');
+    expect(output).toContain('return n;');
+  });
+});
+
+describe('emitIrModuleRust conditional expression', () => {
+  it('emits ternary as Rust if-else expression', () => {
+    const output = emitIrModuleRust(
+      lower('ternary.ts', 'export function pick(flag: boolean, a: number, b: number): number { return flag ? a : b; }')
+        .module,
+    ).contents;
+    expect(output).toContain('if flag');
+    expect(output).toContain('} else {');
+  });
+});
+
+describe('emitIrModuleRust class with assignment mutation on this', () => {
+  it('detects this.field = expr as mutation and emits &mut self', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'assign-mut.ts',
+        `export class Counter {
+           value: number;
+           constructor() { this.value = 0; }
+           set(n: number): void { this.value = n; }
+           get(): number { return this.value; }
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('fn set(&mut self');
+    expect(output).toContain('fn get(&self)');
+  });
+});
+
+describe('emitIrModuleRust null literal emission', () => {
+  it('emits null literal as None', () => {
+    const output = emitIrModuleRust(
+      lower('null-lit.ts', 'export function nothing(): number | null { return null; }').module,
+    ).contents;
+    expect(output).toContain('None');
+  });
+});
+
+describe('emitIrModuleRust non-exported string union type alias', () => {
+  it('emits non-exported string literal union as type alias to String', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'string-union.ts',
+        `type Direction = 'left' | 'right';
+         export function go(d: Direction): string { return d; }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('type Direction = String;');
+  });
+});
+
+describe('emitIrModuleRust tuple type emission', () => {
+  it('emits single-element tuple with trailing comma', () => {
+    const output = emitIrModuleRust(
+      lower('single-tuple.ts', 'export function wrap(n: number): [number] { return [n]; }').module,
+    ).contents;
+    expect(output).toContain('(f64,)');
+  });
+});
+
+describe('emitIrModuleRust do-while loop', () => {
+  it('emits do-while as loop with trailing break condition', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'do-while.ts',
+        'export function halve(n: number): number { let x = n; do { x = x / 2; } while (x > 1); return x; }',
+      ).module,
+    ).contents;
+    expect(output).toContain('loop {');
+    expect(output).toContain('break');
+  });
+});
+
+describe('emitIrModuleRust cast expression', () => {
+  it('emits type cast as Rust as operator', () => {
+    const output = emitIrModuleRust(
+      lower('cast.ts', 'export function asNum(x: unknown): number { return x as number; }').module,
+    ).contents;
+    expect(output).toContain(' as ');
+  });
+});
+
+describe('emitIrModuleRust while true loop', () => {
+  it('emits while true as loop keyword', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'infinite-loop.ts',
+        'export function spin(): number { let x: number = 0; while (true) { x = x + 1; if (x > 10) { return x; } } }',
+      ).module,
+    ).contents;
+    expect(output).toContain('loop {');
+    expect(output).not.toContain('while true');
+  });
+});
