@@ -242,6 +242,7 @@ describe('createCompilerValueCompletionPathSet', () => {
     const valid = path('normal', ['body'], { kind: 'empty' });
     const invalid: Array<Readonly<{ code: string; completion: unknown }>> = [
       { code: 'invalid-completion-kind', completion: null },
+      { code: 'invalid-completion-kind', completion: 42 },
       { code: 'invalid-completion-kind', completion: [] },
       { code: 'invalid-completion-kind', completion: { ...valid, kind: 'yield' } },
       { code: 'invalid-completion-kind', completion: { ...path('break', [], { kind: 'empty' }), extra: true } },
@@ -254,8 +255,14 @@ describe('createCompilerValueCompletionPathSet', () => {
       { code: 'invalid-completion-path', completion: { ...valid, path: [-1] } },
       { code: 'invalid-completion-path', completion: { ...valid, path: [1.5] } },
       { code: 'invalid-completion-value', completion: { ...valid, value: null } },
+      { code: 'invalid-completion-value', completion: { ...valid, value: 42 } },
+      { code: 'invalid-completion-value', completion: { ...valid, value: {} } },
       { code: 'invalid-completion-value', completion: { ...valid, value: [] } },
       { code: 'invalid-completion-value', completion: { ...valid, value: { kind: 'unknown' } } },
+      {
+        code: 'invalid-completion-value',
+        completion: { ...valid, value: { kind: 'other', path: ['a'], phase: 'result' } },
+      },
       { code: 'invalid-completion-value', completion: { ...valid, value: { extra: true, kind: 'empty' } } },
       {
         code: 'invalid-completion-value',
@@ -286,6 +293,7 @@ describe('createCompilerValueCompletionPathSet', () => {
     const valid = createCompilerValueCompletionPathSet([path('normal', [], { kind: 'empty' })]);
     const invalid = [
       null,
+      42,
       [],
       { paths: [], schema: 'invalid' },
       { paths: null, schema: 'flight-compiler-value-completion-path-set/1' },
