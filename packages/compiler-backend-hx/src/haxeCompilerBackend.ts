@@ -1033,15 +1033,16 @@ function emitCastExpressionHaxe(
 
 function isIrCastTargetTypedefHaxe(type: Readonly<IrType>, context: EmitContext): boolean {
   if (type.kind !== 'named' || type.reference.kind !== 'binding') return false;
+  const bindingId = type.reference.binding.id;
   const declaration = context.module.declarations.find(
-    (candidate) => candidate.kind === 'interface' && candidate.binding.id === type.reference.binding.id,
+    (candidate) => candidate.kind === 'interface' && candidate.binding.id === bindingId,
   );
   if (!declaration || declaration.kind !== 'interface') return false;
   return !hasIrModuleClassImplementingHaxe(declaration, context);
 }
 
 function isIrCastTargetUntypedHaxe(type: Readonly<IrType>, context: EmitContext): boolean {
-  if (type.kind === 'array') return true;
+  if (type.kind === 'array' || type.kind === 'tuple') return true;
   return isIrCastTargetTypedefHaxe(type, context);
 }
 

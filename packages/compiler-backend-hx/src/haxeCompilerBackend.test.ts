@@ -1444,6 +1444,16 @@ describe('emitIrModuleHaxe expression coverage', () => {
     expect(output).not.toContain('Array<Float>)');
   });
 
+  it('emits untyped cast when target type is tuple', () => {
+    const result = lower(
+      'cast-tuple.ts',
+      'export function first(values: [[number]?]): number { const [[x] = [1]] = values; return x; }',
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).not.toContain('Array<Float>)');
+  });
+
   it('emits untyped cast when target is typedef interface', () => {
     const result = lower(
       'cast-typedef.ts',

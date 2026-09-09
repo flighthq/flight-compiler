@@ -28,7 +28,7 @@ function createValues():Array<Dynamic> {
 
 function selectNestedDefault(values:Array<Dynamic>):Float {
   final arrayPatternValue:Array<Dynamic> = values;
-  final arrayPatternValue_2:Array<Float> = cast((arrayPatternValue[0] ?? [1]), Array<Float>);
+  final arrayPatternValue_2:Array<Float> = cast((arrayPatternValue[0] ?? [1]));
   final first:Float = arrayPatternValue_2[0];
   return first;
 }
