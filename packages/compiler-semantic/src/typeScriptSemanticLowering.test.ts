@@ -11382,6 +11382,38 @@ it('lowers element access on new expression result for indexed receiver evidence
   expect(ret).toBeDefined();
 });
 
+it('lowers type predicate syntax to its runtime boolean or void result', () => {
+  const result = lower(
+    'type-predicate.ts',
+    `
+      export function isString(value: unknown): value is string { return typeof value === 'string'; }
+      export function assertString(value: unknown): asserts value is string {}
+    `,
+  );
+
+  expect(result.diagnostics).toEqual([]);
+  expect(result.module.declarations).toMatchObject([
+    { kind: 'function', returns: { kind: 'primitive', name: 'boolean' } },
+    { kind: 'function', returns: { kind: 'primitive', name: 'void' } },
+  ]);
+});
+
+it('diagnoses const type parameters at lowering instead of inventing an ambient const type', () => {
+  const result = lower(
+    'const-type-parameter.ts',
+    'export function identity<const Value>(value: Value): Value { return value; }',
+  );
+
+  expect(result.module.declarations).toEqual([]);
+  expect(result.diagnostics).toMatchObject([
+    {
+      code: 'unsupported-typescript',
+      message: 'const type parameters require explicit inference-preserving lowering',
+    },
+  ]);
+  expect(result.diagnostics[0]?.message).not.toContain('ambient');
+});
+
 function getVariableBinding(value: unknown): IrBindingIdentity {
   if (typeof value !== 'object' || value === null || !('binding' in value)) {
     throw new Error('Expected named variable');

@@ -2121,6 +2121,9 @@ function lowerType(node: ts.TypeNode, context: LoweringContext): IrType {
     case ts.SyntaxKind.VoidKeyword:
       return { kind: 'primitive', name: 'void' };
   }
+  if (ts.isTypePredicateNode(node)) {
+    return { kind: 'primitive', name: node.assertsModifier ? 'void' : 'boolean' };
+  }
   if (ts.isParenthesizedTypeNode(node)) return lowerType(node.type, context);
   if (ts.isTypeReferenceNode(node)) {
     const name = getTypeScriptNodeText(node.typeName, context);
@@ -2330,11 +2333,16 @@ function lowerTypeParameters(
   context: LoweringContext,
 ): IrTypeParameter[] {
   return (
-    nodes?.map((node) => ({
-      binding: lowerTypeBindingIdentity(node.name, context),
-      ...(node.constraint ? { constraint: lowerType(node.constraint, context) } : {}),
-      ...(node.default ? { default: lowerType(node.default, context) } : {}),
-    })) ?? []
+    nodes?.map((node) => {
+      if (hasModifier(node, ts.SyntaxKind.ConstKeyword)) {
+        unsupported(node, 'const type parameters require explicit inference-preserving lowering');
+      }
+      return {
+        binding: lowerTypeBindingIdentity(node.name, context),
+        ...(node.constraint ? { constraint: lowerType(node.constraint, context) } : {}),
+        ...(node.default ? { default: lowerType(node.default, context) } : {}),
+      };
+    }) ?? []
   );
 }
 
