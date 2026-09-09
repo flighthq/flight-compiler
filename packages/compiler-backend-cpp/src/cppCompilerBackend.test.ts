@@ -6315,3 +6315,65 @@ describe('emitIrModuleCpp literal in union context', () => {
     expect(emitted.contents).toContain('std::nullopt');
   });
 });
+
+describe('emitIrModuleCpp bitwise operations with flight-cpp profile', () => {
+  it('emits flight::bitwise_and for bitwise & with flight-cpp runtime', () => {
+    const result = lower('bitwise-and-rt.ts', 'export function band(a: number, b: number): number { return a & b; }');
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+    expect(emitted.contents).toContain('flight::bitwise_and(');
+  });
+
+  it('emits flight::bitwise_or for bitwise | with flight-cpp runtime', () => {
+    const result = lower('bitwise-or-rt.ts', 'export function bor(a: number, b: number): number { return a | b; }');
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+    expect(emitted.contents).toContain('flight::bitwise_or(');
+  });
+
+  it('emits flight::bitwise_xor for bitwise ^ with flight-cpp runtime', () => {
+    const result = lower('bitwise-xor-rt.ts', 'export function bxor(a: number, b: number): number { return a ^ b; }');
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+    expect(emitted.contents).toContain('flight::bitwise_xor(');
+  });
+
+  it('emits flight::left_shift for << with flight-cpp runtime', () => {
+    const result = lower('left-shift-rt.ts', 'export function shl(a: number, b: number): number { return a << b; }');
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+    expect(emitted.contents).toContain('flight::left_shift(');
+  });
+
+  it('emits flight::signed_right_shift for >> with flight-cpp runtime', () => {
+    const result = lower('right-shift-rt.ts', 'export function shr(a: number, b: number): number { return a >> b; }');
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+    expect(emitted.contents).toContain('flight::signed_right_shift(');
+  });
+});
+
+describe('emitIrModuleCpp number toString with flight-cpp profile', () => {
+  it('emits flight::to_string for number.toString() with flight-cpp runtime', () => {
+    const result = lower('num-tostring-rt.ts', 'export function text(n: number): string { return n.toString(); }');
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+    expect(emitted.contents).toContain('flight::to_string(');
+  });
+});
+
+describe('emitIrModuleCpp reexport emission', () => {
+  it('emits type-only reexport as using declaration with module resolution', () => {
+    const target = lowerPackage('@flighthq/types', 'shape.ts', 'export interface Shape { area: number }').module;
+    const facade = lowerPackage(
+      '@flighthq/core',
+      'index.ts',
+      "export type { Shape } from '@flighthq/types/shape';",
+    ).module;
+    const resolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          specifier: '@flighthq/types/shape',
+          target: { packageName: '@flighthq/types', source: target.source },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const emitted = emitIrModuleCpp(facade, { moduleResolution: resolution, modules: [facade, target] });
+    expect(emitted.contents).toContain('using');
+  });
+});
