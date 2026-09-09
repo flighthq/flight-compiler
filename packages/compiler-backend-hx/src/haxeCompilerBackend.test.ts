@@ -7646,4 +7646,116 @@ describe('emitIrModuleHaxe exponentiation operators', () => {
     ).contents;
     expect(output).toContain('Math.pow(');
   });
+
+  it('emits string concatenation assignment preserving string domain', () => {
+    const result = lower(
+      'string-concat-assign.ts',
+      `export function greet(name: string): string {
+        let msg: string = 'hello ';
+        msg += name;
+        return msg;
+      }`,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+    expect(output).toContain('+=');
+  });
+
+  it('emits postfix increment and decrement operators on number domain', () => {
+    const result = lower(
+      'postfix-ops.ts',
+      `export function tick(x: number): number {
+        let a: number = x;
+        a++;
+        a--;
+        return a;
+      }`,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+    expect(output).toContain('++');
+    expect(output).toContain('--');
+  });
+
+  it('emits prefix increment and decrement operators on number domain', () => {
+    const result = lower(
+      'prefix-inc-dec.ts',
+      `export function preStep(x: number): number {
+        let a: number = x;
+        ++a;
+        --a;
+        return a;
+      }`,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+    expect(output).toContain('++');
+    expect(output).toContain('--');
+  });
+
+  it('emits module constant variable declaration', () => {
+    const result = lower('module-var.ts', 'export const VALUE: number = 42;');
+    const output = emitIrModuleHaxe(result.module).contents;
+    expect(output).toContain('final');
+    expect(output).toContain('42');
+  });
+
+  it('emits mutable module variable declaration', () => {
+    const result = lower('module-var-mut.ts', 'export let count: number = 0;');
+    const output = emitIrModuleHaxe(result.module).contents;
+    expect(output).toContain('var');
+    expect(output).toContain('0');
+  });
+
+  it('emits regex literal with flags', () => {
+    const result = lower(
+      'regex.ts',
+      `export function test(s: string): boolean {
+        const r = /^hello/i;
+        return r.test(s);
+      }`,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+    expect(output).toContain('~/^hello/i');
+  });
+
+  it('emits nullish check lowered to null comparison', () => {
+    const result = lower(
+      'null-check.ts',
+      `export function isNull(x: number | null): boolean {
+        return x === null;
+      }`,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+    expect(output).toContain('== null');
+  });
+
+  it('emits string equality comparison', () => {
+    const result = lower(
+      'string-eq.ts',
+      `export function same(a: string, b: string): boolean {
+        return a === b;
+      }`,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+    expect(output).toContain('==');
+  });
+
+  it('emits assignment compound operators preserving number domain', () => {
+    const result = lower(
+      'compound-assign.ts',
+      `export function accum(x: number): number {
+        let a: number = x;
+        a += 1;
+        a -= 2;
+        a *= 3;
+        a /= 4;
+        a %= 5;
+        return a;
+      }`,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+    expect(output).toContain('+=');
+    expect(output).toContain('-=');
+    expect(output).toContain('*=');
+    expect(output).toContain('/=');
+    expect(output).toContain('%=');
+  });
 });
