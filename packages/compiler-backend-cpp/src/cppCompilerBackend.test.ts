@@ -4738,6 +4738,13 @@ export function preferred(): number { return NativeSurface.preferredFormat; }`,
     expect(output).toContain('double y');
   });
 
+  it('emits type alias object struct with ReferenceEnabled under flight-cpp profile', () => {
+    const output = emitIrModuleCpp(lower('point-ref.ts', 'export type Point = { x: number; y: number };').module, {
+      runtimeProfile: 'flight-cpp',
+    }).contents;
+    expect(output).toContain('struct Point : public flight::ReferenceEnabled');
+  });
+
   it('emits async method with coroutine include', () => {
     const output = emitIrModuleCpp(
       lower(

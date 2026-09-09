@@ -7526,6 +7526,104 @@ describe('emitIrModuleHaxe assignment operator lowering', () => {
     expect(output).toContain('v = true');
   });
 
+  it('emits logical-or assignment on boolean as negated conditional', () => {
+    const output = emitIrModuleHaxe(
+      lower(
+        'or-assign-bool.ts',
+        'export function ensure(x: boolean): boolean { let v: boolean = x; v ||= true; return v; }',
+      ).module,
+    ).contents;
+    expect(output).toContain('if (!v)');
+    expect(output).toContain('v = true');
+  });
+
+  it('emits logical-or assignment on number as zero/NaN check', () => {
+    const output = emitIrModuleHaxe(
+      lower('or-assign-num.ts', 'export function ensure(x: number): number { let v: number = x; v ||= 1; return v; }')
+        .module,
+    ).contents;
+    expect(output).toContain('== 0.0 || Math.isNaN(');
+  });
+
+  it('emits logical-and assignment on number as truthiness check', () => {
+    const output = emitIrModuleHaxe(
+      lower('and-assign-num.ts', 'export function clamp(x: number): number { let v: number = x; v &&= 0; return v; }')
+        .module,
+    ).contents;
+    expect(output).toContain('!= 0.0 && !Math.isNaN(');
+  });
+
+  it('emits logical-or assignment on string as empty check', () => {
+    const output = emitIrModuleHaxe(
+      lower(
+        'or-assign-str.ts',
+        'export function ensure(x: string): string { let v: string = x; v ||= "default"; return v; }',
+      ).module,
+    ).contents;
+    expect(output).toContain('== ""');
+  });
+
+  it('emits logical-and assignment on string as non-empty check', () => {
+    const output = emitIrModuleHaxe(
+      lower(
+        'and-assign-str.ts',
+        'export function replace(x: string): string { let v: string = x; v &&= "replaced"; return v; }',
+      ).module,
+    ).contents;
+    expect(output).toContain('!= ""');
+  });
+
+  it('emits ||= on boolean as negated conditional assignment', () => {
+    const output = emitIrModuleHaxe(
+      lower(
+        'or-bool-assign.ts',
+        'export function use(x: boolean): boolean { let v: boolean = x; v ||= true; return v; }',
+      ).module,
+    ).contents;
+    expect(output).toContain('if (!v)');
+    expect(output).toContain('v = true');
+  });
+
+  it('emits ||= on number as truthiness-checked assignment', () => {
+    const output = emitIrModuleHaxe(
+      lower('or-num-assign.ts', 'export function use(x: number): number { let v: number = x; v ||= 5; return v; }')
+        .module,
+    ).contents;
+    expect(output).toContain('v == 0.0 || Math.isNaN(v)');
+    expect(output).toContain('v = 5');
+  });
+
+  it('emits &&= on number as truthiness-checked assignment', () => {
+    const output = emitIrModuleHaxe(
+      lower('and-num-assign.ts', 'export function use(x: number): number { let v: number = x; v &&= 0; return v; }')
+        .module,
+    ).contents;
+    expect(output).toContain('v != 0.0 && !Math.isNaN(v)');
+    expect(output).toContain('v = 0');
+  });
+
+  it('emits ||= on string as emptiness-checked assignment', () => {
+    const output = emitIrModuleHaxe(
+      lower(
+        'or-str-assign.ts',
+        'export function use(x: string): string { let v: string = x; v ||= "fallback"; return v; }',
+      ).module,
+    ).contents;
+    expect(output).toContain('v == ""');
+    expect(output).toContain('v = "fallback"');
+  });
+
+  it('emits &&= on string as non-empty-checked assignment', () => {
+    const output = emitIrModuleHaxe(
+      lower(
+        'and-str-assign.ts',
+        'export function use(x: string): string { let v: string = x; v &&= "replaced"; return v; }',
+      ).module,
+    ).contents;
+    expect(output).toContain('v != ""');
+    expect(output).toContain('v = "replaced"');
+  });
+
   it('emits nullish-coalescing assignment as null check', () => {
     const output = emitIrModuleHaxe(
       lower(
@@ -7534,6 +7632,17 @@ describe('emitIrModuleHaxe assignment operator lowering', () => {
       ).module,
     ).contents;
     expect(output).toContain('== null');
+  });
+
+  it('refuses ||= on unknown domain requiring semantic lowering', () => {
+    expect(() =>
+      emitIrModuleHaxe(
+        lower(
+          'or-unknown.ts',
+          'export function use(x: unknown): unknown { let v: unknown = x; v ||= "fallback"; return v; }',
+        ).module,
+      ),
+    ).toThrow('requires Haxe semantic lowering');
   });
 });
 
