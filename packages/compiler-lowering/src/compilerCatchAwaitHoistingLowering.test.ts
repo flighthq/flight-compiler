@@ -109,6 +109,18 @@ describe('createCompilerLoweringPassCatchAwaitHoisting', () => {
     expect(pass.verifyIrModule(output)).toEqual({ kind: 'valid' });
   });
 
+  it('preserves a for-loop without an initializer during catch-await lowering', () => {
+    const pass = createCompilerLoweringPassCatchAwaitHoisting();
+    const output = lowerIrModuleWithCompilerPasses(
+      lower(
+        'export async function loop(task: Promise<number>, backup: Promise<number>, limit: number): Promise<void> { let i: number = 0; for (; i < limit; i++) { try { await task; } catch { await backup; } } }',
+      ),
+      [pass],
+    );
+
+    expect(pass.verifyIrModule(output)).toEqual({ kind: 'valid' });
+  });
+
   it('recurses into class constructor bodies', () => {
     const pass = createCompilerLoweringPassCatchAwaitHoisting();
     const output = lowerIrModuleWithCompilerPasses(
