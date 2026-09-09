@@ -1,0 +1,42 @@
+[
+  {
+    "call": "narrow_typeof",
+    "arguments": ["hello"],
+    "returns": "string"
+  },
+  {
+    "call": "narrow_typeof",
+    "arguments": [42],
+    "returns": "string"
+  },
+  {
+    "call": "narrow_typeof_number",
+    "arguments": [42],
+    "returns": "number"
+  },
+  {
+    "call": "narrow_typeof_number",
+    "arguments": ["hello"],
+    "returns": "number"
+  },
+  {
+    "call": "narrow_branch",
+    "arguments": ["hello", true],
+    "returns": "string"
+  },
+  {
+    "call": "narrow_branch",
+    "arguments": ["hello", false],
+    "returns": "string"
+  },
+  {
+    "call": "assert_string",
+    "arguments": ["test"],
+    "returns": "string"
+  },
+  {
+    "call": "assert_number",
+    "arguments": [7],
+    "returns": "number"
+  }
+]

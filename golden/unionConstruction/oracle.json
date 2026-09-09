@@ -1,0 +1,32 @@
+[
+  {
+    "call": "from_call",
+    "arguments": [true],
+    "returns": "string"
+  },
+  {
+    "call": "from_call",
+    "arguments": [false],
+    "returns": "string"
+  },
+  {
+    "call": "from_conditional",
+    "arguments": [true],
+    "returns": "string"
+  },
+  {
+    "call": "from_conditional",
+    "arguments": [false],
+    "returns": "number"
+  },
+  {
+    "call": "from_binary",
+    "arguments": [3, 4],
+    "returns": "number"
+  },
+  {
+    "call": "from_unary",
+    "arguments": [5],
+    "returns": "number"
+  }
+]
