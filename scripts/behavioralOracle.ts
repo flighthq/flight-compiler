@@ -77,6 +77,10 @@ function isDateArgument(value: unknown): value is { date: number } {
   );
 }
 
+function isRecordArgument(value: unknown): value is Readonly<Record<string, unknown>> & { $type: string } {
+  return typeof value === 'object' && value !== null && !Array.isArray(value) && '$type' in value;
+}
+
 interface OracleDivergence {
   readonly actual: string;
   readonly expected: string;
@@ -376,14 +380,15 @@ function runRustOracle(fixture: string, cases: readonly OracleCase[]): readonly 
       'fn main() {',
       ...cases.flatMap((oracleCase, caseIndex) => {
         const refPositions = new Set(oracleCase.rustRef ?? []);
+        const rustModule = modules[0] ?? 'fixture';
         const bindings: string[] = [];
         const args = oracleCase.arguments.map((arg, argIndex) => {
           if (refPositions.has(argIndex)) {
             const name = `__ref_${String(caseIndex)}_${String(argIndex)}`;
-            bindings.push(`    let mut ${name} = ${renderRustValue(arg)};`);
+            bindings.push(`    let mut ${name} = ${renderRustValue(arg, rustModule)};`);
             return `&mut ${name}`;
           }
-          return renderRustValue(arg);
+          return renderRustValue(arg, rustModule);
         });
         const invocation = `${modules[0] ?? 'fixture'}::${toSnakeCase(oracleCase.call)}(${args.join(', ')})`;
         const call = oracleCase.awaits ? `flight_runtime::block_on(${invocation})` : invocation;
@@ -534,6 +539,12 @@ function inferCppValueType(value: unknown): string | undefined {
 
 function renderCppValue(value: unknown, hint?: string | null): string {
   if (isDateArgument(value)) return `flight::Date(${renderCppValue(value.date)})`;
+  if (isRecordArgument(value)) {
+    const fields = Object.entries(value)
+      .filter(([key]) => key !== '$type')
+      .map(([key, fieldValue]) => `.${toCppName(key)} = ${renderCppValue(fieldValue)}`);
+    return `flighthq_golden::${value.$type}{${fields.join(', ')}}`;
+  }
   if (isTaskArgument(value)) {
     const type = unwrapCppTaskType(hint) ?? inferCppValueType(value.task);
     if (!type) throw new Error('C++ oracle task argument needs a scalar settled type');
@@ -587,22 +598,41 @@ function renderTypeScriptValue(value: unknown): string {
   if (isDateArgument(value)) return `new Date(${JSON.stringify(value.date)})`;
   if (isTaskArgument(value)) return `Promise.resolve(${JSON.stringify(value.task)})`;
   if (isRejectedTaskArgument(value)) return `Promise.reject(${JSON.stringify(value.rejects)})`;
+  if (isRecordArgument(value)) {
+    const fields = Object.entries(value)
+      .filter(([key]) => key !== '$type')
+      .map(([key, fieldValue]) => `${key}: ${renderTypeScriptValue(fieldValue)}`);
+    return `{${fields.join(', ')}}`;
+  }
   return JSON.stringify(value);
 }
 
 function renderHaxeValue(value: unknown): string {
+  if (isRecordArgument(value)) {
+    const fields = Object.entries(value)
+      .filter(([key]) => key !== '$type')
+      .map(([key, fieldValue]) => `${key}: ${renderHaxeValue(fieldValue)}`);
+    return `{${fields.join(', ')}}`;
+  }
   if (isTaskArgument(value)) return `flighthq._internal._Promise.resolve(${renderHaxeValue(value.task)})`;
   if (isRejectedTaskArgument(value)) return `flighthq._internal._Promise.reject(${renderHaxeValue(value.rejects)})`;
   if (Array.isArray(value)) return `[${value.map(renderHaxeValue).join(', ')}]`;
   return JSON.stringify(value);
 }
 
-function renderRustValue(value: unknown): string {
-  if (isTaskArgument(value)) return `flight_runtime::FlightTask::ready(${renderRustValue(value.task)})`;
+function renderRustValue(value: unknown, rustModule?: string): string {
+  if (isRecordArgument(value)) {
+    const module = rustModule ?? 'fixture';
+    const fields = Object.entries(value)
+      .filter(([key]) => key !== '$type')
+      .map(([key, fieldValue]) => `${toSnakeCase(key)}: ${renderRustValue(fieldValue, rustModule)}`);
+    return `${module}::${value.$type} { ${fields.join(', ')} }`;
+  }
+  if (isTaskArgument(value)) return `flight_runtime::FlightTask::ready(${renderRustValue(value.task, rustModule)})`;
   if (isRejectedTaskArgument(value))
     return `flight_runtime::FlightTask::reject(${JSON.stringify(String(value.rejects))})`;
 
-  if (Array.isArray(value)) return `vec![${value.map(renderRustValue).join(', ')}]`;
+  if (Array.isArray(value)) return `vec![${value.map((item) => renderRustValue(item, rustModule)).join(', ')}]`;
   if (typeof value === 'string') return `${JSON.stringify(value)}.to_owned()`;
   if (typeof value === 'number') return Number.isInteger(value) ? `${String(value)}.0` : String(value);
   return String(value);

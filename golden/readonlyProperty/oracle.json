@@ -1,0 +1,22 @@
+[
+  {
+    "call": "getArea",
+    "arguments": [{ "$type": "Config", "width": 10, "height": 5, "label": "test" }],
+    "returns": "number"
+  },
+  {
+    "call": "getArea",
+    "arguments": [{ "$type": "Config", "width": 0, "height": 100, "label": "zero" }],
+    "returns": "number"
+  },
+  {
+    "call": "getLabel",
+    "arguments": [{ "$type": "Config", "width": 3, "height": 4, "label": "small" }],
+    "returns": "string"
+  },
+  {
+    "call": "getPerimeter",
+    "arguments": [{ "$type": "Config", "width": 10, "height": 5, "label": "rect" }],
+    "returns": "number"
+  }
+]
