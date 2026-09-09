@@ -1556,7 +1556,6 @@ describe('emitIrModuleCpp', () => {
     );
   });
 
-
   it('emits tuple literal with absent element as std::nullopt', () => {
     const result = lower('tuple-absent.ts', 'export function partial(): [number, number?] { return [1]; }');
     const emitted = emitIrModuleCpp(result.module);
@@ -2423,6 +2422,18 @@ describe('emitIrModuleCpp', () => {
     const result = lower('math-pow.ts', 'export function cube(x: number): number { return Math.pow(x, 3); }');
     const emitted = emitIrModuleCpp(result.module);
     expect(emitted.contents).toContain('std::pow');
+  });
+
+  it('emits every source exponentiation form through the semantic runtime wrapper', () => {
+    const result = lower(
+      'semantic-power.ts',
+      'export function direct(a: number, b: number): number { return Math.pow(a, b) + a ** b; } export function assign(a: number, b: number): number { a **= b; return a; } export function capture(a: number, b: number): () => number { return (): number => { a **= b; return a; }; }',
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+    expect(emitted.contents).toContain('flight::power(a, b) + flight::power(a, b)');
+    expect(emitted.contents).toContain('assignment_target = flight::power(assignment_target, b)');
+    expect(emitted.contents).toContain('binding_value = flight::power(binding_value, b)');
+    expect(emitted.contents).not.toContain('std::pow');
   });
 
   it('emits Math.round through the semantic runtime wrapper', () => {

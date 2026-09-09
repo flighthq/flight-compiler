@@ -639,6 +639,9 @@ function emitExpression(
       }
       const left = emitAssignmentTargetCpp(expression.left, context);
       if (expression.operator === '**=') {
+        if (getCppRuntimeProfile(context.options) === 'flight-cpp') {
+          return emitExpandedAssignmentCpp(left, `flight::power(assignment_target, ${right})`);
+        }
         context.includes.add('cmath');
         return emitExpandedAssignmentCpp(left, `std::pow(assignment_target, ${right})`);
       }
@@ -691,6 +694,9 @@ function emitExpression(
         expression.semantics.left.flow === 'number' &&
         expression.semantics.right.flow === 'number'
       ) {
+        if (getCppRuntimeProfile(context.options) === 'flight-cpp') {
+          return `flight::power(${emitExpression(expression.left, context)}, ${emitExpression(expression.right, context)})`;
+        }
         context.includes.add('cmath');
         return `std::pow(${emitExpression(expression.left, context)}, ${emitExpression(expression.right, context)})`;
       }
@@ -2288,8 +2294,7 @@ function emitSharedCaptureAssignmentCpp(
   }
   const bindingValue = optionalStorage ? 'binding_value.value()' : 'binding_value';
   if (operator === '**=') {
-    context.includes.add('cmath');
-    return emitSharedCaptureUpdateCpp(target, `${bindingValue} = std::pow(${bindingValue}, ${right});`);
+    return emitSharedCaptureUpdateCpp(target, `${bindingValue} = flight::power(${bindingValue}, ${right});`);
   }
   if (operator === '>>>=') {
     if (getCppRuntimeProfile(context.options) === 'flight-cpp') {

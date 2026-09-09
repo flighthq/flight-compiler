@@ -123,6 +123,7 @@ describe('getCompilerRuntimeExternalMemberTargetCpp', () => {
 
   it('uses JavaScript-compatible numeric wrappers with the semantic runtime', () => {
     expect(getCompilerRuntimeExternalMemberTargetCpp('Math', 'round', 'flight-cpp')).toBe('flight::round');
+    expect(getCompilerRuntimeExternalMemberTargetCpp('Math', 'pow', 'flight-cpp')).toBe('flight::power');
     expect(getCompilerRuntimeExternalMemberTargetCpp('Math', 'max', 'flight-cpp')).toBe('flight::maximum');
     expect(getCompilerRuntimeExternalMemberTargetCpp('Math', 'min', 'flight-cpp')).toBe('flight::minimum');
   });
