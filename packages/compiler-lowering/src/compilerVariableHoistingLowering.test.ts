@@ -998,6 +998,42 @@ describe('createCompilerLoweringPassVariableHoisting', () => {
     ];
     const pass = createCompilerLoweringPassVariableHoisting();
     expect(pass.verifyIrModule(clone)).toMatchObject({ kind: 'invalid' });
+
+    const restOnly = structuredClone(module);
+    const restFn = restOnly.declarations[0];
+    if (restFn?.kind !== 'function') throw new Error('Expected function');
+    const restObjVar: IrVariable = {
+      initializer: { kind: 'literal', value: 0 } as unknown as IrExpression,
+      mutable: true,
+      pattern: {
+        kind: 'object',
+        properties: [
+          {
+            key: { kind: 'named', name: 'x' },
+            pattern: { binding: binding('x', 'block'), kind: 'binding' },
+          },
+        ],
+        rest: { binding: binding('restVar', 'function'), kind: 'binding' },
+        scope: 'function',
+      },
+      type: { kind: 'unknown', source: 'object' },
+    } as unknown as IrVariable;
+    const restArrVar: IrVariable = {
+      initializer: { kind: 'literal', value: 0 } as unknown as IrExpression,
+      mutable: true,
+      pattern: {
+        elements: [{ pattern: { binding: binding('head', 'block'), kind: 'binding' } }],
+        kind: 'array',
+        rest: { binding: binding('tailVar', 'function'), kind: 'binding' },
+        scope: 'function',
+      },
+      type: { kind: 'unknown', source: 'array' },
+    } as unknown as IrVariable;
+    (restFn as unknown as { body: IrStatement[] }).body = [
+      { declarations: [restObjVar, restArrVar], kind: 'variable' as const },
+      ...restFn.body,
+    ];
+    expect(pass.verifyIrModule(restOnly)).toMatchObject({ kind: 'invalid' });
   });
 
   it('lowers block-scoped object and array patterns in a for-loop initializer via direct pass invocation', () => {
@@ -1010,7 +1046,7 @@ describe('createCompilerLoweringPassVariableHoisting', () => {
       kind: 'identifier',
       reference: { binding: binding('source'), kind: 'binding' },
     } as unknown as IrExpression;
-    const objectPattern: IrVariable = {
+    const objectWithRest: IrVariable = {
       initializer: varIdent,
       mutable: false,
       pattern: {
@@ -1024,17 +1060,24 @@ describe('createCompilerLoweringPassVariableHoisting', () => {
             },
             pattern: { binding: binding('computed'), kind: 'binding' },
           },
-          {
-            key: { kind: 'named', name: 'value' },
-            pattern: { binding: binding('value'), kind: 'binding' },
-          },
+          { key: { kind: 'named', name: 'value' }, pattern: { binding: binding('value'), kind: 'binding' } },
         ],
         rest: { binding: binding('rest'), kind: 'binding' },
         scope: 'block',
       },
       type: { kind: 'unknown', source: 'object' },
     } as unknown as IrVariable;
-    const arrayPattern: IrVariable = {
+    const objectNoRest: IrVariable = {
+      initializer: varIdent,
+      mutable: false,
+      pattern: {
+        kind: 'object',
+        properties: [{ key: { kind: 'named', name: 'a' }, pattern: { binding: binding('a'), kind: 'binding' } }],
+        scope: 'block',
+      },
+      type: { kind: 'unknown', source: 'object' },
+    } as unknown as IrVariable;
+    const arrayWithRest: IrVariable = {
       initializer: varIdent,
       mutable: false,
       pattern: {
@@ -1052,9 +1095,25 @@ describe('createCompilerLoweringPassVariableHoisting', () => {
       },
       type: { kind: 'unknown', source: 'array' },
     } as unknown as IrVariable;
+    const arrayNoRest: IrVariable = {
+      initializer: varIdent,
+      mutable: false,
+      pattern: {
+        elements: [{ pattern: { binding: binding('only'), kind: 'binding' } }],
+        kind: 'array',
+        scope: 'block',
+      },
+      type: { kind: 'unknown', source: 'array' },
+    } as unknown as IrVariable;
+    const bindingKind: IrVariable = {
+      initializer: varIdent,
+      mutable: false,
+      pattern: { binding: binding('simple'), kind: 'binding' },
+      type: { kind: 'unknown', source: 'binding' },
+    } as unknown as IrVariable;
     const forLoop: IrStatement = {
       body: { kind: 'block', statements: [] },
-      initializer: [objectPattern, arrayPattern],
+      initializer: [objectWithRest, objectNoRest, arrayWithRest, arrayNoRest, bindingKind],
       kind: 'for',
     } as unknown as IrStatement;
     (declaration as unknown as { body: IrStatement[] }).body = [forLoop, ...declaration.body];
