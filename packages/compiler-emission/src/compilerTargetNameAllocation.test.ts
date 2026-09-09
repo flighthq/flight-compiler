@@ -1010,6 +1010,82 @@ describe('createIrModuleTargetNameAllocation', () => {
     }
   });
 
+  it('throws on an unrecognized declaration kind', () => {
+    const module = createFixtureModule({
+      declarations: [{ kind: 'unknownDecl' } as never],
+    });
+    expect(() => allocateIds(module)).toThrow(TypeError);
+    expect(() => allocateIds(module)).toThrow('Unknown neutral IR kind unknownDecl');
+  });
+
+  it('throws on an unrecognized expression kind inside a function body', () => {
+    const declBinding = { ...createBinding('host', 'host'), kind: 'function' as const, scope: 'module' as const };
+    const module = createFixtureModule({
+      declarations: [
+        {
+          async: false,
+          binding: declBinding,
+          body: [
+            {
+              declarations: [
+                { binding: createBinding('v', 'v'), initializer: { kind: 'alien' } as never, mutable: false },
+              ],
+              kind: 'variable' as const,
+            },
+          ],
+          exported: false,
+          kind: 'function' as const,
+          origin: declBinding,
+          overloads: [],
+          parameters: [],
+          returns: primitiveType,
+          typeParameters: [],
+        },
+      ],
+    });
+    expect(() => allocateIds(module)).toThrow(TypeError);
+    expect(() => allocateIds(module)).toThrow('Unknown neutral IR kind alien');
+  });
+
+  it('throws on an unrecognized statement kind inside a function body', () => {
+    const declBinding = { ...createBinding('host', 'host'), kind: 'function' as const, scope: 'module' as const };
+    const module = createFixtureModule({
+      declarations: [
+        {
+          async: false,
+          binding: declBinding,
+          body: [{ kind: 'unknownStmt' } as never],
+          exported: false,
+          kind: 'function' as const,
+          origin: declBinding,
+          overloads: [],
+          parameters: [],
+          returns: primitiveType,
+          typeParameters: [],
+        },
+      ],
+    });
+    expect(() => allocateIds(module)).toThrow(TypeError);
+    expect(() => allocateIds(module)).toThrow('Unknown neutral IR kind unknownStmt');
+  });
+
+  it('throws on an unrecognized binding pattern kind', () => {
+    const module = createFixtureModule({
+      declarations: [
+        {
+          declarationKind: 'const' as const,
+          exported: false,
+          kind: 'variable' as const,
+          mutable: false,
+          origin: createBinding('v', 'v'),
+          pattern: { kind: 'unknownPattern' } as never,
+        },
+      ],
+    });
+    expect(() => allocateIds(module)).toThrow(TypeError);
+    expect(() => allocateIds(module)).toThrow('Unknown neutral IR kind unknownPattern');
+  });
+
   it('collects pattern variable bindings in statements', () => {
     const patternBinding = createBinding('pv', 'pv');
     const declBinding = { ...createBinding('patHost', 'patHost'), kind: 'function' as const, scope: 'module' as const };
