@@ -10,8 +10,8 @@
     "returns": "string"
   },
   {
-    "call": "highest",
-    "arguments": [],
-    "returns": "number"
+    "call": "describe",
+    "arguments": [{ "$type": "Tagged", "name": "beta", "tag": -5 }],
+    "returns": "string"
   }
 ]
