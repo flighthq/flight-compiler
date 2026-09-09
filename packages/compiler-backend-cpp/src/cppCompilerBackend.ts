@@ -637,11 +637,18 @@ function emitExpression(
         return emitExpandedAssignmentCpp(left, `std::pow(assignment_target, ${right})`);
       }
       if (expression.operator === '>>>=') {
+        if (getCppRuntimeProfile(context.options) === 'flight-cpp') {
+          return emitExpandedAssignmentCpp(left, `flight::unsigned_right_shift(assignment_target, ${right})`);
+        }
         context.includes.add('cstdint');
         return emitExpandedAssignmentCpp(
           left,
           `static_cast<double>(static_cast<uint32_t>(static_cast<int32_t>(assignment_target)) >> static_cast<uint32_t>(${right}))`,
         );
+      }
+      const bitwiseOperator = getCppBitwiseAssignmentOperator(expression.operator);
+      if (bitwiseOperator && getCppRuntimeProfile(context.options) === 'flight-cpp') {
+        return emitExpandedAssignmentCpp(left, emitBitwiseOperationCpp(bitwiseOperator, 'assignment_target', right));
       }
       if (expression.operator === '&&=' || expression.operator === '||=' || expression.operator === '??=') {
         return emitLogicalAssignmentCpp(left, expression.operator, right);
@@ -686,6 +693,9 @@ function emitExpression(
         expression.semantics.left.flow === 'number' &&
         expression.semantics.right.flow === 'number'
       ) {
+        if (getCppRuntimeProfile(context.options) === 'flight-cpp') {
+          return `flight::unsigned_right_shift(${emitExpression(expression.left, context)}, ${emitExpression(expression.right, context)})`;
+        }
         context.includes.add('cstdint');
         return `static_cast<double>(static_cast<uint32_t>(static_cast<int32_t>(${emitExpression(expression.left, context)})) >> static_cast<uint32_t>(${emitExpression(expression.right, context)}))`;
       }
@@ -710,6 +720,9 @@ function emitExpression(
       const left = emitExpression(expression.left, context, isThisAccess(expression.left) ? rightType : undefined);
       const right = emitExpression(expression.right, context, isThisAccess(expression.right) ? leftType : undefined);
       if (bitwise) {
+        if (getCppRuntimeProfile(context.options) === 'flight-cpp') {
+          return emitBitwiseOperationCpp(expression.operator, left, right);
+        }
         context.includes.add('cstdint');
         return `static_cast<double>(static_cast<int32_t>(${left}) ${op} static_cast<int32_t>(${right}))`;
       }
@@ -1036,6 +1049,7 @@ function emitExpression(
       }
       const operand = emitExpression(expression.operand, context);
       if (expression.operator === '~') {
+        if (getCppRuntimeProfile(context.options) === 'flight-cpp') return `flight::bitwise_not(${operand})`;
         context.includes.add('cstdint');
         return `static_cast<double>(~static_cast<int32_t>(${operand}))`;
       }
@@ -2264,10 +2278,23 @@ function emitSharedCaptureAssignmentCpp(
     return emitSharedCaptureUpdateCpp(target, `${bindingValue} = std::pow(${bindingValue}, ${right});`);
   }
   if (operator === '>>>=') {
+    if (getCppRuntimeProfile(context.options) === 'flight-cpp') {
+      return emitSharedCaptureUpdateCpp(
+        target,
+        `${bindingValue} = flight::unsigned_right_shift(${bindingValue}, ${right});`,
+      );
+    }
     context.includes.add('cstdint');
     return emitSharedCaptureUpdateCpp(
       target,
       `${bindingValue} = static_cast<double>(static_cast<uint32_t>(static_cast<int32_t>(${bindingValue})) >> static_cast<uint32_t>(${right}));`,
+    );
+  }
+  const bitwiseOperator = getCppBitwiseAssignmentOperator(operator);
+  if (bitwiseOperator && getCppRuntimeProfile(context.options) === 'flight-cpp') {
+    return emitSharedCaptureUpdateCpp(
+      target,
+      `${bindingValue} = ${emitBitwiseOperationCpp(bitwiseOperator, bindingValue, right)};`,
     );
   }
   if (operator === '&&=') {
@@ -2292,6 +2319,35 @@ function emitSharedCaptureUpdateCpp(target: string, mutation: string, returnExpr
 
 function emitExpandedAssignmentCpp(left: string, value: string): string {
   return `([&]() { auto&& assignment_target = ${left}; assignment_target = ${value}; return assignment_target; }())`;
+}
+
+function emitBitwiseOperationCpp(
+  operator: Extract<IrBinaryOperator, '&' | '<<' | '>>' | '^' | '|'>,
+  left: string,
+  right: string,
+): string {
+  const functionName =
+    operator === '&'
+      ? 'bitwise_and'
+      : operator === '|'
+        ? 'bitwise_or'
+        : operator === '^'
+          ? 'bitwise_xor'
+          : operator === '<<'
+            ? 'left_shift'
+            : 'signed_right_shift';
+  return `flight::${functionName}(${left}, ${right})`;
+}
+
+function getCppBitwiseAssignmentOperator(
+  operator: Extract<IrExpression, { kind: 'assignment' }>['operator'],
+): Extract<IrBinaryOperator, '&' | '<<' | '>>' | '^' | '|'> | undefined {
+  if (operator === '&=') return '&';
+  if (operator === '|=') return '|';
+  if (operator === '^=') return '^';
+  if (operator === '<<=') return '<<';
+  if (operator === '>>=') return '>>';
+  return undefined;
 }
 
 function emitLogicalAssignmentCpp(

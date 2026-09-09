@@ -38,10 +38,10 @@ inline flight::String build_string(flight::String base, double count) {
 
 inline double bit_manipulate(double value, double mask) {
   double result = value;
-  result |= mask;
-  result &= 255.0;
-  result ^= 15.0;
-  result <<= 1.0;
+  ([&]() { auto&& assignment_target = result; assignment_target = flight::bitwise_or(assignment_target, mask); return assignment_target; }());
+  ([&]() { auto&& assignment_target = result; assignment_target = flight::bitwise_and(assignment_target, 255.0); return assignment_target; }());
+  ([&]() { auto&& assignment_target = result; assignment_target = flight::bitwise_xor(assignment_target, 15.0); return assignment_target; }());
+  ([&]() { auto&& assignment_target = result; assignment_target = flight::left_shift(assignment_target, 1.0); return assignment_target; }());
   return result;
 }
 

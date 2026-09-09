@@ -141,6 +141,23 @@ describe('emitIrModuleCpp', () => {
     expect(emitted.contents).toContain('static_assert(flight::runtime_contract.cpp_abi == 2');
   });
 
+  it('uses overflow-safe source bitwise semantics in the runtime profile', () => {
+    const result = lower(
+      'bitwise-semantics.ts',
+      'export function binary(a: number, b: number): number { return (a & b) + (a | b) + (a ^ b) + (a << b) + (a >> b) + (a >>> b); } export function unary(a: number): number { return ~a; } export function assign(a: number, b: number): number { a &= b; a |= b; a ^= b; a <<= b; a >>= b; a >>>= b; return a; }',
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+
+    expect(emitted.contents).toContain('flight::bitwise_and(a, b)');
+    expect(emitted.contents).toContain('flight::bitwise_or(a, b)');
+    expect(emitted.contents).toContain('flight::bitwise_xor(a, b)');
+    expect(emitted.contents).toContain('flight::left_shift(a, b)');
+    expect(emitted.contents).toContain('flight::signed_right_shift(a, b)');
+    expect(emitted.contents).toContain('flight::unsigned_right_shift(a, b)');
+    expect(emitted.contents).toContain('flight::bitwise_not(a)');
+    expect(emitted.contents).not.toContain('static_cast<int32_t>');
+  });
+
   it('uses portable runtime constants and semantic containers for static iteration and rest values', () => {
     const result = lower(
       'portable.ts',

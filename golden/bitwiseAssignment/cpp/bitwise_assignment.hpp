@@ -9,31 +9,31 @@ namespace flighthq_golden {
 
 inline double mask_bits(double value, double mask) {
   double result = value;
-  result &= mask;
+  ([&]() { auto&& assignment_target = result; assignment_target = flight::bitwise_and(assignment_target, mask); return assignment_target; }());
   return result;
 }
 
 inline double set_bits(double value, double bits) {
   double result = value;
-  result |= bits;
+  ([&]() { auto&& assignment_target = result; assignment_target = flight::bitwise_or(assignment_target, bits); return assignment_target; }());
   return result;
 }
 
 inline double toggle_bits(double value, double bits) {
   double result = value;
-  result ^= bits;
+  ([&]() { auto&& assignment_target = result; assignment_target = flight::bitwise_xor(assignment_target, bits); return assignment_target; }());
   return result;
 }
 
 inline double shift_left(double value, double count) {
   double result = value;
-  result <<= count;
+  ([&]() { auto&& assignment_target = result; assignment_target = flight::left_shift(assignment_target, count); return assignment_target; }());
   return result;
 }
 
 inline double shift_right(double value, double count) {
   double result = value;
-  result >>= count;
+  ([&]() { auto&& assignment_target = result; assignment_target = flight::signed_right_shift(assignment_target, count); return assignment_target; }());
   return result;
 }
 
