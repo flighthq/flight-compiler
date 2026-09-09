@@ -11963,3 +11963,111 @@ describe('emitIrModuleRust labeled break', () => {
     expect(output).toContain('break');
   });
 });
+
+describe('emitIrModuleRust array reduce fold', () => {
+  it('emits fold with reordered arguments for array reduce', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'reduce.ts',
+        `export function sum(arr: number[]): number {
+           return arr.reduce((acc: number, item: number): number => acc + item, 0);
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('.fold(');
+  });
+});
+
+describe('emitIrModuleRust undefined comparison left', () => {
+  it('emits is_some when undefined is compared on the left', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'undef-left.ts',
+        `export function check(x: number | undefined): boolean {
+           return undefined !== x;
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('.is_some()');
+  });
+});
+
+describe('emitIrModuleRust deferred binding variable', () => {
+  it('emits deferred binding without mut for later-assigned variable', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'deferred-var.ts',
+        `export function f(): number | null {
+           let x: number | null;
+           x = 42;
+           return x;
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('let x: Option<f64>;');
+    expect(output).not.toContain('let mut x');
+  });
+});
+
+describe('emitIrModuleRust callback variable initializer', () => {
+  it('wraps function-typed variable initializer in Rc', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'callback-var.ts',
+        `export function factory(): (x: number) => number {
+           const fn: (x: number) => number = (x: number): number => x * 2;
+           return fn;
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('Rc');
+  });
+});
+
+describe('emitIrModuleRust for-in loop', () => {
+  it('emits for-in loop with closed key evidence', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'for-in.ts',
+        `export function keys(obj: { a: number; b: number }): string[] {
+           const result: string[] = [];
+           for (const key in obj) {
+             result.push(key);
+           }
+           return result;
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('for');
+    expect(output).toContain('"a"');
+    expect(output).toContain('"b"');
+  });
+});
+
+describe('emitIrModuleRust exponentiation operator', () => {
+  it('emits f64 powf for exponentiation', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'pow.ts',
+        `export function square(n: number): number {
+           return n ** 2;
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('f64::powf(');
+  });
+});
+
+describe('emitIrModuleRust unsigned right shift', () => {
+  it('emits unsigned right shift with u32 cast', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'urshr.ts',
+        `export function unsignedShift(a: number, b: number): number {
+           return a >>> b;
+         }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('as u32');
+  });
+});
