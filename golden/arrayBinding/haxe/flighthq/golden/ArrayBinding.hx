@@ -11,13 +11,13 @@ function select(values:Array<Float>):Float {
 
 function selectDefault(values:Array<Dynamic>):Float {
   final arrayPatternValue:Array<Dynamic> = values;
-  final first:Float = (cast (arrayPatternValue[0] ?? 4) : Float);
+  final first:Float = cast((arrayPatternValue[0] ?? 4), Float);
   return first;
 }
 
 function selectRest(values:Array<Dynamic>):Array<Float> {
   final arrayPatternValue:Array<Dynamic> = values;
-  final rest:Array<Float> = (cast arrayPatternValue.slice(1) : Array<Float>);
+  final rest:Array<Float> = cast(arrayPatternValue.slice(1), Array<Float>);
   return rest;
 }
 
@@ -28,7 +28,7 @@ function createValues():Array<Dynamic> {
 
 function selectNestedDefault(values:Array<Dynamic>):Float {
   final arrayPatternValue:Array<Dynamic> = values;
-  final arrayPatternValue_2:Array<Float> = (cast (arrayPatternValue[0] ?? [1]) : Array<Float>);
+  final arrayPatternValue_2:Array<Float> = cast((arrayPatternValue[0] ?? [1]), Array<Float>);
   final first:Float = arrayPatternValue_2[0];
   return first;
 }
@@ -42,7 +42,7 @@ function selectFixedRest(values:Array<Dynamic>):Array<Dynamic> {
 function selectNestedRest(values:Array<Dynamic>):String {
   final arrayPatternValue:Array<Dynamic> = values;
   final arrayPatternValue_2:Array<Dynamic> = arrayPatternValue.slice(1);
-  final second:String = (cast arrayPatternValue_2[0] : String);
+  final second:String = cast(arrayPatternValue_2[0], String);
   return second;
 }
 
@@ -61,7 +61,7 @@ function selectMixedRest(values:Array<Dynamic>):Array<Dynamic> {
 function selectNestedMixedRest(values:Array<Dynamic>):Array<Bool> {
   final arrayPatternValue:Array<Dynamic> = values;
   final arrayPatternValue_2:Array<Dynamic> = arrayPatternValue.slice(1);
-  final tail:Array<Bool> = (cast arrayPatternValue_2.slice(1) : Array<Bool>);
+  final tail:Array<Bool> = cast(arrayPatternValue_2.slice(1), Array<Bool>);
   return tail;
 }
 

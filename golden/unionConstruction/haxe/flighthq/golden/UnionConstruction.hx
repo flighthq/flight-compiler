@@ -22,7 +22,7 @@ function from_unary(n:Float):Dynamic {
 }
 
 function from_cast(input:Dynamic):Dynamic {
-  final value:Dynamic = cast input : String;
+  final value:Dynamic = cast(input, String);
   return value;
 }
 

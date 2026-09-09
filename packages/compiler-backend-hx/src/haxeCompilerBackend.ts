@@ -604,7 +604,7 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
       return `${expression.callee.kind === 'function' ? `(${emitExpression(expression.callee, context)})` : emitExpression(expression.callee, context)}${expression.optional ? '?.' : ''}(${emitCallArgumentsHaxe(expression, context)})`;
     }
     case 'cast':
-      return `(cast ${emitExpression(expression.expression, context)} : ${emitType(expression.type, context)})`;
+      return `cast(${emitExpression(expression.expression, context)}, ${emitType(expression.type, context)})`;
     case 'conditional':
       return `(${emitExpression(expression.condition, context)} ? ${emitExpression(expression.whenTrue, context)} : ${emitExpression(expression.whenFalse, context)})`;
     case 'element':
@@ -687,7 +687,7 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
             getHaxePrimitiveNarrowedTypeName(expression.object.narrowedMember))
           : undefined;
       const object = narrowed
-        ? `(cast ${emitExpression(expression.object, context)} : ${narrowed})`
+        ? `cast(${emitExpression(expression.object, context)}, ${narrowed})`
         : emitExpression(expression.object, context);
       return `${object}${expression.optional ? '?.' : '.'}${safeHaxeName(expression.name)}`;
     }
@@ -1654,7 +1654,7 @@ function emitVariable(variable: Readonly<IrVariable>, context: EmitContext): str
     variable.initializer !== undefined &&
     isIrExpressionDynamicReadHaxe(variable.initializer, context);
   const initializer = variable.initializer
-    ? ` = ${restCast ? `(cast ${emitExpression(variable.initializer, context)} : ${emitType(variable.type!, context)})` : normalizeSourceTextGrouping(emitExpression(variable.initializer, context))}`
+    ? ` = ${restCast ? `cast(${emitExpression(variable.initializer, context)}, ${emitType(variable.type!, context)})` : normalizeSourceTextGrouping(emitExpression(variable.initializer, context))}`
     : '';
   return `${variable.mutable ? 'var' : 'final'} ${getBindingTargetNameHaxe(variable.binding, context)}${type}${initializer};`;
 }

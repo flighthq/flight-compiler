@@ -442,7 +442,7 @@ describe('emitIrModuleHaxe', () => {
     // A tuple with an optional position has no Haxe array type that holds it, so it is
     // `Array<Dynamic>` and reads out of it reach their declared type by cast.
     expect(emitIrModuleHaxe(defaulted.module).contents).toContain(
-      'final first:Float = (cast (arrayPatternValue[0] ?? 0) : Float);',
+      'final first:Float = cast((arrayPatternValue[0] ?? 0), Float);',
     );
     // A tuple written with an explicit `undefined` member is homogeneous, so Haxe can type it and
     // the read needs no cast.
@@ -450,7 +450,7 @@ describe('emitIrModuleHaxe', () => {
       'final first:Float = arrayPatternValue[0] ?? 0;',
     );
     expect(emitIrModuleHaxe(rest.module).contents).toContain(
-      'final rest:Array<Float> = (cast arrayPatternValue.slice(1) : Array<Float>);',
+      'final rest:Array<Float> = cast(arrayPatternValue.slice(1), Array<Float>);',
     );
     expect(emitIrModuleHaxe(nestedDefault.module).contents).toContain('(arrayPatternValue[0] ?? [1])');
     expect(emitIrModuleHaxe(fixedRest.module).contents).toContain(
@@ -1394,7 +1394,7 @@ describe('emitIrModuleHaxe expression coverage', () => {
     );
     const output = emitIrModuleHaxe(result.module).contents;
 
-    expect(output).toContain('cast value : Float');
+    expect(output).toContain('cast(value, Float)');
   });
 
   it('emits object rest with named and computed exclusions', () => {
@@ -1422,7 +1422,7 @@ describe('emitIrModuleHaxe expression coverage', () => {
     );
     const output = emitIrModuleHaxe(result.module).contents;
 
-    expect(output).toContain('(cast record : Dynamic)');
+    expect(output).toContain('cast(record, Dynamic)');
   });
 
   it('emits undefined-default as null-coalescing', () => {
