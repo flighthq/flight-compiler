@@ -44,4 +44,16 @@ describe('normalizeCompilerStructuralValueCanonical', () => {
       expect(() => normalizeCompilerStructuralValueCanonical(value)).toThrow(TypeError);
     }
   });
+
+  it('rejects arrays with a non-enumerable own property even when indices are intact', () => {
+    const withHidden: unknown[] = [1];
+    Object.defineProperty(withHidden, 'secret', { value: 42, enumerable: false });
+    expect(() => normalizeCompilerStructuralValueCanonical(withHidden)).toThrow(TypeError);
+  });
+
+  it('rejects arrays with a non-enumerable index leaving a gap in Object.keys', () => {
+    const withHiddenIndex: unknown[] = [1, 2, 3];
+    Object.defineProperty(withHiddenIndex, '2', { value: 3, enumerable: false });
+    expect(() => normalizeCompilerStructuralValueCanonical(withHiddenIndex)).toThrow(TypeError);
+  });
 });
