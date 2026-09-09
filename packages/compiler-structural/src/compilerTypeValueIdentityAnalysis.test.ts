@@ -5,6 +5,7 @@ import type {
   CompilerSourceOrigin,
   IrBindingIdentity,
   IrClassDeclaration,
+  IrClassMethod,
   IrEnumDeclaration,
   IrFunctionDeclaration,
   IrInterfaceDeclaration,
@@ -258,7 +259,7 @@ describe('analyzeIrTypeValueIdentity', () => {
       kind: 'union',
       types: [
         { kind: 'unknown', source: 'object' },
-        { kind: 'unknown', source: 'unknown' },
+        { kind: 'unknown', source: 'any' },
       ],
     } as const satisfies IrType;
     const result = analyzeIrTypeValueIdentity(sameReason, module);
@@ -609,16 +610,36 @@ describe('analyzeIrTypeValueIdentity', () => {
     });
   });
 
-  it('collects type parameters from function declarations for constraint analysis', () => {
-    const param = typeBinding('type:fn-param', 'T', 'typeParameter');
-    const fn = {
-      ...functionDeclaration('value:generic-fn', 'transform'),
-      typeParameters: [{ binding: param, constraint: objectType }],
-    };
-    const module = createModule([fn]);
-    expect(analyzeIrTypeValueIdentity(typeReference(param), module)).toMatchObject({
+  it('collects type parameters from function and class method declarations', () => {
+    const fnParam = typeBinding('type:fn-param', 'T', 'typeParameter');
+    const fn = functionDeclaration('value:generic-fn', 'transform');
+    (fn as unknown as { typeParameters: IrTypeParameter[] }).typeParameters = [
+      { binding: fnParam, constraint: objectType },
+    ];
+
+    const methodParam = typeBinding('type:method-param', 'U', 'typeParameter');
+    const class_ = classDeclaration('value:generic-class', 'Container');
+    (class_ as unknown as { methods: IrClassMethod[] }).methods = [
+      {
+        async: false,
+        body: [],
+        name: 'map',
+        overloads: [],
+        parameters: [],
+        returns: numberType,
+        static: false,
+        typeParameters: [{ binding: methodParam, constraint: numberType }],
+        visibility: 'public',
+      },
+    ];
+    const module = createModule([fn, class_]);
+    expect(analyzeIrTypeValueIdentity(typeReference(fnParam), module)).toMatchObject({
       identity: 'reference',
       reason: 'intrinsic-reference',
+    });
+    expect(analyzeIrTypeValueIdentity(typeReference(methodParam), module)).toMatchObject({
+      identity: 'value',
+      reason: 'intrinsic-value',
     });
   });
 
