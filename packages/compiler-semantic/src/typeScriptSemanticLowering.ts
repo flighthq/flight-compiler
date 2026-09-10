@@ -742,7 +742,14 @@ function lowerExpression(
       arguments: lowerTypeScriptInvocationArguments(node, signature, context),
       callee: lowerExpression(node.expression, context),
       kind: 'new',
-      semantics: lowerInvocationSemantics(node, signature, context),
+      semantics: {
+        ...lowerInvocationSemantics(node, signature, context),
+        ...(signature?.resolved &&
+        ts.isConstructSignatureDeclaration(signature.resolved) &&
+        signature.resolved.getSourceFile().fileName !== getCompilerAmbientSurfaceFileName()
+          ? { construction: 'factory' as const }
+          : {}),
+      },
       typeArguments: node.typeArguments?.map((type) => lowerType(type, context)) ?? [],
     };
   }
@@ -2623,6 +2630,31 @@ function lowerTypeScriptTypeProperties(
   const properties: IrObjectTypeProperty[] = [];
   const loweredMethods = new Set<ts.MethodSignature>();
   for (const member of members) {
+    if (ts.isConstructSignatureDeclaration(member)) {
+      const signatures = members.filter(ts.isConstructSignatureDeclaration);
+      if (member !== signatures[0]) continue;
+      if (
+        members.some(
+          (candidate) =>
+            !ts.isConstructSignatureDeclaration(candidate) &&
+            'name' in candidate &&
+            candidate.name !== undefined &&
+            tryPropertyName(candidate.name) === 'construct',
+        )
+      ) {
+        unsupported(member, 'construct signature factory conflicts with object member construct');
+      }
+      const types = signatures.map((signature) => lowerFunctionType(signature, context));
+      const [first, second, ...rest] = types;
+      properties.push({
+        name: 'construct',
+        optional: false,
+        readonly: true,
+        role: 'construct',
+        type: first && second ? { kind: 'intersection', types: [first, second, ...rest] } : first!,
+      });
+      continue;
+    }
     if (ts.isPropertySignature(member)) {
       const name = tryPropertyName(member.name);
       if (name === undefined) continue;

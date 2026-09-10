@@ -36,6 +36,9 @@ export interface IrTypedArraySetSemantics {
 }
 
 export interface IrInvocationSemantics {
+  // Construction through a source-declared construct signature invokes its represented factory slot;
+  // ambient and concrete class constructors retain their target-specific constructor mappings.
+  readonly construction?: 'factory' | undefined;
   readonly defaultParameters?: IrDefaultParameterInvocationSemantics | undefined;
   readonly optionalParameters?: IrOptionalParameterInvocationSemantics | undefined;
   readonly overloadImplementation?: IrOverloadImplementationInvocationSemantics | undefined;

@@ -1285,12 +1285,58 @@ describe('lowerTypeScriptSource', () => {
 
     expect(result.module.declarations.filter((declaration) => declaration.kind === 'typeAlias')).toEqual([]);
     expect(result.diagnostics.map((diagnostic) => diagnostic.message)).toEqual([
-      'unsupported type member ConstructSignature',
       'unsupported type MappedType',
       'unsupported type MappedType',
       'unsupported type MappedType',
       'unsupported type MappedType',
     ]);
+  });
+
+  it('represents construct signatures as factory properties and marks their new expressions', () => {
+    const result = lower(
+      'construct-signature.ts',
+      `
+        interface Created { value: number }
+        interface Factory {
+          new (value: number): Created;
+          readonly version: string;
+        }
+        export function create(factory: Factory): Created {
+          return new factory(1);
+        }
+      `,
+    );
+    const factory = result.module.declarations.find(
+      (declaration) => declaration.kind === 'interface' && declaration.binding.name === 'Factory',
+    );
+    const create = result.module.declarations.find(
+      (declaration) => declaration.kind === 'function' && declaration.binding.name === 'create',
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    expect(factory).toMatchObject({
+      properties: [
+        {
+          name: 'construct',
+          optional: false,
+          readonly: true,
+          role: 'construct',
+          type: {
+            kind: 'function',
+            parameters: [{ name: 'value', type: { kind: 'primitive', name: 'number' } }],
+            returns: { kind: 'named', reference: { binding: { name: 'Created' } } },
+          },
+        },
+        { name: 'version', type: { kind: 'primitive', name: 'string' } },
+      ],
+    });
+    if (create?.kind !== 'function' || create.body[0]?.kind !== 'return') {
+      throw new Error('Expected create function return');
+    }
+    expect(create.body[0].expression).toMatchObject({
+      kind: 'new',
+      semantics: { construction: 'factory' },
+    });
   });
 
   it('erases target-neutral type refinements and resolves only concrete conditional types', () => {

@@ -16,6 +16,9 @@ export interface IrObjectTypeProperty {
   readonly name: string;
   readonly optional: boolean;
   readonly readonly: boolean;
+  // A source construct signature is represented as a function-valued factory slot. Keeping the role
+  // explicit lets invocation lowering preserve `new` semantics without inventing a callable-object type.
+  readonly role?: 'construct' | undefined;
   readonly type: IrType;
 }
 

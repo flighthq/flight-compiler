@@ -1180,6 +1180,27 @@ export function preferred(): number { return NativeSurface.preferredFormat; }`,
     expect(emitted.contents).toContain('#include <stdexcept>');
   });
 
+  it('emits construct-signature values as explicit factory fields and calls', () => {
+    const result = lower(
+      'factory.ts',
+      `
+        interface Created { value: number }
+        interface Factory {
+          new (value: number): Created;
+          readonly version: string;
+        }
+        export function create(factory: Factory): Created {
+          return new factory(1);
+        }
+      `,
+    );
+    const emitted = emitIrModuleCpp(result.module);
+
+    expect(result.diagnostics).toEqual([]);
+    expect(emitted.contents).toContain('std::function<Created(double)> construct;');
+    expect(emitted.contents).toContain('return factory.construct(1.0);');
+  });
+
   it.each(['flight-cpp', 'standard-library'] as const)(
     'emits numeric globals and Number members with their standard headers in the %s profile',
     (runtimeProfile) => {

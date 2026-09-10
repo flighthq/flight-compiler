@@ -1037,6 +1037,12 @@ function emitExpression(
     case 'literal':
       return emitLiteralWithExpectedTypeCpp(expression.value, expectedType, context);
     case 'new': {
+      const args = expression.arguments.map((argument, index) =>
+        emitExpression(argument, context, getIrInvocationArgumentExpectedTypeCpp(expression, index)),
+      );
+      if (expression.semantics.construction === 'factory') {
+        return `${emitExpression(expression.callee, context)}.construct(${args.join(', ')})`;
+      }
       if (expression.callee.kind !== 'identifier') {
         emissionError(context, 'qualified constructors require C++ type-path lowering');
       }
@@ -1051,9 +1057,6 @@ function emitExpression(
       if (typeName === 'std::runtime_error' || typeName === 'std::range_error') {
         context.includes.add('stdexcept');
       }
-      const args = expression.arguments.map((argument, index) =>
-        emitExpression(argument, context, getIrInvocationArgumentExpectedTypeCpp(expression, index)),
-      );
       const typeArguments = emitCppTypeArguments(expression.typeArguments, context);
       if (
         getCppRuntimeProfile(context.options) === 'flight-cpp' &&
