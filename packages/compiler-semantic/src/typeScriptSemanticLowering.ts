@@ -2447,6 +2447,8 @@ function lowerType(node: ts.TypeNode, context: LoweringContext): IrType {
     unsupported(node, `unsupported type operator ${ts.tokenToString(node.operator) ?? String(node.operator)}`);
   }
   if (ts.isIndexedAccessTypeNode(node)) {
+    const concrete = lowerConcreteIndexedAccessType(node, context);
+    if (concrete) return concrete;
     return {
       index: lowerType(node.indexType, context),
       kind: 'indexedAccess',
@@ -2500,6 +2502,11 @@ function getTypeScriptObjectProjectionKeys(node: ts.TypeNode): ReadonlySet<strin
 }
 
 function lowerConcreteConditionalType(node: ts.ConditionalTypeNode, context: LoweringContext): IrType | undefined {
+  if (hasExternalTypeScriptTypeParameter(node, context)) return undefined;
+  return getTypeScriptCheckerTypeEvidence(context.checker.getTypeFromTypeNode(node), context, 0, true);
+}
+
+function lowerConcreteIndexedAccessType(node: ts.IndexedAccessTypeNode, context: LoweringContext): IrType | undefined {
   if (hasExternalTypeScriptTypeParameter(node, context)) return undefined;
   return getTypeScriptCheckerTypeEvidence(context.checker.getTypeFromTypeNode(node), context, 0, true);
 }

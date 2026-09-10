@@ -1064,15 +1064,7 @@ describe('lowerTypeScriptSource', () => {
         typeArguments: [{ kind: 'primitive', name: 'number' }],
       },
     });
-    expect(types.get('Indexed')).toMatchObject({
-      index: { kind: 'literal', value: 'value' },
-      kind: 'indexedAccess',
-      object: {
-        kind: 'named',
-        reference: { binding: box.binding, kind: 'binding', path: [] },
-        typeArguments: [{ kind: 'primitive', name: 'number' }],
-      },
-    });
+    expect(types.get('Indexed')).toEqual({ kind: 'primitive', name: 'number' });
     expect(types.get('Query')).toEqual({
       kind: 'typeOf',
       reference: { binding: getVariableBinding(sample), kind: 'binding', path: [] },
@@ -1343,6 +1335,34 @@ describe('lowerTypeScriptSource', () => {
     expect(declarations.get('Inferred')).toMatchObject({ type: { kind: 'primitive', name: 'string' } });
     expect(declarations.has('Generic')).toBe(false);
     expect(result.diagnostics.map((diagnostic) => diagnostic.message)).toEqual(['unsupported type ConditionalType']);
+  });
+
+  it('resolves checker-concrete indexed access while preserving generic type computation', () => {
+    const result = lower(
+      'indexed-access.ts',
+      `
+        export const Values = { First: 'first', Second: 'second' } as const;
+        export type Value = (typeof Values)[keyof typeof Values];
+        export type Property<Value, Key extends keyof Value> = Value[Key];
+      `,
+    );
+    const declarations = new Map(
+      result.module.declarations.flatMap((declaration) =>
+        'binding' in declaration ? [[declaration.binding.name, declaration] as const] : [],
+      ),
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    expect(declarations.get('Value')).toMatchObject({
+      type: {
+        kind: 'union',
+        types: [
+          { kind: 'literal', value: 'first' },
+          { kind: 'literal', value: 'second' },
+        ],
+      },
+    });
+    expect(declarations.get('Property')).toMatchObject({ type: { kind: 'indexedAccess' } });
   });
 
   it('separates executable defaults from function types', () => {
@@ -5132,7 +5152,7 @@ it('lowers computed property name in object literal', () => {
   expect(init.members[0]).toMatchObject({ kind: 'computedProperty' });
 });
 
-it('lowers indexed access type, keyof, and typeof type operators', () => {
+it('resolves concrete indexed access and lowers keyof and typeof type operators', () => {
   const result = lower(
     'type-ops.ts',
     `
@@ -5147,7 +5167,11 @@ it('lowers indexed access type, keyof, and typeof type operators', () => {
   const indexed = result.module.declarations.find((d) => d.kind === 'typeAlias' && d.binding.name === 'ItemType');
   if (keyof?.kind !== 'typeAlias' || indexed?.kind !== 'typeAlias') throw new Error('Expected type aliases');
   expect(keyof.type).toMatchObject({ kind: 'keyof' });
-  expect(indexed.type).toMatchObject({ kind: 'indexedAccess' });
+  expect(indexed.type).toEqual({
+    element: { kind: 'primitive', name: 'number' },
+    kind: 'array',
+    readonly: false,
+  });
 });
 
 it('lowers readonly array and tuple type operators', () => {

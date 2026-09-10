@@ -961,6 +961,20 @@ export function preferred(): number { return NativeSurface.preferredFormat; }`,
     expect(literalEmitted.contents).toContain('using Status = std::string');
   });
 
+  it('emits checker-resolved indexed-access aliases', () => {
+    const result = lower(
+      'indexed-alias.ts',
+      `
+        export const Status = { Ready: 'ready', Done: 'done' } as const;
+        export type Status = (typeof Status)[keyof typeof Status];
+      `,
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+
+    expect(result.diagnostics).toEqual([]);
+    expect(emitted.contents).toContain('using Status = flight::String;');
+  });
+
   it('emits variable declarations with mutability and types', () => {
     const result = lower('vars.ts', 'export const PI: number = 3.14; export let counter: number = 0;');
     const emitted = emitIrModuleCpp(result.module);
