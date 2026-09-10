@@ -2151,7 +2151,159 @@ function unwrapTypeScriptParenthesizedExpression(expression: ts.Expression): ts.
 }
 
 function lowerStatementList(nodes: readonly ts.Statement[], context: LoweringContext): IrStatement[] {
-  return nodes.map((node) => lowerStatement(node, context));
+  const localFunctionNodes = nodes.flatMap((node, index) =>
+    ts.isFunctionDeclaration(node) ? [{ binding: lowerLocalFunctionBinding(node, context), index, node }] : [],
+  );
+  const localFunctions = localFunctionNodes.map((localFunction) => ({
+    ...localFunction,
+    lowering: lowerLocalFunctionDeclaration(localFunction.node, localFunction.binding, context),
+  }));
+  if (localFunctions.length === 0) return nodes.map((node) => lowerStatement(node, context));
+
+  const initializationByIndex = new Map<number, IrStatement[]>();
+  for (const localFunction of localFunctions) {
+    const symbol = context.checker.getSymbolAtLocation(localFunction.node.name!);
+    if (!symbol) unsupported(localFunction.node.name!, `binding ${localFunction.node.name!.text} cannot be resolved`);
+    const firstUse = nodes.findIndex(
+      (node) => !ts.isFunctionDeclaration(node) && typeScriptNodeReferencesSymbol(node, symbol, context.checker),
+    );
+    const captured = getTypeScriptReferencedSymbols(localFunction.node.body!, context.checker);
+    captured.delete(symbol);
+    const lastCapturedDeclaration = nodes.reduce(
+      (latest, node, index) =>
+        ts.isVariableStatement(node) &&
+        node.declarationList.declarations.some((declaration) =>
+          getTypeScriptBindingNameSymbols(declaration.name, context.checker).some((candidate) =>
+            captured.has(candidate),
+          ),
+        )
+          ? Math.max(latest, index)
+          : latest,
+      -1,
+    );
+    const earliestObservableIndex = firstUse < 0 ? localFunction.index : Math.min(localFunction.index, firstUse);
+    const initializationIndex = Math.max(earliestObservableIndex, lastCapturedDeclaration + 1);
+    if (firstUse >= 0 && initializationIndex > firstUse) {
+      unsupported(
+        localFunction.node,
+        `local function ${localFunction.node.name!.text} cannot be initialized before a reference that precedes its captured bindings`,
+      );
+    }
+    const initializations = initializationByIndex.get(initializationIndex) ?? [];
+    initializations.push(localFunction.lowering.initialization);
+    initializationByIndex.set(initializationIndex, initializations);
+  }
+
+  const statements: IrStatement[] = [
+    { declarations: localFunctions.map(({ lowering }) => lowering.declaration), kind: 'variable' },
+  ];
+  for (let index = 0; index <= nodes.length; index += 1) {
+    statements.push(...(initializationByIndex.get(index) ?? []));
+    const node = nodes[index];
+    if (node && !ts.isFunctionDeclaration(node)) statements.push(lowerStatement(node, context));
+  }
+  return statements;
+}
+
+interface TypeScriptLocalFunctionLowering {
+  readonly declaration: IrVariable;
+  readonly initialization: IrStatement;
+}
+
+function lowerLocalFunctionDeclaration(
+  node: ts.FunctionDeclaration,
+  binding: IrBindingIdentity,
+  context: LoweringContext,
+): TypeScriptLocalFunctionLowering {
+  if (!node.name) unsupported(node, 'local function declarations require a name');
+  if (!node.body)
+    unsupported(node, `local function ${node.name.text} overload signatures require explicit representation`);
+  if (binding.scope !== 'function') {
+    unsupported(node, `block-local function ${node.name.text} requires block-entry initialization representation`);
+  }
+  const signature = lowerFunctionSignature(node, context);
+  const type = lowerFunctionType(node, context);
+  addTypeScriptBindingTypeEvidence(node.name, type, context);
+  const parameterEntries = lowerParameterBindingEntries(node.parameters, signature.parameters, context);
+  const initializer: Extract<IrExpression, { kind: 'function' }> = {
+    async: hasModifier(node, ts.SyntaxKind.AsyncKeyword),
+    body: [
+      ...parameterEntries,
+      ...lowerStatementListWithTypeScriptReturnType(
+        node.body.statements,
+        getTypeScriptFunctionReturnValueType(node, signature.returns, context),
+        signature.returns,
+        context,
+      ),
+    ],
+    kind: 'function',
+    thisMode: 'dynamic',
+    ...signature,
+  };
+  const domain = getIrTypeOperatorValueDomain(type);
+  return {
+    declaration: { binding, initialValue: 'uninitialized', mutable: true, type },
+    initialization: {
+      expression: {
+        kind: 'assignment',
+        left: { kind: 'identifier', reference: { binding, kind: 'binding' } },
+        operator: '=',
+        right: initializer,
+        semantics: {
+          left: { declared: domain, flow: domain },
+          result: domain,
+          right: { declared: domain, flow: domain },
+        },
+      },
+      kind: 'expression',
+    },
+  };
+}
+
+function lowerLocalFunctionBinding(node: ts.FunctionDeclaration, context: LoweringContext): IrBindingIdentity {
+  if (!node.name) unsupported(node, 'local function declarations require a name');
+  const symbol = context.checker.getSymbolAtLocation(node.name);
+  if (!symbol) unsupported(node.name, `binding ${node.name.text} cannot be resolved`);
+  const binding = { ...lowerBindingSymbol(symbol, node.name, context), kind: 'variable' as const };
+  context.bindings.set(symbol, binding);
+  return binding;
+}
+
+function getTypeScriptBindingNameSymbols(name: ts.BindingName, checker: ts.TypeChecker): readonly ts.Symbol[] {
+  if (ts.isIdentifier(name)) {
+    const symbol = checker.getSymbolAtLocation(name);
+    return symbol ? [symbol] : [];
+  }
+  return name.elements.flatMap((element) =>
+    ts.isOmittedExpression(element) ? [] : getTypeScriptBindingNameSymbols(element.name, checker),
+  );
+}
+
+function getTypeScriptReferencedSymbols(node: ts.Node, checker: ts.TypeChecker): Set<ts.Symbol> {
+  const symbols = new Set<ts.Symbol>();
+  const visit = (candidate: ts.Node): void => {
+    if (ts.isIdentifier(candidate)) {
+      const symbol = checker.getSymbolAtLocation(candidate);
+      if (symbol) symbols.add(symbol);
+    }
+    ts.forEachChild(candidate, visit);
+  };
+  visit(node);
+  return symbols;
+}
+
+function typeScriptNodeReferencesSymbol(node: ts.Node, symbol: ts.Symbol, checker: ts.TypeChecker): boolean {
+  let referenced = false;
+  const visit = (candidate: ts.Node): void => {
+    if (referenced) return;
+    if (ts.isIdentifier(candidate) && checker.getSymbolAtLocation(candidate) === symbol) {
+      referenced = true;
+      return;
+    }
+    ts.forEachChild(candidate, visit);
+  };
+  visit(node);
+  return referenced;
 }
 
 function lowerStatementListWithTypeScriptReturnType(
@@ -2812,7 +2964,19 @@ function lowerTypeScriptInterfacePropertiesEvidence(
           ts.isInterfaceDeclaration(candidate) ||
           ts.isTypeAliasDeclaration(candidate),
       );
-      if (!symbol || !base) unsupported(heritage, 'syntactic interface heritage requires an object type declaration');
+      if (!symbol || !base) {
+        const utilityProperties = lowerTypeScriptUnresolvedUtilityHeritageProperties(
+          heritage,
+          context,
+          seen,
+          substitutions,
+        );
+        if (!utilityProperties) {
+          unsupported(heritage, 'syntactic interface heritage requires an object type declaration');
+        }
+        utilityProperties.forEach((property) => mergeProperty(property, heritage));
+        continue;
+      }
       const baseName = base.name?.text ?? '<anonymous-class>';
       if (seen.has(symbol)) unsupported(heritage, `interface ${declaration.name.text} has cyclic heritage`);
       const nextSubstitutions = createTypeScriptSyntacticDeclarationSubstitutions(
@@ -2841,6 +3005,122 @@ function lowerTypeScriptInterfacePropertiesEvidence(
     mergeProperty(property, declaration),
   );
   return properties;
+}
+
+function lowerTypeScriptUnresolvedUtilityHeritageProperties(
+  heritage: ts.ExpressionWithTypeArguments,
+  context: LoweringContext,
+  seen: ReadonlySet<ts.Symbol>,
+  substitutions: ReadonlyMap<ts.Symbol, ts.TypeNode>,
+): readonly IrObjectTypeProperty[] | undefined {
+  if (!ts.isIdentifier(heritage.expression)) return undefined;
+  const arguments_ = heritage.typeArguments ?? [];
+  if (heritage.expression.text === 'Pick' && arguments_.length === 2) {
+    const keys = getTypeScriptStringLiteralTypeValues(arguments_[1]!, context, new Set());
+    if (!keys) unsupported(heritage, 'Pick heritage requires a closed set of string literal keys');
+    const inherited = lowerTypeScriptHeritageTypeNodeProperties(arguments_[0]!, context, seen, substitutions);
+    return keys.map(
+      (name) =>
+        inherited?.find((property) => property.name === name) ?? {
+          name,
+          optional: false,
+          readonly: false,
+          type: { kind: 'unknown', source: 'any' },
+        },
+    );
+  }
+  if (heritage.expression.text !== 'ReturnType' || arguments_.length !== 1) return undefined;
+  const query = arguments_[0]!;
+  if (!ts.isTypeQueryNode(query)) unsupported(heritage, 'ReturnType heritage requires a type query');
+  const unresolved = context.checker.getSymbolAtLocation(query.exprName);
+  const symbol =
+    unresolved?.flags && unresolved.flags & ts.SymbolFlags.Alias
+      ? context.checker.getAliasedSymbol(unresolved)
+      : unresolved;
+  const declaration = symbol?.declarations?.find(
+    (candidate): candidate is ts.FunctionDeclaration | ts.FunctionExpression | ts.MethodDeclaration =>
+      (ts.isFunctionDeclaration(candidate) ||
+        ts.isFunctionExpression(candidate) ||
+        ts.isMethodDeclaration(candidate)) &&
+      candidate.type !== undefined,
+  );
+  if (!symbol || !declaration?.type) {
+    unsupported(heritage, 'ReturnType heritage requires a function with an explicit object return type');
+  }
+  const inherited = lowerTypeScriptHeritageTypeNodeProperties(declaration.type, context, seen, substitutions);
+  if (!inherited) unsupported(heritage, 'ReturnType heritage function must return an object-shaped type');
+  return inherited;
+}
+
+function lowerTypeScriptHeritageTypeNodeProperties(
+  type: ts.TypeNode,
+  context: LoweringContext,
+  seen: ReadonlySet<ts.Symbol>,
+  substitutions: ReadonlyMap<ts.Symbol, ts.TypeNode>,
+): readonly IrObjectTypeProperty[] | undefined {
+  const substituted = getTypeScriptSyntacticTypeSubstitution(type, context.checker, substitutions);
+  if (substituted !== type) {
+    return lowerTypeScriptHeritageTypeNodeProperties(substituted, context, seen, substitutions);
+  }
+  if (ts.isParenthesizedTypeNode(type)) {
+    return lowerTypeScriptHeritageTypeNodeProperties(type.type, context, seen, substitutions);
+  }
+  if (ts.isTypeReferenceNode(type)) {
+    const unresolved = context.checker.getSymbolAtLocation(type.typeName);
+    const symbol =
+      unresolved?.flags && unresolved.flags & ts.SymbolFlags.Alias
+        ? context.checker.getAliasedSymbol(unresolved)
+        : unresolved;
+    const declaration = symbol?.declarations?.find(
+      (candidate): candidate is ts.ClassDeclaration | ts.InterfaceDeclaration | ts.TypeAliasDeclaration =>
+        ts.isClassDeclaration(candidate) ||
+        ts.isInterfaceDeclaration(candidate) ||
+        ts.isTypeAliasDeclaration(candidate),
+    );
+    if (symbol && declaration && !seen.has(symbol)) {
+      const nextSubstitutions = createTypeScriptSyntacticDeclarationSubstitutions(
+        type,
+        declaration,
+        context.checker,
+        substitutions,
+      );
+      if (!nextSubstitutions) return undefined;
+      const nextSeen = new Set(seen);
+      nextSeen.add(symbol);
+      if (ts.isInterfaceDeclaration(declaration)) {
+        return lowerTypeScriptInterfacePropertiesEvidence(declaration, context, nextSeen, nextSubstitutions);
+      }
+      if (ts.isClassDeclaration(declaration)) {
+        return lowerTypeScriptClassPropertiesEvidence(declaration, context, nextSeen, nextSubstitutions);
+      }
+      return getTypeScriptHeritageObjectProperties(
+        lowerTypeScriptTypeNodeEvidence(declaration.type, context, nextSeen, nextSubstitutions),
+      );
+    }
+  }
+  return getTypeScriptHeritageObjectProperties(lowerTypeScriptTypeNodeEvidence(type, context, seen, substitutions));
+}
+
+function getTypeScriptStringLiteralTypeValues(
+  type: ts.TypeNode,
+  context: LoweringContext,
+  seen: ReadonlySet<ts.Symbol>,
+): readonly string[] | undefined {
+  if (ts.isParenthesizedTypeNode(type)) return getTypeScriptStringLiteralTypeValues(type.type, context, seen);
+  if (ts.isLiteralTypeNode(type) && ts.isStringLiteral(type.literal)) return [type.literal.text];
+  if (ts.isUnionTypeNode(type)) {
+    const values = type.types.flatMap((member) => getTypeScriptStringLiteralTypeValues(member, context, seen) ?? []);
+    return values.length === type.types.length ? [...new Set(values)] : undefined;
+  }
+  if (!ts.isTypeReferenceNode(type)) return undefined;
+  const unresolved = context.checker.getSymbolAtLocation(type.typeName);
+  const symbol =
+    unresolved?.flags && unresolved.flags & ts.SymbolFlags.Alias
+      ? context.checker.getAliasedSymbol(unresolved)
+      : unresolved;
+  const declaration = symbol?.declarations?.find(ts.isTypeAliasDeclaration);
+  if (!symbol || !declaration || seen.has(symbol)) return undefined;
+  return getTypeScriptStringLiteralTypeValues(declaration.type, context, new Set(seen).add(symbol));
 }
 
 function lowerTypeScriptClassPropertiesEvidence(
@@ -4247,6 +4527,9 @@ function typeBindingDeclarationName(declaration: TypeScriptTypeBindingDeclaratio
 function bindingDeclarationScope(node: TypeScriptBindingDeclaration): IrBindingScope {
   if (ts.isImportClause(node) || ts.isImportSpecifier(node) || ts.isNamespaceImport(node)) return 'module';
   if (ts.isFunctionExpression(node) || ts.isParameter(node)) return 'function';
+  if (ts.isFunctionDeclaration(node) && ts.isBlock(node.parent) && ts.isFunctionLike(node.parent.parent)) {
+    return 'function';
+  }
   if (ts.isBindingElement(node)) {
     for (let parent: ts.Node | undefined = node.parent; parent; parent = parent.parent) {
       if (ts.isParameter(parent)) return 'function';

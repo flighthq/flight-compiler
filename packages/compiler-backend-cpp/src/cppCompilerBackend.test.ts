@@ -1400,6 +1400,25 @@ export function preferred(): number { return NativeSurface.preferredFormat; }`,
     expect(emitted.contents).toContain('return');
   });
 
+  it('emits recursive local function declarations through initialized shared capture storage', () => {
+    const result = lower(
+      'local-function.ts',
+      `export function run(value: number): number {
+        const offset = 1;
+        return helper(value);
+        function helper(input: number): number {
+          return input <= 0 ? offset : helper(input - 1);
+        }
+      }`,
+    );
+    const emitted = emitIrModuleCpp(result.module);
+
+    expect(result.diagnostics).toEqual([]);
+    expect(emitted.contents).toContain('std::make_shared<std::optional<std::function<double(double)>>>(std::nullopt)');
+    expect(emitted.contents).toContain('(*helper_capture).value() = [=](double input)');
+    expect(emitted.contents).toContain('(*helper_capture).value()((input - 1.0))');
+  });
+
   it('emits super method calls with base class scope resolution', () => {
     const result = lower(
       'super-method.ts',

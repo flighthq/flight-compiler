@@ -624,7 +624,7 @@ function emitVariable(variable: Readonly<IrVariable>, context: EmitContext): str
   const sharedCaptureTargetName = context.sharedCaptureTargetNames.get(variable.binding.id);
   if (sharedCaptureTargetName) {
     if (!variable.initializer) {
-      if (variable.initialValue === 'uninitialized' && getCppRuntimeProfile(context.options) === 'flight-cpp') {
+      if (variable.initialValue === 'uninitialized') {
         const storageType = emitOptionalTypeCpp(type, true, context);
         return `const auto ${sharedCaptureTargetName} = ${emitSharedCaptureCellConstructionCpp(storageType, 'std::nullopt', context)};`;
       }

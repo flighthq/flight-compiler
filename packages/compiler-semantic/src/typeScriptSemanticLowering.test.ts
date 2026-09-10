@@ -1510,6 +1510,23 @@ describe('lowerTypeScriptSource', () => {
     expect(result.diagnostics).toEqual([]);
   });
 
+  it('extracts unresolved Pick and ReturnType utility heritage evidence', () => {
+    const result = lower(
+      'utility-heritage.ts',
+      `
+        type ExternalKeys = 'draw' | 'ERROR';
+        interface Picked extends Pick<ExternalSurface, ExternalKeys> { value: number; }
+        interface Runtime { id: number; }
+        function createRuntime(): Runtime { return { id: 1 }; }
+        interface Created extends ReturnType<typeof createRuntime> { label: string; }
+        export function readPicked({ draw, ERROR, value }: Picked): number { draw; return ERROR + value; }
+        export function readCreated({ id, label }: Created): string { return label + String(id); }
+      `,
+    );
+
+    expect(result.diagnostics).toEqual([]);
+  });
+
   it('extracts interface heritage evidence from public class instances', () => {
     const result = lower(
       'class-heritage.ts',
@@ -5304,6 +5321,56 @@ it('lowers function expression with name', () => {
   const decl = result.module.declarations[0];
   if (decl?.kind !== 'variable') throw new Error('Expected variable');
   expect(decl.initializer).toMatchObject({ kind: 'function' });
+});
+
+it('lowers local function declarations with hoisted initialization and recursive binding identity', () => {
+  const result = lower(
+    'local-function.ts',
+    `
+      export function run(value: number): number {
+        const offset = 1;
+        return helper(value);
+        function helper(input: number): number {
+          return input <= 0 ? offset : helper(input - 1);
+        }
+      }
+    `,
+  );
+  const declaration = result.module.declarations[0];
+  if (declaration?.kind !== 'function') throw new Error('Expected function declaration');
+  const [hoisted, offset, initialization, returned] = declaration.body;
+  if (
+    hoisted?.kind !== 'variable' ||
+    offset?.kind !== 'variable' ||
+    initialization?.kind !== 'expression' ||
+    initialization.expression.kind !== 'assignment' ||
+    initialization.expression.right.kind !== 'function' ||
+    returned?.kind !== 'return'
+  ) {
+    throw new Error('Expected a hoisted local function declaration and initialization');
+  }
+  const local = hoisted.declarations[0];
+  if (!local || !('binding' in local)) throw new Error('Expected named local function variable');
+  const localReturn = initialization.expression.right.body[0];
+
+  expect(result.diagnostics).toEqual([]);
+  expect(local).toMatchObject({
+    binding: { kind: 'variable', name: 'helper', scope: 'function' },
+    initialValue: 'uninitialized',
+    mutable: true,
+    type: { kind: 'function', returns: { kind: 'primitive', name: 'number' } },
+  });
+  expect(initialization.expression.left).toMatchObject({
+    kind: 'identifier',
+    reference: { binding: { id: local.binding.id } },
+  });
+  expect(localReturn).toMatchObject({
+    expression: {
+      kind: 'conditional',
+      whenFalse: { callee: { reference: { binding: { id: local.binding.id } } }, kind: 'call' },
+    },
+    kind: 'return',
+  });
 });
 
 it('lowers template literal with substitutions', () => {
