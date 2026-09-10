@@ -7,6 +7,7 @@
 // audit warns about, so aspirational names are removed until a demonstrated target path returns them.
 export type CompilerRuntimeCapabilityName =
   | 'array'
+  | 'console'
   | 'date'
   | 'error'
   | 'float32-array'
@@ -14,6 +15,7 @@ export type CompilerRuntimeCapabilityName =
   | 'int8-array'
   | 'int16-array'
   | 'int32-array'
+  | 'json'
   | 'map'
   | 'set'
   | 'string'

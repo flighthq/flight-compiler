@@ -200,6 +200,29 @@ const cppExternalBindingOwnerships = new Set(['borrowed', 'owned', 'shared', 'va
 
 const cppFlightRuntimeExternalSymbolBindings = [
   {
+    capability: 'console',
+    kind: 'runtime',
+    members: [
+      { sourceMember: 'error', targetName: 'flight::console_error' },
+      { sourceMember: 'log', targetName: 'flight::console_log' },
+      { sourceMember: 'warn', targetName: 'flight::console_warn' },
+    ],
+    sourceName: 'console',
+    space: 'value',
+    targetName: 'flight::Console',
+  },
+  {
+    capability: 'json',
+    kind: 'runtime',
+    members: [
+      { sourceMember: 'parse', targetName: 'flight::json_parse' },
+      { sourceMember: 'stringify', targetName: 'flight::json_stringify' },
+    ],
+    sourceName: 'JSON',
+    space: 'value',
+    targetName: 'flight::Json',
+  },
+  {
     kind: 'native',
     members: [
       { sourceMember: 'E', targetName: 'flight::e' },
@@ -337,6 +360,7 @@ const cppFlightRuntimeExternalSymbolBindings = [
     space: 'value',
     targetName: 'std::numeric_limits<double>::quiet_NaN()',
   },
+  { kind: 'native', sourceName: 'Number', space: 'type', targetName: 'double' },
   {
     kind: 'native',
     members: [
@@ -367,6 +391,7 @@ const cppFlightRuntimeExternalSymbolBindings = [
     space: 'value',
     targetName: 'flight::Task',
   },
+  { kind: 'native', sourceName: 'RangeError', space: 'type', targetName: 'std::range_error' },
   { kind: 'native', sourceName: 'RangeError', space: 'value', targetName: 'std::range_error' },
   { capability: 'set', kind: 'runtime', sourceName: 'Set', space: 'type', targetName: 'flight::Set' },
   { capability: 'set', kind: 'runtime', sourceName: 'Set', space: 'value', targetName: 'flight::Set' },
@@ -447,6 +472,29 @@ const cppFlightRuntimeExternalSymbolBindings = [
 
 const cppRuntimeExternalSymbolBindings = [
   {
+    capability: 'console',
+    kind: 'runtime',
+    members: [
+      { sourceMember: 'error', targetName: 'FlightConsole::error' },
+      { sourceMember: 'log', targetName: 'FlightConsole::log' },
+      { sourceMember: 'warn', targetName: 'FlightConsole::warn' },
+    ],
+    sourceName: 'console',
+    space: 'value',
+    targetName: 'FlightConsole',
+  },
+  {
+    capability: 'json',
+    kind: 'runtime',
+    members: [
+      { sourceMember: 'parse', targetName: 'FlightJson::parse' },
+      { sourceMember: 'stringify', targetName: 'FlightJson::stringify' },
+    ],
+    sourceName: 'JSON',
+    space: 'value',
+    targetName: 'FlightJson',
+  },
+  {
     kind: 'native',
     members: [
       { sourceMember: 'E', targetName: 'M_E' },
@@ -510,6 +558,7 @@ const cppRuntimeExternalSymbolBindings = [
     space: 'value',
     targetName: 'std::numeric_limits<double>::quiet_NaN()',
   },
+  { kind: 'native', sourceName: 'Number', space: 'type', targetName: 'double' },
   {
     kind: 'native',
     members: [
@@ -543,9 +592,12 @@ const cppRuntimeExternalSymbolBindings = [
     space: 'value',
     targetName: 'FlightTask',
   },
+  { kind: 'native', sourceName: 'RangeError', space: 'type', targetName: 'std::range_error' },
   { kind: 'native', sourceName: 'RangeError', space: 'value', targetName: 'std::range_error' },
   { kind: 'native', sourceName: 'Set', space: 'type', targetName: 'std::unordered_set' },
   { kind: 'native', sourceName: 'Set', space: 'value', targetName: 'std::unordered_set' },
+  { kind: 'native', sourceName: 'String', space: 'type', targetName: 'std::string' },
+  { kind: 'native', sourceName: 'String', space: 'value', targetName: 'std::string' },
   { kind: 'native', sourceName: 'Uint16Array', space: 'type', targetName: 'std::vector<uint16_t>' },
   { kind: 'native', sourceName: 'Uint16Array', space: 'value', targetName: 'std::vector<uint16_t>' },
   { kind: 'native', sourceName: 'Uint32Array', space: 'type', targetName: 'std::vector<uint32_t>' },

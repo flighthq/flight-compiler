@@ -28,7 +28,7 @@ describe('createCompilerRuntimeExternalSymbolBindingPlanCpp', () => {
     const plan = createCompilerRuntimeExternalSymbolBindingPlanCpp();
 
     expect(plan.contract).toBe('flight-runtime-contract/2');
-    expect(plan.bindings).toHaveLength(38);
+    expect(plan.bindings).toHaveLength(44);
     expect(plan.bindings.filter(({ externalSymbol }) => externalSymbol.sourceName === 'Promise')).toEqual([
       {
         capability: 'task',
@@ -59,13 +59,13 @@ describe('createCompilerRuntimeExternalSymbolBindingPlanCpp', () => {
     const second = createCompilerRuntimeExternalSymbolBindingPlanCpp();
 
     (first.bindings as unknown[]).pop();
-    expect(second.bindings).toHaveLength(38);
+    expect(second.bindings).toHaveLength(44);
   });
 
   it('elects semantic containers and strings as flight-cpp runtime capabilities', () => {
     const plan = createCompilerRuntimeExternalSymbolBindingPlanCpp('flight-cpp');
 
-    expect(plan.bindings).toHaveLength(40);
+    expect(plan.bindings).toHaveLength(44);
     expect(plan.bindings).toContainEqual({
       capability: 'array',
       externalSymbol: { sourceName: 'Array', space: 'type' },
@@ -84,6 +84,16 @@ describe('createCompilerRuntimeExternalSymbolBindingPlanCpp', () => {
     expect(plan.bindings).toContainEqual({
       capability: 'weak-map',
       externalSymbol: { sourceName: 'WeakMap', space: 'type' },
+      kind: 'runtime',
+    });
+    expect(plan.bindings).toContainEqual({
+      capability: 'console',
+      externalSymbol: { sourceName: 'console', space: 'value' },
+      kind: 'runtime',
+    });
+    expect(plan.bindings).toContainEqual({
+      capability: 'json',
+      externalSymbol: { sourceName: 'JSON', space: 'value' },
       kind: 'runtime',
     });
   });
@@ -155,6 +165,25 @@ describe('getCompilerRuntimeExternalSymbolTargetCpp', () => {
     ['WeakMap', 'value', 'std::unordered_map'],
   ] as const)('maps %s in %s space to %s', (sourceName, space, targetName) => {
     expect(getCompilerRuntimeExternalSymbolTargetCpp(sourceName, space)).toBe(targetName);
+  });
+
+  it('maps console and JSON in both profiles', () => {
+    expect(getCompilerRuntimeExternalSymbolTargetCpp('console', 'value')).toBe('FlightConsole');
+    expect(getCompilerRuntimeExternalSymbolTargetCpp('JSON', 'value')).toBe('FlightJson');
+    expect(getCompilerRuntimeExternalSymbolTargetCpp('console', 'value', 'flight-cpp')).toBe('flight::Console');
+    expect(getCompilerRuntimeExternalSymbolTargetCpp('JSON', 'value', 'flight-cpp')).toBe('flight::Json');
+  });
+
+  it('maps Number and RangeError in the type space', () => {
+    expect(getCompilerRuntimeExternalSymbolTargetCpp('Number', 'type')).toBe('double');
+    expect(getCompilerRuntimeExternalSymbolTargetCpp('Number', 'type', 'flight-cpp')).toBe('double');
+    expect(getCompilerRuntimeExternalSymbolTargetCpp('RangeError', 'type')).toBe('std::range_error');
+    expect(getCompilerRuntimeExternalSymbolTargetCpp('RangeError', 'type', 'flight-cpp')).toBe('std::range_error');
+  });
+
+  it('maps String in both spaces for the standard-library profile', () => {
+    expect(getCompilerRuntimeExternalSymbolTargetCpp('String', 'type')).toBe('std::string');
+    expect(getCompilerRuntimeExternalSymbolTargetCpp('String', 'value')).toBe('std::string');
   });
 
   it('has no crossed-space or unknown fallback', () => {
@@ -255,6 +284,21 @@ describe('getCompilerRuntimeExternalMemberTargetCpp', () => {
     expect(getCompilerRuntimeExternalMemberTargetCpp('Number', 'isInteger', 'standard-library')).toBe(
       '[](double value) noexcept { return std::isfinite(value) && std::trunc(value) == value; }',
     );
+  });
+
+  it('maps console members in both profiles', () => {
+    expect(getCompilerRuntimeExternalMemberTargetCpp('console', 'log')).toBe('FlightConsole::log');
+    expect(getCompilerRuntimeExternalMemberTargetCpp('console', 'warn')).toBe('FlightConsole::warn');
+    expect(getCompilerRuntimeExternalMemberTargetCpp('console', 'error')).toBe('FlightConsole::error');
+    expect(getCompilerRuntimeExternalMemberTargetCpp('console', 'log', 'flight-cpp')).toBe('flight::console_log');
+    expect(getCompilerRuntimeExternalMemberTargetCpp('console', 'warn', 'flight-cpp')).toBe('flight::console_warn');
+  });
+
+  it('maps JSON members in both profiles', () => {
+    expect(getCompilerRuntimeExternalMemberTargetCpp('JSON', 'parse')).toBe('FlightJson::parse');
+    expect(getCompilerRuntimeExternalMemberTargetCpp('JSON', 'stringify')).toBe('FlightJson::stringify');
+    expect(getCompilerRuntimeExternalMemberTargetCpp('JSON', 'parse', 'flight-cpp')).toBe('flight::json_parse');
+    expect(getCompilerRuntimeExternalMemberTargetCpp('JSON', 'stringify', 'flight-cpp')).toBe('flight::json_stringify');
   });
 
   it('claims nothing for an unbound member or an unbound symbol', () => {
