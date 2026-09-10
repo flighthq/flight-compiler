@@ -5864,7 +5864,7 @@ describe('emitIrModuleHaxe loose inequality with null admits only undefined', ()
 });
 
 describe('emitIrModuleHaxe indexedAccess type emission', () => {
-  it('emits Dynamic for indexed access type', () => {
+  it('resolves concrete indexed access to its element type', () => {
     const result = lower(
       'indexed-type.ts',
       `interface Options { width: number; height: number; }
@@ -5872,7 +5872,7 @@ describe('emitIrModuleHaxe indexedAccess type emission', () => {
     );
     const output = emitIrModuleHaxe(result.module).contents;
 
-    expect(output).toContain('Dynamic');
+    expect(output).toContain('Float');
   });
 });
 
