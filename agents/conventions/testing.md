@@ -77,11 +77,14 @@ Apply an instrument where its failure model is plausible, rather than applying e
 
 Neither is part of `npm run check`: one mutant costs a whole Vitest start, so the instrument is minutes where the gates are seconds. A surviving mutant is a question. Some survivors are equivalent mutants no test could distinguish; others mark an assertion that cannot fail. Read the line before concluding either.
 
-Three survivor shapes have recurred here, and none of them is a missing test:
+Six survivor shapes have recurred across the 17-package mutation audit, and none is a missing test:
 
-- **Failure-code registry markers.** A `{ 'unsupported-ir': true } as const satisfies Readonly<Record<Code, true>>` table is read for key presence through `Object.hasOwn`, so the value is a type-level marker and flipping it changes nothing. `compiler-patch` and `compiler-emission` each carry one.
+- **Failure-code registry markers.** A `{ 'unsupported-ir': true } as const satisfies Readonly<Record<Code, true>>` table is read for key presence through `Object.hasOwn`, so the value is a type-level marker and flipping it changes nothing. `compiler-patch` and `compiler-emission` each carry one; `compiler-inventory` carries twenty.
 - **Unreachable equality arms.** A comparator's equal branch over keys that are unique by construction cannot be taken. Delete the arm rather than write a test that fakes reaching it.
 - **Unobservable ordering terms.** A comparator tiebreak the surrounding algorithm is deliberately insensitive to. `createCompilerTargetNameAllocation` reserves every preferred name in a scope before assigning any, which makes allocation independent of the order of candidates preferring different names, so ordering by preferred name could not change an allocation. It was deleted, not tested, after 20,000 random candidate sets over colliding name families produced byte-identical allocations with and without the term.
+- **Type guard direction swaps.** Flipping `||` to `&&` (or vice versa) in a compound type guard that short-circuits to the same return type for well-typed inputs. Each operand individually decides the same branch for the values the unit test constructs, so swapping the connective changes evaluation order but not the result. Common in `compiler-inventory`, `compiler-ir-validation`, and `compiler-lowering`.
+- **Boundary epsilon on unique keys.** Swapping `<` to `<=` (or `>` to `>=`) in an ordinal comparison over values that are unique by construction — the equal case cannot be taken, so both operators produce the same ordering. Common in comparison chains and sort tiebreakers across many packages.
+- **Diagnostic-only arithmetic.** An operator in a position or line computation that feeds only into error-message text, never into control flow or identity. Flipping `+` to `-` changes the reported source location in a diagnostic but does not change whether the diagnostic fires or which code it names.
 
 A survivor that no test could kill is a claim about the code, so verify it as one. Argument alone is how a real gap gets filed as equivalent: run the differential, or state plainly that you did not.
 
