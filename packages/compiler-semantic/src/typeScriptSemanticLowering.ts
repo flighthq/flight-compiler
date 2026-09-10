@@ -2472,8 +2472,8 @@ function lowerConcreteTypeScriptObjectProjection(
 ): Readonly<IrType> | undefined {
   const name = ts.isIdentifier(node.typeName) ? node.typeName.text : undefined;
   if ((name !== 'Omit' && name !== 'Pick') || node.typeArguments?.length !== 2) return undefined;
-  const [subject, keyType] = node.typeArguments;
-  if (!subject || !keyType) return undefined;
+  const subject = node.typeArguments[0]!;
+  const keyType = node.typeArguments[1]!;
   const properties = lowerTypeScriptCheckerObjectProperties(context.checker.getTypeFromTypeNode(subject), context, 0);
   const keys = getTypeScriptObjectProjectionKeys(keyType);
   if (!properties || !keys) return undefined;

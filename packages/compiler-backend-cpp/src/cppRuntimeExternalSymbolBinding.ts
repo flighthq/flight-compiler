@@ -201,29 +201,6 @@ const cppExternalBindingOwnerships = new Set(['borrowed', 'owned', 'shared', 'va
 
 const cppFlightRuntimeExternalSymbolBindings = [
   {
-    capability: 'console',
-    kind: 'runtime',
-    members: [
-      { sourceMember: 'error', targetName: 'flight::console_error' },
-      { sourceMember: 'log', targetName: 'flight::console_log' },
-      { sourceMember: 'warn', targetName: 'flight::console_warn' },
-    ],
-    sourceName: 'console',
-    space: 'value',
-    targetName: 'flight::Console',
-  },
-  {
-    capability: 'json',
-    kind: 'runtime',
-    members: [
-      { sourceMember: 'parse', targetName: 'flight::json_parse' },
-      { sourceMember: 'stringify', targetName: 'flight::json_stringify' },
-    ],
-    sourceName: 'JSON',
-    space: 'value',
-    targetName: 'flight::Json',
-  },
-  {
     kind: 'native',
     members: [
       { sourceMember: 'E', targetName: 'flight::e' },
@@ -472,29 +449,6 @@ const cppFlightRuntimeExternalSymbolBindings = [
 ] as const satisfies readonly CppRuntimeExternalSymbolBinding[];
 
 const cppRuntimeExternalSymbolBindings = [
-  {
-    capability: 'console',
-    kind: 'runtime',
-    members: [
-      { sourceMember: 'error', targetName: 'FlightConsole::error' },
-      { sourceMember: 'log', targetName: 'FlightConsole::log' },
-      { sourceMember: 'warn', targetName: 'FlightConsole::warn' },
-    ],
-    sourceName: 'console',
-    space: 'value',
-    targetName: 'FlightConsole',
-  },
-  {
-    capability: 'json',
-    kind: 'runtime',
-    members: [
-      { sourceMember: 'parse', targetName: 'FlightJson::parse' },
-      { sourceMember: 'stringify', targetName: 'FlightJson::stringify' },
-    ],
-    sourceName: 'JSON',
-    space: 'value',
-    targetName: 'FlightJson',
-  },
   {
     kind: 'native',
     members: [

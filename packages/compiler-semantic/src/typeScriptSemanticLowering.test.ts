@@ -967,6 +967,55 @@ describe('lowerTypeScriptSource', () => {
     });
   });
 
+  it('lowers concrete Omit projections with parenthesized string and numeric keys', () => {
+    const result = lower(
+      'object-omission.ts',
+      `
+        interface Options {
+          0: boolean;
+          first?: number;
+          second: string;
+          third: boolean;
+        }
+        export type Remaining = Omit<Options, ('first' | 0)>;
+      `,
+    );
+    const remaining = result.module.declarations[1];
+
+    expect(result.diagnostics).toEqual([]);
+    expect(remaining).toMatchObject({
+      kind: 'typeAlias',
+      type: {
+        kind: 'object',
+        properties: [
+          { name: 'second', optional: false, type: { kind: 'primitive', name: 'string' } },
+          { name: 'third', optional: false, type: { kind: 'primitive', name: 'boolean' } },
+        ],
+      },
+    });
+  });
+
+  it('preserves invalid or non-structural Pick references for explicit downstream refusal', () => {
+    const result = lower(
+      'invalid-object-projections.ts',
+      `
+        interface Options { first: number; second: string }
+        export type Missing = Pick<Options, 'missing'>;
+        export type Broad = Pick<Options, string>;
+        export type Mixed = Pick<Options, 'first' | string>;
+        export type BooleanLiteral = Pick<Options, true>;
+        export type NonObject = Pick<number, 'first'>;
+        export type WrongArity = Pick<Options>;
+      `,
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    expect(result.module.declarations.slice(1)).toHaveLength(6);
+    for (const declaration of result.module.declarations.slice(1)) {
+      expect(declaration).toMatchObject({ kind: 'typeAlias', type: { kind: 'named' } });
+    }
+  });
+
   it('preserves named and operator type identity while isolating unsupported type families', () => {
     const supported = lower(
       'referenced-types.ts',
