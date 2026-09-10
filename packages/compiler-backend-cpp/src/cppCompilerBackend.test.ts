@@ -1377,7 +1377,9 @@ export function preferred(): number { return NativeSurface.preferredFormat; }`,
     const module = structuredClone(result.module);
     const fn = module.declarations[0]!;
     if (fn.kind === 'variable' && !('pattern' in fn)) {
+      (fn as any).exported = true;
       (fn as any).pattern = { kind: 'array', elements: [] };
+      delete (fn as any).binding;
     }
     expect(() => emitIrModuleCpp(module)).toThrow();
   });
