@@ -123,6 +123,11 @@ describe('getCompilerStaticNumericArithmeticFact', () => {
     ).toBeUndefined();
     expect(
       getCompilerStaticNumericArithmeticFact(
+        createAssignmentExpression('+=', { left: number, result: 'number', right: bigint }),
+      ),
+    ).toBeUndefined();
+    expect(
+      getCompilerStaticNumericArithmeticFact(
         createBinaryExpression('-', { left: number, result: 'unknown', right: number }),
       ),
     ).toBeUndefined();
