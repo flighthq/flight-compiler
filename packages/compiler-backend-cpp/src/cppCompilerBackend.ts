@@ -991,7 +991,9 @@ function emitExpression(
               context.options.externalBindings,
             )
           : undefined;
-      if (typeName === 'std::runtime_error') context.includes.add('stdexcept');
+      if (typeName === 'std::runtime_error' || typeName === 'std::range_error') {
+        context.includes.add('stdexcept');
+      }
       const args = expression.arguments.map((argument, index) =>
         emitExpression(argument, context, getIrInvocationArgumentExpectedTypeCpp(expression, index)),
       );
@@ -1073,7 +1075,13 @@ function emitExpression(
           getCppRuntimeProfile(context.options),
           context.options.externalBindings,
         );
-        if (member) return member;
+        if (member) {
+          if (expression.object.reference.name === 'Number') {
+            context.includes.add('cmath');
+            context.includes.add('limits');
+          }
+          return member;
+        }
       }
       if (
         expression.object.kind === 'identifier' &&
@@ -3007,7 +3015,14 @@ function emitIdentifierReference(
       getCppRuntimeProfile(context.options),
       context.options.externalBindings,
     );
-    if (target) return target;
+    if (target) {
+      if (reference.name === 'Infinity' || reference.name === 'NaN' || reference.name === 'Number') {
+        context.includes.add('limits');
+      }
+      if (reference.name === 'Number') context.includes.add('cmath');
+      if (reference.name === 'RangeError') context.includes.add('stdexcept');
+      return target;
+    }
     return reference.name;
   }
   if (reference.kind === 'this') return 'this';

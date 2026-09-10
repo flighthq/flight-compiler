@@ -28,7 +28,7 @@ describe('createCompilerRuntimeExternalSymbolBindingPlanCpp', () => {
     const plan = createCompilerRuntimeExternalSymbolBindingPlanCpp();
 
     expect(plan.contract).toBe('flight-runtime-contract/2');
-    expect(plan.bindings).toHaveLength(34);
+    expect(plan.bindings).toHaveLength(38);
     expect(plan.bindings.filter(({ externalSymbol }) => externalSymbol.sourceName === 'Promise')).toEqual([
       {
         capability: 'task',
@@ -59,13 +59,13 @@ describe('createCompilerRuntimeExternalSymbolBindingPlanCpp', () => {
     const second = createCompilerRuntimeExternalSymbolBindingPlanCpp();
 
     (first.bindings as unknown[]).pop();
-    expect(second.bindings).toHaveLength(34);
+    expect(second.bindings).toHaveLength(38);
   });
 
   it('elects semantic containers and strings as flight-cpp runtime capabilities', () => {
     const plan = createCompilerRuntimeExternalSymbolBindingPlanCpp('flight-cpp');
 
-    expect(plan.bindings).toHaveLength(36);
+    expect(plan.bindings).toHaveLength(40);
     expect(plan.bindings).toContainEqual({
       capability: 'array',
       externalSymbol: { sourceName: 'Array', space: 'type' },
@@ -187,6 +187,20 @@ describe('getCompilerRuntimeExternalSymbolTargetCpp', () => {
   ] as const)('maps %s in %s space to the semantic runtime target %s', (sourceName, space, targetName) => {
     expect(getCompilerRuntimeExternalSymbolTargetCpp(sourceName, space, 'flight-cpp')).toBe(targetName);
   });
+
+  it.each(['flight-cpp', 'standard-library'] as const)(
+    'maps numeric globals and RangeError values in the %s profile',
+    (runtimeProfile) => {
+      expect(getCompilerRuntimeExternalSymbolTargetCpp('Infinity', 'value', runtimeProfile)).toBe(
+        'std::numeric_limits<double>::infinity()',
+      );
+      expect(getCompilerRuntimeExternalSymbolTargetCpp('NaN', 'value', runtimeProfile)).toBe(
+        'std::numeric_limits<double>::quiet_NaN()',
+      );
+      expect(getCompilerRuntimeExternalSymbolTargetCpp('Number', 'value', runtimeProfile)).toBe('double');
+      expect(getCompilerRuntimeExternalSymbolTargetCpp('RangeError', 'value', runtimeProfile)).toBe('std::range_error');
+    },
+  );
 });
 
 describe('getCompilerRuntimeExternalMemberTargetCpp', () => {
@@ -203,6 +217,16 @@ describe('getCompilerRuntimeExternalMemberTargetCpp', () => {
     expect(getCompilerRuntimeExternalMemberTargetCpp('Math', 'max', 'flight-cpp')).toBe('flight::maximum');
     expect(getCompilerRuntimeExternalMemberTargetCpp('Math', 'min', 'flight-cpp')).toBe('flight::minimum');
   });
+
+  it.each(['flight-cpp', 'standard-library'] as const)(
+    'maps Number constants and predicates in the %s profile',
+    (runtimeProfile) => {
+      expect(getCompilerRuntimeExternalMemberTargetCpp('Number', 'EPSILON', runtimeProfile)).toBe(
+        'std::numeric_limits<double>::epsilon()',
+      );
+      expect(getCompilerRuntimeExternalMemberTargetCpp('Number', 'isFinite', runtimeProfile)).toBe('std::isfinite');
+    },
+  );
 
   it('claims nothing for an unbound member or an unbound symbol', () => {
     expect(getCompilerRuntimeExternalMemberTargetCpp('Math', 'atan2')).toBeUndefined();

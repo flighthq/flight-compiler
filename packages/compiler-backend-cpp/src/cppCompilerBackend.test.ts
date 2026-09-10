@@ -1050,6 +1050,37 @@ export function preferred(): number { return NativeSurface.preferredFormat; }`,
     expect(emitted.contents).toContain('#include <stdexcept>');
   });
 
+  it.each(['flight-cpp', 'standard-library'] as const)(
+    'emits numeric globals and Number members with their standard headers in the %s profile',
+    (runtimeProfile) => {
+      const result = lower(
+        'number-globals.ts',
+        `export function classify(value: number): number {
+        if (Number.isNaN(value)) return NaN;
+        if (!Number.isFinite(value)) return Infinity;
+        return Number(value) + Number.EPSILON;
+      }`,
+      );
+      const emitted = emitIrModuleCpp(result.module, { runtimeProfile });
+
+      expect(emitted.contents).toContain('std::isnan');
+      expect(emitted.contents).toContain('std::isfinite');
+      expect(emitted.contents).toContain('std::numeric_limits<double>::quiet_NaN()');
+      expect(emitted.contents).toContain('std::numeric_limits<double>::infinity()');
+      expect(emitted.contents).toContain('std::numeric_limits<double>::epsilon()');
+      expect(emitted.contents).toContain('#include <cmath>');
+      expect(emitted.contents).toContain('#include <limits>');
+    },
+  );
+
+  it('emits RangeError construction with the standard exception header', () => {
+    const result = lower('range-error.ts', 'export function fail(): Error { return new RangeError("oops"); }');
+    const emitted = emitIrModuleCpp(result.module);
+
+    expect(emitted.contents).toContain('std::range_error');
+    expect(emitted.contents).toContain('#include <stdexcept>');
+  });
+
   it('emits template literals with std::to_string', () => {
     const result = lower('template.ts', 'export function label(n: number): string { return `item ${n}`; }');
     const emitted = emitIrModuleCpp(result.module);
@@ -2855,7 +2886,7 @@ export function preferred(): number { return NativeSurface.preferredFormat; }`,
   });
 
   it('throws on missing runtime external symbol binding', () => {
-    const result = lower('number-call.ts', 'export function toNum(x: string): number { return Number(x); }');
+    const result = lower('parse-call.ts', 'export function parse(x: string): number { return parseFloat(x); }');
     expect(() => emitIrModuleCpp(result.module)).toThrow(/runtime external symbol binding plan is incomplete/);
   });
 
