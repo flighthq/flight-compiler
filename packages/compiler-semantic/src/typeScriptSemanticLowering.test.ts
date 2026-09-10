@@ -7658,29 +7658,6 @@ it('reports a diagnostic for an unsupported statement kind', () => {
   expect(result.diagnostics).toMatchObject([{ message: expect.stringContaining('unsupported statement') }]);
 });
 
-it('lowers a local function declaration to a variable with a function expression', () => {
-  const result = lower(
-    'local-function.ts',
-    `
-      export function outer(x: number): number {
-        function inner(y: number): number { return y + 1; }
-        return inner(x);
-      }
-    `,
-  );
-  expect(result.diagnostics).toEqual([]);
-  const outer = result.module.declarations.find((d) => 'binding' in d && d.binding.name === 'outer');
-  expect(outer).toBeDefined();
-  const body = (outer as { body: readonly { kind: string }[] }).body;
-  const localVar = body.find((s) => s.kind === 'variable') as {
-    declarations: readonly { binding: { name: string }; initializer: { kind: string } }[];
-    kind: string;
-  };
-  expect(localVar).toBeDefined();
-  expect(localVar.declarations[0]!.binding.name).toBe('inner');
-  expect(localVar.declarations[0]!.initializer.kind).toBe('function');
-});
-
 it('preserves unique symbol initializers while erasing type-level uniqueness', () => {
   const result = lower(
     'unique-symbol.ts',

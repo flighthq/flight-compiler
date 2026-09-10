@@ -1847,47 +1847,6 @@ function lowerStatement(node: ts.Statement, context: LoweringContext): IrStateme
       tryBody: lowerStatement(node.tryBlock, context),
     };
   }
-  if (ts.isFunctionDeclaration(node)) {
-    if (!node.name) unsupported(node, 'local function declaration requires a name');
-    if (!node.body) unsupported(node, 'local function declaration requires a body');
-    const signature = lowerFunctionSignature(node, context);
-    const returnType = getTypeScriptFunctionReturnValueType(node, signature.returns, context);
-    const parameterEntries = lowerParameterBindingEntries(node.parameters, signature.parameters, context);
-    const binding = lowerBindingIdentity(node.name, context);
-    return {
-      declarations: [
-        {
-          binding,
-          exported: false,
-          initializer: {
-            async: hasModifier(node, ts.SyntaxKind.AsyncKeyword),
-            body: [
-              ...parameterEntries,
-              ...lowerStatementListWithTypeScriptReturnType(
-                node.body.statements,
-                returnType,
-                signature.returns,
-                context,
-              ),
-            ],
-            kind: 'function',
-            ...signature,
-            thisMode: 'lexical',
-          },
-          kind: 'variable',
-          mutable: false,
-          origin: origin(node, context),
-          type: {
-            kind: 'function',
-            parameters: signature.parameters,
-            returns: signature.returns,
-            typeParameters: signature.typeParameters,
-          },
-        },
-      ],
-      kind: 'variable',
-    };
-  }
   if (ts.isEmptyStatement(node)) return { kind: 'block', statements: [] };
   unsupported(node, `unsupported statement ${ts.SyntaxKind[node.kind]}`);
 }
