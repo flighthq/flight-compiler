@@ -443,6 +443,56 @@ describe('lowerTypeScriptSource', () => {
     ]);
   });
 
+  it('skips computed class fields, methods, and accessors without losing ordinary members', () => {
+    const result = lower(
+      'computed-class-members.ts',
+      `
+        export class FieldCarrier {
+          value: number = 1;
+          [Symbol.iterator]: bigint = 1n;
+        }
+        export class MethodCarrier {
+          read(): number { return 2; }
+          [Symbol.iterator](): bigint { return 1n; }
+          get ['metadata'](): bigint { return 1n; }
+        }
+        export class ComputedOnly {
+          [Symbol.iterator](): bigint { return 1n; }
+        }
+      `,
+    );
+    const classes = result.module.declarations.filter((declaration) => declaration.kind === 'class');
+
+    expect(result.diagnostics).toEqual([]);
+    expect(classes).toHaveLength(3);
+    expect(classes[0]).toMatchObject({ fields: [{ name: 'value' }], methods: [] });
+    expect(classes[1]).toMatchObject({ fields: [], methods: [{ name: 'read' }] });
+    expect(classes[2]).toMatchObject({ fields: [], methods: [] });
+  });
+
+  it('skips computed interface properties and methods like index signatures', () => {
+    const result = lower(
+      'computed-interface-members.ts',
+      `
+        export interface Mixed {
+          value: number;
+          [Symbol.iterator]: bigint;
+          ['metadata'](): bigint;
+          [key: symbol]: unknown;
+        }
+        export interface ComputedOnly {
+          [Symbol.iterator]: bigint;
+        }
+      `,
+    );
+    const interfaces = result.module.declarations.filter((declaration) => declaration.kind === 'interface');
+
+    expect(result.diagnostics).toEqual([]);
+    expect(interfaces).toHaveLength(2);
+    expect(interfaces[0]).toMatchObject({ properties: [{ name: 'value' }] });
+    expect(interfaces[1]).toMatchObject({ properties: [] });
+  });
+
   it('represents re-exports and default exports instead of silently skipping them', () => {
     const result = lower(
       'barrel.ts',
@@ -995,8 +1045,11 @@ describe('lowerTypeScriptSource', () => {
       `,
     );
 
-    expect(rejected.module.declarations).toHaveLength(1);
-    expect(rejected.module.declarations[0]).toMatchObject({ binding: { name: 'Valid' }, kind: 'typeAlias' });
+    expect(rejected.module.declarations).toHaveLength(2);
+    expect(rejected.module.declarations).toMatchObject([
+      { binding: { name: 'ComputedProperty' }, kind: 'typeAlias', type: { kind: 'object', properties: [] } },
+      { binding: { name: 'Valid' }, kind: 'typeAlias' },
+    ]);
     expect(rejected.diagnostics.map((diagnostic) => diagnostic.message)).toEqual([
       'unsupported literal type',
       'unsupported type operator unique',
@@ -1006,7 +1059,169 @@ describe('lowerTypeScriptSource', () => {
       'unsupported type TemplateLiteralType',
       'unsupported type member CallSignature',
       'property signature requires a type',
-      'computed property names require expression-level representation',
+    ]);
+  });
+
+  it('keeps ambient utilities named and expands only checker-concrete mapped types', () => {
+    const result = lower(
+      'mapped-types.ts',
+      `
+        interface Source {
+          readonly optional?: number;
+          readonly label: string;
+          nested: { ok: boolean };
+          callback: (value: number) => string;
+          mode: 'ready';
+        }
+        export type Utility = Partial<{ value: number }>;
+        export type Mutable = { -readonly [Key in keyof Source]-?: Source[Key] };
+        export type Flags = { readonly [Key in 'ready' | 'done']?: boolean };
+        export type Generic<Value> = { [Key in keyof Value]: Value[Key] };
+      `,
+    );
+    const aliases = new Map(
+      result.module.declarations.flatMap((declaration) =>
+        declaration.kind === 'typeAlias' ? [[declaration.binding.name, declaration.type] as const] : [],
+      ),
+    );
+
+    expect(aliases.get('Utility')).toEqual({
+      kind: 'named',
+      reference: { kind: 'ambient', name: 'Partial' },
+      typeArguments: [
+        {
+          kind: 'object',
+          properties: [
+            { name: 'value', optional: false, readonly: false, type: { kind: 'primitive', name: 'number' } },
+          ],
+        },
+      ],
+    });
+    expect(aliases.get('Mutable')).toEqual({
+      kind: 'object',
+      properties: [
+        { name: 'optional', optional: false, readonly: false, type: { kind: 'primitive', name: 'number' } },
+        { name: 'label', optional: false, readonly: false, type: { kind: 'primitive', name: 'string' } },
+        {
+          name: 'nested',
+          optional: false,
+          readonly: false,
+          type: {
+            kind: 'object',
+            properties: [
+              { name: 'ok', optional: false, readonly: false, type: { kind: 'primitive', name: 'boolean' } },
+            ],
+          },
+        },
+        {
+          name: 'callback',
+          optional: false,
+          readonly: false,
+          type: {
+            kind: 'function',
+            parameters: [
+              {
+                name: 'value',
+                optional: false,
+                rest: false,
+                type: { kind: 'primitive', name: 'number' },
+              },
+            ],
+            returns: { kind: 'primitive', name: 'string' },
+            typeParameters: [],
+          },
+        },
+        { name: 'mode', optional: false, readonly: false, type: { kind: 'literal', value: 'ready' } },
+      ],
+    });
+    expect(aliases.get('Flags')).toEqual({
+      kind: 'object',
+      properties: [
+        { name: 'ready', optional: true, readonly: true, type: { kind: 'primitive', name: 'boolean' } },
+        { name: 'done', optional: true, readonly: true, type: { kind: 'primitive', name: 'boolean' } },
+      ],
+    });
+    expect(aliases.has('Generic')).toBe(false);
+    expect(result.diagnostics.map((diagnostic) => diagnostic.message)).toEqual(['unsupported type MappedType']);
+  });
+
+  it('preserves concrete checker literals, primitives, and overloaded call signatures', () => {
+    const result = lower(
+      'mapped-type-evidence.ts',
+      `
+        interface Source {
+          count: 7;
+          enabled: true;
+          epoch: bigint;
+          key: symbol;
+          callback: ((value?: number) => string) & ((...values: string[]) => number);
+        }
+        export type Concrete = { [Key in keyof Source]: Source[Key] };
+      `,
+    );
+    const concrete = result.module.declarations.find(
+      (declaration) => declaration.kind === 'typeAlias' && declaration.binding.name === 'Concrete',
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    expect(concrete).toMatchObject({
+      kind: 'typeAlias',
+      type: {
+        kind: 'object',
+        properties: [
+          { name: 'count', type: { kind: 'literal', value: 7 } },
+          { name: 'enabled', type: { kind: 'literal', value: true } },
+          { name: 'epoch', type: { kind: 'primitive', name: 'bigint' } },
+          { name: 'key', type: { kind: 'primitive', name: 'symbol' } },
+          {
+            name: 'callback',
+            type: {
+              kind: 'intersection',
+              types: [
+                {
+                  kind: 'function',
+                  parameters: [{ name: 'value', optional: true, rest: false }],
+                  returns: { kind: 'primitive', name: 'string' },
+                },
+                {
+                  kind: 'function',
+                  parameters: [{ name: 'values', optional: false, rest: true }],
+                  returns: { kind: 'primitive', name: 'number' },
+                },
+              ],
+            },
+          },
+        ],
+      },
+    });
+  });
+
+  it('refuses mapped properties whose checker shape is not exactly representable', () => {
+    const result = lower(
+      'mapped-type-refusals.ts',
+      `
+        interface Unsafe {
+          constructable: { new (): { value: number } };
+          indexed: { [key: string]: number };
+          generic: <Value>(value: Value) => Value;
+        }
+        interface SymbolSource {
+          [Symbol.iterator]: number;
+        }
+        export type Constructable = { [Key in 'constructable']: Unsafe[Key] };
+        export type Indexed = { [Key in 'indexed']: Unsafe[Key] };
+        export type Generic = { [Key in 'generic']: Unsafe[Key] };
+        export type SymbolNamed = { [Key in keyof SymbolSource]: SymbolSource[Key] };
+      `,
+    );
+
+    expect(result.module.declarations.filter((declaration) => declaration.kind === 'typeAlias')).toEqual([]);
+    expect(result.diagnostics.map((diagnostic) => diagnostic.message)).toEqual([
+      'unsupported type member ConstructSignature',
+      'unsupported type MappedType',
+      'unsupported type MappedType',
+      'unsupported type MappedType',
+      'unsupported type MappedType',
     ]);
   });
 
@@ -1145,6 +1360,62 @@ describe('lowerTypeScriptSource', () => {
     expect(result!.module.declarations).toContainEqual(
       expect.objectContaining({ binding: expect.objectContaining({ name: 'Derived' }), kind: 'interface' }),
     );
+  });
+
+  it('expands concrete mapped properties through imported named type bindings', () => {
+    const model = ts.createSourceFile(
+      '/flight/packages/model/src/model.ts',
+      'export interface Remote { id: number } export interface Source { readonly remote: Remote; readonly values: Remote[]; }',
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const consumer = ts.createSourceFile(
+      '/flight/packages/app/src/consumer.ts',
+      "import type { Remote, Source } from '@flight/model'; export type Mutable = { -readonly [Key in keyof Source]: Source[Key] };",
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const [, result] = lowerTypeScriptSources(
+      [
+        { packageName: '@flight/model', sourceFile: model, upstreamDirectory: '/flight' },
+        { packageName: '@flight/app', sourceFile: consumer, upstreamDirectory: '/flight' },
+      ],
+      {
+        edges: [
+          {
+            specifier: '@flight/model',
+            target: { packageName: '@flight/model', source: 'packages/model/src/model.ts' },
+          },
+        ],
+        schema: 'flight-compiler-module-resolution/1',
+      },
+    );
+    const mutable = result!.module.declarations.find(
+      (declaration) => declaration.kind === 'typeAlias' && declaration.binding.name === 'Mutable',
+    );
+
+    expect(result!.diagnostics).toEqual([]);
+    expect(mutable).toMatchObject({
+      kind: 'typeAlias',
+      type: {
+        kind: 'object',
+        properties: [
+          {
+            name: 'remote',
+            readonly: false,
+            type: { kind: 'named', reference: { binding: { kind: 'import', name: 'Remote' } } },
+          },
+          {
+            name: 'values',
+            readonly: false,
+            type: {
+              element: { kind: 'named', reference: { binding: { kind: 'import', name: 'Remote' } } },
+              kind: 'array',
+            },
+          },
+        ],
+      },
+    });
   });
 
   it('resolves all supported relative source forms in shared module analysis', () => {

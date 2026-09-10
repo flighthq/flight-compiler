@@ -281,7 +281,8 @@ function lowerClass(node: ts.ClassDeclaration, context: LoweringContext): IrClas
   const methods: IrClassMethod[] = [];
   const methodGroups = new Map<string, ts.MethodDeclaration[]>();
   for (const method of node.members.filter(ts.isMethodDeclaration)) {
-    const name = propertyName(method.name, context);
+    const name = tryPropertyName(method.name);
+    if (name === undefined) continue;
     const key = `${hasModifier(method, ts.SyntaxKind.StaticKeyword) ? 'static' : 'instance'}:${name}`;
     const group = methodGroups.get(key) ?? [];
     group.push(method);
@@ -302,12 +303,13 @@ function lowerClass(node: ts.ClassDeclaration, context: LoweringContext): IrClas
   for (const member of node.members) {
     if (ts.isConstructorDeclaration(member)) continue;
     if (ts.isPropertyDeclaration(member)) {
+      const name = tryPropertyName(member.name);
+      if (name === undefined) continue;
       const isBranded = ts.isPrivateIdentifier(member.name);
       const isAbstract = hasModifier(member, ts.SyntaxKind.AbstractKeyword);
       const isDeclare = hasModifier(member, ts.SyntaxKind.DeclareKeyword);
       if (!member.type && !member.initializer) unsupported(member, 'class fields require a type or initializer');
       const type = member.type ? lowerType(member.type, context) : inferInitializerType(member.initializer!, context);
-      const name = propertyName(member.name, context);
       const key = `${hasModifier(member, ts.SyntaxKind.StaticKeyword) ? 'static' : 'instance'}:${name}`;
       if (fieldSlots.has(key) || methodGroups.has(key)) {
         unsupported(member, `class runtime member ${name} has conflicting field and method storage`);
@@ -328,6 +330,8 @@ function lowerClass(node: ts.ClassDeclaration, context: LoweringContext): IrClas
       continue;
     }
     if (ts.isMethodDeclaration(member) || ts.isGetAccessor(member) || ts.isSetAccessor(member)) {
+      const name = tryPropertyName(member.name);
+      if (name === undefined) continue;
       if (!member.body && !hasModifier(member, ts.SyntaxKind.AbstractKeyword)) continue;
       const accessor = ts.isGetAccessor(member)
         ? ({ accessor: 'get' } as const)
@@ -336,7 +340,6 @@ function lowerClass(node: ts.ClassDeclaration, context: LoweringContext): IrClas
           : {};
       const signature = lowerFunctionSignature(member, context);
       const parameterEntries = lowerParameterBindingEntries(member.parameters, signature.parameters, context);
-      const name = propertyName(member.name, context);
       const key = `${hasModifier(member, ts.SyntaxKind.StaticKeyword) ? 'static' : 'instance'}:${name}`;
       const overloads = (methodGroups.get(key) ?? [])
         .filter((candidate) => candidate !== member)
@@ -2232,6 +2235,10 @@ function lowerType(node: ts.TypeNode, context: LoweringContext): IrType {
     };
   }
   if (ts.isTypeQueryNode(node)) return { kind: 'typeOf', reference: lowerValueNameReference(node.exprName, context) };
+  if (ts.isMappedTypeNode(node)) {
+    const concrete = lowerConcreteMappedType(node, context);
+    if (concrete) return concrete;
+  }
   unsupported(node, `unsupported type ${ts.SyntaxKind[node.kind]}`);
 }
 
@@ -2315,13 +2322,14 @@ function lowerTypeScriptTypeProperties(
   const loweredMethods = new Set<ts.MethodSignature>();
   for (const member of members) {
     if (ts.isPropertySignature(member)) {
+      const name = tryPropertyName(member.name);
+      if (name === undefined) continue;
       if (!member.type) unsupported(member, 'property signature requires a type');
-      const name = propertyName(member.name, context);
       if (properties.some((property) => property.name === name)) {
         unsupported(member, `object type property ${name} is declared more than once`);
       }
       properties.push({
-        name: propertyName(member.name, context),
+        name,
         optional: member.questionToken !== undefined,
         readonly: hasModifier(member, ts.SyntaxKind.ReadonlyKeyword),
         type: lowerPropertyType(member.type),
@@ -2331,13 +2339,14 @@ function lowerTypeScriptTypeProperties(
     if (ts.isIndexSignatureDeclaration(member)) continue;
     if (ts.isMethodSignature(member)) {
       if (loweredMethods.has(member)) continue;
-      const name = propertyName(member.name, context);
+      const name = tryPropertyName(member.name);
+      if (name === undefined) continue;
       if (properties.some((property) => property.name === name)) {
         unsupported(member, `object type member ${name} mixes property and method declarations`);
       }
       const overloads = members.filter(
         (candidate): candidate is ts.MethodSignature =>
-          ts.isMethodSignature(candidate) && propertyName(candidate.name, context) === name,
+          ts.isMethodSignature(candidate) && tryPropertyName(candidate.name) === name,
       );
       const optional = member.questionToken !== undefined;
       if (overloads.some((overload) => (overload.questionToken !== undefined) !== optional)) {
@@ -2357,6 +2366,31 @@ function lowerTypeScriptTypeProperties(
     unsupported(member, `unsupported type member ${ts.SyntaxKind[member.kind]}`);
   }
   return properties;
+}
+
+function lowerConcreteMappedType(node: ts.MappedTypeNode, context: LoweringContext): IrType | undefined {
+  if (hasExternalTypeScriptMappedTypeParameter(node, context)) return undefined;
+  const type = context.checker.getTypeFromTypeNode(node);
+  const properties = lowerTypeScriptCheckerObjectProperties(type, context, 0, node);
+  return properties ? { kind: 'object', properties } : undefined;
+}
+
+function hasExternalTypeScriptMappedTypeParameter(node: ts.MappedTypeNode, context: LoweringContext): boolean {
+  const own = context.checker.getSymbolAtLocation(node.typeParameter.name);
+  let external = false;
+  const visit = (child: ts.Node): void => {
+    if (external) return;
+    if (ts.isIdentifier(child)) {
+      const symbol = context.checker.getSymbolAtLocation(child);
+      if (symbol !== own && symbol?.declarations?.some(ts.isTypeParameterDeclaration)) {
+        external = true;
+        return;
+      }
+    }
+    ts.forEachChild(child, visit);
+  };
+  ts.forEachChild(node, visit);
+  return external;
 }
 
 function lowerCompoundTypes(
@@ -3544,29 +3578,203 @@ function getTypeScriptCheckerTypeEvidence(
   type: ts.Type,
   context: LoweringContext,
   depth: number,
+  structural = false,
 ): Readonly<IrType> | undefined {
   const checker = context.checker;
   if (depth > 4) return undefined;
+  if (structural && type.flags & ts.TypeFlags.StringLiteral) {
+    return { kind: 'literal', value: (type as ts.StringLiteralType).value };
+  }
+  if (structural && type.flags & ts.TypeFlags.NumberLiteral) {
+    return { kind: 'literal', value: (type as ts.NumberLiteralType).value };
+  }
+  if (structural && type.flags & ts.TypeFlags.BooleanLiteral) {
+    return { kind: 'literal', value: checker.typeToString(type) === 'true' };
+  }
   if (type.isUnion()) {
+    if (structural && type.types.every((member) => member.flags & ts.TypeFlags.BooleanLiteral)) {
+      return { kind: 'primitive', name: 'boolean' };
+    }
     const members = type.types.flatMap((member) => {
-      const lowered = getTypeScriptCheckerTypeEvidence(member, context, depth + 1);
+      const lowered = getTypeScriptCheckerTypeEvidence(member, context, depth + 1, structural);
       return lowered ? [lowered] : [];
     });
     if (members.length !== type.types.length || members.length === 0) return undefined;
     return commonType([members[0]!, ...members.slice(1)]);
   }
   if (type.flags & ts.TypeFlags.BooleanLike) return { kind: 'primitive', name: 'boolean' };
+  if (type.flags & ts.TypeFlags.BigIntLike) return { kind: 'primitive', name: 'bigint' };
   if (type.flags & ts.TypeFlags.NumberLike) return { kind: 'primitive', name: 'number' };
   if (type.flags & ts.TypeFlags.StringLike) return { kind: 'primitive', name: 'string' };
+  if (type.flags & ts.TypeFlags.ESSymbolLike) return { kind: 'primitive', name: 'symbol' };
   if (type.flags & ts.TypeFlags.Void) return { kind: 'primitive', name: 'void' };
   if (type.flags & ts.TypeFlags.Undefined) return { kind: 'undefined' };
   if (type.flags & ts.TypeFlags.Null) return { kind: 'null' };
+  if (type.flags & ts.TypeFlags.Never) return { kind: 'never' };
+  if (type.flags & ts.TypeFlags.Any) return { kind: 'unknown', source: 'any' };
+  if (type.flags & ts.TypeFlags.Unknown) return { kind: 'unknown', source: 'unknown' };
   if (checker.isArrayType(type)) {
     const element = checker.getTypeArguments(type as ts.TypeReference)[0];
-    const lowered = element ? getTypeScriptCheckerTypeEvidence(element, context, depth + 1) : undefined;
+    const lowered = element ? getTypeScriptCheckerTypeEvidence(element, context, depth + 1, structural) : undefined;
     return lowered ? { element: lowered, kind: 'array', readonly: false } : undefined;
   }
-  return getTypeScriptDeclaredTypeEvidence(type, context);
+  const declared = getTypeScriptDeclaredTypeEvidence(type, context);
+  if (declared || !structural) return declared;
+  const named = getTypeScriptCheckerNamedTypeEvidence(type, context, depth);
+  if (named) return named;
+  const functionType = getTypeScriptCheckerFunctionTypeEvidence(type, context, depth);
+  if (functionType) return functionType;
+  const properties = lowerTypeScriptCheckerObjectProperties(type, context, depth);
+  return properties ? { kind: 'object', properties } : undefined;
+}
+
+function getTypeScriptCheckerFunctionTypeEvidence(
+  type: ts.Type,
+  context: LoweringContext,
+  depth: number,
+): Readonly<IrType> | undefined {
+  if (context.checker.getSignaturesOfType(type, ts.SignatureKind.Construct).length > 0) return undefined;
+  const signatures = context.checker.getSignaturesOfType(type, ts.SignatureKind.Call);
+  if (signatures.length === 0 || signatures.some((signature) => (signature.typeParameters?.length ?? 0) > 0)) {
+    return undefined;
+  }
+  const functions = signatures.flatMap((signature): Extract<IrType, { kind: 'function' }>[] => {
+    const parameters = signature.getParameters().flatMap((parameter): IrFunctionTypeParameter[] => {
+      if (parameter.getName() === 'this') return [];
+      const declaration = parameter.valueDeclaration;
+      const type = context.checker.getTypeOfSymbolAtLocation(parameter, declaration ?? context.sourceFile);
+      const lowered = getTypeScriptCheckerTypeEvidence(type, context, depth + 1, true);
+      if (!lowered) return [];
+      const value = { name: parameter.getName(), type: lowered };
+      if (declaration && ts.isParameter(declaration) && declaration.dotDotDotToken) {
+        return [{ ...value, optional: false, rest: true }];
+      }
+      const optional =
+        Boolean(parameter.flags & ts.SymbolFlags.Optional) ||
+        (declaration !== undefined &&
+          ts.isParameter(declaration) &&
+          (declaration.questionToken !== undefined || declaration.initializer !== undefined));
+      return optional ? [{ ...value, optional: true, rest: false }] : [{ ...value, optional: false, rest: false }];
+    });
+    if (parameters.length !== signature.getParameters().filter((parameter) => parameter.getName() !== 'this').length) {
+      return [];
+    }
+    const returns = getTypeScriptCheckerTypeEvidence(
+      context.checker.getReturnTypeOfSignature(signature),
+      context,
+      depth + 1,
+      true,
+    );
+    return returns ? [{ kind: 'function', parameters, returns, typeParameters: [] }] : [];
+  });
+  if (functions.length !== signatures.length || !functions[0]) return undefined;
+  return functions.length === 1
+    ? functions[0]
+    : { kind: 'intersection', types: [functions[0], functions[1]!, ...functions.slice(2)] };
+}
+
+function getTypeScriptCheckerNamedTypeEvidence(
+  type: ts.Type,
+  context: LoweringContext,
+  depth: number,
+): Readonly<IrType> | undefined {
+  const symbol = type.aliasSymbol ?? type.getSymbol();
+  if (!symbol) return undefined;
+  const binding = getTypeScriptCheckerTypeBinding(symbol, context);
+  const ambient =
+    symbol.declarations?.some(
+      (declaration) => declaration.getSourceFile().fileName === getCompilerAmbientSurfaceFileName(),
+    ) === true;
+  if (!binding && !ambient) return undefined;
+  const typeArguments = getTypeScriptCheckerTypeArguments(type, context.checker);
+  const loweredArguments = typeArguments.flatMap((argument) => {
+    const lowered = getTypeScriptCheckerTypeEvidence(argument, context, depth + 1, true);
+    return lowered ? [lowered] : [];
+  });
+  if (loweredArguments.length !== typeArguments.length) return undefined;
+  return {
+    kind: 'named',
+    reference: binding ? { binding, kind: 'binding', path: [] } : { kind: 'ambient', name: symbol.name },
+    typeArguments: loweredArguments,
+  };
+}
+
+function getTypeScriptCheckerTypeBinding(
+  symbol: ts.Symbol,
+  context: LoweringContext,
+): IrBindingIdentity | IrTypeBindingIdentity | undefined {
+  const direct = context.typeBindings.get(symbol) ?? context.bindings.get(symbol);
+  if (direct) return direct;
+  const aliases = [...context.typeBindings, ...context.bindings].flatMap(([candidate, binding]) =>
+    candidate.flags & ts.SymbolFlags.Alias && context.checker.getAliasedSymbol(candidate) === symbol ? [binding] : [],
+  );
+  const unique = new Map(aliases.map((binding) => [binding.id, binding]));
+  return unique.size === 1 ? [...unique.values()][0] : undefined;
+}
+
+function getTypeScriptCheckerTypeArguments(type: ts.Type, checker: ts.TypeChecker): readonly ts.Type[] {
+  if (type.aliasTypeArguments) return type.aliasTypeArguments;
+  if (type.flags & ts.TypeFlags.Object && (type as ts.ObjectType).objectFlags & ts.ObjectFlags.Reference) {
+    return checker.getTypeArguments(type as ts.TypeReference);
+  }
+  return [];
+}
+
+function lowerTypeScriptCheckerObjectProperties(
+  type: ts.Type,
+  context: LoweringContext,
+  depth: number,
+  mapped?: ts.MappedTypeNode,
+): readonly IrObjectTypeProperty[] | undefined {
+  if (!(type.flags & ts.TypeFlags.Object) || depth > 4) return undefined;
+  if (
+    context.checker.getSignaturesOfType(type, ts.SignatureKind.Call).length > 0 ||
+    context.checker.getSignaturesOfType(type, ts.SignatureKind.Construct).length > 0 ||
+    context.checker.getIndexInfosOfType(type).length > 0
+  ) {
+    return undefined;
+  }
+  const properties: IrObjectTypeProperty[] = [];
+  for (const property of context.checker.getPropertiesOfType(type)) {
+    const name = property.getName();
+    if (name.startsWith('__@')) return undefined;
+    const optional = Boolean(property.flags & ts.SymbolFlags.Optional);
+    const propertyType = context.checker.getTypeOfSymbolAtLocation(property, mapped ?? context.sourceFile);
+    const lowered = lowerTypeScriptCheckerPropertyType(propertyType, optional, context, depth + 1);
+    if (!lowered) return undefined;
+    properties.push({
+      name,
+      optional,
+      readonly: getTypeScriptCheckerPropertyReadonly(property, mapped),
+      type: lowered,
+    });
+  }
+  return properties;
+}
+
+function lowerTypeScriptCheckerPropertyType(
+  type: ts.Type,
+  optional: boolean,
+  context: LoweringContext,
+  depth: number,
+): Readonly<IrType> | undefined {
+  const candidates =
+    optional && type.isUnion() && type.types.some((member) => !(member.flags & ts.TypeFlags.Undefined))
+      ? type.types.filter((member) => !(member.flags & ts.TypeFlags.Undefined))
+      : [type];
+  if (candidates.length > 1 && candidates.every((candidate) => candidate.flags & ts.TypeFlags.BooleanLiteral)) {
+    return { kind: 'primitive', name: 'boolean' };
+  }
+  const lowered = candidates.flatMap((candidate) => {
+    const evidence = getTypeScriptCheckerTypeEvidence(candidate, context, depth, true);
+    return evidence ? [evidence] : [];
+  });
+  return lowered.length === candidates.length && lowered[0] ? commonType([lowered[0], ...lowered.slice(1)]) : undefined;
+}
+
+function getTypeScriptCheckerPropertyReadonly(property: ts.Symbol, mapped?: ts.MappedTypeNode): boolean {
+  if (mapped?.readonlyToken) return mapped.readonlyToken.kind !== ts.SyntaxKind.MinusToken;
+  return property.declarations?.some((declaration) => hasModifier(declaration, ts.SyntaxKind.ReadonlyKeyword)) === true;
 }
 
 function hasIrTypeAbsentMemberSemantic(type: Readonly<IrType>): boolean {
@@ -4057,10 +4265,15 @@ function origin(node: ts.Node, context: LoweringContext): CompilerSourceOrigin {
 }
 
 function propertyName(node: ts.PropertyName, _context: LoweringContext): string {
-  if (ts.isIdentifier(node) || ts.isPrivateIdentifier(node) || ts.isStringLiteral(node) || ts.isNumericLiteral(node)) {
-    return node.text;
-  }
+  const name = tryPropertyName(node);
+  if (name !== undefined) return name;
   unsupported(node, 'computed property names require expression-level representation');
+}
+
+function tryPropertyName(node: ts.PropertyName): string | undefined {
+  return ts.isIdentifier(node) || ts.isPrivateIdentifier(node) || ts.isStringLiteral(node) || ts.isNumericLiteral(node)
+    ? node.text
+    : undefined;
 }
 
 function relativeSource(file: string, upstreamDirectory: string): string {
