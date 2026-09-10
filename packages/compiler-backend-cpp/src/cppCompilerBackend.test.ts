@@ -104,9 +104,8 @@ describe('createCppCompilerBackend', () => {
       'bool same(flight::Ref<flighthq_models::Model> left, flight::Ref<flighthq_models::Model> right)',
     );
     expect(facade[0]?.contents).toContain('#include "model.hpp"');
-    expect(() => emitIrModuleCpp(consumer, { runtimeProfile: 'flight-cpp' })).toThrow(
-      'imported type Model has indeterminateIdentity',
-    );
+    const standalone = emitIrModuleCpp(consumer, { runtimeProfile: 'flight-cpp' });
+    expect(standalone.contents).toContain('flight::Ref<Model>');
   });
 
   it('applies explicit package namespace and installed include identity across a module graph', () => {

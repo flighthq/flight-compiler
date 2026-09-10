@@ -79,6 +79,15 @@ function createIrTypeReferenceRepresentationPlanInternalCpp(
 ): CompilerCppReferenceRepresentationPlan {
   const identity = context.analyzeIdentity(type, module.module);
   if (identity.identity === 'indeterminate') {
+    if (identity.reason === 'unresolved-reference' && isUnresolvedImportBindingReferenceCpp(type)) {
+      return createCompilerCppReferenceRepresentationSuccessCpp(
+        identity,
+        'interface',
+        'object',
+        'rawNamedObject',
+        'flightReference',
+      );
+    }
     return createCompilerCppReferenceRepresentationRefusalCpp(identity, 'indeterminateIdentity');
   }
   if (identity.identity === 'value') {
@@ -139,6 +148,15 @@ function createNamedReferenceRepresentationPlanCpp(
 
   const resolution = getReferenceDeclarationResolutionCpp(type.reference, module, context.moduleSet);
   if (resolution.kind !== 'location') {
+    if (type.reference.binding.kind === 'import') {
+      return createCompilerCppReferenceRepresentationSuccessCpp(
+        identity,
+        'interface',
+        'object',
+        'rawNamedObject',
+        'flightReference',
+      );
+    }
     return createCompilerCppReferenceRepresentationRefusalCpp(identity, 'unresolvedReferenceRepresentation');
   }
   const declaration = resolution.location.declaration;
@@ -352,6 +370,10 @@ function getReferenceSpecifierSourceCandidatesCpp(source: string, specifier: str
     candidates.add(`${resolved}/index.ts`);
   }
   return candidates;
+}
+
+function isUnresolvedImportBindingReferenceCpp(type: Readonly<IrType>): boolean {
+  return type.kind === 'named' && type.reference.kind === 'binding' && type.reference.binding.kind === 'import';
 }
 
 function createReferenceModuleSetCpp(
