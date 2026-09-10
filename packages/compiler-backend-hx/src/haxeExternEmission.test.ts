@@ -3,7 +3,7 @@ import ts from 'typescript';
 import { lowerTypeScriptSource } from '../../compiler-semantic/src/index.js';
 import type { EmittedFile } from '../../compiler-types/src/index.js';
 import { createHaxeCompilerBackend, emitIrModuleHaxe } from './haxeCompilerBackend.js';
-import { emitIrModuleHaxeExtern } from './haxeExternEmission.js';
+import { emitIrModuleHaxeExtern, emitIrModuleHaxeExternWithContext } from './haxeExternEmission.js';
 
 describe('emitIrModuleHaxeExtern', () => {
   it('emits exported interfaces as structural typedefs and values on the package contract holder', () => {
@@ -160,6 +160,20 @@ describe('emitIrModuleHaxeExtern', () => {
     expect(() => emitIrModuleHaxeExtern(module)).toThrow(
       'package exports default and default_ share Haxe holder member default_',
     );
+  });
+});
+
+describe('emitIrModuleHaxeExternWithContext', () => {
+  it('places the source package contract specifier in custom ESM import metadata', () => {
+    const module = lower('@flighthq/geometry', 'value.ts', 'export function value(): number { return 1; }');
+
+    const holder = findFile(
+      emitIrModuleHaxeExternWithContext(module, [module], undefined, { rootPackage: 'flight' }),
+      'flight/_js/_fn/Geometry.hx',
+    );
+
+    expect(holder.contents).toContain('@:jsImport("@flighthq/geometry/contract")');
+    expect(holder.contents).not.toContain('@:jsRequire');
   });
 });
 
