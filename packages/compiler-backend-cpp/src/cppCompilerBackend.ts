@@ -228,9 +228,7 @@ function emitIrModuleCppWithContext(
     const targetName = targetNames.get(bindingPlan.binding.id) ?? safeCppName(bindingPlan.binding.name);
     sharedCaptureTargetNames.set(bindingPlan.binding.id, generateUniqueName(`${targetName}_capture`, context));
   }
-  const declarations = [...module.declarations]
-    .sort((left, right) => declarationPriorityCpp(left) - declarationPriorityCpp(right))
-    .map((declaration) => emitDeclaration(declaration, context));
+  const declarations = orderIrModuleDeclarationsCpp(module).map((declaration) => emitDeclaration(declaration, context));
   const imports = emitImports(module, context);
   const reexports = emitReexportsCpp(module, context);
   const lines = [createCompilerGeneratedFileHeader(module, '//', options.upstreamCommit)];
@@ -773,11 +771,7 @@ function emitExpression(
         context.includes.add('cmath');
         return `std::pow(${emitExpression(expression.left, context)}, ${emitExpression(expression.right, context)})`;
       }
-      if (
-        expression.operator === '>>>' &&
-        expression.semantics.left.flow === 'number' &&
-        expression.semantics.right.flow === 'number'
-      ) {
+      if (expression.operator === '>>>') {
         if (getCppRuntimeProfile(context.options) === 'flight-cpp') {
           return `flight::unsigned_right_shift(${emitExpression(expression.left, context)}, ${emitExpression(expression.right, context)})`;
         }
@@ -1018,6 +1012,13 @@ function emitExpression(
       }
       if (externalConstruction) {
         return `${externalConstruction.targetName}${typeArguments}(${args.join(', ')})`;
+      }
+      if (
+        (typeName === 'std::runtime_error' || typeName === 'std::range_error') &&
+        getCppRuntimeProfile(context.options) === 'flight-cpp' &&
+        args.length > 0
+      ) {
+        return `${typeName}(${args[0]}.to_utf8())`;
       }
       const constructedType: IrType | undefined =
         expression.callee.reference.kind === 'binding'
@@ -2226,6 +2227,59 @@ function declarationPriorityCpp(declaration: Readonly<IrDeclaration>): number {
   return 2;
 }
 
+function orderIrModuleDeclarationsCpp(module: Readonly<IrModule>): readonly Readonly<IrDeclaration>[] {
+  const originalIndexes = new Map(module.declarations.map((declaration, index) => [declaration, index] as const));
+  const ranked = [...module.declarations].sort(
+    (left, right) =>
+      declarationPriorityCpp(left) - declarationPriorityCpp(right) ||
+      originalIndexes.get(left)! - originalIndexes.get(right)!,
+  );
+  const declarationsByBindingId = new Map(
+    module.declarations.flatMap((declaration) =>
+      'binding' in declaration ? [[declaration.binding.id, declaration] as const] : [],
+    ),
+  );
+  const dependencies = new Map<Readonly<IrDeclaration>, ReadonlySet<Readonly<IrDeclaration>>>();
+  for (const declaration of module.declarations) {
+    const referenced = new Set<Readonly<IrDeclaration>>();
+    const addBindingDependency = (bindingId: string) => {
+      const dependency = declarationsByBindingId.get(bindingId);
+      if (dependency && dependency !== declaration) referenced.add(dependency);
+    };
+    analyzeIrModuleTraversal(
+      { ...module, declarations: [declaration], exports: [] },
+      {
+        expression(expression) {
+          if (expression.kind === 'identifier' && expression.reference.kind === 'binding') {
+            addBindingDependency(expression.reference.binding.id);
+          }
+        },
+        type(type) {
+          if (type.kind === 'named' && type.reference.kind === 'binding') {
+            addBindingDependency(type.reference.binding.id);
+          }
+        },
+      },
+    );
+    dependencies.set(declaration, referenced);
+  }
+
+  const pending = new Set(ranked);
+  const ordered: Readonly<IrDeclaration>[] = [];
+  while (pending.size > 0) {
+    const next =
+      ranked.find(
+        (declaration) =>
+          pending.has(declaration) &&
+          [...(dependencies.get(declaration) ?? [])].every((dependency) => !pending.has(dependency)),
+      ) ?? ranked.find((declaration) => pending.has(declaration));
+    if (!next) break;
+    pending.delete(next);
+    ordered.push(next);
+  }
+  return ordered;
+}
+
 function emitBindingConstnessCpp(mutable: boolean, type: Readonly<IrType> | undefined): string {
   return !mutable && type && isCppScalarValueType(type) ? 'const ' : '';
 }
@@ -2767,9 +2821,10 @@ function hasIndexedRuntimeReceiverCpp(
   if (expression.semantics.receivers.some((receiver) => receiver === 'array' || receiver.endsWith('Array'))) {
     return true;
   }
-  if (expression.object.kind !== 'identifier' || expression.object.reference.kind !== 'binding') return false;
-  const type = context.bindingTypes.get(expression.object.reference.binding.id);
-  return type?.kind === 'array';
+  const type = getIrExpressionTypeEvidenceCpp(expression.object, context);
+  if (!type) return false;
+  const plan = context.referenceRepresentationPlanner.plan(type, context.module);
+  return plan.kind === 'represented' && (plan.category === 'array' || plan.category === 'typedArray');
 }
 
 function hasSharedReferentRepresentationCpp(type: Readonly<IrType>, context: EmitContext): boolean {

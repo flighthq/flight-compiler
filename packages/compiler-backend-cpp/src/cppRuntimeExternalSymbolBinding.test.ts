@@ -224,9 +224,22 @@ describe('getCompilerRuntimeExternalMemberTargetCpp', () => {
       expect(getCompilerRuntimeExternalMemberTargetCpp('Number', 'EPSILON', runtimeProfile)).toBe(
         'std::numeric_limits<double>::epsilon()',
       );
+      expect(getCompilerRuntimeExternalMemberTargetCpp('Number', 'MIN_VALUE', runtimeProfile)).toBe(
+        'std::numeric_limits<double>::denorm_min()',
+      );
       expect(getCompilerRuntimeExternalMemberTargetCpp('Number', 'isFinite', runtimeProfile)).toBe('std::isfinite');
     },
   );
+
+  it('maps Number.isInteger to the semantic runtime in the flight-cpp profile', () => {
+    expect(getCompilerRuntimeExternalMemberTargetCpp('Number', 'isInteger', 'flight-cpp')).toBe('flight::is_integer');
+  });
+
+  it('maps Number.isInteger to a finite integral test in the standard-library profile', () => {
+    expect(getCompilerRuntimeExternalMemberTargetCpp('Number', 'isInteger', 'standard-library')).toBe(
+      '[](double value) noexcept { return std::isfinite(value) && std::trunc(value) == value; }',
+    );
+  });
 
   it('claims nothing for an unbound member or an unbound symbol', () => {
     expect(getCompilerRuntimeExternalMemberTargetCpp('Math', 'atan2')).toBeUndefined();

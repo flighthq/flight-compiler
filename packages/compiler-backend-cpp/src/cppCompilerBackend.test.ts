@@ -257,6 +257,45 @@ export function preferred(): number { return NativeSurface.preferredFormat; }`,
     expect(emitted.contents).not.toContain('static_cast<int32_t>');
   });
 
+  it('emits unsigned shifts through the runtime when operand flow is unresolved', () => {
+    const result = lower(
+      'imported-shift.ts',
+      "import { checksum } from './checksum'; export function high(bytes: Uint8Array): number { return (checksum(bytes) >>> 24) & 255; }",
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+
+    expect(emitted.contents).toContain('flight::unsigned_right_shift(checksum(bytes), 24.0)');
+    expect(emitted.contents).not.toContain('>>>');
+  });
+
+  it('recognizes identity-preserving utility wrappers around indexed runtime views', () => {
+    const result = lower(
+      'readonly-typed-array.ts',
+      'export function read(levels: Readonly<Uint8Array>, index: number): number { return levels[index]; }',
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+
+    expect(emitted.contents).toContain('return levels.element(index)');
+    expect(emitted.contents).not.toContain('levels[static_cast<size_t>');
+  });
+
+  it('orders module declarations after the local declarations they reference', () => {
+    const result = lower(
+      'declaration-order.ts',
+      'export function read(): number { return helper(); } function helper(): number { return LIMIT; } class Holder { value: number = LIMIT; } const LIMIT = 4;',
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+    const constant = emitted.contents.indexOf('inline const double limit = 4.0');
+    const helper = emitted.contents.indexOf('double helper()');
+    const holder = emitted.contents.indexOf('struct Holder');
+    const read = emitted.contents.indexOf('double read()');
+
+    expect(constant).toBeGreaterThan(-1);
+    expect(helper).toBeGreaterThan(constant);
+    expect(holder).toBeGreaterThan(constant);
+    expect(read).toBeGreaterThan(helper);
+  });
+
   it('uses portable runtime constants and semantic containers for static iteration and rest values', () => {
     const result = lower(
       'portable.ts',
@@ -1058,6 +1097,7 @@ export function preferred(): number { return NativeSurface.preferredFormat; }`,
         `export function classify(value: number): number {
         if (Number.isNaN(value)) return NaN;
         if (!Number.isFinite(value)) return Infinity;
+        if (!Number.isInteger(value)) return Number.MIN_VALUE;
         return Number(value) + Number.EPSILON;
       }`,
       );
@@ -1067,19 +1107,33 @@ export function preferred(): number { return NativeSurface.preferredFormat; }`,
       expect(emitted.contents).toContain('std::isfinite');
       expect(emitted.contents).toContain('std::numeric_limits<double>::quiet_NaN()');
       expect(emitted.contents).toContain('std::numeric_limits<double>::infinity()');
+      expect(emitted.contents).toContain('std::numeric_limits<double>::denorm_min()');
       expect(emitted.contents).toContain('std::numeric_limits<double>::epsilon()');
+      expect(emitted.contents).toContain(
+        runtimeProfile === 'flight-cpp'
+          ? 'flight::is_integer(value)'
+          : '[](double value) noexcept { return std::isfinite(value) && std::trunc(value) == value; }(value)',
+      );
       expect(emitted.contents).toContain('#include <cmath>');
       expect(emitted.contents).toContain('#include <limits>');
     },
   );
 
-  it('emits RangeError construction with the standard exception header', () => {
-    const result = lower('range-error.ts', 'export function fail(): Error { return new RangeError("oops"); }');
-    const emitted = emitIrModuleCpp(result.module);
+  it.each(['flight-cpp', 'standard-library'] as const)(
+    'emits RangeError construction with the correct string representation in the %s profile',
+    (runtimeProfile) => {
+      const result = lower(
+        'range-error.ts',
+        'export function fail(message: string): never { throw new RangeError(message); }',
+      );
+      const emitted = emitIrModuleCpp(result.module, { runtimeProfile });
 
-    expect(emitted.contents).toContain('std::range_error');
-    expect(emitted.contents).toContain('#include <stdexcept>');
-  });
+      expect(emitted.contents).toContain(
+        runtimeProfile === 'flight-cpp' ? 'std::range_error(message.to_utf8())' : 'std::range_error(message)',
+      );
+      expect(emitted.contents).toContain('#include <stdexcept>');
+    },
+  );
 
   it('emits template literals with std::to_string', () => {
     const result = lower('template.ts', 'export function label(n: number): string { return `item ${n}`; }');
