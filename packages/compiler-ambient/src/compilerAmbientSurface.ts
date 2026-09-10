@@ -54,8 +54,8 @@ interface String {
   concat(...values: string[]): string;
   endsWith(search: string): boolean;
   includes(search: string): boolean;
-  indexOf(search: string): number;
-  lastIndexOf(search: string): number;
+  indexOf(search: string, position?: number): number;
+  lastIndexOf(search: string, position?: number): number;
   padStart(length: number, fill?: string): string;
   repeat(count: number): string;
   replace(search: string, replacement: string): string;

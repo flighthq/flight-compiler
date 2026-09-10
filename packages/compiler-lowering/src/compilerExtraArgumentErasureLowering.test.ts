@@ -100,6 +100,18 @@ describe('createCompilerLoweringPassExtraArgumentErasure', () => {
     expect(pass.verifyIrModule(module)).toMatchObject({ kind: 'invalid' });
   });
 
+  it('keeps the optional position argument to string search methods', () => {
+    const module = lower(`
+      export function find(text: string, position: number): number {
+        return text.indexOf('needle', position) + text.lastIndexOf('needle', position);
+      }
+    `);
+    const pass = createCompilerLoweringPassExtraArgumentErasure();
+
+    expect(pass.verifyIrModule(module)).toEqual({ kind: 'valid' });
+    expect(pass.lowerIrModule(module)).toEqual(module);
+  });
+
   it('preserves calls whose extra-argument evidence lacks a complete signature', () => {
     const module = lower(`
       function choose(value: number): number { return value; }
