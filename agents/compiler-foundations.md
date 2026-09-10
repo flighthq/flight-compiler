@@ -270,6 +270,30 @@ Status: target policy and the proven linear async source-emission boundary are e
 
 The Haxe backend now declares a complete versioned task runtime table: executor construction, `then` continuation, `resolve` assimilation, exact rejection, ordered `all`, and `finally` cleanup are tied to the shared task semantic versions. Its first task lowering consumes the target-neutral state-machine analysis and elects a runtime-constructor executor, nested callback chaining, lexical Haxe closure storage for retained locals and captures, lexical `this`, and executor resolve/reject settlement. Source execution, suspension, fulfillment, rejection, resume identity, evaluation failure, and value-bearing completion remain exact path-addressed lowering actions rather than being reconstructed during emission. Neutral refusals remain visible. The Haxe emitter consumes only that plan and explicit expression, statement, binding-name, generated-name, and failure capabilities; it emits the proven linear subset for declarations, methods, and closures without leaving raw `await` syntax. Injected parser and complete-file-set compiler adapters exercise the generated callback form. Incomplete capability tables and invalid Haxe runtime type or member names fail through tagged data. The lowering, runtime table, and task emitter are deterministic and their focused implementation files have zero unreached arms. The maintained runtime implementation remains in `flight-hx`.
 
+### `compiler-backend-cpp`
+
+Status: C++ naming, runtime binding, reference representation, and source emission are explicit under one target policy boundary.
+
+The C++ backend maps packages to namespaces and modules to headers, avoids C++ keywords, and offers dual standard-library and flight-cpp runtime profiles. External binding manifests declare which ambient types and members map to C++ representations. Reference representation planning determines when a generated value uses a pointer, reference, or value type. The emission session performs graph-wide analysis before emitting any single module. 199 of 200 golden fixtures emit; the sole blocking rule is WeakMap key reference representation, which requires a proven flight reference. Mutation testing has not been run on this backend; 455 unreached arms remain, concentrated in union representation planning and the large emitter.
+
+### `compiler-backend-rs`
+
+Status: Rust naming, ownership evidence, and source emission are explicit under one target policy boundary.
+
+The Rust backend maps packages to crate modules, avoids Rust keywords, and normalizes case. Identity-based declarations and references preserve binding provenance. Exact ownership evidence covers mutability, use counts, rebinding versus referent mutation, storage classification, cross-capture and cross-carrier uses, and suspension boundary crossings without choosing borrowing, cloning, reference counting, or pinning. Inventory-routed structural preflight and direct-versus-lowered operator decisions are deterministic. 197 of 200 golden fixtures emit; blocking rules are cast-to-primitive lowering and dual-sentinel union representation. Ownership analysis has zero unreached arms; 340 unreached arms remain across the wider backend, concentrated in the emitter.
+
+### `compiler-orchestration`
+
+Status: deterministic pass composition with explicit module-resolution forwarding.
+
+Orchestration owns the deterministic pipeline that assembles TypeScript program construction, package inventory, export-lane resolution, neutral semantic lowering, patch application, and target backend dispatch into a single reproducible compilation. Duplicate module identities and paths, diagnostics, patch flow, module-resolution forwarding, ordered optional syntax-parser and target-compiler smoke enforcement, normalization, ordering, non-vacuity, and input immutability are exercised. Mutation testing kills 132 of 193 mutants (68.4% kill rate); the lower rate reflects that surviving operators are predominantly `||`→`&&` direction swaps in multi-condition guards and `===`→`!==` inversions in type guards where well-typed callers cannot reach the wrong branch. One real mutant was killed: the empty-subject lookalike rejection in `isCompilerPackageGraphFailure`. Twelve unreached arms remain, primarily in integration-level compilation paths that depend on a live TypeScript project.
+
+### `compiler-ambient`
+
+Status: type-surface declaration with no conditional logic.
+
+The ambient package declares the value and type surface that generated code may assume — `Promise`, `Math`, `Map`, typed arrays, and their members — as pure TypeScript text. It has no runtime implementation, no conditional operators, and no mutatable code paths. Mutation testing generates zero mutants. The package is the other projection of what the backends' runtime binding tables name: it declares what an ambient type has on it, while a binding table says what that type becomes. A member it declares that a backend has not bound is refused at emission.
+
 ## Package isolation review
 
 Each workspace passes its own strict typecheck and Vitest target. The package boundary remains justified only where the subject and dependency direction are independently useful:
