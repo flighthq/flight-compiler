@@ -216,6 +216,21 @@ describe('createIrTypeReferenceRepresentationPlanCpp', () => {
       reason: 'indeterminateIdentity',
       schema: 'flight-compiler-cpp-reference-representation/1',
     });
+    const importBinding = unresolvedImport.imports[0]?.bindings[0]?.binding;
+    if (!importBinding || importBinding.space !== 'type') throw new TypeError('expected type import binding');
+    const directImportType = {
+      kind: 'named',
+      reference: { binding: importBinding, kind: 'binding', path: [] },
+      typeArguments: [],
+    } as const satisfies IrType;
+    expect(createIrTypeReferenceRepresentationPlanCpp(directImportType, unresolvedImport)).toMatchObject({
+      category: 'interface',
+      identity: { identity: 'indeterminate', reason: 'unresolved-reference' },
+      identityDomain: 'object',
+      kind: 'represented',
+      storageRepresentation: 'rawNamedObject',
+      valueRepresentation: 'flightReference',
+    });
     expect(planDeclaration(module, 'Open')).toMatchObject({
       identity: { identity: 'indeterminate', reason: 'invalid-type-application' },
       kind: 'refused',
