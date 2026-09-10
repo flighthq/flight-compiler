@@ -691,6 +691,26 @@ function emitExpression(
           context,
         );
       }
+      if (
+        expression.operator === '=' &&
+        expression.left.kind === 'property' &&
+        expression.left.member?.receiver === 'array' &&
+        expression.left.member.name === 'length' &&
+        getCppRuntimeProfile(context.options) === 'flight-cpp'
+      ) {
+        const receiver = emitExpression(expression.left.object, context);
+        const operator = memberOp(expression.left.object, context);
+        return `([&]() { auto&& assignment_receiver = ${receiver}; const auto assignment_value = ${right}; assignment_receiver${operator}resize(assignment_value); return assignment_value; }())`;
+      }
+      if (
+        expression.operator === '=' &&
+        expression.left.kind === 'property' &&
+        expression.left.member?.receiver === 'typedArray' &&
+        expression.left.member.name === 'length' &&
+        getCppRuntimeProfile(context.options) === 'flight-cpp'
+      ) {
+        emissionError(context, 'typed-array length is read-only and cannot be resized');
+      }
       if (expression.operator === '=' && expression.left.kind === 'property') {
         const setter = getIrExpressionClassAccessorCpp(expression.left.object, expression.left.name, 'set', context);
         if (setter) {
