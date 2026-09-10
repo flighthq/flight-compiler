@@ -69,6 +69,35 @@ describe('createCppCompilerBackend', () => {
     expect(emitted[0]?.contents).toContain('flighthq_models::Model');
   });
 
+  it('emits imported function and tuple aliases through their inline C++ representations', () => {
+    const types = lowerPackage(
+      '@flighthq/types',
+      'aliases.ts',
+      'export type Callback = (value: number) => void; export type Pair = [number, string];',
+    ).module;
+    const consumer = lowerPackage(
+      '@flighthq/consumer',
+      'consumer.ts',
+      "import type { Callback, Pair } from '@flighthq/types'; export function accept(callback: Callback, pair: Pair): void {}",
+    ).module;
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [{ specifier: '@flighthq/types', target: { packageName: types.packageName, source: types.source } }],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const session = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules: [consumer, types],
+      options: { runtimeProfile: 'flight-cpp' },
+    });
+
+    const aliases = session.emitModule(types)[0]?.contents;
+    const emitted = session.emitModule(consumer)[0]?.contents;
+    expect(aliases).toContain('using Callback = std::function<void(double)>');
+    expect(aliases).toContain('using Pair = std::tuple<double, flight::String>');
+    expect(emitted).toContain('void accept(flighthq_types::Callback callback, flighthq_types::Pair pair)');
+    expect(emitted).not.toContain('flight::Ref<flighthq_types::');
+  });
+
   it('uses the resolved module graph for imported reference representation', () => {
     const model = lowerPackage('@flighthq/models', 'model.ts', 'export interface Model { value: number }').module;
     const barrel = lowerPackage('@flighthq/models', 'barrel.ts', "export type { Model } from './model.js';").module;
@@ -517,6 +546,17 @@ export function preferred(): number { return NativeSurface.preferredFormat; }`,
     );
     expect(emitted.contents).toContain('state_capture.read_binding()->value += 1.0');
     expect(emitted.contents).toContain('return alias->value');
+  });
+
+  it('does not claim inline tuple storage preserves shared referent mutation', () => {
+    const result = lower(
+      'tuple-referent.ts',
+      'export function mutate(): number { const tuple: [number] = [0]; const update = (): void => { tuple[0] += 1; }; update(); return tuple[0]; }',
+    );
+
+    expect(() => emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' })).toThrow(
+      'captured referent mutation of tuple requires a shared C++ reference representation',
+    );
   });
 
   it('preserves module structural referent mutation through shared object identity', () => {

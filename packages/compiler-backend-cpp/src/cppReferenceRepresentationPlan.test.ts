@@ -73,10 +73,10 @@ describe('createIrTypeReferenceRepresentationPlanCpp', () => {
     });
   });
 
-  it('keeps runtime identity handles direct instead of wrapping them in flight references', () => {
+  it('keeps runtime handles and inline aggregate aliases direct instead of wrapping them in flight references', () => {
     const module = lower(
       'aliases.ts',
-      'export type Values = number[]; export type Table = Map<string, number>; export type View = Uint8Array; export type Callback = () => void;',
+      'export type Values = number[]; export type Table = Map<string, number>; export type View = Uint8Array; export type Callback = () => void; export type Pair = [number, string];',
     );
     const cases = [
       [{ element: numberType, kind: 'array', readonly: false }, 'array', 'object'],
@@ -116,6 +116,12 @@ describe('createIrTypeReferenceRepresentationPlanCpp', () => {
       valueRepresentation: 'runtimeReference',
     });
     expect(planDeclaration(module, 'Callback')).toMatchObject({
+      category: 'value',
+      kind: 'represented',
+      storageRepresentation: 'inlineValue',
+      valueRepresentation: 'inlineValue',
+    });
+    expect(planDeclaration(module, 'Pair')).toMatchObject({
       category: 'value',
       kind: 'represented',
       storageRepresentation: 'inlineValue',
@@ -253,12 +259,12 @@ describe('createIrTypeReferenceRepresentationPlannerCpp', () => {
   it('resolves direct imported declarations through explicit module resolution independent of module order', () => {
     const model = lower(
       'model.ts',
-      'export class Model { value = 1; } export type Shape = { value: number }; export type Values = number[];',
+      'export class Model { value = 1; } export type Shape = { value: number }; export type Values = number[]; export type Callback = (value: number) => void; export type Pair = [number, string];',
       '@flighthq/models',
     );
     const consumer = lower(
       'consumer.ts',
-      "import type { Model, Shape, Values } from '@flighthq/models'; export type PublicModel = Model; export type PublicShape = Shape; export type PublicValues = Values;",
+      "import type { Callback, Model, Pair, Shape, Values } from '@flighthq/models'; export type PublicCallback = Callback; export type PublicModel = Model; export type PublicPair = Pair; export type PublicShape = Shape; export type PublicValues = Values;",
       '@flighthq/consumer',
     );
     const resolution: CompilerModuleResolutionPlan = {
@@ -288,6 +294,16 @@ describe('createIrTypeReferenceRepresentationPlannerCpp', () => {
         category: 'array',
         kind: 'represented',
         valueRepresentation: 'runtimeReference',
+      });
+      expect(planner.plan(declarationType(consumer, 'PublicCallback'), consumer)).toMatchObject({
+        category: 'value',
+        kind: 'represented',
+        valueRepresentation: 'inlineValue',
+      });
+      expect(planner.plan(declarationType(consumer, 'PublicPair'), consumer)).toMatchObject({
+        category: 'value',
+        kind: 'represented',
+        valueRepresentation: 'inlineValue',
       });
     }
     expect(forward.plan(declarationType(consumer, 'PublicModel'), consumer)).toEqual(
