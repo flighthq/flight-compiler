@@ -60,6 +60,50 @@ describe('createHaxeCompilerBackend', () => {
       }),
     ).toThrow('structural object compatibility missing-required-property');
   });
+
+  it('uses resolved package-export source modules for Haxe imports', () => {
+    const target = lowerPackage('@flighthq/types', 'point.ts', 'export interface Point { x: number }').module;
+    const subject = lowerPackage(
+      '@flighthq/core',
+      'use.ts',
+      "import type { Point } from '@flighthq/types/public'; export type Alias = Point;",
+    ).module;
+    const files = createHaxeCompilerBackend().emitModule(subject, {
+      moduleResolution: {
+        edges: [
+          {
+            specifier: '@flighthq/types/public',
+            target: { packageName: '@flighthq/types', source: target.source },
+          },
+        ],
+        schema: 'flight-compiler-module-resolution/1',
+      },
+      modules: [subject, target],
+      options: {},
+    });
+
+    expect(files[0]!.contents).toContain('import flighthq.types.Point.Point;');
+  });
+
+  it('uses resolved extensionless source modules for Haxe imports', () => {
+    const target = lower('helper.ts', 'export function helper(): number { return 1; }').module;
+    const subject = lower('use.ts', "import { helper } from './helper'; export const value = helper();").module;
+    const files = createHaxeCompilerBackend().emitModule(subject, {
+      moduleResolution: {
+        edges: [
+          {
+            specifier: './helper',
+            target: { packageName: '@flighthq/math', source: target.source },
+          },
+        ],
+        schema: 'flight-compiler-module-resolution/1',
+      },
+      modules: [subject, target],
+      options: {},
+    });
+
+    expect(files[0]!.contents).toContain('import flighthq.math.Helper.helper;');
+  });
 });
 
 describe('emitIrModuleHaxe', () => {

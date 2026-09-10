@@ -36,6 +36,7 @@ import type {
   CompilerBackend,
   CompilerHaxeTaskLowering,
   CompilerHaxeTaskLoweringFunction,
+  CompilerModuleIdentity,
   CompilerModuleResolutionPlan,
   EmittedFile,
   HaxeCompilerBackendOptions,
@@ -89,6 +90,7 @@ interface EmitContext {
   generatedNames: Set<string>;
   machineNames: Map<string, string>;
   module: Readonly<IrModule>;
+  moduleResolution: Readonly<CompilerModuleResolutionPlan> | undefined;
   nullableBindingIds: ReadonlySet<string>;
   options: Readonly<HaxeCompilerBackendOptions>;
   returnsAbsent: boolean;
@@ -205,6 +207,7 @@ function emitIrModuleHaxeWithContext(
     generatedNames: new Set(targetNames.values()),
     machineNames: new Map(),
     module,
+    moduleResolution,
     nullableBindingIds: collectIrModuleNullableBindingIds(module),
     options,
     dynamicBindingIds: new Set<string>(),
@@ -918,8 +921,7 @@ function emitValueReexportForwardingHaxe(
   modulePath: string,
   context: EmitContext,
 ): string[] {
-  const sourcePath = resolveReexportSourcePathHaxe(exported.specifier, context);
-  const sourceModule = context.sourceModules.find((m) => m.source === sourcePath);
+  const sourceModule = getHaxeResolvedImportModule(exported.specifier, context);
   if (!sourceModule) {
     emissionError(
       context,
@@ -952,13 +954,6 @@ function emitValueReexportForwardingHaxe(
   const targetName = safeHaxeName(exported.exported);
   const sourceName = safeHaxeName(exported.imported);
   return [`function ${targetName}(${params}):${returnType} {`, `  return ${modulePath}.${sourceName}(${args});`, '}'];
-}
-
-function resolveReexportSourcePathHaxe(specifier: string, context: EmitContext): string {
-  if (!specifier.startsWith('.')) return specifier;
-  return path.posix.normalize(
-    path.posix.join(path.posix.dirname(context.module.source), specifier.replace(/\.[cm]?js$/u, '.ts')),
-  );
 }
 
 // A data shape as a class rather than an anonymous structure. Haxe's `@:structInit` keeps the
@@ -1744,14 +1739,17 @@ function emissionError(context: EmitContext, message: string): never {
 }
 
 function haxeImportModule(specifier: string, context: EmitContext): string {
+  const resolvedModule = getHaxeResolvedImportModule(specifier, context);
+  if (resolvedModule) return getHaxeModulePath(resolvedModule, context.options);
   if (specifier.startsWith('.')) {
-    const target = path.posix.normalize(
+    const unresolved = path.posix.normalize(
       path.posix.join(path.posix.dirname(context.module.source), specifier.replace(/\.[cm]?js$/u, '.ts')),
     );
-    const extension = path.posix.extname(target);
+    const extension = path.posix.extname(unresolved);
     if (extension.length > 0 && extension !== '.ts' && extension !== '.tsx') {
       emissionError(context, `non-TypeScript import ${specifier} requires resource materialization`);
     }
+    const target = /\.tsx?$/u.test(unresolved) ? unresolved : `${unresolved}.ts`;
     return `${context.packageName}.${haxeImplementationModule(target)}`;
   }
   if (specifier.startsWith('@')) {
@@ -1762,6 +1760,46 @@ function haxeImportModule(specifier: string, context: EmitContext): string {
     return `${haxePackage}.${packageModule}`;
   }
   emissionError(context, `external import ${specifier} requires a runtime or standard-library mapping`);
+}
+
+function getHaxeModulePath(module: Readonly<IrModule>, options: Readonly<HaxeCompilerBackendOptions>): string {
+  return `${convertPackageNameToHaxePackageName(module.packageName, options.rootPackage)}.${haxeImplementationModule(module.source)}`;
+}
+
+function getHaxeResolvedImportModule(specifier: string, context: EmitContext): Readonly<IrModule> | undefined {
+  const matching = context.moduleResolution?.edges.filter((edge) => edge.specifier === specifier) ?? [];
+  const exact = matching.filter(
+    (edge) => edge.importer && isHaxeCompilerModuleIdentityEqual(edge.importer, context.module),
+  );
+  const targets = exact.length > 0 ? exact : matching.filter((edge) => !edge.importer);
+  if (targets.length === 1) {
+    const target = targets[0]!.target;
+    return context.sourceModules.find(
+      (module) =>
+        module.packageName === target.packageName &&
+        path.posix.normalize(module.source) === path.posix.normalize(target.source),
+    );
+  }
+  if (!specifier.startsWith('.')) return undefined;
+  const source = path.posix.normalize(
+    path.posix.join(path.posix.dirname(context.module.source), specifier.replace(/\.[cm]?js$/u, '.ts')),
+  );
+  const candidates = new Set([source, `${source}.ts`, `${source}/index.ts`]);
+  return context.sourceModules.find(
+    (module) =>
+      module.packageName === context.module.packageName && candidates.has(path.posix.normalize(module.source)),
+  );
+}
+
+function isHaxeCompilerModuleIdentityEqual(
+  left: Readonly<CompilerModuleIdentity>,
+  right: Readonly<CompilerModuleIdentity>,
+): boolean {
+  return (
+    left.packageName === right.packageName &&
+    path.posix.normalize(left.source) === path.posix.normalize(right.source) &&
+    left.name === right.name
+  );
 }
 
 function haxeImplementationModule(sourcePath: string): string {
