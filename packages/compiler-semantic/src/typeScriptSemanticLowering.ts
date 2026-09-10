@@ -2343,6 +2343,8 @@ function lowerType(node: ts.TypeNode, context: LoweringContext): IrType {
   if (ts.isTypeReferenceNode(node)) {
     const projection = lowerConcreteTypeScriptObjectProjection(node, context);
     if (projection) return projection;
+    const conditional = lowerConcreteTypeScriptConditionalAliasReference(node, context);
+    if (conditional) return conditional;
     const name = getTypeScriptNodeText(node.typeName, context);
     const arguments_ = node.typeArguments?.map((type) => lowerType(type, context)) ?? [];
     const reference = lowerTypeNameReference(node.typeName, context);
@@ -2376,7 +2378,12 @@ function lowerType(node: ts.TypeNode, context: LoweringContext): IrType {
   }
   if (ts.isUnionTypeNode(node)) return { kind: 'union', types: lowerCompoundTypes(node.types, node, context) };
   if (ts.isIntersectionTypeNode(node)) {
-    return { kind: 'intersection', types: lowerCompoundTypes(node.types, node, context) };
+    const types = lowerCompoundTypes(node.types, node, context);
+    if (types.some((type) => type.kind === 'never')) return { kind: 'never' };
+    const represented = types.filter((type) => type.kind !== 'unknown' || type.source !== 'unknown');
+    if (represented.length === 0) return { kind: 'unknown', source: 'unknown' };
+    if (represented.length === 1) return represented[0]!;
+    return { kind: 'intersection', types: [represented[0]!, represented[1]!, ...represented.slice(2)] };
   }
   if (ts.isFunctionTypeNode(node) || ts.isConstructorTypeNode(node)) return lowerFunctionType(node, context);
   if (ts.isTypeLiteralNode(node)) return { kind: 'object', properties: lowerTypeProperties(node.members, context) };
@@ -2446,6 +2453,23 @@ function lowerConcreteTypeScriptObjectProjection(
   };
 }
 
+function lowerConcreteTypeScriptConditionalAliasReference(
+  node: ts.TypeReferenceNode,
+  context: LoweringContext,
+): IrType | undefined {
+  const symbol = context.checker.getSymbolAtLocation(node.typeName);
+  const declaration = symbol?.declarations?.find(ts.isTypeAliasDeclaration);
+  if (!symbol || !declaration || !ts.isConditionalTypeNode(declaration.type)) return undefined;
+  const substitutions = createTypeScriptSyntacticDeclarationSubstitutions(
+    node,
+    declaration,
+    context.checker,
+    new Map(),
+  );
+  if (!substitutions) return undefined;
+  return lowerConcreteTypeScriptConditionalTypeEvidence(declaration.type, context, new Set([symbol]), substitutions);
+}
+
 function getTypeScriptObjectProjectionKeys(node: ts.TypeNode): ReadonlySet<string> | undefined {
   if (ts.isParenthesizedTypeNode(node)) return getTypeScriptObjectProjectionKeys(node.type);
   if (ts.isUnionTypeNode(node)) {
@@ -2461,8 +2485,51 @@ function getTypeScriptObjectProjectionKeys(node: ts.TypeNode): ReadonlySet<strin
 }
 
 function lowerConcreteConditionalType(node: ts.ConditionalTypeNode, context: LoweringContext): IrType | undefined {
-  if (hasExternalTypeScriptTypeParameter(node, context)) return undefined;
+  if (hasExternalTypeScriptTypeParameter(node, context)) {
+    return lowerTypeScriptConditionalRuntimeRepresentation(node, context);
+  }
   return getTypeScriptCheckerTypeEvidence(context.checker.getTypeFromTypeNode(node), context, 0, true);
+}
+
+// A conditional type can reject some generic instantiations without changing the representation of
+// any value that can exist. `T extends Constraint ? T : never`, for example, is still represented by
+// T, while a literal true/false conditional is represented by bool. Preserve those representation-
+// neutral refinements and refuse conditionals whose inhabited branches require different layouts.
+function lowerTypeScriptConditionalRuntimeRepresentation(
+  node: ts.ConditionalTypeNode,
+  context: LoweringContext,
+): IrType | undefined {
+  if (containsTypeScriptInferType(node)) return undefined;
+  const branches = getTypeScriptConditionalInhabitedBranches(node);
+  if (branches.length === 0) return { kind: 'never' };
+  const lowered = branches.map((branch) => lowerType(branch, context));
+  const represented = lowered.map(getIrTypeRuntimeRepresentationSemantic);
+  const first = represented[0]!;
+  return represented.every((candidate) => JSON.stringify(candidate) === JSON.stringify(first)) ? first : undefined;
+}
+
+function getTypeScriptConditionalInhabitedBranches(node: ts.ConditionalTypeNode): ts.TypeNode[] {
+  return [node.trueType, node.falseType].flatMap((branch): ts.TypeNode[] => {
+    if (branch.kind === ts.SyntaxKind.NeverKeyword) return [];
+    return ts.isConditionalTypeNode(branch) ? getTypeScriptConditionalInhabitedBranches(branch) : [branch];
+  });
+}
+
+function containsTypeScriptInferType(node: ts.Node): boolean {
+  if (ts.isInferTypeNode(node)) return true;
+  let found = false;
+  ts.forEachChild(node, (child) => {
+    if (!found && containsTypeScriptInferType(child)) found = true;
+  });
+  return found;
+}
+
+function getIrTypeRuntimeRepresentationSemantic(type: IrType): IrType {
+  if (type.kind !== 'literal') return type;
+  return {
+    kind: 'primitive',
+    name: typeof type.value === 'boolean' ? 'boolean' : typeof type.value === 'number' ? 'number' : 'string',
+  };
 }
 
 function lowerConcreteIndexedAccessType(node: ts.IndexedAccessTypeNode, context: LoweringContext): IrType | undefined {
@@ -2857,6 +2924,10 @@ function lowerTypeScriptTypeNodeEvidence(
     const inner = lowerTypeScriptTypeNodeEvidence(type.type, context, seen, substitutions);
     return inner.kind === 'array' || inner.kind === 'tuple' ? { ...inner, readonly: true } : inner;
   }
+  if (ts.isConditionalTypeNode(type)) {
+    const conditional = lowerConcreteTypeScriptConditionalTypeEvidence(type, context, seen, substitutions);
+    if (conditional) return conditional;
+  }
   if (ts.isTypeReferenceNode(type)) {
     const parts = getTypeNameNodeParts(type.typeName);
     const name = parts ? [parts.root.text, ...parts.path].join('.') : undefined;
@@ -2954,6 +3025,29 @@ function lowerTypeScriptTypeNodeEvidence(
     };
   }
   return lowerType(type, context);
+}
+
+function lowerConcreteTypeScriptConditionalTypeEvidence(
+  node: ts.ConditionalTypeNode,
+  context: LoweringContext,
+  seen: ReadonlySet<ts.Symbol>,
+  substitutions: ReadonlyMap<ts.Symbol, ts.TypeNode>,
+): IrType | undefined {
+  const checkType = getTypeScriptSyntacticTypeSubstitution(node.checkType, context.checker, substitutions);
+  const extendsType = getTypeScriptSyntacticTypeSubstitution(node.extendsType, context.checker, substitutions);
+  if (
+    hasExternalTypeScriptTypeParameter(checkType, context) ||
+    hasExternalTypeScriptTypeParameter(extendsType, context)
+  ) {
+    return undefined;
+  }
+  const selected = context.checker.isTypeAssignableTo(
+    context.checker.getTypeFromTypeNode(checkType),
+    context.checker.getTypeFromTypeNode(extendsType),
+  )
+    ? node.trueType
+    : node.falseType;
+  return lowerTypeScriptTypeNodeEvidence(selected, context, seen, substitutions);
 }
 
 function lowerTypeScriptFunctionTypeEvidence(

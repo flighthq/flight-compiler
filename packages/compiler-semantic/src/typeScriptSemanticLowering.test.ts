@@ -1113,9 +1113,10 @@ describe('lowerTypeScriptSource', () => {
       `,
     );
 
-    expect(rejected.module.declarations).toHaveLength(5);
+    expect(rejected.module.declarations).toHaveLength(6);
     expect(rejected.module.declarations).toMatchObject([
       { binding: { name: 'Unique' }, kind: 'typeAlias', type: { kind: 'primitive', name: 'symbol' } },
+      { binding: { name: 'Conditional' }, kind: 'typeAlias', type: { kind: 'primitive', name: 'boolean' } },
       { binding: { name: 'Constructor' }, kind: 'typeAlias', type: { kind: 'function' } },
       { binding: { name: 'TemplateValue' }, kind: 'typeAlias', type: { kind: 'primitive', name: 'string' } },
       { binding: { name: 'ComputedProperty' }, kind: 'typeAlias', type: { kind: 'object', properties: [] } },
@@ -1123,7 +1124,6 @@ describe('lowerTypeScriptSource', () => {
     ]);
     expect(rejected.diagnostics.map((diagnostic) => diagnostic.message)).toEqual([
       'unsupported literal type',
-      'unsupported type ConditionalType',
       'unsupported type MappedType',
       'unsupported type member CallSignature',
       'property signature requires a type',
@@ -1304,7 +1304,14 @@ describe('lowerTypeScriptSource', () => {
         'export type Factory = new (value?: number) => Created;',
         "export type Selected = 'ready' extends string ? { ok: true } : never;",
         'export type Inferred = string extends infer Value ? Value : never;',
+        'export type Refinement<Value> = Value extends string ? Value : never;',
+        'export type BooleanRefinement<Value> = Value extends string ? true : false;',
         'export type Generic<Value> = Value extends string ? number : boolean;',
+        "export type Specialized = Generic<'ready'>;",
+        'type IsAny<Value> = 0 extends 1 & Value ? true : false;',
+        'export function assertSyncVoid<Value>(',
+        '  value: Value & (IsAny<Value> extends true ? never : Value extends void ? unknown : never),',
+        '): void { void value; }',
       ].join('\n'),
     );
     const declarations = new Map(
@@ -1333,7 +1340,16 @@ describe('lowerTypeScriptSource', () => {
       },
     });
     expect(declarations.get('Inferred')).toMatchObject({ type: { kind: 'primitive', name: 'string' } });
+    expect(declarations.get('Refinement')).toMatchObject({
+      type: { kind: 'named', reference: { binding: { name: 'Value' } } },
+    });
+    expect(declarations.get('BooleanRefinement')).toMatchObject({ type: { kind: 'primitive', name: 'boolean' } });
     expect(declarations.has('Generic')).toBe(false);
+    expect(declarations.get('Specialized')).toMatchObject({ type: { kind: 'primitive', name: 'number' } });
+    expect(declarations.get('IsAny')).toMatchObject({ type: { kind: 'primitive', name: 'boolean' } });
+    expect(declarations.get('assertSyncVoid')).toMatchObject({
+      parameters: [{ type: { kind: 'named', reference: { binding: { name: 'Value' } } } }],
+    });
     expect(result.diagnostics.map((diagnostic) => diagnostic.message)).toEqual(['unsupported type ConditionalType']);
   });
 
