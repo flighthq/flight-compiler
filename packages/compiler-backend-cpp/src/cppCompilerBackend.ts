@@ -2860,7 +2860,7 @@ function hasIndexedRuntimeReceiverCpp(
 function hasSharedReferentRepresentationCpp(type: Readonly<IrType>, context: EmitContext): boolean {
   if (getCppRuntimeProfile(context.options) !== 'flight-cpp') return false;
   const plan = context.referenceRepresentationPlanner.plan(type, context.module);
-  return plan.kind === 'represented' && plan.identity.identity === 'reference';
+  return plan.kind === 'represented' && plan.valueRepresentation !== 'inlineValue';
 }
 
 function hasFlightReferenceRepresentationCpp(type: Readonly<IrType>, context: EmitContext): boolean {
