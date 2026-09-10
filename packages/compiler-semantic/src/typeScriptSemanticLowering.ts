@@ -1078,9 +1078,16 @@ function lowerExpressionWithTypeArguments(
   node: ts.ExpressionWithTypeArguments,
   context: LoweringContext,
 ): IrTypeReference {
+  const reference = lowerExpressionTypeNameReference(node.expression, context);
+  if (!reference) {
+    return unsupported(
+      node,
+      `heritage type ${getTypeScriptNodeText(node.expression, context)} has no reachable declaration`,
+    );
+  }
   return {
     kind: 'named',
-    reference: lowerExpressionTypeNameReference(node.expression, context),
+    reference,
     typeArguments: node.typeArguments?.map((type) => lowerType(type, context)) ?? [],
   };
 }
@@ -1357,7 +1364,10 @@ function isIrTypedArrayReceiver(value: IrIndexedReceiver): value is IrTypedArray
   return value !== 'array' && value !== 'object' && value !== 'string' && value !== 'tuple' && value !== 'unknown';
 }
 
-function lowerExpressionTypeNameReference(expression: ts.Expression, context: LoweringContext): IrTypeNameReference {
+function lowerExpressionTypeNameReference(
+  expression: ts.Expression,
+  context: LoweringContext,
+): IrTypeNameReference | undefined {
   return lowerTypeNameNodeReference(expression, context);
 }
 
@@ -2156,6 +2166,7 @@ function lowerType(node: ts.TypeNode, context: LoweringContext): IrType {
     const name = getTypeScriptNodeText(node.typeName, context);
     const arguments_ = node.typeArguments?.map((type) => lowerType(type, context)) ?? [];
     const reference = lowerTypeNameReference(node.typeName, context);
+    if (!reference) return { kind: 'unknown', source: 'unknown' };
     if (reference.kind === 'ambient' && (name === 'Array' || name === 'ReadonlyArray') && arguments_.length === 1) {
       return { element: arguments_[0]!, kind: 'array', readonly: name === 'ReadonlyArray' };
     }
@@ -2235,14 +2246,14 @@ function lowerTypeAlias(node: ts.TypeAliasDeclaration, context: LoweringContext)
   };
 }
 
-function lowerTypeNameReference(node: ts.EntityName, context: LoweringContext): IrTypeNameReference {
+function lowerTypeNameReference(node: ts.EntityName, context: LoweringContext): IrTypeNameReference | undefined {
   return lowerTypeNameNodeReference(node, context);
 }
 
 function lowerTypeNameNodeReference(
   node: ts.EntityName | ts.Expression,
   context: LoweringContext,
-): IrTypeNameReference {
+): IrTypeNameReference | undefined {
   const parts = getTypeNameNodeParts(node);
   if (!parts) return { kind: 'ambient', name: getTypeScriptNodeText(node, context) };
   const symbol = context.checker.getSymbolAtLocation(parts.root);
@@ -2254,7 +2265,7 @@ function lowerTypeNameNodeReference(
   }
   if (symbol?.declarations?.some(isTypeBindingDeclaration)) {
     if (!hasTypeBindingDeclarationInModule(symbol, context)) {
-      return { kind: 'ambient', name: getTypeScriptNodeText(node, context) };
+      return undefined;
     }
     return { binding: lowerTypeBindingSymbol(symbol, parts.root, context), kind: 'binding', path: parts.path };
   }
