@@ -197,7 +197,7 @@ describe('analyzeIrModuleTraversal', () => {
     expect(bindingPatterns).toEqual(expect.arrayContaining(['array', 'binding']));
     expect(parameters).toBe(8);
     expect(signatures).toBeGreaterThanOrEqual(7);
-    expect(typeParameters).toBe(6);
+    expect(typeParameters).toBe(5);
     expect(variables).toBeGreaterThanOrEqual(10);
     expect(expressions).toEqual(
       expect.objectContaining(

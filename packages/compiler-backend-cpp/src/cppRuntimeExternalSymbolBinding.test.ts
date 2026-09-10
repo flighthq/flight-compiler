@@ -174,6 +174,13 @@ describe('getCompilerRuntimeExternalSymbolTargetCpp', () => {
     ).toBeUndefined();
   });
 
+  it('maps Promise static operations in both runtime profiles', () => {
+    expect(getCompilerRuntimeExternalMemberTargetCpp('Promise', 'resolve')).toBe('FlightTask::resolve');
+    expect(getCompilerRuntimeExternalMemberTargetCpp('Promise', 'reject')).toBe('FlightTask::reject');
+    expect(getCompilerRuntimeExternalMemberTargetCpp('Promise', 'all')).toBe('FlightTask::all');
+    expect(getCompilerRuntimeExternalMemberTargetCpp('Promise', 'resolve', 'flight-cpp')).toBe('flight::resolve_task');
+  });
+
   it.each([
     ['Array', 'type', 'flight::Array'],
     ['Date', 'value', 'flight::Date'],

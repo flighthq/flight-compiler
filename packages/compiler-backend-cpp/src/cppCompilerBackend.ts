@@ -3354,9 +3354,10 @@ function getCppNamespaceImportMemberTargetNameCpp(
   context: EmitContext,
 ): string | undefined {
   if (expression.object.kind !== 'identifier' || expression.object.reference.kind !== 'binding') return undefined;
+  const namespaceBindingId = expression.object.reference.binding.id;
   for (const importItem of context.module.imports) {
     const importedBinding = importItem.bindings.find(
-      (candidate) => candidate.binding.id === expression.object.reference.binding.id && candidate.imported === '*',
+      (candidate) => candidate.binding.id === namespaceBindingId && candidate.imported === '*',
     );
     if (!importedBinding) continue;
     const targetModule = getCppResolvedImportModule(importItem.specifier, context);
