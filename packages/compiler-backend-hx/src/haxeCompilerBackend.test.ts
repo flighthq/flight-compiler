@@ -1979,6 +1979,46 @@ describe('emitIrModuleHaxe statement coverage', () => {
 });
 
 describe('emitIrModuleHaxe ambient member coverage', () => {
+  it('emits Number predicates and constants as semantics-preserving Haxe expressions', () => {
+    const result = lower(
+      'number-statics.ts',
+      `
+        export function finite(value: number): boolean { return Number.isFinite(value); }
+        export function integer(value: number): boolean { return Number.isInteger(value); }
+        export function allIntegers(values: number[]): boolean { return values.every(Number.isInteger); }
+        export function invalid(value: number): boolean { return Number.isNaN(value); }
+        export function epsilon(): number { return Number.EPSILON; }
+        export function maximumSafeInteger(): number { return Number.MAX_SAFE_INTEGER; }
+        export function minimumSafeInteger(): number { return Number.MIN_SAFE_INTEGER; }
+      `,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('return Math.isFinite(value);');
+    expect(output).toContain('Math.isFinite(numberValue) && Math.ffloor(numberValue) == numberValue');
+    expect(output).toContain('Lambda.foreach(values, (function(numberValue:Float)');
+    expect(output).toContain('return Math.isNaN(value);');
+    expect(output).toContain('return 2.220446049250313e-16;');
+    expect(output).toContain('return 9.007199254740991e15;');
+    expect(output).toContain('return -9.007199254740991e15;');
+  });
+
+  it('keeps Number conversion and unsupported static members as explicit refusals', () => {
+    const conversion = lower(
+      'number-conversion.ts',
+      'export function parse(value: string): number { return Number(value); }',
+    );
+    const parseFloat = lower(
+      'number-parse-float.ts',
+      'export function parse(value: string): number { return Number.parseFloat(value); }',
+    );
+
+    expect(() => emitIrModuleHaxe(conversion.module)).toThrow(
+      'bare Number values require JavaScript numeric-conversion lowering',
+    );
+    expect(() => emitIrModuleHaxe(parseFloat.module)).toThrow('Number member parseFloat has no Haxe binding');
+  });
+
   it('emits array.reduce as Lambda.fold with exchanged closure', () => {
     const result = lower(
       'reduce.ts',

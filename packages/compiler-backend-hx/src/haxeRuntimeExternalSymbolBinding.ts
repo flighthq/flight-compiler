@@ -1,5 +1,6 @@
 import type {
   CompilerRuntimeCapabilityName,
+  CompilerRuntimeExternalMemberBinding,
   CompilerRuntimeExternalSymbolBinding,
   CompilerRuntimeExternalSymbolBindingPlan,
   CompilerRuntimeExternalSymbolSpace,
@@ -8,6 +9,7 @@ import type {
 type HaxeRuntimeExternalSymbolBinding =
   | Readonly<{
       kind: Extract<CompilerRuntimeExternalSymbolBinding, { kind: 'native' }>['kind'];
+      members?: readonly CompilerRuntimeExternalMemberBinding[] | undefined;
       sourceName: string;
       space: CompilerRuntimeExternalSymbolSpace;
       targetName: string;
@@ -36,6 +38,18 @@ export function createCompilerRuntimeExternalSymbolBindingPlanHaxe(): CompilerRu
     ),
     contract: 'flight-runtime-contract/2',
   };
+}
+
+// Namespace-like ambient values have no Haxe value of their own. Their members decide the complete
+// target expression, so `Number.isFinite` can become `Math.isFinite` without making bare `Number`
+// look like a valid Haxe constructor.
+export function getCompilerRuntimeExternalMemberTargetHaxe(sourceName: string, member: string): string | undefined {
+  const normalized = sourceName.normalize('NFC');
+  const binding: HaxeRuntimeExternalSymbolBinding | undefined = haxeRuntimeExternalSymbolBindings.find(
+    (candidate) => candidate.sourceName === normalized && candidate.space === 'value',
+  );
+  if (!binding || binding.kind !== 'native') return undefined;
+  return binding.members?.find((candidate) => candidate.sourceMember === member.normalize('NFC'))?.targetName;
 }
 
 export function getCompilerRuntimeExternalSymbolTargetHaxe(
@@ -132,6 +146,24 @@ const haxeRuntimeExternalSymbolBindings = [
   { capability: 'map', kind: 'runtime', sourceName: 'Map', space: 'type', targetName: '_Map' },
   { capability: 'map', kind: 'runtime', sourceName: 'Map', space: 'value', targetName: '_Map' },
   { kind: 'native', sourceName: 'Math', space: 'value', targetName: 'Math' },
+  {
+    kind: 'native',
+    members: [
+      { sourceMember: 'EPSILON', targetName: '2.220446049250313e-16' },
+      { sourceMember: 'MAX_SAFE_INTEGER', targetName: '9.007199254740991e15' },
+      { sourceMember: 'MIN_SAFE_INTEGER', targetName: '-9.007199254740991e15' },
+      { sourceMember: 'isFinite', targetName: 'Math.isFinite' },
+      {
+        sourceMember: 'isInteger',
+        targetName:
+          '(function(numberValue:Float) return Math.isFinite(numberValue) && Math.ffloor(numberValue) == numberValue)',
+      },
+      { sourceMember: 'isNaN', targetName: 'Math.isNaN' },
+    ],
+    sourceName: 'Number',
+    space: 'value',
+    targetName: 'Number',
+  },
   { capability: 'task', kind: 'runtime', sourceName: 'Promise', space: 'type', targetName: '_Promise' },
   { capability: 'task', kind: 'runtime', sourceName: 'Promise', space: 'value', targetName: '_Promise' },
   { kind: 'native', sourceName: 'Record', space: 'type', targetName: 'haxe.DynamicAccess' },

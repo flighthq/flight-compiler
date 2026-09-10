@@ -1,5 +1,6 @@
 import {
   createCompilerRuntimeExternalSymbolBindingPlanHaxe,
+  getCompilerRuntimeExternalMemberTargetHaxe,
   getCompilerRuntimeExternalSymbolTargetHaxe,
 } from './haxeRuntimeExternalSymbolBinding.js';
 
@@ -8,7 +9,7 @@ describe('createCompilerRuntimeExternalSymbolBindingPlanHaxe', () => {
     const plan = createCompilerRuntimeExternalSymbolBindingPlanHaxe();
 
     expect(plan.contract).toBe('flight-runtime-contract/2');
-    expect(plan.bindings).toHaveLength(38);
+    expect(plan.bindings).toHaveLength(39);
     expect(plan.bindings.filter(({ externalSymbol }) => externalSymbol.sourceName === 'Promise')).toEqual([
       {
         capability: 'task',
@@ -56,7 +57,28 @@ describe('createCompilerRuntimeExternalSymbolBindingPlanHaxe', () => {
     const second = createCompilerRuntimeExternalSymbolBindingPlanHaxe();
 
     (first.bindings as unknown[]).pop();
-    expect(second.bindings).toHaveLength(38);
+    expect(second.bindings).toHaveLength(39);
+  });
+});
+
+describe('getCompilerRuntimeExternalMemberTargetHaxe', () => {
+  it.each([
+    ['EPSILON', '2.220446049250313e-16'],
+    ['MAX_SAFE_INTEGER', '9.007199254740991e15'],
+    ['MIN_SAFE_INTEGER', '-9.007199254740991e15'],
+    ['isFinite', 'Math.isFinite'],
+    ['isNaN', 'Math.isNaN'],
+  ] as const)('maps Number.%s to %s', (member, target) => {
+    expect(getCompilerRuntimeExternalMemberTargetHaxe('Number', member)).toBe(target);
+  });
+
+  it('uses a finite float-preserving predicate for Number.isInteger', () => {
+    expect(getCompilerRuntimeExternalMemberTargetHaxe('Number', 'isInteger')).toContain('Math.ffloor');
+  });
+
+  it('has no fallback for unsupported members or non-namespace values', () => {
+    expect(getCompilerRuntimeExternalMemberTargetHaxe('Number', 'parseFloat')).toBeUndefined();
+    expect(getCompilerRuntimeExternalMemberTargetHaxe('Array', 'isFinite')).toBeUndefined();
   });
 });
 
@@ -82,6 +104,7 @@ describe('getCompilerRuntimeExternalSymbolTargetHaxe', () => {
     ['Map', 'type', 'flighthq._internal._Map'],
     ['Map', 'value', 'flighthq._internal._Map'],
     ['Math', 'value', 'Math'],
+    ['Number', 'value', 'Number'],
     ['Promise', 'type', 'flighthq._internal._Promise'],
     ['Promise', 'value', 'flighthq._internal._Promise'],
     ['Record', 'type', 'haxe.DynamicAccess'],

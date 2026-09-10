@@ -76,6 +76,7 @@ import { convertPackageNameToHaxePackageName, convertSourcePathToHaxeModuleName 
 import { emitIrModuleHaxeExternWithContext } from './haxeExternEmission.js';
 import { createCompilerRuntimeExternalConstructorAbiPlanHaxe } from './haxeRuntimeExternalConstructorAbi.js';
 import {
+  getCompilerRuntimeExternalMemberTargetHaxe,
   createCompilerRuntimeExternalSymbolBindingPlanHaxe,
   getCompilerRuntimeExternalSymbolTargetHaxe,
 } from './haxeRuntimeExternalSymbolBinding.js';
@@ -728,6 +729,19 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
       return `(function() { final ${name} = Reflect.copy(${emitExpression(expression.object, context)}); ${exclusions} return ${name}; })()`;
     }
     case 'property': {
+      if (expression.object.kind === 'identifier' && expression.object.reference.kind === 'ambient') {
+        const sourceName = expression.object.reference.name;
+        const target = getCompilerRuntimeExternalMemberTargetHaxe(sourceName, expression.name);
+        if (target) {
+          if (expression.optional) {
+            emissionError(context, `optional ${sourceName} member access requires null-safe Haxe lowering`);
+          }
+          return target;
+        }
+        if (sourceName === 'Number') {
+          emissionError(context, `Number member ${expression.name} has no Haxe binding`);
+        }
+      }
       // A member of the ambient surface is spelled by the table, not by the source's name. A member
       // with no binding is refused here rather than emitted and hoped for.
       if (expression.member) {
@@ -1074,6 +1088,9 @@ function emitIdentifierReferenceHaxe(reference: Readonly<IrIdentifierReference>,
   if (reference.kind === 'ambient') {
     if (reference.name === 'undefined') {
       emissionError(context, 'undefined expressions require Haxe nullability lowering');
+    }
+    if (reference.name === 'Number') {
+      emissionError(context, 'bare Number values require JavaScript numeric-conversion lowering');
     }
     const targetName = getCompilerRuntimeExternalSymbolTargetHaxe(
       reference.name,
