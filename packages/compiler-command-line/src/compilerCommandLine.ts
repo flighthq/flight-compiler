@@ -7,6 +7,7 @@ import type {
   CompilerCommandLineRefusal,
   CompilerCommandLineRequest,
   CompilerCommandLineResult,
+  HaxeCompilerEmissionMode,
 } from '../../compiler-types/src/index.js';
 
 // Pointing the compiler at a directory.
@@ -34,9 +35,10 @@ export function compileCompilerCommandLineRequest(
         : createRustCompilerBackend();
   const backendOptions: Record<string, unknown> =
     parsed.target === 'haxe'
-      ? parsed.rootPackage === undefined
-        ? {}
-        : { rootPackage: parsed.rootPackage }
+      ? {
+          emissionMode: parsed.emissionMode,
+          ...(parsed.rootPackage === undefined ? {} : { rootPackage: parsed.rootPackage }),
+        }
       : parsed.target === 'cpp'
         ? {
             runtimeProfile: parsed.runtimeProfile,
@@ -117,12 +119,14 @@ export function getCompilerCommandLineUsage(): string {
 const commandLineUsage = `Usage: flight-compile <source-directory> --target <cpp|haxe|rust> --out <directory>
 
   --package <name>        Package name the modules belong to (default: @local/source)
+  --emission-mode <mode>  Haxe emission: extern or transpile (default: transpile)
   --root-package <name>   Root package for Haxe output (default: the target's own)
   --runtime-profile <id>  C++ runtime profile: flight-cpp or standard-library (default: flight-cpp)
   --runtime-header <path> Override the flight-cpp runtime include spelling
   --report                Report refusals without failing the run`;
 
 interface ParsedCompilerCommandLineRequest {
+  readonly emissionMode: HaxeCompilerEmissionMode;
   readonly outputDirectory: string;
   readonly packageName: string;
   readonly reportOnly: boolean;
@@ -166,6 +170,13 @@ function parseCompilerCommandLineRequest(
   if (outputDirectory === undefined) return { failure: '--out is required' };
   const rootPackage = named.get('root-package');
   if (rootPackage !== undefined && target !== 'haxe') return { failure: '--root-package requires --target haxe' };
+  const emissionMode = named.get('emission-mode') ?? 'transpile';
+  if (emissionMode !== 'extern' && emissionMode !== 'transpile') {
+    return { failure: '--emission-mode must be extern or transpile' };
+  }
+  if (named.has('emission-mode') && target !== 'haxe') {
+    return { failure: '--emission-mode requires --target haxe' };
+  }
   const runtimeProfile = named.get('runtime-profile') ?? 'flight-cpp';
   if (runtimeProfile !== 'flight-cpp' && runtimeProfile !== 'standard-library') {
     return { failure: '--runtime-profile must be flight-cpp or standard-library' };
@@ -183,6 +194,7 @@ function parseCompilerCommandLineRequest(
     };
   }
   return {
+    emissionMode,
     outputDirectory,
     packageName: named.get('package') ?? '@local/source',
     reportOnly,
@@ -199,6 +211,7 @@ function isPortableIncludePath(value: string): boolean {
 }
 
 const commandLineValueOptions = new Set([
+  '--emission-mode',
   '--out',
   '--package',
   '--root-package',

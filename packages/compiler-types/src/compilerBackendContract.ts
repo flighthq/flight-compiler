@@ -47,7 +47,11 @@ export interface BackendEmissionFailure extends Error, CompilerSourceIdentity {
   readonly kind: 'backend-emission';
 }
 
+export type HaxeCompilerEmissionMode = 'extern' | 'transpile';
+
 export interface HaxeCompilerBackendOptions {
+  /** Whether Haxe binds JavaScript exports or transpiles their implementations. Defaults to `transpile`. */
+  readonly emissionMode?: HaxeCompilerEmissionMode | undefined;
   readonly rootPackage?: string | undefined;
   /**
    * How a data shape is represented. `anonymous` is the honest structural translation of a

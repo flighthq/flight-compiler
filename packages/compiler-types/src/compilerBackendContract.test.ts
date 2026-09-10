@@ -15,7 +15,11 @@ import type { CompilerSourceIdentity } from './compilerSourceIdentity.js';
 describe('compiler backend contracts', () => {
   it('represent backend capabilities, options, and output as plain composable data', () => {
     const module = createModule();
-    const haxeOptions: HaxeCompilerBackendOptions = { rootPackage: 'flighthq', upstreamCommit: 'a'.repeat(40) };
+    const haxeOptions: HaxeCompilerBackendOptions = {
+      emissionMode: 'extern',
+      rootPackage: 'flighthq',
+      upstreamCommit: 'a'.repeat(40),
+    };
     const rustOptions: RustCompilerBackendOptions = {
       opaqueHostType: 'FlightHostValue',
       upstreamCommit: 'a'.repeat(40),

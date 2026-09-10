@@ -98,6 +98,30 @@ describe('compileCompilerCommandLineRequest', () => {
     expect([...written.keys()][0]).toContain('com/example');
   });
 
+  it('passes the emission mode through to the Haxe backend and defaults to transpilation', () => {
+    const external = new Map<string, string>();
+    const transpiled = new Map<string, string>();
+    const input = source('value.ts', 'export function value(): number { return 1; }');
+
+    expect(
+      compileCompilerCommandLineRequest(
+        { argv: ['/src', '--target', 'haxe', '--out', '/extern', '--emission-mode', 'extern'] },
+        capabilities([input], external, []),
+      ).exitCode,
+    ).toBe(0);
+    expect(
+      compileCompilerCommandLineRequest(
+        { argv: ['/src', '--target', 'haxe', '--out', '/transpile'] },
+        capabilities([input], transpiled, []),
+      ).exitCode,
+    ).toBe(0);
+
+    expect(external.get('/extern/flighthq/_js/_fn/Source.hx')).toContain('extern class Source');
+    expect(external.get('/extern/flighthq/_js/_fn/Source.hx')).toContain('@:jsRequire("@local/source/contract")');
+    expect(external.get('/extern/flighthq/_js/_fn/Source.hx')).not.toContain('return 1;');
+    expect(transpiled.get('/transpile/flighthq/source/Value.hx')).toContain('return 1;');
+  });
+
   it('elects the semantic C++ runtime by default and permits an explicit compatibility profile', () => {
     const semantic = new Map<string, string>();
     const standard = new Map<string, string>();
@@ -165,6 +189,8 @@ describe('compileCompilerCommandLineRequest', () => {
     const errors: string[] = [];
     const invalidRequests = [
       ['/src', '--target', 'cpp', '--out', '/out', '--runtime-profile', 'unknown'],
+      ['/src', '--target', 'haxe', '--out', '/out', '--emission-mode', 'unknown'],
+      ['/src', '--target', 'cpp', '--out', '/out', '--emission-mode', 'extern'],
       ['/src', '--target', 'haxe', '--out', '/out', '--runtime-profile', 'flight-cpp'],
       ['/src', '--target', 'cpp', '--out', '/out', '--runtime-header', '../bad\\runtime.hpp'],
       ['/src', '--target', 'rust', '--out', '/out', '--root-package', 'flight'],
@@ -195,6 +221,8 @@ describe('compileCompilerCommandLineRequest', () => {
     }
 
     expect(errors.join('')).toContain('--runtime-profile must be flight-cpp or standard-library');
+    expect(errors.join('')).toContain('--emission-mode must be extern or transpile');
+    expect(errors.join('')).toContain('--emission-mode requires --target haxe');
     expect(errors.join('')).toContain('require --target cpp');
     expect(errors.join('')).toContain('portable quoted-include path');
     expect(errors.join('')).toContain('--root-package requires --target haxe');

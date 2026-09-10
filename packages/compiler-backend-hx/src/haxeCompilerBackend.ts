@@ -65,7 +65,6 @@ import type {
   IrType,
   IrTypeAliasDeclaration,
   IrTypeBindingIdentity,
-  IrTypeReference,
   IrTypeParameter,
   IrUnaryOperatorSemantics,
   IrVariable,
@@ -73,6 +72,7 @@ import type {
 } from '../../compiler-types/src/index.js';
 import { getCompilerHaxeAmbientMemberBinding } from './haxeAmbientMemberBinding.js';
 import { convertPackageNameToHaxePackageName, convertSourcePathToHaxeModuleName } from './haxeCompilerIdentity.js';
+import { emitIrModuleHaxeExternWithContext } from './haxeExternEmission.js';
 import { createCompilerRuntimeExternalConstructorAbiPlanHaxe } from './haxeRuntimeExternalConstructorAbi.js';
 import {
   createCompilerRuntimeExternalSymbolBindingPlanHaxe,
@@ -81,6 +81,7 @@ import {
 import { createCompilerRuntimeTaskCapabilityPlanHaxe } from './haxeRuntimeTaskCapability.js';
 import { emitCompilerHaxeTaskLoweringFunction } from './haxeTaskEmission.js';
 import { isCompilerHaxeTaskLoweringFailure, lowerCompilerAsyncStateMachinesHaxe } from './haxeTaskLowering.js';
+import { emitIrTypeHaxe } from './haxeTypeEmission.js';
 
 interface EmitContext {
   breakableDepth: number;
@@ -108,8 +109,19 @@ interface HaxeControlFlowLabel {
 
 export function createHaxeCompilerBackend(): CompilerBackend<HaxeCompilerBackendOptions> {
   return {
+    createEmissionSession({ moduleResolution, modules, options }) {
+      return Object.freeze({
+        emitModule(module: Readonly<IrModule>) {
+          return options.emissionMode === 'extern'
+            ? emitIrModuleHaxeExternWithContext(module, modules, moduleResolution, options)
+            : [emitIrModuleHaxeWithContext(module, modules, moduleResolution, options)];
+        },
+      });
+    },
     emitModule(module, { moduleResolution, modules, options }) {
-      return [emitIrModuleHaxeWithContext(module, modules, moduleResolution, options)];
+      return options.emissionMode === 'extern'
+        ? emitIrModuleHaxeExternWithContext(module, modules, moduleResolution, options)
+        : [emitIrModuleHaxeWithContext(module, modules, moduleResolution, options)];
     },
     name: 'haxe',
   };
@@ -119,6 +131,13 @@ export function emitIrModuleHaxe(
   sourceModule: Readonly<IrModule>,
   options: Readonly<HaxeCompilerBackendOptions> = {},
 ): EmittedFile {
+  if (options.emissionMode === 'extern') {
+    throw createBackendEmissionFailure(
+      'haxe',
+      sourceModule,
+      'emitIrModuleHaxe is the single-file transpile API; use the Haxe backend session for extern emission',
+    );
+  }
   return emitIrModuleHaxeWithContext(sourceModule, [sourceModule], undefined, options);
 }
 
@@ -1338,80 +1357,18 @@ function emitStatements(statements: readonly IrStatement[], context: EmitContext
 }
 
 function emitType(type: Readonly<IrType>, context: EmitContext): string {
-  switch (type.kind) {
-    case 'array':
-      return `Array<${emitType(type.element, context)}>`;
-    case 'function': {
-      const params = type.parameters.map((parameter) => emitType(parameter.type, context));
-      return `(${params.join(', ')})->${emitType(type.returns, context)}`;
-    }
-    case 'indexedAccess':
-    case 'keyof':
-    case 'typeOf':
-      return 'Dynamic';
-    case 'intersection':
-      return type.types.length === 1 ? emitType(type.types[0]!, context) : 'Dynamic';
-    case 'literal':
-      return typeof type.value === 'boolean' ? 'Bool' : typeof type.value === 'number' ? 'Float' : 'String';
-    case 'named': {
-      const sourceName = type.reference.kind === 'ambient' ? type.reference.name : undefined;
-      if (
-        (sourceName === 'Readonly' || sourceName === 'Partial' || sourceName === 'Required') &&
-        type.typeArguments[0]
-      ) {
-        return emitType(type.typeArguments[0], context);
-      }
-      const arguments_ = type.typeArguments.map((argument) => emitType(argument, context));
-      return `${getTypeReferenceTargetNameHaxe(type, context)}${arguments_.length > 0 ? `<${arguments_.join(', ')}>` : ''}`;
-    }
-    case 'never':
-      return 'Dynamic';
-    case 'null':
-    case 'undefined':
-      return 'Dynamic';
-    case 'object':
-      return emitAnonymousType(type.properties, context);
-    case 'primitive':
-      return {
-        bigint: 'haxe.Int64',
-        boolean: 'Bool',
-        number: 'Float',
-        string: 'String',
-        symbol: 'Dynamic',
-        void: 'Void',
-      }[type.name];
-    case 'tuple': {
-      // Haxe has no tuple, so a fixed sequence is an array. Where every position holds the same type
-      // the array can say so; where they differ there is no Haxe type that holds both, and the
-      // element type is lost rather than misstated.
-      const elements = type.elements.map((element) => emitType(element.type, context));
-      const shared = new Set(elements);
-      return shared.size === 1 && !type.elements.some((element) => element.optional)
-        ? `Array<${[...shared][0]!}>`
-        : 'Array<Dynamic>';
-    }
-    case 'union': {
-      const concrete = type.types.filter((item) => item.kind !== 'null' && item.kind !== 'undefined');
-      if (hasIrTypeNullMemberHaxe(type) && hasIrTypeUndefinedMemberHaxe(type)) {
-        emissionError(context, 'types containing both null and undefined require distinct Haxe sentinels');
-      }
-      return concrete.length === 1 && concrete.length !== type.types.length
-        ? `Null<${emitType(concrete[0]!, context)}>`
-        : 'Dynamic';
-    }
-    case 'unknown':
-      return 'Dynamic';
-  }
+  return emitIrTypeHaxe(type, {
+    fail: (message) => emissionError(context, message),
+    getBindingName: (binding) => getBindingTargetNameHaxe(binding, context),
+    getExternalTypeName: (name) =>
+      getCompilerRuntimeExternalSymbolTargetHaxe(name, 'type', context.options.runtimeModule),
+    getMemberName: safeHaxeName,
+    getTypeName: safeHaxeTypeName,
+  });
 }
 
 function hasIrTypeNullMemberHaxe(type: Readonly<IrType>): boolean {
   return type.kind === 'null' || (type.kind === 'union' && type.types.some((member) => member.kind === 'null'));
-}
-
-function hasIrTypeUndefinedMemberHaxe(type: Readonly<IrType>): boolean {
-  return (
-    type.kind === 'undefined' || (type.kind === 'union' && type.types.some((member) => member.kind === 'undefined'))
-  );
 }
 
 function emitArrayIndexHaxe(index: Readonly<IrExpression>, context: EmitContext): string {
@@ -1455,11 +1412,7 @@ function emitSpreadCallHaxe(
 }
 
 function emitAnonymousType(properties: readonly IrObjectTypeProperty[], context: EmitContext): string {
-  return `{ ${properties
-    .map(
-      (property) => `${property.optional ? '?' : ''}${safeHaxeName(property.name)}:${emitType(property.type, context)}`,
-    )
-    .join(', ')} }`;
+  return emitType({ kind: 'object', properties }, context);
 }
 
 function emitTypeDeclaration(declaration: Readonly<IrDeclaration>, context: EmitContext): string[] {
@@ -1784,22 +1737,6 @@ function getElementAccessTupleIndexHaxe(
     emissionError(context, 'tuple projection requires one statically known nonnegative integer index');
   }
   return expression.index.value;
-}
-
-function getTypeReferenceTargetNameHaxe(type: Readonly<IrTypeReference>, context: EmitContext): string {
-  if (type.reference.kind === 'ambient') {
-    const targetName = getCompilerRuntimeExternalSymbolTargetHaxe(
-      type.reference.name,
-      'type',
-      context.options.runtimeModule ?? 'flighthq._internal',
-    );
-    if (!targetName) emissionError(context, `external type ${type.reference.name} has no Haxe binding`);
-    return targetName;
-  }
-  return [
-    getBindingTargetNameHaxe(type.reference.binding, context),
-    ...type.reference.path.map((segment) => safeHaxeTypeName(segment)),
-  ].join('.');
 }
 
 function emissionError(context: EmitContext, message: string): never {
