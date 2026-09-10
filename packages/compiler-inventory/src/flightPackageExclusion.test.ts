@@ -117,6 +117,10 @@ describe('analyzeFlightPackageExclusions', () => {
         ...completeHostFacts,
         imports: [...completeHostFacts.imports, { kind: 'tauri', specifier: '@tauri-apps/api' }],
       }),
+      createPackageInventory('@flighthq/tool-no-host-import', {
+        ...completeHostFacts,
+        imports: [],
+      }),
     ];
 
     for (const packageInventory of cases) {
