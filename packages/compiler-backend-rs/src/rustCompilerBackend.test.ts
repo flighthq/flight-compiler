@@ -4535,13 +4535,27 @@ describe('emitIrModuleRust', () => {
     expect(output).toContain('.set(');
   });
 
-  it('emits cell-wrapped nullish assignment as Option conditional set for Copy types', () => {
+  it('emits cell-wrapped nullish assignment as Option conditional set for number', () => {
     const output = emitIrModuleRust(
       lower(
         'cell-nullish.ts',
         `export function fill(): () => number {
           let value: number | null = null;
           return (fallback: number) => { value ??= fallback; return value!; };
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('.get().is_none()');
+    expect(output).toContain('.set(Some(');
+  });
+
+  it('emits cell-wrapped nullish assignment as Option conditional set for boolean', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'cell-nullish-bool.ts',
+        `export function fill(): () => boolean {
+          let value: boolean | null = null;
+          return (fallback: boolean) => { value ??= fallback; return value!; };
         }`,
       ).module,
     ).contents;
