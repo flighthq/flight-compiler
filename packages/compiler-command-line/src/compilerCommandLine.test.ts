@@ -117,7 +117,7 @@ describe('compileCompilerCommandLineRequest', () => {
     ).toBe(0);
 
     expect(external.get('/extern/flighthq/_js/_fn/Source.hx')).toContain('extern class Source');
-    expect(external.get('/extern/flighthq/_js/_fn/Source.hx')).toContain('@:jsRequire("@local/source/contract")');
+    expect(external.get('/extern/flighthq/_js/_fn/Source.hx')).toContain('@:jsImport("@local/source/contract")');
     expect(external.get('/extern/flighthq/_js/_fn/Source.hx')).not.toContain('return 1;');
     expect(transpiled.get('/transpile/flighthq/source/Value.hx')).toContain('return 1;');
   });

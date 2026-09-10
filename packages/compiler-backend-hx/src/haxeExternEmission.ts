@@ -171,7 +171,7 @@ function emitPackageHolderHaxeExtern(packageName: string, context: HaxeExternEmi
     '#if js',
     `package ${targetPackage};`,
     '',
-    `@:jsRequire(${JSON.stringify(`${packageName}/contract`)})`,
+    `@:jsImport(${JSON.stringify(`${packageName}/contract`)})`,
     `extern class ${holderName} {`,
   ];
   for (const value of values) {

@@ -27,8 +27,9 @@ describe('emitIrModuleHaxeExtern', () => {
     expect(typedef.contents).toContain('var x:Float;');
     expect(typedef.contents).toContain('var y:Float;');
     expect(typedef.contents).toContain('@:optional var label:String;');
-    expect(typedef.contents).not.toContain('@:jsRequire');
-    expect(holder.contents).toContain('@:jsRequire("@flighthq/geometry/contract")');
+    expect(typedef.contents).not.toContain('@:jsImport');
+    expect(holder.contents).toContain('@:jsImport("@flighthq/geometry/contract")');
+    expect(holder.contents).not.toContain('@:jsRequire');
     expect(holder.contents).toContain('extern class Geometry {');
     expect(holder.contents).toContain('static function createVector2(?x:Float, ?y:Float):flight.Vector2;');
     expect(holder.contents).toContain('static var ORIGIN:flight.Vector2;');
