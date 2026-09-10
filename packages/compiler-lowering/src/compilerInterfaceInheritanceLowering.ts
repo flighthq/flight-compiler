@@ -3,6 +3,7 @@ import { isDeepStrictEqual } from 'node:util';
 import { compareTextCodeUnits, normalizePathPortable } from '../../compiler-canonical-form/src/index.js';
 import { analyzeIrModuleTraversal } from '../../compiler-ir-traversal/src/index.js';
 import {
+  analyzeIrTypeStructuralAssignability,
   createIrTypeParameterSubstitutionPlan,
   isCompilerStructuralTypeSubstitutionFailure,
   resolveIrTypeStructuralSubstitution,
@@ -160,6 +161,7 @@ function getIrInterfaceDeclarationPropertiesFlattened(
       declaration,
       properties,
       context,
+      true,
     );
   }
   return properties;
@@ -378,10 +380,20 @@ function addIrInterfacePropertyFlattened(
   declaration: Readonly<InterfaceInheritanceStructuralDeclaration>,
   properties: IrObjectTypeProperty[],
   context: InterfaceInheritanceLoweringContext,
+  directOverride = false,
 ): void {
-  const existing = properties.find((candidate) => candidate.name === property.name);
-  if (!existing) {
+  const existingIndex = properties.findIndex((candidate) => candidate.name === property.name);
+  if (existingIndex < 0) {
     properties.push(property);
+    return;
+  }
+  const existing = properties[existingIndex]!;
+  if (
+    directOverride &&
+    (!property.optional || existing.optional) &&
+    analyzeIrTypeStructuralAssignability(property.type, existing.type).status === 'compatible'
+  ) {
+    properties[existingIndex] = property;
     return;
   }
   if (!isDeepStrictEqual(existing, property)) {

@@ -152,6 +152,25 @@ describe('createCompilerLoweringPassInterfaceInheritance', () => {
     });
   });
 
+  it('replaces inherited properties with compatible direct refinements', () => {
+    const module = lower(
+      'refined-property.ts',
+      `
+        interface Base { optional?: number; type: string; }
+        export interface Refined extends Base { optional: number; type: 'specific'; }
+      `,
+    );
+    const output = lowerIrModuleWithCompilerPasses(module, [createCompilerLoweringPassInterfaceInheritance([module])]);
+
+    expect(getInterface(output, 'Refined')).toMatchObject({
+      extends: [],
+      properties: [
+        { name: 'optional', optional: false, type: { kind: 'primitive', name: 'number' } },
+        { name: 'type', type: { kind: 'literal', value: 'specific' } },
+      ],
+    });
+  });
+
   it('deduplicates identical diamonds and refuses unresolved, cyclic, arity, and incompatible heritage', () => {
     const module = lower(
       'failures.ts',
