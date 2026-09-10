@@ -135,6 +135,7 @@ const haxeRuntimeExternalSymbolBindings = [
   { capability: 'task', kind: 'runtime', sourceName: 'Promise', space: 'type', targetName: '_Promise' },
   { capability: 'task', kind: 'runtime', sourceName: 'Promise', space: 'value', targetName: '_Promise' },
   { kind: 'native', sourceName: 'Record', space: 'type', targetName: 'haxe.DynamicAccess' },
+  { capability: 'map', kind: 'runtime', sourceName: 'ReadonlyMap', space: 'type', targetName: '_Map' },
   { capability: 'set', kind: 'runtime', sourceName: 'Set', space: 'type', targetName: '_Set' },
   { capability: 'set', kind: 'runtime', sourceName: 'Set', space: 'value', targetName: '_Set' },
   { kind: 'native', sourceName: 'String', space: 'type', targetName: 'String' },

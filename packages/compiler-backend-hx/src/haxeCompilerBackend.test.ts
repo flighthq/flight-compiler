@@ -1729,12 +1729,14 @@ describe('emitIrModuleHaxe type coverage', () => {
         export function partial(config: Partial<Config>): void { config; }
         export function required(config: Required<Config>): void { config; }
         export function record(config: Record<string, number>): void { config; }
+        export function readonlyMap(config: ReadonlyMap<string, number>): void { config; }
       `,
     );
     const output = emitIrModuleHaxe(result.module).contents;
 
     expect(output).toContain('config:Config');
     expect(output).toContain('config:haxe.DynamicAccess<Float>');
+    expect(output).toContain('config:flighthq._internal._Map<String, Float>');
   });
 
   it('emits named type with type arguments', () => {

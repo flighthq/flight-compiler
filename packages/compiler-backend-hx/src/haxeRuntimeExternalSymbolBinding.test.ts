@@ -8,7 +8,7 @@ describe('createCompilerRuntimeExternalSymbolBindingPlanHaxe', () => {
     const plan = createCompilerRuntimeExternalSymbolBindingPlanHaxe();
 
     expect(plan.contract).toBe('flight-runtime-contract/2');
-    expect(plan.bindings).toHaveLength(37);
+    expect(plan.bindings).toHaveLength(38);
     expect(plan.bindings.filter(({ externalSymbol }) => externalSymbol.sourceName === 'Promise')).toEqual([
       {
         capability: 'task',
@@ -37,6 +37,11 @@ describe('createCompilerRuntimeExternalSymbolBindingPlanHaxe', () => {
       externalSymbol: { sourceName: 'Record', space: 'type' },
       kind: 'native',
     });
+    expect(plan.bindings).toContainEqual({
+      capability: 'map',
+      externalSymbol: { sourceName: 'ReadonlyMap', space: 'type' },
+      kind: 'runtime',
+    });
     expect(plan.bindings).not.toContainEqual({
       externalSymbol: { sourceName: 'Math', space: 'type' },
       kind: 'native',
@@ -51,7 +56,7 @@ describe('createCompilerRuntimeExternalSymbolBindingPlanHaxe', () => {
     const second = createCompilerRuntimeExternalSymbolBindingPlanHaxe();
 
     (first.bindings as unknown[]).pop();
-    expect(second.bindings).toHaveLength(37);
+    expect(second.bindings).toHaveLength(38);
   });
 });
 
@@ -80,6 +85,7 @@ describe('getCompilerRuntimeExternalSymbolTargetHaxe', () => {
     ['Promise', 'type', 'flighthq._internal._Promise'],
     ['Promise', 'value', 'flighthq._internal._Promise'],
     ['Record', 'type', 'haxe.DynamicAccess'],
+    ['ReadonlyMap', 'type', 'flighthq._internal._Map'],
     ['Set', 'type', 'flighthq._internal._Set'],
     ['Set', 'value', 'flighthq._internal._Set'],
     ['String', 'type', 'String'],
