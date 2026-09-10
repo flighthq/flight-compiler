@@ -1208,6 +1208,16 @@ export function preferred(): number { return NativeSurface.preferredFormat; }`,
     expect(emitted.contents).toContain('to_string');
   });
 
+  it('emits global String() conversion as to_string', () => {
+    const result = lower(
+      'string-convert.ts',
+      'export function convert(value: number): string { return String(value); }',
+    );
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('to_string');
+    expect(emitted.contents).not.toContain('flight::String(');
+  });
+
   it('emits enum member access with scoped resolution', () => {
     const result = lower(
       'enum-access.ts',

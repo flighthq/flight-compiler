@@ -887,6 +887,19 @@ function emitExpression(
           return `${spreadOperand}.empty() ? ${foldTarget.identity} : *${foldTarget.algorithm}(${spreadOperand}.begin(), ${spreadOperand}.end())`;
         }
       }
+      if (
+        expression.callee.kind === 'identifier' &&
+        expression.callee.reference.kind === 'ambient' &&
+        expression.callee.reference.name === 'String' &&
+        expression.arguments.length === 1
+      ) {
+        const arg = emitExpression(expression.arguments[0]!, context);
+        if (getCppRuntimeProfile(context.options) === 'flight-cpp') {
+          return `flight::to_string(${arg})`;
+        }
+        context.includes.add('string');
+        return `std::to_string(${arg})`;
+      }
       const callee =
         expression.callee.kind === 'function'
           ? `(${emitExpression(expression.callee, context)})`

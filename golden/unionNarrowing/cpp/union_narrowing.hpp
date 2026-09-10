@@ -12,7 +12,7 @@ inline flight::String narrow_typeof(std::variant<double, flight::String> value) 
   if (std::holds_alternative<flight::String>(value)) {
     return std::get<flight::String>(value);
   }
-  return flight::String(std::get<double>(value));
+  return flight::to_string(std::get<double>(value));
 }
 
 inline double narrow_typeof_number(std::variant<double, flight::String> value) {
