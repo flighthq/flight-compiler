@@ -11,6 +11,7 @@ import {
   createCompilerModuleEvaluationPlan,
   isCompilerModuleEvaluationFailure,
 } from '../../compiler-module/src/index.js';
+import { isCompilerLoweringFailure } from '../../compiler-lowering/src/index.js';
 import { applySemanticPatchSet } from '../../compiler-patch/src/index.js';
 import { lowerTypeScriptSources } from '../../compiler-semantic/src/index.js';
 import type {
@@ -225,6 +226,9 @@ function compareCompilerPackageGraphRefusals(
 
 function createCompilerPackageGraphEmissionRefusal(error: unknown): CompilerPackageCompilationRefusal {
   if (isBackendEmissionFailure(error)) {
+    return { code: error.code, message: error.message, stage: 'emission' };
+  }
+  if (isCompilerLoweringFailure(error) && error.code === 'unsupported-ir') {
     return { code: error.code, message: error.message, stage: 'emission' };
   }
   if (isCompilerInvariantFailure(error)) {

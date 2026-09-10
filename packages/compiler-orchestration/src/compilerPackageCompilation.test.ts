@@ -1,4 +1,5 @@
 import { createBackendEmissionFailure } from '../../compiler-emission/src/index.js';
+import { createCompilerLoweringFailure } from '../../compiler-lowering/src/index.js';
 import type {
   CompilerBackend,
   CompilerModuleIdentity,
@@ -257,6 +258,31 @@ describe('compileTypeScriptPackageGraph', () => {
       ['Collision-a', 'duplicate-emitted-path', 'emission'],
       ['Collision-b', 'duplicate-emitted-path', 'emission'],
       ['Unsafe', 'unsafe-emitted-path', 'emission'],
+    ]);
+  });
+
+  it('preserves controlled unsupported lowering failures as unsupported IR refusals', () => {
+    const unsupported = source('@local/source', 'source', 'unsupported.ts', 'export const unsupported = 1;');
+    const backend: CompilerBackend = {
+      emitModule(module) {
+        throw createCompilerLoweringFailure('unsupported-ir', 'fixture-pass', module, 'fixture unsupported IR');
+      },
+      name: 'fixture',
+    };
+    const result = compileTypeScriptPackageGraph({
+      backend,
+      backendOptions: {},
+      graph: graph([], [], [{ dependencies: [], name: '@local/source', root: unsupported.packageRoot }]),
+      sources: [unsupported],
+    });
+
+    expect(result.report.modules[0]?.refusals).toEqual([
+      {
+        code: 'unsupported-ir',
+        message:
+          'Compiler lowering pass fixture-pass failed for @local/source/packages/source/src/unsupported.ts: fixture unsupported IR',
+        stage: 'emission',
+      },
     ]);
   });
 
