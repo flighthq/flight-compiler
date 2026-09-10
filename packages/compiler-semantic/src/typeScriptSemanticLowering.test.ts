@@ -3655,6 +3655,57 @@ describe('lowerTypeScriptSource', () => {
       presence: 'narrowedPresent',
     });
   });
+  it('uses checker flow evidence when destructuring a narrowed tuple', () => {
+    const result = lower(
+      'narrowed-tuple.ts',
+      `export function read(value: [number, string] | null): number {
+         if (value === null) return 0;
+         const [count, label] = value;
+         return count + label.length;
+       }`,
+    );
+    const read = result.module.declarations.find(
+      (declaration) => declaration.kind === 'function' && declaration.binding.name === 'read',
+    );
+    const statement = read?.kind === 'function' ? read.body[1] : undefined;
+    const variable = statement?.kind === 'variable' ? statement.declarations[0] : undefined;
+
+    expect(result.diagnostics).toEqual([]);
+    expect(variable).toMatchObject({ pattern: { kind: 'array', type: { kind: 'tuple' } }, type: { kind: 'tuple' } });
+  });
+  it('preserves fixed tuple rows when a literal array is destructured by iteration', () => {
+    const result = lower(
+      'literal-tuple-rows.ts',
+      `export function read(): void {
+         for (const [left, right] of [[1, 2], [3, 4]]) { left; right; }
+       }`,
+    );
+    const read = result.module.declarations[0];
+    const loop = read?.kind === 'function' ? read.body[0] : undefined;
+
+    expect(result.diagnostics).toEqual([]);
+    expect(loop).toMatchObject({
+      iterable: { elements: [{ kind: 'tuple' }, { kind: 'tuple' }], kind: 'array' },
+      kind: 'forOf',
+      variable: { pattern: { kind: 'array', type: { kind: 'tuple' } }, type: { kind: 'tuple' } },
+    });
+  });
+  it('constructs a tuple in the inhabited branch of a nullable return type', () => {
+    const result = lower(
+      'nullable-tuple.ts',
+      `export function create(present: boolean): [number, string] | null {
+         return present ? [1, 'ready'] : null;
+       }`,
+    );
+    const create = result.module.declarations[0];
+    const returned = create?.kind === 'function' ? create.body[0] : undefined;
+
+    expect(result.diagnostics).toEqual([]);
+    expect(returned).toMatchObject({
+      expression: { kind: 'conditional', whenTrue: { kind: 'tuple' } },
+      kind: 'return',
+    });
+  });
   it('names the union member a reference was narrowed to, and leaves an unnarrowed one open', () => {
     const result = lower(
       'union.ts',

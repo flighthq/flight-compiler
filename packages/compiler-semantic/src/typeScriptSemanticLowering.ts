@@ -631,11 +631,13 @@ function lowerExpression(
     return { kind: 'literal', value: node.text };
   if (ts.isArrayLiteralExpression(node)) {
     const targetShape = getIrTypeConstructionTargetShape(contextualTargetType ?? contextualType, context);
-    if (contextualType?.kind === 'tuple') {
+    const contextualShape =
+      contextualType?.kind === 'union' ? getIrTypeConstructionTargetShape(contextualType, context) : contextualType;
+    if (contextualShape?.kind === 'tuple') {
       return lowerTupleExpression(
         node,
-        contextualType,
-        targetShape?.kind === 'tuple' ? targetShape : contextualType,
+        contextualShape,
+        targetShape?.kind === 'tuple' ? targetShape : contextualShape,
         context,
       );
     }
@@ -646,7 +648,7 @@ function lowerExpression(
           : lowerExpression(
               element,
               context,
-              contextualType?.kind === 'array' ? contextualType.element : undefined,
+              contextualShape?.kind === 'array' ? contextualShape.element : undefined,
               targetShape?.kind === 'array' ? targetShape.element : undefined,
             ),
       ),
@@ -1518,6 +1520,10 @@ function getIrTypeConstructionTargetShape(
   context: LoweringContext,
   seen: ReadonlySet<string> = new Set(),
 ): IrType | undefined {
+  if (type?.kind === 'union') {
+    const inhabited = type.types.filter((member) => member.kind !== 'null' && member.kind !== 'undefined');
+    if (inhabited.length === 1) return getIrTypeConstructionTargetShape(inhabited[0], context, seen);
+  }
   if (
     !type ||
     type.kind !== 'named' ||
@@ -1780,18 +1786,19 @@ function lowerStatement(node: ts.Statement, context: LoweringContext): IrStateme
     if (!ts.isVariableDeclarationList(node.initializer) || node.initializer.declarations.length !== 1) {
       unsupported(node.initializer, 'for bindings must be a single variable declaration');
     }
-    const variable = lowerVariables(
-      node.initializer,
-      context,
-      ts.isForOfStatement(node)
-        ? lowerTypeScriptForOfElementType(node.expression, context)
-        : { kind: 'primitive', name: 'string' },
-    )[0]!;
+    const elementType: IrType | undefined = ts.isForOfStatement(node)
+      ? lowerTypeScriptForOfElementType(node.expression, context)
+      : { kind: 'primitive', name: 'string' };
+    const variable = lowerVariables(node.initializer, context, elementType)[0]!;
     return ts.isForOfStatement(node)
       ? {
           await: node.awaitModifier !== undefined,
           body: lowerStatement(node.statement, context),
-          iterable: lowerExpression(node.expression, context),
+          iterable: lowerExpression(
+            node.expression,
+            context,
+            elementType ? { element: elementType, kind: 'array', readonly: false } : undefined,
+          ),
           kind: 'forOf',
           variable,
         }
@@ -2794,6 +2801,10 @@ function getTypeScriptForInKeyPlan(
 }
 
 function lowerTypeScriptForOfElementType(expression: ts.Expression, context: LoweringContext): IrType | undefined {
+  if (ts.isArrayLiteralExpression(expression)) {
+    const tuple = lowerTypeScriptArrayLiteralTupleElementType(expression, context);
+    if (tuple) return tuple;
+  }
   const iterableType = getTypeScriptSyntacticExpressionTypeEvidence(expression, context.checker);
   if (!iterableType) return undefined;
   const element = getTypeScriptTypeNodeIterableElementEvidence(iterableType, context, new Set());
@@ -2813,6 +2824,33 @@ function lowerTypeScriptForOfElementType(expression: ts.Expression, context: Low
     }
   }
   return lowerTypeScriptTypeNodeEvidence(element.type, context, new Set(), element.substitutions);
+}
+
+function lowerTypeScriptArrayLiteralTupleElementType(
+  expression: ts.ArrayLiteralExpression,
+  context: LoweringContext,
+): Extract<IrType, { kind: 'tuple' }> | undefined {
+  if (expression.elements.length === 0) return undefined;
+  const rows = expression.elements.flatMap((element): ts.ArrayLiteralExpression[] => {
+    if (ts.isSpreadElement(element) || !ts.isArrayLiteralExpression(element)) return [];
+    if (element.elements.some((value) => ts.isOmittedExpression(value) || ts.isSpreadElement(value))) return [];
+    return [element];
+  });
+  if (rows.length !== expression.elements.length || !rows[0]) return undefined;
+  const width = rows[0].elements.length;
+  if (width === 0 || rows.some((row) => row.elements.length !== width)) return undefined;
+  return {
+    elements: Array.from({ length: width }, (_, index): IrTupleTypeElement => {
+      const types = rows.map((row) => inferInitializerType(row.elements[index]! as ts.Expression, context));
+      return {
+        optional: false,
+        rest: false,
+        type: commonType([types[0]!, ...types.slice(1)]),
+      };
+    }),
+    kind: 'tuple',
+    readonly: false,
+  };
 }
 
 function lowerTypeScriptExpressionTypeEvidence(
@@ -3586,6 +3624,17 @@ function inferInitializerType(node: ts.Expression, context: LoweringContext): Ir
   if (ts.isArrowFunction(node) || ts.isFunctionExpression(node)) {
     return lowerFunctionType(node, context);
   }
+  // An identifier can carry a narrower flow type than its declaration. Read that proof before the
+  // syntactic declaration evidence so `if (tuple === null) return; const [a] = tuple` reaches the
+  // binding-pattern pass as a tuple rather than as the original tuple-or-null union.
+  if (ts.isIdentifier(node)) {
+    const declared = getTypeScriptExpressionDeclaredType(node, context);
+    const flow = context.checker.getTypeAtLocation(node);
+    if (declared && context.checker.typeToString(flow) !== context.checker.typeToString(declared)) {
+      const narrowed = getTypeScriptCheckerTypeEvidence(flow, context, 0);
+      if (narrowed) return narrowed;
+    }
+  }
   // Where no written type reaches the value — a call into the ambient surface returns the surface's
   // own type parameter, which names nothing here — the checker's instantiation of it does.
   return (
@@ -4110,6 +4159,22 @@ function getTypeScriptCheckerTypeEvidence(
   if (type.flags & ts.TypeFlags.Never) return { kind: 'never' };
   if (type.flags & ts.TypeFlags.Any) return { kind: 'unknown', source: 'any' };
   if (type.flags & ts.TypeFlags.Unknown) return { kind: 'unknown', source: 'unknown' };
+  if (checker.isTupleType(type)) {
+    const reference = type as ts.TupleTypeReference;
+    if (reference.target.combinedFlags & ts.ElementFlags.Variable) return undefined;
+    const arguments_ = checker.getTypeArguments(reference);
+    const elements = arguments_.flatMap((argument, index): IrTupleTypeElement[] => {
+      const lowered = getTypeScriptCheckerTypeEvidence(argument, context, depth + 1, structural);
+      if (!lowered) return [];
+      return [
+        reference.target.elementFlags[index] === ts.ElementFlags.Optional
+          ? { optional: true, rest: false, type: lowered }
+          : { optional: false, rest: false, type: lowered },
+      ];
+    });
+    if (elements.length !== arguments_.length) return undefined;
+    return { elements, kind: 'tuple', readonly: reference.target.readonly };
+  }
   if (checker.isArrayType(type)) {
     const element = checker.getTypeArguments(type as ts.TypeReference)[0];
     const lowered = element ? getTypeScriptCheckerTypeEvidence(element, context, depth + 1, structural) : undefined;
