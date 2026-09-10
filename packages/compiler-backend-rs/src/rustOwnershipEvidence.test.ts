@@ -93,21 +93,13 @@ describe('analyzeIrModuleOwnershipEvidenceRust', () => {
     );
     const storage = new Map(evidence.bindings.map((binding) => [binding.binding.name, binding.storage]));
 
-    for (const name of ['literal', 'neverValue', 'nullValue', 'primitive', 'undefinedValue']) {
+    for (const name of ['indexedValue', 'literal', 'neverValue', 'nullValue', 'primitive', 'undefinedValue']) {
       expect(storage.get(name)).toBe('valueSemantic');
     }
     for (const name of ['arrayValue', 'functionValue', 'objectValue', 'tupleValue']) {
       expect(storage.get(name)).toBe('sharedIdentity');
     }
-    for (const name of [
-      'indexedValue',
-      'intersectionValue',
-      'keyValue',
-      'namedValue',
-      'typeOfValue',
-      'unionValue',
-      'unknownValue',
-    ]) {
+    for (const name of ['intersectionValue', 'keyValue', 'namedValue', 'typeOfValue', 'unionValue', 'unknownValue']) {
       expect(storage.get(name)).toBe('indeterminate');
     }
   });
