@@ -232,7 +232,7 @@ describe('analyzeIrModuleClosureEvidence', () => {
           const closures: Array<() => number> = [];
           for (const value of values) {
             const bodyValue = value;
-            closures.push(() => value, () => bodyValue);
+            closures.push(() => value + both.count, () => bodyValue);
           }
           for (const key in { first }) closures.push(() => key.length);
           for await (const value of values) closures.push(() => value);
@@ -265,8 +265,9 @@ describe('analyzeIrModuleClosureEvidence', () => {
     expect(
       evidence.closures.flatMap((closure) => closure.captures).find((capture) => capture.binding.name === 'hoisted')
         ?.lifetimeBoundaries,
-    ).not.toContain('iteration');
+    ).toEqual(['closureEscape']);
     expect(both).toBeDefined();
+    expect(both?.lifetimeBoundaries).toEqual(['closureEscape']);
   });
   it('excludes type-only local exports from the exported binding set', () => {
     const evidence = analyzeIrModuleClosureEvidence(
