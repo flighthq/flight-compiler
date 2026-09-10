@@ -1022,6 +1022,24 @@ export function preferred(): number { return NativeSurface.preferredFormat; }`,
     expect(emitted.contents).toContain('double counter');
   });
 
+  it('emits uninitialized variables from checker flow type evidence', () => {
+    const result = lower(
+      'evolving-variable.ts',
+      `
+        export function choose(flag: boolean): number {
+          let value;
+          if (flag) value = 1;
+          else value = 2;
+          return value;
+        }
+      `,
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+
+    expect(result.diagnostics).toEqual([]);
+    expect(emitted.contents).toContain('double value;');
+  });
+
   it('emits string concatenation with std::string', () => {
     const result = lower('concat.ts', 'export function greet(name: string): string { return "Hello, " + name + "!"; }');
     const emitted = emitIrModuleCpp(result.module);

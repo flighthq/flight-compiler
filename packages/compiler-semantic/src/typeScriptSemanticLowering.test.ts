@@ -1385,6 +1385,33 @@ describe('lowerTypeScriptSource', () => {
     expect(callback.initializer.parameters[0]).toHaveProperty('initializer');
   });
 
+  it('uses checker flow evidence to type uninitialized evolving variables', () => {
+    const result = lower(
+      'evolving-variable.ts',
+      `
+        export function choose(flag: boolean): number {
+          let value;
+          if (flag) value = 1;
+          else value = 2;
+          return value;
+        }
+        export function unused(): void { let value; }
+      `,
+    );
+    const choose = result.module.declarations[0];
+    const unused = result.module.declarations[1];
+    if (choose?.kind !== 'function' || unused?.kind !== 'function') throw new Error('Expected functions');
+    const choice = choose.body.find((statement) => statement.kind === 'variable');
+    const unusedValue = unused.body.find((statement) => statement.kind === 'variable');
+
+    expect(result.diagnostics).toEqual([]);
+    expect(choice).toMatchObject({
+      declarations: [{ binding: { name: 'value' }, type: { kind: 'primitive', name: 'number' } }],
+    });
+    expect(unusedValue).toMatchObject({ declarations: [{ binding: { name: 'value' } }] });
+    expect(unusedValue?.kind === 'variable' ? unusedValue.declarations[0] : undefined).not.toHaveProperty('type');
+  });
+
   it('distinguishes absent and explicit class constructors', () => {
     const result = lower('constructors.ts', 'export class Implicit {} export class Explicit { constructor() {} }');
     const [implicit, explicit] = result.module.declarations;

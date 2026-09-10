@@ -2678,7 +2678,7 @@ function lowerVariable(
       ? contextualType
       : node.initializer
         ? inferInitializerType(node.initializer, context)
-        : undefined;
+        : getTypeScriptUninitializedVariableType(node, context);
   const valueType = node.type ? lowerTypeScriptTypeNodeEvidence(node.type, context) : type;
   const target = ts.isIdentifier(node.name)
     ? { binding: lowerBindingIdentity(node.name, context) }
@@ -2690,6 +2690,30 @@ function lowerVariable(
     mutable,
     ...(type ? { type } : {}),
   };
+}
+
+function getTypeScriptUninitializedVariableType(
+  node: ts.VariableDeclaration,
+  context: LoweringContext,
+): IrType | undefined {
+  if (!ts.isIdentifier(node.name)) return undefined;
+  const symbol = context.checker.getSymbolAtLocation(node.name);
+  if (!symbol) return undefined;
+  const evidence = new Map<string, IrType>();
+  const visit = (candidate: ts.Node): void => {
+    if (
+      candidate !== node.name &&
+      ts.isIdentifier(candidate) &&
+      context.checker.getSymbolAtLocation(candidate) === symbol
+    ) {
+      const type = getTypeScriptCheckerTypeEvidence(context.checker.getTypeAtLocation(candidate), context, 0);
+      if (type && type.kind !== 'unknown') evidence.set(JSON.stringify(type), type);
+    }
+    ts.forEachChild(candidate, visit);
+  };
+  visit(context.sourceFile);
+  const types = [...evidence.values()];
+  return types[0] ? commonType([types[0], ...types.slice(1)]) : undefined;
 }
 
 function getTypeScriptForInKeyPlan(
@@ -4280,6 +4304,7 @@ function createTypeScriptAnalysis(
     true,
   );
   const options: ts.CompilerOptions = {
+    noImplicitAny: true,
     noLib: true,
     noResolve: true,
     strictNullChecks: true,
