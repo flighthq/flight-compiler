@@ -929,6 +929,12 @@ describe('validateIrModuleStructure', () => {
         );
       }
     }
+
+    const breakNonLoop = lower(
+      'labeled-block-break.ts',
+      'export function scan(): void { outer: { if (true) break outer; } }',
+    );
+    expect(validateIrModuleStructure(breakNonLoop)).toEqual({ kind: 'valid' });
   });
 
   it('accepts exact repeated function-scoped variable declarations but not other duplicate introductions', () => {
