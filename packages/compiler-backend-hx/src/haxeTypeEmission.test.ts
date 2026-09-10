@@ -36,9 +36,23 @@ describe('emitIrTypeHaxe', () => {
       reference: { kind: 'ambient', name: 'Promise' },
       typeArguments: [{ kind: 'primitive', name: 'string' }],
     };
+    const record: IrType = {
+      kind: 'named',
+      reference: { kind: 'ambient', name: 'Record' },
+      typeArguments: [
+        { kind: 'primitive', name: 'string' },
+        { kind: 'primitive', name: 'number' },
+      ],
+    };
 
     expect(emitIrTypeHaxe(named, context)).toBe('Model.ValueType<Float>');
     expect(emitIrTypeHaxe(external, context)).toBe('Task<String>');
+    expect(
+      emitIrTypeHaxe(record, {
+        ...context,
+        getExternalTypeName: (name: string) => (name === 'Record' ? 'haxe.DynamicAccess' : undefined),
+      }),
+    ).toBe('haxe.DynamicAccess<Float>');
     expect(
       emitIrTypeHaxe(
         {

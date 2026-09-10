@@ -1720,7 +1720,7 @@ describe('emitIrModuleHaxe type coverage', () => {
     expect(output).toContain('value:Dynamic');
   });
 
-  it('emits Readonly, Partial, and Required wrappers as their inner type', () => {
+  it('emits utility types using their Haxe representations', () => {
     const result = lower(
       'utility-types.ts',
       `
@@ -1728,11 +1728,13 @@ describe('emitIrModuleHaxe type coverage', () => {
         export function readOnly(config: Readonly<Config>): number { return config.value; }
         export function partial(config: Partial<Config>): void { config; }
         export function required(config: Required<Config>): void { config; }
+        export function record(config: Record<string, number>): void { config; }
       `,
     );
     const output = emitIrModuleHaxe(result.module).contents;
 
     expect(output).toContain('config:Config');
+    expect(output).toContain('config:haxe.DynamicAccess<Float>');
   });
 
   it('emits named type with type arguments', () => {

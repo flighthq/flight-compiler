@@ -38,6 +38,11 @@ export function emitIrTypeHaxe(type: Readonly<IrType>, context: Readonly<IrTypeH
       ) {
         return emitIrTypeHaxe(type.typeArguments[0], context);
       }
+      if (sourceName === 'Record' && type.typeArguments[1]) {
+        const externalTypeName = context.getExternalTypeName(sourceName);
+        if (!externalTypeName) context.fail(`external type ${sourceName} has no Haxe binding`);
+        return `${externalTypeName}<${emitIrTypeHaxe(type.typeArguments[1], context)}>`;
+      }
       const resolved = context.resolveNamedType?.(type);
       if (resolved !== undefined) return resolved;
       let targetName: string;
