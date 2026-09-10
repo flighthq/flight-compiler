@@ -40,6 +40,9 @@ layouts:
 
 default: default
 
+integrate:
+  from: review
+
 presets:
   default:
     layout: default
