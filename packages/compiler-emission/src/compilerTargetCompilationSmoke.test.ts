@@ -32,6 +32,29 @@ describe('isCompilerTargetCompilationSmokeFailure', () => {
       }),
     ).toBe(false);
   });
+
+  it('rejects a failure whose compiler name is an empty string', () => {
+    const emptyCompiler = Object.assign(new Error('forged'), {
+      compiler: '',
+      diagnostics: [{ code: 'type', column: 1, line: 1, message: 'bad', path: 'Value.rs' }],
+      kind: 'target-compilation-smoke',
+    });
+
+    expect(isCompilerTargetCompilationSmokeFailure(emptyCompiler)).toBe(false);
+  });
+
+  it('rejects a diagnostic with an empty code, message, or path', () => {
+    const withEmpty = (override: Record<string, unknown>) =>
+      Object.assign(new Error('forged'), {
+        compiler: 'fixture-compiler',
+        diagnostics: [{ code: 'type', column: 1, line: 1, message: 'ok', path: 'Value.rs', ...override }],
+        kind: 'target-compilation-smoke',
+      });
+
+    expect(isCompilerTargetCompilationSmokeFailure(withEmpty({ code: '' }))).toBe(false);
+    expect(isCompilerTargetCompilationSmokeFailure(withEmpty({ message: '' }))).toBe(false);
+    expect(isCompilerTargetCompilationSmokeFailure(withEmpty({ path: '' }))).toBe(false);
+  });
 });
 
 describe('validateCompilerTargetCompilationSmoke', () => {
@@ -113,6 +136,25 @@ describe('validateCompilerTargetCompilationSmoke', () => {
     expect(failure.diagnostics.at(-1)?.message).toBe('late');
   });
 
+  it('sorts by path before line when path and line orders disagree', () => {
+    const compiler = createCompiler(() => [
+      { code: 'err', column: 1, line: 5, message: 'late line', path: 'Alpha.rs' },
+      { code: 'err', column: 1, line: 1, message: 'early line', path: 'Zulu.rs' },
+    ]);
+    const failure = captureFailure(
+      [
+        { contents: 'alpha', path: 'Alpha.rs' },
+        { contents: 'zulu', path: 'Zulu.rs' },
+      ],
+      compiler,
+    );
+
+    expect(failure.diagnostics[0]?.path).toBe('Alpha.rs');
+    expect(failure.diagnostics[0]?.line).toBe(5);
+    expect(failure.diagnostics[1]?.path).toBe('Zulu.rs');
+    expect(failure.diagnostics[1]?.line).toBe(1);
+  });
+
   it('refuses malformed adapter identities, support decisions, results, and diagnostics as invariants', () => {
     const files = [{ contents: 'value', path: 'Value.rs' }];
     const invalidCompilers = [
@@ -131,6 +173,21 @@ describe('validateCompilerTargetCompilationSmoke', () => {
       expect(() => validateCompilerTargetCompilationSmoke(files, compiler)).toThrow(
         expect.objectContaining({ code: 'invalid-target-compilation-smoke-adapter', kind: 'compiler-invariant' }),
       );
+    }
+
+    const nonStringName = invalidCompilers.find((c) => typeof c.name !== 'string')!;
+    try {
+      validateCompilerTargetCompilationSmoke(files, nonStringName);
+      expect.unreachable('Expected non-string compiler name to fail');
+    } catch (error) {
+      expect(error).toMatchObject({ subject: '<non-string>' });
+    }
+    const emptyName = invalidCompilers.find((c) => c.name === '')!;
+    try {
+      validateCompilerTargetCompilationSmoke(files, emptyName);
+      expect.unreachable('Expected empty compiler name to fail');
+    } catch (error) {
+      expect(error).toMatchObject({ subject: '' });
     }
 
     for (const diagnostic of [
