@@ -46,6 +46,7 @@ import type {
   EmittedFile,
   IrBinaryOperator,
   IrBinaryOperatorSemantics,
+  IrBindingPattern,
   IrCatchClause,
   IrClassDeclaration,
   IrControlFlowLabelIdentity,
@@ -281,13 +282,12 @@ function createCppTargetNameMap(module: Readonly<IrModule>): Map<string, string>
   const publicNameGroups = new Map<string, (IrBindingIdentity | IrTypeBindingIdentity)[]>();
   for (const declaration of module.declarations) {
     if (!declaration.exported) continue;
-    if (!('binding' in declaration)) {
-      throw new Error('C++ target allocation received an unlowered binding-pattern declaration');
+    for (const binding of collectCppPublicDeclarationBindings(declaration)) {
+      const preferredName = getCppPreferredBindingName(binding).normalize('NFC');
+      const group = publicNameGroups.get(preferredName) ?? [];
+      group.push(binding);
+      publicNameGroups.set(preferredName, group);
     }
-    const preferredName = getCppPreferredBindingName(declaration.binding).normalize('NFC');
-    const group = publicNameGroups.get(preferredName) ?? [];
-    group.push(declaration.binding);
-    publicNameGroups.set(preferredName, group);
   }
   const collisionBindingIds = new Set(
     [...publicNameGroups.values()]
@@ -302,6 +302,21 @@ function createCppTargetNameMap(module: Readonly<IrModule>): Map<string, string>
         : getCppPreferredBindingName(binding),
     })).map((allocation) => [allocation.identity, allocation.name]),
   );
+}
+
+function collectCppPublicDeclarationBindings(
+  declaration: Readonly<IrDeclaration>,
+): readonly (IrBindingIdentity | IrTypeBindingIdentity)[] {
+  return 'binding' in declaration ? [declaration.binding] : collectCppBindingPatternBindings(declaration.pattern);
+}
+
+function collectCppBindingPatternBindings(pattern: Readonly<IrBindingPattern>): readonly IrBindingIdentity[] {
+  if (pattern.kind === 'binding') return [pattern.binding];
+  const children =
+    pattern.kind === 'array'
+      ? pattern.elements.flatMap((element) => (element ? collectCppBindingPatternBindings(element.pattern) : []))
+      : pattern.properties.flatMap((property) => collectCppBindingPatternBindings(property.pattern));
+  return pattern.rest ? [...children, ...collectCppBindingPatternBindings(pattern.rest)] : children;
 }
 
 function getCppPreferredBindingName(binding: Readonly<IrBindingIdentity | IrTypeBindingIdentity>): string {
