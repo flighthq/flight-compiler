@@ -294,6 +294,18 @@ Status: type-surface declaration with no conditional logic.
 
 The ambient package declares the value and type surface that generated code may assume — `Promise`, `Math`, `Map`, typed arrays, and their members — as pure TypeScript text. It has no runtime implementation, no conditional operators, and no mutatable code paths. Mutation testing generates zero mutants. The package is the other projection of what the backends' runtime binding tables name: it declares what an ambient type has on it, while a binding table says what that type becomes. A member it declares that a backend has not bound is refused at emission.
 
+### `compiler-command-line`
+
+Status: CLI entry point with end-to-end argument validation and compilation dispatch.
+
+The command-line package parses `argv`, validates target-specific and source-generating options, dispatches compilation through the orchestration pipeline, and formats a grouped report of emitted and refused modules. Every option, its validation boundary, and the usage text are end-to-end tested. Mutation testing kills 56 of 67 mutants (83.6% kill rate); survivors are comparison-chain late tiers in report sorting, entry-point guard equivalents, and two `||`→`&&` direction swaps in multi-condition parse guards where well-typed callers cannot distinguish the branches. Three real mutants were killed through targeted tests: the `--runtime-header` flow through to emitted C++ output, include-path special character rejection, and the report sample-size truncation boundary.
+
+### `compiler-semantic`
+
+Status: TypeScript semantic analysis and neutral IR lowering; partial mutation coverage.
+
+The semantic package owns TypeScript-to-neutral-IR lowering, static fact analysis (truthiness, numeric arithmetic, indexed access modes), and TypeScript-specific signature, overload, and invocation evidence. The main lowering file (875 mutants) cannot be mutation-tested in isolation because its tests require a real TypeScript project checkout. Smaller analysis files produce two equivalent survivors (`||`→`&&` direction swaps). Static numeric arithmetic covers all closed operators, declared-versus-flow domain narrowing, bigint, and inconsistent-domain rejection for binary, assignment, and unary expressions. 215 unreached arms remain, concentrated in the TypeScript-dependent lowering and in `assertNever` exhaustiveness guards.
+
 ## Package isolation review
 
 Each workspace passes its own strict typecheck and Vitest target. The package boundary remains justified only where the subject and dependency direction are independently useful:
