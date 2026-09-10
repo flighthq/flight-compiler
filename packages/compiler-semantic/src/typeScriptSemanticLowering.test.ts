@@ -1712,6 +1712,31 @@ describe('lowerTypeScriptSource', () => {
     }
   });
 
+  it('preserves ambient collection identity in inferred values instead of expanding implementation members', () => {
+    const result = lower(
+      'inferred-ambient.ts',
+      'interface Row { key: number } function table(): Map<number, Row> { return new Map<number, Row>(); } export function copy(bytes: Readonly<Uint8Array>): Uint8Array { const input = bytes as Uint8Array; const rows = table(); rows.size; return input.slice(0); }',
+    );
+    const copy = result.module.declarations[2];
+    if (copy?.kind !== 'function' || copy.body[0]?.kind !== 'variable' || copy.body[1]?.kind !== 'variable') {
+      throw new Error('Expected inferred collection variables');
+    }
+    const input = copy.body[0].declarations[0];
+    const rows = copy.body[1].declarations[0];
+
+    expect(result.diagnostics).toEqual([]);
+    expect(input).toMatchObject({
+      type: { kind: 'named', reference: { kind: 'ambient', name: 'Uint8Array' }, typeArguments: [] },
+    });
+    expect(rows).toMatchObject({
+      type: {
+        kind: 'named',
+        reference: { kind: 'ambient', name: 'Map' },
+        typeArguments: [{ kind: 'primitive', name: 'number' }, { kind: 'named' }],
+      },
+    });
+  });
+
   it('records optional-chain receiver and projected value type evidence', () => {
     const result = lower(
       'optional-chain-evidence.ts',

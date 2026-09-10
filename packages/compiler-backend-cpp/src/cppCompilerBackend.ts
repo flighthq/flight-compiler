@@ -1088,6 +1088,8 @@ function emitExpression(
           return `${emitExpression(expression.object, context)}${memberOp(expression.object, context)}${binding.targetName}`;
         }
       }
+      const namespaceMember = getCppNamespaceImportMemberTargetNameCpp(expression, context);
+      if (namespaceMember) return namespaceMember;
       if (expression.object.kind === 'identifier' && expression.object.reference.kind === 'ambient') {
         addCppExternalBindingHeaders(expression.object.reference.name, 'value', context);
         const member = getCompilerRuntimeExternalMemberTargetCpp(
@@ -1103,6 +1105,10 @@ function emitExpression(
           }
           return member;
         }
+        emissionError(
+          context,
+          `ambient value ${expression.object.reference.name} member ${expression.name} has no C++ binding`,
+        );
       }
       if (
         expression.object.kind === 'identifier' &&
@@ -1608,6 +1614,10 @@ function emitType(type: Readonly<IrType>, context: EmitContext, representation: 
         optional: property.optional,
         type: emitType(property.type, context),
       }));
+      const unresolved = emittedProperties.find((property) => /\bauto\b/u.test(property.type));
+      if (unresolved) {
+        emissionError(context, `anonymous object property ${unresolved.name} requires concrete C++ type evidence`);
+      }
       const key = emittedProperties
         .map((property) => `${property.optional ? '?' : ''}${property.type} ${property.name}`)
         .join('; ');
@@ -3334,8 +3344,28 @@ function getCppImportedBindingTargetName(
       return context.targetNames.get(bindingId) ?? safeCppName(importedBinding.binding.name);
     }
     const targetName = getCppResolvedExportTargetName(targetModule, importedName);
-    if (targetModule.packageName === context.module.packageName) return targetName;
     return `${getCppCompilerPackageNamespace(targetModule.packageName, context.options.packageTargets)}::${targetName}`;
+  }
+  return undefined;
+}
+
+function getCppNamespaceImportMemberTargetNameCpp(
+  expression: Readonly<Extract<IrExpression, { kind: 'property' }>>,
+  context: EmitContext,
+): string | undefined {
+  if (expression.object.kind !== 'identifier' || expression.object.reference.kind !== 'binding') return undefined;
+  for (const importItem of context.module.imports) {
+    const importedBinding = importItem.bindings.find(
+      (candidate) => candidate.binding.id === expression.object.reference.binding.id && candidate.imported === '*',
+    );
+    if (!importedBinding) continue;
+    const targetModule = getCppResolvedImportModule(importItem.specifier, context);
+    if (!targetModule) {
+      emissionError(context, `namespace import ${importedBinding.binding.name} requires module resolution`);
+    }
+    const targetName = getCppResolvedExportTargetName(targetModule, expression.name);
+    const namespaceName = getCppCompilerPackageNamespace(targetModule.packageName, context.options.packageTargets);
+    return `${namespaceName}::${targetName}`;
   }
   return undefined;
 }

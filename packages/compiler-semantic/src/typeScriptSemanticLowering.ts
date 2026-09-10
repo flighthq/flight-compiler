@@ -2579,6 +2579,9 @@ function lowerTypeScriptTypeNodeEvidence(
       (candidate): candidate is ts.InterfaceDeclaration | ts.TypeAliasDeclaration =>
         ts.isInterfaceDeclaration(candidate) || ts.isTypeAliasDeclaration(candidate),
     );
+    if (declaration?.getSourceFile().fileName === getCompilerAmbientSurfaceFileName()) {
+      return lowerType(type, context);
+    }
     if (symbol && declaration && !seen.has(symbol)) {
       const nextSubstitutions = createTypeScriptSyntacticDeclarationSubstitutions(
         type,
