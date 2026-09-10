@@ -306,6 +306,12 @@ Status: TypeScript semantic analysis and neutral IR lowering; partial mutation c
 
 The semantic package owns TypeScript-to-neutral-IR lowering, static fact analysis (truthiness, numeric arithmetic, indexed access modes), and TypeScript-specific signature, overload, and invocation evidence. The main lowering file (875 mutants) cannot be mutation-tested in isolation because its tests require a real TypeScript project checkout. Smaller analysis files produce two equivalent survivors (`||`→`&&` direction swaps). Static numeric arithmetic covers all closed operators, declared-versus-flow domain narrowing, bigint, and inconsistent-domain rejection for binary, assignment, and unary expressions. 215 unreached arms remain, concentrated in the TypeScript-dependent lowering and in `assertNever` exhaustiveness guards.
 
+### `compiler-inventory`
+
+Status: read-only package, export-lane, symbol, and runtime-value analysis above identity.
+
+The inventory package discovers Flight workspaces, validates manifests, resolves package export lanes and re-export chains, classifies runtime versus type-only symbols, collects host import evidence, derives evidence-backed tooling exclusions, and builds immutable module-resolution plans. Every failure is tagged for message-independent handling across manifest, project, Git, export-graph, source-resolution, runtime-classification, SDK, endpoint-receiver, exclusion, and resolution-plan domains. Mutation testing kills 358 of 440 mutants (81.4% kill rate); 20 of the 82 survivors are failure-code registry `true → false` markers (the same equivalent pattern as `compiler-patch` and `compiler-emission`), and the remainder are `||`→`&&` direction swaps and `===`→`!==` inversions in multi-condition type guards. Two killed mutants timed out rather than failing, indicating single-operator termination conditions in traversal loops. One real mutant was killed through a targeted test: the empty-host-import exclusion boundary.
+
 ## Package isolation review
 
 Each workspace passes its own strict typecheck and Vitest target. The package boundary remains justified only where the subject and dependency direction are independently useful:
