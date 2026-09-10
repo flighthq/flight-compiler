@@ -138,6 +138,18 @@ Open foundation work:
 
 Decision: do not declare the IR stable or publish a serialized IR format. Source, module, export, source-location, source-origin, value/type binding, emitted-file, semantic-patch target, and target-name identity, together with diagnostic and bedrock failure contracts, are now locked as readonly structural contracts. Declaration, type, type-directed expression-operator, and binding families now have a reviewed structural floor. Audit inventory next as the first composition above these primitives before widening target emission.
 
+### `compiler-canonical-form`
+
+Status: narrow and mature as the dependency-free portable canonical-form floor.
+
+The package defines locale-independent text order and portable path form without importing compiler contracts or domain identity policy. Text comparison uses code-unit ordering so results are deterministic and platform-independent. Path normalization translates backslash and the current platform's `path.sep` to forward slash. The package has no dependencies. Mutation testing kills 25/25 mutants (100% kill rate). Exact text equality and order, empty and prefix values, ASCII case, non-ASCII and surrogate text, antisymmetry, transitivity, caller-owned Unicode normalization, and portable separator form are direct-tested.
+
+### `compiler-ir-traversal`
+
+Status: narrow and mature as the dependency-floor read-only IR observation boundary.
+
+The package provides typed structural walks over modules, declarations, statements, expressions, and types without embedding analysis policy. It depends only on `compiler-types`. Consumption by closure, structural, module, and task packages demonstrates independent utility. Mutation testing kills 20/20 mutants (100% kill rate).
+
 ### `compiler-provenance`
 
 Status: narrow and near-mature after the current hardening pass.

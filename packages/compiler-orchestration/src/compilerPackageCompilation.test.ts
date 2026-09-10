@@ -672,6 +672,15 @@ describe('isCompilerPackageGraphFailure', () => {
     expect(isCompilerPackageGraphFailure(received)).toBe(true);
     expect(received).toMatchObject({ code: 'package-root-mismatch', kind: 'compiler-package-graph' });
     expect(isCompilerPackageGraphFailure(new Error('other'))).toBe(false);
+    expect(
+      isCompilerPackageGraphFailure(
+        Object.assign(new Error('empty subject'), {
+          code: 'invalid-graph',
+          kind: 'compiler-package-graph',
+          subject: '',
+        }),
+      ),
+    ).toBe(false);
   });
 
   it('rejects malformed package, source, entry, and module dependency shapes with stable codes', () => {
