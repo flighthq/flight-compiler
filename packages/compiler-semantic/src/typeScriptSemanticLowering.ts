@@ -156,6 +156,7 @@ function lowerTypeScriptSourceWithAnalysis(
     sourceFile,
     typeBindings: new Map(),
   };
+  const imports = lowerImports(context.sourceFile, context);
   const declarations: IrDeclaration[] = [];
   const exports: IrExport[] = [];
   const pendingOverloads = new Map<string, IrFunctionSignature[]>();
@@ -238,7 +239,7 @@ function lowerTypeScriptSourceWithAnalysis(
     module: {
       declarations,
       exports,
-      imports: lowerImports(context.sourceFile, context),
+      imports,
       name: moduleNameFromSource(context.sourceFile.fileName),
       packageName: options.packageName,
       source: relativeSource(sourceFile.fileName, options.upstreamDirectory),
@@ -2252,6 +2253,9 @@ function lowerTypeNameNodeReference(
     return { binding: lowerBindingSymbol(symbol, parts.root, context), kind: 'binding', path: parts.path };
   }
   if (symbol?.declarations?.some(isTypeBindingDeclaration)) {
+    if (!hasTypeBindingDeclarationInModule(symbol, context)) {
+      return { kind: 'ambient', name: getTypeScriptNodeText(node, context) };
+    }
     return { binding: lowerTypeBindingSymbol(symbol, parts.root, context), kind: 'binding', path: parts.path };
   }
   return { kind: 'ambient', name: getTypeScriptNodeText(node, context) };
@@ -3911,6 +3915,14 @@ function lowerTypeBindingSymbol(
 ): IrTypeBindingIdentity {
   const cached = context.typeBindings.get(symbol);
   if (cached) return cached;
+  const aliased = resolveTypeBindingAliasTarget(symbol, context);
+  if (aliased) {
+    const aliasedCached = context.typeBindings.get(aliased);
+    if (aliasedCached) {
+      context.typeBindings.set(symbol, aliasedCached);
+      return aliasedCached;
+    }
+  }
   const declaration = symbol.declarations?.find(isTypeBindingDeclaration);
   if (!declaration) return unsupported(node, `type binding ${node.text} has no supported declaration`);
   const name = typeBindingDeclarationName(declaration);
@@ -3924,7 +3936,27 @@ function lowerTypeBindingSymbol(
     space: 'type',
   };
   context.typeBindings.set(symbol, binding);
+  if (aliased) context.typeBindings.set(aliased, binding);
   return binding;
+}
+
+function hasTypeBindingDeclarationInModule(symbol: ts.Symbol, context: LoweringContext): boolean {
+  if (context.typeBindings.has(symbol)) return true;
+  const aliased = resolveTypeBindingAliasTarget(symbol, context);
+  if (aliased && context.typeBindings.has(aliased)) return true;
+  return (
+    symbol.declarations?.some(
+      (declaration) =>
+        isTypeBindingDeclaration(declaration) && declaration.getSourceFile().fileName === context.sourceFile.fileName,
+    ) ?? false
+  );
+}
+
+function resolveTypeBindingAliasTarget(symbol: ts.Symbol, context: LoweringContext): ts.Symbol | undefined {
+  if (!(symbol.flags & ts.SymbolFlags.Alias)) return undefined;
+  const aliased = context.checker.getAliasedSymbol(symbol);
+  if (aliased === symbol || !aliased.declarations?.some(isTypeBindingDeclaration)) return undefined;
+  return aliased;
 }
 
 function typeBindingDeclarationKind(declaration: TypeScriptTypeBindingDeclaration): IrTypeBindingIdentity['kind'] {
