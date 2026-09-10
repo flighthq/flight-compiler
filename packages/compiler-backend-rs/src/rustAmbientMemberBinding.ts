@@ -69,5 +69,7 @@ const rustAmbientMemberBindings: Readonly<Record<string, CompilerRustAmbientMemb
   'string.toLowerCase': { kind: 'method', targetName: 'to_lowercase' },
   'string.toUpperCase': { kind: 'method', targetName: 'to_uppercase' },
   'string.trim': { kind: 'method', owns: true, targetName: 'trim' },
+  'typedArray.length': { kind: 'countingMethod', targetName: 'len' },
+  'typedArray.slice': { kind: 'method', targetName: 'slice' },
   'tuple.length': { kind: 'countingMethod', targetName: 'len' },
 };

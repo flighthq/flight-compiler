@@ -50,6 +50,21 @@ describe('getCompilerHaxeAmbientMemberBinding', () => {
     });
   });
 
+  it('keeps the typed-array members supplied by the Haxe runtime wrappers', () => {
+    expect(getCompilerHaxeAmbientMemberBinding({ name: 'length', receiver: 'typedArray' })).toEqual({
+      kind: 'property',
+      targetName: 'length',
+    });
+    expect(getCompilerHaxeAmbientMemberBinding({ name: 'slice', receiver: 'typedArray' })).toEqual({
+      kind: 'method',
+      targetName: 'slice',
+    });
+    expect(getCompilerHaxeAmbientMemberBinding({ name: 'subarray', receiver: 'typedArray' })).toEqual({
+      kind: 'method',
+      targetName: 'subarray',
+    });
+  });
+
   it('answers nothing for a member with no agreed spelling, so emission refuses rather than guesses', () => {
     expect(getCompilerHaxeAmbientMemberBinding({ name: 'sort', receiver: 'array' })).toBeUndefined();
     expect(getCompilerHaxeAmbientMemberBinding({ name: 'toFixed', receiver: 'number' })).toBeUndefined();

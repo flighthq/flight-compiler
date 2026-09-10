@@ -68,5 +68,8 @@ const haxeAmbientMemberBindings: Readonly<Record<string, CompilerHaxeAmbientMemb
   'string.toLowerCase': { kind: 'method', targetName: 'toLowerCase' },
   'string.toUpperCase': { kind: 'method', targetName: 'toUpperCase' },
   'string.trim': { kind: 'staticCall', targetPath: 'StringTools.trim' },
+  'typedArray.length': { kind: 'property', targetName: 'length' },
+  'typedArray.slice': { kind: 'method', targetName: 'slice' },
+  'typedArray.subarray': { kind: 'method', targetName: 'subarray' },
   'tuple.length': { kind: 'property', targetName: 'length' },
 };

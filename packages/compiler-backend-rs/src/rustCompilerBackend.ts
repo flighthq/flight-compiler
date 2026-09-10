@@ -975,7 +975,7 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
       // view into the one it came from.
       if (
         expression.callee.kind === 'property' &&
-        expression.callee.member?.receiver === 'array' &&
+        (expression.callee.member?.receiver === 'array' || expression.callee.member?.receiver === 'typedArray') &&
         expression.callee.member.name === 'slice'
       ) {
         const receiver = emitExpression(expression.callee.object, context);
