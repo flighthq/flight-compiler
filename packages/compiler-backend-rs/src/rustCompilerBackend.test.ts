@@ -4565,6 +4565,21 @@ describe('emitIrModuleRust', () => {
     expect(output).toContain('.borrow().clone().unwrap()');
   });
 
+  it('emits ref-cell-wrapped plain assignment with replace for non-Copy types', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'refcell-assign.ts',
+        `export function update(): (next: string) => string {
+          let value: string = "initial";
+          return (next: string) => { value = next; return value; };
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('Rc<RefCell<String>>');
+    expect(output).toContain('.replace(');
+    expect(output).toContain('.borrow().clone()');
+  });
+
   it('emits string replace as Rust replace', () => {
     const output = emitIrModuleRust(
       lower('str-replace.ts', `export function fix(s: string): string { return s.replace("old", "new"); }`).module,
