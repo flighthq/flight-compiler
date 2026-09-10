@@ -82,6 +82,11 @@ const cppFlightRuntimeAmbientMemberBindings: Readonly<Record<string, CompilerCpp
   'task.catch': { kind: 'method', targetName: 'catch_error' },
   'task.finally': { kind: 'method', targetName: 'finally' },
   'task.then': { kind: 'method', targetName: 'then' },
+  'typedArray.fill': { kind: 'method', targetName: 'fill' },
+  'typedArray.length': { kind: 'sizeMethod', targetName: 'size' },
+  'typedArray.set': { kind: 'method', targetName: 'set' },
+  'typedArray.slice': { kind: 'method', targetName: 'slice' },
+  'typedArray.subarray': { kind: 'method', targetName: 'subarray' },
 };
 
 const cppAmbientMemberBindings: Readonly<Record<string, CompilerCppAmbientMemberBinding>> = {
@@ -119,4 +124,5 @@ const cppAmbientMemberBindings: Readonly<Record<string, CompilerCppAmbientMember
   'string.toLowerCase': { kind: 'method', targetName: 'to_lower' },
   'string.toUpperCase': { kind: 'method', targetName: 'to_upper' },
   'string.trim': { kind: 'method', targetName: 'trim' },
+  'typedArray.length': { kind: 'sizeMethod', targetName: 'size' },
 };

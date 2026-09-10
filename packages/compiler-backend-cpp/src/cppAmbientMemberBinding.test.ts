@@ -95,6 +95,21 @@ describe('getCompilerCppAmbientMemberBinding', () => {
     });
   });
 
+  it('maps typed-array length in both profiles and runtime methods in the flight-cpp profile', () => {
+    for (const runtimeProfile of ['flight-cpp', 'standard-library'] as const) {
+      expect(getCompilerCppAmbientMemberBinding({ name: 'length', receiver: 'typedArray' }, runtimeProfile)).toEqual({
+        kind: 'sizeMethod',
+        targetName: 'size',
+      });
+    }
+    for (const name of ['fill', 'set', 'slice', 'subarray']) {
+      expect(getCompilerCppAmbientMemberBinding({ name, receiver: 'typedArray' }, 'flight-cpp')).toEqual({
+        kind: 'method',
+        targetName: name,
+      });
+    }
+  });
+
   it('answers nothing for a member with no agreed spelling, so emission refuses rather than guesses', () => {
     expect(getCompilerCppAmbientMemberBinding({ name: 'sort', receiver: 'array' })).toBeUndefined();
     expect(getCompilerCppAmbientMemberBinding({ name: 'toFixed', receiver: 'number' })).toBeUndefined();

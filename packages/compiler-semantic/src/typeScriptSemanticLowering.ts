@@ -3449,9 +3449,18 @@ function getIrResolvedMemberReceiver(type: Readonly<IrType> | undefined): IrReso
     const ambientReceivers: Record<string, IrResolvedMemberReceiver> = {
       Date: 'date',
       Error: 'error',
+      Float32Array: 'typedArray',
+      Float64Array: 'typedArray',
+      Int16Array: 'typedArray',
+      Int32Array: 'typedArray',
+      Int8Array: 'typedArray',
       Map: 'map',
       Promise: 'task',
       Set: 'set',
+      Uint16Array: 'typedArray',
+      Uint32Array: 'typedArray',
+      Uint8Array: 'typedArray',
+      Uint8ClampedArray: 'typedArray',
       WeakMap: 'map',
     };
     return ambientReceivers[type.reference.name];

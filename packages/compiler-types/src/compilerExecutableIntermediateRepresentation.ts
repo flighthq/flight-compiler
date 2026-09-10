@@ -40,6 +40,7 @@ export type IrResolvedMemberReceiver =
   | 'set'
   | 'string'
   | 'task'
+  | 'typedArray'
   | 'tuple';
 
 export interface IrResolvedMember {

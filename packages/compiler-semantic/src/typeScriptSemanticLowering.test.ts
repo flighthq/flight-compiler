@@ -1695,6 +1695,23 @@ describe('lowerTypeScriptSource', () => {
     expect(expr).toMatchObject({ kind: 'property', member: { name: 'length', receiver: 'array' } });
   });
 
+  it('classifies every supported typed-array member receiver', () => {
+    const result = lower(
+      'typed-array-members.ts',
+      'export function lengths(a: Float32Array, b: Float64Array, c: Int8Array, d: Int16Array, e: Int32Array, f: Uint8Array, g: Uint8ClampedArray, h: Uint16Array, i: Uint32Array): number[] { return [a.length, b.length, c.length, d.length, e.length, f.length, g.length, h.length, i.length]; }',
+    );
+    const fn = result.module.declarations[0];
+    if (fn?.kind !== 'function' || fn.body[0]?.kind !== 'return' || fn.body[0].expression?.kind !== 'array') {
+      throw new Error('Expected typed-array member expressions');
+    }
+
+    expect(result.diagnostics).toEqual([]);
+    expect(fn.body[0].expression.elements).toHaveLength(9);
+    for (const element of fn.body[0].expression.elements) {
+      expect(element).toMatchObject({ kind: 'property', member: { name: 'length', receiver: 'typedArray' } });
+    }
+  });
+
   it('records optional-chain receiver and projected value type evidence', () => {
     const result = lower(
       'optional-chain-evidence.ts',
