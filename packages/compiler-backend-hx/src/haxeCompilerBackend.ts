@@ -854,8 +854,8 @@ function emitFunction(declaration: Readonly<IrFunctionDeclaration>, outer: EmitC
 function emitImports(imports: readonly IrImport[], context: EmitContext): string[] {
   const emitted = new Set<string>();
   for (const imported of imports) {
-    if (imported.bindings.length === 0) continue;
     const modulePath = haxeImportModule(imported.specifier, context);
+    if (imported.bindings.length === 0) continue;
     for (const binding of imported.bindings) {
       if (binding.imported === '*' || binding.imported === 'default') {
         emissionError(context, `${binding.imported} imports require explicit Haxe mapping for ${imported.specifier}`);
@@ -1748,6 +1748,10 @@ function haxeImportModule(specifier: string, context: EmitContext): string {
     const target = path.posix.normalize(
       path.posix.join(path.posix.dirname(context.module.source), specifier.replace(/\.[cm]?js$/u, '.ts')),
     );
+    const extension = path.posix.extname(target);
+    if (extension.length > 0 && extension !== '.ts' && extension !== '.tsx') {
+      emissionError(context, `non-TypeScript import ${specifier} requires resource materialization`);
+    }
     return `${context.packageName}.${haxeImplementationModule(target)}`;
   }
   if (specifier.startsWith('@')) {
