@@ -266,6 +266,16 @@ describe('getCompilerRuntimeExternalMemberTargetCpp', () => {
   });
 
   it.each(['flight-cpp', 'standard-library'] as const)(
+    'maps Math.imul to an exact signed 32-bit multiplication in the %s profile',
+    (runtimeProfile) => {
+      const target = getCompilerRuntimeExternalMemberTargetCpp('Math', 'imul', runtimeProfile);
+      expect(target).toContain('std::uint32_t');
+      expect(target).toContain('std::int64_t');
+      expect(target).toContain('4294967296.0');
+    },
+  );
+
+  it.each(['flight-cpp', 'standard-library'] as const)(
     'maps Number constants and predicates in the %s profile',
     (runtimeProfile) => {
       expect(getCompilerRuntimeExternalMemberTargetCpp('Number', 'EPSILON', runtimeProfile)).toBe(

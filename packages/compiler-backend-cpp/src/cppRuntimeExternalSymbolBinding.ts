@@ -199,8 +199,12 @@ function isCppExternalBindingHeader(value: unknown): value is string {
 
 const cppExternalBindingOwnerships = new Set(['borrowed', 'owned', 'shared', 'value']);
 
+const cppMathImulTarget =
+  '([](double left, double right) noexcept { const auto to_uint32 = [](double value) noexcept { if (!std::isfinite(value) || value == 0.0) return std::uint32_t{0}; constexpr double modulus = 4294967296.0; double remainder = std::fmod(std::trunc(value), modulus); if (remainder < 0.0) remainder += modulus; return static_cast<std::uint32_t>(remainder); }; const std::uint32_t product = to_uint32(left) * to_uint32(right); return product < 0x80000000U ? static_cast<double>(product) : static_cast<double>(static_cast<std::int64_t>(product) - 0x100000000LL); })';
+
 const cppFlightRuntimeExternalSymbolBindings = [
   {
+    headers: ['cmath', 'cstdint'],
     kind: 'native',
     members: [
       { sourceMember: 'E', targetName: 'flight::e' },
@@ -216,6 +220,7 @@ const cppFlightRuntimeExternalSymbolBindings = [
       { sourceMember: 'exp', targetName: 'std::exp' },
       { sourceMember: 'floor', targetName: 'std::floor' },
       { sourceMember: 'hypot', targetName: 'std::hypot' },
+      { sourceMember: 'imul', targetName: cppMathImulTarget },
       { sourceMember: 'log', targetName: 'std::log' },
       { sourceMember: 'log10', targetName: 'std::log10' },
       { sourceMember: 'log2', targetName: 'std::log2' },
@@ -450,6 +455,7 @@ const cppFlightRuntimeExternalSymbolBindings = [
 
 const cppRuntimeExternalSymbolBindings = [
   {
+    headers: ['cmath', 'cstdint'],
     kind: 'native',
     members: [
       { sourceMember: 'E', targetName: 'M_E' },
@@ -465,6 +471,7 @@ const cppRuntimeExternalSymbolBindings = [
       { sourceMember: 'exp', targetName: 'std::exp' },
       { sourceMember: 'floor', targetName: 'std::floor' },
       { sourceMember: 'hypot', targetName: 'std::hypot' },
+      { sourceMember: 'imul', targetName: cppMathImulTarget },
       { sourceMember: 'log', targetName: 'std::log' },
       { sourceMember: 'log10', targetName: 'std::log10' },
       { sourceMember: 'log2', targetName: 'std::log2' },

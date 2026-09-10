@@ -3941,6 +3941,21 @@ export function preferred(): number { return NativeSurface.preferredFormat; }`,
     expect(output).toContain('abs');
   });
 
+  it.each(['flight-cpp', 'standard-library'] as const)(
+    'emits Math.imul with JavaScript signed 32-bit semantics in the %s profile',
+    (runtimeProfile) => {
+      const output = emitIrModuleCpp(
+        lower('math-imul.ts', `export function multiply(a: number, b: number): number { return Math.imul(a, b); }`)
+          .module,
+        { runtimeProfile },
+      ).contents;
+      expect(output).toContain('#include <cmath>');
+      expect(output).toContain('#include <cstdint>');
+      expect(output).toContain('std::uint32_t product');
+      expect(output).toContain('0x100000000LL');
+    },
+  );
+
   it('emits super reference with named base class', () => {
     const output = emitIrModuleCpp(
       lower(
