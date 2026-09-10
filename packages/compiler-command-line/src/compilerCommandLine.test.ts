@@ -149,7 +149,7 @@ describe('compileCompilerCommandLineRequest', () => {
 
   it('rejects runtime-header values with characters unsafe for quoted includes', () => {
     const errors: string[] = [];
-    const unsafe = ['"bad.hpp', '<bad>.hpp', 'bad\npath.hpp'];
+    const unsafe = ['', '"bad.hpp', '<bad>.hpp', 'bad\npath.hpp'];
     for (const header of unsafe) {
       compileCompilerCommandLineRequest(
         { argv: ['/src', '--target', 'cpp', '--out', '/out', '--runtime-header', header] },
