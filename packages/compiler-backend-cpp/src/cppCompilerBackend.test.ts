@@ -2496,6 +2496,39 @@ export function preferred(): number { return NativeSurface.preferredFormat; }`,
     expect(emitted.contents).toContain('return x');
   });
 
+  it('resolves reexported type aliases when constructing contextual unions', () => {
+    const status = lowerPackage('@flighthq/types', 'status.ts', "export type Status = 'ready' | 'done';").module;
+    const contract = lowerPackage('@flighthq/types', 'contract.ts', "export * from './status';").module;
+    const consumer = lowerPackage(
+      '@flighthq/consumer',
+      'detect.ts',
+      "import type { Status } from '@flighthq/types/contract'; export function detect(ok: boolean): Status | null { return ok ? 'ready' : null; }",
+    ).module;
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          importer: consumer,
+          specifier: '@flighthq/types/contract',
+          target: { packageName: contract.packageName, source: contract.source },
+        },
+        {
+          importer: contract,
+          specifier: './status',
+          target: { packageName: status.packageName, source: status.source },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const emitted = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules: [consumer, contract, status],
+      options: { runtimeProfile: 'flight-cpp' },
+    }).emitModule(consumer)[0]!;
+
+    expect(emitted.contents).toContain('std::optional<flight::String> detect(bool ok)');
+    expect(emitted.contents).toContain('flight::String("ready")');
+  });
+
   it('emits discriminant tests and member access only from checker-proven evidence', () => {
     const result = lower(
       'shape.ts',

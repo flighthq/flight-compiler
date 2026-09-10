@@ -39,6 +39,16 @@ interface ReferenceModuleSet {
 interface ReferencePlanningContext {
   readonly analyzeIdentity: (type: Readonly<IrType>, module: Readonly<IrModule>) => CompilerTypeValueIdentityAnalysis;
   readonly moduleSet: ReferenceModuleSet;
+  readonly resolutionCache: ReferenceResolutionCache;
+}
+
+interface ReferenceResolutionCache {
+  readonly exportLocations: Map<string, readonly ReferenceDeclarationLocation[]>;
+  readonly specifierModules: Map<string, readonly ReferenceModuleRecord[]>;
+}
+
+export interface IrTypeAliasResolverCpp {
+  readonly resolve: (type: Readonly<IrType>, module: Readonly<IrModule>) => Readonly<IrType> | undefined;
 }
 
 export function createIrTypeReferenceRepresentationPlanCpp(
@@ -61,6 +71,7 @@ export function createIrTypeReferenceRepresentationPlannerCpp(
   const context: ReferencePlanningContext = {
     analyzeIdentity: analyzer.analyze,
     moduleSet,
+    resolutionCache: createReferenceResolutionCacheCpp(),
   };
   return Object.freeze({
     plan(type: Readonly<IrType>, module: Readonly<IrModule>) {
@@ -69,6 +80,47 @@ export function createIrTypeReferenceRepresentationPlannerCpp(
       return createIrTypeReferenceRepresentationPlanInternalCpp(type, subject, context);
     },
     schema: 'flight-compiler-cpp-reference-representation-planner/1',
+  });
+}
+
+export function createIrTypeAliasResolverCpp(
+  modules: readonly Readonly<IrModule>[],
+  moduleResolution: Readonly<CompilerModuleResolutionPlan> = compilerEmptyModuleResolutionPlanCpp,
+): IrTypeAliasResolverCpp {
+  const moduleSet = createReferenceModuleSetCpp(structuredClone(modules), structuredClone(moduleResolution));
+  const cache = new Map<string, Readonly<IrType> | null>();
+  const resolutionCache = createReferenceResolutionCacheCpp();
+  return Object.freeze({
+    resolve(type: Readonly<IrType>, module: Readonly<IrModule>): Readonly<IrType> | undefined {
+      if (type.kind !== 'named' || type.reference.kind !== 'binding' || type.typeArguments.length > 0) {
+        return undefined;
+      }
+      const subject = getReferenceModuleRecordCpp(module, moduleSet);
+      if (!subject) throw new TypeError('C++ type-alias subject must belong to the explicit module set');
+      const reference = type.reference;
+      const key = `${subject.identity}\0${reference.binding.id}\0${reference.path.join('\0')}`;
+      const cached = cache.get(key);
+      if (cached !== undefined) return cached ?? undefined;
+      let locations: readonly ReferenceDeclarationLocation[];
+      if (reference.binding.kind === 'import') {
+        const resolution = getReferenceDeclarationResolutionCpp(reference, subject, moduleSet, resolutionCache);
+        locations = resolution.kind === 'location' ? [resolution.location] : [];
+      } else if (reference.path.length === 0) {
+        locations = moduleSet.modules.flatMap((candidate) => {
+          const location = candidate.declarations.get(reference.binding.id);
+          return location ? [location] : [];
+        });
+      } else {
+        locations = [];
+      }
+      const aliases = deduplicateReferenceDeclarationLocationsCpp(locations).filter(
+        (location) => location.declaration.kind === 'typeAlias',
+      );
+      const result =
+        aliases.length === 1 && aliases[0]!.declaration.kind === 'typeAlias' ? aliases[0]!.declaration.type : null;
+      cache.set(key, result);
+      return result ?? undefined;
+    },
   });
 }
 
@@ -149,7 +201,12 @@ function createNamedReferenceRepresentationPlanCpp(
     return createCompilerCppReferenceRepresentationRefusalCpp(identity, 'unsupportedReferenceForm');
   }
 
-  const resolution = getReferenceDeclarationResolutionCpp(type.reference, module, context.moduleSet);
+  const resolution = getReferenceDeclarationResolutionCpp(
+    type.reference,
+    module,
+    context.moduleSet,
+    context.resolutionCache,
+  );
   if (resolution.kind !== 'location') {
     if (type.reference.binding.kind === 'import') {
       return createCompilerCppReferenceRepresentationSuccessCpp(
@@ -266,6 +323,7 @@ function getReferenceDeclarationResolutionCpp(
   reference: Readonly<Extract<Extract<IrType, { kind: 'named' }>['reference'], { kind: 'binding' }>>,
   module: Readonly<ReferenceModuleRecord>,
   moduleSet: Readonly<ReferenceModuleSet>,
+  cache?: ReferenceResolutionCache | undefined,
 ): Readonly<{ kind: 'indeterminate' }> | Readonly<{ kind: 'location'; location: ReferenceDeclarationLocation }> {
   const binding = reference.binding;
   if (binding.kind !== 'import') {
@@ -286,8 +344,8 @@ function getReferenceDeclarationResolutionCpp(
   });
   const locations = deduplicateReferenceDeclarationLocationsCpp(
     imports.flatMap(({ exportName, specifier }) =>
-      getReferenceSpecifierModulesCpp(module, specifier, moduleSet).flatMap((target) =>
-        getReferenceExportLocationsCpp(target, exportName, moduleSet, new Set()),
+      getReferenceSpecifierModulesCpp(module, specifier, moduleSet, cache).flatMap((target) =>
+        getReferenceExportLocationsCpp(target, exportName, moduleSet, new Set(), cache),
       ),
     ),
   );
@@ -300,9 +358,13 @@ function getReferenceExportLocationsCpp(
   exportName: string,
   moduleSet: Readonly<ReferenceModuleSet>,
   seen: ReadonlySet<string>,
+  cache?: ReferenceResolutionCache | undefined,
 ): readonly ReferenceDeclarationLocation[] {
   const identity = `${module.identity}\0${exportName}`;
+  const cached = cache?.exportLocations.get(identity);
+  if (cached) return cached;
   if (seen.has(identity)) return [];
+  cache?.exportLocations.set(identity, []);
   const nextSeen = new Set(seen);
   nextSeen.add(identity);
   const locations = [...module.declarations.values()].filter(
@@ -314,24 +376,30 @@ function getReferenceExportLocationsCpp(
       if (location) locations.push(location);
     }
     if (exported.kind === 'reexport' && exported.exported === exportName) {
-      for (const target of getReferenceSpecifierModulesCpp(module, exported.specifier, moduleSet)) {
-        locations.push(...getReferenceExportLocationsCpp(target, exported.imported, moduleSet, nextSeen));
+      for (const target of getReferenceSpecifierModulesCpp(module, exported.specifier, moduleSet, cache)) {
+        locations.push(...getReferenceExportLocationsCpp(target, exported.imported, moduleSet, nextSeen, cache));
       }
     }
     if (exported.kind === 'all') {
-      for (const target of getReferenceSpecifierModulesCpp(module, exported.specifier, moduleSet)) {
-        locations.push(...getReferenceExportLocationsCpp(target, exportName, moduleSet, nextSeen));
+      for (const target of getReferenceSpecifierModulesCpp(module, exported.specifier, moduleSet, cache)) {
+        locations.push(...getReferenceExportLocationsCpp(target, exportName, moduleSet, nextSeen, cache));
       }
     }
   }
-  return deduplicateReferenceDeclarationLocationsCpp(locations);
+  const result = deduplicateReferenceDeclarationLocationsCpp(locations);
+  cache?.exportLocations.set(identity, result);
+  return result;
 }
 
 function getReferenceSpecifierModulesCpp(
   from: Readonly<ReferenceModuleRecord>,
   specifier: string,
   moduleSet: Readonly<ReferenceModuleSet>,
+  cache?: ReferenceResolutionCache | undefined,
 ): readonly ReferenceModuleRecord[] {
+  const key = `${from.identity}\0${specifier}`;
+  const cached = cache?.specifierModules.get(key);
+  if (cached) return cached;
   const candidates = getReferenceSpecifierSourceCandidatesCpp(from.source, specifier);
   const matching = moduleSet.resolution.edges.filter((edge) => edge.specifier === specifier);
   const exact = matching.filter(
@@ -340,11 +408,17 @@ function getReferenceSpecifierModulesCpp(
   const resolutionTargets = (exact.length > 0 ? exact : matching.filter((edge) => !edge.importer)).map(
     (edge) => `${edge.target.packageName}\0${normalizePathPortable(edge.target.source)}`,
   );
-  return moduleSet.modules.filter(
+  const result = moduleSet.modules.filter(
     (candidate) =>
       (candidate.module.packageName === from.module.packageName && candidates.has(candidate.source)) ||
       resolutionTargets.includes(`${candidate.module.packageName}\0${candidate.source}`),
   );
+  cache?.specifierModules.set(key, result);
+  return result;
+}
+
+function createReferenceResolutionCacheCpp(): ReferenceResolutionCache {
+  return { exportLocations: new Map(), specifierModules: new Map() };
 }
 
 function getReferenceSpecifierSourceCandidatesCpp(source: string, specifier: string): ReadonlySet<string> {

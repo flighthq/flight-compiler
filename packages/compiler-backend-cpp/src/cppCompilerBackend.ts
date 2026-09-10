@@ -76,7 +76,11 @@ import {
   getCppCompilerPackageNamespace,
   isCppCompilerKeyword,
 } from './cppCompilerIdentity.js';
-import { createIrTypeReferenceRepresentationPlannerCpp } from './cppReferenceRepresentationPlan.js';
+import {
+  createIrTypeAliasResolverCpp,
+  createIrTypeReferenceRepresentationPlannerCpp,
+  type IrTypeAliasResolverCpp,
+} from './cppReferenceRepresentationPlan.js';
 import {
   createCompilerRuntimeExternalSymbolBindingPlanCpp,
   getCompilerExternalBindingConstructionCpp,
@@ -115,6 +119,7 @@ interface EmitContext {
   sharedCaptureTargetNames: ReadonlyMap<string, string>;
   sourceModules: readonly Readonly<IrModule>[];
   targetNames: ReadonlyMap<string, string>;
+  typeAliasResolver: IrTypeAliasResolverCpp;
   uninitializedCaptureStorageBindingIds: ReadonlySet<string>;
   generatedNames: Set<string>;
   enclosingReturnType?: Readonly<IrType> | undefined;
@@ -126,10 +131,20 @@ export function createCppCompilerBackend(): CompilerBackend<CppCompilerBackendOp
       const referenceRepresentationPlanner = moduleResolution
         ? createIrTypeReferenceRepresentationPlannerCpp(modules, moduleResolution)
         : createIrTypeReferenceRepresentationPlannerCpp(modules);
+      const typeAliasResolver = moduleResolution
+        ? createIrTypeAliasResolverCpp(modules, moduleResolution)
+        : createIrTypeAliasResolverCpp(modules);
       return Object.freeze({
         emitModule(module: Readonly<IrModule>) {
           return [
-            emitIrModuleCppWithContext(module, options, modules, moduleResolution, referenceRepresentationPlanner),
+            emitIrModuleCppWithContext(
+              module,
+              options,
+              modules,
+              moduleResolution,
+              referenceRepresentationPlanner,
+              typeAliasResolver,
+            ),
           ];
         },
       });
@@ -154,6 +169,7 @@ function emitIrModuleCppWithContext(
   sourceModules: readonly Readonly<IrModule>[],
   moduleResolution?: Readonly<CompilerModuleResolutionPlan> | undefined,
   referenceRepresentationPlanner?: CompilerCppReferenceRepresentationPlanner | undefined,
+  typeAliasResolver?: IrTypeAliasResolverCpp | undefined,
 ): EmittedFile {
   const module = lowerIrModuleWithCompilerPasses(sourceModule, [
     createCompilerLoweringPassExtraArgumentErasure(),
@@ -204,6 +220,11 @@ function emitIrModuleCppWithContext(
     sharedCaptureTargetNames,
     sourceModules,
     targetNames,
+    typeAliasResolver:
+      typeAliasResolver ??
+      (moduleResolution
+        ? createIrTypeAliasResolverCpp(sourceModules, moduleResolution)
+        : createIrTypeAliasResolverCpp(sourceModules)),
     uninitializedCaptureStorageBindingIds,
     generatedNames: new Set(targetNames.values()),
   };
@@ -1831,12 +1852,7 @@ function getCppUnionRepresentationPlan(
 ): Exclude<ReturnType<typeof createCppUnionRepresentationPlan>, { kind: 'refused' }> {
   const plan = createCppUnionRepresentationPlan(type, {
     resolveAliasTarget(typeReference) {
-      if (typeReference.reference.kind !== 'binding' || typeReference.typeArguments.length > 0) return undefined;
-      const bindingId = typeReference.reference.binding.id;
-      const alias = context.module.declarations.find(
-        (declaration) => declaration.kind === 'typeAlias' && declaration.binding.id === bindingId,
-      );
-      return alias?.kind === 'typeAlias' ? alias.type : undefined;
+      return resolveCppTypeAliasTarget(typeReference, context);
     },
     resolveTargetType(runtimeType) {
       return emitType(runtimeType, context);
@@ -2014,13 +2030,18 @@ function getIrTypeRuntimeDomainCpp(
   if (type.kind !== 'named' || type.reference.kind !== 'binding' || type.typeArguments.length > 0) return type;
   const bindingId = type.reference.binding.id;
   if (resolvingAliases.has(bindingId)) return type;
-  const alias = context.module.declarations.find(
-    (declaration) => declaration.kind === 'typeAlias' && declaration.binding.id === bindingId,
-  );
-  if (alias?.kind !== 'typeAlias') return type;
+  const alias = resolveCppTypeAliasTarget(type, context);
+  if (!alias) return type;
   const nextResolvingAliases = new Set(resolvingAliases);
   nextResolvingAliases.add(bindingId);
-  return getIrTypeRuntimeDomainCpp(alias.type, context, nextResolvingAliases);
+  return getIrTypeRuntimeDomainCpp(alias, context, nextResolvingAliases);
+}
+
+function resolveCppTypeAliasTarget(
+  type: Readonly<Extract<IrType, { kind: 'named' }>>,
+  context: EmitContext,
+): Readonly<IrType> | undefined {
+  return context.typeAliasResolver.resolve(type, context.module);
 }
 
 function getSingleIrTypeKindCpp<Kind extends IrType['kind']>(
