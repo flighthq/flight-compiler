@@ -103,6 +103,9 @@ function createIrTypeReferenceRepresentationPlanInternalCpp(
       'runtimeReference',
     );
   }
+  if (type.kind === 'function' || type.kind === 'tuple') {
+    return createCompilerCppReferenceRepresentationSuccessCpp(identity, 'value', 'none', 'inlineValue', 'inlineValue');
+  }
   if (type.kind === 'object') {
     return createCompilerCppReferenceRepresentationSuccessCpp(
       identity,

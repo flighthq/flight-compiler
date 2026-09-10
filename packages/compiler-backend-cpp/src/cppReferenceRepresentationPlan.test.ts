@@ -116,8 +116,10 @@ describe('createIrTypeReferenceRepresentationPlanCpp', () => {
       valueRepresentation: 'runtimeReference',
     });
     expect(planDeclaration(module, 'Callback')).toMatchObject({
-      kind: 'refused',
-      reason: 'unsupportedReferenceForm',
+      category: 'value',
+      kind: 'represented',
+      storageRepresentation: 'inlineValue',
+      valueRepresentation: 'inlineValue',
     });
   });
 
@@ -194,7 +196,15 @@ describe('createIrTypeReferenceRepresentationPlanCpp', () => {
       kind: 'refused',
       reason: 'compoundReference',
     });
-    for (const type of [functionType, tupleType, typeOfArray, constrainedParameter]) {
+    for (const type of [functionType, tupleType]) {
+      expect(createIrTypeReferenceRepresentationPlanCpp(type, module)).toMatchObject({
+        category: 'value',
+        kind: 'represented',
+        storageRepresentation: 'inlineValue',
+        valueRepresentation: 'inlineValue',
+      });
+    }
+    for (const type of [typeOfArray, constrainedParameter]) {
       expect(createIrTypeReferenceRepresentationPlanCpp(type, module)).toMatchObject({
         kind: 'refused',
         reason: 'unsupportedReferenceForm',
