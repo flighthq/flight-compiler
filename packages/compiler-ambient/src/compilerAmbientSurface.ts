@@ -152,6 +152,7 @@ interface Math {
   asin(value: number): number;
   ceil(value: number): number;
   cos(value: number): number;
+  exp(value: number): number;
   floor(value: number): number;
   log(value: number): number;
   max(...values: number[]): number;
