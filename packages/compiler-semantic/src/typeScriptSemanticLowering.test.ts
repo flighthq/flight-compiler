@@ -5317,15 +5317,18 @@ it('erases const assertions without inventing an ambient const type', () => {
   const result = lower(
     'const-assertions.ts',
     `
+      interface Entry { kind: string }
       export const values = [{ kind: 'ready' }] as const;
       export const key = <const>'value';
+      export const checked = [{ kind: 'checked' }] as const satisfies readonly Entry[];
     `,
   );
 
   expect(result.diagnostics).toEqual([]);
-  expect(result.module.declarations).toMatchObject([
+  expect(result.module.declarations.slice(1)).toMatchObject([
     { initializer: { kind: 'array' }, type: { kind: 'array' } },
     { initializer: { kind: 'literal', value: 'value' }, type: { kind: 'primitive', name: 'string' } },
+    { initializer: { kind: 'array' }, type: { kind: 'array' } },
   ]);
   expect(JSON.stringify(result.module)).not.toContain('"name":"const"');
 });

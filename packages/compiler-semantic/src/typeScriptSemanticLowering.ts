@@ -594,7 +594,11 @@ function lowerExpression(
   if (isTypeScriptConstAssertion(node)) {
     return lowerExpression(node.expression, context, contextualType, contextualTargetType);
   }
-  if (ts.isAsExpression(node) || ts.isTypeAssertionExpression(node) || ts.isSatisfiesExpression(node)) {
+  if (ts.isSatisfiesExpression(node)) {
+    const type = lowerType(node.type, context);
+    return lowerExpression(node.expression, context, type, type);
+  }
+  if (ts.isAsExpression(node) || ts.isTypeAssertionExpression(node)) {
     const type = lowerType(node.type, context);
     return { expression: lowerExpression(node.expression, context, type), kind: 'cast', type };
   }
@@ -3451,6 +3455,9 @@ function getTypeScriptVariableDeclarationKind(
 }
 
 function inferInitializerType(node: ts.Expression, context: LoweringContext): IrType {
+  if (ts.isParenthesizedExpression(node) || ts.isSatisfiesExpression(node)) {
+    return inferInitializerType(node.expression, context);
+  }
   if (isTypeScriptConstAssertion(node)) return inferInitializerType(node.expression, context);
   if (node.kind === ts.SyntaxKind.TrueKeyword || node.kind === ts.SyntaxKind.FalseKeyword) {
     return { kind: 'primitive', name: 'boolean' };
