@@ -149,9 +149,11 @@ interface Math {
   readonly E: number;
   readonly PI: number;
   abs(value: number): number;
+  asin(value: number): number;
   ceil(value: number): number;
   cos(value: number): number;
   floor(value: number): number;
+  log(value: number): number;
   max(...values: number[]): number;
   min(...values: number[]): number;
   pow(base: number, exponent: number): number;

@@ -1979,6 +1979,20 @@ describe('emitIrModuleHaxe statement coverage', () => {
 });
 
 describe('emitIrModuleHaxe ambient member coverage', () => {
+  it('uses numeric ambient evidence for Math logarithm and arcsine arithmetic', () => {
+    const result = lower(
+      'math-evidence.ts',
+      `
+        export function scaleLog(value: number): number { return 2 * Math.log(value); }
+        export function scaleAsin(value: number): number { return Math.asin(value) * 2; }
+      `,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('return 2 * Math.log(value);');
+    expect(output).toContain('return Math.asin(value) * 2;');
+  });
+
   it('emits Number predicates and constants as semantics-preserving Haxe expressions', () => {
     const result = lower(
       'number-statics.ts',
