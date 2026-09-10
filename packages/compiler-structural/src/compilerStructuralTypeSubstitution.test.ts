@@ -45,6 +45,12 @@ describe('createIrTypeParameterSubstitutionPlan', () => {
     expect(arguments_).toEqual(argumentsSnapshot);
   });
 
+  it('accepts exactly matching argument and parameter counts', () => {
+    const value = typeParameter('type-parameter:value', 'Value');
+    const plan = createIrTypeParameterSubstitutionPlan([{ binding: value }], [numberType]);
+    expect(plan.substitutions).toEqual([{ parameter: value, type: numberType }]);
+  });
+
   it('rejects missing, excess, and duplicate parameter applications through stable paths', () => {
     const value = typeParameter('type-parameter:value', 'Value');
     const cases = [

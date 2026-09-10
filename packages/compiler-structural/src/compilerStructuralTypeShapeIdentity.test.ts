@@ -111,6 +111,49 @@ describe('createIrObjectTypeShapeIdentity', () => {
     );
   });
 
+  it('distinguishes nested function type parameter positions across offset boundaries', () => {
+    const outerParam = typeParameter('type-parameter:outer', 'T');
+    const innerParamA = typeParameter('type-parameter:inner-a', 'U');
+    const innerParamB = typeParameter('type-parameter:inner-b', 'V');
+    const refOuter = {
+      kind: 'named',
+      reference: { binding: outerParam, kind: 'binding', path: [] },
+      typeArguments: [],
+    } as const;
+    const refB = {
+      kind: 'named',
+      reference: { binding: innerParamB, kind: 'binding', path: [] },
+      typeArguments: [],
+    } as const;
+    const returnsInnerV: IrType = {
+      kind: 'function',
+      parameters: [],
+      returns: refB,
+      typeParameters: [{ binding: innerParamA }, { binding: innerParamB }],
+    };
+    const returnsOuterT: IrType = {
+      kind: 'function',
+      parameters: [],
+      returns: refOuter,
+      typeParameters: [{ binding: innerParamA }, { binding: innerParamB }],
+    };
+    const fnReturnsV: IrType = {
+      kind: 'function',
+      parameters: [{ name: 'cb', optional: false, rest: false, type: returnsInnerV }],
+      returns: refOuter,
+      typeParameters: [{ binding: outerParam }],
+    };
+    const fnReturnsT: IrType = {
+      kind: 'function',
+      parameters: [{ name: 'cb', optional: false, rest: false, type: returnsOuterT }],
+      returns: refOuter,
+      typeParameters: [{ binding: outerParam }],
+    };
+    expect(createIrObjectTypeShapeIdentity([property('fn', fnReturnsV)])).not.toBe(
+      createIrObjectTypeShapeIdentity([property('fn', fnReturnsT)]),
+    );
+  });
+
   it('collapses duplicate compound members to their canonical member identity', () => {
     expect(
       createIrObjectTypeShapeIdentity([property('value', { kind: 'union', types: [numberType, numberType] })]),

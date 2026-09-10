@@ -127,6 +127,15 @@ describe('analyzeIrTypeStructuralAssignability', () => {
         { element: numberType, kind: 'array', readonly: false },
       ),
     ).toEqual({ codes: ['type-incompatible'], status: 'incompatible' });
+    expect(
+      codes(
+        tuple([parameter(numberType), parameter(stringType)]),
+        tuple([parameter(numberType), parameter(stringType)]),
+      ),
+    ).toEqual({
+      codes: [],
+      status: 'compatible',
+    });
     expect(codes(tuple([parameter(numberType)], true), tuple([parameter(numberType)]))).toEqual({
       codes: ['readonly-container-incompatible'],
       status: 'incompatible',
@@ -151,6 +160,16 @@ describe('analyzeIrTypeStructuralAssignability', () => {
         tuple([parameter(numberType), parameter(stringType, { rest: true })]),
       ),
     ).toEqual({ codes: [], status: 'compatible' });
+
+    const extraFixed = analyzeIrTypeStructuralAssignability(
+      tuple([parameter(numberType), parameter(stringType), parameter(booleanType)]),
+      tuple([parameter(numberType), parameter(numberType, { rest: true })]),
+    );
+    expect(extraFixed.status).toBe('incompatible');
+    expect(extraFixed.diagnostics.map((d) => ({ code: d.code, path: d.path }))).toEqual([
+      { code: 'type-incompatible', path: ['elements', 1] },
+      { code: 'type-incompatible', path: ['elements', 2] },
+    ]);
   });
 
   it('checks callable inputs contravariantly, outputs covariantly, and cardinality explicitly', () => {
