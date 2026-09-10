@@ -32,6 +32,29 @@ describe('isCompilerEmittedSourceSyntaxFailure', () => {
       }),
     ).toBe(false);
   });
+
+  it('rejects a failure whose parser name is an empty string', () => {
+    const emptyParser = Object.assign(new Error('forged'), {
+      diagnostics: [{ code: 'syntax', column: 1, line: 1, message: 'bad', path: 'Value.rs' }],
+      kind: 'emitted-source-syntax',
+      parser: '',
+    });
+
+    expect(isCompilerEmittedSourceSyntaxFailure(emptyParser)).toBe(false);
+  });
+
+  it('rejects a diagnostic with an empty code, message, or path', () => {
+    const withEmpty = (override: Record<string, unknown>) =>
+      Object.assign(new Error('forged'), {
+        diagnostics: [{ code: 'syntax', column: 1, line: 1, message: 'ok', path: 'Value.rs', ...override }],
+        kind: 'emitted-source-syntax',
+        parser: 'fixture-parser',
+      });
+
+    expect(isCompilerEmittedSourceSyntaxFailure(withEmpty({ code: '' }))).toBe(false);
+    expect(isCompilerEmittedSourceSyntaxFailure(withEmpty({ message: '' }))).toBe(false);
+    expect(isCompilerEmittedSourceSyntaxFailure(withEmpty({ path: '' }))).toBe(false);
+  });
 });
 
 describe('validateCompilerEmittedSourceSyntax', () => {
@@ -109,6 +132,26 @@ describe('validateCompilerEmittedSourceSyntax', () => {
     expect(failure.diagnostics.at(-1)?.message).toBe('late');
   });
 
+  it('sorts by path before line when path and line orders disagree', () => {
+    const parser = createParser((file) =>
+      file.path === 'Alpha.rs'
+        ? [{ code: 'err', column: 1, line: 5, message: 'late line' }]
+        : [{ code: 'err', column: 1, line: 1, message: 'early line' }],
+    );
+    const failure = captureFailure(
+      [
+        { contents: 'alpha', path: 'Alpha.rs' },
+        { contents: 'zulu', path: 'Zulu.rs' },
+      ],
+      parser,
+    );
+
+    expect(failure.diagnostics[0]?.path).toBe('Alpha.rs');
+    expect(failure.diagnostics[0]?.line).toBe(5);
+    expect(failure.diagnostics[1]?.path).toBe('Zulu.rs');
+    expect(failure.diagnostics[1]?.line).toBe(1);
+  });
+
   it('refuses malformed parser identities, support decisions, results, and diagnostics as invariants', () => {
     const file = [{ contents: 'value', path: 'Value.rs' }];
     const invalidParsers = [
@@ -124,6 +167,21 @@ describe('validateCompilerEmittedSourceSyntax', () => {
       expect(() => validateCompilerEmittedSourceSyntax(file, parser)).toThrow(
         expect.objectContaining({ code: 'invalid-emitted-source-parser', kind: 'compiler-invariant' }),
       );
+    }
+
+    const nonStringName = invalidParsers.find((p) => typeof p.name !== 'string')!;
+    try {
+      validateCompilerEmittedSourceSyntax(file, nonStringName);
+      expect.unreachable('Expected non-string parser name to fail');
+    } catch (error) {
+      expect(error).toMatchObject({ subject: '<non-string>' });
+    }
+    const emptyName = invalidParsers.find((p) => p.name === '')!;
+    try {
+      validateCompilerEmittedSourceSyntax(file, emptyName);
+      expect.unreachable('Expected empty parser name to fail');
+    } catch (error) {
+      expect(error).toMatchObject({ subject: '' });
     }
 
     for (const diagnostic of [

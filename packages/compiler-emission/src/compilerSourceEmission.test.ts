@@ -153,6 +153,12 @@ describe('normalizeEmittedFile', () => {
     expect(() => normalizeEmittedFile({ contents: '', dependencies: ['../private.hpp'], path: 'value.hpp' })).toThrow(
       expect.objectContaining({ code: 'unsafe-emitted-path' }),
     );
+    expect(() => normalizeEmittedFile({ contents: 'value', dependencies: [''], path: 'value.hpp' })).toThrow(
+      expect.objectContaining({ code: 'unsafe-emitted-path' }),
+    );
+    expect(() =>
+      normalizeEmittedFile({ contents: 'value', dependencies: ['path/<bad>.hpp'], path: 'value.hpp' }),
+    ).toThrow(expect.objectContaining({ code: 'unsafe-emitted-path' }));
   });
 });
 
