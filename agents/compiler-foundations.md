@@ -218,6 +218,18 @@ A separate value-bearing completion-path algebra now retains the exact control p
 
 Async task completion is defined over that same floor without choosing Haxe or Rust runtime syntax. A task exists before its body starts, the body runs synchronously until suspension, normal fallthrough resolves implicit `undefined`, `return` resolves its value, and `throw` rejects with its value; both resolution routes normalize plain values, tasks, and thenables, while escaped break or continue routes fail through tagged data. Every neutral `await` expression carries one exact immutable contract: evaluate its operand once, normalize a value, task, or thenable, suspend even for settled input, enqueue continuation after settlement, resume fulfillment as a normal value, and resume rejection as a throw. Semantic lowering constructs that evidence, structural IR validation requires it, and both backends continue to refuse emission until a target lowering implements the whole boundary. All four measured implementation files have zero unreached statement or branch arms under isolated coverage.
 
+### `compiler-ir-validation`
+
+Status: narrow structural integrity boundary above completion and provenance.
+
+The package verifies target-neutral IR values without importing semantic lowering, target emission, or TypeScript program construction. Module and binding identity, legal introduction roles, exact source fingerprints, shared statement-value carrier validity, ancestor-scope reachability across module/declaration/function/block regions, compound-type arity, parameter cardinality, parameter-property constructor identity, and every discriminated IR family are checked without target policy or mutation. Mutation testing kills 450/518 mutants (86.9% kill rate); survivors are type-guard direction swaps and boolean metadata flags that cannot affect behavior for well-typed inputs. Four real mutants were killed through targeted boundary tests covering non-integer tuple rest and suffix index boundaries and break targeting non-loop labels.
+
+### `compiler-lowering`
+
+Status: backend-elected neutral transform library above completion, ir-validation, and structural.
+
+The package provides verified IR-to-IR passes that backends elect individually. Pass ordering, shared structural validation, generic substitution and statement-value semantics, pass-specific postconditions, explicit idempotence verification, module identity, immutability, stable pass-named failures, initializer scope, omitted conditions, discarded numeric updates, continue-correct nested-loop behavior, and exact static/base/derived field plus parameter-property initialization timing are direct-tested. Mutation testing kills 773/1012 mutants (76.4% kill rate); the lower rate reflects that many surviving operators control metadata flags consumed only by downstream backends, making them equivalent at the unit-test level.
+
 ### `compiler-task`
 
 Status: narrow composition above traversal and completion vocabulary.
