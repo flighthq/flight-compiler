@@ -3499,7 +3499,7 @@ function isIrTypeCopyRust(type: Readonly<IrType>): boolean {
   if (type.kind === 'primitive') return type.name === 'number' || type.name === 'boolean';
   if (type.kind === 'union') {
     const nonNull = type.types.filter((member) => member.kind !== 'null' && member.kind !== 'undefined');
-    return nonNull.length === 1 && isIrTypeCopyRust(nonNull[0]);
+    return nonNull.length === 1 && nonNull[0] !== undefined && isIrTypeCopyRust(nonNull[0]);
   }
   return false;
 }
