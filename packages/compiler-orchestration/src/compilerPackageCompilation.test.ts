@@ -492,6 +492,222 @@ describe('compileTypeScriptPackageGraph', () => {
     ]);
   });
 
+  it('traces a named barrel import to its source module deterministically', () => {
+    const good = source('@local/source', 'source', 'good.ts', 'export const good = 1;');
+    const barrel = source('@local/source', 'source', 'barrel.ts', "export { good } from './good.js';");
+    const consumer = source(
+      '@local/source',
+      'source',
+      'consumer.ts',
+      "import { good } from './barrel.js'; export const value = good;",
+    );
+    const first = compileFixturePackageGraph([barrel, consumer, good], consumer);
+    const second = compileFixturePackageGraph([good, consumer, barrel], consumer);
+
+    expect(first.report.initialization).toEqual(second.report.initialization);
+    expect(getFixtureDependencyTargets(first, 'Consumer')).toEqual(['Good']);
+    expect(first.report.initialization.groups.map((group) => group.modules.map((module) => module.name))).toEqual([
+      ['Good'],
+      ['Consumer'],
+    ]);
+  });
+
+  it('passes the traced source as the exact backend module-resolution target', () => {
+    const good = source('@local/source', 'source', 'good.ts', 'export const good = 1;');
+    const barrel = source('@local/source', 'source', 'barrel.ts', "export { good } from './good.js';");
+    const consumer = source(
+      '@local/source',
+      'source',
+      'consumer.ts',
+      "import { good } from './barrel.js'; export const value = good;",
+    );
+    const consumerIdentity = identity(consumer, 'Consumer');
+    let exactTargets: string[] = [];
+    compileTypeScriptPackageGraph({
+      backend: {
+        createEmissionSession({ moduleResolution }) {
+          exactTargets =
+            moduleResolution?.edges
+              .filter(
+                (edge) =>
+                  edge.specifier === './barrel.js' &&
+                  edge.importer?.packageName === consumerIdentity.packageName &&
+                  edge.importer.source === consumerIdentity.source,
+              )
+              .map((edge) => edge.target.source) ?? [];
+          return { emitModule: (module) => [{ contents: module.name, path: `${module.name}.txt` }] };
+        },
+        emitModule: () => [],
+        name: 'fixture',
+      },
+      backendOptions: {},
+      graph: graph([consumerIdentity], [], [{ dependencies: [], name: '@local/source', root: consumer.packageRoot }]),
+      moduleResolution: {
+        edges: [
+          {
+            importer: consumerIdentity,
+            specifier: './barrel.js',
+            target: { packageName: barrel.packageName, source: identity(barrel, 'Barrel').source },
+          },
+        ],
+        schema: 'flight-compiler-module-resolution/1',
+      },
+      sources: [consumer, barrel, good],
+    });
+
+    expect(exactTargets).toEqual([identity(good, 'Good').source]);
+  });
+
+  it('orders independently traced named-import dependencies by their source requests', () => {
+    const alpha = source('@local/source', 'source', 'alpha.ts', 'export const alpha = 1;');
+    const zeta = source('@local/source', 'source', 'zeta.ts', 'export const zeta = 2;');
+    const alphaBarrel = source('@local/source', 'source', 'alpha-barrel.ts', "export { alpha } from './alpha.js';");
+    const zetaBarrel = source('@local/source', 'source', 'zeta-barrel.ts', "export { zeta } from './zeta.js';");
+    const consumer = source(
+      '@local/source',
+      'source',
+      'consumer.ts',
+      "import { zeta } from './zeta-barrel.js'; import { alpha } from './alpha-barrel.js'; export const value = alpha + zeta;",
+    );
+    const result = compileFixturePackageGraph([zetaBarrel, consumer, alpha, alphaBarrel, zeta], consumer);
+
+    expect(getFixtureDependencyTargets(result, 'Consumer')).toEqual(['Alpha', 'Zeta']);
+  });
+
+  it('keeps namespace imports dependent on the barrel module', () => {
+    const good = source('@local/source', 'source', 'good.ts', 'export const good = 1;');
+    const barrel = source('@local/source', 'source', 'barrel.ts', "export { good } from './good.js';");
+    const consumer = source(
+      '@local/source',
+      'source',
+      'consumer.ts',
+      "import * as barrel from './barrel.js'; export const value = barrel.good;",
+    );
+    const result = compileFixturePackageGraph([consumer, good, barrel], consumer);
+
+    expect(getFixtureDependencyTargets(result, 'Consumer')).toEqual(['Barrel']);
+    expect(result.report.initialization.groups.map((group) => group.modules.map((module) => module.name))).toEqual([
+      ['Good'],
+      ['Barrel'],
+      ['Consumer'],
+    ]);
+  });
+
+  it('keeps named namespace-object imports dependent on the barrel module', () => {
+    const good = source('@local/source', 'source', 'good.ts', 'export const good = 1;');
+    const barrel = source('@local/source', 'source', 'barrel.ts', "export * as values from './good.js';");
+    const consumer = source(
+      '@local/source',
+      'source',
+      'consumer.ts',
+      "import { values } from './barrel.js'; export const value = values.good;",
+    );
+    const result = compileFixturePackageGraph([consumer, good, barrel], consumer);
+
+    expect(getFixtureDependencyTargets(result, 'Consumer')).toEqual(['Barrel']);
+  });
+
+  it('keeps side-effect and named imports from the same request dependent on the barrel module', () => {
+    const good = source('@local/source', 'source', 'good.ts', 'export const good = 1;');
+    const barrel = source('@local/source', 'source', 'barrel.ts', "export { good } from './good.js';");
+    const consumer = source(
+      '@local/source',
+      'source',
+      'consumer.ts',
+      "import './barrel.js'; import { good } from './barrel.js'; export const value = good;",
+    );
+    const result = compileFixturePackageGraph([consumer, good, barrel], consumer);
+
+    expect(getFixtureDependencyTargets(result, 'Consumer')).toEqual(['Barrel']);
+  });
+
+  it('traces a named import through export-all and multiple barrel levels', () => {
+    const good = source('@local/source', 'source', 'good.ts', 'export const good = 1;');
+    const inner = source('@local/source', 'source', 'inner.ts', "export * from './good.js';");
+    const outer = source('@local/source', 'source', 'outer.ts', "export { good } from './inner.js';");
+    const consumer = source(
+      '@local/source',
+      'source',
+      'consumer.ts',
+      "import { good } from './outer.js'; export const value = good;",
+    );
+    const result = compileFixturePackageGraph([outer, inner, consumer, good], consumer);
+
+    expect(getFixtureDependencyTargets(result, 'Consumer')).toEqual(['Good']);
+    expect(result.report.initialization.groups.map((group) => group.modules.map((module) => module.name))).toEqual([
+      ['Good'],
+      ['Consumer'],
+    ]);
+  });
+
+  it('falls back to the barrel when any named import cannot be traced', () => {
+    const good = source('@local/source', 'source', 'good.ts', 'export const good = 1;');
+    const barrel = source('@local/source', 'source', 'barrel.ts', "export { good } from './good.js';");
+    const consumer = source(
+      '@local/source',
+      'source',
+      'consumer.ts',
+      "import { good, missing } from './barrel.js'; export const value = good; export type Missing = typeof missing;",
+    );
+    const result = compileFixturePackageGraph([consumer, barrel, good], consumer);
+
+    expect(getFixtureDependencyTargets(result, 'Consumer')).toEqual(['Barrel']);
+  });
+
+  it('keeps a barrel dependency when named imports resolve to multiple source modules', () => {
+    const alpha = source('@local/source', 'source', 'alpha.ts', 'export const alpha = 1;');
+    const beta = source('@local/source', 'source', 'beta.ts', 'export const beta = 2;');
+    const barrel = source(
+      '@local/source',
+      'source',
+      'barrel.ts',
+      "export { alpha } from './alpha.js'; export { beta } from './beta.js';",
+    );
+    const consumer = source(
+      '@local/source',
+      'source',
+      'consumer.ts',
+      "import { alpha, beta } from './barrel.js'; export const value = alpha + beta;",
+    );
+    const result = compileFixturePackageGraph([consumer, beta, barrel, alpha], consumer);
+
+    expect(getFixtureDependencyTargets(result, 'Consumer')).toEqual(['Barrel']);
+  });
+
+  it('does not cascade an unrelated barrel source refusal to a named-import consumer', () => {
+    const good = source('@local/source', 'source', 'good.ts', 'export const good = 1;');
+    const bad = source('@local/source', 'source', 'bad.ts', 'export const bad = 1;');
+    const barrel = source(
+      '@local/source',
+      'source',
+      'barrel.ts',
+      "export * from './bad.js'; export * from './good.js';",
+    );
+    const consumer = source(
+      '@local/source',
+      'source',
+      'consumer.ts',
+      "import { good } from './barrel.js'; export const value = good;",
+    );
+    const result = compileFixturePackageGraph([barrel, bad, consumer, good], consumer, {
+      emitModule(module) {
+        if (module.name === 'Bad') throw createBackendEmissionFailure('fixture', module, 'unsupported bad value');
+        return [{ contents: module.name, path: `${module.name}.txt` }];
+      },
+      name: 'fixture',
+    });
+
+    expect(result.compilation.files.map((file) => file.path)).toEqual(['Consumer.txt', 'Good.txt']);
+    expect(result.report.modules.find((module) => module.module.name === 'Barrel')).toMatchObject({
+      refusals: [expect.objectContaining({ code: 'dependency-refused' })],
+      status: 'refused',
+    });
+    expect(result.report.modules.find((module) => module.module.name === 'Consumer')).toMatchObject({
+      refusals: [],
+      status: 'emitted',
+    });
+  });
+
   it('skips unresolvable relative re-export specifiers in dependency edges', () => {
     const value = source(
       '@local/source',
@@ -828,4 +1044,35 @@ function source(
     sourceFile: parseTypeScriptSource(`${packageRoot}/src/${fileName}`, contents),
     upstreamDirectory: '/flight',
   };
+}
+
+function compileFixturePackageGraph(
+  sources: readonly TypeScriptPackageGraphSource[],
+  entry: Readonly<TypeScriptPackageGraphSource>,
+  backend: CompilerBackend = {
+    emitModule: (module) => [{ contents: module.name, path: `${module.name}.txt` }],
+    name: 'fixture',
+  },
+) {
+  return compileTypeScriptPackageGraph({
+    backend,
+    backendOptions: {},
+    graph: graph(
+      [identity(entry, 'Consumer')],
+      [],
+      [{ dependencies: [], name: '@local/source', root: entry.packageRoot }],
+    ),
+    sources,
+  });
+}
+
+function getFixtureDependencyTargets(
+  result: ReturnType<typeof compileFixturePackageGraph>,
+  moduleName: string,
+): string[] {
+  return (
+    result.report.initialization.modules
+      .find((module) => module.module.name === moduleName)
+      ?.dependencies.map((dependency) => dependency.target.name) ?? []
+  );
 }
