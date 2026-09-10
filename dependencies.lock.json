@@ -7,6 +7,12 @@
       "repository": "https://github.com/flighthq/flight-cpp",
       "branch": "main",
       "commit": "70656d466841ae7ce9b014a36eb81a442a79ddb5"
+    },
+    {
+      "name": "flight-hx",
+      "repository": "https://github.com/flighthq/flight-hx",
+      "branch": "main",
+      "commit": "b666d740adce417243bc2114c583dbd7212256b6"
     }
   ]
 }
