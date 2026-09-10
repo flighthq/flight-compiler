@@ -940,6 +940,33 @@ describe('lowerTypeScriptSource', () => {
     });
   });
 
+  it('lowers concrete Pick projections to their selected structural fields', () => {
+    const result = lower(
+      'object-projection.ts',
+      `
+        interface Options {
+          first?: number;
+          second: string;
+          third: boolean;
+        }
+        export type Selected = Pick<Options, 'first' | 'third'>;
+      `,
+    );
+    const selected = result.module.declarations[1];
+
+    expect(result.diagnostics).toEqual([]);
+    expect(selected).toMatchObject({
+      kind: 'typeAlias',
+      type: {
+        kind: 'object',
+        properties: [
+          { name: 'first', optional: true, type: { kind: 'primitive', name: 'number' } },
+          { name: 'third', optional: false, type: { kind: 'primitive', name: 'boolean' } },
+        ],
+      },
+    });
+  });
+
   it('preserves named and operator type identity while isolating unsupported type families', () => {
     const supported = lower(
       'referenced-types.ts',
@@ -5286,6 +5313,23 @@ it('lowers as type assertion expression', () => {
   expect(result.diagnostics).toEqual([]);
 });
 
+it('erases const assertions without inventing an ambient const type', () => {
+  const result = lower(
+    'const-assertions.ts',
+    `
+      export const values = [{ kind: 'ready' }] as const;
+      export const key = <const>'value';
+    `,
+  );
+
+  expect(result.diagnostics).toEqual([]);
+  expect(result.module.declarations).toMatchObject([
+    { initializer: { kind: 'array' }, type: { kind: 'array' } },
+    { initializer: { kind: 'literal', value: 'value' }, type: { kind: 'primitive', name: 'string' } },
+  ]);
+  expect(JSON.stringify(result.module)).not.toContain('"name":"const"');
+});
+
 it('lowers comma operator as binary expression', () => {
   const result = lower(
     'comma.ts',
@@ -9509,6 +9553,25 @@ it('resolves receiver from resolved named ambient member', () => {
     `,
   );
   expect(result.diagnostics).toEqual([]);
+});
+
+it('resolves ReadonlyMap operations through the map ambient-member contract', () => {
+  const result = lower(
+    'readonly-map-receiver.ts',
+    `
+      export function read(values: ReadonlyMap<string, number>): number | undefined {
+        return values.get('value');
+      }
+    `,
+  );
+  const read = result.module.declarations[0];
+  if (read?.kind !== 'function' || read.body[0]?.kind !== 'return') throw new Error('Expected map read');
+
+  expect(result.diagnostics).toEqual([]);
+  expect(read.body[0].expression).toMatchObject({
+    callee: { kind: 'property', member: { name: 'get', receiver: 'map' } },
+    kind: 'call',
+  });
 });
 
 it('resolves type evidence from binding type for identifier expression', () => {

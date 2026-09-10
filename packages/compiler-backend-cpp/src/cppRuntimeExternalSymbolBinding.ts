@@ -65,9 +65,10 @@ export function getCompilerExternalBindingHeadersCpp(
   sourceName: string,
   space: CompilerRuntimeExternalSymbolSpace,
   externalBindings?: Readonly<CppCompilerExternalBindingManifest> | undefined,
+  runtimeProfile: CppCompilerRuntimeProfile = 'standard-library',
 ): readonly string[] {
   return (
-    getCppCompilerExternalBindings(externalBindings).find(
+    getCppRuntimeExternalSymbolBindings(runtimeProfile, externalBindings).find(
       (binding) => binding.sourceName === sourceName.normalize('NFC') && binding.space === space,
     )?.headers ?? []
   );
@@ -393,6 +394,14 @@ const cppFlightRuntimeExternalSymbolBindings = [
   },
   { kind: 'native', sourceName: 'RangeError', space: 'type', targetName: 'std::range_error' },
   { kind: 'native', sourceName: 'RangeError', space: 'value', targetName: 'std::range_error' },
+  {
+    capability: 'map',
+    headers: ['flight/map.hpp'],
+    kind: 'runtime',
+    sourceName: 'ReadonlyMap',
+    space: 'type',
+    targetName: 'flight::Map',
+  },
   { capability: 'set', kind: 'runtime', sourceName: 'Set', space: 'type', targetName: 'flight::Set' },
   { capability: 'set', kind: 'runtime', sourceName: 'Set', space: 'value', targetName: 'flight::Set' },
   { capability: 'string', kind: 'runtime', sourceName: 'String', space: 'type', targetName: 'flight::String' },
@@ -459,14 +468,6 @@ const cppFlightRuntimeExternalSymbolBindings = [
     sourceName: 'Uint8ClampedArray',
     space: 'value',
     targetName: 'flight::Uint8ClampedArray',
-  },
-  { capability: 'weak-map', kind: 'runtime', sourceName: 'WeakMap', space: 'type', targetName: 'flight::WeakMap' },
-  {
-    capability: 'weak-map',
-    kind: 'runtime',
-    sourceName: 'WeakMap',
-    space: 'value',
-    targetName: 'flight::WeakMap',
   },
 ] as const satisfies readonly CppRuntimeExternalSymbolBinding[];
 
@@ -594,6 +595,13 @@ const cppRuntimeExternalSymbolBindings = [
   },
   { kind: 'native', sourceName: 'RangeError', space: 'type', targetName: 'std::range_error' },
   { kind: 'native', sourceName: 'RangeError', space: 'value', targetName: 'std::range_error' },
+  {
+    headers: ['unordered_map'],
+    kind: 'native',
+    sourceName: 'ReadonlyMap',
+    space: 'type',
+    targetName: 'std::unordered_map',
+  },
   { kind: 'native', sourceName: 'Set', space: 'type', targetName: 'std::unordered_set' },
   { kind: 'native', sourceName: 'Set', space: 'value', targetName: 'std::unordered_set' },
   { kind: 'native', sourceName: 'String', space: 'type', targetName: 'std::string' },
@@ -606,6 +614,4 @@ const cppRuntimeExternalSymbolBindings = [
   { kind: 'native', sourceName: 'Uint8Array', space: 'value', targetName: 'std::vector<uint8_t>' },
   { kind: 'native', sourceName: 'Uint8ClampedArray', space: 'type', targetName: 'std::vector<uint8_t>' },
   { kind: 'native', sourceName: 'Uint8ClampedArray', space: 'value', targetName: 'std::vector<uint8_t>' },
-  { kind: 'native', sourceName: 'WeakMap', space: 'type', targetName: 'std::unordered_map' },
-  { kind: 'native', sourceName: 'WeakMap', space: 'value', targetName: 'std::unordered_map' },
 ] as const satisfies readonly CppRuntimeExternalSymbolBinding[];

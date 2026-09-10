@@ -3467,7 +3467,12 @@ function assertRuntimeExternalSymbolBindingsCpp(
 }
 
 function addCppExternalBindingHeaders(sourceName: string, space: 'type' | 'value', context: EmitContext): void {
-  for (const header of getCompilerExternalBindingHeadersCpp(sourceName, space, context.options.externalBindings)) {
+  for (const header of getCompilerExternalBindingHeadersCpp(
+    sourceName,
+    space,
+    context.options.externalBindings,
+    getCppRuntimeProfile(context.options),
+  )) {
     context.includes.add(header);
   }
 }

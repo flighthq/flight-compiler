@@ -563,35 +563,38 @@ export function preferred(): number { return NativeSurface.preferredFormat; }`,
     );
   });
 
-  it('emits WeakMap only for reference keys and proven reference-free values', () => {
-    const supported = lower(
+  it('refuses WeakMap until the selected runtime provides weak-key semantics', () => {
+    const result = lower(
       'weak-map.ts',
       `interface Key { id: number }
        export function lookup(values: WeakMap<Key, number>, key: Key): number | undefined {
          return values.get(key);
-       }
-       export function create(key: Key): WeakMap<Key, number> {
-         const values = new WeakMap<Key, number>();
-         values.set(key, 1);
-         return values;
        }`,
     );
-    const invalidKey = lower('weak-map-key.ts', 'export type Invalid = WeakMap<string, number>;');
-    const invalidValue = lower(
-      'weak-map-value.ts',
-      'interface Key { id: number } interface Value { id: number } export type Invalid = WeakMap<Key, Value>;',
-    );
-    const emitted = emitIrModuleCpp(supported.module, { runtimeProfile: 'flight-cpp' });
 
-    expect(emitted.contents).toContain('flight::WeakMap<flight::Ref<Key>, double> values');
-    expect(emitted.contents).toContain('flight::Ref<Key> key');
-    expect(emitted.contents).toContain('return values.get(key)');
-    expect(() => emitIrModuleCpp(invalidKey.module, { runtimeProfile: 'flight-cpp' })).toThrow(
-      'flight-cpp WeakMap key requires a proven flight reference representation',
+    expect(() => emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' })).toThrow(
+      'runtime external symbol binding plan is incomplete (missing: WeakMap[type])',
     );
-    expect(() => emitIrModuleCpp(invalidValue.module, { runtimeProfile: 'flight-cpp' })).toThrow(
-      'flight-cpp WeakMap value requires a proven reference-free representation',
+    expect(() => emitIrModuleCpp(result.module)).toThrow(
+      'runtime external symbol binding plan is incomplete (missing: WeakMap[type])',
     );
+  });
+
+  it.each([
+    ['flight-cpp', '#include <flight/map.hpp>', 'flight::Map<flight::String, double> values', 'values.size()'],
+    ['standard-library', '#include <unordered_map>', 'std::unordered_map<std::string, double> values', 'values.size()'],
+  ] as const)('emits ReadonlyMap through the %s map contract', (runtimeProfile, header, type, access) => {
+    const result = lower(
+      'readonly-map.ts',
+      `export function read(values: ReadonlyMap<string, number>): number {
+         return values.size;
+       }`,
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile });
+
+    expect(emitted.contents).toContain(header);
+    expect(emitted.contents).toContain(type);
+    expect(emitted.contents).toContain(access);
   });
 
   it('allows module referent mutation backed by a shared runtime container', () => {

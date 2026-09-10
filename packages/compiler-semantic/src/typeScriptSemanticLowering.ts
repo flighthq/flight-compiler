@@ -591,6 +591,9 @@ function lowerExpression(
 ): IrExpression {
   if (ts.isParenthesizedExpression(node))
     return lowerExpression(node.expression, context, contextualType, contextualTargetType);
+  if (isTypeScriptConstAssertion(node)) {
+    return lowerExpression(node.expression, context, contextualType, contextualTargetType);
+  }
   if (ts.isAsExpression(node) || ts.isTypeAssertionExpression(node) || ts.isSatisfiesExpression(node)) {
     const type = lowerType(node.type, context);
     return { expression: lowerExpression(node.expression, context, type), kind: 'cast', type };
@@ -2375,6 +2378,8 @@ function lowerType(node: ts.TypeNode, context: LoweringContext): IrType {
   }
   if (ts.isParenthesizedTypeNode(node)) return lowerType(node.type, context);
   if (ts.isTypeReferenceNode(node)) {
+    const projection = lowerConcreteTypeScriptObjectProjection(node, context);
+    if (projection) return projection;
     const name = getTypeScriptNodeText(node.typeName, context);
     const arguments_ = node.typeArguments?.map((type) => lowerType(type, context)) ?? [];
     const reference = lowerTypeNameReference(node.typeName, context);
@@ -2455,6 +2460,39 @@ function lowerType(node: ts.TypeNode, context: LoweringContext): IrType {
     if (concrete) return concrete;
   }
   unsupported(node, `unsupported type ${ts.SyntaxKind[node.kind]}`);
+}
+
+function lowerConcreteTypeScriptObjectProjection(
+  node: ts.TypeReferenceNode,
+  context: LoweringContext,
+): Readonly<IrType> | undefined {
+  const name = ts.isIdentifier(node.typeName) ? node.typeName.text : undefined;
+  if ((name !== 'Omit' && name !== 'Pick') || node.typeArguments?.length !== 2) return undefined;
+  const [subject, keyType] = node.typeArguments;
+  if (!subject || !keyType) return undefined;
+  const properties = lowerTypeScriptCheckerObjectProperties(context.checker.getTypeFromTypeNode(subject), context, 0);
+  const keys = getTypeScriptObjectProjectionKeys(keyType);
+  if (!properties || !keys) return undefined;
+  const available = new Set(properties.map((property) => property.name));
+  if ([...keys].some((key) => !available.has(key))) return undefined;
+  return {
+    kind: 'object',
+    properties: properties.filter((property) => (name === 'Pick' ? keys.has(property.name) : !keys.has(property.name))),
+  };
+}
+
+function getTypeScriptObjectProjectionKeys(node: ts.TypeNode): ReadonlySet<string> | undefined {
+  if (ts.isParenthesizedTypeNode(node)) return getTypeScriptObjectProjectionKeys(node.type);
+  if (ts.isUnionTypeNode(node)) {
+    const members = node.types.map(getTypeScriptObjectProjectionKeys);
+    if (members.some((member) => !member)) return undefined;
+    return new Set(members.flatMap((member) => [...member!]));
+  }
+  if (!ts.isLiteralTypeNode(node)) return undefined;
+  if (ts.isStringLiteral(node.literal) || ts.isNumericLiteral(node.literal)) {
+    return new Set([node.literal.text]);
+  }
+  return undefined;
 }
 
 function lowerConcreteConditionalType(node: ts.ConditionalTypeNode, context: LoweringContext): IrType | undefined {
@@ -3413,6 +3451,7 @@ function getTypeScriptVariableDeclarationKind(
 }
 
 function inferInitializerType(node: ts.Expression, context: LoweringContext): IrType {
+  if (isTypeScriptConstAssertion(node)) return inferInitializerType(node.expression, context);
   if (node.kind === ts.SyntaxKind.TrueKeyword || node.kind === ts.SyntaxKind.FalseKeyword) {
     return { kind: 'primitive', name: 'boolean' };
   }
@@ -3464,6 +3503,16 @@ function inferInitializerType(node: ts.Expression, context: LoweringContext): Ir
       kind: 'unknown',
       source: 'any',
     }
+  );
+}
+
+function isTypeScriptConstAssertion(node: ts.Expression): node is ts.AsExpression | ts.TypeAssertion {
+  if (!ts.isAsExpression(node) && !ts.isTypeAssertionExpression(node)) return false;
+  return (
+    ts.isTypeReferenceNode(node.type) &&
+    ts.isIdentifier(node.type.typeName) &&
+    node.type.typeName.text === 'const' &&
+    !node.type.typeArguments
   );
 }
 
@@ -3849,6 +3898,7 @@ function getIrResolvedMemberReceiver(type: Readonly<IrType> | undefined): IrReso
       Int8Array: 'typedArray',
       Map: 'map',
       Promise: 'task',
+      ReadonlyMap: 'map',
       Set: 'set',
       Uint16Array: 'typedArray',
       Uint32Array: 'typedArray',
