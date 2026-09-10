@@ -190,6 +190,7 @@ function lowerTypeScriptSourceWithAnalysis(
         );
         pendingOverloads.delete(name);
       } else if (ts.isVariableStatement(statement)) {
+        if (isErasableTypeScriptUniqueSymbolDeclaration(statement)) continue;
         const lowered = lowerVariableStatement(statement, context);
         declarations.push(...lowered);
         exports.push(...lowered.flatMap((declaration) => createTypeScriptDeclarationExports(declaration, false)));
@@ -245,6 +246,21 @@ function lowerTypeScriptSourceWithAnalysis(
       source: relativeSource(sourceFile.fileName, options.upstreamDirectory),
     },
   };
+}
+
+function isErasableTypeScriptUniqueSymbolDeclaration(node: ts.VariableStatement): boolean {
+  return (
+    !isExported(node) &&
+    hasModifier(node, ts.SyntaxKind.DeclareKeyword) &&
+    node.declarationList.declarations.length > 0 &&
+    node.declarationList.declarations.every(
+      (declaration) =>
+        declaration.initializer === undefined &&
+        declaration.type !== undefined &&
+        ts.isTypeOperatorNode(declaration.type) &&
+        declaration.type.operator === ts.SyntaxKind.UniqueKeyword,
+    )
+  );
 }
 
 function diagnostic(node: ts.Node, message: string, context: LoweringContext): CompilerDiagnostic {
@@ -2394,7 +2410,7 @@ function lowerType(node: ts.TypeNode, context: LoweringContext): IrType {
   if (ts.isIntersectionTypeNode(node)) {
     return { kind: 'intersection', types: lowerCompoundTypes(node.types, node, context) };
   }
-  if (ts.isFunctionTypeNode(node)) return lowerFunctionType(node, context);
+  if (ts.isFunctionTypeNode(node) || ts.isConstructorTypeNode(node)) return lowerFunctionType(node, context);
   if (ts.isTypeLiteralNode(node)) return { kind: 'object', properties: lowerTypeProperties(node.members, context) };
   if (ts.isLiteralTypeNode(node)) {
     if (node.literal.kind === ts.SyntaxKind.NullKeyword) return { kind: 'null' };
@@ -2413,6 +2429,7 @@ function lowerType(node: ts.TypeNode, context: LoweringContext): IrType {
   }
   if (ts.isTypeOperatorNode(node)) {
     if (node.operator === ts.SyntaxKind.KeyOfKeyword) return { kind: 'keyof', type: lowerType(node.type, context) };
+    if (node.operator === ts.SyntaxKind.UniqueKeyword) return lowerType(node.type, context);
     if (node.operator === ts.SyntaxKind.ReadonlyKeyword) {
       const type = lowerType(node.type, context);
       if (type.kind === 'array' || type.kind === 'tuple') return { ...type, readonly: true };
@@ -2428,11 +2445,21 @@ function lowerType(node: ts.TypeNode, context: LoweringContext): IrType {
     };
   }
   if (ts.isTypeQueryNode(node)) return { kind: 'typeOf', reference: lowerValueNameReference(node.exprName, context) };
+  if (ts.isTemplateLiteralTypeNode(node)) return { kind: 'primitive', name: 'string' };
+  if (ts.isConditionalTypeNode(node)) {
+    const concrete = lowerConcreteConditionalType(node, context);
+    if (concrete) return concrete;
+  }
   if (ts.isMappedTypeNode(node)) {
     const concrete = lowerConcreteMappedType(node, context);
     if (concrete) return concrete;
   }
   unsupported(node, `unsupported type ${ts.SyntaxKind[node.kind]}`);
+}
+
+function lowerConcreteConditionalType(node: ts.ConditionalTypeNode, context: LoweringContext): IrType | undefined {
+  if (hasExternalTypeScriptTypeParameter(node, context)) return undefined;
+  return getTypeScriptCheckerTypeEvidence(context.checker.getTypeFromTypeNode(node), context, 0, true);
 }
 
 function lowerTypeAlias(node: ts.TypeAliasDeclaration, context: LoweringContext): IrTypeAliasDeclaration {
@@ -2562,20 +2589,28 @@ function lowerTypeScriptTypeProperties(
 }
 
 function lowerConcreteMappedType(node: ts.MappedTypeNode, context: LoweringContext): IrType | undefined {
-  if (hasExternalTypeScriptMappedTypeParameter(node, context)) return undefined;
+  if (hasExternalTypeScriptTypeParameter(node, context)) return undefined;
   const type = context.checker.getTypeFromTypeNode(node);
   const properties = lowerTypeScriptCheckerObjectProperties(type, context, 0, node);
   return properties ? { kind: 'object', properties } : undefined;
 }
 
-function hasExternalTypeScriptMappedTypeParameter(node: ts.MappedTypeNode, context: LoweringContext): boolean {
-  const own = context.checker.getSymbolAtLocation(node.typeParameter.name);
+function hasExternalTypeScriptTypeParameter(node: ts.TypeNode, context: LoweringContext): boolean {
+  const local = new Set<ts.Symbol>();
+  const collect = (child: ts.Node): void => {
+    if (ts.isTypeParameterDeclaration(child)) {
+      const symbol = context.checker.getSymbolAtLocation(child.name);
+      if (symbol) local.add(symbol);
+    }
+    ts.forEachChild(child, collect);
+  };
+  collect(node);
   let external = false;
   const visit = (child: ts.Node): void => {
     if (external) return;
     if (ts.isIdentifier(child)) {
       const symbol = context.checker.getSymbolAtLocation(child);
-      if (symbol !== own && symbol?.declarations?.some(ts.isTypeParameterDeclaration)) {
+      if (symbol && !local.has(symbol) && symbol.declarations?.some(ts.isTypeParameterDeclaration)) {
         external = true;
         return;
       }

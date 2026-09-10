@@ -1045,18 +1045,18 @@ describe('lowerTypeScriptSource', () => {
       `,
     );
 
-    expect(rejected.module.declarations).toHaveLength(2);
+    expect(rejected.module.declarations).toHaveLength(5);
     expect(rejected.module.declarations).toMatchObject([
+      { binding: { name: 'Unique' }, kind: 'typeAlias', type: { kind: 'primitive', name: 'symbol' } },
+      { binding: { name: 'Constructor' }, kind: 'typeAlias', type: { kind: 'function' } },
+      { binding: { name: 'TemplateValue' }, kind: 'typeAlias', type: { kind: 'primitive', name: 'string' } },
       { binding: { name: 'ComputedProperty' }, kind: 'typeAlias', type: { kind: 'object', properties: [] } },
       { binding: { name: 'Valid' }, kind: 'typeAlias' },
     ]);
     expect(rejected.diagnostics.map((diagnostic) => diagnostic.message)).toEqual([
       'unsupported literal type',
-      'unsupported type operator unique',
       'unsupported type ConditionalType',
       'unsupported type MappedType',
-      'unsupported type ConstructorType',
-      'unsupported type TemplateLiteralType',
       'unsupported type member CallSignature',
       'property signature requires a type',
     ]);
@@ -1223,6 +1223,50 @@ describe('lowerTypeScriptSource', () => {
       'unsupported type MappedType',
       'unsupported type MappedType',
     ]);
+  });
+
+  it('erases target-neutral type refinements and resolves only concrete conditional types', () => {
+    const result = lower(
+      'resolved-type-refinements.ts',
+      [
+        'declare const brand: unique symbol;',
+        "const token: unique symbol = Symbol('token');",
+        'interface Created { value: number }',
+        'export type Pattern = `prefix-${string}`;',
+        'export type Factory = new (value?: number) => Created;',
+        "export type Selected = 'ready' extends string ? { ok: true } : never;",
+        'export type Inferred = string extends infer Value ? Value : never;',
+        'export type Generic<Value> = Value extends string ? number : boolean;',
+      ].join('\n'),
+    );
+    const declarations = new Map(
+      result.module.declarations.flatMap((declaration) =>
+        'binding' in declaration ? [[declaration.binding.name, declaration] as const] : [],
+      ),
+    );
+
+    expect(declarations.has('brand')).toBe(false);
+    expect(declarations.get('token')).toMatchObject({
+      initializer: { kind: 'call' },
+      type: { kind: 'primitive', name: 'symbol' },
+    });
+    expect(declarations.get('Pattern')).toMatchObject({ type: { kind: 'primitive', name: 'string' } });
+    expect(declarations.get('Factory')).toMatchObject({
+      type: {
+        kind: 'function',
+        parameters: [{ name: 'value', optional: true, rest: false, type: { kind: 'primitive', name: 'number' } }],
+        returns: { kind: 'named', reference: { binding: { name: 'Created' } } },
+      },
+    });
+    expect(declarations.get('Selected')).toMatchObject({
+      type: {
+        kind: 'object',
+        properties: [{ name: 'ok', type: { kind: 'literal', value: true } }],
+      },
+    });
+    expect(declarations.get('Inferred')).toMatchObject({ type: { kind: 'primitive', name: 'string' } });
+    expect(declarations.has('Generic')).toBe(false);
+    expect(result.diagnostics.map((diagnostic) => diagnostic.message)).toEqual(['unsupported type ConditionalType']);
   });
 
   it('separates executable defaults from function types', () => {
@@ -4441,14 +4485,15 @@ it('resolves expression binding evidence through property access and call chains
   expect(result.diagnostics).toEqual([]);
 });
 
-it('reports unsupported type operator (unique symbol)', () => {
+it('lowers unique symbol variable types to the symbol primitive', () => {
   const result = lower(
     'unique-symbol.ts',
     `
         export const sym: unique symbol = Symbol('id');
       `,
   );
-  expect(result.diagnostics).toMatchObject([{ code: 'unsupported-typescript' }]);
+  expect(result.diagnostics).toEqual([]);
+  expect(result.module.declarations[0]).toMatchObject({ type: { kind: 'primitive', name: 'symbol' } });
 });
 
 it('lowers type-only named imports with correct classification', () => {
@@ -7516,14 +7561,18 @@ it('lowers a local function declaration to a variable with a function expression
   expect(localVar.declarations[0]!.initializer.kind).toBe('function');
 });
 
-it('reports a diagnostic for a unique symbol type operator', () => {
+it('preserves unique symbol initializers while erasing type-level uniqueness', () => {
   const result = lower(
     'unique-symbol.ts',
     `
       export const key: unique symbol = Symbol("key");
     `,
   );
-  expect(result.diagnostics).toMatchObject([{ message: expect.stringContaining('unsupported type operator') }]);
+  expect(result.diagnostics).toEqual([]);
+  expect(result.module.declarations[0]).toMatchObject({
+    initializer: { kind: 'call' },
+    type: { kind: 'primitive', name: 'symbol' },
+  });
 });
 
 it('reports a diagnostic for destructuring assignment with object rest', () => {
@@ -8818,14 +8867,15 @@ it('lowers object property access on optional member returns type evidence', () 
 
 // --- Untested arm coverage: type evidence, binding patterns, destructuring, exports ---
 
-it('diagnoses unsupported type operator unique symbol', () => {
+it('represents initialized unique symbols without a semantic refusal', () => {
   const result = lower(
     'unique-symbol.ts',
     `
       export const tag: unique symbol = Symbol("tag");
     `,
   );
-  expect(result.diagnostics).toMatchObject([{ code: 'unsupported-typescript' }]);
+  expect(result.diagnostics).toEqual([]);
+  expect(result.module.declarations[0]).toMatchObject({ type: { kind: 'primitive', name: 'symbol' } });
 });
 
 it('lowers qualified name type reference path', () => {
@@ -10744,9 +10794,10 @@ it('lowers typeof type query with a value name reference', () => {
   expect(fn.parameters[0]?.type).toMatchObject({ kind: 'typeOf', reference: { kind: 'binding' } });
 });
 
-it('lowers type operator unique symbol as unsupported diagnostic', () => {
+it('lowers unique symbol syntax through the ordinary symbol representation', () => {
   const result = lower('unique-symbol.ts', 'export const s: unique symbol = Symbol();');
-  expect(result.diagnostics).toMatchObject([{ message: expect.stringContaining('unsupported type operator') }]);
+  expect(result.diagnostics).toEqual([]);
+  expect(result.module.declarations[0]).toMatchObject({ type: { kind: 'primitive', name: 'symbol' } });
 });
 
 it('lowers qualified name in type position', () => {
