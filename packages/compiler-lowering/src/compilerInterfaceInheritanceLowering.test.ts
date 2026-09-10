@@ -171,6 +171,26 @@ describe('createCompilerLoweringPassInterfaceInheritance', () => {
     });
   });
 
+  it('flattens Partial heritage over a local generic structure', () => {
+    const module = lower(
+      'partial-heritage.ts',
+      `
+        interface Base<Value> { required: Value; readonly stable: string; }
+        export interface Optional extends Partial<Base<number>> { own: boolean; }
+      `,
+    );
+    const output = lowerIrModuleWithCompilerPasses(module, [createCompilerLoweringPassInterfaceInheritance([module])]);
+
+    expect(getInterface(output, 'Optional')).toMatchObject({
+      extends: [],
+      properties: [
+        { name: 'required', optional: true, readonly: false, type: { kind: 'primitive', name: 'number' } },
+        { name: 'stable', optional: true, readonly: true, type: { kind: 'primitive', name: 'string' } },
+        { name: 'own', optional: false, readonly: false, type: { kind: 'primitive', name: 'boolean' } },
+      ],
+    });
+  });
+
   it('deduplicates identical diamonds and refuses unresolved, cyclic, arity, and incompatible heritage', () => {
     const module = lower(
       'failures.ts',

@@ -144,6 +144,19 @@ function getIrInterfaceDeclarationPropertiesFlattened(
   }
   const properties: IrObjectTypeProperty[] = [];
   for (const reference of declaration.extends) {
+    const utilityProperties = getIrInterfaceUtilityHeritagePropertiesFlattened(
+      reference,
+      location,
+      nextAncestors,
+      substitutions,
+      context,
+    );
+    if (utilityProperties) {
+      for (const property of utilityProperties) {
+        addIrInterfacePropertyFlattened(property, declaration, properties, context);
+      }
+      continue;
+    }
     const base = getIrInterfaceDeclarationBase(reference, location, context);
     const baseSubstitutions = getIrInterfaceTypeSubstitutionPlan(reference, base.declaration, substitutions, context);
     for (const property of getIrInterfaceDeclarationPropertiesFlattened(
@@ -165,6 +178,27 @@ function getIrInterfaceDeclarationPropertiesFlattened(
     );
   }
   return properties;
+}
+
+function getIrInterfaceUtilityHeritagePropertiesFlattened(
+  reference: Readonly<IrTypeReference>,
+  location: Readonly<InterfaceInheritanceDeclarationLocation>,
+  ancestors: ReadonlySet<string>,
+  substitutions: Readonly<CompilerStructuralTypeSubstitutionPlan>,
+  context: InterfaceInheritanceLoweringContext,
+): readonly IrObjectTypeProperty[] | undefined {
+  if (reference.reference.kind !== 'ambient' || reference.reference.name !== 'Partial') return undefined;
+  if (reference.typeArguments.length !== 1) {
+    return failIrInterfaceInheritanceLowering(
+      context.subject,
+      `interface ${location.declaration.binding.name} inherits Partial with invalid type argument count`,
+    );
+  }
+  const target = resolveIrTypeStructuralSubstitution(reference.typeArguments[0]!, substitutions);
+  return getIrInterfaceHeritageTypePropertiesFlattened(target, location, ancestors, context).map((property) => ({
+    ...property,
+    optional: true,
+  }));
 }
 
 function getIrInterfaceHeritageClassPropertiesFlattened(
