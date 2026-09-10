@@ -132,6 +132,17 @@ describe('validateCompilerEmittedSourceSyntax', () => {
     expect(failure.diagnostics.at(-1)?.message).toBe('late');
   });
 
+  it('sorts by message when code is equal regardless of input order', () => {
+    const parser = createParser(() => [
+      { code: 'same', column: 1, line: 1, message: 'beta' },
+      { code: 'same', column: 1, line: 1, message: 'Alpha' },
+    ]);
+    const failure = captureFailure([{ contents: 'value', path: 'Value.rs' }], parser);
+
+    expect(failure.diagnostics[0]?.message).toBe('Alpha');
+    expect(failure.diagnostics[1]?.message).toBe('beta');
+  });
+
   it('sorts by path before line when path and line orders disagree', () => {
     const parser = createParser((file) =>
       file.path === 'Alpha.rs'

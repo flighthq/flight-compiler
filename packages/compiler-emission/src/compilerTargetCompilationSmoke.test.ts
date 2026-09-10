@@ -136,6 +136,17 @@ describe('validateCompilerTargetCompilationSmoke', () => {
     expect(failure.diagnostics.at(-1)?.message).toBe('late');
   });
 
+  it('sorts by message when code is equal regardless of input order', () => {
+    const compiler = createCompiler(() => [
+      { code: 'same', column: 1, line: 1, message: 'beta', path: 'Value.rs' },
+      { code: 'same', column: 1, line: 1, message: 'Alpha', path: 'Value.rs' },
+    ]);
+    const failure = captureFailure([{ contents: 'value', path: 'Value.rs' }], compiler);
+
+    expect(failure.diagnostics[0]?.message).toBe('Alpha');
+    expect(failure.diagnostics[1]?.message).toBe('beta');
+  });
+
   it('sorts by path before line when path and line orders disagree', () => {
     const compiler = createCompiler(() => [
       { code: 'err', column: 1, line: 5, message: 'late line', path: 'Alpha.rs' },
