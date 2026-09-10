@@ -3,7 +3,7 @@ import ts from 'typescript';
 import { lowerTypeScriptSource } from '../../compiler-semantic/src/index.js';
 import type { IrExpression, IrModule } from '../../compiler-types/src/index.js';
 import { createCompilerLoweringPassExtraArgumentErasure } from './compilerExtraArgumentErasureLowering.js';
-import { lowerIrModuleWithCompilerPasses } from './compilerLoweringPass.js';
+import { isCompilerLoweringFailure, lowerIrModuleWithCompilerPasses } from './compilerLoweringPass.js';
 
 describe('createCompilerLoweringPassExtraArgumentErasure', () => {
   it('preserves left-to-right argument evaluation inside each conditional or repeated expression context', () => {
@@ -142,9 +142,21 @@ describe('createCompilerLoweringPassExtraArgumentErasure', () => {
       export function read(picker: Picker): number { return picker.choose(1, 2); }
     `);
 
-    expect(() => lowerIrModuleWithCompilerPasses(module, [createCompilerLoweringPassExtraArgumentErasure()])).toThrow(
-      'fixed extra call arguments remain after erasure',
-    );
+    let error: unknown;
+    try {
+      lowerIrModuleWithCompilerPasses(module, [createCompilerLoweringPassExtraArgumentErasure()]);
+    } catch (caught) {
+      error = caught;
+    }
+
+    expect(isCompilerLoweringFailure(error)).toBe(true);
+    if (isCompilerLoweringFailure(error)) {
+      expect(error).toMatchObject({
+        code: 'unsupported-ir',
+        message: expect.stringContaining('fixed extra call arguments remain after erasure'),
+        pass: 'extra-argument-erasure',
+      });
+    }
   });
 });
 

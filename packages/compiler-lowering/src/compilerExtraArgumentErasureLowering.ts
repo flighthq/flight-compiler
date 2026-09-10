@@ -138,13 +138,22 @@ function isCompilerIrTraversalContainer(value: unknown): value is Record<number 
 function lowerIrModuleExtraArgumentErasure(module: Readonly<IrModule>): IrModule {
   const lowered = structuredClone(module);
   const paths: CompilerIrTraversalPath[] = [];
+  let unsupported = false;
   analyzeIrModuleTraversal(lowered, {
     expression(expression, path) {
-      if (hasIrCallExpressionExtraArgumentErasureResidual(expression) && expression.semantics.extraArguments) {
-        paths.push(path);
-      }
+      if (!hasIrCallExpressionExtraArgumentErasureResidual(expression)) return;
+      if (expression.semantics.extraArguments) paths.push(path);
+      else unsupported = true;
     },
   });
+  if (unsupported) {
+    throw createCompilerLoweringFailure(
+      'unsupported-ir',
+      compilerLoweringPassNameExtraArgumentErasure,
+      module,
+      'fixed extra call arguments remain after erasure',
+    );
+  }
   for (const path of paths.reverse()) {
     const expression = getIrModuleTraversalPathValue(lowered, path);
     if (!isIrCallExpressionExtraArgumentErasureCandidate(expression)) {
