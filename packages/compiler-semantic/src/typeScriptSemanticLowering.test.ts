@@ -3942,6 +3942,43 @@ it('diagnoses value namespace, empty statements, and unsupported top-level synta
   expect(empty.diagnostics).toEqual([]);
 });
 
+it('lowers module-level calls and assignments as ordered side-effect carriers', () => {
+  const result = lower(
+    'module-side-effects.ts',
+    `
+      import { register } from './registry';
+      register();
+      export let value = 0;
+      value = 1;
+      1 + 2;
+    `,
+  );
+
+  expect(result.module.declarations).toMatchObject([
+    {
+      binding: { name: 'moduleSideEffect', scope: 'module' },
+      declarationKind: 'const',
+      initializer: {
+        callee: { body: [{ expression: { kind: 'call' }, kind: 'expression' }, { kind: 'return' }] },
+        kind: 'call',
+        semantics: { statementValue: { normalCompletion: 'final-return-value' } },
+      },
+      kind: 'variable',
+      mutable: false,
+      type: { kind: 'primitive', name: 'boolean' },
+    },
+    { binding: { name: 'value' }, kind: 'variable' },
+    {
+      binding: { name: 'moduleSideEffect' },
+      initializer: {
+        callee: { body: [{ expression: { kind: 'assignment' }, kind: 'expression' }, { kind: 'return' }] },
+      },
+      kind: 'variable',
+    },
+  ]);
+  expect(result.diagnostics).toMatchObject([{ message: 'unsupported top-level ExpressionStatement' }]);
+});
+
 it('wraps labeled non-loop statements in a block with a label identity', () => {
   const result = lower(
     'labeled.ts',

@@ -1702,6 +1702,25 @@ describe('emitIrModuleHaxe class coverage', () => {
 
     expect(output).toContain('var count:Float = 0;');
   });
+
+  it('emits module-level call and assignment side effects in source order', () => {
+    const result = lower(
+      'module-side-effects.ts',
+      `
+        import { register } from './registry';
+        register();
+        export let value = 0;
+        value = 1;
+      `,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(result.diagnostics).toEqual([]);
+    expect(output).toMatch(/final moduleSideEffect(?:_2)?:Bool = \(\{ register\(\); true; \}\);/u);
+    expect(output).toMatch(/final moduleSideEffect(?:_2)?:Bool = \(\{ value = 1; true; \}\);/u);
+    expect(output.indexOf('register(); true;')).toBeLessThan(output.indexOf('var value:Float'));
+    expect(output.indexOf('var value:Float')).toBeLessThan(output.indexOf('value = 1; true;'));
+  });
 });
 
 describe('emitIrModuleHaxe type coverage', () => {

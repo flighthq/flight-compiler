@@ -212,6 +212,8 @@ function lowerTypeScriptSourceWithAnalysis(
         exports.push(
           ...createTypeScriptDeclarationExports(declaration, hasModifier(statement, ts.SyntaxKind.DefaultKeyword)),
         );
+      } else if (ts.isExpressionStatement(statement) && isTypeScriptModuleSideEffectExpression(statement.expression)) {
+        declarations.push(lowerTypeScriptModuleSideEffect(statement, context));
       } else if (ts.isModuleDeclaration(statement)) {
         if (hasValueNamespaceMembers(statement)) {
           unsupported(statement, 'value namespace declarations require neutral IR namespace representation');
@@ -245,6 +247,66 @@ function lowerTypeScriptSourceWithAnalysis(
       packageName: options.packageName,
       source: relativeSource(sourceFile.fileName, options.upstreamDirectory),
     },
+  };
+}
+
+function isTypeScriptModuleSideEffectExpression(
+  expression: ts.Expression,
+): expression is ts.CallExpression | ts.BinaryExpression {
+  return (
+    ts.isCallExpression(expression) ||
+    (ts.isBinaryExpression(expression) && isAssignmentOperator(expression.operatorToken.kind))
+  );
+}
+
+// A target module has declarations rather than free-standing statements. Carry a source module's
+// ordered call or assignment through the same initialization lane as an unexported const, and make
+// the initializer produce a value so targets never have to declare storage with a void type.
+function lowerTypeScriptModuleSideEffect(
+  statement: ts.ExpressionStatement,
+  context: LoweringContext,
+): IrVariableDeclaration {
+  const sourceOrigin = origin(statement, context);
+  const type = { kind: 'primitive', name: 'boolean' } as const;
+  return {
+    binding: {
+      ...sourceOrigin,
+      id: `binding:${JSON.stringify([
+        sourceOrigin.packageName,
+        sourceOrigin.source,
+        'module-side-effect',
+        statement.getStart(context.sourceFile),
+      ])}`,
+      kind: 'variable',
+      name: 'moduleSideEffect',
+      scope: 'module',
+      space: 'value',
+    },
+    declarationKind: 'const',
+    exported: false,
+    initializer: {
+      arguments: [],
+      callee: {
+        async: false,
+        body: [
+          { expression: lowerExpression(statement.expression, context), kind: 'expression' },
+          { expression: { kind: 'literal', value: true }, kind: 'return' },
+        ],
+        kind: 'function',
+        parameters: [],
+        returns: type,
+        thisMode: 'lexical',
+        typeParameters: [],
+      },
+      kind: 'call',
+      optional: false,
+      semantics: { resultType: type, statementValue: createIrStatementValueCallSemantics() },
+      typeArguments: [],
+    },
+    kind: 'variable',
+    mutable: false,
+    origin: sourceOrigin,
+    type,
   };
 }
 
