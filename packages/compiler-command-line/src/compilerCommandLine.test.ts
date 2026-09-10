@@ -49,6 +49,8 @@ describe('compileCompilerCommandLineRequest', () => {
     expect(result.exitCode).toBe(1);
     expect(result.refusals).toHaveLength(1);
     expect(result.refusals[0]).toMatchObject({ code: 'unsupported-ir', module: 'bad.ts', stage: 'emission' });
+    expect(result.refusals[0]).not.toHaveProperty('column');
+    expect(result.refusals[0]).not.toHaveProperty('line');
   });
 
   it('compiles sibling imports as one graph so cross-module type identity reaches the backend', () => {
@@ -120,6 +122,43 @@ describe('compileCompilerCommandLineRequest', () => {
     expect(semantic.get('/semantic/label.hpp')).toContain('flight::String label()');
     expect(standard.get('/standard/label.hpp')).toContain('std::string label()');
     expect(standard.get('/standard/label.hpp')).not.toContain('flight/runtime.hpp');
+  });
+
+  it('passes a valid runtime-header through to the C++ backend options', () => {
+    const written = new Map<string, string>();
+    const result = compileCompilerCommandLineRequest(
+      {
+        argv: [
+          '/src',
+          '--target',
+          'cpp',
+          '--out',
+          '/out',
+          '--runtime-profile',
+          'flight-cpp',
+          '--runtime-header',
+          'custom/runtime.hpp',
+        ],
+      },
+      capabilities([source('value.ts', 'export function value(): number { return 1; }')], written, []),
+    );
+
+    expect(result).toMatchObject({ emitted: 1, exitCode: 0, refusals: [] });
+    expect(written.get('/out/value.hpp')).toContain('#include "custom/runtime.hpp"');
+  });
+
+  it('rejects runtime-header values with characters unsafe for quoted includes', () => {
+    const errors: string[] = [];
+    const unsafe = ['"bad.hpp', '<bad>.hpp', 'bad\npath.hpp'];
+    for (const header of unsafe) {
+      compileCompilerCommandLineRequest(
+        { argv: ['/src', '--target', 'cpp', '--out', '/out', '--runtime-header', header] },
+        { ...capabilities([], new Map(), []), writeError: (text) => errors.push(text) },
+      );
+    }
+    for (const error of errors) {
+      expect(error).toContain('portable quoted-include path');
+    }
   });
 
   it('validates target-specific and source-generating options before compiling', () => {
@@ -225,6 +264,16 @@ describe('createCompilerCommandLineReport', () => {
 
     expect(report).toContain('7x one reason');
     expect(report).toContain('… and 4 more');
+  });
+
+  it('lists all modules when exactly at the sample size without a truncation line', () => {
+    const report = createCompilerCommandLineReport(
+      0,
+      Array.from({ length: 3 }, (_, index) => ({ module: `m${String(index)}.ts`, reason: 'one reason' })),
+    );
+
+    expect(report).toContain('3x one reason');
+    expect(report).not.toContain('… and');
   });
 });
 
