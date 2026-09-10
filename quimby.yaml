@@ -36,7 +36,7 @@ services:
 
 layouts:
   default:
-    expr: (review | builder):80 / (host $serve):20
+    expr: (review | (builder builder2 builder3)):80 / (host $serve):20
 
 default: default
 
@@ -52,4 +52,8 @@ presets:
         # is directive weight one way. Escalation is the inverse edge, so builder may summon review.
         directs: [builder]
       builder:
+        role: builder
+      builder2:
+        role: builder
+      builder3:
         role: builder
