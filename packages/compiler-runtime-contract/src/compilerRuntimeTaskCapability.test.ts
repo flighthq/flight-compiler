@@ -190,6 +190,20 @@ describe('collectCompilerRuntimeTaskCapabilityRequirements', () => {
         expect.objectContaining({ kind: 'taskOperation', operation: 'then' }),
       ]),
     );
+    const normalizeEvidence = first.requirements.find((r) => r.capability === 'normalize')?.evidence ?? [];
+    const continueEvidence = first.requirements.find((r) => r.capability === 'continue')?.evidence ?? [];
+    const normalizeMachineEvidence = normalizeEvidence.filter((e) => e.kind === 'stateMachine');
+    const continueMachineEvidence = continueEvidence.filter((e) => e.kind === 'stateMachine');
+    expect(normalizeMachineEvidence).toEqual([
+      { kind: 'stateMachine', path: ['declarations', 0, 'body', 'end'], reason: 'assimilation' },
+    ]);
+    expect(continueMachineEvidence).toEqual([
+      {
+        kind: 'stateMachine',
+        path: ['declarations', 0, 'body', 0, 'expression'],
+        reason: 'continuation',
+      },
+    ]);
     expect(first).toEqual(second);
     expect(inventory).toEqual(inventorySnapshot);
     expect(machines).toEqual(machineSnapshot);

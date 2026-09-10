@@ -92,6 +92,30 @@ describe('analyzeCompilerRuntimeExternalConstructorAbiCompleteness', () => {
     });
   });
 
+  it('reports an invocation as missing when its sole constructor is invalid even if argument count matches', () => {
+    const result = analyzeCompilerRuntimeExternalConstructorAbiCompleteness(
+      [{ externalSymbol: { sourceName: 'Deque', space: 'value' }, providedArgumentCount: 1 }],
+      {
+        constructors: [
+          {
+            dynamicArguments: false,
+            externalSymbol: { sourceName: 'Deque', space: 'value' },
+            fixedArgumentCounts: [1, 0],
+          },
+        ],
+        contract: 'flight-runtime-constructor-abi/1',
+      },
+    );
+
+    expect(result).toMatchObject({
+      invalidExternalConstructors: [{ sourceName: 'Deque', space: 'value' }],
+      kind: 'incomplete',
+      missingExternalConstructors: [
+        { externalSymbol: { sourceName: 'Deque', space: 'value' }, providedArgumentCount: 1 },
+      ],
+    });
+  });
+
   it('treats empty names, negative counts, unsafe counts, and unordered counts as invalid', () => {
     const constructors = [
       { sourceName: '', fixedArgumentCounts: [0] },
