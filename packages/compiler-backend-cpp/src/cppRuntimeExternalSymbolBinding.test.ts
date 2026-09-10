@@ -211,6 +211,15 @@ describe('getCompilerRuntimeExternalMemberTargetCpp', () => {
     expect(getCompilerRuntimeExternalMemberTargetCpp('Math', 'PI')).toBe('M_PI');
   });
 
+  it.each(['flight-cpp', 'standard-library'] as const)(
+    'binds the complete Flight SDK Math function surface in the %s profile',
+    (runtimeProfile) => {
+      for (const member of ['acos', 'asin', 'atan', 'atan2', 'cbrt', 'exp', 'hypot', 'log', 'log2', 'log10', 'tan']) {
+        expect(getCompilerRuntimeExternalMemberTargetCpp('Math', member, runtimeProfile)).toBe(`std::${member}`);
+      }
+    },
+  );
+
   it('uses JavaScript-compatible numeric wrappers with the semantic runtime', () => {
     expect(getCompilerRuntimeExternalMemberTargetCpp('Math', 'round', 'flight-cpp')).toBe('flight::round');
     expect(getCompilerRuntimeExternalMemberTargetCpp('Math', 'pow', 'flight-cpp')).toBe('flight::power');
@@ -242,7 +251,7 @@ describe('getCompilerRuntimeExternalMemberTargetCpp', () => {
   });
 
   it('claims nothing for an unbound member or an unbound symbol', () => {
-    expect(getCompilerRuntimeExternalMemberTargetCpp('Math', 'atan2')).toBeUndefined();
+    expect(getCompilerRuntimeExternalMemberTargetCpp('Math', 'random')).toBeUndefined();
     expect(getCompilerRuntimeExternalMemberTargetCpp('Array', 'from')).toBeUndefined();
     expect(getCompilerRuntimeExternalMemberTargetCpp('Date', 'now')).toBeUndefined();
     expect(getCompilerRuntimeExternalMemberTargetCpp('Unmapped', 'method')).toBeUndefined();
