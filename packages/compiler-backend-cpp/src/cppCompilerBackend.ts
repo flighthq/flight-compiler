@@ -26,6 +26,7 @@ import {
   createCompilerLoweringPassSwitchFallthrough,
   createCompilerLoweringPassSwitchSuspension,
   createCompilerLoweringPassVariableHoisting,
+  isCompilerLoweringFailure,
   lowerIrModuleWithCompilerPasses,
 } from '../../compiler-lowering/src/index.js';
 import {
@@ -171,17 +172,25 @@ function emitIrModuleCppWithContext(
   referenceRepresentationPlanner?: CompilerCppReferenceRepresentationPlanner | undefined,
   typeAliasResolver?: IrTypeAliasResolverCpp | undefined,
 ): EmittedFile {
-  const module = lowerIrModuleWithCompilerPasses(sourceModule, [
-    createCompilerLoweringPassExtraArgumentErasure(),
-    createCompilerLoweringPassAwaitConditionHoisting(),
-    createCompilerLoweringPassCatchAwaitHoisting(),
-    createCompilerLoweringPassBindingPattern(),
-    createCompilerLoweringPassVariableHoisting(),
-    createCompilerLoweringPassCStyleFor(),
-    createCompilerLoweringPassInterfaceInheritance(sourceModules, moduleResolution),
-    createCompilerLoweringPassSwitchFallthrough(),
-    createCompilerLoweringPassSwitchSuspension(),
-  ]);
+  let module: IrModule;
+  try {
+    module = lowerIrModuleWithCompilerPasses(sourceModule, [
+      createCompilerLoweringPassExtraArgumentErasure(),
+      createCompilerLoweringPassAwaitConditionHoisting(),
+      createCompilerLoweringPassCatchAwaitHoisting(),
+      createCompilerLoweringPassBindingPattern(),
+      createCompilerLoweringPassVariableHoisting(),
+      createCompilerLoweringPassCStyleFor(),
+      createCompilerLoweringPassInterfaceInheritance(sourceModules, moduleResolution),
+      createCompilerLoweringPassSwitchFallthrough(),
+      createCompilerLoweringPassSwitchSuspension(),
+    ]);
+  } catch (error) {
+    if (isCompilerLoweringFailure(error) && error.code === 'unsupported-ir') {
+      throw createBackendEmissionFailure('cpp', sourceModule, error.message);
+    }
+    throw error;
+  }
   assertRuntimeExternalSymbolBindingsCpp(module, options);
   let targetNames: Map<string, string>;
   try {

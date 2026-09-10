@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 
 import ts from 'typescript';
 
+import { isBackendEmissionFailure } from '../../compiler-emission/src/index.js';
 import { lowerTypeScriptSource } from '../../compiler-semantic/src/index.js';
 import type { CompilerModuleResolutionPlan, IrType } from '../../compiler-types/src/index.js';
 import { createCppCompilerBackend, emitIrModuleCpp } from './cppCompilerBackend.js';
@@ -67,6 +68,21 @@ describe('createCppCompilerBackend', () => {
     const emitted = session.emitModule(consumer);
     expect(emitted[0]?.contents).toContain('#include "model.hpp"');
     expect(emitted[0]?.contents).toContain('flighthq_models::Model');
+  });
+
+  it('reports expected target-lowering refusals as backend emission failures', () => {
+    const module = lower('external-heritage.ts', 'export interface Derived extends External {}').module;
+
+    try {
+      emitIrModuleCpp(module);
+      throw new Error('Expected C++ emission to refuse unresolved external heritage');
+    } catch (error) {
+      expect(isBackendEmissionFailure(error)).toBe(true);
+      if (isBackendEmissionFailure(error)) {
+        expect(error.code).toBe('unsupported-ir');
+        expect(error.message).toContain('Compiler lowering pass interface-inheritance failed');
+      }
+    }
   });
 
   it('emits imported function and tuple aliases through their inline C++ representations', () => {
