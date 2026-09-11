@@ -103,7 +103,7 @@ Status: structure complete; bedrock contract hardening in progress.
 - Preserve deterministic build, package, coverage, and boundary gates as the implementation grows.
 - Complete the maturity work in [Compiler foundations](compiler-foundations.md) from contracts through provenance, patches, and emission before expanding the higher compiler layers.
 
-Exit criterion: `npm run check` proves a clean, self-contained public artifact; every workspace is independently testable; and the bedrock audit has no unresolved identity, determinism, failure-contract, or portability decision required by the next layer.
+Exit criterion: `npm run verify` proves a clean, self-contained public artifact; every workspace is independently testable; and the bedrock audit has no unresolved identity, determinism, failure-contract, or portability decision required by the next layer.
 
 ### 1. Freeze the compatibility contract
 

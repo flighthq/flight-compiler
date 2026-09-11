@@ -2,7 +2,7 @@
 #
 # The sweep is split into independent jobs so a failure names its own lane and the slow lanes run in
 # parallel with the fast ones. Within a job every gate step carries `if: always()`, preserving the
-# property `npm run check` has locally: these gates are independent, so stopping at the first failure
+# property `npm run verify` has locally: these gates are independent, so stopping at the first failure
 # would hide the rest.
 #
 # `pack:check` builds before it inspects, so the artifact lane needs no separate build step.

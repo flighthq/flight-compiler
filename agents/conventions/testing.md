@@ -10,9 +10,9 @@ What a test must prove, how to run the narrowest one that answers your question,
 - `scripts/` is repository automation and carries focused tests only where the risk warrants them. Script tests import `describe`, `expect` and `it` from `vitest` explicitly, because the scripts build does not load the Vitest globals.
 - Tests use temporary fixture workspaces and never depend on a network checkout.
 
-## The two lanes
+## The verification lanes
 
-`npm run check` runs the unit tests twice, deliberately.
+`npm run verify` runs the unit tests twice, deliberately.
 
 - `test:packages` runs each workspace alone. This proves package boundaries: an undeclared dependency or a leaked import fails here and nowhere else.
 - `test:coverage` runs everything together with instrumentation, and measures the repository against its ratchets.
@@ -32,7 +32,7 @@ Tests are example-driven specifications, not coverage decoration. For a foundati
 - caller-input immutability where the contract promises it;
 - every tagged failure code, by its code rather than by message text.
 
-A green test run is not a compile guarantee: `npm run test` does not typecheck. Attestation requires `npm run check`.
+A green test run is not a static-correctness guarantee: `npm run test` does not typecheck. Pair it with `npm run check` when that signal matters, and use `npm run verify` only when target compilation and artifact verification are also required.
 
 ## Verifying a guard that lands with its fix
 
@@ -75,7 +75,7 @@ Apply an instrument where its failure model is plausible, rather than applying e
 
 `npm run untested -- <package>` is its complement: it lists the arms no test ever took, where mutation asks whether the arms that were taken are actually checked. An arm missing from the untested list was taken by some test, not necessarily checked by one, so an empty list means nobody has looked here rather than that the package is verified.
 
-Neither is part of `npm run check`: one mutant costs a whole Vitest start, so the instrument is minutes where the gates are seconds. A surviving mutant is a question. Some survivors are equivalent mutants no test could distinguish; others mark an assertion that cannot fail. Read the line before concluding either.
+Neither is part of `npm run verify`: one mutant costs a whole Vitest start, so the instrument is minutes where the gates are seconds. A surviving mutant is a question. Some survivors are equivalent mutants no test could distinguish; others mark an assertion that cannot fail. Read the line before concluding either.
 
 Six survivor shapes have recurred across the 17-package mutation audit, and none is a missing test:
 

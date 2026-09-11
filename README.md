@@ -44,9 +44,10 @@ The upstream directory must be an initialized Flight Git checkout. Analysis is r
 npm install
 npm run fix
 npm run check
+npm run test
 ```
 
-`npm run check` validates every workspace manifest and dependency boundary, formats, lints, type-checks each package, runs both isolated and coverage test lanes, builds the assembled artifact, and inspects the package tarball. See [AGENTS.md](AGENTS.md) for architecture and contribution rules.
+`npm run check` runs the static correctness gates, while `npm run test` runs the unit suite without coverage instrumentation. `npm run verify` is the explicit full sweep for CI and releases: it adds isolated-package tests, coverage ratchets, emitted-source compilation, behavioral oracles, and package assembly. See [AGENTS.md](AGENTS.md) for architecture and contribution rules.
 
 ## License
 

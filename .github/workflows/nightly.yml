@@ -2,7 +2,7 @@
 #
 # CI splits the gates across jobs that each start from a warm `npm ci`, so nothing there proves the
 # repository builds from a clean tree in one sequence. `npm run ci` is `clean` followed by the whole
-# `check` runner, which is exactly that proof — and it is too slow to sit on every pull request.
+# `verify` runner, which is exactly that proof — and it is too slow to sit on every pull request.
 #
 # It runs on a schedule rather than on merge so a green main branch is re-verified against a moving
 # toolchain: the same tree can stop building when a transitive dependency or the runner image moves

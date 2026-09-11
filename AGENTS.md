@@ -171,11 +171,13 @@ Use npm, not pnpm or Yarn. Node.js 22 or newer is required. Script names follow 
 
 - `flight-compile <directory> --target <cpp|haxe|rust> --out <directory>`: point the compiler at a codebase. Sources are lowered into one module graph and share backend analysis, while every module retains its own outcome so a run reports everything it could not lower rather than stopping at the first refusal; `--report` reports without failing. Published as the package's `bin`.
 - `npm run fix`: apply Oxlint fixes and Oxfmt formatting after edits.
-- `npm run check`: complete deterministic gate; run before handoff. Every registered gate runs even after an earlier one fails, and the failures are reported together.
-- `npm run check:push`: fast static pre-push profile covering repository structure, formatting, linting, ordering, licensing, and API shape. It omits type checking, tests, coverage, target toolchains, and packaging; the full command above remains the handoff gate.
-- `npm run test`: run Vitest once.
+- `npm run check`: static correctness sweep covering repository structure, formatting, linting, ordering, licensing, API shape, and type checking. Every selected gate runs even after an earlier one fails, and the failures are reported together.
+- `npm run check:push`: faster pre-push subset of `npm run check` that omits the workspace typecheck. It does not run tests, coverage, target toolchains, or packaging.
+- `npm run test`: run the complete unit suite once, without coverage instrumentation or ratchets.
 - `npm run test:packages`: run every private package and the public package in isolation.
-- `npm run test:coverage`: run all unit tests together with aggregate instrumentation. The complete gate intentionally runs tests once in isolation and again for coverage because these lanes prove different properties.
+- `npm run test:coverage`: run all unit tests together with aggregate instrumentation. The verification sweep intentionally runs tests once in isolation and again for coverage because these lanes prove different properties.
+- `npm run verify`: complete deterministic verification sweep, including static checks, isolated and coverage test lanes, emitted-source compilation, behavioral oracles, and package assembly. Use it when the broad release signal is required, not as the editing loop.
+- `npm run ci`: clean generated artifacts, then run `npm run verify` from a cold tree.
 - `npm run docs:check`: enforce the bounded codebase map, Claude pointer, local documentation links, and `npm run` citations that name a real script.
 - `npm run exports:check`: outside `compiler-types`, require one exactly named colocated test file for every non-barrel package source and one exact `describe('<function>')` block for every exported function. This proves test structure and naming, not assertion depth.
 - `npm run order`: rewrite leading import blocks into group order. It refuses a block containing a comment rather than re-attaching it to the wrong import, and never moves exported functions.
@@ -203,7 +205,7 @@ See [the testing conventions](agents/conventions/testing.md) for test structure,
 
 Coverage thresholds are enforced ratchets, not aspirational targets: the current 94.3% branches, 98.7% functions, 97.3% lines, and 96.3% statements floors sit immediately below the combined compiler baseline (94.38 / 98.72 / 97.34 / 96.34 on 2026-09-10) so regressions fail promptly. Maintain or raise them as exercised compiler surface grows. Lowering a threshold requires an explicit architectural justification.
 
-Run `npm run fix` before committing and `npm run check` after committing so the verification applies to the exact carried tree.
+Run `npm run fix` before committing, the narrowest relevant `npm run test` selector for changed behavior, and `npm run check` for static correctness. Reserve `npm run verify` for CI, releases, or an explicitly requested broad sweep.
 
 ## Migration Discipline
 

@@ -12,7 +12,7 @@ import type { Mutant } from './mutationOperators.js';
 // percentage cannot: whether the assertions that execute a line would notice if that line decided
 // the opposite.
 //
-// It is deliberately not part of `npm run check`. One mutant costs a whole Vitest start, so the
+// It is deliberately not part of `npm run verify`. One mutant costs a whole Vitest start, so the
 // instrument is minutes where the gates are seconds, and its output is a worklist for a human rather
 // than a pass/fail claim. Run it against one package while working on that package.
 //

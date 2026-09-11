@@ -22,7 +22,7 @@
     "build": "npm run clean:dist --silent && tsc -p tsconfig.build.json",
     "check": "npm run _scripts:build --silent && node ./.script-build/repositoryCheck.js",
     "check:push": "npm run check -- --push",
-    "ci": "npm run clean && npm run check",
+    "ci": "npm run clean && npm run verify",
     "clean": "npm run _scripts:build --silent && node ./.script-build/workspaceArtifactCleanup.js",
     "clean:dist": "npm run _scripts:build --silent && node ./.script-build/workspaceArtifactCleanup.js --dist-only",
     "docs:check": "npm run _scripts:build --silent && node ./.script-build/documentationHealth.js",
@@ -55,6 +55,7 @@
     "test:watch": "vitest",
     "typecheck": "npm run _scripts:build --silent && node ./.script-build/workspaceTypecheck.js",
     "untested": "npm run _scripts:build --silent && node ./.script-build/untestedArms.js",
+    "verify": "npm run check -- --verify",
     "prepare": "husky",
     "oracle:check": "npm run _scripts:build --silent && node ./.script-build/behavioralOracle.js",
     "compile": "npm run build --silent && node -e \"import('./packages/tool-compiler/dist/packages/tool-compiler/src/index.js').then((m)=>process.exit(m.compileCompilerCommandLineDirectory(process.argv.slice(1))))\" --"

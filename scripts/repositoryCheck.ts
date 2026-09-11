@@ -7,10 +7,10 @@ import type { CheckGate } from './checkGateRegistry.js';
 
 // The non-fixing quality sweep.
 //
-// EVERY GATE RUNS, whatever the ones before it did. These gates are independent — a typecheck error
-// says nothing about whether package boundaries hold or documentation links resolve — so stopping at
-// the first failure hides the rest and makes one red gate look like the only problem. Failures are
-// collected and reported together, and the process exits nonzero at the end.
+// EVERY SELECTED GATE RUNS, whatever the ones before it did. These gates are independent — a
+// typecheck error says nothing about whether package boundaries hold or documentation links resolve
+// — so stopping at the first failure hides the rest and makes one red gate look like the only
+// problem. Failures are collected and reported together, and the process exits nonzero at the end.
 //
 // A gate whose inputs depend on an earlier step still short-circuits inside its own script:
 // `pack:check` builds before it inspects the tarball, so it can never report health for a stale
@@ -21,7 +21,7 @@ const binary = (name: string): string =>
   path.join(root, 'node_modules', '.bin', process.platform === 'win32' ? `${name}.cmd` : name);
 const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm';
 const compiledScript = (name: string): readonly string[] => [path.join(root, '.script-build', `${name}.js`)];
-const pushGateLabels = new Set([
+const checkGateLabels = new Set([
   'api:check',
   'docs:check',
   'exports:check',
@@ -30,7 +30,9 @@ const pushGateLabels = new Set([
   'lint',
   'order:check',
   'packages:check',
+  'typecheck',
 ]);
+const pushGateLabels = new Set([...checkGateLabels].filter((label) => label !== 'typecheck'));
 
 const profile = readProfile(process.argv.slice(2));
 
@@ -53,18 +55,21 @@ add('oracle:check', process.execPath, compiledScript('behavioralOracle'));
 add('pack:check', npm, ['run', 'pack:check', '--silent']);
 
 const registeredGateLabels = new Set(gates.map((gate) => gate.label));
-const missingPushGateLabels = [...pushGateLabels].filter((label) => !registeredGateLabels.has(label));
-if (missingPushGateLabels.length > 0) {
-  process.stderr.write(`Push check references unregistered gates: ${missingPushGateLabels.join(', ')}\n`);
+const missingProfileGateLabels = [...checkGateLabels].filter((label) => !registeredGateLabels.has(label));
+if (missingProfileGateLabels.length > 0) {
+  process.stderr.write(`Check profiles reference unregistered gates: ${missingProfileGateLabels.join(', ')}\n`);
   process.exit(1);
 }
 
-const selectedGates = profile === 'push' ? gates.filter((gate) => pushGateLabels.has(gate.label)) : gates;
-const profileLabel = profile === 'push' ? ' push' : '';
+const selectedGates =
+  profile === 'verify'
+    ? gates
+    : gates.filter((gate) => (profile === 'push' ? pushGateLabels : checkGateLabels).has(gate.label));
+const resultLabel = profile === 'verify' ? 'verification' : profile === 'push' ? 'push check' : 'check';
 
-if (profile === 'push') {
+if (profile !== 'verify') {
   process.stdout.write(
-    `Static pre-push profile: ${String(selectedGates.length)} of ${String(gates.length)} gates. Run npm run check for the complete sweep.\n`,
+    `Static ${profile} profile: ${String(selectedGates.length)} of ${String(gates.length)} gates. Run npm run verify for the complete sweep.\n`,
   );
 }
 
@@ -83,17 +88,18 @@ for (const gate of selectedGates) {
 
 if (failed.length > 0) {
   process.stderr.write(
-    `\n${String(failed.length)} of ${String(selectedGates.length)}${profileLabel} check gates failed: ${failed.join(', ')}\n`,
+    `\n${String(failed.length)} of ${String(selectedGates.length)} ${resultLabel} gates failed: ${failed.join(', ')}\n`,
   );
   process.exit(1);
 }
 
-process.stdout.write(`\n${String(selectedGates.length)}${profileLabel} check gates passed.\n`);
+process.stdout.write(`\n${String(selectedGates.length)} ${resultLabel} gates passed.\n`);
 
-function readProfile(args: readonly string[]): 'complete' | 'push' {
-  if (args.length === 0) return 'complete';
+function readProfile(args: readonly string[]): 'check' | 'push' | 'verify' {
+  if (args.length === 0) return 'check';
   if (args.length === 1 && args[0] === '--push') return 'push';
-  process.stderr.write('Usage: npm run check [-- --push]\n');
+  if (args.length === 1 && args[0] === '--verify') return 'verify';
+  process.stderr.write('Usage: npm run check, npm run check:push, or npm run verify\n');
   process.exit(2);
 }
 

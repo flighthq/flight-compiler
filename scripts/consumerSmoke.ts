@@ -12,7 +12,7 @@ import { fileURLToPath } from 'node:url';
 // resolves whether or not it was assembled correctly. This installs what a consumer would install,
 // with nothing else present, and runs a real compile through it.
 //
-// It is deliberately not part of `npm run check`. Installing a tarball reaches the network for the
+// It is deliberately not part of `npm run verify`. Installing a tarball reaches the network for the
 // package's own dependencies, and a gate that needs the network is a gate that fails for reasons
 // unrelated to the change under test. It runs in the nightly workflow, where that cost is expected.
 

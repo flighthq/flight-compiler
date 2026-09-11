@@ -30,20 +30,22 @@ When a gate later gains an automatic fix, it takes the bare name (or `:fix`) and
 
 Omitting a segment yields a collapse alias that fans over the omitted axis. Aliases only chain leaf scripts — the real command lives in the leaf and is never duplicated into the alias.
 
-- **Omit the subject** → run that action across every subject. `check` is the whole-repository sweep over every registered gate.
+- **Omit the subject** → run that action across every subject. `check` is the whole-repository static sweep; `test` is the whole unit suite.
 - **Omit the modifier** → the umbrella for that subject.
 
 Every meaningful collapse should exist, so the obvious thing to type works.
 
-## The check sweep
+## Check and verification
 
-`check` is the fully collapsed quality alias and the only command a contributor must remember before handoff. It is not an `&&` chain: `scripts/repositoryCheck.ts` registers every gate and runs all of them, because these gates are independent and stopping at the first failure hides the rest. A gate whose inputs depend on an earlier step guards its own inputs instead — `pack:check` builds before it inspects the tarball, so it can never report health for a stale `dist/`.
+`check` is the fully collapsed static-correctness alias. It covers repository and export structure, documentation, formatting, linting, source order, license provenance, public API shape, and type checking without entering any unit, coverage, target-toolchain, oracle, or package-artifact lane. `test` owns the unit suite and runs it once without coverage instrumentation.
 
-The pre-push hook invokes `npm run check:push`, a static profile of the same registry. It keeps the independent-gate reporting behavior while omitting type checking, isolated tests, aggregate coverage, emitted-source compilation, behavioral oracles, and packaging. Those slower lanes still belong to the complete handoff sweep; repeating them on every push made the hook expensive enough to invite routine bypass.
+`verify` is the explicit complete composition. It selects every gate registered by `scripts/repositoryCheck.ts`, including the static checks, isolated and coverage test lanes, emitted-source compilation, behavioral oracles, and package assembly. It is not an `&&` chain: every selected gate runs because stopping at the first independent failure hides the rest. A gate whose inputs depend on an earlier step guards its own inputs instead — `pack:check` builds before it inspects the tarball, so it can never report health for a stale `dist/`.
+
+The pre-push hook invokes `npm run check:push`, a shorter profile of the same registry that omits the workspace typecheck. Repeating the test and artifact lanes—or even the repository-wide typecheck—on every push made the hook expensive enough to invite routine bypass.
 
 Registering the same gate label twice throws rather than running it twice, because a doubled stage is invisible in a green sweep. See [`scripts/checkGateRegistry.ts`](../../scripts/checkGateRegistry.ts).
 
-`ci` is `clean` plus `check`: the same sweep from a cold tree.
+`ci` is `clean` plus `verify`: the complete sweep from a cold tree.
 
 ## Read versus write
 
@@ -67,28 +69,29 @@ A citation written as a bare backticked script name with no `npm run` lead is re
 
 ## Current surface
 
-| script                    | meaning                                                                         |
-| ------------------------- | ------------------------------------------------------------------------------- |
-| `check`                   | the whole-repository sweep; every gate runs and failures are reported together  |
-| `check:push`              | static pre-push profile; omits typecheck, tests, target toolchains, and packing |
-| `ci`                      | `clean` then `check`                                                            |
-| `fix`                     | apply lint fixes and formatting                                                 |
-| `format` / `format:check` | write formatting / fail on unformatted files                                    |
-| `lint` / `lint:fix`       | report lint findings / write fixes                                              |
-| `typecheck`               | strict no-emit check for the root and every workspace                           |
-| `packages:check`          | manifests, layout, dependency direction, naming, and facade completeness        |
-| `exports:check`           | one colocated test per source and one `describe()` per exported function        |
-| `docs:check`              | bounded codebase map, Claude pointer, local links, and command citations        |
-| `order` / `order:check`   | rewrite import blocks / report import and exported-function order               |
-| `test` / `test:watch`     | run the aggregate suite once / in watch mode                                    |
-| `test:packages`           | run every workspace in isolation, proving package boundaries                    |
-| `test:coverage`           | run the aggregate suite with instrumentation against the coverage ratchets      |
-| `build`                   | clean stale output and assemble the public artifact                             |
-| `pack:check`              | build fresh, then inspect the publishable tarball                               |
-| `clean` / `clean:dist`    | remove generated output / remove distribution output only                       |
-| `mutation`                | report surviving mutants for one package; a worklist, not a gate                |
-| `untested`                | list branch and statement arms no test took in one package; also not a gate     |
-| `license:check`           | licensed text outside the named exemptions                                      |
-| `api` / `api:check`       | rewrite the published API report / fail when it no longer matches the facade    |
-| `golden` / `golden:check` | rewrite emission fixtures / compare emitted output byte for byte                |
-| `smoke`                   | install the packed tarball as a consumer and compile through it (nightly)       |
+| script                    | meaning                                                                      |
+| ------------------------- | ---------------------------------------------------------------------------- |
+| `check`                   | static repository correctness, including typecheck                           |
+| `check:push`              | shorter pre-push static profile; omits the workspace typecheck               |
+| `verify`                  | every registered static, test, coverage, target, oracle, and artifact gate   |
+| `ci`                      | `clean` then `verify`                                                        |
+| `fix`                     | apply lint fixes and formatting                                              |
+| `format` / `format:check` | write formatting / fail on unformatted files                                 |
+| `lint` / `lint:fix`       | report lint findings / write fixes                                           |
+| `typecheck`               | strict no-emit check for the root and every workspace                        |
+| `packages:check`          | manifests, layout, dependency direction, naming, and facade completeness     |
+| `exports:check`           | one colocated test per source and one `describe()` per exported function     |
+| `docs:check`              | bounded codebase map, Claude pointer, local links, and command citations     |
+| `order` / `order:check`   | rewrite import blocks / report import and exported-function order            |
+| `test` / `test:watch`     | run the aggregate suite once / in watch mode                                 |
+| `test:packages`           | run every workspace in isolation, proving package boundaries                 |
+| `test:coverage`           | run the aggregate suite with instrumentation against the coverage ratchets   |
+| `build`                   | clean stale output and assemble the public artifact                          |
+| `pack:check`              | build fresh, then inspect the publishable tarball                            |
+| `clean` / `clean:dist`    | remove generated output / remove distribution output only                    |
+| `mutation`                | report surviving mutants for one package; a worklist, not a gate             |
+| `untested`                | list branch and statement arms no test took in one package; also not a gate  |
+| `license:check`           | licensed text outside the named exemptions                                   |
+| `api` / `api:check`       | rewrite the published API report / fail when it no longer matches the facade |
+| `golden` / `golden:check` | rewrite emission fixtures / compare emitted output byte for byte             |
+| `smoke`                   | install the packed tarball as a consumer and compile through it (nightly)    |
