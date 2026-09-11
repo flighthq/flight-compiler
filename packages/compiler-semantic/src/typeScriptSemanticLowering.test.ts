@@ -4093,7 +4093,6 @@ describe('lowerTypeScriptSource', () => {
     });
     expect(initializer?.kind === 'conditional' ? initializer.whenTrue : undefined).toMatchObject({
       kind: 'identifier',
-      narrowedMember: 'Readonly',
     });
   });
 

@@ -593,11 +593,24 @@ function validateIdentityModuleResolutionPlan(resolution: Readonly<CompilerModul
   if (!resolution || resolution.schema !== 'flight-compiler-module-resolution/1' || !Array.isArray(resolution.edges)) {
     throw new TypeError('Type value identity module resolution plan is invalid');
   }
-  const specifiers = new Set<string>();
+  const importedNamesBySpecifier = new Map<string, ReadonlySet<string> | undefined>();
   for (const edge of resolution.edges) {
     const importer = edge?.importer;
     const importerKey = importer ? getIdentityModuleKey(importer) : '';
     const resolutionKey = `${importerKey}\0${edge?.specifier ?? ''}`;
+    const importedNamesValid =
+      edge?.importedNames === undefined ||
+      (Array.isArray(edge.importedNames) &&
+        edge.importedNames.length > 0 &&
+        edge.importedNames.every((name) => typeof name === 'string' && name.length > 0) &&
+        new Set(edge.importedNames).size === edge.importedNames.length);
+    const importedNames = edge?.importedNames ? new Set(edge.importedNames) : undefined;
+    const priorNames = importedNamesBySpecifier.get(resolutionKey);
+    const duplicate =
+      importedNamesBySpecifier.has(resolutionKey) &&
+      (priorNames === undefined ||
+        importedNames === undefined ||
+        [...importedNames].some((name) => priorNames.has(name)));
     if (
       !edge ||
       typeof edge.specifier !== 'string' ||
@@ -614,11 +627,15 @@ function validateIdentityModuleResolutionPlan(resolution: Readonly<CompilerModul
           importer.source.length === 0 ||
           typeof importer.name !== 'string' ||
           importer.name.length === 0)) ||
-      specifiers.has(resolutionKey)
+      !importedNamesValid ||
+      duplicate
     ) {
       throw new TypeError('Type value identity module resolution plan contains an invalid or duplicate edge');
     }
-    specifiers.add(resolutionKey);
+    importedNamesBySpecifier.set(
+      resolutionKey,
+      importedNames === undefined ? undefined : new Set([...(priorNames ?? []), ...importedNames]),
+    );
   }
 }
 

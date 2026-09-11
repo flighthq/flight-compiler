@@ -32,7 +32,7 @@ export interface IrNullishComparisonEvidence {
   readonly literal: 'null' | 'undefined';
 }
 
-// Proof that one equality comparison is exactly a test for one member of a closed union binding.
+// Proof that one equality or instanceof comparison is exactly a test for one member of a closed union binding.
 // The source checker decides the member: targets may elect a tagged representation without
 // rediscovering TypeScript control flow from expression spelling.
 export interface IrUnionMemberTestEvidence {

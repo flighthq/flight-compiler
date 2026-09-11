@@ -527,6 +527,7 @@ function lowerIrStatementSwitchFallthrough(
         : statement;
     case 'switch': {
       const cases = statement.cases.map((switchCase) => ({
+        ...switchCase,
         ...(switchCase.expression
           ? { expression: lowerIrExpressionSwitchFallthrough(switchCase.expression, sourceIdentity) }
           : {}),
@@ -681,7 +682,7 @@ function createIrSwitchStateMachineFallthrough(
       );
       statements.push({ kind: 'break' });
     }
-    return { expression: { kind: 'literal', value: index }, statements };
+    return { ...switchCase, expression: { kind: 'literal', value: index }, statements };
   });
   return {
     kind: 'block',

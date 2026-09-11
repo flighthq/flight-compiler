@@ -94,6 +94,7 @@ import {
 } from './compilerTypeScriptSyntacticTypeEvidence.js';
 
 interface LoweringContext {
+  analysisModuleOptions: ReadonlyMap<string, Readonly<LowerTypeScriptSourceOptions>>;
   analysisSourceFiles: readonly ts.SourceFile[];
   bindingTypes: Map<ts.Symbol, IrType>;
   bindings: Map<ts.Symbol, IrBindingIdentity>;
@@ -129,7 +130,13 @@ export function lowerTypeScriptSource(
   options: Readonly<LowerTypeScriptSourceOptions>,
 ): TypeScriptLoweringResult {
   const analysis = createTypeScriptAnalysis([{ ...options, sourceFile }], compilerEmptyModuleResolutionPlan);
-  return lowerTypeScriptSourceWithAnalysis(analysis.sourceFiles[0]!, options, analysis.checker, analysis.sourceFiles);
+  return lowerTypeScriptSourceWithAnalysis(
+    analysis.sourceFiles[0]!,
+    options,
+    analysis.checker,
+    analysis.sourceFiles,
+    new Map([[sourceFile.fileName, options]]),
+  );
 }
 
 export function lowerTypeScriptSources(
@@ -137,8 +144,20 @@ export function lowerTypeScriptSources(
   moduleResolution: Readonly<CompilerModuleResolutionPlan> = compilerEmptyModuleResolutionPlan,
 ): readonly TypeScriptLoweringResult[] {
   const analysis = createTypeScriptAnalysis(sources, moduleResolution);
+  const analysisModuleOptions = new Map(
+    sources.map(({ packageName, sourceFile, upstreamDirectory }) => [
+      sourceFile.fileName,
+      { packageName, upstreamDirectory },
+    ]),
+  );
   return sources.map((source, index) =>
-    lowerTypeScriptSourceWithAnalysis(analysis.sourceFiles[index]!, source, analysis.checker, analysis.sourceFiles),
+    lowerTypeScriptSourceWithAnalysis(
+      analysis.sourceFiles[index]!,
+      source,
+      analysis.checker,
+      analysis.sourceFiles,
+      analysisModuleOptions,
+    ),
   );
 }
 
@@ -147,8 +166,10 @@ function lowerTypeScriptSourceWithAnalysis(
   options: Readonly<LowerTypeScriptSourceOptions>,
   checker: ts.TypeChecker,
   analysisSourceFiles: readonly ts.SourceFile[],
+  analysisModuleOptions: ReadonlyMap<string, Readonly<LowerTypeScriptSourceOptions>>,
 ): TypeScriptLoweringResult {
   const context: LoweringContext = {
+    analysisModuleOptions,
     analysisSourceFiles,
     bindingTypes: new Map(),
     bindings: new Map(),
@@ -1706,6 +1727,15 @@ function getIrTypeConstructionTargetShape(
   context: LoweringContext,
   seen: ReadonlySet<string> = new Set(),
 ): IrType | undefined {
+  if (
+    type?.kind === 'named' &&
+    type.reference.kind === 'ambient' &&
+    (type.reference.name === 'Readonly' || type.reference.name === 'Required') &&
+    type.typeArguments.length === 1 &&
+    type.typeArguments[0]
+  ) {
+    return getIrTypeConstructionTargetShape(type.typeArguments[0], context, seen);
+  }
   if (type?.kind === 'union') {
     const inhabited = type.types.filter((member) => member.kind !== 'null' && member.kind !== 'undefined');
     if (inhabited.length === 1) return getIrTypeConstructionTargetShape(inhabited[0], context, seen);
@@ -1720,18 +1750,28 @@ function getIrTypeConstructionTargetShape(
     return type;
   }
   const bindingId = type.reference.binding.id;
-  const symbol = [...context.typeBindings].find(([, binding]) => binding.id === bindingId)?.[0];
-  const declaration = symbol?.declarations?.find(
-    (candidate): candidate is ts.InterfaceDeclaration | ts.TypeAliasDeclaration =>
-      ts.isInterfaceDeclaration(candidate) || ts.isTypeAliasDeclaration(candidate),
-  );
+  const declaration = [...context.typeBindings]
+    .filter(([, binding]) => binding.id === bindingId)
+    .flatMap(([symbol]) => symbol.declarations ?? [])
+    .find(
+      (candidate): candidate is ts.InterfaceDeclaration | ts.TypeAliasDeclaration =>
+        ts.isInterfaceDeclaration(candidate) || ts.isTypeAliasDeclaration(candidate),
+    );
   if (!declaration) return type;
+  const declarationSourceFile = declaration.getSourceFile();
+  const declarationOptions = context.analysisModuleOptions.get(declarationSourceFile.fileName);
+  const declarationContext = declarationOptions
+    ? { ...context, options: declarationOptions, sourceFile: declarationSourceFile }
+    : context;
   const unresolved = ts.isInterfaceDeclaration(declaration)
-    ? ({ kind: 'object', properties: lowerTypeProperties(declaration.members, context) } as const)
-    : lowerType(declaration.type, context);
+    ? ({ kind: 'object', properties: lowerTypeProperties(declaration.members, declarationContext) } as const)
+    : lowerType(declaration.type, declarationContext);
   const resolved = resolveIrTypeStructuralSubstitution(
     unresolved,
-    createIrTypeParameterSubstitutionPlan(lowerTypeParameters(declaration.typeParameters, context), type.typeArguments),
+    createIrTypeParameterSubstitutionPlan(
+      lowerTypeParameters(declaration.typeParameters, declarationContext),
+      type.typeArguments,
+    ),
   );
   const nextSeen = new Set(seen);
   nextSeen.add(bindingId);
@@ -4259,17 +4299,28 @@ function getTypeScriptInstanceofUnionMemberTestEvidence(
   if (!ts.isIdentifier(subject)) return undefined;
   const source = getTypeScriptUnionBindingEvidence(subject, context);
   if (!source) return undefined;
-  const constructed = context.checker
-    .getTypeAtLocation(constructor)
-    .getConstructSignatures()
-    .map((signature) => signature.getReturnType());
-  if (constructed.length === 0) return undefined;
-  const members = source.type.types.filter((member) =>
-    constructed.some((instance) => context.checker.isTypeAssignableTo(member, instance)),
+  const constructorName = ts.isIdentifier(constructor) ? constructor.text : undefined;
+  if (!constructorName) return undefined;
+  const members = source.type.types.filter(
+    (member) => getTypeScriptInstanceofIrTypeName(member, context) === constructorName,
   );
   if (members.length !== 1) return undefined;
-  const member = getTypeScriptCheckerTypeEvidence(members[0]!, context, 0);
-  return member ? { binding: source.binding, member, whenResult: true } : undefined;
+  return { binding: source.binding, member: members[0]!, whenResult: true };
+}
+
+function getTypeScriptInstanceofIrTypeName(type: Readonly<IrType>, context: LoweringContext): string | undefined {
+  if (
+    type.kind === 'named' &&
+    type.reference.kind === 'ambient' &&
+    (type.reference.name === 'Readonly' || type.reference.name === 'Required') &&
+    type.typeArguments.length === 1 &&
+    type.typeArguments[0]
+  ) {
+    return getTypeScriptInstanceofIrTypeName(type.typeArguments[0], context);
+  }
+  const resolved = getIrTypeConstructionTargetShape(type, context);
+  if (resolved !== type) return getTypeScriptInstanceofIrTypeName(resolved, context);
+  return type.kind === 'named' && type.reference.kind === 'ambient' ? type.reference.name : undefined;
 }
 
 function getTypeScriptTypeofUnionMemberTestEvidence(
@@ -4283,10 +4334,17 @@ function getTypeScriptTypeofUnionMemberTestEvidence(
   if (!ts.isIdentifier(subject)) return undefined;
   const source = getTypeScriptUnionBindingEvidence(subject, context);
   if (!source) return undefined;
-  const members = source.type.types.filter((member) => getTypeScriptPrimitiveTypeName(member) === expected.text);
+  const members = source.type.types.filter((member) => getIrTypeTypeofName(member) === expected.text);
   if (members.length !== 1) return undefined;
-  const member = getTypeScriptCheckerTypeEvidence(members[0]!, context, 0);
-  return member ? { binding: source.binding, member, whenResult } : undefined;
+  return { binding: source.binding, member: members[0]!, whenResult };
+}
+
+function getIrTypeTypeofName(type: Readonly<IrType>): string | undefined {
+  if (type.kind === 'primitive') return type.name === 'void' ? 'undefined' : type.name;
+  if (type.kind === 'literal') return typeof type.value;
+  if (type.kind === 'undefined') return 'undefined';
+  if (type.kind === 'null') return 'object';
+  return undefined;
 }
 
 function getTypeScriptDiscriminantUnionMemberTestEvidence(
@@ -4301,32 +4359,27 @@ function getTypeScriptDiscriminantUnionMemberTestEvidence(
   if (!ts.isIdentifier(subject)) return undefined;
   const source = getTypeScriptUnionBindingEvidence(subject, context);
   if (!source) return undefined;
-  const members: ts.Type[] = [];
+  const members: IrType[] = [];
   for (const member of source.type.types) {
-    const property = context.checker.getPropertyOfType(member, test.name.text);
-    const declaration = property?.valueDeclaration ?? property?.declarations?.[0];
-    if (!property || !declaration) return undefined;
-    const propertyValue = getTypeScriptLiteralTypeValue(
-      context.checker.getTypeOfSymbolAtLocation(property, declaration),
-      context.checker,
-    );
+    const shape = getIrTypeConstructionTargetShape(member, context);
+    const property =
+      shape?.kind === 'object' ? shape.properties.find((candidate) => candidate.name === test.name.text) : undefined;
+    const propertyValue = property?.type.kind === 'literal' ? property.type.value : undefined;
     if (propertyValue === undefined) return undefined;
     if (Object.is(propertyValue, literal)) members.push(member);
   }
   if (members.length !== 1) return undefined;
-  const member = getTypeScriptCheckerTypeEvidence(members[0]!, context, 0);
-  return member ? { binding: source.binding, member, whenResult } : undefined;
+  return { binding: source.binding, member: members[0]!, whenResult };
 }
 
 function getTypeScriptUnionBindingEvidence(
   node: ts.Identifier,
   context: LoweringContext,
-): Readonly<{ binding: IrBindingIdentity; type: ts.UnionType }> | undefined {
+): Readonly<{ binding: IrBindingIdentity; type: Extract<IrType, { kind: 'union' }> }> | undefined {
   const symbol = context.checker.getSymbolAtLocation(node);
-  const declaration = symbol?.valueDeclaration ?? symbol?.declarations?.[0];
-  if (!symbol || !declaration) return undefined;
-  const type = context.checker.getTypeOfSymbolAtLocation(symbol, declaration);
-  if (!type.isUnion()) return undefined;
+  const declared = symbol ? context.bindingTypes.get(symbol) : undefined;
+  const type = declared ? getIrTypeConstructionTargetShape(declared, context) : undefined;
+  if (type?.kind !== 'union') return undefined;
   const reference = lowerIdentifierReference(node, context);
   return reference.kind === 'binding' ? { binding: reference.binding, type } : undefined;
 }
@@ -4342,15 +4395,6 @@ function getTypeScriptLiteralExpressionValue(expression: ts.Expression): boolean
     ts.isNumericLiteral(expression.operand)
   ) {
     return -Number(expression.operand.text.replaceAll('_', ''));
-  }
-  return undefined;
-}
-
-function getTypeScriptLiteralTypeValue(type: ts.Type, checker: ts.TypeChecker): boolean | number | string | undefined {
-  if (type.isStringLiteral() || type.isNumberLiteral()) return type.value;
-  if (type.flags & ts.TypeFlags.BooleanLiteral) {
-    const value = checker.typeToString(type);
-    return value === 'true' ? true : value === 'false' ? false : undefined;
   }
   return undefined;
 }

@@ -122,6 +122,7 @@ interface EmitContext {
   referenceRepresentationPlanner: CompilerCppReferenceRepresentationPlanner;
   returnsAbsent: boolean;
   sharedCaptureTargetNames: ReadonlyMap<string, string>;
+  sourceModules: readonly Readonly<IrModule>[];
   targetNames: ReadonlyMap<string, string>;
   uninitializedCaptureStorageBindingIds: ReadonlySet<string>;
   generatedNames: Set<string>;
@@ -231,6 +232,7 @@ function emitIrModuleCppWithContext(
         : createIrTypeReferenceRepresentationPlannerCpp(sourceModules)),
     returnsAbsent: false,
     sharedCaptureTargetNames,
+    sourceModules,
     targetNames,
     uninitializedCaptureStorageBindingIds,
     generatedNames: new Set(targetNames.values()),
@@ -1177,8 +1179,18 @@ function emitExpression(
         `static_cast<${emitType(expression.type, context)}>(${emitExpression(expression.expression, context)})`
       );
     }
-    case 'conditional':
-      return `(${emitExpression(expression.condition, context)} ? ${emitExpression(expression.whenTrue, context, expectedType)} : ${emitExpression(expression.whenFalse, context, expectedType)})`;
+    case 'conditional': {
+      const evidence =
+        expression.condition.kind === 'binary' ? expression.condition.semantics.unionMemberTest : undefined;
+      const branchContext = (result: boolean): EmitContext =>
+        evidence?.whenResult === result
+          ? {
+              ...context,
+              narrowedBindingTypes: new Map(context.narrowedBindingTypes).set(evidence.binding.id, evidence.member),
+            }
+          : context;
+      return `(${emitExpression(expression.condition, context)} ? ${emitExpression(expression.whenTrue, branchContext(true), expectedType)} : ${emitExpression(expression.whenFalse, branchContext(false), expectedType)})`;
+    }
     case 'element': {
       if (expression.optional) return emitOptionalElementExpressionCpp(expression, context);
       const computedProperty = emitComputedSymbolElementAccessCpp(expression, context);
@@ -1436,6 +1448,7 @@ function emitExpression(
         expression.object.kind === 'identifier' &&
         expression.object.reference.kind === 'binding' &&
         !expression.object.narrowedMember &&
+        !context.narrowedBindingTypes.has(expression.object.reference.binding.id) &&
         getIrBindingVariantUnionTypeCpp(expression.object.reference.binding.id, context)
       ) {
         emissionError(context, `property ${expression.name} on a C++ variant requires proven union member access`);
@@ -2636,7 +2649,7 @@ function emitUnionMemberAssertionCpp(
   if (expression.kind !== 'identifier' || expression.reference.kind !== 'binding') return undefined;
   const union = getIrBindingVariantUnionTypeCpp(expression.reference.binding.id, context);
   if (!union) return undefined;
-  const representation = getCppVariantRepresentation(union, context);
+  const representation = getCppVariantRepresentationForInspection(union, context);
   const alternatives = representation.alternatives.filter((alternative) =>
     alternative.members.some((member) => isDeepStrictEqual(member, assertedType)),
   );
@@ -2644,22 +2657,23 @@ function emitUnionMemberAssertionCpp(
     emissionError(context, 'type assertion target must identify exactly one C++ variant alternative');
   }
   if (representation.direct) return emitIdentifierReference(expression.reference, context);
-  return `std::get<${alternatives[0]!.targetType}>(${emitIdentifierReference(expression.reference, context)})`;
+  return `std::get<${String(representation.alternatives.indexOf(alternatives[0]!))}>(${emitIdentifierReference(expression.reference, context)})`;
 }
 
 function emitUnionMemberTestCpp(evidence: Readonly<IrUnionMemberTestEvidence>, context: EmitContext): string {
   const union = getIrBindingVariantUnionTypeCpp(evidence.binding.id, context);
   if (!union) emissionError(context, 'union member test requires a C++ variant binding');
-  const representation = getCppVariantRepresentation(union, context);
+  const representation = getCppVariantRepresentationForInspection(union, context);
   const alternatives = representation.alternatives.filter((alternative) =>
     doesCppVariantAlternativeMatchType(alternative, evidence.member, context),
   );
   if (alternatives.length !== 1) {
     emissionError(context, 'union member test must identify exactly one C++ variant alternative');
   }
+  const alternativeIndex = representation.alternatives.indexOf(alternatives[0]!);
   const test = representation.direct
     ? 'true'
-    : `std::holds_alternative<${alternatives[0]!.targetType}>(${emitBindingValueCpp(evidence.binding, context)})`;
+    : `${emitBindingValueCpp(evidence.binding, context)}.index() == ${String(alternativeIndex)}`;
   return evidence.whenResult ? test : `!${test}`;
 }
 
@@ -2670,7 +2684,12 @@ function doesCppVariantAlternativeMatchType(
 ): boolean {
   return (
     alternative.members.some((member) => isDeepStrictEqual(member, type)) ||
-    alternative.targetType === emitType(type, context)
+    alternative.targetType ===
+      emitType(type, {
+        ...context,
+        anonymousStructs: new Map(),
+        includes: new Set(),
+      })
   );
 }
 
@@ -2688,7 +2707,7 @@ function emitCppVariantCommonPropertyExpression(
   }
   const union = getIrBindingVariantUnionTypeCpp(expression.object.reference.binding.id, context);
   if (!union) return undefined;
-  const representation = getCppVariantRepresentation(union, context);
+  const representation = getCppVariantRepresentationForInspection(union, context);
   if (representation.direct) return undefined;
   const propertyTypes = representation.alternatives.flatMap((alternative) =>
     alternative.members.map((member) => getIrObjectPropertyTypeCpp(member, expression.name, context)),
@@ -2716,7 +2735,7 @@ function emitNarrowedUnionMemberCpp(
   if (!expression.narrowedMember && !narrowedType) return undefined;
   const union = getIrBindingVariantUnionTypeCpp(expression.reference.binding.id, context);
   if (!union) return undefined;
-  const representation = getCppVariantRepresentation(union, context);
+  const representation = getCppVariantRepresentationForInspection(union, context);
   const alternatives = representation.alternatives.filter((alternative) =>
     narrowedType
       ? doesCppVariantAlternativeMatchType(alternative, narrowedType, context)
@@ -2729,7 +2748,7 @@ function emitNarrowedUnionMemberCpp(
     );
   }
   if (representation.direct) return emitIdentifierReference(expression.reference, context);
-  return `std::get<${alternatives[0]!.targetType}>(${emitIdentifierReference(expression.reference, context)})`;
+  return `std::get<${String(representation.alternatives.indexOf(alternatives[0]!))}>(${emitIdentifierReference(expression.reference, context)})`;
 }
 
 function getCppVariantRepresentation(
@@ -2749,6 +2768,17 @@ function getCppVariantRepresentation(
     })),
     direct: plan.kind === 'singleValue',
   };
+}
+
+function getCppVariantRepresentationForInspection(
+  type: Readonly<Extract<IrType, { kind: 'union' }>>,
+  context: EmitContext,
+): CppVariantRepresentation {
+  return getCppVariantRepresentation(type, {
+    ...context,
+    anonymousStructs: new Map(),
+    includes: new Set(),
+  });
 }
 
 function getCppUnionRepresentationPlan(
@@ -3410,6 +3440,8 @@ function getIrExpressionTypeEvidenceCpp(
       }
       if (expression.reference.kind !== 'binding') return undefined;
       const declaredType = getCppBindingTypeCpp(expression.reference.binding.id, context);
+      const narrowedType = context.narrowedBindingTypes.get(expression.reference.binding.id);
+      if (narrowedType) return narrowedType;
       if (!declaredType || !expression.narrowedMember) return declaredType;
       return (
         getIrUnionTypeCpp(declaredType, context, new Set())?.types.find(
@@ -4285,14 +4317,29 @@ function hasIndexedRuntimeReceiverCpp(
 
 function hasSharedReferentRepresentationCpp(type: Readonly<IrType>, context: EmitContext): boolean {
   if (getCppRuntimeProfile(context.options) !== 'flight-cpp') return false;
-  const plan = context.referenceRepresentationPlanner.plan(type, context.module);
+  const identityPreserving = getCppIdentityPreservingUtilityArgument(type);
+  if (identityPreserving) return hasSharedReferentRepresentationCpp(identityPreserving, context);
+  const owner = getCppDirectBindingOwner(type, context);
+  const plan = context.referenceRepresentationPlanner.plan(type, owner?.module ?? context.module);
   return plan.kind === 'represented' && plan.valueRepresentation !== 'inlineValue';
 }
 
 function hasFlightReferenceRepresentationCpp(type: Readonly<IrType>, context: EmitContext): boolean {
   if (getCppRuntimeProfile(context.options) !== 'flight-cpp') return false;
-  const plan = context.referenceRepresentationPlanner.plan(type, context.module);
+  const identityPreserving = getCppIdentityPreservingUtilityArgument(type);
+  if (identityPreserving) return hasFlightReferenceRepresentationCpp(identityPreserving, context);
+  const owner = getCppDirectBindingOwner(type, context);
+  const plan = context.referenceRepresentationPlanner.plan(type, owner?.module ?? context.module);
   return plan.kind === 'represented' && plan.valueRepresentation === 'flightReference';
+}
+
+function getCppIdentityPreservingUtilityArgument(type: Readonly<IrType>): Readonly<IrType> | undefined {
+  return type.kind === 'named' &&
+    type.reference.kind === 'ambient' &&
+    (type.reference.name === 'Readonly' || type.reference.name === 'Required') &&
+    type.typeArguments.length === 1
+    ? type.typeArguments[0]
+    : undefined;
 }
 
 function getExpectedReturnTypeCpp(context: EmitContext): Readonly<IrType> | undefined {
@@ -4799,7 +4846,28 @@ function getTypeReferenceTargetName(type: Readonly<IrType & { kind: 'named' }>, 
   }
   const imported = getCppImportedBindingTargetName(type.reference.binding.id, type.reference.path, context);
   if (imported) return imported;
+  const owner = getCppDirectBindingOwner(type, context);
+  if (owner && owner.module.packageName !== context.module.packageName) {
+    const targetName =
+      createCppTargetNameMap(owner.module).get(type.reference.binding.id) ?? pascalCase(type.reference.binding.name);
+    return `${getCppCompilerPackageNamespace(owner.module.packageName, context.options.packageTargets)}::${targetName}`;
+  }
   return context.targetNames.get(type.reference.binding.id) ?? pascalCase(type.reference.binding.name);
+}
+
+function getCppDirectBindingOwner(
+  type: Readonly<IrType>,
+  context: EmitContext,
+): Readonly<{ declaration: IrDeclaration; module: IrModule }> | undefined {
+  if (type.kind !== 'named' || type.reference.kind !== 'binding' || type.reference.binding.kind === 'import') {
+    return undefined;
+  }
+  const matches = context.sourceModules.flatMap((module) =>
+    module.declarations.flatMap((declaration) =>
+      'binding' in declaration && declaration.binding.id === type.reference.binding.id ? [{ declaration, module }] : [],
+    ),
+  );
+  return matches.length === 1 ? matches[0] : undefined;
 }
 
 function getCppEquivalentImportedTypeCpp(type: Readonly<IrType>, context: EmitContext): IrType | undefined {

@@ -467,9 +467,15 @@ function visitExpression(expression: Readonly<IrExpression>, path: string, state
           expression.operator !== '==' &&
           expression.operator !== '===' &&
           expression.operator !== '!=' &&
-          expression.operator !== '!=='
+          expression.operator !== '!==' &&
+          expression.operator !== 'instanceof'
         ) {
-          addFailure('invalid-node-shape', testPath, 'union member test evidence requires an equality operator', state);
+          addFailure(
+            'invalid-node-shape',
+            testPath,
+            'union member test evidence requires an equality or instanceof operator',
+            state,
+          );
         }
         if (typeof test.whenResult !== 'boolean') {
           addFailure('invalid-node-shape', `${testPath}.whenResult`, 'union member test result must be boolean', state);

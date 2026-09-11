@@ -184,8 +184,10 @@ describe('createCppCompilerBackend', () => {
     const aliases = session.emitModule(types)[0]!.contents;
     const emitted = session.emitModule(consumer)[0]!.contents;
 
-    expect(aliases.match(/template <typename Reason>/gu)).toHaveLength(2);
-    expect(aliases).toMatch(/using Outcome = std::variant<[^;]*<Reason>[^;]*<Reason>>;/u);
+    expect(aliases.match(/template <typename Reason>/gu)).toHaveLength(3);
+    expect(aliases).toContain(
+      'using Outcome = std::variant<flight::Ref<reason_1<Reason>>, flight::Ref<reason<Reason>>>;',
+    );
     expect(emitted).toContain('flighthq_types::Outcome<flight::String> accept(');
     expect(emitted).not.toContain('flight::Ref<flighthq_types::Outcome');
   });
@@ -272,26 +274,64 @@ describe('createCppCompilerBackend', () => {
   });
 
   it('projects common variant properties and narrows structural switch cases', () => {
-    const types = lowerPackage(
-      '@flighthq/types',
-      'update.ts',
-      "export interface DownloadedUpdate { readonly version: string } export type Outcome = Readonly<{ readonly reason: 'downloaded'; readonly update: DownloadedUpdate }> | Readonly<{ readonly reason: 'missing' }> ;",
-    ).module;
-    const consumer = lowerPackage(
-      '@flighthq/updater',
-      'updater.ts',
-      `import type { Outcome } from '@flighthq/types';
-       export function version(outcome: Outcome): string {
-         switch (outcome.reason) {
-           case 'downloaded': return outcome.update.version;
-           default: return '';
-         }
-       }`,
-    ).module;
     const moduleResolution: CompilerModuleResolutionPlan = {
-      edges: [{ specifier: '@flighthq/types', target: { packageName: types.packageName, source: types.source } }],
+      edges: [
+        {
+          specifier: '@flighthq/types',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/update.ts' },
+        },
+      ],
       schema: 'flight-compiler-module-resolution/1',
     };
+    const [typesResult, consumerResult] = lowerTypeScriptSources(
+      [
+        {
+          packageName: '@flighthq/types',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/types/src/update.ts',
+            "export interface DownloadedUpdate { readonly version: string } export type Outcome = Readonly<{ readonly reason: 'downloaded'; readonly update: DownloadedUpdate }> | Readonly<{ readonly reason: 'missing' }> ;",
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+        {
+          packageName: '@flighthq/updater',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/updater/src/updater.ts',
+            `import type { Outcome } from '@flighthq/types';
+             export function version(outcome: Outcome): string {
+               switch (outcome.reason) {
+                 case 'downloaded': return outcome.update.version;
+                 default: return '';
+               }
+             }`,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+      ],
+      moduleResolution,
+    );
+    expect(typesResult?.diagnostics).toEqual([]);
+    expect(consumerResult?.diagnostics).toEqual([]);
+    const types = typesResult!.module;
+    const consumer = consumerResult!.module;
+    const version = consumer.declarations.find(
+      (declaration) => declaration.kind === 'function' && declaration.binding.name === 'version',
+    );
+    const switchStatement = version?.kind === 'function' ? version.body[0] : undefined;
+    expect(switchStatement?.kind === 'switch' ? switchStatement.cases[0]?.unionMemberTest : undefined).toMatchObject({
+      binding: { name: 'outcome' },
+      whenResult: true,
+    });
+    const outcome = types.declarations.find(
+      (declaration) => declaration.kind === 'typeAlias' && declaration.binding.name === 'Outcome',
+    );
+    expect(switchStatement?.kind === 'switch' ? switchStatement.cases[0]?.unionMemberTest?.member : undefined).toEqual(
+      outcome?.kind === 'typeAlias' && outcome.type.kind === 'union' ? outcome.type.types[0] : undefined,
+    );
     const session = createCppCompilerBackend().createEmissionSession!({
       moduleResolution,
       modules: [consumer, types],
@@ -300,7 +340,8 @@ describe('createCppCompilerBackend', () => {
     const emitted = session.emitModule(consumer)[0]!.contents;
 
     expect(emitted).toContain('std::visit([](const auto& value) { return value->reason; }, outcome)');
-    expect(emitted).toMatch(/std::get<flight::Ref<[A-Za-z_]\w*>>\(outcome\)->update->version/u);
+    expect(emitted).toMatch(/std::get<\d+>\(outcome\)->update->version/u);
+    expect(emitted).not.toContain('struct reason_update');
   });
 
   it('uses the resolved module graph for imported reference representation', () => {
@@ -538,7 +579,7 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     );
 
     const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
-    expect(emitted.contents).toContain('std::holds_alternative<flight::Uint8Array>(data)');
+    expect(emitted.contents).toContain('data.index() == 1 ? std::get<1>(data)');
     expect(emitted.contents).toContain('static_cast<double>(bytes.byte_length())');
     expect(emitted.contents).toContain('static_cast<double>(data.byte_length())');
     expect(emitted.contents).not.toContain(' instanceof ');
@@ -6063,8 +6104,8 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
 
     expect(result.diagnostics).toEqual([]);
     expect(output).toContain('[]() {\n  for (auto value : values)');
-    expect(output).toContain('[]() {\n  if (total > 0.0)');
-    expect(output.indexOf('for (auto value : values)')).toBeLessThan(output.indexOf('if (total > 0.0)'));
+    expect(output).toContain('[]() {\n  if ((total > 0.0))');
+    expect(output.indexOf('for (auto value : values)')).toBeLessThan(output.indexOf('if ((total > 0.0))'));
     expect(output).not.toContain('inline const bool module_side_effect = [=]');
   });
 

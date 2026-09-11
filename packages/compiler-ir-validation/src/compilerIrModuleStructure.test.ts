@@ -158,12 +158,18 @@ describe('validateIrModuleStructure', () => {
     });
   });
 
-  it('validates union member test evidence, its binding, member type, and equality operator', () => {
+  it('validates union member test evidence, its binding, member type, and narrowing operator', () => {
     const valid = lower(
       'union-member-test.ts',
       `export function isText(value: string | number): boolean { return typeof value === 'string'; }`,
     );
     expect(validateIrModuleStructure(valid)).toEqual({ kind: 'valid' });
+
+    const validInstanceof = lower(
+      'instanceof-union-member-test.ts',
+      `export function isBytes(value: Uint8Array | ArrayBuffer): boolean { return value instanceof Uint8Array; }`,
+    );
+    expect(validateIrModuleStructure(validInstanceof)).toEqual({ kind: 'valid' });
 
     const invalidOperator = structuredClone(valid);
     const invalidResult = structuredClone(valid);
