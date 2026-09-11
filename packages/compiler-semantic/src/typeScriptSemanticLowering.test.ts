@@ -1610,6 +1610,69 @@ describe('lowerTypeScriptSource', () => {
     expect(result.diagnostics.map((diagnostic) => diagnostic.message)).toEqual(['unsupported type ConditionalType']);
   });
 
+  it('preserves the common object surface of generic Host capability conditionals', () => {
+    const result = lower(
+      'conditional-host-capabilities.ts',
+      `
+        declare const RuntimeKey: unique symbol;
+        interface Entity { [RuntimeKey]: object | undefined; }
+        interface HostAppCapabilities {
+          readonly badge?: () => void;
+          readonly dock?: () => void;
+          readonly focus?: () => void;
+          readonly hide?: () => void;
+          readonly name?: () => string;
+          readonly show?: () => void;
+          readonly version?: () => string;
+        }
+        type CommonAppCapabilities = Entity &
+          Required<Pick<HostAppCapabilities, 'name' | 'version'>>;
+        type AndroidAppCapabilities = CommonAppCapabilities &
+          Required<Pick<HostAppCapabilities, 'hide'>>;
+        type IosAppCapabilities = CommonAppCapabilities &
+          Required<Pick<HostAppCapabilities, 'show'>>;
+        export type MobileAppCapabilitiesFor<Profile extends 'android' | 'ios'> =
+          Profile extends 'android' ? AndroidAppCapabilities : IosAppCapabilities;
+        type MacosAppCapabilities = CommonAppCapabilities &
+          Required<Pick<HostAppCapabilities, 'dock'>>;
+        type WindowsAppCapabilities = CommonAppCapabilities &
+          Required<Pick<HostAppCapabilities, 'badge'>>;
+        type LinuxAppCapabilities = CommonAppCapabilities &
+          Required<Pick<HostAppCapabilities, 'focus'>>;
+        export type DesktopAppCapabilitiesFor<Profile extends 'linux' | 'macos' | 'windows'> =
+          Profile extends 'macos'
+            ? MacosAppCapabilities
+            : Profile extends 'windows'
+              ? WindowsAppCapabilities
+              : LinuxAppCapabilities;
+      `,
+    );
+    const declarations = new Map(
+      result.module.declarations.flatMap((declaration) =>
+        'binding' in declaration ? [[declaration.binding.name, declaration] as const] : [],
+      ),
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    for (const name of ['MobileAppCapabilitiesFor', 'DesktopAppCapabilitiesFor']) {
+      expect(declarations.get(name)).toMatchObject({
+        kind: 'typeAlias',
+        type: {
+          kind: 'object',
+          properties: [
+            {
+              computedKey: { binding: { name: 'RuntimeKey' }, kind: 'binding' },
+              name: 'RuntimeKey',
+              optional: false,
+            },
+            { name: 'name', optional: false, readonly: true },
+            { name: 'version', optional: false, readonly: true },
+          ],
+        },
+      });
+    }
+  });
+
   it('resolves checker-concrete indexed access while preserving generic type computation', () => {
     const result = lower(
       'indexed-access.ts',

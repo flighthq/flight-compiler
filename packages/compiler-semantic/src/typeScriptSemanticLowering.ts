@@ -2832,10 +2832,32 @@ function lowerTypeScriptConditionalRuntimeRepresentation(
   if (containsTypeScriptInferType(node)) return undefined;
   const branches = getTypeScriptConditionalInhabitedBranches(node);
   if (branches.length === 0) return { kind: 'never' };
+  const object = lowerTypeScriptConditionalCommonObjectEvidence(branches, context);
+  if (object) return object;
   const lowered = branches.map((branch) => lowerType(branch, context));
   const represented = lowered.map(getIrTypeRuntimeRepresentationSemantic);
   const first = represented[0]!;
   return represented.every((candidate) => JSON.stringify(candidate) === JSON.stringify(first)) ? first : undefined;
+}
+
+function lowerTypeScriptConditionalCommonObjectEvidence(
+  branches: readonly ts.TypeNode[],
+  context: LoweringContext,
+): Readonly<Extract<IrType, { kind: 'object' }>> | undefined {
+  const branchProperties = branches.map((branch) =>
+    lowerTypeScriptHeritageTypeNodeProperties(branch, context, new Set(), new Map()),
+  );
+  if (branchProperties.some((properties) => !properties)) return undefined;
+  const [first, ...rest] = branchProperties as readonly (readonly IrObjectTypeProperty[])[];
+  if (!first) return undefined;
+  const properties = first.filter((property) =>
+    rest.every((branch) =>
+      branch.some(
+        (candidate) => candidate.name === property.name && JSON.stringify(candidate) === JSON.stringify(property),
+      ),
+    ),
+  );
+  return properties.length > 0 ? { kind: 'object', properties } : undefined;
 }
 
 function getTypeScriptConditionalInhabitedBranches(node: ts.ConditionalTypeNode): ts.TypeNode[] {
@@ -3911,7 +3933,39 @@ function lowerTypeScriptHeritageTypeNodeProperties(
   if (ts.isParenthesizedTypeNode(type)) {
     return lowerTypeScriptHeritageTypeNodeProperties(type.type, context, seen, substitutions);
   }
+  if (ts.isIntersectionTypeNode(type)) {
+    const properties: IrObjectTypeProperty[] = [];
+    for (const member of type.types) {
+      const inherited = lowerTypeScriptHeritageTypeNodeProperties(member, context, seen, substitutions);
+      if (!inherited) return undefined;
+      for (const property of inherited) {
+        const existing = properties.find((candidate) => candidate.name === property.name);
+        if (!existing) properties.push(property);
+        else if (JSON.stringify(existing) !== JSON.stringify(property)) return undefined;
+      }
+    }
+    return properties;
+  }
   if (ts.isTypeReferenceNode(type)) {
+    const utility = ts.isIdentifier(type.typeName) ? type.typeName.text : undefined;
+    const subject = type.typeArguments?.[0];
+    if (subject && ['Omit', 'Partial', 'Pick', 'Readonly', 'Required'].includes(utility ?? '')) {
+      const properties = lowerTypeScriptHeritageTypeNodeProperties(subject, context, seen, substitutions);
+      if (!properties) return undefined;
+      if (utility === 'Pick' || utility === 'Omit') {
+        const keysType = type.typeArguments?.[1];
+        const keys = keysType ? getTypeScriptStringLiteralTypeValues(keysType, context, new Set()) : undefined;
+        if (!keys) return undefined;
+        const available = new Set(properties.map((property) => property.name));
+        if (keys.some((key) => !available.has(key))) return undefined;
+        const selected = new Set(keys);
+        return properties.filter((property) => (utility === 'Pick') === selected.has(property.name));
+      }
+      if (type.typeArguments?.length !== 1) return undefined;
+      if (utility === 'Partial') return properties.map((property) => ({ ...property, optional: true }));
+      if (utility === 'Readonly') return properties.map((property) => ({ ...property, readonly: true }));
+      if (utility === 'Required') return properties.map((property) => ({ ...property, optional: false }));
+    }
     const unresolved = context.checker.getSymbolAtLocation(type.typeName);
     const symbol =
       unresolved?.flags && unresolved.flags & ts.SymbolFlags.Alias
@@ -3939,9 +3993,7 @@ function lowerTypeScriptHeritageTypeNodeProperties(
       if (ts.isClassDeclaration(declaration)) {
         return lowerTypeScriptClassPropertiesEvidence(declaration, context, nextSeen, nextSubstitutions);
       }
-      return getTypeScriptHeritageObjectProperties(
-        lowerTypeScriptTypeNodeEvidence(declaration.type, context, nextSeen, nextSubstitutions),
-      );
+      return lowerTypeScriptHeritageTypeNodeProperties(declaration.type, context, nextSeen, nextSubstitutions);
     }
   }
   return getTypeScriptHeritageObjectProperties(lowerTypeScriptTypeNodeEvidence(type, context, seen, substitutions));
