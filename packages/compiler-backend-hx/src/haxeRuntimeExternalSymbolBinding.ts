@@ -41,6 +41,23 @@ export function createCompilerRuntimeExternalSymbolBindingPlanHaxe(): CompilerRu
   };
 }
 
+export function getCompilerAmbientUtilityHeritageTargetHaxe(
+  declaration: Readonly<IrInterfaceDeclaration>,
+): string | undefined {
+  if (declaration.properties.length > 0 || declaration.extends.length !== 1) return undefined;
+  const heritage = declaration.extends[0]!;
+  if (
+    heritage.reference.kind !== 'ambient' ||
+    heritage.reference.name !== 'Pick' ||
+    heritage.typeArguments.length !== 2
+  ) {
+    return undefined;
+  }
+  const target = heritage.typeArguments[0]!;
+  if (target.kind !== 'named' || target.reference.kind !== 'ambient') return undefined;
+  return getCompilerRuntimeExternalSymbolTargetHaxe(target.reference.name, 'type');
+}
+
 // Namespace-like ambient values have no Haxe value of their own. Their members decide the complete
 // target expression, so `Number.isFinite` can become `Math.isFinite` without making bare `Number`
 // look like a valid Haxe constructor.
@@ -64,23 +81,6 @@ export function getCompilerRuntimeExternalSymbolTargetHaxe(
   );
   if (!binding) return undefined;
   return binding.kind === 'runtime' ? `${runtimeModule}.${binding.targetName}` : binding.targetName;
-}
-
-export function getCompilerAmbientUtilityHeritageTargetHaxe(
-  declaration: Readonly<IrInterfaceDeclaration>,
-): string | undefined {
-  if (declaration.properties.length > 0 || declaration.extends.length !== 1) return undefined;
-  const heritage = declaration.extends[0]!;
-  if (
-    heritage.reference.kind !== 'ambient' ||
-    heritage.reference.name !== 'Pick' ||
-    heritage.typeArguments.length !== 2
-  ) {
-    return undefined;
-  }
-  const target = heritage.typeArguments[0]!;
-  if (target.kind !== 'named' || target.reference.kind !== 'ambient') return undefined;
-  return getCompilerRuntimeExternalSymbolTargetHaxe(target.reference.name, 'type');
 }
 
 const haxeRuntimeExternalSymbolBindings = [

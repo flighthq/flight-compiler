@@ -1,5 +1,7 @@
+import type { IrInterfaceDeclaration } from '../../compiler-types/src/index.js';
 import {
   createCompilerRuntimeExternalSymbolBindingPlanHaxe,
+  getCompilerAmbientUtilityHeritageTargetHaxe,
   getCompilerRuntimeExternalMemberTargetHaxe,
   getCompilerRuntimeExternalSymbolTargetHaxe,
 } from './haxeRuntimeExternalSymbolBinding.js';
@@ -66,6 +68,31 @@ describe('createCompilerRuntimeExternalSymbolBindingPlanHaxe', () => {
 
     (first.bindings as unknown[]).pop();
     expect(second.bindings).toHaveLength(99);
+  });
+});
+
+describe('getCompilerAmbientUtilityHeritageTargetHaxe', () => {
+  it('widens a propertyless WebGL Pick interface to its Haxe host type', () => {
+    const declaration = {
+      extends: [
+        {
+          kind: 'named',
+          reference: { kind: 'ambient', name: 'Pick' },
+          typeArguments: [
+            {
+              kind: 'named',
+              reference: { kind: 'ambient', name: 'WebGL2RenderingContext' },
+              typeArguments: [],
+            },
+            { kind: 'literal', value: 'bindVertexArray' },
+          ],
+        },
+      ],
+      properties: [],
+    } as unknown as IrInterfaceDeclaration;
+
+    expect(getCompilerAmbientUtilityHeritageTargetHaxe(declaration)).toBe('js.html.webgl.WebGL2RenderingContext');
+    expect(getCompilerAmbientUtilityHeritageTargetHaxe({ ...declaration, properties: [{}] } as never)).toBeUndefined();
   });
 });
 

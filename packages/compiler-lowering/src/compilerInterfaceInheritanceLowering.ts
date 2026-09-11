@@ -9,6 +9,7 @@ import {
   resolveIrTypeStructuralSubstitution,
 } from '../../compiler-structural/src/index.js';
 import type {
+  CompilerInterfaceInheritanceLoweringOptions,
   CompilerLoweringPass,
   CompilerModuleIdentity,
   CompilerModuleResolutionPlan,
@@ -36,12 +37,6 @@ interface InterfaceInheritanceLoweringContext {
   readonly moduleSet: InterfaceInheritanceModuleSet;
   readonly options: Readonly<CompilerInterfaceInheritanceLoweringOptions>;
   readonly subject: Readonly<IrModule>;
-}
-
-export interface CompilerInterfaceInheritanceLoweringOptions {
-  readonly eraseAmbientUtilityHeritage?:
-    | ((reference: Readonly<IrTypeReference>, declaration: Readonly<IrInterfaceDeclaration>) => boolean)
-    | undefined;
 }
 
 interface InterfaceInheritanceTypeImport {

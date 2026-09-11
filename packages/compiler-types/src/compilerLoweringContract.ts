@@ -1,5 +1,13 @@
+import type { IrInterfaceDeclaration } from './compilerDeclarationIntermediateRepresentation.js';
 import type { IrModule } from './compilerModuleIntermediateRepresentation.js';
 import type { CompilerSourceIdentity } from './compilerSourceIdentity.js';
+import type { IrTypeReference } from './compilerTypeIntermediateRepresentation.js';
+
+export interface CompilerInterfaceInheritanceLoweringOptions {
+  readonly eraseAmbientUtilityHeritage?:
+    | ((reference: Readonly<IrTypeReference>, declaration: Readonly<IrInterfaceDeclaration>) => boolean)
+    | undefined;
+}
 
 export type CompilerLoweringPassVerification =
   | Readonly<{ kind: 'valid' }>

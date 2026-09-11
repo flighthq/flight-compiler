@@ -1,1 +1,1 @@
-haxe emission failed for @flighthq/golden/packages/golden/src/dualSentinelUnion.ts: types containing both null and undefined require distinct Haxe sentinels
+haxe emission failed for @flighthq/golden/packages/golden/src/dualSentinelUnion.ts: operator === against null requires Haxe nullability lowering
