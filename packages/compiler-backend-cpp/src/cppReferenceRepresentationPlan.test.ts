@@ -303,6 +303,11 @@ describe('createIrTypeReferenceRepresentationPlannerCpp', () => {
           specifier: '@flighthq/models',
           target: { packageName: model.packageName, source: model.source },
         },
+        {
+          importer: { name: consumer.name, packageName: consumer.packageName, source: consumer.source },
+          specifier: '@flighthq/models',
+          target: { packageName: model.packageName, source: model.source },
+        },
       ],
       schema: 'flight-compiler-module-resolution/1',
     };
@@ -422,8 +427,18 @@ describe('createIrTypeReferenceRepresentationPlannerCpp', () => {
       kind: 'named',
       reference: { binding: { name: 'Shape' }, kind: 'binding' },
     });
+    expect(planner.resolveAlias(alias, module)).toEqual(planner.resolveAlias(alias, module));
+    expect(planner.resolveAlias(numberType, module)).toBeUndefined();
+    expect(planner.resolveModule('./missing.js', module)).toBeUndefined();
     expect(() => planner.plan(numberType, lower('other.ts', 'export const value = 1;'))).toThrow(
       'C++ reference representation subject must belong to the explicit module set',
+    );
+    const other = lower('other.ts', 'export const value = 1;');
+    expect(() => planner.resolveAlias(alias, other)).toThrow(
+      'C++ type-alias subject must belong to the explicit module set',
+    );
+    expect(() => planner.resolveModule('./snapshot.js', other)).toThrow(
+      'C++ module resolution subject must belong to the explicit module set',
     );
   });
 });
