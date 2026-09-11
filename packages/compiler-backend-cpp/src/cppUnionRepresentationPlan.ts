@@ -260,8 +260,25 @@ function freezeCppUnionRepresentationPlan(value: unknown, seen: WeakSet<object>)
 }
 
 function widenIrLiteralTypeCpp(type: Readonly<IrType>): Readonly<IrType> {
-  if (type.kind !== 'literal') return type;
-  if (typeof type.value === 'boolean') return { kind: 'primitive', name: 'boolean' };
-  if (typeof type.value === 'number') return { kind: 'primitive', name: 'number' };
-  return { kind: 'primitive', name: 'string' };
+  if (type.kind === 'literal') {
+    if (typeof type.value === 'boolean') return { kind: 'primitive', name: 'boolean' };
+    if (typeof type.value === 'number') return { kind: 'primitive', name: 'number' };
+    return { kind: 'primitive', name: 'string' };
+  }
+  if (type.kind === 'object') {
+    return {
+      ...type,
+      properties: type.properties.map((property) => ({ ...property, type: widenIrLiteralTypeCpp(property.type) })),
+    };
+  }
+  if (type.kind === 'union') {
+    const members = new Map<string, Readonly<IrType>>();
+    for (const member of type.types.map(widenIrLiteralTypeCpp)) {
+      members.set(normalizeCompilerStructuralValueCanonical(member), member);
+    }
+    const values = [...members.values()];
+    if (values.length === 1) return values[0]!;
+    return { kind: 'union', types: [values[0]!, values[1]!, ...values.slice(2)] };
+  }
+  return type;
 }

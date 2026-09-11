@@ -92,6 +92,30 @@ describe('createCppUnionRepresentationPlan', () => {
       ],
     });
 
+    const collapsedDiscriminants = createPlan(
+      union(
+        {
+          kind: 'object',
+          properties: [{ name: 'reason', optional: false, readonly: true, type: literal('ok') }],
+        },
+        {
+          kind: 'object',
+          properties: [
+            {
+              name: 'reason',
+              optional: false,
+              readonly: true,
+              type: union(literal('blocked'), literal('missing')),
+            },
+          ],
+        },
+      ),
+    );
+    expect(collapsedDiscriminants).toMatchObject({
+      kind: 'singleValue',
+      valueSlots: [{ sourceRelationship: 'runtimeEquivalent', targetType: 'object' }],
+    });
+
     const collision = createPlan(union(namedAmbient('First'), namedAmbient('Second')), new Map(), () => 'Same');
     expect(collision).toMatchObject({ kind: 'refused', reason: 'distinctRuntimeDomainsShareTargetType' });
     if (collision.kind !== 'refused') throw new Error('Expected an erased-distinction refusal');

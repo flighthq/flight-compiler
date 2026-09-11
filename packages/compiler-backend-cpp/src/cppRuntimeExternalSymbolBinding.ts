@@ -403,6 +403,13 @@ const cppFlightRuntimeExternalSymbolBindings = [
     targetName: 'flight::Map',
   },
   {
+    capability: 'set',
+    kind: 'runtime',
+    sourceName: 'ReadonlySet',
+    space: 'type',
+    targetName: 'flight::Set',
+  },
+  {
     headers: ['unordered_map'],
     kind: 'native',
     sourceName: 'Record',
@@ -627,6 +634,13 @@ const cppRuntimeExternalSymbolBindings = [
     sourceName: 'ReadonlyMap',
     space: 'type',
     targetName: 'std::unordered_map',
+  },
+  {
+    headers: ['unordered_set'],
+    kind: 'native',
+    sourceName: 'ReadonlySet',
+    space: 'type',
+    targetName: 'std::unordered_set',
   },
   {
     headers: ['unordered_map'],

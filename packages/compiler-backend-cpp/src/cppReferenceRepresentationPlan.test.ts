@@ -24,13 +24,22 @@ describe('C++ reference planner object shapes', () => {
   it('resolves named aliases and object utility shapes without changing their neutral types', () => {
     const module = lower(
       'model.ts',
-      'export interface Model { value: number; label?: string } export type Alias = Model;',
+      'export interface Model { value: number; label?: string } export type Alias = Model; export type Maybe<Value> = Value | null;',
     );
     const alias = declarationType(module, 'Alias');
     const model = declarationType(module, 'Model');
     const resolver = createIrTypeReferenceRepresentationPlannerCpp([module]);
 
     expect(resolver.resolveAlias(alias, module)).toEqual(model);
+    expect(
+      resolver.resolveAlias(
+        { ...declarationType(module, 'Maybe'), typeArguments: [{ kind: 'primitive', name: 'number' }] },
+        module,
+      ),
+    ).toEqual({
+      kind: 'union',
+      types: [{ kind: 'primitive', name: 'number' }, { kind: 'null' }],
+    });
     expect(resolver.resolveObjectShape(ambientType('Partial', [model]), module)).toEqual([
       { name: 'value', optional: true, readonly: false, type: numberType },
       { name: 'label', optional: true, readonly: false, type: { kind: 'primitive', name: 'string' } },
@@ -309,8 +318,11 @@ describe('createIrTypeReferenceRepresentationPlanCpp', () => {
     } as const satisfies IrType;
 
     expect(createIrTypeReferenceRepresentationPlanCpp(referenceUnion, module)).toMatchObject({
-      kind: 'refused',
-      reason: 'compoundReference',
+      category: 'value',
+      identityDomain: 'none',
+      kind: 'represented',
+      storageRepresentation: 'inlineValue',
+      valueRepresentation: 'inlineValue',
     });
     expect(createIrTypeReferenceRepresentationPlanCpp(referenceIntersection, module)).toMatchObject({
       kind: 'refused',

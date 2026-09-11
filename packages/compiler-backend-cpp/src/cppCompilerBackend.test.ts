@@ -114,6 +114,57 @@ describe('createCppCompilerBackend', () => {
     expect(emitted).not.toContain('flight::Ref<flighthq_types::');
   });
 
+  it('emits imported generic union aliases as inline values', () => {
+    const types = lowerPackage(
+      '@flighthq/types',
+      'outcome.ts',
+      "export type Outcome<Reason extends string> = { readonly reason: 'ok' } | { readonly reason: Reason };",
+    ).module;
+    const consumer = lowerPackage(
+      '@flighthq/consumer',
+      'consumer.ts',
+      "import type { Outcome } from '@flighthq/types'; export function accept(value: Outcome<'blocked'>): Outcome<'blocked'> { return value; }",
+    ).module;
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [{ specifier: '@flighthq/types', target: { packageName: types.packageName, source: types.source } }],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const session = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules: [consumer, types],
+      options: { runtimeProfile: 'flight-cpp' },
+    });
+    const emitted = session.emitModule(consumer)[0]!.contents;
+
+    expect(emitted).toContain('flighthq_types::Outcome<flight::String> accept(');
+    expect(emitted).not.toContain('flight::Ref<flighthq_types::Outcome');
+  });
+
+  it('qualifies nested references while expanding imported union aliases', () => {
+    const types = lowerPackage(
+      '@flighthq/types',
+      'update.ts',
+      "export interface DownloadedUpdate { readonly version: string } export type Outcome = { readonly reason: 'downloaded'; readonly update: DownloadedUpdate } | { readonly reason: 'missing' };",
+    ).module;
+    const consumer = lowerPackage(
+      '@flighthq/consumer',
+      'consumer.ts',
+      "import type { DownloadedUpdate, Outcome } from '@flighthq/types'; export function keep(value: Outcome): Outcome { const retained: DownloadedUpdate | null = null; retained; return value; }",
+    ).module;
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [{ specifier: '@flighthq/types', target: { packageName: types.packageName, source: types.source } }],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const session = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules: [consumer, types],
+      options: { runtimeProfile: 'flight-cpp' },
+    });
+    const emitted = session.emitModule(consumer)[0]!.contents;
+
+    expect(emitted).toContain('flight::Ref<flighthq_types::DownloadedUpdate> update;');
+  });
+
   it('uses the resolved module graph for imported reference representation', () => {
     const model = lowerPackage('@flighthq/models', 'model.ts', 'export interface Model { value: number }').module;
     const barrel = lowerPackage('@flighthq/models', 'barrel.ts', "export type { Model } from './model.js';").module;
@@ -2036,15 +2087,16 @@ export function preferred(): number { return NativeSurface.preferredFormat; }`,
     expect(emitted.contents).toContain('flight::String tag()');
   });
 
-  it('emits null and undefined types as void', () => {
-    const result = lower('null-type.ts', 'export const x: number = 1;');
-    const module = structuredClone(result.module);
-    const decl = module.declarations[0];
-    if (decl?.kind === 'variable' && !('pattern' in decl)) {
-      (decl as any).type = { kind: 'null' };
-    }
-    const emitted = emitIrModuleCpp(module);
-    expect(emitted.contents).toContain('void');
+  it('emits standalone null and undefined sentinel types', () => {
+    const result = lower(
+      'presence-types.ts',
+      'export function noValue(): null { return null; } export function missing(): undefined { return undefined; }',
+    );
+    const emitted = emitIrModuleCpp(result.module);
+
+    expect(emitted.contents).toContain('std::nullptr_t no_value()');
+    expect(emitted.contents).toContain('std::monostate missing()');
+    expect(emitted.contents).toContain('return std::monostate{};');
   });
 
   it('emits symbol type as int', () => {
@@ -2093,6 +2145,17 @@ export function preferred(): number { return NativeSurface.preferredFormat; }`,
     expect(emitted.contents).toContain('std::optional<double> count;');
     expect(emitted.contents).toContain('std::optional<std::string> label;');
     expect(emitted.contents).toContain('void apply(count_label options)');
+  });
+
+  it('resolves NonNullable over a named object indexed access', () => {
+    const result = lower(
+      'non-nullable-indexed.ts',
+      `interface Explanation { container: 'atf' | 'dds' | null }
+       export function identify(container: NonNullable<Explanation['container']>): string { return container; }`,
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+
+    expect(emitted.contents).toContain('flight::String identify(flight::String container)');
   });
 
   it('resolves Readonly<Partial<T>> through imported interface barrels', () => {
@@ -3688,6 +3751,70 @@ export function preferred(): number { return NativeSurface.preferredFormat; }`,
     const emitted = emitIrModuleCpp(result.module);
     expect(emitted.contents).toContain('.value_or(');
     expect(emitted.contents).toContain('#include <optional>');
+  });
+
+  it('preserves optional storage when nullish coalescing changes only the absence sentinel', () => {
+    const result = lower(
+      'nullish-sentinel.ts',
+      `export function find(values: Map<string, number>): number | null {
+         return values.get('key') ?? null;
+       }`,
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+
+    expect(emitted.contents).toContain('return values.get(flight::String("key"));');
+    expect(emitted.contents).not.toContain('.value_or(std::nullopt)');
+  });
+
+  it('lazily coalesces compatible optional representations', () => {
+    const result = lower(
+      'optional-coalesce.ts',
+      `export function fallback(primary: string | undefined, secondary: () => string | null): string | null {
+         return primary ?? secondary();
+       }`,
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+
+    expect(emitted.contents).toContain('auto nullish_coalesce_left = primary;');
+    expect(emitted.contents).toContain('if (nullish_coalesce_left.has_value()) return nullish_coalesce_left;');
+    expect(emitted.contents).toContain('return secondary();');
+    expect(emitted.contents).not.toContain('.value_or(secondary())');
+  });
+
+  it('preserves contextual optional storage from record element and property reads', () => {
+    const result = lower(
+      'optional-member-read.ts',
+      `interface Info { value: number }
+       interface Holder { selected: Info | null }
+       export function fromRecord(values: Record<string, Info | null>, key: string): Info | null {
+         return values[key];
+       }
+       export function fromProperty(holder: Holder): Info | null {
+         return holder.selected;
+       }`,
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+
+    expect(emitted.contents).toContain('return values[key];');
+    expect(emitted.contents).toContain('return holder->selected;');
+    expect(emitted.contents).not.toContain('std::optional<std::optional');
+  });
+
+  it('preserves effectful null call results while constructing optional absence', () => {
+    const result = lower(
+      'effectful-null.ts',
+      `interface Model { value: number }
+       function reject(): null { return null; }
+       export function load(ok: boolean): Model | null {
+         if (!ok) return reject();
+         return { value: 1 };
+       }`,
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+
+    expect(emitted.contents).toContain('flight::Null reject()');
+    expect(emitted.contents).toContain('return flight::null;');
+    expect(emitted.contents).toContain('(void)reject(); return std::nullopt;');
   });
 
   it('emits optional chain on nullable struct without premature unwrap', () => {

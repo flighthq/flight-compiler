@@ -54,6 +54,7 @@ function compareIrRuntimeExternalSymbolIdentities(
 const compilerIntrinsicTypeNames = new Set([
   'Exclude',
   'Extract',
+  'NonNullable',
   'NoInfer',
   'Omit',
   'Partial',

@@ -28,7 +28,7 @@ describe('createCompilerRuntimeExternalSymbolBindingPlanCpp', () => {
     const plan = createCompilerRuntimeExternalSymbolBindingPlanCpp();
 
     expect(plan.contract).toBe('flight-runtime-contract/2');
-    expect(plan.bindings).toHaveLength(48);
+    expect(plan.bindings).toHaveLength(49);
     expect(plan.bindings.filter(({ externalSymbol }) => externalSymbol.sourceName === 'Promise')).toEqual([
       {
         capability: 'task',
@@ -63,13 +63,13 @@ describe('createCompilerRuntimeExternalSymbolBindingPlanCpp', () => {
     const second = createCompilerRuntimeExternalSymbolBindingPlanCpp();
 
     (first.bindings as unknown[]).pop();
-    expect(second.bindings).toHaveLength(48);
+    expect(second.bindings).toHaveLength(49);
   });
 
   it('elects semantic containers and strings as flight-cpp runtime capabilities', () => {
     const plan = createCompilerRuntimeExternalSymbolBindingPlanCpp('flight-cpp');
 
-    expect(plan.bindings).toHaveLength(49);
+    expect(plan.bindings).toHaveLength(50);
     expect(plan.bindings).toContainEqual({
       capability: 'array',
       externalSymbol: { sourceName: 'Array', space: 'type' },
@@ -88,6 +88,11 @@ describe('createCompilerRuntimeExternalSymbolBindingPlanCpp', () => {
     expect(plan.bindings).toContainEqual({
       capability: 'map',
       externalSymbol: { sourceName: 'ReadonlyMap', space: 'type' },
+      kind: 'runtime',
+    });
+    expect(plan.bindings).toContainEqual({
+      capability: 'set',
+      externalSymbol: { sourceName: 'ReadonlySet', space: 'type' },
       kind: 'runtime',
     });
     expect(plan.bindings).toContainEqual({
@@ -147,6 +152,11 @@ describe('getCompilerExternalBindingHeadersCpp', () => {
     ]);
   });
 
+  it('returns the profile-specific header for a built-in ReadonlySet binding', () => {
+    expect(getCompilerExternalBindingHeadersCpp('ReadonlySet', 'type')).toEqual(['unordered_set']);
+    expect(getCompilerExternalBindingHeadersCpp('ReadonlySet', 'type', undefined, 'flight-cpp')).toEqual([]);
+  });
+
   it('returns the semantic runtime header for the interned symbol binding', () => {
     expect(getCompilerExternalBindingHeadersCpp('Symbol', 'value')).toEqual([]);
     expect(getCompilerExternalBindingHeadersCpp('Symbol', 'value', undefined, 'flight-cpp')).toEqual([
@@ -182,6 +192,7 @@ describe('getCompilerRuntimeExternalSymbolTargetCpp', () => {
     ['Promise', 'type', 'FlightTask'],
     ['Promise', 'value', 'FlightTask'],
     ['ReadonlyMap', 'type', 'std::unordered_map'],
+    ['ReadonlySet', 'type', 'std::unordered_set'],
     ['Set', 'type', 'std::unordered_set'],
     ['Set', 'value', 'std::unordered_set'],
     ['Uint8Array', 'type', 'std::vector<uint8_t>'],
@@ -249,6 +260,7 @@ describe('getCompilerRuntimeExternalSymbolTargetCpp', () => {
     ['Map', 'type', 'flight::Map'],
     ['Promise', 'type', 'flight::Task'],
     ['ReadonlyMap', 'type', 'flight::Map'],
+    ['ReadonlySet', 'type', 'flight::Set'],
     ['Set', 'value', 'flight::Set'],
     ['String', 'type', 'flight::String'],
     ['Uint8ClampedArray', 'value', 'flight::Uint8ClampedArray'],

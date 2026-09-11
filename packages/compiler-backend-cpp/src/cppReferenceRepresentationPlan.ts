@@ -116,11 +116,11 @@ function resolveIrTypeAliasCpp(
   resolutionCache: ReferenceResolutionCache,
   cache: Map<string, Readonly<IrType> | null>,
 ): Readonly<IrType> | undefined {
-  if (type.kind !== 'named' || type.reference.kind !== 'binding' || type.typeArguments.length > 0) return undefined;
+  if (type.kind !== 'named' || type.reference.kind !== 'binding') return undefined;
   const subject = getReferenceModuleRecordCpp(module, moduleSet);
   if (!subject) throw new TypeError('C++ type-alias subject must belong to the explicit module set');
   const reference = type.reference;
-  const key = `${subject.identity}\0${reference.binding.id}\0${reference.path.join('\0')}`;
+  const key = `${subject.identity}\0${reference.binding.id}\0${reference.path.join('\0')}\0${JSON.stringify(type.typeArguments)}`;
   const cached = cache.get(key);
   if (cached !== undefined) return cached ?? undefined;
   let locations: readonly ReferenceDeclarationLocation[];
@@ -135,8 +135,14 @@ function resolveIrTypeAliasCpp(
   const aliases = deduplicateReferenceDeclarationLocationsCpp(locations).filter(
     (location) => location.declaration.kind === 'typeAlias',
   );
+  const alias = aliases.length === 1 ? aliases[0] : undefined;
   const result =
-    aliases.length === 1 && aliases[0]!.declaration.kind === 'typeAlias' ? aliases[0]!.declaration.type : null;
+    alias?.declaration.kind === 'typeAlias'
+      ? resolveIrTypeStructuralSubstitution(
+          alias.declaration.type,
+          createIrTypeParameterSubstitutionPlan(alias.declaration.typeParameters, type.typeArguments),
+        )
+      : null;
   cache.set(key, result);
   return result ?? undefined;
 }
@@ -274,7 +280,10 @@ function createIrTypeReferenceRepresentationPlanInternalCpp(
     );
   }
   if (type.kind === 'named') return createNamedReferenceRepresentationPlanCpp(type, module, context, identity);
-  if (type.kind === 'intersection' || type.kind === 'union') {
+  if (type.kind === 'union') {
+    return createCompilerCppReferenceRepresentationSuccessCpp(identity, 'value', 'none', 'inlineValue', 'inlineValue');
+  }
+  if (type.kind === 'intersection') {
     return createCompilerCppReferenceRepresentationRefusalCpp(identity, 'compoundReference');
   }
   return createCompilerCppReferenceRepresentationRefusalCpp(identity, 'unsupportedReferenceForm');

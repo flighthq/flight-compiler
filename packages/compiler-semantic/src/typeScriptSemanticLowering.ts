@@ -4462,11 +4462,12 @@ function getTypeScriptCheckerTypeEvidence(
     return lowered ? { element: lowered, kind: 'array', readonly: false } : undefined;
   }
   const declared = getTypeScriptDeclaredTypeEvidence(type, context);
-  if (declared || !structural) return declared;
+  if (declared) return declared;
   const named = getTypeScriptCheckerNamedTypeEvidence(type, context, depth);
   if (named) return named;
   const functionType = getTypeScriptCheckerFunctionTypeEvidence(type, context, depth);
   if (functionType) return functionType;
+  if (!structural) return undefined;
   const properties = lowerTypeScriptCheckerObjectProperties(type, context, depth);
   return properties ? { kind: 'object', properties } : undefined;
 }

@@ -166,6 +166,7 @@ describe('collectIrModulesRuntimeExternalSymbolIdentities', () => {
           export type UtilityStorage =
             | Exclude<StoredUnion, typeof ErasedKey>
             | Extract<ExtractedUnion, ErasedConstraint>
+            | NonNullable<PresentStorage>
             | NoInfer<InferredStorage>
             | Omit<OmittedStorage, 'key'>
             | Pick<PickedStorage, 'key'>;
@@ -181,6 +182,7 @@ describe('collectIrModulesRuntimeExternalSymbolIdentities', () => {
       { sourceName: 'InferredStorage', space: 'type' },
       { sourceName: 'OmittedStorage', space: 'type' },
       { sourceName: 'PickedStorage', space: 'type' },
+      { sourceName: 'PresentStorage', space: 'type' },
       { sourceName: 'StoredUnion', space: 'type' },
     ]);
   });

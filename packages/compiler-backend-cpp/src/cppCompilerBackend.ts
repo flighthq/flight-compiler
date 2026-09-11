@@ -1023,7 +1023,16 @@ function emitExpression(
       if (getCppRuntimeProfile(context.options) === 'flight-cpp' && hasIndexedRuntimeReceiverCpp(expression, context)) {
         return `${emitExpression(expression.object, context)}.element(${emitExpression(expression.index, context)})`;
       }
-      return `${emitExpression(expression.object, context)}[static_cast<size_t>(${emitExpression(expression.index, context)})]`;
+      const object = emitExpression(expression.object, context);
+      const index = emitExpression(expression.index, context);
+      const objectType = getIrExpressionTypeEvidenceCpp(expression.object, context);
+      const record =
+        objectType?.kind === 'named' &&
+        objectType.reference.kind === 'ambient' &&
+        objectType.reference.name === 'Record';
+      return record || expression.semantics.receivers.every((receiver) => receiver === 'object')
+        ? `${object}[${index}]`
+        : `${object}[static_cast<size_t>(${index})]`;
     }
     case 'function': {
       if (expression.async) emissionError(context, 'async closures require C++ coroutine lowering');
@@ -1062,6 +1071,9 @@ function emitExpression(
       ]).join('\n')}\n}`;
     }
     case 'identifier': {
+      if (expression.reference.kind === 'ambient' && expression.reference.name === 'undefined') {
+        return emitUndefinedWithExpectedTypeCpp(expectedType, context);
+      }
       if (
         expression.reference.kind === 'this' &&
         expectedType &&
@@ -1658,6 +1670,19 @@ function emitType(type: Readonly<IrType>, context: EmitContext, representation: 
   if (
     type.kind === 'named' &&
     type.reference.kind === 'ambient' &&
+    type.reference.name === 'NonNullable' &&
+    type.typeArguments.length === 1 &&
+    type.typeArguments[0]
+  ) {
+    const present = getCppNonNullableType(type.typeArguments[0], context, new Set());
+    if (!present) emissionError(context, 'NonNullable<T> requires a statically resolvable present type');
+    return emitType(present, context, representation);
+  }
+  const rebound = getCppEquivalentImportedTypeCpp(type, context);
+  if (rebound) return emitType(rebound, context, representation);
+  if (
+    type.kind === 'named' &&
+    type.reference.kind === 'ambient' &&
     (type.reference.name === 'Readonly' || type.reference.name === 'Required') &&
     type.typeArguments[0]
   ) {
@@ -1741,8 +1766,13 @@ function emitType(type: Readonly<IrType>, context: EmitContext, representation: 
     case 'never':
       return 'void';
     case 'null':
+      if (getCppRuntimeProfile(context.options) === 'flight-cpp') return 'flight::Null';
+      context.includes.add('cstddef');
+      return 'std::nullptr_t';
     case 'undefined':
-      return 'void';
+      if (getCppRuntimeProfile(context.options) === 'flight-cpp') return 'flight::Undefined';
+      context.includes.add('variant');
+      return 'std::monostate';
     case 'object': {
       const emittedProperties = type.properties.map((property) => ({
         name: safeCppName(property.name),
@@ -1815,6 +1845,34 @@ function assertWeakMapTypeArgumentsCpp(typeArguments: readonly IrType[], context
   if (value.kind !== 'represented' || value.identity.identity !== 'value') {
     emissionError(context, 'flight-cpp WeakMap value requires a proven reference-free representation');
   }
+}
+
+function getCppNonNullableType(
+  type: Readonly<IrType>,
+  context: EmitContext,
+  resolvingAliases: ReadonlySet<string>,
+): Readonly<IrType> | undefined {
+  if (type.kind === 'indexedAccess') {
+    if (type.index.kind !== 'literal' || typeof type.index.value !== 'string') return undefined;
+    const propertyName = type.index.value;
+    const properties = context.referenceRepresentationPlanner.resolveObjectShape(type.object, context.module);
+    const property = properties?.find((candidate) => candidate.name === propertyName);
+    return property ? getCppNonNullableType(property.type, context, resolvingAliases) : undefined;
+  }
+  if (type.kind === 'union') {
+    const present = type.types.filter((member) => member.kind !== 'null' && member.kind !== 'undefined');
+    if (present.length === 0) return undefined;
+    if (present.length === 1) return getCppNonNullableType(present[0]!, context, resolvingAliases);
+    return { kind: 'union', types: [present[0]!, present[1]!, ...present.slice(2)] };
+  }
+  if (type.kind !== 'named' || type.reference.kind !== 'binding') return type;
+  const bindingId = type.reference.binding.id;
+  if (resolvingAliases.has(bindingId)) return type;
+  const alias = resolveCppTypeAliasTarget(type, context);
+  if (!alias) return type;
+  const nextResolvingAliases = new Set(resolvingAliases);
+  nextResolvingAliases.add(bindingId);
+  return getCppNonNullableType(alias, context, nextResolvingAliases);
 }
 
 function emitUnionTypeCpp(type: Readonly<Extract<IrType, { kind: 'union' }>>, context: EmitContext): string {
@@ -1988,6 +2046,34 @@ function emitContextualUnionExpressionCpp(
   if (expression.kind === 'literal' && expression.value === null) {
     return emitCppUnionSentinelConstruction('null', union, plan.kind, context);
   }
+  if (expression.kind === 'binary' && expression.operator === '??') {
+    const leftType = getIrExpressionTypeEvidenceCpp(expression.left, context);
+    const leftUnion = leftType ? getIrUnionTypeCpp(leftType, context, new Set()) : undefined;
+    if (leftUnion) {
+      const leftPlan = getCppUnionRepresentationPlan(leftUnion, context);
+      if (
+        hasEquivalentCppOptionalUnionRepresentation(plan, leftPlan) &&
+        ((expression.right.kind === 'literal' && expression.right.value === null) ||
+          expression.right.kind === 'undefinedValue')
+      ) {
+        return emitExpression(expression.left, context, leftType);
+      }
+      const rightType = getIrExpressionTypeEvidenceCpp(expression.right, context);
+      const rightUnion = rightType ? getIrUnionTypeCpp(rightType, context, new Set()) : undefined;
+      if (rightUnion) {
+        const rightPlan = getCppUnionRepresentationPlan(rightUnion, context);
+        if (
+          hasEquivalentCppOptionalUnionRepresentation(plan, leftPlan) &&
+          hasEquivalentCppOptionalUnionRepresentation(plan, rightPlan)
+        ) {
+          const unionType = emitUnionTypeCpp(union, context);
+          const left = emitExpression(expression.left, context, leftType);
+          const right = emitExpression(expression.right, context, rightType);
+          return `([&]() -> ${unionType} { auto nullish_coalesce_left = ${left}; if (nullish_coalesce_left.has_value()) return nullish_coalesce_left; return ${right}; }())`;
+        }
+      }
+    }
+  }
   assertIrExpressionHasNoDualSentinelOptionalChainCpp(expression, context);
   if (
     (expression.kind === 'call' && (expression.optional || expression.semantics.optionalChain)) ||
@@ -2010,8 +2096,17 @@ function emitContextualUnionExpressionCpp(
   }
   const expressionUnion = getIrUnionTypeCpp(expressionType, context, new Set());
   if (expressionUnion) {
-    if (isDeepStrictEqual(getCppUnionRepresentationPlan(expressionUnion, context), plan)) return undefined;
+    if (hasEquivalentCppUnionRepresentation(getCppUnionRepresentationPlan(expressionUnion, context), plan)) {
+      return undefined;
+    }
     emissionError(context, 'contextual C++ union conversion requires equivalent source union evidence');
+  }
+  if (expressionType.kind === 'null' || expressionType.kind === 'undefined') {
+    const sentinel = expressionType.kind;
+    const emitted = emitExpression(expression, context, expressionType, false);
+    const absence = emitCppUnionSentinelConstruction(sentinel, union, plan.kind, context);
+    const unionType = emitUnionTypeCpp(union, context);
+    return `([&]() -> ${unionType} { (void)${emitted}; return ${absence}; }())`;
   }
   const runtimeType = getIrTypeRuntimeDomainCpp(expressionType, context, new Set());
   if (!runtimeType) {
@@ -2033,6 +2128,27 @@ function emitContextualUnionExpressionCpp(
     return `${unionType}{std::in_place, std::in_place_type<${targetType}>, ${emitted}}`;
   }
   return `${unionType}{std::in_place_type<${targetType}>, ${emitted}}`;
+}
+
+function hasEquivalentCppOptionalUnionRepresentation(
+  left: ReturnType<typeof getCppUnionRepresentationPlan>,
+  right: ReturnType<typeof getCppUnionRepresentationPlan>,
+): boolean {
+  return (
+    (left.kind === 'optionalSingle' || left.kind === 'optionalVariant') &&
+    hasEquivalentCppUnionRepresentation(left, right)
+  );
+}
+
+function hasEquivalentCppUnionRepresentation(
+  left: ReturnType<typeof getCppUnionRepresentationPlan>,
+  right: ReturnType<typeof getCppUnionRepresentationPlan>,
+): boolean {
+  return (
+    left.kind === right.kind &&
+    left.valueSlots.length === right.valueSlots.length &&
+    left.valueSlots.every((slot, index) => slot.representationKey === right.valueSlots[index]?.representationKey)
+  );
 }
 
 function emitCppUnionSentinelConstruction(
@@ -2076,6 +2192,8 @@ function getIrExpressionTypeForUnionConstructionCpp(
     case 'cast':
       return expression.type;
     case 'element':
+      return getIrExpressionTypeEvidenceCpp(expression, context);
+    case 'property':
       return getIrExpressionTypeEvidenceCpp(expression, context);
     case 'function':
       return {
@@ -2382,8 +2500,12 @@ function getIrExpressionTypeEvidenceCpp(
         : undefined;
     case 'object':
       return expression.type;
-    case 'element':
-      return getComputedSymbolElementPropertyCpp(expression, context)?.type;
+    case 'element': {
+      const computedSymbol = getComputedSymbolElementPropertyCpp(expression, context);
+      if (computedSymbol) return computedSymbol.type;
+      const objectType = getIrExpressionTypeEvidenceCpp(expression.object, context);
+      return objectType ? getIrIndexedElementTypeCpp(objectType, expression, context, new Set()) : undefined;
+    }
     case 'property': {
       const objectType = getIrExpressionTypeEvidenceCpp(expression.object, context);
       return objectType ? getIrObjectPropertyTypeCpp(objectType, expression.name, context) : undefined;
@@ -2403,6 +2525,37 @@ function getIrExpressionTypeEvidenceCpp(
     case 'undefinedValue':
       return undefined;
   }
+}
+
+function getIrIndexedElementTypeCpp(
+  type: Readonly<IrType>,
+  expression: Readonly<Extract<IrExpression, { kind: 'element' }>>,
+  context: EmitContext,
+  resolvingAliases: ReadonlySet<string>,
+): Readonly<IrType> | undefined {
+  if (type.kind === 'array') return type.element;
+  if (type.kind === 'tuple') {
+    if (expression.index.kind !== 'literal' || typeof expression.index.value !== 'number') return undefined;
+    return type.elements[expression.index.value]?.type;
+  }
+  if (type.kind !== 'named') return undefined;
+  if (type.reference.kind === 'ambient') {
+    if (
+      (type.reference.name === 'Array' || type.reference.name === 'ReadonlyArray') &&
+      type.typeArguments.length === 1
+    ) {
+      return type.typeArguments[0];
+    }
+    if (type.reference.name === 'Record' && type.typeArguments.length === 2) return type.typeArguments[1];
+    return undefined;
+  }
+  const bindingId = type.reference.binding.id;
+  if (resolvingAliases.has(bindingId)) return undefined;
+  const alias = resolveCppTypeAliasTarget(type, context);
+  if (!alias) return undefined;
+  const nextResolvingAliases = new Set(resolvingAliases);
+  nextResolvingAliases.add(bindingId);
+  return getIrIndexedElementTypeCpp(alias, expression, context, nextResolvingAliases);
 }
 
 function getIrBindingVariantUnionTypeCpp(
@@ -2428,16 +2581,14 @@ function getIrUnionTypeCpp(
   seen: ReadonlySet<string>,
 ): Extract<IrType, { kind: 'union' }> | undefined {
   if (type.kind === 'union') return type;
-  if (type.kind !== 'named' || type.reference.kind !== 'binding' || type.typeArguments.length > 0) return undefined;
-  const bindingId = type.reference.binding.id;
-  if (seen.has(bindingId)) return undefined;
-  const alias = context.module.declarations.find(
-    (declaration) => declaration.kind === 'typeAlias' && declaration.binding.id === bindingId,
-  );
-  if (alias?.kind !== 'typeAlias') return undefined;
+  if (type.kind !== 'named' || type.reference.kind !== 'binding') return undefined;
+  const key = `${type.reference.binding.id}\0${JSON.stringify(type.typeArguments)}`;
+  if (seen.has(key)) return undefined;
+  const alias = resolveCppTypeAliasTarget(type, context);
+  if (!alias) return undefined;
   const nextSeen = new Set(seen);
-  nextSeen.add(bindingId);
-  return getIrUnionTypeCpp(alias.type, context, nextSeen);
+  nextSeen.add(key);
+  return getIrUnionTypeCpp(alias, context, nextSeen);
 }
 
 function getIrUnionMemberNameCpp(type: Readonly<IrType>): string | undefined {
@@ -3344,6 +3495,7 @@ function emitLiteralWithExpectedTypeCpp(
   context: EmitContext,
 ): string {
   if (value !== null) return emitLiteral(value, context);
+  if (expectedType?.kind === 'null' && getCppRuntimeProfile(context.options) === 'flight-cpp') return 'flight::null';
   const union = expectedType ? getIrUnionTypeCpp(expectedType, context, new Set()) : undefined;
   if (!union) return emitLiteral(value, context);
   const plan = getCppUnionRepresentationPlan(union, context);
@@ -3374,6 +3526,11 @@ function emitLiteral(value: boolean | null | number | string, context: EmitConte
 }
 
 function emitUndefinedWithExpectedTypeCpp(expectedType: Readonly<IrType> | undefined, context: EmitContext): string {
+  if (expectedType?.kind === 'undefined') {
+    if (getCppRuntimeProfile(context.options) === 'flight-cpp') return 'flight::undefined';
+    context.includes.add('variant');
+    return 'std::monostate{}';
+  }
   const union = expectedType ? getIrUnionTypeCpp(expectedType, context, new Set()) : undefined;
   if (union) {
     const plan = getCppUnionRepresentationPlan(union, context);
@@ -3503,6 +3660,26 @@ function getTypeReferenceTargetName(type: Readonly<IrType & { kind: 'named' }>, 
   const imported = getCppImportedBindingTargetName(type.reference.binding.id, type.reference.path, context);
   if (imported) return imported;
   return context.targetNames.get(type.reference.binding.id) ?? pascalCase(type.reference.binding.name);
+}
+
+function getCppEquivalentImportedTypeCpp(type: Readonly<IrType>, context: EmitContext): IrType | undefined {
+  if (
+    type.kind !== 'named' ||
+    type.reference.kind !== 'binding' ||
+    type.reference.binding.kind === 'import' ||
+    context.targetNames.has(type.reference.binding.id)
+  ) {
+    return undefined;
+  }
+  const bindingName = type.reference.binding.name;
+  const equivalentImports = context.module.imports.flatMap((importItem) =>
+    importItem.bindings.filter((binding) => binding.imported === bindingName),
+  );
+  if (equivalentImports.length !== 1) return undefined;
+  return {
+    ...type,
+    reference: { ...type.reference, binding: equivalentImports[0]!.binding },
+  };
 }
 
 function getCppImportedBindingTargetName(

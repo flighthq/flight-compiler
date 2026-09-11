@@ -8285,6 +8285,71 @@ it('records checker-instantiated and ambient optional call result types', () => 
   });
 });
 
+it('records checker-resolved callable result types without expanding arbitrary objects', () => {
+  const result = lower(
+    'callable-result.ts',
+    'interface Host { subscribe(): () => void } export function open(host: Host): () => void { return host.subscribe(); }',
+  );
+  const declaration = result.module.declarations.find(
+    (candidate) => candidate.kind === 'function' && candidate.binding.name === 'open',
+  );
+  const returned = declaration?.kind === 'function' ? declaration.body[0] : undefined;
+  if (returned?.kind !== 'return' || returned.expression?.kind !== 'call') {
+    throw new Error('Expected callable call result');
+  }
+
+  expect(returned.expression.semantics.resultType).toMatchObject({
+    kind: 'function',
+    parameters: [],
+    returns: { kind: 'primitive', name: 'void' },
+  });
+});
+
+it('retains imported named aliases in checker-resolved call result types', () => {
+  const model = ts.createSourceFile(
+    '/flight/packages/model/src/model.ts',
+    'export type Decoder = (bytes: Uint8Array) => string;',
+    ts.ScriptTarget.Latest,
+    true,
+  );
+  const consumer = ts.createSourceFile(
+    '/flight/packages/app/src/consumer.ts',
+    "import type { Decoder } from '@flight/model'; export function find(values: Map<string, Decoder>): Decoder | undefined { return values.get('image'); }",
+    ts.ScriptTarget.Latest,
+    true,
+  );
+  const [, result] = lowerTypeScriptSources(
+    [
+      { packageName: '@flight/model', sourceFile: model, upstreamDirectory: '/flight' },
+      { packageName: '@flight/app', sourceFile: consumer, upstreamDirectory: '/flight' },
+    ],
+    {
+      edges: [
+        {
+          specifier: '@flight/model',
+          target: { packageName: '@flight/model', source: 'packages/model/src/model.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    },
+  );
+  const declaration = result!.module.declarations.find(
+    (candidate) => candidate.kind === 'function' && candidate.binding.name === 'find',
+  );
+  const returned = declaration?.kind === 'function' ? declaration.body[0] : undefined;
+  if (returned?.kind !== 'return' || returned.expression?.kind !== 'call') {
+    throw new Error('Expected imported alias call result');
+  }
+
+  expect(returned.expression.semantics.resultType).toMatchObject({
+    kind: 'union',
+    types: [
+      { kind: 'undefined' },
+      { kind: 'named', reference: { binding: { kind: 'import', name: 'Decoder' }, kind: 'binding' } },
+    ],
+  });
+});
+
 it('resolves type reference through a type alias for indexed receivers', () => {
   const result = lower(
     'type-alias-receiver.ts',
