@@ -49,6 +49,7 @@ interface IdentityModuleSet {
   readonly modulesByIdentity: ReadonlyMap<string, IdentityModuleRecord>;
   readonly modulesByPackageSource: ReadonlyMap<string, readonly IdentityModuleRecord[]>;
   readonly resolutionTargetsBySpecifier: ReadonlyMap<string, IdentityResolutionTargets>;
+  readonly typeParameterOwnersByBindingId: ReadonlyMap<string, readonly IdentityModuleRecord[]>;
 }
 
 interface IdentityResolutionTargets {
@@ -245,17 +246,21 @@ function analyzeIrTypeParameterValueIdentity(
   bindingId: string,
   context: Readonly<TypeValueIdentityContext>,
 ): CompilerTypeValueIdentityAnalysis {
-  const parameter = context.module.typeParameters.get(bindingId);
-  if (!parameter?.constraint) {
+  const local = context.module.typeParameters.get(bindingId);
+  const owners = context.moduleSet.typeParameterOwnersByBindingId.get(bindingId) ?? [];
+  const owner = local ? context.module : owners.length === 1 ? owners[0] : undefined;
+  const parameter = local ?? owner?.typeParameters.get(bindingId);
+  if (!owner || !parameter?.constraint) {
     return createCompilerTypeValueIdentityAnalysis('indeterminate', 'unconstrained-type-parameter');
   }
-  const identity = `${context.module.identity}\0type-parameter\0${bindingId}`;
+  const identity = `${owner.identity}\0type-parameter\0${bindingId}`;
   if (context.active.has(identity)) {
     return createCompilerTypeValueIdentityAnalysis('indeterminate', 'cyclic-reference');
   }
   return analyzeIrTypeValueIdentityInternal(parameter.constraint, {
     ...context,
     active: new Set(context.active).add(identity),
+    module: owner,
   });
 }
 
@@ -434,12 +439,21 @@ function createIdentityModuleSet(
     candidates.push(record);
     modulesByPackageSource.set(key, candidates);
   }
+  const typeParameterOwnersByBindingId = new Map<string, IdentityModuleRecord[]>();
+  for (const record of records) {
+    for (const bindingId of record.typeParameters.keys()) {
+      const owners = typeParameterOwnersByBindingId.get(bindingId) ?? [];
+      owners.push(record);
+      typeParameterOwnersByBindingId.set(bindingId, owners);
+    }
+  }
   return {
     exportResolutions: new Map(),
     modules: records,
     modulesByIdentity: new Map(records.map((record) => [record.identity, record])),
     modulesByPackageSource,
     resolutionTargetsBySpecifier: createIdentityResolutionTargets(resolution),
+    typeParameterOwnersByBindingId,
   };
 }
 

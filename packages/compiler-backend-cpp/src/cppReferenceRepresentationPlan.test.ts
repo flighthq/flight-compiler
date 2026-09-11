@@ -13,6 +13,7 @@ import {
   createIrTypeReferenceRepresentationPlanCpp,
   createIrTypeReferenceRepresentationPlannerCpp,
 } from './cppReferenceRepresentationPlan.js';
+import { createCppCompilerBackend } from './cppCompilerBackend.js';
 
 const numberType = { kind: 'primitive', name: 'number' } as const satisfies IrType;
 const objectType = {
@@ -452,6 +453,73 @@ describe('createIrTypeReferenceRepresentationPlannerCpp', () => {
     if (!publicValues) throw new TypeError('expected local alias target');
     expect(forward.resolveAlias(publicValues, consumer)).toMatchObject({ kind: 'array' });
     expect(forward.resolveModule('@flighthq/models', consumer)).toEqual(model);
+  });
+
+  it('preserves caller type-parameter identity through an imported generic identity alias', () => {
+    const types = lower(
+      'Entity.ts',
+      `export interface Entity {}
+       export interface Adjustment extends Entity { kind: string }
+       export type AdjustmentKind = string;
+       export type EntityConstruction<Type extends Entity> = { -readonly [Key in keyof Type]: Type[Key] };`,
+      '@flighthq/types',
+    );
+    const adjustments = lower(
+      'adjustment.ts',
+      `import type { Adjustment, AdjustmentKind, EntityConstruction } from '@flighthq/types/contract';
+       export function initializeAdjustment<T extends Adjustment>(out: EntityConstruction<T>, kind: AdjustmentKind): void {
+         out.kind = kind;
+       }`,
+      '@flighthq/adjustments',
+    );
+    const resolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          importer: { name: adjustments.name, packageName: adjustments.packageName, source: adjustments.source },
+          importedNames: ['Adjustment', 'AdjustmentKind', 'EntityConstruction'],
+          specifier: '@flighthq/types/contract',
+          target: { packageName: types.packageName, source: types.source },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const declaration = adjustments.declarations.find(
+      (candidate) => candidate.kind === 'function' && candidate.binding.name === 'initializeAdjustment',
+    );
+    if (declaration?.kind !== 'function') throw new TypeError('expected adjustment initializer');
+
+    const planner = createIrTypeReferenceRepresentationPlannerCpp([types, adjustments], resolution);
+    const constructionType = declaration.parameters[0]!.type;
+    expect(planner.plan(constructionType, adjustments)).toMatchObject({
+      category: 'interface',
+      identity: { identity: 'reference', reason: 'declared-reference' },
+      kind: 'represented',
+      valueRepresentation: 'flightReference',
+    });
+    const emitted = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution: resolution,
+      modules: [types, adjustments],
+      options: { runtimeProfile: 'flight-cpp' },
+    }).emitModule(adjustments)[0]!.contents;
+    expect(emitted).toContain('initialize_adjustment');
+
+    if (constructionType.kind !== 'named' || !constructionType.typeArguments[0]) {
+      throw new TypeError('expected applied construction alias');
+    }
+    const collision = {
+      ...structuredClone(adjustments),
+      name: 'collision',
+      packageName: '@flighthq/collision',
+      source: 'packages/collision/src/adjustment.ts',
+    };
+    const collidingPlanner = createIrTypeReferenceRepresentationPlannerCpp([types, adjustments, collision], resolution);
+    expect(collidingPlanner.plan(constructionType.typeArguments[0], adjustments)).toMatchObject({
+      kind: 'represented',
+    });
+    expect(collidingPlanner.plan(constructionType, adjustments)).toMatchObject({
+      identity: { identity: 'indeterminate', reason: 'unconstrained-type-parameter' },
+      kind: 'refused',
+    });
   });
 
   it('resolves relative JavaScript specifiers and local export aliases without changing caller data', () => {
