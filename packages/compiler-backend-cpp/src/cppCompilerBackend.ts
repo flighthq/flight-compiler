@@ -1345,8 +1345,14 @@ function emitExpression(
         context.includes.add('stdexcept');
       }
       const constructedType = getIrNewExpressionTypeEvidenceCpp(expression, context);
+      const contextualArrayTypeArguments =
+        ambientConstructorName === 'Array' && expectedType?.kind === 'array' ? [expectedType.element] : [];
       const typeArguments = emitCppTypeArguments(
-        expression.typeArguments.length > 0 ? expression.typeArguments : (constructedType?.typeArguments ?? []),
+        expression.typeArguments.length > 0
+          ? expression.typeArguments
+          : constructedType && constructedType.typeArguments.length > 0
+            ? constructedType.typeArguments
+            : contextualArrayTypeArguments,
         context,
       );
       if (

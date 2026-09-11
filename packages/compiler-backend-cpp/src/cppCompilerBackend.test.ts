@@ -2354,7 +2354,7 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
       'array-dynamic-length-loop-fill-flight.ts',
       `export function values(length: number): number[] {
         const size = length;
-        const result = new Array<number>(size);
+        const result: number[] = new Array(size);
         for (let index = 0; index < size; index++) result[index] = index;
         return result;
       }
@@ -2380,7 +2380,7 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     const result = lower(
       'array-length-direct-fill-flight.ts',
       `export function values(out?: number[]): number[] {
-        const result = out ?? new Array<number>(3);
+        const result = out ?? new Array(3);
         result[0] = 1;
         result[1] = 2;
         result[2] = 3;
