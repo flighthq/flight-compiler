@@ -377,6 +377,29 @@ export function preferred(): number { return NativeSurface.preferredFormat; }`,
     expect(emitted.contents).toContain('return Lane::Fast');
   });
 
+  it('emits merged enum value namespace functions as static wrapper members', () => {
+    const result = lower(
+      'enum-namespace.ts',
+      `
+        export enum Flags { None = 0, Visible = 1 }
+        export namespace Flags {
+          export function any(flags: Flags, test: Flags): boolean { return (flags & test) !== 0; }
+          export function clear(): Flags { return Flags.None; }
+        }
+        export function visible(flags: Flags): boolean { return Flags.any(flags, Flags.Visible); }
+      `,
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+
+    expect(result.diagnostics).toEqual([]);
+    expect(emitted.contents).toContain('struct Flags {');
+    expect(emitted.contents).toContain('inline static constexpr double Visible = 1.0;');
+    expect(emitted.contents).toContain('static bool any(Flags flags, Flags test)');
+    expect(emitted.contents).toContain('static Flags clear()');
+    expect(emitted.contents).toContain('return Flags::any(flags, Flags::Visible)');
+    expect(emitted.contents).not.toContain('inline bool any(');
+  });
+
   it('materializes default parameter values before their typed uses', () => {
     const result = lower(
       'default.ts',

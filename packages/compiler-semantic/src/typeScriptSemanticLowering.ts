@@ -217,7 +217,7 @@ function lowerTypeScriptSourceWithAnalysis(
         declarations.push(lowerTypeScriptModuleSideEffect(statement, context));
       } else if (ts.isModuleDeclaration(statement)) {
         if (hasValueNamespaceMembers(statement)) {
-          unsupported(statement, 'value namespace declarations require neutral IR namespace representation');
+          declarations.push(...lowerMergedEnumValueNamespace(statement, context));
         }
       } else if (!ts.isEmptyStatement(statement)) {
         unsupported(statement, `unsupported top-level ${ts.SyntaxKind[statement.kind]}`);
@@ -537,6 +537,54 @@ function lowerEnum(node: ts.EnumDeclaration, context: LoweringContext): IrEnumDe
   };
 }
 
+function lowerMergedEnumValueNamespace(
+  node: ts.ModuleDeclaration,
+  context: LoweringContext,
+): readonly IrFunctionDeclaration[] {
+  if (!ts.isIdentifier(node.name) || !node.body || !ts.isModuleBlock(node.body)) {
+    unsupported(node, 'value namespace declarations require a direct identifier namespace body');
+  }
+  const symbol = context.checker.getSymbolAtLocation(node.name);
+  if (!symbol?.declarations?.some(ts.isEnumDeclaration)) {
+    unsupported(node, 'value namespace declarations require neutral IR namespace representation');
+  }
+  const root = lowerBindingSymbol(symbol, node.name, context);
+  const declarations: IrFunctionDeclaration[] = [];
+  const pendingOverloads = new Map<string, IrFunctionSignature[]>();
+  for (const statement of node.body.statements) {
+    if (
+      ts.isInterfaceDeclaration(statement) ||
+      ts.isTypeAliasDeclaration(statement) ||
+      (ts.isImportDeclaration(statement) && statement.importClause?.isTypeOnly)
+    ) {
+      continue;
+    }
+    if (!ts.isFunctionDeclaration(statement)) {
+      unsupported(statement, `enum value namespace member ${ts.SyntaxKind[statement.kind]} requires neutral lowering`);
+    }
+    const name = requiredDeclarationName(statement, context);
+    if (!statement.body) {
+      const overloads = pendingOverloads.get(name) ?? [];
+      overloads.push(lowerFunctionSignature(statement, context));
+      pendingOverloads.set(name, overloads);
+      continue;
+    }
+    declarations.push({
+      ...lowerFunction(statement, pendingOverloads.get(name) ?? [], context),
+      exported: false,
+      namespaceMember: { binding: root, kind: 'binding', path: [name] },
+    });
+    pendingOverloads.delete(name);
+  }
+  for (const [name, overloads] of pendingOverloads) {
+    unsupported(
+      node,
+      `namespace function overload ${name} has no implementation (${String(overloads.length)} signature(s))`,
+    );
+  }
+  return declarations;
+}
+
 function evaluateEnumConstant(
   node: ts.Expression,
   values: ReadonlyMap<string, number | string>,
@@ -771,6 +819,7 @@ function lowerExpression(
       kind: 'property',
       ...absent,
       ...member,
+      ...getTypeScriptValueNamespaceMemberReference(node, context),
       name: node.name.text,
       object: lowerExpression(node.expression, context),
       optional,
@@ -2659,13 +2708,28 @@ function lowerTypeNameNodeReference(
   return { kind: 'ambient', name: getTypeScriptNodeText(node, context) };
 }
 
-function lowerValueNameReference(node: ts.EntityName, context: LoweringContext): IrValueNameReference {
+function lowerValueNameReference(node: ts.EntityName | ts.Expression, context: LoweringContext): IrValueNameReference {
   const parts = getTypeNameNodeParts(node);
   if (!parts) return { kind: 'ambient', name: getTypeScriptNodeText(node, context) };
   const symbol = context.checker.getSymbolAtLocation(parts.root);
   return symbol?.declarations?.some(isValueBindingDeclaration) && !isTypeScriptAmbientSurfaceSymbol(symbol)
     ? { binding: lowerBindingSymbol(symbol, parts.root, context), kind: 'binding', path: parts.path }
     : { kind: 'ambient', name: getTypeScriptNodeText(node, context) };
+}
+
+function getTypeScriptValueNamespaceMemberReference(
+  node: ts.PropertyAccessExpression,
+  context: LoweringContext,
+): Readonly<{ namespaceMember: IrValueNameReference }> | undefined {
+  const symbol = context.checker.getSymbolAtLocation(node.name);
+  const namespaceMember = symbol?.declarations?.some((declaration) => {
+    for (let parent: ts.Node | undefined = declaration.parent; parent; parent = parent.parent) {
+      if (ts.isModuleDeclaration(parent)) return true;
+      if (ts.isSourceFile(parent)) return false;
+    }
+    return false;
+  });
+  return namespaceMember ? { namespaceMember: lowerValueNameReference(node, context) } : undefined;
 }
 
 function getTypeNameNodeParts(

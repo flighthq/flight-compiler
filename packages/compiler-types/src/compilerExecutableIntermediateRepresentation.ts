@@ -6,7 +6,11 @@ import type {
   IrPropertyKeyCoercion,
 } from './compilerAccessSemanticIntermediateRepresentation.js';
 import type { IrAwaitSemantics } from './compilerAsyncTaskCompletionContract.js';
-import type { IrBindingIdentity, IrIdentifierReference } from './compilerBindingIntermediateRepresentation.js';
+import type {
+  IrBindingIdentity,
+  IrIdentifierReference,
+  IrValueNameReference,
+} from './compilerBindingIntermediateRepresentation.js';
 import type { IrBindingPattern } from './compilerBindingPatternIntermediateRepresentation.js';
 import type { IrCatchSemantics } from './compilerCatchCompletionContract.js';
 import type {
@@ -166,6 +170,10 @@ export type IrExpression =
       // ambient surface differently, so the receiver it was resolved against travels with the name.
       member?: IrResolvedMember | undefined;
       name: string;
+      // The checker resolved this access through a source value namespace. The reference retains
+      // the namespace root and full member path so a backend need not infer namespace semantics
+      // from capitalization or from a property name that could equally be an object field.
+      namespaceMember?: IrValueNameReference | undefined;
       object: IrExpression;
       optional: boolean;
       optionalChain?: IrOptionalChainSemantics | undefined;

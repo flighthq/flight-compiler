@@ -5113,6 +5113,48 @@ it('resolves enum declarations with string and numeric values', () => {
   expect(decl).toMatchObject({ kind: 'enum' });
 });
 
+it('lowers enum value namespace functions and their qualified references', () => {
+  const result = lower(
+    'enum-namespace.ts',
+    `
+      export enum Flags { None = 0, Visible = 1 }
+      export namespace Flags {
+        export function any(flags: Flags, test: Flags): boolean { return (flags & test) !== 0; }
+      }
+      export function visible(flags: Flags): boolean { return Flags.any(flags, Flags.Visible); }
+    `,
+  );
+
+  expect(result.diagnostics).toEqual([]);
+  const enumeration = result.module.declarations.find((declaration) => declaration.kind === 'enum');
+  const namespaceFunction = result.module.declarations.find(
+    (declaration) => declaration.kind === 'function' && declaration.binding.name === 'any',
+  );
+  const caller = result.module.declarations.find(
+    (declaration) => declaration.kind === 'function' && declaration.binding.name === 'visible',
+  );
+  if (enumeration?.kind !== 'enum' || namespaceFunction?.kind !== 'function' || caller?.kind !== 'function') {
+    throw new Error('Expected enum and namespace functions');
+  }
+  expect(namespaceFunction.namespaceMember).toEqual({
+    binding: enumeration.binding,
+    kind: 'binding',
+    path: ['any'],
+  });
+  expect(caller.body).toMatchObject([
+    {
+      expression: {
+        callee: {
+          kind: 'property',
+          namespaceMember: { binding: enumeration.binding, kind: 'binding', path: ['any'] },
+        },
+        kind: 'call',
+      },
+      kind: 'return',
+    },
+  ]);
+});
+
 it('lowers regexp literal expressions with pattern and flags', () => {
   const result = lower(
     'regexp.ts',

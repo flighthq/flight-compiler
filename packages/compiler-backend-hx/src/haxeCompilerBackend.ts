@@ -853,6 +853,9 @@ function emitStatementValueExpressionHaxe(
 }
 
 function emitFunction(declaration: Readonly<IrFunctionDeclaration>, outer: EmitContext): string[] {
+  if (declaration.namespaceMember) {
+    emissionError(outer, `value namespace function ${declaration.binding.name} requires Haxe namespace lowering`);
+  }
   // A module-level static carries no access or `static` keyword: it is already a member of the
   // module rather than of a type, and Haxe rejects both there.
   const access = '';

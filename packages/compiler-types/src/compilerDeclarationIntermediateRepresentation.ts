@@ -1,4 +1,8 @@
-import type { IrBindingIdentity, IrTypeBindingIdentity } from './compilerBindingIntermediateRepresentation.js';
+import type {
+  IrBindingIdentity,
+  IrTypeBindingIdentity,
+  IrValueNameReference,
+} from './compilerBindingIntermediateRepresentation.js';
 import type {
   IrExpression,
   IrParameter,
@@ -25,6 +29,10 @@ export interface IrFunctionDeclaration extends IrFunctionSignature {
   readonly binding: IrBindingIdentity;
   readonly exported: boolean;
   readonly kind: 'function';
+  // A value namespace member remains an ordinary declaration so every executable lowering pass
+  // still sees its body. Its qualified source identity travels separately because targets may
+  // choose a static member, a module, or a flattened symbol for the namespace representation.
+  readonly namespaceMember?: IrValueNameReference | undefined;
   readonly origin: CompilerSourceOrigin;
   readonly overloads: readonly IrFunctionSignature[];
 }

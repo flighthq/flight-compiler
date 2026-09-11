@@ -232,7 +232,9 @@ function emitIrModuleCppWithContext(
     const targetName = targetNames.get(bindingPlan.binding.id) ?? safeCppName(bindingPlan.binding.name);
     sharedCaptureTargetNames.set(bindingPlan.binding.id, generateUniqueName(`${targetName}_capture`, context));
   }
-  const declarations = orderIrModuleDeclarationsCpp(module).map((declaration) => emitDeclaration(declaration, context));
+  const declarations = orderIrModuleDeclarationsCpp(module)
+    .filter((declaration) => declaration.kind !== 'function' || !declaration.namespaceMember)
+    .map((declaration) => emitDeclaration(declaration, context));
   const imports = emitImports(module, context);
   const reexports = emitReexportsCpp(module, context);
   const lines = [createCompilerGeneratedFileHeader(module, '//', options.upstreamCommit)];
@@ -484,6 +486,13 @@ function emitClass(declaration: Readonly<IrClassDeclaration>, outer: EmitContext
 function emitEnum(declaration: Readonly<IrEnumDeclaration>, context: EmitContext): string[] {
   const name = getBindingTargetName(declaration.binding, context);
   const allStringValues = declaration.members.every((member) => typeof member.value === 'string');
+  const namespaceFunctions = getIrEnumNamespaceFunctionsCpp(declaration, context);
+  if (namespaceFunctions.length > 0) {
+    if (allStringValues) {
+      emissionError(context, `string enum ${declaration.binding.name} value namespace requires wrapper lowering`);
+    }
+    return emitNumericEnumNamespaceWrapperCpp(declaration, namespaceFunctions, context);
+  }
   if (allStringValues) return emitStringEnumCpp(declaration, context);
   const lines: string[] = [`enum class ${name} {`];
   for (const member of declaration.members) {
@@ -497,6 +506,74 @@ function emitEnum(declaration: Readonly<IrEnumDeclaration>, context: EmitContext
     lines.push(`  ${safeCppTypeName(member.name)}${value},`);
   }
   lines.push('};');
+  return lines;
+}
+
+function getIrEnumNamespaceFunctionsCpp(
+  declaration: Readonly<IrEnumDeclaration>,
+  context: EmitContext,
+): readonly Readonly<IrFunctionDeclaration>[] {
+  return context.module.declarations.filter(
+    (candidate): candidate is IrFunctionDeclaration =>
+      candidate.kind === 'function' &&
+      candidate.namespaceMember?.kind === 'binding' &&
+      candidate.namespaceMember.binding.id === declaration.binding.id &&
+      candidate.namespaceMember.path.length === 1,
+  );
+}
+
+function emitNumericEnumNamespaceWrapperCpp(
+  declaration: Readonly<IrEnumDeclaration>,
+  namespaceFunctions: readonly Readonly<IrFunctionDeclaration>[],
+  context: EmitContext,
+): string[] {
+  const name = getBindingTargetName(declaration.binding, context);
+  const lines = [
+    `struct ${name} {`,
+    '  double value;',
+    `  constexpr ${name}() : value(0.0) {}`,
+    `  constexpr ${name}(double source) : value(source) {}`,
+    '  constexpr operator double() const noexcept { return value; }',
+  ];
+  for (const member of declaration.members) {
+    if (typeof member.value !== 'number' || !Number.isSafeInteger(member.value)) {
+      emissionError(
+        context,
+        `numeric enum member ${declaration.binding.name}.${member.name} requires an integer value`,
+      );
+    }
+    lines.push(`  inline static constexpr double ${safeCppTypeName(member.name)} = ${String(member.value)}.0;`);
+  }
+  for (const namespaceFunction of namespaceFunctions) {
+    lines.push(...indentSourceLines(emitEnumNamespaceFunctionCpp(namespaceFunction, context)));
+  }
+  lines.push('};');
+  return lines;
+}
+
+function emitEnumNamespaceFunctionCpp(declaration: Readonly<IrFunctionDeclaration>, outer: EmitContext): string[] {
+  const context: EmitContext = {
+    ...outer,
+    async: declaration.async,
+    defaultedParameterIds: collectDefaultedParameterIdsCpp(declaration.parameters),
+    enclosingReturnType: declaration.returns,
+    returnsAbsent: hasIrTypeAbsentMember(declaration.returns),
+  };
+  if (declaration.async) context.includes.add('coroutine');
+  const returnType = emitType(declaration.returns, context);
+  const typeParams = emitTypeParameters(declaration.typeParameters, context);
+  const params = declaration.parameters.map((parameter) => emitParameter(parameter, context)).join(', ');
+  const lines: string[] = [];
+  if (typeParams) lines.push(`template ${typeParams}`);
+  lines.push(`static ${returnType} ${safeCppName(declaration.binding.name)}(${params}) {`);
+  lines.push(
+    ...indentSourceLines([
+      ...emitParameterInitializersCpp(declaration.parameters, context),
+      ...emitStatements(declaration.body, context),
+      ...emitImplicitCompletionCpp(declaration.body, context),
+    ]),
+  );
+  lines.push('}');
   return lines;
 }
 
@@ -1098,6 +1175,9 @@ function emitExpression(
     }
     case 'property': {
       if (expression.optional) return emitOptionalPropertyExpressionCpp(expression, context);
+      if (expression.namespaceMember) {
+        return `${emitExpression(expression.object, context)}::${safeCppName(expression.name)}`;
+      }
       if (expression.member) {
         const binding = getCompilerCppAmbientMemberBinding(expression.member, getCppRuntimeProfile(context.options));
         if (binding && binding.kind === 'sizeMethod') {
@@ -3127,6 +3207,11 @@ function emitIdentifierReference(
     }
     return 'super';
   }
+  const namespaceFunction = context.module.declarations.find(
+    (declaration) =>
+      declaration.kind === 'function' && declaration.namespaceMember && declaration.binding.id === reference.binding.id,
+  );
+  if (namespaceFunction?.kind === 'function') return safeCppName(namespaceFunction.binding.name);
   const imported = getCppImportedBindingTargetName(reference.binding.id, [], context);
   if (imported) return imported;
   return emitBindingValueCpp(reference.binding, context);

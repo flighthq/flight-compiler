@@ -1408,6 +1408,9 @@ function hasIrFunctionSignatureThisMutationRust(method: Readonly<{ body: readonl
 }
 
 function emitFunction(declaration: Readonly<IrFunctionDeclaration>, outer: EmitContext): string[] {
+  if (declaration.namespaceMember) {
+    emissionError(outer, `value namespace function ${declaration.binding.name} requires Rust namespace lowering`);
+  }
   const context: EmitContext = {
     ...outer,
     enclosingReturnType: declaration.returns,
