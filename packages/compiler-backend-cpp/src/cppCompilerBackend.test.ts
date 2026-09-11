@@ -2071,6 +2071,64 @@ export function preferred(): number { return NativeSurface.preferredFormat; }`,
     expect(() => emitIrModuleCpp(module)).toThrow('Partial');
   });
 
+  it('emits Partial<T> object shapes with optional C++ fields', () => {
+    const result = lower(
+      'partial-object.ts',
+      'interface Options { count: number; label: string; } export function apply(options: Partial<Options>): void {}',
+    );
+    const emitted = emitIrModuleCpp(result.module);
+
+    expect(emitted.contents).toContain('std::optional<double> count;');
+    expect(emitted.contents).toContain('std::optional<std::string> label;');
+    expect(emitted.contents).toContain('void apply(count_label options)');
+  });
+
+  it('resolves Readonly<Partial<T>> through imported interface barrels', () => {
+    const model = lowerPackage(
+      '@flighthq/types',
+      'has-appearance.ts',
+      'export interface HasAppearance { alpha: number; visible: boolean; }',
+    ).module;
+    const barrel = lowerPackage(
+      '@flighthq/types',
+      'contract.ts',
+      "export type { HasAppearance } from './has-appearance.js';",
+    ).module;
+    const consumer = lowerPackage(
+      '@flighthq/node',
+      'has-appearance.ts',
+      "import type { HasAppearance } from '@flighthq/types/contract'; export function init(target: HasAppearance, obj?: Readonly<Partial<HasAppearance>>): void { target.alpha = obj?.alpha ?? 1; target.visible = obj?.visible ?? true; }",
+    ).module;
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          importer: { name: consumer.name, packageName: consumer.packageName, source: consumer.source },
+          specifier: '@flighthq/types/contract',
+          target: { packageName: barrel.packageName, source: barrel.source },
+        },
+        {
+          importer: { name: barrel.name, packageName: barrel.packageName, source: barrel.source },
+          specifier: './has-appearance.js',
+          target: { packageName: model.packageName, source: model.source },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const session = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules: [consumer, barrel, model],
+      options: { runtimeProfile: 'flight-cpp' },
+    });
+    const emitted = session.emitModule(consumer)[0]!.contents;
+
+    expect(emitted).toContain('std::optional<double> alpha;');
+    expect(emitted).toContain('std::optional<bool> visible;');
+    expect(emitted).toContain('std::optional<flight::Ref<alpha_visible>> obj = std::nullopt');
+    expect(emitted).toContain('auto optional_chain_receiver = obj;');
+    expect(emitted).toContain('std::optional<double>');
+    expect(emitted).not.toContain('std::optional<auto>');
+  });
+
   it('emits C++ keywords with trailing underscore', () => {
     const result = lower(
       'keywords.ts',

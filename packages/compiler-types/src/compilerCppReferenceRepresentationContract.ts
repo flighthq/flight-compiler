@@ -1,5 +1,5 @@
 import type { IrModule } from './compilerModuleIntermediateRepresentation.js';
-import type { IrType } from './compilerTypeIntermediateRepresentation.js';
+import type { IrObjectTypeProperty, IrType } from './compilerTypeIntermediateRepresentation.js';
 import type { CompilerTypeValueIdentityAnalysis } from './compilerTypeValueIdentityContract.js';
 
 export type CompilerCppReferenceRepresentationCategory =
@@ -58,5 +58,9 @@ export interface CompilerCppReferenceRepresentationPlanner {
   readonly plan: (type: Readonly<IrType>, module: Readonly<IrModule>) => CompilerCppReferenceRepresentationPlan;
   readonly resolveAlias: (type: Readonly<IrType>, module: Readonly<IrModule>) => Readonly<IrType> | undefined;
   readonly resolveModule: (specifier: string, module: Readonly<IrModule>) => Readonly<IrModule> | undefined;
+  readonly resolveObjectShape: (
+    type: Readonly<IrType>,
+    module: Readonly<IrModule>,
+  ) => readonly Readonly<IrObjectTypeProperty>[] | undefined;
   readonly schema: 'flight-compiler-cpp-reference-representation-planner/1';
 }

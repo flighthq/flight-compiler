@@ -20,6 +20,89 @@ const objectType = {
   properties: [{ name: 'value', optional: false, readonly: false, type: numberType }],
 } as const satisfies IrType;
 
+describe('C++ reference planner object shapes', () => {
+  it('resolves named aliases and object utility shapes without changing their neutral types', () => {
+    const module = lower(
+      'model.ts',
+      'export interface Model { value: number; label?: string } export type Alias = Model;',
+    );
+    const alias = declarationType(module, 'Alias');
+    const model = declarationType(module, 'Model');
+    const resolver = createIrTypeReferenceRepresentationPlannerCpp([module]);
+
+    expect(resolver.resolveAlias(alias, module)).toEqual(model);
+    expect(resolver.resolveObjectShape(ambientType('Partial', [model]), module)).toEqual([
+      { name: 'value', optional: true, readonly: false, type: numberType },
+      { name: 'label', optional: true, readonly: false, type: { kind: 'primitive', name: 'string' } },
+    ]);
+  });
+
+  it('projects nested utilities through aliases and inherited interfaces', () => {
+    const module = lower(
+      'inherited-model.ts',
+      'interface Base { readonly id: number; } interface Model extends Base { value?: string; } export type Alias = Model;',
+    );
+    const alias = declarationType(module, 'Alias');
+    const resolver = createIrTypeReferenceRepresentationPlannerCpp([module]);
+
+    expect(resolver.resolveObjectShape(ambientType('Readonly', [ambientType('Partial', [alias])]), module)).toEqual([
+      { name: 'id', optional: true, readonly: true, type: numberType },
+      {
+        name: 'value',
+        optional: true,
+        readonly: true,
+        type: { kind: 'primitive', name: 'string' },
+      },
+    ]);
+    expect(resolver.resolveObjectShape(ambientType('Required', [ambientType('Partial', [alias])]), module)).toEqual([
+      { name: 'id', optional: false, readonly: true, type: numberType },
+      {
+        name: 'value',
+        optional: false,
+        readonly: false,
+        type: { kind: 'primitive', name: 'string' },
+      },
+    ]);
+  });
+
+  it('rejects unresolved, conflicting, behavioral, and malformed object shapes', () => {
+    const module = lower(
+      'object-shape-refusals.ts',
+      `
+        interface Left { value: number; }
+        interface Right { value: string; }
+        interface Conflict extends Left, Right {}
+        class Data { value = 1; static kind = 1; private hidden = 1; }
+        class Behavior { value = 1; run(): void {} }
+      `,
+    );
+    const unresolved = lower(
+      'unresolved-shape.ts',
+      "import type { Missing } from '@missing'; export type Alias = Missing;",
+    );
+    const resolver = createIrTypeReferenceRepresentationPlannerCpp([module]);
+
+    expect(resolver.resolveObjectShape(objectType, module)).toEqual(objectType.properties);
+    expect(resolver.resolveObjectShape(numberType, module)).toBeUndefined();
+    expect(resolver.resolveObjectShape(ambientType('Partial'), module)).toBeUndefined();
+    expect(resolver.resolveObjectShape(ambientType('Pick', [objectType]), module)).toBeUndefined();
+    expect(resolver.resolveObjectShape(declarationType(module, 'Conflict'), module)).toBeUndefined();
+    expect(resolver.resolveObjectShape(declarationType(module, 'Data'), module)).toEqual([
+      { name: 'value', optional: false, readonly: false, type: numberType },
+    ]);
+    expect(resolver.resolveObjectShape(declarationType(module, 'Behavior'), module)).toBeUndefined();
+    expect(
+      createIrTypeReferenceRepresentationPlannerCpp([unresolved]).resolveObjectShape(
+        declarationType(unresolved, 'Alias'),
+        unresolved,
+      ),
+    ).toBeUndefined();
+    expect(() => resolver.resolveObjectShape(objectType, unresolved)).toThrow(
+      'C++ object-shape subject must belong to the explicit module set',
+    );
+  });
+});
+
 describe('createIrTypeReferenceRepresentationPlanCpp', () => {
   it('separates inline values, reference handles, and their raw object storage', () => {
     const module = lower(

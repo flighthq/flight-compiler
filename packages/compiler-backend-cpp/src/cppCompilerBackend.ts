@@ -1711,7 +1711,11 @@ function emitType(type: Readonly<IrType>, context: EmitContext, representation: 
         }
       }
       if (sourceName === 'Partial' && type.typeArguments[0]) {
-        emissionError(context, 'Partial<T> requires C++ optional-field lowering');
+        const properties = context.referenceRepresentationPlanner.resolveObjectShape(type, context.module);
+        if (!properties) {
+          emissionError(context, 'Partial<T> requires a statically resolvable C++ object shape');
+        }
+        return emitType({ kind: 'object', properties }, context, representation);
       }
       if (sourceName === 'WeakMap' && getCppRuntimeProfile(context.options) === 'flight-cpp') {
         assertWeakMapTypeArgumentsCpp(type.typeArguments, context);
@@ -2198,6 +2202,8 @@ function getIrObjectPropertyTypeCpp(
   context: EmitContext,
 ): Readonly<IrType> | undefined {
   if (type.kind === 'object') return type.properties.find((property) => property.name === propertyName)?.type;
+  const objectShape = context.referenceRepresentationPlanner.resolveObjectShape(type, context.module);
+  if (objectShape) return objectShape.find((property) => property.name === propertyName)?.type;
   if (type.kind !== 'named' || type.reference.kind !== 'binding') return undefined;
   const bindingId = type.reference.binding.id;
   const declaration = context.module.declarations.find(
@@ -2904,14 +2910,13 @@ function emitOptionalPropertyExpressionCpp(
   if (semantics.receiverNullish === 'excluded' && !indexesRuntimeCollection) {
     return emitExpression({ ...expression, optional: false }, context);
   }
-  const payload = emitOptionalChainPayloadTypeCpp(semantics.valueType, context);
+  const receiverType = emitOptionalChainPayloadIrTypeCpp(semantics.receiverType, context);
+  const resolvedPropertyType = getIrObjectPropertyTypeCpp(receiverType, expression.name, context);
+  const valueType =
+    semantics.valueType.kind === 'unknown' ? (resolvedPropertyType ?? semantics.valueType) : semantics.valueType;
+  const payload = emitOptionalChainPayloadTypeCpp(valueType, context);
   const object = emitOptionalChainReceiverCpp(expression.object, context);
-  const memberOperator = hasFlightReferenceRepresentationCpp(
-    emitOptionalChainPayloadIrTypeCpp(semantics.receiverType, context),
-    context,
-  )
-    ? '->'
-    : '.';
+  const memberOperator = hasFlightReferenceRepresentationCpp(receiverType, context) ? '->' : '.';
   let projected: string;
   if (expression.member) {
     const binding = getCompilerCppAmbientMemberBinding(expression.member, getCppRuntimeProfile(context.options));
@@ -2938,6 +2943,9 @@ function emitOptionalChainReceiverCpp(expression: Readonly<IrExpression>, contex
     hasIndexedRuntimeReceiverCpp(expression, context)
   ) {
     return `${emitExpression(expression.object, context)}.get(${emitExpression(expression.index, context)})`;
+  }
+  if (expression.kind === 'identifier' && expression.presence === 'narrowedPresent') {
+    return emitExpression({ ...expression, presence: undefined }, context);
   }
   return emitExpression(expression, context);
 }

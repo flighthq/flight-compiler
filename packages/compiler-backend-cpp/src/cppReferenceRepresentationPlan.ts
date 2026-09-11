@@ -12,6 +12,7 @@ import type {
   CompilerTypeValueIdentityAnalysis,
   IrDeclaration,
   IrModule,
+  IrObjectTypeProperty,
   IrType,
 } from '../../compiler-types/src/index.js';
 
@@ -99,6 +100,11 @@ export function createIrTypeReferenceRepresentationPlannerCpp(
       const targets = getReferenceSpecifierModulesCpp(subject, specifier, moduleSet, resolutionCache);
       return targets.length === 1 ? targets[0]!.module : undefined;
     },
+    resolveObjectShape(type: Readonly<IrType>, module: Readonly<IrModule>) {
+      const subject = getReferenceModuleRecordCpp(module, moduleSet);
+      if (!subject) throw new TypeError('C++ object-shape subject must belong to the explicit module set');
+      return resolveIrTypeObjectShapeCpp(type, subject, moduleSet, resolutionCache, new Set());
+    },
     schema: 'flight-compiler-cpp-reference-representation-planner/1',
   });
 }
@@ -133,6 +139,95 @@ function resolveIrTypeAliasCpp(
     aliases.length === 1 && aliases[0]!.declaration.kind === 'typeAlias' ? aliases[0]!.declaration.type : null;
   cache.set(key, result);
   return result ?? undefined;
+}
+
+function resolveIrTypeObjectShapeCpp(
+  type: Readonly<IrType>,
+  module: Readonly<ReferenceModuleRecord>,
+  moduleSet: Readonly<ReferenceModuleSet>,
+  cache: ReferenceResolutionCache,
+  ancestors: ReadonlySet<string>,
+): readonly Readonly<IrObjectTypeProperty>[] | undefined {
+  if (type.kind === 'object') return type.properties;
+  if (type.kind !== 'named') return undefined;
+  if (type.reference.kind === 'ambient') {
+    if (type.typeArguments.length !== 1 || !type.typeArguments[0]) return undefined;
+    const properties = resolveIrTypeObjectShapeCpp(type.typeArguments[0], module, moduleSet, cache, ancestors);
+    if (!properties) return undefined;
+    if (type.reference.name === 'Partial') {
+      return properties.map((property) => ({ ...property, optional: true }));
+    }
+    if (type.reference.name === 'Readonly') {
+      return properties.map((property) => ({ ...property, readonly: true }));
+    }
+    if (type.reference.name === 'Required') {
+      return properties.map((property) => ({ ...property, optional: false }));
+    }
+    return undefined;
+  }
+  const resolution = getReferenceDeclarationResolutionCpp(type.reference, module, moduleSet, cache);
+  if (resolution.kind !== 'location') return undefined;
+  const location = resolution.location;
+  if (ancestors.has(location.identity)) return undefined;
+  const nextAncestors = new Set(ancestors).add(location.identity);
+  const declaration = location.declaration;
+  const substitutions = createIrTypeParameterSubstitutionPlan(declaration.typeParameters, type.typeArguments);
+  if (declaration.kind === 'typeAlias') {
+    return resolveIrTypeObjectShapeCpp(
+      resolveIrTypeStructuralSubstitution(declaration.type, substitutions),
+      location.module,
+      moduleSet,
+      cache,
+      nextAncestors,
+    );
+  }
+  const inherited =
+    declaration.kind === 'interface' ? declaration.extends : declaration.extends ? [declaration.extends] : [];
+  const inheritedProperties = inherited.map((base) =>
+    resolveIrTypeObjectShapeCpp(
+      resolveIrTypeStructuralSubstitution(base, substitutions),
+      location.module,
+      moduleSet,
+      cache,
+      nextAncestors,
+    ),
+  );
+  if (inheritedProperties.some((properties) => !properties)) return undefined;
+  const ownProperties: readonly Readonly<IrObjectTypeProperty>[] =
+    declaration.kind === 'interface'
+      ? declaration.properties.map((property) => ({
+          ...property,
+          type: resolveIrTypeStructuralSubstitution(property.type, substitutions),
+        }))
+      : declaration.fields.flatMap((field): readonly Readonly<IrObjectTypeProperty>[] =>
+          field.static || field.visibility !== 'public' || field.branded
+            ? []
+            : [
+                {
+                  name: field.name,
+                  optional: field.optional,
+                  readonly: field.readonly,
+                  type: resolveIrTypeStructuralSubstitution(field.type, substitutions),
+                },
+              ],
+        );
+  if (declaration.kind === 'class' && declaration.methods.some((method) => !method.static)) return undefined;
+  return mergeIrObjectShapePropertiesCpp([
+    ...inheritedProperties.flatMap((properties) => properties!),
+    ...ownProperties,
+  ]);
+}
+
+function mergeIrObjectShapePropertiesCpp(
+  properties: readonly Readonly<IrObjectTypeProperty>[],
+): readonly Readonly<IrObjectTypeProperty>[] | undefined {
+  const result = new Map<string, Readonly<IrObjectTypeProperty>>();
+  for (const property of properties) {
+    const existing = result.get(property.name);
+    if (existing && JSON.stringify(existing) !== JSON.stringify(property)) return undefined;
+    result.set(property.name, property);
+  }
+  return [...result.values()];
 }
 
 function createIrTypeReferenceRepresentationPlanInternalCpp(
