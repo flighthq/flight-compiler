@@ -63,6 +63,7 @@ A focused native compile also found that compiler-emitted `Record<PropertyKey, V
 
 - [ ] Add `flight/symbol.hpp`, `flight::Symbol`, and `flight::Symbol::for_key`. Repeated calls with the same key must preserve symbol identity. This is required by the generated Entity runtime key.
 - [ ] Compile the emitted Entity header and a dependent construction/access path against the pinned runtime. The runtime must provide `flight::ReferenceEnabled` and the existing reference helpers used by generated interface-derived types.
+- [ ] Choose an open structural-row strategy for `NodeOf<Traits>`, `Partial<D>`, and `EntityConstruction<Host & Capabilities>`, or reshape those Flight APIs into closed native records. Ordinary C++ multiple inheritance is not compatible: real traits both refine existing fields and add new ones, so it duplicates mutable slots or erases caller fields. Any runtime view must keep one shared owner and field storage across partial, readonly, construction, and trait projections.
 
 ## Host-provided bindings
 
@@ -70,6 +71,7 @@ These are not portable runtime globals and must not become unconditional `flight
 
 - [ ] Provide a Node/tooling host manifest for `process`, including the members reached by Flight's shell and tool-pipeline packages.
 - [ ] Provide a browser/media host manifest for `navigator`, `Permissions`, `PermissionDescriptor`, `MediaDevices`, `MediaStream`, and `MediaStreamTrack`.
+- [ ] Extend the external-binding ABI with an explicit weak-key identity/hash/equality guarantee before admitting native `CanvasImageSource`, `GPUShaderModule`, or similar handles as `WeakMap` keys. Ownership and nullability evidence alone do not prove compatibility with the emitted key container.
 - [ ] Add a manifest compile test for each supported host adapter so every reachable ambient type, value, constructor, and static member has exactly one binding.
 - [ ] Keep SDL, native GL, Dawn/wgpu-native, Vulkan, and platform window handles in their respective host packages. Generated render packages own rendering behavior; the compiler and core runtime do not learn host SDK APIs.
 
