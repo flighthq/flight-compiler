@@ -1215,6 +1215,82 @@ describe('lowerTypeScriptSource', () => {
     expect(result.diagnostics.map((diagnostic) => diagnostic.message)).toEqual(['unsupported type MappedType']);
   });
 
+  it('keeps referenced unsupported helper aliases opaque so public bindings remain valid', () => {
+    const result = lower(
+      'referenced-mapped-helper.ts',
+      `
+        type NumericProperties<Value> = {
+          [Key in keyof Value as Value[Key] extends number ? Key : never]?: number;
+        };
+        export interface Tween<Value> {
+          readonly properties: Readonly<NumericProperties<Value>>;
+        }
+      `,
+    );
+    const declarations = new Map(
+      result.module.declarations.flatMap((declaration) =>
+        'binding' in declaration ? [[declaration.binding.name, declaration] as const] : [],
+      ),
+    );
+
+    expect(declarations.get('NumericProperties')).toMatchObject({
+      kind: 'typeAlias',
+      type: { kind: 'unknown', source: 'unknown' },
+      typeParameters: [{ binding: { name: 'Value' } }],
+    });
+    expect(declarations.get('Tween')).toMatchObject({
+      kind: 'interface',
+      properties: [
+        {
+          name: 'properties',
+          type: {
+            kind: 'named',
+            reference: { kind: 'ambient', name: 'Readonly' },
+            typeArguments: [
+              {
+                kind: 'named',
+                reference: { binding: { name: 'NumericProperties' }, kind: 'binding' },
+                typeArguments: [{ kind: 'named', reference: { binding: { name: 'Value' } } }],
+              },
+            ],
+          },
+        },
+      ],
+    });
+    expect(result.diagnostics.map((diagnostic) => diagnostic.message)).toEqual(['unsupported type MappedType']);
+  });
+
+  it('substitutes conditional helper parameters inside selected named type arguments', () => {
+    const result = lower(
+      'conditional-named-substitution.ts',
+      `
+        interface Box<Value> { value: Value }
+        type BoxedFrom<Value extends object> = Value extends object ? Box<Value> : never;
+        export type Concrete = BoxedFrom<{ count: number }>;
+      `,
+    );
+    const concrete = result.module.declarations.find(
+      (declaration) => declaration.kind === 'typeAlias' && declaration.binding.name === 'Concrete',
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    expect(concrete).toMatchObject({
+      kind: 'typeAlias',
+      type: {
+        kind: 'object',
+        properties: [
+          {
+            name: 'value',
+            type: {
+              kind: 'object',
+              properties: [{ name: 'count', type: { kind: 'primitive', name: 'number' } }],
+            },
+          },
+        ],
+      },
+    });
+  });
+
   it('preserves concrete checker literals, primitives, and overloaded call signatures', () => {
     const result = lower(
       'mapped-type-evidence.ts',
@@ -1393,7 +1469,7 @@ describe('lowerTypeScriptSource', () => {
       type: { kind: 'named', reference: { binding: { name: 'Value' } } },
     });
     expect(declarations.get('BooleanRefinement')).toMatchObject({ type: { kind: 'primitive', name: 'boolean' } });
-    expect(declarations.has('Generic')).toBe(false);
+    expect(declarations.get('Generic')).toMatchObject({ type: { kind: 'unknown', source: 'unknown' } });
     expect(declarations.get('Specialized')).toMatchObject({ type: { kind: 'primitive', name: 'number' } });
     expect(declarations.get('IsAny')).toMatchObject({ type: { kind: 'primitive', name: 'boolean' } });
     expect(declarations.get('assertSyncVoid')).toMatchObject({

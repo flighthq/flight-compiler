@@ -227,6 +227,11 @@ function lowerTypeScriptSourceWithAnalysis(
       const severity =
         ts.isTypeAliasDeclaration(statement) || ts.isInterfaceDeclaration(statement) ? 'warning' : 'error';
       context.diagnostics.push(diagnostic(error.node, error.message, context, severity));
+      if (ts.isTypeAliasDeclaration(statement) && isTypeAliasReferencedOutsideDeclaration(statement, context)) {
+        const declaration = lowerOpaqueTypeAlias(statement, context);
+        declarations.push(declaration);
+        exports.push(...createTypeScriptDeclarationExports(declaration, false));
+      }
     }
   }
 
@@ -2682,6 +2687,41 @@ function lowerTypeAlias(node: ts.TypeAliasDeclaration, context: LoweringContext)
   };
 }
 
+// Unsupported private helpers may still be part of the shape of a declaration that did lower. If
+// the helper disappears, its surviving named references become dangling bindings and invalidate the
+// whole module before a target can apply its own opaque/external policy. Preserve only aliases used
+// outside their declaration, with unknown precision but stable identity and generic arity. An
+// unsupported, otherwise unused export remains omitted as before.
+function lowerOpaqueTypeAlias(node: ts.TypeAliasDeclaration, context: LoweringContext): IrTypeAliasDeclaration {
+  return {
+    binding: lowerTypeBindingIdentity(node.name, context),
+    exported: isExported(node),
+    kind: 'typeAlias',
+    origin: origin(node, context),
+    type: { kind: 'unknown', source: 'unknown' },
+    typeParameters:
+      node.typeParameters?.map((parameter) => ({ binding: lowerTypeBindingIdentity(parameter.name, context) })) ?? [],
+  };
+}
+
+function isTypeAliasReferencedOutsideDeclaration(node: ts.TypeAliasDeclaration, context: LoweringContext): boolean {
+  const symbol = context.checker.getSymbolAtLocation(node.name);
+  if (!symbol) return false;
+  let referenced = false;
+  const visit = (candidate: ts.Node): void => {
+    if (referenced) return;
+    if (ts.isIdentifier(candidate) && context.checker.getSymbolAtLocation(candidate) === symbol) {
+      referenced = true;
+      return;
+    }
+    ts.forEachChild(candidate, visit);
+  };
+  for (const statement of context.sourceFile.statements) {
+    if (statement !== node) visit(statement);
+  }
+  return referenced;
+}
+
 function lowerTypeNameReference(node: ts.EntityName, context: LoweringContext): IrTypeNameReference | undefined {
   return lowerTypeNameNodeReference(node, context);
 }
@@ -3173,7 +3213,16 @@ function lowerTypeScriptTypeNodeEvidence(
         };
       }
     }
-    return lowerType(type, context);
+    const reference = lowerTypeNameReference(type.typeName, context);
+    if (!reference) return { kind: 'unknown', source: 'unknown' };
+    return {
+      kind: 'named',
+      reference,
+      typeArguments:
+        type.typeArguments?.map((argument) =>
+          lowerTypeScriptTypeNodeEvidence(argument, context, seen, substitutions),
+        ) ?? [],
+    };
   }
   if (ts.isArrayTypeNode(type)) {
     return {
