@@ -2779,12 +2779,13 @@ function getCppTypeOfValueType(
     (functionDeclaration
       ? {
           kind: 'function' as const,
-          parameters: functionDeclaration.parameters.map((parameter) => ({
-            name: parameter.binding.name,
-            optional: parameter.optional,
-            rest: parameter.rest,
-            type: parameter.type,
-          })),
+          parameters: functionDeclaration.parameters.map((parameter) => {
+            const value = { name: parameter.binding.name, type: parameter.type };
+            if (parameter.rest) return { ...value, optional: false as const, rest: true as const };
+            return parameter.optional
+              ? { ...value, optional: true as const, rest: false as const }
+              : { ...value, optional: false as const, rest: false as const };
+          }),
           returns: functionDeclaration.returns,
           typeParameters: functionDeclaration.typeParameters,
         }
