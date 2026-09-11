@@ -158,6 +158,33 @@ describe('createIrTypeReferenceRepresentationPlanCpp', () => {
     }
   });
 
+  it('uses a type parameter reference constraint as representation proof', () => {
+    const module = lower(
+      'constraint.ts',
+      'export interface Entity {} export type WithoutRuntime<Type extends Entity> = Omit<Type, "runtime">;',
+    );
+    const alias = module.declarations.find(
+      (declaration) => declaration.kind === 'typeAlias' && declaration.binding.name === 'WithoutRuntime',
+    );
+    if (alias?.kind !== 'typeAlias' || alias.type.kind !== 'named') throw new TypeError('expected projected alias');
+    const parameter = alias.type.typeArguments[0];
+    if (!parameter) throw new TypeError('expected projected type parameter');
+
+    expect(createIrTypeReferenceRepresentationPlanCpp(parameter, module)).toMatchObject({
+      category: 'interface',
+      identity: { identity: 'reference', reason: 'declared-reference' },
+      identityDomain: 'object',
+      kind: 'represented',
+      storageRepresentation: 'rawNamedObject',
+      valueRepresentation: 'flightReference',
+    });
+    expect(createIrTypeReferenceRepresentationPlanCpp(alias.type, module)).toMatchObject({
+      category: 'interface',
+      kind: 'represented',
+      valueRepresentation: 'flightReference',
+    });
+  });
+
   it('returns explicit refusals where reference identity does not yet select one safe C++ representation', () => {
     const module = lower(
       'refusals.ts',
@@ -210,12 +237,15 @@ describe('createIrTypeReferenceRepresentationPlanCpp', () => {
         valueRepresentation: 'inlineValue',
       });
     }
-    for (const type of [typeOfArray, constrainedParameter]) {
-      expect(createIrTypeReferenceRepresentationPlanCpp(type, module)).toMatchObject({
-        kind: 'refused',
-        reason: 'unsupportedReferenceForm',
-      });
-    }
+    expect(createIrTypeReferenceRepresentationPlanCpp(typeOfArray, module)).toMatchObject({
+      kind: 'refused',
+      reason: 'unsupportedReferenceForm',
+    });
+    expect(createIrTypeReferenceRepresentationPlanCpp(constrainedParameter, module)).toMatchObject({
+      category: 'interface',
+      kind: 'represented',
+      valueRepresentation: 'flightReference',
+    });
     for (const type of [ambientType('WeakSet'), ambientType('BigInt64Array')]) {
       expect(createIrTypeReferenceRepresentationPlanCpp(type, module)).toMatchObject({
         kind: 'refused',

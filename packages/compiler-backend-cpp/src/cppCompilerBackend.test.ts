@@ -1927,6 +1927,44 @@ export function preferred(): number { return NativeSurface.preferredFormat; }`,
     expect(emitted.contents).toContain('double fill(Pt p)');
   });
 
+  it('erases Omit<T, K> only when the semantic runtime proves a reference-preserving representation', () => {
+    const result = lower(
+      'omit-reference.ts',
+      'export interface Entity {} export type WithoutRuntime<Type extends Entity> = Omit<Type, "runtime">;',
+    );
+
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+    expect(emitted.contents).toContain('template <typename Type>');
+    expect(emitted.contents).toContain('using WithoutRuntime = flight::Ref<Type>');
+    expect(() => emitIrModuleCpp(result.module)).toThrow(
+      'Omit<T, K> requires a proven reference-preserving flight-cpp representation',
+    );
+    const value = lower('omit-value.ts', 'export type Invalid<Type extends number> = Omit<Type, "runtime">;');
+    expect(() => emitIrModuleCpp(value.module, { runtimeProfile: 'flight-cpp' })).toThrow(
+      'Omit<T, K> requires a proven reference-preserving flight-cpp representation',
+    );
+  });
+
+  it('emits the Entity marker, reference projection, runtime record, and interned key together', () => {
+    const result = lower(
+      'entity.ts',
+      `export interface Entity { [EntityRuntimeKey]: EntityRuntime | undefined; }
+       export type EntityConstruction<Type extends Entity> = { -readonly [Key in keyof Type]: Type[Key] };
+       export type EntityWithoutRuntime<Type extends Entity> = Omit<Type, typeof EntityRuntimeKey>;
+       export interface EntityRuntime { uid?: string; }
+       export const EntityRuntimeKey = Symbol.for('EntityRuntime');`,
+    );
+
+    expect(result.diagnostics.every((diagnostic) => diagnostic.severity === 'warning')).toBe(true);
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+    expect(emitted.contents).toContain('struct Entity : public flight::ReferenceEnabled');
+    expect(emitted.contents).toContain('using EntityWithoutRuntime = flight::Ref<Type>');
+    expect(emitted.contents).toContain('struct EntityRuntime : public flight::ReferenceEnabled');
+    expect(emitted.contents).toContain(
+      'flight::Symbol entity_runtime_key = flight::Symbol::for_key(flight::String("EntityRuntime"))',
+    );
+  });
+
   it('refuses indexedAccess types', () => {
     const result = lower('idx.ts', 'export const x: number = 1;');
     const module = structuredClone(result.module);

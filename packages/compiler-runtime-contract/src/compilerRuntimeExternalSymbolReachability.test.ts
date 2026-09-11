@@ -12,6 +12,7 @@ describe('collectIrModulesRuntimeExternalSymbolIdentities', () => {
         export type ExternalMap<T extends PromiseLike<number> = Set<string>> =
           Readonly<Map<string, T & Float32Array>>;
         export type ExternalIndexed = ExternalShape['value'];
+        export type ExternalProjection<T extends Error> = Omit<Pick<T, keyof T>, 'stack'>;
         export type ExternalObject = {
           callback: <T extends Error = Error>(value: T) => Promise<T>;
           value: 'literal' | 1 | true | null | undefined | never;

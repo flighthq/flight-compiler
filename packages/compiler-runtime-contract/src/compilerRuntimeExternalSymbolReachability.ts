@@ -37,5 +37,5 @@ function compareIrRuntimeExternalSymbolIdentities(
 }
 
 // These TypeScript utility wrappers change compile-time type meaning but do not name runtime storage.
-const compilerIntrinsicTypeNames = new Set(['Partial', 'Readonly', 'Required']);
+const compilerIntrinsicTypeNames = new Set(['Omit', 'Partial', 'Pick', 'Readonly', 'Required']);
 const compilerIntrinsicValueNames = new Set(['undefined']);

@@ -1596,6 +1596,23 @@ function emitType(type: Readonly<IrType>, context: EmitContext, representation: 
     return emitType(type.typeArguments[0], context, representation);
   }
   if (
+    type.kind === 'named' &&
+    type.reference.kind === 'ambient' &&
+    type.reference.name === 'Omit' &&
+    type.typeArguments.length === 2 &&
+    type.typeArguments[0]
+  ) {
+    const subject = context.referenceRepresentationPlanner.plan(type.typeArguments[0], context.module);
+    if (
+      getCppRuntimeProfile(context.options) !== 'flight-cpp' ||
+      subject.kind !== 'represented' ||
+      subject.valueRepresentation !== 'flightReference'
+    ) {
+      emissionError(context, 'Omit<T, K> requires a proven reference-preserving flight-cpp representation');
+    }
+    return emitType(type.typeArguments[0], context, representation);
+  }
+  if (
     representation === 'value' &&
     getCppRuntimeProfile(context.options) === 'flight-cpp' &&
     hasFlightReferenceRepresentationCpp(type, context)

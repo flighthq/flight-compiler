@@ -198,7 +198,13 @@ function createNamedReferenceRepresentationPlanCpp(
     );
   }
   if (type.reference.binding.kind === 'typeParameter') {
-    return createCompilerCppReferenceRepresentationRefusalCpp(identity, 'unsupportedReferenceForm');
+    return createCompilerCppReferenceRepresentationSuccessCpp(
+      identity,
+      'interface',
+      'object',
+      'rawNamedObject',
+      'flightReference',
+    );
   }
 
   const resolution = getReferenceDeclarationResolutionCpp(
