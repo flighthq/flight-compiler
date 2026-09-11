@@ -1066,6 +1066,8 @@ function emitExpression(
     }
     case 'call': {
       if (expression.optional) return emitOptionalCallExpressionCpp(expression, context);
+      const optionalPropertyCall = emitOptionalPropertyCallExpressionCpp(expression, context);
+      if (optionalPropertyCall) return optionalPropertyCall;
       if (
         expression.callee.kind === 'property' &&
         expression.callee.object.kind === 'identifier' &&
@@ -3182,6 +3184,14 @@ function getIrCallReturnTypeCpp(
   context: EmitContext,
 ): Readonly<IrType> | undefined {
   if (expression.callee.kind === 'function') return expression.callee.returns;
+  if (expression.callee.kind === 'property' && expression.callee.optionalChain) {
+    const returns = getCppCallableReturnType(expression.callee.optionalChain.valueType, context, new Set());
+    if (returns) {
+      return expression.callee.optionalChain.receiverNullish === 'possible'
+        ? { kind: 'union', types: [returns, { kind: 'undefined' }] }
+        : returns;
+    }
+  }
   if (expression.callee.kind === 'identifier' && expression.callee.reference.kind === 'binding') {
     const declaration = getCppFunctionDeclarationForBindingCpp(expression.callee.reference.binding.id, context);
     if (declaration) {
@@ -4720,6 +4730,33 @@ function emitOptionalCallExpressionCpp(
   }
   const payload = emitType(valueType, context);
   return `([&]() -> std::optional<${payload}> { auto optional_chain_receiver = ${callee}; if (!optional_chain_receiver.has_value()) return std::nullopt; return optional_chain_receiver.value()(${arguments_}); }())`;
+}
+
+function emitOptionalPropertyCallExpressionCpp(
+  expression: Readonly<Extract<IrExpression, { kind: 'call' }>>,
+  context: EmitContext,
+): string | undefined {
+  const callee = expression.callee;
+  if (callee.kind !== 'property' || !callee.optional) return undefined;
+  const semantics = callee.optionalChain;
+  if (!semantics) return undefined;
+  assertIrOptionalChainReceiverIsSingleSentinelCpp(semantics.receiverType, context);
+  if (semantics.receiverNullish === 'excluded') {
+    return emitExpression({ ...expression, callee: { ...callee, optional: false } }, context);
+  }
+  const receiverType = emitOptionalChainPayloadIrTypeCpp(semantics.receiverType, context);
+  const returns = getCppCallableReturnType(semantics.valueType, context, new Set());
+  if (!returns) emissionError(context, `optional property call ${callee.name} requires callable result evidence`);
+  const receiver = emitOptionalChainReceiverCpp(callee.object, context);
+  const memberOperator = hasFlightReferenceRepresentationCpp(receiverType, context) ? '->' : '.';
+  const arguments_ = expression.arguments.map((argument) => emitExpression(argument, context)).join(', ');
+  const invocation = `optional_chain_receiver.value()${memberOperator}${safeCppName(callee.name)}(${arguments_})`;
+  context.includes.add('optional');
+  if (returns.kind === 'primitive' && returns.name === 'void') {
+    return `([&]() { auto optional_chain_receiver = ${receiver}; if (!optional_chain_receiver.has_value()) return; ${invocation}; }())`;
+  }
+  const payload = emitType(returns, context);
+  return `([&]() -> std::optional<${payload}> { auto optional_chain_receiver = ${receiver}; if (!optional_chain_receiver.has_value()) return std::nullopt; return ${invocation}; }())`;
 }
 
 function emitOptionalElementExpressionCpp(

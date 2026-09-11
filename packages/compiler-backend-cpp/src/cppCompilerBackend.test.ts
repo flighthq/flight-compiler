@@ -1613,7 +1613,7 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
       const result = lower(
         'number-globals.ts',
         `export function classify(value: number): number {
-        if (Number.isNaN(value)) return NaN;
+        if (Number.isNaN(value)) return Number.NaN;
         if (!Number.isFinite(value)) return Infinity;
         if (!Number.isInteger(value)) return Number.MIN_VALUE;
         return Number(value) + Number.EPSILON;
@@ -4592,6 +4592,104 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(emitted.contents).not.toContain('optional_chain_receiver = holder.value()');
     expect(emitted.contents).toContain('.has_value()');
     expect(emitted.contents).toContain('.value_or(0.0)');
+  });
+
+  it('emits an optional method call through an indirectly imported interface', () => {
+    const modelSource = ts.createSourceFile(
+      '/flight/packages/model/src/model.ts',
+      `export interface Process { readonly id: number; }
+       export interface Backend { spawn(command: string): Process; }
+       export interface Host { readonly backend?: Backend; }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const consumerSource = ts.createSourceFile(
+      '/flight/packages/app/src/consumer.ts',
+      `import type { Host, Process } from '@flight/model';
+       export function spawn(host: Host): Process | null {
+         return host.backend?.spawn('flight') ?? null;
+       }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          specifier: '@flight/model',
+          target: { packageName: '@flight/model', source: 'packages/model/src/model.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const results = lowerTypeScriptSources(
+      [
+        { packageName: '@flight/model', sourceFile: modelSource, upstreamDirectory: '/flight' },
+        { packageName: '@flight/app', sourceFile: consumerSource, upstreamDirectory: '/flight' },
+      ],
+      moduleResolution,
+    );
+    const modules = results.map((result) => result.module);
+    const output = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules,
+      options: { runtimeProfile: 'flight-cpp' },
+    }).emitModule(modules[1]!)[0]!.contents;
+
+    expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
+    expect(output).toContain('std::optional<flight::Ref<flighthq_model::Process>>');
+    expect(output).toContain('optional_chain_receiver.value()->spawn(flight::String("flight"))');
+  });
+
+  it('uses imported object evidence for contextual array element construction', () => {
+    const modelSource = ts.createSourceFile(
+      '/flight/packages/model/src/model.ts',
+      `export interface Subset { indexCount: number; indexOffset: number; }
+       export interface Geometry { subsets: Subset[]; }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const consumerSource = ts.createSourceFile(
+      '/flight/packages/app/src/consumer.ts',
+      `import type { Geometry, Subset } from '@flight/model';
+       export function copy(geometry: Geometry): void {
+         const next: Subset[] = [];
+         for (let i = 0; i < geometry.subsets.length; i++) {
+           next.push({
+             indexCount: geometry.subsets[i].indexCount,
+             indexOffset: geometry.subsets[i].indexOffset,
+           });
+         }
+         geometry.subsets = next;
+       }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          specifier: '@flight/model',
+          target: { packageName: '@flight/model', source: 'packages/model/src/model.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const results = lowerTypeScriptSources(
+      [
+        { packageName: '@flight/model', sourceFile: modelSource, upstreamDirectory: '/flight' },
+        { packageName: '@flight/app', sourceFile: consumerSource, upstreamDirectory: '/flight' },
+      ],
+      moduleResolution,
+    );
+    const modules = results.map((result) => result.module);
+    const output = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules,
+      options: { runtimeProfile: 'flight-cpp' },
+    }).emitModule(modules[1]!)[0]!.contents;
+
+    expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
+    expect(output).toContain('flight::make_ref<flighthq_model::Subset>');
+    expect(output).not.toMatch(/anonymous object property .* requires concrete C\+\+ type evidence/u);
   });
 
   it('emits != undefined nullish comparison as negated has_value', () => {

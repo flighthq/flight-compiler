@@ -2922,6 +2922,72 @@ describe('lowerTypeScriptSource', () => {
     });
   });
 
+  it('preserves imported recursive property and optional-call evidence', () => {
+    const model = ts.createSourceFile(
+      '/flight/packages/model/src/model.ts',
+      `export interface Element { children: Element[]; name: string; }
+       export interface Process { readonly id: number; }
+       export interface Backend { spawn(command: string): Process; }
+       export interface Host { readonly backend?: Backend; }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const consumer = ts.createSourceFile(
+      '/flight/packages/app/src/read.ts',
+      `import type { Element, Host, Process } from '@flight/model';
+       export function find(element: Element, name: string): Element | null {
+         for (const child of element.children) if (child.name === name) return child;
+         return null;
+       }
+       export function spawn(host: Host): Process | null {
+         return host.backend?.spawn('flight') ?? null;
+       }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const [, result] = lowerTypeScriptSources(
+      [
+        { packageName: '@flight/model', sourceFile: model, upstreamDirectory: '/flight' },
+        { packageName: '@flight/app', sourceFile: consumer, upstreamDirectory: '/flight' },
+      ],
+      {
+        edges: [
+          {
+            specifier: '@flight/model',
+            target: { packageName: '@flight/model', source: 'packages/model/src/model.ts' },
+          },
+        ],
+        schema: 'flight-compiler-module-resolution/1',
+      },
+    );
+    const find = result!.module.declarations.find(
+      (candidate) => candidate.kind === 'function' && candidate.binding.name === 'find',
+    );
+    const loop = find?.kind === 'function' ? find.body[0] : undefined;
+    const spawn = result!.module.declarations.find(
+      (candidate) => candidate.kind === 'function' && candidate.binding.name === 'spawn',
+    );
+    const returned = spawn?.kind === 'function' ? spawn.body[0] : undefined;
+    const call =
+      returned?.kind === 'return' && returned.expression?.kind === 'binary' ? returned.expression.left : undefined;
+    const optionalChain =
+      call?.kind === 'call' && call.callee.kind === 'property' ? call.callee.optionalChain : undefined;
+
+    expect(result!.diagnostics).toEqual([]);
+    expect(loop?.kind === 'forOf' ? loop.variable.type : undefined).toMatchObject({
+      kind: 'named',
+      reference: { binding: { kind: 'import', name: 'Element' }, kind: 'binding' },
+    });
+    expect(optionalChain?.receiverType).toMatchObject({
+      kind: 'union',
+      types: [{ kind: 'object' }, { kind: 'undefined' }],
+    });
+    expect(optionalChain?.valueType).toMatchObject({
+      kind: 'function',
+      returns: { kind: 'named', reference: { binding: { kind: 'import', name: 'Process' }, kind: 'binding' } },
+    });
+  });
+
   it('preserves named, renamed, nested, defaulted, computed, and rest object binding evidence', () => {
     const result = lower(
       'object-bindings.ts',

@@ -323,6 +323,9 @@ describe('getCompilerRuntimeExternalSymbolTargetCpp', () => {
       expect(getCompilerRuntimeExternalSymbolTargetCpp('Number', 'value', runtimeProfile)).toBe(
         runtimeProfile === 'flight-cpp' ? 'flight::to_number' : 'double',
       );
+      expect(getCompilerRuntimeExternalMemberTargetCpp('Number', 'NaN', runtimeProfile)).toBe(
+        'std::numeric_limits<double>::quiet_NaN()',
+      );
       expect(getCompilerRuntimeExternalSymbolTargetCpp('RangeError', 'value', runtimeProfile)).toBe('std::range_error');
     },
   );

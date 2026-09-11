@@ -56,6 +56,7 @@ interface NumberConstructor {
   readonly EPSILON: number;
   readonly MAX_SAFE_INTEGER: number;
   readonly MIN_SAFE_INTEGER: number;
+  readonly NaN: number;
   isFinite(value: number): boolean;
   isInteger(value: number): boolean;
   isNaN(value: number): boolean;

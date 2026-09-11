@@ -1202,7 +1202,7 @@ function getTypeScriptOptionalChainReceiverNullish(
 
 function getTypeScriptOptionalChainTypeEvidence(expression: ts.Expression, context: LoweringContext): IrType {
   const binding = getTypeScriptExpressionBindingTypeEvidence(expression, context);
-  if (binding) return binding;
+  if (binding) return resolveTypeScriptExpressionPropertyTypeEvidence(binding, context);
   const evidence = getTypeScriptSyntacticExpressionTypeEvidence(expression, context.checker);
   return evidence ? lowerType(evidence, context) : { kind: 'unknown', source: 'unknown' };
 }
@@ -1212,6 +1212,9 @@ function getTypeScriptOptionalChainValueTypeEvidence(
   receiverType: Readonly<IrType>,
   context: LoweringContext,
 ): IrType {
+  const binding = getTypeScriptExpressionBindingTypeEvidence(expression, context);
+  const bindingValue = removeIrTypeBindingPatternUndefined(binding);
+  if (bindingValue) return resolveTypeScriptExpressionPropertyTypeEvidence(bindingValue, context);
   const evidence = getTypeScriptSyntacticExpressionTypeEvidence(expression, context.checker);
   if (evidence) return lowerType(evidence, context);
   if (!ts.isElementAccessExpression(expression)) return { kind: 'unknown', source: 'unknown' };
@@ -3286,9 +3289,9 @@ function lowerTypeScriptForOfElementType(
     if (argument) return lowerTypeScriptForOfElementType(argument, context, nextSeen);
   }
   const iterableType = getTypeScriptSyntacticExpressionTypeEvidence(expression, context.checker);
-  if (!iterableType) return undefined;
+  if (!iterableType) return getTypeScriptForOfBindingElementType(expression, context);
   const element = getTypeScriptTypeNodeIterableElementEvidence(iterableType, context, new Set());
-  if (!element) return undefined;
+  if (!element) return getTypeScriptForOfBindingElementType(expression, context);
   if ('key' in element) {
     return {
       elements: [
@@ -3345,6 +3348,14 @@ function lowerTypeScriptForOfElementType(
     }
   }
   return lowerTypeScriptTypeNodeEvidence(element.type, context, new Set(), element.substitutions);
+}
+
+function getTypeScriptForOfBindingElementType(expression: ts.Expression, context: LoweringContext): IrType | undefined {
+  const bindingType = getTypeScriptExpressionBindingTypeEvidence(expression, context);
+  return (
+    getIrTypeIndexedElementEvidence(bindingType, undefined) ??
+    getIrTypeIndexedElementEvidence(getIrTypeConstructionTargetShape(bindingType, context), undefined)
+  );
 }
 
 function lowerTypeScriptCollectionViewElementType(
@@ -5100,6 +5111,29 @@ function getTypeScriptExpressionBindingTypeEvidence(
   return declaration && ts.isVariableDeclaration(declaration) && declaration.type
     ? lowerTypeScriptTypeNodeEvidence(declaration.type, context)
     : undefined;
+}
+
+function resolveTypeScriptExpressionPropertyTypeEvidence(type: Readonly<IrType>, context: LoweringContext): IrType {
+  if (type.kind === 'union') {
+    return {
+      kind: 'union',
+      types: type.types.map((member) => resolveTypeScriptExpressionPropertyTypeEvidence(member, context)) as [
+        IrType,
+        IrType,
+        ...IrType[],
+      ],
+    };
+  }
+  if (
+    type.kind !== 'named' ||
+    type.reference.kind !== 'binding' ||
+    type.reference.binding.kind === 'import' ||
+    (type.reference.binding.packageName === context.options.packageName &&
+      type.reference.binding.source === relativeSource(context.sourceFile.fileName, context.options.upstreamDirectory))
+  ) {
+    return type;
+  }
+  return getIrTypeConstructionTargetShape(type, context) ?? type;
 }
 
 function lowerTypeScriptIndexedReceivers(type: ts.Type, checker: ts.TypeChecker): IrIndexedReceiver[] {
