@@ -2404,11 +2404,9 @@ function emitType(type: Readonly<IrType>, context: EmitContext, representation: 
       return emitType(indexed, context, representation);
     }
     case 'keyof': {
-      const properties = context.referenceRepresentationPlanner.resolveObjectShape(type.type, context.module);
-      if (!properties || properties.length === 0 || properties.some((property) => property.computedKey)) {
-        emissionError(context, 'keyof types require C++ type computation lowering');
-      }
-      return emitCppStringType(context);
+      const keyType = getCppKeyofType(type.type, context);
+      if (!keyType) emissionError(context, 'keyof types require C++ type computation lowering');
+      return emitType(keyType, context, representation);
     }
     case 'typeOf': {
       const valueType = getCppTypeOfValueType(type, context);
@@ -2439,6 +2437,11 @@ function emitType(type: Readonly<IrType>, context: EmitContext, representation: 
         if (plan.kind === 'refused') {
           emissionError(context, `imported type ${type.reference.binding.name} has ${plan.reason}`);
         }
+      }
+      if (sourceName === 'Exclude') {
+        const excluded = getCppExcludedType(type.typeArguments, context);
+        if (!excluded) emissionError(context, 'Exclude types require closed C++ type computation lowering');
+        return emitType(excluded, context, representation);
       }
       if (sourceName === 'Partial' && type.typeArguments[0]) {
         const properties = context.referenceRepresentationPlanner.resolveObjectShape(
@@ -2558,6 +2561,73 @@ function getCppIndexedAccessType(
   if (selected.length === 0) return undefined;
   const unique = [...new Map(selected.map((candidate) => [JSON.stringify(candidate), candidate])).values()];
   return unique.length === 1 ? unique[0] : { kind: 'union', types: [unique[0]!, unique[1]!, ...unique.slice(2)] };
+}
+
+function getCppKeyofType(type: Readonly<IrType>, context: EmitContext): Readonly<IrType> | undefined {
+  const properties = context.referenceRepresentationPlanner.resolveObjectShape(type, context.module);
+  if (!properties || properties.length === 0) return undefined;
+  const keyTypes: IrType[] = [];
+  if (properties.some((property) => !property.computedKey)) {
+    keyTypes.push({ kind: 'primitive', name: 'string' });
+  }
+  if (properties.some((property) => property.computedKey)) {
+    keyTypes.push({ kind: 'primitive', name: 'symbol' });
+  }
+  return createCppClosedTypeUnion(keyTypes);
+}
+
+function getCppExcludedType(
+  typeArguments: readonly Readonly<IrType>[],
+  context: EmitContext,
+): Readonly<IrType> | undefined {
+  if (typeArguments.length !== 2 || !typeArguments[0] || !typeArguments[1]) return undefined;
+  const included = getCppClosedTypeMembers(typeArguments[0], context);
+  const excluded = getCppClosedTypeMembers(typeArguments[1], context);
+  if (!included || !excluded) return undefined;
+  return createCppClosedTypeUnion(
+    included.filter((member) => !excluded.some((candidate) => isCppClosedTypeAssignable(member, candidate))),
+  );
+}
+
+function getCppClosedTypeMembers(
+  type: Readonly<IrType>,
+  context: EmitContext,
+): readonly Readonly<IrType>[] | undefined {
+  const resolved =
+    type.kind === 'keyof'
+      ? getCppKeyofType(type.type, context)
+      : type.kind === 'typeOf'
+        ? getCppTypeOfValueType(type, context)
+        : type;
+  if (!resolved) return undefined;
+  if (resolved.kind === 'never') return [];
+  if (resolved.kind === 'union') {
+    const members = resolved.types.map((member) => getCppClosedTypeMembers(member, context));
+    return members.some((member) => !member) ? undefined : members.flatMap((member) => member!);
+  }
+  return resolved.kind === 'literal' ||
+    resolved.kind === 'null' ||
+    resolved.kind === 'primitive' ||
+    resolved.kind === 'undefined'
+    ? [resolved]
+    : undefined;
+}
+
+function isCppClosedTypeAssignable(source: Readonly<IrType>, target: Readonly<IrType>): boolean {
+  if (target.kind === 'primitive') {
+    if (source.kind === 'primitive') return source.name === target.name;
+    if (source.kind !== 'literal') return false;
+    return typeof source.value === target.name;
+  }
+  if (target.kind === 'literal') return source.kind === 'literal' && Object.is(source.value, target.value);
+  return source.kind === target.kind;
+}
+
+function createCppClosedTypeUnion(types: readonly Readonly<IrType>[]): Readonly<IrType> {
+  const unique = [...new Map(types.map((type) => [JSON.stringify(type), type])).values()];
+  if (unique.length === 0) return { kind: 'never' };
+  if (unique.length === 1) return unique[0]!;
+  return { kind: 'union', types: [unique[0]!, unique[1]!, ...unique.slice(2)] };
 }
 
 function getCppErasedIntersectionValueType(

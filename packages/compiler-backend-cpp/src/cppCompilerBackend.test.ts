@@ -2594,6 +2594,57 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(emitted.contents).toContain('using Kind = flight::String');
   });
 
+  it('emits imported interface key domains and closed exclusions without erasing symbol keys', () => {
+    const results = lowerTypeScriptSources([
+      {
+        packageName: '@flighthq/types',
+        sourceFile: ts.createSourceFile(
+          '/flight/packages/types/src/contracts.ts',
+          `export const EntityRuntimeKey = Symbol.for('EntityRuntime');
+           export interface Entity { [EntityRuntimeKey]: object | undefined }
+           export interface HapticsBackend extends Entity { cancel(): boolean; impact(): boolean }
+           export interface LifecycleBackend extends Entity { getState(): string; subscribe(): void }
+           export interface InteractionSignals extends Entity { onClick(): void; onFocus(): void }
+           export interface ParticleEmitterConfig extends Entity { alphaStart: number; alphaEnd: number }`,
+          ts.ScriptTarget.Latest,
+          true,
+        ),
+        upstreamDirectory: '/flight',
+      },
+      {
+        packageName: '@flighthq/types',
+        sourceFile: ts.createSourceFile(
+          '/flight/packages/types/src/key-domains.ts',
+          `import type {
+             Entity,
+             HapticsBackend,
+             InteractionSignals,
+             LifecycleBackend,
+             ParticleEmitterConfig,
+           } from './contracts.js';
+           export type HapticsOperation = keyof HapticsBackend;
+           export type InteractionSignalName = Exclude<keyof InteractionSignals, symbol>;
+           export type LifecycleOperation = Exclude<keyof LifecycleBackend, keyof Entity>;
+           export interface ParticleConfigIssue { field: keyof ParticleEmitterConfig }`,
+          ts.ScriptTarget.Latest,
+          true,
+        ),
+        upstreamDirectory: '/flight',
+      },
+    ]);
+    expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
+    const modules = results.map((result) => result.module);
+    const emitted = createCppCompilerBackend().createEmissionSession!({
+      modules,
+      options: { runtimeProfile: 'flight-cpp' },
+    }).emitModule(modules[1]!)[0]!.contents;
+
+    expect(emitted).toContain('using HapticsOperation = std::variant<flight::String, flight::Symbol>');
+    expect(emitted).toContain('using InteractionSignalName = flight::String');
+    expect(emitted).toContain('using LifecycleOperation = flight::String');
+    expect(emitted).toContain('std::variant<flight::String, flight::Symbol> field;');
+  });
+
   it('refuses intersections without a compatible object composition', () => {
     const result = lower('inter.ts', 'export const x: number = 1;');
     const module = structuredClone(result.module);
