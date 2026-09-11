@@ -358,6 +358,45 @@ describe('createCompilerLoweringPassInterfaceInheritance', () => {
     );
   });
 
+  it('rebinds inherited cross-module property types through direct type imports', () => {
+    const detail = lowerInPackage(
+      '@flighthq/model',
+      'model',
+      'detail.ts',
+      'export interface Detail { value: number; }',
+    );
+    const base = lowerInPackage(
+      '@flighthq/model',
+      'model',
+      'base.ts',
+      "import type { Detail } from './detail'; export interface Base { detail: Detail; }",
+    );
+    const derived = lowerInPackage(
+      '@flighthq/model',
+      'model',
+      'derived.ts',
+      "import type { Base } from './base'; export interface Derived extends Base { active: boolean; }",
+    );
+    const output = lowerIrModuleWithCompilerPasses(
+      derived,
+      [createCompilerLoweringPassInterfaceInheritance([derived, base, detail])],
+      { verificationDepth: 'idempotence' },
+    );
+    const inherited = getInterface(output, 'Derived').properties[0];
+
+    expect(output.imports).toHaveLength(2);
+    expect(output.imports[1]).toMatchObject({
+      bindings: [{ imported: 'Detail', typeOnly: true }],
+      specifier: './detail.js',
+      typeOnly: true,
+    });
+    expect(inherited).toMatchObject({
+      name: 'detail',
+      type: { kind: 'named', reference: { binding: output.imports[1]!.bindings[0]!.binding, kind: 'binding' } },
+    });
+    expect(derived.imports).toHaveLength(1);
+  });
+
   it('resolves named imports through relative star exports and source extension mappings', () => {
     const base = lowerInPackage(
       '@flighthq/model',

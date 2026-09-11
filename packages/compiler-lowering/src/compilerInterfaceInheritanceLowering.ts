@@ -16,19 +16,29 @@ import type {
   IrClassDeclaration,
   IrClassMethod,
   IrInterfaceDeclaration,
+  IrImport,
   IrModule,
   IrObjectTypeProperty,
   IrType,
   IrTypeAliasDeclaration,
   IrTypeBindingIdentity,
+  IrTypeNameReference,
   IrTypeReference,
 } from '../../compiler-types/src/index.js';
 import { createCompilerLoweringFailure } from './compilerLoweringPass.js';
 
 interface InterfaceInheritanceLoweringContext {
+  readonly importedTypeBindings: Map<string, IrTypeBindingIdentity>;
+  readonly imports: IrImport[];
   readonly module: InterfaceInheritanceModuleRecord;
   readonly moduleSet: InterfaceInheritanceModuleSet;
   readonly subject: Readonly<IrModule>;
+}
+
+interface InterfaceInheritanceTypeImport {
+  readonly imported: string;
+  readonly path: readonly string[];
+  readonly target: InterfaceInheritanceModuleRecord;
 }
 
 interface InterfaceInheritanceDeclarationLocation {
@@ -88,12 +98,19 @@ function lowerIrModuleInterfaceInheritance(
   const moduleSet = createInterfaceInheritanceModuleSet(module, moduleRecords, resolution);
   const subject = getInterfaceInheritanceModuleRecord(module, moduleSet);
   if (!subject) throw new TypeError('Interface inheritance subject must belong to the explicit module set');
-  const context: InterfaceInheritanceLoweringContext = { module: subject, moduleSet, subject: module };
+  const context: InterfaceInheritanceLoweringContext = {
+    importedTypeBindings: new Map(),
+    imports: module.imports.map((imported) => ({ ...imported, bindings: [...imported.bindings] })),
+    module: subject,
+    moduleSet,
+    subject: module,
+  };
   return {
     ...module,
     declarations: module.declarations.map((declaration) =>
       declaration.kind === 'interface' ? lowerIrInterfaceDeclarationInheritance(declaration, context) : declaration,
     ),
+    imports: context.imports,
   };
 }
 
@@ -112,7 +129,9 @@ function lowerIrInterfaceDeclarationInheritance(
     ...declaration,
     extends: [],
     properties: inherited
-      ? properties.map((property, index) => rebindIrInterfacePropertyTypeParameters(property, declaration, index))
+      ? properties.map((property, index) =>
+          rebindIrInterfacePropertyTypeParameters(property, declaration, index, context),
+        )
       : properties,
   };
 }
@@ -606,6 +625,7 @@ function rebindIrInterfacePropertyTypeParameters(
   property: Readonly<IrObjectTypeProperty>,
   declaration: Readonly<IrInterfaceDeclaration>,
   propertyIndex: number,
+  context: InterfaceInheritanceLoweringContext,
 ): IrObjectTypeProperty {
   return {
     ...property,
@@ -614,6 +634,7 @@ function rebindIrInterfacePropertyTypeParameters(
       declaration,
       `properties[${String(propertyIndex)}].type`,
       new Map(),
+      context,
     ),
   };
 }
@@ -623,12 +644,13 @@ function rebindIrTypeInterfaceInheritance(
   declaration: Readonly<IrInterfaceDeclaration>,
   path: string,
   bindings: ReadonlyMap<string, Readonly<IrTypeBindingIdentity>>,
+  context: InterfaceInheritanceLoweringContext,
 ): IrType {
   switch (type.kind) {
     case 'array':
       return {
         ...type,
-        element: rebindIrTypeInterfaceInheritance(type.element, declaration, `${path}.element`, bindings),
+        element: rebindIrTypeInterfaceInheritance(type.element, declaration, `${path}.element`, bindings, context),
       };
     case 'function': {
       const nestedBindings = new Map(bindings);
@@ -649,9 +671,16 @@ function rebindIrTypeInterfaceInheritance(
             declaration,
             `${path}.parameters[${String(index)}].type`,
             nestedBindings,
+            context,
           ),
         })),
-        returns: rebindIrTypeInterfaceInheritance(type.returns, declaration, `${path}.returns`, nestedBindings),
+        returns: rebindIrTypeInterfaceInheritance(
+          type.returns,
+          declaration,
+          `${path}.returns`,
+          nestedBindings,
+          context,
+        ),
         typeParameters: typeParameters.map((parameter, index) => ({
           ...parameter,
           ...(parameter.constraint
@@ -661,6 +690,7 @@ function rebindIrTypeInterfaceInheritance(
                   declaration,
                   `${path}.typeParameters[${String(index)}].constraint`,
                   nestedBindings,
+                  context,
                 ),
               }
             : {}),
@@ -671,6 +701,7 @@ function rebindIrTypeInterfaceInheritance(
                   declaration,
                   `${path}.typeParameters[${String(index)}].default`,
                   nestedBindings,
+                  context,
                 ),
               }
             : {}),
@@ -680,28 +711,37 @@ function rebindIrTypeInterfaceInheritance(
     case 'indexedAccess':
       return {
         ...type,
-        index: rebindIrTypeInterfaceInheritance(type.index, declaration, `${path}.index`, bindings),
-        object: rebindIrTypeInterfaceInheritance(type.object, declaration, `${path}.object`, bindings),
+        index: rebindIrTypeInterfaceInheritance(type.index, declaration, `${path}.index`, bindings, context),
+        object: rebindIrTypeInterfaceInheritance(type.object, declaration, `${path}.object`, bindings, context),
       };
     case 'intersection': {
       const types = type.types.map((member, index) =>
-        rebindIrTypeInterfaceInheritance(member, declaration, `${path}.types[${String(index)}]`, bindings),
+        rebindIrTypeInterfaceInheritance(member, declaration, `${path}.types[${String(index)}]`, bindings, context),
       );
       return { ...type, types: [types[0]!, types[1]!, ...types.slice(2)] };
     }
     case 'keyof':
       return {
         ...type,
-        type: rebindIrTypeInterfaceInheritance(type.type, declaration, `${path}.type`, bindings),
+        type: rebindIrTypeInterfaceInheritance(type.type, declaration, `${path}.type`, bindings, context),
       };
     case 'named': {
       const binding = type.reference.kind === 'binding' ? bindings.get(type.reference.binding.id) : undefined;
-      const reference = type.reference.kind === 'binding' && binding ? { ...type.reference, binding } : type.reference;
+      const reference =
+        type.reference.kind === 'binding' && binding
+          ? { ...type.reference, binding }
+          : rebindIrInterfaceInheritedTypeReference(type.reference, declaration, context);
       return {
         ...type,
         reference,
         typeArguments: type.typeArguments.map((argument, index) =>
-          rebindIrTypeInterfaceInheritance(argument, declaration, `${path}.typeArguments[${String(index)}]`, bindings),
+          rebindIrTypeInterfaceInheritance(
+            argument,
+            declaration,
+            `${path}.typeArguments[${String(index)}]`,
+            bindings,
+            context,
+          ),
         ),
       };
     }
@@ -715,6 +755,7 @@ function rebindIrTypeInterfaceInheritance(
             declaration,
             `${path}.properties[${String(index)}].type`,
             bindings,
+            context,
           ),
         })),
       };
@@ -728,12 +769,13 @@ function rebindIrTypeInterfaceInheritance(
             declaration,
             `${path}.elements[${String(index)}].type`,
             bindings,
+            context,
           ),
         })),
       };
     case 'union': {
       const types = type.types.map((member, index) =>
-        rebindIrTypeInterfaceInheritance(member, declaration, `${path}.types[${String(index)}]`, bindings),
+        rebindIrTypeInterfaceInheritance(member, declaration, `${path}.types[${String(index)}]`, bindings, context),
       );
       return { ...type, types: [types[0]!, types[1]!, ...types.slice(2)] };
     }
@@ -746,6 +788,124 @@ function rebindIrTypeInterfaceInheritance(
     case 'unknown':
       return type;
   }
+}
+
+function rebindIrInterfaceInheritedTypeReference(
+  reference: Readonly<IrTypeNameReference>,
+  declaration: Readonly<IrInterfaceDeclaration>,
+  context: InterfaceInheritanceLoweringContext,
+): IrTypeNameReference {
+  if (
+    reference.kind !== 'binding' ||
+    (reference.binding.packageName === context.subject.packageName &&
+      reference.binding.source === context.subject.source)
+  ) {
+    return reference;
+  }
+  const imported = getInterfaceInheritanceTypeImport(reference, context);
+  const key = `${reference.binding.id}\0${imported.imported}`;
+  let binding = context.importedTypeBindings.get(key);
+  if (!binding) {
+    binding = {
+      column: declaration.binding.column,
+      fingerprint: declaration.binding.fingerprint,
+      id: `type-binding:${JSON.stringify([
+        context.subject.packageName,
+        context.subject.source,
+        'interface-inheritance',
+        reference.binding.id,
+        imported.imported,
+      ])}`,
+      kind: 'import',
+      line: declaration.binding.line,
+      name: reference.binding.name,
+      packageName: context.subject.packageName,
+      scope: 'module',
+      source: context.subject.source,
+      space: 'type',
+    };
+    context.importedTypeBindings.set(key, binding);
+    addInterfaceInheritanceTypeImport(binding, imported, context);
+  }
+  return { binding, kind: 'binding', path: imported.path };
+}
+
+function getInterfaceInheritanceTypeImport(
+  reference: Readonly<Extract<IrTypeNameReference, { kind: 'binding' }>>,
+  context: InterfaceInheritanceLoweringContext,
+): InterfaceInheritanceTypeImport {
+  for (const module of context.moduleSet.modules) {
+    const declaration = module.declarations.get(reference.binding.id);
+    if (declaration) {
+      return { imported: declaration.declaration.binding.name, path: reference.path, target: module };
+    }
+    for (const imported of module.module.imports) {
+      const candidate = imported.bindings.find((binding) => binding.binding.id === reference.binding.id);
+      if (!candidate) continue;
+      const targets = getInterfaceInheritanceSpecifierModules(module, imported.specifier, context.moduleSet);
+      if (targets.length !== 1) {
+        return failIrInterfaceInheritanceLowering(
+          context.subject,
+          `inherited type ${reference.binding.name} does not resolve to one module`,
+        );
+      }
+      if (candidate.imported === '*') {
+        const [name, ...remainingPath] = reference.path;
+        if (!name) {
+          return failIrInterfaceInheritanceLowering(
+            context.subject,
+            `inherited namespace type ${reference.binding.name} has no exported member path`,
+          );
+        }
+        return { imported: name, path: remainingPath, target: targets[0]! };
+      }
+      return { imported: candidate.imported, path: reference.path, target: targets[0]! };
+    }
+  }
+  return failIrInterfaceInheritanceLowering(
+    context.subject,
+    `inherited type ${reference.binding.name} has no source module introduction`,
+  );
+}
+
+function addInterfaceInheritanceTypeImport(
+  binding: Readonly<IrTypeBindingIdentity>,
+  imported: Readonly<InterfaceInheritanceTypeImport>,
+  context: InterfaceInheritanceLoweringContext,
+): void {
+  if (imported.target.module.packageName !== context.subject.packageName) {
+    failIrInterfaceInheritanceLowering(
+      context.subject,
+      `inherited type ${imported.imported} requires cross-package import materialization`,
+    );
+  }
+  const specifier = getInterfaceInheritanceRelativeSpecifier(context.subject.source, imported.target.source);
+  const index = context.imports.findIndex((candidate) => candidate.specifier === specifier);
+  const importBinding = { binding, imported: imported.imported, typeOnly: true } as const;
+  if (index < 0) {
+    context.imports.push({ bindings: [importBinding], specifier, typeOnly: true });
+    return;
+  }
+  const existing = context.imports[index]!;
+  context.imports[index] = { ...existing, bindings: [...existing.bindings, importBinding] };
+}
+
+function getInterfaceInheritanceRelativeSpecifier(fromSource: string, targetSource: string): string {
+  const from = normalizePathPortable(fromSource).split('/');
+  const target = normalizePathPortable(targetSource).split('/');
+  from.pop();
+  target[target.length - 1] = target
+    .at(-1)!
+    .replace(/\.cts$/u, '.cjs')
+    .replace(/\.mts$/u, '.mjs')
+    .replace(/\.tsx$/u, '.jsx')
+    .replace(/\.ts$/u, '.js');
+  while (from[0] !== undefined && from[0] === target[0]) {
+    from.shift();
+    target.shift();
+  }
+  const relative = [...from.map(() => '..'), ...target].join('/');
+  return relative.startsWith('.') ? relative : `./${relative}`;
 }
 
 function failIrInterfaceInheritanceLowering(module: Readonly<IrModule>, message: string): never {
