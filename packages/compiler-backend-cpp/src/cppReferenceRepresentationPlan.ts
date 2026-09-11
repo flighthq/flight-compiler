@@ -32,6 +32,7 @@ interface ReferenceModuleRecord {
   readonly importsByBindingId: ReadonlyMap<string, readonly ReferenceImport[]>;
   readonly module: Readonly<IrModule>;
   readonly source: string;
+  readonly valueTypesByBindingId: ReadonlyMap<string, Readonly<IrType>>;
 }
 
 interface ReferenceImport {
@@ -46,6 +47,7 @@ interface ReferenceModuleSet {
   readonly modulesByPackageSource: ReadonlyMap<string, readonly ReferenceModuleRecord[]>;
   readonly namedBindingOwnersByBindingId: ReadonlyMap<string, readonly ReferenceModuleRecord[]>;
   readonly resolutionTargetsBySpecifier: ReadonlyMap<string, ReferenceResolutionTargets>;
+  readonly valueBindingOwnersByBindingId: ReadonlyMap<string, readonly ReferenceModuleRecord[]>;
 }
 
 interface ReferenceResolutionTargets {
@@ -301,6 +303,7 @@ function mergeIrObjectShapePropertiesCpp(
     const type = mergeIrObjectShapePropertyTypesCpp(existing.type, property.type, module, moduleSet, cache, ancestors, {
       aliases: new Set(),
       ancestors: new WeakMap(),
+      valueQueries: new Set(),
     });
     if (!type) return undefined;
     result.set(property.name, {
@@ -376,6 +379,7 @@ function mergeIrObjectShapePropertyTypesCpp(
 interface IrTypeStructuralComparisonStateCpp {
   readonly aliases: Set<string>;
   readonly ancestors: WeakMap<object, WeakSet<object>>;
+  readonly valueQueries: Set<string>;
 }
 
 function isIrTypeStructurallyAssignableCpp(
@@ -402,6 +406,40 @@ function isIrTypeStructurallyAssignableCpp(
       return target.types.some((member) =>
         isIrTypeStructurallyAssignableCpp(source, member, module, moduleSet, cache, shapeAncestors, comparison),
       );
+    }
+    const sourceValueQuery = resolveIrTypeValueQueryForShapeComparisonCpp(source, module, moduleSet);
+    if (sourceValueQuery && !comparison.valueQueries.has(sourceValueQuery.identity)) {
+      comparison.valueQueries.add(sourceValueQuery.identity);
+      try {
+        return isIrTypeStructurallyAssignableCpp(
+          sourceValueQuery.type,
+          target,
+          sourceValueQuery.module,
+          moduleSet,
+          cache,
+          shapeAncestors,
+          comparison,
+        );
+      } finally {
+        comparison.valueQueries.delete(sourceValueQuery.identity);
+      }
+    }
+    const targetValueQuery = resolveIrTypeValueQueryForShapeComparisonCpp(target, module, moduleSet);
+    if (targetValueQuery && !comparison.valueQueries.has(targetValueQuery.identity)) {
+      comparison.valueQueries.add(targetValueQuery.identity);
+      try {
+        return isIrTypeStructurallyAssignableCpp(
+          source,
+          targetValueQuery.type,
+          targetValueQuery.module,
+          moduleSet,
+          cache,
+          shapeAncestors,
+          comparison,
+        );
+      } finally {
+        comparison.valueQueries.delete(targetValueQuery.identity);
+      }
     }
     const sourceAlias = resolveIrTypeAliasForShapeComparisonCpp(source, module, moduleSet, cache);
     if (sourceAlias && !comparison.aliases.has(sourceAlias.identity)) {
@@ -493,6 +531,32 @@ function resolveIrTypeAliasForShapeComparisonCpp(
       createIrTypeParameterSubstitutionPlan(declaration.typeParameters, type.typeArguments),
     ),
   };
+}
+
+function resolveIrTypeValueQueryForShapeComparisonCpp(
+  type: Readonly<IrType>,
+  module: Readonly<ReferenceModuleRecord>,
+  moduleSet: Readonly<ReferenceModuleSet>,
+):
+  | Readonly<{
+      identity: string;
+      module: Readonly<ReferenceModuleRecord>;
+      type: Readonly<IrType>;
+    }>
+  | undefined {
+  if (type.kind !== 'typeOf' || type.reference.kind !== 'binding' || type.reference.path.length > 0) return undefined;
+  const bindingId = type.reference.binding.id;
+  const local = module.valueTypesByBindingId.has(bindingId);
+  const owners = moduleSet.valueBindingOwnersByBindingId.get(bindingId) ?? [];
+  const owner = local ? module : owners.length === 1 ? owners[0] : undefined;
+  const valueType = owner?.valueTypesByBindingId.get(bindingId);
+  return owner && valueType
+    ? {
+        identity: `${owner.identity}\0${bindingId}`,
+        module: owner,
+        type: valueType,
+      }
+    : undefined;
 }
 
 function createIrTypeReferenceRepresentationPlanInternalCpp(
@@ -876,6 +940,7 @@ function createReferenceModuleSetCpp(
   const declarationsByBindingId = new Map<string, ReferenceDeclarationLocation[]>();
   const modulesByPackageSource = new Map<string, ReferenceModuleRecord[]>();
   const namedBindingOwnersByBindingId = new Map<string, ReferenceModuleRecord[]>();
+  const valueBindingOwnersByBindingId = new Map<string, ReferenceModuleRecord[]>();
   for (const record of records) {
     const moduleKey = `${record.module.packageName}\0${record.source}`;
     const sourceRecords = modulesByPackageSource.get(moduleKey) ?? [];
@@ -891,6 +956,11 @@ function createReferenceModuleSetCpp(
       owners.push(record);
       namedBindingOwnersByBindingId.set(bindingId, owners);
     }
+    for (const bindingId of record.valueTypesByBindingId.keys()) {
+      const owners = valueBindingOwnersByBindingId.get(bindingId) ?? [];
+      owners.push(record);
+      valueBindingOwnersByBindingId.set(bindingId, owners);
+    }
   }
   return {
     declarationsByBindingId,
@@ -899,6 +969,7 @@ function createReferenceModuleSetCpp(
     modulesByPackageSource,
     namedBindingOwnersByBindingId,
     resolutionTargetsBySpecifier: createReferenceResolutionTargetsCpp(resolution),
+    valueBindingOwnersByBindingId,
   };
 }
 
@@ -938,12 +1009,14 @@ function createReferenceModuleRecordCpp(module: Readonly<IrModule>): ReferenceMo
   const record: {
     declarations: Map<string, ReferenceDeclarationLocation>;
     importsByBindingId: Map<string, ReferenceImport[]>;
-  } & Omit<ReferenceModuleRecord, 'declarations' | 'importsByBindingId'> = {
+    valueTypesByBindingId: Map<string, Readonly<IrType>>;
+  } & Omit<ReferenceModuleRecord, 'declarations' | 'importsByBindingId' | 'valueTypesByBindingId'> = {
     declarations: new Map(),
     identity,
     importsByBindingId: new Map(),
     module,
     source,
+    valueTypesByBindingId: new Map(),
   };
   for (const declaration of module.declarations) {
     if (declaration.kind === 'class' || declaration.kind === 'interface' || declaration.kind === 'typeAlias') {
@@ -952,6 +1025,9 @@ function createReferenceModuleRecordCpp(module: Readonly<IrModule>): ReferenceMo
         identity: `${identity}\0${declaration.binding.id}`,
         module: record,
       });
+    }
+    if (declaration.kind === 'variable' && 'binding' in declaration && declaration.type) {
+      record.valueTypesByBindingId.set(declaration.binding.id, declaration.type);
     }
   }
   for (const entry of module.imports) {

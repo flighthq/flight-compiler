@@ -129,6 +129,27 @@ describe('C++ reference planner object shapes', () => {
     expect(resolver.resolveObjectShape(declarationType(transmission, 'InvalidVolume'), transmission)).toBeUndefined();
   });
 
+  it('follows closed value queries when merging inherited specialized property types', () => {
+    const entity = lower('entity-kind.ts', 'export type Kind = string;');
+    const material = lower(
+      'material.ts',
+      "import type { Kind } from './entity-kind'; export interface Material { readonly kind: Kind; }",
+    );
+    const shaded = lower(
+      'shaded-material.ts',
+      "import type { Material } from './material'; export const ShadedKind = 'Shaded'; const InvalidKind = 1; export interface ShadedMaterial extends Material { readonly kind: typeof ShadedKind; map: string; } export interface InvalidMaterial extends Material { readonly kind: typeof InvalidKind; }",
+    );
+    const resolver = createIrTypeReferenceRepresentationPlannerCpp([shaded, material, entity]);
+    const properties = resolver.resolveObjectShape(declarationType(shaded, 'ShadedMaterial'), shaded);
+
+    expect(properties?.map((property) => property.name)).toEqual(['kind', 'map']);
+    expect(properties?.find((property) => property.name === 'kind')?.type).toMatchObject({
+      kind: 'typeOf',
+      reference: { binding: { name: 'ShadedKind' } },
+    });
+    expect(resolver.resolveObjectShape(declarationType(shaded, 'InvalidMaterial'), shaded)).toBeUndefined();
+  });
+
   it('merges Host-style capability roots and closed required projections', () => {
     const module = lower(
       'host-shape.ts',
