@@ -2134,6 +2134,73 @@ describe('lowerTypeScriptSource', () => {
     });
   });
 
+  it('introduces a unique same-package type hidden behind an imported Texture interface', () => {
+    const source = (file: string, text: string) => ({
+      packageName: '@flighthq/types',
+      sourceFile: ts.createSourceFile(`/flight/packages/types/src/${file}`, text, ts.ScriptTarget.Latest, true),
+      upstreamDirectory: '/flight',
+    });
+    const results = lowerTypeScriptSources([
+      source('Vector2.ts', 'export interface Vector2 { x: number; y: number; }'),
+      source(
+        'TextureUvTransform.ts',
+        `import type { Vector2 } from './Vector2';
+         export interface TextureUvTransform { uvOffset: Vector2; uvScale: Vector2; }`,
+      ),
+      source(
+        'HiddenTextureUvTransform.ts',
+        `interface HiddenVector2 { x: number; y: number; }
+         export interface HiddenTextureUvTransform { uvOffset: HiddenVector2; }`,
+      ),
+      source(
+        'Texture.ts',
+        `import type { TextureUvTransform } from './TextureUvTransform';
+         import type { HiddenTextureUvTransform } from './HiddenTextureUvTransform';
+         export type Texture = { [Key in keyof TextureUvTransform]: TextureUvTransform[Key] };
+         export type HiddenTexture = {
+           [Key in keyof HiddenTextureUvTransform]: HiddenTextureUvTransform[Key]
+         };`,
+      ),
+    ]);
+    const result = results.at(-1)!;
+    const texture = result.module.declarations.find(
+      (declaration) => declaration.kind === 'typeAlias' && declaration.binding.name === 'Texture',
+    );
+    const hiddenTexture = result.module.declarations.find(
+      (declaration) => declaration.kind === 'typeAlias' && declaration.binding.name === 'HiddenTexture',
+    );
+    const vectorImport = result.module.imports.find((imported) => imported.specifier === './Vector2.js');
+
+    expect(result.diagnostics).toEqual([]);
+    expect(vectorImport).toMatchObject({
+      bindings: [
+        {
+          binding: { kind: 'import', name: 'Vector2', packageName: '@flighthq/types', space: 'type' },
+          imported: 'Vector2',
+          typeOnly: true,
+        },
+      ],
+      typeOnly: true,
+    });
+    expect(texture).toMatchObject({
+      kind: 'typeAlias',
+      type: {
+        kind: 'object',
+        properties: [
+          { name: 'uvOffset', type: { kind: 'named', reference: { binding: vectorImport!.bindings[0]!.binding } } },
+          { name: 'uvScale', type: { kind: 'named', reference: { binding: vectorImport!.bindings[0]!.binding } } },
+        ],
+      },
+    });
+    expect(hiddenTexture).toMatchObject({
+      kind: 'typeAlias',
+      type: { properties: [{ name: 'uvOffset', type: { kind: 'object' } }] },
+    });
+    expect(
+      result.module.imports.flatMap((imported) => imported.bindings.map((binding) => binding.imported)),
+    ).not.toContain('HiddenVector2');
+  });
+
   it('keeps checker-reached types unresolved when multiple imported barrels export them', () => {
     const source = (packageName: string, directory: string, file: string, text: string) => ({
       packageName,

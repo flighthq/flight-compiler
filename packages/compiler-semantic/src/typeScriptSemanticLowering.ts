@@ -5706,9 +5706,9 @@ function lowerTypeBindingSymbol(
 }
 
 // Checker evidence can expose an exported type which the current source did not spell, such as the
-// return type of an imported function. The type still reaches this module through an existing source
-// import. Introduce it through that exact request so the reference remains locally valid while its
-// specifier and imported name retain the cross-module route.
+// return type of an imported function. Prefer the exact authored request which exposes that type. A
+// same-package hidden member has no such request, but its unique declaration owner is also a stable
+// route: introduce a direct relative type import rather than erasing its nominal identity.
 function lowerTypeScriptInferredTypeImportBinding(
   symbol: ts.Symbol,
   context: LoweringContext,
@@ -5745,12 +5745,22 @@ function lowerTypeScriptInferredTypeImportBinding(
       });
     }
   }
-  if (routes.size !== 1) return undefined;
-  const { importDeclaration, imported, specifier } = [...routes.values()][0]!;
+  if (routes.size > 1) return undefined;
+  const authored = [...routes.values()][0];
+  const direct = authored ? undefined : getTypeScriptUniqueSamePackageTypeImportRoute(symbol, context);
+  const route = authored
+    ? {
+        imported: authored.imported,
+        originNode: authored.importDeclaration.moduleSpecifier,
+        specifier: authored.specifier,
+      }
+    : direct;
+  if (!route) return undefined;
+  const { imported, originNode, specifier } = route;
   const moduleOptions = context.analysisModuleOptions.get(context.moduleSourceFile.fileName);
   if (!moduleOptions) return undefined;
   const moduleContext = { ...context, options: moduleOptions, sourceFile: context.moduleSourceFile };
-  const sourceOrigin = origin(importDeclaration.moduleSpecifier, moduleContext);
+  const sourceOrigin = origin(originNode, moduleContext);
   const binding: IrTypeBindingIdentity = {
     ...sourceOrigin,
     id: `type-binding:${JSON.stringify([
@@ -5772,6 +5782,52 @@ function lowerTypeScriptInferredTypeImportBinding(
   });
   context.typeBindings.set(symbol, binding);
   return binding;
+}
+
+function getTypeScriptUniqueSamePackageTypeImportRoute(
+  symbol: ts.Symbol,
+  context: LoweringContext,
+): Readonly<{ imported: string; originNode: ts.Node; specifier: string }> | undefined {
+  const ownerFiles = new Map<string, ts.SourceFile>();
+  for (const declaration of symbol.declarations ?? []) {
+    if (
+      (!ts.isInterfaceDeclaration(declaration) && !ts.isTypeAliasDeclaration(declaration)) ||
+      !ts.isSourceFile(declaration.parent) ||
+      !isExported(declaration) ||
+      hasModifier(declaration, ts.SyntaxKind.DefaultKeyword) ||
+      declaration.name.text !== symbol.name
+    ) {
+      continue;
+    }
+    ownerFiles.set(declaration.getSourceFile().fileName, declaration.getSourceFile());
+  }
+  if (ownerFiles.size !== 1) return undefined;
+  const owner = [...ownerFiles.values()][0]!;
+  const ownerOptions = context.analysisModuleOptions.get(owner.fileName);
+  if (
+    !ownerOptions ||
+    ownerOptions.packageName !== context.options.packageName ||
+    owner.fileName === context.moduleSourceFile.fileName
+  ) {
+    return undefined;
+  }
+  const specifier = getTypeScriptDirectSamePackageImportSpecifier(context.moduleSourceFile.fileName, owner.fileName);
+  return specifier ? { imported: symbol.name, originNode: context.moduleSourceFile, specifier } : undefined;
+}
+
+function getTypeScriptDirectSamePackageImportSpecifier(fromFile: string, targetFile: string): string | undefined {
+  const from = normalizePathPortable(fromFile);
+  const target = normalizePathPortable(targetFile);
+  if (target.endsWith('.d.ts')) return undefined;
+  const emittedTarget = target
+    .replace(/\.cts$/u, '.cjs')
+    .replace(/\.mts$/u, '.mjs')
+    .replace(/\.tsx$/u, '.jsx')
+    .replace(/\.ts$/u, '.js');
+  if (emittedTarget === target) return undefined;
+  const relative = path.posix.relative(path.posix.dirname(from), emittedTarget);
+  if (!relative) return undefined;
+  return relative.startsWith('.') ? relative : `./${relative}`;
 }
 
 function hasTypeBindingDeclarationInModule(symbol: ts.Symbol, context: LoweringContext): boolean {
