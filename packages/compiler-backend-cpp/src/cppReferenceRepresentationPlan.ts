@@ -173,6 +173,21 @@ function resolveIrTypeObjectShapeCpp(
   }
   if (type.kind !== 'named') return undefined;
   if (type.reference.kind === 'ambient') {
+    if (
+      (type.reference.name === 'Omit' || type.reference.name === 'Pick') &&
+      type.typeArguments.length === 2 &&
+      type.typeArguments[0] &&
+      type.typeArguments[1]
+    ) {
+      const properties = resolveIrTypeObjectShapeCpp(type.typeArguments[0], module, moduleSet, cache, ancestors);
+      const keys = getIrObjectProjectionKeysCpp(type.typeArguments[1]);
+      if (!properties || !keys) return undefined;
+      const available = new Set(properties.map((property) => property.name));
+      if ([...keys].some((key) => !available.has(key))) return undefined;
+      return properties.filter((property) =>
+        type.reference.name === 'Pick' ? keys.has(property.name) : !keys.has(property.name),
+      );
+    }
     if (type.typeArguments.length !== 1 || !type.typeArguments[0]) return undefined;
     const properties = resolveIrTypeObjectShapeCpp(type.typeArguments[0], module, moduleSet, cache, ancestors);
     if (!properties) return undefined;
@@ -238,6 +253,18 @@ function resolveIrTypeObjectShapeCpp(
     ...inheritedProperties.flatMap((properties) => properties!),
     ...ownProperties,
   ]);
+}
+
+function getIrObjectProjectionKeysCpp(type: Readonly<IrType>): ReadonlySet<string> | undefined {
+  if (type.kind === 'literal' && (typeof type.value === 'number' || typeof type.value === 'string')) {
+    return new Set([String(type.value)]);
+  }
+  if (type.kind === 'typeOf' && type.reference.kind === 'binding' && type.reference.path.length === 0) {
+    return new Set([type.reference.binding.name]);
+  }
+  if (type.kind !== 'union') return undefined;
+  const members = type.types.map(getIrObjectProjectionKeysCpp);
+  return members.some((member) => !member) ? undefined : new Set(members.flatMap((member) => [...member!]));
 }
 
 function mergeIrObjectShapePropertiesCpp(

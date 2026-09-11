@@ -3636,6 +3636,72 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(output).not.toContain('std::variant<double, auto>');
   });
 
+  it('emits a dense matrix from an independently lowered imported construction shape', () => {
+    const entity = lowerPackage(
+      '@flighthq/types',
+      'Entity.ts',
+      `export const EntityRuntimeKey = Symbol.for('EntityRuntime');
+       export interface Entity { [EntityRuntimeKey]: object | undefined; }
+       export type EntityWithoutRuntime<Type extends Entity> = Omit<Type, typeof EntityRuntimeKey>;`,
+    ).module;
+    const scale = lowerPackage(
+      '@flighthq/types',
+      'ColorScaleBias.ts',
+      `import type { Entity, EntityWithoutRuntime } from './Entity';
+       export interface ColorScaleBias extends Entity {
+         alphaBias: number; alphaScale: number; blueBias: number; blueScale: number;
+         greenBias: number; greenScale: number; redBias: number; redScale: number;
+       }
+       export type ColorScaleBiasLike = EntityWithoutRuntime<ColorScaleBias>;`,
+    ).module;
+    const contract = lowerPackage(
+      '@flighthq/types',
+      'contract.ts',
+      "export * from './ColorScaleBias'; export * from './Entity';",
+    ).module;
+    const consumer = lowerPackage(
+      '@flighthq/adjustments',
+      'colorScaleBiasAdjustment.ts',
+      `import type { ColorScaleBiasLike } from '@flighthq/types/contract';
+       export function matrix(colorScaleBias: Readonly<ColorScaleBiasLike>): number[] {
+         const value = { ...colorScaleBias };
+         const colorMatrix = [
+           value.redScale, 0, 0, 0, value.redBias,
+           0, value.greenScale, 0, 0, value.greenBias,
+           0, 0, value.blueScale, 0, value.blueBias,
+           0, 0, 0, value.alphaScale, value.alphaBias,
+         ];
+         return colorMatrix;
+       }`,
+    ).module;
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          specifier: '@flighthq/types/contract',
+          target: { packageName: contract.packageName, source: contract.source },
+        },
+        {
+          specifier: './ColorScaleBias',
+          target: { packageName: scale.packageName, source: scale.source },
+        },
+        {
+          specifier: './Entity',
+          target: { packageName: entity.packageName, source: entity.source },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const output = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules: [consumer, contract, entity, scale],
+      options: { runtimeProfile: 'flight-cpp' },
+    }).emitModule(consumer)[0]!.contents;
+
+    expect(output).toContain('auto value = flight::make_ref<flighthq_types::ColorScaleBiasLike>(*color_scale_bias);');
+    expect(output).toContain('auto color_matrix = flight::Array<double>');
+    expect(output).not.toContain('std::variant<double, auto>');
+  });
+
   it('uses a present Partial property as optional return construction evidence', () => {
     const result = lower(
       'partial-array-member.ts',

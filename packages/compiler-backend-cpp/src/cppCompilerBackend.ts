@@ -791,7 +791,13 @@ function emitVariable(variable: Readonly<IrVariable>, context: EmitContext): str
   const name = getBindingTargetName(variable.binding, context);
   const arrayElement = context.arrayElementBindingIds.has(variable.binding.id);
   const inferredInitializerType =
-    !arrayElement && !variable.mutable && variable.type?.kind === 'unknown' && variable.initializer
+    !arrayElement &&
+    !variable.mutable &&
+    variable.initializer &&
+    (variable.type?.kind === 'unknown' ||
+      (variable.type?.kind === 'array' &&
+        variable.type.element.kind === 'union' &&
+        variable.type.element.types.some((type) => type.kind === 'unknown')))
       ? getIrExpressionTypeEvidenceCpp(variable.initializer, context)
       : undefined;
   const preservedInitializerType = arrayElement
@@ -1413,6 +1419,20 @@ function emitExpression(
     case 'object': {
       const constructionType =
         expectedType && hasFlightReferenceRepresentationCpp(expectedType, context) ? expectedType : expression.type;
+      const spread =
+        expression.members.length === 1 && expression.members[0]?.kind === 'spread' ? expression.members[0] : undefined;
+      if (spread) {
+        const spreadType =
+          constructionType.kind === 'unknown'
+            ? getIrExpressionTypeEvidenceCpp(spread.expression, context)
+            : constructionType;
+        const value = emitExpression(spread.expression, context, spreadType);
+        if (spreadType && hasFlightReferenceRepresentationCpp(spreadType, context)) {
+          const storageType = emitType(spreadType, context, 'storage');
+          return `flight::make_ref<${storageType}>(*${value})`;
+        }
+        return value;
+      }
       const members = expression.members
         .filter((member): member is typeof member & { kind: 'property' } => member.kind === 'property')
         .map(
@@ -3527,7 +3547,26 @@ function getIrExpressionTypeEvidenceCpp(
         const iterableElement = operandType ? getIrIterableElementTypeCpp(operandType, context, new Set()) : undefined;
         return iterableElement ? [iterableElement] : [];
       })[0];
-      return spreadElement ? { element: spreadElement, kind: 'array', readonly: false } : undefined;
+      if (spreadElement) return { element: spreadElement, kind: 'array', readonly: false };
+      const elementTypes = expression.elements.flatMap((element): readonly IrType[] => {
+        if (!element) return [];
+        const type = getIrExpressionTypeForUnionConstructionCpp(element, [], context);
+        return type ? [type] : [];
+      });
+      if (elementTypes.length !== expression.elements.length || !elementTypes[0]) return undefined;
+      const runtimeTypes = elementTypes.map((type) => getIrTypeRuntimeDomainCpp(type, context, new Set()));
+      const first = runtimeTypes[0];
+      if (
+        !first ||
+        runtimeTypes.some(
+          (type) =>
+            !type ||
+            normalizeCompilerStructuralValueCanonical(type) !== normalizeCompilerStructuralValueCanonical(first),
+        )
+      ) {
+        return undefined;
+      }
+      return { element: first, kind: 'array', readonly: false };
     }
     case 'assignment':
       return getIrAssignmentTargetTypeCpp(expression.left, context);
@@ -3576,8 +3615,16 @@ function getIrExpressionTypeEvidenceCpp(
     }
     case 'new':
       return getIrNewExpressionTypeEvidenceCpp(expression, context);
-    case 'object':
+    case 'object': {
+      if (expression.type.kind === 'unknown' && expression.members.length === 1) {
+        const member = expression.members[0];
+        if (member?.kind === 'spread') {
+          const spreadType = getIrExpressionTypeEvidenceCpp(member.expression, context);
+          if (spreadType) return spreadType;
+        }
+      }
       return expression.type;
+    }
     case 'element': {
       const computedSymbol = getComputedSymbolElementPropertyCpp(expression, context);
       if (computedSymbol) return computedSymbol.type;
