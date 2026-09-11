@@ -997,7 +997,7 @@ function emitExpression(
           emissionError(context, 'dual-sentinel nullish coalescing requires presence projection lowering');
         }
         context.includes.add('optional');
-        return `${emitOptionalExpressionCpp(expression.left, context, expectedType)}.value_or(${emitExpression(expression.right, context, expectedType)})`;
+        return `${emitOptionalExpressionCpp(expression.left, context, expectedType)}.value_or(${emitExpression(expression.right, context, expectedType, true, denseArrayLengthInitialized)})`;
       }
       if (
         expression.operator === '+' &&
@@ -3772,27 +3772,31 @@ function collectIrModuleArrayElementBindingIdsCpp(
 }
 
 // A sized JavaScript Array begins sparse, while flight::Array is dense. Permit the sized form only
-// when the source itself proves that every slot is overwritten by contiguous, constant-bound loops
-// before the array can be observed. The proof is intentionally narrow: it covers lookup-table builders
-// without turning an arbitrary sparse allocation into a default-filled array.
+// when the source itself proves that every slot is overwritten by contiguous writes before the array
+// can be observed. The proof is intentionally narrow: it covers lookup-table builders without turning
+// an arbitrary sparse allocation into a default-filled array.
 function collectIrModuleDenseArrayLengthBindingIdsCpp(module: Readonly<IrModule>): ReadonlySet<string> {
+  const immutableBindingIds = new Set<string>();
+  analyzeIrModuleTraversal(module, {
+    variable(variable) {
+      if ('binding' in variable && !variable.mutable) immutableBindingIds.add(variable.binding.id);
+    },
+  });
   const result = new Set<string>();
   const inspectStatements = (statements: readonly Readonly<IrStatement>[]): void => {
     statements.forEach((statement, statementIndex) => {
       if (statement.kind === 'variable') {
         for (const variable of statement.declarations) {
-          if (
-            'binding' in variable &&
-            variable.initializer?.kind === 'new' &&
-            variable.initializer.callee.kind === 'identifier' &&
-            variable.initializer.callee.reference.kind === 'ambient' &&
-            variable.initializer.callee.reference.name === 'Array' &&
-            variable.initializer.arguments.length === 1
-          ) {
-            const length = getNonnegativeIntegerLiteralCpp(variable.initializer.arguments[0]!);
+          if ('binding' in variable && variable.initializer) {
+            const length = getDenseArrayLengthExpressionCpp(variable.initializer);
             if (
-              length !== undefined &&
-              hasContiguousDenseArrayWriteLoopsCpp(variable.binding.id, length, statements.slice(statementIndex + 1))
+              length &&
+              hasCompleteDenseArrayWritesCpp(
+                variable.binding.id,
+                length,
+                immutableBindingIds,
+                statements.slice(statementIndex + 1),
+              )
             ) {
               result.add(variable.binding.id);
             }
@@ -3857,19 +3861,61 @@ function collectIrModuleDenseArrayLengthBindingIdsCpp(module: Readonly<IrModule>
   return result;
 }
 
-function hasContiguousDenseArrayWriteLoopsCpp(
+function getDenseArrayLengthExpressionCpp(expression: Readonly<IrExpression>): Readonly<IrExpression> | undefined {
+  const candidate = expression.kind === 'binary' && expression.operator === '??' ? expression.right : expression;
+  return candidate.kind === 'new' &&
+    candidate.callee.kind === 'identifier' &&
+    candidate.callee.reference.kind === 'ambient' &&
+    candidate.callee.reference.name === 'Array' &&
+    candidate.arguments.length === 1
+    ? candidate.arguments[0]
+    : undefined;
+}
+
+function hasCompleteDenseArrayWritesCpp(
   arrayBindingId: string,
-  length: number,
+  length: Readonly<IrExpression>,
+  immutableBindingIds: ReadonlySet<string>,
   statements: readonly Readonly<IrStatement>[],
 ): boolean {
+  const literalLength = getNonnegativeIntegerLiteralCpp(length);
+  if (literalLength === undefined) {
+    const first = statements[0];
+    return Boolean(
+      first && getDenseArrayWholeWriteLoopStrideCpp(first, arrayBindingId, length, immutableBindingIds) !== undefined,
+    );
+  }
   let nextIndex = 0;
   for (const statement of statements) {
-    const range = getDenseArrayWriteLoopRangeCpp(statement, arrayBindingId);
-    if (!range || range.start !== nextIndex || range.end > length) return false;
-    nextIndex = range.end;
-    if (nextIndex === length) return true;
+    const directIndex = getDenseArrayDirectWriteIndexCpp(statement, arrayBindingId);
+    if (directIndex !== undefined) {
+      if (directIndex !== nextIndex) return false;
+      nextIndex += 1;
+    } else {
+      const range = getDenseArrayWriteLoopRangeCpp(statement, arrayBindingId);
+      if (!range || range.start !== nextIndex || range.end > literalLength) return false;
+      nextIndex = range.end;
+    }
+    if (nextIndex === literalLength) return true;
   }
   return false;
+}
+
+function getDenseArrayDirectWriteIndexCpp(
+  statement: Readonly<IrStatement>,
+  arrayBindingId: string,
+): number | undefined {
+  if (
+    statement.kind !== 'expression' ||
+    statement.expression.kind !== 'assignment' ||
+    statement.expression.operator !== '=' ||
+    statement.expression.left.kind !== 'element' ||
+    !isIrBindingIdentifierCpp(statement.expression.left.object, arrayBindingId) ||
+    doesIrExpressionReferenceBindingCpp(statement.expression.right, arrayBindingId)
+  ) {
+    return undefined;
+  }
+  return getNonnegativeIntegerLiteralCpp(statement.expression.left.index);
 }
 
 function getDenseArrayWriteLoopRangeCpp(
@@ -3909,11 +3955,167 @@ function getDenseArrayWriteLoopRangeCpp(
     body.expression.operator !== '=' ||
     body.expression.left.kind !== 'element' ||
     !isIrBindingIdentifierCpp(body.expression.left.object, arrayBindingId) ||
-    !isIrBindingIdentifierCpp(body.expression.left.index, index.binding.id)
+    !isIrBindingIdentifierCpp(body.expression.left.index, index.binding.id) ||
+    doesIrExpressionReferenceBindingCpp(body.expression.right, arrayBindingId)
   ) {
     return undefined;
   }
   return { end, start };
+}
+
+function getDenseArrayWholeWriteLoopStrideCpp(
+  statement: Readonly<IrStatement>,
+  arrayBindingId: string,
+  length: Readonly<IrExpression>,
+  immutableBindingIds: ReadonlySet<string>,
+): number | undefined {
+  if (statement.kind !== 'for' || !Array.isArray(statement.initializer) || statement.initializer.length !== 1) {
+    return undefined;
+  }
+  const index = statement.initializer[0]!;
+  const condition = statement.condition;
+  const increment = statement.increment;
+  if (
+    !('binding' in index) ||
+    !index.initializer ||
+    getNonnegativeIntegerLiteralCpp(index.initializer) !== 0 ||
+    !condition ||
+    condition.kind !== 'binary' ||
+    condition.operator !== '<' ||
+    !isIrBindingIdentifierCpp(condition.left, index.binding.id) ||
+    !increment ||
+    increment.kind !== 'unary' ||
+    increment.operator !== '++' ||
+    !isIrBindingIdentifierCpp(increment.operand, index.binding.id)
+  ) {
+    return undefined;
+  }
+  const stride = getDenseArrayLengthStrideCpp(length, condition.right, immutableBindingIds);
+  if (stride === undefined) return undefined;
+  const offsets = new Set<number>();
+  const body = statement.body.kind === 'block' ? statement.body.statements : [statement.body];
+  for (const bodyStatement of body) {
+    if (
+      bodyStatement.kind === 'expression' &&
+      bodyStatement.expression.kind === 'assignment' &&
+      bodyStatement.expression.operator === '=' &&
+      bodyStatement.expression.left.kind === 'element' &&
+      isIrBindingIdentifierCpp(bodyStatement.expression.left.object, arrayBindingId) &&
+      !doesIrExpressionReferenceBindingCpp(bodyStatement.expression.right, arrayBindingId)
+    ) {
+      const offset = getDenseArrayWriteOffsetCpp(bodyStatement.expression.left.index, index.binding.id, stride);
+      if (offset === undefined || offsets.has(offset)) return undefined;
+      offsets.add(offset);
+      continue;
+    }
+    if (!isDenseArrayWholeWriteLoopPreludeCpp(bodyStatement, arrayBindingId)) {
+      return undefined;
+    }
+  }
+  return offsets.size === stride ? stride : undefined;
+}
+
+function isDenseArrayWholeWriteLoopPreludeCpp(statement: Readonly<IrStatement>, arrayBindingId: string): boolean {
+  return (
+    statement.kind === 'variable' &&
+    statement.declarations.every(
+      (variable) =>
+        'pattern' in variable &&
+        variable.initializer?.kind === 'call' &&
+        variable.initializer.callee.kind === 'identifier' &&
+        variable.initializer.callee.reference.kind === 'binding' &&
+        variable.initializer.callee.reference.binding.kind === 'parameter' &&
+        !doesIrStatementReferenceBindingCpp(statement, arrayBindingId),
+    )
+  );
+}
+
+function getDenseArrayLengthStrideCpp(
+  length: Readonly<IrExpression>,
+  bound: Readonly<IrExpression>,
+  immutableBindingIds: ReadonlySet<string>,
+): number | undefined {
+  if (!isStableDenseArrayBoundCpp(bound, immutableBindingIds)) return undefined;
+  if (isEquivalentDenseArrayBoundCpp(length, bound)) return 1;
+  if (length.kind !== 'binary' || length.operator !== '*') return undefined;
+  const leftStride = getPositiveIntegerLiteralCpp(length.left);
+  if (leftStride !== undefined && isEquivalentDenseArrayBoundCpp(length.right, bound)) return leftStride;
+  const rightStride = getPositiveIntegerLiteralCpp(length.right);
+  return rightStride !== undefined && isEquivalentDenseArrayBoundCpp(length.left, bound) ? rightStride : undefined;
+}
+
+function getDenseArrayWriteOffsetCpp(
+  expression: Readonly<IrExpression>,
+  indexBindingId: string,
+  stride: number,
+): number | undefined {
+  if (stride === 1 && isIrBindingIdentifierCpp(expression, indexBindingId)) return 0;
+  const base = expression.kind === 'binary' && expression.operator === '+' ? expression.left : expression;
+  const offset =
+    expression.kind === 'binary' && expression.operator === '+' ? getNonnegativeIntegerLiteralCpp(expression.right) : 0;
+  if (
+    offset === undefined ||
+    offset >= stride ||
+    base.kind !== 'binary' ||
+    base.operator !== '*' ||
+    !isIrBindingIdentifierCpp(base.left, indexBindingId) ||
+    getPositiveIntegerLiteralCpp(base.right) !== stride
+  ) {
+    return undefined;
+  }
+  return offset;
+}
+
+function isStableDenseArrayBoundCpp(
+  expression: Readonly<IrExpression>,
+  immutableBindingIds: ReadonlySet<string>,
+): boolean {
+  return (
+    getNonnegativeIntegerLiteralCpp(expression) !== undefined ||
+    (expression.kind === 'identifier' &&
+      expression.reference.kind === 'binding' &&
+      immutableBindingIds.has(expression.reference.binding.id))
+  );
+}
+
+function isEquivalentDenseArrayBoundCpp(left: Readonly<IrExpression>, right: Readonly<IrExpression>): boolean {
+  const leftLiteral = getNonnegativeIntegerLiteralCpp(left);
+  const rightLiteral = getNonnegativeIntegerLiteralCpp(right);
+  if (leftLiteral !== undefined || rightLiteral !== undefined) return leftLiteral === rightLiteral;
+  return (
+    left.kind === 'identifier' &&
+    left.reference.kind === 'binding' &&
+    right.kind === 'identifier' &&
+    right.reference.kind === 'binding' &&
+    left.reference.binding.id === right.reference.binding.id
+  );
+}
+
+function doesIrExpressionReferenceBindingCpp(expression: Readonly<IrExpression>, bindingId: string): boolean {
+  let referencesBinding = false;
+  analyzeIrExpressionSubtreeTraversal(expression, {
+    expression(candidate) {
+      if (isIrBindingIdentifierCpp(candidate, bindingId)) referencesBinding = true;
+      return referencesBinding ? false : undefined;
+    },
+  });
+  return referencesBinding;
+}
+
+function doesIrStatementReferenceBindingCpp(statement: Readonly<IrStatement>, bindingId: string): boolean {
+  let referencesBinding = false;
+  analyzeIrStatementSubtreeTraversal(statement, {
+    expression(candidate) {
+      if (isIrBindingIdentifierCpp(candidate, bindingId)) referencesBinding = true;
+      return referencesBinding ? false : undefined;
+    },
+  });
+  return referencesBinding;
+}
+
+function getPositiveIntegerLiteralCpp(expression: Readonly<IrExpression>): number | undefined {
+  const value = getNonnegativeIntegerLiteralCpp(expression);
+  return value !== undefined && value > 0 ? value : undefined;
 }
 
 function getNonnegativeIntegerLiteralCpp(expression: Readonly<IrExpression>): number | undefined {

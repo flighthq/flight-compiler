@@ -2296,6 +2296,32 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(() => emitIrModuleCpp(partiallyFilled.module, { runtimeProfile: 'flight-cpp' })).toThrow(
       'Array length construction is outside the dense flight-cpp array profile',
     );
+
+    const incompleteWrites = lower(
+      'array-length-incomplete-writes-flight.ts',
+      `export function values(): number[] {
+        const result = new Array<number>(3);
+        result[0] = 1;
+        result[2] = 3;
+        return result;
+      }`,
+    );
+    expect(() => emitIrModuleCpp(incompleteWrites.module, { runtimeProfile: 'flight-cpp' })).toThrow(
+      'Array length construction is outside the dense flight-cpp array profile',
+    );
+
+    const incompleteLoop = lower(
+      'array-length-incomplete-loop-flight.ts',
+      `export function values(length: number): number[] {
+        const size = length;
+        const result = new Array<number>(size);
+        for (let index = 0; index < size - 1; index++) result[index] = 1;
+        return result;
+      }`,
+    );
+    expect(() => emitIrModuleCpp(incompleteLoop.module, { runtimeProfile: 'flight-cpp' })).toThrow(
+      'Array length construction is outside the dense flight-cpp array profile',
+    );
   });
 
   it('emits length-constructed arrays when an immediate full fill proves them dense', () => {
@@ -2321,6 +2347,49 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
 
     expect(emitted.contents).toContain('flight::Array<double> result = flight::Array<double>(4.0)');
+  });
+
+  it('emits dynamic-sized arrays when canonical loops initialize every slot before observation', () => {
+    const result = lower(
+      'array-dynamic-length-loop-fill-flight.ts',
+      `export function values(length: number): number[] {
+        const size = length;
+        const result = new Array<number>(size);
+        for (let index = 0; index < size; index++) result[index] = index;
+        return result;
+      }
+      export function triples(length: number, values: (index: number) => [number, number, number]): number[] {
+        const size = length;
+        const result = new Array<number>(size * 3);
+        for (let index = 0; index < size; index++) {
+          const [first, second, third] = values(index);
+          result[index * 3] = first;
+          result[index * 3 + 1] = second;
+          result[index * 3 + 2] = third;
+        }
+        return result;
+      }`,
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+
+    expect(emitted.contents).toContain('flight::Array<double> result = flight::Array<double>(size)');
+    expect(emitted.contents).toContain('flight::Array<double> result = flight::Array<double>((size * 3.0))');
+  });
+
+  it('emits literal-sized arrays when contiguous direct writes initialize every slot', () => {
+    const result = lower(
+      'array-length-direct-fill-flight.ts',
+      `export function values(out?: number[]): number[] {
+        const result = out ?? new Array<number>(3);
+        result[0] = 1;
+        result[1] = 2;
+        result[2] = 3;
+        return result;
+      }`,
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+
+    expect(emitted.contents).toContain('.value_or(flight::Array<double>(3.0))');
   });
 
   it('emits tuple literal with absent element as std::nullopt', () => {
