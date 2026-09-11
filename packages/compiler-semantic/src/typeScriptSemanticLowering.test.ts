@@ -1814,6 +1814,49 @@ describe('lowerTypeScriptSource', () => {
     expect(methodReturn.returns.reference).toMatchObject({ binding: { id: parameter?.id }, kind: 'binding' });
   });
 
+  it('materializes the closed GlContext ambient Pick surface while retaining its host heritage', () => {
+    const members = [
+      'ACTIVE_TEXTURE',
+      'bindBuffer',
+      'clear',
+      ...Array.from({ length: 234 }, (_, index) => `glMember${String(index)}`),
+    ];
+    const result = lower(
+      'GlContext.ts',
+      `type GlContextMember = ${members.map((member) => JSON.stringify(member)).join(' | ')};
+       export interface GlContext extends Pick<WebGL2RenderingContext, GlContextMember> {}
+       export interface OpenContext extends Pick<WebGL2RenderingContext, string> {}`,
+    );
+    const glContext = result.module.declarations.find(
+      (declaration) => declaration.kind === 'interface' && declaration.binding.name === 'GlContext',
+    );
+    const openContext = result.module.declarations.find(
+      (declaration) => declaration.kind === 'interface' && declaration.binding.name === 'OpenContext',
+    );
+    if (glContext?.kind !== 'interface' || openContext?.kind !== 'interface') {
+      throw new Error('Expected GlContext interfaces');
+    }
+
+    expect(result.diagnostics).toEqual([]);
+    expect(glContext.extends).toMatchObject([
+      {
+        reference: { kind: 'ambient', name: 'Pick' },
+        typeArguments: [
+          { reference: { kind: 'ambient', name: 'WebGL2RenderingContext' } },
+          { reference: { binding: { name: 'GlContextMember' }, kind: 'binding' } },
+        ],
+      },
+    ]);
+    expect(glContext.properties).toHaveLength(237);
+    expect(new Set(glContext.properties.map((property) => property.name))).toEqual(new Set(members));
+    expect(glContext.properties).toEqual(
+      expect.arrayContaining([
+        { name: 'clear', optional: false, readonly: false, type: { kind: 'unknown', source: 'any' } },
+      ]),
+    );
+    expect(openContext).toMatchObject({ extends: [{ reference: { kind: 'ambient', name: 'Pick' } }], properties: [] });
+  });
+
   it('uses shared module analysis for imported interface heritage evidence', () => {
     const base = ts.createSourceFile(
       '/flight/packages/model/src/base.ts',

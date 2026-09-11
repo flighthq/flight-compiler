@@ -1742,6 +1742,20 @@ function lowerImportBindingIdentity(
 }
 
 function lowerInterface(node: ts.InterfaceDeclaration, context: LoweringContext): IrInterfaceDeclaration {
+  const ownProperties = lowerTypeProperties(node.members, context);
+  const properties: IrObjectTypeProperty[] = [];
+  for (const clause of node.heritageClauses ?? []) {
+    for (const heritage of clause.types) {
+      for (const property of lowerTypeScriptClosedAmbientPickHeritageProperties(heritage, context) ?? []) {
+        if (!properties.some((candidate) => candidate.name === property.name)) properties.push(property);
+      }
+    }
+  }
+  for (const property of ownProperties) {
+    const inherited = properties.findIndex((candidate) => candidate.name === property.name);
+    if (inherited < 0) properties.push(property);
+    else properties[inherited] = property;
+  }
   return {
     binding: lowerTypeBindingIdentity(node.name, context),
     exported: isExported(node),
@@ -1751,9 +1765,37 @@ function lowerInterface(node: ts.InterfaceDeclaration, context: LoweringContext)
       ) ?? [],
     kind: 'interface',
     origin: origin(node, context),
-    properties: lowerTypeProperties(node.members, context),
+    properties,
     typeParameters: lowerTypeParameters(node.typeParameters, context),
   };
+}
+
+// A deliberately unresolved ambient Pick still proves a finite structural surface when its target
+// is an ambient host type and the checker resolves every selected key to a string literal. Retain
+// the heritage edge for target-specific host widening, but carry those properties in neutral IR so
+// a target which cannot bind the host interface can flatten only after explicitly accepting them.
+function lowerTypeScriptClosedAmbientPickHeritageProperties(
+  heritage: ts.ExpressionWithTypeArguments,
+  context: LoweringContext,
+): readonly IrObjectTypeProperty[] | undefined {
+  if (
+    !ts.isIdentifier(heritage.expression) ||
+    heritage.expression.text !== 'Pick' ||
+    context.checker.getSymbolAtLocation(heritage.expression) !== undefined ||
+    heritage.typeArguments?.length !== 2
+  ) {
+    return undefined;
+  }
+  const target = lowerType(heritage.typeArguments[0]!, context);
+  if (target.kind !== 'named' || target.reference.kind !== 'ambient') return undefined;
+  const keys = getTypeScriptCheckerStringLiteralTypeValues(heritage.typeArguments[1]!, context);
+  if (!keys) return undefined;
+  return keys.map((name) => ({
+    name,
+    optional: false,
+    readonly: false,
+    type: { kind: 'unknown', source: 'any' },
+  }));
 }
 
 function getIrTypeConstructionTargetShape(
@@ -4037,6 +4079,20 @@ function getTypeScriptStringLiteralTypeValues(
   const declaration = symbol?.declarations?.find(ts.isTypeAliasDeclaration);
   if (!symbol || !declaration || seen.has(symbol)) return undefined;
   return getTypeScriptStringLiteralTypeValues(declaration.type, context, new Set(seen).add(symbol));
+}
+
+function getTypeScriptCheckerStringLiteralTypeValues(
+  node: ts.TypeNode,
+  context: LoweringContext,
+): readonly string[] | undefined {
+  const type = context.checker.getTypeFromTypeNode(node);
+  const members = type.isUnion() ? type.types : [type];
+  if (members.some((member) => !(member.flags & ts.TypeFlags.StringLiteral))) return undefined;
+  return [
+    ...new Set(
+      members.map((member) => (member as ts.StringLiteralType).value),
+    ),
+  ];
 }
 
 function lowerTypeScriptClassPropertiesEvidence(
