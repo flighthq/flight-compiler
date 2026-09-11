@@ -101,6 +101,8 @@ interface CppVariantRepresentation {
   direct: boolean;
 }
 
+type CppDirectBindingOwner = Readonly<{ declaration: IrDeclaration; module: IrModule }>;
+
 interface EmitContext {
   anonymousStructs: Map<string, AnonymousStruct>;
   anonymousStructTypeParameters: readonly IrTypeParameter[];
@@ -111,6 +113,7 @@ interface EmitContext {
   currentClass?: Readonly<IrClassDeclaration> | undefined;
   defaultedParameterIds: ReadonlySet<string>;
   denseArrayLengthBindingIds: ReadonlySet<string>;
+  directBindingOwners: ReadonlyMap<string, CppDirectBindingOwner | null>;
   finallyReturnVar?: string | undefined;
   includes: Set<string>;
   module: Readonly<IrModule>;
@@ -122,7 +125,6 @@ interface EmitContext {
   referenceRepresentationPlanner: CompilerCppReferenceRepresentationPlanner;
   returnsAbsent: boolean;
   sharedCaptureTargetNames: ReadonlyMap<string, string>;
-  sourceModules: readonly Readonly<IrModule>[];
   targetNames: ReadonlyMap<string, string>;
   uninitializedCaptureStorageBindingIds: ReadonlySet<string>;
   generatedNames: Set<string>;
@@ -136,6 +138,7 @@ export function createCppCompilerBackend(): CompilerBackend<CppCompilerBackendOp
         ? createIrTypeReferenceRepresentationPlannerCpp(modules, moduleResolution)
         : createIrTypeReferenceRepresentationPlannerCpp(modules);
       const interfaceInheritancePass = createCompilerLoweringPassInterfaceInheritance(modules, moduleResolution);
+      const directBindingOwners = createCppDirectBindingOwners(modules);
       return Object.freeze({
         emitModule(module: Readonly<IrModule>) {
           return [
@@ -146,6 +149,7 @@ export function createCppCompilerBackend(): CompilerBackend<CppCompilerBackendOp
               moduleResolution,
               referenceRepresentationPlanner,
               interfaceInheritancePass,
+              directBindingOwners,
             ),
           ];
         },
@@ -172,6 +176,7 @@ function emitIrModuleCppWithContext(
   moduleResolution?: Readonly<CompilerModuleResolutionPlan> | undefined,
   referenceRepresentationPlanner?: CompilerCppReferenceRepresentationPlanner | undefined,
   interfaceInheritancePass?: Readonly<CompilerLoweringPass> | undefined,
+  directBindingOwners?: ReadonlyMap<string, CppDirectBindingOwner | null> | undefined,
 ): EmittedFile {
   let module: IrModule;
   try {
@@ -218,6 +223,7 @@ function emitIrModuleCppWithContext(
     bindingTypes,
     defaultedParameterIds: new Set(),
     denseArrayLengthBindingIds: collectIrModuleDenseArrayLengthBindingIdsCpp(sourceModule),
+    directBindingOwners: directBindingOwners ?? createCppDirectBindingOwners(sourceModules),
     includes: new Set<string>(),
     module,
     namespaceScope: true,
@@ -232,7 +238,6 @@ function emitIrModuleCppWithContext(
         : createIrTypeReferenceRepresentationPlannerCpp(sourceModules)),
     returnsAbsent: false,
     sharedCaptureTargetNames,
-    sourceModules,
     targetNames,
     uninitializedCaptureStorageBindingIds,
     generatedNames: new Set(targetNames.values()),
@@ -4866,20 +4871,25 @@ function getTypeReferenceTargetName(type: Readonly<IrType & { kind: 'named' }>, 
   return context.targetNames.get(type.reference.binding.id) ?? pascalCase(type.reference.binding.name);
 }
 
-function getCppDirectBindingOwner(
-  type: Readonly<IrType>,
-  context: EmitContext,
-): Readonly<{ declaration: IrDeclaration; module: IrModule }> | undefined {
+function getCppDirectBindingOwner(type: Readonly<IrType>, context: EmitContext): CppDirectBindingOwner | undefined {
   if (type.kind !== 'named' || type.reference.kind !== 'binding' || type.reference.binding.kind === 'import') {
     return undefined;
   }
-  const bindingId = type.reference.binding.id;
-  const matches = context.sourceModules.flatMap((module) =>
-    module.declarations.flatMap((declaration) =>
-      'binding' in declaration && declaration.binding.id === bindingId ? [{ declaration, module }] : [],
-    ),
-  );
-  return matches.length === 1 ? matches[0] : undefined;
+  return context.directBindingOwners.get(type.reference.binding.id) ?? undefined;
+}
+
+function createCppDirectBindingOwners(
+  modules: readonly Readonly<IrModule>[],
+): ReadonlyMap<string, CppDirectBindingOwner | null> {
+  const owners = new Map<string, CppDirectBindingOwner | null>();
+  for (const module of modules) {
+    for (const declaration of module.declarations) {
+      if (!('binding' in declaration)) continue;
+      const bindingId = declaration.binding.id;
+      owners.set(bindingId, owners.has(bindingId) ? null : { declaration, module });
+    }
+  }
+  return owners;
 }
 
 function getCppEquivalentImportedTypeCpp(type: Readonly<IrType>, context: EmitContext): IrType | undefined {
