@@ -1249,7 +1249,11 @@ function emitExpression(
       if (typeName === 'std::runtime_error' || typeName === 'std::range_error') {
         context.includes.add('stdexcept');
       }
-      const typeArguments = emitCppTypeArguments(expression.typeArguments, context);
+      const constructedType = getIrNewExpressionTypeEvidenceCpp(expression, context);
+      const typeArguments = emitCppTypeArguments(
+        expression.typeArguments.length > 0 ? expression.typeArguments : (constructedType?.typeArguments ?? []),
+        context,
+      );
       if (
         getCppRuntimeProfile(context.options) === 'flight-cpp' &&
         ambientConstructorName === 'Array' &&
@@ -1264,6 +1268,15 @@ function emitExpression(
         }
         return `${typeName}${typeArguments}::create(${args.join(', ')})`;
       }
+      if (
+        getCppRuntimeProfile(context.options) !== 'flight-cpp' &&
+        ambientConstructorName === 'Set' &&
+        args.length === 1 &&
+        constructedType?.typeArguments.length === 1
+      ) {
+        const valuesName = getGeneratedTargetName('setConstructorValues', context);
+        return `([&]() { auto&& ${valuesName} = ${args[0]}; return ${typeName}${typeArguments}(${valuesName}.begin(), ${valuesName}.end()); }())`;
+      }
       if (externalConstruction) {
         return `${externalConstruction.targetName}${typeArguments}(${args.join(', ')})`;
       }
@@ -1274,14 +1287,6 @@ function emitExpression(
       ) {
         return `${typeName}(${args[0]}.to_utf8())`;
       }
-      const constructedType: IrType | undefined =
-        expression.callee.kind === 'identifier' && expression.callee.reference.kind === 'binding'
-          ? {
-              kind: 'named',
-              reference: { binding: expression.callee.reference.binding, kind: 'binding', path: [] },
-              typeArguments: expression.typeArguments,
-            }
-          : undefined;
       if (
         constructedType &&
         getCppRuntimeProfile(context.options) === 'flight-cpp' &&
@@ -1508,6 +1513,8 @@ function emitArrayExpressionCpp(
 
   const inferredSpreadElements = expression.elements.flatMap((element): readonly IrType[] => {
     if (element?.kind !== 'spread') return [];
+    const view = getCppCollectionIterationView(element.expression, context);
+    if (view) return [view.elementType];
     const operandType = getIrExpressionTypeEvidenceCpp(element.expression, context);
     const iterableElement = operandType ? getIrIterableElementTypeCpp(operandType, context, new Set()) : undefined;
     return iterableElement && iterableElement.kind !== 'unknown' ? [iterableElement] : [];
@@ -1531,6 +1538,8 @@ function emitArrayExpressionCpp(
     if (element.kind !== 'spread') {
       return `${resultName}.${append}(${emitExpression(element, context, elementType)});`;
     }
+    const view = getCppCollectionIterationView(element.expression, context);
+    if (view) return emitCppCollectionViewArraySpread(view, resultName, append, context);
     const operandType = getIrExpressionTypeEvidenceCpp(element.expression, context);
     const tuple = operandType ? getIrTupleTypeCpp(operandType, context, new Set()) : undefined;
     if (tuple) {
@@ -1567,6 +1576,127 @@ function emitArrayPushSpreadCallCpp(
   const arguments_ = emitArrayExpressionCpp({ elements: expression.arguments, kind: 'array' }, context, receiverType);
   const append = getCppRuntimeProfile(context.options) === 'flight-cpp' ? 'push' : 'push_back';
   return `([&]() { auto&& ${receiverName} = ${emitExpression(expression.callee.object, context)}; const auto ${argumentsName} = ${arguments_}; for (const auto& ${itemName} : ${argumentsName}) { ${receiverName}.${append}(${itemName}); } return static_cast<double>(${receiverName}.size()); }())`;
+}
+
+interface CppCollectionIterationView {
+  readonly collection: Readonly<IrExpression>;
+  readonly collectionKind: 'map' | 'set';
+  readonly elementType: Readonly<IrType>;
+  readonly projection: 'entry' | 'key' | 'value';
+}
+
+type IrAmbientNamedTypeCpp = Readonly<
+  Extract<IrType, { kind: 'named' }> & { reference: Readonly<{ kind: 'ambient'; name: string }> }
+>;
+
+function getCppCollectionIterationView(
+  expression: Readonly<IrExpression>,
+  context: EmitContext,
+): CppCollectionIterationView | undefined {
+  if (
+    expression.kind !== 'call' ||
+    expression.optional ||
+    expression.arguments.length !== 0 ||
+    expression.callee.kind !== 'property' ||
+    expression.callee.optional ||
+    (expression.callee.member?.receiver !== 'map' && expression.callee.member?.receiver !== 'set') ||
+    !['entries', 'keys', 'values'].includes(expression.callee.name)
+  ) {
+    return undefined;
+  }
+  const collectionType = getIrAmbientCollectionTypeCpp(
+    getIrExpressionTypeEvidenceCpp(expression.callee.object, context),
+    context,
+    new Set(),
+  );
+  if (!collectionType) return undefined;
+  const collectionKind = ['Map', 'ReadonlyMap'].includes(collectionType.reference.name) ? 'map' : 'set';
+  const projection =
+    expression.callee.name === 'entries' ? 'entry' : expression.callee.name === 'keys' ? 'key' : 'value';
+  if (collectionKind === 'map') {
+    const [key, value] = collectionType.typeArguments;
+    if (!key || !value) return undefined;
+    return {
+      collection: expression.callee.object,
+      collectionKind,
+      elementType:
+        projection === 'entry'
+          ? {
+              elements: [key, value].map((type) => ({ optional: false, rest: false, type })),
+              kind: 'tuple',
+              readonly: true,
+            }
+          : projection === 'key'
+            ? key
+            : value,
+      projection,
+    };
+  }
+  const value = collectionType.typeArguments[0];
+  if (!value) return undefined;
+  return {
+    collection: expression.callee.object,
+    collectionKind,
+    elementType:
+      projection === 'entry'
+        ? {
+            elements: [value, value].map((type) => ({ optional: false, rest: false, type })),
+            kind: 'tuple',
+            readonly: true,
+          }
+        : value,
+    projection,
+  };
+}
+
+function getIrAmbientCollectionTypeCpp(
+  type: Readonly<IrType> | undefined,
+  context: EmitContext,
+  resolvingAliases: ReadonlySet<string>,
+): IrAmbientNamedTypeCpp | undefined {
+  if (!type || type.kind !== 'named') return undefined;
+  if (type.reference.kind === 'ambient' && ['Map', 'ReadonlyMap', 'ReadonlySet', 'Set'].includes(type.reference.name)) {
+    return type as IrAmbientNamedTypeCpp;
+  }
+  if (type.reference.kind !== 'binding' || resolvingAliases.has(type.reference.binding.id)) return undefined;
+  const alias = resolveCppTypeAliasTarget(type, context);
+  if (!alias) return undefined;
+  const nextResolvingAliases = new Set(resolvingAliases);
+  nextResolvingAliases.add(type.reference.binding.id);
+  return getIrAmbientCollectionTypeCpp(alias, context, nextResolvingAliases);
+}
+
+function emitCppCollectionViewArraySpread(
+  view: Readonly<CppCollectionIterationView>,
+  resultName: string,
+  append: string,
+  context: EmitContext,
+): string {
+  const collectionName = getGeneratedTargetName('arraySpreadCollection', context);
+  const valueName = getGeneratedTargetName('arraySpreadValue', context);
+  if (view.collectionKind === 'set' && view.projection !== 'entry') {
+    return `{ auto&& ${collectionName} = ${emitExpression(view.collection, context)}; for (const auto& ${valueName} : ${collectionName}) { ${resultName}.${append}(${valueName}); } }`;
+  }
+  if (view.collectionKind === 'set') {
+    context.includes.add('tuple');
+    return `{ auto&& ${collectionName} = ${emitExpression(view.collection, context)}; for (const auto& ${valueName} : ${collectionName}) { ${resultName}.${append}(std::make_tuple(${valueName}, ${valueName})); } }`;
+  }
+  const keyName = getGeneratedTargetName('arraySpreadKey', context);
+  const itemName = getGeneratedTargetName('arraySpreadMappedValue', context);
+  const projected =
+    view.projection === 'entry'
+      ? `std::make_tuple(${keyName}, ${itemName})`
+      : view.projection === 'key'
+        ? keyName
+        : itemName;
+  if (view.projection === 'entry') context.includes.add('tuple');
+  const unused =
+    view.projection === 'key'
+      ? ` static_cast<void>(${itemName});`
+      : view.projection === 'value'
+        ? ` static_cast<void>(${keyName});`
+        : '';
+  return `{ auto&& ${collectionName} = ${emitExpression(view.collection, context)}; for (const auto& [${keyName}, ${itemName}] : ${collectionName}) {${unused} ${resultName}.${append}(${projected}); } }`;
 }
 
 function getIrArrayTypeCpp(
@@ -1624,7 +1754,12 @@ function getIrIterableElementTypeCpp(
   if (array) return array.element;
   if (type.kind === 'primitive' && type.name === 'string') return type;
   if (type.kind === 'tuple') {
-    const elements = type.elements.map((element) => element.type);
+    const elements = type.elements.flatMap((element): readonly IrType[] => {
+      if (!element.rest) return [element.type];
+      const restElement = getIrIterableElementTypeCpp(element.type, context, resolvingAliases);
+      return restElement ? [restElement] : [];
+    });
+    if (elements.length !== type.elements.length) return undefined;
     if (elements.length === 0) return undefined;
     const unique = new Map(elements.map((element) => [JSON.stringify(element), element]));
     const values = [...unique.values()];
@@ -1750,9 +1885,54 @@ function emitStatement(statement: Readonly<IrStatement>, context: EmitContext): 
       if ('pattern' in statement.variable) {
         emissionError(context, 'binding patterns require destructuring lowering before C++ emission');
       }
-      const iterable = emitExpression(statement.iterable, context);
+      const collectionView = getCppCollectionIterationView(statement.iterable, context);
+      const iterable = emitExpression(collectionView?.collection ?? statement.iterable, context);
       const variableName = getBindingTargetName(statement.variable.binding, context);
       const sharedCaptureTargetName = context.sharedCaptureTargetNames.get(statement.variable.binding.id);
+      if (collectionView && !(collectionView.collectionKind === 'set' && collectionView.projection !== 'entry')) {
+        if (sharedCaptureTargetName && !statement.variable.type) {
+          emissionError(
+            context,
+            `shared mutable capture ${statement.variable.binding.name} requires concrete binding type evidence`,
+          );
+        }
+        const keyName = getGeneratedTargetName('forOfKey', context);
+        const valueName = getGeneratedTargetName('forOfValue', context);
+        const projected =
+          collectionView.collectionKind === 'set'
+            ? `std::make_tuple(${valueName}, ${valueName})`
+            : collectionView.projection === 'entry'
+              ? `std::make_tuple(${keyName}, ${valueName})`
+              : collectionView.projection === 'key'
+                ? keyName
+                : valueName;
+        if (collectionView.projection === 'entry') context.includes.add('tuple');
+        const iterationValueName = sharedCaptureTargetName
+          ? generateUniqueName(`${variableName}_iteration_value`, context)
+          : variableName;
+        const binding = `auto ${iterationValueName} = ${projected};`;
+        const body = sharedCaptureTargetName
+          ? [
+              binding,
+              `const auto ${sharedCaptureTargetName} = ${emitSharedCaptureCellConstructionCpp(emitType(statement.variable.type!, context), iterationValueName, context)};`,
+              ...emitStatementBody(statement.body, context),
+            ]
+          : [binding, ...emitStatementBody(statement.body, context)];
+        if (collectionView.collectionKind === 'set') {
+          return [`for (const auto& ${valueName} : ${iterable}) {`, ...indentSourceLines(body), '}'];
+        }
+        const unused =
+          collectionView.projection === 'key'
+            ? `static_cast<void>(${valueName});`
+            : collectionView.projection === 'value'
+              ? `static_cast<void>(${keyName});`
+              : undefined;
+        return [
+          `for (const auto& [${keyName}, ${valueName}] : ${iterable}) {`,
+          ...indentSourceLines(unused ? [unused, ...body] : body),
+          '}',
+        ];
+      }
       if (sharedCaptureTargetName) {
         if (!statement.variable.type) {
           emissionError(
@@ -2988,13 +3168,57 @@ function getCppBindingTypeCpp(bindingId: string, context: EmitContext): Readonly
   return context.preservedInitializerTypes.get(bindingId) ?? context.bindingTypes.get(bindingId);
 }
 
+function getIrNewExpressionTypeEvidenceCpp(
+  expression: Readonly<Extract<IrExpression, { kind: 'new' }>>,
+  context: EmitContext,
+): Readonly<Extract<IrType, { kind: 'named' }>> | undefined {
+  if (expression.callee.kind !== 'identifier') return undefined;
+  if (expression.callee.reference.kind === 'binding') {
+    return {
+      kind: 'named',
+      reference: { binding: expression.callee.reference.binding, kind: 'binding', path: [] },
+      typeArguments: expression.typeArguments,
+    };
+  }
+  if (expression.callee.reference.kind !== 'ambient') return undefined;
+  const name = expression.callee.reference.name;
+  if (expression.typeArguments.length > 0) {
+    return { kind: 'named', reference: { kind: 'ambient', name }, typeArguments: expression.typeArguments };
+  }
+  const argumentType = expression.arguments[0]
+    ? getIrExpressionTypeEvidenceCpp(expression.arguments[0], context)
+    : undefined;
+  const elementType = argumentType ? getIrIterableElementTypeCpp(argumentType, context, new Set()) : undefined;
+  if (name === 'Set' && elementType) {
+    return { kind: 'named', reference: { kind: 'ambient', name }, typeArguments: [elementType] };
+  }
+  const tuple = elementType ? getIrTupleTypeCpp(elementType, context, new Set()) : undefined;
+  if (name === 'Map' && tuple?.elements.length === 2) {
+    return {
+      kind: 'named',
+      reference: { kind: 'ambient', name },
+      typeArguments: [tuple.elements[0]!.type, tuple.elements[1]!.type],
+    };
+  }
+  return { kind: 'named', reference: { kind: 'ambient', name }, typeArguments: [] };
+}
+
 function getIrExpressionTypeEvidenceCpp(
   expression: Readonly<IrExpression>,
   context: EmitContext,
 ): Readonly<IrType> | undefined {
   switch (expression.kind) {
-    case 'array':
-      return undefined;
+    case 'array': {
+      const spreadElement = expression.elements.flatMap((element): readonly IrType[] => {
+        if (element?.kind !== 'spread') return [];
+        const view = getCppCollectionIterationView(element.expression, context);
+        if (view) return [view.elementType];
+        const operandType = getIrExpressionTypeEvidenceCpp(element.expression, context);
+        const iterableElement = operandType ? getIrIterableElementTypeCpp(operandType, context, new Set()) : undefined;
+        return iterableElement ? [iterableElement] : [];
+      })[0];
+      return spreadElement ? { element: spreadElement, kind: 'array', readonly: false } : undefined;
+    }
     case 'assignment':
       return getIrAssignmentTargetTypeCpp(expression.left, context);
     case 'await': {
@@ -3044,13 +3268,7 @@ function getIrExpressionTypeEvidenceCpp(
       );
     }
     case 'new':
-      return expression.callee.kind === 'identifier' && expression.callee.reference.kind === 'binding'
-        ? {
-            kind: 'named',
-            reference: { binding: expression.callee.reference.binding, kind: 'binding', path: [] },
-            typeArguments: expression.typeArguments,
-          }
-        : undefined;
+      return getIrNewExpressionTypeEvidenceCpp(expression, context);
     case 'object':
       return expression.type;
     case 'element': {

@@ -3078,10 +3078,65 @@ function getTypeScriptForInKeyPlan(
   return keyPlan ? { keyPlan } : undefined;
 }
 
-function lowerTypeScriptForOfElementType(expression: ts.Expression, context: LoweringContext): IrType | undefined {
+function lowerTypeScriptForOfElementType(
+  expression: ts.Expression,
+  context: LoweringContext,
+  seen: ReadonlySet<ts.Node> = new Set(),
+): IrType | undefined {
+  if (seen.has(expression)) return undefined;
+  const nextSeen = new Set(seen);
+  nextSeen.add(expression);
   if (ts.isArrayLiteralExpression(expression)) {
     const tuple = lowerTypeScriptArrayLiteralTupleElementType(expression, context);
     if (tuple) return tuple;
+    const elementTypes = expression.elements.flatMap((element): readonly IrType[] => {
+      if (ts.isOmittedExpression(element)) return [];
+      if (ts.isSpreadElement(element)) {
+        const spreadElement = lowerTypeScriptForOfElementType(element.expression, context, nextSeen);
+        return spreadElement ? [spreadElement] : [];
+      }
+      return [inferInitializerType(element, context)];
+    });
+    if (elementTypes[0]) return commonType([elementTypes[0], ...elementTypes.slice(1)]);
+  }
+  if (ts.isIdentifier(expression)) {
+    const symbol = context.checker.getSymbolAtLocation(expression);
+    const declaration = symbol?.valueDeclaration ?? symbol?.declarations?.[0];
+    if (declaration && ts.isVariableDeclaration(declaration) && !declaration.type && declaration.initializer) {
+      const initializerElement = lowerTypeScriptForOfElementType(declaration.initializer, context, nextSeen);
+      if (initializerElement) return initializerElement;
+    }
+  }
+  if (
+    ts.isCallExpression(expression) &&
+    ts.isPropertyAccessExpression(expression.expression) &&
+    ['concat', 'filter', 'reverse', 'slice', 'sort', 'splice'].includes(expression.expression.name.text)
+  ) {
+    const receiverElement = lowerTypeScriptForOfElementType(expression.expression.expression, context, nextSeen);
+    if (receiverElement) return receiverElement;
+  }
+  const collectionView = lowerTypeScriptCollectionViewElementType(expression, context);
+  if (collectionView) return collectionView;
+  if (
+    ts.isNewExpression(expression) &&
+    ts.isIdentifier(expression.expression) &&
+    (expression.expression.text === 'Map' || expression.expression.text === 'Set')
+  ) {
+    const [firstType, secondType] = expression.typeArguments ?? [];
+    if (expression.expression.text === 'Set' && firstType) return lowerType(firstType, context);
+    if (expression.expression.text === 'Map' && firstType && secondType) {
+      return {
+        elements: [firstType, secondType].map((type) => ({
+          optional: false,
+          rest: false,
+          type: lowerType(type, context),
+        })),
+        kind: 'tuple',
+        readonly: true,
+      };
+    }
+    const argument = expression.arguments?.[0];
+    if (argument) return lowerTypeScriptForOfElementType(argument, context, nextSeen);
   }
   const iterableType = getTypeScriptSyntacticExpressionTypeEvidence(expression, context.checker);
   if (!iterableType) return undefined;
@@ -3143,6 +3198,46 @@ function lowerTypeScriptForOfElementType(expression: ts.Expression, context: Low
     }
   }
   return lowerTypeScriptTypeNodeEvidence(element.type, context, new Set(), element.substitutions);
+}
+
+function lowerTypeScriptCollectionViewElementType(
+  expression: ts.Expression,
+  context: LoweringContext,
+): IrType | undefined {
+  if (
+    !ts.isCallExpression(expression) ||
+    expression.arguments.length !== 0 ||
+    !ts.isPropertyAccessExpression(expression.expression) ||
+    !['entries', 'keys', 'values'].includes(expression.expression.name.text)
+  ) {
+    return undefined;
+  }
+  const receiverType = getTypeScriptSyntacticExpressionTypeEvidence(expression.expression.expression, context.checker);
+  if (!receiverType) return undefined;
+  const element = getTypeScriptTypeNodeIterableElementEvidence(receiverType, context, new Set());
+  if (!element) return undefined;
+  const projection = expression.expression.name.text;
+  if ('key' in element) {
+    const key = lowerTypeScriptTypeNodeEvidence(element.key, context, new Set(), element.substitutions);
+    const value = lowerTypeScriptTypeNodeEvidence(element.value, context, new Set(), element.substitutions);
+    return projection === 'entries'
+      ? {
+          elements: [key, value].map((type) => ({ optional: false, rest: false, type })),
+          kind: 'tuple',
+          readonly: true,
+        }
+      : projection === 'keys'
+        ? key
+        : value;
+  }
+  const value = lowerTypeScriptTypeNodeEvidence(element.type, context, new Set(), element.substitutions);
+  return projection === 'entries'
+    ? {
+        elements: [value, value].map((type) => ({ optional: false, rest: false, type })),
+        kind: 'tuple',
+        readonly: true,
+      }
+    : value;
 }
 
 function lowerTypeScriptArrayLiteralTupleElementType(
@@ -4397,6 +4492,7 @@ function getIrResolvedMemberReceiver(type: Readonly<IrType> | undefined): IrReso
       RegExp: 'regexp',
       RegExpExecArray: 'array',
       ReadonlyMap: 'map',
+      ReadonlySet: 'set',
       Set: 'set',
       TextDecoder: 'textDecoder',
       Uint16Array: 'typedArray',
@@ -4449,14 +4545,35 @@ function getTypeScriptPrimitiveTypeName(type: ts.Type): string | undefined {
 // What a callback's parameter holds, when the source did not annotate it and the position it was
 // passed to decides. `values.map((value) => value * 2)` writes no type for `value`; the ambient
 // surface says `map` takes `(value: T, index: number) => U` and the checker instantiates `T`. That
-// instantiation is the checker's work, not syntax, so this is the one place a checker type is read
-// back into the neutral model — and only for the shapes a target can name without guessing.
+// instantiation is normally the checker's work. When the deliberately small ambient surface does
+// not expose a collection view object, the written receiver and callback position provide the same
+// evidence without pretending the iterator itself has a portable runtime representation.
 function getTypeScriptContextualParameterType(
   node: ts.ParameterDeclaration,
   context: LoweringContext,
 ): Readonly<IrType> | undefined {
-  if (!ts.isIdentifier(node.name)) return undefined;
-  return getTypeScriptCheckerTypeEvidence(context.checker.getTypeAtLocation(node), context, 0);
+  const checkerType = getTypeScriptCheckerTypeEvidence(context.checker.getTypeAtLocation(node), context, 0);
+  if (checkerType && checkerType.kind !== 'unknown') return checkerType;
+  const callback = node.parent;
+  const call = callback.parent;
+  if (
+    (!ts.isArrowFunction(callback) && !ts.isFunctionExpression(callback)) ||
+    !ts.isCallExpression(call) ||
+    !call.arguments.includes(callback) ||
+    !ts.isPropertyAccessExpression(call.expression)
+  ) {
+    return checkerType;
+  }
+  const parameterIndex = callback.parameters.indexOf(node);
+  const method = call.expression.name.text;
+  const elementType = lowerTypeScriptForOfElementType(call.expression.expression, context);
+  if (!elementType) return checkerType;
+  if (method === 'sort' && (parameterIndex === 0 || parameterIndex === 1)) return elementType;
+  if (['every', 'filter', 'find', 'findIndex', 'forEach', 'map', 'some'].includes(method)) {
+    if (parameterIndex === 0) return elementType;
+    if (parameterIndex === 1) return { kind: 'primitive', name: 'number' };
+  }
+  return checkerType;
 }
 
 // A type the checker resolved to something this module declares. The declaration's own name is what

@@ -4765,7 +4765,13 @@ export function compare(left: string, right: string, locale: string, options: In
          const copied = [...values];
          return copied;
        }
+       export function distinct(values: readonly string[]): string[] {
+         return [...new Set(values)];
+       }
        export function copyTuple(values: readonly [number, number]): number[] {
+         return [...values];
+       }
+       export function copyTupleRest(values: readonly [number, ...number[]]): number[] {
          return [...values];
        }`,
     ).module;
@@ -4776,6 +4782,9 @@ export function compare(left: string, right: string, locale: string, options: In
     expect(standard).toContain('array_spread_result.push_back(first)');
     expect(standard).toContain('for (const auto& array_spread_item : items)');
     expect(standard).toContain('array_spread_result.push_back(99.0)');
+    expect(standard).toMatch(
+      /std::unordered_set<std::string>\(set_constructor_values(?:_\d+)?\.begin\(\), set_constructor_values(?:_\d+)?\.end\(\)\)/u,
+    );
     expect(flight).toContain('flight::Array<double> array_spread_result');
     expect(flight).toContain('array_spread_result.push(first)');
     expect(flight).toContain('for (const auto& array_spread_item : items)');
@@ -4804,6 +4813,40 @@ export function compare(left: string, right: string, locale: string, options: In
       output.indexOf('array_push_receiver.push(array_push_item)'),
     );
     expect(output).toContain('return static_cast<double>(array_push_receiver.size())');
+  });
+
+  it('projects map and set iterator views while materializing spreads and for-of loops', () => {
+    const output = emitIrModuleCpp(
+      lower(
+        'collection-view-spread.ts',
+        `export function distinct(values: readonly string[]): string[] {
+           return [...new Set(values)].sort();
+         }
+         export function mapValues(values: Map<string, number>): number[] {
+           return [...values.values()].sort((left, right) => left - right);
+         }
+         export function mapEntries(values: Map<string, number>): readonly (readonly [string, number])[] {
+           return [...values.entries()];
+         }
+         export function setValues(values: ReadonlySet<string>): string[] {
+           return [...values.values()];
+         }
+         export function sum(values: ReadonlyMap<string, number>): number {
+           let total = 0;
+           for (const value of values.values()) total += value;
+           return total;
+         }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+
+    expect(output).toContain('flight::Set<flight::String>(values)');
+    expect(output).toContain('for (const auto& array_spread_item : flight::Set<flight::String>(values))');
+    expect(output).toMatch(/for \(const auto& \[array_spread_key(?:_\d+)?, array_spread_mapped_value(?:_\d+)?\]/u);
+    expect(output).toContain('std::make_tuple(array_spread_key');
+    expect(output).toMatch(/for \(const auto& \[for_of_key(?:_\d+)?, for_of_value(?:_\d+)?\] : values\)/u);
+    expect(output).not.toContain('.values()');
+    expect(output).not.toContain('.entries()');
   });
 
   it('still refuses unbounded spreads when a fixed-arity call has no iterable target', () => {

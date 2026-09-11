@@ -5860,6 +5860,41 @@ it('infers array element types from unbounded iterable spreads', () => {
   });
 });
 
+it('infers array element types from map and set iterator views', () => {
+  const result = lower(
+    'spread-collection-views.ts',
+    `export function run(
+       values: readonly string[],
+       map: ReadonlyMap<string, number>,
+       set: ReadonlySet<string>,
+     ): void {
+       const distinct = [...new Set(values)];
+       const keys = [...map.keys()];
+       const entries = [...map.entries()];
+       const setValues = [...set.values()];
+       distinct;
+       keys;
+       entries;
+       setValues;
+     }`,
+  );
+  const declaration = result.module.declarations.find(
+    (candidate) => candidate.kind === 'function' && candidate.binding.name === 'run',
+  );
+  const variables =
+    declaration?.kind === 'function'
+      ? declaration.body.filter((statement) => statement.kind === 'variable')
+      : undefined;
+
+  expect(result.diagnostics).toEqual([]);
+  expect(variables).toMatchObject([
+    { declarations: [{ type: { element: { kind: 'primitive', name: 'string' }, kind: 'array' } }] },
+    { declarations: [{ type: { element: { kind: 'primitive', name: 'string' }, kind: 'array' } }] },
+    { declarations: [{ type: { element: { kind: 'tuple' }, kind: 'array' } }] },
+    { declarations: [{ type: { element: { kind: 'primitive', name: 'string' }, kind: 'array' } }] },
+  ]);
+});
+
 it('resolves member receiver for array, tuple, string, and named types', () => {
   const result = lower(
     'member-receivers.ts',
@@ -7717,6 +7752,30 @@ it('infers contextual callback parameter types from array map', () => {
       `,
   );
   expect(result.diagnostics).toEqual([]);
+});
+
+it('infers contextual tuple types for destructured callback parameters', () => {
+  const result = lower(
+    'contextual-destructured-callback.ts',
+    `export function run(values: ReadonlyMap<number, string>): string[] {
+       const entries = [...values.entries()].sort((left, right) => left[0] - right[0]);
+       return entries.map(([index, label]) => index > 0 ? label : '');
+     }`,
+  );
+  const declaration = result.module.declarations.find(
+    (candidate) => candidate.kind === 'function' && candidate.binding.name === 'run',
+  );
+  const returned =
+    declaration?.kind === 'function' ? declaration.body.find((statement) => statement.kind === 'return') : undefined;
+  const callback =
+    returned?.kind === 'return' && returned.expression?.kind === 'call' ? returned.expression.arguments[0] : undefined;
+  const parameterEntry = callback?.kind === 'function' ? callback.body[0] : undefined;
+
+  expect(result.diagnostics).toEqual([]);
+  expect(parameterEntry).toMatchObject({
+    declarations: [{ pattern: { kind: 'array' }, type: { kind: 'tuple' } }],
+    kind: 'variable',
+  });
 });
 
 it('infers contextual callback parameter as declared type from the same module', () => {
