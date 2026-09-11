@@ -16,6 +16,23 @@ Mark an item adopted only after all of the following are true:
 
 When the downstream repository contains an equivalent maintained register, replace this document with a link to it. Do not leave two independently maintained checklists.
 
+## Current pinned gap
+
+At `flight-cpp` revision `70656d466841ae7ce9b014a36eb81a442a79ddb5`, the compiler's `flight-cpp` binding profile emits ten runtime headers that the pinned checkout does not contain:
+
+- `flight/array_buffer.hpp`
+- `flight/data_view.hpp`
+- `flight/intl.hpp`
+- `flight/json.hpp`
+- `flight/number.hpp`
+- `flight/object.hpp`
+- `flight/regexp.hpp`
+- `flight/symbol.hpp`
+- `flight/text_decoder.hpp`
+- `flight/url.hpp`
+
+This is a pin-specific snapshot, not an additional contract. Update it whenever `dependencies.lock.json` advances. Existing headers such as `flight/string.hpp` and `flight/typed_array.hpp` also require the extensions named below, so the absence list alone is not the completion gate.
+
 ## Release and dependency contract
 
 - [ ] Advance the unreleased C++ ABI coherently. The compiler and pinned runtime currently assert ABI 1, but ABI 1 was never released. Land the intended ABI revision in `flight-cpp`, update the compiler assertion and dependency lock in the same integration, and compile an emitted header against the new pin.
