@@ -299,6 +299,7 @@ function mergeIrObjectShapePropertiesCpp(
       return undefined;
     }
     const type = mergeIrObjectShapePropertyTypesCpp(existing.type, property.type, module, moduleSet, cache, ancestors, {
+      aliases: new Set(),
       ancestors: new WeakMap(),
     });
     if (!type) return undefined;
@@ -373,6 +374,7 @@ function mergeIrObjectShapePropertyTypesCpp(
 }
 
 interface IrTypeStructuralComparisonStateCpp {
+  readonly aliases: Set<string>;
   readonly ancestors: WeakMap<object, WeakSet<object>>;
 }
 
@@ -400,6 +402,40 @@ function isIrTypeStructurallyAssignableCpp(
       return target.types.some((member) =>
         isIrTypeStructurallyAssignableCpp(source, member, module, moduleSet, cache, shapeAncestors, comparison),
       );
+    }
+    const sourceAlias = resolveIrTypeAliasForShapeComparisonCpp(source, module, moduleSet, cache);
+    if (sourceAlias && !comparison.aliases.has(sourceAlias.identity)) {
+      comparison.aliases.add(sourceAlias.identity);
+      try {
+        return isIrTypeStructurallyAssignableCpp(
+          sourceAlias.type,
+          target,
+          sourceAlias.module,
+          moduleSet,
+          cache,
+          shapeAncestors,
+          comparison,
+        );
+      } finally {
+        comparison.aliases.delete(sourceAlias.identity);
+      }
+    }
+    const targetAlias = resolveIrTypeAliasForShapeComparisonCpp(target, module, moduleSet, cache);
+    if (targetAlias && !comparison.aliases.has(targetAlias.identity)) {
+      comparison.aliases.add(targetAlias.identity);
+      try {
+        return isIrTypeStructurallyAssignableCpp(
+          source,
+          targetAlias.type,
+          targetAlias.module,
+          moduleSet,
+          cache,
+          shapeAncestors,
+          comparison,
+        );
+      } finally {
+        comparison.aliases.delete(targetAlias.identity);
+      }
     }
     const sourceProperties = resolveIrTypeObjectShapeCpp(source, module, moduleSet, cache, shapeAncestors);
     const targetProperties = resolveIrTypeObjectShapeCpp(target, module, moduleSet, cache, shapeAncestors);
@@ -429,6 +465,34 @@ function isIrTypeStructurallyAssignableCpp(
   } finally {
     targets.delete(target);
   }
+}
+
+function resolveIrTypeAliasForShapeComparisonCpp(
+  type: Readonly<IrType>,
+  module: Readonly<ReferenceModuleRecord>,
+  moduleSet: Readonly<ReferenceModuleSet>,
+  cache: ReferenceResolutionCache,
+):
+  | Readonly<{
+      identity: string;
+      module: Readonly<ReferenceModuleRecord>;
+      type: Readonly<IrType>;
+    }>
+  | undefined {
+  if (type.kind !== 'named' || type.reference.kind !== 'binding') return undefined;
+  const resolution = getReferenceDeclarationResolutionCpp(type.reference, module, moduleSet, cache);
+  if (resolution.kind !== 'location') return undefined;
+  const location = resolution.location;
+  const declaration = location.declaration;
+  if (declaration.kind !== 'typeAlias') return undefined;
+  return {
+    identity: `${location.identity}\0${JSON.stringify(type.typeArguments)}`,
+    module: location.module,
+    type: resolveIrTypeStructuralSubstitution(
+      declaration.type,
+      createIrTypeParameterSubstitutionPlan(declaration.typeParameters, type.typeArguments),
+    ),
+  };
 }
 
 function createIrTypeReferenceRepresentationPlanInternalCpp(

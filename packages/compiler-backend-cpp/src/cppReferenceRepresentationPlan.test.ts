@@ -98,6 +98,37 @@ describe('C++ reference planner object shapes', () => {
     });
   });
 
+  it('follows closed aliases when merging inherited specialized property types', () => {
+    const entity = lower('entity.ts', 'export type Kind = string; export interface Entity { id: number; }');
+    const extension = lower(
+      'extension.ts',
+      "import type { Entity, Kind } from './entity'; export interface PbrExtension extends Entity { readonly kind: Kind; }",
+    );
+    const transmission = lower(
+      'transmission.ts',
+      "import type { PbrExtension } from './extension'; type Count = number; export interface TransmissionVolume extends PbrExtension { readonly kind: 'TransmissionVolume'; transmission: number; } export interface InvalidVolume extends PbrExtension { readonly kind: Count; }",
+    );
+    const options = lower(
+      'options.ts',
+      "import type { TransmissionVolume } from './transmission'; export interface GlassOptions { volume?: Partial<TransmissionVolume>; }",
+    );
+    const resolver = createIrTypeReferenceRepresentationPlannerCpp([options, transmission, extension, entity]);
+    const glassOptions = options.declarations.find(
+      (declaration) => declaration.kind === 'interface' && declaration.binding.name === 'GlassOptions',
+    );
+    if (glassOptions?.kind !== 'interface' || !glassOptions.properties[0]) {
+      throw new TypeError('expected GlassOptions.volume');
+    }
+    const properties = resolver.resolveObjectShape(glassOptions.properties[0].type, options);
+
+    expect(properties).toEqual([
+      { name: 'id', optional: true, readonly: false, type: numberType },
+      { name: 'kind', optional: true, readonly: true, type: { kind: 'literal', value: 'TransmissionVolume' } },
+      { name: 'transmission', optional: true, readonly: false, type: numberType },
+    ]);
+    expect(resolver.resolveObjectShape(declarationType(transmission, 'InvalidVolume'), transmission)).toBeUndefined();
+  });
+
   it('merges Host-style capability roots and closed required projections', () => {
     const module = lower(
       'host-shape.ts',
