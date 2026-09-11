@@ -502,6 +502,8 @@ function createIrTypeReferenceRepresentationPlanInternalCpp(
 ): CompilerCppReferenceRepresentationPlan {
   const identity = context.analyzeIdentity(type, module.module);
   if (identity.identity === 'indeterminate') {
+    const importedAlias = createIndeterminateImportedTypeAliasRepresentationPlanCpp(type, module, context, identity);
+    if (importedAlias) return importedAlias;
     if (identity.reason === 'unresolved-reference' && isUnresolvedImportBindingReferenceCpp(type)) {
       return createCompilerCppReferenceRepresentationSuccessCpp(
         identity,
@@ -555,6 +557,28 @@ function createIrTypeReferenceRepresentationPlanInternalCpp(
       : createCompilerCppReferenceRepresentationRefusalCpp(identity, 'compoundReference');
   }
   return createCompilerCppReferenceRepresentationRefusalCpp(identity, 'unsupportedReferenceForm');
+}
+
+// A resolved imported type alias already has one C++ representation in its defining header. Its
+// source value identity may legitimately be heterogeneous (a scalar/reference union or a phantom
+// brand intersection), but the alias name itself is an inline ABI type and must not be wrapped again.
+function createIndeterminateImportedTypeAliasRepresentationPlanCpp(
+  type: Readonly<IrType>,
+  module: Readonly<ReferenceModuleRecord>,
+  context: Readonly<ReferencePlanningContext>,
+  identity: Readonly<CompilerTypeValueIdentityAnalysis>,
+): CompilerCppReferenceRepresentationPlan | undefined {
+  if (type.kind !== 'named' || type.reference.kind !== 'binding' || type.reference.binding.kind !== 'import') {
+    return undefined;
+  }
+  const resolution = getReferenceDeclarationResolutionCpp(
+    type.reference,
+    module,
+    context.moduleSet,
+    context.resolutionCache,
+  );
+  if (resolution.kind !== 'location' || resolution.location.declaration.kind !== 'typeAlias') return undefined;
+  return createCompilerCppReferenceRepresentationSuccessCpp(identity, 'value', 'none', 'inlineValue', 'inlineValue');
 }
 
 function createNamedReferenceRepresentationPlanCpp(

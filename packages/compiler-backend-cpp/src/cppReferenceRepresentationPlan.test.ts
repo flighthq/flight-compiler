@@ -587,6 +587,104 @@ describe('createIrTypeReferenceRepresentationPlannerCpp', () => {
     expect(forward.resolveModule('@flighthq/models', consumer)).toEqual(model);
   });
 
+  it('uses the defining ABI for resolved imported aliases with heterogeneous source identity', () => {
+    const [modelResult, consumerResult] = lowerTypeScriptSources(
+      [
+        {
+          packageName: '@flighthq/models',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/models/src/model.ts',
+            `export type AudioDeviceHandle = number & { readonly __brand: 'AudioDeviceHandle' };
+             export type FlightDocumentScalar = boolean | number | string | null;
+             export type FlightDocumentValue =
+               | FlightDocumentScalar
+               | FlightDocumentValue[]
+               | FlightDocumentFields;
+             export interface FlightDocumentFields { [name: string]: FlightDocumentValue }
+             export interface InteractionSignals { onClick(): void; onFocus(): void }
+             export type InteractionSignalName = Exclude<keyof InteractionSignals, symbol>;
+             export const KnownFormatKind = 'Known';
+             export type ParticleFormatKind =
+               | typeof KnownFormatKind
+               | (string & Record<never, never>);
+             export interface Matrix { values: number[] }
+             export type ShapeCommandToken = Matrix | boolean | number | readonly number[] | string | null;`,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+        {
+          packageName: '@flighthq/consumer',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/consumer/src/consumer.ts',
+            `import type {
+               AudioDeviceHandle,
+               FlightDocumentValue,
+               InteractionSignalName,
+               ParticleFormatKind,
+               ShapeCommandToken,
+             } from '@flighthq/models';
+             export interface UsesAliases {
+               audio: AudioDeviceHandle;
+               document: FlightDocumentValue;
+               interaction: InteractionSignalName;
+               particle: ParticleFormatKind;
+               shape: ShapeCommandToken;
+             }`,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+      ],
+      {
+        edges: [
+          {
+            specifier: '@flighthq/models',
+            target: { packageName: '@flighthq/models', source: 'packages/models/src/model.ts' },
+          },
+        ],
+        schema: 'flight-compiler-module-resolution/1',
+      },
+    );
+    expect([modelResult, consumerResult].flatMap((result) => result!.diagnostics)).toEqual([]);
+    const model = modelResult!.module;
+    const consumer = consumerResult!.module;
+    const usesAliases = consumer.declarations.find(
+      (declaration) => declaration.kind === 'interface' && declaration.binding.name === 'UsesAliases',
+    );
+    if (usesAliases?.kind !== 'interface') throw new TypeError('expected alias consumer interface');
+    const properties = new Map(usesAliases.properties.map((property) => [property.name, property.type]));
+    const planner = createIrTypeReferenceRepresentationPlannerCpp([model, consumer], {
+      edges: [
+        {
+          specifier: '@flighthq/models',
+          target: { packageName: '@flighthq/models', source: 'packages/models/src/model.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    });
+
+    for (const name of ['audio', 'document', 'interaction', 'particle', 'shape']) {
+      expect(planner.plan(properties.get(name)!, consumer)).toMatchObject({
+        category: 'value',
+        identity: { identity: 'indeterminate' },
+        kind: 'represented',
+        storageRepresentation: 'inlineValue',
+        valueRepresentation: 'inlineValue',
+      });
+    }
+    expect(planner.plan(properties.get('interaction')!, consumer)).toMatchObject({
+      identity: { reason: 'unsupported-ambient-utility' },
+    });
+    for (const name of ['audio', 'document', 'particle', 'shape']) {
+      expect(planner.plan(properties.get(name)!, consumer)).toMatchObject({
+        identity: { reason: 'ambiguous-compound' },
+      });
+    }
+  });
+
   it('preserves caller-owned generic and concrete identity through an imported identity alias', () => {
     const resolution: CompilerModuleResolutionPlan = {
       edges: [
