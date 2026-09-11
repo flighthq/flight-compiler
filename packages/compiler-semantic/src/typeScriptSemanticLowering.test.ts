@@ -5155,6 +5155,53 @@ it('lowers enum value namespace functions and their qualified references', () =>
   ]);
 });
 
+it('handles type members and overload diagnostics in merged enum value namespaces', () => {
+  const overloaded = lower(
+    'enum-namespace-overload.ts',
+    `
+      export enum Flags { None = 0 }
+      export namespace Flags {
+        export interface Options { value: number; }
+        export type Value = number;
+        export function has(value: Flags): boolean;
+        export function has(value: Flags): boolean { return value !== Flags.None; }
+      }
+    `,
+  );
+  const overload = overloaded.module.declarations.find(
+    (declaration) => declaration.kind === 'function' && declaration.binding.name === 'has',
+  );
+
+  expect(overloaded.diagnostics).toEqual([]);
+  expect(overload).toMatchObject({ kind: 'function', overloads: [{ parameters: [{ binding: { name: 'value' } }] }] });
+
+  const orphan = lower(
+    'enum-namespace-orphan.ts',
+    `
+      export enum Flags { None = 0 }
+      export namespace Flags { export function missing(value: Flags): void; }
+    `,
+  );
+  const valueMember = lower(
+    'enum-namespace-value.ts',
+    `
+      export enum Flags { None = 0 }
+      export namespace Flags { export const value = 1; }
+    `,
+  );
+  const nested = lower(
+    'enum-namespace-nested.ts',
+    `
+      export enum Flags { None = 0 }
+      export namespace Flags.Inner { export function value(): number { return 1; } }
+    `,
+  );
+
+  expect(orphan.diagnostics[0]?.message).toContain('namespace function overload missing has no implementation');
+  expect(valueMember.diagnostics[0]?.message).toContain('enum value namespace member');
+  expect(nested.diagnostics[0]?.message).toContain('direct identifier namespace body');
+});
+
 it('lowers regexp literal expressions with pattern and flags', () => {
   const result = lower(
     'regexp.ts',

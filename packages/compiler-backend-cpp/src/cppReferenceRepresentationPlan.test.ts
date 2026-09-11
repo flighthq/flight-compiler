@@ -72,8 +72,10 @@ describe('C++ reference planner object shapes', () => {
         interface Left { value: number; }
         interface Right { value: string; }
         interface Conflict extends Left, Right {}
-        class Data { value = 1; static kind = 1; private hidden = 1; }
+        class Parent { base = 1; }
+        class Data extends Parent { value = 1; static kind = 1; private hidden = 1; }
         class Behavior { value = 1; run(): void {} }
+        type Cycle = Cycle;
       `,
     );
     const unresolved = lower(
@@ -88,9 +90,11 @@ describe('C++ reference planner object shapes', () => {
     expect(resolver.resolveObjectShape(ambientType('Pick', [objectType]), module)).toBeUndefined();
     expect(resolver.resolveObjectShape(declarationType(module, 'Conflict'), module)).toBeUndefined();
     expect(resolver.resolveObjectShape(declarationType(module, 'Data'), module)).toEqual([
+      { name: 'base', optional: false, readonly: false, type: numberType },
       { name: 'value', optional: false, readonly: false, type: numberType },
     ]);
     expect(resolver.resolveObjectShape(declarationType(module, 'Behavior'), module)).toBeUndefined();
+    expect(resolver.resolveObjectShape(declarationType(module, 'Cycle'), module)).toBeUndefined();
     expect(
       createIrTypeReferenceRepresentationPlannerCpp([unresolved]).resolveObjectShape(
         declarationType(unresolved, 'Alias'),
