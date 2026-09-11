@@ -688,7 +688,7 @@ describe('createCppCompilerBackend', () => {
       options: { runtimeProfile: 'flight-cpp' },
     }).emitModule(modules[2]!)[0]!.contents;
 
-    expect(emitted).toContain('std::optional<std::shared_ptr<void>>');
+    expect(emitted).toContain('std::optional<flight::Ref<void>>');
     expect(emitted).toContain('optional_chain_receiver.value()->binding');
     expect(emitted).not.toContain('std::optional<auto>');
   });
