@@ -17,6 +17,7 @@ export type CompilerRuntimeCapabilityName =
   | 'map'
   | 'set'
   | 'string'
+  | 'symbol'
   | 'task'
   | 'uint8-array'
   | 'uint8-clamped-array'

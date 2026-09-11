@@ -1675,6 +1675,10 @@ function emitType(type: Readonly<IrType>, context: EmitContext, representation: 
     }
     case 'primitive':
       if (type.name === 'string') return emitCppStringType(context);
+      if (type.name === 'symbol' && getCppRuntimeProfile(context.options) === 'flight-cpp') {
+        context.includes.add('flight/symbol.hpp');
+        return 'flight::Symbol';
+      }
       if (type.name === 'void') return 'void';
       return {
         bigint: 'int64_t',

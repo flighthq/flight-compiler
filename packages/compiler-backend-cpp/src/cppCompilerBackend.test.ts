@@ -273,6 +273,14 @@ export function preferred(): number { return NativeSurface.preferredFormat; }`,
     expect(emitted.contents).not.toContain('static_cast<size_t>');
   });
 
+  it('emits interned symbols through the semantic runtime contract', () => {
+    const result = lower('symbol-for.ts', "export const key = Symbol.for('key');");
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+
+    expect(emitted.contents).toContain('#include <flight/symbol.hpp>');
+    expect(emitted.contents).toContain('flight::Symbol key = flight::Symbol::for_key(flight::String("key"))');
+  });
+
   it('uses source numeric and error semantics in the runtime profile', () => {
     const result = lower(
       'semantics.ts',

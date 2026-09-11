@@ -28,6 +28,7 @@ describe('createCompilerAmbientSurfaceSource', () => {
     expect(source).toContain('asin(value: number): number;');
     expect(source).toContain('exp(value: number): number;');
     expect(source).toContain('log(value: number): number;');
+    expect(source).toContain('for(key: string): symbol;');
     expect(source).toContain('toUpperCase(): string;');
     expect(source).toContain('interface WeakMap<K extends object, V>');
   });

@@ -65,7 +65,7 @@ describe('createCompilerRuntimeExternalSymbolBindingPlanCpp', () => {
   it('elects semantic containers and strings as flight-cpp runtime capabilities', () => {
     const plan = createCompilerRuntimeExternalSymbolBindingPlanCpp('flight-cpp');
 
-    expect(plan.bindings).toHaveLength(47);
+    expect(plan.bindings).toHaveLength(48);
     expect(plan.bindings).toContainEqual({
       capability: 'array',
       externalSymbol: { sourceName: 'Array', space: 'type' },
@@ -84,6 +84,11 @@ describe('createCompilerRuntimeExternalSymbolBindingPlanCpp', () => {
     expect(plan.bindings).toContainEqual({
       capability: 'map',
       externalSymbol: { sourceName: 'ReadonlyMap', space: 'type' },
+      kind: 'runtime',
+    });
+    expect(plan.bindings).toContainEqual({
+      capability: 'symbol',
+      externalSymbol: { sourceName: 'Symbol', space: 'value' },
       kind: 'runtime',
     });
   });
@@ -135,6 +140,13 @@ describe('getCompilerExternalBindingHeadersCpp', () => {
     expect(getCompilerExternalBindingHeadersCpp('ReadonlyMap', 'type')).toEqual(['unordered_map']);
     expect(getCompilerExternalBindingHeadersCpp('ReadonlyMap', 'type', undefined, 'flight-cpp')).toEqual([
       'flight/map.hpp',
+    ]);
+  });
+
+  it('returns the semantic runtime header for the interned symbol binding', () => {
+    expect(getCompilerExternalBindingHeadersCpp('Symbol', 'value')).toEqual([]);
+    expect(getCompilerExternalBindingHeadersCpp('Symbol', 'value', undefined, 'flight-cpp')).toEqual([
+      'flight/symbol.hpp',
     ]);
   });
 });
@@ -207,6 +219,13 @@ describe('getCompilerRuntimeExternalSymbolTargetCpp', () => {
     expect(getCompilerRuntimeExternalMemberTargetCpp('Promise', 'reject')).toBe('FlightTask::reject');
     expect(getCompilerRuntimeExternalMemberTargetCpp('Promise', 'all')).toBe('FlightTask::all');
     expect(getCompilerRuntimeExternalMemberTargetCpp('Promise', 'resolve', 'flight-cpp')).toBe('flight::resolve_task');
+  });
+
+  it('maps interned symbols only through the semantic runtime profile', () => {
+    expect(getCompilerRuntimeExternalSymbolTargetCpp('Symbol', 'value')).toBeUndefined();
+    expect(getCompilerRuntimeExternalSymbolTargetCpp('Symbol', 'value', 'flight-cpp')).toBe('flight::Symbol');
+    expect(getCompilerRuntimeExternalMemberTargetCpp('Symbol', 'for')).toBeUndefined();
+    expect(getCompilerRuntimeExternalMemberTargetCpp('Symbol', 'for', 'flight-cpp')).toBe('flight::Symbol::for_key');
   });
 
   it.each([
@@ -312,6 +331,7 @@ describe('isCompilerRuntimeExternalSymbolProvidedCpp', () => {
     expect(isCompilerRuntimeExternalSymbolProvidedCpp('NotASymbol', 'type')).toBe(false);
     expect(isCompilerRuntimeExternalSymbolProvidedCpp('Map', 'type', 'flight-cpp')).toBe(true);
     expect(isCompilerRuntimeExternalSymbolProvidedCpp('ReadonlyMap', 'type', 'flight-cpp')).toBe(true);
+    expect(isCompilerRuntimeExternalSymbolProvidedCpp('Symbol', 'value', 'flight-cpp')).toBe(true);
     expect(isCompilerRuntimeExternalSymbolProvidedCpp('WeakMap', 'type', 'flight-cpp')).toBe(false);
   });
 });

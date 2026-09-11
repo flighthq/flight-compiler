@@ -409,6 +409,15 @@ const cppFlightRuntimeExternalSymbolBindings = [
     space: 'value',
     targetName: 'flight::String',
   },
+  {
+    capability: 'symbol',
+    headers: ['flight/symbol.hpp'],
+    kind: 'runtime',
+    members: [{ sourceMember: 'for', targetName: 'flight::Symbol::for_key' }],
+    sourceName: 'Symbol',
+    space: 'value',
+    targetName: 'flight::Symbol',
+  },
   { kind: 'native', sourceName: 'TypeError', space: 'type', targetName: 'std::runtime_error' },
   { kind: 'native', sourceName: 'TypeError', space: 'value', targetName: 'std::runtime_error' },
   {
