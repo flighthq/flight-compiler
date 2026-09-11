@@ -10,6 +10,18 @@ export function getIrTypeIndexedElementEvidence(
 ): Readonly<IrType> | undefined {
   if (!type) return undefined;
   if (type.kind === 'array') return type.element;
+  if (type.kind === 'named' && type.reference.kind === 'ambient') {
+    if ((type.reference.name === 'Readonly' || type.reference.name === 'Required') && type.typeArguments.length === 1) {
+      return getIrTypeIndexedElementEvidence(type.typeArguments[0], index);
+    }
+    if (
+      (type.reference.name === 'Array' || type.reference.name === 'ReadonlyArray') &&
+      type.typeArguments.length === 1
+    ) {
+      return type.typeArguments[0];
+    }
+    if (type.reference.name === 'Record' && type.typeArguments.length === 2) return type.typeArguments[1];
+  }
   if (type.kind !== 'tuple' || index === undefined) return undefined;
   const element = type.elements[index];
   return element && !element.optional && !element.rest ? element.type : undefined;

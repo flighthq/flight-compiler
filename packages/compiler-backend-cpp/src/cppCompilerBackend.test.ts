@@ -2376,6 +2376,78 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(emitted.contents).toContain('flight::Array<double> result = flight::Array<double>((size * 3.0))');
   });
 
+  it('emits product-sized arrays initialized by nested loops and a sequential write cursor', () => {
+    const result = lower(
+      'array-nested-sequential-fill-flight.ts',
+      `export function values(size: number, transforms: readonly ((value: number) => number)[]): number[] {
+        const count = size;
+        const result = new Array<number>(count * count * count * 3);
+        const scale = count - 1;
+        let write = 0;
+        for (let z = 0; z < count; z++) {
+          const zValue = z / scale;
+          for (let y = 0; y < count; y++) {
+            const yValue = y / scale;
+            for (let x = 0; x < count; x++) {
+              let value = x / scale + yValue + zValue;
+              for (let transform = 0; transform < transforms.length; transform++) {
+                value = transforms[transform](value);
+              }
+              result[write++] = value;
+              result[write++] = yValue;
+              result[write++] = zValue;
+            }
+          }
+        }
+        return result;
+      }`,
+    );
+    const emitted = emitIrModuleCpp(result.module, {
+      runtimeProfile: 'flight-cpp',
+    });
+
+    expect(emitted.contents).toContain('flight::Array<double> result = flight::Array<double>');
+  });
+
+  it('refuses nested sequential initialization that leaves each product cell partial', () => {
+    const result = lower(
+      'array-nested-sequential-partial-flight.ts',
+      `export function values(size: number): number[] {
+        const count = size;
+        const result = new Array<number>(count * count * 3);
+        let write = 0;
+        for (let y = 0; y < count; y++) {
+          for (let x = 0; x < count; x++) {
+            result[write++] = x;
+            result[write++] = y;
+          }
+        }
+        return result;
+      }`,
+    );
+
+    expect(() => emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' })).toThrow(
+      'Array length construction is outside the dense flight-cpp array profile',
+    );
+
+    const skipped = lower(
+      'array-nested-sequential-skipped-flight.ts',
+      `export function values(size: number, skip: boolean): number[] {
+        const count = size;
+        const result = new Array<number>(count * count);
+        let write = 0;
+        for (let y = 0; y < count; y++) {
+          if (skip) continue;
+          for (let x = 0; x < count; x++) result[write++] = x;
+        }
+        return result;
+      }`,
+    );
+    expect(() => emitIrModuleCpp(skipped.module, { runtimeProfile: 'flight-cpp' })).toThrow(
+      'Array length construction is outside the dense flight-cpp array profile',
+    );
+  });
+
   it('emits literal-sized arrays when contiguous direct writes initialize every slot', () => {
     const result = lower(
       'array-length-direct-fill-flight.ts',
@@ -3390,6 +3462,167 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     const output = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
 
     expect(output).toContain('std::optional<flight::Ref<Info>>{create_info()}');
+  });
+
+  it('uses imported function returns as optional and variant construction evidence', () => {
+    const producer = lowerPackage(
+      '@flighthq/adjustments',
+      'producer.ts',
+      'export function matrix(): number[] { return [1]; } export function scalar(): number { return 1; }',
+    ).module;
+    const consumer = lowerPackage(
+      '@flighthq/adjustments',
+      'consumer.ts',
+      `import { matrix, scalar } from './producer';
+       interface Cache { value: number | null; }
+       export function optional(): number[] | null { return matrix(); }
+       export function variant(flag: boolean): number | string {
+         const value = scalar();
+         return flag ? value : 'missing';
+       }
+       export function update(cache: Cache): number {
+         const value = scalar();
+         cache.value = value;
+         return value;
+       }`,
+    ).module;
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          importer: {
+            name: consumer.name,
+            packageName: consumer.packageName,
+            source: consumer.source,
+          },
+          specifier: './producer',
+          target: {
+            packageName: producer.packageName,
+            source: producer.source,
+          },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const output = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules: [consumer, producer],
+      options: { runtimeProfile: 'flight-cpp' },
+    }).emitModule(consumer)[0]!.contents;
+
+    expect(output).toContain('return std::optional<flight::Array<double>>{flighthq_adjustments::matrix()};');
+    expect(output).toContain('std::variant<double, flight::String>{std::in_place_type<double>, value}');
+    expect(output).toContain('cache->value = std::optional<double>{value}');
+  });
+
+  it('prefers a written readonly function result over checker-degraded call evidence', () => {
+    const result = lower(
+      'readonly-call-result.ts',
+      `function find(): readonly number[] | null { return null; }
+       export function resolve(): readonly number[] | null {
+         const value = find();
+         return value;
+       }`,
+    );
+    const output = emitIrModuleCpp(result.module, {
+      runtimeProfile: 'flight-cpp',
+    }).contents;
+
+    expect(output).toContain('std::optional<flight::Array<double>> value = find();');
+  });
+
+  it('uses imported structural object evidence for copied adjustment values', () => {
+    const modelSource = ts.createSourceFile(
+      '/flight/packages/types/src/model.ts',
+      `export interface Entity { runtime: object; }
+       export type EntityWithoutRuntime<Type extends Entity> = Omit<Type, 'runtime'>;
+       export interface Scale extends Entity { redScale: number; redBias: number; }
+       export type ScaleLike = EntityWithoutRuntime<Scale>;`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const contractSource = ts.createSourceFile(
+      '/flight/packages/types/src/contract.ts',
+      "export type { ScaleLike } from './model';",
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const consumerSource = ts.createSourceFile(
+      '/flight/packages/adjustments/src/scale.ts',
+      `import type { ScaleLike } from '@flighthq/types/contract';
+       export function matrix(scale: Readonly<ScaleLike>): number[] {
+         const value = { ...scale };
+         const result = [value.redScale, 0, value.redBias];
+         return result;
+       }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          specifier: '@flighthq/types/contract',
+          target: {
+            packageName: '@flighthq/types',
+            source: 'packages/types/src/contract.ts',
+          },
+        },
+        {
+          specifier: './model',
+          target: {
+            packageName: '@flighthq/types',
+            source: 'packages/types/src/model.ts',
+          },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const results = lowerTypeScriptSources(
+      [
+        {
+          packageName: '@flighthq/types',
+          sourceFile: modelSource,
+          upstreamDirectory: '/flight',
+        },
+        {
+          packageName: '@flighthq/types',
+          sourceFile: contractSource,
+          upstreamDirectory: '/flight',
+        },
+        {
+          packageName: '@flighthq/adjustments',
+          sourceFile: consumerSource,
+          upstreamDirectory: '/flight',
+        },
+      ],
+      moduleResolution,
+    );
+    const modules = results.map((result) => result.module);
+    const output = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules,
+      options: { runtimeProfile: 'flight-cpp' },
+    }).emitModule(modules[2]!)[0]!.contents;
+
+    expect(output).toContain('flight::Array<double> result = flight::Array<double>');
+    expect(output).not.toContain('std::variant<double, auto>');
+  });
+
+  it('uses a present Partial property as optional return construction evidence', () => {
+    const result = lower(
+      'partial-array-member.ts',
+      `interface Adjustment { colorMatrix: readonly number[]; }
+       export function matrix(operation: object): readonly number[] | null {
+         const value = (operation as Readonly<Partial<Adjustment>>).colorMatrix;
+         return Array.isArray(value) && value.length === 20 ? value : null;
+       }`,
+    );
+    const output = emitIrModuleCpp(result.module, {
+      runtimeProfile: 'flight-cpp',
+    }).contents;
+
+    expect(output).toContain('std::optional<flight::Array<double>> value');
+    expect(output).toContain('value = static_cast<flight::Ref<color_matrix>>(operation)->color_matrix;');
+    expect(output).not.toContain('value = std::optional<flight::Array<double>>{static_cast');
   });
 
   it('preserves named optional reference results for structurally inferred locals', () => {

@@ -1736,6 +1736,40 @@ function getIrTypeConstructionTargetShape(
   if (
     type?.kind === 'named' &&
     type.reference.kind === 'ambient' &&
+    type.reference.name === 'Omit' &&
+    type.typeArguments.length === 2 &&
+    type.typeArguments[0] &&
+    type.typeArguments[1]
+  ) {
+    const inner = getIrTypeConstructionTargetShape(type.typeArguments[0], context, seen);
+    const keys = getIrTypeObjectProjectionKeys(type.typeArguments[1]);
+    if (inner?.kind !== 'object' || !keys) return type;
+    return {
+      ...inner,
+      properties: inner.properties.filter((property) => !keys.has(property.name)),
+    };
+  }
+  if (
+    type?.kind === 'named' &&
+    type.reference.kind === 'ambient' &&
+    type.reference.name === 'Partial' &&
+    type.typeArguments.length === 1 &&
+    type.typeArguments[0]
+  ) {
+    const inner = getIrTypeConstructionTargetShape(type.typeArguments[0], context, seen);
+    return inner?.kind === 'object'
+      ? {
+          ...inner,
+          properties: inner.properties.map((property) => ({
+            ...property,
+            optional: true,
+          })),
+        }
+      : type;
+  }
+  if (
+    type?.kind === 'named' &&
+    type.reference.kind === 'ambient' &&
     (type.reference.name === 'Readonly' || type.reference.name === 'Required') &&
     type.typeArguments.length === 1 &&
     type.typeArguments[0]
@@ -1756,13 +1790,13 @@ function getIrTypeConstructionTargetShape(
     return type;
   }
   const bindingId = type.reference.binding.id;
-  const declaration = [...context.typeBindings]
-    .filter(([, binding]) => binding.id === bindingId)
-    .flatMap(([symbol]) => symbol.declarations ?? [])
-    .find(
-      (candidate): candidate is ts.InterfaceDeclaration | ts.TypeAliasDeclaration =>
-        ts.isInterfaceDeclaration(candidate) || ts.isTypeAliasDeclaration(candidate),
-    );
+  const symbol = [...context.typeBindings].find(([, binding]) => binding.id === bindingId)?.[0];
+  const declarationSymbol =
+    symbol?.flags && symbol.flags & ts.SymbolFlags.Alias ? context.checker.getAliasedSymbol(symbol) : symbol;
+  const declaration = declarationSymbol?.declarations?.find(
+    (candidate): candidate is ts.InterfaceDeclaration | ts.TypeAliasDeclaration =>
+      ts.isInterfaceDeclaration(candidate) || ts.isTypeAliasDeclaration(candidate),
+  );
   if (!declaration) return type;
   const declarationSourceFile = declaration.getSourceFile();
   const declarationOptions = context.analysisModuleOptions.get(declarationSourceFile.fileName);
@@ -1782,6 +1816,18 @@ function getIrTypeConstructionTargetShape(
   const nextSeen = new Set(seen);
   nextSeen.add(bindingId);
   return getIrTypeConstructionTargetShape(resolved, context, nextSeen);
+}
+
+function getIrTypeObjectProjectionKeys(type: Readonly<IrType>): ReadonlySet<string> | undefined {
+  if (type.kind === 'literal' && (typeof type.value === 'string' || typeof type.value === 'number')) {
+    return new Set([String(type.value)]);
+  }
+  if (type.kind === 'typeOf' && type.reference.kind === 'binding' && type.reference.path.length === 0) {
+    return new Set([type.reference.binding.name]);
+  }
+  if (type.kind !== 'union') return undefined;
+  const keys = type.types.flatMap((member) => [...(getIrTypeObjectProjectionKeys(member) ?? [])]);
+  return keys.length === type.types.length ? new Set(keys) : undefined;
 }
 
 function lowerObjectMember(
@@ -4155,9 +4201,16 @@ function inferInitializerType(node: ts.Expression, context: LoweringContext): Ir
   if (ts.isObjectLiteralExpression(node)) {
     const properties = new Map<string, IrObjectTypeProperty>();
     for (const member of node.properties) {
-      if (ts.isSpreadAssignment(member) || ts.isComputedPropertyName(member.name)) {
-        return { kind: 'unknown', source: 'object' };
+      if (ts.isSpreadAssignment(member)) {
+        const spreadType =
+          getTypeScriptExpressionBindingTypeEvidence(member.expression, context) ??
+          lowerTypeScriptExpressionTypeEvidence(member.expression, context);
+        const spreadShape = getIrTypeConstructionTargetShape(spreadType, context);
+        if (spreadShape?.kind !== 'object') return { kind: 'unknown', source: 'object' };
+        for (const property of spreadShape.properties) properties.set(property.name, { ...property, readonly: false });
+        continue;
       }
+      if (ts.isComputedPropertyName(member.name)) return { kind: 'unknown', source: 'object' };
       const name = propertyName(member.name, context);
       const type = ts.isShorthandPropertyAssignment(member)
         ? inferInitializerType(member.name, context)
@@ -4187,6 +4240,10 @@ function inferInitializerType(node: ts.Expression, context: LoweringContext): Ir
     // Binding-pattern lowering can prove a type that the deliberately small ambient surface cannot
     // reconstruct through the checker. Preserve that proof when the binding is used to infer an
     // anonymous object literal, as in a mapped tuple becoming `{ start, end, delta }`.
+    const bindingType = getTypeScriptExpressionBindingTypeEvidence(node, context);
+    if (bindingType) return bindingType;
+  }
+  if (ts.isPropertyAccessExpression(node) || ts.isElementAccessExpression(node)) {
     const bindingType = getTypeScriptExpressionBindingTypeEvidence(node, context);
     if (bindingType) return bindingType;
   }
@@ -4978,16 +5035,25 @@ function getTypeScriptExpressionBindingTypeEvidence(
   expression: ts.Expression,
   context: LoweringContext,
 ): Readonly<IrType> | undefined {
+  if (ts.isAsExpression(expression) || ts.isTypeAssertionExpression(expression)) {
+    return lowerTypeScriptTypeNodeEvidence(expression.type, context);
+  }
   if (
     ts.isParenthesizedExpression(expression) ||
-    ts.isAsExpression(expression) ||
-    ts.isTypeAssertionExpression(expression) ||
     ts.isSatisfiesExpression(expression) ||
     ts.isNonNullExpression(expression)
   ) {
     return getTypeScriptExpressionBindingTypeEvidence(expression.expression, context);
   }
   if (ts.isPropertyAccessExpression(expression)) {
+    const receiver = getIrTypeConstructionTargetShape(
+      getTypeScriptExpressionBindingTypeEvidence(expression.expression, context),
+      context,
+    );
+    if (receiver?.kind === 'object') {
+      const property = receiver.properties.find((candidate) => candidate.name === expression.name.text);
+      if (property) return property.optional ? addIrTypeBindingPatternUndefined(property.type) : property.type;
+    }
     // The member's own declaration carries the written type, which a receiver named by a reference
     // does not: resolving the reference would mean resolving every alias the source went through.
     const declaration = context.checker.getSymbolAtLocation(expression.name)?.declarations?.[0];
@@ -5003,10 +5069,7 @@ function getTypeScriptExpressionBindingTypeEvidence(
       const written = lowerFunctionType(declaration, context);
       return declaration.questionToken ? { kind: 'union', types: [written, { kind: 'undefined' }] } : written;
     }
-    return getIrTypeMemberEvidence(
-      getTypeScriptExpressionBindingTypeEvidence(expression.expression, context),
-      expression.name.text,
-    );
+    return getIrTypeMemberEvidence(receiver, expression.name.text);
   }
   // A call's result has no declaration to read a written type off, and a call into the ambient
   // surface returns the surface's own type parameter. The checker's instantiation is what says an
@@ -5015,11 +5078,28 @@ function getTypeScriptExpressionBindingTypeEvidence(
     return getTypeScriptCheckerTypeEvidence(context.checker.getTypeAtLocation(expression), context, 0);
   }
   if (ts.isElementAccessExpression(expression)) {
-    return getTypeScriptCheckerTypeEvidence(context.checker.getTypeAtLocation(expression), context, 0);
+    const index =
+      expression.argumentExpression && ts.isNumericLiteral(expression.argumentExpression)
+        ? Number(expression.argumentExpression.text)
+        : undefined;
+    const receiver = getIrTypeConstructionTargetShape(
+      getTypeScriptExpressionBindingTypeEvidence(expression.expression, context),
+      context,
+    );
+    return (
+      getIrTypeIndexedElementEvidence(receiver, index) ??
+      getTypeScriptCheckerTypeEvidence(context.checker.getTypeAtLocation(expression), context, 0)
+    );
   }
   if (!ts.isIdentifier(expression)) return undefined;
   const symbol = context.checker.getSymbolAtLocation(expression);
-  return symbol ? context.bindingTypes.get(symbol) : undefined;
+  if (!symbol) return undefined;
+  const recorded = context.bindingTypes.get(symbol);
+  if (recorded) return recorded;
+  const declaration = symbol.valueDeclaration ?? symbol.declarations?.[0];
+  return declaration && ts.isVariableDeclaration(declaration) && declaration.type
+    ? lowerTypeScriptTypeNodeEvidence(declaration.type, context)
+    : undefined;
 }
 
 function lowerTypeScriptIndexedReceivers(type: ts.Type, checker: ts.TypeChecker): IrIndexedReceiver[] {

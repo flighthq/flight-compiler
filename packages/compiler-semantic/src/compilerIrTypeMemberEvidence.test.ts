@@ -27,6 +27,28 @@ describe('getIrTypeIndexedElementEvidence', () => {
     expect(getIrTypeIndexedElementEvidence(tuple, undefined)).toBeUndefined();
   });
 
+  it('answers indexed ambient collections through identity-preserving wrappers', () => {
+    const number = { kind: 'primitive', name: 'number' } as const;
+    const record: IrType = {
+      kind: 'named',
+      reference: { kind: 'ambient', name: 'Record' },
+      typeArguments: [{ kind: 'primitive', name: 'string' }, number],
+    };
+    const readonlyRecord: IrType = {
+      kind: 'named',
+      reference: { kind: 'ambient', name: 'Readonly' },
+      typeArguments: [record],
+    };
+    const readonlyArray: IrType = {
+      kind: 'named',
+      reference: { kind: 'ambient', name: 'ReadonlyArray' },
+      typeArguments: [number],
+    };
+
+    expect(getIrTypeIndexedElementEvidence(readonlyRecord, undefined)).toEqual(number);
+    expect(getIrTypeIndexedElementEvidence(readonlyArray, undefined)).toEqual(number);
+  });
+
   it('answers nothing for an absent type or one that holds no elements', () => {
     expect(getIrTypeIndexedElementEvidence(undefined, 0)).toBeUndefined();
     expect(getIrTypeIndexedElementEvidence({ kind: 'primitive', name: 'string' }, 0)).toBeUndefined();

@@ -9088,6 +9088,82 @@ it('infers object initializer type with shorthand properties', () => {
   expect(result.diagnostics).toEqual([]);
 });
 
+it('preserves indexed Record and object-copy evidence in inferred arrays', () => {
+  const result = lower(
+    'adjustment-construction-evidence.ts',
+    `
+      type Kind = 'first' | 'second';
+      interface Scale { redScale: number; redBias: number; }
+      const MATRICES: Readonly<Record<Kind, readonly number[]>> = {
+        first: [1, 0],
+        second: [0, 1],
+      };
+      export function fromRecord(kind: Kind): number[] {
+        const matrix = MATRICES[kind];
+        const result = [matrix[0], 0, matrix[1]];
+        return result;
+      }
+      export function fromCopy(scale: Readonly<Scale>): number[] {
+        const value = { ...scale };
+        const result = [value.redScale, 0, value.redBias];
+        return result;
+      }
+    `,
+  );
+  expect(result.diagnostics).toEqual([]);
+  const inferredTypes = result.module.declarations
+    .filter((declaration) => declaration.kind === 'function')
+    .flatMap((declaration) => declaration.body)
+    .filter((statement) => statement.kind === 'variable')
+    .flatMap((statement) => statement.declarations)
+    .filter((variable) => 'binding' in variable && variable.binding.name === 'result')
+    .map((variable) => variable.type);
+
+  expect(inferredTypes).toEqual([
+    {
+      element: { kind: 'primitive', name: 'number' },
+      kind: 'array',
+      readonly: false,
+    },
+    {
+      element: { kind: 'primitive', name: 'number' },
+      kind: 'array',
+      readonly: false,
+    },
+  ]);
+});
+
+it('preserves optional property evidence through Readonly Partial casts', () => {
+  const result = lower(
+    'partial-property-evidence.ts',
+    `
+      interface Adjustment { colorMatrix: readonly number[]; }
+      export function read(operation: object): readonly number[] | undefined {
+        const matrix = (operation as Readonly<Partial<Adjustment>>).colorMatrix;
+        return matrix;
+      }
+    `,
+  );
+  expect(result.diagnostics).toEqual([]);
+  const fn = result.module.declarations.find(
+    (declaration) => declaration.kind === 'function' && declaration.binding.name === 'read',
+  );
+  const statement = fn?.kind === 'function' ? fn.body[0] : undefined;
+  const variable = statement?.kind === 'variable' ? statement.declarations[0] : undefined;
+
+  expect(variable?.type).toEqual({
+    kind: 'union',
+    types: [
+      {
+        element: { kind: 'primitive', name: 'number' },
+        kind: 'array',
+        readonly: true,
+      },
+      { kind: 'undefined' },
+    ],
+  });
+});
+
 it('resolves type evidence for property access on member declaration', () => {
   const result = lower(
     'member-evidence.ts',

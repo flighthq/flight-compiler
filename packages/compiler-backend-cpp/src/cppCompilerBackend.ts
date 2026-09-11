@@ -789,9 +789,14 @@ function emitVariable(variable: Readonly<IrVariable>, context: EmitContext): str
   }
   const name = getBindingTargetName(variable.binding, context);
   const arrayElement = context.arrayElementBindingIds.has(variable.binding.id);
+  const inferredInitializerType =
+    !arrayElement && !variable.mutable && variable.type?.kind === 'unknown' && variable.initializer
+      ? getIrExpressionTypeEvidenceCpp(variable.initializer, context)
+      : undefined;
   const preservedInitializerType = arrayElement
     ? undefined
-    : getCppStructurallyEquivalentInitializerTypeCpp(variable, context);
+    : (getCppStructurallyEquivalentInitializerTypeCpp(variable, context) ??
+      (inferredInitializerType?.kind === 'unknown' ? undefined : inferredInitializerType));
   if (preservedInitializerType) {
     context.preservedInitializerTypes.set(variable.binding.id, preservedInitializerType);
   }
@@ -3052,15 +3057,7 @@ function getIrExpressionTypeForUnionConstructionCpp(
         typeParameters: expression.typeParameters,
       };
     case 'identifier': {
-      if (expression.reference.kind !== 'binding') return undefined;
-      const declaredType = getCppBindingTypeCpp(expression.reference.binding.id, context);
-      const narrowedType = context.narrowedBindingTypes.get(expression.reference.binding.id);
-      if (narrowedType) return narrowedType;
-      if (!declaredType || !expression.narrowedMember) return declaredType;
-      const union = getIrUnionTypeCpp(declaredType, context, new Set());
-      return (
-        union?.types.find((member) => getIrUnionMemberNameCpp(member) === expression.narrowedMember) ?? declaredType
-      );
+      return getIrIdentifierTypeEvidenceCpp(expression, context);
     }
     case 'literal':
       return typeof expression.value === 'boolean'
@@ -3143,17 +3140,57 @@ function getIrCallReturnTypeCpp(
   expression: Readonly<Extract<IrExpression, { kind: 'call' }>>,
   context: EmitContext,
 ): Readonly<IrType> | undefined {
-  if (expression.semantics.resultType.kind !== 'unknown') return expression.semantics.resultType;
   if (expression.callee.kind === 'function') return expression.callee.returns;
   if (expression.callee.kind === 'identifier' && expression.callee.reference.kind === 'binding') {
-    const bindingId = expression.callee.reference.binding.id;
-    const declaration = context.module.declarations.find(
-      (candidate) => candidate.kind === 'function' && candidate.binding.id === bindingId,
-    );
-    if (declaration?.kind === 'function') return declaration.returns;
+    const declaration = getCppFunctionDeclarationForBindingCpp(expression.callee.reference.binding.id, context);
+    if (declaration) {
+      if (declaration.typeParameters.length === 0) return declaration.returns;
+      if (declaration.typeParameters.length === expression.typeArguments.length) {
+        return resolveIrTypeStructuralSubstitution(
+          declaration.returns,
+          createIrTypeParameterSubstitutionPlan(declaration.typeParameters, expression.typeArguments),
+        );
+      }
+    }
   }
+  if (expression.semantics.resultType.kind !== 'unknown') return expression.semantics.resultType;
   const calleeType = getIrExpressionTypeEvidenceCpp(expression.callee, context);
   return calleeType ? getCppCallableReturnType(calleeType, context, new Set()) : undefined;
+}
+
+function getCppFunctionDeclarationForBindingCpp(
+  bindingId: string,
+  context: EmitContext,
+): Readonly<IrFunctionDeclaration> | undefined {
+  const local = context.module.declarations.find(
+    (candidate): candidate is IrFunctionDeclaration =>
+      candidate.kind === 'function' && candidate.binding.id === bindingId,
+  );
+  if (local) return local;
+  const imported = context.module.imports.flatMap((importItem) => {
+    const binding = importItem.bindings.find(
+      (candidate) => candidate.binding.id === bindingId && candidate.imported !== '*',
+    );
+    if (!binding || binding.imported === '*') return [];
+    return getCppResolvedImportModules(importItem.specifier, context).flatMap((module) => {
+      const directBindingIds = new Set([
+        ...module.declarations.flatMap((declaration) =>
+          'binding' in declaration && declaration.exported && declaration.binding.name === binding.imported
+            ? [declaration.binding.id]
+            : [],
+        ),
+        ...module.exports.flatMap((exported) =>
+          exported.kind === 'local' && exported.exported === binding.imported ? [exported.binding.id] : [],
+        ),
+      ]);
+      return module.declarations.filter(
+        (declaration): declaration is IrFunctionDeclaration =>
+          declaration.kind === 'function' && directBindingIds.has(declaration.binding.id),
+      );
+    });
+  });
+  const unique = new Map(imported.map((declaration) => [declaration.binding.id, declaration]));
+  return unique.size === 1 ? [...unique.values()][0] : undefined;
 }
 
 function emitArrayFromMapKeysCpp(
@@ -3251,7 +3288,9 @@ function getIrObjectPropertyTypeCpp(
   propertyName: string,
   context: EmitContext,
 ): Readonly<IrType> | undefined {
-  if (type.kind === 'object') return type.properties.find((property) => property.name === propertyName)?.type;
+  if (type.kind === 'object') {
+    return getIrObjectPropertyReadTypeCpp(type.properties.find((property) => property.name === propertyName));
+  }
   if (
     type.kind === 'named' &&
     type.reference.kind === 'ambient' &&
@@ -3261,7 +3300,9 @@ function getIrObjectPropertyTypeCpp(
     return type.typeArguments[1];
   }
   const objectShape = context.referenceRepresentationPlanner.resolveObjectShape(type, context.module);
-  if (objectShape) return objectShape.find((property) => property.name === propertyName)?.type;
+  if (objectShape) {
+    return getIrObjectPropertyReadTypeCpp(objectShape.find((property) => property.name === propertyName));
+  }
   if (type.kind !== 'named' || type.reference.kind !== 'binding') return undefined;
   const bindingId = type.reference.binding.id;
   const declaration = context.module.declarations.find(
@@ -3271,9 +3312,10 @@ function getIrObjectPropertyTypeCpp(
   );
   if (declaration?.kind === 'class') {
     const field = declaration.fields.find((candidate) => candidate.name === propertyName);
-    const propertyType =
-      field?.type ??
-      declaration.methods.find((candidate) => candidate.name === propertyName && candidate.accessor === 'get')?.returns;
+    const propertyType = field
+      ? getIrObjectPropertyReadTypeCpp(field)
+      : declaration.methods.find((candidate) => candidate.name === propertyName && candidate.accessor === 'get')
+          ?.returns;
     return propertyType
       ? resolveIrTypeStructuralSubstitution(
           propertyType,
@@ -3282,7 +3324,9 @@ function getIrObjectPropertyTypeCpp(
       : undefined;
   }
   if (declaration?.kind === 'interface') {
-    const propertyType = declaration.properties.find((property) => property.name === propertyName)?.type;
+    const propertyType = getIrObjectPropertyReadTypeCpp(
+      declaration.properties.find((property) => property.name === propertyName),
+    );
     return propertyType
       ? resolveIrTypeStructuralSubstitution(
           propertyType,
@@ -3300,6 +3344,25 @@ function getIrObjectPropertyTypeCpp(
         context,
       )
     : undefined;
+}
+
+function getIrObjectPropertyReadTypeCpp(
+  property: Readonly<{ optional: boolean; type: IrType }> | undefined,
+): Readonly<IrType> | undefined {
+  if (!property) return undefined;
+  if (!property.optional) return property.type;
+  if (
+    property.type.kind === 'undefined' ||
+    (property.type.kind === 'union' && property.type.types.some((member) => member.kind === 'undefined'))
+  ) {
+    return property.type;
+  }
+  return property.type.kind === 'union'
+    ? {
+        kind: 'union',
+        types: [property.type.types[0], property.type.types[1], ...property.type.types.slice(2), { kind: 'undefined' }],
+      }
+    : { kind: 'union', types: [property.type, { kind: 'undefined' }] };
 }
 
 function emitComputedSymbolElementAccessCpp(
@@ -3453,16 +3516,7 @@ function getIrExpressionTypeEvidenceCpp(
           })),
         };
       }
-      if (expression.reference.kind !== 'binding') return undefined;
-      const declaredType = getCppBindingTypeCpp(expression.reference.binding.id, context);
-      const narrowedType = context.narrowedBindingTypes.get(expression.reference.binding.id);
-      if (narrowedType) return narrowedType;
-      if (!declaredType || !expression.narrowedMember) return declaredType;
-      return (
-        getIrUnionTypeCpp(declaredType, context, new Set())?.types.find(
-          (member) => getIrUnionMemberNameCpp(member) === expression.narrowedMember,
-        ) ?? declaredType
-      );
+      return getIrIdentifierTypeEvidenceCpp(expression, context);
     }
     case 'new':
       return getIrNewExpressionTypeEvidenceCpp(expression, context);
@@ -3500,6 +3554,25 @@ function getIrExpressionTypeEvidenceCpp(
     case 'undefinedValue':
       return undefined;
   }
+}
+
+function getIrIdentifierTypeEvidenceCpp(
+  expression: Readonly<Extract<IrExpression, { kind: 'identifier' }>>,
+  context: EmitContext,
+): Readonly<IrType> | undefined {
+  if (expression.reference.kind !== 'binding') return undefined;
+  const bindingId = expression.reference.binding.id;
+  const declaredType = getCppBindingTypeCpp(bindingId, context);
+  const narrowedType = context.narrowedBindingTypes.get(bindingId);
+  if (narrowedType) return narrowedType;
+  if (!declaredType) return undefined;
+  const union = getIrUnionTypeCpp(declaredType, context, new Set());
+  if (expression.presence === 'narrowedPresent' && union) {
+    const present = union.types.filter((member) => member.kind !== 'null' && member.kind !== 'undefined');
+    if (present.length === 1) return present[0];
+  }
+  if (!expression.narrowedMember) return declaredType;
+  return union?.types.find((member) => getIrUnionMemberNameCpp(member) === expression.narrowedMember) ?? declaredType;
 }
 
 function getIrIndexedElementTypeCpp(
@@ -3888,7 +3961,9 @@ function hasCompleteDenseArrayWritesCpp(
   if (literalLength === undefined) {
     const first = statements[0];
     return Boolean(
-      first && getDenseArrayWholeWriteLoopStrideCpp(first, arrayBindingId, length, immutableBindingIds) !== undefined,
+      (first &&
+        getDenseArrayWholeWriteLoopStrideCpp(first, arrayBindingId, length, immutableBindingIds) !== undefined) ||
+      hasDenseArrayNestedSequentialWritesCpp(arrayBindingId, length, immutableBindingIds, statements),
     );
   }
   let nextIndex = 0;
@@ -3905,6 +3980,174 @@ function hasCompleteDenseArrayWritesCpp(
     if (nextIndex === literalLength) return true;
   }
   return false;
+}
+
+interface DenseArrayNestedSequentialWriteProof {
+  readonly bounds: readonly IrExpression[];
+  readonly writesPerIteration: number;
+}
+
+function hasDenseArrayNestedSequentialWritesCpp(
+  arrayBindingId: string,
+  length: Readonly<IrExpression>,
+  immutableBindingIds: ReadonlySet<string>,
+  statements: readonly Readonly<IrStatement>[],
+): boolean {
+  for (const [counterStatementIndex, counterStatement] of statements.entries()) {
+    if (doesIrStatementReferenceBindingCpp(counterStatement, arrayBindingId)) return false;
+    if (counterStatement.kind !== 'variable') continue;
+    const counters = counterStatement.declarations.filter(
+      (variable) =>
+        'binding' in variable &&
+        variable.mutable &&
+        variable.initializer !== undefined &&
+        getNonnegativeIntegerLiteralCpp(variable.initializer) === 0,
+    );
+    for (const counter of counters) {
+      if (!('binding' in counter)) continue;
+      for (const statement of statements.slice(counterStatementIndex + 1)) {
+        const proof = getDenseArrayNestedSequentialWriteProofCpp(
+          statement,
+          arrayBindingId,
+          counter.binding.id,
+          immutableBindingIds,
+        );
+        if (proof) return hasEquivalentDenseArrayProductCpp(length, proof.bounds, proof.writesPerIteration);
+        if (
+          doesIrStatementReferenceBindingCpp(statement, arrayBindingId) ||
+          doesIrStatementReferenceBindingCpp(statement, counter.binding.id)
+        ) {
+          break;
+        }
+      }
+    }
+  }
+  return false;
+}
+
+function getDenseArrayNestedSequentialWriteProofCpp(
+  statement: Readonly<IrStatement>,
+  arrayBindingId: string,
+  counterBindingId: string,
+  immutableBindingIds: ReadonlySet<string>,
+): DenseArrayNestedSequentialWriteProof | undefined {
+  const loop = getDenseArrayCanonicalLoopCpp(statement, immutableBindingIds);
+  if (!loop) return undefined;
+  const body = statement.kind === 'for' && statement.body.kind === 'block' ? statement.body.statements : [loop.body];
+  let nested: DenseArrayNestedSequentialWriteProof | undefined;
+  let writesPerIteration = 0;
+  for (const bodyStatement of body) {
+    if (isDenseArraySequentialWriteCpp(bodyStatement, arrayBindingId, counterBindingId)) {
+      if (nested) return undefined;
+      writesPerIteration += 1;
+      continue;
+    }
+    const referencesArray = doesIrStatementReferenceBindingCpp(bodyStatement, arrayBindingId);
+    const referencesCounter = doesIrStatementReferenceBindingCpp(bodyStatement, counterBindingId);
+    if (!referencesArray && !referencesCounter) {
+      if (doesIrStatementContainLoopControlCpp(bodyStatement)) return undefined;
+      continue;
+    }
+    if (nested || writesPerIteration > 0) return undefined;
+    nested = getDenseArrayNestedSequentialWriteProofCpp(
+      bodyStatement,
+      arrayBindingId,
+      counterBindingId,
+      immutableBindingIds,
+    );
+    if (!nested) return undefined;
+  }
+  if (nested)
+    return {
+      bounds: [loop.bound, ...nested.bounds],
+      writesPerIteration: nested.writesPerIteration,
+    };
+  return writesPerIteration > 0 ? { bounds: [loop.bound], writesPerIteration } : undefined;
+}
+
+function getDenseArrayCanonicalLoopCpp(
+  statement: Readonly<IrStatement>,
+  immutableBindingIds: ReadonlySet<string>,
+): Readonly<{ body: IrStatement; bound: IrExpression }> | undefined {
+  if (statement.kind !== 'for' || !Array.isArray(statement.initializer) || statement.initializer.length !== 1) {
+    return undefined;
+  }
+  const index = statement.initializer[0]!;
+  const condition = statement.condition;
+  const increment = statement.increment;
+  if (
+    !('binding' in index) ||
+    !index.initializer ||
+    getNonnegativeIntegerLiteralCpp(index.initializer) !== 0 ||
+    !condition ||
+    condition.kind !== 'binary' ||
+    condition.operator !== '<' ||
+    !isIrBindingIdentifierCpp(condition.left, index.binding.id) ||
+    !isStableDenseArrayBoundCpp(condition.right, immutableBindingIds) ||
+    !increment ||
+    increment.kind !== 'unary' ||
+    increment.operator !== '++' ||
+    !isIrBindingIdentifierCpp(increment.operand, index.binding.id)
+  ) {
+    return undefined;
+  }
+  return { body: statement.body, bound: condition.right };
+}
+
+function isDenseArraySequentialWriteCpp(
+  statement: Readonly<IrStatement>,
+  arrayBindingId: string,
+  counterBindingId: string,
+): boolean {
+  if (
+    statement.kind !== 'expression' ||
+    statement.expression.kind !== 'assignment' ||
+    statement.expression.operator !== '=' ||
+    statement.expression.left.kind !== 'element' ||
+    !isIrBindingIdentifierCpp(statement.expression.left.object, arrayBindingId)
+  ) {
+    return false;
+  }
+  const index = statement.expression.left.index;
+  return (
+    index.kind === 'unary' &&
+    index.operator === '++' &&
+    index.postfix &&
+    isIrBindingIdentifierCpp(index.operand, counterBindingId) &&
+    !doesIrExpressionReferenceBindingCpp(statement.expression.right, arrayBindingId) &&
+    !doesIrExpressionReferenceBindingCpp(statement.expression.right, counterBindingId)
+  );
+}
+
+function hasEquivalentDenseArrayProductCpp(
+  length: Readonly<IrExpression>,
+  bounds: readonly Readonly<IrExpression>[],
+  writesPerIteration: number,
+): boolean {
+  const split = (expression: Readonly<IrExpression>): readonly Readonly<IrExpression>[] =>
+    expression.kind === 'binary' && expression.operator === '*'
+      ? [...split(expression.left), ...split(expression.right)]
+      : [expression];
+  const normalize = (factors: readonly Readonly<IrExpression>[], scalar: number) => {
+    let literal = scalar;
+    const dynamic: Readonly<IrExpression>[] = [];
+    for (const factor of factors) {
+      const value = getNonnegativeIntegerLiteralCpp(factor);
+      if (value === undefined) dynamic.push(factor);
+      else literal *= value;
+    }
+    return { dynamic, literal };
+  };
+  const actual = normalize(split(length), 1);
+  const expected = normalize(bounds, writesPerIteration);
+  if (actual.literal !== expected.literal || actual.dynamic.length !== expected.dynamic.length) return false;
+  const unmatched = [...actual.dynamic];
+  for (const factor of expected.dynamic) {
+    const index = unmatched.findIndex((candidate) => isEquivalentDenseArrayBoundCpp(candidate, factor));
+    if (index < 0) return false;
+    unmatched.splice(index, 1);
+  }
+  return unmatched.length === 0;
 }
 
 function getDenseArrayDirectWriteIndexCpp(
@@ -4117,6 +4360,17 @@ function doesIrStatementReferenceBindingCpp(statement: Readonly<IrStatement>, bi
     },
   });
   return referencesBinding;
+}
+
+function doesIrStatementContainLoopControlCpp(statement: Readonly<IrStatement>): boolean {
+  let containsLoopControl = false;
+  analyzeIrStatementSubtreeTraversal(statement, {
+    statement(candidate) {
+      if (candidate.kind === 'break' || candidate.kind === 'continue') containsLoopControl = true;
+      return containsLoopControl ? false : undefined;
+    },
+  });
+  return containsLoopControl;
 }
 
 function getPositiveIntegerLiteralCpp(expression: Readonly<IrExpression>): number | undefined {
