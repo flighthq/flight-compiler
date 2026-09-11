@@ -470,7 +470,7 @@ describe('lowerTypeScriptSource', () => {
     expect(classes[2]).toMatchObject({ fields: [], methods: [] });
   });
 
-  it('skips computed interface properties and methods like index signatures', () => {
+  it('retains symbol-keyed interface properties while skipping computed methods and index signatures', () => {
     const result = lower(
       'computed-interface-members.ts',
       `
@@ -489,8 +489,15 @@ describe('lowerTypeScriptSource', () => {
 
     expect(result.diagnostics).toEqual([]);
     expect(interfaces).toHaveLength(2);
-    expect(interfaces[0]).toMatchObject({ properties: [{ name: 'value' }] });
-    expect(interfaces[1]).toMatchObject({ properties: [] });
+    expect(interfaces[0]).toMatchObject({
+      properties: [
+        { name: 'value' },
+        { computedKey: { kind: 'ambient', name: 'Symbol.iterator' }, name: 'Symbol_iterator' },
+      ],
+    });
+    expect(interfaces[1]).toMatchObject({
+      properties: [{ computedKey: { kind: 'ambient', name: 'Symbol.iterator' }, name: 'Symbol_iterator' }],
+    });
   });
 
   it('represents re-exports and default exports instead of silently skipping them', () => {

@@ -2939,7 +2939,15 @@ function lowerTypeScriptReadonlyRemovalIdentityMappedType(
   const indexParameter = getTypeScriptTypeReferenceSymbol(node.type.indexType, context);
   const source = getTypeScriptTypeReferenceSymbol(constraint.type, context);
   const indexedSource = getTypeScriptTypeReferenceSymbol(node.type.objectType, context);
-  if (!mappedParameter || mappedParameter !== indexParameter || !source || source !== indexedSource) return undefined;
+  if (
+    !mappedParameter ||
+    mappedParameter !== indexParameter ||
+    !source ||
+    source !== indexedSource ||
+    !source.declarations?.some(ts.isTypeParameterDeclaration)
+  ) {
+    return undefined;
+  }
   return lowerType(constraint.type, context);
 }
 
