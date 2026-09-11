@@ -2598,24 +2598,29 @@ function getCppExcludedType(
 function getCppClosedTypeMembers(
   type: Readonly<IrType>,
   context: EmitContext,
+  resolvingAliases: ReadonlySet<string> = new Set(),
 ): readonly Readonly<IrType>[] | undefined {
-  const resolved =
-    type.kind === 'keyof'
-      ? getCppKeyofType(type.type, context)
-      : type.kind === 'typeOf'
-        ? getCppTypeOfValueType(type, context)
-        : type;
-  if (!resolved) return undefined;
-  if (resolved.kind === 'never') return [];
-  if (resolved.kind === 'union') {
-    const members = resolved.types.map((member) => getCppClosedTypeMembers(member, context));
+  if (type.kind === 'keyof' || type.kind === 'typeOf') {
+    const resolved = type.kind === 'keyof' ? getCppKeyofType(type.type, context) : getCppTypeOfValueType(type, context);
+    return resolved ? getCppClosedTypeMembers(resolved, context, resolvingAliases) : undefined;
+  }
+  if (type.kind === 'named' && type.reference.kind === 'binding') {
+    const bindingId = type.reference.binding.id;
+    if (resolvingAliases.has(bindingId)) return undefined;
+    const alias = resolveCppTypeAliasTarget(type, context);
+    if (alias) {
+      const nextResolvingAliases = new Set(resolvingAliases);
+      nextResolvingAliases.add(bindingId);
+      return getCppClosedTypeMembers(alias, context, nextResolvingAliases);
+    }
+  }
+  if (type.kind === 'never') return [];
+  if (type.kind === 'union') {
+    const members = type.types.map((member) => getCppClosedTypeMembers(member, context, resolvingAliases));
     return members.some((member) => !member) ? undefined : members.flatMap((member) => member!);
   }
-  return resolved.kind === 'literal' ||
-    resolved.kind === 'null' ||
-    resolved.kind === 'primitive' ||
-    resolved.kind === 'undefined'
-    ? [resolved]
+  return type.kind === 'literal' || type.kind === 'null' || type.kind === 'primitive' || type.kind === 'undefined'
+    ? [type]
     : undefined;
 }
 

@@ -2768,6 +2768,47 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(emitted).toContain('std::variant<flight::String, flight::Symbol> field;');
   });
 
+  it('resolves an imported literal union alias while computing Exclude', () => {
+    const results = lowerTypeScriptSources([
+      {
+        packageName: '@flighthq/types',
+        sourceFile: ts.createSourceFile(
+          '/flight/packages/types/src/BitmapReadback.ts',
+          `export type BitmapReadbackBlockReason =
+             | 'backend-not-installed'
+             | 'empty-size'
+             | 'no-canvas'
+             | 'ok'
+             | 'tainted-source';`,
+          ts.ScriptTarget.Latest,
+          true,
+        ),
+        upstreamDirectory: '/flight',
+      },
+      {
+        packageName: '@flighthq/types',
+        sourceFile: ts.createSourceFile(
+          '/flight/packages/types/src/BitmapReadbackBackend.ts',
+          `import type { BitmapReadbackBlockReason } from './BitmapReadback.js';
+           export type BitmapReadbackBackendReason = Exclude<
+             BitmapReadbackBlockReason,
+             'backend-not-installed' | 'empty-size'
+           >;`,
+          ts.ScriptTarget.Latest,
+          true,
+        ),
+        upstreamDirectory: '/flight',
+      },
+    ]);
+    const modules = results.map((result) => result.module);
+    const emitted = createCppCompilerBackend().createEmissionSession!({
+      modules,
+      options: { runtimeProfile: 'flight-cpp' },
+    }).emitModule(modules[1]!)[0]!.contents;
+
+    expect(emitted).toContain('using BitmapReadbackBackendReason = flight::String;');
+  });
+
   it('refuses intersections without a compatible object composition', () => {
     const result = lower('inter.ts', 'export const x: number = 1;');
     const module = structuredClone(result.module);
