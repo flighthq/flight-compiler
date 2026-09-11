@@ -5581,6 +5581,16 @@ function lowerTypeScriptInferredTypeImportBinding(
   if (!declaration || declaration.getSourceFile().fileName === context.moduleSourceFile.fileName) return undefined;
   const targetFile = declaration.getSourceFile().fileName;
   const specifiers = new Set<string>();
+  for (const statement of context.moduleSourceFile.statements) {
+    if (!ts.isImportDeclaration(statement) || !ts.isStringLiteral(statement.moduleSpecifier)) continue;
+    const moduleSymbol = context.checker.getSymbolAtLocation(statement.moduleSpecifier);
+    if (!moduleSymbol) continue;
+    const exportsTarget = context.checker.getExportsOfModule(moduleSymbol).some((candidate) => {
+      const target = candidate.flags & ts.SymbolFlags.Alias ? context.checker.getAliasedSymbol(candidate) : candidate;
+      return target === symbol;
+    });
+    if (exportsTarget) specifiers.add(statement.moduleSpecifier.text);
+  }
   for (const [candidate, binding] of [...context.typeBindings, ...context.bindings]) {
     if (binding.kind !== 'import') continue;
     const target = candidate.flags & ts.SymbolFlags.Alias ? context.checker.getAliasedSymbol(candidate) : candidate;

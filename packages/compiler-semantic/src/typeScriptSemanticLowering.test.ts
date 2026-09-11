@@ -1945,6 +1945,69 @@ describe('lowerTypeScriptSource', () => {
     expect(new Set(references)).toEqual(new Set([inferred!.importBinding.binding.id]));
   });
 
+  it('introduces nested member types through the contract barrel that exports them', () => {
+    const curve = ts.createSourceFile(
+      '/flight/packages/types/src/ParticleCurve.ts',
+      'export type ParticleCurve = ReadonlyArray<number>;',
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const config = ts.createSourceFile(
+      '/flight/packages/types/src/ParticleEmitterConfig.ts',
+      `import type { ParticleCurve } from './ParticleCurve';
+       export interface ParticleEmitterConfig { alphaCurve: ParticleCurve | null; }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const contract = ts.createSourceFile(
+      '/flight/packages/types/src/contract.ts',
+      "export * from './ParticleCurve'; export * from './ParticleEmitterConfig';",
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const consumer = ts.createSourceFile(
+      '/flight/packages/particles/src/particleEmitterConfig.ts',
+      `import type { ParticleEmitterConfig } from '@flighthq/types/contract';
+       export function initialize(config?: Partial<ParticleEmitterConfig>): void {
+         config?.alphaCurve ?? null;
+       }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const [, , , result] = lowerTypeScriptSources(
+      [
+        { packageName: '@flighthq/types', sourceFile: curve, upstreamDirectory: '/flight' },
+        { packageName: '@flighthq/types', sourceFile: config, upstreamDirectory: '/flight' },
+        { packageName: '@flighthq/types', sourceFile: contract, upstreamDirectory: '/flight' },
+        { packageName: '@flighthq/particles', sourceFile: consumer, upstreamDirectory: '/flight' },
+      ],
+      {
+        edges: [
+          {
+            specifier: '@flighthq/types/contract',
+            target: { packageName: '@flighthq/types', source: 'packages/types/src/contract.ts' },
+          },
+        ],
+        schema: 'flight-compiler-module-resolution/1',
+      },
+    );
+    const inferred = result!.module.imports
+      .flatMap((imported) =>
+        imported.bindings.map((importBinding) => ({ importBinding, specifier: imported.specifier })),
+      )
+      .find(({ importBinding }) => importBinding.imported === 'ParticleCurve');
+
+    expect(result!.diagnostics).toEqual([]);
+    expect(inferred).toMatchObject({
+      importBinding: {
+        binding: { kind: 'import', name: 'ParticleCurve', space: 'type' },
+        imported: 'ParticleCurve',
+        typeOnly: true,
+      },
+      specifier: '@flighthq/types/contract',
+    });
+  });
+
   it('expands concrete mapped properties through imported named type bindings', () => {
     const model = ts.createSourceFile(
       '/flight/packages/model/src/model.ts',
