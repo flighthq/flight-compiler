@@ -542,6 +542,11 @@ export interface BrowserPermissionMediaTypes {
       `export function read(bytes: Uint8Array): number {
   return new DataView(bytes.buffer, bytes.byteOffset, 8).getFloat64(0, true);
 }
+export function mutate(bytes: Uint8Array): number {
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  view.setUint32(0, 42, true);
+  return view.getUint32(0, true) + view.byteLength + view.byteOffset;
+}
 export function decode(bytes: Uint8Array): string { return new TextDecoder().decode(bytes); }
 export function allocate(length: number): ArrayBuffer { return new ArrayBuffer(length); }
 export function matches(value: string): boolean { return /^flight$/i.test(value); }
@@ -557,6 +562,10 @@ export function compare(left: string, right: string, locale: string, options: In
 
     const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
     expect(emitted.contents).toContain('flight::DataView(bytes.buffer, bytes.byte_offset, 8.0).get_float64(0.0, true)');
+    expect(emitted.contents).toContain('view.set_uint32(0.0, 42.0, true)');
+    expect(emitted.contents).toContain('view.get_uint32(0.0, true)');
+    expect(emitted.contents).toContain('view.byte_length');
+    expect(emitted.contents).toContain('view.byte_offset');
     expect(emitted.contents).toContain('flight::TextDecoder().decode(bytes)');
     expect(emitted.contents).toContain('flight::ArrayBuffer(length)');
     expect(emitted.contents).toContain('flight::RegExp(flight::String("^flight$"), flight::String("i")).test(value)');

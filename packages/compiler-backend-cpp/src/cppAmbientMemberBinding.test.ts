@@ -119,6 +119,37 @@ describe('getCompilerCppAmbientMemberBinding', () => {
       kind: 'method',
       targetName: 'get_float64',
     });
+    for (const name of ['getFloat32', 'getInt8', 'getInt16', 'getInt32', 'getUint8', 'getUint16', 'getUint32']) {
+      expect(getCompilerCppAmbientMemberBinding({ name, receiver: 'dataView' }, 'flight-cpp')).toEqual({
+        kind: 'method',
+        targetName: name.replace(/[A-Z]/g, (letter) => `_${letter.toLowerCase()}`),
+      });
+    }
+    for (const name of [
+      'setFloat32',
+      'setFloat64',
+      'setInt8',
+      'setInt16',
+      'setInt32',
+      'setUint8',
+      'setUint16',
+      'setUint32',
+    ]) {
+      expect(getCompilerCppAmbientMemberBinding({ name, receiver: 'dataView' }, 'flight-cpp')).toEqual({
+        kind: 'method',
+        targetName: name.replace(/[A-Z]/g, (letter) => `_${letter.toLowerCase()}`),
+      });
+    }
+    for (const [name, targetName] of [
+      ['buffer', 'buffer'],
+      ['byteLength', 'byte_length'],
+      ['byteOffset', 'byte_offset'],
+    ] as const) {
+      expect(getCompilerCppAmbientMemberBinding({ name, receiver: 'dataView' }, 'flight-cpp')).toEqual({
+        kind: 'property',
+        targetName,
+      });
+    }
     expect(getCompilerCppAmbientMemberBinding({ name: 'decode', receiver: 'textDecoder' }, 'flight-cpp')).toEqual({
       kind: 'method',
       targetName: 'decode',
