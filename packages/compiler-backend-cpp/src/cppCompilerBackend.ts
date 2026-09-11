@@ -2553,8 +2553,13 @@ function emitType(type: Readonly<IrType>, context: EmitContext, representation: 
         return emitCppCallableObjectStorageTypeCpp(type, callableObject, context);
       }
       const properties = context.referenceRepresentationPlanner.resolveObjectShape(type, context.module);
-      if (!properties) emissionError(context, 'intersection types require C++ multiple-inheritance lowering');
-      return emitType({ kind: 'object', properties }, context, representation);
+      if (properties) return emitType({ kind: 'object', properties }, context, representation);
+      const distributed = context.referenceRepresentationPlanner.resolveClosedIntersectionDistribution(
+        type,
+        context.module,
+      );
+      if (!distributed) emissionError(context, 'intersection types require C++ multiple-inheritance lowering');
+      return emitType(distributed, context, representation);
     }
     case 'literal':
       return typeof type.value === 'boolean'
@@ -3857,7 +3862,12 @@ function getIrTypeRuntimeDomainCpp(
   }
   if (type.kind === 'intersection') {
     const erasedValue = getCppErasedIntersectionValueType(type, context);
-    return erasedValue ? getIrTypeRuntimeDomainCpp(erasedValue, context, resolvingAliases) : type;
+    if (erasedValue) return getIrTypeRuntimeDomainCpp(erasedValue, context, resolvingAliases);
+    const distributed = context.referenceRepresentationPlanner.resolveClosedIntersectionDistribution(
+      type,
+      context.module,
+    );
+    return distributed ? getIrTypeRuntimeDomainCpp(distributed, context, resolvingAliases) : type;
   }
   if (type.kind === 'keyof') {
     const keyType = getCppKeyofType(type.type, context);

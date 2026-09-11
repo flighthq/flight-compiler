@@ -106,6 +106,14 @@ export function createIrTypeReferenceRepresentationPlannerCpp(
     resolveAlias(type: Readonly<IrType>, module: Readonly<IrModule>): Readonly<IrType> | undefined {
       return resolveIrTypeAliasCpp(type, module, moduleSet, resolutionCache, aliasCache);
     },
+    resolveClosedIntersectionDistribution(
+      type: Readonly<Extract<IrType, { kind: 'intersection' }>>,
+      module: Readonly<IrModule>,
+    ): Readonly<Extract<IrType, { kind: 'union' }>> | undefined {
+      const subject = getReferenceModuleRecordCpp(module, moduleSet);
+      if (!subject) throw new TypeError('C++ intersection-distribution subject must belong to the explicit module set');
+      return resolveIrTypeClosedIntersectionDistributionCpp(type, subject, moduleSet, resolutionCache);
+    },
     resolveModule(specifier: string, module: Readonly<IrModule>): Readonly<IrModule> | undefined {
       const subject = getReferenceModuleRecordCpp(module, moduleSet);
       if (!subject) throw new TypeError('C++ module resolution subject must belong to the explicit module set');
@@ -273,6 +281,33 @@ function resolveIrTypeObjectShapeCpp(
     cache,
     nextAncestors,
   );
+}
+
+function resolveIrTypeClosedIntersectionDistributionCpp(
+  type: Readonly<Extract<IrType, { kind: 'intersection' }>>,
+  module: Readonly<ReferenceModuleRecord>,
+  moduleSet: Readonly<ReferenceModuleSet>,
+  cache: ReferenceResolutionCache,
+): Readonly<Extract<IrType, { kind: 'union' }>> | undefined {
+  const unionIndexes = type.types.flatMap((member, index) => (member.kind === 'union' ? [index] : []));
+  if (unionIndexes.length !== 1) return undefined;
+  const unionIndex = unionIndexes[0]!;
+  const union = type.types[unionIndex];
+  if (union?.kind !== 'union') return undefined;
+  const alternatives = union.types.map((alternative): Readonly<Extract<IrType, { kind: 'object' }>> | undefined => {
+    const distributedMembers = type.types.map((member, index) => (index === unionIndex ? alternative : member));
+    const distributed: Readonly<Extract<IrType, { kind: 'intersection' }>> = {
+      kind: 'intersection',
+      types: [distributedMembers[0]!, distributedMembers[1]!, ...distributedMembers.slice(2)],
+    };
+    const properties = resolveIrTypeObjectShapeCpp(distributed, module, moduleSet, cache, new Set());
+    return properties ? { kind: 'object', properties } : undefined;
+  });
+  if (alternatives.some((alternative) => !alternative)) return undefined;
+  return {
+    kind: 'union',
+    types: [alternatives[0]!, alternatives[1]!, ...alternatives.slice(2).map((alternative) => alternative!)],
+  };
 }
 
 function getIrObjectProjectionKeysCpp(type: Readonly<IrType>): ReadonlySet<string> | undefined {
@@ -644,14 +679,23 @@ function createIrTypeReferenceRepresentationPlanInternalCpp(
       );
     }
     const properties = resolveIrTypeObjectShapeCpp(type, module, context.moduleSet, context.resolutionCache, new Set());
-    return properties
-      ? createCompilerCppReferenceRepresentationSuccessCpp(
-          identity,
-          'anonymousObject',
-          'object',
-          'rawAnonymousObject',
-          'flightReference',
-        )
+    if (properties) {
+      return createCompilerCppReferenceRepresentationSuccessCpp(
+        identity,
+        'anonymousObject',
+        'object',
+        'rawAnonymousObject',
+        'flightReference',
+      );
+    }
+    const distributed = resolveIrTypeClosedIntersectionDistributionCpp(
+      type,
+      module,
+      context.moduleSet,
+      context.resolutionCache,
+    );
+    return distributed
+      ? createCompilerCppReferenceRepresentationSuccessCpp(identity, 'value', 'none', 'inlineValue', 'inlineValue')
       : createCompilerCppReferenceRepresentationRefusalCpp(identity, 'compoundReference');
   }
   return createCompilerCppReferenceRepresentationRefusalCpp(identity, 'unsupportedReferenceForm');
