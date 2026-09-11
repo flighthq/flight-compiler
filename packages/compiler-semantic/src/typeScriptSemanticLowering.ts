@@ -3087,18 +3087,59 @@ function lowerTypeScriptForOfElementType(expression: ts.Expression, context: Low
   if (!iterableType) return undefined;
   const element = getTypeScriptTypeNodeIterableElementEvidence(iterableType, context, new Set());
   if (!element) return undefined;
+  if ('key' in element) {
+    return {
+      elements: [
+        {
+          optional: false,
+          rest: false,
+          type: lowerTypeScriptTypeNodeEvidence(element.key, context, new Set(), element.substitutions),
+        },
+        {
+          optional: false,
+          rest: false,
+          type: lowerTypeScriptTypeNodeEvidence(element.value, context, new Set(), element.substitutions),
+        },
+      ],
+      kind: 'tuple',
+      readonly: true,
+    };
+  }
   // Preserve the written identity of directly exposed interfaces/classes. Expanding an interface
   // into an anonymous structural object here loses the fact that `for (const item of items: Item[])`
   // produces an Item. Aliases and substituted parameters still take the evidence path so tuple and
   // generic iterable elements retain their concrete shapes.
   if (element.substitutions.size === 0 && ts.isTypeReferenceNode(element.type)) {
-    const symbol = context.checker.getSymbolAtLocation(element.type.typeName);
+    const unresolved = context.checker.getSymbolAtLocation(element.type.typeName);
+    const symbol =
+      unresolved?.flags && unresolved.flags & ts.SymbolFlags.Alias
+        ? context.checker.getAliasedSymbol(unresolved)
+        : unresolved;
     if (
       symbol?.declarations?.some(
         (declaration) => ts.isInterfaceDeclaration(declaration) || ts.isClassDeclaration(declaration),
       )
     ) {
       return lowerType(element.type, context);
+    }
+  }
+  if (ts.isTypeReferenceNode(element.type)) {
+    const unresolved = context.checker.getSymbolAtLocation(element.type.typeName);
+    const symbol =
+      unresolved?.flags && unresolved.flags & ts.SymbolFlags.Alias
+        ? context.checker.getAliasedSymbol(unresolved)
+        : unresolved;
+    const declaration = symbol?.declarations?.find(ts.isTypeAliasDeclaration);
+    if (symbol && declaration) {
+      const substitutions = createTypeScriptSyntacticAliasSubstitutions(
+        element.type,
+        declaration,
+        context.checker,
+        element.substitutions,
+      );
+      if (substitutions) {
+        return lowerTypeScriptTypeNodeEvidence(declaration.type, context, new Set([symbol]), substitutions);
+      }
     }
   }
   return lowerTypeScriptTypeNodeEvidence(element.type, context, new Set(), element.substitutions);
@@ -3179,12 +3220,18 @@ interface TypeScriptTypeNodeEvidence {
   readonly type: ts.TypeNode;
 }
 
+interface TypeScriptMapElementEvidence {
+  readonly key: ts.TypeNode;
+  readonly substitutions: ReadonlyMap<ts.Symbol, ts.TypeNode>;
+  readonly value: ts.TypeNode;
+}
+
 function getTypeScriptTypeNodeIterableElementEvidence(
   type: ts.TypeNode,
   context: LoweringContext,
   seen: ReadonlySet<ts.Symbol>,
   substitutions: ReadonlyMap<ts.Symbol, ts.TypeNode> = new Map(),
-): TypeScriptTypeNodeEvidence | undefined {
+): TypeScriptTypeNodeEvidence | TypeScriptMapElementEvidence | undefined {
   const substituted = getTypeScriptSyntacticTypeSubstitution(type, context.checker, substitutions);
   if (substituted !== type) {
     return getTypeScriptTypeNodeIterableElementEvidence(substituted, context, seen, substitutions);
@@ -3200,10 +3247,26 @@ function getTypeScriptTypeNodeIterableElementEvidence(
     const parts = getTypeNameNodeParts(type.typeName);
     const name = parts ? [parts.root.text, ...parts.path].join('.') : undefined;
     const element = type.typeArguments?.[0];
-    if ((name === 'Array' || name === 'ReadonlyArray') && type.typeArguments?.length === 1 && element) {
+    if (
+      ['Array', 'Iterable', 'IterableIterator', 'ReadonlyArray', 'ReadonlySet', 'Set'].includes(name ?? '') &&
+      type.typeArguments?.length === 1 &&
+      element
+    ) {
       return { substitutions, type: element };
     }
-    const symbol = context.checker.getSymbolAtLocation(type.typeName);
+    if (
+      (name === 'Map' || name === 'ReadonlyMap') &&
+      type.typeArguments?.length === 2 &&
+      type.typeArguments[0] &&
+      type.typeArguments[1]
+    ) {
+      return { key: type.typeArguments[0], substitutions, value: type.typeArguments[1] };
+    }
+    const unresolved = context.checker.getSymbolAtLocation(type.typeName);
+    const symbol =
+      unresolved?.flags && unresolved.flags & ts.SymbolFlags.Alias
+        ? context.checker.getAliasedSymbol(unresolved)
+        : unresolved;
     if (!symbol || seen.has(symbol)) return undefined;
     const declaration = symbol.declarations?.find(ts.isTypeAliasDeclaration);
     if (!declaration) return undefined;
@@ -3876,9 +3939,14 @@ function inferInitializerType(node: ts.Expression, context: LoweringContext): Ir
   if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node))
     return { kind: 'primitive', name: 'string' };
   if (ts.isArrayLiteralExpression(node)) {
-    const elementTypes = node.elements.flatMap((element) =>
-      ts.isOmittedExpression(element) ? [] : [inferInitializerType(element, context)],
-    );
+    const elementTypes = node.elements.flatMap((element) => {
+      if (ts.isOmittedExpression(element)) return [];
+      if (ts.isSpreadElement(element)) {
+        const iterableElement = lowerTypeScriptForOfElementType(element.expression, context);
+        return iterableElement ? [iterableElement] : [];
+      }
+      return [inferInitializerType(element, context)];
+    });
     return {
       element:
         elementTypes.length === 0

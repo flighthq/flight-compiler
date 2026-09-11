@@ -825,27 +825,8 @@ function emitExpression(
     if (constructed) return constructed;
   }
   switch (expression.kind) {
-    case 'array': {
-      const expectedArray = expectedType?.kind === 'array' ? expectedType : undefined;
-      if (
-        getCppRuntimeProfile(context.options) === 'flight-cpp' &&
-        expression.elements.some((element) => element === undefined)
-      ) {
-        emissionError(context, 'sparse array literals are outside the dense flight-cpp array profile');
-      }
-      const elements = expression.elements.map((element) =>
-        element ? emitExpression(element, context, expectedArray?.element) : '{}',
-      );
-      if (getCppRuntimeProfile(context.options) === 'flight-cpp') {
-        if (elements.length === 0 && !expectedArray) {
-          emissionError(context, 'an empty array requires contextual element type in C++ emission');
-        }
-        const target = expectedArray ? `flight::Array<${emitType(expectedArray.element, context)}>` : 'flight::Array';
-        return `${target}{${elements.join(', ')}}`;
-      }
-      context.includes.add('vector');
-      return `std::vector{${elements.join(', ')}}`;
-    }
+    case 'array':
+      return emitArrayExpressionCpp(expression, context, expectedType);
     case 'assignment': {
       const assignmentType = getIrAssignmentTargetTypeCpp(expression.left, context);
       const right = emitExpression(expression.right, context, assignmentType);
@@ -1028,6 +1009,8 @@ function emitExpression(
       }
       const arrayFromMapKeys = emitArrayFromMapKeysCpp(expression, expectedType, context);
       if (arrayFromMapKeys) return arrayFromMapKeys;
+      const arrayPushSpread = emitArrayPushSpreadCallCpp(expression, context);
+      if (arrayPushSpread) return arrayPushSpread;
       if (
         expression.callee.kind === 'property' &&
         expression.callee.member?.receiver === 'number' &&
@@ -1494,6 +1477,204 @@ function emitExpression(
     case 'objectRest':
       emissionError(context, `${expression.kind} expressions require C++ structured binding lowering`);
   }
+}
+
+function emitArrayExpressionCpp(
+  expression: Readonly<Extract<IrExpression, { kind: 'array' }>>,
+  context: EmitContext,
+  expectedType: Readonly<IrType> | undefined,
+): string {
+  const expectedArray = getIrArrayTypeCpp(expectedType, context, new Set());
+  if (
+    getCppRuntimeProfile(context.options) === 'flight-cpp' &&
+    expression.elements.some((element) => element === undefined)
+  ) {
+    emissionError(context, 'sparse array literals are outside the dense flight-cpp array profile');
+  }
+  if (!expression.elements.some((element) => element?.kind === 'spread')) {
+    const elements = expression.elements.map((element) =>
+      element ? emitExpression(element, context, expectedArray?.element) : '{}',
+    );
+    if (getCppRuntimeProfile(context.options) === 'flight-cpp') {
+      if (elements.length === 0 && !expectedArray) {
+        emissionError(context, 'an empty array requires contextual element type in C++ emission');
+      }
+      const target = expectedArray ? `flight::Array<${emitType(expectedArray.element, context)}>` : 'flight::Array';
+      return `${target}{${elements.join(', ')}}`;
+    }
+    context.includes.add('vector');
+    return `std::vector{${elements.join(', ')}}`;
+  }
+
+  const inferredSpreadElements = expression.elements.flatMap((element): readonly IrType[] => {
+    if (element?.kind !== 'spread') return [];
+    const operandType = getIrExpressionTypeEvidenceCpp(element.expression, context);
+    const iterableElement = operandType ? getIrIterableElementTypeCpp(operandType, context, new Set()) : undefined;
+    return iterableElement && iterableElement.kind !== 'unknown' ? [iterableElement] : [];
+  });
+  const elementType =
+    expectedArray && expectedArray.element.kind !== 'unknown' ? expectedArray.element : inferredSpreadElements[0];
+  if (!elementType) {
+    emissionError(context, 'array spread requires contextual or iterable element type evidence');
+  }
+
+  const flightRuntime = getCppRuntimeProfile(context.options) === 'flight-cpp';
+  if (!flightRuntime) context.includes.add('vector');
+  const target = flightRuntime
+    ? `flight::Array<${emitType(elementType, context)}>`
+    : `std::vector<${emitType(elementType, context)}>`;
+  const resultName = getGeneratedTargetName('arraySpreadResult', context);
+  const itemName = getGeneratedTargetName('arraySpreadItem', context);
+  const append = flightRuntime ? 'push' : 'push_back';
+  const statements = expression.elements.map((element): string => {
+    if (!element) return `${resultName}.${append}({});`;
+    if (element.kind !== 'spread') {
+      return `${resultName}.${append}(${emitExpression(element, context, elementType)});`;
+    }
+    const operandType = getIrExpressionTypeEvidenceCpp(element.expression, context);
+    const tuple = operandType ? getIrTupleTypeCpp(operandType, context, new Set()) : undefined;
+    if (tuple) {
+      context.includes.add('tuple');
+      const operandName = getGeneratedTargetName('arraySpreadTuple', context);
+      const tupleAppends = tuple.elements.map((tupleElement, index) =>
+        tupleElement.rest
+          ? `for (const auto& ${itemName} : std::get<${String(index)}>(${operandName})) { ${resultName}.${append}(${itemName}); }`
+          : `${resultName}.${append}(std::get<${String(index)}>(${operandName}));`,
+      );
+      return `{ auto&& ${operandName} = ${emitExpression(element.expression, context)}; ${tupleAppends.join(' ')} }`;
+    }
+    return `for (const auto& ${itemName} : ${emitExpression(element.expression, context)}) { ${resultName}.${append}(${itemName}); }`;
+  });
+  return `([&]() { ${target} ${resultName}; ${statements.join(' ')} return ${resultName}; }())`;
+}
+
+function emitArrayPushSpreadCallCpp(
+  expression: Readonly<Extract<IrExpression, { kind: 'call' }>>,
+  context: EmitContext,
+): string | undefined {
+  if (
+    expression.callee.kind !== 'property' ||
+    expression.callee.member?.receiver !== 'array' ||
+    expression.callee.member.name !== 'push' ||
+    !expression.arguments.some((argument) => argument.kind === 'spread')
+  ) {
+    return undefined;
+  }
+  const receiverName = getGeneratedTargetName('arrayPushReceiver', context);
+  const argumentsName = getGeneratedTargetName('arrayPushArguments', context);
+  const itemName = getGeneratedTargetName('arrayPushItem', context);
+  const receiverType = getIrExpressionTypeEvidenceCpp(expression.callee.object, context);
+  const arguments_ = emitArrayExpressionCpp({ elements: expression.arguments, kind: 'array' }, context, receiverType);
+  const append = getCppRuntimeProfile(context.options) === 'flight-cpp' ? 'push' : 'push_back';
+  return `([&]() { auto&& ${receiverName} = ${emitExpression(expression.callee.object, context)}; const auto ${argumentsName} = ${arguments_}; for (const auto& ${itemName} : ${argumentsName}) { ${receiverName}.${append}(${itemName}); } return static_cast<double>(${receiverName}.size()); }())`;
+}
+
+function getIrArrayTypeCpp(
+  type: Readonly<IrType> | undefined,
+  context: EmitContext,
+  resolvingAliases: ReadonlySet<string>,
+): Readonly<Extract<IrType, { kind: 'array' }>> | undefined {
+  if (!type) return undefined;
+  if (type.kind === 'array') return type;
+  if (
+    type.kind === 'named' &&
+    type.reference.kind === 'ambient' &&
+    (type.reference.name === 'Array' || type.reference.name === 'ReadonlyArray') &&
+    type.typeArguments.length === 1 &&
+    type.typeArguments[0]
+  ) {
+    return {
+      element: type.typeArguments[0],
+      kind: 'array',
+      readonly: type.reference.name === 'ReadonlyArray',
+    };
+  }
+  if (type.kind !== 'named' || type.reference.kind !== 'binding') return undefined;
+  const bindingId = type.reference.binding.id;
+  if (resolvingAliases.has(bindingId)) return undefined;
+  const alias = resolveCppTypeAliasTarget(type, context);
+  if (!alias) return undefined;
+  const nextResolvingAliases = new Set(resolvingAliases);
+  nextResolvingAliases.add(bindingId);
+  return getIrArrayTypeCpp(alias, context, nextResolvingAliases);
+}
+
+function getIrTupleTypeCpp(
+  type: Readonly<IrType>,
+  context: EmitContext,
+  resolvingAliases: ReadonlySet<string>,
+): Readonly<Extract<IrType, { kind: 'tuple' }>> | undefined {
+  if (type.kind === 'tuple') return type;
+  if (type.kind !== 'named' || type.reference.kind !== 'binding') return undefined;
+  const bindingId = type.reference.binding.id;
+  if (resolvingAliases.has(bindingId)) return undefined;
+  const alias = resolveCppTypeAliasTarget(type, context);
+  if (!alias) return undefined;
+  const nextResolvingAliases = new Set(resolvingAliases);
+  nextResolvingAliases.add(bindingId);
+  return getIrTupleTypeCpp(alias, context, nextResolvingAliases);
+}
+
+function getIrIterableElementTypeCpp(
+  type: Readonly<IrType>,
+  context: EmitContext,
+  resolvingAliases: ReadonlySet<string>,
+): Readonly<IrType> | undefined {
+  const array = getIrArrayTypeCpp(type, context, resolvingAliases);
+  if (array) return array.element;
+  if (type.kind === 'primitive' && type.name === 'string') return type;
+  if (type.kind === 'tuple') {
+    const elements = type.elements.map((element) => element.type);
+    if (elements.length === 0) return undefined;
+    const unique = new Map(elements.map((element) => [JSON.stringify(element), element]));
+    const values = [...unique.values()];
+    return values.length === 1
+      ? values[0]
+      : values.length > 1
+        ? { kind: 'union', types: [values[0]!, values[1]!, ...values.slice(2)] }
+        : undefined;
+  }
+  if (type.kind === 'union') {
+    const elements = type.types.flatMap((member): readonly IrType[] => {
+      const element = getIrIterableElementTypeCpp(member, context, resolvingAliases);
+      return element ? [element] : [];
+    });
+    if (elements.length !== type.types.length || !elements[0]) return undefined;
+    const unique = new Map(elements.map((element) => [JSON.stringify(element), element]));
+    const values = [...unique.values()];
+    return values.length === 1 ? values[0] : { kind: 'union', types: [values[0]!, values[1]!, ...values.slice(2)] };
+  }
+  if (type.kind !== 'named') return undefined;
+  if (type.reference.kind === 'ambient') {
+    if (
+      ['Iterable', 'IterableIterator', 'ReadonlySet', 'Set'].includes(type.reference.name) &&
+      type.typeArguments.length === 1
+    ) {
+      return type.typeArguments[0];
+    }
+    if (type.reference.name === 'Map' && type.typeArguments.length === 2) {
+      return {
+        elements: type.typeArguments.map((element) => ({ optional: false, rest: false, type: element })),
+        kind: 'tuple',
+        readonly: true,
+      };
+    }
+    if (
+      /^(?:BigInt64|BigUint64|Float32|Float64|Int16|Int32|Int8|Uint16|Uint32|Uint8|Uint8Clamped)Array$/u.test(
+        type.reference.name,
+      )
+    ) {
+      return { kind: 'primitive', name: 'number' };
+    }
+    return undefined;
+  }
+  const bindingId = type.reference.binding.id;
+  if (resolvingAliases.has(bindingId)) return undefined;
+  const alias = resolveCppTypeAliasTarget(type, context);
+  if (!alias) return undefined;
+  const nextResolvingAliases = new Set(resolvingAliases);
+  nextResolvingAliases.add(bindingId);
+  return getIrIterableElementTypeCpp(alias, context, nextResolvingAliases);
 }
 
 function emitStatement(statement: Readonly<IrStatement>, context: EmitContext): string[] {

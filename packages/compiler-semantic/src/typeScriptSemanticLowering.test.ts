@@ -2867,6 +2867,61 @@ describe('lowerTypeScriptSource', () => {
     expect(loops[7]?.variable.type).toBeUndefined();
   });
 
+  it('expands imported tuple aliases for for-of destructuring evidence', () => {
+    const model = ts.createSourceFile(
+      '/flight/packages/model/src/rows.ts',
+      'export type Row<Value = number> = readonly [Value, string]; export type Rows = readonly Row[]; export type Entries = Map<string, boolean>;',
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const consumer = ts.createSourceFile(
+      '/flight/packages/app/src/read.ts',
+      `import type { Entries, Row, Rows } from '@flight/model';
+       export function read(direct: readonly Row<boolean>[], aliased: Rows, entries: Entries): void {
+         for (const [enabled, directLabel] of direct) { enabled; directLabel; }
+         for (const [value, aliasLabel] of aliased) { value; aliasLabel; }
+         for (const [key, active] of entries) { key; active; }
+       }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const [, result] = lowerTypeScriptSources(
+      [
+        { packageName: '@flight/model', sourceFile: model, upstreamDirectory: '/flight' },
+        { packageName: '@flight/app', sourceFile: consumer, upstreamDirectory: '/flight' },
+      ],
+      {
+        edges: [
+          {
+            specifier: '@flight/model',
+            target: { packageName: '@flight/model', source: 'packages/model/src/rows.ts' },
+          },
+        ],
+        schema: 'flight-compiler-module-resolution/1',
+      },
+    );
+    const declaration = result!.module.declarations.find(
+      (candidate) => candidate.kind === 'function' && candidate.binding.name === 'read',
+    );
+    if (declaration?.kind !== 'function') throw new Error('Expected read function');
+    const loops = declaration.body.filter((statement) => statement.kind === 'forOf');
+
+    expect(result!.diagnostics).toEqual([]);
+    expect(loops).toHaveLength(3);
+    expect(loops[0]?.variable.type).toMatchObject({
+      elements: [{ type: { kind: 'primitive', name: 'boolean' } }, { type: { kind: 'primitive', name: 'string' } }],
+      kind: 'tuple',
+    });
+    expect(loops[1]?.variable.type).toMatchObject({
+      elements: [{ type: { kind: 'primitive', name: 'number' } }, { type: { kind: 'primitive', name: 'string' } }],
+      kind: 'tuple',
+    });
+    expect(loops[2]?.variable.type).toMatchObject({
+      elements: [{ type: { kind: 'primitive', name: 'string' } }, { type: { kind: 'primitive', name: 'boolean' } }],
+      kind: 'tuple',
+    });
+  });
+
   it('preserves named, renamed, nested, defaulted, computed, and rest object binding evidence', () => {
     const result = lower(
       'object-bindings.ts',
@@ -5783,6 +5838,26 @@ it('lowers spread element within array literal', () => {
   const ret = fn.body[0];
   if (ret?.kind !== 'return' || ret.expression?.kind !== 'array') throw new Error('Expected array');
   expect(ret.expression.elements[1]).toMatchObject({ kind: 'spread' });
+});
+
+it('infers array element types from unbounded iterable spreads', () => {
+  const result = lower(
+    'spread-array-evidence.ts',
+    `export function run(items: Set<string>): string[] {
+       const copied = [...items];
+       return copied;
+     }`,
+  );
+  const declaration = result.module.declarations.find(
+    (candidate) => candidate.kind === 'function' && candidate.binding.name === 'run',
+  );
+  const copied = declaration?.kind === 'function' ? declaration.body[0] : undefined;
+
+  expect(result.diagnostics).toEqual([]);
+  expect(copied).toMatchObject({
+    declarations: [{ type: { element: { kind: 'primitive', name: 'string' }, kind: 'array' } }],
+    kind: 'variable',
+  });
 });
 
 it('resolves member receiver for array, tuple, string, and named types', () => {

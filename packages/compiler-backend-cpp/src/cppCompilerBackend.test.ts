@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import ts from 'typescript';
 
 import { isBackendEmissionFailure } from '../../compiler-emission/src/index.js';
-import { lowerTypeScriptSource } from '../../compiler-semantic/src/index.js';
+import { lowerTypeScriptSource, lowerTypeScriptSources } from '../../compiler-semantic/src/index.js';
 import type { CompilerModuleResolutionPlan, IrType } from '../../compiler-types/src/index.js';
 import { createCppCompilerBackend, emitIrModuleCpp } from './cppCompilerBackend.js';
 
@@ -112,6 +112,53 @@ describe('createCppCompilerBackend', () => {
     expect(aliases).toContain('using Pair = std::tuple<double, flight::String>');
     expect(emitted).toContain('void accept(flighthq_types::Callback callback, flighthq_types::Pair pair)');
     expect(emitted).not.toContain('flight::Ref<flighthq_types::');
+  });
+
+  it('lowers for-of destructuring through an imported tuple element alias', () => {
+    const rows = ts.createSourceFile(
+      '/flight/packages/model/src/rows.ts',
+      'export type Row = readonly [number, string]; export type Rows = readonly Row[];',
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const read = ts.createSourceFile(
+      '/flight/packages/app/src/read.ts',
+      `import type { Rows } from '@flight/model';
+       export function labels(rows: Rows): string {
+         let result = '';
+         for (const [count, label] of rows) { if (count > 0) result += label; }
+         return result;
+       }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          specifier: '@flight/model',
+          target: { packageName: '@flight/model', source: 'packages/model/src/rows.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const results = lowerTypeScriptSources(
+      [
+        { packageName: '@flight/model', sourceFile: rows, upstreamDirectory: '/flight' },
+        { packageName: '@flight/app', sourceFile: read, upstreamDirectory: '/flight' },
+      ],
+      moduleResolution,
+    );
+    const modules = results.map((result) => result.module);
+    const output = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules,
+      options: { runtimeProfile: 'flight-cpp' },
+    }).emitModule(modules[1]!)![0]!.contents;
+
+    expect(results[1]!.diagnostics).toEqual([]);
+    expect(output).toContain('for (auto array_pattern_value');
+    expect(output).toContain('std::get<0>');
+    expect(output).toContain('std::get<1>');
   });
 
   it('emits imported generic union aliases as inline values', () => {
@@ -4706,6 +4753,69 @@ export function compare(left: string, right: string, locale: string, options: In
     ).contents;
     expect(output).toContain('max_element');
     expect(output).toContain('#include <algorithm>');
+  });
+
+  it('materializes unbounded array spreads in source order for both runtime profiles', () => {
+    const module = lower(
+      'array-spread.ts',
+      `export function copy(first: number, items: readonly number[]): number[] {
+         return [first, ...items, 99];
+       }
+       export function copySet(values: Set<string>): string[] {
+         const copied = [...values];
+         return copied;
+       }
+       export function copyTuple(values: readonly [number, number]): number[] {
+         return [...values];
+       }`,
+    ).module;
+    const standard = emitIrModuleCpp(module).contents;
+    const flight = emitIrModuleCpp(module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    expect(standard).toContain('std::vector<double> array_spread_result');
+    expect(standard).toContain('array_spread_result.push_back(first)');
+    expect(standard).toContain('for (const auto& array_spread_item : items)');
+    expect(standard).toContain('array_spread_result.push_back(99.0)');
+    expect(flight).toContain('flight::Array<double> array_spread_result');
+    expect(flight).toContain('array_spread_result.push(first)');
+    expect(flight).toContain('for (const auto& array_spread_item : items)');
+    expect(flight).toContain('array_spread_result.push(99.0)');
+    expect(flight).toMatch(/flight::Array<flight::String> array_spread_result(?:_\d+)?/u);
+    expect(flight).toMatch(/for \(const auto& array_spread_item(?:_\d+)? : values\)/u);
+    expect(flight).toMatch(/auto&& array_spread_tuple(?:_\d+)? = values/u);
+    expect(flight).toContain('std::get<0>');
+    expect(flight).toContain('std::get<1>');
+  });
+
+  it('materializes spread push arguments before mutating the receiver', () => {
+    const module = lower(
+      'push-spread.ts',
+      `export function append(items: number[], incoming: readonly number[]): number {
+         return items.push(1, ...incoming, 2, ...items);
+       }`,
+    ).module;
+    const output = emitIrModuleCpp(module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    expect(output).toContain('auto&& array_push_receiver = items');
+    expect(output).toContain('const auto array_push_arguments = ([&]()');
+    expect(output).toContain('for (const auto& array_spread_item : incoming)');
+    expect(output).toContain('for (const auto& array_spread_item : items)');
+    expect(output.indexOf('const auto array_push_arguments')).toBeLessThan(
+      output.indexOf('array_push_receiver.push(array_push_item)'),
+    );
+    expect(output).toContain('return static_cast<double>(array_push_receiver.size())');
+  });
+
+  it('still refuses unbounded spreads when a fixed-arity call has no iterable target', () => {
+    const module = lower(
+      'fixed-call-spread.ts',
+      `function add(left: number, right: number): number { return left + right; }
+       export function invoke(values: number[]): number { return add(...values); }`,
+    ).module;
+
+    expect(() => emitIrModuleCpp(module, { runtimeProfile: 'flight-cpp' })).toThrow(
+      'spreading an unbounded collection requires a fold or a variadic target',
+    );
   });
 
   it('passes a terminal spread collection to a represented rest-array parameter', () => {

@@ -225,6 +225,7 @@ interface Map<K, V> {
   get(key: K): V | undefined;
   has(key: K): boolean;
   set(key: K, value: V): Map<K, V>;
+  [Symbol.iterator](): Iterator<readonly [K, V]>;
 }
 
 interface MapConstructor {
@@ -251,6 +252,7 @@ interface Set<T> {
   delete(value: T): boolean;
   forEach(visit: (value: T) => void): void;
   has(value: T): boolean;
+  [Symbol.iterator](): Iterator<T>;
 }
 
 interface SetConstructor {
