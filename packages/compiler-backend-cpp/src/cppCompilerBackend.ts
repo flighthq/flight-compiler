@@ -2745,8 +2745,8 @@ function assertWeakMapTypeArgumentsCpp(typeArguments: readonly IrType[], context
     emissionError(context, 'flight-cpp WeakMap key requires a proven flight reference representation');
   }
   const value = context.referenceRepresentationPlanner.plan(typeArguments[1], context.module);
-  if (value.kind !== 'represented' || value.identity.identity !== 'value') {
-    emissionError(context, 'flight-cpp WeakMap value requires a proven reference-free representation');
+  if (value.kind !== 'represented') {
+    emissionError(context, 'flight-cpp WeakMap value requires a proven C++ representation');
   }
 }
 

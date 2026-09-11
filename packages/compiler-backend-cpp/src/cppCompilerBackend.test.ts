@@ -1477,7 +1477,7 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
         packageName: '@flighthq/types',
         sourceFile: ts.createSourceFile(
           '/flight/packages/types/src/RenderState.ts',
-          "import type { Renderable } from './Renderable'; export interface RenderStateRuntime { renderProxyMap: WeakMap<Renderable, number> }",
+          "import type { Renderable } from './Renderable'; import type { RenderCache } from './RenderCache'; export interface RenderStateRuntime { renderProxyMap: WeakMap<Renderable, RenderCache> }",
           ts.ScriptTarget.Latest,
           true,
         ),
@@ -1487,7 +1487,7 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
         packageName: '@flighthq/types',
         sourceFile: ts.createSourceFile(
           '/flight/packages/types/src/Velocity.ts',
-          'export interface VelocityField { samples: WeakMap<object, number> }',
+          'export interface VelocitySample { value: number } export interface VelocityField { samples: WeakMap<object, VelocitySample> }',
           ts.ScriptTarget.Latest,
           true,
         ),
@@ -1503,8 +1503,10 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     const renderState = session.emitModule(modules[3]!)[0]!.contents;
     const velocity = session.emitModule(modules[4]!)[0]!.contents;
 
-    expect(renderState).toContain('std::unordered_map<flighthq_types::Renderable, double> render_proxy_map;');
-    expect(velocity).toContain('std::unordered_map<flight::Ref<void>, double> samples;');
+    expect(renderState).toContain(
+      'std::unordered_map<flighthq_types::Renderable, flight::Ref<flighthq_types::RenderCache>> render_proxy_map;',
+    );
+    expect(velocity).toContain('std::unordered_map<flight::Ref<void>, flight::Ref<VelocitySample>> samples;');
 
     const invalid = lower('weak-map-invalid.ts', 'export interface Invalid { values: WeakMap<string, number> }');
     expect(() => emitIrModuleCpp(invalid.module, { runtimeProfile: 'flight-cpp' })).toThrow(
