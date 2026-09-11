@@ -118,6 +118,12 @@ interface TypeScriptAnalysisModuleRecord {
   readonly source: string;
 }
 
+interface TypeScriptAnalysisModuleResolutionIndex {
+  readonly defaultTargetsBySpecifier: ReadonlyMap<string, readonly TypeScriptAnalysisModuleRecord[]>;
+  readonly exactTargetsByRequest: ReadonlyMap<string, readonly TypeScriptAnalysisModuleRecord[]>;
+  readonly modulesByFileName: ReadonlyMap<string, TypeScriptAnalysisModuleRecord>;
+}
+
 interface UnsupportedSyntaxFailure extends Error {
   kind: 'unsupported-syntax';
   node: ts.Node;
@@ -5104,14 +5110,13 @@ function createTypeScriptAnalysis(
     packageName: source.packageName,
     source: relativeSource(source.sourceFile.fileName, source.upstreamDirectory),
   }));
+  const resolutionIndex = createTypeScriptAnalysisModuleResolutionIndex(modules, moduleResolution);
   const host = ts.createCompilerHost(options, true);
   host.fileExists = (file) => files.has(file);
   host.getSourceFile = (file) => files.get(file);
   host.readFile = (file) => files.get(file)?.text;
   host.resolveModuleNames = (moduleNames, containingFile) =>
-    moduleNames.map((specifier) =>
-      resolveTypeScriptAnalysisModule(specifier, containingFile, modules, moduleResolution),
-    );
+    moduleNames.map((specifier) => resolveTypeScriptAnalysisModule(specifier, containingFile, resolutionIndex));
   host.writeFile = () => undefined;
   const program = ts.createProgram({
     host,
@@ -5124,33 +5129,65 @@ function createTypeScriptAnalysis(
   };
 }
 
+function createTypeScriptAnalysisModuleResolutionIndex(
+  modules: readonly TypeScriptAnalysisModuleRecord[],
+  moduleResolution: Readonly<CompilerModuleResolutionPlan>,
+): TypeScriptAnalysisModuleResolutionIndex {
+  const defaultTargetsBySpecifier = new Map<string, TypeScriptAnalysisModuleRecord[]>();
+  const exactTargetsByRequest = new Map<string, TypeScriptAnalysisModuleRecord[]>();
+  const modulesByFileName = new Map(modules.map((module) => [module.fileName, module] as const));
+  const modulesByIdentity = new Map<string, TypeScriptAnalysisModuleRecord[]>();
+  for (const module of modules) {
+    const key = getTypeScriptAnalysisModuleIdentityKey(module.packageName, module.source);
+    const matching = modulesByIdentity.get(key);
+    if (matching) matching.push(module);
+    else modulesByIdentity.set(key, [module]);
+  }
+  for (const edge of moduleResolution.edges) {
+    const targetKey = getTypeScriptAnalysisModuleIdentityKey(edge.target.packageName, edge.target.source);
+    const targets = modulesByIdentity.get(targetKey) ?? [];
+    if (edge.importer) {
+      const requestKey = getTypeScriptAnalysisModuleRequestKey(edge.importer, edge.specifier);
+      const matching = exactTargetsByRequest.get(requestKey);
+      if (matching) matching.push(...targets);
+      else exactTargetsByRequest.set(requestKey, [...targets]);
+    } else {
+      const matching = defaultTargetsBySpecifier.get(edge.specifier);
+      if (matching) matching.push(...targets);
+      else defaultTargetsBySpecifier.set(edge.specifier, [...targets]);
+    }
+  }
+  return { defaultTargetsBySpecifier, exactTargetsByRequest, modulesByFileName };
+}
+
+function getTypeScriptAnalysisModuleIdentityKey(packageName: string, source: string): string {
+  return `${packageName}\0${normalizePathPortable(source)}`;
+}
+
+function getTypeScriptAnalysisModuleRequestKey(
+  importer: Readonly<Pick<TypeScriptAnalysisModuleRecord, 'packageName' | 'source'>>,
+  specifier: string,
+): string {
+  return `${getTypeScriptAnalysisModuleIdentityKey(importer.packageName, importer.source)}\0${specifier}`;
+}
+
 function resolveTypeScriptAnalysisModule(
   specifier: string,
   containingFile: string,
-  modules: readonly TypeScriptAnalysisModuleRecord[],
-  moduleResolution: Readonly<CompilerModuleResolutionPlan>,
+  index: Readonly<TypeScriptAnalysisModuleResolutionIndex>,
 ): ts.ResolvedModule | undefined {
-  const importer = modules.find((module) => module.fileName === containingFile);
+  const importer = index.modulesByFileName.get(containingFile);
   if (!importer) return undefined;
-  const matching = moduleResolution.edges.filter((edge) => edge.specifier === specifier);
-  const exact = matching.filter(
-    (edge) =>
-      edge.importer?.packageName === importer.packageName &&
-      normalizePathPortable(edge.importer.source) === normalizePathPortable(importer.source),
-  );
-  const targets = (exact.length > 0 ? exact : matching.filter((edge) => !edge.importer)).flatMap((edge) =>
-    modules.filter(
-      (module) =>
-        module.packageName === edge.target.packageName &&
-        normalizePathPortable(module.source) === normalizePathPortable(edge.target.source),
-    ),
-  );
+  const requestKey = getTypeScriptAnalysisModuleRequestKey(importer, specifier);
+  const targets = index.exactTargetsByRequest.has(requestKey)
+    ? index.exactTargetsByRequest.get(requestKey)!
+    : (index.defaultTargetsBySpecifier.get(specifier) ?? []);
   const relativeCandidates = getTypeScriptAnalysisRelativeCandidates(containingFile, specifier);
   const candidates = [
     ...targets,
-    ...modules.filter(
-      (module) => module.packageName === importer.packageName && relativeCandidates.has(module.fileName),
-    ),
+    ...[...relativeCandidates]
+      .map((candidate) => index.modulesByFileName.get(candidate))
+      .filter((module): module is TypeScriptAnalysisModuleRecord => module?.packageName === importer.packageName),
   ];
   const resolved = [...new Map(candidates.map((candidate) => [candidate.fileName, candidate])).values()];
   return resolved.length === 1

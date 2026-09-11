@@ -2506,6 +2506,15 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(emitted.contents).toContain('auto x');
   });
 
+  it('terminates inferred binding collection when an alias remains unknown', () => {
+    const module = lower(
+      'unknown-alias.ts',
+      'export function forward(value: unknown): unknown { const alias = value; return alias; }',
+    ).module;
+
+    expect(emitIrModuleCpp(module).contents).toContain('auto alias = value;');
+  });
+
   it('refuses Partial<T> types', () => {
     const result = lower('partial.ts', 'export const x: number = 1;');
     const module = structuredClone(result.module);

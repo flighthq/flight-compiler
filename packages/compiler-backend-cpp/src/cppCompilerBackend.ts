@@ -3668,7 +3668,7 @@ function collectIrModuleBindingTypesCpp(module: Readonly<IrModule>): ReadonlyMap
       const existing = result.get(bindingId);
       if (existing && existing.kind !== 'unknown') continue;
       const type = inferIrExpressionTypeCpp(initializer, result);
-      if (!type) continue;
+      if (!type || type.kind === 'unknown') continue;
       result.set(bindingId, type);
       changed = true;
     }
