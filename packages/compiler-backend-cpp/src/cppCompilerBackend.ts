@@ -103,6 +103,7 @@ interface CppVariantRepresentation {
 }
 
 type CppDirectBindingOwner = Readonly<{ declaration: IrDeclaration; module: IrModule }>;
+type CppImportBindingOwner = Readonly<{ imported: string; module: IrModule; specifier: string }>;
 
 interface EmitContext {
   anonymousStructs: Map<string, AnonymousStruct>;
@@ -115,6 +116,7 @@ interface EmitContext {
   defaultedParameterIds: ReadonlySet<string>;
   denseArrayLengthBindingIds: ReadonlySet<string>;
   directBindingOwners: ReadonlyMap<string, CppDirectBindingOwner | null>;
+  importBindingOwners: ReadonlyMap<string, CppImportBindingOwner | null>;
   finallyReturnVar?: string | undefined;
   includes: Set<string>;
   module: Readonly<IrModule>;
@@ -140,6 +142,7 @@ export function createCppCompilerBackend(): CompilerBackend<CppCompilerBackendOp
         : createIrTypeReferenceRepresentationPlannerCpp(modules);
       const interfaceInheritancePass = createCompilerLoweringPassInterfaceInheritance(modules, moduleResolution);
       const directBindingOwners = createCppDirectBindingOwners(modules);
+      const importBindingOwners = createCppImportBindingOwners(modules);
       return Object.freeze({
         emitModule(module: Readonly<IrModule>) {
           return [
@@ -151,6 +154,7 @@ export function createCppCompilerBackend(): CompilerBackend<CppCompilerBackendOp
               referenceRepresentationPlanner,
               interfaceInheritancePass,
               directBindingOwners,
+              importBindingOwners,
             ),
           ];
         },
@@ -178,6 +182,7 @@ function emitIrModuleCppWithContext(
   referenceRepresentationPlanner?: CompilerCppReferenceRepresentationPlanner | undefined,
   interfaceInheritancePass?: Readonly<CompilerLoweringPass> | undefined,
   directBindingOwners?: ReadonlyMap<string, CppDirectBindingOwner | null> | undefined,
+  importBindingOwners?: ReadonlyMap<string, CppImportBindingOwner | null> | undefined,
 ): EmittedFile {
   let module: IrModule;
   try {
@@ -225,6 +230,7 @@ function emitIrModuleCppWithContext(
     defaultedParameterIds: new Set(),
     denseArrayLengthBindingIds: collectIrModuleDenseArrayLengthBindingIdsCpp(sourceModule),
     directBindingOwners: directBindingOwners ?? createCppDirectBindingOwners(sourceModules),
+    importBindingOwners: importBindingOwners ?? createCppImportBindingOwners(sourceModules),
     includes: new Set<string>(),
     module,
     namespaceScope: true,
@@ -2634,7 +2640,7 @@ function getCppErasedIntersectionValueType(
   type: Readonly<Extract<IrType, { kind: 'intersection' }>>,
   context: EmitContext,
 ): Readonly<IrType> | undefined {
-  const valueDomains: IrType[] = [];
+  let sharedDomains: Map<string, IrType> | undefined;
   for (const member of type.types) {
     if (
       member.kind === 'object' ||
@@ -2646,13 +2652,23 @@ function getCppErasedIntersectionValueType(
       continue;
     }
     const runtimeDomain = getIrTypeRuntimeDomainCpp(member, context, new Set());
-    if (!runtimeDomain || (runtimeDomain.kind !== 'literal' && runtimeDomain.kind !== 'primitive')) return undefined;
-    valueDomains.push(runtimeDomain);
+    const candidates = runtimeDomain ? getCppIntersectionScalarDomains(runtimeDomain) : undefined;
+    if (!candidates) return undefined;
+    const candidateDomains = new Map(
+      candidates.map((domain) => [normalizeCompilerStructuralValueCanonical(domain), domain] as const),
+    );
+    sharedDomains = sharedDomains
+      ? new Map([...sharedDomains].filter(([key]) => candidateDomains.has(key)))
+      : candidateDomains;
   }
-  const domains = new Map(
-    valueDomains.map((domain) => [normalizeCompilerStructuralValueCanonical(domain), domain] as const),
-  );
-  return domains.size === 1 ? [...domains.values()][0] : undefined;
+  return sharedDomains?.size === 1 ? [...sharedDomains.values()][0] : undefined;
+}
+
+function getCppIntersectionScalarDomains(type: Readonly<IrType>): readonly IrType[] | undefined {
+  if (type.kind === 'primitive') return [type];
+  if (type.kind !== 'union') return undefined;
+  const domains = type.types.flatMap((member) => (member.kind === 'primitive' ? [member] : []));
+  return domains.length === type.types.length ? domains : undefined;
 }
 
 function getCppIndexedAccessPropertyNames(
@@ -3292,6 +3308,10 @@ function getIrTypeRuntimeDomainCpp(
   if (type.kind === 'keyof') {
     const keyType = getCppKeyofType(type.type, context);
     return keyType ? getIrTypeRuntimeDomainCpp(keyType, context, resolvingAliases) : undefined;
+  }
+  if (type.kind === 'typeOf') {
+    const valueType = getCppTypeOfValueType(type, context);
+    return valueType ? getIrTypeRuntimeDomainCpp(valueType, context, resolvingAliases) : undefined;
   }
   if (type.kind !== 'named' || type.reference.kind !== 'binding' || type.typeArguments.length > 0) return type;
   const bindingId = type.reference.binding.id;
@@ -5636,6 +5656,8 @@ function getTypeReferenceTargetName(type: Readonly<IrType & { kind: 'named' }>, 
   }
   const imported = getCppImportedBindingTargetName(type.reference.binding.id, type.reference.path, context);
   if (imported) return imported;
+  const foreignImported = getCppForeignImportedBindingTargetNameCpp(type, context);
+  if (foreignImported) return foreignImported;
   const owner = getCppDirectBindingOwner(type, context);
   if (owner && owner.module.packageName !== context.module.packageName) {
     const targetName =
@@ -5664,6 +5686,49 @@ function createCppDirectBindingOwners(
     }
   }
   return owners;
+}
+
+function createCppImportBindingOwners(
+  modules: readonly Readonly<IrModule>[],
+): ReadonlyMap<string, CppImportBindingOwner | null> {
+  const owners = new Map<string, CppImportBindingOwner | null>();
+  for (const module of modules) {
+    for (const importItem of module.imports) {
+      for (const binding of importItem.bindings) {
+        const bindingId = binding.binding.id;
+        owners.set(
+          bindingId,
+          owners.has(bindingId) ? null : { imported: binding.imported, module, specifier: importItem.specifier },
+        );
+      }
+    }
+  }
+  return owners;
+}
+
+function getCppForeignImportedBindingTargetNameCpp(
+  type: Readonly<Extract<IrType, { kind: 'named' }>>,
+  context: EmitContext,
+): string | undefined {
+  if (type.reference.kind !== 'binding' || type.reference.binding.kind !== 'import') return undefined;
+  const owner = context.importBindingOwners.get(type.reference.binding.id);
+  if (
+    !owner ||
+    (owner.module.packageName === context.module.packageName && owner.module.source === context.module.source)
+  ) {
+    return undefined;
+  }
+  const importedName = owner.imported === '*' ? type.reference.path[0] : owner.imported;
+  if (!importedName) return undefined;
+  const targetModules = context.referenceRepresentationPlanner.resolveModules(owner.specifier, owner.module);
+  const directTargets = targetModules.filter((target) => hasCppDirectExportName(target, importedName));
+  const targetModule =
+    directTargets.length === 1
+      ? directTargets[0]!
+      : context.referenceRepresentationPlanner.resolveModule(owner.specifier, owner.module);
+  if (!targetModule) return undefined;
+  const targetName = getCppResolvedExportTargetName(targetModule, importedName);
+  return `${getCppCompilerPackageNamespace(targetModule.packageName, context.options.packageTargets)}::${targetName}`;
 }
 
 function getCppEquivalentImportedTypeCpp(type: Readonly<IrType>, context: EmitContext): IrType | undefined {

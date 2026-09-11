@@ -383,6 +383,129 @@ describe('createCppCompilerBackend', () => {
     expect(standalone.contents).toContain('flight::Ref<Model>');
   });
 
+  it('constructs an imported optional reference from an imported function result', () => {
+    const types = ts.createSourceFile(
+      '/flight/packages/types/src/entity.ts',
+      `export interface Entity { [EntityRuntimeKey]: EntityRuntime | undefined; }
+       export interface EntityRuntime { binding: object | null; }
+       export const EntityRuntimeKey = Symbol.for('EntityRuntime');`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const runtime = ts.createSourceFile(
+      '/flight/packages/entity/src/runtime.ts',
+      `import type { EntityRuntime } from '@flighthq/types/contract';
+       export function createEntityRuntime(): EntityRuntime { return { binding: null }; }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const binding = ts.createSourceFile(
+      '/flight/packages/entity/src/binding.ts',
+      `import type { Entity } from '@flighthq/types/contract';
+       import { EntityRuntimeKey } from '@flighthq/types/contract';
+       import { createEntityRuntime } from './runtime.js';
+       export function attach(entity: Entity): void {
+         if (entity[EntityRuntimeKey] === undefined) entity[EntityRuntimeKey] = createEntityRuntime();
+       }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          specifier: '@flighthq/types/contract',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/entity.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const results = lowerTypeScriptSources(
+      [
+        { packageName: '@flighthq/types', sourceFile: types, upstreamDirectory: '/flight' },
+        { packageName: '@flighthq/entity', sourceFile: runtime, upstreamDirectory: '/flight' },
+        { packageName: '@flighthq/entity', sourceFile: binding, upstreamDirectory: '/flight' },
+      ],
+      moduleResolution,
+    );
+    const modules = results.map((result) => result.module);
+    const emitted = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules,
+      options: {
+        packageTargets: {
+          '@flighthq/entity': { includePrefix: 'flight/entity', namespace: 'flight::entity' },
+          '@flighthq/types': { includePrefix: 'flight/types', namespace: 'flight::types' },
+        },
+        runtimeProfile: 'flight-cpp',
+      },
+    }).emitModule(modules[2]!)[0]!.contents;
+
+    expect(emitted).toContain(
+      'std::optional<flight::Ref<flight::types::EntityRuntime>>{flight::entity::create_entity_runtime()}',
+    );
+  });
+
+  it('constructs an imported nullable reference from an imported function result', () => {
+    const types = ts.createSourceFile(
+      '/flight/packages/types/src/color.ts',
+      `export interface ColorLut { size: number; samples: readonly number[] }
+       export interface ColorLutCache { lut: ColorLut | null }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const colorLut = ts.createSourceFile(
+      '/flight/packages/adjustments/src/colorLut.ts',
+      `import type { ColorLut } from '@flighthq/types/contract';
+       export function bakeColorLut(): ColorLut { return { size: 2, samples: [] }; }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const cache = ts.createSourceFile(
+      '/flight/packages/adjustments/src/colorLutCache.ts',
+      `import type { ColorLut, ColorLutCache } from '@flighthq/types/contract';
+       import { bakeColorLut } from './colorLut.js';
+       export function bake(cache: ColorLutCache): ColorLut {
+         const lut = bakeColorLut();
+         cache.lut = lut;
+         return lut;
+       }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          specifier: '@flighthq/types/contract',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/color.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const results = lowerTypeScriptSources(
+      [
+        { packageName: '@flighthq/types', sourceFile: types, upstreamDirectory: '/flight' },
+        { packageName: '@flighthq/adjustments', sourceFile: colorLut, upstreamDirectory: '/flight' },
+        { packageName: '@flighthq/adjustments', sourceFile: cache, upstreamDirectory: '/flight' },
+      ],
+      moduleResolution,
+    );
+    const modules = results.map((result) => result.module);
+    const emitted = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules,
+      options: {
+        packageTargets: {
+          '@flighthq/adjustments': { includePrefix: 'flight/adjustments', namespace: 'flight::adjustments' },
+          '@flighthq/types': { includePrefix: 'flight/types', namespace: 'flight::types' },
+        },
+        runtimeProfile: 'flight-cpp',
+      },
+    }).emitModule(modules[2]!)[0]!.contents;
+
+    expect(emitted).toContain('flight::Ref<flight::types::ColorLut> lut = flight::adjustments::bake_color_lut()');
+    expect(emitted).toContain('std::optional<flight::Ref<flight::types::ColorLut>>{lut}');
+  });
+
   it('applies explicit package namespace and installed include identity across a module graph', () => {
     const model = lowerPackage('@flighthq/types', 'model.ts', 'export interface Model { value: number }').module;
     const consumer = lowerPackage(
@@ -4140,27 +4263,74 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     const result = lower(
       'open-string-unions.ts',
       `export interface Request { title: string; tag?: string }
-       export type Role = 'button' | 'link' | (string & {});
+       export const FirstFormat = 'First';
+       export const SecondFormat = 'Second';
+       export type Role = 'button' | 'link' | (string & Record<never, never>);
+       export type Format = typeof FirstFormat | typeof SecondFormat | (string & Record<never, never>);
        export type RequestField = keyof Request;
        export type ScheduleField = RequestField | 'at' | 'repeat';`,
     );
     const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
 
     expect(emitted.contents).toContain('using Role = flight::String;');
+    expect(emitted.contents).toContain('using Format = flight::String;');
     expect(emitted.contents).toContain('using RequestField = flight::String;');
     expect(emitted.contents).toContain('using ScheduleField = flight::String;');
     expect(emitted.contents).not.toContain('std::variant<flight::String, flight::String>');
   });
 
   it('erases equivalent primitive and keyof intersection value domains', () => {
-    const result = lower(
-      'keyof-value-intersection.ts',
-      `interface Config { alpha: number; size: number }
-       export function report(field: string & keyof Config): string { return field; }`,
+    const config = ts.createSourceFile(
+      '/flight/packages/types/src/config.ts',
+      `export const EntityRuntimeKey = Symbol.for('EntityRuntime');
+       export interface Entity { [EntityRuntimeKey]: object | undefined }
+       export interface ParticleEmitterConfig extends Entity { alpha: number; size: number }
+       export interface ParticleConfigIssue { field: keyof ParticleEmitterConfig; message: string }`,
+      ts.ScriptTarget.Latest,
+      true,
     );
-    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+    const contract = ts.createSourceFile(
+      '/flight/packages/types/src/contract.ts',
+      "export type { ParticleConfigIssue, ParticleEmitterConfig } from './config.js';",
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const consumer = ts.createSourceFile(
+      '/flight/packages/particles/src/validate.ts',
+      `import type { ParticleConfigIssue, ParticleEmitterConfig } from '@flighthq/types/contract';
+       export function report(
+         issues: ParticleConfigIssue[],
+         field: string & keyof ParticleEmitterConfig,
+       ): void { issues.push({ field, message: 'invalid' }); }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          specifier: '@flighthq/types/contract',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/contract.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const results = lowerTypeScriptSources(
+      [
+        { packageName: '@flighthq/types', sourceFile: config, upstreamDirectory: '/flight' },
+        { packageName: '@flighthq/types', sourceFile: contract, upstreamDirectory: '/flight' },
+        { packageName: '@flighthq/particles', sourceFile: consumer, upstreamDirectory: '/flight' },
+      ],
+      moduleResolution,
+    );
+    const modules = results.map((result) => result.module);
+    const emitted = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules,
+      options: { runtimeProfile: 'flight-cpp' },
+    }).emitModule(modules[2]!)[0]!.contents;
 
-    expect(emitted.contents).toContain('flight::String report(flight::String field)');
+    expect(emitted).toContain('flight::String field');
+    expect(emitted).toContain('.push(');
   });
 
   it('emits array with sparse element as empty initializer', () => {
