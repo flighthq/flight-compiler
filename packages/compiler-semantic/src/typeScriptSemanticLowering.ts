@@ -4549,9 +4549,24 @@ function getTypeScriptCheckerNamedTypeEvidence(
   if (loweredArguments.length !== typeArguments.length) return undefined;
   return {
     kind: 'named',
-    reference: binding ? { binding, kind: 'binding', path: [] } : { kind: 'ambient', name: symbol.name },
+    reference: binding
+      ? { binding, kind: 'binding', path: [] }
+      : { kind: 'ambient', name: getTypeScriptAmbientSymbolName(symbol) },
     typeArguments: loweredArguments,
   };
+}
+
+function getTypeScriptAmbientSymbolName(symbol: ts.Symbol): string {
+  const declaration = symbol.declarations?.find(
+    (candidate) => candidate.getSourceFile().fileName === getCompilerAmbientSurfaceFileName(),
+  );
+  const namespaceNames: string[] = [];
+  for (let parent = declaration?.parent; parent; parent = parent.parent) {
+    if (ts.isModuleDeclaration(parent) && (ts.isIdentifier(parent.name) || ts.isStringLiteral(parent.name))) {
+      namespaceNames.unshift(parent.name.text);
+    }
+  }
+  return [...namespaceNames, symbol.name].join('.');
 }
 
 function getTypeScriptCheckerTypeBinding(
