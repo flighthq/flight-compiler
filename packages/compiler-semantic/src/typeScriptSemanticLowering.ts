@@ -4154,10 +4154,9 @@ function inferInitializerType(node: ts.Expression, context: LoweringContext): Ir
       }
       const name = propertyName(member.name, context);
       const type = ts.isShorthandPropertyAssignment(member)
-        ? (lowerTypeScriptExpressionTypeEvidence(member.name, context) ?? inferInitializerType(member.name, context))
+        ? inferInitializerType(member.name, context)
         : ts.isPropertyAssignment(member)
-          ? (lowerTypeScriptExpressionTypeEvidence(member.initializer, context) ??
-            inferInitializerType(member.initializer, context))
+          ? inferInitializerType(member.initializer, context)
           : ts.isMethodDeclaration(member)
             ? lowerFunctionType(member, context)
             : undefined;

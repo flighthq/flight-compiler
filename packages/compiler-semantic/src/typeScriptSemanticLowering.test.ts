@@ -4096,11 +4096,15 @@ describe('lowerTypeScriptSource', () => {
     });
   });
 
-  it('uses binding-pattern evidence when inferring anonymous callback results', () => {
+  it('uses binding-pattern evidence when inferring renamed anonymous callback results', () => {
     const result = lower(
       'anonymous-callback-result.ts',
       `export function segments(entries: readonly (readonly [number, number])[]) {
-         return entries.map(([end, start]) => ({ end, start }));
+         return entries.map(([codePoint, glyph]) => ({
+           delta: (glyph - codePoint) & 0xffff,
+           end: codePoint,
+           start: codePoint,
+         }));
        }`,
     );
     const declaration = result.module.declarations.find(
@@ -4122,6 +4126,7 @@ describe('lowerTypeScriptSource', () => {
     expect(object?.kind === 'object' ? object.type : undefined).toMatchObject({
       kind: 'object',
       properties: [
+        { name: 'delta', type: { kind: 'primitive', name: 'number' } },
         { name: 'end', type: { kind: 'primitive', name: 'number' } },
         { name: 'start', type: { kind: 'primitive', name: 'number' } },
       ],
