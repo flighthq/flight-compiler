@@ -1091,7 +1091,8 @@ function lowerTypeScriptInvocationArguments(
     const declaredType = lowerFunctionTypeParameter(parameter, context).type;
     const type =
       parameter.type && hasExternalTypeScriptTypeParameter(parameter.type, context)
-        ? (getTypeScriptInstantiatedInvocationParameterType(node, index, argument, context) ?? declaredType)
+        ? (getTypeScriptInstantiatedInvocationParameterType(node, index, argument, context) ??
+          inferInitializerType(argument, context))
         : declaredType;
     const contextualType =
       parameter.questionToken || parameter.initializer ? addIrTypeBindingPatternUndefined(type) : type;
@@ -1107,12 +1108,12 @@ function getTypeScriptInstantiatedInvocationParameterType(
 ): IrType | undefined {
   const parameter = context.checker.getResolvedSignature(node)?.parameters[index];
   if (!parameter) return undefined;
-  return getTypeScriptCheckerTypeEvidence(
-    context.checker.getTypeOfSymbolAtLocation(parameter, argument),
-    context,
-    0,
-    true,
-  );
+  const type = context.checker.getTypeOfSymbolAtLocation(parameter, argument);
+  // Contextual return inference can leave a resolved signature's parameter as the callee's raw type
+  // parameter. That binding is not in scope at the call site; the argument's own initializer evidence
+  // is the only local proof available to the caller.
+  if (type.flags & ts.TypeFlags.TypeParameter) return undefined;
+  return getTypeScriptCheckerTypeEvidence(type, context, 0, true);
 }
 
 function addTypeScriptExtraArgumentErasureSemantics(

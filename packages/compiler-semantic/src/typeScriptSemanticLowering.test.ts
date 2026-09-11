@@ -8955,6 +8955,53 @@ it('keeps instantiated generic call evidence outside the callee type parameter s
   });
 });
 
+it('uses caller-owned object evidence when contextual assignment leaves a generic parameter uninstantiated', () => {
+  const result = lower(
+    'contextual-generic-call-evidence.ts',
+    `interface Entity { runtime: object | undefined }
+     interface Signal<Slot> { slot: Slot | undefined }
+     interface LogSignals extends Entity {
+       onLogEntry: Signal<(entry: string) => void>;
+       onLogError: Signal<(entry: string) => void>;
+     }
+     function createSignal<Slot>(): Signal<Slot> { return { slot: undefined }; }
+     let logSignals: LogSignals | null = null;
+     export function enableLogSignals(): LogSignals {
+       if (logSignals !== null) return logSignals;
+       logSignals = initializeLogEntity({
+         onLogEntry: createSignal<(entry: string) => void>(),
+         onLogError: createSignal<(entry: string) => void>(),
+       });
+       return logSignals;
+     }
+     function initializeLogEntity<Type extends object>(value: Type): Type & Entity {
+       return value as Type & Entity;
+     }`,
+  );
+  const enable = result.module.declarations.find(
+    (candidate) => candidate.kind === 'function' && candidate.binding.name === 'enableLogSignals',
+  );
+  const initialize = result.module.declarations.find(
+    (candidate) => candidate.kind === 'function' && candidate.binding.name === 'initializeLogEntity',
+  );
+  const statement = enable?.kind === 'function' ? enable.body[1] : undefined;
+  const assignment = statement?.kind === 'expression' ? statement.expression : undefined;
+  const call = assignment?.kind === 'assignment' ? assignment.right : undefined;
+  if (call?.kind !== 'call' || call.arguments[0]?.kind !== 'object') {
+    throw new Error('Expected assigned generic object call');
+  }
+  if (initialize?.kind !== 'function' || !initialize.typeParameters[0]) {
+    throw new Error('Expected generic initializer');
+  }
+
+  expect(result.diagnostics).toEqual([]);
+  expect(JSON.stringify(enable)).not.toContain(initialize.typeParameters[0].binding.id);
+  expect(call.arguments[0].type).toMatchObject({
+    kind: 'object',
+    properties: [{ name: 'onLogEntry' }, { name: 'onLogError' }],
+  });
+});
+
 it('records checker-resolved callable result types without expanding arbitrary objects', () => {
   const result = lower(
     'callable-result.ts',
