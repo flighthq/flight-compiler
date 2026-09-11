@@ -202,6 +202,9 @@ const cppExternalBindingOwnerships = new Set(['borrowed', 'owned', 'shared', 'va
 const cppMathImulTarget =
   '([](double left, double right) noexcept { const auto to_uint32 = [](double value) noexcept { if (!std::isfinite(value) || value == 0.0) return std::uint32_t{0}; constexpr double modulus = 4294967296.0; double remainder = std::fmod(std::trunc(value), modulus); if (remainder < 0.0) remainder += modulus; return static_cast<std::uint32_t>(remainder); }; const std::uint32_t product = to_uint32(left) * to_uint32(right); return product < 0x80000000U ? static_cast<double>(product) : static_cast<double>(static_cast<std::int64_t>(product) - 0x100000000LL); })';
 
+const cppMathRandomTarget =
+  '([]() { static thread_local std::mt19937_64 engine(std::random_device{}()); return std::generate_canonical<double, 53>(engine); })';
+
 const cppObjectIsTarget =
   '([](const auto& left, const auto& right) { using Left = std::remove_cvref_t<decltype(left)>; using Right = std::remove_cvref_t<decltype(right)>; if constexpr (!std::is_same_v<Left, Right>) { return false; } else if constexpr (std::is_floating_point_v<Left>) { if (std::isnan(left) && std::isnan(right)) return true; if (left == 0.0 && right == 0.0) return std::signbit(left) == std::signbit(right); return left == right; } else { return left == right; } })';
 
@@ -227,7 +230,7 @@ const cppIntlRuntimeTypeTargets = [
 
 const cppFlightRuntimeExternalSymbolBindings = [
   {
-    headers: ['cmath', 'cstdint'],
+    headers: ['cmath', 'cstdint', 'random'],
     kind: 'native',
     members: [
       { sourceMember: 'E', targetName: 'flight::e' },
@@ -250,6 +253,7 @@ const cppFlightRuntimeExternalSymbolBindings = [
       { sourceMember: 'max', targetName: 'flight::maximum' },
       { sourceMember: 'min', targetName: 'flight::minimum' },
       { sourceMember: 'pow', targetName: 'flight::power' },
+      { sourceMember: 'random', targetName: cppMathRandomTarget },
       { sourceMember: 'round', targetName: 'flight::round' },
       { sourceMember: 'sign', targetName: 'flight::sign' },
       { sourceMember: 'sin', targetName: 'std::sin' },
@@ -435,6 +439,13 @@ const cppFlightRuntimeExternalSymbolBindings = [
     targetName: 'std::numeric_limits<double>::quiet_NaN()',
   },
   { kind: 'native', sourceName: 'Number', space: 'type', targetName: 'double' },
+  {
+    headers: ['cmath'],
+    kind: 'native',
+    sourceName: 'isNaN',
+    space: 'value',
+    targetName: 'std::isnan',
+  },
   {
     capability: 'number-parsing',
     headers: ['flight/number.hpp'],
@@ -666,7 +677,7 @@ const cppFlightRuntimeExternalSymbolBindings = [
 
 const cppRuntimeExternalSymbolBindings = [
   {
-    headers: ['cmath', 'cstdint'],
+    headers: ['cmath', 'cstdint', 'random'],
     kind: 'native',
     members: [
       { sourceMember: 'E', targetName: 'M_E' },
@@ -689,6 +700,7 @@ const cppRuntimeExternalSymbolBindings = [
       { sourceMember: 'max', targetName: 'std::max' },
       { sourceMember: 'min', targetName: 'std::min' },
       { sourceMember: 'pow', targetName: 'std::pow' },
+      { sourceMember: 'random', targetName: cppMathRandomTarget },
       { sourceMember: 'round', targetName: 'std::round' },
       { sourceMember: 'sign', targetName: 'flight::sign' },
       { sourceMember: 'sin', targetName: 'std::sin' },
@@ -718,6 +730,13 @@ const cppRuntimeExternalSymbolBindings = [
   { kind: 'native', sourceName: 'Float32Array', space: 'value', targetName: 'std::vector<float>' },
   { kind: 'native', sourceName: 'Float64Array', space: 'type', targetName: 'std::vector<double>' },
   { kind: 'native', sourceName: 'Float64Array', space: 'value', targetName: 'std::vector<double>' },
+  {
+    headers: ['cmath'],
+    kind: 'native',
+    sourceName: 'isNaN',
+    space: 'value',
+    targetName: 'std::isnan',
+  },
   {
     kind: 'native',
     sourceName: 'Infinity',

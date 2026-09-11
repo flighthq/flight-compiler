@@ -330,14 +330,36 @@ describe('createIrTypeReferenceRepresentationPlanCpp', () => {
       kind: 'represented',
       valueRepresentation: 'flightReference',
     });
-    for (const type of [functionType, tupleType]) {
-      expect(createIrTypeReferenceRepresentationPlanCpp(type, module)).toMatchObject({
-        category: 'value',
-        kind: 'represented',
-        storageRepresentation: 'inlineValue',
-        valueRepresentation: 'inlineValue',
-      });
-    }
+    expect(createIrTypeReferenceRepresentationPlanCpp(functionType, module)).toMatchObject({
+      category: 'value',
+      kind: 'represented',
+      storageRepresentation: 'inlineValue',
+      valueRepresentation: 'inlineValue',
+    });
+    expect(createIrTypeReferenceRepresentationPlanCpp(tupleType, module)).toMatchObject({
+      category: 'array',
+      kind: 'represented',
+      storageRepresentation: 'runtimeManaged',
+      valueRepresentation: 'runtimeReference',
+    });
+    expect(
+      createIrTypeReferenceRepresentationPlanCpp(
+        {
+          elements: [
+            { optional: false, rest: false, type: numberType },
+            { optional: false, rest: false, type: { kind: 'primitive', name: 'string' } },
+          ],
+          kind: 'tuple',
+          readonly: false,
+        },
+        module,
+      ),
+    ).toMatchObject({
+      category: 'value',
+      kind: 'represented',
+      storageRepresentation: 'inlineValue',
+      valueRepresentation: 'inlineValue',
+    });
     expect(createIrTypeReferenceRepresentationPlanCpp(typeOfArray, module)).toMatchObject({
       kind: 'refused',
       reason: 'unsupportedReferenceForm',

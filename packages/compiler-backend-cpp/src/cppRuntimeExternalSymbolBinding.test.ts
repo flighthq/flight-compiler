@@ -28,7 +28,7 @@ describe('createCompilerRuntimeExternalSymbolBindingPlanCpp', () => {
     const plan = createCompilerRuntimeExternalSymbolBindingPlanCpp();
 
     expect(plan.contract).toBe('flight-runtime-contract/2');
-    expect(plan.bindings).toHaveLength(49);
+    expect(plan.bindings).toHaveLength(50);
     expect(plan.bindings.filter(({ externalSymbol }) => externalSymbol.sourceName === 'Promise')).toEqual([
       {
         capability: 'task',
@@ -63,13 +63,13 @@ describe('createCompilerRuntimeExternalSymbolBindingPlanCpp', () => {
     const second = createCompilerRuntimeExternalSymbolBindingPlanCpp();
 
     (first.bindings as unknown[]).pop();
-    expect(second.bindings).toHaveLength(49);
+    expect(second.bindings).toHaveLength(50);
   });
 
   it('elects semantic containers and strings as flight-cpp runtime capabilities', () => {
     const plan = createCompilerRuntimeExternalSymbolBindingPlanCpp('flight-cpp');
 
-    expect(plan.bindings).toHaveLength(77);
+    expect(plan.bindings).toHaveLength(78);
     expect(plan.bindings).toContainEqual({
       capability: 'array',
       externalSymbol: { sourceName: 'Array', space: 'type' },
@@ -191,6 +191,14 @@ describe('getCompilerExternalBindingHeadersCpp', () => {
       'vector',
     ]);
   });
+
+  it.each(['flight-cpp', 'standard-library'] as const)(
+    'includes native random and numeric predicate support in the %s profile',
+    (runtimeProfile) => {
+      expect(getCompilerExternalBindingHeadersCpp('Math', 'value', undefined, runtimeProfile)).toContain('random');
+      expect(getCompilerExternalBindingHeadersCpp('isNaN', 'value', undefined, runtimeProfile)).toEqual(['cmath']);
+    },
+  );
 
   it('returns semantic runtime headers for the newly modeled portable services', () => {
     expect(getCompilerExternalBindingHeadersCpp('ArrayBuffer', 'value', undefined, 'flight-cpp')).toEqual([
@@ -319,6 +327,15 @@ describe('getCompilerRuntimeExternalSymbolTargetCpp', () => {
     },
   );
 
+  it.each(['flight-cpp', 'standard-library'] as const)(
+    'binds Math.random to a process-local C++ random source in the %s profile',
+    (runtimeProfile) => {
+      const target = getCompilerRuntimeExternalMemberTargetCpp('Math', 'random', runtimeProfile);
+      expect(target).toContain('thread_local std::mt19937_64');
+      expect(target).toContain('std::generate_canonical<double, 53>');
+    },
+  );
+
   it('maps portable service namespaces and functions through the semantic runtime profile', () => {
     expect(getCompilerRuntimeExternalMemberTargetCpp('Object', 'keys', 'flight-cpp')).toBe('flight::object_keys');
     expect(getCompilerRuntimeExternalMemberTargetCpp('JSON', 'parse', 'flight-cpp')).toBe('flight::Json::parse');
@@ -327,6 +344,7 @@ describe('getCompilerRuntimeExternalSymbolTargetCpp', () => {
       'flight::String::from_code_point',
     );
     expect(getCompilerRuntimeExternalSymbolTargetCpp('parseInt', 'value', 'flight-cpp')).toBe('flight::parse_int');
+    expect(getCompilerRuntimeExternalSymbolTargetCpp('isNaN', 'value', 'flight-cpp')).toBe('std::isnan');
   });
 });
 
@@ -398,7 +416,6 @@ describe('getCompilerRuntimeExternalMemberTargetCpp', () => {
   });
 
   it('claims nothing for an unbound member or an unbound symbol', () => {
-    expect(getCompilerRuntimeExternalMemberTargetCpp('Math', 'random')).toBeUndefined();
     expect(getCompilerRuntimeExternalMemberTargetCpp('Array', 'from')).toBeUndefined();
     expect(getCompilerRuntimeExternalMemberTargetCpp('Date', 'now')).toBeUndefined();
     expect(getCompilerRuntimeExternalMemberTargetCpp('console', 'log')).toBeUndefined();

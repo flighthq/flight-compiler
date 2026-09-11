@@ -957,10 +957,25 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(emitted.contents).toContain('return alias->value');
   });
 
-  it('does not claim inline tuple storage preserves shared referent mutation', () => {
+  it('preserves captured homogeneous tuple referent mutation through the shared array runtime', () => {
     const result = lower(
       'tuple-referent.ts',
       'export function mutate(): number { const tuple: [number] = [0]; const update = (): void => { tuple[0] += 1; }; update(); return tuple[0]; }',
+    );
+
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+
+    expect(emitted.contents).toContain(
+      'const auto tuple_capture = flight::make_binding_cell(flight::Array<double>{0.0})',
+    );
+    expect(emitted.contents).toContain('tuple_capture.read_binding().element(0.0) += 1.0');
+    expect(emitted.contents).toContain('return tuple_capture.read_binding().element(0.0)');
+  });
+
+  it('keeps heterogeneous captured tuples explicit when referent mutation cannot be shared', () => {
+    const result = lower(
+      'heterogeneous-tuple-referent.ts',
+      "export function mutate(): number { const tuple: [number, string] = [0, '']; const update = (): void => { tuple[0] += 1; }; update(); return tuple[0]; }",
     );
 
     expect(() => emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' })).toThrow(

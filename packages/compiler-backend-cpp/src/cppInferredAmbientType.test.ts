@@ -39,11 +39,14 @@ describe('C++ inferred ambient types', () => {
     );
   });
 
-  it('refuses an unbound ambient namespace member instead of emitting property syntax', () => {
-    const result = lower('export function random(): number { return Math.random(); }');
-    expect(result.diagnostics).toEqual([]);
-    expect(() => emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' })).toThrow(
-      'ambient value Math member random has no C++ binding',
+  it('emits Math.random and global isNaN through exact native bindings', () => {
+    const result = lower(
+      'export function random(): number { const value = Math.random(); return isNaN(value) ? 0 : value; }',
     );
+    expect(result.diagnostics).toEqual([]);
+    const output = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
+    expect(output).toContain('#include <random>');
+    expect(output).toContain('thread_local std::mt19937_64');
+    expect(output).toContain('std::isnan(value)');
   });
 });

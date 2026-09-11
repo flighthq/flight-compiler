@@ -15,6 +15,7 @@ import type {
   IrObjectTypeProperty,
   IrType,
 } from '../../compiler-types/src/index.js';
+import { getIrHomogeneousTupleElementTypeCpp } from './cppTupleRepresentation.js';
 
 type ReferenceDeclaration = Readonly<Extract<IrDeclaration, { kind: 'class' | 'interface' | 'typeAlias' }>>;
 
@@ -286,7 +287,7 @@ function createIrTypeReferenceRepresentationPlanInternalCpp(
     return createCompilerCppReferenceRepresentationSuccessCpp(identity, 'value', 'none', 'inlineValue', 'inlineValue');
   }
 
-  if (type.kind === 'array') {
+  if (type.kind === 'array' || getIrHomogeneousTupleElementTypeCpp(type)) {
     return createCompilerCppReferenceRepresentationSuccessCpp(
       identity,
       'array',

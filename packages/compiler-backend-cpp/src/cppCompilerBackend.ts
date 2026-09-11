@@ -88,6 +88,7 @@ import {
   getCompilerRuntimeExternalMemberTargetCpp,
   getCompilerRuntimeExternalSymbolTargetCpp,
 } from './cppRuntimeExternalSymbolBinding.js';
+import { getIrHomogeneousTupleElementTypeCpp } from './cppTupleRepresentation.js';
 import { createCppUnionRepresentationPlan } from './cppUnionRepresentationPlan.js';
 
 interface AnonymousStruct {
@@ -832,7 +833,12 @@ function emitVariable(variable: Readonly<IrVariable>, context: EmitContext): str
     const sharedInitializer = arrayElement
       ? emitOptionalExpressionCpp(variable.initializer, context, variable.type)
       : emitExpression(variable.initializer, context, variable.type);
-    return `const auto ${sharedCaptureTargetName} = ${emitSharedCaptureCellConstructionCpp(sharedType, sharedInitializer, context)};`;
+    const tuple = variable.type ? getIrTupleTypeCpp(variable.type, context, new Set()) : undefined;
+    const runtimeArrayInitializer =
+      getCppRuntimeProfile(context.options) === 'flight-cpp' &&
+      (getIrArrayTypeCpp(variable.type, context, new Set()) !== undefined ||
+        (tuple !== undefined && getIrHomogeneousTupleElementTypeCpp(tuple) !== undefined));
+    return `const auto ${sharedCaptureTargetName} = ${emitSharedCaptureCellConstructionCpp(sharedType, sharedInitializer, context, runtimeArrayInitializer)};`;
   }
   return `${constness}${emittedType} ${name}${initializer};`;
 }
@@ -1205,13 +1211,13 @@ function emitExpression(
       if (expression.optional) return emitOptionalElementExpressionCpp(expression, context);
       const computedProperty = emitComputedSymbolElementAccessCpp(expression, context);
       if (computedProperty) return computedProperty;
+      if (getCppRuntimeProfile(context.options) === 'flight-cpp' && hasIndexedRuntimeReceiverCpp(expression, context)) {
+        return `${emitExpression(expression.object, context)}.element(${emitExpression(expression.index, context)})`;
+      }
       if (expression.semantics.receivers.includes('tuple')) {
         context.includes.add('tuple');
         const index = getElementAccessTupleIndexCpp(expression, context);
         return `std::get<${String(index)}>(${emitExpression(expression.object, context)})`;
-      }
-      if (getCppRuntimeProfile(context.options) === 'flight-cpp' && hasIndexedRuntimeReceiverCpp(expression, context)) {
-        return `${emitExpression(expression.object, context)}.element(${emitExpression(expression.index, context)})`;
       }
       const object = emitExpression(expression.object, context);
       const index = emitExpression(expression.index, context);
@@ -1510,8 +1516,7 @@ function emitExpression(
       return parts.length === 0 ? (flightRuntime ? 'flight::String()' : 'std::string()') : parts.join(' + ');
     }
     case 'tuple': {
-      context.includes.add('tuple');
-      const expectedTuple = expectedType?.kind === 'tuple' ? expectedType : undefined;
+      const expectedTuple = expectedType ? getIrTupleTypeCpp(expectedType, context, new Set()) : undefined;
       const elements = expression.elements.map((element, index) => {
         if (!element.expression) {
           context.includes.add('optional');
@@ -1524,7 +1529,9 @@ function emitExpression(
         }
         return emitted;
       });
-      return `std::make_tuple(${elements.join(', ')})`;
+      return expectedTuple
+        ? emitCppTupleConstructionCpp(expectedTuple, elements, context)
+        : emitCppInlineTupleConstructionCpp(elements, context);
     }
     case 'unary': {
       if (
@@ -1574,12 +1581,28 @@ function emitExpression(
       return `${emitExpression(expression.value, context)}.value_or(${emitExpression(expression.fallback, context)})`;
     }
     case 'tupleRest': {
+      const objectType = getIrExpressionTypeEvidenceCpp(expression.object, context);
+      const tuple = objectType ? getIrTupleTypeCpp(objectType, context, new Set()) : undefined;
+      if (tuple && getCppRuntimeProfile(context.options) === 'flight-cpp' && getIrHomogeneousTupleElementTypeCpp(tuple)) {
+        return emitCppTupleSliceExpressionCpp(expression.object, tuple, expression.start, tuple.elements.length, context);
+      }
       context.includes.add('tuple');
       return `std::get<${String(expression.start)}>(${emitExpression(expression.object, context)})`;
     }
     case 'tupleSpread':
       return emitTupleSpreadExpressionCpp(expression, context);
     case 'tupleSuffix': {
+      const objectType = getIrExpressionTypeEvidenceCpp(expression.object, context);
+      const tuple = objectType ? getIrTupleTypeCpp(objectType, context, new Set()) : undefined;
+      if (tuple && getCppRuntimeProfile(context.options) === 'flight-cpp' && getIrHomogeneousTupleElementTypeCpp(tuple)) {
+        return emitCppTupleSliceExpressionCpp(
+          expression.object,
+          tuple,
+          expression.start,
+          expression.start + expression.width,
+          context,
+        );
+      }
       context.includes.add('tuple');
       const object = emitExpression(expression.object, context);
       const elements = Array.from(
@@ -1652,12 +1675,11 @@ function emitArrayExpressionCpp(
     const operandType = getIrExpressionTypeEvidenceCpp(element.expression, context);
     const tuple = operandType ? getIrTupleTypeCpp(operandType, context, new Set()) : undefined;
     if (tuple) {
-      context.includes.add('tuple');
       const operandName = getGeneratedTargetName('arraySpreadTuple', context);
       const tupleAppends = tuple.elements.map((tupleElement, index) =>
         tupleElement.rest
-          ? `for (const auto& ${itemName} : std::get<${String(index)}>(${operandName})) { ${resultName}.${append}(${itemName}); }`
-          : `${resultName}.${append}(std::get<${String(index)}>(${operandName}));`,
+          ? `for (const auto& ${itemName} : ${emitCppTupleElementAccessCpp(operandName, tuple, index, context)}) { ${resultName}.${append}(${itemName}); }`
+          : `${resultName}.${append}(${emitCppTupleElementAccessCpp(operandName, tuple, index, context)});`,
       );
       return `{ auto&& ${operandName} = ${emitExpression(element.expression, context)}; ${tupleAppends.join(' ')} }`;
     }
@@ -1787,18 +1809,20 @@ function emitCppCollectionViewArraySpread(
     return `{ auto&& ${collectionName} = ${emitExpression(view.collection, context)}; for (const auto& ${valueName} : ${collectionName}) { ${resultName}.${append}(${valueName}); } }`;
   }
   if (view.collectionKind === 'set') {
-    context.includes.add('tuple');
-    return `{ auto&& ${collectionName} = ${emitExpression(view.collection, context)}; for (const auto& ${valueName} : ${collectionName}) { ${resultName}.${append}(std::make_tuple(${valueName}, ${valueName})); } }`;
+    const tuple = view.elementType.kind === 'tuple' ? view.elementType : undefined;
+    const projected = tuple
+      ? emitCppTupleConstructionCpp(tuple, [valueName, valueName], context)
+      : emitCppInlineTupleConstructionCpp([valueName, valueName], context);
+    return `{ auto&& ${collectionName} = ${emitExpression(view.collection, context)}; for (const auto& ${valueName} : ${collectionName}) { ${resultName}.${append}(${projected}); } }`;
   }
   const keyName = getGeneratedTargetName('arraySpreadKey', context);
   const itemName = getGeneratedTargetName('arraySpreadMappedValue', context);
   const projected =
-    view.projection === 'entry'
-      ? `std::make_tuple(${keyName}, ${itemName})`
+    view.projection === 'entry' && view.elementType.kind === 'tuple'
+      ? emitCppTupleConstructionCpp(view.elementType, [keyName, itemName], context)
       : view.projection === 'key'
         ? keyName
         : itemName;
-  if (view.projection === 'entry') context.includes.add('tuple');
   const unused =
     view.projection === 'key'
       ? ` static_cast<void>(${itemName});`
@@ -2008,14 +2032,13 @@ function emitStatement(statement: Readonly<IrStatement>, context: EmitContext): 
         const keyName = getGeneratedTargetName('forOfKey', context);
         const valueName = getGeneratedTargetName('forOfValue', context);
         const projected =
-          collectionView.collectionKind === 'set'
-            ? `std::make_tuple(${valueName}, ${valueName})`
-            : collectionView.projection === 'entry'
-              ? `std::make_tuple(${keyName}, ${valueName})`
+          collectionView.collectionKind === 'set' && collectionView.elementType.kind === 'tuple'
+            ? emitCppTupleConstructionCpp(collectionView.elementType, [valueName, valueName], context)
+            : collectionView.projection === 'entry' && collectionView.elementType.kind === 'tuple'
+              ? emitCppTupleConstructionCpp(collectionView.elementType, [keyName, valueName], context)
               : collectionView.projection === 'key'
                 ? keyName
                 : valueName;
-        if (collectionView.projection === 'entry') context.includes.add('tuple');
         const iterationValueName = sharedCaptureTargetName
           ? generateUniqueName(`${variableName}_iteration_value`, context)
           : variableName;
@@ -2454,6 +2477,10 @@ function emitType(type: Readonly<IrType>, context: EmitContext, representation: 
         void: 'void',
       }[type.name];
     case 'tuple': {
+      const homogeneousElement = getIrHomogeneousTupleElementTypeCpp(type);
+      if (getCppRuntimeProfile(context.options) === 'flight-cpp' && homogeneousElement) {
+        return `flight::Array<${emitType(homogeneousElement, context)}>`;
+      }
       context.includes.add('tuple');
       const elements = type.elements.map((element) => {
         const emitted = emitType(element.type, context);
@@ -4470,9 +4497,14 @@ function getSharedCaptureTargetNameCpp(expression: Readonly<IrExpression>, conte
     : undefined;
 }
 
-function emitSharedCaptureCellConstructionCpp(type: string, initial: string, context: EmitContext): string {
+function emitSharedCaptureCellConstructionCpp(
+  type: string,
+  initial: string,
+  context: EmitContext,
+  initializedRuntimeValue = false,
+): string {
   if (getCppRuntimeProfile(context.options) === 'flight-cpp') {
-    return `flight::make_binding_cell(${type}{${initial}})`;
+    return `flight::make_binding_cell(${initializedRuntimeValue ? initial : `${type}{${initial}}`})`;
   }
   context.includes.add('memory');
   return `std::make_shared<${type}>(${initial})`;
@@ -4694,6 +4726,9 @@ function emitOptionalElementExpressionCpp(
     const receiver = getOptionalPayloadTypeCpp(semantics.receiverType, context);
     if (receiver.kind === 'tuple') {
       const tupleIndex = getElementAccessTupleIndexCpp(expression, context);
+      if (getCppRuntimeProfile(context.options) === 'flight-cpp' && getIrHomogeneousTupleElementTypeCpp(receiver)) {
+        return `([&]() -> std::optional<${payload}> { auto optional_chain_receiver = ${object}; if (!optional_chain_receiver.has_value()) return std::nullopt; return optional_chain_receiver.value().get(${index}); }())`;
+      }
       return `([&]() -> std::optional<${payload}> { auto optional_chain_receiver = ${object}; if (!optional_chain_receiver.has_value()) return std::nullopt; return std::get<${String(tupleIndex)}>(optional_chain_receiver.value()); }())`;
     }
     if (receiver.kind === 'array') {
@@ -5200,7 +5235,6 @@ function emitTupleSpreadExpressionCpp(
   expression: Readonly<Extract<IrExpression, { kind: 'tupleSpread' }>>,
   context: EmitContext,
 ): string {
-  context.includes.add('tuple');
   const declarations: string[] = [];
   const elements: string[] = [];
   let resultIndex = 0;
@@ -5226,7 +5260,7 @@ function emitTupleSpreadExpressionCpp(
     const name = getGeneratedTargetName('tuple_spread_value', context);
     declarations.push(`auto ${name} = ${emitExpression(segment.expression, context)};`);
     segment.type.elements.forEach((element, offset) => {
-      const value = `std::get<${String(offset)}>(${name})`;
+      const value = emitCppTupleElementAccessCpp(name, segment.type, offset, context);
       const target = expression.type.elements[resultIndex + offset]!;
       if (target.optional && !element.optional) {
         context.includes.add('optional');
@@ -5237,8 +5271,57 @@ function emitTupleSpreadExpressionCpp(
     });
     resultIndex += segment.type.elements.length;
   }
-  const tuple = `std::make_tuple(${elements.join(', ')})`;
+  const tuple = emitCppTupleConstructionCpp(expression.type, elements, context);
   return `([&]() { ${declarations.join(' ')} return ${tuple}; })()`;
+}
+
+function emitCppInlineTupleConstructionCpp(elements: readonly string[], context: EmitContext): string {
+  context.includes.add('tuple');
+  return `std::make_tuple(${elements.join(', ')})`;
+}
+
+function emitCppTupleConstructionCpp(
+  type: Readonly<Extract<IrType, { kind: 'tuple' }>>,
+  elements: readonly string[],
+  context: EmitContext,
+): string {
+  const homogeneousElement = getIrHomogeneousTupleElementTypeCpp(type);
+  if (getCppRuntimeProfile(context.options) === 'flight-cpp' && homogeneousElement) {
+    return `flight::Array<${emitType(homogeneousElement, context)}>{${elements.join(', ')}}`;
+  }
+  return emitCppInlineTupleConstructionCpp(elements, context);
+}
+
+function emitCppTupleElementAccessCpp(
+  object: string,
+  type: Readonly<Extract<IrType, { kind: 'tuple' }>>,
+  index: number,
+  context: EmitContext,
+): string {
+  if (getCppRuntimeProfile(context.options) === 'flight-cpp' && getIrHomogeneousTupleElementTypeCpp(type)) {
+    return `${object}.element(${String(index)}.0)`;
+  }
+  context.includes.add('tuple');
+  return `std::get<${String(index)}>(${object})`;
+}
+
+function emitCppTupleSliceExpressionCpp(
+  expression: Readonly<IrExpression>,
+  type: Readonly<Extract<IrType, { kind: 'tuple' }>>,
+  start: number,
+  end: number,
+  context: EmitContext,
+): string {
+  const source = getGeneratedTargetName('tupleSliceSource', context);
+  const resultType: Extract<IrType, { kind: 'tuple' }> = {
+    elements: type.elements.slice(start, end),
+    kind: 'tuple',
+    readonly: false,
+  };
+  const elements = resultType.elements.map((_, offset) =>
+    emitCppTupleElementAccessCpp(source, type, start + offset, context),
+  );
+  return `([&]() { auto&& ${source} = ${emitExpression(expression, context)}; return ${emitCppTupleConstructionCpp(resultType, elements, context)}; }())`;
 }
 
 function emitAssignmentOperator(operator: string): string {
