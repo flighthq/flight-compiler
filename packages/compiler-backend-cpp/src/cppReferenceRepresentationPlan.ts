@@ -43,6 +43,7 @@ interface ReferenceModuleSet {
   readonly modules: readonly ReferenceModuleRecord[];
   readonly modulesByIdentity: ReadonlyMap<string, ReferenceModuleRecord>;
   readonly modulesByPackageSource: ReadonlyMap<string, readonly ReferenceModuleRecord[]>;
+  readonly namedBindingOwnersByBindingId: ReadonlyMap<string, readonly ReferenceModuleRecord[]>;
   readonly resolutionTargetsBySpecifier: ReadonlyMap<string, ReferenceResolutionTargets>;
 }
 
@@ -485,12 +486,16 @@ function getReferenceDeclarationResolutionCpp(
   cache?: ReferenceResolutionCache | undefined,
 ): Readonly<{ kind: 'indeterminate' }> | Readonly<{ kind: 'location'; location: ReferenceDeclarationLocation }> {
   const binding = reference.binding;
+  const local = module.declarations.has(binding.id) || module.importsByBindingId.has(binding.id);
+  const owners = moduleSet.namedBindingOwnersByBindingId.get(binding.id) ?? [];
+  const owner = local ? module : owners.length === 1 ? owners[0] : undefined;
+  if (!owner) return { kind: 'indeterminate' };
   if (binding.kind !== 'import') {
     if (reference.path.length > 0) return { kind: 'indeterminate' };
-    const location = module.declarations.get(binding.id);
+    const location = owner.declarations.get(binding.id);
     return location ? { kind: 'location', location } : { kind: 'indeterminate' };
   }
-  const imported = module.importsByBindingId.get(binding.id) ?? [];
+  const imported = owner.importsByBindingId.get(binding.id) ?? [];
   const imports = imported.flatMap(({ imported: importedName, specifier }) => {
     if (importedName === '*' && reference.path.length === 1) {
       return [{ exportName: reference.path[0]!, specifier }];
@@ -499,7 +504,7 @@ function getReferenceDeclarationResolutionCpp(
   });
   const locations = deduplicateReferenceDeclarationLocationsCpp(
     imports.flatMap(({ exportName, specifier }) =>
-      getReferenceSpecifierModulesCpp(module, specifier, moduleSet, cache).flatMap((target) =>
+      getReferenceSpecifierModulesCpp(owner, specifier, moduleSet, cache).flatMap((target) =>
         getReferenceExportLocationsCpp(target, exportName, moduleSet, new Set(), cache),
       ),
     ),
@@ -617,6 +622,7 @@ function createReferenceModuleSetCpp(
   const records = modules.map(createReferenceModuleRecordCpp).sort(compareReferenceModuleRecordsCpp);
   const declarationsByBindingId = new Map<string, ReferenceDeclarationLocation[]>();
   const modulesByPackageSource = new Map<string, ReferenceModuleRecord[]>();
+  const namedBindingOwnersByBindingId = new Map<string, ReferenceModuleRecord[]>();
   for (const record of records) {
     const moduleKey = `${record.module.packageName}\0${record.source}`;
     const sourceRecords = modulesByPackageSource.get(moduleKey) ?? [];
@@ -627,12 +633,18 @@ function createReferenceModuleSetCpp(
       locations.push(location);
       declarationsByBindingId.set(bindingId, locations);
     }
+    for (const bindingId of new Set([...record.declarations.keys(), ...record.importsByBindingId.keys()])) {
+      const owners = namedBindingOwnersByBindingId.get(bindingId) ?? [];
+      owners.push(record);
+      namedBindingOwnersByBindingId.set(bindingId, owners);
+    }
   }
   return {
     declarationsByBindingId,
     modules: records,
     modulesByIdentity: new Map(records.map((record) => [record.identity, record])),
     modulesByPackageSource,
+    namedBindingOwnersByBindingId,
     resolutionTargetsBySpecifier: createReferenceResolutionTargetsCpp(resolution),
   };
 }

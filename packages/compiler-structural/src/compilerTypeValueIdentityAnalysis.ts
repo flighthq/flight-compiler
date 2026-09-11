@@ -48,6 +48,7 @@ interface IdentityModuleSet {
   readonly modules: readonly IdentityModuleRecord[];
   readonly modulesByIdentity: ReadonlyMap<string, IdentityModuleRecord>;
   readonly modulesByPackageSource: ReadonlyMap<string, readonly IdentityModuleRecord[]>;
+  readonly namedBindingOwnersByBindingId: ReadonlyMap<string, readonly IdentityModuleRecord[]>;
   readonly resolutionTargetsBySpecifier: ReadonlyMap<string, IdentityResolutionTargets>;
   readonly typeParameterOwnersByBindingId: ReadonlyMap<string, readonly IdentityModuleRecord[]>;
 }
@@ -274,12 +275,16 @@ function getIdentityDeclarationResolution(
   if (type.reference.kind !== 'binding') return { cycle: false, kind: 'indeterminate' };
   const reference = type.reference;
   const binding = reference.binding;
+  const local = module.declarations.has(binding.id) || module.importsByBindingId.has(binding.id);
+  const owners = moduleSet.namedBindingOwnersByBindingId.get(binding.id) ?? [];
+  const owner = local ? module : owners.length === 1 ? owners[0] : undefined;
+  if (!owner) return { cycle: false, kind: 'indeterminate' };
   if (binding.kind !== 'import') {
     if (reference.path.length > 0) return { cycle: false, kind: 'indeterminate' };
-    const location = module.declarations.get(binding.id);
+    const location = owner.declarations.get(binding.id);
     return location ? { kind: 'location', location } : { cycle: false, kind: 'indeterminate' };
   }
-  const imported = module.importsByBindingId.get(binding.id) ?? [];
+  const imported = owner.importsByBindingId.get(binding.id) ?? [];
   const exportNames = imported.flatMap(({ imported: importedName, specifier }) => {
     if (importedName === '*' && reference.path.length === 1) {
       return [{ exportName: reference.path[0]!, specifier }];
@@ -287,7 +292,7 @@ function getIdentityDeclarationResolution(
     return reference.path.length === 0 && importedName !== '*' ? [{ exportName: importedName, specifier }] : [];
   });
   const resolutions = exportNames.map(({ exportName, specifier }) =>
-    getIdentityExportResolution(module, specifier, exportName, moduleSet, new Set()),
+    getIdentityExportResolution(owner, specifier, exportName, moduleSet, new Set()),
   );
   const locations = deduplicateIdentityDeclarationLocations(resolutions.flatMap((resolution) => resolution.locations));
   if (locations.length === 1) return { kind: 'location', location: locations[0]! };
@@ -440,7 +445,13 @@ function createIdentityModuleSet(
     modulesByPackageSource.set(key, candidates);
   }
   const typeParameterOwnersByBindingId = new Map<string, IdentityModuleRecord[]>();
+  const namedBindingOwnersByBindingId = new Map<string, IdentityModuleRecord[]>();
   for (const record of records) {
+    for (const bindingId of new Set([...record.declarations.keys(), ...record.importsByBindingId.keys()])) {
+      const owners = namedBindingOwnersByBindingId.get(bindingId) ?? [];
+      owners.push(record);
+      namedBindingOwnersByBindingId.set(bindingId, owners);
+    }
     for (const bindingId of record.typeParameters.keys()) {
       const owners = typeParameterOwnersByBindingId.get(bindingId) ?? [];
       owners.push(record);
@@ -452,6 +463,7 @@ function createIdentityModuleSet(
     modules: records,
     modulesByIdentity: new Map(records.map((record) => [record.identity, record])),
     modulesByPackageSource,
+    namedBindingOwnersByBindingId,
     resolutionTargetsBySpecifier: createIdentityResolutionTargets(resolution),
     typeParameterOwnersByBindingId,
   };
