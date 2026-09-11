@@ -35,6 +35,7 @@ import {
   collectIrModulesRuntimeExternalSymbolIdentities,
 } from '../../compiler-runtime-contract/src/index.js';
 import {
+  analyzeIrTypeStructuralAssignability,
   createIrTypeParameterSubstitutionPlan,
   resolveIrTypeStructuralSubstitution,
 } from '../../compiler-structural/src/index.js';
@@ -92,9 +93,28 @@ import { getIrHomogeneousTupleElementTypeCpp } from './cppTupleRepresentation.js
 import { createCppUnionRepresentationPlan } from './cppUnionRepresentationPlan.js';
 
 interface AnonymousStruct {
+  callable?: Readonly<{
+    fieldName: string;
+    parameters: readonly Readonly<{ name: string; type: string }>[];
+    returns: string;
+  }>;
   name: string;
   properties: readonly { name: string; optional: boolean; type: string }[];
   typeParameters: readonly string[];
+}
+
+interface CppCallableObject {
+  callable: Readonly<Extract<IrType, { kind: 'function' }>>;
+  properties: readonly Readonly<IrObjectTypeProperty>[];
+}
+
+interface CppCallableObjectIndexedProjection {
+  indexedAccess: Readonly<
+    Extract<IrType, { kind: 'indexedAccess' }> & {
+      index: Readonly<Extract<IrType, { kind: 'literal' }> & { value: string }>;
+    }
+  >;
+  representation: Readonly<CppCallableObject>;
 }
 
 interface CppVariantRepresentation {
@@ -427,8 +447,20 @@ function emitAnonymousStructCpp(struct: Readonly<AnonymousStruct>, context: Emit
   lines.push(
     `struct ${struct.name}${getCppRuntimeProfile(context.options) === 'flight-cpp' ? ' : public flight::ReferenceEnabled' : ''} {`,
   );
+  if (struct.callable) {
+    context.includes.add('functional');
+    const parameterTypes = struct.callable.parameters.map((parameter) => parameter.type).join(', ');
+    lines.push(`  std::function<${struct.callable.returns}(${parameterTypes})> ${struct.callable.fieldName};`);
+  }
   for (const property of struct.properties) {
     lines.push(`  ${emitOptionalTypeCpp(property.type, property.optional, context)} ${property.name};`);
+  }
+  if (struct.callable) {
+    const parameters = struct.callable.parameters.map((parameter) => `${parameter.type} ${parameter.name}`).join(', ');
+    const arguments_ = struct.callable.parameters.map((parameter) => parameter.name).join(', ');
+    lines.push(`  ${struct.callable.returns} operator()(${parameters}) const {`);
+    lines.push(`    return ${struct.callable.fieldName}(${arguments_});`);
+    lines.push('  }');
   }
   lines.push('};');
   return lines;
@@ -750,6 +782,31 @@ function emitTypeAlias(declaration: Readonly<IrTypeAliasDeclaration>, outer: Emi
   };
   const stringLiterals = getIrUnionTypeStringLiteralValues(declaration.type);
   if (stringLiterals) return emitStringLiteralUnionCpp(declaration, context);
+  const callableObject = getCppCallableObjectIntersectionCpp(declaration.type, context);
+  if (callableObject && getCppRuntimeProfile(context.options) === 'flight-cpp') {
+    const typeParameters = context.anonymousStructTypeParameters.map(
+      (parameter) => context.targetNames.get(parameter.binding.id) ?? pascalCase(parameter.binding.name),
+    );
+    return emitAnonymousStructCpp(
+      createCppCallableObjectStructCpp(
+        getBindingTargetName(declaration.binding, context),
+        callableObject,
+        typeParameters,
+        context,
+      ),
+      context,
+    );
+  }
+  const callableProjection = getCppCallableObjectIndexedProjectionCpp(declaration.type, context);
+  if (callableProjection && getCppRuntimeProfile(context.options) === 'flight-cpp') {
+    context.includes.add('utility');
+    const name = getBindingTargetName(declaration.binding, context);
+    const typeParams = emitTypeParameters(declaration.typeParameters, context);
+    const lines: string[] = [];
+    if (typeParams) lines.push(`template ${typeParams}`);
+    lines.push(`using ${name} = ${emitCppCallableObjectIndexedProjectionTypeCpp(callableProjection, context)};`);
+    return lines;
+  }
   const objectProperties =
     declaration.type.kind === 'object'
       ? declaration.type.properties
@@ -937,7 +994,17 @@ function emitExpression(
       return emitArrayExpressionCpp(expression, context, expectedType);
     case 'assignment': {
       const assignmentType = getIrAssignmentTargetTypeCpp(expression.left, context);
-      const right = emitExpression(expression.right, context, assignmentType);
+      const rightType = getIrExpressionTypeEvidenceCpp(expression.right, context);
+      const exactCallableFieldAssignment =
+        expression.operator === '=' &&
+        assignmentType &&
+        rightType &&
+        isCppExactCallableObjectFieldAssignmentCpp(expression.left, rightType, assignmentType, context);
+      const right = emitExpression(
+        expression.right,
+        context,
+        exactCallableFieldAssignment ? rightType : assignmentType,
+      );
       const sharedCaptureTargetName = getSharedCaptureTargetNameCpp(expression.left, context);
       if (sharedCaptureTargetName && getCppRuntimeProfile(context.options) === 'flight-cpp') {
         return emitSharedCaptureAssignmentCpp(
@@ -1094,14 +1161,17 @@ function emitExpression(
       if (expression.optional) return emitOptionalCallExpressionCpp(expression, context);
       const optionalPropertyCall = emitOptionalPropertyCallExpressionCpp(expression, context);
       if (optionalPropertyCall) return optionalPropertyCall;
-      if (
-        expression.callee.kind === 'property' &&
-        expression.callee.object.kind === 'identifier' &&
-        expression.callee.object.reference.kind === 'ambient' &&
-        expression.callee.object.reference.name === 'Object' &&
-        expression.callee.name === 'freeze' &&
-        expression.arguments.length === 1
-      ) {
+      if (isCppAmbientObjectMemberCallCpp(expression, 'assign')) {
+        const assigned = emitClosedCallableObjectAssignCpp(expression, context);
+        if (!assigned) {
+          emissionError(
+            context,
+            'Object.assign requires one closed callable-object target and an exact compatible object literal source',
+          );
+        }
+        return assigned;
+      }
+      if (isCppAmbientObjectMemberCallCpp(expression, 'freeze') && expression.arguments.length === 1) {
         return emitExpression(expression.arguments[0]!, context, expectedType);
       }
       if (
@@ -1214,10 +1284,23 @@ function emitExpression(
         }
         return emitExpression(argument, context, getIrCallArgumentExpectedTypeCpp(expression, index, context));
       });
-      return `${callee}${emitCppTypeArguments(expression.typeArguments, context)}(${args.join(', ')})`;
+      const invocationTarget = getCppCallableObjectExpressionCpp(expression.callee, context) ? `(*${callee})` : callee;
+      return `${invocationTarget}${emitCppTypeArguments(expression.typeArguments, context)}(${args.join(', ')})`;
     }
     case 'cast': {
       const asserted = emitUnionMemberAssertionCpp(expression.expression, expression.type, context);
+      const callableObject = getCppCallableObjectIrTypeCpp(expression.type, context, new Set());
+      if (callableObject && getCppRuntimeProfile(context.options) === 'flight-cpp') {
+        if (
+          expression.expression.kind !== 'function' ||
+          !isCppFunctionExpressionCompatibleWithCallableObjectCpp(expression.expression, callableObject, context)
+        ) {
+          emissionError(context, 'callable-object construction requires one compatible nongeneric function expression');
+        }
+        const storageType = emitType(expression.type, context, 'storage');
+        const callableFieldName = getCppCallableObjectFieldNameCpp(callableObject.properties);
+        return `flight::make_ref<${storageType}>(${storageType}{.${callableFieldName} = ${emitExpression(expression.expression, context, callableObject.callable)}})`;
+      }
       return (
         asserted ??
         `static_cast<${emitType(expression.type, context)}>(${emitExpression(expression.expression, context)})`
@@ -1260,6 +1343,24 @@ function emitExpression(
     }
     case 'function': {
       if (expression.async) emissionError(context, 'async closures require C++ coroutine lowering');
+      const expectedCallable =
+        expectedType?.kind === 'function'
+          ? expectedType
+          : expectedType
+            ? getCppCallableObjectIrTypeCpp(expectedType, context, new Set())?.callable
+            : undefined;
+      const parameters =
+        expectedCallable?.parameters.length === expression.parameters.length
+          ? expression.parameters.map((parameter, index) =>
+              parameter.type.kind === 'unknown' && parameter.type.source === 'any'
+                ? { ...parameter, type: expectedCallable.parameters[index]!.type }
+                : parameter,
+            )
+          : expression.parameters;
+      const returns =
+        expectedCallable && expression.returns.kind === 'unknown' && expression.returns.source === 'any'
+          ? expectedCallable.returns
+          : expression.returns;
       const functionContext: EmitContext = {
         ...context,
         anonymousStructTypeParameters: mergeIrTypeParametersCpp(
@@ -1267,10 +1368,10 @@ function emitExpression(
           expression.typeParameters,
         ),
         async: false,
-        defaultedParameterIds: collectDefaultedParameterIdsCpp(expression.parameters),
-        enclosingReturnType: expression.returns,
+        defaultedParameterIds: collectDefaultedParameterIdsCpp(parameters),
+        enclosingReturnType: returns,
         namespaceScope: false,
-        returnsAbsent: hasIrTypeAbsentMember(expression.returns),
+        returnsAbsent: hasIrTypeAbsentMember(returns),
       };
       const usesThis = irFunctionExpressionUsesThisCpp(expression);
       if (usesThis && expression.thisMode === 'dynamic') {
@@ -1280,7 +1381,7 @@ function emitExpression(
         emissionError(context, 'lexical-this closure requires class receiver context');
       }
       functionContext.includes.add('functional');
-      const params = expression.parameters.map((parameter) => emitParameter(parameter, functionContext));
+      const params = parameters.map((parameter) => emitParameter(parameter, functionContext));
       const capture = usesThis
         ? context.namespaceScope
           ? '[this]'
@@ -1291,14 +1392,14 @@ function emitExpression(
       if (
         expression.expression &&
         functionContext.defaultedParameterIds.size === 0 &&
-        !hasSharedCaptureParameterCpp(expression.parameters, functionContext)
+        !hasSharedCaptureParameterCpp(parameters, functionContext)
       ) {
-        return `${capture}(${params.join(', ')}) { return ${emitExpression(expression.expression, functionContext, expression.returns)}; }`;
+        return `${capture}(${params.join(', ')}) { return ${emitExpression(expression.expression, functionContext, returns)}; }`;
       }
       return `${capture}(${params.join(', ')}) {\n${indentSourceLines([
-        ...emitParameterInitializersCpp(expression.parameters, functionContext),
+        ...emitParameterInitializersCpp(parameters, functionContext),
         ...(expression.expression
-          ? [`return ${emitExpression(expression.expression, functionContext, expression.returns)};`]
+          ? [`return ${emitExpression(expression.expression, functionContext, returns)};`]
           : [
               ...emitStatements(expression.body, functionContext),
               ...emitImplicitCompletionCpp(expression.body, functionContext),
@@ -2360,6 +2461,17 @@ function emitTryFinallyCpp(
 }
 
 function emitType(type: Readonly<IrType>, context: EmitContext, representation: 'storage' | 'value' = 'value'): string {
+  if (getCppRuntimeProfile(context.options) === 'flight-cpp') {
+    const projection = getCppCallableObjectIndexedProjectionCpp(type, context);
+    if (projection) {
+      const valueType = emitCppCallableObjectIndexedProjectionTypeCpp(projection, context);
+      return representation === 'value' ? valueType : `typename ${valueType}::element_type`;
+    }
+    if (isCppCallableObjectValueAliasCpp(type, context)) {
+      const valueType = getTypeReferenceTargetName(type, context);
+      return representation === 'value' ? valueType : `typename ${valueType}::element_type`;
+    }
+  }
   if (
     type.kind === 'named' &&
     type.reference.kind === 'ambient' &&
@@ -2436,6 +2548,10 @@ function emitType(type: Readonly<IrType>, context: EmitContext, representation: 
     case 'intersection': {
       const erasedValue = getCppErasedIntersectionValueType(type, context);
       if (erasedValue) return emitType(erasedValue, context, representation);
+      const callableObject = getCppCallableObjectIntersectionCpp(type, context);
+      if (callableObject && getCppRuntimeProfile(context.options) === 'flight-cpp') {
+        return emitCppCallableObjectStorageTypeCpp(type, callableObject, context);
+      }
       const properties = context.referenceRepresentationPlanner.resolveObjectShape(type, context.module);
       if (!properties) emissionError(context, 'intersection types require C++ multiple-inheritance lowering');
       return emitType({ kind: 'object', properties }, context, representation);
@@ -2857,6 +2973,312 @@ function getCppNonNullableType(
   const nextResolvingAliases = new Set(resolvingAliases);
   nextResolvingAliases.add(bindingId);
   return getCppNonNullableType(alias, context, nextResolvingAliases);
+}
+
+function getCppCallableObjectIntersectionCpp(
+  type: Readonly<IrType>,
+  context: EmitContext,
+): Readonly<CppCallableObject> | undefined {
+  if (type.kind !== 'intersection' || type.types.length !== 2) return undefined;
+  const callables = type.types.filter(
+    (member): member is Extract<IrType, { kind: 'function' }> => member.kind === 'function',
+  );
+  if (callables.length !== 1) return undefined;
+  const callable = callables[0]!;
+  if (
+    callable.typeParameters.length > 0 ||
+    callable.parameters.some((parameter) => parameter.optional || parameter.rest)
+  ) {
+    return undefined;
+  }
+  const object = type.types.find((member) => member !== callable);
+  if (!object) return undefined;
+  const properties = context.referenceRepresentationPlanner.resolveObjectShape(object, context.module);
+  if (
+    !properties ||
+    properties.some((property) => property.computedKey) ||
+    new Set(properties.map((property) => safeCppName(property.name))).size !== properties.length
+  ) {
+    return undefined;
+  }
+  return { callable, properties };
+}
+
+function getCppCallableObjectIrTypeCpp(
+  type: Readonly<IrType>,
+  context: EmitContext,
+  resolvingAliases: ReadonlySet<string>,
+): Readonly<CppCallableObject> | undefined {
+  const direct = getCppCallableObjectIntersectionCpp(type, context);
+  if (direct) return direct;
+  if (type.kind === 'union') {
+    const present = type.types.filter((member) => member.kind !== 'null' && member.kind !== 'undefined');
+    return present.length === 1 ? getCppCallableObjectIrTypeCpp(present[0]!, context, resolvingAliases) : undefined;
+  }
+  if (
+    type.kind === 'named' &&
+    type.reference.kind === 'ambient' &&
+    type.reference.name === 'NonNullable' &&
+    type.typeArguments.length === 1 &&
+    type.typeArguments[0]
+  ) {
+    const present = getCppNonNullableType(type.typeArguments[0], context, resolvingAliases);
+    return present ? getCppCallableObjectIrTypeCpp(present, context, resolvingAliases) : undefined;
+  }
+  if (type.kind === 'indexedAccess') {
+    const indexed = getCppIndexedAccessType(type, context);
+    return indexed ? getCppCallableObjectIrTypeCpp(indexed, context, resolvingAliases) : undefined;
+  }
+  if (type.kind !== 'named' || type.reference.kind !== 'binding') return undefined;
+  const key = `${type.reference.binding.id}\0${JSON.stringify(type.typeArguments)}`;
+  if (resolvingAliases.has(key)) return undefined;
+  const alias = resolveCppTypeAliasTarget(type, context);
+  return alias ? getCppCallableObjectIrTypeCpp(alias, context, new Set(resolvingAliases).add(key)) : undefined;
+}
+
+function getCppCallableObjectExpressionCpp(
+  expression: Readonly<IrExpression>,
+  context: EmitContext,
+): Readonly<CppCallableObject> | undefined {
+  const type = getIrExpressionTypeEvidenceCpp(expression, context);
+  return type ? getCppCallableObjectIrTypeCpp(type, context, new Set()) : undefined;
+}
+
+function getCppCallableObjectIndexedProjectionCpp(
+  type: Readonly<IrType>,
+  context: EmitContext,
+): Readonly<CppCallableObjectIndexedProjection> | undefined {
+  if (
+    type.kind !== 'named' ||
+    type.reference.kind !== 'ambient' ||
+    type.reference.name !== 'NonNullable' ||
+    type.typeArguments.length !== 1
+  ) {
+    return undefined;
+  }
+  const indexedAccess = type.typeArguments[0];
+  if (
+    indexedAccess?.kind !== 'indexedAccess' ||
+    indexedAccess.index.kind !== 'literal' ||
+    typeof indexedAccess.index.value !== 'string' ||
+    indexedAccess.object.kind !== 'named'
+  ) {
+    return undefined;
+  }
+  const indexed = getCppIndexedAccessType(indexedAccess, context);
+  if (!indexed || !hasIrTypeAbsentMember(indexed)) return undefined;
+  const present = getCppNonNullableType(indexed, context, new Set());
+  const representation = present ? getCppCallableObjectIrTypeCpp(present, context, new Set()) : undefined;
+  return representation
+    ? {
+        indexedAccess: { ...indexedAccess, index: { ...indexedAccess.index, value: indexedAccess.index.value } },
+        representation,
+      }
+    : undefined;
+}
+
+function emitCppCallableObjectIndexedProjectionTypeCpp(
+  projection: Readonly<CppCallableObjectIndexedProjection>,
+  context: EmitContext,
+): string {
+  context.includes.add('utility');
+  const objectType = emitType(projection.indexedAccess.object, context, 'storage');
+  const propertyName = safeCppName(String(projection.indexedAccess.index.value));
+  return `typename decltype(std::declval<${objectType}&>().${propertyName})::value_type`;
+}
+
+function isCppCallableObjectValueAliasCpp(
+  type: Readonly<IrType>,
+  context: EmitContext,
+): type is Readonly<Extract<IrType, { kind: 'named' }>> {
+  if (type.kind !== 'named' || type.reference.kind !== 'binding') return false;
+  const alias = resolveCppTypeAliasTarget(type, context);
+  return Boolean(alias && getCppCallableObjectIndexedProjectionCpp(alias, context));
+}
+
+function isCppExactCallableObjectFieldAssignmentCpp(
+  target: Readonly<IrExpression>,
+  sourceType: Readonly<IrType>,
+  targetType: Readonly<IrType>,
+  context: EmitContext,
+): boolean {
+  if (target.kind !== 'property' || !getCppCallableObjectIrTypeCpp(targetType, context, new Set())) return false;
+  if (sourceType.kind !== 'named' || sourceType.reference.kind !== 'binding') return false;
+  const alias = resolveCppTypeAliasTarget(sourceType, context);
+  const projection = alias ? getCppCallableObjectIndexedProjectionCpp(alias, context) : undefined;
+  const receiverType = getIrExpressionTypeEvidenceCpp(target.object, context);
+  return Boolean(
+    projection &&
+    receiverType &&
+    projection.indexedAccess.index.value === target.name &&
+    normalizeCompilerStructuralValueCanonical(projection.indexedAccess.object) ===
+      normalizeCompilerStructuralValueCanonical(receiverType),
+  );
+}
+
+function emitCppCallableObjectStorageTypeCpp(
+  type: Readonly<Extract<IrType, { kind: 'intersection' }>>,
+  representation: Readonly<CppCallableObject>,
+  context: EmitContext,
+): string {
+  const typeParameters = context.anonymousStructTypeParameters.map(
+    (parameter) => context.targetNames.get(parameter.binding.id) ?? pascalCase(parameter.binding.name),
+  );
+  const typeParameterKey = context.anonymousStructTypeParameters.map((parameter) => parameter.binding.id).join(',');
+  const key = `${typeParameterKey}\0callable\0${normalizeCompilerStructuralValueCanonical(type)}`;
+  const existing = context.anonymousStructs.get(key);
+  if (existing) return `${existing.name}${typeParameters.length > 0 ? `<${typeParameters.join(', ')}>` : ''}`;
+  const structName = generateAnonymousStructName([{ name: 'callable' }, ...representation.properties], context);
+  context.anonymousStructs.set(
+    key,
+    createCppCallableObjectStructCpp(structName, representation, typeParameters, context),
+  );
+  return `${structName}${typeParameters.length > 0 ? `<${typeParameters.join(', ')}>` : ''}`;
+}
+
+function createCppCallableObjectStructCpp(
+  name: string,
+  representation: Readonly<CppCallableObject>,
+  typeParameters: readonly string[],
+  context: EmitContext,
+): AnonymousStruct {
+  const properties = representation.properties.map((property) => ({
+    name: safeCppName(property.name),
+    optional: property.optional,
+    type: emitType(property.type, context),
+  }));
+  const parameters = representation.callable.parameters.map((parameter, index) => ({
+    name: `argument_${String(index)}`,
+    type: emitType(parameter.type, context),
+  }));
+  const returns = emitType(representation.callable.returns, context);
+  if (
+    [returns, ...parameters.map((parameter) => parameter.type), ...properties.map((property) => property.type)].some(
+      (emitted) => /\bauto\b/u.test(emitted),
+    )
+  ) {
+    emissionError(context, 'callable-object representation requires concrete C++ member type evidence');
+  }
+  return {
+    callable: {
+      fieldName: getCppCallableObjectFieldNameCpp(representation.properties),
+      parameters,
+      returns,
+    },
+    name,
+    properties,
+    typeParameters,
+  };
+}
+
+function getCppCallableObjectFieldNameCpp(properties: readonly Readonly<IrObjectTypeProperty>[]): string {
+  const propertyNames = new Set(properties.map((property) => safeCppName(property.name)));
+  let name = 'callable';
+  while (propertyNames.has(name)) name += '_target';
+  return name;
+}
+
+function isCppAmbientObjectMemberCallCpp(
+  expression: Readonly<Extract<IrExpression, { kind: 'call' }>>,
+  member: string,
+): boolean {
+  return (
+    expression.callee.kind === 'property' &&
+    expression.callee.object.kind === 'identifier' &&
+    expression.callee.object.reference.kind === 'ambient' &&
+    expression.callee.object.reference.name === 'Object' &&
+    expression.callee.name === member
+  );
+}
+
+function emitClosedCallableObjectAssignCpp(
+  expression: Readonly<Extract<IrExpression, { kind: 'call' }>>,
+  context: EmitContext,
+): string | undefined {
+  if (getCppRuntimeProfile(context.options) !== 'flight-cpp' || expression.arguments.length !== 2) return undefined;
+  const target = expression.arguments[0]!;
+  const source = expression.arguments[1]!;
+  if (source.kind !== 'object' || source.members.some((member) => member.kind !== 'property')) return undefined;
+  const targetType = getIrExpressionTypeEvidenceCpp(target, context);
+  if (!targetType || !hasFlightReferenceRepresentationCpp(targetType, context)) return undefined;
+  const representation = getCppCallableObjectIrTypeCpp(targetType, context, new Set());
+  if (!representation || source.members.length !== representation.properties.length) return undefined;
+  const sourceByName = new Map(
+    source.members.map((member) => [member.kind === 'property' ? member.name : '', member] as const),
+  );
+  if (sourceByName.size !== source.members.length) return undefined;
+  const assignments = representation.properties.flatMap((property) => {
+    const member = sourceByName.get(property.name);
+    if (
+      member?.kind !== 'property' ||
+      !isCppExpressionExactlyRepresentableAsTypeCpp(member.value, property.type, context)
+    ) {
+      return [];
+    }
+    return [{ property, value: member.value }];
+  });
+  if (assignments.length !== representation.properties.length) return undefined;
+  const targetName = getGeneratedTargetName('object_assign_target', context);
+  const targetExpression = emitExpression(target, context, targetType);
+  const writes = assignments.map(
+    ({ property, value }) =>
+      `${targetName}->${safeCppName(property.name)} = ${emitExpression(value, context, property.type)};`,
+  );
+  return `([&]() { auto ${targetName} = ${targetExpression}; ${writes.join(' ')} return ${targetName}; }())`;
+}
+
+function isCppFunctionExpressionCompatibleWithCallableObjectCpp(
+  expression: Readonly<Extract<IrExpression, { kind: 'function' }>>,
+  representation: Readonly<CppCallableObject>,
+  context: EmitContext,
+): boolean {
+  return isCppFunctionExpressionCompatibleWithCallableCpp(expression, representation.callable, context);
+}
+
+function isCppFunctionExpressionCompatibleWithCallableCpp(
+  expression: Readonly<Extract<IrExpression, { kind: 'function' }>>,
+  callable: Readonly<Extract<IrType, { kind: 'function' }>>,
+  context: EmitContext,
+): boolean {
+  return (
+    expression.typeParameters.length === 0 &&
+    expression.parameters.every((parameter) => !parameter.optional && !parameter.rest) &&
+    expression.parameters.length === callable.parameters.length &&
+    expression.parameters.every(
+      (parameter, index) =>
+        (parameter.type.kind === 'unknown' && parameter.type.source === 'any') ||
+        emitType(parameter.type, context) === emitType(callable.parameters[index]!.type, context),
+    ) &&
+    isCppFunctionExpressionReturnCompatibleCpp(expression, callable.returns, context)
+  );
+}
+
+function isCppFunctionExpressionReturnCompatibleCpp(
+  expression: Readonly<Extract<IrExpression, { kind: 'function' }>>,
+  target: Readonly<IrType>,
+  context: EmitContext,
+): boolean {
+  if (emitType(expression.returns, context) === emitType(target, context)) return true;
+  if (expression.returns.kind !== 'unknown' || expression.returns.source !== 'any' || !expression.expression) {
+    return false;
+  }
+  const expressionType = getIrExpressionTypeEvidenceCpp(expression.expression, context);
+  return Boolean(expressionType && emitType(expressionType, context) === emitType(target, context));
+}
+
+function isCppExpressionExactlyRepresentableAsTypeCpp(
+  expression: Readonly<IrExpression>,
+  target: Readonly<IrType>,
+  context: EmitContext,
+): boolean {
+  const callable = getCppClosedCallableType(target, context, new Set());
+  if (expression.kind === 'function' && callable) {
+    return isCppFunctionExpressionCompatibleWithCallableCpp(expression, callable, context);
+  }
+  const source = getIrExpressionTypeEvidenceCpp(expression, context);
+  if (!source) return false;
+  if (analyzeIrTypeStructuralAssignability(source, target).status === 'compatible') return true;
+  return emitType(source, context) === emitType(target, context);
 }
 
 function emitUnionTypeCpp(type: Readonly<Extract<IrType, { kind: 'union' }>>, context: EmitContext): string {
@@ -5198,12 +5620,16 @@ function emitOptionalCallExpressionCpp(
   const valueType = emitOptionalChainPayloadIrTypeCpp(semantics.valueType, context);
   const callee = emitOptionalChainReceiverCpp(expression.callee, context);
   const arguments_ = expression.arguments.map((argument) => emitExpression(argument, context)).join(', ');
+  const receiverType = emitOptionalChainPayloadIrTypeCpp(semantics.receiverType, context);
+  const invocation = getCppCallableObjectIrTypeCpp(receiverType, context, new Set())
+    ? `(*optional_chain_receiver.value())(${arguments_})`
+    : `optional_chain_receiver.value()(${arguments_})`;
   context.includes.add('optional');
   if (valueType.kind === 'primitive' && valueType.name === 'void') {
-    return `([&]() { auto optional_chain_receiver = ${callee}; if (!optional_chain_receiver.has_value()) return; optional_chain_receiver.value()(${arguments_}); }())`;
+    return `([&]() { auto optional_chain_receiver = ${callee}; if (!optional_chain_receiver.has_value()) return; ${invocation}; }())`;
   }
   const payload = emitType(valueType, context);
-  return `([&]() -> std::optional<${payload}> { auto optional_chain_receiver = ${callee}; if (!optional_chain_receiver.has_value()) return std::nullopt; return optional_chain_receiver.value()(${arguments_}); }())`;
+  return `([&]() -> std::optional<${payload}> { auto optional_chain_receiver = ${callee}; if (!optional_chain_receiver.has_value()) return std::nullopt; return ${invocation}; }())`;
 }
 
 function emitOptionalPropertyCallExpressionCpp(
@@ -5372,6 +5798,7 @@ function hasSharedReferentRepresentationCpp(type: Readonly<IrType>, context: Emi
 
 function hasFlightReferenceRepresentationCpp(type: Readonly<IrType>, context: EmitContext): boolean {
   if (getCppRuntimeProfile(context.options) !== 'flight-cpp') return false;
+  if (getCppCallableObjectIrTypeCpp(type, context, new Set())) return true;
   const identityPreserving = getCppIdentityPreservingUtilityArgument(type);
   if (identityPreserving) return hasFlightReferenceRepresentationCpp(identityPreserving, context);
   const owner = getCppDirectBindingOwner(type, context);
@@ -5678,6 +6105,9 @@ function memberOp(object: Readonly<IrExpression>, context: EmitContext): string 
   if (isSuperAccess(object)) return '::';
   if (isThisAccess(object)) return '->';
   const type = getIrExpressionTypeEvidenceCpp(object, context);
+  if (type && hasIrTypeAbsentMember(type) && getCppCallableObjectIrTypeCpp(type, context, new Set())) {
+    return '.value()->';
+  }
   return type && hasFlightReferenceRepresentationCpp(type, context) ? '->' : '.';
 }
 

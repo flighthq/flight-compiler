@@ -3277,6 +3277,118 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(emitted.contents).toContain('flight::String text;');
   });
 
+  it('emits a closed callable-object reference through indexed alias construction and use', () => {
+    const types = ts.createSourceFile(
+      '/flight/packages/types/src/RenderState.ts',
+      `export interface RenderRegistrySignals { active: boolean }
+       export interface RenderStateRuntime {
+         registryMiss:
+           | (((registry: number, kind: string) => void) & {
+               clear(): void;
+               readonly signals: RenderRegistrySignals;
+             })
+           | null;
+       }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const render = ts.createSourceFile(
+      '/flight/packages/render/src/renderRegistrySignals.ts',
+      `import type { RenderRegistrySignals, RenderStateRuntime } from '@flighthq/types';
+       type RenderRegistryMissEmitter = NonNullable<RenderStateRuntime['registryMiss']>;
+       function emitRegistryMiss(registry: number, kind: string): void { void registry; void kind; }
+       function clearRegistryMiss(): void {}
+       export function enable(runtime: RenderStateRuntime, signals: RenderRegistrySignals): RenderRegistrySignals {
+         if (runtime.registryMiss !== null) return runtime.registryMiss.signals;
+         const emitter = ((registry, kind) => emitRegistryMiss(registry, kind)) as RenderRegistryMissEmitter;
+         Object.assign(emitter, { clear: () => clearRegistryMiss(), signals });
+         runtime.registryMiss = emitter;
+         emitter(2, 'direct');
+         runtime.registryMiss?.(1, 'shape');
+         runtime.registryMiss?.clear();
+         runtime.registryMiss?.signals;
+         return emitter.signals;
+       }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          specifier: '@flighthq/types',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/RenderState.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const results = lowerTypeScriptSources(
+      [
+        { packageName: '@flighthq/types', sourceFile: types, upstreamDirectory: '/flight' },
+        { packageName: '@flighthq/render', sourceFile: render, upstreamDirectory: '/flight' },
+      ],
+      moduleResolution,
+    );
+    const modules = results.map((result) => result.module);
+    const session = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules,
+      options: { runtimeProfile: 'flight-cpp' },
+    });
+    const typesOutput = session.emitModule(modules[0]!)![0]!.contents;
+    const renderOutput = session.emitModule(modules[1]!)![0]!.contents;
+
+    expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
+    expect(typesOutput).toContain('std::function<void(double, flight::String)> callable;');
+    expect(typesOutput).toContain('void operator()(double argument_0, flight::String argument_1) const');
+    expect(typesOutput).toContain('return callable(argument_0, argument_1);');
+    expect(renderOutput).toContain(
+      'using RenderRegistryMissEmitter = typename decltype(std::declval<flighthq_types::RenderStateRuntime&>().registry_miss)::value_type;',
+    );
+    expect(renderOutput).toContain(
+      'flight::make_ref<typename RenderRegistryMissEmitter::element_type>(typename RenderRegistryMissEmitter::element_type{.callable = ',
+    );
+    expect(renderOutput).toContain('object_assign_target->clear = ');
+    expect(renderOutput).toContain('object_assign_target->signals = signals;');
+    expect(renderOutput).toContain('return runtime->registry_miss.value()->signals;');
+    expect(renderOutput).toContain('(*emitter)(2.0, flight::String("direct"))');
+    expect(renderOutput).toContain('(*optional_chain_receiver.value())(1.0, flight::String("shape"))');
+    expect(renderOutput).toContain('optional_chain_receiver.value()->clear()');
+    expect(renderOutput).toContain('return optional_chain_receiver.value()->signals;');
+    expect(renderOutput).toContain('return emitter->signals;');
+  });
+
+  it('refuses incomplete and incompatible callable-object construction', () => {
+    const missing = lower(
+      'callable-object-missing.ts',
+      `interface Signals { active: boolean }
+       type Emitter = (() => void) & { clear(): void; signals: Signals };
+       function noop(): void {}
+       export function create(signals: Signals): Emitter {
+         const emitter = (() => noop()) as Emitter;
+         Object.assign(emitter, { signals });
+         return emitter;
+       }`,
+    ).module;
+    const incompatible = lower(
+      'callable-object-incompatible.ts',
+      `interface Signals { active: boolean }
+       type Emitter = (() => void) & { clear(): void; signals: Signals };
+       function noop(): void {}
+       export function create(): Emitter {
+         const emitter = (() => noop()) as Emitter;
+         Object.assign(emitter, { clear: () => noop(), signals: 1 });
+         return emitter;
+       }`,
+    ).module;
+
+    expect(() => emitIrModuleCpp(missing, { runtimeProfile: 'flight-cpp' })).toThrow(
+      'Object.assign requires one closed callable-object target',
+    );
+    expect(() => emitIrModuleCpp(incompatible, { runtimeProfile: 'flight-cpp' })).toThrow(
+      'Object.assign requires one closed callable-object target',
+    );
+  });
+
   it('erases phantom object brands from primitive intersections', () => {
     const result = lower(
       'primitive-brand.ts',
