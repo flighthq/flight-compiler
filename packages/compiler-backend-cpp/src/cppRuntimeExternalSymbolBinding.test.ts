@@ -28,7 +28,7 @@ describe('createCompilerRuntimeExternalSymbolBindingPlanCpp', () => {
     const plan = createCompilerRuntimeExternalSymbolBindingPlanCpp();
 
     expect(plan.contract).toBe('flight-runtime-contract/2');
-    expect(plan.bindings).toHaveLength(43);
+    expect(plan.bindings).toHaveLength(47);
     expect(plan.bindings.filter(({ externalSymbol }) => externalSymbol.sourceName === 'Promise')).toEqual([
       {
         capability: 'task',
@@ -59,13 +59,13 @@ describe('createCompilerRuntimeExternalSymbolBindingPlanCpp', () => {
     const second = createCompilerRuntimeExternalSymbolBindingPlanCpp();
 
     (first.bindings as unknown[]).pop();
-    expect(second.bindings).toHaveLength(43);
+    expect(second.bindings).toHaveLength(47);
   });
 
   it('elects semantic containers and strings as flight-cpp runtime capabilities', () => {
     const plan = createCompilerRuntimeExternalSymbolBindingPlanCpp('flight-cpp');
 
-    expect(plan.bindings).toHaveLength(43);
+    expect(plan.bindings).toHaveLength(47);
     expect(plan.bindings).toContainEqual({
       capability: 'array',
       externalSymbol: { sourceName: 'Array', space: 'type' },
@@ -179,13 +179,10 @@ describe('getCompilerRuntimeExternalSymbolTargetCpp', () => {
     expect(getCompilerRuntimeExternalSymbolTargetCpp('Boolean', 'value')).toBeUndefined();
     expect(getCompilerRuntimeExternalSymbolTargetCpp('Unmapped', 'value')).toBeUndefined();
     for (const [unsupported, space] of [
-      ['ArrayBuffer', 'type'],
       ['console', 'value'],
       ['DataView', 'type'],
       ['JSON', 'value'],
-      ['Record', 'type'],
       ['RegExp', 'type'],
-      ['WeakMap', 'type'],
       ['WebGLProgram', 'type'],
     ] as const) {
       expect(getCompilerRuntimeExternalSymbolTargetCpp(unsupported, space)).toBeUndefined();

@@ -247,6 +247,13 @@ const cppFlightRuntimeExternalSymbolBindings = [
     space: 'value',
     targetName: 'flight::Array',
   },
+  {
+    headers: ['cstdint', 'vector'],
+    kind: 'native',
+    sourceName: 'ArrayBuffer',
+    space: 'type',
+    targetName: 'std::vector<uint8_t>',
+  },
   { kind: 'native', sourceName: 'Boolean', space: 'type', targetName: 'bool' },
   { capability: 'date', kind: 'runtime', sourceName: 'Date', space: 'type', targetName: 'flight::Date' },
   {
@@ -384,6 +391,13 @@ const cppFlightRuntimeExternalSymbolBindings = [
     space: 'type',
     targetName: 'flight::Map',
   },
+  {
+    headers: ['unordered_map'],
+    kind: 'native',
+    sourceName: 'Record',
+    space: 'type',
+    targetName: 'std::unordered_map',
+  },
   { capability: 'set', kind: 'runtime', sourceName: 'Set', space: 'type', targetName: 'flight::Set' },
   { capability: 'set', kind: 'runtime', sourceName: 'Set', space: 'value', targetName: 'flight::Set' },
   { capability: 'string', kind: 'runtime', sourceName: 'String', space: 'type', targetName: 'flight::String' },
@@ -453,6 +467,20 @@ const cppFlightRuntimeExternalSymbolBindings = [
     space: 'value',
     targetName: 'flight::Uint8ClampedArray',
   },
+  {
+    headers: ['unordered_map'],
+    kind: 'native',
+    sourceName: 'WeakMap',
+    space: 'type',
+    targetName: 'std::unordered_map',
+  },
+  {
+    headers: ['unordered_map'],
+    kind: 'native',
+    sourceName: 'WeakMap',
+    space: 'value',
+    targetName: 'std::unordered_map',
+  },
 ] as const satisfies readonly CppRuntimeExternalSymbolBinding[];
 
 const cppRuntimeExternalSymbolBindings = [
@@ -493,6 +521,13 @@ const cppRuntimeExternalSymbolBindings = [
   },
   { kind: 'native', sourceName: 'Array', space: 'type', targetName: 'std::vector' },
   { kind: 'native', sourceName: 'Array', space: 'value', targetName: 'std::vector' },
+  {
+    headers: ['cstdint', 'vector'],
+    kind: 'native',
+    sourceName: 'ArrayBuffer',
+    space: 'type',
+    targetName: 'std::vector<uint8_t>',
+  },
   { kind: 'native', sourceName: 'Boolean', space: 'type', targetName: 'bool' },
   { capability: 'date', kind: 'runtime', sourceName: 'Date', space: 'type', targetName: 'FlightDate' },
   { capability: 'date', kind: 'runtime', sourceName: 'Date', space: 'value', targetName: 'FlightDate' },
@@ -565,6 +600,13 @@ const cppRuntimeExternalSymbolBindings = [
     space: 'type',
     targetName: 'std::unordered_map',
   },
+  {
+    headers: ['unordered_map'],
+    kind: 'native',
+    sourceName: 'Record',
+    space: 'type',
+    targetName: 'std::unordered_map',
+  },
   { kind: 'native', sourceName: 'Set', space: 'type', targetName: 'std::unordered_set' },
   { kind: 'native', sourceName: 'Set', space: 'value', targetName: 'std::unordered_set' },
   { kind: 'native', sourceName: 'String', space: 'type', targetName: 'std::string' },
@@ -579,4 +621,18 @@ const cppRuntimeExternalSymbolBindings = [
   { kind: 'native', sourceName: 'Uint8Array', space: 'value', targetName: 'std::vector<uint8_t>' },
   { kind: 'native', sourceName: 'Uint8ClampedArray', space: 'type', targetName: 'std::vector<uint8_t>' },
   { kind: 'native', sourceName: 'Uint8ClampedArray', space: 'value', targetName: 'std::vector<uint8_t>' },
+  {
+    headers: ['unordered_map'],
+    kind: 'native',
+    sourceName: 'WeakMap',
+    space: 'type',
+    targetName: 'std::unordered_map',
+  },
+  {
+    headers: ['unordered_map'],
+    kind: 'native',
+    sourceName: 'WeakMap',
+    space: 'value',
+    targetName: 'std::unordered_map',
+  },
 ] as const satisfies readonly CppRuntimeExternalSymbolBinding[];

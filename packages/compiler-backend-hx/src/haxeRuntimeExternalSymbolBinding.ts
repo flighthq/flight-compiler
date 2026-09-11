@@ -68,6 +68,7 @@ export function getCompilerRuntimeExternalSymbolTargetHaxe(
 const haxeRuntimeExternalSymbolBindings = [
   { kind: 'native', sourceName: 'Array', space: 'type', targetName: 'Array' },
   { kind: 'native', sourceName: 'Array', space: 'value', targetName: 'Array' },
+  { kind: 'native', sourceName: 'ArrayBuffer', space: 'type', targetName: 'haxe.io.Bytes' },
   { kind: 'native', sourceName: 'Boolean', space: 'type', targetName: 'Bool' },
   { capability: 'date', kind: 'runtime', sourceName: 'Date', space: 'type', targetName: '_Date' },
   { capability: 'date', kind: 'runtime', sourceName: 'Date', space: 'value', targetName: '_Date' },

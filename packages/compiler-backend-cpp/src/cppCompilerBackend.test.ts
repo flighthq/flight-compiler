@@ -619,7 +619,7 @@ export function preferred(): number { return NativeSurface.preferredFormat; }`,
     );
   });
 
-  it('refuses WeakMap until the selected runtime provides weak-key semantics', () => {
+  it('emits WeakMap through both runtime profiles', () => {
     const result = lower(
       'weak-map.ts',
       `interface Key { id: number }
@@ -628,12 +628,10 @@ export function preferred(): number { return NativeSurface.preferredFormat; }`,
        }`,
     );
 
-    expect(() => emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' })).toThrow(
-      'runtime external symbol binding plan is incomplete (missing: WeakMap[type])',
-    );
-    expect(() => emitIrModuleCpp(result.module)).toThrow(
-      'runtime external symbol binding plan is incomplete (missing: WeakMap[type])',
-    );
+    const flightCpp = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+    expect(flightCpp.contents).toContain('unordered_map');
+    const standardLibrary = emitIrModuleCpp(result.module);
+    expect(standardLibrary.contents).toContain('unordered_map');
   });
 
   it.each([
