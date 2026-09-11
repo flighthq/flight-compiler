@@ -862,6 +862,67 @@ export function preferred(): number { return NativeSurface.preferredFormat; }`,
     expect((error as Error).message).not.toContain('PropertyKey[type]');
   });
 
+  it('computes only closed callable utility projections', () => {
+    const closed = lower(
+      'callable-utilities.ts',
+      `function project(value: number, flag?: boolean): string { return ''; }
+       export type ProjectedReturn = ReturnType<typeof project>;
+       export type ProjectedParameters = Parameters<typeof project>;`,
+    ).module;
+    const emitted = emitIrModuleCpp(closed, { runtimeProfile: 'flight-cpp' }).contents;
+
+    expect(emitted).toContain('using ProjectedReturn = flight::String;');
+    expect(emitted).toContain('using ProjectedParameters = std::tuple<double, std::optional<bool>>;');
+
+    const generic = lower(
+      'generic-parameters.ts',
+      'export type GenericParameters<T extends (value: number) => number> = Parameters<T>;',
+    ).module;
+    expect(() => emitIrModuleCpp(generic, { runtimeProfile: 'flight-cpp' })).toThrow(
+      'Parameters<T> requires a statically resolvable non-generic callable type',
+    );
+
+    const genericReturn = lower(
+      'generic-return.ts',
+      'export type GenericReturn = ReturnType<<T>(value: T) => T>;',
+    ).module;
+    expect(() => emitIrModuleCpp(genericReturn, { runtimeProfile: 'flight-cpp' })).toThrow(
+      'ReturnType<T> requires a statically resolvable non-generic callable type',
+    );
+
+    const unknownReturn = lower('unknown-return.ts', 'export type UnknownReturn = ReturnType<() => unknown>;').module;
+    expect(() => emitIrModuleCpp(unknownReturn, { runtimeProfile: 'flight-cpp' })).toThrow(
+      'ReturnType<T> result requires concrete C++ type evidence',
+    );
+
+    const rest = lower(
+      'rest-parameters.ts',
+      'export type RestParameters = Parameters<(...values: number[]) => void>;',
+    ).module;
+    expect(() => emitIrModuleCpp(rest, { runtimeProfile: 'flight-cpp' })).toThrow(
+      'Parameters<T> with rest parameters requires variadic C++ tuple lowering',
+    );
+
+    const restReturn = lower(
+      'rest-return.ts',
+      'export type RestReturn = ReturnType<(...values: number[]) => number>;',
+    ).module;
+    expect(() => emitIrModuleCpp(restReturn, { runtimeProfile: 'flight-cpp' })).toThrow(
+      'ReturnType<T> with rest parameters is outside closed callable projection lowering',
+    );
+
+    const timer = lower('timer-return.ts', 'export type Timer = ReturnType<typeof setTimeout>;').module;
+    expect(() => emitIrModuleCpp(timer, { runtimeProfile: 'flight-cpp' })).toThrow('missing: setTimeout[value]');
+
+    const runtimeViews = lower(
+      'runtime-views.ts',
+      'export type RuntimeViews = ArrayLike<number> | ArrayBufferLike;',
+    ).module;
+    expect(() => emitIrModuleCpp(runtimeViews, { runtimeProfile: 'flight-cpp' })).toThrow(
+      'missing: ArrayBufferLike[type], ArrayLike[type]',
+    );
+  });
+
   it('binds process and browser host surfaces without making them compiler runtime policy', () => {
     const result = lower(
       'host-surfaces.ts',

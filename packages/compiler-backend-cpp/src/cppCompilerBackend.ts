@@ -2463,6 +2463,40 @@ function emitType(type: Readonly<IrType>, context: EmitContext, representation: 
         if (!excluded) emissionError(context, 'Exclude types require closed C++ type computation lowering');
         return emitType(excluded, context, representation);
       }
+      if (sourceName === 'Parameters' || sourceName === 'ReturnType') {
+        if (type.typeArguments.length !== 1 || !type.typeArguments[0]) {
+          emissionError(context, `${sourceName}<T> requires exactly one callable type argument`);
+        }
+        const callable = getCppClosedCallableType(type.typeArguments[0], context, new Set());
+        if (!callable || callable.typeParameters.length > 0) {
+          emissionError(context, `${sourceName}<T> requires a statically resolvable non-generic callable type`);
+        }
+        if (callable.parameters.some((parameter) => parameter.rest)) {
+          emissionError(
+            context,
+            sourceName === 'Parameters'
+              ? 'Parameters<T> with rest parameters requires variadic C++ tuple lowering'
+              : 'ReturnType<T> with rest parameters is outside closed callable projection lowering',
+          );
+        }
+        const projected: Readonly<IrType> =
+          sourceName === 'ReturnType'
+            ? callable.returns
+            : {
+                elements: callable.parameters.map((parameter) => ({
+                  optional: parameter.optional,
+                  rest: false,
+                  type: parameter.type,
+                })),
+                kind: 'tuple',
+                readonly: false,
+              };
+        const emitted = emitType(projected, context, representation);
+        if (/\bauto\b/u.test(emitted)) {
+          emissionError(context, `${sourceName}<T> result requires concrete C++ type evidence`);
+        }
+        return emitted;
+      }
       if (sourceName === 'PropertyKey') {
         if (type.typeArguments.length > 0) emissionError(context, 'PropertyKey does not accept type arguments');
         return emitType(createCppPropertyKeyTypeCpp(), context, representation);
@@ -2739,7 +2773,22 @@ function getCppTypeOfValueType(
   context: EmitContext,
 ): Readonly<IrType> | undefined {
   if (type.reference.kind !== 'binding') return undefined;
-  let valueType = getCppBindingTypeCpp(type.reference.binding.id, context);
+  const functionDeclaration = getCppFunctionDeclarationForBindingCpp(type.reference.binding.id, context);
+  let valueType =
+    getCppBindingTypeCpp(type.reference.binding.id, context) ??
+    (functionDeclaration
+      ? {
+          kind: 'function' as const,
+          parameters: functionDeclaration.parameters.map((parameter) => ({
+            name: parameter.binding.name,
+            optional: parameter.optional,
+            rest: parameter.rest,
+            type: parameter.type,
+          })),
+          returns: functionDeclaration.returns,
+          typeParameters: functionDeclaration.typeParameters,
+        }
+      : undefined);
   for (const segment of type.reference.path) {
     if (!valueType) return undefined;
     valueType = getIrObjectPropertyTypeCpp(valueType, segment, context);
@@ -3579,10 +3628,22 @@ function getCppCallableReturnType(
   context: EmitContext,
   resolvingAliases: ReadonlySet<string>,
 ): Readonly<IrType> | undefined {
-  if (type.kind === 'function') return type.returns;
+  return getCppClosedCallableType(type, context, resolvingAliases)?.returns;
+}
+
+function getCppClosedCallableType(
+  type: Readonly<IrType>,
+  context: EmitContext,
+  resolvingAliases: ReadonlySet<string>,
+): Readonly<Extract<IrType, { kind: 'function' }>> | undefined {
+  if (type.kind === 'function') return type;
   if (type.kind === 'union') {
     const callable = type.types.filter((member) => member.kind !== 'null' && member.kind !== 'undefined');
-    return callable.length === 1 ? getCppCallableReturnType(callable[0]!, context, resolvingAliases) : undefined;
+    return callable.length === 1 ? getCppClosedCallableType(callable[0]!, context, resolvingAliases) : undefined;
+  }
+  if (type.kind === 'typeOf') {
+    const valueType = getCppTypeOfValueType(type, context);
+    return valueType ? getCppClosedCallableType(valueType, context, resolvingAliases) : undefined;
   }
   if (type.kind !== 'named' || type.reference.kind !== 'binding') return undefined;
   const bindingId = type.reference.binding.id;
@@ -3591,7 +3652,7 @@ function getCppCallableReturnType(
   if (!target) return undefined;
   const nextResolvingAliases = new Set(resolvingAliases);
   nextResolvingAliases.add(bindingId);
-  return getCppCallableReturnType(target, context, nextResolvingAliases);
+  return getCppClosedCallableType(target, context, nextResolvingAliases);
 }
 
 function getIrCallArgumentExpectedTypeCpp(
