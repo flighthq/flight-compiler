@@ -2453,6 +2453,10 @@ function emitType(type: Readonly<IrType>, context: EmitContext, representation: 
         if (!excluded) emissionError(context, 'Exclude types require closed C++ type computation lowering');
         return emitType(excluded, context, representation);
       }
+      if (sourceName === 'PropertyKey') {
+        if (type.typeArguments.length > 0) emissionError(context, 'PropertyKey does not accept type arguments');
+        return emitType(createCppPropertyKeyTypeCpp(), context, representation);
+      }
       if (sourceName === 'Partial' && type.typeArguments[0]) {
         const properties = context.referenceRepresentationPlanner.resolveObjectShape(
           type.typeArguments[0],
@@ -2548,6 +2552,7 @@ function emitType(type: Readonly<IrType>, context: EmitContext, representation: 
         return getBindingTargetName(context.currentClass.binding, context);
       }
       if (type.source === 'object') {
+        if (getCppRuntimeProfile(context.options) === 'flight-cpp') return 'flight::Ref<void>';
         context.includes.add('memory');
         return 'std::shared_ptr<void>';
       }
@@ -2604,6 +2609,14 @@ function getCppClosedTypeMembers(
   context: EmitContext,
   resolvingAliases: ReadonlySet<string> = new Set(),
 ): readonly Readonly<IrType>[] | undefined {
+  if (
+    type.kind === 'named' &&
+    type.reference.kind === 'ambient' &&
+    type.reference.name === 'PropertyKey' &&
+    type.typeArguments.length === 0
+  ) {
+    return getCppClosedTypeMembers(createCppPropertyKeyTypeCpp(), context, resolvingAliases);
+  }
   if (type.kind === 'keyof' || type.kind === 'typeOf') {
     const resolved = type.kind === 'keyof' ? getCppKeyofType(type.type, context) : getCppTypeOfValueType(type, context);
     return resolved ? getCppClosedTypeMembers(resolved, context, resolvingAliases) : undefined;
@@ -2643,6 +2656,17 @@ function createCppClosedTypeUnion(types: readonly Readonly<IrType>[]): Readonly<
   if (unique.length === 0) return { kind: 'never' };
   if (unique.length === 1) return unique[0]!;
   return { kind: 'union', types: [unique[0]!, unique[1]!, ...unique.slice(2)] };
+}
+
+function createCppPropertyKeyTypeCpp(): Extract<IrType, { kind: 'union' }> {
+  return {
+    kind: 'union',
+    types: [
+      { kind: 'primitive', name: 'string' },
+      { kind: 'primitive', name: 'number' },
+      { kind: 'primitive', name: 'symbol' },
+    ],
+  };
 }
 
 function getCppErasedIntersectionValueType(
@@ -2717,14 +2741,34 @@ function assertWeakMapTypeArgumentsCpp(typeArguments: readonly IrType[], context
   if (typeArguments.length !== 2 || !typeArguments[0] || !typeArguments[1]) {
     emissionError(context, 'flight-cpp WeakMap requires explicit key and value type arguments');
   }
-  const key = context.referenceRepresentationPlanner.plan(typeArguments[0], context.module);
-  if (key.kind !== 'represented' || key.valueRepresentation !== 'flightReference') {
+  if (!hasWeakMapKeyFlightReferenceRepresentationCpp(typeArguments[0], context, new Set())) {
     emissionError(context, 'flight-cpp WeakMap key requires a proven flight reference representation');
   }
   const value = context.referenceRepresentationPlanner.plan(typeArguments[1], context.module);
   if (value.kind !== 'represented' || value.identity.identity !== 'value') {
     emissionError(context, 'flight-cpp WeakMap value requires a proven reference-free representation');
   }
+}
+
+function hasWeakMapKeyFlightReferenceRepresentationCpp(
+  type: Readonly<IrType>,
+  context: EmitContext,
+  resolvingAliases: ReadonlySet<string>,
+): boolean {
+  if (type.kind === 'unknown' && type.source === 'object') return true;
+  const plan = context.referenceRepresentationPlanner.plan(type, context.module);
+  if (plan.kind === 'represented' && plan.valueRepresentation === 'flightReference') return true;
+  if (type.kind === 'union') {
+    return type.types.every((member) =>
+      hasWeakMapKeyFlightReferenceRepresentationCpp(member, context, resolvingAliases),
+    );
+  }
+  if (type.kind !== 'named' || type.reference.kind !== 'binding') return false;
+  const key = `${type.reference.binding.id}\0${JSON.stringify(type.typeArguments)}`;
+  if (resolvingAliases.has(key)) return false;
+  const alias = context.referenceRepresentationPlanner.resolveAlias(type, context.module);
+  if (!alias) return false;
+  return hasWeakMapKeyFlightReferenceRepresentationCpp(alias, context, new Set(resolvingAliases).add(key));
 }
 
 function getCppNonNullableType(
@@ -3340,6 +3384,14 @@ function getIrTypeRuntimeDomainCpp(
   if (type.kind === 'typeOf') {
     const valueType = getCppTypeOfValueType(type, context);
     return valueType ? getIrTypeRuntimeDomainCpp(valueType, context, resolvingAliases) : undefined;
+  }
+  if (
+    type.kind === 'named' &&
+    type.reference.kind === 'ambient' &&
+    type.reference.name === 'PropertyKey' &&
+    type.typeArguments.length === 0
+  ) {
+    return createCppPropertyKeyTypeCpp();
   }
   if (type.kind !== 'named' || type.reference.kind !== 'binding' || type.typeArguments.length > 0) return type;
   const bindingId = type.reference.binding.id;

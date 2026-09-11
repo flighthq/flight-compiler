@@ -158,6 +158,22 @@ describe('collectIrModulesRuntimeExternalSymbolIdentities', () => {
     expect(collectIrModulesRuntimeExternalSymbolIdentities([lowered.module])).toEqual([]);
   });
 
+  it('treats PropertyKey as a closed compiler-intrinsic type', () => {
+    const lowered = lowerTypeScriptSource(
+      ts.createSourceFile(
+        '/flight/packages/runtime/src/property-key.ts',
+        'export type PropertyBag = Record<PropertyKey, unknown>;',
+        ts.ScriptTarget.Latest,
+        true,
+      ),
+      { packageName: '@flighthq/runtime', upstreamDirectory: '/flight' },
+    );
+
+    expect(collectIrModulesRuntimeExternalSymbolIdentities([lowered.module])).toEqual([
+      { sourceName: 'Record', space: 'type' },
+    ]);
+  });
+
   it('collects utility storage subjects without erased key and constraint arguments', () => {
     const lowered = lowerTypeScriptSource(
       ts.createSourceFile(

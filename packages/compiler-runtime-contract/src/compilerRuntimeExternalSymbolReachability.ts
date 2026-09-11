@@ -59,6 +59,7 @@ const compilerIntrinsicTypeNames = new Set([
   'Omit',
   'Partial',
   'Pick',
+  'PropertyKey',
   'Readonly',
   'Required',
 ]);

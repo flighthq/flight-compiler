@@ -834,6 +834,34 @@ export function preferred(): number { return NativeSurface.preferredFormat; }`,
     expect(emitted.contents).toContain('return host::preferred_format');
   });
 
+  it('lowers PropertyKey intrinsically while preserving an unrelated Proxy refusal', () => {
+    const propertyBag = lower(
+      'property-key.ts',
+      'export type PropertyBag = Record<PropertyKey, number>; export type NonStringKey = Exclude<PropertyKey, string>;',
+    ).module;
+    const emitted = emitIrModuleCpp(propertyBag, { runtimeProfile: 'flight-cpp' }).contents;
+
+    expect(emitted).toContain('using PropertyBag = std::unordered_map<std::variant<');
+    expect(emitted).toContain('flight::String');
+    expect(emitted).toContain('double');
+    expect(emitted).toContain('flight::Symbol');
+    expect(emitted).toContain('using NonStringKey = std::variant<double, flight::Symbol>;');
+
+    const guarded = lower(
+      'property-key-proxy.ts',
+      'export function guard(target: Record<PropertyKey, number>): Record<PropertyKey, number> { return new Proxy(target, {}); }',
+    ).module;
+    let error: unknown;
+    try {
+      emitIrModuleCpp(guarded, { runtimeProfile: 'flight-cpp' });
+    } catch (caught) {
+      error = caught;
+    }
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toContain('missing: Proxy[value]');
+    expect((error as Error).message).not.toContain('PropertyKey[type]');
+  });
+
   it('binds process and browser host surfaces without making them compiler runtime policy', () => {
     const result = lower(
       'host-surfaces.ts',
@@ -1411,6 +1439,77 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(flightCpp.contents).toContain('unordered_map');
     const standardLibrary = emitIrModuleCpp(result.module);
     expect(standardLibrary.contents).toContain('unordered_map');
+  });
+
+  it('proves Flight WeakMap keys through reference unions and erased object types', () => {
+    const results = lowerTypeScriptSources([
+      {
+        packageName: '@flighthq/types',
+        sourceFile: ts.createSourceFile(
+          '/flight/packages/types/src/Node.ts',
+          'export interface Node<Traits extends object = object> { enabled: boolean } export type NodeAny = Node<any>;',
+          ts.ScriptTarget.Latest,
+          true,
+        ),
+        upstreamDirectory: '/flight',
+      },
+      {
+        packageName: '@flighthq/types',
+        sourceFile: ts.createSourceFile(
+          '/flight/packages/types/src/RenderCache.ts',
+          'export interface RenderCache { kind: string }',
+          ts.ScriptTarget.Latest,
+          true,
+        ),
+        upstreamDirectory: '/flight',
+      },
+      {
+        packageName: '@flighthq/types',
+        sourceFile: ts.createSourceFile(
+          '/flight/packages/types/src/Renderable.ts',
+          "import type { NodeAny } from './Node'; import type { RenderCache } from './RenderCache'; export type Renderable = NodeAny | RenderCache;",
+          ts.ScriptTarget.Latest,
+          true,
+        ),
+        upstreamDirectory: '/flight',
+      },
+      {
+        packageName: '@flighthq/types',
+        sourceFile: ts.createSourceFile(
+          '/flight/packages/types/src/RenderState.ts',
+          "import type { Renderable } from './Renderable'; export interface RenderStateRuntime { renderProxyMap: WeakMap<Renderable, number> }",
+          ts.ScriptTarget.Latest,
+          true,
+        ),
+        upstreamDirectory: '/flight',
+      },
+      {
+        packageName: '@flighthq/types',
+        sourceFile: ts.createSourceFile(
+          '/flight/packages/types/src/Velocity.ts',
+          'export interface VelocityField { samples: WeakMap<object, number> }',
+          ts.ScriptTarget.Latest,
+          true,
+        ),
+        upstreamDirectory: '/flight',
+      },
+    ]);
+    expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
+    const modules = results.map((result) => result.module);
+    const session = createCppCompilerBackend().createEmissionSession!({
+      modules,
+      options: { runtimeProfile: 'flight-cpp' },
+    });
+    const renderState = session.emitModule(modules[3]!)[0]!.contents;
+    const velocity = session.emitModule(modules[4]!)[0]!.contents;
+
+    expect(renderState).toContain('std::unordered_map<flighthq_types::Renderable, double> render_proxy_map;');
+    expect(velocity).toContain('std::unordered_map<flight::Ref<void>, double> samples;');
+
+    const invalid = lower('weak-map-invalid.ts', 'export interface Invalid { values: WeakMap<string, number> }');
+    expect(() => emitIrModuleCpp(invalid.module, { runtimeProfile: 'flight-cpp' })).toThrow(
+      'flight-cpp WeakMap key requires a proven flight reference representation',
+    );
   });
 
   it.each([
