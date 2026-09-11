@@ -386,6 +386,40 @@ describe('createIrTypeReferenceRepresentationPlanCpp', () => {
     }
   });
 
+  it('proves only one closed nongeneric callable-object intersection', () => {
+    const module = lower(
+      'callable-object.ts',
+      `interface Signals { active: boolean }
+       export type Emitter = ((registry: number, kind: string) => void) & {
+         clear(): void;
+         readonly signals: Signals;
+       };
+       export type GenericEmitter = (<Value>(value: Value) => void) & { clear(): void };
+       export type RestEmitter = ((...values: number[]) => void) & { clear(): void };
+       export type OptionalEmitter = ((value?: number) => void) & { clear(): void };
+       export type OverloadedEmitter =
+         ((value: number) => void) & ((value: string) => void) & { clear(): void };`,
+    );
+
+    expect(planDeclaration(module, 'Emitter')).toMatchObject({
+      category: 'objectAlias',
+      identity: { identity: 'reference', reason: 'homogeneous-compound' },
+      identityDomain: 'object',
+      kind: 'represented',
+      storageRepresentation: 'rawNamedObject',
+      valueRepresentation: 'flightReference',
+    });
+    for (const name of ['GenericEmitter', 'RestEmitter', 'OptionalEmitter', 'OverloadedEmitter']) {
+      expect(planDeclaration(module, name)).toMatchObject({ kind: 'refused' });
+    }
+
+    const open = lower(
+      'callable-object-open.ts',
+      "import type { Missing } from '@missing'; export type OpenEmitter = (() => void) & Missing;",
+    );
+    expect(planDeclaration(open, 'OpenEmitter')).toMatchObject({ kind: 'refused' });
+  });
+
   it('uses a type parameter reference constraint as representation proof', () => {
     const module = lower(
       'constraint.ts',

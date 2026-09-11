@@ -609,6 +609,15 @@ function createIrTypeReferenceRepresentationPlanInternalCpp(
     return createCompilerCppReferenceRepresentationSuccessCpp(identity, 'value', 'none', 'inlineValue', 'inlineValue');
   }
   if (type.kind === 'intersection') {
+    if (isIrCallableObjectIntersectionRepresentableCpp(type, module, context)) {
+      return createCompilerCppReferenceRepresentationSuccessCpp(
+        identity,
+        'anonymousObject',
+        'object',
+        'rawAnonymousObject',
+        'flightReference',
+      );
+    }
     const properties = resolveIrTypeObjectShapeCpp(type, module, context.moduleSet, context.resolutionCache, new Set());
     return properties
       ? createCompilerCppReferenceRepresentationSuccessCpp(
@@ -621,6 +630,23 @@ function createIrTypeReferenceRepresentationPlanInternalCpp(
       : createCompilerCppReferenceRepresentationRefusalCpp(identity, 'compoundReference');
   }
   return createCompilerCppReferenceRepresentationRefusalCpp(identity, 'unsupportedReferenceForm');
+}
+
+function isIrCallableObjectIntersectionRepresentableCpp(
+  type: Readonly<Extract<IrType, { kind: 'intersection' }>>,
+  module: Readonly<ReferenceModuleRecord>,
+  context: Readonly<ReferencePlanningContext>,
+): boolean {
+  if (type.types.length !== 2) return false;
+  const callable = type.types.find((member) => member.kind === 'function');
+  const object = type.types.find((member) => member !== callable);
+  return Boolean(
+    callable?.kind === 'function' &&
+    callable.typeParameters.length === 0 &&
+    callable.parameters.every((parameter) => !parameter.optional && !parameter.rest) &&
+    object &&
+    resolveIrTypeObjectShapeCpp(object, module, context.moduleSet, context.resolutionCache, new Set()),
+  );
 }
 
 // A resolved imported type alias already has one C++ representation in its defining header. Its
