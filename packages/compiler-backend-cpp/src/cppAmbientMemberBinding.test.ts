@@ -167,7 +167,7 @@ describe('getCompilerCppAmbientMemberBinding', () => {
       targetName: 'byte_offset',
     });
     expect(getCompilerCppAmbientMemberBinding({ name: 'byteLength', receiver: 'typedArray' }, 'flight-cpp')).toEqual({
-      kind: 'sizeMethod',
+      kind: 'property',
       targetName: 'byte_length',
     });
   });

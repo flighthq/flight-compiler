@@ -107,7 +107,7 @@ const cppFlightRuntimeAmbientMemberBindings: Readonly<Record<string, CompilerCpp
   'task.then': { kind: 'method', targetName: 'then' },
   'textDecoder.decode': { kind: 'method', targetName: 'decode' },
   'typedArray.buffer': { kind: 'property', targetName: 'buffer' },
-  'typedArray.byteLength': { kind: 'sizeMethod', targetName: 'byte_length' },
+  'typedArray.byteLength': { kind: 'property', targetName: 'byte_length' },
   'typedArray.byteOffset': { kind: 'property', targetName: 'byte_offset' },
   'typedArray.fill': { kind: 'method', targetName: 'fill' },
   'typedArray.length': { kind: 'sizeMethod', targetName: 'size' },

@@ -589,7 +589,7 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
 
     const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
     expect(emitted.contents).toContain('data.index() == 1 ? std::get<1>(data)');
-    expect(emitted.contents).toContain('static_cast<double>(bytes.byte_length())');
+    expect(emitted.contents).toContain('bytes.byte_length');
     expect(emitted.contents).toContain('static_cast<double>(data.byte_length())');
     expect(emitted.contents).not.toContain(' instanceof ');
   });
