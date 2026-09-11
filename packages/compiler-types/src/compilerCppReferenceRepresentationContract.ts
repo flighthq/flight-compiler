@@ -56,5 +56,7 @@ export type CompilerCppReferenceRepresentationPlan =
 
 export interface CompilerCppReferenceRepresentationPlanner {
   readonly plan: (type: Readonly<IrType>, module: Readonly<IrModule>) => CompilerCppReferenceRepresentationPlan;
+  readonly resolveAlias: (type: Readonly<IrType>, module: Readonly<IrModule>) => Readonly<IrType> | undefined;
+  readonly resolveModule: (specifier: string, module: Readonly<IrModule>) => Readonly<IrModule> | undefined;
   readonly schema: 'flight-compiler-cpp-reference-representation-planner/1';
 }

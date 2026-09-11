@@ -339,6 +339,14 @@ describe('createIrTypeReferenceRepresentationPlannerCpp', () => {
     expect(forward.plan(declarationType(consumer, 'PublicModel'), consumer)).toEqual(
       reverse.plan(declarationType(consumer, 'PublicModel'), consumer),
     );
+    const publicValues = forward.resolveAlias(declarationType(consumer, 'PublicValues'), consumer);
+    expect(publicValues).toMatchObject({
+      kind: 'named',
+      reference: { binding: { kind: 'import', name: 'Values' }, kind: 'binding' },
+    });
+    if (!publicValues) throw new TypeError('expected local alias target');
+    expect(forward.resolveAlias(publicValues, consumer)).toMatchObject({ kind: 'array' });
+    expect(forward.resolveModule('@flighthq/models', consumer)).toEqual(model);
   });
 
   it('resolves relative JavaScript specifiers and local export aliases without changing caller data', () => {
@@ -358,6 +366,7 @@ describe('createIrTypeReferenceRepresentationPlannerCpp', () => {
     });
     expect(Object.isFrozen(planner)).toBe(true);
     expect(Object.isFrozen(planner.plan(numberType, consumer))).toBe(true);
+    expect(planner.resolveModule('./model.js', consumer)).toEqual(model);
     expect([model, consumer]).toEqual(snapshot);
   });
 
@@ -399,14 +408,19 @@ describe('createIrTypeReferenceRepresentationPlannerCpp', () => {
   });
 
   it('snapshots its graph and rejects subjects outside that explicit graph', () => {
-    const module = lower('snapshot.ts', 'export interface Shape { value: number }');
+    const module = lower('snapshot.ts', 'export interface Shape { value: number } export type Alias = Shape;');
     const planner = createIrTypeReferenceRepresentationPlannerCpp([module]);
     const shape = declarationType(module, 'Shape');
+    const alias = declarationType(module, 'Alias');
     (module.declarations as IrDeclaration[]).splice(0);
 
     expect(planner.plan(shape, module)).toMatchObject({
       category: 'interface',
       kind: 'represented',
+    });
+    expect(planner.resolveAlias(alias, module)).toMatchObject({
+      kind: 'named',
+      reference: { binding: { name: 'Shape' }, kind: 'binding' },
     });
     expect(() => planner.plan(numberType, lower('other.ts', 'export const value = 1;'))).toThrow(
       'C++ reference representation subject must belong to the explicit module set',

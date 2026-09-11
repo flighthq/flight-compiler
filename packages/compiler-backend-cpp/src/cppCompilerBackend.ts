@@ -40,7 +40,6 @@ import {
 import type {
   CompilerBackend,
   CompilerCppReferenceRepresentationPlanner,
-  CompilerModuleIdentity,
   CompilerModuleResolutionPlan,
   CppCompilerBackendOptions,
   CppCompilerRuntimeProfile,
@@ -77,11 +76,7 @@ import {
   getCppCompilerPackageNamespace,
   isCppCompilerKeyword,
 } from './cppCompilerIdentity.js';
-import {
-  createIrTypeAliasResolverCpp,
-  createIrTypeReferenceRepresentationPlannerCpp,
-  type IrTypeAliasResolverCpp,
-} from './cppReferenceRepresentationPlan.js';
+import { createIrTypeReferenceRepresentationPlannerCpp } from './cppReferenceRepresentationPlan.js';
 import {
   createCompilerRuntimeExternalSymbolBindingPlanCpp,
   getCompilerExternalBindingConstructionCpp,
@@ -112,15 +107,12 @@ interface EmitContext {
   finallyReturnVar?: string | undefined;
   includes: Set<string>;
   module: Readonly<IrModule>;
-  moduleResolution?: Readonly<CompilerModuleResolutionPlan> | undefined;
   nullableBindingIds: ReadonlySet<string>;
   options: Readonly<CppCompilerBackendOptions>;
   referenceRepresentationPlanner: CompilerCppReferenceRepresentationPlanner;
   returnsAbsent: boolean;
   sharedCaptureTargetNames: ReadonlyMap<string, string>;
-  sourceModules: readonly Readonly<IrModule>[];
   targetNames: ReadonlyMap<string, string>;
-  typeAliasResolver: IrTypeAliasResolverCpp;
   uninitializedCaptureStorageBindingIds: ReadonlySet<string>;
   generatedNames: Set<string>;
   enclosingReturnType?: Readonly<IrType> | undefined;
@@ -132,20 +124,10 @@ export function createCppCompilerBackend(): CompilerBackend<CppCompilerBackendOp
       const referenceRepresentationPlanner = moduleResolution
         ? createIrTypeReferenceRepresentationPlannerCpp(modules, moduleResolution)
         : createIrTypeReferenceRepresentationPlannerCpp(modules);
-      const typeAliasResolver = moduleResolution
-        ? createIrTypeAliasResolverCpp(modules, moduleResolution)
-        : createIrTypeAliasResolverCpp(modules);
       return Object.freeze({
         emitModule(module: Readonly<IrModule>) {
           return [
-            emitIrModuleCppWithContext(
-              module,
-              options,
-              modules,
-              moduleResolution,
-              referenceRepresentationPlanner,
-              typeAliasResolver,
-            ),
+            emitIrModuleCppWithContext(module, options, modules, moduleResolution, referenceRepresentationPlanner),
           ];
         },
       });
@@ -170,7 +152,6 @@ function emitIrModuleCppWithContext(
   sourceModules: readonly Readonly<IrModule>[],
   moduleResolution?: Readonly<CompilerModuleResolutionPlan> | undefined,
   referenceRepresentationPlanner?: CompilerCppReferenceRepresentationPlanner | undefined,
-  typeAliasResolver?: IrTypeAliasResolverCpp | undefined,
 ): EmittedFile {
   let module: IrModule;
   try {
@@ -217,7 +198,6 @@ function emitIrModuleCppWithContext(
     defaultedParameterIds: new Set(),
     includes: new Set<string>(),
     module,
-    ...(moduleResolution ? { moduleResolution } : {}),
     nullableBindingIds: collectIrModuleNullableBindingIds(module),
     options,
     referenceRepresentationPlanner:
@@ -227,13 +207,7 @@ function emitIrModuleCppWithContext(
         : createIrTypeReferenceRepresentationPlannerCpp(sourceModules)),
     returnsAbsent: false,
     sharedCaptureTargetNames,
-    sourceModules,
     targetNames,
-    typeAliasResolver:
-      typeAliasResolver ??
-      (moduleResolution
-        ? createIrTypeAliasResolverCpp(sourceModules, moduleResolution)
-        : createIrTypeAliasResolverCpp(sourceModules)),
     uninitializedCaptureStorageBindingIds,
     generatedNames: new Set(targetNames.values()),
   };
@@ -2074,7 +2048,7 @@ function resolveCppTypeAliasTarget(
   type: Readonly<Extract<IrType, { kind: 'named' }>>,
   context: EmitContext,
 ): Readonly<IrType> | undefined {
-  return context.typeAliasResolver.resolve(type, context.module);
+  return context.referenceRepresentationPlanner.resolveAlias(type, context.module);
 }
 
 function getSingleIrTypeKindCpp<Kind extends IrType['kind']>(
@@ -3077,39 +3051,7 @@ function getCppIncludeDirectivePath(directive: string): string {
 }
 
 function getCppResolvedImportModule(specifier: string, context: EmitContext): Readonly<IrModule> | undefined {
-  const matching = context.moduleResolution?.edges.filter((edge) => edge.specifier === specifier) ?? [];
-  const exact = matching.filter(
-    (edge) => edge.importer && isCppCompilerModuleIdentityEqual(edge.importer, context.module),
-  );
-  const targets = exact.length > 0 ? exact : matching.filter((edge) => !edge.importer);
-  if (targets.length === 1) {
-    const target = targets[0]!.target;
-    return context.sourceModules.find(
-      (module) =>
-        module.packageName === target.packageName &&
-        path.posix.normalize(module.source) === path.posix.normalize(target.source),
-    );
-  }
-  if (!specifier.startsWith('.')) return undefined;
-  const source = path.posix.normalize(
-    path.posix.join(path.posix.dirname(context.module.source), specifier.replace(/\.[cm]?js$/u, '.ts')),
-  );
-  const candidates = new Set([source, `${source}.ts`, `${source}/index.ts`]);
-  return context.sourceModules.find(
-    (module) =>
-      module.packageName === context.module.packageName && candidates.has(path.posix.normalize(module.source)),
-  );
-}
-
-function isCppCompilerModuleIdentityEqual(
-  left: Readonly<CompilerModuleIdentity>,
-  right: Readonly<CompilerModuleIdentity>,
-): boolean {
-  return (
-    left.packageName === right.packageName &&
-    path.posix.normalize(left.source) === path.posix.normalize(right.source) &&
-    left.name === right.name
-  );
+  return context.referenceRepresentationPlanner.resolveModule(specifier, context.module);
 }
 
 function emitReexportsCpp(module: Readonly<IrModule>, context: EmitContext): string[] {

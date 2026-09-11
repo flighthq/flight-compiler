@@ -32,15 +32,28 @@ interface IdentityExportResolution {
 interface IdentityModuleRecord {
   readonly declarations: ReadonlyMap<string, IdentityDeclarationLocation>;
   readonly identity: string;
+  readonly importsByBindingId: ReadonlyMap<string, readonly IdentityImport[]>;
   readonly module: Readonly<IrModule>;
   readonly source: string;
   readonly typeParameters: ReadonlyMap<string, Readonly<IrTypeParameter>>;
 }
 
+interface IdentityImport {
+  readonly imported: string;
+  readonly specifier: string;
+}
+
 interface IdentityModuleSet {
+  readonly exportResolutions: Map<string, IdentityExportResolution>;
   readonly modules: readonly IdentityModuleRecord[];
   readonly modulesByIdentity: ReadonlyMap<string, IdentityModuleRecord>;
-  readonly resolution: Readonly<CompilerModuleResolutionPlan>;
+  readonly modulesByPackageSource: ReadonlyMap<string, readonly IdentityModuleRecord[]>;
+  readonly resolutionTargetsBySpecifier: ReadonlyMap<string, IdentityResolutionTargets>;
+}
+
+interface IdentityResolutionTargets {
+  readonly fallback: readonly string[];
+  readonly byImporter: ReadonlyMap<string, readonly string[]>;
 }
 
 interface TypeValueIdentityContext {
@@ -261,11 +274,7 @@ function getIdentityDeclarationResolution(
     const location = module.declarations.get(binding.id);
     return location ? { kind: 'location', location } : { cycle: false, kind: 'indeterminate' };
   }
-  const imported = module.module.imports.flatMap((entry) =>
-    entry.bindings
-      .filter((candidate) => candidate.binding.id === binding.id)
-      .map((candidate) => ({ imported: candidate.imported, specifier: entry.specifier })),
-  );
+  const imported = module.importsByBindingId.get(binding.id) ?? [];
   const exportNames = imported.flatMap(({ imported: importedName, specifier }) => {
     if (importedName === '*' && reference.path.length === 1) {
       return [{ exportName: reference.path[0]!, specifier }];
@@ -308,6 +317,9 @@ function getIdentityModuleExportResolution(
   ancestors: ReadonlySet<string>,
 ): IdentityExportResolution {
   const query = `${module.identity}\0${exportName}`;
+  const cacheable = ancestors.size === 0;
+  const cached = cacheable ? moduleSet.exportResolutions.get(query) : undefined;
+  if (cached) return cached;
   if (ancestors.has(query)) return { cycle: true, locations: [], unresolved: false };
   const next = new Set(ancestors).add(query);
   const locations = [...module.declarations.values()].filter(
@@ -337,7 +349,7 @@ function getIdentityModuleExportResolution(
         break;
     }
   }
-  return {
+  const result = {
     cycle: nested.some((resolution) => resolution.cycle),
     locations: deduplicateIdentityDeclarationLocations([
       ...locations,
@@ -345,6 +357,8 @@ function getIdentityModuleExportResolution(
     ]),
     unresolved: nested.some((resolution) => resolution.unresolved),
   };
+  if (cacheable) moduleSet.exportResolutions.set(query, result);
+  return result;
 }
 
 function getIdentitySpecifierModules(
@@ -353,16 +367,20 @@ function getIdentitySpecifierModules(
   moduleSet: Readonly<IdentityModuleSet>,
 ): readonly IdentityModuleRecord[] {
   const candidates = getIdentitySpecifierSourceCandidates(from.source, specifier);
-  const matching = moduleSet.resolution.edges.filter((edge) => edge.specifier === specifier);
-  const exact = matching.filter((edge) => edge.importer && getIdentityModuleKey(edge.importer) === from.identity);
-  const resolutionTargets = (exact.length > 0 ? exact : matching.filter((edge) => !edge.importer)).map(
-    (edge) => `${edge.target.packageName}\0${normalizePathPortable(edge.target.source)}`,
-  );
-  return moduleSet.modules.filter(
-    (candidate) =>
-      (candidate.module.packageName === from.module.packageName && candidates.has(candidate.source)) ||
-      resolutionTargets.includes(`${candidate.module.packageName}\0${candidate.source}`),
-  );
+  const resolved = moduleSet.resolutionTargetsBySpecifier.get(specifier);
+  const resolutionTargets = resolved?.byImporter.get(from.identity) ?? resolved?.fallback ?? [];
+  const resultByIdentity = new Map<string, IdentityModuleRecord>();
+  for (const source of candidates) {
+    for (const candidate of moduleSet.modulesByPackageSource.get(`${from.module.packageName}\0${source}`) ?? []) {
+      resultByIdentity.set(candidate.identity, candidate);
+    }
+  }
+  for (const target of resolutionTargets) {
+    for (const candidate of moduleSet.modulesByPackageSource.get(target) ?? []) {
+      resultByIdentity.set(candidate.identity, candidate);
+    }
+  }
+  return [...resultByIdentity.values()].sort(compareIdentityModuleRecords);
 }
 
 function getIdentitySpecifierSourceCandidates(source: string, specifier: string): ReadonlySet<string> {
@@ -409,22 +427,64 @@ function createIdentityModuleSet(
   if (records.some((record, index) => index > 0 && record.identity === records[index - 1]!.identity)) {
     throw new TypeError('Type value identity module set contains a duplicate module identity');
   }
+  const modulesByPackageSource = new Map<string, IdentityModuleRecord[]>();
+  for (const record of records) {
+    const key = `${record.module.packageName}\0${record.source}`;
+    const candidates = modulesByPackageSource.get(key) ?? [];
+    candidates.push(record);
+    modulesByPackageSource.set(key, candidates);
+  }
   return {
+    exportResolutions: new Map(),
     modules: records,
     modulesByIdentity: new Map(records.map((record) => [record.identity, record])),
-    resolution,
+    modulesByPackageSource,
+    resolutionTargetsBySpecifier: createIdentityResolutionTargets(resolution),
   };
+}
+
+function createIdentityResolutionTargets(
+  resolution: Readonly<CompilerModuleResolutionPlan>,
+): ReadonlyMap<string, IdentityResolutionTargets> {
+  const targets = new Map<string, { fallback: Set<string>; byImporter: Map<string, Set<string>> }>();
+  for (const edge of resolution.edges) {
+    const entry = targets.get(edge.specifier) ?? { fallback: new Set(), byImporter: new Map() };
+    const target = `${edge.target.packageName}\0${normalizePathPortable(edge.target.source)}`;
+    if (edge.importer) {
+      const importer = getIdentityModuleKey(edge.importer);
+      const exact = entry.byImporter.get(importer) ?? new Set();
+      exact.add(target);
+      entry.byImporter.set(importer, exact);
+    } else {
+      entry.fallback.add(target);
+    }
+    targets.set(edge.specifier, entry);
+  }
+  return new Map(
+    [...targets].map(([specifier, entry]) => [
+      specifier,
+      {
+        byImporter: new Map(
+          [...entry.byImporter].map(([importer, exact]) => [importer, [...exact].sort(compareTextCodeUnits)]),
+        ),
+        fallback: [...entry.fallback].sort(compareTextCodeUnits),
+      },
+    ]),
+  );
 }
 
 function createIdentityModuleRecord(module: Readonly<IrModule>): IdentityModuleRecord {
   const source = normalizePathPortable(module.source);
   const identity = `${module.packageName}\0${source}\0${module.name}`;
-  const record: { declarations: Map<string, IdentityDeclarationLocation> } & Omit<
-    IdentityModuleRecord,
-    'declarations' | 'typeParameters'
-  > & { typeParameters: Map<string, Readonly<IrTypeParameter>> } = {
+  const record: {
+    declarations: Map<string, IdentityDeclarationLocation>;
+    importsByBindingId: Map<string, IdentityImport[]>;
+  } & Omit<IdentityModuleRecord, 'declarations' | 'importsByBindingId' | 'typeParameters'> & {
+      typeParameters: Map<string, Readonly<IrTypeParameter>>;
+    } = {
     declarations: new Map(),
     identity,
+    importsByBindingId: new Map(),
     module,
     source,
     typeParameters: new Map(),
@@ -446,6 +506,13 @@ function createIdentityModuleRecord(module: Readonly<IrModule>): IdentityModuleR
       });
     }
     collectIrDeclarationTypeParameters(declaration, record.typeParameters);
+  }
+  for (const entry of module.imports) {
+    for (const binding of entry.bindings) {
+      const imports = record.importsByBindingId.get(binding.binding.id) ?? [];
+      imports.push({ imported: binding.imported, specifier: entry.specifier });
+      record.importsByBindingId.set(binding.binding.id, imports);
+    }
   }
   return record;
 }

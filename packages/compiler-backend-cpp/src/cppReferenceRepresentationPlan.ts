@@ -26,14 +26,27 @@ interface ReferenceDeclarationLocation {
 interface ReferenceModuleRecord {
   readonly declarations: ReadonlyMap<string, ReferenceDeclarationLocation>;
   readonly identity: string;
+  readonly importsByBindingId: ReadonlyMap<string, readonly ReferenceImport[]>;
   readonly module: Readonly<IrModule>;
   readonly source: string;
 }
 
+interface ReferenceImport {
+  readonly imported: string;
+  readonly specifier: string;
+}
+
 interface ReferenceModuleSet {
+  readonly declarationsByBindingId: ReadonlyMap<string, readonly ReferenceDeclarationLocation[]>;
   readonly modules: readonly ReferenceModuleRecord[];
   readonly modulesByIdentity: ReadonlyMap<string, ReferenceModuleRecord>;
-  readonly resolution: Readonly<CompilerModuleResolutionPlan>;
+  readonly modulesByPackageSource: ReadonlyMap<string, readonly ReferenceModuleRecord[]>;
+  readonly resolutionTargetsBySpecifier: ReadonlyMap<string, ReferenceResolutionTargets>;
+}
+
+interface ReferenceResolutionTargets {
+  readonly fallback: readonly string[];
+  readonly byImporter: ReadonlyMap<string, readonly string[]>;
 }
 
 interface ReferencePlanningContext {
@@ -45,10 +58,6 @@ interface ReferencePlanningContext {
 interface ReferenceResolutionCache {
   readonly exportLocations: Map<string, readonly ReferenceDeclarationLocation[]>;
   readonly specifierModules: Map<string, readonly ReferenceModuleRecord[]>;
-}
-
-export interface IrTypeAliasResolverCpp {
-  readonly resolve: (type: Readonly<IrType>, module: Readonly<IrModule>) => Readonly<IrType> | undefined;
 }
 
 export function createIrTypeReferenceRepresentationPlanCpp(
@@ -68,10 +77,12 @@ export function createIrTypeReferenceRepresentationPlannerCpp(
   const resolutionSnapshot = structuredClone(moduleResolution);
   const analyzer = createIrTypeValueIdentityAnalyzer(moduleSnapshot, resolutionSnapshot);
   const moduleSet = createReferenceModuleSetCpp(moduleSnapshot, resolutionSnapshot);
+  const aliasCache = new Map<string, Readonly<IrType> | null>();
+  const resolutionCache = createReferenceResolutionCacheCpp();
   const context: ReferencePlanningContext = {
     analyzeIdentity: analyzer.analyze,
     moduleSet,
-    resolutionCache: createReferenceResolutionCacheCpp(),
+    resolutionCache,
   };
   return Object.freeze({
     plan(type: Readonly<IrType>, module: Readonly<IrModule>) {
@@ -79,49 +90,49 @@ export function createIrTypeReferenceRepresentationPlannerCpp(
       if (!subject) throw new TypeError('C++ reference representation subject must belong to the explicit module set');
       return createIrTypeReferenceRepresentationPlanInternalCpp(type, subject, context);
     },
+    resolveAlias(type: Readonly<IrType>, module: Readonly<IrModule>): Readonly<IrType> | undefined {
+      return resolveIrTypeAliasCpp(type, module, moduleSet, resolutionCache, aliasCache);
+    },
+    resolveModule(specifier: string, module: Readonly<IrModule>): Readonly<IrModule> | undefined {
+      const subject = getReferenceModuleRecordCpp(module, moduleSet);
+      if (!subject) throw new TypeError('C++ module resolution subject must belong to the explicit module set');
+      const targets = getReferenceSpecifierModulesCpp(subject, specifier, moduleSet, resolutionCache);
+      return targets.length === 1 ? targets[0]!.module : undefined;
+    },
     schema: 'flight-compiler-cpp-reference-representation-planner/1',
   });
 }
 
-export function createIrTypeAliasResolverCpp(
-  modules: readonly Readonly<IrModule>[],
-  moduleResolution: Readonly<CompilerModuleResolutionPlan> = compilerEmptyModuleResolutionPlanCpp,
-): IrTypeAliasResolverCpp {
-  const moduleSet = createReferenceModuleSetCpp(structuredClone(modules), structuredClone(moduleResolution));
-  const cache = new Map<string, Readonly<IrType> | null>();
-  const resolutionCache = createReferenceResolutionCacheCpp();
-  return Object.freeze({
-    resolve(type: Readonly<IrType>, module: Readonly<IrModule>): Readonly<IrType> | undefined {
-      if (type.kind !== 'named' || type.reference.kind !== 'binding' || type.typeArguments.length > 0) {
-        return undefined;
-      }
-      const subject = getReferenceModuleRecordCpp(module, moduleSet);
-      if (!subject) throw new TypeError('C++ type-alias subject must belong to the explicit module set');
-      const reference = type.reference;
-      const key = `${subject.identity}\0${reference.binding.id}\0${reference.path.join('\0')}`;
-      const cached = cache.get(key);
-      if (cached !== undefined) return cached ?? undefined;
-      let locations: readonly ReferenceDeclarationLocation[];
-      if (reference.binding.kind === 'import') {
-        const resolution = getReferenceDeclarationResolutionCpp(reference, subject, moduleSet, resolutionCache);
-        locations = resolution.kind === 'location' ? [resolution.location] : [];
-      } else if (reference.path.length === 0) {
-        locations = moduleSet.modules.flatMap((candidate) => {
-          const location = candidate.declarations.get(reference.binding.id);
-          return location ? [location] : [];
-        });
-      } else {
-        locations = [];
-      }
-      const aliases = deduplicateReferenceDeclarationLocationsCpp(locations).filter(
-        (location) => location.declaration.kind === 'typeAlias',
-      );
-      const result =
-        aliases.length === 1 && aliases[0]!.declaration.kind === 'typeAlias' ? aliases[0]!.declaration.type : null;
-      cache.set(key, result);
-      return result ?? undefined;
-    },
-  });
+function resolveIrTypeAliasCpp(
+  type: Readonly<IrType>,
+  module: Readonly<IrModule>,
+  moduleSet: Readonly<ReferenceModuleSet>,
+  resolutionCache: ReferenceResolutionCache,
+  cache: Map<string, Readonly<IrType> | null>,
+): Readonly<IrType> | undefined {
+  if (type.kind !== 'named' || type.reference.kind !== 'binding' || type.typeArguments.length > 0) return undefined;
+  const subject = getReferenceModuleRecordCpp(module, moduleSet);
+  if (!subject) throw new TypeError('C++ type-alias subject must belong to the explicit module set');
+  const reference = type.reference;
+  const key = `${subject.identity}\0${reference.binding.id}\0${reference.path.join('\0')}`;
+  const cached = cache.get(key);
+  if (cached !== undefined) return cached ?? undefined;
+  let locations: readonly ReferenceDeclarationLocation[];
+  if (reference.binding.kind === 'import') {
+    const resolution = getReferenceDeclarationResolutionCpp(reference, subject, moduleSet, resolutionCache);
+    locations = resolution.kind === 'location' ? [resolution.location] : [];
+  } else if (reference.path.length === 0) {
+    locations = moduleSet.declarationsByBindingId.get(reference.binding.id) ?? [];
+  } else {
+    locations = [];
+  }
+  const aliases = deduplicateReferenceDeclarationLocationsCpp(locations).filter(
+    (location) => location.declaration.kind === 'typeAlias',
+  );
+  const result =
+    aliases.length === 1 && aliases[0]!.declaration.kind === 'typeAlias' ? aliases[0]!.declaration.type : null;
+  cache.set(key, result);
+  return result ?? undefined;
 }
 
 function createIrTypeReferenceRepresentationPlanInternalCpp(
@@ -337,11 +348,7 @@ function getReferenceDeclarationResolutionCpp(
     const location = module.declarations.get(binding.id);
     return location ? { kind: 'location', location } : { kind: 'indeterminate' };
   }
-  const imported = module.module.imports.flatMap((entry) =>
-    entry.bindings
-      .filter((candidate) => candidate.binding.id === binding.id)
-      .map((candidate) => ({ imported: candidate.imported, specifier: entry.specifier })),
-  );
+  const imported = module.importsByBindingId.get(binding.id) ?? [];
   const imports = imported.flatMap(({ imported: importedName, specifier }) => {
     if (importedName === '*' && reference.path.length === 1) {
       return [{ exportName: reference.path[0]!, specifier }];
@@ -407,18 +414,20 @@ function getReferenceSpecifierModulesCpp(
   const cached = cache?.specifierModules.get(key);
   if (cached) return cached;
   const candidates = getReferenceSpecifierSourceCandidatesCpp(from.source, specifier);
-  const matching = moduleSet.resolution.edges.filter((edge) => edge.specifier === specifier);
-  const exact = matching.filter(
-    (edge) => edge.importer && createReferenceModuleKeyCpp(edge.importer) === from.identity,
-  );
-  const resolutionTargets = (exact.length > 0 ? exact : matching.filter((edge) => !edge.importer)).map(
-    (edge) => `${edge.target.packageName}\0${normalizePathPortable(edge.target.source)}`,
-  );
-  const result = moduleSet.modules.filter(
-    (candidate) =>
-      (candidate.module.packageName === from.module.packageName && candidates.has(candidate.source)) ||
-      resolutionTargets.includes(`${candidate.module.packageName}\0${candidate.source}`),
-  );
+  const resolved = moduleSet.resolutionTargetsBySpecifier.get(specifier);
+  const resolutionTargets = resolved?.byImporter.get(from.identity) ?? resolved?.fallback ?? [];
+  const resultByIdentity = new Map<string, ReferenceModuleRecord>();
+  for (const source of candidates) {
+    for (const candidate of moduleSet.modulesByPackageSource.get(`${from.module.packageName}\0${source}`) ?? []) {
+      resultByIdentity.set(candidate.identity, candidate);
+    }
+  }
+  for (const target of resolutionTargets) {
+    for (const candidate of moduleSet.modulesByPackageSource.get(target) ?? []) {
+      resultByIdentity.set(candidate.identity, candidate);
+    }
+  }
+  const result = [...resultByIdentity.values()].sort(compareReferenceModuleRecordsCpp);
   cache?.specifierModules.set(key, result);
   return result;
 }
@@ -464,22 +473,68 @@ function createReferenceModuleSetCpp(
   resolution: Readonly<CompilerModuleResolutionPlan>,
 ): ReferenceModuleSet {
   const records = modules.map(createReferenceModuleRecordCpp).sort(compareReferenceModuleRecordsCpp);
+  const declarationsByBindingId = new Map<string, ReferenceDeclarationLocation[]>();
+  const modulesByPackageSource = new Map<string, ReferenceModuleRecord[]>();
+  for (const record of records) {
+    const moduleKey = `${record.module.packageName}\0${record.source}`;
+    const sourceRecords = modulesByPackageSource.get(moduleKey) ?? [];
+    sourceRecords.push(record);
+    modulesByPackageSource.set(moduleKey, sourceRecords);
+    for (const [bindingId, location] of record.declarations) {
+      const locations = declarationsByBindingId.get(bindingId) ?? [];
+      locations.push(location);
+      declarationsByBindingId.set(bindingId, locations);
+    }
+  }
   return {
+    declarationsByBindingId,
     modules: records,
     modulesByIdentity: new Map(records.map((record) => [record.identity, record])),
-    resolution,
+    modulesByPackageSource,
+    resolutionTargetsBySpecifier: createReferenceResolutionTargetsCpp(resolution),
   };
+}
+
+function createReferenceResolutionTargetsCpp(
+  resolution: Readonly<CompilerModuleResolutionPlan>,
+): ReadonlyMap<string, ReferenceResolutionTargets> {
+  const targets = new Map<string, { fallback: Set<string>; byImporter: Map<string, Set<string>> }>();
+  for (const edge of resolution.edges) {
+    const entry = targets.get(edge.specifier) ?? { fallback: new Set(), byImporter: new Map() };
+    const target = `${edge.target.packageName}\0${normalizePathPortable(edge.target.source)}`;
+    if (edge.importer) {
+      const importer = createReferenceModuleKeyCpp(edge.importer);
+      const exact = entry.byImporter.get(importer) ?? new Set();
+      exact.add(target);
+      entry.byImporter.set(importer, exact);
+    } else {
+      entry.fallback.add(target);
+    }
+    targets.set(edge.specifier, entry);
+  }
+  return new Map(
+    [...targets].map(([specifier, entry]) => [
+      specifier,
+      {
+        byImporter: new Map(
+          [...entry.byImporter].map(([importer, exact]) => [importer, [...exact].sort(compareTextCodeUnits)]),
+        ),
+        fallback: [...entry.fallback].sort(compareTextCodeUnits),
+      },
+    ]),
+  );
 }
 
 function createReferenceModuleRecordCpp(module: Readonly<IrModule>): ReferenceModuleRecord {
   const source = normalizePathPortable(module.source);
   const identity = `${module.packageName}\0${source}\0${module.name}`;
-  const record: { declarations: Map<string, ReferenceDeclarationLocation> } & Omit<
-    ReferenceModuleRecord,
-    'declarations'
-  > = {
+  const record: {
+    declarations: Map<string, ReferenceDeclarationLocation>;
+    importsByBindingId: Map<string, ReferenceImport[]>;
+  } & Omit<ReferenceModuleRecord, 'declarations' | 'importsByBindingId'> = {
     declarations: new Map(),
     identity,
+    importsByBindingId: new Map(),
     module,
     source,
   };
@@ -490,6 +545,13 @@ function createReferenceModuleRecordCpp(module: Readonly<IrModule>): ReferenceMo
         identity: `${identity}\0${declaration.binding.id}`,
         module: record,
       });
+    }
+  }
+  for (const entry of module.imports) {
+    for (const binding of entry.bindings) {
+      const imports = record.importsByBindingId.get(binding.binding.id) ?? [];
+      imports.push({ imported: binding.imported, specifier: entry.specifier });
+      record.importsByBindingId.set(binding.binding.id, imports);
     }
   }
   return record;
