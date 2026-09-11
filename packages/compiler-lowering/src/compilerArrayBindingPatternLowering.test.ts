@@ -461,6 +461,37 @@ describe('createCompilerLoweringPassArrayBindingPattern', () => {
     expect(pass.verifyIrModule(output)).toEqual({ kind: 'valid' });
   });
 
+  it('preserves Object.entries tuple evidence through synchronous for-of lowering', () => {
+    const pass = createCompilerLoweringPassArrayBindingPattern();
+    const output = lowerIrModuleWithCompilerPasses(
+      lower(
+        'object-entries.ts',
+        `export function copy(data: Record<string, unknown>): Record<string, unknown> {
+           const result: Record<string, unknown> = {};
+           for (const [key, value] of Object.entries(data)) result[key] = value;
+           return result;
+         }`,
+      ),
+      [pass],
+    );
+    const loop = getFunctionDeclaration(output, 'copy').body[1];
+    if (loop?.kind !== 'forOf' || loop.body.kind !== 'block') throw new Error('Expected Object.entries loop');
+    const variables = getVariableStatement(loop.body.statements[0]).declarations.map(getNamedVariable);
+
+    expect(loop.variable.type).toMatchObject({
+      elements: [
+        { optional: false, rest: false, type: { kind: 'primitive', name: 'string' } },
+        { optional: false, rest: false, type: { kind: 'unknown', source: 'unknown' } },
+      ],
+      kind: 'tuple',
+    });
+    expect(variables).toMatchObject([
+      { binding: { name: 'key' }, type: { kind: 'primitive', name: 'string' } },
+      { binding: { name: 'value' }, type: { kind: 'unknown', source: 'unknown' } },
+    ]);
+    expect(pass.verifyIrModule(output)).toEqual({ kind: 'valid' });
+  });
+
   it('lowers array patterns in diverse statement containers and expression kinds', () => {
     const output = lowerIrModuleWithCompilerPasses(
       lower(

@@ -25,6 +25,7 @@ export function getCompilerAmbientSurfaceFileName(): string {
 const ambientSurfaceSource = `
 interface Object {}
 interface ObjectConstructor {
+  entries(value: object): [string, unknown][];
   is(left: unknown, right: unknown): boolean;
   keys(value: object): string[];
 }

@@ -3346,6 +3346,8 @@ function lowerTypeScriptForOfElementType(
     const argument = expression.arguments?.[0];
     if (argument) return lowerTypeScriptForOfElementType(argument, context, nextSeen);
   }
+  const ambientCallElement = lowerTypeScriptAmbientCallArrayElementType(expression, context);
+  if (ambientCallElement) return ambientCallElement;
   const iterableType = getTypeScriptSyntacticExpressionTypeEvidence(expression, context.checker);
   if (!iterableType) return getTypeScriptForOfBindingElementType(expression, context);
   const element = getTypeScriptTypeNodeIterableElementEvidence(iterableType, context, new Set());
@@ -3414,6 +3416,22 @@ function getTypeScriptForOfBindingElementType(expression: ts.Expression, context
     getIrTypeIndexedElementEvidence(bindingType, undefined) ??
     getIrTypeIndexedElementEvidence(getIrTypeConstructionTargetShape(bindingType, context), undefined)
   );
+}
+
+function lowerTypeScriptAmbientCallArrayElementType(
+  expression: ts.Expression,
+  context: LoweringContext,
+): IrType | undefined {
+  if (!ts.isCallExpression(expression)) return undefined;
+  const declaration = context.checker.getResolvedSignature(expression)?.declaration;
+  // The written return node belongs to the ambient surface and may contain surface-owned type
+  // parameters. Its checker result is the scoped call-site evidence: materialize only a proven
+  // array element, leaving non-array and still-unresolved calls for the normal syntactic path.
+  if (declaration?.getSourceFile().fileName !== getCompilerAmbientSurfaceFileName()) return undefined;
+  const type = context.checker.getTypeAtLocation(expression);
+  if (!context.checker.isArrayType(type)) return undefined;
+  const element = context.checker.getTypeArguments(type as ts.TypeReference)[0];
+  return element ? getTypeScriptCheckerTypeEvidence(element, context, 0, true) : undefined;
 }
 
 function lowerTypeScriptCollectionViewElementType(
