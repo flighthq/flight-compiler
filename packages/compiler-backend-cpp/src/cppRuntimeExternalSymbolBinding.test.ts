@@ -1,6 +1,7 @@
 import {
   createCompilerRuntimeExternalSymbolBindingPlanCpp,
   getCompilerExternalBindingConstructionCpp,
+  getCompilerExternalBindingEvidenceCpp,
   getCompilerExternalBindingHeadersCpp,
   getCompilerRuntimeExternalMemberTargetCpp,
   getCompilerRuntimeExternalSymbolTargetCpp,
@@ -149,6 +150,56 @@ describe('getCompilerExternalBindingConstructionCpp', () => {
       targetName: 'host::create_surface',
     });
     expect(getCompilerExternalBindingConstructionCpp('Missing', externalBindings)).toBeUndefined();
+  });
+});
+
+describe('getCompilerExternalBindingEvidenceCpp', () => {
+  it('returns exact validated ownership and nullability evidence for one external symbol space', () => {
+    const manifest = {
+      bindings: [
+        {
+          headers: ['host/gpu.hpp'],
+          nullability: 'nullable' as const,
+          ownership: 'shared' as const,
+          sourceName: 'GPUDevice',
+          space: 'type' as const,
+          targetName: 'host::GpuDevice',
+        },
+      ],
+      schema: 'flight-cpp-external-bindings/1' as const,
+    };
+
+    expect(getCompilerExternalBindingEvidenceCpp('GPUDevice', 'type', manifest)).toEqual({
+      nullability: 'nullable',
+      ownership: 'shared',
+      sourceName: 'GPUDevice',
+      space: 'type',
+      targetName: 'host::GpuDevice',
+    });
+    expect(getCompilerExternalBindingEvidenceCpp('GPUDevice', 'value', manifest)).toBeUndefined();
+  });
+
+  it('rejects ambiguous normalized identities and malformed evidence instead of choosing one', () => {
+    const binding = {
+      headers: ['host/gpu.hpp'],
+      nullability: 'non-null' as const,
+      ownership: 'owned' as const,
+      sourceName: 'GPUDevice',
+      space: 'type' as const,
+      targetName: 'host::GpuDevice',
+    };
+    expect(() =>
+      getCompilerExternalBindingEvidenceCpp('GPUDevice', 'type', {
+        bindings: [binding, { ...binding, targetName: 'host::OtherGpuDevice' }],
+        schema: 'flight-cpp-external-bindings/1',
+      }),
+    ).toThrow('ambiguous for GPUDevice[type]');
+    expect(() =>
+      getCompilerExternalBindingEvidenceCpp('GPUDevice', 'type', {
+        bindings: [{ ...binding, ownership: 'unknown' as 'shared' }],
+        schema: 'flight-cpp-external-bindings/1',
+      }),
+    ).toThrow('malformed');
   });
 });
 

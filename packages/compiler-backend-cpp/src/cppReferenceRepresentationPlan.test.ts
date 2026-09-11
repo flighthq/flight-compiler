@@ -357,6 +357,80 @@ describe('createIrTypeReferenceRepresentationPlanCpp', () => {
     });
   });
 
+  it('plans exact external type ownership without changing the manifest target representation', () => {
+    const module = lower('external.ts', 'export interface Marker { value: number }');
+    const resolution = {
+      edges: [],
+      schema: 'flight-compiler-module-resolution/1' as const,
+    };
+    const externalBindings = {
+      bindings: [
+        ['OwnedHandle', 'owned'],
+        ['SharedHandle', 'shared'],
+        ['BorrowedHandle', 'borrowed'],
+        ['ValueHandle', 'value'],
+      ].map(([sourceName, ownership]) => ({
+        headers: ['host/handles.hpp'],
+        nullability: 'non-null' as const,
+        ownership: ownership as 'borrowed' | 'owned' | 'shared' | 'value',
+        sourceName: sourceName!,
+        space: 'type' as const,
+        targetName: `host::${sourceName!}`,
+      })),
+      schema: 'flight-cpp-external-bindings/1' as const,
+    };
+    const planner = createIrTypeReferenceRepresentationPlannerCpp([module], resolution, externalBindings);
+
+    for (const sourceName of ['OwnedHandle', 'SharedHandle']) {
+      expect(planner.plan(ambientType(sourceName), module)).toEqual({
+        category: 'external',
+        identity: {
+          identity: 'reference',
+          reason: 'declared-reference',
+          schema: 'flight-compiler-type-value-identity/1',
+        },
+        identityDomain: 'object',
+        kind: 'represented',
+        schema: 'flight-compiler-cpp-reference-representation/1',
+        storageRepresentation: 'runtimeManaged',
+        valueRepresentation: 'runtimeReference',
+      });
+    }
+    expect(planner.plan(ambientType('BorrowedHandle'), module)).toEqual({
+      category: 'external',
+      identity: {
+        identity: 'reference',
+        reason: 'declared-reference',
+        schema: 'flight-compiler-type-value-identity/1',
+      },
+      identityDomain: 'object',
+      kind: 'represented',
+      schema: 'flight-compiler-cpp-reference-representation/1',
+      storageRepresentation: 'inlineValue',
+      valueRepresentation: 'inlineValue',
+    });
+    expect(planner.plan(ambientType('ValueHandle'), module)).toEqual({
+      category: 'external',
+      identity: {
+        identity: 'value',
+        reason: 'declared-value',
+        schema: 'flight-compiler-type-value-identity/1',
+      },
+      identityDomain: 'none',
+      kind: 'represented',
+      schema: 'flight-compiler-cpp-reference-representation/1',
+      storageRepresentation: 'inlineValue',
+      valueRepresentation: 'inlineValue',
+    });
+    expect(planner.plan(ambientType('MissingHandle'), module)).toMatchObject({
+      kind: 'refused',
+      reason: 'indeterminateIdentity',
+    });
+    expect(planner.plan(ambientType('OwnedHandle'), module)).not.toMatchObject({
+      valueRepresentation: 'flightReference',
+    });
+  });
+
   it('preserves reference representation through generic aliases and ambient object utilities', () => {
     const module = lower('generic.ts', 'export type Box<T> = { value: T };');
     const box = declarationType(module, 'Box');

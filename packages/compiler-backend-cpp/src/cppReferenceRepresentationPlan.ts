@@ -11,11 +11,13 @@ import type {
   CompilerModuleIdentity,
   CompilerModuleResolutionPlan,
   CompilerTypeValueIdentityAnalysis,
+  CppCompilerExternalBindingManifest,
   IrDeclaration,
   IrModule,
   IrObjectTypeProperty,
   IrType,
 } from '../../compiler-types/src/index.js';
+import { getCompilerExternalBindingEvidenceCpp } from './cppRuntimeExternalSymbolBinding.js';
 import { getIrHomogeneousTupleElementTypeCpp } from './cppTupleRepresentation.js';
 
 type ReferenceDeclaration = Readonly<Extract<IrDeclaration, { kind: 'class' | 'interface' | 'typeAlias' }>>;
@@ -57,6 +59,7 @@ interface ReferenceResolutionTargets {
 
 interface ReferencePlanningContext {
   readonly analyzeIdentity: (type: Readonly<IrType>, module: Readonly<IrModule>) => CompilerTypeValueIdentityAnalysis;
+  readonly externalBindings?: Readonly<CppCompilerExternalBindingManifest> | undefined;
   readonly moduleSet: ReferenceModuleSet;
   readonly resolutionCache: ReferenceResolutionCache;
 }
@@ -71,22 +74,26 @@ export function createIrTypeReferenceRepresentationPlanCpp(
   module: Readonly<IrModule>,
   modules: readonly Readonly<IrModule>[] = [module],
   moduleResolution: Readonly<CompilerModuleResolutionPlan> = compilerEmptyModuleResolutionPlanCpp,
+  externalBindings?: Readonly<CppCompilerExternalBindingManifest> | undefined,
 ): CompilerCppReferenceRepresentationPlan {
-  return createIrTypeReferenceRepresentationPlannerCpp(modules, moduleResolution).plan(type, module);
+  return createIrTypeReferenceRepresentationPlannerCpp(modules, moduleResolution, externalBindings).plan(type, module);
 }
 
 export function createIrTypeReferenceRepresentationPlannerCpp(
   modules: readonly Readonly<IrModule>[],
   moduleResolution: Readonly<CompilerModuleResolutionPlan> = compilerEmptyModuleResolutionPlanCpp,
+  externalBindings?: Readonly<CppCompilerExternalBindingManifest> | undefined,
 ): CompilerCppReferenceRepresentationPlanner {
   const moduleSnapshot = structuredClone(modules);
   const resolutionSnapshot = structuredClone(moduleResolution);
+  const externalBindingSnapshot = externalBindings ? structuredClone(externalBindings) : undefined;
   const analyzer = createIrTypeValueIdentityAnalyzer(moduleSnapshot, resolutionSnapshot);
   const moduleSet = createReferenceModuleSetCpp(moduleSnapshot, resolutionSnapshot);
   const aliasCache = new Map<string, Readonly<IrType> | null>();
   const resolutionCache = createReferenceResolutionCacheCpp();
   const context: ReferencePlanningContext = {
     analyzeIdentity: analyzer.analyze,
+    ...(externalBindingSnapshot ? { externalBindings: externalBindingSnapshot } : {}),
     moduleSet,
     resolutionCache,
   };
@@ -564,6 +571,24 @@ function createIrTypeReferenceRepresentationPlanInternalCpp(
   module: Readonly<ReferenceModuleRecord>,
   context: Readonly<ReferencePlanningContext>,
 ): CompilerCppReferenceRepresentationPlan {
+  if (type.kind === 'named' && type.reference.kind === 'ambient') {
+    const external = getCompilerExternalBindingEvidenceCpp(type.reference.name, 'type', context.externalBindings);
+    if (external) {
+      const reference = external.ownership !== 'value';
+      const managed = external.ownership === 'owned' || external.ownership === 'shared';
+      return createCompilerCppReferenceRepresentationSuccessCpp(
+        {
+          identity: reference ? 'reference' : 'value',
+          reason: reference ? 'declared-reference' : 'declared-value',
+          schema: 'flight-compiler-type-value-identity/1',
+        },
+        'external',
+        reference ? 'object' : 'none',
+        managed ? 'runtimeManaged' : 'inlineValue',
+        managed ? 'runtimeReference' : 'inlineValue',
+      );
+    }
+  }
   const identity = context.analyzeIdentity(type, module.module);
   if (identity.identity === 'indeterminate') {
     const importedAlias = createIndeterminateImportedTypeAliasRepresentationPlanCpp(type, module, context, identity);

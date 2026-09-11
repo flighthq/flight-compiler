@@ -7,6 +7,7 @@ export type CompilerCppReferenceRepresentationCategory =
   | 'array'
   | 'class'
   | 'date'
+  | 'external'
   | 'interface'
   | 'map'
   | 'objectAlias'

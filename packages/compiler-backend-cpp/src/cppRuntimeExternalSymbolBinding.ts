@@ -61,6 +61,27 @@ export function getCompilerExternalBindingConstructionCpp(
   )?.construction;
 }
 
+export function getCompilerExternalBindingEvidenceCpp(
+  sourceName: string,
+  space: CompilerRuntimeExternalSymbolSpace,
+  externalBindings?: Readonly<CppCompilerExternalBindingManifest> | undefined,
+):
+  | Readonly<Pick<CppCompilerExternalBinding, 'nullability' | 'ownership' | 'sourceName' | 'space' | 'targetName'>>
+  | undefined {
+  const binding = getCppCompilerExternalBindings(externalBindings).find(
+    (candidate) => candidate.sourceName === sourceName.normalize('NFC') && candidate.space === space,
+  );
+  return binding
+    ? Object.freeze({
+        nullability: binding.nullability,
+        ownership: binding.ownership,
+        sourceName: binding.sourceName,
+        space: binding.space,
+        targetName: binding.targetName,
+      })
+    : undefined;
+}
+
 export function getCompilerExternalBindingHeadersCpp(
   sourceName: string,
   space: CompilerRuntimeExternalSymbolSpace,
@@ -121,17 +142,20 @@ function getCppRuntimeExternalSymbolBindings(
 ): readonly CppRuntimeExternalSymbolBinding[] {
   const runtime =
     runtimeProfile === 'flight-cpp' ? cppFlightRuntimeExternalSymbolBindings : cppRuntimeExternalSymbolBindings;
-  return [...runtime, ...getCppCompilerExternalBindings(externalBindings)];
+  return [
+    ...runtime,
+    ...getCppCompilerExternalBindings(externalBindings).map((binding) => ({ ...binding, kind: 'native' as const })),
+  ];
 }
 
 function getCppCompilerExternalBindings(
   manifest?: Readonly<CppCompilerExternalBindingManifest> | undefined,
-): readonly CppRuntimeExternalSymbolBinding[] {
+): readonly Readonly<CppCompilerExternalBinding>[] {
   if (!manifest) return [];
   if (manifest.schema !== 'flight-cpp-external-bindings/1' || !Array.isArray(manifest.bindings)) {
     throw new TypeError('C++ external bindings require flight-cpp-external-bindings/1');
   }
-  return manifest.bindings.map((binding: Readonly<CppCompilerExternalBinding>, index: number) => {
+  const bindings = manifest.bindings.map((binding: Readonly<CppCompilerExternalBinding>, index: number) => {
     const subject = `C++ external binding ${String(index)}`;
     if (
       !binding ||
@@ -171,7 +195,6 @@ function getCppCompilerExternalBindings(
     return {
       ...(binding.construction ? { construction: { ...binding.construction } } : {}),
       headers: [...binding.headers],
-      kind: 'native' as const,
       ...(binding.members
         ? {
             members: binding.members.map((member: Readonly<{ sourceMember: string; targetName: string }>) => ({
@@ -179,11 +202,22 @@ function getCppCompilerExternalBindings(
             })),
           }
         : {}),
+      nullability: binding.nullability,
+      ownership: binding.ownership,
       sourceName: binding.sourceName.normalize('NFC'),
       space: binding.space,
       targetName: binding.targetName,
     };
   });
+  const identities = new Set<string>();
+  for (const binding of bindings) {
+    const identity = `${binding.sourceName}\0${binding.space}`;
+    if (identities.has(identity)) {
+      throw new TypeError(`C++ external binding manifest is ambiguous for ${binding.sourceName}[${binding.space}]`);
+    }
+    identities.add(identity);
+  }
+  return bindings;
 }
 
 function isCppExternalBindingHeader(value: unknown): value is string {
