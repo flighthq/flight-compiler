@@ -1,5 +1,6 @@
 import ts from 'typescript';
 
+import { analyzeIrModuleTraversal } from '../../compiler-ir-traversal/src/index.js';
 import type { IrBindingIdentity, IrExpression, IrStatement } from '../../compiler-types/src/index.js';
 import { lowerTypeScriptSource, lowerTypeScriptSources } from './typeScriptSemanticLowering.js';
 
@@ -1799,6 +1800,90 @@ describe('lowerTypeScriptSource', () => {
     expect(result!.module.declarations).toContainEqual(
       expect.objectContaining({ binding: expect.objectContaining({ name: 'Derived' }), kind: 'interface' }),
     );
+  });
+
+  it('introduces checker-reached exported types through their source import route', () => {
+    const types = ts.createSourceFile(
+      '/flight/packages/types/src/Entity.ts',
+      `export interface Entity { [EntityRuntimeKey]: EntityRuntime | undefined; }
+       export interface EntityRuntime { binding: object | null; }
+       export const EntityRuntimeKey = Symbol.for('EntityRuntime');`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const runtime = ts.createSourceFile(
+      '/flight/packages/entity/src/runtime.ts',
+      `import type { EntityRuntime } from '@flighthq/types/contract';
+       export function createEntityRuntime(): EntityRuntime { return { binding: null }; }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const binding = ts.createSourceFile(
+      '/flight/packages/entity/src/binding.ts',
+      `import type { Entity } from '@flighthq/types/contract';
+       import { EntityRuntimeKey } from '@flighthq/types/contract';
+       import { createEntityRuntime } from './runtime.js';
+       export function attachEntityBinding(entity: Entity, value: object): void {
+         if (entity[EntityRuntimeKey] === undefined) entity[EntityRuntimeKey] = createEntityRuntime();
+         entity[EntityRuntimeKey].binding = value;
+       }
+       export function detachEntityBinding(entity: Entity): void {
+         const runtime = entity[EntityRuntimeKey];
+         if (runtime !== undefined) runtime.binding = null;
+       }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const [, , result] = lowerTypeScriptSources(
+      [
+        { packageName: '@flighthq/types', sourceFile: types, upstreamDirectory: '/flight' },
+        { packageName: '@flighthq/entity', sourceFile: runtime, upstreamDirectory: '/flight' },
+        { packageName: '@flighthq/entity', sourceFile: binding, upstreamDirectory: '/flight' },
+      ],
+      {
+        edges: [
+          {
+            specifier: '@flighthq/types/contract',
+            target: { packageName: '@flighthq/types', source: 'packages/types/src/Entity.ts' },
+          },
+        ],
+        schema: 'flight-compiler-module-resolution/1',
+      },
+    );
+    const inferred = result!.module.imports
+      .flatMap((imported) =>
+        imported.bindings.map((importBinding) => ({ importBinding, specifier: imported.specifier })),
+      )
+      .find(({ importBinding }) => importBinding.imported === 'EntityRuntime');
+    const references: string[] = [];
+    analyzeIrModuleTraversal(result!.module, {
+      type(type) {
+        if (
+          type.kind === 'named' &&
+          type.reference.kind === 'binding' &&
+          type.reference.binding.name === 'EntityRuntime'
+        ) {
+          references.push(type.reference.binding.id);
+        }
+      },
+    });
+
+    expect(result!.diagnostics).toEqual([]);
+    expect(inferred).toMatchObject({
+      importBinding: {
+        binding: {
+          kind: 'import',
+          packageName: '@flighthq/entity',
+          source: 'packages/entity/src/binding.ts',
+          space: 'type',
+        },
+        imported: 'EntityRuntime',
+        typeOnly: true,
+      },
+      specifier: '@flighthq/types/contract',
+    });
+    expect(references).toHaveLength(2);
+    expect(new Set(references)).toEqual(new Set([inferred!.importBinding.binding.id]));
   });
 
   it('expands concrete mapped properties through imported named type bindings', () => {
@@ -8665,6 +8750,51 @@ it('records checker-instantiated and ambient optional call result types', () => 
   expect(mapReturn.expression.semantics.resultType).toEqual({
     kind: 'union',
     types: [{ kind: 'undefined' }, { kind: 'primitive', name: 'number' }],
+  });
+});
+
+it('keeps instantiated generic call evidence outside the callee type parameter scope', () => {
+  const result = lower(
+    'generic-call-evidence.ts',
+    `interface Entity { runtime: object | undefined }
+     export function createSink() {
+       const handle = initializeEntity({ sink: 1 });
+       return handle;
+     }
+     function initializeEntity<Type extends object>(value: Type): Type & Entity {
+       return value as Type & Entity;
+     }`,
+  );
+  const create = result.module.declarations.find(
+    (candidate) => candidate.kind === 'function' && candidate.binding.name === 'createSink',
+  );
+  const statement = create?.kind === 'function' ? create.body[0] : undefined;
+  const call = statement?.kind === 'variable' ? statement.declarations[0]?.initializer : undefined;
+  const initialize = result.module.declarations.find(
+    (candidate) => candidate.kind === 'function' && candidate.binding.name === 'initializeEntity',
+  );
+  if (call?.kind !== 'call' || call.arguments[0]?.kind !== 'object') {
+    throw new Error('Expected generic object call');
+  }
+  if (initialize?.kind !== 'function' || !initialize.typeParameters[0]) {
+    throw new Error('Expected generic initializer');
+  }
+
+  expect(result.diagnostics).toEqual([]);
+  expect(JSON.stringify(create)).not.toContain(initialize.typeParameters[0].binding.id);
+  expect(call.arguments[0].type).toMatchObject({
+    kind: 'object',
+    properties: [{ name: 'sink', type: { kind: 'primitive', name: 'number' } }],
+  });
+  expect(call.semantics.resultType).toMatchObject({
+    kind: 'intersection',
+    types: [
+      {
+        kind: 'object',
+        properties: [{ name: 'sink', type: { kind: 'primitive', name: 'number' } }],
+      },
+      { kind: 'named', reference: { binding: { name: 'Entity' } } },
+    ],
   });
 });
 

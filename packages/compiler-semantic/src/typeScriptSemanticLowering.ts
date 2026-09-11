@@ -100,6 +100,8 @@ interface LoweringContext {
   bindings: Map<ts.Symbol, IrBindingIdentity>;
   checker: ts.TypeChecker;
   diagnostics: CompilerDiagnostic[];
+  imports: IrImport[];
+  moduleSourceFile: ts.SourceFile;
   options: Readonly<LowerTypeScriptSourceOptions>;
   returnTargetTypes: IrType[];
   returnTypes: IrType[];
@@ -181,13 +183,15 @@ function lowerTypeScriptSourceWithAnalysis(
     bindings: new Map(),
     checker,
     diagnostics: [],
+    imports: [],
+    moduleSourceFile: sourceFile,
     options,
     returnTargetTypes: [],
     returnTypes: [],
     sourceFile,
     typeBindings: new Map(),
   };
-  const imports = lowerImports(context.sourceFile, context);
+  context.imports.push(...lowerImports(context.sourceFile, context));
   const declarations: IrDeclaration[] = [];
   const exports: IrExport[] = [];
   const pendingOverloads = new Map<string, IrFunctionSignature[]>();
@@ -287,7 +291,7 @@ function lowerTypeScriptSourceWithAnalysis(
     module: {
       declarations,
       exports,
-      imports,
+      imports: context.imports,
       name: moduleNameFromSource(context.sourceFile.fileName),
       packageName: options.packageName,
       source: relativeSource(sourceFile.fileName, options.upstreamDirectory),
@@ -1084,11 +1088,31 @@ function lowerTypeScriptInvocationArguments(
     if (ts.isSpreadElement(argument)) return lowerExpression(argument, context);
     const parameter = parameters[index];
     if (!parameter) return lowerExpression(argument, context);
-    const type = lowerFunctionTypeParameter(parameter, context).type;
+    const declaredType = lowerFunctionTypeParameter(parameter, context).type;
+    const type =
+      parameter.type && hasExternalTypeScriptTypeParameter(parameter.type, context)
+        ? (getTypeScriptInstantiatedInvocationParameterType(node, index, argument, context) ?? declaredType)
+        : declaredType;
     const contextualType =
       parameter.questionToken || parameter.initializer ? addIrTypeBindingPatternUndefined(type) : type;
     return lowerExpression(argument, context, contextualType);
   });
+}
+
+function getTypeScriptInstantiatedInvocationParameterType(
+  node: ts.CallExpression | ts.NewExpression,
+  index: number,
+  argument: ts.Expression,
+  context: LoweringContext,
+): IrType | undefined {
+  const parameter = context.checker.getResolvedSignature(node)?.parameters[index];
+  if (!parameter) return undefined;
+  return getTypeScriptCheckerTypeEvidence(
+    context.checker.getTypeOfSymbolAtLocation(parameter, argument),
+    context,
+    0,
+    true,
+  );
 }
 
 function addTypeScriptExtraArgumentErasureSemantics(
@@ -3456,8 +3480,16 @@ function lowerTypeScriptExpressionTypeEvidence(
   }
   const type = getTypeScriptSyntacticExpressionTypeEvidence(expression, context.checker);
   // A type node the ambient surface owns is written in the surface's own type parameters, which mean
-  // nothing in the module being lowered. Whatever path reached it, it stops here.
-  if (!type || type.getSourceFile().fileName === getCompilerAmbientSurfaceFileName()) return undefined;
+  // nothing in the module being lowered. The same is true of a generic callee's raw return syntax:
+  // its type parameters belong to the callee, while the call site needs the checker's instantiation.
+  // Whatever path reached either form, it stops here.
+  if (
+    !type ||
+    type.getSourceFile().fileName === getCompilerAmbientSurfaceFileName() ||
+    hasExternalTypeScriptTypeParameter(type, context)
+  ) {
+    return undefined;
+  }
   return lowerTypeScriptTypeNodeEvidence(type, context);
 }
 
@@ -4832,6 +4864,14 @@ function getTypeScriptCheckerTypeEvidence(
     if (members.length !== type.types.length || members.length === 0) return undefined;
     return commonType([members[0]!, ...members.slice(1)]);
   }
+  if (type.isIntersection()) {
+    const members = type.types.flatMap((member) => {
+      const lowered = getTypeScriptCheckerTypeEvidence(member, context, depth + 1, true);
+      return lowered ? [lowered] : [];
+    });
+    if (members.length !== type.types.length || members.length < 2) return undefined;
+    return { kind: 'intersection', types: [members[0]!, members[1]!, ...members.slice(2)] };
+  }
   if (type.flags & ts.TypeFlags.BooleanLike) return { kind: 'primitive', name: 'boolean' };
   if (type.flags & ts.TypeFlags.BigIntLike) return { kind: 'primitive', name: 'bigint' };
   if (type.flags & ts.TypeFlags.NumberLike) return { kind: 'primitive', name: 'number' };
@@ -4973,7 +5013,8 @@ function getTypeScriptCheckerTypeBinding(
     candidate.flags & ts.SymbolFlags.Alias && context.checker.getAliasedSymbol(candidate) === symbol ? [binding] : [],
   );
   const unique = new Map(aliases.map((binding) => [binding.id, binding]));
-  return unique.size === 1 ? [...unique.values()][0] : undefined;
+  if (unique.size > 0) return unique.size === 1 ? [...unique.values()][0] : undefined;
+  return lowerTypeScriptInferredTypeImportBinding(symbol, context);
 }
 
 function getTypeScriptCheckerTypeArguments(type: ts.Type, checker: ts.TypeChecker): readonly ts.Type[] {
@@ -5500,6 +5541,12 @@ function lowerTypeBindingSymbol(
       return aliasedCached;
     }
   }
+  const inferredImport = lowerTypeScriptInferredTypeImportBinding(aliased ?? symbol, context);
+  if (inferredImport) {
+    context.typeBindings.set(symbol, inferredImport);
+    if (aliased) context.typeBindings.set(aliased, inferredImport);
+    return inferredImport;
+  }
   const declaration = symbol.declarations?.find(isTypeBindingDeclaration);
   if (!declaration) return unsupported(node, `type binding ${node.text} has no supported declaration`);
   const name = typeBindingDeclarationName(declaration);
@@ -5514,6 +5561,70 @@ function lowerTypeBindingSymbol(
   };
   context.typeBindings.set(symbol, binding);
   if (aliased) context.typeBindings.set(aliased, binding);
+  return binding;
+}
+
+// Checker evidence can expose an exported type which the current source did not spell, such as the
+// return type of an imported function. The type still reaches this module through an existing source
+// import. Introduce it through that exact request so the reference remains locally valid while its
+// specifier and imported name retain the cross-module route.
+function lowerTypeScriptInferredTypeImportBinding(
+  symbol: ts.Symbol,
+  context: LoweringContext,
+): IrTypeBindingIdentity | undefined {
+  const declaration = symbol.declarations?.find(
+    (candidate): candidate is ts.InterfaceDeclaration | ts.TypeAliasDeclaration =>
+      (ts.isInterfaceDeclaration(candidate) || ts.isTypeAliasDeclaration(candidate)) &&
+      ts.isSourceFile(candidate.parent) &&
+      isExported(candidate),
+  );
+  if (!declaration || declaration.getSourceFile().fileName === context.moduleSourceFile.fileName) return undefined;
+  const targetFile = declaration.getSourceFile().fileName;
+  const specifiers = new Set<string>();
+  for (const [candidate, binding] of [...context.typeBindings, ...context.bindings]) {
+    if (binding.kind !== 'import') continue;
+    const target = candidate.flags & ts.SymbolFlags.Alias ? context.checker.getAliasedSymbol(candidate) : candidate;
+    if (!target.declarations?.some((targetDeclaration) => targetDeclaration.getSourceFile().fileName === targetFile)) {
+      continue;
+    }
+    for (const imported of context.imports) {
+      if (imported.bindings.some((importBinding) => importBinding.binding.id === binding.id)) {
+        specifiers.add(imported.specifier);
+      }
+    }
+  }
+  if (specifiers.size !== 1) return undefined;
+  const specifier = [...specifiers][0]!;
+  const importDeclaration = context.moduleSourceFile.statements.find(
+    (statement): statement is ts.ImportDeclaration =>
+      ts.isImportDeclaration(statement) &&
+      ts.isStringLiteral(statement.moduleSpecifier) &&
+      statement.moduleSpecifier.text === specifier,
+  );
+  const moduleOptions = context.analysisModuleOptions.get(context.moduleSourceFile.fileName);
+  if (!importDeclaration || !moduleOptions) return undefined;
+  const moduleContext = { ...context, options: moduleOptions, sourceFile: context.moduleSourceFile };
+  const sourceOrigin = origin(importDeclaration.moduleSpecifier, moduleContext);
+  const binding: IrTypeBindingIdentity = {
+    ...sourceOrigin,
+    id: `type-binding:${JSON.stringify([
+      sourceOrigin.packageName,
+      sourceOrigin.source,
+      'inferred-import',
+      specifier,
+      symbol.name,
+    ])}`,
+    kind: 'import',
+    name: symbol.name,
+    scope: 'module',
+    space: 'type',
+  };
+  context.imports.push({
+    bindings: [{ binding, imported: symbol.name, typeOnly: true }],
+    specifier,
+    typeOnly: true,
+  });
+  context.typeBindings.set(symbol, binding);
   return binding;
 }
 
