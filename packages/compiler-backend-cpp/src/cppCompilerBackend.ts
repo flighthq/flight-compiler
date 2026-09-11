@@ -45,7 +45,6 @@ import type {
   CompilerLoweringPass,
   CompilerModuleResolutionPlan,
   CppCompilerBackendOptions,
-  CppCompilerExternalBindingManifest,
   CppCompilerRuntimeProfile,
   EmittedFile,
   IrBinaryOperator,
@@ -2602,9 +2601,7 @@ function emitType(type: Readonly<IrType>, context: EmitContext, representation: 
           emissionError(context, `${sourceName}<T> requires exactly one callable type argument`);
         }
         const externalCallResult =
-          sourceName === 'ReturnType'
-            ? getCppExternalCallResultTypeCpp(type.typeArguments[0], context.options.externalBindings)
-            : undefined;
+          sourceName === 'ReturnType' ? getCppExternalCallResultTypeCpp(type.typeArguments[0], context) : undefined;
         if (externalCallResult) return externalCallResult;
         const callable = getCppClosedCallableType(type.typeArguments[0], context, new Set());
         if (!callable || callable.typeParameters.length > 0) {
@@ -4176,12 +4173,11 @@ function getCppClosedCallableType(
   return getCppClosedCallableType(target, context, nextResolvingAliases);
 }
 
-function getCppExternalCallResultTypeCpp(
-  type: Readonly<IrType>,
-  externalBindings: Readonly<CppCompilerExternalBindingManifest> | undefined,
-): string | undefined {
+function getCppExternalCallResultTypeCpp(type: Readonly<IrType>, context: EmitContext): string | undefined {
   if (type.kind !== 'typeOf' || type.reference.kind !== 'ambient') return undefined;
-  return getCompilerExternalBindingCallResultTypeCpp(type.reference.name, externalBindings);
+  const result = getCompilerExternalBindingCallResultTypeCpp(type.reference.name, context.options.externalBindings);
+  if (result) addCppExternalBindingHeaders(type.reference.name, 'value', context);
+  return result;
 }
 
 function getIrCallArgumentExpectedTypeCpp(
