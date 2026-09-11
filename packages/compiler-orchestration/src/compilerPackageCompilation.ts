@@ -7,11 +7,11 @@ import {
   validateCompilerEmittedSourceSyntax,
   validateCompilerTargetCompilationSmoke,
 } from '../../compiler-emission/src/index.js';
+import { isCompilerLoweringFailure } from '../../compiler-lowering/src/index.js';
 import {
   createCompilerModuleEvaluationPlan,
   isCompilerModuleEvaluationFailure,
 } from '../../compiler-module/src/index.js';
-import { isCompilerLoweringFailure } from '../../compiler-lowering/src/index.js';
 import { applySemanticPatchSet } from '../../compiler-patch/src/index.js';
 import { lowerTypeScriptSources } from '../../compiler-semantic/src/index.js';
 import type {
