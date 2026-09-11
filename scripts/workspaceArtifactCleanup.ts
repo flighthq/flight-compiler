@@ -5,7 +5,9 @@ import { fileURLToPath } from 'node:url';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 const directories = [path.join(root, 'dist')];
-if (!process.argv.includes('--dist-only')) directories.push(path.join(root, 'coverage'));
+if (!process.argv.includes('--dist-only')) {
+  directories.push(path.join(root, '.script-build'), path.join(root, 'coverage'));
+}
 for (const directory of directories) {
   rmSync(directory, { force: true, recursive: true });
 }

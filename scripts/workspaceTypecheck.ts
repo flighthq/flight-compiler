@@ -15,19 +15,28 @@ interface TypecheckResult {
   passed: boolean;
 }
 
+type TypecheckMode = 'all' | 'packages' | 'root';
+
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const mode = readTypecheckMode(process.argv.slice(2));
 const packages = readdirSync(path.join(root, 'packages'), { withFileTypes: true })
   .filter((entry) => entry.isDirectory())
   .map((entry) => entry.name)
   .sort();
-const targets: TypecheckTarget[] = [
+const allTargets: TypecheckTarget[] = [
   { config: 'tsconfig.json', label: 'flight-compiler repository' },
   ...packages.map((packageName) => ({
     config: `packages/${packageName}/tsconfig.json`,
     label: `@flighthq/${packageName}`,
   })),
 ];
+const targets = allTargets.filter((_target, index) => {
+  if (mode === 'root') return index === 0;
+  if (mode === 'packages') return index > 0;
+  return true;
+});
 const concurrency = Math.max(1, Math.min(availableParallelism(), targets.length, 4));
+process.stdout.write(`Running ${String(targets.length)} typecheck target(s) with ${String(concurrency)} worker(s).\n`);
 const results = await runTargets(concurrency);
 let failed = false;
 
@@ -39,6 +48,14 @@ for (const result of results) {
 
 if (failed) process.exit(1);
 process.stdout.write(`\n${String(results.length)} typecheck targets passed.\n`);
+
+function readTypecheckMode(args: readonly string[]): TypecheckMode {
+  if (args.length === 0) return 'all';
+  if (args.length === 1 && args[0] === '--packages') return 'packages';
+  if (args.length === 1 && args[0] === '--root') return 'root';
+  process.stderr.write('Usage: npm run typecheck, npm run typecheck:packages, or npm run typecheck:root\n');
+  process.exit(2);
+}
 
 async function runTarget(target: Readonly<TypecheckTarget>): Promise<TypecheckResult> {
   return await new Promise((resolve) => {

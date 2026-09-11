@@ -54,6 +54,8 @@
     "test:packages": "npm run _scripts:build --silent && node ./.script-build/isolatedPackageTest.js",
     "test:watch": "vitest",
     "typecheck": "npm run _scripts:build --silent && node ./.script-build/workspaceTypecheck.js",
+    "typecheck:packages": "npm run typecheck -- --packages",
+    "typecheck:root": "npm run typecheck -- --root",
     "untested": "npm run _scripts:build --silent && node ./.script-build/untestedArms.js",
     "verify": "npm run check -- --verify",
     "prepare": "husky",

@@ -171,12 +171,12 @@ Use npm, not pnpm or Yarn. Node.js 22 or newer is required. Script names follow 
 
 - `flight-compile <directory> --target <cpp|haxe|rust> --out <directory>`: point the compiler at a codebase. Sources are lowered into one module graph and share backend analysis, while every module retains its own outcome so a run reports everything it could not lower rather than stopping at the first refusal; `--report` reports without failing. Published as the package's `bin`.
 - `npm run fix`: apply Oxlint fixes and Oxfmt formatting after edits.
-- `npm run check`: static correctness sweep covering repository structure, formatting, linting, ordering, licensing, API shape, and type checking. Every selected gate runs even after an earlier one fails, and the failures are reported together.
+- `npm run check`: static correctness sweep covering repository structure, formatting, linting, ordering, licensing, API shape, and the root TypeScript program. Every selected gate runs even after an earlier one fails, and the failures are reported together with per-gate timings and exact rerun commands.
 - `npm run check:push`: faster pre-push subset of `npm run check` that omits the workspace typecheck. It does not run tests, coverage, target toolchains, or packaging.
 - `npm run test`: run the complete unit suite once, without coverage instrumentation or ratchets.
-- `npm run test:packages`: run every private package and the public package in isolation.
+- `npm run test:packages`: run every private package and the public package in isolation with bounded parallelism and deterministic grouped output.
 - `npm run test:coverage`: run all unit tests together with aggregate instrumentation. The verification sweep intentionally runs tests once in isolation and again for coverage because these lanes prove different properties.
-- `npm run verify`: complete deterministic verification sweep, including static checks, isolated and coverage test lanes, emitted-source compilation, behavioral oracles, and package assembly. Use it when the broad release signal is required, not as the editing loop.
+- `npm run verify`: complete deterministic verification sweep, including static checks, isolated package typechecks, isolated and coverage test lanes, emitted-source compilation, behavioral oracles, and package assembly. Use it when the broad release signal is required, not as the editing loop.
 - `npm run ci`: clean generated artifacts, then run `npm run verify` from a cold tree.
 - `npm run docs:check`: enforce the bounded codebase map, Claude pointer, local documentation links, and `npm run` citations that name a real script.
 - `npm run exports:check`: outside `compiler-types`, require one exactly named colocated test file for every non-barrel package source and one exact `describe('<function>')` block for every exported function. This proves test structure and naming, not assertion depth.
@@ -193,7 +193,7 @@ Use npm, not pnpm or Yarn. Node.js 22 or newer is required. Script names follow 
 - `npm run license:check`: fail on licensed text — a license body, grant, SPDX identifier, reservation of rights, or foreign copyright notice — outside the named exemptions it prints on every run.
 - `npm run readiness`: report what fraction of the golden corpus each target emits, which fixtures diverge between targets, and which refusal rules block the most fixtures. A reporting instrument over the committed pins that `golden:check` keeps current; nothing gates on it.
 - `npm run untested -- <package>`: list the branch and statement arms in one package that no test took. A location list, not a score, and nothing gates on it.
-- `npm run typecheck`: run the root and every workspace's strict no-emit check, collecting failures.
+- `npm run typecheck`: run the root and every workspace's strict no-emit check, collecting failures. `npm run typecheck:root` checks the root program once; `npm run typecheck:packages` checks only the isolated workspace configurations.
 - `npm run packages:check`: enforce manifests, flat source trees, source trees free of compiled output (a stray `.js` beside a source shadows it, so the tests run the stale copy while reporting the source as untested), dependency declarations and acyclicity, centralized contracts, class-free implementation, globally unique domain filenames and APIs, verb-first function names, transient-comment absence, tests, and public-facade completeness.
 - `npm run build`: clean stale output and assemble ESM JavaScript, declarations, maps, and declaration maps in `packages/tool-compiler/dist/`.
 - `npm run pack:check`: build fresh, inspect the publishable tarball, and prove every private workspace is assembled without leaking private imports or source/tests.

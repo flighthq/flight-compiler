@@ -1,9 +1,16 @@
 import { spawnSync } from 'node:child_process';
 import path from 'node:path';
+import { performance } from 'node:perf_hooks';
 import { fileURLToPath } from 'node:url';
 
 import { createCheckGateRegistry } from './checkGateRegistry.js';
 import type { CheckGate } from './checkGateRegistry.js';
+
+interface CheckGateRunResult {
+  readonly durationMilliseconds: number;
+  readonly gate: Readonly<CheckGate>;
+  readonly status: number;
+}
 
 // The non-fixing quality sweep.
 //
@@ -30,9 +37,9 @@ const checkGateLabels = new Set([
   'lint',
   'order:check',
   'packages:check',
-  'typecheck',
+  'typecheck:root',
 ]);
-const pushGateLabels = new Set([...checkGateLabels].filter((label) => label !== 'typecheck'));
+const pushGateLabels = new Set([...checkGateLabels].filter((label) => label !== 'typecheck:root'));
 
 const profile = readProfile(process.argv.slice(2));
 
@@ -47,7 +54,8 @@ add('order:check', process.execPath, compiledScript('sourceOrderHealth'));
 add('license:check', process.execPath, compiledScript('licenseProvenanceHealth'));
 add('api:check', process.execPath, [...compiledScript('publicApiReport'), '--check']);
 add('cpp:exceptions:check', process.execPath, compiledScript('cppExceptionLedger'));
-add('typecheck', process.execPath, compiledScript('workspaceTypecheck'));
+add('typecheck:root', process.execPath, [...compiledScript('workspaceTypecheck'), '--root']);
+add('typecheck:packages', process.execPath, [...compiledScript('workspaceTypecheck'), '--packages']);
 add('test:packages', process.execPath, compiledScript('isolatedPackageTest'));
 add('test:coverage', binary('vitest'), ['run', '--coverage']);
 add('compile:check', process.execPath, compiledScript('emittedSourceCompile'));
@@ -80,16 +88,24 @@ if (selectedGates.length === 0) {
   process.exit(1);
 }
 
-const failed: string[] = [];
+const results: CheckGateRunResult[] = [];
 for (const gate of selectedGates) {
   process.stdout.write(`\n▶ ${gate.label}\n`);
-  if (runGate(gate) !== 0) failed.push(gate.label);
+  results.push(runGate(gate));
+}
+const failed = results.filter((result) => result.status !== 0);
+const labelWidth = Math.max(...results.map((result) => result.gate.label.length));
+process.stdout.write('\nGate timings:\n');
+for (const result of results) {
+  process.stdout.write(`  ${result.gate.label.padEnd(labelWidth)}  ${formatDuration(result.durationMilliseconds)}\n`);
 }
 
 if (failed.length > 0) {
   process.stderr.write(
-    `\n${String(failed.length)} of ${String(selectedGates.length)} ${resultLabel} gates failed: ${failed.join(', ')}\n`,
+    `\n${String(failed.length)} of ${String(selectedGates.length)} ${resultLabel} gates failed: ${failed.map((result) => result.gate.label).join(', ')}\n`,
   );
+  process.stderr.write('Rerun failed gates:\n');
+  for (const result of failed) process.stderr.write(`  npm run ${result.gate.label}\n`);
   process.exit(1);
 }
 
@@ -103,13 +119,22 @@ function readProfile(args: readonly string[]): 'check' | 'push' | 'verify' {
   process.exit(2);
 }
 
-function runGate(gate: Readonly<CheckGate>): number {
+function formatDuration(milliseconds: number): string {
+  if (milliseconds < 1_000) return `${String(Math.round(milliseconds))}ms`;
+  const seconds = milliseconds / 1_000;
+  if (seconds < 60) return `${seconds.toFixed(1)}s`;
+  return `${String(Math.floor(seconds / 60))}m ${String(Math.round(seconds % 60))}s`;
+}
+
+function runGate(gate: Readonly<CheckGate>): CheckGateRunResult {
+  const startedAt = performance.now();
   const result = spawnSync(gate.command, [...gate.args], { cwd: root, env: process.env, stdio: 'inherit' });
+  let status = result.status ?? 1;
   if (result.error) {
     process.stderr.write(`${gate.label}: ${result.error.message}\n`);
-    return 1;
+    status = 1;
   }
   // A gate killed by a signal reports a null status; treating that as anything but a failure would
   // let an out-of-memory or interrupted stage pass silently.
-  return result.status ?? 1;
+  return { durationMilliseconds: performance.now() - startedAt, gate, status };
 }

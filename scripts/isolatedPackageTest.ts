@@ -1,11 +1,23 @@
-import { spawnSync } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { readFileSync, readdirSync } from 'node:fs';
+import { availableParallelism } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 interface PackageManifest {
   name: string;
   scripts?: Record<string, string>;
+}
+
+interface PackageTestResult {
+  name: string;
+  output: string;
+  passed: boolean;
+}
+
+interface PackageTestTarget {
+  directory: string;
+  manifest: PackageManifest;
 }
 
 // Isolated runs prove workspace boundaries; the later aggregate coverage run proves repository-wide instrumentation.
@@ -27,14 +39,16 @@ if (targets.length === 0) {
 }
 
 const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm';
+const concurrency = Math.max(1, Math.min(availableParallelism(), targets.length, 4));
+process.stdout.write(
+  `Running ${String(targets.length)} isolated package test target(s) with ${String(concurrency)} worker(s).\n`,
+);
+const results = await runTargets(concurrency);
 const failures: string[] = [];
-for (const target of targets) {
-  process.stdout.write(`\n▶ ${target.manifest.name}\n`);
-  const result = spawnSync(npm, ['run', 'test', `--workspace=${target.directory}`], {
-    cwd: root,
-    stdio: 'inherit',
-  });
-  if (result.status !== 0) failures.push(target.manifest.name);
+for (const result of results) {
+  process.stdout.write(`\n▶ ${result.name}\n`);
+  process.stdout.write(result.output);
+  if (!result.passed) failures.push(result.name);
 }
 
 if (failures.length > 0) {
@@ -43,3 +57,36 @@ if (failures.length > 0) {
 }
 
 process.stdout.write(`\n${String(targets.length)} package test targets passed.\n`);
+
+async function runTarget(target: Readonly<PackageTestTarget>): Promise<PackageTestResult> {
+  return await new Promise((resolve) => {
+    const child = spawn(npm, ['run', 'test', `--workspace=${target.directory}`], {
+      cwd: root,
+      env: process.env,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    const chunks: string[] = [];
+    child.stdout.on('data', (chunk: Buffer) => chunks.push(chunk.toString()));
+    child.stderr.on('data', (chunk: Buffer) => chunks.push(chunk.toString()));
+    child.on('error', (error) => chunks.push(`${error.message}\n`));
+    child.on('close', (code) => {
+      resolve({ name: target.manifest.name, output: chunks.join(''), passed: code === 0 });
+    });
+  });
+}
+
+async function runTargets(limit: number): Promise<PackageTestResult[]> {
+  const results: PackageTestResult[] = [];
+  let next = 0;
+  await Promise.all(
+    Array.from({ length: limit }, async () => {
+      for (;;) {
+        const index = next++;
+        const target = targets[index];
+        if (!target) return;
+        results[index] = await runTarget(target);
+      }
+    }),
+  );
+  return results;
+}

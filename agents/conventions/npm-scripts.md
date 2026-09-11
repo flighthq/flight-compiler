@@ -37,11 +37,15 @@ Every meaningful collapse should exist, so the obvious thing to type works.
 
 ## Check and verification
 
-`check` is the fully collapsed static-correctness alias. It covers repository and export structure, documentation, formatting, linting, source order, license provenance, public API shape, and type checking without entering any unit, coverage, target-toolchain, oracle, or package-artifact lane. `test` owns the unit suite and runs it once without coverage instrumentation.
+`check` is the fully collapsed static-correctness alias. It covers repository and export structure, documentation, formatting, linting, source order, license provenance, public API shape, and the root TypeScript program without entering any unit, coverage, target-toolchain, oracle, or package-artifact lane. `test` owns the unit suite and runs it once without coverage instrumentation.
 
-`verify` is the explicit complete composition. It selects every gate registered by `scripts/repositoryCheck.ts`, including the static checks, isolated and coverage test lanes, emitted-source compilation, behavioral oracles, and package assembly. It is not an `&&` chain: every selected gate runs because stopping at the first independent failure hides the rest. A gate whose inputs depend on an earlier step guards its own inputs instead — `pack:check` builds before it inspects the tarball, so it can never report health for a stale `dist/`.
+`verify` is the explicit complete composition. It selects every gate registered by `scripts/repositoryCheck.ts`, including the static checks, isolated package typechecks, isolated and coverage test lanes, emitted-source compilation, behavioral oracles, and package assembly. It is not an `&&` chain: every selected gate runs because stopping at the first independent failure hides the rest. A gate whose inputs depend on an earlier step guards its own inputs instead — `pack:check` builds before it inspects the tarball, so it can never report health for a stale `dist/`.
 
-The pre-push hook invokes `npm run check:push`, a shorter profile of the same registry that omits the workspace typecheck. Repeating the test and artifact lanes—or even the repository-wide typecheck—on every push made the hook expensive enough to invite routine bypass.
+Every profile ends with per-gate timings. When one fails, the summary prints its exact standalone `npm run` command so the next iteration reruns only the failed instrument.
+
+The pre-push hook invokes `npm run check:push`, a shorter profile of the same registry that omits typechecking. Repeating the test and artifact lanes—or even the root typecheck—on every push made the hook expensive enough to invite routine bypass.
+
+Every repository-script command incrementally compiles `scripts/` into the ignored `.script-build/` cache. Repeated commands reuse that cache; `npm run clean` removes it so `npm run ci` retains its cold-build meaning.
 
 Registering the same gate label twice throws rather than running it twice, because a doubled stage is invisible in a green sweep. See [`scripts/checkGateRegistry.ts`](../../scripts/checkGateRegistry.ts).
 
@@ -71,14 +75,16 @@ A citation written as a bare backticked script name with no `npm run` lead is re
 
 | script                    | meaning                                                                      |
 | ------------------------- | ---------------------------------------------------------------------------- |
-| `check`                   | static repository correctness, including typecheck                           |
-| `check:push`              | shorter pre-push static profile; omits the workspace typecheck               |
+| `check`                   | static repository correctness, including the root TypeScript program         |
+| `check:push`              | shorter pre-push static profile; omits typechecking                          |
 | `verify`                  | every registered static, test, coverage, target, oracle, and artifact gate   |
 | `ci`                      | `clean` then `verify`                                                        |
 | `fix`                     | apply lint fixes and formatting                                              |
 | `format` / `format:check` | write formatting / fail on unformatted files                                 |
 | `lint` / `lint:fix`       | report lint findings / write fixes                                           |
 | `typecheck`               | strict no-emit check for the root and every workspace                        |
+| `typecheck:root`          | strict no-emit check for the root program once                               |
+| `typecheck:packages`      | strict no-emit checks for isolated workspace configurations                  |
 | `packages:check`          | manifests, layout, dependency direction, naming, and facade completeness     |
 | `exports:check`           | one colocated test per source and one `describe()` per exported function     |
 | `docs:check`              | bounded codebase map, Claude pointer, local links, and command citations     |

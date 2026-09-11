@@ -14,7 +14,7 @@ What a test must prove, how to run the narrowest one that answers your question,
 
 `npm run verify` runs the unit tests twice, deliberately.
 
-- `test:packages` runs each workspace alone. This proves package boundaries: an undeclared dependency or a leaked import fails here and nowhere else.
+- `test:packages` runs each workspace alone with bounded parallelism, then prints captured results in package order. This proves package boundaries: an undeclared dependency or a leaked import fails here and nowhere else.
 - `test:coverage` runs everything together with instrumentation, and measures the repository against its ratchets.
 
 Neither lane subsumes the other. While iterating, prefer the narrowest meaningful run — one test file, then one workspace — and broaden only once the local change is understood. Broad runs are confidence gates; focused runs are the editing loop.
