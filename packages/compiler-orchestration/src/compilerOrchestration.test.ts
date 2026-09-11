@@ -382,6 +382,22 @@ describe('compileTypeScriptModules', () => {
       }),
     ).toThrow(expect.objectContaining({ kind: 'compiler-diagnostics', name: 'CompilerDiagnosticsError' }));
   });
+
+  it('emits modules whose only diagnostics are warning-severity type alias failures', () => {
+    const sourceFile = parseTypeScriptSource(
+      '/flight/packages/math/src/types.ts',
+      'export type Mapped<T> = { [K in keyof T]: T[K] }; export const value = 1;',
+    );
+
+    const result = compileTypeScriptModules({
+      backend: fixtureBackend,
+      backendOptions: {},
+      sources: [{ packageName: '@flighthq/math', sourceFile, upstreamDirectory: '/flight' }],
+    });
+
+    expect(result.compilation.files).toHaveLength(1);
+    expect(result.diagnostics).toEqual([]);
+  });
 });
 
 describe('createCompilerDiagnosticsFailure', () => {

@@ -1129,6 +1129,7 @@ describe('lowerTypeScriptSource', () => {
       'unsupported type member CallSignature',
       'property signature requires a type',
     ]);
+    expect(rejected.diagnostics.every((diagnostic) => diagnostic.severity === 'warning')).toBe(true);
   });
 
   it('keeps ambient utilities named and expands only checker-concrete mapped types', () => {
@@ -1291,6 +1292,7 @@ describe('lowerTypeScriptSource', () => {
       'unsupported type MappedType',
       'unsupported type MappedType',
     ]);
+    expect(result.diagnostics.every((diagnostic) => diagnostic.severity === 'warning')).toBe(true);
   });
 
   it('represents construct signatures as factory properties and marks their new expressions', () => {

@@ -201,6 +201,36 @@ describe('compileTypeScriptPackageGraph', () => {
     });
   });
 
+  it('emits modules with warning-severity type alias diagnostics rather than refusing them', () => {
+    const mixed = source(
+      '@local/source',
+      'source',
+      'mixed.ts',
+      'export type Mapped<T> = { [K in keyof T]: T[K] }; export const value = 1;',
+    );
+    const backend: CompilerBackend = {
+      emitModule: (module) => [{ contents: module.name, path: `${module.name}.txt` }],
+      name: 'fixture',
+    };
+    const result = compileTypeScriptPackageGraph({
+      backend,
+      backendOptions: {},
+      graph: graph(
+        [identity(mixed, 'Mixed')],
+        [],
+        [{ dependencies: [], name: '@local/source', root: mixed.packageRoot }],
+      ),
+      sources: [mixed],
+    });
+
+    expect(result.compilation.files.map((file) => file.path)).toEqual(['Mixed.txt']);
+    expect(result.report.modules[0]).toMatchObject({
+      module: identity(mixed, 'Mixed'),
+      outputFiles: ['Mixed.txt'],
+      status: 'emitted',
+    });
+  });
+
   it('is deterministic under source, package, entry, and dependency permutation', () => {
     const alpha = source('@local/source', 'source', 'alpha.ts', 'export const alpha = 1;');
     const beta = source(
