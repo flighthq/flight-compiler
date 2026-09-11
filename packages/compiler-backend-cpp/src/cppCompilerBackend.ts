@@ -107,11 +107,13 @@ interface EmitContext {
   bindingTypes: ReadonlyMap<string, Readonly<IrType>>;
   currentClass?: Readonly<IrClassDeclaration> | undefined;
   defaultedParameterIds: ReadonlySet<string>;
+  denseArrayLengthBindingIds: ReadonlySet<string>;
   finallyReturnVar?: string | undefined;
   includes: Set<string>;
   module: Readonly<IrModule>;
   nullableBindingIds: ReadonlySet<string>;
   options: Readonly<CppCompilerBackendOptions>;
+  preservedInitializerTypes: Map<string, Readonly<IrType>>;
   referenceRepresentationPlanner: CompilerCppReferenceRepresentationPlanner;
   returnsAbsent: boolean;
   sharedCaptureTargetNames: ReadonlyMap<string, string>;
@@ -208,10 +210,12 @@ function emitIrModuleCppWithContext(
     bindingClasses: collectIrModuleBindingClassesCpp(module, bindingTypes),
     bindingTypes,
     defaultedParameterIds: new Set(),
+    denseArrayLengthBindingIds: collectIrModuleDenseArrayLengthBindingIdsCpp(sourceModule),
     includes: new Set<string>(),
     module,
     nullableBindingIds: collectIrModuleNullableBindingIds(module),
     options,
+    preservedInitializerTypes: new Map(),
     referenceRepresentationPlanner:
       referenceRepresentationPlanner ??
       (moduleResolution
@@ -714,11 +718,27 @@ function emitVariable(variable: Readonly<IrVariable>, context: EmitContext): str
   }
   const name = getBindingTargetName(variable.binding, context);
   const arrayElement = context.arrayElementBindingIds.has(variable.binding.id);
-  const type = variable.type ? emitType(variable.type, context) : 'auto';
+  const preservedInitializerType = arrayElement
+    ? undefined
+    : getCppStructurallyEquivalentInitializerTypeCpp(variable, context);
+  if (preservedInitializerType) {
+    context.preservedInitializerTypes.set(variable.binding.id, preservedInitializerType);
+  }
+  const type = variable.type && !preservedInitializerType ? emitType(variable.type, context) : 'auto';
   const emittedType = arrayElement ? emitOptionalTypeCpp(type, true, context) : type;
   const constness = emitBindingConstnessCpp(variable.mutable, variable.type);
   const initializer = variable.initializer
-    ? ` = ${arrayElement ? emitOptionalExpressionCpp(variable.initializer, context, variable.type) : emitExpression(variable.initializer, context, variable.type)}`
+    ? ` = ${
+        arrayElement
+          ? emitOptionalExpressionCpp(variable.initializer, context, variable.type)
+          : emitExpression(
+              variable.initializer,
+              context,
+              preservedInitializerType ?? variable.type,
+              true,
+              context.denseArrayLengthBindingIds.has(variable.binding.id),
+            )
+      }`
     : '';
   const sharedCaptureTargetName = context.sharedCaptureTargetNames.get(variable.binding.id);
   if (sharedCaptureTargetName) {
@@ -739,6 +759,58 @@ function emitVariable(variable: Readonly<IrVariable>, context: EmitContext): str
     return `const auto ${sharedCaptureTargetName} = ${emitSharedCaptureCellConstructionCpp(sharedType, sharedInitializer, context)};`;
   }
   return `${constness}${emittedType} ${name}${initializer};`;
+}
+
+function getCppStructurallyEquivalentInitializerTypeCpp(
+  variable: Readonly<IrVariable>,
+  context: EmitContext,
+): Readonly<IrType> | undefined {
+  if (
+    'pattern' in variable ||
+    variable.mutable ||
+    !variable.type ||
+    !variable.initializer ||
+    context.sharedCaptureTargetNames.has(variable.binding.id)
+  ) {
+    return undefined;
+  }
+  const initializerType = getIrExpressionTypeEvidenceCpp(variable.initializer, context);
+  if (!initializerType) return undefined;
+  const variableUnion = getIrUnionTypeCpp(variable.type, context, new Set());
+  const initializerUnion = getIrUnionTypeCpp(initializerType, context, new Set());
+  if (!variableUnion || !initializerUnion) return undefined;
+  const variableAbsence = variableUnion.types
+    .filter((member) => member.kind === 'null' || member.kind === 'undefined')
+    .map((member) => member.kind)
+    .sort();
+  const initializerAbsence = initializerUnion.types
+    .filter((member) => member.kind === 'null' || member.kind === 'undefined')
+    .map((member) => member.kind)
+    .sort();
+  if (!isDeepStrictEqual(variableAbsence, initializerAbsence) || variableAbsence.length === 0) return undefined;
+  const variableValues = variableUnion.types.filter((member) => member.kind !== 'null' && member.kind !== 'undefined');
+  const initializerValues = initializerUnion.types.filter(
+    (member) => member.kind !== 'null' && member.kind !== 'undefined',
+  );
+  if (variableValues.length !== 1 || initializerValues.length !== 1) return undefined;
+  const variablePlan = context.referenceRepresentationPlanner.plan(variableValues[0]!, context.module);
+  const initializerPlan = context.referenceRepresentationPlanner.plan(initializerValues[0]!, context.module);
+  if (
+    variablePlan.kind !== 'represented' ||
+    variablePlan.valueRepresentation !== 'flightReference' ||
+    initializerPlan.kind !== 'represented' ||
+    initializerPlan.valueRepresentation !== 'flightReference'
+  ) {
+    return undefined;
+  }
+  const variableShape = context.referenceRepresentationPlanner.resolveObjectShape(variableValues[0]!, context.module);
+  const initializerShape = context.referenceRepresentationPlanner.resolveObjectShape(
+    initializerValues[0]!,
+    context.module,
+  );
+  return variableShape && initializerShape && isDeepStrictEqual(variableShape, initializerShape)
+    ? initializerType
+    : undefined;
 }
 
 function emitExpression(
@@ -1141,7 +1213,7 @@ function emitExpression(
         expression.reference.kind === 'binding' &&
         context.nullableBindingIds.has(expression.reference.binding.id)
       ) {
-        const bindingType = context.bindingTypes.get(expression.reference.binding.id);
+        const bindingType = getCppBindingTypeCpp(expression.reference.binding.id, context);
         const union = bindingType ? getIrUnionTypeCpp(bindingType, context, new Set()) : undefined;
         const plan = union ? getCppUnionRepresentationPlan(union, context) : undefined;
         if (plan?.kind === 'dualSentinelVariant') {
@@ -1982,7 +2054,7 @@ function getCppTypeOfValueType(
   context: EmitContext,
 ): Readonly<IrType> | undefined {
   if (type.reference.kind !== 'binding') return undefined;
-  let valueType = context.bindingTypes.get(type.reference.binding.id);
+  let valueType = getCppBindingTypeCpp(type.reference.binding.id, context);
   for (const segment of type.reference.path) {
     if (!valueType) return undefined;
     valueType = getIrObjectPropertyTypeCpp(valueType, segment, context);
@@ -2076,7 +2148,7 @@ function emitNullishComparisonCpp(
       : expression.left;
   const operandType =
     operand.kind === 'identifier' && operand.reference.kind === 'binding'
-      ? context.bindingTypes.get(operand.reference.binding.id)
+      ? getCppBindingTypeCpp(operand.reference.binding.id, context)
       : undefined;
   const union = operandType ? getIrUnionTypeCpp(operandType, context, new Set()) : undefined;
   const plan = union ? getCppUnionRepresentationPlan(union, context) : undefined;
@@ -2431,7 +2503,7 @@ function getIrExpressionTypeForUnionConstructionCpp(
       };
     case 'identifier': {
       if (expression.reference.kind !== 'binding') return undefined;
-      const declaredType = context.bindingTypes.get(expression.reference.binding.id);
+      const declaredType = getCppBindingTypeCpp(expression.reference.binding.id, context);
       if (!declaredType || !expression.narrowedMember) return declaredType;
       const union = getIrUnionTypeCpp(declaredType, context, new Set());
       return (
@@ -2628,6 +2700,14 @@ function getIrObjectPropertyTypeCpp(
   context: EmitContext,
 ): Readonly<IrType> | undefined {
   if (type.kind === 'object') return type.properties.find((property) => property.name === propertyName)?.type;
+  if (
+    type.kind === 'named' &&
+    type.reference.kind === 'ambient' &&
+    type.reference.name === 'Record' &&
+    type.typeArguments.length === 2
+  ) {
+    return type.typeArguments[1];
+  }
   const objectShape = context.referenceRepresentationPlanner.resolveObjectShape(type, context.module);
   if (objectShape) return objectShape.find((property) => property.name === propertyName)?.type;
   if (type.kind !== 'named' || type.reference.kind !== 'binding') return undefined;
@@ -2723,6 +2803,10 @@ function getCppComputedPropertySourceName(reference: Readonly<IrValueNameReferen
   return [reference.binding.name, ...reference.path].join('.');
 }
 
+function getCppBindingTypeCpp(bindingId: string, context: EmitContext): Readonly<IrType> | undefined {
+  return context.preservedInitializerTypes.get(bindingId) ?? context.bindingTypes.get(bindingId);
+}
+
 function getIrExpressionTypeEvidenceCpp(
   expression: Readonly<IrExpression>,
   context: EmitContext,
@@ -2770,7 +2854,7 @@ function getIrExpressionTypeEvidenceCpp(
         };
       }
       if (expression.reference.kind !== 'binding') return undefined;
-      const declaredType = context.bindingTypes.get(expression.reference.binding.id);
+      const declaredType = getCppBindingTypeCpp(expression.reference.binding.id, context);
       if (!declaredType || !expression.narrowedMember) return declaredType;
       return (
         getIrUnionTypeCpp(declaredType, context, new Set())?.types.find(
@@ -2850,7 +2934,7 @@ function getIrBindingVariantUnionTypeCpp(
   bindingId: string,
   context: EmitContext,
 ): Extract<IrType, { kind: 'union' }> | undefined {
-  const type = context.bindingTypes.get(bindingId);
+  const type = getCppBindingTypeCpp(bindingId, context);
   return type ? getIrVariantUnionTypeCpp(type, context, new Set()) : undefined;
 }
 
@@ -3105,6 +3189,168 @@ function collectIrModuleArrayElementBindingIdsCpp(
   return result;
 }
 
+// A sized JavaScript Array begins sparse, while flight::Array is dense. Permit the sized form only
+// when the source itself proves that every slot is overwritten by contiguous, constant-bound loops
+// before the array can be observed. The proof is intentionally narrow: it covers lookup-table builders
+// without turning an arbitrary sparse allocation into a default-filled array.
+function collectIrModuleDenseArrayLengthBindingIdsCpp(module: Readonly<IrModule>): ReadonlySet<string> {
+  const result = new Set<string>();
+  const inspectStatements = (statements: readonly Readonly<IrStatement>[]): void => {
+    statements.forEach((statement, statementIndex) => {
+      if (statement.kind === 'variable') {
+        for (const variable of statement.declarations) {
+          if (
+            'binding' in variable &&
+            variable.initializer?.kind === 'new' &&
+            variable.initializer.callee.kind === 'identifier' &&
+            variable.initializer.callee.reference.kind === 'ambient' &&
+            variable.initializer.callee.reference.name === 'Array' &&
+            variable.initializer.arguments.length === 1
+          ) {
+            const length = getNonnegativeIntegerLiteralCpp(variable.initializer.arguments[0]!);
+            if (
+              length !== undefined &&
+              hasContiguousDenseArrayWriteLoopsCpp(variable.binding.id, length, statements.slice(statementIndex + 1))
+            ) {
+              result.add(variable.binding.id);
+            }
+          }
+        }
+      }
+      switch (statement.kind) {
+        case 'block':
+          inspectStatements(statement.statements);
+          break;
+        case 'do':
+        case 'for':
+        case 'forIn':
+        case 'forOf':
+        case 'while':
+          inspectStatements(statement.body.kind === 'block' ? statement.body.statements : [statement.body]);
+          break;
+        case 'if':
+          inspectStatements(
+            statement.consequent.kind === 'block' ? statement.consequent.statements : [statement.consequent],
+          );
+          if (statement.otherwise) {
+            inspectStatements(
+              statement.otherwise.kind === 'block' ? statement.otherwise.statements : [statement.otherwise],
+            );
+          }
+          break;
+        case 'switch':
+          for (const switchCase of statement.cases) inspectStatements(switchCase.statements);
+          break;
+        case 'try':
+          inspectStatements(statement.tryBody.kind === 'block' ? statement.tryBody.statements : [statement.tryBody]);
+          if (statement.catchClause) {
+            inspectStatements(
+              statement.catchClause.body.kind === 'block'
+                ? statement.catchClause.body.statements
+                : [statement.catchClause.body],
+            );
+          }
+          if (statement.finallyBody) {
+            inspectStatements(
+              statement.finallyBody.kind === 'block' ? statement.finallyBody.statements : [statement.finallyBody],
+            );
+          }
+          break;
+        case 'break':
+        case 'continue':
+        case 'expression':
+        case 'return':
+        case 'throw':
+          break;
+      }
+    });
+  };
+  for (const declaration of module.declarations) {
+    if (declaration.kind === 'function') inspectStatements(declaration.body);
+    if (declaration.kind === 'class') {
+      if (declaration.classConstructor) inspectStatements(declaration.classConstructor.body);
+      for (const method of declaration.methods) inspectStatements(method.body);
+    }
+  }
+  return result;
+}
+
+function hasContiguousDenseArrayWriteLoopsCpp(
+  arrayBindingId: string,
+  length: number,
+  statements: readonly Readonly<IrStatement>[],
+): boolean {
+  let nextIndex = 0;
+  for (const statement of statements) {
+    const range = getDenseArrayWriteLoopRangeCpp(statement, arrayBindingId);
+    if (!range || range.start !== nextIndex || range.end > length) return false;
+    nextIndex = range.end;
+    if (nextIndex === length) return true;
+  }
+  return false;
+}
+
+function getDenseArrayWriteLoopRangeCpp(
+  statement: Readonly<IrStatement>,
+  arrayBindingId: string,
+): Readonly<{ end: number; start: number }> | undefined {
+  if (statement.kind !== 'for' || !Array.isArray(statement.initializer) || statement.initializer.length !== 1) {
+    return undefined;
+  }
+  const index = statement.initializer[0]!;
+  if (!('binding' in index) || !index.initializer) return undefined;
+  const start = getNonnegativeIntegerLiteralCpp(index.initializer);
+  const condition = statement.condition;
+  const increment = statement.increment;
+  if (
+    start === undefined ||
+    !condition ||
+    condition.kind !== 'binary' ||
+    condition.operator !== '<' ||
+    !isIrBindingIdentifierCpp(condition.left, index.binding.id) ||
+    !increment ||
+    increment.kind !== 'unary' ||
+    increment.operator !== '++' ||
+    !isIrBindingIdentifierCpp(increment.operand, index.binding.id)
+  ) {
+    return undefined;
+  }
+  const end = getNonnegativeIntegerLiteralCpp(condition.right);
+  const body =
+    statement.body.kind === 'block' && statement.body.statements.length === 1
+      ? statement.body.statements[0]!
+      : statement.body;
+  if (
+    end === undefined ||
+    body.kind !== 'expression' ||
+    body.expression.kind !== 'assignment' ||
+    body.expression.operator !== '=' ||
+    body.expression.left.kind !== 'element' ||
+    !isIrBindingIdentifierCpp(body.expression.left.object, arrayBindingId) ||
+    !isIrBindingIdentifierCpp(body.expression.left.index, index.binding.id)
+  ) {
+    return undefined;
+  }
+  return { end, start };
+}
+
+function getNonnegativeIntegerLiteralCpp(expression: Readonly<IrExpression>): number | undefined {
+  return expression.kind === 'literal' &&
+    typeof expression.value === 'number' &&
+    Number.isSafeInteger(expression.value) &&
+    expression.value >= 0
+    ? expression.value
+    : undefined;
+}
+
+function isIrBindingIdentifierCpp(expression: Readonly<IrExpression>, bindingId: string): boolean {
+  return (
+    expression.kind === 'identifier' &&
+    expression.reference.kind === 'binding' &&
+    expression.reference.binding.id === bindingId
+  );
+}
+
 function irTypeIncludesUndefinedCpp(type: Readonly<IrType>): boolean {
   if (type.kind === 'undefined') return true;
   if (type.kind === 'union') return type.types.some((member) => member.kind === 'undefined');
@@ -3304,7 +3550,7 @@ function getIrExpressionBindingTypeCpp(
   context: EmitContext,
 ): Readonly<IrType> | undefined {
   return expression.kind === 'identifier' && expression.reference.kind === 'binding'
-    ? context.bindingTypes.get(expression.reference.binding.id)
+    ? getCppBindingTypeCpp(expression.reference.binding.id, context)
     : undefined;
 }
 

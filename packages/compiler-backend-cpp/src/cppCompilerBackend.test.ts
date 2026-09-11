@@ -2103,6 +2103,21 @@ export function compare(left: string, right: string, locale: string, options: In
     expect(emitted.contents).toContain('flight::Array<double>(length).fill(0.0)');
   });
 
+  it('emits literal-sized arrays when contiguous loops initialize every slot before observation', () => {
+    const result = lower(
+      'array-length-loop-fill-flight.ts',
+      `export function values(): number[] {
+        const result = new Array<number>(4);
+        for (let index = 0; index < 2; index++) result[index] = 1;
+        for (let index = 2; index < 4; index++) result[index] = 2;
+        return result;
+      }`,
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+
+    expect(emitted.contents).toContain('flight::Array<double> result = flight::Array<double>(4.0)');
+  });
+
   it('emits tuple literal with absent element as std::nullopt', () => {
     const result = lower('tuple-absent.ts', 'export function partial(): [number, number?] { return [1]; }');
     const emitted = emitIrModuleCpp(result.module);
@@ -3078,6 +3093,37 @@ export function compare(left: string, right: string, locale: string, options: In
     const output = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
 
     expect(output).toContain('std::optional<flight::String>{reason}');
+  });
+
+  it('uses the declared Record value type when contextual object members are unions', () => {
+    const result = lower(
+      'record-union-values.ts',
+      `type Kind = 'present' | 'missing';
+       interface Info { readonly width: number; }
+       function createInfo(): Info { return { width: 1 }; }
+       const values: Record<Kind, Info | null> = { present: createInfo(), missing: null };
+       export function getInfo(kind: Kind): Info | null { return values[kind]; }`,
+    );
+    const output = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    expect(output).toContain('std::optional<flight::Ref<Info>>{create_info()}');
+  });
+
+  it('preserves named optional reference results for structurally inferred locals', () => {
+    const result = lower(
+      'named-optional-local.ts',
+      `interface Info { readonly width: number; }
+       function findInfo(): Info | null { return null; }
+       export function getWidth(): number {
+         const info = findInfo();
+         if (info === null) return 0;
+         return info.width;
+       }`,
+    );
+    const output = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    expect(output).toContain('auto info = find_info()');
+    expect(output).toContain('return info.value()->width');
   });
 
   it('adopts a returned task and wraps its awaited value in the async return union', () => {
