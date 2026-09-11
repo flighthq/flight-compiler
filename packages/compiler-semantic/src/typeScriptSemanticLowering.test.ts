@@ -12182,6 +12182,48 @@ it('lowers typeof type query with a value name reference', () => {
   expect(fn.parameters[0]?.type).toMatchObject({ kind: 'typeOf', reference: { kind: 'binding' } });
 });
 
+it('materializes scalar type queries from type-only imports without guessing object queries', () => {
+  const [, result] = lowerTypeScriptSources([
+    {
+      packageName: '@flighthq/types',
+      sourceFile: ts.createSourceFile(
+        '/flight/packages/types/src/Entity.ts',
+        `export const EntityRuntimeKey = Symbol.for('EntityRuntime');
+         export const EntityKind = 'entity' as const;`,
+        ts.ScriptTarget.Latest,
+        true,
+      ),
+      upstreamDirectory: '/flight',
+    },
+    {
+      packageName: '@flighthq/types',
+      sourceFile: ts.createSourceFile(
+        '/flight/packages/types/src/InteractionManager.ts',
+        `import type { EntityKind, EntityRuntimeKey } from './Entity';
+         export type RuntimeKey = typeof EntityRuntimeKey;
+         export type Kind = typeof EntityKind;
+         export const settings = { enabled: true };
+         export type Settings = typeof settings;
+         export type Console = typeof console;`,
+        ts.ScriptTarget.Latest,
+        true,
+      ),
+      upstreamDirectory: '/flight',
+    },
+  ]);
+  const declarations = new Map(
+    result.module.declarations.flatMap((declaration) =>
+      'binding' in declaration ? [[declaration.binding.name, declaration] as const] : [],
+    ),
+  );
+
+  expect(result.diagnostics).toEqual([]);
+  expect(declarations.get('RuntimeKey')).toMatchObject({ type: { kind: 'primitive', name: 'symbol' } });
+  expect(declarations.get('Kind')).toMatchObject({ type: { kind: 'literal', value: 'entity' } });
+  expect(declarations.get('Settings')).toMatchObject({ type: { kind: 'typeOf', reference: { kind: 'binding' } } });
+  expect(declarations.get('Console')).toMatchObject({ type: { kind: 'typeOf', reference: { kind: 'ambient' } } });
+});
+
 it('lowers unique symbol syntax through the ordinary symbol representation', () => {
   const result = lower('unique-symbol.ts', 'export const s: unique symbol = Symbol();');
   expect(result.diagnostics).toEqual([]);

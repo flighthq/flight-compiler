@@ -2743,7 +2743,14 @@ function lowerType(node: ts.TypeNode, context: LoweringContext): IrType {
       object: lowerType(node.objectType, context),
     };
   }
-  if (ts.isTypeQueryNode(node)) return { kind: 'typeOf', reference: lowerValueNameReference(node.exprName, context) };
+  if (ts.isTypeQueryNode(node)) {
+    const reference = lowerValueNameReference(node.exprName, context);
+    if (reference.kind === 'ambient') {
+      const checkerType = getTypeScriptCheckerTypeEvidence(context.checker.getTypeFromTypeNode(node), context, 0, true);
+      if (checkerType?.kind === 'literal' || checkerType?.kind === 'primitive') return checkerType;
+    }
+    return { kind: 'typeOf', reference };
+  }
   if (ts.isTemplateLiteralTypeNode(node)) return { kind: 'primitive', name: 'string' };
   if (ts.isConditionalTypeNode(node)) {
     const concrete = lowerConcreteConditionalType(node, context);
