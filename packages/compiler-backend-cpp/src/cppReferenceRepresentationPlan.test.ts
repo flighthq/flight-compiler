@@ -325,8 +325,9 @@ describe('createIrTypeReferenceRepresentationPlanCpp', () => {
       valueRepresentation: 'inlineValue',
     });
     expect(createIrTypeReferenceRepresentationPlanCpp(referenceIntersection, module)).toMatchObject({
-      kind: 'refused',
-      reason: 'compoundReference',
+      category: 'anonymousObject',
+      kind: 'represented',
+      valueRepresentation: 'flightReference',
     });
     for (const type of [functionType, tupleType]) {
       expect(createIrTypeReferenceRepresentationPlanCpp(type, module)).toMatchObject({

@@ -2510,6 +2510,26 @@ describe('lowerTypeScriptSource', () => {
     ]);
   });
 
+  it('retains optional method absence in optional-call receiver evidence', () => {
+    const result = lower(
+      'optional-method-call-evidence.ts',
+      'interface Backend { prepare?(): void } export function prepare(backend: Backend): void { backend.prepare?.(); }',
+    );
+    const prepare = result.module.declarations[1];
+    const statement = prepare?.kind === 'function' ? prepare.body[0] : undefined;
+    if (statement?.kind !== 'expression' || statement.expression.kind !== 'call') {
+      throw new Error('Expected optional method call');
+    }
+
+    expect(statement.expression.semantics.optionalChain).toMatchObject({
+      receiverNullish: 'possible',
+      receiverType: {
+        kind: 'union',
+        types: [{ kind: 'function', returns: { kind: 'primitive', name: 'void' } }, { kind: 'undefined' }],
+      },
+    });
+  });
+
   it('identifies typed-array set calls from receiver semantics rather than member spelling', () => {
     const result = lower(
       'typed-array-set.ts',

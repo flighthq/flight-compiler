@@ -1094,7 +1094,9 @@ function createTypeScriptOptionalChainSemantics(
   const receiverType = getTypeScriptOptionalChainTypeEvidence(receiver, context);
   return {
     receiverEvaluation: 'once',
-    receiverNullish: getTypeScriptOptionalChainReceiverNullish(receiver, context),
+    receiverNullish: hasIrTypeAbsentMemberSemantic(receiverType)
+      ? 'possible'
+      : getTypeScriptOptionalChainReceiverNullish(receiver, context),
     receiverType,
     result: 'undefined',
     shortCircuit: 'nullish',
@@ -4657,6 +4659,10 @@ function getTypeScriptExpressionBindingTypeEvidence(
       declaration.type
     ) {
       const written = lowerTypeScriptTypeNodeEvidence(declaration.type, context);
+      return declaration.questionToken ? { kind: 'union', types: [written, { kind: 'undefined' }] } : written;
+    }
+    if (declaration && (ts.isMethodSignature(declaration) || ts.isMethodDeclaration(declaration))) {
+      const written = lowerFunctionType(declaration, context);
       return declaration.questionToken ? { kind: 'union', types: [written, { kind: 'undefined' }] } : written;
     }
     return getIrTypeMemberEvidence(

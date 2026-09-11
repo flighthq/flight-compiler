@@ -155,6 +155,13 @@ function resolveIrTypeObjectShapeCpp(
   ancestors: ReadonlySet<string>,
 ): readonly Readonly<IrObjectTypeProperty>[] | undefined {
   if (type.kind === 'object') return type.properties;
+  if (type.kind === 'intersection') {
+    const members = type.types.map((member) =>
+      resolveIrTypeObjectShapeCpp(member, module, moduleSet, cache, ancestors),
+    );
+    if (members.some((properties) => !properties)) return undefined;
+    return mergeIrObjectShapePropertiesCpp(members.flatMap((properties) => properties!));
+  }
   if (type.kind !== 'named') return undefined;
   if (type.reference.kind === 'ambient') {
     if (type.typeArguments.length !== 1 || !type.typeArguments[0]) return undefined;
@@ -230,8 +237,22 @@ function mergeIrObjectShapePropertiesCpp(
   const result = new Map<string, Readonly<IrObjectTypeProperty>>();
   for (const property of properties) {
     const existing = result.get(property.name);
-    if (existing && JSON.stringify(existing) !== JSON.stringify(property)) return undefined;
-    result.set(property.name, property);
+    if (!existing) {
+      result.set(property.name, property);
+      continue;
+    }
+    if (
+      JSON.stringify(existing.type) !== JSON.stringify(property.type) ||
+      JSON.stringify(existing.computedKey) !== JSON.stringify(property.computedKey) ||
+      existing.role !== property.role
+    ) {
+      return undefined;
+    }
+    result.set(property.name, {
+      ...existing,
+      optional: existing.optional && property.optional,
+      readonly: existing.readonly && property.readonly,
+    });
   }
   return [...result.values()];
 }
@@ -284,7 +305,16 @@ function createIrTypeReferenceRepresentationPlanInternalCpp(
     return createCompilerCppReferenceRepresentationSuccessCpp(identity, 'value', 'none', 'inlineValue', 'inlineValue');
   }
   if (type.kind === 'intersection') {
-    return createCompilerCppReferenceRepresentationRefusalCpp(identity, 'compoundReference');
+    const properties = resolveIrTypeObjectShapeCpp(type, module, context.moduleSet, context.resolutionCache, new Set());
+    return properties
+      ? createCompilerCppReferenceRepresentationSuccessCpp(
+          identity,
+          'anonymousObject',
+          'object',
+          'rawAnonymousObject',
+          'flightReference',
+        )
+      : createCompilerCppReferenceRepresentationRefusalCpp(identity, 'compoundReference');
   }
   return createCompilerCppReferenceRepresentationRefusalCpp(identity, 'unsupportedReferenceForm');
 }

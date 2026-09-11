@@ -1978,6 +1978,24 @@ export function preferred(): number { return NativeSurface.preferredFormat; }`,
     expect(() => emitIrModuleCpp(sized.module, { runtimeProfile: 'flight-cpp' })).toThrow(
       'Array length construction is outside the dense flight-cpp array profile',
     );
+
+    const partiallyFilled = lower(
+      'array-length-partial-fill-flight.ts',
+      'export function values(length: number): number[] { return new Array<number>(length).fill(0, 1); }',
+    );
+    expect(() => emitIrModuleCpp(partiallyFilled.module, { runtimeProfile: 'flight-cpp' })).toThrow(
+      'Array length construction is outside the dense flight-cpp array profile',
+    );
+  });
+
+  it('emits length-constructed arrays when an immediate full fill proves them dense', () => {
+    const result = lower(
+      'array-length-full-fill-flight.ts',
+      'export function values(length: number): number[] { return new Array<number>(length).fill(0); }',
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+
+    expect(emitted.contents).toContain('flight::Array<double>(length).fill(0.0)');
   });
 
   it('emits tuple literal with absent element as std::nullopt', () => {
@@ -2051,7 +2069,7 @@ export function preferred(): number { return NativeSurface.preferredFormat; }`,
     expect(emitted.dependencies).toEqual(expect.arrayContaining(['flight/runtime.hpp', 'flight/symbol.hpp', 'memory']));
   });
 
-  it('refuses indexedAccess types', () => {
+  it('refuses indexedAccess types without a closed object shape', () => {
     const result = lower('idx.ts', 'export const x: number = 1;');
     const module = structuredClone(result.module);
     const decl = module.declarations[0];
@@ -2065,7 +2083,23 @@ export function preferred(): number { return NativeSurface.preferredFormat; }`,
     expect(() => emitIrModuleCpp(module)).toThrow('indexedAccess');
   });
 
-  it('refuses intersection types', () => {
+  it('emits closed keyof, indexed-access, and value-query type computations', () => {
+    const result = lower(
+      'closed-type-computations.ts',
+      `interface Options { count: number; label?: string }
+       export const Kind = 'options';
+       export type OptionKey = keyof Options;
+       export type OptionValue = Options[keyof Options];
+       export type Kind = typeof Kind;`,
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+
+    expect(emitted.contents).toContain('using OptionKey = flight::String');
+    expect(emitted.contents).toContain('using OptionValue = std::optional<std::variant');
+    expect(emitted.contents).toContain('using Kind = flight::String');
+  });
+
+  it('refuses intersections without a compatible object composition', () => {
     const result = lower('inter.ts', 'export const x: number = 1;');
     const module = structuredClone(result.module);
     const decl = module.declarations[0];
@@ -2073,6 +2107,32 @@ export function preferred(): number { return NativeSurface.preferredFormat; }`,
       (decl as any).type = { kind: 'intersection', types: [] };
     }
     expect(() => emitIrModuleCpp(module)).toThrow('intersection');
+  });
+
+  it('emits object intersections as one composed reference shape', () => {
+    const result = lower(
+      'object-intersection.ts',
+      `interface Position { x: number }
+       interface Label { text: string }
+       export type LabeledPosition = Position & Label;`,
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+
+    expect(emitted.contents).toContain('struct LabeledPosition : public flight::ReferenceEnabled');
+    expect(emitted.contents).toContain('double x;');
+    expect(emitted.contents).toContain('flight::String text;');
+  });
+
+  it('erases phantom object brands from primitive intersections', () => {
+    const result = lower(
+      'primitive-brand.ts',
+      `export type Handle = number & { readonly __brand: 'Handle' };
+       export function identity(handle: Handle): Handle { return handle; }`,
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+
+    expect(emitted.contents).toContain('using Handle = double');
+    expect(emitted.contents).toContain('Handle identity(Handle handle)');
   });
 
   it('emits boolean literal type as bool', () => {
@@ -2902,6 +2962,28 @@ export function preferred(): number { return NativeSurface.preferredFormat; }`,
     expect(output).toContain('std::variant<double, std::nullptr_t, std::monostate>');
     expect(output).toContain('std::in_place_type<std::nullptr_t>, nullptr');
     expect(output).toContain('std::in_place_type<std::monostate>, std::monostate{}');
+  });
+
+  it('wraps a runtime-equivalent source union in a wider optional union', () => {
+    const result = lower(
+      'optional-source-union.ts',
+      `type Reason = 'blocked' | 'missing';
+       export function explain(reason: Reason): Reason | null { return reason; }`,
+    );
+    const output = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    expect(output).toContain('std::optional<flight::String>{reason}');
+  });
+
+  it('adopts a returned task and wraps its awaited value in the async return union', () => {
+    const result = lower(
+      'async-task-adoption.ts',
+      `type Loader = () => Promise<number>;
+       export async function load(loader: Loader): Promise<number | null> { return loader(); }`,
+    );
+    const output = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    expect(output).toContain('co_return std::optional<double>{co_await loader()}');
   });
 
   it('refuses dual-sentinel coalescing and optional chaining until presence projection is lowered', () => {
@@ -4468,6 +4550,48 @@ export function preferred(): number { return NativeSurface.preferredFormat; }`,
     ).contents;
     expect(output).toContain('max_element');
     expect(output).toContain('#include <algorithm>');
+  });
+
+  it('passes a terminal spread collection to a represented rest-array parameter', () => {
+    const output = emitIrModuleCpp(
+      lower(
+        'rest-array-call.ts',
+        `export function invoke(listener: (...args: readonly unknown[]) => void, args: readonly unknown[]): void {
+           listener(...args);
+         }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+
+    expect(output).toContain('listener(args)');
+  });
+
+  it('materializes Array.from over ordered map keys without an unbound static member', () => {
+    const output = emitIrModuleCpp(
+      lower(
+        'array-from-map-keys.ts',
+        `const values = new Map<string, number>();
+         export function keys(): readonly string[] { return Array.from(values.keys()); }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+
+    expect(output).toContain('for (const auto& [array_from_key, array_from_value] : values)');
+    expect(output).toContain('array_from_result.push(array_from_key)');
+  });
+
+  it('erases Object.freeze after preserving its single value evaluation', () => {
+    const output = emitIrModuleCpp(
+      lower(
+        'object-freeze.ts',
+        `interface Outcome { readonly reason: 'ok' }
+         export function outcome(): Outcome { return Object.freeze({ reason: 'ok' }); }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+
+    expect(output).toContain('.reason = flight::String("ok")');
+    expect(output).not.toContain('Object::freeze');
   });
 
   it('emits variadic tuple rest with std::get and tuple include', () => {
