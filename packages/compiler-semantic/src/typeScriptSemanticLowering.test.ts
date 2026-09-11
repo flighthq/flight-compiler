@@ -1802,6 +1802,65 @@ describe('lowerTypeScriptSource', () => {
     );
   });
 
+  it('expands barrel-imported EntityRuntime heritage for contextual construction', () => {
+    const entity = ts.createSourceFile(
+      '/flight/packages/types/src/Entity.ts',
+      'export interface EntityRuntime { binding: object | null; }',
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const contract = ts.createSourceFile(
+      '/flight/packages/types/src/contract.ts',
+      "export * from './Entity';",
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const gizmo = ts.createSourceFile(
+      '/flight/packages/gizmo/src/gizmoState.ts',
+      `import type { EntityRuntime } from '@flighthq/types/contract';
+       interface GizmoRuntime extends EntityRuntime { disposed: boolean; }
+       export function createGizmoRuntime(): GizmoRuntime {
+         return { binding: null, disposed: false };
+       }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const [, , result] = lowerTypeScriptSources(
+      [
+        { packageName: '@flighthq/types', sourceFile: entity, upstreamDirectory: '/flight' },
+        { packageName: '@flighthq/types', sourceFile: contract, upstreamDirectory: '/flight' },
+        { packageName: '@flighthq/gizmo', sourceFile: gizmo, upstreamDirectory: '/flight' },
+      ],
+      {
+        edges: [
+          {
+            specifier: './Entity',
+            target: { packageName: '@flighthq/types', source: 'packages/types/src/Entity.ts' },
+          },
+          {
+            specifier: '@flighthq/types/contract',
+            target: { packageName: '@flighthq/types', source: 'packages/types/src/contract.ts' },
+          },
+        ],
+        schema: 'flight-compiler-module-resolution/1',
+      },
+    );
+
+    expect(result!.diagnostics).toEqual([]);
+    const declaration = result!.module.declarations.find(
+      (candidate) => candidate.kind === 'function' && candidate.binding.name === 'createGizmoRuntime',
+    );
+    const returned = declaration?.kind === 'function' ? declaration.body[0] : undefined;
+    expect(returned).toMatchObject({
+      expression: {
+        kind: 'object',
+        members: [{ name: 'binding' }, { name: 'disposed' }],
+        type: { kind: 'named', reference: { binding: { name: 'GizmoRuntime' } } },
+      },
+      kind: 'return',
+    });
+  });
+
   it('introduces checker-reached exported types through their source import route', () => {
     const types = ts.createSourceFile(
       '/flight/packages/types/src/Entity.ts',

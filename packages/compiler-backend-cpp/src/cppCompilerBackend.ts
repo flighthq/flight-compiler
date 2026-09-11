@@ -2899,7 +2899,18 @@ function emitContextualUnionExpressionCpp(
     return emitCppUnionSentinelConstruction('null', union, plan.kind, context);
   }
   if (expression.kind === 'binary' && expression.operator === '??') {
-    const leftType = getIrExpressionTypeEvidenceCpp(expression.left, context);
+    const fallback =
+      expression.right.kind === 'literal' && expression.right.value === null
+        ? ('null' as const)
+        : expression.right.kind === 'undefinedValue' ||
+            (expression.right.kind === 'identifier' &&
+              expression.right.reference.kind === 'ambient' &&
+              expression.right.reference.name === 'undefined')
+          ? ('undefined' as const)
+          : undefined;
+    const leftType =
+      getIrExpressionTypeEvidenceCpp(expression.left, context) ??
+      (fallback ? getIrOptionalChainCoalescedTypeEvidenceCpp(expression.left, fallback, context) : undefined);
     const leftUnion = leftType ? getIrUnionTypeCpp(leftType, context, new Set()) : undefined;
     if (leftUnion) {
       const leftPlan = getCppUnionRepresentationPlan(leftUnion, context);
@@ -2986,6 +2997,33 @@ function emitContextualUnionExpressionCpp(
   }
   const emitted = emitExpression(expression, context, runtimeType, false);
   return emitCppUnionValueConstruction(emitted, targetType, union, plan.kind, context);
+}
+
+// Optional-chain IR records the member/call value before the receiver's undefined short circuit.
+// When `??` replaces that short circuit with the same literal sentinel as the contextual target,
+// that value type plus the fallback is exact evidence for the coalesced representation. This lets
+// nullable members such as `config?.curve ?? null` reuse the optional storage the chain already emits
+// without pretending an arbitrary optional chain has lost its distinct undefined result.
+function getIrOptionalChainCoalescedTypeEvidenceCpp(
+  expression: Readonly<IrExpression>,
+  fallback: 'null' | 'undefined',
+  context: EmitContext,
+): Readonly<IrType> | undefined {
+  const semantics =
+    expression.kind === 'call'
+      ? expression.semantics.optionalChain
+      : expression.kind === 'element'
+        ? expression.semantics.optionalChain
+        : expression.kind === 'property'
+          ? expression.optionalChain
+          : undefined;
+  if (!semantics || semantics.valueType.kind === 'unknown') return undefined;
+  const valueUnion = getIrUnionTypeCpp(semantics.valueType, context, new Set());
+  const present = (valueUnion?.types ?? [semantics.valueType]).filter(
+    (member) => member.kind !== 'null' && member.kind !== 'undefined',
+  );
+  if (!present[0]) return undefined;
+  return { kind: 'union', types: [{ kind: fallback }, present[0], ...present.slice(1)] };
 }
 
 function emitCppUnionValueConstruction(

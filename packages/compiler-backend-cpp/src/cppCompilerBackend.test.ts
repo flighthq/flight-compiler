@@ -2768,6 +2768,32 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(emitted).not.toContain('std::optional<auto>');
   });
 
+  it('coalesces nullable Partial<T> optional-chain members into contextual optional storage', () => {
+    const result = lower(
+      'particle-emitter-config.ts',
+      `type ParticleBlendMode = 'add' | 'multiply' | 'normal' | 'screen';
+       type ParticleCurve = ReadonlyArray<number>;
+       interface ParticleEmitterConfig {
+         alphaCurve: ParticleCurve | null;
+         blendMode: ParticleBlendMode | null;
+       }
+       export function initialize(
+         out: ParticleEmitterConfig,
+         config?: Partial<ParticleEmitterConfig>,
+       ): void {
+         out.alphaCurve = config?.alphaCurve ?? null;
+         out.blendMode = config?.blendMode ?? null;
+       }`,
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
+    expect(emitted).toContain('out->alpha_curve =');
+    expect(emitted).toContain('out->blend_mode =');
+    expect(emitted).toContain('auto optional_chain_receiver = config;');
+    expect(emitted).not.toContain('std::optional<auto>');
+  });
+
   it('emits C++ keywords with trailing underscore', () => {
     const result = lower(
       'keywords.ts',
