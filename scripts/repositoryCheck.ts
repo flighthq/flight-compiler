@@ -95,21 +95,28 @@ for (const gate of selectedGates) {
 }
 const failed = results.filter((result) => result.status !== 0);
 const labelWidth = Math.max(...results.map((result) => result.gate.label.length));
-process.stdout.write('\nGate timings:\n');
-for (const result of results) {
-  process.stdout.write(`  ${result.gate.label.padEnd(labelWidth)}  ${formatDuration(result.durationMilliseconds)}\n`);
-}
+const summary = [
+  '',
+  'Gate timings:',
+  ...results.map(
+    (result) => `  ${result.gate.label.padEnd(labelWidth)}  ${formatDuration(result.durationMilliseconds)}`,
+  ),
+];
 
 if (failed.length > 0) {
-  process.stderr.write(
-    `\n${String(failed.length)} of ${String(selectedGates.length)} ${resultLabel} gates failed: ${failed.map((result) => result.gate.label).join(', ')}\n`,
+  summary.push(
+    '',
+    `${String(failed.length)} of ${String(selectedGates.length)} ${resultLabel} gates failed: ${failed.map((result) => result.gate.label).join(', ')}`,
+    'Rerun failed gates:',
+    ...failed.map((result) => `  npm run ${result.gate.label}`),
+    '',
   );
-  process.stderr.write('Rerun failed gates:\n');
-  for (const result of failed) process.stderr.write(`  npm run ${result.gate.label}\n`);
+  process.stdout.write(summary.join('\n'));
   process.exit(1);
 }
 
-process.stdout.write(`\n${String(selectedGates.length)} ${resultLabel} gates passed.\n`);
+summary.push('', `${String(selectedGates.length)} ${resultLabel} gates passed.`, '');
+process.stdout.write(summary.join('\n'));
 
 function readProfile(args: readonly string[]): 'check' | 'push' | 'verify' {
   if (args.length === 0) return 'check';

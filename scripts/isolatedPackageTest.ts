@@ -52,7 +52,7 @@ for (const result of results) {
 }
 
 if (failures.length > 0) {
-  process.stderr.write(`\n${String(failures.length)} package test target(s) failed: ${failures.join(', ')}\n`);
+  process.stdout.write(`\n${String(failures.length)} package test target(s) failed: ${failures.join(', ')}\n`);
   process.exit(1);
 }
 
