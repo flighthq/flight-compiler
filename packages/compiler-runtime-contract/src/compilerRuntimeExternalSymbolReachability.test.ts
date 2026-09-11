@@ -174,6 +174,32 @@ describe('collectIrModulesRuntimeExternalSymbolIdentities', () => {
     ]);
   });
 
+  it('treats callable projections as intrinsic while retaining their subjects and runtime-backed views', () => {
+    const lowered = lowerTypeScriptSource(
+      ts.createSourceFile(
+        '/flight/packages/runtime/src/callable-utilities.ts',
+        `
+          export type ProjectedReturn = ReturnType<() => ReturnStorage>;
+          export type ProjectedParameters = Parameters<(value: ParameterStorage) => void>;
+          export type AmbientReturn = ReturnType<typeof externalCall>;
+          export type RuntimeViews = ArrayLike<ArrayStorage> | ArrayBufferLike;
+        `,
+        ts.ScriptTarget.Latest,
+        true,
+      ),
+      { packageName: '@flighthq/runtime', upstreamDirectory: '/flight' },
+    );
+
+    expect(collectIrModulesRuntimeExternalSymbolIdentities([lowered.module])).toEqual([
+      { sourceName: 'ArrayBufferLike', space: 'type' },
+      { sourceName: 'ArrayLike', space: 'type' },
+      { sourceName: 'ArrayStorage', space: 'type' },
+      { sourceName: 'ParameterStorage', space: 'type' },
+      { sourceName: 'ReturnStorage', space: 'type' },
+      { sourceName: 'externalCall', space: 'value' },
+    ]);
+  });
+
   it('collects utility storage subjects without erased key and constraint arguments', () => {
     const lowered = lowerTypeScriptSource(
       ts.createSourceFile(

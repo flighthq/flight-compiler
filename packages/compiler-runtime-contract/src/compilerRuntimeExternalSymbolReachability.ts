@@ -57,10 +57,12 @@ const compilerIntrinsicTypeNames = new Set([
   'NonNullable',
   'NoInfer',
   'Omit',
+  'Parameters',
   'Partial',
   'Pick',
   'PropertyKey',
   'Readonly',
+  'ReturnType',
   'Required',
 ]);
 const compilerErasedTypeArgumentIndexes = new Map<string, readonly number[]>([
