@@ -41,6 +41,7 @@ describe('compiler orchestration contracts', () => {
       line: 1,
       message: 'unsupported',
       packageName: '@flighthq/math',
+      severity: 'error',
       source: 'packages/math/src/value.ts',
     };
 

@@ -161,7 +161,7 @@ describe('compileTypeScriptPackageGraph', () => {
       '@local/source',
       'source',
       'bad.ts',
-      'export const retained = 1;\ndoSomething();\ndoSomethingElse();',
+      'export const retained = 1;\nexport namespace A { export function f(): number { return 1; } }\nexport namespace B { export function g(): number { return 2; } }',
     );
     const backend: CompilerBackend = {
       emitModule: (module) => [{ contents: module.name, path: `${module.name}.txt` }],
@@ -461,8 +461,18 @@ describe('compileTypeScriptPackageGraph', () => {
   });
 
   it('sorts lowering diagnostics by package, source, line, column, code, and message', () => {
-    const a = source('@local/source', 'source', 'alpha.ts', 'export const retained = 1;\ndoAlpha();\ndoBeta();');
-    const b = source('@local/source', 'source', 'beta.ts', 'export const retained = 1;\ndoBeta();\ndoAlpha();');
+    const a = source(
+      '@local/source',
+      'source',
+      'alpha.ts',
+      'export const retained = 1;\nexport namespace A { export function f(): number { return 1; } }\nexport namespace B { export function g(): number { return 2; } }',
+    );
+    const b = source(
+      '@local/source',
+      'source',
+      'beta.ts',
+      'export const retained = 1;\nexport namespace B { export function g(): number { return 2; } }\nexport namespace A { export function f(): number { return 1; } }',
+    );
     const backend: CompilerBackend = {
       emitModule: (module) => [{ contents: module.name, path: `${module.name}.txt` }],
       name: 'fixture',
@@ -810,7 +820,7 @@ describe('compileTypeScriptPackageGraph', () => {
   });
 
   it('sorts lowering diagnostics by column when package, source, and line match', () => {
-    const value = source('@local/source', 'source', 'value.ts', 'export const retained = 1;\ndoAlpha(); doBeta();');
+    const value = source('@local/source', 'source', 'value.ts', 'export const retained = 1;\ndebugger; debugger;');
     const backend: CompilerBackend = {
       emitModule: (module) => [{ contents: module.name, path: `${module.name}.txt` }],
       name: 'fixture',

@@ -723,6 +723,7 @@ describe('lowerTypeScriptSource', () => {
         line: 1,
         message: 'value namespace declarations require neutral IR namespace representation',
         packageName: '@flighthq/math',
+        severity: 'error',
         source: 'packages/math/src/namespace.ts',
       },
     ]);

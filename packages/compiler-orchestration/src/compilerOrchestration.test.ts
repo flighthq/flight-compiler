@@ -392,6 +392,7 @@ describe('createCompilerDiagnosticsFailure', () => {
       line: 2,
       message: 'late',
       packageName: '@flighthq/math',
+      severity: 'error' as const,
       source: 'value.ts',
     };
     const early = {
@@ -400,6 +401,7 @@ describe('createCompilerDiagnosticsFailure', () => {
       line: 1,
       message: 'early',
       packageName: '@flighthq/core',
+      severity: 'error' as const,
       source: 'index.ts',
     };
     const diagnostics: CompilerDiagnostic[] = [late, early];
@@ -424,6 +426,7 @@ describe('createCompilerDiagnosticsFailure', () => {
       line: 1,
       message,
       packageName,
+      severity: 'error',
       source: 'shared.ts',
     });
     const diagnostics = [

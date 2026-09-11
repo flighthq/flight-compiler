@@ -368,23 +368,36 @@ describe('createCompilerLoweringPassVariableHoisting', () => {
     });
   });
 
-  it('refuses to over-type an untyped redeclaration from later for-in evidence', () => {
-    const run = () =>
-      lowerIrModuleWithCompilerPasses(
-        lower(
-          'for-in-redeclaration-hoisting.ts',
-          `
-            export function visit(values: Record<string, number>): void {
-              var key;
-              key = 1;
-              for (var key in values) key;
-            }
-          `,
-        ),
-        [createCompilerLoweringPassBindingPattern(), createCompilerLoweringPassVariableHoisting()],
-      );
+  it('merges a for-in redeclaration with a same-typed earlier var declaration', () => {
+    const output = lowerIrModuleWithCompilerPasses(
+      lower(
+        'for-in-redeclaration-hoisting.ts',
+        `
+          export function visit(values: Record<string, number>): void {
+            var key;
+            key = 1;
+            for (var key in values) key;
+          }
+        `,
+      ),
+      [createCompilerLoweringPassBindingPattern(), createCompilerLoweringPassVariableHoisting()],
+    );
+    const body = getFunctionBody(output, 'visit');
+    const loop = getForInStatement(body[2]);
+    const carrier = getNamedVariable(loop.variable);
 
-    expectLoweringFailure(run, 'function-scoped variable key has inconsistent redeclaration types');
+    expect(getVariableStatement(body[0]).declarations).toMatchObject([
+      {
+        binding: { name: 'key', scope: 'function' },
+        mutable: true,
+        type: { kind: 'primitive', name: 'string' },
+      },
+    ]);
+    expect(carrier).toMatchObject({
+      binding: { name: 'variableHoistingIterationValue', scope: 'block' },
+      mutable: false,
+      type: { kind: 'primitive', name: 'string' },
+    });
   });
 
   it('composes iteration carriers with function-scoped array binding leaves', () => {

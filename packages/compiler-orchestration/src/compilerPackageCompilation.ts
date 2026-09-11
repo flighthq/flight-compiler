@@ -85,6 +85,7 @@ export function compileTypeScriptPackageGraph<BackendOptions>(
   );
   const diagnostics = lowered.flatMap((result) => result.diagnostics).sort(compareCompilerPackageGraphDiagnostics);
   for (const diagnostic of diagnostics) {
+    if (diagnostic.severity !== 'error') continue;
     const record = [...records.values()].find(
       (candidate) =>
         candidate.module.packageName === diagnostic.packageName && candidate.module.source === diagnostic.source,

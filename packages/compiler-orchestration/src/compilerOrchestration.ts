@@ -77,7 +77,8 @@ export function compileTypeScriptModules<BackendOptions>(
 ): CompileIrModulesResult {
   const lowered = lowerTypeScriptSources(options.sources, options.moduleResolution);
   const diagnostics = lowered.flatMap((result) => result.diagnostics);
-  if (diagnostics.length > 0) throw createCompilerDiagnosticsFailure(diagnostics);
+  const errors = diagnostics.filter((diagnostic) => diagnostic.severity === 'error');
+  if (errors.length > 0) throw createCompilerDiagnosticsFailure(errors);
   return compileIrModules({
     backend: options.backend,
     backendOptions: options.backendOptions,
@@ -157,6 +158,8 @@ function isCompilerDiagnosticValue(value: unknown): value is CompilerDiagnostic 
     typeof value.message === 'string' &&
     'packageName' in value &&
     typeof value.packageName === 'string' &&
+    'severity' in value &&
+    (value.severity === 'error' || value.severity === 'warning') &&
     'source' in value &&
     typeof value.source === 'string'
   );

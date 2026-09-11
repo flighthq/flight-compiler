@@ -20,6 +20,7 @@ import {
 } from '../../compiler-structural/src/index.js';
 import type {
   CompilerDiagnostic,
+  CompilerDiagnosticSeverity,
   CompilerModuleResolutionPlan,
   CompilerSourceOrigin,
   IrAssignmentOperator,
@@ -223,7 +224,9 @@ function lowerTypeScriptSourceWithAnalysis(
       }
     } catch (error) {
       if (!isUnsupportedSyntaxFailure(error)) throw error;
-      context.diagnostics.push(diagnostic(error.node, error.message, context));
+      const severity =
+        ts.isTypeAliasDeclaration(statement) || ts.isInterfaceDeclaration(statement) ? 'warning' : 'error';
+      context.diagnostics.push(diagnostic(error.node, error.message, context, severity));
     }
   }
 
@@ -325,7 +328,12 @@ function isErasableTypeScriptUniqueSymbolDeclaration(node: ts.VariableStatement)
   );
 }
 
-function diagnostic(node: ts.Node, message: string, context: LoweringContext): CompilerDiagnostic {
+function diagnostic(
+  node: ts.Node,
+  message: string,
+  context: LoweringContext,
+  severity: CompilerDiagnosticSeverity = 'error',
+): CompilerDiagnostic {
   const start = node.getStart(context.sourceFile);
   const position = context.sourceFile.getLineAndCharacterOfPosition(start);
   return {
@@ -334,6 +342,7 @@ function diagnostic(node: ts.Node, message: string, context: LoweringContext): C
     line: position.line + 1,
     message,
     packageName: context.options.packageName,
+    severity,
     source: relativeSource(context.sourceFile.fileName, context.options.upstreamDirectory),
   };
 }
