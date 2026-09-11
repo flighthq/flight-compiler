@@ -4136,6 +4136,33 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(emitted.contents).toContain('using');
   });
 
+  it('collapses open and computed string unions to their proven C++ runtime domain', () => {
+    const result = lower(
+      'open-string-unions.ts',
+      `export interface Request { title: string; tag?: string }
+       export type Role = 'button' | 'link' | (string & {});
+       export type RequestField = keyof Request;
+       export type ScheduleField = RequestField | 'at' | 'repeat';`,
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+
+    expect(emitted.contents).toContain('using Role = flight::String;');
+    expect(emitted.contents).toContain('using RequestField = flight::String;');
+    expect(emitted.contents).toContain('using ScheduleField = flight::String;');
+    expect(emitted.contents).not.toContain('std::variant<flight::String, flight::String>');
+  });
+
+  it('erases equivalent primitive and keyof intersection value domains', () => {
+    const result = lower(
+      'keyof-value-intersection.ts',
+      `interface Config { alpha: number; size: number }
+       export function report(field: string & keyof Config): string { return field; }`,
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+
+    expect(emitted.contents).toContain('flight::String report(flight::String field)');
+  });
+
   it('emits array with sparse element as empty initializer', () => {
     const result = lower('sparse.ts', 'export const x: number = 1;');
     const module = structuredClone(result.module);

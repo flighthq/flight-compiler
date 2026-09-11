@@ -130,6 +130,43 @@ describe('createCppUnionRepresentationPlan', () => {
     ).toEqual(['First', 'Second']);
   });
 
+  it('collapses only target-proven erased intersections and computed string domains', () => {
+    const erasedString = {
+      kind: 'intersection',
+      types: [primitive('string'), { kind: 'object', properties: [] }],
+    } as const satisfies IrType;
+    const requestKeys = {
+      kind: 'keyof',
+      type: {
+        kind: 'object',
+        properties: [{ name: 'title', optional: false, readonly: false, type: primitive('string') }],
+      },
+    } as const satisfies IrType;
+    const resolveRuntimeDomain = (type: Readonly<IrType>): Readonly<IrType> | undefined =>
+      type.kind === 'intersection' || type.kind === 'keyof' ? primitive('string') : undefined;
+
+    expect(
+      createPlan(union(literal('known'), erasedString), new Map(), getTargetType, resolveRuntimeDomain),
+    ).toMatchObject({
+      kind: 'singleValue',
+      valueSlots: [{ runtimeType: primitive('string'), sourceRelationship: 'runtimeEquivalent' }],
+    });
+    expect(createPlan(union(literal('at'), requestKeys), new Map(), getTargetType, resolveRuntimeDomain)).toMatchObject(
+      {
+        kind: 'singleValue',
+        valueSlots: [{ runtimeType: primitive('string'), sourceRelationship: 'runtimeEquivalent' }],
+      },
+    );
+
+    const unproven = createPlan(
+      union(erasedString, namedAmbient('Opaque')),
+      new Map(),
+      () => 'std::string',
+      resolveRuntimeDomain,
+    );
+    expect(unproven).toMatchObject({ kind: 'refused', reason: 'distinctRuntimeDomainsShareTargetType' });
+  });
+
   it('returns order-independent deeply immutable evidence without changing caller input', () => {
     const firstInput = union(primitive('string'), { kind: 'undefined' }, primitive('number'));
     const secondInput = union(primitive('number'), primitive('string'), { kind: 'undefined' });
@@ -153,11 +190,13 @@ function createPlan(
   type: Readonly<Extract<IrType, { kind: 'union' }>>,
   aliases: ReadonlyMap<string, Readonly<IrType>> = new Map(),
   resolveTargetType: (type: Readonly<IrType>) => string = getTargetType,
+  resolveRuntimeDomain: (type: Readonly<IrType>) => Readonly<IrType> | undefined = () => undefined,
 ) {
   return createCppUnionRepresentationPlan(type, {
     resolveAliasTarget(typeReference) {
       return typeReference.reference.kind === 'binding' ? aliases.get(typeReference.reference.binding.id) : undefined;
     },
+    resolveRuntimeDomain,
     resolveTargetType,
   });
 }

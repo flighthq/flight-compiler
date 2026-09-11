@@ -25,6 +25,7 @@ type CppUnionRepresentationPlan =
 
 interface CppUnionRepresentationPlanningCapabilities {
   readonly resolveAliasTarget: (type: Readonly<IrTypeReference>) => Readonly<IrType> | undefined;
+  readonly resolveRuntimeDomain: (type: Readonly<IrType>) => Readonly<IrType> | undefined;
   readonly resolveTargetType: (type: Readonly<IrType>) => string;
 }
 
@@ -150,6 +151,15 @@ function collectRuntimeAlternativeCpp(
       collectRuntimeAlternativeCpp(aliasTarget, sourceAlternative, capabilities, inventory, nextResolvingAliases);
       return;
     }
+  }
+
+  const resolvedRuntimeDomain = capabilities.resolveRuntimeDomain(type);
+  if (
+    resolvedRuntimeDomain &&
+    normalizeCompilerStructuralValueCanonical(resolvedRuntimeDomain) !== normalizeCompilerStructuralValueCanonical(type)
+  ) {
+    collectRuntimeAlternativeCpp(resolvedRuntimeDomain, sourceAlternative, capabilities, inventory, resolvingAliases);
+    return;
   }
 
   const runtimeType = widenIrLiteralTypeCpp(type);

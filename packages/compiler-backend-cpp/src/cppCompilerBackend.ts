@@ -2414,7 +2414,7 @@ function emitType(type: Readonly<IrType>, context: EmitContext, representation: 
       return emitType(valueType, context, representation);
     }
     case 'intersection': {
-      const erasedValue = getCppErasedIntersectionValueType(type);
+      const erasedValue = getCppErasedIntersectionValueType(type, context);
       if (erasedValue) return emitType(erasedValue, context, representation);
       const properties = context.referenceRepresentationPlanner.resolveObjectShape(type, context.module);
       if (!properties) emissionError(context, 'intersection types require C++ multiple-inheritance lowering');
@@ -2632,20 +2632,27 @@ function createCppClosedTypeUnion(types: readonly Readonly<IrType>[]): Readonly<
 
 function getCppErasedIntersectionValueType(
   type: Readonly<Extract<IrType, { kind: 'intersection' }>>,
+  context: EmitContext,
 ): Readonly<IrType> | undefined {
-  const values = type.types.filter((member) => member.kind === 'literal' || member.kind === 'primitive');
-  if (values.length !== 1) return undefined;
-  return type.types.every(
-    (member) =>
-      member === values[0] ||
+  const valueDomains: IrType[] = [];
+  for (const member of type.types) {
+    if (
       member.kind === 'object' ||
       (member.kind === 'named' &&
         member.reference.kind === 'ambient' &&
         member.reference.name === 'Record' &&
-        member.typeArguments[0]?.kind === 'never'),
-  )
-    ? values[0]
-    : undefined;
+        member.typeArguments[0]?.kind === 'never')
+    ) {
+      continue;
+    }
+    const runtimeDomain = getIrTypeRuntimeDomainCpp(member, context, new Set());
+    if (!runtimeDomain || (runtimeDomain.kind !== 'literal' && runtimeDomain.kind !== 'primitive')) return undefined;
+    valueDomains.push(runtimeDomain);
+  }
+  const domains = new Map(
+    valueDomains.map((domain) => [normalizeCompilerStructuralValueCanonical(domain), domain] as const),
+  );
+  return domains.size === 1 ? [...domains.values()][0] : undefined;
 }
 
 function getCppIndexedAccessPropertyNames(
@@ -2937,6 +2944,9 @@ function getCppUnionRepresentationPlan(
   const plan = createCppUnionRepresentationPlan(type, {
     resolveAliasTarget(typeReference) {
       return resolveCppTypeAliasTarget(typeReference, context);
+    },
+    resolveRuntimeDomain(runtimeType) {
+      return getIrTypeRuntimeDomainCpp(runtimeType, context, new Set());
     },
     resolveTargetType(runtimeType) {
       return emitType(runtimeType, context);
@@ -3274,6 +3284,14 @@ function getIrTypeRuntimeDomainCpp(
       kind: 'primitive',
       name: typeof type.value === 'boolean' ? 'boolean' : typeof type.value === 'number' ? 'number' : 'string',
     };
+  }
+  if (type.kind === 'intersection') {
+    const erasedValue = getCppErasedIntersectionValueType(type, context);
+    return erasedValue ? getIrTypeRuntimeDomainCpp(erasedValue, context, resolvingAliases) : type;
+  }
+  if (type.kind === 'keyof') {
+    const keyType = getCppKeyofType(type.type, context);
+    return keyType ? getIrTypeRuntimeDomainCpp(keyType, context, resolvingAliases) : undefined;
   }
   if (type.kind !== 'named' || type.reference.kind !== 'binding' || type.typeArguments.length > 0) return type;
   const bindingId = type.reference.binding.id;
