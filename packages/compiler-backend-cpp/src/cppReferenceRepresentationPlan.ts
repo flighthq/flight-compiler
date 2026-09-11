@@ -669,6 +669,15 @@ function createIrTypeReferenceRepresentationPlanInternalCpp(
     return createCompilerCppReferenceRepresentationSuccessCpp(identity, 'value', 'none', 'inlineValue', 'inlineValue');
   }
   if (type.kind === 'intersection') {
+    if (isIrCallableOverloadIntersectionRepresentableCpp(type)) {
+      return createCompilerCppReferenceRepresentationSuccessCpp(
+        identity,
+        'value',
+        'none',
+        'inlineValue',
+        'inlineValue',
+      );
+    }
     if (isIrCallableObjectIntersectionRepresentableCpp(type, module, context)) {
       return createCompilerCppReferenceRepresentationSuccessCpp(
         identity,
@@ -699,6 +708,20 @@ function createIrTypeReferenceRepresentationPlanInternalCpp(
       : createCompilerCppReferenceRepresentationRefusalCpp(identity, 'compoundReference');
   }
   return createCompilerCppReferenceRepresentationRefusalCpp(identity, 'unsupportedReferenceForm');
+}
+
+function isIrCallableOverloadIntersectionRepresentableCpp(
+  type: Readonly<Extract<IrType, { kind: 'intersection' }>>,
+): boolean {
+  return (
+    type.types.length >= 2 &&
+    type.types.every(
+      (member) =>
+        member.kind === 'function' &&
+        member.typeParameters.length === 0 &&
+        member.parameters.every((parameter) => !parameter.optional && !parameter.rest),
+    )
+  );
 }
 
 function isIrCallableObjectIntersectionRepresentableCpp(

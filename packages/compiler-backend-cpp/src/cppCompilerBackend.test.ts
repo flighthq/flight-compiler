@@ -3309,6 +3309,91 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     );
   });
 
+  it('emits closed interface method overloads as one inline callable storage set', () => {
+    const result = lower(
+      'capacitor-api.ts',
+      `export interface CapacitorPluginListenerHandle { remove(): Promise<void> }
+       export interface AppState { active: boolean }
+       export interface OpenedUrl { url: string }
+       export interface CapacitorAppPlugin {
+         addListener(
+           eventName: 'appStateChange',
+           listener: (state: AppState) => void,
+         ): Promise<CapacitorPluginListenerHandle>;
+         addListener(
+           eventName: 'appUrlOpen',
+           listener: (event: OpenedUrl) => void,
+         ): Promise<CapacitorPluginListenerHandle>;
+       }
+       export function listenForState(
+         plugin: CapacitorAppPlugin,
+         listener: (state: AppState) => void,
+       ): Promise<CapacitorPluginListenerHandle> {
+         return plugin.addListener('appStateChange', listener);
+       }
+       export function listenForUrl(
+         plugin: CapacitorAppPlugin,
+         listener: (event: OpenedUrl) => void,
+       ): Promise<CapacitorPluginListenerHandle> {
+         return plugin.addListener('appUrlOpen', listener);
+       }`,
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+
+    expect(result.diagnostics).toEqual([]);
+    expect(emitted.contents).toContain('struct callable_overloads {');
+    expect(emitted.contents).toContain(
+      'std::function<flight::Task<flight::Ref<CapacitorPluginListenerHandle>>(flight::String, std::function<void(flight::Ref<AppState>)>)> overload_0;',
+    );
+    expect(emitted.contents).toContain(
+      'std::function<flight::Task<flight::Ref<CapacitorPluginListenerHandle>>(flight::String, std::function<void(flight::Ref<OpenedUrl>)>)> overload_1;',
+    );
+    expect(emitted.contents).toContain(
+      'flight::Task<flight::Ref<CapacitorPluginListenerHandle>> operator()(flight::String argument_0, std::function<void(flight::Ref<AppState>)> argument_1) const',
+    );
+    expect(emitted.contents).toContain('return overload_0(argument_0, argument_1);');
+    expect(emitted.contents).toContain(
+      'flight::Task<flight::Ref<CapacitorPluginListenerHandle>> operator()(flight::String argument_0, std::function<void(flight::Ref<OpenedUrl>)> argument_1) const',
+    );
+    expect(emitted.contents).toContain('return overload_1(argument_0, argument_1);');
+    expect(emitted.contents).toContain('callable_overloads add_listener;');
+    expect(emitted.contents).toContain('return plugin->add_listener(flight::String("appStateChange"), listener);');
+    expect(emitted.contents).toContain('return plugin->add_listener(flight::String("appUrlOpen"), listener);');
+  });
+
+  it('refuses open or C++-indistinguishable interface method overloads', () => {
+    const generic = lower(
+      'generic-overload.ts',
+      `export interface GenericApi {
+         invoke<Value>(value: Value): void;
+         invoke(value: number): void;
+       }`,
+    ).module;
+    const rest = lower(
+      'rest-overload.ts',
+      `export interface RestApi {
+         invoke(...values: number[]): void;
+         invoke(value: string): void;
+       }`,
+    ).module;
+    const collapsed = lower(
+      'collapsed-overload.ts',
+      `export interface CollapsedApi {
+         invoke(value: 'left'): number;
+         invoke(value: 'right'): string;
+       }`,
+    ).module;
+
+    for (const module of [generic, rest]) {
+      expect(() => emitIrModuleCpp(module, { runtimeProfile: 'flight-cpp' })).toThrow(
+        'intersection types require C++ multiple-inheritance lowering',
+      );
+    }
+    expect(() => emitIrModuleCpp(collapsed, { runtimeProfile: 'flight-cpp' })).toThrow(
+      'overloaded callable intersection has incompatible C++ call surfaces',
+    );
+  });
+
   it('emits a closed callable-object reference through indexed alias construction and use', () => {
     const types = ts.createSourceFile(
       '/flight/packages/types/src/RenderState.ts',

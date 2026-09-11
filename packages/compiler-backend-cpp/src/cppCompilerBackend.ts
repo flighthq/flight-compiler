@@ -93,19 +93,24 @@ import { getIrHomogeneousTupleElementTypeCpp } from './cppTupleRepresentation.js
 import { createCppUnionRepresentationPlan } from './cppUnionRepresentationPlan.js';
 
 interface AnonymousStruct {
-  callable?: Readonly<{
+  callables?: readonly Readonly<{
     fieldName: string;
     parameters: readonly Readonly<{ name: string; type: string }>[];
     returns: string;
-  }>;
+  }>[];
   name: string;
   properties: readonly { name: string; optional: boolean; type: string }[];
+  referenceEnabled?: boolean;
   typeParameters: readonly string[];
 }
 
 interface CppCallableObject {
   callable: Readonly<Extract<IrType, { kind: 'function' }>>;
   properties: readonly Readonly<IrObjectTypeProperty>[];
+}
+
+interface CppCallableOverloadSet {
+  callables: readonly Readonly<Extract<IrType, { kind: 'function' }>>[];
 }
 
 interface CppCallableObjectIndexedProjection {
@@ -445,21 +450,23 @@ function emitAnonymousStructCpp(struct: Readonly<AnonymousStruct>, context: Emit
     lines.push(`template <${struct.typeParameters.map((parameter) => `typename ${parameter}`).join(', ')}>`);
   }
   lines.push(
-    `struct ${struct.name}${getCppRuntimeProfile(context.options) === 'flight-cpp' ? ' : public flight::ReferenceEnabled' : ''} {`,
+    `struct ${struct.name}${getCppRuntimeProfile(context.options) === 'flight-cpp' && struct.referenceEnabled !== false ? ' : public flight::ReferenceEnabled' : ''} {`,
   );
-  if (struct.callable) {
+  if (struct.callables) {
     context.includes.add('functional');
-    const parameterTypes = struct.callable.parameters.map((parameter) => parameter.type).join(', ');
-    lines.push(`  std::function<${struct.callable.returns}(${parameterTypes})> ${struct.callable.fieldName};`);
+    for (const callable of struct.callables) {
+      const parameterTypes = callable.parameters.map((parameter) => parameter.type).join(', ');
+      lines.push(`  std::function<${callable.returns}(${parameterTypes})> ${callable.fieldName};`);
+    }
   }
   for (const property of struct.properties) {
     lines.push(`  ${emitOptionalTypeCpp(property.type, property.optional, context)} ${property.name};`);
   }
-  if (struct.callable) {
-    const parameters = struct.callable.parameters.map((parameter) => `${parameter.type} ${parameter.name}`).join(', ');
-    const arguments_ = struct.callable.parameters.map((parameter) => parameter.name).join(', ');
-    lines.push(`  ${struct.callable.returns} operator()(${parameters}) const {`);
-    lines.push(`    return ${struct.callable.fieldName}(${arguments_});`);
+  for (const callable of struct.callables ?? []) {
+    const parameters = callable.parameters.map((parameter) => `${parameter.type} ${parameter.name}`).join(', ');
+    const arguments_ = callable.parameters.map((parameter) => parameter.name).join(', ');
+    lines.push(`  ${callable.returns} operator()(${parameters}) const {`);
+    lines.push(`    return ${callable.fieldName}(${arguments_});`);
     lines.push('  }');
   }
   lines.push('};');
@@ -2548,6 +2555,10 @@ function emitType(type: Readonly<IrType>, context: EmitContext, representation: 
     case 'intersection': {
       const erasedValue = getCppErasedIntersectionValueType(type, context);
       if (erasedValue) return emitType(erasedValue, context, representation);
+      const callableOverloads = getCppCallableOverloadIntersectionCpp(type);
+      if (callableOverloads && getCppRuntimeProfile(context.options) === 'flight-cpp') {
+        return emitCppCallableOverloadStorageTypeCpp(type, callableOverloads, context);
+      }
       const callableObject = getCppCallableObjectIntersectionCpp(type, context);
       if (callableObject && getCppRuntimeProfile(context.options) === 'flight-cpp') {
         return emitCppCallableObjectStorageTypeCpp(type, callableObject, context);
@@ -3009,6 +3020,24 @@ function getCppCallableObjectIntersectionCpp(
   return { callable, properties };
 }
 
+function getCppCallableOverloadIntersectionCpp(type: Readonly<IrType>): Readonly<CppCallableOverloadSet> | undefined {
+  if (type.kind !== 'intersection' || type.types.length < 2) return undefined;
+  const callables = type.types.filter(
+    (member): member is Extract<IrType, { kind: 'function' }> => member.kind === 'function',
+  );
+  if (
+    callables.length !== type.types.length ||
+    callables.some(
+      (callable) =>
+        callable.typeParameters.length > 0 ||
+        callable.parameters.some((parameter) => parameter.optional || parameter.rest),
+    )
+  ) {
+    return undefined;
+  }
+  return { callables };
+}
+
 function getCppCallableObjectIrTypeCpp(
   type: Readonly<IrType>,
   context: EmitContext,
@@ -3141,6 +3170,56 @@ function emitCppCallableObjectStorageTypeCpp(
   return `${structName}${typeParameters.length > 0 ? `<${typeParameters.join(', ')}>` : ''}`;
 }
 
+function emitCppCallableOverloadStorageTypeCpp(
+  type: Readonly<Extract<IrType, { kind: 'intersection' }>>,
+  representation: Readonly<CppCallableOverloadSet>,
+  context: EmitContext,
+): string {
+  const typeParameters = context.anonymousStructTypeParameters.map(
+    (parameter) => context.targetNames.get(parameter.binding.id) ?? pascalCase(parameter.binding.name),
+  );
+  const typeParameterKey = context.anonymousStructTypeParameters.map((parameter) => parameter.binding.id).join(',');
+  const key = `${typeParameterKey}\0callable-overloads\0${normalizeCompilerStructuralValueCanonical(type)}`;
+  const existing = context.anonymousStructs.get(key);
+  if (existing) return `${existing.name}${typeParameters.length > 0 ? `<${typeParameters.join(', ')}>` : ''}`;
+  const structName = generateAnonymousStructName([{ name: 'callableOverloads' }], context);
+  context.anonymousStructs.set(
+    key,
+    createCppCallableOverloadStructCpp(structName, representation, typeParameters, context),
+  );
+  return `${structName}${typeParameters.length > 0 ? `<${typeParameters.join(', ')}>` : ''}`;
+}
+
+function createCppCallableOverloadStructCpp(
+  name: string,
+  representation: Readonly<CppCallableOverloadSet>,
+  typeParameters: readonly string[],
+  context: EmitContext,
+): AnonymousStruct {
+  const callables = representation.callables.map((callable, overloadIndex) => ({
+    fieldName: `overload_${String(overloadIndex)}`,
+    parameters: callable.parameters.map((parameter, parameterIndex) => ({
+      name: `argument_${String(parameterIndex)}`,
+      type: emitType(parameter.type, context),
+    })),
+    returns: emitType(callable.returns, context),
+  }));
+  if (
+    callables.some((callable) =>
+      [callable.returns, ...callable.parameters.map((parameter) => parameter.type)].some((emitted) =>
+        /\bauto\b/u.test(emitted),
+      ),
+    )
+  ) {
+    emissionError(context, 'overloaded callable intersection requires concrete C++ type evidence');
+  }
+  const callSurfaces = callables.map((callable) => callable.parameters.map((parameter) => parameter.type).join('\0'));
+  if (new Set(callSurfaces).size !== callSurfaces.length) {
+    emissionError(context, 'overloaded callable intersection has incompatible C++ call surfaces');
+  }
+  return { callables, name, properties: [], referenceEnabled: false, typeParameters };
+}
+
 function createCppCallableObjectStructCpp(
   name: string,
   representation: Readonly<CppCallableObject>,
@@ -3165,11 +3244,13 @@ function createCppCallableObjectStructCpp(
     emissionError(context, 'callable-object representation requires concrete C++ member type evidence');
   }
   return {
-    callable: {
-      fieldName: getCppCallableObjectFieldNameCpp(representation.properties),
-      parameters,
-      returns,
-    },
+    callables: [
+      {
+        fieldName: getCppCallableObjectFieldNameCpp(representation.properties),
+        parameters,
+        returns,
+      },
+    ],
     name,
     properties,
     typeParameters,

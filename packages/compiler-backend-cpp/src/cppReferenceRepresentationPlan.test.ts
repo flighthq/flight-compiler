@@ -564,6 +564,43 @@ describe('createIrTypeReferenceRepresentationPlanCpp', () => {
     expect(planDeclaration(open, 'OpenEmitter')).toMatchObject({ kind: 'refused' });
   });
 
+  it('proves only closed nongeneric callable overload intersections as inline values', () => {
+    const module = lower(
+      'callable-overloads.ts',
+      `export interface Api {
+         addListener(event: 'state', listener: (active: boolean) => void): void;
+         addListener(event: 'url', listener: (url: string) => void): void;
+         generic<Value>(value: Value): void;
+         generic(value: number): void;
+         variadic(...values: number[]): void;
+         variadic(value: string): void;
+       }`,
+    );
+    const api = module.declarations.find(
+      (declaration) => declaration.kind === 'interface' && declaration.binding.name === 'Api',
+    );
+    if (api?.kind !== 'interface') throw new TypeError('expected Api interface');
+    const propertyType = (name: string): Readonly<IrType> => {
+      const property = api.properties.find((candidate) => candidate.name === name);
+      if (!property) throw new TypeError(`expected ${name} property`);
+      return property.type;
+    };
+
+    expect(createIrTypeReferenceRepresentationPlanCpp(propertyType('addListener'), module)).toMatchObject({
+      category: 'value',
+      identity: { identity: 'reference', reason: 'homogeneous-compound' },
+      identityDomain: 'none',
+      kind: 'represented',
+      storageRepresentation: 'inlineValue',
+      valueRepresentation: 'inlineValue',
+    });
+    for (const name of ['generic', 'variadic']) {
+      expect(createIrTypeReferenceRepresentationPlanCpp(propertyType(name), module)).toMatchObject({
+        kind: 'refused',
+      });
+    }
+  });
+
   it('uses a type parameter reference constraint as representation proof', () => {
     const module = lower(
       'constraint.ts',
