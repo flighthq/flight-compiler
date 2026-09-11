@@ -123,10 +123,17 @@ describe('C++ reference planner object shapes', () => {
       `,
     );
     const resolver = createIrTypeReferenceRepresentationPlannerCpp([module]);
-    const result = resolver.resolveAlias(declarationType(module, 'WgpuOffscreenRenderStateResult'), module);
-    const open = resolver.resolveAlias(declarationType(module, 'OpenResult'), module);
-    const conflict = resolver.resolveAlias(declarationType(module, 'ConflictingResult'), module);
-    const multiple = resolver.resolveAlias(declarationType(module, 'MultipleUnions'), module);
+    const aliasType = (name: string): Readonly<IrType> => {
+      const declaration = module.declarations.find(
+        (candidate) => candidate.kind === 'typeAlias' && candidate.binding.name === name,
+      );
+      if (declaration?.kind !== 'typeAlias') throw new TypeError(`expected ${name} type alias`);
+      return declaration.type;
+    };
+    const result = aliasType('WgpuOffscreenRenderStateResult');
+    const open = aliasType('OpenResult');
+    const conflict = aliasType('ConflictingResult');
+    const multiple = aliasType('MultipleUnions');
     if (result?.kind !== 'intersection' || open?.kind !== 'intersection' || conflict?.kind !== 'intersection') {
       throw new TypeError('expected intersection aliases');
     }

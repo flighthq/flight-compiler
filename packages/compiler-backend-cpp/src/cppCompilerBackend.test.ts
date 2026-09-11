@@ -3292,7 +3292,9 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
          );`,
     );
     const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
-    const anonymousStructs = emitted.match(/struct AnonymousStruct\d+ : public flight::ReferenceEnabled \{[^}]+\};/gu);
+    const anonymousStructs = emitted.match(
+      /struct entity_id_reason_(?:info|state) : public flight::ReferenceEnabled \{[^}]+\};/gu,
+    );
 
     expect(emitted).toContain('#include <variant>');
     expect(anonymousStructs).toHaveLength(2);
@@ -3303,7 +3305,7 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(anonymousStructs?.some((struct) => struct.includes('flight::Ref<GPUDeviceLostInfo> info;'))).toBe(true);
     expect(anonymousStructs?.some((struct) => struct.includes('flight::Ref<WgpuRenderState> state;'))).toBe(true);
     expect(emitted).toMatch(
-      /using WgpuOffscreenRenderStateResult = std::variant<flight::Ref<AnonymousStruct\d+>, flight::Ref<AnonymousStruct\d+>>;/u,
+      /using WgpuOffscreenRenderStateResult = std::variant<flight::Ref<entity_id_reason_(?:info|state)>, flight::Ref<entity_id_reason_(?:info|state)>>;/u,
     );
   });
 
