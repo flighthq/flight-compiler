@@ -1125,7 +1125,12 @@ function emitIrClassFieldInitializationsHaxe(
 }
 
 function isIrClassErrorSubclassHaxe(declaration: Readonly<IrClassDeclaration>): boolean {
-  return declaration.extends?.reference.kind === 'ambient' && declaration.extends.reference.name === 'Error';
+  return (
+    declaration.extends?.reference.kind === 'ambient' &&
+    (declaration.extends.reference.name === 'Error' ||
+      declaration.extends.reference.name === 'RangeError' ||
+      declaration.extends.reference.name === 'TypeError')
+  );
 }
 
 function isIrExpressionSuperConstructorCallHaxe(expression: Readonly<IrExpression>): boolean {

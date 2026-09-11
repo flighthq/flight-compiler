@@ -3151,7 +3151,7 @@ function emitIdentifierReference(
         context.includes.add('limits');
       }
       if (reference.name === 'Number') context.includes.add('cmath');
-      if (reference.name === 'RangeError') context.includes.add('stdexcept');
+      if (reference.name === 'RangeError' || reference.name === 'TypeError') context.includes.add('stdexcept');
       return target;
     }
     return reference.name;

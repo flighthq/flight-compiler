@@ -145,7 +145,9 @@ const haxeRuntimeExternalSymbolBindings = [
   },
   { capability: 'map', kind: 'runtime', sourceName: 'Map', space: 'type', targetName: '_Map' },
   { capability: 'map', kind: 'runtime', sourceName: 'Map', space: 'value', targetName: '_Map' },
+  { kind: 'native', sourceName: 'Infinity', space: 'value', targetName: 'Math.POSITIVE_INFINITY' },
   { kind: 'native', sourceName: 'Math', space: 'value', targetName: 'Math' },
+  { kind: 'native', sourceName: 'NaN', space: 'value', targetName: 'Math.NaN' },
   {
     kind: 'native',
     members: [
@@ -166,12 +168,16 @@ const haxeRuntimeExternalSymbolBindings = [
   },
   { capability: 'task', kind: 'runtime', sourceName: 'Promise', space: 'type', targetName: '_Promise' },
   { capability: 'task', kind: 'runtime', sourceName: 'Promise', space: 'value', targetName: '_Promise' },
+  { kind: 'native', sourceName: 'RangeError', space: 'type', targetName: 'haxe.Exception' },
+  { kind: 'native', sourceName: 'RangeError', space: 'value', targetName: 'haxe.Exception' },
   { kind: 'native', sourceName: 'Record', space: 'type', targetName: 'haxe.DynamicAccess' },
   { capability: 'map', kind: 'runtime', sourceName: 'ReadonlyMap', space: 'type', targetName: '_Map' },
   { capability: 'set', kind: 'runtime', sourceName: 'Set', space: 'type', targetName: '_Set' },
   { capability: 'set', kind: 'runtime', sourceName: 'Set', space: 'value', targetName: '_Set' },
   { kind: 'native', sourceName: 'String', space: 'type', targetName: 'String' },
   { kind: 'native', sourceName: 'String', space: 'value', targetName: 'String' },
+  { kind: 'native', sourceName: 'TypeError', space: 'type', targetName: 'haxe.Exception' },
+  { kind: 'native', sourceName: 'TypeError', space: 'value', targetName: 'haxe.Exception' },
   {
     capability: 'uint16-array',
     kind: 'runtime',

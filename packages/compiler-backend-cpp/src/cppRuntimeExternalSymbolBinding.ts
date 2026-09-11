@@ -395,6 +395,8 @@ const cppFlightRuntimeExternalSymbolBindings = [
     space: 'value',
     targetName: 'flight::String',
   },
+  { kind: 'native', sourceName: 'TypeError', space: 'type', targetName: 'std::runtime_error' },
+  { kind: 'native', sourceName: 'TypeError', space: 'value', targetName: 'std::runtime_error' },
   {
     capability: 'uint16-array',
     kind: 'runtime',
@@ -567,6 +569,8 @@ const cppRuntimeExternalSymbolBindings = [
   { kind: 'native', sourceName: 'Set', space: 'value', targetName: 'std::unordered_set' },
   { kind: 'native', sourceName: 'String', space: 'type', targetName: 'std::string' },
   { kind: 'native', sourceName: 'String', space: 'value', targetName: 'std::string' },
+  { kind: 'native', sourceName: 'TypeError', space: 'type', targetName: 'std::runtime_error' },
+  { kind: 'native', sourceName: 'TypeError', space: 'value', targetName: 'std::runtime_error' },
   { kind: 'native', sourceName: 'Uint16Array', space: 'type', targetName: 'std::vector<uint16_t>' },
   { kind: 'native', sourceName: 'Uint16Array', space: 'value', targetName: 'std::vector<uint16_t>' },
   { kind: 'native', sourceName: 'Uint32Array', space: 'type', targetName: 'std::vector<uint32_t>' },

@@ -9,7 +9,7 @@ describe('createCompilerRuntimeExternalSymbolBindingPlanHaxe', () => {
     const plan = createCompilerRuntimeExternalSymbolBindingPlanHaxe();
 
     expect(plan.contract).toBe('flight-runtime-contract/2');
-    expect(plan.bindings).toHaveLength(39);
+    expect(plan.bindings).toHaveLength(45);
     expect(plan.bindings.filter(({ externalSymbol }) => externalSymbol.sourceName === 'Promise')).toEqual([
       {
         capability: 'task',
@@ -57,7 +57,7 @@ describe('createCompilerRuntimeExternalSymbolBindingPlanHaxe', () => {
     const second = createCompilerRuntimeExternalSymbolBindingPlanHaxe();
 
     (first.bindings as unknown[]).pop();
-    expect(second.bindings).toHaveLength(39);
+    expect(second.bindings).toHaveLength(45);
   });
 });
 
