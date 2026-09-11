@@ -31,6 +31,9 @@ describe('createCompilerAmbientSurfaceSource', () => {
     expect(source).toContain('readonly NaN: number;');
     expect(source).toContain('for(key: string): symbol;');
     expect(source).toContain('entries(value: object): [string, unknown][];');
+    expect(source).toContain(
+      'assign<Target extends object, Source extends object>(target: Target, source: Source): Target & Source;',
+    );
     expect(source).toContain('keys(value: object): string[];');
     expect(source).toContain('stringify(value: unknown, replacer?: unknown, space?: number | string): string;');
     expect(source).toContain('toUpperCase(): string;');
