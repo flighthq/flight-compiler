@@ -111,6 +111,7 @@ interface EmitContext {
   arrayElementBindingIds: ReadonlySet<string>;
   async?: boolean | undefined;
   bindingClasses: ReadonlyMap<string, Readonly<IrClassDeclaration>>;
+  bindingInitializers: ReadonlyMap<string, Readonly<IrExpression>>;
   bindingTypes: ReadonlyMap<string, Readonly<IrType>>;
   currentClass?: Readonly<IrClassDeclaration> | undefined;
   defaultedParameterIds: ReadonlySet<string>;
@@ -126,6 +127,7 @@ interface EmitContext {
   options: Readonly<CppCompilerBackendOptions>;
   preservedInitializerTypes: Map<string, Readonly<IrType>>;
   referenceRepresentationPlanner: CompilerCppReferenceRepresentationPlanner;
+  resolvingInitializerBindingIds: Set<string>;
   returnsAbsent: boolean;
   sharedCaptureTargetNames: ReadonlyMap<string, string>;
   targetNames: ReadonlyMap<string, string>;
@@ -226,6 +228,7 @@ function emitIrModuleCppWithContext(
     anonymousStructTypeParameters: [],
     arrayElementBindingIds: collectIrModuleArrayElementBindingIdsCpp(module, bindingTypes),
     bindingClasses: collectIrModuleBindingClassesCpp(module, bindingTypes),
+    bindingInitializers: collectIrModuleBindingInitializersCpp(module),
     bindingTypes,
     defaultedParameterIds: new Set(),
     denseArrayLengthBindingIds: collectIrModuleDenseArrayLengthBindingIdsCpp(sourceModule),
@@ -243,6 +246,7 @@ function emitIrModuleCppWithContext(
       (moduleResolution
         ? createIrTypeReferenceRepresentationPlannerCpp(sourceModules, moduleResolution)
         : createIrTypeReferenceRepresentationPlannerCpp(sourceModules)),
+    resolvingInitializerBindingIds: new Set(),
     returnsAbsent: false,
     sharedCaptureTargetNames,
     targetNames,
@@ -1456,7 +1460,7 @@ function emitExpression(
       return initializer;
     }
     case 'property': {
-      if (expression.optional) return emitOptionalPropertyExpressionCpp(expression, context);
+      if (expression.optional) return emitOptionalPropertyExpressionCpp(expression, context, expectedType);
       if (expression.member) {
         const binding = getCompilerCppAmbientMemberBinding(expression.member, getCppRuntimeProfile(context.options));
         if (binding && binding.kind === 'sizeMethod') {
@@ -3129,9 +3133,14 @@ function getIrOptionalChainCoalescedTypeEvidenceCpp(
         : expression.kind === 'property'
           ? expression.optionalChain
           : undefined;
-  if (!semantics || semantics.valueType.kind === 'unknown') return undefined;
-  const valueUnion = getIrUnionTypeCpp(semantics.valueType, context, new Set());
-  const present = (valueUnion?.types ?? [semantics.valueType]).filter(
+  if (!semantics) return undefined;
+  const valueType =
+    semantics.valueType.kind === 'unknown'
+      ? getIrOptionalChainValueTypeEvidenceCpp(expression, context)
+      : semantics.valueType;
+  if (!valueType) return undefined;
+  const valueUnion = getIrUnionTypeCpp(valueType, context, new Set());
+  const present = (valueUnion?.types ?? [valueType]).filter(
     (member) => member.kind !== 'null' && member.kind !== 'undefined',
   );
   if (!present[0]) return undefined;
@@ -3253,7 +3262,10 @@ function getIrExpressionTypeForUnionConstructionCpp(
     case 'assignment':
       return getIrAssignmentTargetTypeCpp(expression.left, context);
     case 'binary':
-      return getIrOperatorValueDomainTypeCpp(expression.semantics.result);
+      return (
+        getIrOperatorValueDomainTypeCpp(expression.semantics.result) ??
+        getIrNullishCoalesceTypeEvidenceCpp(expression, context)
+      );
     case 'call':
       return getIrCallReturnTypeCpp(expression, context);
     case 'cast':
@@ -3364,6 +3376,32 @@ function getIrOperatorValueDomainTypeCpp(domain: IrBinaryOperatorSemantics['resu
     : domain === 'null' || domain === 'undefined'
       ? { kind: domain }
       : undefined;
+}
+
+function getIrNullishCoalesceTypeEvidenceCpp(
+  expression: Readonly<Extract<IrExpression, { kind: 'binary' }>>,
+  context: EmitContext,
+): Readonly<IrType> | undefined {
+  if (expression.operator !== '??') return undefined;
+  const left = getIrExpressionTypeEvidenceCpp(expression.left, context);
+  const right =
+    getIrExpressionTypeEvidenceCpp(expression.right, context) ??
+    getIrExpressionTypeForUnionConstructionCpp(expression.right, [], context);
+  if (!left || !right || left.kind === 'unknown' || right.kind === 'unknown') return undefined;
+  const leftUnion = getIrUnionTypeCpp(left, context, new Set());
+  const rightUnion = getIrUnionTypeCpp(right, context, new Set());
+  return createIrTypeEvidenceUnionCpp([
+    ...(leftUnion?.types ?? [left]).filter((member) => member.kind !== 'null' && member.kind !== 'undefined'),
+    ...(rightUnion?.types ?? [right]),
+  ]);
+}
+
+function createIrTypeEvidenceUnionCpp(types: readonly Readonly<IrType>[]): Readonly<IrType> | undefined {
+  const unique = [
+    ...new Map(types.map((type) => [normalizeCompilerStructuralValueCanonical(type), type] as const)).values(),
+  ];
+  if (!unique[0]) return undefined;
+  return unique.length === 1 ? unique[0] : { kind: 'union', types: [unique[0], unique[1]!, ...unique.slice(2)] };
 }
 
 function getIrCallReturnTypeCpp(
@@ -3537,6 +3575,27 @@ function getIrObjectPropertyTypeCpp(
   ) {
     return type.typeArguments[1];
   }
+  if (
+    type.kind === 'named' &&
+    type.reference.kind === 'ambient' &&
+    type.reference.name === 'Readonly' &&
+    type.typeArguments.length === 1 &&
+    type.typeArguments[0]
+  ) {
+    return getIrObjectPropertyTypeCpp(type.typeArguments[0], propertyName, context);
+  }
+  if (
+    type.kind === 'named' &&
+    type.reference.kind === 'ambient' &&
+    type.reference.name === 'Omit' &&
+    type.typeArguments.length === 2 &&
+    type.typeArguments[0] &&
+    type.typeArguments[1]
+  ) {
+    const excluded = isCppObjectProjectionPropertyExcluded(type.typeArguments[1], propertyName);
+    if (excluded === true) return undefined;
+    if (excluded === false) return getIrObjectPropertyTypeCpp(type.typeArguments[0], propertyName, context);
+  }
   const objectShape = context.referenceRepresentationPlanner.resolveObjectShape(type, context.module);
   if (objectShape) {
     return getIrObjectPropertyReadTypeCpp(objectShape.find((property) => property.name === propertyName));
@@ -3582,6 +3641,17 @@ function getIrObjectPropertyTypeCpp(
         context,
       )
     : undefined;
+}
+
+function isCppObjectProjectionPropertyExcluded(type: Readonly<IrType>, propertyName: string): boolean | undefined {
+  if (type.kind === 'literal' && (typeof type.value === 'number' || typeof type.value === 'string')) {
+    return String(type.value) === propertyName;
+  }
+  if (type.kind === 'primitive' && type.name === 'symbol') return false;
+  if (type.kind !== 'union') return undefined;
+  const members = type.types.map((member) => isCppObjectProjectionPropertyExcluded(member, propertyName));
+  if (members.includes(true)) return true;
+  return members.every((member) => member === false) ? false : undefined;
 }
 
 function getIrObjectPropertyReadTypeCpp(
@@ -3744,6 +3814,11 @@ function getIrExpressionTypeEvidenceCpp(
       return getIrCallReturnTypeCpp(expression, context);
     case 'cast':
       return expression.type;
+    case 'binary':
+      return (
+        getIrOperatorValueDomainTypeCpp(expression.semantics.result) ??
+        getIrNullishCoalesceTypeEvidenceCpp(expression, context)
+      );
     case 'conditional':
       return (
         getIrExpressionTypeEvidenceCpp(expression.whenTrue, context) ??
@@ -3801,10 +3876,8 @@ function getIrExpressionTypeEvidenceCpp(
             ?.returns;
         if (memberType) return memberType;
       }
-      const objectType = getIrExpressionTypeEvidenceCpp(expression.object, context);
-      return objectType ? getIrObjectPropertyTypeCpp(objectType, expression.name, context) : undefined;
+      return getIrPropertyExpressionTypeEvidenceCpp(expression, context);
     }
-    case 'binary':
     case 'literal':
     case 'objectRest':
     case 'regexp':
@@ -3830,7 +3903,24 @@ function getIrIdentifierTypeEvidenceCpp(
   const declaredType = getCppBindingTypeCpp(bindingId, context);
   const narrowedType = context.narrowedBindingTypes.get(bindingId);
   if (narrowedType) return narrowedType;
-  if (!declaredType) return undefined;
+  if (!declaredType || declaredType.kind === 'unknown') {
+    const initializer = context.bindingInitializers.get(bindingId);
+    let inferred: Readonly<IrType> | undefined;
+    if (
+      initializer?.kind === 'binary' &&
+      initializer.operator === '??' &&
+      !context.resolvingInitializerBindingIds.has(bindingId)
+    ) {
+      context.resolvingInitializerBindingIds.add(bindingId);
+      try {
+        inferred = getIrNullishCoalesceTypeEvidenceCpp(initializer, context);
+      } finally {
+        context.resolvingInitializerBindingIds.delete(bindingId);
+      }
+    }
+    if (inferred) return inferred;
+    if (!declaredType) return undefined;
+  }
   const union = getIrUnionTypeCpp(declaredType, context, new Set());
   if (expression.presence === 'narrowedPresent' && union) {
     const present = union.types.filter((member) => member.kind !== 'null' && member.kind !== 'undefined');
@@ -3838,6 +3928,40 @@ function getIrIdentifierTypeEvidenceCpp(
   }
   if (!expression.narrowedMember) return declaredType;
   return union?.types.find((member) => getIrUnionMemberNameCpp(member) === expression.narrowedMember) ?? declaredType;
+}
+
+function getIrPropertyExpressionTypeEvidenceCpp(
+  expression: Readonly<Extract<IrExpression, { kind: 'property' }>>,
+  context: EmitContext,
+): Readonly<IrType> | undefined {
+  const valueType = expression.optional
+    ? getIrOptionalChainValueTypeEvidenceCpp(expression, context)
+    : (() => {
+        const objectType = getIrExpressionTypeEvidenceCpp(expression.object, context);
+        return objectType ? getIrObjectPropertyTypeCpp(objectType, expression.name, context) : undefined;
+      })();
+  if (!valueType || !expression.optional || expression.optionalChain?.receiverNullish !== 'possible') return valueType;
+  return createIrTypeEvidenceUnionCpp([valueType, { kind: 'undefined' }]);
+}
+
+function getIrOptionalChainValueTypeEvidenceCpp(
+  expression: Readonly<IrExpression>,
+  context: EmitContext,
+): Readonly<IrType> | undefined {
+  const semantics =
+    expression.kind === 'call'
+      ? expression.semantics.optionalChain
+      : expression.kind === 'element'
+        ? expression.semantics.optionalChain
+        : expression.kind === 'property'
+          ? expression.optionalChain
+          : undefined;
+  if (!semantics) return undefined;
+  if (semantics.valueType.kind !== 'unknown') return semantics.valueType;
+  if (expression.kind !== 'property') return undefined;
+  const objectType = getIrExpressionTypeEvidenceCpp(expression.object, context);
+  const presentObjectType = objectType ? getCppNonNullableType(objectType, context, new Set()) : undefined;
+  return presentObjectType ? getIrObjectPropertyTypeCpp(presentObjectType, expression.name, context) : undefined;
 }
 
 function getIrIndexedElementTypeCpp(
@@ -3989,6 +4113,18 @@ function collectIrModuleBindingClassesCpp(
     const declaration = classesByIdentity.get(type.reference.binding.id);
     if (declaration) result.set(bindingId, declaration);
   }
+  return result;
+}
+
+function collectIrModuleBindingInitializersCpp(
+  module: Readonly<IrModule>,
+): ReadonlyMap<string, Readonly<IrExpression>> {
+  const result = new Map<string, Readonly<IrExpression>>();
+  analyzeIrModuleTraversal(module, {
+    variable(variable) {
+      if ('binding' in variable && variable.initializer) result.set(variable.binding.id, variable.initializer);
+    },
+  });
   return result;
 }
 
@@ -5006,6 +5142,7 @@ function emitOptionalElementExpressionCpp(
 function emitOptionalPropertyExpressionCpp(
   expression: Readonly<Extract<IrExpression, { kind: 'property' }>>,
   context: EmitContext,
+  expectedType?: Readonly<IrType> | undefined,
 ): string {
   const semantics = expression.optionalChain;
   if (!semantics) emissionError(context, 'optional property access lacks neutral optional-chain evidence');
@@ -5017,10 +5154,17 @@ function emitOptionalPropertyExpressionCpp(
   if (semantics.receiverNullish === 'excluded' && !indexesRuntimeCollection) {
     return emitExpression({ ...expression, optional: false }, context);
   }
-  const receiverType = emitOptionalChainPayloadIrTypeCpp(semantics.receiverType, context);
+  const receiverEvidence = getIrExpressionTypeEvidenceCpp(expression.object, context);
+  const receiverType = emitOptionalChainPayloadIrTypeCpp(
+    semantics.receiverType.kind === 'unknown' ? (receiverEvidence ?? semantics.receiverType) : semantics.receiverType,
+    context,
+  );
   const resolvedPropertyType = getIrObjectPropertyTypeCpp(receiverType, expression.name, context);
+  const contextualValueType = expectedType ? getCppNonNullableType(expectedType, context, new Set()) : undefined;
   const valueType =
-    semantics.valueType.kind === 'unknown' ? (resolvedPropertyType ?? semantics.valueType) : semantics.valueType;
+    semantics.valueType.kind === 'unknown'
+      ? (resolvedPropertyType ?? contextualValueType ?? semantics.valueType)
+      : semantics.valueType;
   const payload = emitOptionalChainPayloadTypeCpp(valueType, context);
   const object = emitOptionalChainReceiverCpp(expression.object, context);
   const memberOperator = hasFlightReferenceRepresentationCpp(receiverType, context) ? '->' : '.';

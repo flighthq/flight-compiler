@@ -561,6 +561,138 @@ describe('createCppCompilerBackend', () => {
     );
   });
 
+  it('recovers optional construction values through a symbol-key Omit projection', () => {
+    const model = ts.createSourceFile(
+      '/flight/packages/types/src/model.ts',
+      `export const EntityRuntimeKey = Symbol.for('EntityRuntime');
+       export interface Entity { [EntityRuntimeKey]: object | undefined; }
+       export type EntityConstruction<Type extends Entity> = { -readonly [Key in keyof Type]: Type[Key] };
+       export interface Adjustment extends Entity { kind: string; }
+       export interface ColorMatrixAdjustment extends Adjustment { colorMatrix: number[]; }
+       export interface BrightnessContrastAdjustment extends ColorMatrixAdjustment {
+         kind: 'BrightnessContrastAdjustment'; brightness?: number; contrast?: number;
+       }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const contract = ts.createSourceFile(
+      '/flight/packages/types/src/contract.ts',
+      "export * from './model.js';",
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const adjustment = ts.createSourceFile(
+      '/flight/packages/adjustments/src/brightnessContrastAdjustment.ts',
+      `import type {
+         BrightnessContrastAdjustment,
+         EntityConstruction,
+         EntityRuntimeKey,
+       } from '@flighthq/types/contract';
+       export function initialize(
+         out: EntityConstruction<BrightnessContrastAdjustment>,
+         options: Readonly<
+           Omit<BrightnessContrastAdjustment, typeof EntityRuntimeKey | 'kind' | 'colorMatrix'>
+         > = {},
+       ): void {
+         const brightness = options.brightness ?? 0;
+         out.brightness = brightness;
+         out.contrast = options.contrast ?? 1;
+       }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          specifier: '@flighthq/types/contract',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/contract.ts' },
+        },
+        {
+          specifier: './model.js',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/model.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const results = lowerTypeScriptSources(
+      [
+        { packageName: '@flighthq/types', sourceFile: model, upstreamDirectory: '/flight' },
+        { packageName: '@flighthq/types', sourceFile: contract, upstreamDirectory: '/flight' },
+        { packageName: '@flighthq/adjustments', sourceFile: adjustment, upstreamDirectory: '/flight' },
+      ],
+      moduleResolution,
+    );
+    const modules = results.map((result) => result.module);
+    const emitted = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules,
+      options: { runtimeProfile: 'flight-cpp' },
+    }).emitModule(modules[2]!)[0]!.contents;
+
+    expect(emitted).toContain('auto brightness = options.value()->brightness.value_or(0.0)');
+    expect(emitted).toContain('out->brightness = std::optional<double>{brightness}');
+    expect(emitted).toContain('out->contrast = std::optional<double>{options.value()->contrast.value_or(1.0)}');
+    expect(emitted).not.toContain('std::optional<auto>');
+  });
+
+  it('recovers nullable property evidence through an imported entity optional chain', () => {
+    const entity = ts.createSourceFile(
+      '/flight/packages/types/src/entity.ts',
+      `export interface Entity { [EntityRuntimeKey]: EntityRuntime | undefined; }
+       export interface EntityRuntime { binding: object | null; }
+       export const EntityRuntimeKey = Symbol.for('EntityRuntime');`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const contract = ts.createSourceFile(
+      '/flight/packages/types/src/contract.ts',
+      "export * from './entity.js';",
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const binding = ts.createSourceFile(
+      '/flight/packages/entity/src/binding.ts',
+      `import type { Entity } from '@flighthq/types/contract';
+       import { EntityRuntimeKey } from '@flighthq/types/contract';
+       export function getEntityBinding(source: Readonly<Entity>): object | null {
+         return source[EntityRuntimeKey]?.binding ?? null;
+       }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          specifier: '@flighthq/types/contract',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/contract.ts' },
+        },
+        {
+          specifier: './entity.js',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/entity.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const results = lowerTypeScriptSources(
+      [
+        { packageName: '@flighthq/types', sourceFile: entity, upstreamDirectory: '/flight' },
+        { packageName: '@flighthq/types', sourceFile: contract, upstreamDirectory: '/flight' },
+        { packageName: '@flighthq/entity', sourceFile: binding, upstreamDirectory: '/flight' },
+      ],
+      moduleResolution,
+    );
+    const modules = results.map((result) => result.module);
+    const emitted = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules,
+      options: { runtimeProfile: 'flight-cpp' },
+    }).emitModule(modules[2]!)[0]!.contents;
+
+    expect(emitted).toContain('std::optional<std::shared_ptr<void>>');
+    expect(emitted).toContain('optional_chain_receiver.value()->binding');
+    expect(emitted).not.toContain('std::optional<auto>');
+  });
+
   it('constructs an imported nullable reference from an imported function result', () => {
     const types = ts.createSourceFile(
       '/flight/packages/types/src/color.ts',
