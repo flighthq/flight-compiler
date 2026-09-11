@@ -172,6 +172,7 @@ Use npm, not pnpm or Yarn. Node.js 22 or newer is required. Script names follow 
 - `flight-compile <directory> --target <cpp|haxe|rust> --out <directory>`: point the compiler at a codebase. Sources are lowered into one module graph and share backend analysis, while every module retains its own outcome so a run reports everything it could not lower rather than stopping at the first refusal; `--report` reports without failing. Published as the package's `bin`.
 - `npm run fix`: apply Oxlint fixes and Oxfmt formatting after edits.
 - `npm run check`: complete deterministic gate; run before handoff. Every registered gate runs even after an earlier one fails, and the failures are reported together.
+- `npm run check:push`: fast static pre-push profile covering repository structure, formatting, linting, ordering, licensing, and API shape. It omits type checking, tests, coverage, target toolchains, and packaging; the full command above remains the handoff gate.
 - `npm run test`: run Vitest once.
 - `npm run test:packages`: run every private package and the public package in isolation.
 - `npm run test:coverage`: run all unit tests together with aggregate instrumentation. The complete gate intentionally runs tests once in isolation and again for coverage because these lanes prove different properties.

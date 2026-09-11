@@ -21,6 +21,7 @@
     "api:check": "npm run _scripts:build --silent && node ./.script-build/publicApiReport.js --check",
     "build": "npm run clean:dist --silent && tsc -p tsconfig.build.json",
     "check": "npm run _scripts:build --silent && node ./.script-build/repositoryCheck.js",
+    "check:push": "npm run check -- --push",
     "ci": "npm run clean && npm run check",
     "clean": "npm run _scripts:build --silent && node ./.script-build/workspaceArtifactCleanup.js",
     "clean:dist": "npm run _scripts:build --silent && node ./.script-build/workspaceArtifactCleanup.js --dist-only",

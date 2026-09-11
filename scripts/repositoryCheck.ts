@@ -21,6 +21,18 @@ const binary = (name: string): string =>
   path.join(root, 'node_modules', '.bin', process.platform === 'win32' ? `${name}.cmd` : name);
 const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm';
 const compiledScript = (name: string): readonly string[] => [path.join(root, '.script-build', `${name}.js`)];
+const pushGateLabels = new Set([
+  'api:check',
+  'docs:check',
+  'exports:check',
+  'format:check',
+  'license:check',
+  'lint',
+  'order:check',
+  'packages:check',
+]);
+
+const profile = readProfile(process.argv.slice(2));
 
 const { add, gates } = createCheckGateRegistry();
 
@@ -40,27 +52,50 @@ add('compile:check', process.execPath, compiledScript('emittedSourceCompile'));
 add('oracle:check', process.execPath, compiledScript('behavioralOracle'));
 add('pack:check', npm, ['run', 'pack:check', '--silent']);
 
+const registeredGateLabels = new Set(gates.map((gate) => gate.label));
+const missingPushGateLabels = [...pushGateLabels].filter((label) => !registeredGateLabels.has(label));
+if (missingPushGateLabels.length > 0) {
+  process.stderr.write(`Push check references unregistered gates: ${missingPushGateLabels.join(', ')}\n`);
+  process.exit(1);
+}
+
+const selectedGates = profile === 'push' ? gates.filter((gate) => pushGateLabels.has(gate.label)) : gates;
+const profileLabel = profile === 'push' ? ' push' : '';
+
+if (profile === 'push') {
+  process.stdout.write(
+    `Static pre-push profile: ${String(selectedGates.length)} of ${String(gates.length)} gates. Run npm run check for the complete sweep.\n`,
+  );
+}
+
 // A sweep with no gates would walk nothing and report the same success a complete run does. That
 // green is worse than a red, because it is passed onward in good faith.
-if (gates.length === 0) {
+if (selectedGates.length === 0) {
   process.stderr.write('Repository check registered no gates; there is nothing to verify.\n');
   process.exit(1);
 }
 
 const failed: string[] = [];
-for (const gate of gates) {
+for (const gate of selectedGates) {
   process.stdout.write(`\n▶ ${gate.label}\n`);
   if (runGate(gate) !== 0) failed.push(gate.label);
 }
 
 if (failed.length > 0) {
   process.stderr.write(
-    `\n${String(failed.length)} of ${String(gates.length)} check gates failed: ${failed.join(', ')}\n`,
+    `\n${String(failed.length)} of ${String(selectedGates.length)}${profileLabel} check gates failed: ${failed.join(', ')}\n`,
   );
   process.exit(1);
 }
 
-process.stdout.write(`\n${String(gates.length)} check gates passed.\n`);
+process.stdout.write(`\n${String(selectedGates.length)}${profileLabel} check gates passed.\n`);
+
+function readProfile(args: readonly string[]): 'complete' | 'push' {
+  if (args.length === 0) return 'complete';
+  if (args.length === 1 && args[0] === '--push') return 'push';
+  process.stderr.write('Usage: npm run check [-- --push]\n');
+  process.exit(2);
+}
 
 function runGate(gate: Readonly<CheckGate>): number {
   const result = spawnSync(gate.command, [...gate.args], { cwd: root, env: process.env, stdio: 'inherit' });

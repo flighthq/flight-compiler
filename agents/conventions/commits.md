@@ -46,4 +46,4 @@ The repository deliberately carries no commit bodies, `Co-Authored-By` trailers,
 
 `commitlint` runs from the `commit-msg` hook and checks the type set, scope case, and subject shape. It cannot check whether the subject is honest — that stays with review.
 
-The `pre-commit` hook runs `lint-staged`, which lints and formats only the staged files. The full sweep is `npm run check`, which the `pre-push` hook runs; keep the hooks fast enough that nobody is tempted to bypass them.
+The `pre-commit` hook runs `lint-staged`, which lints and formats only the staged files. The `pre-push` hook runs the static `npm run check:push` profile; run the complete `npm run check` sweep before handoff. Keep hooks fast enough that nobody is tempted to bypass them.
