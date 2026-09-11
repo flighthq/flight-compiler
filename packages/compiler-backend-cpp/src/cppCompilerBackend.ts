@@ -3684,6 +3684,23 @@ function emitContextualUnionExpressionCpp(
   ) {
     return undefined;
   }
+  const externalCallResult = getCppExternalCallResultTargetCpp(expression, context);
+  if (externalCallResult) {
+    const targetSlots = plan.valueSlots.filter((slot) => slot.targetType === externalCallResult);
+    if (targetSlots.length !== 1) {
+      emissionError(
+        context,
+        `external call result type ${externalCallResult} is not one represented contextual runtime domain`,
+      );
+    }
+    return emitCppUnionValueConstruction(
+      emitExpression(expression, context, undefined, false),
+      externalCallResult,
+      union,
+      plan.kind,
+      context,
+    );
+  }
   const expressionType = getIrExpressionTypeForUnionConstructionCpp(expression, plan.valueSlots, context);
   if (!expressionType) {
     if (plan.kind === 'singleValue') return undefined;
@@ -4178,6 +4195,25 @@ function getCppExternalCallResultTypeCpp(type: Readonly<IrType>, context: EmitCo
   const result = getCompilerExternalBindingCallResultTypeCpp(type.reference.name, context.options.externalBindings);
   if (result) addCppExternalBindingHeaders(type.reference.name, 'value', context);
   return result;
+}
+
+function getCppExternalCallResultTargetCpp(
+  expression: Readonly<IrExpression>,
+  context: EmitContext,
+): string | undefined {
+  if (
+    expression.kind !== 'call' ||
+    expression.optional ||
+    expression.semantics.optionalChain ||
+    expression.callee.kind !== 'identifier' ||
+    expression.callee.reference.kind !== 'ambient'
+  ) {
+    return undefined;
+  }
+  return getCompilerExternalBindingCallResultTypeCpp(
+    expression.callee.reference.name,
+    context.options.externalBindings,
+  );
 }
 
 function getIrCallArgumentExpectedTypeCpp(

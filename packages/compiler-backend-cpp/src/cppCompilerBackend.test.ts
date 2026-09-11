@@ -693,6 +693,109 @@ describe('createCppCompilerBackend', () => {
     expect(emitted).not.toContain('std::optional<auto>');
   });
 
+  it('constructs a buffered-log interval handle from exact ambient call-result evidence', () => {
+    const module = lowerPackage(
+      '@flighthq/log',
+      'log.ts',
+      `export function startBufferedInterval(intervalMs: number): void {
+         const flush = (): void => {};
+         let timer: ReturnType<typeof setInterval> | null = null;
+         if (intervalMs > 0 && typeof setInterval !== 'undefined') {
+           timer = setInterval(flush, intervalMs);
+         }
+       }`,
+    ).module;
+    const externalBindings = {
+      bindings: [
+        {
+          callResultType: 'host::IntervalHandle',
+          headers: ['host/timer.hpp'],
+          nullability: 'non-null' as const,
+          ownership: 'value' as const,
+          sourceName: 'setInterval',
+          space: 'value' as const,
+          targetName: 'host::set_interval',
+        },
+      ],
+      schema: 'flight-cpp-external-bindings/1' as const,
+    };
+    const emitted = emitIrModuleCpp(module, { externalBindings, runtimeProfile: 'flight-cpp' }).contents;
+
+    expect(emitted).toContain('#include <host/timer.hpp>');
+    expect(emitted).toContain('std::optional<host::IntervalHandle> timer = std::nullopt;');
+    expect(emitted).toContain('std::optional<host::IntervalHandle>{host::set_interval(flush, interval_ms)}');
+    expect(emitted).not.toContain('std::optional<auto>');
+  });
+
+  it('constructs a throttled signal timeout handle from exact ambient call-result evidence', () => {
+    const module = lowerPackage(
+      '@flighthq/signals',
+      'throttle.ts',
+      `export function scheduleTrailing(delayMs: number): void {
+         let trailingTimer: ReturnType<typeof setTimeout> | null = null;
+         const schedule = (delay: number): void => {
+           trailingTimer = setTimeout((): void => {
+             trailingTimer = null;
+           }, delay);
+         };
+         schedule(delayMs);
+       }`,
+    ).module;
+    const externalBindings = {
+      bindings: [
+        {
+          callResultType: 'host::TimeoutHandle',
+          headers: ['host/timer.hpp'],
+          nullability: 'non-null' as const,
+          ownership: 'value' as const,
+          sourceName: 'setTimeout',
+          space: 'value' as const,
+          targetName: 'host::set_timeout',
+        },
+      ],
+      schema: 'flight-cpp-external-bindings/1' as const,
+    };
+    const emitted = emitIrModuleCpp(module, { externalBindings, runtimeProfile: 'flight-cpp' }).contents;
+
+    expect(emitted).toContain('std::optional<host::TimeoutHandle>');
+    expect(emitted).toContain('std::optional<host::TimeoutHandle>{host::set_timeout(');
+    expect(emitted).not.toContain('std::optional<auto>');
+  });
+
+  it('refuses ambient call construction without an exact matching contextual result type', () => {
+    const module = lower(
+      'timer-call-result-controls.ts',
+      `export function schedule(): void {
+         let timer: number | null = null;
+         timer = setTimeout((): void => {}, 1);
+       }`,
+    ).module;
+    const binding = {
+      headers: ['host/timer.hpp'],
+      nullability: 'non-null' as const,
+      ownership: 'value' as const,
+      sourceName: 'setTimeout',
+      space: 'value' as const,
+      targetName: 'host::set_timeout',
+    };
+
+    expect(() =>
+      emitIrModuleCpp(module, {
+        externalBindings: { bindings: [binding], schema: 'flight-cpp-external-bindings/1' },
+        runtimeProfile: 'flight-cpp',
+      }),
+    ).toThrow('contextual optionalSingle construction requires expression type evidence');
+    expect(() =>
+      emitIrModuleCpp(module, {
+        externalBindings: {
+          bindings: [{ ...binding, callResultType: 'host::TimeoutHandle' }],
+          schema: 'flight-cpp-external-bindings/1',
+        },
+        runtimeProfile: 'flight-cpp',
+      }),
+    ).toThrow('external call result type host::TimeoutHandle is not one represented contextual runtime domain');
+  });
+
   it('constructs an imported nullable reference from an imported function result', () => {
     const types = ts.createSourceFile(
       '/flight/packages/types/src/color.ts',
