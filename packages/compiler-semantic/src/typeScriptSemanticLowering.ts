@@ -5541,13 +5541,19 @@ function lowerTypeBindingSymbol(
       return aliasedCached;
     }
   }
-  const inferredImport = lowerTypeScriptInferredTypeImportBinding(aliased ?? symbol, context);
+  const declaration = symbol.declarations?.find(isTypeBindingDeclaration);
+  // A spelled import is introduced by lowerImports itself. Inferring it while that import is being
+  // lowered would append a second route with the same identity; inference is only for checker-reached
+  // declarations that have no local spelling.
+  const inferredImport =
+    declaration?.getSourceFile().fileName === context.moduleSourceFile.fileName
+      ? undefined
+      : lowerTypeScriptInferredTypeImportBinding(aliased ?? symbol, context);
   if (inferredImport) {
     context.typeBindings.set(symbol, inferredImport);
     if (aliased) context.typeBindings.set(aliased, inferredImport);
     return inferredImport;
   }
-  const declaration = symbol.declarations?.find(isTypeBindingDeclaration);
   if (!declaration) return unsupported(node, `type binding ${node.text} has no supported declaration`);
   const name = typeBindingDeclarationName(declaration);
   const source = relativeSource(context.sourceFile.fileName, context.options.upstreamDirectory);

@@ -1996,8 +1996,12 @@ describe('lowerTypeScriptSource', () => {
         imported.bindings.map((importBinding) => ({ importBinding, specifier: imported.specifier })),
       )
       .find(({ importBinding }) => importBinding.imported === 'ParticleCurve');
+    const direct = result!.module.imports
+      .flatMap((imported) => imported.bindings)
+      .filter((importBinding) => importBinding.imported === 'ParticleEmitterConfig');
 
     expect(result!.diagnostics).toEqual([]);
+    expect(direct).toHaveLength(1);
     expect(inferred).toMatchObject({
       importBinding: {
         binding: { kind: 'import', name: 'ParticleCurve', space: 'type' },
