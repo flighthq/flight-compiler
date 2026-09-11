@@ -37,6 +37,7 @@ export type IrParameter = Omit<IrFunctionTypeParameter, 'name'> &
 // unique, and what lets it refuse a member it has not decided how to lower.
 export type IrResolvedMemberReceiver =
   | 'array'
+  | 'arrayBuffer'
   | 'dataView'
   | 'date'
   | 'error'
@@ -245,6 +246,7 @@ export interface IrCatchClause {
 export interface IrSwitchCase {
   readonly expression?: IrExpression | undefined;
   readonly statements: readonly IrStatement[];
+  readonly unionMemberTest?: IrUnionMemberTestEvidence | undefined;
 }
 
 export type IrForInKeyPlan =

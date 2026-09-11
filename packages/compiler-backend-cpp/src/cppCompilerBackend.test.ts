@@ -181,10 +181,66 @@ describe('createCppCompilerBackend', () => {
       modules: [consumer, types],
       options: { runtimeProfile: 'flight-cpp' },
     });
+    const aliases = session.emitModule(types)[0]!.contents;
     const emitted = session.emitModule(consumer)[0]!.contents;
 
+    expect(aliases.match(/template <typename Reason>/gu)).toHaveLength(2);
+    expect(aliases).toMatch(/using Outcome = std::variant<[^;]*<Reason>[^;]*<Reason>>;/u);
     expect(emitted).toContain('flighthq_types::Outcome<flight::String> accept(');
     expect(emitted).not.toContain('flight::Ref<flighthq_types::Outcome');
+  });
+
+  it('includes and qualifies every source in a split named-import request', () => {
+    const alpha = lowerPackage('@flighthq/types', 'alpha.ts', 'export interface Alpha { value: number }').module;
+    const beta = lowerPackage('@flighthq/types', 'beta.ts', 'export interface Beta { label: string }').module;
+    const consumer = lowerPackage(
+      '@flighthq/consumer',
+      'consumer.ts',
+      "import type { Alpha, Beta } from '@flighthq/types/contract'; export function pair(alpha: Alpha, beta: Beta): void {}",
+    ).module;
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          importedNames: ['Alpha'],
+          specifier: '@flighthq/types/contract',
+          target: { packageName: alpha.packageName, source: alpha.source },
+        },
+        {
+          importedNames: ['Beta'],
+          specifier: '@flighthq/types/contract',
+          target: { packageName: beta.packageName, source: beta.source },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const emitted = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules: [consumer, beta, alpha],
+      options: {
+        packageTargets: {
+          '@flighthq/consumer': { includePrefix: 'flight/consumer', namespace: 'flight::consumer' },
+          '@flighthq/types': { includePrefix: 'flight/types', namespace: 'flight::types' },
+        },
+        runtimeProfile: 'flight-cpp',
+      },
+    }).emitModule(consumer)[0]!.contents;
+
+    expect(emitted).toContain('#include <flight/types/alpha.hpp>');
+    expect(emitted).toContain('#include <flight/types/beta.hpp>');
+    expect(emitted).toContain('flight::Ref<flight::types::Alpha> alpha');
+    expect(emitted).toContain('flight::Ref<flight::types::Beta> beta');
+  });
+
+  it('places anonymous union helpers after complete named dependencies and before their owner', () => {
+    const emitted = emitIrModuleCpp(
+      lower(
+        'ordered-anonymous-types.ts',
+        'export type Outcome = { value: Later } | { reason: string }; export interface Later { version: string }',
+      ).module,
+    ).contents;
+
+    expect(emitted.indexOf('struct Later {')).toBeLessThan(emitted.indexOf('struct value'));
+    expect(emitted.indexOf('struct value')).toBeLessThan(emitted.indexOf('using Outcome'));
   });
 
   it('qualifies nested references while expanding imported union aliases', () => {
@@ -207,9 +263,44 @@ describe('createCppCompilerBackend', () => {
       modules: [consumer, types],
       options: { runtimeProfile: 'flight-cpp' },
     });
+    const aliases = session.emitModule(types)[0]!.contents;
     const emitted = session.emitModule(consumer)[0]!.contents;
 
+    expect(aliases.indexOf('struct DownloadedUpdate :')).toBeLessThan(aliases.indexOf('struct reason_update'));
+    expect(aliases.indexOf('struct reason_update')).toBeLessThan(aliases.indexOf('using Outcome'));
     expect(emitted).toContain('flight::Ref<flighthq_types::DownloadedUpdate> update;');
+  });
+
+  it('projects common variant properties and narrows structural switch cases', () => {
+    const types = lowerPackage(
+      '@flighthq/types',
+      'update.ts',
+      "export interface DownloadedUpdate { readonly version: string } export type Outcome = Readonly<{ readonly reason: 'downloaded'; readonly update: DownloadedUpdate }> | Readonly<{ readonly reason: 'missing' }> ;",
+    ).module;
+    const consumer = lowerPackage(
+      '@flighthq/updater',
+      'updater.ts',
+      `import type { Outcome } from '@flighthq/types';
+       export function version(outcome: Outcome): string {
+         switch (outcome.reason) {
+           case 'downloaded': return outcome.update.version;
+           default: return '';
+         }
+       }`,
+    ).module;
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [{ specifier: '@flighthq/types', target: { packageName: types.packageName, source: types.source } }],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const session = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules: [consumer, types],
+      options: { runtimeProfile: 'flight-cpp' },
+    });
+    const emitted = session.emitModule(consumer)[0]!.contents;
+
+    expect(emitted).toContain('std::visit([](const auto& value) { return value->reason; }, outcome)');
+    expect(emitted).toMatch(/std::get<flight::Ref<[A-Za-z_]\w*>>\(outcome\)->update->version/u);
   });
 
   it('uses the resolved module graph for imported reference representation', () => {
@@ -434,6 +525,23 @@ export function compare(left: string, right: string, locale: string, options: In
     expect(emitted.contents).toContain('flight::object_keys(value)');
     expect(emitted.contents).toContain('flight::Json::stringify(value, nullptr, 2.0)');
     expect(emitted.contents).toContain('flight::IntlCollator(locale, options).compare(left, right)');
+  });
+
+  it('emits typed-array instanceof narrowing and byte lengths through the runtime contract', () => {
+    const result = lower(
+      'binary-view.ts',
+      `export function byteLength(data: Readonly<Uint8Array> | ArrayBuffer): number {
+  const bytes = data instanceof Uint8Array ? data : new Uint8Array(data);
+  return bytes.byteLength;
+}
+export function bufferByteLength(data: ArrayBuffer): number { return data.byteLength; }`,
+    );
+
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+    expect(emitted.contents).toContain('std::holds_alternative<flight::Uint8Array>(data)');
+    expect(emitted.contents).toContain('static_cast<double>(bytes.byte_length())');
+    expect(emitted.contents).toContain('static_cast<double>(data.byte_length())');
+    expect(emitted.contents).not.toContain(' instanceof ');
   });
 
   it('emits a function with parameters', () => {
@@ -5752,6 +5860,19 @@ export function compare(left: string, right: string, locale: string, options: In
       ).module,
     ).contents;
     expect(output).toContain('has_value');
+  });
+
+  it('emits optional void calls without forming optional<void>', () => {
+    const output = emitIrModuleCpp(
+      lower(
+        'optional-void-call.ts',
+        'interface Backend { prepare?(): void } export function prepare(backend: Backend): void { backend.prepare?.(); }',
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+
+    expect(output).toContain('if (!optional_chain_receiver.has_value()) return; optional_chain_receiver.value()();');
+    expect(output).not.toContain('optional<void>');
   });
 
   it('emits string length as size method with static_cast', () => {

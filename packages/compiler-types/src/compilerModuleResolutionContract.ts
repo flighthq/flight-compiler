@@ -3,6 +3,8 @@ import type { CompilerModuleIdentity, CompilerSourceIdentity } from './compilerS
 export interface CompilerModuleResolutionEdge {
   /** Absent means a workspace-wide package export; present means one importer's exact request. */
   readonly importer?: CompilerModuleIdentity | undefined;
+  /** Absent means the whole request; present scopes a split named-import request to these exports. */
+  readonly importedNames?: readonly string[] | undefined;
   readonly specifier: string;
   readonly target: CompilerSourceIdentity;
 }

@@ -100,6 +100,13 @@ export function createIrTypeReferenceRepresentationPlannerCpp(
       const targets = getReferenceSpecifierModulesCpp(subject, specifier, moduleSet, resolutionCache);
       return targets.length === 1 ? targets[0]!.module : undefined;
     },
+    resolveModules(specifier: string, module: Readonly<IrModule>): readonly Readonly<IrModule>[] {
+      const subject = getReferenceModuleRecordCpp(module, moduleSet);
+      if (!subject) throw new TypeError('C++ module resolution subject must belong to the explicit module set');
+      return getReferenceSpecifierModulesCpp(subject, specifier, moduleSet, resolutionCache).map(
+        (target) => target.module,
+      );
+    },
     resolveObjectShape(type: Readonly<IrType>, module: Readonly<IrModule>) {
       const subject = getReferenceModuleRecordCpp(module, moduleSet);
       if (!subject) throw new TypeError('C++ object-shape subject must belong to the explicit module set');

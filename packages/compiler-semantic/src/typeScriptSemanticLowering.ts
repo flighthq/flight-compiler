@@ -1998,10 +1998,16 @@ function lowerStatement(node: ts.Statement, context: LoweringContext): IrStateme
   }
   if (ts.isSwitchStatement(node)) {
     return {
-      cases: node.caseBlock.clauses.map((clause) => ({
-        ...(ts.isCaseClause(clause) ? { expression: lowerExpression(clause.expression, context) } : {}),
-        statements: lowerStatementList(clause.statements, context),
-      })),
+      cases: node.caseBlock.clauses.map((clause) => {
+        const unionMemberTest = ts.isCaseClause(clause)
+          ? getTypeScriptDiscriminantUnionMemberTestEvidence(node.expression, clause.expression, true, context)
+          : undefined;
+        return {
+          ...(ts.isCaseClause(clause) ? { expression: lowerExpression(clause.expression, context) } : {}),
+          statements: lowerStatementList(clause.statements, context),
+          ...(unionMemberTest ? { unionMemberTest } : {}),
+        };
+      }),
       expression: lowerExpression(node.expression, context),
       kind: 'switch',
       origin: origin(node, context),
@@ -4133,6 +4139,11 @@ function inferInitializerType(node: ts.Expression, context: LoweringContext): Ir
       const narrowed = getTypeScriptCheckerTypeEvidence(flow, context, 0);
       if (narrowed) return narrowed;
     }
+    // Binding-pattern lowering can prove a type that the deliberately small ambient surface cannot
+    // reconstruct through the checker. Preserve that proof when the binding is used to infer an
+    // anonymous object literal, as in a mapped tuple becoming `{ start, end, delta }`.
+    const bindingType = getTypeScriptExpressionBindingTypeEvidence(node, context);
+    if (bindingType) return bindingType;
   }
   // Where no written type reaches the value — a call into the ambient surface returns the surface's
   // own type parameter, which names nothing here — the checker's instantiation of it does.
@@ -4219,6 +4230,9 @@ function getTypeScriptUnionMemberTestEvidence(
   node: ts.BinaryExpression,
   context: LoweringContext,
 ): IrUnionMemberTestEvidence | undefined {
+  if (node.operatorToken.kind === ts.SyntaxKind.InstanceOfKeyword) {
+    return getTypeScriptInstanceofUnionMemberTestEvidence(node.left, node.right, context);
+  }
   const whenResult =
     node.operatorToken.kind === ts.SyntaxKind.EqualsEqualsToken ||
     node.operatorToken.kind === ts.SyntaxKind.EqualsEqualsEqualsToken
@@ -4234,6 +4248,28 @@ function getTypeScriptUnionMemberTestEvidence(
     getTypeScriptDiscriminantUnionMemberTestEvidence(node.left, node.right, whenResult, context) ??
     getTypeScriptDiscriminantUnionMemberTestEvidence(node.right, node.left, whenResult, context)
   );
+}
+
+function getTypeScriptInstanceofUnionMemberTestEvidence(
+  test: ts.Expression,
+  constructor: ts.Expression,
+  context: LoweringContext,
+): IrUnionMemberTestEvidence | undefined {
+  const subject = unwrapTypeScriptParenthesizedExpression(test);
+  if (!ts.isIdentifier(subject)) return undefined;
+  const source = getTypeScriptUnionBindingEvidence(subject, context);
+  if (!source) return undefined;
+  const constructed = context.checker
+    .getTypeAtLocation(constructor)
+    .getConstructSignatures()
+    .map((signature) => signature.getReturnType());
+  if (constructed.length === 0) return undefined;
+  const members = source.type.types.filter((member) =>
+    constructed.some((instance) => context.checker.isTypeAssignableTo(member, instance)),
+  );
+  if (members.length !== 1) return undefined;
+  const member = getTypeScriptCheckerTypeEvidence(members[0]!, context, 0);
+  return member ? { binding: source.binding, member, whenResult: true } : undefined;
 }
 
 function getTypeScriptTypeofUnionMemberTestEvidence(
@@ -4528,6 +4564,7 @@ function getIrResolvedMemberReceiver(type: Readonly<IrType> | undefined): IrReso
   if (type.kind === 'tuple') return 'tuple';
   if (type.kind === 'named' && type.reference.kind === 'ambient') {
     const ambientReceivers: Record<string, IrResolvedMemberReceiver> = {
+      ArrayBuffer: 'arrayBuffer',
       DataView: 'dataView',
       Date: 'date',
       Error: 'error',

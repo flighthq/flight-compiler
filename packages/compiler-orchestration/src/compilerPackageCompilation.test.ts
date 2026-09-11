@@ -720,7 +720,7 @@ describe('compileTypeScriptPackageGraph', () => {
     expect(getFixtureDependencyTargets(result, 'Consumer')).toEqual(['Barrel']);
   });
 
-  it('keeps a barrel dependency when named imports resolve to multiple source modules', () => {
+  it('splits a named barrel request across its exact source modules', () => {
     const alpha = source('@local/source', 'source', 'alpha.ts', 'export const alpha = 1;');
     const beta = source('@local/source', 'source', 'beta.ts', 'export const beta = 2;');
     const barrel = source(
@@ -737,7 +737,44 @@ describe('compileTypeScriptPackageGraph', () => {
     );
     const result = compileFixturePackageGraph([consumer, beta, barrel, alpha], consumer);
 
-    expect(getFixtureDependencyTargets(result, 'Consumer')).toEqual(['Barrel']);
+    expect(getFixtureDependencyTargets(result, 'Consumer')).toEqual(['Alpha', 'Beta']);
+    expect(
+      result.report.initialization.modules.find((module) => module.module.name === 'Consumer')?.dependencies,
+    ).toEqual([
+      expect.objectContaining({ importedNames: ['alpha'], target: expect.objectContaining({ name: 'Alpha' }) }),
+      expect.objectContaining({ importedNames: ['beta'], target: expect.objectContaining({ name: 'Beta' }) }),
+    ]);
+  });
+
+  it('does not cascade an unrelated multi-source barrel refusal to a named-import consumer', () => {
+    const alpha = source('@local/source', 'source', 'alpha.ts', 'export const alpha = 1;');
+    const beta = source('@local/source', 'source', 'beta.ts', 'export const beta = 2;');
+    const bad = source('@local/source', 'source', 'bad.ts', 'export const bad = 3;');
+    const barrel = source(
+      '@local/source',
+      'source',
+      'barrel.ts',
+      "export * from './alpha.js'; export * from './beta.js'; export * from './bad.js';",
+    );
+    const consumer = source(
+      '@local/source',
+      'source',
+      'consumer.ts',
+      "import { alpha, beta } from './barrel.js'; export const value = alpha + beta;",
+    );
+    const result = compileFixturePackageGraph([barrel, bad, consumer, beta, alpha], consumer, {
+      emitModule(module) {
+        if (module.name === 'Bad') throw createBackendEmissionFailure('fixture', module, 'unsupported bad value');
+        return [{ contents: module.name, path: `${module.name}.txt` }];
+      },
+      name: 'fixture',
+    });
+
+    expect(result.report.modules.find((module) => module.module.name === 'Consumer')).toMatchObject({
+      refusals: [],
+      status: 'emitted',
+    });
+    expect(getFixtureDependencyTargets(result, 'Consumer')).toEqual(['Alpha', 'Beta']);
   });
 
   it('does not cascade an unrelated barrel source refusal to a named-import consumer', () => {

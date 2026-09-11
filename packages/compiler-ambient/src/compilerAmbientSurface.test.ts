@@ -39,6 +39,7 @@ describe('createCompilerAmbientSurfaceSource', () => {
     const source = createCompilerAmbientSurfaceSource();
 
     expect(source).toContain('new (byteLength: number): ArrayBuffer;');
+    expect(source).toContain('readonly byteLength: number;');
     expect(source).toContain('getFloat64(byteOffset: number, littleEndian?: boolean): number;');
     expect(source).toContain('decode(input?: Uint8Array): string;');
     expect(source).toContain('exec(value: string): RegExpExecArray | null;');

@@ -928,7 +928,6 @@ function emitFunction(declaration: Readonly<IrFunctionDeclaration>, outer: EmitC
 function emitImports(imports: readonly IrImport[], context: EmitContext): string[] {
   const emitted = new Set<string>();
   for (const imported of imports) {
-    const modulePath = haxeImportModule(imported.specifier, context);
     if (imported.bindings.length === 0) continue;
     for (const binding of imported.bindings) {
       if (binding.imported === '*' || binding.imported === 'default') {
@@ -939,6 +938,7 @@ function emitImports(imports: readonly IrImport[], context: EmitContext): string
           ? safeHaxeTypeName(binding.imported)
           : safeHaxeName(binding.imported);
       const localName = getBindingTargetNameHaxe(binding.binding, context);
+      const modulePath = haxeImportModule(imported.specifier, context, binding.imported);
       emitted.add(`import ${modulePath}.${importedName}${importedName === localName ? '' : ` as ${localName}`};`);
     }
   }
@@ -2019,8 +2019,8 @@ function createCompilerModuleFacadePlanHaxe(
   }
 }
 
-function haxeImportModule(specifier: string, context: EmitContext): string {
-  const resolvedModule = getHaxeResolvedImportModule(specifier, context);
+function haxeImportModule(specifier: string, context: EmitContext, importedName?: string): string {
+  const resolvedModule = getHaxeResolvedImportModule(specifier, context, importedName);
   if (resolvedModule) return getHaxeModulePath(resolvedModule, context.options);
   if (specifier.startsWith('.')) {
     const unresolved = path.posix.normalize(
@@ -2047,8 +2047,18 @@ function getHaxeModulePath(module: Readonly<IrModule>, options: Readonly<HaxeCom
   return `${convertPackageNameToHaxePackageName(module.packageName, options.rootPackage)}.${haxeImplementationModule(module.source)}`;
 }
 
-function getHaxeResolvedImportModule(specifier: string, context: EmitContext): Readonly<IrModule> | undefined {
-  return getHaxeResolvedImportModuleFrom(context.module, specifier, context.sourceModules, context.moduleResolution);
+function getHaxeResolvedImportModule(
+  specifier: string,
+  context: EmitContext,
+  importedName?: string,
+): Readonly<IrModule> | undefined {
+  return getHaxeResolvedImportModuleFrom(
+    context.module,
+    specifier,
+    context.sourceModules,
+    context.moduleResolution,
+    importedName,
+  );
 }
 
 function getHaxeResolvedImportModuleFrom(
@@ -2056,10 +2066,15 @@ function getHaxeResolvedImportModuleFrom(
   specifier: string,
   modules: readonly Readonly<IrModule>[],
   moduleResolution: Readonly<CompilerModuleResolutionPlan> | undefined,
+  importedName?: string,
 ): Readonly<IrModule> | undefined {
   const matching = moduleResolution?.edges.filter((edge) => edge.specifier === specifier) ?? [];
   const exact = matching.filter((edge) => edge.importer && isHaxeCompilerModuleIdentityEqual(edge.importer, importer));
-  const targets = exact.length > 0 ? exact : matching.filter((edge) => !edge.importer);
+  const scoped = exact.length > 0 ? exact : matching.filter((edge) => !edge.importer);
+  const targets = scoped.filter(
+    (edge) =>
+      edge.importedNames === undefined || (importedName !== undefined && edge.importedNames.includes(importedName)),
+  );
   if (targets.length === 1) {
     const target = targets[0]!.target;
     return modules.find(

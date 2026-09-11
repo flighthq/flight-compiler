@@ -1,6 +1,7 @@
 import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 
+import { normalizeCompilerStructuralValueCanonical } from '../../compiler-canonical-form/src/index.js';
 import {
   collectIrModuleNullableBindingIds,
   createBackendEmissionFailure,
@@ -92,15 +93,17 @@ import { createCppUnionRepresentationPlan } from './cppUnionRepresentationPlan.j
 interface AnonymousStruct {
   name: string;
   properties: readonly { name: string; optional: boolean; type: string }[];
+  typeParameters: readonly string[];
 }
 
 interface CppVariantRepresentation {
-  alternatives: readonly Readonly<{ members: readonly IrType[]; targetType: string }>[];
+  alternatives: readonly Readonly<{ members: readonly IrType[]; runtimeType: IrType; targetType: string }>[];
   direct: boolean;
 }
 
 interface EmitContext {
   anonymousStructs: Map<string, AnonymousStruct>;
+  anonymousStructTypeParameters: readonly IrTypeParameter[];
   arrayElementBindingIds: ReadonlySet<string>;
   async?: boolean | undefined;
   bindingClasses: ReadonlyMap<string, Readonly<IrClassDeclaration>>;
@@ -113,6 +116,7 @@ interface EmitContext {
   module: Readonly<IrModule>;
   namespaceScope: boolean;
   nullableBindingIds: ReadonlySet<string>;
+  narrowedBindingTypes: ReadonlyMap<string, Readonly<IrType>>;
   options: Readonly<CppCompilerBackendOptions>;
   preservedInitializerTypes: Map<string, Readonly<IrType>>;
   referenceRepresentationPlanner: CompilerCppReferenceRepresentationPlanner;
@@ -207,6 +211,7 @@ function emitIrModuleCppWithContext(
   const uninitializedCaptureStorageBindingIds = collectIrModuleUninitializedBindingIdsCpp(module);
   const context: EmitContext = {
     anonymousStructs: new Map(),
+    anonymousStructTypeParameters: [],
     arrayElementBindingIds: collectIrModuleArrayElementBindingIdsCpp(module, bindingTypes),
     bindingClasses: collectIrModuleBindingClassesCpp(module, bindingTypes),
     bindingTypes,
@@ -216,6 +221,7 @@ function emitIrModuleCppWithContext(
     module,
     namespaceScope: true,
     nullableBindingIds: collectIrModuleNullableBindingIds(module),
+    narrowedBindingTypes: new Map(),
     options,
     preservedInitializerTypes: new Map(),
     referenceRepresentationPlanner:
@@ -252,7 +258,18 @@ function emitIrModuleCppWithContext(
   }
   const declarations = orderIrModuleDeclarationsCpp(module)
     .filter((declaration) => declaration.kind !== 'function' || !declaration.namespaceMember)
-    .map((declaration) => emitDeclaration(declaration, context));
+    .map((declaration) => {
+      const existingAnonymousStructs = new Set(context.anonymousStructs.keys());
+      const lines = emitDeclaration(declaration, context);
+      const anonymousStructs = [...context.anonymousStructs]
+        .filter(([key]) => !existingAnonymousStructs.has(key))
+        .map(([, struct]) => struct);
+      const anonymousStructLines = anonymousStructs.flatMap((struct) => [
+        '',
+        ...emitAnonymousStructCpp(struct, context),
+      ]);
+      return { anonymousStructLines, lines };
+    });
   const imports = emitImports(module, context);
   const reexports = emitReexportsCpp(module, context);
   const lines = [createCompilerGeneratedFileHeader(module, '//', options.upstreamCommit)];
@@ -276,18 +293,11 @@ function emitIrModuleCppWithContext(
   if (imports.length > 0) lines.push('', ...imports);
   const namespaceName = getCppCompilerPackageNamespace(module.packageName, options.packageTargets);
   lines.push('', `namespace ${namespaceName} {`);
-  for (const struct of context.anonymousStructs.values()) {
-    lines.push('');
-    lines.push(
-      `struct ${struct.name}${getCppRuntimeProfile(context.options) === 'flight-cpp' ? ' : public flight::ReferenceEnabled' : ''} {`,
-    );
-    for (const property of struct.properties) {
-      lines.push(`  ${emitOptionalTypeCpp(property.type, property.optional, context)} ${property.name};`);
-    }
-    lines.push('};');
-  }
   if (reexports.length > 0) lines.push('', ...reexports);
-  declarations.forEach((declaration) => lines.push('', ...declaration));
+  declarations.forEach((declaration) => {
+    lines.push(...declaration.anonymousStructLines);
+    lines.push('', ...declaration.lines);
+  });
   lines.push('', `} // namespace ${namespaceName}`);
   const runtimeDependency =
     options.runtimeHeader ?? (getCppRuntimeProfile(options) === 'flight-cpp' ? 'flight/runtime.hpp' : undefined);
@@ -381,8 +391,30 @@ function emitDeclaration(declaration: Readonly<IrDeclaration>, context: EmitCont
   }
 }
 
+function emitAnonymousStructCpp(struct: Readonly<AnonymousStruct>, context: EmitContext): string[] {
+  const lines: string[] = [];
+  if (struct.typeParameters.length > 0) {
+    lines.push(`template <${struct.typeParameters.map((parameter) => `typename ${parameter}`).join(', ')}>`);
+  }
+  lines.push(
+    `struct ${struct.name}${getCppRuntimeProfile(context.options) === 'flight-cpp' ? ' : public flight::ReferenceEnabled' : ''} {`,
+  );
+  for (const property of struct.properties) {
+    lines.push(`  ${emitOptionalTypeCpp(property.type, property.optional, context)} ${property.name};`);
+  }
+  lines.push('};');
+  return lines;
+}
+
 function emitClass(declaration: Readonly<IrClassDeclaration>, outer: EmitContext): string[] {
-  const context: EmitContext = { ...outer, currentClass: declaration };
+  const context: EmitContext = {
+    ...outer,
+    anonymousStructTypeParameters: mergeIrTypeParametersCpp(
+      outer.anonymousStructTypeParameters,
+      declaration.typeParameters,
+    ),
+    currentClass: declaration,
+  };
   const name = getBindingTargetName(declaration.binding, context);
   const typeParams = emitTypeParameters(declaration.typeParameters, context);
   const extendsClause = declaration.extends
@@ -468,6 +500,10 @@ function emitClass(declaration: Readonly<IrClassDeclaration>, outer: EmitContext
   for (const method of declaration.methods) {
     const methodContext: EmitContext = {
       ...context,
+      anonymousStructTypeParameters: mergeIrTypeParametersCpp(
+        context.anonymousStructTypeParameters,
+        method.typeParameters,
+      ),
       async: method.async,
       defaultedParameterIds: collectDefaultedParameterIdsCpp(method.parameters),
       enclosingReturnType: method.returns,
@@ -574,6 +610,10 @@ function emitNumericEnumNamespaceWrapperCpp(
 function emitEnumNamespaceFunctionCpp(declaration: Readonly<IrFunctionDeclaration>, outer: EmitContext): string[] {
   const context: EmitContext = {
     ...outer,
+    anonymousStructTypeParameters: mergeIrTypeParametersCpp(
+      outer.anonymousStructTypeParameters,
+      declaration.typeParameters,
+    ),
     async: declaration.async,
     defaultedParameterIds: collectDefaultedParameterIdsCpp(declaration.parameters),
     enclosingReturnType: declaration.returns,
@@ -620,6 +660,10 @@ function emitStringEnumCpp(declaration: Readonly<IrEnumDeclaration>, context: Em
 function emitFunction(declaration: Readonly<IrFunctionDeclaration>, outer: EmitContext): string[] {
   const context: EmitContext = {
     ...outer,
+    anonymousStructTypeParameters: mergeIrTypeParametersCpp(
+      outer.anonymousStructTypeParameters,
+      declaration.typeParameters,
+    ),
     async: declaration.async,
     defaultedParameterIds: collectDefaultedParameterIdsCpp(declaration.parameters),
     enclosingReturnType: declaration.returns,
@@ -645,7 +689,14 @@ function emitFunction(declaration: Readonly<IrFunctionDeclaration>, outer: EmitC
   return lines;
 }
 
-function emitInterface(declaration: Readonly<IrInterfaceDeclaration>, context: EmitContext): string[] {
+function emitInterface(declaration: Readonly<IrInterfaceDeclaration>, outer: EmitContext): string[] {
+  const context: EmitContext = {
+    ...outer,
+    anonymousStructTypeParameters: mergeIrTypeParametersCpp(
+      outer.anonymousStructTypeParameters,
+      declaration.typeParameters,
+    ),
+  };
   const name = getBindingTargetName(declaration.binding, context);
   const typeParams = emitTypeParameters(declaration.typeParameters, context);
   const lines: string[] = [];
@@ -661,7 +712,14 @@ function emitInterface(declaration: Readonly<IrInterfaceDeclaration>, context: E
   return lines;
 }
 
-function emitTypeAlias(declaration: Readonly<IrTypeAliasDeclaration>, context: EmitContext): string[] {
+function emitTypeAlias(declaration: Readonly<IrTypeAliasDeclaration>, outer: EmitContext): string[] {
+  const context: EmitContext = {
+    ...outer,
+    anonymousStructTypeParameters: mergeIrTypeParametersCpp(
+      outer.anonymousStructTypeParameters,
+      declaration.typeParameters,
+    ),
+  };
   const stringLiterals = getIrUnionTypeStringLiteralValues(declaration.type);
   if (stringLiterals) return emitStringLiteralUnionCpp(declaration, context);
   const objectProperties =
@@ -1148,6 +1206,10 @@ function emitExpression(
       if (expression.async) emissionError(context, 'async closures require C++ coroutine lowering');
       const functionContext: EmitContext = {
         ...context,
+        anonymousStructTypeParameters: mergeIrTypeParametersCpp(
+          context.anonymousStructTypeParameters,
+          expression.typeParameters,
+        ),
         async: false,
         defaultedParameterIds: collectDefaultedParameterIdsCpp(expression.parameters),
         enclosingReturnType: expression.returns,
@@ -1222,7 +1284,10 @@ function emitExpression(
         context.includes.add('optional');
         return `${emitIdentifierReference(expression.reference, context)}.value()`;
       }
-      if (expression.narrowedMember && expression.reference.kind === 'binding') {
+      if (
+        expression.reference.kind === 'binding' &&
+        (expression.narrowedMember || context.narrowedBindingTypes.has(expression.reference.binding.id))
+      ) {
         const narrowed = emitNarrowedUnionMemberCpp(expression, context);
         if (narrowed) return narrowed;
       }
@@ -1342,6 +1407,8 @@ function emitExpression(
       }
       const namespaceMember = getCppNamespaceImportMemberTargetNameCpp(expression, context);
       if (namespaceMember) return namespaceMember;
+      const commonVariantProperty = emitCppVariantCommonPropertyExpression(expression, context);
+      if (commonVariantProperty) return commonVariantProperty;
       if (expression.object.kind === 'identifier' && expression.object.reference.kind === 'ambient') {
         addCppExternalBindingHeaders(expression.object.reference.name, 'value', context);
         const member = getCompilerRuntimeExternalMemberTargetCpp(
@@ -2079,7 +2146,16 @@ function emitSwitchCaseStatementsCpp(
 ): string[] {
   const last = switchCase.statements.at(-1);
   const localBreak = last?.kind === 'break' && (!last.target || (switchLabel && last.target.id === switchLabel.id));
-  return emitStatements(localBreak ? switchCase.statements.slice(0, -1) : switchCase.statements, context);
+  const caseContext = switchCase.unionMemberTest
+    ? {
+        ...context,
+        narrowedBindingTypes: new Map(context.narrowedBindingTypes).set(
+          switchCase.unionMemberTest.binding.id,
+          switchCase.unionMemberTest.member,
+        ),
+      }
+    : context;
+  return emitStatements(localBreak ? switchCase.statements.slice(0, -1) : switchCase.statements, caseContext);
 }
 
 function emitStatementBody(statement: Readonly<IrStatement>, context: EmitContext): string[] {
@@ -2308,6 +2384,10 @@ function emitType(type: Readonly<IrType>, context: EmitContext, representation: 
       context.includes.add('variant');
       return 'std::monostate';
     case 'object': {
+      const typeParameters = context.anonymousStructTypeParameters.map(
+        (parameter) => context.targetNames.get(parameter.binding.id) ?? pascalCase(parameter.binding.name),
+      );
+      if (type.properties.some((property) => property.optional)) context.includes.add('optional');
       const emittedProperties = type.properties.map((property) => ({
         name: safeCppName(property.name),
         optional: property.optional,
@@ -2317,14 +2397,17 @@ function emitType(type: Readonly<IrType>, context: EmitContext, representation: 
       if (unresolved) {
         emissionError(context, `anonymous object property ${unresolved.name} requires concrete C++ type evidence`);
       }
-      const key = emittedProperties
-        .map((property) => `${property.optional ? '?' : ''}${property.type} ${property.name}`)
-        .join('; ');
+      // Literal discriminants can erase to one target scalar type while still requiring distinct
+      // variant alternatives. Key helpers by neutral structure, not only their emitted field types.
+      const typeParameterKey = context.anonymousStructTypeParameters.map((parameter) => parameter.binding.id).join(',');
+      const key = `${typeParameterKey}\0${normalizeCompilerStructuralValueCanonical(type)}`;
       const existing = context.anonymousStructs.get(key);
-      if (existing) return existing.name;
+      if (existing) {
+        return `${existing.name}${typeParameters.length > 0 ? `<${typeParameters.join(', ')}>` : ''}`;
+      }
       const structName = generateAnonymousStructName(type.properties, context);
-      context.anonymousStructs.set(key, { name: structName, properties: emittedProperties });
-      return structName;
+      context.anonymousStructs.set(key, { name: structName, properties: emittedProperties, typeParameters });
+      return `${structName}${typeParameters.length > 0 ? `<${typeParameters.join(', ')}>` : ''}`;
     }
     case 'primitive':
       if (type.name === 'string') return emitCppStringType(context);
@@ -2569,7 +2652,7 @@ function emitUnionMemberTestCpp(evidence: Readonly<IrUnionMemberTestEvidence>, c
   if (!union) emissionError(context, 'union member test requires a C++ variant binding');
   const representation = getCppVariantRepresentation(union, context);
   const alternatives = representation.alternatives.filter((alternative) =>
-    alternative.members.some((member) => isDeepStrictEqual(member, evidence.member)),
+    doesCppVariantAlternativeMatchType(alternative, evidence.member, context),
   );
   if (alternatives.length !== 1) {
     emissionError(context, 'union member test must identify exactly one C++ variant alternative');
@@ -2580,19 +2663,70 @@ function emitUnionMemberTestCpp(evidence: Readonly<IrUnionMemberTestEvidence>, c
   return evidence.whenResult ? test : `!${test}`;
 }
 
+function doesCppVariantAlternativeMatchType(
+  alternative: CppVariantRepresentation['alternatives'][number],
+  type: Readonly<IrType>,
+  context: EmitContext,
+): boolean {
+  return (
+    alternative.members.some((member) => isDeepStrictEqual(member, type)) ||
+    alternative.targetType === emitType(type, context)
+  );
+}
+
+function emitCppVariantCommonPropertyExpression(
+  expression: Readonly<Extract<IrExpression, { kind: 'property' }>>,
+  context: EmitContext,
+): string | undefined {
+  if (
+    expression.object.kind !== 'identifier' ||
+    expression.object.reference.kind !== 'binding' ||
+    expression.object.narrowedMember ||
+    context.narrowedBindingTypes.has(expression.object.reference.binding.id)
+  ) {
+    return undefined;
+  }
+  const union = getIrBindingVariantUnionTypeCpp(expression.object.reference.binding.id, context);
+  if (!union) return undefined;
+  const representation = getCppVariantRepresentation(union, context);
+  if (representation.direct) return undefined;
+  const propertyTypes = representation.alternatives.flatMap((alternative) =>
+    alternative.members.map((member) => getIrObjectPropertyTypeCpp(member, expression.name, context)),
+  );
+  if (propertyTypes.length === 0 || propertyTypes.some((type) => !type)) return undefined;
+  const emittedTypes = new Set(propertyTypes.map((type) => emitType(type!, context)));
+  if (emittedTypes.size !== 1) return undefined;
+  const referenceModes = new Set(
+    representation.alternatives.map((alternative) =>
+      hasFlightReferenceRepresentationCpp(alternative.runtimeType, context) ? 'reference' : 'value',
+    ),
+  );
+  if (referenceModes.size !== 1) return undefined;
+  context.includes.add('variant');
+  const operator = referenceModes.has('reference') ? '->' : '.';
+  return `std::visit([](const auto& value) { return value${operator}${safeCppName(expression.name)}; }, ${emitIdentifierReference(expression.object.reference, context)})`;
+}
+
 function emitNarrowedUnionMemberCpp(
   expression: Readonly<Extract<IrExpression, { kind: 'identifier' }>>,
   context: EmitContext,
 ): string | undefined {
-  if (!expression.narrowedMember || expression.reference.kind !== 'binding') return undefined;
+  if (expression.reference.kind !== 'binding') return undefined;
+  const narrowedType = context.narrowedBindingTypes.get(expression.reference.binding.id);
+  if (!expression.narrowedMember && !narrowedType) return undefined;
   const union = getIrBindingVariantUnionTypeCpp(expression.reference.binding.id, context);
   if (!union) return undefined;
   const representation = getCppVariantRepresentation(union, context);
   const alternatives = representation.alternatives.filter((alternative) =>
-    alternative.members.some((member) => getIrUnionMemberNameCpp(member) === expression.narrowedMember),
+    narrowedType
+      ? doesCppVariantAlternativeMatchType(alternative, narrowedType, context)
+      : alternative.members.some((member) => getIrUnionMemberNameCpp(member) === expression.narrowedMember),
   );
   if (alternatives.length !== 1) {
-    emissionError(context, `narrowed member ${expression.narrowedMember} must identify one C++ variant alternative`);
+    emissionError(
+      context,
+      `narrowed member ${expression.narrowedMember ?? 'structural switch case'} must identify one C++ variant alternative`,
+    );
   }
   if (representation.direct) return emitIdentifierReference(expression.reference, context);
   return `std::get<${alternatives[0]!.targetType}>(${emitIdentifierReference(expression.reference, context)})`;
@@ -2610,6 +2744,7 @@ function getCppVariantRepresentation(
   return {
     alternatives: plan.valueSlots.map((slot) => ({
       members: slot.sourceAlternatives,
+      runtimeType: slot.runtimeType,
       targetType: slot.targetType,
     })),
     direct: plan.kind === 'singleValue',
@@ -2878,6 +3013,8 @@ function getIrExpressionTypeForUnionConstructionCpp(
     case 'identifier': {
       if (expression.reference.kind !== 'binding') return undefined;
       const declaredType = getCppBindingTypeCpp(expression.reference.binding.id, context);
+      const narrowedType = context.narrowedBindingTypes.get(expression.reference.binding.id);
+      if (narrowedType) return narrowedType;
       if (!declaredType || !expression.narrowedMember) return declaredType;
       const union = getIrUnionTypeCpp(declaredType, context, new Set());
       return (
@@ -4018,10 +4155,14 @@ function emitOptionalCallExpressionCpp(
   if (semantics.receiverNullish === 'excluded') {
     return emitExpression({ ...expression, optional: false }, context);
   }
-  const payload = emitOptionalChainPayloadTypeCpp(semantics.valueType, context);
+  const valueType = emitOptionalChainPayloadIrTypeCpp(semantics.valueType, context);
   const callee = emitOptionalChainReceiverCpp(expression.callee, context);
   const arguments_ = expression.arguments.map((argument) => emitExpression(argument, context)).join(', ');
   context.includes.add('optional');
+  if (valueType.kind === 'primitive' && valueType.name === 'void') {
+    return `([&]() { auto optional_chain_receiver = ${callee}; if (!optional_chain_receiver.has_value()) return; optional_chain_receiver.value()(${arguments_}); }())`;
+  }
+  const payload = emitType(valueType, context);
   return `([&]() -> std::optional<${payload}> { auto optional_chain_receiver = ${callee}; if (!optional_chain_receiver.has_value()) return std::nullopt; return optional_chain_receiver.value()(${arguments_}); }())`;
 }
 
@@ -4258,8 +4399,10 @@ function emitImports(module: Readonly<IrModule>, context: EmitContext): string[]
     ),
   ];
   return [...new Set(specifiers)].flatMap((specifier) => {
-    const targetModule = getCppResolvedImportModule(specifier, context);
-    if (targetModule) return [getCppModuleIncludeDirective(targetModule, context.options)];
+    const targetModules = getCppResolvedImportModules(specifier, context);
+    if (targetModules.length > 0) {
+      return targetModules.map((targetModule) => getCppModuleIncludeDirective(targetModule, context.options));
+    }
     if (!specifier.startsWith('.')) return [];
     const target = path.posix.normalize(
       path.posix.join(path.posix.dirname(context.module.source), specifier.replace(/\.[cm]?js$/u, '.ts')),
@@ -4296,6 +4439,10 @@ function getCppIncludeDirectivePath(directive: string): string {
 
 function getCppResolvedImportModule(specifier: string, context: EmitContext): Readonly<IrModule> | undefined {
   return context.referenceRepresentationPlanner.resolveModule(specifier, context.module);
+}
+
+function getCppResolvedImportModules(specifier: string, context: EmitContext): readonly Readonly<IrModule>[] {
+  return context.referenceRepresentationPlanner.resolveModules(specifier, context.module);
 }
 
 function emitReexportsCpp(module: Readonly<IrModule>, context: EmitContext): string[] {
@@ -4339,6 +4486,13 @@ function emitReexportsCpp(module: Readonly<IrModule>, context: EmitContext): str
 function emitTypeParameters(parameters: readonly IrTypeParameter[], context: EmitContext): string {
   if (parameters.length === 0) return '';
   return `<${parameters.map((parameter) => `typename ${context.targetNames.get(parameter.binding.id) ?? pascalCase(parameter.binding.name)}`).join(', ')}>`;
+}
+
+function mergeIrTypeParametersCpp(
+  outer: readonly IrTypeParameter[],
+  inner: readonly IrTypeParameter[],
+): readonly IrTypeParameter[] {
+  return [...new Map([...outer, ...inner].map((parameter) => [parameter.binding.id, parameter])).values()];
 }
 
 function getIrAmbientConstructorNameCpp(expression: Readonly<IrExpression>): string | undefined {
@@ -4678,14 +4832,33 @@ function getCppImportedBindingTargetName(
     if (!importedBinding) continue;
     const importedName = importedBinding.imported === '*' ? referencePath[0] : importedBinding.imported;
     if (!importedName) return undefined;
-    const targetModule = getCppResolvedImportModule(importItem.specifier, context);
-    if (!targetModule) {
+    const targetModules = getCppResolvedImportModules(importItem.specifier, context);
+    if (targetModules.length === 0) {
       return context.targetNames.get(bindingId) ?? safeCppName(importedBinding.binding.name);
+    }
+    const directTargets = targetModules.filter((target) => hasCppDirectExportName(target, importedName));
+    const targetModule =
+      directTargets.length === 1 ? directTargets[0]! : getCppResolvedImportModule(importItem.specifier, context);
+    if (!targetModule) {
+      emissionError(context, `imported binding ${importedName} requires one module export target`);
     }
     const targetName = getCppResolvedExportTargetName(targetModule, importedName);
     return `${getCppCompilerPackageNamespace(targetModule.packageName, context.options.packageTargets)}::${targetName}`;
   }
   return undefined;
+}
+
+function hasCppDirectExportName(module: Readonly<IrModule>, exportedName: string): boolean {
+  return (
+    module.exports.some(
+      (exported) =>
+        (exported.kind === 'default' && exportedName === 'default') ||
+        (exported.kind !== 'all' && exported.kind !== 'default' && exported.exported === exportedName),
+    ) ||
+    module.declarations.some(
+      (declaration) => 'binding' in declaration && declaration.exported && declaration.binding.name === exportedName,
+    )
+  );
 }
 
 function getCppNamespaceImportMemberTargetNameCpp(

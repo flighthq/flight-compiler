@@ -39,7 +39,7 @@ interface ModuleEmissionRecord {
 
 type CompilerPackageGraphExportResolution =
   | Readonly<{ kind: 'absent' | 'unknown' }>
-  | Readonly<{ kind: 'resolved'; module: Readonly<IrModule> }>;
+  | Readonly<{ exported: string; kind: 'resolved'; module: Readonly<IrModule> }>;
 
 type CompilerPackageGraphModuleResolver = (
   importer: Readonly<IrModule>,
@@ -326,12 +326,11 @@ function createCompilerPackageGraphModuleDependencies(
   const modulesByIdentity = new Map(
     modules.map((module) => [getCompilerPackageGraphModuleKey(module), module] as const),
   );
-  const dependencyByRequest = new Map(
-    dependencies.map((dependency) => [
-      `${getCompilerPackageGraphModuleKey(dependency.importer)}\0${dependency.specifier}`,
-      dependency,
-    ]),
-  );
+  const dependencyByRequest = new Map<string, CompilerModuleLinkDependency[]>();
+  for (const dependency of dependencies) {
+    const key = `${getCompilerPackageGraphModuleKey(dependency.importer)}\0${dependency.specifier}`;
+    dependencyByRequest.set(key, [...(dependencyByRequest.get(key) ?? []), dependency]);
+  }
   for (const module of modules) {
     const specifiers = new Set([
       ...module.imports.map((imported) => imported.specifier),
@@ -346,15 +345,17 @@ function createCompilerPackageGraphModuleDependencies(
       if (dependencyByRequest.has(key)) continue;
       const target = resolveModule(module, specifier);
       if (!target) continue;
-      dependencyByRequest.set(key, {
-        importer: cloneCompilerPackageGraphIdentity(module),
-        specifier,
-        target: cloneCompilerPackageGraphIdentity(target),
-      });
+      dependencyByRequest.set(key, [
+        {
+          importer: cloneCompilerPackageGraphIdentity(module),
+          specifier,
+          target: cloneCompilerPackageGraphIdentity(target),
+        },
+      ]);
     }
   }
   const dependencyResolution = createCompilerPackageGraphModuleResolution(
-    [...dependencyByRequest.values()],
+    [...dependencyByRequest.values()].flat(),
     resolution,
   );
   const resolveDependencyModule = createCompilerPackageGraphModuleResolver(modules, dependencyResolution);
@@ -377,8 +378,9 @@ function createCompilerPackageGraphModuleDependencies(
         continue;
       }
       const requestKey = `${getCompilerPackageGraphModuleKey(module)}\0${specifier}`;
-      const dependency = dependencyByRequest.get(requestKey);
-      if (!dependency) continue;
+      const requestDependencies = dependencyByRequest.get(requestKey);
+      if (requestDependencies?.length !== 1 || requestDependencies[0]?.importedNames) continue;
+      const dependency = requestDependencies[0];
       const barrel = modulesByIdentity.get(getCompilerPackageGraphModuleKey(dependency.target));
       if (!barrel) continue;
       const targets = bindings.map((binding) =>
@@ -391,33 +393,65 @@ function createCompilerPackageGraphModuleDependencies(
         ),
       );
       if (targets.some((target) => target.kind !== 'resolved')) continue;
+      if (
+        targets.some((target, index) => target.kind === 'resolved' && target.exported !== bindings[index]!.imported)
+      ) {
+        // A renamed re-export needs the barrel's generated alias until symbol routes also carry the
+        // final declaration name. Do not silently spell the public alias against the leaf module.
+        continue;
+      }
       const resolvedModules = new Map(
         targets.flatMap((target) =>
           target.kind === 'resolved' ? [[getCompilerPackageGraphModuleKey(target.module), target.module] as const] : [],
         ),
       );
-      // CompilerModuleLinkDependency is intentionally one target per source specifier. When named
-      // bindings fan out across several source modules, retain the barrel until that public contract
-      // grows a symbol discriminator rather than creating an ambiguous resolution edge.
-      if (resolvedModules.size !== 1) continue;
-      const target = [...resolvedModules.values()][0]!;
       const importerPackage = packages.get(module.packageName);
-      if (target.packageName !== module.packageName && !importerPackage?.dependencies.includes(target.packageName)) {
+      if (
+        [...resolvedModules.values()].some(
+          (target) =>
+            target.packageName !== module.packageName && !importerPackage?.dependencies.includes(target.packageName),
+        )
+      ) {
         continue;
       }
-      dependencyByRequest.set(requestKey, {
-        importer: cloneCompilerPackageGraphIdentity(module),
-        specifier,
-        target: cloneCompilerPackageGraphIdentity(target),
+      if (resolvedModules.size === 1) {
+        const target = [...resolvedModules.values()][0]!;
+        dependencyByRequest.set(requestKey, [
+          {
+            importer: cloneCompilerPackageGraphIdentity(module),
+            specifier,
+            target: cloneCompilerPackageGraphIdentity(target),
+          },
+        ]);
+        continue;
+      }
+      const importedNamesByModule = new Map<string, string[]>();
+      targets.forEach((target, index) => {
+        if (target.kind !== 'resolved') return;
+        const key = getCompilerPackageGraphModuleKey(target.module);
+        importedNamesByModule.set(key, [...(importedNamesByModule.get(key) ?? []), bindings[index]!.imported]);
       });
+      dependencyByRequest.set(
+        requestKey,
+        [...resolvedModules]
+          .sort((left, right) => compareTextCodeUnits(left[0], right[0]))
+          .map(([key, target]) => ({
+            importer: cloneCompilerPackageGraphIdentity(module),
+            importedNames: [...new Set(importedNamesByModule.get(key) ?? [])].sort(compareTextCodeUnits),
+            specifier,
+            target: cloneCompilerPackageGraphIdentity(target),
+          })),
+      );
     }
   }
-  return [...dependencyByRequest.values()].sort(
-    (left, right) =>
-      compareCompilerPackageGraphModules(left.importer, right.importer) ||
-      compareTextCodeUnits(left.specifier, right.specifier) ||
-      compareCompilerPackageGraphModules(left.target, right.target),
-  );
+  return [...dependencyByRequest.values()]
+    .flat()
+    .sort(
+      (left, right) =>
+        compareCompilerPackageGraphModules(left.importer, right.importer) ||
+        compareTextCodeUnits(left.specifier, right.specifier) ||
+        compareCompilerPackageGraphModules(left.target, right.target),
+    );
 }
 
 function resolveCompilerPackageGraphExportSource(
@@ -440,8 +474,10 @@ function resolveCompilerPackageGraphExportSource(
   let result: CompilerPackageGraphExportResolution;
   if (explicit.length > 1) {
     result = { kind: 'unknown' };
-  } else if (explicit[0]?.kind === 'local' || explicit[0]?.kind === 'default') {
-    result = { kind: 'resolved', module };
+  } else if (explicit[0]?.kind === 'local') {
+    result = { exported: explicit[0].binding.name, kind: 'resolved', module };
+  } else if (explicit[0]?.kind === 'default') {
+    result = { exported: 'default', kind: 'resolved', module };
   } else if (explicit[0]?.kind === 'namespace') {
     // The namespace object is an export created by this module, not a declaration in its source
     // module. Preserve the barrel dependency until namespace-object lowering can represent it.
@@ -455,7 +491,7 @@ function resolveCompilerPackageGraphExportSource(
   } else if (exportName === 'default') {
     result = { kind: 'absent' };
   } else {
-    const sources = new Map<string, Readonly<IrModule>>();
+    const sources = new Map<string, Readonly<{ exported: string; kind: 'resolved'; module: Readonly<IrModule> }>>();
     let unknown = false;
     for (const exported of module.exports) {
       if (exported.kind !== 'all') continue;
@@ -467,14 +503,14 @@ function resolveCompilerPackageGraphExportSource(
       const candidate = resolveCompilerPackageGraphExportSource(target, exportName, resolveModule, cache, nextActive);
       if (candidate.kind === 'unknown') unknown = true;
       if (candidate.kind === 'resolved') {
-        sources.set(getCompilerPackageGraphModuleKey(candidate.module), candidate.module);
+        sources.set(`${getCompilerPackageGraphModuleKey(candidate.module)}\0${candidate.exported}`, candidate);
       }
     }
     result =
       unknown || sources.size > 1
         ? { kind: 'unknown' }
         : sources.size === 1
-          ? { kind: 'resolved', module: [...sources.values()][0]! }
+          ? [...sources.values()][0]!
           : { kind: 'absent' };
   }
   cache.set(key, result);
@@ -498,6 +534,7 @@ function createCompilerPackageGraphModuleResolution(
       ) ?? []),
       ...dependencies.map((dependency) => ({
         importer: cloneCompilerPackageGraphIdentity(dependency.importer),
+        ...(dependency.importedNames ? { importedNames: [...dependency.importedNames] } : {}),
         specifier: dependency.specifier,
         target: {
           packageName: dependency.target.packageName,
@@ -795,18 +832,32 @@ function validateCompilerPackageGraphReferences(
     }
     entryKeys.add(key);
   }
-  const dependencyKeys = new Set<string>();
+  const dependencyNamesByRequest = new Map<string, ReadonlySet<string> | undefined>();
   for (const dependency of dependencies) {
     const importerKey = getCompilerPackageGraphModuleKey(dependency.importer);
     const targetKey = getCompilerPackageGraphModuleKey(dependency.target);
     const dependencyKey = `${importerKey}\0${dependency.specifier}`;
+    const importedNamesValid =
+      dependency.importedNames === undefined ||
+      (Array.isArray(dependency.importedNames) &&
+        dependency.importedNames.length > 0 &&
+        dependency.importedNames.every((name) => typeof name === 'string' && name.length > 0) &&
+        new Set(dependency.importedNames).size === dependency.importedNames.length);
+    const importedNames = dependency.importedNames ? new Set(dependency.importedNames) : undefined;
+    const priorNames = dependencyNamesByRequest.get(dependencyKey);
+    const duplicateRequest =
+      dependencyNamesByRequest.has(dependencyKey) &&
+      (priorNames === undefined ||
+        importedNames === undefined ||
+        [...importedNames].some((name) => priorNames.has(name)));
     const importerPackage = packages.get(dependency.importer.packageName);
     if (
       !identities.has(importerKey) ||
       !identities.has(targetKey) ||
       typeof dependency.specifier !== 'string' ||
       dependency.specifier.length === 0 ||
-      dependencyKeys.has(dependencyKey) ||
+      !importedNamesValid ||
+      duplicateRequest ||
       (dependency.importer.packageName !== dependency.target.packageName &&
         !importerPackage?.dependencies.includes(dependency.target.packageName))
     ) {
@@ -816,7 +867,10 @@ function validateCompilerPackageGraphReferences(
         `Package module dependency is invalid for ${dependency.importer.packageName}/${dependency.importer.source}`,
       );
     }
-    dependencyKeys.add(dependencyKey);
+    dependencyNamesByRequest.set(
+      dependencyKey,
+      importedNames === undefined ? undefined : new Set([...(priorNames ?? []), ...importedNames]),
+    );
   }
 }
 

@@ -4,6 +4,8 @@
 
 The graph schema is `flight-compiler-package-graph/1`. Package dependencies are explicit and are checked against every cross-package module edge. Relative sibling edges are resolved from the supplied module set; package exports can be supplied through `CompilerModuleResolutionPlan`. An importer-specific resolution edge takes precedence over a workspace-wide export edge with the same specifier.
 
+Named imports through a barrel are traced to their declaration modules. When one request reaches several modules, the compiler records disjoint `importedNames` on the module-resolution and link-dependency edges, emits every required header, and keeps unrelated barrel sources out of the consumer's refusal closure. Side-effect, namespace, renamed, and re-export requests retain their whole-module dependency because they cannot be split without changing the public facade.
+
 The result report uses `flight-compiler-package-report/1` and contains:
 
 - one emitted or refused outcome per source module;

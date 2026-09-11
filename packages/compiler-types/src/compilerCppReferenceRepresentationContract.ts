@@ -58,6 +58,7 @@ export interface CompilerCppReferenceRepresentationPlanner {
   readonly plan: (type: Readonly<IrType>, module: Readonly<IrModule>) => CompilerCppReferenceRepresentationPlan;
   readonly resolveAlias: (type: Readonly<IrType>, module: Readonly<IrModule>) => Readonly<IrType> | undefined;
   readonly resolveModule: (specifier: string, module: Readonly<IrModule>) => Readonly<IrModule> | undefined;
+  readonly resolveModules: (specifier: string, module: Readonly<IrModule>) => readonly Readonly<IrModule>[];
   readonly resolveObjectShape: (
     type: Readonly<IrType>,
     module: Readonly<IrModule>,

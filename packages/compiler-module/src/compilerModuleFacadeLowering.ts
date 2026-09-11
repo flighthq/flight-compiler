@@ -25,11 +25,16 @@ import type {
 import { createCompilerModuleFacadeIdentities } from './compilerModuleFacadeIdentity.js';
 
 interface CompilerModuleFacadeRecord {
-  readonly dependencies: Map<string, CompilerModuleFacadeRecord>;
+  readonly dependencies: Map<string, CompilerModuleFacadeDependencyRoute[]>;
   readonly evaluation: Readonly<CompilerModuleEvaluationModulePlan>;
   readonly identity: CompilerModuleIdentity;
   readonly identityKey: string;
   readonly module: Readonly<IrModule>;
+}
+
+interface CompilerModuleFacadeDependencyRoute {
+  readonly importedNames?: readonly string[] | undefined;
+  readonly target: CompilerModuleFacadeRecord;
 }
 
 interface CompilerModuleFacadeResolution {
@@ -151,7 +156,7 @@ function connectCompilerModuleFacadeRecords(records: ReadonlyMap<string, Compile
           'Module facade evaluation dependency is malformed or has the wrong importer',
         );
       }
-      const runtime = isCompilerModuleFacadeRuntimeRequest(record.module, dependency.specifier);
+      const runtime = isCompilerModuleFacadeRuntimeDependency(record.module, dependency);
       if ((dependency.evaluation === 'runtime') !== runtime) {
         throw createCompilerModuleFacadeLoweringFailure(
           'invalid-facade-evaluation',
@@ -167,14 +172,28 @@ function connectCompilerModuleFacadeRecords(records: ReadonlyMap<string, Compile
           `Module facade dependency target is absent for ${dependency.specifier}`,
         );
       }
-      if (record.dependencies.has(dependency.specifier)) {
+      const routes = record.dependencies.get(dependency.specifier) ?? [];
+      if (
+        routes.some(
+          (route) =>
+            route.importedNames === undefined ||
+            dependency.importedNames === undefined ||
+            route.importedNames.some((name) => dependency.importedNames!.includes(name)),
+        )
+      ) {
         throw createCompilerModuleFacadeLoweringFailure(
           'invalid-facade-evaluation',
           `${record.identityKey}:${dependency.specifier}`,
           `Module facade evaluation duplicates dependency ${dependency.specifier}`,
         );
       }
-      record.dependencies.set(dependency.specifier, target);
+      record.dependencies.set(dependency.specifier, [
+        ...routes,
+        {
+          ...(dependency.importedNames ? { importedNames: dependency.importedNames } : {}),
+          target,
+        },
+      ]);
     }
     for (const specifier of expected) {
       if (!record.dependencies.has(specifier)) {
@@ -366,8 +385,21 @@ function getCompilerModuleFacadeCandidateLanes(exported: Readonly<IrExport>): re
 function getCompilerModuleFacadeDependency(
   record: Readonly<CompilerModuleFacadeRecord>,
   specifier: string,
+  importedName?: string,
 ): CompilerModuleFacadeRecord {
-  return record.dependencies.get(specifier)!;
+  const routes = record.dependencies.get(specifier) ?? [];
+  const matching = routes.filter(
+    (route) =>
+      route.importedNames === undefined || (importedName !== undefined && route.importedNames.includes(importedName)),
+  );
+  if (matching.length !== 1) {
+    throw createCompilerModuleFacadeLoweringFailure(
+      'missing-facade-dependency',
+      `${record.identityKey}:${specifier}`,
+      `Module facade dependency does not resolve exactly once for ${specifier}`,
+    );
+  }
+  return matching[0]!.target;
 }
 
 function getCompilerModuleFacadeExplicitCandidates(
@@ -457,6 +489,20 @@ function isCompilerModuleFacadeRuntimeRequest(module: Readonly<IrModule>, specif
   );
 }
 
+function isCompilerModuleFacadeRuntimeDependency(
+  module: Readonly<IrModule>,
+  dependency: Readonly<CompilerModuleEvaluationModulePlan['dependencies'][number]>,
+): boolean {
+  if (!dependency.importedNames) return isCompilerModuleFacadeRuntimeRequest(module, dependency.specifier);
+  const importedNames = new Set(dependency.importedNames);
+  return module.imports.some(
+    (imported) =>
+      imported.specifier === dependency.specifier &&
+      !imported.typeOnly &&
+      imported.bindings.some((binding) => !binding.typeOnly && importedNames.has(binding.imported)),
+  );
+}
+
 function normalizeCompilerModuleFacadeIdentity(value: unknown, subject: string): CompilerModuleIdentity {
   if (value === null) throwInvalidCompilerModuleFacadeIdentity(subject);
   if (typeof value !== 'object') throwInvalidCompilerModuleFacadeIdentity(subject);
@@ -512,7 +558,7 @@ function resolveCompilerModuleFacadeCandidate(
       }
       if (binding.kind !== 'import') return { route: { binding, kind: 'binding', module: record.identity }, via: [] };
       const imported = getCompilerModuleFacadeImport(record, binding)!;
-      const target = getCompilerModuleFacadeDependency(record, imported.specifier);
+      const target = getCompilerModuleFacadeDependency(record, imported.specifier, imported.imported);
       const hop: CompilerModuleFacadeHop = {
         kind: 'import',
         module: record.identity,
@@ -540,7 +586,7 @@ function resolveCompilerModuleFacadeCandidate(
       };
     }
     case 'reexport': {
-      const target = getCompilerModuleFacadeDependency(record, exported.specifier);
+      const target = getCompilerModuleFacadeDependency(record, exported.specifier, exported.imported);
       const resolved = resolveCompilerModuleFacadeExport(target, exported.imported, lane, active);
       return resolved
         ? prependCompilerModuleFacadeHop(resolved, {

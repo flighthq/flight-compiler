@@ -111,6 +111,10 @@ describe('getCompilerCppAmbientMemberBinding', () => {
   });
 
   it('maps binary, text, regexp, and URL members through the semantic runtime', () => {
+    expect(getCompilerCppAmbientMemberBinding({ name: 'byteLength', receiver: 'arrayBuffer' }, 'flight-cpp')).toEqual({
+      kind: 'sizeMethod',
+      targetName: 'byte_length',
+    });
     expect(getCompilerCppAmbientMemberBinding({ name: 'getFloat64', receiver: 'dataView' }, 'flight-cpp')).toEqual({
       kind: 'method',
       targetName: 'get_float64',
@@ -130,6 +134,10 @@ describe('getCompilerCppAmbientMemberBinding', () => {
     expect(getCompilerCppAmbientMemberBinding({ name: 'byteOffset', receiver: 'typedArray' }, 'flight-cpp')).toEqual({
       kind: 'property',
       targetName: 'byte_offset',
+    });
+    expect(getCompilerCppAmbientMemberBinding({ name: 'byteLength', receiver: 'typedArray' }, 'flight-cpp')).toEqual({
+      kind: 'sizeMethod',
+      targetName: 'byte_length',
     });
   });
 

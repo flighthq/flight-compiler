@@ -5,6 +5,8 @@ import type { CompilerIrTraversalPath } from './compilerTraversalObserverContrac
 
 export interface CompilerModuleLinkDependency {
   readonly importer: CompilerModuleIdentity;
+  /** Absent means the whole request; present scopes a split named-import request to these exports. */
+  readonly importedNames?: readonly string[] | undefined;
   readonly specifier: string;
   readonly target: CompilerModuleIdentity;
 }

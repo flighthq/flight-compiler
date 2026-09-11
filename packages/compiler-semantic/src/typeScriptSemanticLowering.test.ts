@@ -4070,6 +4070,65 @@ describe('lowerTypeScriptSource', () => {
     });
   });
 
+  it('records instanceof evidence for exactly one constructible union alternative', () => {
+    const result = lower(
+      'instanceof-narrowing.ts',
+      `export function byteLength(value: Readonly<Uint8Array> | ArrayBuffer): number {
+         const bytes = value instanceof Uint8Array ? value : new Uint8Array(value);
+         return bytes.byteLength;
+       }`,
+    );
+    const declaration = result.module.declarations.find(
+      (candidate) => candidate.kind === 'function' && candidate.binding.name === 'byteLength',
+    );
+    const variable = declaration?.kind === 'function' ? declaration.body[0] : undefined;
+    const initializer = variable?.kind === 'variable' ? variable.declarations[0]?.initializer : undefined;
+    const condition = initializer?.kind === 'conditional' ? initializer.condition : undefined;
+
+    expect(result.diagnostics).toEqual([]);
+    expect(condition?.kind === 'binary' ? condition.semantics.unionMemberTest : undefined).toMatchObject({
+      binding: { name: 'value' },
+      member: { kind: 'named', reference: { name: 'Readonly' } },
+      whenResult: true,
+    });
+    expect(initializer?.kind === 'conditional' ? initializer.whenTrue : undefined).toMatchObject({
+      kind: 'identifier',
+      narrowedMember: 'Readonly',
+    });
+  });
+
+  it('uses binding-pattern evidence when inferring anonymous callback results', () => {
+    const result = lower(
+      'anonymous-callback-result.ts',
+      `export function segments(entries: readonly (readonly [number, number])[]) {
+         return entries.map(([end, start]) => ({ end, start }));
+       }`,
+    );
+    const declaration = result.module.declarations.find(
+      (candidate) => candidate.kind === 'function' && candidate.binding.name === 'segments',
+    );
+    const returned =
+      declaration?.kind === 'function' ? declaration.body.find((statement) => statement.kind === 'return') : undefined;
+    const callback =
+      returned?.kind === 'return' && returned.expression?.kind === 'call'
+        ? returned.expression.arguments[0]
+        : undefined;
+    const callbackCompletion = callback?.kind === 'function' ? callback.body.at(-1) : undefined;
+    const object =
+      callback?.kind === 'function'
+        ? (callback.expression ?? (callbackCompletion?.kind === 'return' ? callbackCompletion.expression : undefined))
+        : undefined;
+
+    expect(result.diagnostics).toEqual([]);
+    expect(object?.kind === 'object' ? object.type : undefined).toMatchObject({
+      kind: 'object',
+      properties: [
+        { name: 'end', type: { kind: 'primitive', name: 'number' } },
+        { name: 'start', type: { kind: 'primitive', name: 'number' } },
+      ],
+    });
+  });
+
   it('records reversed and negated union member tests without guessing open discriminants', () => {
     const result = lower(
       'union-tests.ts',
@@ -8821,6 +8880,29 @@ it('lowers a switch statement with subject domain evidence', () => {
     `,
   );
   expect(result.diagnostics).toEqual([]);
+});
+
+it('records structural union-member evidence on discriminant switch cases', () => {
+  const result = lower(
+    'switch-union.ts',
+    `type Outcome = Readonly<{ reason: 'ready'; value: string }> | Readonly<{ reason: 'empty' }>;
+     export function read(outcome: Outcome): string {
+       switch (outcome.reason) {
+         case 'ready': return outcome.value;
+         default: return '';
+       }
+     }`,
+  );
+  const declaration = result.module.declarations.find(
+    (candidate) => candidate.kind === 'function' && candidate.binding.name === 'read',
+  );
+  const statement = declaration?.kind === 'function' ? declaration.body[0] : undefined;
+
+  expect(result.diagnostics).toEqual([]);
+  expect(statement?.kind === 'switch' ? statement.cases[0]?.unionMemberTest : undefined).toMatchObject({
+    binding: { name: 'outcome' },
+    whenResult: true,
+  });
 });
 
 // --- Destructuring assignment ---

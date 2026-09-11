@@ -25,10 +25,15 @@ import type {
 
 interface CompilerModuleEvaluationRecord {
   readonly dependencies: CompilerModuleEvaluationRecord[];
-  readonly dependencyBySpecifier: Map<string, CompilerModuleEvaluationRecord>;
+  readonly dependencyBySpecifier: Map<string, CompilerModuleEvaluationDependencyRoute[]>;
   readonly identity: CompilerModuleIdentity;
   readonly identityKey: string;
   readonly module: Readonly<IrModule>;
+}
+
+interface CompilerModuleEvaluationDependencyRoute {
+  readonly dependency: Readonly<CompilerModuleLinkDependency>;
+  readonly target: CompilerModuleEvaluationRecord;
 }
 
 interface CompilerModuleEvaluationTraversalState {
@@ -132,7 +137,9 @@ function assertCompilerModuleEvaluationReachability(
     const record = pending.pop()!;
     if (reached.has(record.identityKey)) continue;
     reached.add(record.identityKey);
-    pending.push(...record.dependencyBySpecifier.values());
+    pending.push(
+      ...[...record.dependencyBySpecifier.values()].flatMap((routes) => routes.map((route) => route.target)),
+    );
   }
   const unreachable = [...records.values()]
     .filter((record) => !reached.has(record.identityKey))
@@ -176,7 +183,12 @@ function connectCompilerModuleEvaluationDependencies(
       !dependency ||
       typeof dependency !== 'object' ||
       typeof dependency.specifier !== 'string' ||
-      dependency.specifier.length === 0
+      dependency.specifier.length === 0 ||
+      (dependency.importedNames !== undefined &&
+        (!Array.isArray(dependency.importedNames) ||
+          dependency.importedNames.length === 0 ||
+          dependency.importedNames.some((name) => typeof name !== 'string' || name.length === 0) ||
+          new Set(dependency.importedNames).size !== dependency.importedNames.length))
     ) {
       throw createCompilerModuleEvaluationFailure(
         'invalid-dependency',
@@ -200,7 +212,15 @@ function connectCompilerModuleEvaluationDependencies(
         importer?.identity,
       );
     }
-    if (importer.dependencyBySpecifier.has(dependency.specifier)) {
+    const routes = importer.dependencyBySpecifier.get(dependency.specifier) ?? [];
+    if (
+      routes.some(
+        (route) =>
+          route.dependency.importedNames === undefined ||
+          dependency.importedNames === undefined ||
+          route.dependency.importedNames.some((name) => dependency.importedNames!.includes(name)),
+      )
+    ) {
       throw createCompilerModuleEvaluationFailure(
         'duplicate-dependency',
         `${importer.identityKey}:${dependency.specifier}`,
@@ -208,34 +228,67 @@ function connectCompilerModuleEvaluationDependencies(
         importer.identity,
       );
     }
-    importer.dependencyBySpecifier.set(dependency.specifier, target);
-    if (getCompilerModuleEvaluationRuntimeSpecifiers(importer.module).has(dependency.specifier)) {
+    importer.dependencyBySpecifier.set(dependency.specifier, [...routes, { dependency, target }]);
+    if (isCompilerModuleEvaluationRuntimeDependency(importer.module, dependency)) {
       importer.dependencies.push(target);
     }
   }
   for (const record of records.values()) {
-    const expected = getCompilerModuleEvaluationLinkedSpecifiers(record.module);
-    for (const specifier of expected) {
-      if (!record.dependencyBySpecifier.has(specifier)) {
+    const expected = getCompilerModuleEvaluationLinkedRequests(record.module);
+    for (const request of expected) {
+      const routes = record.dependencyBySpecifier.get(request.specifier) ?? [];
+      if (!routes.some((route) => doesCompilerModuleEvaluationRouteCoverRequest(route.dependency, request.imported))) {
         throw createCompilerModuleEvaluationFailure(
           'missing-dependency',
-          `${record.identityKey}:${specifier}`,
-          `Module evaluation dependency is missing for ${specifier}`,
+          `${record.identityKey}:${request.specifier}`,
+          `Module evaluation dependency is missing for ${request.specifier}`,
           record.identity,
         );
       }
     }
-    for (const specifier of record.dependencyBySpecifier.keys()) {
-      if (!expected.has(specifier)) {
-        throw createCompilerModuleEvaluationFailure(
-          'unexpected-dependency',
-          `${record.identityKey}:${specifier}`,
-          `Module evaluation dependency is not requested by the module: ${specifier}`,
-          record.identity,
+    for (const [specifier, routes] of record.dependencyBySpecifier) {
+      for (const route of routes) {
+        const requested = expected.some(
+          (request) =>
+            request.specifier === specifier &&
+            doesCompilerModuleEvaluationRouteCoverRequest(route.dependency, request.imported),
         );
+        if (!requested) {
+          throw createCompilerModuleEvaluationFailure(
+            'unexpected-dependency',
+            `${record.identityKey}:${specifier}`,
+            `Module evaluation dependency is not requested by the module: ${specifier}`,
+            record.identity,
+          );
+        }
       }
     }
   }
+}
+
+function doesCompilerModuleEvaluationRouteCoverRequest(
+  dependency: Readonly<CompilerModuleLinkDependency>,
+  imported: string | undefined,
+): boolean {
+  return (
+    dependency.importedNames === undefined || (imported !== undefined && dependency.importedNames.includes(imported))
+  );
+}
+
+function isCompilerModuleEvaluationRuntimeDependency(
+  module: Readonly<IrModule>,
+  dependency: Readonly<CompilerModuleLinkDependency>,
+): boolean {
+  if (dependency.importedNames === undefined) {
+    return getCompilerModuleEvaluationRuntimeSpecifiers(module).has(dependency.specifier);
+  }
+  const importedNames = new Set(dependency.importedNames);
+  return module.imports.some(
+    (imported) =>
+      imported.specifier === dependency.specifier &&
+      !imported.typeOnly &&
+      imported.bindings.some((binding) => !binding.typeOnly && importedNames.has(binding.imported)),
+  );
 }
 
 function createCompilerModuleEvaluationFailure(
@@ -287,9 +340,13 @@ function createCompilerModuleEvaluationModulePlan(
     );
   }
   record.module.imports.forEach((imported) => {
-    const target = record.dependencyBySpecifier.get(imported.specifier)!;
     for (const importedBinding of imported.bindings) {
       if (importedBinding.typeOnly) continue;
+      const route = record.dependencyBySpecifier
+        .get(imported.specifier)!
+        .find((candidate) =>
+          doesCompilerModuleEvaluationRouteCoverRequest(candidate.dependency, importedBinding.imported),
+        )!;
       addCompilerModuleEvaluationBinding(
         bindings,
         seenBindings,
@@ -299,7 +356,7 @@ function createCompilerModuleEvaluationModulePlan(
           initialization: {
             imported: importedBinding.imported,
             kind: 'dependency',
-            module: target.identity,
+            module: route.target.identity,
           },
           kind: 'import',
           mutation: 'read-only',
@@ -342,14 +399,17 @@ function createCompilerModuleEvaluationModulePlan(
   }
   return {
     bindings,
-    dependencies: [...record.dependencyBySpecifier].map(([specifier, dependency]) => ({
-      evaluation: getCompilerModuleEvaluationRuntimeSpecifiers(record.module).has(specifier)
-        ? ('runtime' as const)
-        : ('type-only' as const),
-      importer: record.identity,
-      specifier,
-      target: dependency.identity,
-    })),
+    dependencies: [...record.dependencyBySpecifier].flatMap(([specifier, routes]) =>
+      routes.map(({ dependency, target }) => ({
+        evaluation: isCompilerModuleEvaluationRuntimeDependency(record.module, dependency)
+          ? ('runtime' as const)
+          : ('type-only' as const),
+        importer: record.identity,
+        ...(dependency.importedNames ? { importedNames: [...dependency.importedNames] } : {}),
+        specifier,
+        target: target.identity,
+      })),
+    ),
     module: record.identity,
     steps,
   };
@@ -577,12 +637,28 @@ function getCompilerModuleEvaluationRuntimeSpecifiers(module: Readonly<IrModule>
   return specifiers;
 }
 
-function getCompilerModuleEvaluationLinkedSpecifiers(module: Readonly<IrModule>): ReadonlySet<string> {
-  const specifiers = new Set(module.imports.map((imported) => imported.specifier));
-  for (const exported of module.exports) {
-    if ('specifier' in exported) specifiers.add(exported.specifier);
+function getCompilerModuleEvaluationLinkedRequests(
+  module: Readonly<IrModule>,
+): readonly Readonly<{ imported?: string | undefined; specifier: string }>[] {
+  const requests: Array<Readonly<{ imported?: string | undefined; specifier: string }>> = [];
+  const seen = new Set<string>();
+  const add = (specifier: string, imported?: string): void => {
+    const key = `${specifier}\0${imported ?? ''}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    requests.push({ ...(imported === undefined ? {} : { imported }), specifier });
+  };
+  for (const imported of module.imports) {
+    if (imported.bindings.length === 0 || imported.bindings.some((binding) => binding.imported === '*')) {
+      add(imported.specifier);
+      continue;
+    }
+    for (const binding of imported.bindings) add(imported.specifier, binding.imported);
   }
-  return specifiers;
+  for (const exported of module.exports) {
+    if ('specifier' in exported) add(exported.specifier);
+  }
+  return requests;
 }
 
 function getCompilerModuleEvaluationTopLevelAwaitPath(module: Readonly<IrModule>): CompilerIrTraversalPath | undefined {

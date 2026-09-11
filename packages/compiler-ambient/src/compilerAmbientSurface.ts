@@ -287,7 +287,9 @@ interface JSON {
 }
 declare var JSON: JSON;
 
-interface ArrayBuffer {}
+interface ArrayBuffer {
+  readonly byteLength: number;
+}
 interface ArrayBufferConstructor {
   new (byteLength: number): ArrayBuffer;
 }
@@ -361,6 +363,7 @@ declare var console: Console;
 
 interface Int8Array {
   readonly buffer: ArrayBuffer;
+  readonly byteLength: number;
   readonly byteOffset: number;
   readonly length: number;
   [index: number]: number;
@@ -378,6 +381,7 @@ declare var Int8Array: Int8ArrayConstructor;
 
 interface Uint8Array {
   readonly buffer: ArrayBuffer;
+  readonly byteLength: number;
   readonly byteOffset: number;
   readonly length: number;
   [index: number]: number;
@@ -395,6 +399,7 @@ declare var Uint8Array: Uint8ArrayConstructor;
 
 interface Uint8ClampedArray {
   readonly buffer: ArrayBuffer;
+  readonly byteLength: number;
   readonly byteOffset: number;
   readonly length: number;
   [index: number]: number;
@@ -412,6 +417,7 @@ declare var Uint8ClampedArray: Uint8ClampedArrayConstructor;
 
 interface Int16Array {
   readonly buffer: ArrayBuffer;
+  readonly byteLength: number;
   readonly byteOffset: number;
   readonly length: number;
   [index: number]: number;
@@ -429,6 +435,7 @@ declare var Int16Array: Int16ArrayConstructor;
 
 interface Uint16Array {
   readonly buffer: ArrayBuffer;
+  readonly byteLength: number;
   readonly byteOffset: number;
   readonly length: number;
   [index: number]: number;
@@ -446,6 +453,7 @@ declare var Uint16Array: Uint16ArrayConstructor;
 
 interface Int32Array {
   readonly buffer: ArrayBuffer;
+  readonly byteLength: number;
   readonly byteOffset: number;
   readonly length: number;
   [index: number]: number;
@@ -463,6 +471,7 @@ declare var Int32Array: Int32ArrayConstructor;
 
 interface Uint32Array {
   readonly buffer: ArrayBuffer;
+  readonly byteLength: number;
   readonly byteOffset: number;
   readonly length: number;
   [index: number]: number;
@@ -480,6 +489,7 @@ declare var Uint32Array: Uint32ArrayConstructor;
 
 interface Float32Array {
   readonly buffer: ArrayBuffer;
+  readonly byteLength: number;
   readonly byteOffset: number;
   readonly length: number;
   [index: number]: number;
@@ -497,6 +507,7 @@ declare var Float32Array: Float32ArrayConstructor;
 
 interface Float64Array {
   readonly buffer: ArrayBuffer;
+  readonly byteLength: number;
   readonly byteOffset: number;
   readonly length: number;
   [index: number]: number;
