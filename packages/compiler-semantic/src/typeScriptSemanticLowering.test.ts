@@ -12321,6 +12321,7 @@ it('materializes scalar type queries from type-only imports without guessing obj
       upstreamDirectory: '/flight',
     },
   ]);
+  if (!result) throw new Error('Expected InteractionManager lowering result');
   const declarations = new Map(
     result.module.declarations.flatMap((declaration) =>
       'binding' in declaration ? [[declaration.binding.name, declaration] as const] : [],
