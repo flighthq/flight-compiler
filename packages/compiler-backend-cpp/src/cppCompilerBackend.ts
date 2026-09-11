@@ -159,9 +159,11 @@ interface EmitContext {
 export function createCppCompilerBackend(): CompilerBackend<CppCompilerBackendOptions> {
   return {
     createEmissionSession({ moduleResolution, modules, options }) {
-      const referenceRepresentationPlanner = moduleResolution
-        ? createIrTypeReferenceRepresentationPlannerCpp(modules, moduleResolution)
-        : createIrTypeReferenceRepresentationPlannerCpp(modules);
+      const referenceRepresentationPlanner = createIrTypeReferenceRepresentationPlannerCpp(
+        modules,
+        moduleResolution,
+        options.externalBindings,
+      );
       const interfaceInheritancePass = createCompilerLoweringPassInterfaceInheritanceCpp(modules, moduleResolution);
       const directBindingOwners = createCppDirectBindingOwners(modules);
       const importBindingOwners = createCppImportBindingOwners(modules);
@@ -263,9 +265,7 @@ function emitIrModuleCppWithContext(
     preservedInitializerTypes: new Map(),
     referenceRepresentationPlanner:
       referenceRepresentationPlanner ??
-      (moduleResolution
-        ? createIrTypeReferenceRepresentationPlannerCpp(sourceModules, moduleResolution)
-        : createIrTypeReferenceRepresentationPlannerCpp(sourceModules)),
+      createIrTypeReferenceRepresentationPlannerCpp(sourceModules, moduleResolution, options.externalBindings),
     resolvingInitializerBindingIds: new Set(),
     returnsAbsent: false,
     sharedCaptureTargetNames,

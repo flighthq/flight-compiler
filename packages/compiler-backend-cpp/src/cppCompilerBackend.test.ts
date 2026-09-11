@@ -796,7 +796,8 @@ describe('emitIrModuleCpp', () => {
   it('binds reachable target-native ambient types, values, headers, members, and factories', () => {
     const result = lower(
       'native-surface.ts',
-      `export function same(surface: NativeSurface): NativeSurface { return surface; }
+      `export interface NativeEnvelope { surface: NativeSurface; }
+export function same(surface: NativeSurface): NativeSurface { return surface; }
 export function create(): NativeSurface { return new NativeSurface(); }
 export function preferred(): number { return NativeSurface.preferredFormat; }`,
     );
@@ -829,6 +830,7 @@ export function preferred(): number { return NativeSurface.preferredFormat; }`,
     );
     const emitted = emitIrModuleCpp(result.module, { externalBindings, runtimeProfile: 'flight-cpp' });
     expect(emitted.contents.match(/#include <host\/surface\.hpp>/gu)).toHaveLength(1);
+    expect(emitted.contents).toContain('host::Surface surface;');
     expect(emitted.contents).toContain('host::Surface same(host::Surface surface)');
     expect(emitted.contents).toContain('return host::create_surface()');
     expect(emitted.contents).toContain('return host::preferred_format');
