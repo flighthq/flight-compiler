@@ -286,7 +286,8 @@ function getIrInterfaceUtilityHeritagePropertiesFlattened(
 ): readonly IrObjectTypeProperty[] | undefined {
   if (
     location.declaration.kind === 'interface' &&
-    context.options.eraseAmbientUtilityHeritage?.(reference, location.declaration)
+    context.options.eraseAmbientUtilityHeritage?.(reference, location.declaration) &&
+    isIrInterfaceAmbientPickHeritageFullyMaterialized(reference, location, substitutions, context)
   ) {
     return [];
   }
@@ -311,6 +312,29 @@ function getIrInterfaceUtilityHeritagePropertiesFlattened(
     context,
   );
   return properties.filter((property) => (utility === 'Pick') === keys.has(property.name));
+}
+
+function isIrInterfaceAmbientPickHeritageFullyMaterialized(
+  reference: Readonly<IrTypeReference>,
+  location: Readonly<InterfaceInheritanceDeclarationLocation>,
+  substitutions: Readonly<CompilerStructuralTypeSubstitutionPlan>,
+  context: InterfaceInheritanceLoweringContext,
+): boolean {
+  if (
+    location.declaration.kind !== 'interface' ||
+    reference.reference.kind !== 'ambient' ||
+    reference.reference.name !== 'Pick' ||
+    reference.typeArguments.length !== 2
+  ) {
+    return false;
+  }
+  const keys = getIrInterfaceUtilityHeritageKeys(
+    resolveIrTypeStructuralSubstitution(reference.typeArguments[1]!, substitutions),
+    location,
+    context,
+  );
+  const materialized = new Set(location.declaration.properties.map((property) => property.name));
+  return [...keys].every((key) => materialized.has(key));
 }
 
 function getIrInterfaceUtilityHeritageKeys(

@@ -72,7 +72,7 @@ describe('createCompilerRuntimeExternalSymbolBindingPlanHaxe', () => {
 });
 
 describe('getCompilerAmbientUtilityHeritageTargetHaxe', () => {
-  it('widens a propertyless WebGL Pick interface to its Haxe host type', () => {
+  it('widens only a fully materialized WebGL Pick interface to its Haxe host type', () => {
     const declaration = {
       extends: [
         {
@@ -88,11 +88,22 @@ describe('getCompilerAmbientUtilityHeritageTargetHaxe', () => {
           ],
         },
       ],
-      properties: [],
+      properties: [{ name: 'bindVertexArray' }],
     } as unknown as IrInterfaceDeclaration;
 
     expect(getCompilerAmbientUtilityHeritageTargetHaxe(declaration)).toBe('js.html.webgl.WebGL2RenderingContext');
-    expect(getCompilerAmbientUtilityHeritageTargetHaxe({ ...declaration, properties: [{}] } as never)).toBeUndefined();
+    expect(getCompilerAmbientUtilityHeritageTargetHaxe({ ...declaration, properties: [] })).toBeUndefined();
+    expect(
+      getCompilerAmbientUtilityHeritageTargetHaxe({
+        ...declaration,
+        extends: [
+          {
+            ...declaration.extends[0]!,
+            typeArguments: [declaration.extends[0]!.typeArguments[0]!, { kind: 'primitive', name: 'string' }],
+          },
+        ],
+      }),
+    ).toBeUndefined();
   });
 });
 

@@ -142,7 +142,7 @@ export function createCppCompilerBackend(): CompilerBackend<CppCompilerBackendOp
       const referenceRepresentationPlanner = moduleResolution
         ? createIrTypeReferenceRepresentationPlannerCpp(modules, moduleResolution)
         : createIrTypeReferenceRepresentationPlannerCpp(modules);
-      const interfaceInheritancePass = createCompilerLoweringPassInterfaceInheritance(modules, moduleResolution);
+      const interfaceInheritancePass = createCompilerLoweringPassInterfaceInheritanceCpp(modules, moduleResolution);
       const directBindingOwners = createCppDirectBindingOwners(modules);
       const importBindingOwners = createCppImportBindingOwners(modules);
       return Object.freeze({
@@ -195,7 +195,7 @@ function emitIrModuleCppWithContext(
       createCompilerLoweringPassBindingPattern(),
       createCompilerLoweringPassVariableHoisting(),
       createCompilerLoweringPassCStyleFor(),
-      interfaceInheritancePass ?? createCompilerLoweringPassInterfaceInheritance(sourceModules, moduleResolution),
+      interfaceInheritancePass ?? createCompilerLoweringPassInterfaceInheritanceCpp(sourceModules, moduleResolution),
       createCompilerLoweringPassSwitchFallthrough(),
       createCompilerLoweringPassSwitchSuspension(),
     ]);
@@ -328,6 +328,16 @@ function emitIrModuleCppWithContext(
     ],
     path: getCppModuleFilePath(module, options),
   };
+}
+
+function createCompilerLoweringPassInterfaceInheritanceCpp(
+  modules: readonly Readonly<IrModule>[],
+  moduleResolution: Readonly<CompilerModuleResolutionPlan> | undefined,
+): CompilerLoweringPass {
+  return createCompilerLoweringPassInterfaceInheritance(modules, moduleResolution, {
+    eraseAmbientUtilityHeritage: (reference) =>
+      reference.reference.kind === 'ambient' && reference.reference.name === 'Pick',
+  });
 }
 
 function createCppTargetNameMap(module: Readonly<IrModule>): Map<string, string> {

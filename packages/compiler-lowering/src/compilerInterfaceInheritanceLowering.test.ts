@@ -315,7 +315,7 @@ describe('createCompilerLoweringPassInterfaceInheritance', () => {
   it('erases ambient utility heritage only through an explicit target policy', () => {
     const module = lower(
       'ambient-pick.ts',
-      "export interface Context extends Pick<WebGL2RenderingContext, 'clear'> {}",
+      "type ContextMember = 'clear' | 'viewport'; export interface Context extends Pick<WebGL2RenderingContext, ContextMember> {}",
     );
 
     expect(() =>
@@ -331,7 +331,34 @@ describe('createCompilerLoweringPassInterfaceInheritance', () => {
       }),
     ]);
 
-    expect(getInterface(output, 'Context')).toMatchObject({ extends: [], properties: [] });
+    expect(getInterface(output, 'Context')).toMatchObject({
+      extends: [],
+      properties: [{ name: 'clear' }, { name: 'viewport' }],
+    });
+
+    const context = getInterface(module, 'Context');
+    const incomplete = replaceInterface(module, context, {
+      properties: context.properties.filter((property) => property.name !== 'viewport'),
+    });
+    expect(() =>
+      lowerIrModuleWithCompilerPasses(incomplete, [
+        createCompilerLoweringPassInterfaceInheritance([incomplete], undefined, {
+          eraseAmbientUtilityHeritage: () => true,
+        }),
+      ]),
+    ).toThrow('inherits a nonlocal interface that cannot be structurally resolved');
+
+    const open = lower(
+      'ambient-pick-open.ts',
+      'export interface OpenContext extends Pick<WebGL2RenderingContext, string> {}',
+    );
+    expect(() =>
+      lowerIrModuleWithCompilerPasses(open, [
+        createCompilerLoweringPassInterfaceInheritance([open], undefined, {
+          eraseAmbientUtilityHeritage: () => true,
+        }),
+      ]),
+    ).toThrow('inherits utility with nonliteral property keys');
   });
 
   it('flattens Partial heritage over a local generic structure', () => {

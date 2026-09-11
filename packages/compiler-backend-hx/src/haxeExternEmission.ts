@@ -157,7 +157,7 @@ function createAmbientUtilityHeritageTargetsHaxeExtern(module: Readonly<IrModule
   return new Map(
     module.declarations.flatMap((declaration) => {
       if (declaration.kind !== 'interface') return [];
-      const target = getCompilerAmbientUtilityHeritageTargetHaxe(declaration);
+      const target = getCompilerAmbientUtilityHeritageTargetHaxe(declaration, module);
       return target ? [[declaration.binding.id, target] as const] : [];
     }),
   );

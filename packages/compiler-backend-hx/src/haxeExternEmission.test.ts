@@ -112,7 +112,7 @@ describe('emitIrModuleHaxeExtern', () => {
     const module = lower(
       '@flighthq/types',
       'context.ts',
-      "export interface Context extends Pick<WebGL2RenderingContext, 'clear'> {}",
+      "type ContextMember = 'clear'; export interface Context extends Pick<WebGL2RenderingContext, ContextMember> {}",
     );
 
     const typedef = findFile(emitIrModuleHaxeExtern(module, { rootPackage: 'flight' }), 'flight/_js/Context.hx');

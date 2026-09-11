@@ -2973,6 +2973,40 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(emitted.contents).toContain('double fill(Pt p)');
   });
 
+  it('erases fully materialized closed ambient Pick heritage', () => {
+    const result = lower(
+      'GlContext.ts',
+      `type GlContextMember = 'ACTIVE_TEXTURE' | 'clear';
+       export interface GlContext extends Pick<WebGL2RenderingContext, GlContextMember> {}`,
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+
+    expect(result.diagnostics).toEqual([]);
+    expect(emitted.contents).toContain('struct GlContext : public flight::ReferenceEnabled');
+    expect(emitted.contents).toContain('auto active_texture;');
+    expect(emitted.contents).toContain('auto clear;');
+
+    const incomplete = {
+      ...result.module,
+      declarations: result.module.declarations.map((declaration) =>
+        declaration.kind === 'interface' && declaration.binding.name === 'GlContext'
+          ? { ...declaration, properties: declaration.properties.slice(0, 1) }
+          : declaration,
+      ),
+    };
+    expect(() => emitIrModuleCpp(incomplete, { runtimeProfile: 'flight-cpp' })).toThrow(
+      'inherits a nonlocal interface that cannot be structurally resolved',
+    );
+
+    const open = lower(
+      'OpenGlContext.ts',
+      'export interface OpenGlContext extends Pick<WebGL2RenderingContext, string> {}',
+    );
+    expect(() => emitIrModuleCpp(open.module, { runtimeProfile: 'flight-cpp' })).toThrow(
+      'inherits utility with nonliteral property keys',
+    );
+  });
+
   it('erases Omit<T, K> only when the semantic runtime proves a reference-preserving representation', () => {
     const result = lower(
       'omit-reference.ts',

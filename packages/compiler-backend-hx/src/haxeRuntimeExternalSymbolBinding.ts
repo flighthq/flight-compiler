@@ -5,6 +5,8 @@ import type {
   CompilerRuntimeExternalSymbolBindingPlan,
   CompilerRuntimeExternalSymbolSpace,
   IrInterfaceDeclaration,
+  IrModule,
+  IrType,
 } from '../../compiler-types/src/index.js';
 
 type HaxeRuntimeExternalSymbolBinding =
@@ -43,8 +45,9 @@ export function createCompilerRuntimeExternalSymbolBindingPlanHaxe(): CompilerRu
 
 export function getCompilerAmbientUtilityHeritageTargetHaxe(
   declaration: Readonly<IrInterfaceDeclaration>,
+  module?: Readonly<IrModule> | undefined,
 ): string | undefined {
-  if (declaration.properties.length > 0 || declaration.extends.length !== 1) return undefined;
+  if (declaration.extends.length !== 1) return undefined;
   const heritage = declaration.extends[0]!;
   if (
     heritage.reference.kind !== 'ambient' ||
@@ -53,6 +56,9 @@ export function getCompilerAmbientUtilityHeritageTargetHaxe(
   ) {
     return undefined;
   }
+  const keys = getIrAmbientPickHeritageKeysHaxe(heritage.typeArguments[1]!, module, new Set());
+  const materialized = new Set(declaration.properties.map((property) => property.name));
+  if (!keys || [...keys].some((key) => !materialized.has(key))) return undefined;
   const target = heritage.typeArguments[0]!;
   if (target.kind !== 'named' || target.reference.kind !== 'ambient') return undefined;
   return getCompilerRuntimeExternalSymbolTargetHaxe(target.reference.name, 'type');
@@ -81,6 +87,37 @@ export function getCompilerRuntimeExternalSymbolTargetHaxe(
   );
   if (!binding) return undefined;
   return binding.kind === 'runtime' ? `${runtimeModule}.${binding.targetName}` : binding.targetName;
+}
+
+function getIrAmbientPickHeritageKeysHaxe(
+  type: Readonly<IrType>,
+  module: Readonly<IrModule> | undefined,
+  aliases: ReadonlySet<string>,
+): ReadonlySet<string> | undefined {
+  if (type.kind === 'never') return new Set();
+  if (type.kind === 'literal' && typeof type.value === 'string') return new Set([type.value]);
+  if (type.kind === 'union') {
+    const members = type.types.map((member) => getIrAmbientPickHeritageKeysHaxe(member, module, aliases));
+    return members.some((member) => !member) ? undefined : new Set(members.flatMap((member) => [...member!]));
+  }
+  if (
+    type.kind !== 'named' ||
+    type.reference.kind !== 'binding' ||
+    type.reference.path.length > 0 ||
+    type.typeArguments.length > 0 ||
+    !module
+  ) {
+    return undefined;
+  }
+  const bindingId = type.reference.binding.id;
+  const alias = module.declarations.find(
+    (declaration) =>
+      declaration.kind === 'typeAlias' &&
+      declaration.binding.id === bindingId &&
+      declaration.typeParameters.length === 0,
+  );
+  if (alias?.kind !== 'typeAlias' || aliases.has(alias.binding.id)) return undefined;
+  return getIrAmbientPickHeritageKeysHaxe(alias.type, module, new Set(aliases).add(alias.binding.id));
 }
 
 const haxeRuntimeExternalSymbolBindings = [
