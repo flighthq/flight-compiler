@@ -86,6 +86,41 @@ describe('lowerIrModuleWithCompilerPasses', () => {
     expect(output.imports).not.toBe(module.imports);
   });
 
+  it('copies caller-owned input once and transfers owned outputs directly between passes', () => {
+    let firstInput: Readonly<IrModule> | undefined;
+    let firstOutput: IrModule | undefined;
+    let firstVerificationInput: Readonly<IrModule> | undefined;
+    let secondInput: Readonly<IrModule> | undefined;
+    const first = createPass(
+      'first',
+      (value) => {
+        firstInput = value;
+        firstOutput = appendImport(value, 'first');
+        return firstOutput;
+      },
+      (value) => {
+        firstVerificationInput = value;
+        return { kind: 'valid' };
+      },
+    );
+    const second = createPass(
+      'second',
+      (value) => {
+        secondInput = value;
+        return appendImport(value, 'second');
+      },
+      () => ({ kind: 'valid' }),
+      ['first'],
+    );
+
+    const output = lowerIrModuleWithCompilerPasses(module, [first, second]);
+
+    expect(firstInput).not.toBe(module);
+    expect(firstVerificationInput).toBe(firstOutput);
+    expect(secondInput).toBe(firstOutput);
+    expect(output.imports.map((item) => item.specifier)).toEqual(['first', 'second']);
+  });
+
   it('refuses malformed input before an empty plan or selected pass can consume it', () => {
     let transforms = 0;
     const malformed = { ...module, name: '' };

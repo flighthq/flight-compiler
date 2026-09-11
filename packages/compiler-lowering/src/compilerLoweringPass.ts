@@ -83,7 +83,7 @@ function getCompilerLoweringPassOutput(
   pass: Readonly<CompilerLoweringPass>,
 ): IrModule {
   try {
-    const output = pass.lowerIrModule(structuredClone(module));
+    const output = pass.lowerIrModule(module);
     validateCompilerLoweringModule(sourceIdentity, output, pass.name);
     if (output.name !== module.name || output.packageName !== module.packageName || output.source !== module.source) {
       throw createCompilerLoweringFailure(
@@ -93,7 +93,7 @@ function getCompilerLoweringPassOutput(
         'a target-neutral lowering pass must preserve module identity',
       );
     }
-    const verification: unknown = pass.verifyIrModule(structuredClone(output));
+    const verification: unknown = pass.verifyIrModule(output);
     if (!isCompilerLoweringPassVerification(verification)) {
       throw new TypeError('lowering pass verification must be a valid or invalid tagged result');
     }
