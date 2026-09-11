@@ -5930,6 +5930,43 @@ export function compare(left: string, right: string, locale: string, options: In
     expect(() => emitIrModuleCpp(module)).toThrow('requires inferred type evidence');
   });
 
+  it('emits ordered executable module initialization with namespace-safe closures', () => {
+    const result = lower(
+      'module-initialization.ts',
+      `export const values: number[] = [1, 2];
+       export let total = 0;
+       for (const value of values) total += value;
+       if (total > 0) total *= 2;`,
+    );
+    const output = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    expect(result.diagnostics).toEqual([]);
+    expect(output).toContain('[]() {\n  for (auto value : values)');
+    expect(output).toContain('[]() {\n  if (total > 0.0)');
+    expect(output.indexOf('for (auto value : values)')).toBeLessThan(output.indexOf('if (total > 0.0)'));
+    expect(output).not.toContain('inline const bool module_side_effect = [=]');
+  });
+
+  it('preserves module initialization order around static class fields', () => {
+    const result = lower(
+      'module-class-initialization.ts',
+      `const events: string[] = [];
+       mark('before');
+       export class Marker { static value = mark('class'); }
+       mark('after');
+       function mark(value: string): number { events.push(value); return 0; }`,
+    );
+    const output = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
+    const before = output.indexOf('mark(flight::String("before"))');
+    const classInitialization = output.indexOf('mark(flight::String("class"))');
+    const after = output.indexOf('mark(flight::String("after"))');
+
+    expect(result.diagnostics).toEqual([]);
+    expect(before).toBeGreaterThan(-1);
+    expect(classInitialization).toBeGreaterThan(before);
+    expect(after).toBeGreaterThan(classInitialization);
+  });
+
   it('preserves optional array results until a nullish fallback consumes them', () => {
     const result = lower('pop.ts', 'export function last(items: number[]): number { return items.pop() ?? -1; }');
     const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });

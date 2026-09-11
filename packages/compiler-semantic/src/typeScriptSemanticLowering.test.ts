@@ -4196,7 +4196,7 @@ it('diagnoses value namespace, empty statements, and unsupported top-level synta
   expect(empty.diagnostics).toEqual([]);
 });
 
-it('lowers module-level calls and assignments as ordered side-effect carriers', () => {
+it('lowers executable module initialization as ordered side-effect carriers', () => {
   const result = lower(
     'module-side-effects.ts',
     `
@@ -4204,6 +4204,8 @@ it('lowers module-level calls and assignments as ordered side-effect carriers', 
       register();
       export let value = 0;
       value = 1;
+      for (let index = 0; index < 2; index++) value += index;
+      if (value > 0) value *= 2;
       1 + 2;
     `,
   );
@@ -4229,8 +4231,44 @@ it('lowers module-level calls and assignments as ordered side-effect carriers', 
       },
       kind: 'variable',
     },
+    {
+      binding: { name: 'moduleSideEffect' },
+      initializer: { callee: { body: [{ kind: 'for' }, { kind: 'return' }] } },
+      kind: 'variable',
+    },
+    {
+      binding: { name: 'moduleSideEffect' },
+      initializer: { callee: { body: [{ kind: 'if' }, { kind: 'return' }] } },
+      kind: 'variable',
+    },
+    {
+      binding: { name: 'moduleSideEffect' },
+      initializer: {
+        callee: { body: [{ expression: { kind: 'binary' }, kind: 'expression' }, { kind: 'return' }] },
+      },
+      kind: 'variable',
+    },
   ]);
-  expect(result.diagnostics).toMatchObject([{ message: 'unsupported top-level ExpressionStatement' }]);
+  expect(result.diagnostics).toEqual([]);
+});
+
+it('refuses asynchronous and escaping-var module initialization until their module semantics are represented', () => {
+  const asynchronous = lower('module-await.ts', 'async function load(): Promise<void> {} await load();');
+  const asynchronousVariable = lower(
+    'module-await-variable.ts',
+    'async function load(): Promise<number> { return 1; } export const value = await load();',
+  );
+  const escapingVar = lower('module-var.ts', 'for (var index = 0; index < 2; index++) {}');
+
+  expect(asynchronous.diagnostics).toMatchObject([
+    { message: 'top-level await requires asynchronous module evaluation' },
+  ]);
+  expect(asynchronousVariable.diagnostics).toMatchObject([
+    { message: 'top-level await requires asynchronous module evaluation' },
+  ]);
+  expect(escapingVar.diagnostics).toMatchObject([
+    { message: 'top-level nested var requires module-scope declaration hoisting' },
+  ]);
 });
 
 it('wraps labeled non-loop statements in a block with a label identity', () => {
@@ -12354,7 +12392,7 @@ it('records export = assignment as a diagnostic rather than crashing', () => {
   expect(result.diagnostics[0]!.message).toContain('export = assignments are not ECMAScript exports');
 });
 
-it('records unsupported top-level statement as a diagnostic', () => {
+it('lowers a top-level loop as executable module initialization', () => {
   const result = lower(
     'top-level-for.ts',
     `
@@ -12362,8 +12400,11 @@ it('records unsupported top-level statement as a diagnostic', () => {
       for (let i = 0; i < 10; i++) {}
     `,
   );
-  expect(result.diagnostics.length).toBeGreaterThan(0);
-  expect(result.diagnostics[0]!.message).toContain('unsupported top-level');
+  expect(result.diagnostics).toEqual([]);
+  expect(result.module.declarations).toMatchObject([
+    { kind: 'function' },
+    { initializer: { callee: { body: [{ kind: 'for' }, { kind: 'return' }] } }, kind: 'variable' },
+  ]);
 });
 
 it('lowers array destructuring with sparse (omitted) elements', () => {

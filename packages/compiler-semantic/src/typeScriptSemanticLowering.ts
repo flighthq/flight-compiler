@@ -169,6 +169,13 @@ function lowerTypeScriptSourceWithAnalysis(
     if (ts.isImportDeclaration(statement)) {
       continue;
     }
+    const topLevelAwait = getTypeScriptModuleInitializationAwait(statement);
+    if (topLevelAwait) {
+      context.diagnostics.push(
+        diagnostic(topLevelAwait, 'top-level await requires asynchronous module evaluation', context),
+      );
+      continue;
+    }
     if (ts.isExportDeclaration(statement) || ts.isExportAssignment(statement)) {
       try {
         exports.push(...lowerExport(statement, context));
@@ -216,7 +223,7 @@ function lowerTypeScriptSourceWithAnalysis(
         exports.push(
           ...createTypeScriptDeclarationExports(declaration, hasModifier(statement, ts.SyntaxKind.DefaultKeyword)),
         );
-      } else if (ts.isExpressionStatement(statement) && isTypeScriptModuleSideEffectExpression(statement.expression)) {
+      } else if (isTypeScriptModuleInitializationStatement(statement)) {
         declarations.push(lowerTypeScriptModuleSideEffect(statement, context));
       } else if (ts.isModuleDeclaration(statement)) {
         if (hasValueNamespaceMembers(statement)) {
@@ -261,22 +268,33 @@ function lowerTypeScriptSourceWithAnalysis(
   };
 }
 
-function isTypeScriptModuleSideEffectExpression(
-  expression: ts.Expression,
-): expression is ts.CallExpression | ts.BinaryExpression {
+function isTypeScriptModuleInitializationStatement(statement: ts.Statement): boolean {
   return (
-    ts.isCallExpression(expression) ||
-    (ts.isBinaryExpression(expression) && isAssignmentOperator(expression.operatorToken.kind))
+    ts.isBlock(statement) ||
+    ts.isDoStatement(statement) ||
+    ts.isExpressionStatement(statement) ||
+    ts.isForInStatement(statement) ||
+    ts.isForOfStatement(statement) ||
+    ts.isForStatement(statement) ||
+    ts.isIfStatement(statement) ||
+    ts.isLabeledStatement(statement) ||
+    ts.isSwitchStatement(statement) ||
+    ts.isThrowStatement(statement) ||
+    ts.isTryStatement(statement) ||
+    ts.isWhileStatement(statement)
   );
 }
 
 // A target module has declarations rather than free-standing statements. Carry a source module's
-// ordered call or assignment through the same initialization lane as an unexported const, and make
-// the initializer produce a value so targets never have to declare storage with a void type.
-function lowerTypeScriptModuleSideEffect(
-  statement: ts.ExpressionStatement,
-  context: LoweringContext,
-): IrVariableDeclaration {
+// ordered executable statement through the same initialization lane as an unexported const, and
+// make the initializer produce a value so targets never have to declare storage with a void type.
+function lowerTypeScriptModuleSideEffect(statement: ts.Statement, context: LoweringContext): IrVariableDeclaration {
+  const topLevelAwait = getTypeScriptModuleInitializationAwait(statement);
+  if (topLevelAwait) unsupported(topLevelAwait, 'top-level await requires asynchronous module evaluation');
+  const escapingVariable = getTypeScriptModuleInitializationVar(statement);
+  if (escapingVariable) {
+    unsupported(escapingVariable, 'top-level nested var requires module-scope declaration hoisting');
+  }
   const sourceOrigin = origin(statement, context);
   const type = { kind: 'primitive', name: 'boolean' } as const;
   return {
@@ -299,10 +317,7 @@ function lowerTypeScriptModuleSideEffect(
       arguments: [],
       callee: {
         async: false,
-        body: [
-          { expression: lowerExpression(statement.expression, context), kind: 'expression' },
-          { expression: { kind: 'literal', value: true }, kind: 'return' },
-        ],
+        body: [lowerStatement(statement, context), { expression: { kind: 'literal', value: true }, kind: 'return' }],
         kind: 'function',
         parameters: [],
         returns: type,
@@ -319,6 +334,40 @@ function lowerTypeScriptModuleSideEffect(
     origin: sourceOrigin,
     type,
   };
+}
+
+function getTypeScriptModuleInitializationAwait(
+  statement: ts.Statement,
+): ts.AwaitExpression | ts.ForOfStatement | undefined {
+  let found: ts.AwaitExpression | ts.ForOfStatement | undefined;
+  const visit = (node: ts.Node): void => {
+    if (found || ts.isFunctionLike(node)) return;
+    if (ts.isPropertyDeclaration(node) && !hasModifier(node, ts.SyntaxKind.StaticKeyword)) {
+      if (ts.isComputedPropertyName(node.name)) visit(node.name.expression);
+      return;
+    }
+    if (ts.isAwaitExpression(node) || (ts.isForOfStatement(node) && node.awaitModifier)) {
+      found = node;
+      return;
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(statement);
+  return found;
+}
+
+function getTypeScriptModuleInitializationVar(statement: ts.Statement): ts.VariableDeclarationList | undefined {
+  let found: ts.VariableDeclarationList | undefined;
+  const visit = (node: ts.Node): void => {
+    if (found || (node !== statement && ts.isFunctionLike(node))) return;
+    if (ts.isVariableDeclarationList(node) && !(node.flags & ts.NodeFlags.BlockScoped)) {
+      found = node;
+      return;
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(statement);
+  return found;
 }
 
 function isErasableTypeScriptUniqueSymbolDeclaration(node: ts.VariableStatement): boolean {
@@ -5287,9 +5336,24 @@ function bindingDeclarationScope(node: TypeScriptBindingDeclaration): IrBindingS
         ? 'function'
         : 'block';
     }
-    if (ts.isSourceFile(parent)) return 'module';
+    if (ts.isSourceFile(parent)) {
+      if (
+        variableDeclaration &&
+        variableDeclaration.parent.flags & ts.NodeFlags.BlockScoped &&
+        !isTypeScriptDirectModuleVariableDeclaration(variableDeclaration)
+      ) {
+        return 'block';
+      }
+      if (ts.isFunctionDeclaration(node) && node.parent !== parent) return 'block';
+      return 'module';
+    }
   }
   return 'block';
+}
+
+function isTypeScriptDirectModuleVariableDeclaration(node: ts.VariableDeclaration): boolean {
+  const owner = node.parent.parent;
+  return ts.isVariableStatement(owner) && ts.isSourceFile(owner.parent);
 }
 
 function findVariableDeclarationOwner(node: ts.BindingElement): ts.VariableDeclaration | undefined {

@@ -111,6 +111,7 @@ interface EmitContext {
   finallyReturnVar?: string | undefined;
   includes: Set<string>;
   module: Readonly<IrModule>;
+  namespaceScope: boolean;
   nullableBindingIds: ReadonlySet<string>;
   options: Readonly<CppCompilerBackendOptions>;
   preservedInitializerTypes: Map<string, Readonly<IrType>>;
@@ -213,6 +214,7 @@ function emitIrModuleCppWithContext(
     denseArrayLengthBindingIds: collectIrModuleDenseArrayLengthBindingIdsCpp(sourceModule),
     includes: new Set<string>(),
     module,
+    namespaceScope: true,
     nullableBindingIds: collectIrModuleNullableBindingIds(module),
     options,
     preservedInitializerTypes: new Map(),
@@ -420,6 +422,7 @@ function emitClass(declaration: Readonly<IrClassDeclaration>, outer: EmitContext
     const constructorContext: EmitContext = {
       ...context,
       defaultedParameterIds: collectDefaultedParameterIdsCpp(declaration.classConstructor.parameters),
+      namespaceScope: false,
     };
     const params = declaration.classConstructor.parameters
       .map((parameter) => emitParameter(parameter, constructorContext))
@@ -468,6 +471,7 @@ function emitClass(declaration: Readonly<IrClassDeclaration>, outer: EmitContext
       async: method.async,
       defaultedParameterIds: collectDefaultedParameterIdsCpp(method.parameters),
       enclosingReturnType: method.returns,
+      namespaceScope: false,
       returnsAbsent: hasIrTypeAbsentMember(method.returns),
     };
     if (method.async) methodContext.includes.add('coroutine');
@@ -573,6 +577,7 @@ function emitEnumNamespaceFunctionCpp(declaration: Readonly<IrFunctionDeclaratio
     async: declaration.async,
     defaultedParameterIds: collectDefaultedParameterIdsCpp(declaration.parameters),
     enclosingReturnType: declaration.returns,
+    namespaceScope: false,
     returnsAbsent: hasIrTypeAbsentMember(declaration.returns),
   };
   if (declaration.async) context.includes.add('coroutine');
@@ -618,6 +623,7 @@ function emitFunction(declaration: Readonly<IrFunctionDeclaration>, outer: EmitC
     async: declaration.async,
     defaultedParameterIds: collectDefaultedParameterIdsCpp(declaration.parameters),
     enclosingReturnType: declaration.returns,
+    namespaceScope: false,
     returnsAbsent: hasIrTypeAbsentMember(declaration.returns),
   };
   if (declaration.async) context.includes.add('coroutine');
@@ -1145,6 +1151,7 @@ function emitExpression(
         async: false,
         defaultedParameterIds: collectDefaultedParameterIdsCpp(expression.parameters),
         enclosingReturnType: expression.returns,
+        namespaceScope: false,
         returnsAbsent: hasIrTypeAbsentMember(expression.returns),
       };
       const usesThis = irFunctionExpressionUsesThisCpp(expression);
@@ -1156,7 +1163,13 @@ function emitExpression(
       }
       functionContext.includes.add('functional');
       const params = expression.parameters.map((parameter) => emitParameter(parameter, functionContext));
-      const capture = usesThis ? '[=, this]' : '[=]';
+      const capture = usesThis
+        ? context.namespaceScope
+          ? '[this]'
+          : '[=, this]'
+        : context.namespaceScope
+          ? '[]'
+          : '[=]';
       if (
         expression.expression &&
         functionContext.defaultedParameterIds.size === 0 &&
@@ -3368,25 +3381,10 @@ function getIrUnionMemberNameCpp(type: Readonly<IrType>): string | undefined {
   return type.reference.kind === 'binding' ? type.reference.binding.name : type.reference.name;
 }
 
-function declarationPriorityCpp(declaration: Readonly<IrDeclaration>): number {
-  if (
-    declaration.kind === 'class' ||
-    declaration.kind === 'typeAlias' ||
-    declaration.kind === 'interface' ||
-    declaration.kind === 'enum'
-  )
-    return 0;
-  if (declaration.kind === 'function' && !declaration.exported) return 1;
-  return 2;
-}
-
 function orderIrModuleDeclarationsCpp(module: Readonly<IrModule>): readonly Readonly<IrDeclaration>[] {
-  const originalIndexes = new Map(module.declarations.map((declaration, index) => [declaration, index] as const));
-  const ranked = [...module.declarations].sort(
-    (left, right) =>
-      declarationPriorityCpp(left) - declarationPriorityCpp(right) ||
-      originalIndexes.get(left)! - originalIndexes.get(right)!,
-  );
+  // Source order is the module-evaluation order for variables, classes, enums, and side-effect
+  // carriers. Move a later declaration only when an earlier declaration actually depends on it.
+  const ranked = [...module.declarations];
   const declarationsByBindingId = new Map(
     module.declarations.flatMap((declaration) =>
       'binding' in declaration ? [[declaration.binding.id, declaration] as const] : [],
