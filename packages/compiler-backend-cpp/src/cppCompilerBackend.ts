@@ -2913,19 +2913,30 @@ function emitNarrowedUnionMemberCpp(
   const union = getIrBindingVariantUnionTypeCpp(expression.reference.binding.id, context);
   if (!union) return undefined;
   const representation = getCppVariantRepresentationForInspection(union, context);
-  const alternatives = representation.alternatives.filter((alternative) =>
-    narrowedType
-      ? doesCppVariantAlternativeMatchType(alternative, narrowedType, context)
-      : alternative.members.some((member) => getIrUnionMemberNameCpp(member) === expression.narrowedMember),
+  const sourceAlternatives = representation.alternatives.flatMap((alternative) =>
+    alternative.members.map((member) => ({ alternative, member })),
   );
-  if (alternatives.length !== 1) {
+  const exactMatches = narrowedType
+    ? sourceAlternatives.filter(({ member }) => isDeepStrictEqual(member, narrowedType))
+    : [];
+  const narrowedTargetType =
+    narrowedType && exactMatches.length === 0
+      ? emitType(narrowedType, { ...context, anonymousStructs: new Map(), includes: new Set() })
+      : undefined;
+  const matches =
+    exactMatches.length > 0
+      ? exactMatches
+      : narrowedTargetType
+        ? sourceAlternatives.filter(({ alternative }) => alternative.targetType === narrowedTargetType)
+        : sourceAlternatives.filter(({ member }) => getIrUnionMemberNameCpp(member) === expression.narrowedMember);
+  if (matches.length !== 1) {
     emissionError(
       context,
       `narrowed member ${expression.narrowedMember ?? 'structural switch case'} must identify one C++ variant alternative`,
     );
   }
   if (representation.direct) return emitIdentifierReference(expression.reference, context);
-  return `std::get<${String(representation.alternatives.indexOf(alternatives[0]!))}>(${emitIdentifierReference(expression.reference, context)})`;
+  return `std::get<${String(representation.alternatives.indexOf(matches[0]!.alternative))}>(${emitIdentifierReference(expression.reference, context)})`;
 }
 
 function getCppVariantRepresentation(

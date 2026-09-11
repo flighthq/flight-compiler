@@ -344,6 +344,122 @@ describe('createCppCompilerBackend', () => {
     expect(emitted).not.toContain('struct reason_update');
   });
 
+  it('narrows an imported collider union to its named variant alternative', () => {
+    const source = (file: string, contents: string) => ({
+      packageName: '@flighthq/types',
+      sourceFile: ts.createSourceFile(`/flight/packages/types/src/${file}.ts`, contents, ts.ScriptTarget.Latest, true),
+      upstreamDirectory: '/flight',
+    });
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          specifier: '@flighthq/types/contract',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/contract.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const results = lowerTypeScriptSources(
+      [
+        source('CollisionResponse', 'export interface CollisionResponse { restitution?: number; friction?: number }'),
+        ...(
+          [
+            ['CircleCollider', "x: number; mode: 'exclude' | 'contain'"],
+            ['PlaneCollider', 'nx: number; distance: number'],
+            ['RectangleCollider', "width: number; mode: 'exclude' | 'contain'"],
+            ['SphereCollider', "radius: number; mode: 'exclude' | 'contain'"],
+          ] as const
+        ).map(([name, properties]) =>
+          source(
+            name,
+            `import type { CollisionResponse } from './CollisionResponse.js';
+             export interface ${name} extends CollisionResponse { kind: '${name}'; ${properties} }`,
+          ),
+        ),
+        source(
+          'ParticleCollider',
+          `import type { CircleCollider } from './CircleCollider.js';
+           import type { PlaneCollider } from './PlaneCollider.js';
+           import type { RectangleCollider } from './RectangleCollider.js';
+           import type { SphereCollider } from './SphereCollider.js';
+           export type ParticleCollider = CircleCollider | PlaneCollider | RectangleCollider | SphereCollider;`,
+        ),
+        source(
+          'contract',
+          `export * from './CircleCollider.js';
+           export * from './PlaneCollider.js';
+           export * from './RectangleCollider.js';
+           export * from './SphereCollider.js';
+           export * from './ParticleCollider.js';`,
+        ),
+        {
+          packageName: '@flighthq/particles',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/particles/src/applyParticleCollisions.ts',
+            `import type {
+               CircleCollider,
+               ParticleCollider,
+               PlaneCollider,
+               RectangleCollider,
+               SphereCollider,
+             } from '@flighthq/types/contract';
+             export function resolveCollider(collider: ParticleCollider): number {
+               switch (collider.kind) {
+                 case 'PlaneCollider': return resolvePlane(collider);
+                 case 'CircleCollider': return resolveCircle(collider);
+                 case 'RectangleCollider': return resolveRectangle(collider);
+                 case 'SphereCollider': return resolveSphere(collider);
+               }
+             }
+             function resolvePlane(collider: PlaneCollider): number { return collider.nx; }
+             function resolveCircle(collider: CircleCollider): number { return collider.x; }
+             function resolveRectangle(collider: RectangleCollider): number { return collider.width; }
+             function resolveSphere(collider: SphereCollider): number { return collider.radius; }`,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+      ],
+      moduleResolution,
+    );
+    const modules = results.map((result) => result.module);
+    const emitted = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules,
+      options: { runtimeProfile: 'flight-cpp' },
+    }).emitModule(modules.at(-1)!)[0]!.contents;
+
+    expect(emitted).toMatch(/resolve_plane\(std::get<\d+>\(collider\)\)/u);
+    expect(emitted).toMatch(/resolve_circle\(std::get<\d+>\(collider\)\)/u);
+    expect(emitted).toMatch(/resolve_rectangle\(std::get<\d+>\(collider\)\)/u);
+    expect(emitted).toMatch(/resolve_sphere\(std::get<\d+>\(collider\)\)/u);
+  });
+
+  it('refuses a narrowed variant reference without matching source-alternative evidence', () => {
+    const result = lower(
+      'unproven-variant-member.ts',
+      `interface CircleCollider { kind: 'CircleCollider'; radius: number }
+       interface PlaneCollider { kind: 'PlaneCollider'; distance: number }
+       export function keep(collider: CircleCollider | PlaneCollider): CircleCollider | PlaneCollider {
+         return collider;
+       }`,
+    );
+    const module = structuredClone(result.module);
+    const declaration = module.declarations.find(
+      (candidate) => candidate.kind === 'function' && candidate.binding.name === 'keep',
+    );
+    const returned = declaration?.kind === 'function' ? declaration.body[0] : undefined;
+    if (returned?.kind !== 'return' || returned.expression?.kind !== 'identifier') {
+      throw new Error('Expected returned collider identifier');
+    }
+    Object.assign(returned.expression, { narrowedMember: 'MissingCollider' });
+
+    expect(() => emitIrModuleCpp(module, { runtimeProfile: 'flight-cpp' })).toThrow(
+      'narrowed member MissingCollider must identify one C++ variant alternative',
+    );
+  });
+
   it('uses the resolved module graph for imported reference representation', () => {
     const model = lowerPackage('@flighthq/models', 'model.ts', 'export interface Model { value: number }').module;
     const barrel = lowerPackage('@flighthq/models', 'barrel.ts', "export type { Model } from './model.js';").module;
