@@ -2768,28 +2768,27 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(emitted).not.toContain('std::optional<auto>');
   });
 
-  it('coalesces nullable Partial<T> optional-chain members into contextual optional storage', () => {
+  it.each([
+    ['curve alias', 'type ParticleValue = ReadonlyArray<number>;', 'alphaCurve', 'alpha_curve'],
+    ['string union alias', "type ParticleValue = 'add' | 'multiply' | 'normal' | 'screen';", 'blendMode', 'blend_mode'],
+  ])('coalesces nullable Partial<T> %s members into contextual optional storage', (_, alias, field, emittedField) => {
     const result = lower(
       'particle-emitter-config.ts',
-      `type ParticleBlendMode = 'add' | 'multiply' | 'normal' | 'screen';
-       type ParticleCurve = ReadonlyArray<number>;
+      `${alias}
        interface ParticleEmitterConfig {
-         alphaCurve: ParticleCurve | null;
-         blendMode: ParticleBlendMode | null;
+         ${field}: ParticleValue | null;
        }
        export function initialize(
          out: ParticleEmitterConfig,
          config?: Partial<ParticleEmitterConfig>,
        ): void {
-         out.alphaCurve = config?.alphaCurve ?? null;
-         out.blendMode = config?.blendMode ?? null;
+         out.${field} = config?.${field} ?? null;
        }`,
     );
 
     expect(result.diagnostics).toEqual([]);
     const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
-    expect(emitted).toContain('out->alpha_curve =');
-    expect(emitted).toContain('out->blend_mode =');
+    expect(emitted).toContain(`out->${emittedField} =`);
     expect(emitted).toContain('auto optional_chain_receiver = config;');
     expect(emitted).not.toContain('std::optional<auto>');
   });

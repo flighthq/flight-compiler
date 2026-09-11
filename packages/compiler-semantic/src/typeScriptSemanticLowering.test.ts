@@ -2685,6 +2685,37 @@ describe('lowerTypeScriptSource', () => {
     ]);
   });
 
+  it('retains nullable property declarations as optional-chain value evidence', () => {
+    const result = lower(
+      'optional-chain-nullable-property.ts',
+      `type ParticleCurve = ReadonlyArray<number>;
+       interface Config { curve: ParticleCurve | null; }
+       export function read(config?: Partial<Config>): ParticleCurve | null {
+         return config?.curve ?? null;
+       }`,
+    );
+    const read = result.module.declarations.find(
+      (candidate) => candidate.kind === 'function' && candidate.binding.name === 'read',
+    );
+    const returned = read?.kind === 'function' ? read.body[0] : undefined;
+    const chain =
+      returned?.kind === 'return' && returned.expression?.kind === 'binary' ? returned.expression.left : undefined;
+    if (chain?.kind !== 'property') throw new Error('Expected optional property chain');
+
+    expect(result.diagnostics).toEqual([]);
+    expect(chain.optionalChain?.valueType).toEqual({
+      kind: 'union',
+      types: [
+        {
+          kind: 'named',
+          reference: { binding: expect.objectContaining({ name: 'ParticleCurve' }), kind: 'binding', path: [] },
+          typeArguments: [],
+        },
+        { kind: 'null' },
+      ],
+    });
+  });
+
   it('retains optional method absence in optional-call receiver evidence', () => {
     const result = lower(
       'optional-method-call-evidence.ts',

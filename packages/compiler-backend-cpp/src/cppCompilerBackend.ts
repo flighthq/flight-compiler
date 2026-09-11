@@ -2909,8 +2909,8 @@ function emitContextualUnionExpressionCpp(
           ? ('undefined' as const)
           : undefined;
     const leftType =
-      getIrExpressionTypeEvidenceCpp(expression.left, context) ??
-      (fallback ? getIrOptionalChainCoalescedTypeEvidenceCpp(expression.left, fallback, context) : undefined);
+      (fallback ? getIrOptionalChainCoalescedTypeEvidenceCpp(expression.left, fallback, context) : undefined) ??
+      getIrExpressionTypeEvidenceCpp(expression.left, context);
     const leftUnion = leftType ? getIrUnionTypeCpp(leftType, context, new Set()) : undefined;
     if (leftUnion) {
       const leftPlan = getCppUnionRepresentationPlan(leftUnion, context);
