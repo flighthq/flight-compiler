@@ -808,21 +808,13 @@ function rewriteIrStatementSwitchBreakForStateMachine(
           ? {
               catchClause: {
                 ...statement.catchClause,
-                body: rewriteIrStatementSwitchBreakForStateMachine(
-                  statement.catchClause.body,
-                  switchLabel,
-                  assignExit,
-                ),
+                body: rewriteIrStatementSwitchBreakForStateMachine(statement.catchClause.body, switchLabel, assignExit),
               },
             }
           : {}),
         ...(statement.finallyBody
           ? {
-              finallyBody: rewriteIrStatementSwitchBreakForStateMachine(
-                statement.finallyBody,
-                switchLabel,
-                assignExit,
-              ),
+              finallyBody: rewriteIrStatementSwitchBreakForStateMachine(statement.finallyBody, switchLabel, assignExit),
             }
           : {}),
       };

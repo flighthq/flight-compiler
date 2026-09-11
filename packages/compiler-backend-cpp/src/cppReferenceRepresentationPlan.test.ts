@@ -9,11 +9,11 @@ import type {
   IrModule,
   IrType,
 } from '../../compiler-types/src/index.js';
+import { createCppCompilerBackend } from './cppCompilerBackend.js';
 import {
   createIrTypeReferenceRepresentationPlanCpp,
   createIrTypeReferenceRepresentationPlannerCpp,
 } from './cppReferenceRepresentationPlan.js';
-import { createCppCompilerBackend } from './cppCompilerBackend.js';
 
 const numberType = { kind: 'primitive', name: 'number' } as const satisfies IrType;
 const objectType = {

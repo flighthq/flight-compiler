@@ -1583,8 +1583,18 @@ function emitExpression(
     case 'tupleRest': {
       const objectType = getIrExpressionTypeEvidenceCpp(expression.object, context);
       const tuple = objectType ? getIrTupleTypeCpp(objectType, context, new Set()) : undefined;
-      if (tuple && getCppRuntimeProfile(context.options) === 'flight-cpp' && getIrHomogeneousTupleElementTypeCpp(tuple)) {
-        return emitCppTupleSliceExpressionCpp(expression.object, tuple, expression.start, tuple.elements.length, context);
+      if (
+        tuple &&
+        getCppRuntimeProfile(context.options) === 'flight-cpp' &&
+        getIrHomogeneousTupleElementTypeCpp(tuple)
+      ) {
+        return emitCppTupleSliceExpressionCpp(
+          expression.object,
+          tuple,
+          expression.start,
+          tuple.elements.length,
+          context,
+        );
       }
       context.includes.add('tuple');
       return `std::get<${String(expression.start)}>(${emitExpression(expression.object, context)})`;
@@ -1594,7 +1604,11 @@ function emitExpression(
     case 'tupleSuffix': {
       const objectType = getIrExpressionTypeEvidenceCpp(expression.object, context);
       const tuple = objectType ? getIrTupleTypeCpp(objectType, context, new Set()) : undefined;
-      if (tuple && getCppRuntimeProfile(context.options) === 'flight-cpp' && getIrHomogeneousTupleElementTypeCpp(tuple)) {
+      if (
+        tuple &&
+        getCppRuntimeProfile(context.options) === 'flight-cpp' &&
+        getIrHomogeneousTupleElementTypeCpp(tuple)
+      ) {
         return emitCppTupleSliceExpressionCpp(
           expression.object,
           tuple,
