@@ -3279,6 +3279,34 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(emitted.contents).toContain('flight::String text;');
   });
 
+  it('emits WgpuRenderState-style closed intersections as variants of composed references', () => {
+    const result = lower(
+      'WgpuRenderState.ts',
+      `interface Entity { readonly entityId: number }
+       interface GPUDeviceLostInfo { readonly message: string }
+       interface WgpuRenderState { readonly frame: number }
+       export type WgpuOffscreenRenderStateResult = Entity &
+         (
+           | { readonly reason: 'device-lost'; readonly info: GPUDeviceLostInfo }
+           | { readonly reason: 'ok'; readonly state: WgpuRenderState }
+         );`,
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
+    const anonymousStructs = emitted.match(/struct AnonymousStruct\d+ : public flight::ReferenceEnabled \{[^}]+\};/gu);
+
+    expect(emitted).toContain('#include <variant>');
+    expect(anonymousStructs).toHaveLength(2);
+    for (const struct of anonymousStructs ?? []) {
+      expect(struct).toContain('double entityId;');
+      expect(struct).toContain('flight::String reason;');
+    }
+    expect(anonymousStructs?.some((struct) => struct.includes('flight::Ref<GPUDeviceLostInfo> info;'))).toBe(true);
+    expect(anonymousStructs?.some((struct) => struct.includes('flight::Ref<WgpuRenderState> state;'))).toBe(true);
+    expect(emitted).toMatch(
+      /using WgpuOffscreenRenderStateResult = std::variant<flight::Ref<AnonymousStruct\d+>, flight::Ref<AnonymousStruct\d+>>;/u,
+    );
+  });
+
   it('emits a closed callable-object reference through indexed alias construction and use', () => {
     const types = ts.createSourceFile(
       '/flight/packages/types/src/RenderState.ts',

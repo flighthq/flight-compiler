@@ -98,6 +98,69 @@ describe('C++ reference planner object shapes', () => {
     });
   });
 
+  it('distributes one closed object union through a represented intersection', () => {
+    const module = lower(
+      'WgpuRenderState.ts',
+      `
+        interface Entity { readonly entityId: number; }
+        interface DeviceLostInfo { readonly message: string; }
+        interface WgpuRenderState { readonly frame: number; }
+        export type WgpuOffscreenRenderStateResult = Entity &
+          (
+            | { readonly reason: 'device-lost'; readonly info: DeviceLostInfo }
+            | { readonly reason: 'ok'; readonly state: WgpuRenderState }
+          );
+        export type OpenResult<T extends object> = Entity &
+          (T | { readonly reason: 'ok'; readonly state: WgpuRenderState });
+        export type ConflictingResult = Entity &
+          (
+            | { readonly entityId: string; readonly reason: 'device-lost' }
+            | { readonly reason: 'ok'; readonly state: WgpuRenderState }
+          );
+        export type MultipleUnions = Entity &
+          ({ readonly left: number } | { readonly right: number }) &
+          ({ readonly top: number } | { readonly bottom: number });
+      `,
+    );
+    const resolver = createIrTypeReferenceRepresentationPlannerCpp([module]);
+    const result = resolver.resolveAlias(declarationType(module, 'WgpuOffscreenRenderStateResult'), module);
+    const open = resolver.resolveAlias(declarationType(module, 'OpenResult'), module);
+    const conflict = resolver.resolveAlias(declarationType(module, 'ConflictingResult'), module);
+    const multiple = resolver.resolveAlias(declarationType(module, 'MultipleUnions'), module);
+    if (result?.kind !== 'intersection' || open?.kind !== 'intersection' || conflict?.kind !== 'intersection') {
+      throw new TypeError('expected intersection aliases');
+    }
+    if (multiple?.kind !== 'intersection') throw new TypeError('expected multiple-union intersection alias');
+
+    const distributed = resolver.resolveClosedIntersectionDistribution(result, module);
+
+    expect(distributed?.types.map((alternative) => alternative.kind)).toEqual(['object', 'object']);
+    expect(
+      distributed?.types.map((alternative) =>
+        alternative.kind === 'object' ? alternative.properties.map((property) => property.name) : [],
+      ),
+    ).toEqual([
+      ['entityId', 'reason', 'info'],
+      ['entityId', 'reason', 'state'],
+    ]);
+    expect(resolver.plan(result, module)).toMatchObject({
+      category: 'value',
+      identityDomain: 'none',
+      kind: 'represented',
+      storageRepresentation: 'inlineValue',
+      valueRepresentation: 'inlineValue',
+    });
+    expect(resolver.plan(declarationType(module, 'WgpuOffscreenRenderStateResult'), module)).toMatchObject({
+      category: 'value',
+      kind: 'represented',
+      valueRepresentation: 'inlineValue',
+    });
+    for (const unresolved of [open, conflict, multiple]) {
+      expect(resolver.resolveClosedIntersectionDistribution(unresolved, module)).toBeUndefined();
+      expect(resolver.plan(unresolved, module)).toMatchObject({ kind: 'refused' });
+    }
+  });
+
   it('follows closed aliases when merging inherited specialized property types', () => {
     const entity = lower('entity.ts', 'export type Kind = string; export interface Entity { id: number; }');
     const extension = lower(
