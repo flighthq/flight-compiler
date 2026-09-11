@@ -632,6 +632,7 @@ function createIndeterminateImportedTypeAliasRepresentationPlanCpp(
   context: Readonly<ReferencePlanningContext>,
   identity: Readonly<CompilerTypeValueIdentityAnalysis>,
 ): CompilerCppReferenceRepresentationPlan | undefined {
+  if (identity.reason !== 'ambiguous-compound' && identity.reason !== 'unsupported-ambient-utility') return undefined;
   if (type.kind !== 'named' || type.reference.kind !== 'binding' || type.reference.binding.kind !== 'import') {
     return undefined;
   }
