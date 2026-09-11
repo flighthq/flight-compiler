@@ -1925,11 +1925,23 @@ describe('lowerTypeScriptSource', () => {
   });
 
   it('introduces checker-reached exported types through their source import route', () => {
-    const types = ts.createSourceFile(
+    const entityType = ts.createSourceFile(
       '/flight/packages/types/src/Entity.ts',
-      `export interface Entity { [EntityRuntimeKey]: EntityRuntime | undefined; }
-       export interface EntityRuntime { binding: object | null; }
+      `import type { EntityRuntime } from './EntityRuntime.js';
+       export interface Entity { [EntityRuntimeKey]: EntityRuntime | undefined; }
        export const EntityRuntimeKey = Symbol.for('EntityRuntime');`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const runtimeType = ts.createSourceFile(
+      '/flight/packages/types/src/EntityRuntime.ts',
+      'export interface EntityRuntime { binding: object | null; }',
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const contract = ts.createSourceFile(
+      '/flight/packages/types/src/contract.ts',
+      "export * from './Entity.js'; export * from './EntityRuntime.js';",
       ts.ScriptTarget.Latest,
       true,
     );
@@ -1956,9 +1968,11 @@ describe('lowerTypeScriptSource', () => {
       ts.ScriptTarget.Latest,
       true,
     );
-    const [, , result] = lowerTypeScriptSources(
+    const [, , , , result] = lowerTypeScriptSources(
       [
-        { packageName: '@flighthq/types', sourceFile: types, upstreamDirectory: '/flight' },
+        { packageName: '@flighthq/types', sourceFile: entityType, upstreamDirectory: '/flight' },
+        { packageName: '@flighthq/types', sourceFile: runtimeType, upstreamDirectory: '/flight' },
+        { packageName: '@flighthq/types', sourceFile: contract, upstreamDirectory: '/flight' },
         { packageName: '@flighthq/entity', sourceFile: runtime, upstreamDirectory: '/flight' },
         { packageName: '@flighthq/entity', sourceFile: binding, upstreamDirectory: '/flight' },
       ],
@@ -1966,7 +1980,7 @@ describe('lowerTypeScriptSource', () => {
         edges: [
           {
             specifier: '@flighthq/types/contract',
-            target: { packageName: '@flighthq/types', source: 'packages/types/src/Entity.ts' },
+            target: { packageName: '@flighthq/types', source: 'packages/types/src/contract.ts' },
           },
         ],
         schema: 'flight-compiler-module-resolution/1',
@@ -2073,6 +2087,56 @@ describe('lowerTypeScriptSource', () => {
       },
       specifier: '@flighthq/types/contract',
     });
+  });
+
+  it('keeps checker-reached types unresolved when multiple imported barrels export them', () => {
+    const source = (packageName: string, directory: string, file: string, text: string) => ({
+      packageName,
+      sourceFile: ts.createSourceFile(`/flight/packages/${directory}/src/${file}`, text, ts.ScriptTarget.Latest, true),
+      upstreamDirectory: '/flight',
+    });
+    const hidden = source('@flight/model', 'model', 'hidden.ts', 'export interface Hidden { value: number; }');
+    const first = source(
+      '@flight/model',
+      'model',
+      'first.ts',
+      "export { Hidden } from './hidden.js'; export interface First {}",
+    );
+    const second = source(
+      '@flight/model',
+      'model',
+      'second.ts',
+      "export { Hidden } from './hidden.js'; export interface Second {}",
+    );
+    const helper = source(
+      '@flight/app',
+      'app',
+      'helper.ts',
+      "import type { Hidden } from '@flight/first'; export function makeHidden(): Hidden { return { value: 1 }; }",
+    );
+    const consumer = source(
+      '@flight/app',
+      'app',
+      'consumer.ts',
+      "import type { First } from '@flight/first'; import type { Second } from '@flight/second'; import { makeHidden } from './helper.js'; export function read(): number { return makeHidden().value; }",
+    );
+    const result = lowerTypeScriptSources([hidden, first, second, helper, consumer], {
+      edges: [
+        {
+          specifier: '@flight/first',
+          target: { packageName: '@flight/model', source: 'packages/model/src/first.ts' },
+        },
+        {
+          specifier: '@flight/second',
+          target: { packageName: '@flight/model', source: 'packages/model/src/second.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    }).at(-1)!;
+
+    expect(
+      result.module.imports.flatMap((imported) => imported.bindings.map((binding) => binding.imported)),
+    ).not.toContain('Hidden');
   });
 
   it('expands concrete mapped properties through imported named type bindings', () => {

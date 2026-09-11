@@ -5645,40 +5645,35 @@ function lowerTypeScriptInferredTypeImportBinding(
       isExported(candidate),
   );
   if (!declaration || declaration.getSourceFile().fileName === context.moduleSourceFile.fileName) return undefined;
-  const targetFile = declaration.getSourceFile().fileName;
-  const specifiers = new Set<string>();
+  // The imported module's export table is the provenance boundary. Comparing leaf declaration files
+  // misses export-star barrels, where two types reached through one request intentionally live in
+  // different files. Exact checker-symbol identity keeps renamed exports sound and ambiguity explicit.
+  const routes = new Map<string, { importDeclaration: ts.ImportDeclaration; imported: string; specifier: string }>();
   for (const statement of context.moduleSourceFile.statements) {
-    if (!ts.isImportDeclaration(statement) || !ts.isStringLiteral(statement.moduleSpecifier)) continue;
-    const moduleSymbol = context.checker.getSymbolAtLocation(statement.moduleSpecifier);
-    if (!moduleSymbol) continue;
-    const exportsTarget = context.checker.getExportsOfModule(moduleSymbol).some((candidate) => {
-      const target = candidate.flags & ts.SymbolFlags.Alias ? context.checker.getAliasedSymbol(candidate) : candidate;
-      return target === symbol;
-    });
-    if (exportsTarget) specifiers.add(statement.moduleSpecifier.text);
-  }
-  for (const [candidate, binding] of [...context.typeBindings, ...context.bindings]) {
-    if (binding.kind !== 'import') continue;
-    const target = candidate.flags & ts.SymbolFlags.Alias ? context.checker.getAliasedSymbol(candidate) : candidate;
-    if (!target.declarations?.some((targetDeclaration) => targetDeclaration.getSourceFile().fileName === targetFile)) {
+    if (
+      !ts.isImportDeclaration(statement) ||
+      !statement.importClause ||
+      !ts.isStringLiteral(statement.moduleSpecifier)
+    ) {
       continue;
     }
-    for (const imported of context.imports) {
-      if (imported.bindings.some((importBinding) => importBinding.binding.id === binding.id)) {
-        specifiers.add(imported.specifier);
-      }
+    const moduleSymbol = context.checker.getSymbolAtLocation(statement.moduleSpecifier);
+    if (!moduleSymbol) continue;
+    for (const exported of context.checker.getExportsOfModule(moduleSymbol)) {
+      const target = exported.flags & ts.SymbolFlags.Alias ? context.checker.getAliasedSymbol(exported) : exported;
+      if (target !== symbol) continue;
+      const specifier = statement.moduleSpecifier.text;
+      routes.set(JSON.stringify([specifier, exported.name]), {
+        importDeclaration: statement,
+        imported: exported.name,
+        specifier,
+      });
     }
   }
-  if (specifiers.size !== 1) return undefined;
-  const specifier = [...specifiers][0]!;
-  const importDeclaration = context.moduleSourceFile.statements.find(
-    (statement): statement is ts.ImportDeclaration =>
-      ts.isImportDeclaration(statement) &&
-      ts.isStringLiteral(statement.moduleSpecifier) &&
-      statement.moduleSpecifier.text === specifier,
-  );
+  if (routes.size !== 1) return undefined;
+  const { importDeclaration, imported, specifier } = [...routes.values()][0]!;
   const moduleOptions = context.analysisModuleOptions.get(context.moduleSourceFile.fileName);
-  if (!importDeclaration || !moduleOptions) return undefined;
+  if (!moduleOptions) return undefined;
   const moduleContext = { ...context, options: moduleOptions, sourceFile: context.moduleSourceFile };
   const sourceOrigin = origin(importDeclaration.moduleSpecifier, moduleContext);
   const binding: IrTypeBindingIdentity = {
@@ -5688,7 +5683,7 @@ function lowerTypeScriptInferredTypeImportBinding(
       sourceOrigin.source,
       'inferred-import',
       specifier,
-      symbol.name,
+      imported,
     ])}`,
     kind: 'import',
     name: symbol.name,
@@ -5696,7 +5691,7 @@ function lowerTypeScriptInferredTypeImportBinding(
     space: 'type',
   };
   context.imports.push({
-    bindings: [{ binding, imported: symbol.name, typeOnly: true }],
+    bindings: [{ binding, imported, typeOnly: true }],
     specifier,
     typeOnly: true,
   });
