@@ -72,6 +72,7 @@ export interface CppCompilerExternalBindingConstruction {
 }
 
 export interface CppCompilerExternalBinding {
+  readonly callResultType?: string | undefined;
   readonly construction?: CppCompilerExternalBindingConstruction | undefined;
   readonly headers: readonly string[];
   readonly members?: readonly Readonly<{ sourceMember: string; targetName: string }>[] | undefined;

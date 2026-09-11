@@ -61,6 +61,15 @@ export function getCompilerExternalBindingConstructionCpp(
   )?.construction;
 }
 
+export function getCompilerExternalBindingCallResultTypeCpp(
+  sourceName: string,
+  externalBindings?: Readonly<CppCompilerExternalBindingManifest> | undefined,
+): string | undefined {
+  return getCppCompilerExternalBindings(externalBindings).find(
+    (binding) => binding.sourceName === sourceName.normalize('NFC') && binding.space === 'value',
+  )?.callResultType;
+}
+
 export function getCompilerExternalBindingEvidenceCpp(
   sourceName: string,
   space: CompilerRuntimeExternalSymbolSpace,
@@ -192,7 +201,14 @@ function getCppCompilerExternalBindings(
     ) {
       throw new TypeError(`${subject} has a malformed construction mapping`);
     }
+    if (
+      binding.callResultType !== undefined &&
+      (binding.space !== 'value' || typeof binding.callResultType !== 'string' || binding.callResultType.length === 0)
+    ) {
+      throw new TypeError(`${subject} has a malformed call-result type`);
+    }
     return {
+      ...(binding.callResultType ? { callResultType: binding.callResultType } : {}),
       ...(binding.construction ? { construction: { ...binding.construction } } : {}),
       headers: [...binding.headers],
       ...(binding.members

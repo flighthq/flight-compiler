@@ -915,6 +915,42 @@ export function preferred(): number { return NativeSurface.preferredFormat; }`,
 
     const timer = lower('timer-return.ts', 'export type Timer = ReturnType<typeof setTimeout>;').module;
     expect(() => emitIrModuleCpp(timer, { runtimeProfile: 'flight-cpp' })).toThrow('missing: setTimeout[value]');
+    const timerBinding = {
+      bindings: [
+        {
+          callResultType: 'host::TimerHandle',
+          headers: ['host/timer.hpp'],
+          nullability: 'non-null' as const,
+          ownership: 'value' as const,
+          sourceName: 'setTimeout',
+          space: 'value' as const,
+          targetName: 'host::set_timeout',
+        },
+      ],
+      schema: 'flight-cpp-external-bindings/1' as const,
+    };
+    const emittedTimer = emitIrModuleCpp(timer, {
+      externalBindings: timerBinding,
+      runtimeProfile: 'flight-cpp',
+    }).contents;
+    expect(emittedTimer).toContain('#include <host/timer.hpp>');
+    expect(emittedTimer).toContain('using Timer = host::TimerHandle;');
+
+    const timerWithoutResult = {
+      ...timerBinding,
+      bindings: timerBinding.bindings.map(({ callResultType: _, ...binding }) => binding),
+    };
+    expect(() =>
+      emitIrModuleCpp(timer, { externalBindings: timerWithoutResult, runtimeProfile: 'flight-cpp' }),
+    ).toThrow('ReturnType<T> requires a statically resolvable non-generic callable type');
+
+    const timerParameters = lower(
+      'timer-parameters.ts',
+      'export type TimerParameters = Parameters<typeof setTimeout>;',
+    ).module;
+    expect(() =>
+      emitIrModuleCpp(timerParameters, { externalBindings: timerBinding, runtimeProfile: 'flight-cpp' }),
+    ).toThrow('Parameters<T> requires a statically resolvable non-generic callable type');
 
     const runtimeViews = lower(
       'runtime-views.ts',

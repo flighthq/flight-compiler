@@ -38,6 +38,15 @@ describe('compiler backend contracts', () => {
       externalBindings: {
         bindings: [
           {
+            callResultType: 'host::TimerHandle',
+            headers: ['host/timer.hpp'],
+            nullability: 'non-null',
+            ownership: 'value',
+            sourceName: 'setTimeout',
+            space: 'value',
+            targetName: 'host::set_timeout',
+          },
+          {
             headers: ['host/gl.hpp'],
             nullability: 'non-null',
             ownership: 'borrowed',
@@ -58,6 +67,15 @@ describe('compiler backend contracts', () => {
     expect(cppOptions).toEqual({
       externalBindings: {
         bindings: [
+          {
+            callResultType: 'host::TimerHandle',
+            headers: ['host/timer.hpp'],
+            nullability: 'non-null',
+            ownership: 'value',
+            sourceName: 'setTimeout',
+            space: 'value',
+            targetName: 'host::set_timeout',
+          },
           {
             headers: ['host/gl.hpp'],
             nullability: 'non-null',

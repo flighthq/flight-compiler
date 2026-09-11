@@ -45,6 +45,7 @@ import type {
   CompilerLoweringPass,
   CompilerModuleResolutionPlan,
   CppCompilerBackendOptions,
+  CppCompilerExternalBindingManifest,
   CppCompilerRuntimeProfile,
   EmittedFile,
   IrBinaryOperator,
@@ -84,6 +85,7 @@ import {
 import { createIrTypeReferenceRepresentationPlannerCpp } from './cppReferenceRepresentationPlan.js';
 import {
   createCompilerRuntimeExternalSymbolBindingPlanCpp,
+  getCompilerExternalBindingCallResultTypeCpp,
   getCompilerExternalBindingConstructionCpp,
   getCompilerExternalBindingHeadersCpp,
   getCompilerRuntimeExternalMemberTargetCpp,
@@ -2599,6 +2601,11 @@ function emitType(type: Readonly<IrType>, context: EmitContext, representation: 
         if (type.typeArguments.length !== 1 || !type.typeArguments[0]) {
           emissionError(context, `${sourceName}<T> requires exactly one callable type argument`);
         }
+        const externalCallResult =
+          sourceName === 'ReturnType'
+            ? getCppExternalCallResultTypeCpp(type.typeArguments[0], context.options.externalBindings)
+            : undefined;
+        if (externalCallResult) return externalCallResult;
         const callable = getCppClosedCallableType(type.typeArguments[0], context, new Set());
         if (!callable || callable.typeParameters.length > 0) {
           emissionError(context, `${sourceName}<T> requires a statically resolvable non-generic callable type`);
@@ -4167,6 +4174,14 @@ function getCppClosedCallableType(
   const nextResolvingAliases = new Set(resolvingAliases);
   nextResolvingAliases.add(bindingId);
   return getCppClosedCallableType(target, context, nextResolvingAliases);
+}
+
+function getCppExternalCallResultTypeCpp(
+  type: Readonly<IrType>,
+  externalBindings: Readonly<CppCompilerExternalBindingManifest> | undefined,
+): string | undefined {
+  if (type.kind !== 'typeOf' || type.reference.kind !== 'ambient') return undefined;
+  return getCompilerExternalBindingCallResultTypeCpp(type.reference.name, externalBindings);
 }
 
 function getIrCallArgumentExpectedTypeCpp(

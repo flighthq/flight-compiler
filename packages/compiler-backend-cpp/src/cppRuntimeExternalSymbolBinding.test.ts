@@ -1,5 +1,6 @@
 import {
   createCompilerRuntimeExternalSymbolBindingPlanCpp,
+  getCompilerExternalBindingCallResultTypeCpp,
   getCompilerExternalBindingConstructionCpp,
   getCompilerExternalBindingEvidenceCpp,
   getCompilerExternalBindingHeadersCpp,
@@ -150,6 +151,50 @@ describe('getCompilerExternalBindingConstructionCpp', () => {
       targetName: 'host::create_surface',
     });
     expect(getCompilerExternalBindingConstructionCpp('Missing', externalBindings)).toBeUndefined();
+  });
+});
+
+describe('getCompilerExternalBindingCallResultTypeCpp', () => {
+  const timerBindings = {
+    bindings: [
+      {
+        callResultType: 'host::TimerHandle',
+        headers: ['host/timer.hpp'],
+        nullability: 'non-null' as const,
+        ownership: 'value' as const,
+        sourceName: 'setTimeout',
+        space: 'value' as const,
+        targetName: 'host::set_timeout',
+      },
+    ],
+    schema: 'flight-cpp-external-bindings/1' as const,
+  };
+
+  it('returns exact call-result evidence only for a downstream value binding', () => {
+    expect(getCompilerExternalBindingCallResultTypeCpp('setTimeout', timerBindings)).toBe('host::TimerHandle');
+    expect(getCompilerExternalBindingCallResultTypeCpp('Missing', timerBindings)).toBeUndefined();
+    expect(getCompilerExternalBindingCallResultTypeCpp('NativeSurface', externalBindings)).toBeUndefined();
+  });
+
+  it('rejects malformed, type-space, and ambiguous call-result evidence', () => {
+    expect(() =>
+      getCompilerExternalBindingCallResultTypeCpp('setTimeout', {
+        bindings: [{ ...timerBindings.bindings[0]!, callResultType: '' }],
+        schema: 'flight-cpp-external-bindings/1',
+      }),
+    ).toThrow('malformed call-result type');
+    expect(() =>
+      getCompilerExternalBindingCallResultTypeCpp('setTimeout', {
+        bindings: [{ ...timerBindings.bindings[0]!, space: 'type' }],
+        schema: 'flight-cpp-external-bindings/1',
+      }),
+    ).toThrow('malformed call-result type');
+    expect(() =>
+      getCompilerExternalBindingCallResultTypeCpp('setTimeout', {
+        bindings: [timerBindings.bindings[0]!, { ...timerBindings.bindings[0]!, callResultType: 'host::OtherHandle' }],
+        schema: 'flight-cpp-external-bindings/1',
+      }),
+    ).toThrow('ambiguous for setTimeout[value]');
   });
 });
 
