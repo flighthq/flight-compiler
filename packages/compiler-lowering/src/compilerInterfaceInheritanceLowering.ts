@@ -54,15 +54,34 @@ interface InterfaceInheritanceDeclarationLocation {
 interface InterfaceInheritanceModuleRecord {
   readonly declarations: ReadonlyMap<string, InterfaceInheritanceDeclarationLocation>;
   readonly identity: string;
+  readonly importsByBindingId: ReadonlyMap<string, readonly InterfaceInheritanceImport[]>;
   readonly module: Readonly<IrModule>;
   readonly source: string;
 }
 
+interface InterfaceInheritanceImport {
+  readonly imported: string;
+  readonly specifier: string;
+}
+
 type InterfaceInheritanceStructuralDeclaration = IrClassDeclaration | IrInterfaceDeclaration | IrTypeAliasDeclaration;
 
-interface InterfaceInheritanceModuleSet {
-  readonly modules: readonly InterfaceInheritanceModuleRecord[];
-  readonly resolution: Readonly<CompilerModuleResolutionPlan>;
+interface InterfaceInheritanceModuleIndex {
+  readonly declarationModulesByBindingId: ReadonlyMap<string, readonly InterfaceInheritanceModuleRecord[]>;
+  readonly importModulesByBindingId: ReadonlyMap<string, readonly InterfaceInheritanceModuleRecord[]>;
+  readonly modulesByIdentity: ReadonlyMap<string, InterfaceInheritanceModuleRecord>;
+  readonly modulesByPackageSource: ReadonlyMap<string, readonly InterfaceInheritanceModuleRecord[]>;
+  readonly resolutionTargetsBySpecifier: ReadonlyMap<string, InterfaceInheritanceResolutionTargets>;
+  readonly valueModulesByName: ReadonlyMap<string, readonly InterfaceInheritanceModuleRecord[]>;
+}
+
+interface InterfaceInheritanceModuleSet extends InterfaceInheritanceModuleIndex {
+  readonly subject: InterfaceInheritanceModuleRecord;
+}
+
+interface InterfaceInheritanceResolutionTargets {
+  readonly byImporter: ReadonlyMap<string, readonly string[]>;
+  readonly fallback: readonly string[];
 }
 
 const compilerLoweringPassNameInterfaceInheritance = 'interface-inheritance';
@@ -72,17 +91,12 @@ export function createCompilerLoweringPassInterfaceInheritance(
   resolution: Readonly<CompilerModuleResolutionPlan> | undefined = compilerEmptyModuleResolutionPlan,
   options: Readonly<CompilerInterfaceInheritanceLoweringOptions> = {},
 ): CompilerLoweringPass {
-  let moduleRecords: readonly InterfaceInheritanceModuleRecord[] | undefined;
+  let moduleIndex: InterfaceInheritanceModuleIndex | undefined;
   return {
     idempotent: true,
     lowerIrModule(module) {
-      moduleRecords ??= createInterfaceInheritanceModuleRecords(modules);
-      return lowerIrModuleInterfaceInheritance(
-        module,
-        moduleRecords,
-        resolution ?? compilerEmptyModuleResolutionPlan,
-        options,
-      );
+      moduleIndex ??= createInterfaceInheritanceModuleIndex(modules, resolution ?? compilerEmptyModuleResolutionPlan);
+      return lowerIrModuleInterfaceInheritance(module, moduleIndex, options);
     },
     name: compilerLoweringPassNameInterfaceInheritance,
     runsAfter: [],
@@ -94,34 +108,73 @@ export function createCompilerLoweringPassInterfaceInheritance(
         },
       });
       return inherited
-        ? { kind: 'invalid', reason: 'interface inheritance remains after structural flattening' }
+        ? {
+            kind: 'invalid',
+            reason: 'interface inheritance remains after structural flattening',
+          }
         : { kind: 'valid' };
     },
   };
 }
 
-function createInterfaceInheritanceModuleRecords(
+function createInterfaceInheritanceModuleIndex(
   modules: readonly Readonly<IrModule>[],
-): readonly InterfaceInheritanceModuleRecord[] {
+  resolution: Readonly<CompilerModuleResolutionPlan>,
+): InterfaceInheritanceModuleIndex {
   const records = modules.map(createInterfaceInheritanceModuleRecord).sort(compareInterfaceInheritanceRecords);
   if (records.some((record, index) => index > 0 && record.identity === records[index - 1]!.identity)) {
     throw new TypeError('Interface inheritance module set contains a duplicate module identity');
   }
-  return records;
+  const declarationModulesByBindingId = new Map<string, InterfaceInheritanceModuleRecord[]>();
+  const importModulesByBindingId = new Map<string, InterfaceInheritanceModuleRecord[]>();
+  const modulesByPackageSource = new Map<string, InterfaceInheritanceModuleRecord[]>();
+  const valueModulesByName = new Map<string, InterfaceInheritanceModuleRecord[]>();
+  for (const record of records) {
+    addInterfaceInheritanceModuleIndexEntry(
+      modulesByPackageSource,
+      `${record.module.packageName}\0${record.source}`,
+      record,
+    );
+    for (const bindingId of record.declarations.keys()) {
+      addInterfaceInheritanceModuleIndexEntry(declarationModulesByBindingId, bindingId, record);
+    }
+    for (const bindingId of record.importsByBindingId.keys()) {
+      addInterfaceInheritanceModuleIndexEntry(importModulesByBindingId, bindingId, record);
+    }
+    const valueNames = new Set(
+      record.module.declarations.flatMap((declaration) =>
+        declaration.kind === 'variable' && 'binding' in declaration ? [declaration.binding.name] : [],
+      ),
+    );
+    for (const imported of record.module.imports) {
+      for (const binding of imported.bindings) valueNames.add(binding.binding.name);
+    }
+    for (const name of valueNames) addInterfaceInheritanceModuleIndexEntry(valueModulesByName, name, record);
+  }
+  return {
+    declarationModulesByBindingId,
+    importModulesByBindingId,
+    modulesByIdentity: new Map(records.map((record) => [record.identity, record])),
+    modulesByPackageSource,
+    resolutionTargetsBySpecifier: createInterfaceInheritanceResolutionTargets(resolution),
+    valueModulesByName,
+  };
 }
 
 function lowerIrModuleInterfaceInheritance(
   module: Readonly<IrModule>,
-  moduleRecords: readonly InterfaceInheritanceModuleRecord[],
-  resolution: Readonly<CompilerModuleResolutionPlan>,
+  moduleIndex: Readonly<InterfaceInheritanceModuleIndex>,
   options: Readonly<CompilerInterfaceInheritanceLoweringOptions>,
 ): IrModule {
-  const moduleSet = createInterfaceInheritanceModuleSet(module, moduleRecords, resolution);
+  const moduleSet = createInterfaceInheritanceModuleSet(module, moduleIndex);
   const subject = getInterfaceInheritanceModuleRecord(module, moduleSet);
   if (!subject) throw new TypeError('Interface inheritance subject must belong to the explicit module set');
   const context: InterfaceInheritanceLoweringContext = {
     importedTypeBindings: new Map(),
-    imports: module.imports.map((imported) => ({ ...imported, bindings: [...imported.bindings] })),
+    imports: module.imports.map((imported) => ({
+      ...imported,
+      bindings: [...imported.bindings],
+    })),
     module: subject,
     moduleSet,
     options,
@@ -211,7 +264,10 @@ function getIrInterfaceDeclarationPropertiesFlattened(
   }
   for (const property of declaration.properties) {
     addIrInterfacePropertyFlattened(
-      { ...property, type: resolveIrTypeStructuralSubstitution(property.type, substitutions) },
+      {
+        ...property,
+        type: resolveIrTypeStructuralSubstitution(property.type, substitutions),
+      },
       declaration,
       properties,
       context,
@@ -440,7 +496,12 @@ function getIrInterfaceDeclarationBaseFromModule(
       .filter((candidate) => candidate.binding.id === bindingReference.binding.id)
       .flatMap((candidate) => {
         if (candidate.imported === '*' && bindingReference.path.length === 1) {
-          return [{ exportName: bindingReference.path[0]!, specifier: entry.specifier }];
+          return [
+            {
+              exportName: bindingReference.path[0]!,
+              specifier: entry.specifier,
+            },
+          ];
         }
         return bindingReference.path.length === 0 && candidate.imported !== '*'
           ? [{ exportName: candidate.imported, specifier: entry.specifier }]
@@ -547,7 +608,10 @@ function addIrInterfacePropertyFlattened(
 function removeIrObjectPropertyReadonlyInterfaceInheritance(type: Readonly<IrType>): IrType {
   switch (type.kind) {
     case 'array':
-      return { ...type, element: removeIrObjectPropertyReadonlyInterfaceInheritance(type.element) };
+      return {
+        ...type,
+        element: removeIrObjectPropertyReadonlyInterfaceInheritance(type.element),
+      };
     case 'function':
       return {
         ...type,
@@ -568,7 +632,10 @@ function removeIrObjectPropertyReadonlyInterfaceInheritance(type: Readonly<IrTyp
       return { ...type, types: [types[0]!, types[1]!, ...types.slice(2)] };
     }
     case 'keyof':
-      return { ...type, type: removeIrObjectPropertyReadonlyInterfaceInheritance(type.type) };
+      return {
+        ...type,
+        type: removeIrObjectPropertyReadonlyInterfaceInheritance(type.type),
+      };
     case 'named':
       return {
         ...type,
@@ -693,7 +760,11 @@ function resolveIrTypeInterfaceInheritance(
       if (!expandStructures) {
         return {
           ...type,
-          reference: { binding: location.declaration.binding, kind: 'binding', path: [] },
+          reference: {
+            binding: location.declaration.binding,
+            kind: 'binding',
+            path: [],
+          },
           typeArguments: type.typeArguments.map((argument) =>
             resolveIrTypeInterfaceInheritance(argument, module, context, declarations, false),
           ),
@@ -803,11 +874,19 @@ function getInterfaceInheritanceValueDeclaration(
   const origins =
     reference.kind === 'binding'
       ? [getInterfaceInheritanceBindingModule(reference.binding, context) ?? module]
-      : context.moduleSet.modules;
+      : getInterfaceInheritanceAdjustedModuleRecords(
+          context.moduleSet.valueModulesByName.get(reference.name) ?? [],
+          context.moduleSet,
+          hasInterfaceInheritanceModuleValueName(context.moduleSet.subject, reference.name),
+        );
   const declarations = new Map<string, IrVariableDeclaration & { readonly binding: IrBindingIdentity }>();
   for (const origin of origins) {
     const local = origin.module.declarations.find(
-      (declaration): declaration is IrVariableDeclaration & { readonly binding: IrBindingIdentity } =>
+      (
+        declaration,
+      ): declaration is IrVariableDeclaration & {
+        readonly binding: IrBindingIdentity;
+      } =>
         declaration.kind === 'variable' &&
         'binding' in declaration &&
         (reference.kind === 'binding'
@@ -825,7 +904,11 @@ function getInterfaceInheritanceValueDeclaration(
       if (!exportName) continue;
       for (const target of getInterfaceInheritanceSpecifierModules(origin, imported.specifier, context.moduleSet)) {
         const declaration = target.module.declarations.find(
-          (item): item is IrVariableDeclaration & { readonly binding: IrBindingIdentity } => {
+          (
+            item,
+          ): item is IrVariableDeclaration & {
+            readonly binding: IrBindingIdentity;
+          } => {
             if (item.kind !== 'variable' || !('binding' in item)) return false;
             return (
               (item.exported && item.binding.name === exportName) ||
@@ -850,42 +933,76 @@ function getInterfaceInheritanceBindingModule(
   context: InterfaceInheritanceLoweringContext,
 ): InterfaceInheritanceModuleRecord | undefined {
   const source = normalizePathPortable(binding.source);
-  return context.moduleSet.modules.find(
-    (module) => module.module.packageName === binding.packageName && module.source === source,
+  const key = `${binding.packageName}\0${source}`;
+  return getInterfaceInheritanceAdjustedModuleRecords(
+    context.moduleSet.modulesByPackageSource.get(key) ?? [],
+    context.moduleSet,
+    context.moduleSet.subject.module.packageName === binding.packageName && context.moduleSet.subject.source === source,
+  )[0];
+}
+
+function addInterfaceInheritanceModuleIndexEntry(
+  index: Map<string, InterfaceInheritanceModuleRecord[]>,
+  key: string,
+  record: InterfaceInheritanceModuleRecord,
+): void {
+  const entries = index.get(key) ?? [];
+  entries.push(record);
+  index.set(key, entries);
+}
+
+function createInterfaceInheritanceResolutionTargets(
+  resolution: Readonly<CompilerModuleResolutionPlan>,
+): ReadonlyMap<string, InterfaceInheritanceResolutionTargets> {
+  const targets = new Map<string, { byImporter: Map<string, Set<string>>; fallback: Set<string> }>();
+  for (const edge of resolution.edges) {
+    const entry = targets.get(edge.specifier) ?? {
+      byImporter: new Map(),
+      fallback: new Set(),
+    };
+    const target = `${edge.target.packageName}\0${normalizePathPortable(edge.target.source)}`;
+    if (edge.importer) {
+      const importer = getInterfaceInheritanceModuleIdentity(edge.importer);
+      const exact = entry.byImporter.get(importer) ?? new Set();
+      exact.add(target);
+      entry.byImporter.set(importer, exact);
+    } else {
+      entry.fallback.add(target);
+    }
+    targets.set(edge.specifier, entry);
+  }
+  return new Map(
+    [...targets].map(([specifier, entry]) => [
+      specifier,
+      {
+        byImporter: new Map(
+          [...entry.byImporter].map(([importer, exact]) => [importer, [...exact].sort(compareTextCodeUnits)]),
+        ),
+        fallback: [...entry.fallback].sort(compareTextCodeUnits),
+      },
+    ]),
   );
 }
 
 function createInterfaceInheritanceModuleSet(
   subject: Readonly<IrModule>,
-  moduleRecords: readonly InterfaceInheritanceModuleRecord[],
-  resolution: Readonly<CompilerModuleResolutionPlan>,
+  moduleIndex: Readonly<InterfaceInheritanceModuleIndex>,
 ): InterfaceInheritanceModuleSet {
   const subjectIdentity = getInterfaceInheritanceModuleIdentity(subject);
-  const existingIndex = moduleRecords.findIndex((record) => record.identity === subjectIdentity);
-  if (existingIndex >= 0 && moduleRecords[existingIndex]!.module === subject) {
-    return { modules: moduleRecords, resolution };
-  }
-  const subjectRecord = createInterfaceInheritanceModuleRecord(subject);
-  const records = [...moduleRecords];
-  if (existingIndex >= 0) records[existingIndex] = subjectRecord;
-  else {
-    records.push(subjectRecord);
-    records.sort(compareInterfaceInheritanceRecords);
-  }
-  if (records.some((record, index) => index > 0 && record.identity === records[index - 1]!.identity)) {
-    throw new TypeError('Interface inheritance module set contains a duplicate module identity');
-  }
-  return { modules: records, resolution };
+  const existing = moduleIndex.modulesByIdentity.get(subjectIdentity);
+  const subjectRecord = existing?.module === subject ? existing : createInterfaceInheritanceModuleRecord(subject);
+  return { ...moduleIndex, subject: subjectRecord };
 }
 
 function createInterfaceInheritanceModuleRecord(module: Readonly<IrModule>): InterfaceInheritanceModuleRecord {
   const identity = getInterfaceInheritanceModuleIdentity(module);
-  const record: { declarations: Map<string, InterfaceInheritanceDeclarationLocation> } & Omit<
-    InterfaceInheritanceModuleRecord,
-    'declarations'
-  > = {
+  const record: {
+    declarations: Map<string, InterfaceInheritanceDeclarationLocation>;
+    importsByBindingId: Map<string, InterfaceInheritanceImport[]>;
+  } & Omit<InterfaceInheritanceModuleRecord, 'declarations' | 'importsByBindingId'> = {
     declarations: new Map(),
     identity,
+    importsByBindingId: new Map(),
     module,
     source: normalizePathPortable(module.source),
   };
@@ -900,7 +1017,32 @@ function createInterfaceInheritanceModuleRecord(module: Readonly<IrModule>): Int
       module: record,
     });
   }
+  for (const imported of module.imports) {
+    for (const binding of imported.bindings) {
+      const entries = record.importsByBindingId.get(binding.binding.id) ?? [];
+      entries.push({
+        imported: binding.imported,
+        specifier: imported.specifier,
+      });
+      record.importsByBindingId.set(binding.binding.id, entries);
+    }
+  }
   return record;
+}
+
+function getInterfaceInheritanceAdjustedModuleRecords(
+  records: readonly InterfaceInheritanceModuleRecord[],
+  moduleSet: Readonly<InterfaceInheritanceModuleSet>,
+  includeSubject: boolean,
+): readonly InterfaceInheritanceModuleRecord[] {
+  const adjusted = new Map(
+    records.map((record) => [
+      record.identity,
+      record.identity === moduleSet.subject.identity ? moduleSet.subject : record,
+    ]),
+  );
+  if (includeSubject) adjusted.set(moduleSet.subject.identity, moduleSet.subject);
+  return [...adjusted.values()].sort(compareInterfaceInheritanceRecords);
 }
 
 function getInterfaceInheritanceModuleRecord(
@@ -908,7 +1050,19 @@ function getInterfaceInheritanceModuleRecord(
   moduleSet: Readonly<InterfaceInheritanceModuleSet>,
 ): InterfaceInheritanceModuleRecord | undefined {
   const identity = getInterfaceInheritanceModuleIdentity(module);
-  return moduleSet.modules.find((candidate) => candidate.identity === identity);
+  if (moduleSet.subject.identity === identity) return moduleSet.subject;
+  return moduleSet.modulesByIdentity.get(identity);
+}
+
+function hasInterfaceInheritanceModuleValueName(
+  module: Readonly<InterfaceInheritanceModuleRecord>,
+  name: string,
+): boolean {
+  return (
+    module.module.declarations.some(
+      (declaration) => declaration.kind === 'variable' && 'binding' in declaration && declaration.binding.name === name,
+    ) || module.module.imports.some((imported) => imported.bindings.some((binding) => binding.binding.name === name))
+  );
 }
 
 function getInterfaceInheritanceDeclarationLocation(
@@ -959,17 +1113,25 @@ function getInterfaceInheritanceSpecifierModules(
   moduleSet: Readonly<InterfaceInheritanceModuleSet>,
 ): readonly InterfaceInheritanceModuleRecord[] {
   const candidates = getInterfaceInheritanceSpecifierSourceCandidates(from.source, specifier);
-  const matching = moduleSet.resolution.edges.filter((edge) => edge.specifier === specifier);
-  const exact = matching.filter(
-    (edge) => edge.importer && getInterfaceInheritanceModuleIdentity(edge.importer) === from.identity,
-  );
-  const resolutionTargets = (exact.length > 0 ? exact : matching.filter((edge) => !edge.importer)).map(
-    (edge) => `${edge.target.packageName}\0${normalizePathPortable(edge.target.source)}`,
-  );
-  return moduleSet.modules.filter(
-    (candidate) =>
-      (candidate.module.packageName === from.module.packageName && candidates.has(candidate.source)) ||
-      resolutionTargets.includes(`${candidate.module.packageName}\0${candidate.source}`),
+  const indexedTargets = moduleSet.resolutionTargetsBySpecifier.get(specifier);
+  const exactTargets = indexedTargets?.byImporter.get(from.identity);
+  const resolutionTargets = exactTargets && exactTargets.length > 0 ? exactTargets : (indexedTargets?.fallback ?? []);
+  const modulesByIdentity = new Map<string, InterfaceInheritanceModuleRecord>();
+  for (const source of candidates) {
+    for (const candidate of moduleSet.modulesByPackageSource.get(`${from.module.packageName}\0${source}`) ?? []) {
+      modulesByIdentity.set(candidate.identity, candidate);
+    }
+  }
+  for (const target of resolutionTargets) {
+    for (const candidate of moduleSet.modulesByPackageSource.get(target) ?? []) {
+      modulesByIdentity.set(candidate.identity, candidate);
+    }
+  }
+  return getInterfaceInheritanceAdjustedModuleRecords(
+    [...modulesByIdentity.values()],
+    moduleSet,
+    (from.module.packageName === moduleSet.subject.module.packageName && candidates.has(moduleSet.subject.source)) ||
+      resolutionTargets.includes(`${moduleSet.subject.module.packageName}\0${moduleSet.subject.source}`),
   );
 }
 
@@ -1239,15 +1401,31 @@ function getInterfaceInheritanceTypeImport(
   reference: Readonly<Extract<IrTypeNameReference, { kind: 'binding' }>>,
   context: InterfaceInheritanceLoweringContext,
 ): InterfaceInheritanceTypeImport {
-  for (const module of context.moduleSet.modules) {
+  const indexedModules = new Map<string, InterfaceInheritanceModuleRecord>();
+  for (const module of context.moduleSet.declarationModulesByBindingId.get(reference.binding.id) ?? []) {
+    indexedModules.set(module.identity, module);
+  }
+  for (const module of context.moduleSet.importModulesByBindingId.get(reference.binding.id) ?? []) {
+    indexedModules.set(module.identity, module);
+  }
+  const subjectHasBinding =
+    context.moduleSet.subject.declarations.has(reference.binding.id) ||
+    context.moduleSet.subject.importsByBindingId.has(reference.binding.id);
+  for (const module of getInterfaceInheritanceAdjustedModuleRecords(
+    [...indexedModules.values()],
+    context.moduleSet,
+    subjectHasBinding,
+  )) {
     const declaration = module.declarations.get(reference.binding.id);
     if (declaration) {
-      return { imported: declaration.declaration.binding.name, path: reference.path, target: module };
+      return {
+        imported: declaration.declaration.binding.name,
+        path: reference.path,
+        target: module,
+      };
     }
-    for (const imported of module.module.imports) {
-      const candidate = imported.bindings.find((binding) => binding.binding.id === reference.binding.id);
-      if (!candidate) continue;
-      const targets = getInterfaceInheritanceSpecifierModules(module, imported.specifier, context.moduleSet);
+    for (const candidate of module.importsByBindingId.get(reference.binding.id) ?? []) {
+      const targets = getInterfaceInheritanceSpecifierModules(module, candidate.specifier, context.moduleSet);
       if (targets.length !== 1) {
         return failIrInterfaceInheritanceLowering(
           context.subject,
@@ -1264,7 +1442,11 @@ function getInterfaceInheritanceTypeImport(
         }
         return { imported: name, path: remainingPath, target: targets[0]! };
       }
-      return { imported: candidate.imported, path: reference.path, target: targets[0]! };
+      return {
+        imported: candidate.imported,
+        path: reference.path,
+        target: targets[0]!,
+      };
     }
   }
   return failIrInterfaceInheritanceLowering(
@@ -1286,13 +1468,24 @@ function addInterfaceInheritanceTypeImport(
   }
   const specifier = getInterfaceInheritanceRelativeSpecifier(context.subject.source, imported.target.source);
   const index = context.imports.findIndex((candidate) => candidate.specifier === specifier);
-  const importBinding = { binding, imported: imported.imported, typeOnly: true } as const;
+  const importBinding = {
+    binding,
+    imported: imported.imported,
+    typeOnly: true,
+  } as const;
   if (index < 0) {
-    context.imports.push({ bindings: [importBinding], specifier, typeOnly: true });
+    context.imports.push({
+      bindings: [importBinding],
+      specifier,
+      typeOnly: true,
+    });
     return;
   }
   const existing = context.imports[index]!;
-  context.imports[index] = { ...existing, bindings: [...existing.bindings, importBinding] };
+  context.imports[index] = {
+    ...existing,
+    bindings: [...existing.bindings, importBinding],
+  };
 }
 
 function getInterfaceInheritanceRelativeSpecifier(fromSource: string, targetSource: string): string {

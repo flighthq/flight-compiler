@@ -139,9 +139,9 @@ describe('lowerIrModuleWithCompilerPasses', () => {
 
     expect(lowerIrModuleWithCompilerPasses(module, [pass]).imports.map((item) => item.specifier)).toEqual(['once']);
     expect(
-      lowerIrModuleWithCompilerPasses(module, [pass], { verificationDepth: 'idempotence' }).imports.map(
-        (item) => item.specifier,
-      ),
+      lowerIrModuleWithCompilerPasses(module, [pass], {
+        verificationDepth: 'idempotence',
+      }).imports.map((item) => item.specifier),
     ).toEqual(['once']);
   });
 
@@ -161,12 +161,20 @@ describe('lowerIrModuleWithCompilerPasses', () => {
     );
 
     lowerIrModuleWithCompilerPasses(module, [pass]);
-    expect({ postconditions, transforms }).toEqual({ postconditions: 1, transforms: 1 });
+    expect({ postconditions, transforms }).toEqual({
+      postconditions: 1,
+      transforms: 1,
+    });
 
     postconditions = 0;
     transforms = 0;
-    lowerIrModuleWithCompilerPasses(module, [pass], { verificationDepth: 'idempotence' });
-    expect({ postconditions, transforms }).toEqual({ postconditions: 2, transforms: 2 });
+    lowerIrModuleWithCompilerPasses(module, [pass], {
+      verificationDepth: 'idempotence',
+    });
+    expect({ postconditions, transforms }).toEqual({
+      postconditions: 2,
+      transforms: 2,
+    });
   });
 
   it('rejects invalid plans, structural or pass-specific malformation, changed identity, false idempotence, and errors', () => {
@@ -219,7 +227,10 @@ describe('lowerIrModuleWithCompilerPasses', () => {
     expectFailure(
       () =>
         lowerIrModuleWithCompilerPasses(module, [
-          createPass('structurally-malformed', (value) => ({ ...value, name: '' })),
+          createPass('structurally-malformed', (value) => ({
+            ...value,
+            name: '',
+          })),
         ]),
       'malformed-ir',
       'structurally-malformed',
@@ -307,7 +318,10 @@ describe('lowerIrModuleWithCompilerPasses', () => {
 });
 
 function appendImport(moduleValue: Readonly<IrModule>, specifier: string): IrModule {
-  return { ...moduleValue, imports: [...moduleValue.imports, { bindings: [], specifier, typeOnly: false }] };
+  return {
+    ...moduleValue,
+    imports: [...moduleValue.imports, { bindings: [], specifier, typeOnly: false }],
+  };
 }
 
 function createImportPass(
@@ -331,7 +345,9 @@ function createImportPass(
 function createPass(
   name: string,
   lowerIrModule: CompilerLoweringPass['lowerIrModule'],
-  verifyIrModule: CompilerLoweringPass['verifyIrModule'] = () => ({ kind: 'valid' }),
+  verifyIrModule: CompilerLoweringPass['verifyIrModule'] = () => ({
+    kind: 'valid',
+  }),
   runsAfter: readonly string[] = [],
   idempotent = true,
 ): CompilerLoweringPass {

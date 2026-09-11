@@ -521,6 +521,45 @@ describe('createCompilerLoweringPassInterfaceInheritance', () => {
     );
   });
 
+  it('indexes module resolution once for repeated graph lowering', () => {
+    const base = lowerInPackage('@flighthq/model', 'model', 'base.ts', 'export interface Base { value: number; }');
+    const derived = lowerInPackage(
+      '@flighthq/app',
+      'app',
+      'derived.ts',
+      "import type { Base } from '@flighthq/model'; export interface Derived extends Base {}",
+    );
+    let resolutionReads = 0;
+    const edges = new Proxy(
+      [
+        {
+          importer: identity(derived),
+          specifier: '@flighthq/model',
+          target: { packageName: base.packageName, source: base.source },
+        },
+      ],
+      {
+        get(target, property, receiver) {
+          resolutionReads += 1;
+          return Reflect.get(target, property, receiver) as unknown;
+        },
+      },
+    );
+    const resolution: CompilerModuleResolutionPlan = {
+      edges,
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const pass = createCompilerLoweringPassInterfaceInheritance([derived, base], resolution);
+
+    const first = pass.lowerIrModule(derived);
+    const indexedReads = resolutionReads;
+    const second = pass.lowerIrModule(derived);
+
+    expect(second).toEqual(first);
+    expect(indexedReads).toBeGreaterThan(0);
+    expect(resolutionReads).toBe(indexedReads);
+  });
+
   it('rebinds inherited cross-module property types through direct type imports', () => {
     const detail = lowerInPackage(
       '@flighthq/model',
