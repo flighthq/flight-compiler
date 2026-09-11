@@ -14,19 +14,33 @@ export function collectIrModulesRuntimeExternalSymbolIdentities(
     identities.set(JSON.stringify([identity.sourceName, identity.space]), identity);
   };
   for (const module of modules) {
+    const erasedTypeArgumentPaths: (readonly (number | string)[])[] = [];
     analyzeIrModuleTraversal(module, {
       expression(expression) {
         if (expression.kind === 'identifier' && expression.reference.kind === 'ambient') {
           add(expression.reference.name, 'value');
         }
       },
-      type(type) {
+      type(type, path) {
+        if (erasedTypeArgumentPaths.some((prefix) => isCompilerIrTraversalPathWithin(path, prefix))) return;
+        if (type.kind === 'named' && type.reference.kind === 'ambient') {
+          for (const index of compilerErasedTypeArgumentIndexes.get(type.reference.name) ?? []) {
+            erasedTypeArgumentPaths.push([...path, 'typeArguments', index]);
+          }
+        }
         if (type.kind === 'named' && type.reference.kind === 'ambient') add(type.reference.name, 'type');
         if (type.kind === 'typeOf' && type.reference.kind === 'ambient') add(type.reference.name, 'value');
       },
     });
   }
   return [...identities.values()].sort(compareIrRuntimeExternalSymbolIdentities);
+}
+
+function isCompilerIrTraversalPathWithin(
+  path: readonly (number | string)[],
+  prefix: readonly (number | string)[],
+): boolean {
+  return prefix.length <= path.length && prefix.every((part, index) => path[index] === part);
 }
 
 function compareIrRuntimeExternalSymbolIdentities(
@@ -37,5 +51,20 @@ function compareIrRuntimeExternalSymbolIdentities(
 }
 
 // These TypeScript utility wrappers change compile-time type meaning but do not name runtime storage.
-const compilerIntrinsicTypeNames = new Set(['Omit', 'Partial', 'Pick', 'Readonly', 'Required']);
+const compilerIntrinsicTypeNames = new Set([
+  'Exclude',
+  'Extract',
+  'NoInfer',
+  'Omit',
+  'Partial',
+  'Pick',
+  'Readonly',
+  'Required',
+]);
+const compilerErasedTypeArgumentIndexes = new Map<string, readonly number[]>([
+  ['Exclude', [1]],
+  ['Extract', [1]],
+  ['Omit', [1]],
+  ['Pick', [1]],
+]);
 const compilerIntrinsicValueNames = new Set(['undefined']);

@@ -158,6 +158,33 @@ describe('collectIrModulesRuntimeExternalSymbolIdentities', () => {
     expect(collectIrModulesRuntimeExternalSymbolIdentities([lowered.module])).toEqual([]);
   });
 
+  it('collects utility storage subjects without erased key and constraint arguments', () => {
+    const lowered = lowerTypeScriptSource(
+      ts.createSourceFile(
+        '/flight/packages/runtime/src/utilities.ts',
+        `
+          export type UtilityStorage =
+            | Exclude<StoredUnion, typeof ErasedKey>
+            | Extract<ExtractedUnion, ErasedConstraint>
+            | NoInfer<InferredStorage>
+            | Omit<OmittedStorage, 'key'>
+            | Pick<PickedStorage, 'key'>;
+        `,
+        ts.ScriptTarget.Latest,
+        true,
+      ),
+      { packageName: '@flighthq/runtime', upstreamDirectory: '/flight' },
+    );
+
+    expect(collectIrModulesRuntimeExternalSymbolIdentities([lowered.module])).toEqual([
+      { sourceName: 'ExtractedUnion', space: 'type' },
+      { sourceName: 'InferredStorage', space: 'type' },
+      { sourceName: 'OmittedStorage', space: 'type' },
+      { sourceName: 'PickedStorage', space: 'type' },
+      { sourceName: 'StoredUnion', space: 'type' },
+    ]);
+  });
+
   it('fails defensively for forged declaration, expression, member, statement, and type kinds', () => {
     const empty = lowerTypeScriptSource(
       ts.createSourceFile('/flight/packages/runtime/src/base.ts', '', ts.ScriptTarget.Latest, true),
