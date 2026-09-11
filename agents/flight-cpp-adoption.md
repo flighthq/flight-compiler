@@ -94,6 +94,26 @@ The Signals `connection`, `emitter`, and `safe` modules use `...args: Parameters
 - [ ] Define a zero-storage C++ facet/tag or view representation that shares one owning `flight::Ref<TrayIcon>` and one Entity runtime slot while retaining the distinct `TrayWith*` capability constraints at public call boundaries. Prove capable and incapable hosts, multiple simultaneous facets, referent identity, and invalid facet calls with TypeScript-versus-native oracles.
 - [ ] Alternatively, reshape the Flight tray API around explicit host capability witnesses or tagged handles before generation. Do not publish a compiler-only erasure that widens the generic source contract.
 
+## Weak identity caches
+
+The bounded eight-package diagnostic at compiler revision `61e63e5` and `flight-cpp` revision `538fe1d` exposes five direct `WeakMap` refusals. The diagnostic host manifest deliberately gives every external object shared ownership, but that proves neither a usable weak owner nor the identity/hash/equality operations required by a native key container.
+
+| Refused module | First unsupported key/value pair | Exact representation boundary |
+| --- | --- | --- |
+| `GlContextRuntime` | `CanvasImageSource` → `WebGLTexture` | `CanvasImageSource` is the six-arm DOM union of image, video, canvas, bitmap, offscreen-canvas, and video-frame objects. The host needs one identity-preserving weak-key carrier across those alternatives. `WebGLTexture` is a host value that must remain storable without changing its native lifetime policy. |
+| `WgpuDeviceRuntime` | `CanvasImageSource` → `WgpuTextureEntry` | The same host weak-key proof is absent. The value is a compiler-proven Flight reference to the local `WgpuTextureEntry` interface, so it is not the refusal. |
+| `WgpuQuadBatchResources` | `GPUShaderModule` → `Map<string, GPURenderPipeline>` | `GPUShaderModule` is a host handle whose shared ownership declaration does not define weak access, identity, hashing, or equality. The value is the represented Flight map of strings to host pipeline handles. |
+| `WgpuRenderState` | `CanvasImageSource` → `WgpuTextureEntry` | This newly exposed blocker is the same `CanvasImageSource` host-key ABI gap as the device runtime, not a new local interface-rebinding defect. |
+| `WgpuScene3DRuntime` | `object` → `unknown` at `shadedMaterialBindingCache` | The `object` key already lowers to the accepted erased Flight reference key. The first unrepresentable value is `unknown`; `shadedMaterialPlanCache` has the same shape. The preceding `object` → `WgpuScene3DFrameBinding` and `object` → `WgpuMaterialBinding` pairs, plus the later `object` → `WgpuMeshUpload` pair, already have concrete local Flight-reference values. |
+
+The remaining texture caches in the GL and WGPU runtime records use `TextureSource`, `ExternalTexture`, `RenderTexture`, or `ImageResource` keys. Those imported Entity-derived interfaces already have compiler-proven `flight::Ref<T>` identity; anonymous/local entry records and host GPU handles supply their corresponding value representations. That proof does not make the current container sound. At this pin `weak-map` is still `planned`, there is no runtime weak-map header or type, and the compiler's provisional spelling is `std::unordered_map`. That fallback owns reference keys strongly and therefore cannot implement source weak reachability.
+
+- [ ] Implement and package a `flight::WeakMap<Key, Value>` contract with non-enumerable `get`, `set`, `has`, and `delete` behavior, weak key retention, stable identity comparison, and entry expiry when the last strong key owner disappears. Then change the compiler binding from the provisional strong map only after emitted headers and lifetime oracles pass.
+- [ ] Extend `flight-cpp-external-bindings/1` with an explicit weak-key ABI contract before admitting `CanvasImageSource`, `GPUShaderModule`, or similar native handles. The contract must identify the weak owner/token and its equality/hash operations; `ownership: "shared"` plus a direct `targetName` is insufficient.
+- [ ] Give the two shaded-material caches a concrete shared value carrier, either by closing their public value types at the Flight source boundary or by adding a versioned runtime-erased value with checked recovery. The compiler cannot soundly invent one C++ layout for `unknown`.
+
+No current refusal in this group has a sound compiler-only relaxation: accepting an external `runtimeReference` as a weak key would assume an unstated host ABI, accepting `unknown` would fabricate a value representation, and retaining `std::unordered_map` would erase weak lifetime semantics.
+
 ## Host-provided bindings
 
 These are not portable runtime globals and must not become unconditional `flight-cpp` core bindings. A host adapter or consuming application supplies a versioned `flight-cpp-external-bindings/1` manifest and the named native headers.
