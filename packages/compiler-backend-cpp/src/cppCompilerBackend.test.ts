@@ -3299,7 +3299,7 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(emitted).toContain('#include <variant>');
     expect(anonymousStructs).toHaveLength(2);
     for (const struct of anonymousStructs ?? []) {
-      expect(struct).toContain('double entityId;');
+      expect(struct).toContain('double entity_id;');
       expect(struct).toContain('flight::String reason;');
     }
     expect(anonymousStructs?.some((struct) => struct.includes('flight::Ref<GPUDeviceLostInfo> info;'))).toBe(true);
