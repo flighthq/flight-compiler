@@ -2550,6 +2550,20 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(emitted.dependencies).toEqual(expect.arrayContaining(['flight/runtime.hpp', 'flight/symbol.hpp', 'memory']));
   });
 
+  it('uses ambient undefined as contextual evidence when clearing a computed optional slot', () => {
+    const result = lower(
+      'runtime-slot-reset.ts',
+      `export const RuntimeKey = Symbol.for('Runtime');
+       interface Runtime { value: number; }
+       interface Entity { [RuntimeKey]: Runtime | undefined; }
+       export function release(entity: Entity): void { entity[RuntimeKey] = undefined; }`,
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+    expect(emitted.contents).toContain('entity->runtime_key = std::nullopt;');
+  });
+
   it('refuses indexedAccess types without a closed object shape', () => {
     const result = lower('idx.ts', 'export const x: number = 1;');
     const module = structuredClone(result.module);
@@ -3638,6 +3652,77 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(output).toContain('std::optional<flight::Array<double>> value');
     expect(output).toContain('value = static_cast<flight::Ref<color_matrix>>(operation)->color_matrix;');
     expect(output).not.toContain('value = std::optional<flight::Array<double>>{static_cast');
+  });
+
+  it('returns a narrowed Partial property through its reexported function alias union', () => {
+    const transformSource = ts.createSourceFile(
+      '/flight/packages/types/src/ColorTransformFunction.ts',
+      `export type ColorTransformFunction =
+         (out: [number, number, number], r: number, g: number, b: number) => void;`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const adjustmentSource = ts.createSourceFile(
+      '/flight/packages/types/src/ColorLutAdjustment.ts',
+      `import type { ColorTransformFunction } from './ColorTransformFunction';
+       export interface ColorLutAdjustment { transform: ColorTransformFunction; }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const contractSource = ts.createSourceFile(
+      '/flight/packages/types/src/contract.ts',
+      "export * from './ColorLutAdjustment'; export * from './ColorTransformFunction';",
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const consumerSource = ts.createSourceFile(
+      '/flight/packages/adjustments/src/colorLutAdjustment.ts',
+      `import type { ColorLutAdjustment, ColorTransformFunction } from '@flighthq/types/contract';
+       export function getTransform(operation: Readonly<{ kind: string }>): ColorTransformFunction | null {
+         const transform = (operation as Readonly<Partial<ColorLutAdjustment>>).transform;
+         if (typeof transform === 'function') return transform;
+         return null;
+       }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          specifier: '@flighthq/types/contract',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/contract.ts' },
+        },
+        {
+          specifier: './ColorLutAdjustment',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/ColorLutAdjustment.ts' },
+        },
+        {
+          specifier: './ColorTransformFunction',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/ColorTransformFunction.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const results = lowerTypeScriptSources(
+      [
+        { packageName: '@flighthq/types', sourceFile: transformSource, upstreamDirectory: '/flight' },
+        { packageName: '@flighthq/types', sourceFile: adjustmentSource, upstreamDirectory: '/flight' },
+        { packageName: '@flighthq/types', sourceFile: contractSource, upstreamDirectory: '/flight' },
+        { packageName: '@flighthq/adjustments', sourceFile: consumerSource, upstreamDirectory: '/flight' },
+      ],
+      moduleResolution,
+    );
+    const modules = results.map((result) => result.module);
+    const output = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules,
+      options: { runtimeProfile: 'flight-cpp' },
+    }).emitModule(modules[3]!)[0]!.contents;
+
+    expect(results[3]!.diagnostics).toEqual([]);
+    expect(output).toContain(
+      'return std::optional<std::function<void(flight::Array<double>, double, double, double)>>',
+    );
   });
 
   it('preserves named optional reference results for structurally inferred locals', () => {

@@ -2867,7 +2867,12 @@ function emitContextualUnionExpressionCpp(
   const union = getIrUnionTypeCpp(expectedType, context, new Set());
   if (!union || expression.kind === 'conditional') return undefined;
   const plan = getCppUnionRepresentationPlan(union, context);
-  if (expression.kind === 'undefinedValue') {
+  if (
+    expression.kind === 'undefinedValue' ||
+    (expression.kind === 'identifier' &&
+      expression.reference.kind === 'ambient' &&
+      expression.reference.name === 'undefined')
+  ) {
     return emitCppUnionSentinelConstruction('undefined', union, plan.kind, context);
   }
   if (expression.kind === 'literal' && expression.value === null) {
