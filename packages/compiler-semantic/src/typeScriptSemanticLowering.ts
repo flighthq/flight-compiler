@@ -4392,6 +4392,13 @@ function inferInitializerType(node: ts.Expression, context: LoweringContext): Ir
     return inferInitializerType(node.expression, context);
   }
   if (isTypeScriptConstAssertion(node)) return inferInitializerType(node.expression, context);
+  if (
+    (ts.isAsExpression(node) || ts.isTypeAssertionExpression(node)) &&
+    (isTypeScriptClosedCallableObjectType(node.type, context) ||
+      isTypeScriptClosedCallableObjectAliasReference(node.type, context))
+  ) {
+    return lowerType(node.type, context);
+  }
   if (node.kind === ts.SyntaxKind.TrueKeyword || node.kind === ts.SyntaxKind.FalseKeyword) {
     return { kind: 'primitive', name: 'boolean' };
   }
@@ -4485,6 +4492,43 @@ function isTypeScriptConstAssertion(node: ts.Expression): node is ts.AsExpressio
     node.type.typeName.text === 'const' &&
     !node.type.typeArguments
   );
+}
+
+function isTypeScriptClosedCallableObjectType(node: ts.TypeNode, context: LoweringContext): boolean {
+  const type = context.checker.getTypeFromTypeNode(node);
+  const callables = context.checker.getSignaturesOfType(type, ts.SignatureKind.Call);
+  if (
+    callables.length !== 1 ||
+    callables[0]!.getTypeParameters()?.length ||
+    context.checker.getSignaturesOfType(type, ts.SignatureKind.Construct).length > 0 ||
+    context.checker.getIndexInfosOfType(type).length > 0 ||
+    context.checker.getPropertiesOfType(type).length === 0
+  ) {
+    return false;
+  }
+  return callables[0]!.getParameters().every((parameter) => {
+    if (parameter.flags & ts.SymbolFlags.Optional) return false;
+    return !parameter.declarations?.some(
+      (declaration) => ts.isParameter(declaration) && declaration.dotDotDotToken !== undefined,
+    );
+  });
+}
+
+function isTypeScriptClosedCallableObjectAliasReference(node: ts.TypeNode, context: LoweringContext): boolean {
+  if (!ts.isTypeReferenceNode(node)) return false;
+  const symbol = context.checker.getSymbolAtLocation(node.typeName);
+  const declaration = symbol?.declarations?.find(ts.isTypeAliasDeclaration);
+  if (!declaration) return false;
+  if (
+    ts.isTypeReferenceNode(declaration.type) &&
+    ts.isIdentifier(declaration.type.typeName) &&
+    declaration.type.typeName.text === 'NonNullable' &&
+    declaration.type.typeArguments?.length === 1 &&
+    ts.isIndexedAccessTypeNode(declaration.type.typeArguments[0])
+  ) {
+    return isTypeScriptClosedCallableObjectIndexedAccess(declaration.type.typeArguments[0], context);
+  }
+  return isTypeScriptClosedCallableObjectType(declaration.type, context);
 }
 
 function commonType(types: readonly [IrType, ...IrType[]]): IrType {

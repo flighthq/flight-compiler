@@ -1721,7 +1721,11 @@ describe('lowerTypeScriptSource', () => {
       '/flight/packages/app/src/callback.ts',
       `import type { Runtime } from '@flight/model';
        export type Callback = NonNullable<Runtime['callback']>;
-       export type Label = NonNullable<Runtime['label']>;`,
+       export type Label = NonNullable<Runtime['label']>;
+       export function create(): Callback {
+         const callback = (() => {}) as Callback;
+         return callback;
+       }`,
       ts.ScriptTarget.Latest,
       true,
     );
@@ -1756,6 +1760,19 @@ describe('lowerTypeScriptSource', () => {
       kind: 'named',
       reference: { kind: 'ambient', name: 'NonNullable' },
       typeArguments: [{ kind: 'union' }],
+    });
+    const create = result!.module.declarations.find(
+      (declaration) => declaration.kind === 'function' && declaration.binding.name === 'create',
+    );
+    if (create?.kind !== 'function') throw new Error('Expected create function');
+    expect(create.body[0]).toMatchObject({
+      declarations: [
+        {
+          binding: { name: 'callback' },
+          type: { kind: 'named', reference: { binding: { name: 'Callback' }, kind: 'binding' } },
+        },
+      ],
+      kind: 'variable',
     });
   });
 
