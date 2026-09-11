@@ -1,7 +1,13 @@
 import ts from 'typescript';
 
 import { analyzeIrModuleTraversal } from '../../compiler-ir-traversal/src/index.js';
-import type { IrBindingIdentity, IrExpression, IrStatement } from '../../compiler-types/src/index.js';
+import type {
+  IrBindingIdentity,
+  IrExpression,
+  IrObjectTypeProperty,
+  IrStatement,
+  IrType,
+} from '../../compiler-types/src/index.js';
 import { lowerTypeScriptSource, lowerTypeScriptSources } from './typeScriptSemanticLowering.js';
 
 function lower(file: string, source: string) {
@@ -2141,6 +2147,11 @@ describe('lowerTypeScriptSource', () => {
       upstreamDirectory: '/flight',
     });
     const results = lowerTypeScriptSources([
+      source(
+        'Entity.ts',
+        `export interface Entity { runtime: number; }
+         export type EntityWithoutRuntime<Type extends Entity> = Omit<Type, 'runtime'>;`,
+      ),
       source('Vector2.ts', 'export interface Vector2 { x: number; y: number; }'),
       source(
         'TextureUvTransform.ts',
@@ -2154,17 +2165,27 @@ describe('lowerTypeScriptSource', () => {
       ),
       source(
         'Texture.ts',
-        `import type { TextureUvTransform } from './TextureUvTransform';
+        `import type { Entity, EntityWithoutRuntime } from './Entity';
+         import type { TextureUvTransform } from './TextureUvTransform';
          import type { HiddenTextureUvTransform } from './HiddenTextureUvTransform';
-         export type Texture = { [Key in keyof TextureUvTransform]: TextureUvTransform[Key] };
+         interface TextureCommon extends Entity, TextureUvTransform { version: number; }
+         interface Texture2D extends TextureCommon { readonly dimension: '2d'; }
+         type Texture =
+           | Texture2D
+           | (TextureCommon & { readonly dimension: '2d-array' })
+           | (TextureCommon & { readonly dimension: '3d' })
+           | (TextureCommon & { readonly dimension: 'cube' });
+         type TextureLikeFrom<Type extends Texture> =
+           Type extends Texture ? EntityWithoutRuntime<Type> : never;
+         export type TextureLike = TextureLikeFrom<Texture>;
          export type HiddenTexture = {
            [Key in keyof HiddenTextureUvTransform]: HiddenTextureUvTransform[Key]
          };`,
       ),
     ]);
     const result = results.at(-1)!;
-    const texture = result.module.declarations.find(
-      (declaration) => declaration.kind === 'typeAlias' && declaration.binding.name === 'Texture',
+    const textureLike = result.module.declarations.find(
+      (declaration) => declaration.kind === 'typeAlias' && declaration.binding.name === 'TextureLike',
     );
     const hiddenTexture = result.module.declarations.find(
       (declaration) => declaration.kind === 'typeAlias' && declaration.binding.name === 'HiddenTexture',
@@ -2182,16 +2203,50 @@ describe('lowerTypeScriptSource', () => {
       ],
       typeOnly: true,
     });
-    expect(texture).toMatchObject({
-      kind: 'typeAlias',
-      type: {
-        kind: 'object',
-        properties: [
-          { name: 'uvOffset', type: { kind: 'named', reference: { binding: vectorImport!.bindings[0]!.binding } } },
-          { name: 'uvScale', type: { kind: 'named', reference: { binding: vectorImport!.bindings[0]!.binding } } },
-        ],
-      },
-    });
+    if (textureLike?.kind !== 'typeAlias') throw new Error('Expected the TextureLike type alias');
+    const vectorProperties: IrObjectTypeProperty[] = [];
+    const visit = (type: IrType): void => {
+      switch (type.kind) {
+        case 'array':
+          visit(type.element);
+          break;
+        case 'function':
+          type.parameters.forEach((parameter) => visit(parameter.type));
+          visit(type.returns);
+          break;
+        case 'indexedAccess':
+          visit(type.object);
+          visit(type.index);
+          break;
+        case 'intersection':
+        case 'union':
+          type.types.forEach(visit);
+          break;
+        case 'keyof':
+          visit(type.type);
+          break;
+        case 'named':
+          type.typeArguments.forEach(visit);
+          break;
+        case 'object':
+          for (const property of type.properties) {
+            if (property.name === 'uvOffset' || property.name === 'uvScale') vectorProperties.push(property);
+            visit(property.type);
+          }
+          break;
+        case 'tuple':
+          type.elements.forEach((element) => visit(element.type));
+          break;
+      }
+    };
+    visit(textureLike.type);
+    expect(vectorProperties).toHaveLength(8);
+    for (const property of vectorProperties) {
+      expect(property.type).toMatchObject({
+        kind: 'named',
+        reference: { binding: vectorImport!.bindings[0]!.binding },
+      });
+    }
     expect(hiddenTexture).toMatchObject({
       kind: 'typeAlias',
       type: { properties: [{ name: 'uvOffset', type: { kind: 'object' } }] },

@@ -3005,7 +3005,11 @@ function lowerTypeNameNodeReference(
   }
   if (symbol?.declarations?.some(isTypeBindingDeclaration)) {
     if (!hasTypeBindingDeclarationInModule(symbol, context)) {
-      return undefined;
+      const aliased = resolveTypeBindingAliasTarget(symbol, context);
+      const inferred = lowerTypeScriptInferredTypeImportBinding(aliased ?? symbol, context);
+      if (!inferred) return undefined;
+      context.typeBindings.set(symbol, inferred);
+      if (aliased) context.typeBindings.set(aliased, inferred);
     }
     return { binding: lowerTypeBindingSymbol(symbol, parts.root, context), kind: 'binding', path: parts.path };
   }
