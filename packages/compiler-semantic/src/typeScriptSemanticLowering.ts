@@ -1809,12 +1809,16 @@ function getIrTypeConstructionTargetShape(
   const unresolved = ts.isInterfaceDeclaration(declaration)
     ? ({ kind: 'object', properties: lowerTypeProperties(declaration.members, declarationContext) } as const)
     : lowerType(declaration.type, declarationContext);
+  const typeParameters = lowerTypeParameters(declaration.typeParameters, declarationContext);
+  if (
+    type.typeArguments.length > typeParameters.length ||
+    typeParameters.slice(type.typeArguments.length).some((parameter) => !parameter.default)
+  ) {
+    return type;
+  }
   const resolved = resolveIrTypeStructuralSubstitution(
     unresolved,
-    createIrTypeParameterSubstitutionPlan(
-      lowerTypeParameters(declaration.typeParameters, declarationContext),
-      type.typeArguments,
-    ),
+    createIrTypeParameterSubstitutionPlan(typeParameters, type.typeArguments),
   );
   const nextSeen = new Set(seen);
   nextSeen.add(bindingId);

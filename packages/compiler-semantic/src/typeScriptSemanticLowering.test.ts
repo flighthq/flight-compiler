@@ -219,6 +219,37 @@ describe('lowerTypeScriptSource', () => {
     });
   });
 
+  it('keeps assignment evidence conservative when an unresolved import prevents generic call inference', () => {
+    const result = lower(
+      'generic-call-assignment.ts',
+      `import type { ImportedState } from '@flighthq/types/contract';
+       interface Runtime<NodeType extends object> { pivot: string; }
+       function getRuntime<NodeType extends object>(state: Readonly<ImportedState<NodeType>>): Runtime<NodeType> {
+         return state as unknown as Runtime<NodeType>;
+       }
+       export function setPivot<NodeType extends object>(state: ImportedState<NodeType>, pivot: string): void {
+         getRuntime(state).pivot = pivot;
+       }`,
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    const setPivot = result.module.declarations.find(
+      (declaration) => declaration.kind === 'function' && declaration.binding.name === 'setPivot',
+    );
+    expect(setPivot).toMatchObject({
+      body: [
+        {
+          expression: {
+            kind: 'assignment',
+            semantics: { left: { declared: 'string', flow: 'string' }, result: 'string' },
+          },
+          kind: 'expression',
+        },
+      ],
+      kind: 'function',
+    });
+  });
+
   it('resolves enum auto-increment values after explicit discriminants', () => {
     const result = lower('mode.ts', 'export enum Mode { A = 1, B, C = Mode.A << 3, D }');
 
