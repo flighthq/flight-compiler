@@ -52,6 +52,14 @@ None of the three TypeScript array-like names is a sound alias for one concrete 
 
 A future compiler intrinsic for a checker-proven closed `ArrayBufferLike` is the only compiler-only computation in this family: expand the alias to its exact alternatives and use their declared runtime representations. The sequence and view interfaces still need runtime carriers because their public values cross calls, returns, and stored fields. Add focused native conversion and aliasing oracles before declaring any of these external bindings available.
 
+## Dependent callable parameter packs
+
+The Signals `connection`, `emitter`, and `safe` modules use `...args: Parameters<T>` where `T extends (...args: any[]) => void`. This is not the closed `Parameters<ConcreteFunction>` tuple projection the compiler already supports. The current IR models `args` as one array-valued rest binding, while `std::function<R(P...)>` erases whether each source parameter was fixed, optional, or rest. Emitting an unconstrained or merely invocable C++ `Args...` would admit calls outside the source signature; requiring exact `std::function<R(Args...)>` equality instead rejects valid optional, rest, callable-object, and function-conversion cases.
+
+- [ ] Add target-neutral dependent callable-pack evidence that ties the rest binding to its callable type parameter, preserves fixed/optional/rest roles and per-position types, and distinguishes pack expansion from ordinary array use.
+- [ ] Define a versioned Flight C++ callable-signature trait and storage ABI covering every compiler-emitted callable representation, including optional/rest metadata and callable wrappers, without relying on implicit C++ conversions as source assignability evidence.
+- [ ] Lower exported rest signatures, generic function expressions, and terminal pack expansion as one verified operation. Keep `Parameters<T>` refused until zero-, one-, and multi-argument signals, optional/rest callables, nested forwarding, and invalid calls pass TypeScript-versus-native oracles.
+
 ## RegExp and URL
 
 - [ ] Add `flight/regexp.hpp`, `flight::RegExp`, and `flight::RegExpExecArray` with constructor and literal paths, flags, captures, `exec`, and `test`. Global expressions must preserve observable match position across calls.
