@@ -4151,6 +4151,20 @@ export function preferred(): number { return NativeSurface.preferredFormat; }`,
     },
   );
 
+  it.each(['flight-cpp', 'standard-library'] as const)(
+    'emits Object.is with JavaScript SameValue semantics in the %s profile',
+    (runtimeProfile) => {
+      const output = emitIrModuleCpp(
+        lower('object-is.ts', `export function same(a: number, b: number): boolean { return Object.is(a, b); }`).module,
+        { runtimeProfile },
+      ).contents;
+      expect(output).toContain('#include <cmath>');
+      expect(output).toContain('#include <type_traits>');
+      expect(output).toContain('std::isnan(left) && std::isnan(right)');
+      expect(output).toContain('std::signbit(left) == std::signbit(right)');
+    },
+  );
+
   it('emits super reference with named base class', () => {
     const output = emitIrModuleCpp(
       lower(

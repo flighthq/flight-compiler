@@ -28,7 +28,7 @@ describe('createCompilerRuntimeExternalSymbolBindingPlanCpp', () => {
     const plan = createCompilerRuntimeExternalSymbolBindingPlanCpp();
 
     expect(plan.contract).toBe('flight-runtime-contract/2');
-    expect(plan.bindings).toHaveLength(47);
+    expect(plan.bindings).toHaveLength(48);
     expect(plan.bindings.filter(({ externalSymbol }) => externalSymbol.sourceName === 'Promise')).toEqual([
       {
         capability: 'task',
@@ -49,6 +49,10 @@ describe('createCompilerRuntimeExternalSymbolBindingPlanCpp', () => {
       externalSymbol: { sourceName: 'Error', space: 'value' },
       kind: 'native',
     });
+    expect(plan.bindings).toContainEqual({
+      externalSymbol: { sourceName: 'Object', space: 'value' },
+      kind: 'native',
+    });
     expect(new Set(plan.bindings.map(({ externalSymbol }) => JSON.stringify(externalSymbol)))).toHaveLength(
       plan.bindings.length,
     );
@@ -59,13 +63,13 @@ describe('createCompilerRuntimeExternalSymbolBindingPlanCpp', () => {
     const second = createCompilerRuntimeExternalSymbolBindingPlanCpp();
 
     (first.bindings as unknown[]).pop();
-    expect(second.bindings).toHaveLength(47);
+    expect(second.bindings).toHaveLength(48);
   });
 
   it('elects semantic containers and strings as flight-cpp runtime capabilities', () => {
     const plan = createCompilerRuntimeExternalSymbolBindingPlanCpp('flight-cpp');
 
-    expect(plan.bindings).toHaveLength(48);
+    expect(plan.bindings).toHaveLength(49);
     expect(plan.bindings).toContainEqual({
       capability: 'array',
       externalSymbol: { sourceName: 'Array', space: 'type' },
@@ -149,6 +153,16 @@ describe('getCompilerExternalBindingHeadersCpp', () => {
       'flight/symbol.hpp',
     ]);
   });
+
+  it.each(['flight-cpp', 'standard-library'] as const)(
+    'returns Object.is support headers in the %s profile',
+    (profile) => {
+      expect(getCompilerExternalBindingHeadersCpp('Object', 'value', undefined, profile)).toEqual([
+        'cmath',
+        'type_traits',
+      ]);
+    },
+  );
 });
 
 describe('getCompilerRuntimeExternalSymbolTargetCpp', () => {
@@ -288,6 +302,16 @@ describe('getCompilerRuntimeExternalMemberTargetCpp', () => {
       expect(target).toContain('std::uint32_t');
       expect(target).toContain('std::int64_t');
       expect(target).toContain('4294967296.0');
+    },
+  );
+
+  it.each(['flight-cpp', 'standard-library'] as const)(
+    'maps Object.is to exact SameValue semantics in the %s profile',
+    (runtimeProfile) => {
+      const target = getCompilerRuntimeExternalMemberTargetCpp('Object', 'is', runtimeProfile);
+      expect(target).toContain('!std::is_same_v<Left, Right>');
+      expect(target).toContain('std::isnan(left) && std::isnan(right)');
+      expect(target).toContain('std::signbit(left) == std::signbit(right)');
     },
   );
 

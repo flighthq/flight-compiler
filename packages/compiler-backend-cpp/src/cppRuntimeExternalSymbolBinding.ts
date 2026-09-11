@@ -202,6 +202,9 @@ const cppExternalBindingOwnerships = new Set(['borrowed', 'owned', 'shared', 'va
 const cppMathImulTarget =
   '([](double left, double right) noexcept { const auto to_uint32 = [](double value) noexcept { if (!std::isfinite(value) || value == 0.0) return std::uint32_t{0}; constexpr double modulus = 4294967296.0; double remainder = std::fmod(std::trunc(value), modulus); if (remainder < 0.0) remainder += modulus; return static_cast<std::uint32_t>(remainder); }; const std::uint32_t product = to_uint32(left) * to_uint32(right); return product < 0x80000000U ? static_cast<double>(product) : static_cast<double>(static_cast<std::int64_t>(product) - 0x100000000LL); })';
 
+const cppObjectIsTarget =
+  '([](const auto& left, const auto& right) { using Left = std::remove_cvref_t<decltype(left)>; using Right = std::remove_cvref_t<decltype(right)>; if constexpr (!std::is_same_v<Left, Right>) { return false; } else if constexpr (std::is_floating_point_v<Left>) { if (std::isnan(left) && std::isnan(right)) return true; if (left == 0.0 && right == 0.0) return std::signbit(left) == std::signbit(right); return left == right; } else { return left == right; } })';
+
 const cppFlightRuntimeExternalSymbolBindings = [
   {
     headers: ['cmath', 'cstdint'],
@@ -367,6 +370,14 @@ const cppFlightRuntimeExternalSymbolBindings = [
     sourceName: 'Number',
     space: 'value',
     targetName: 'double',
+  },
+  {
+    headers: ['cmath', 'type_traits'],
+    kind: 'native',
+    members: [{ sourceMember: 'is', targetName: cppObjectIsTarget }],
+    sourceName: 'Object',
+    space: 'value',
+    targetName: cppObjectIsTarget,
   },
   { capability: 'task', kind: 'runtime', sourceName: 'Promise', space: 'type', targetName: 'flight::Task' },
   {
@@ -586,6 +597,14 @@ const cppRuntimeExternalSymbolBindings = [
     sourceName: 'Number',
     space: 'value',
     targetName: 'double',
+  },
+  {
+    headers: ['cmath', 'type_traits'],
+    kind: 'native',
+    members: [{ sourceMember: 'is', targetName: cppObjectIsTarget }],
+    sourceName: 'Object',
+    space: 'value',
+    targetName: cppObjectIsTarget,
   },
   { capability: 'task', kind: 'runtime', sourceName: 'Promise', space: 'type', targetName: 'FlightTask' },
   {
