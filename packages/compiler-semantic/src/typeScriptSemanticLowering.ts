@@ -5602,11 +5602,12 @@ function lowerTypeBindingSymbol(
     }
   }
   const declaration = symbol.declarations?.find(isTypeBindingDeclaration);
-  // A spelled import is introduced by lowerImports itself. Inferring it while that import is being
-  // lowered would append a second route with the same identity; inference is only for checker-reached
-  // declarations that have no local spelling.
+  // An authored import is its own provenance. During lowerImports, the resulting IrImport has not
+  // been appended to the context yet, so inferred discovery must not synthesize the same request.
   const inferredImport =
-    declaration?.getSourceFile().fileName === context.moduleSourceFile.fileName
+    declaration &&
+    typeBindingDeclarationKind(declaration) === 'import' &&
+    declaration.getSourceFile() === context.moduleSourceFile
       ? undefined
       : lowerTypeScriptInferredTypeImportBinding(aliased ?? symbol, context);
   if (inferredImport) {

@@ -1986,11 +1986,11 @@ describe('lowerTypeScriptSource', () => {
         schema: 'flight-compiler-module-resolution/1',
       },
     );
-    const inferred = result!.module.imports
-      .flatMap((imported) =>
-        imported.bindings.map((importBinding) => ({ importBinding, specifier: imported.specifier })),
-      )
-      .find(({ importBinding }) => importBinding.imported === 'EntityRuntime');
+    const imports = result!.module.imports.flatMap((imported) =>
+      imported.bindings.map((importBinding) => ({ importBinding, specifier: imported.specifier })),
+    );
+    const inferred = imports.find(({ importBinding }) => importBinding.imported === 'EntityRuntime');
+    const explicit = imports.filter(({ importBinding }) => importBinding.imported === 'Entity');
     const references: string[] = [];
     analyzeIrModuleTraversal(result!.module, {
       type(type) {
@@ -2005,6 +2005,8 @@ describe('lowerTypeScriptSource', () => {
     });
 
     expect(result!.diagnostics).toEqual([]);
+    expect(explicit).toHaveLength(1);
+    expect(explicit[0]!.importBinding.binding.id).not.toContain('inferred-import');
     expect(inferred).toMatchObject({
       importBinding: {
         binding: {
