@@ -1,5 +1,6 @@
 import { compareTextCodeUnits, normalizePathPortable } from '../../compiler-canonical-form/src/index.js';
 import {
+  analyzeIrTypeStructuralAssignability,
   createIrTypeParameterSubstitutionPlan,
   createIrTypeValueIdentityAnalyzer,
   resolveIrTypeStructuralSubstitution,
@@ -169,7 +170,13 @@ function resolveIrTypeObjectShapeCpp(
       resolveIrTypeObjectShapeCpp(member, module, moduleSet, cache, ancestors),
     );
     if (members.some((properties) => !properties)) return undefined;
-    return mergeIrObjectShapePropertiesCpp(members.flatMap((properties) => properties!));
+    return mergeIrObjectShapePropertiesCpp(
+      members.flatMap((properties) => properties!),
+      module,
+      moduleSet,
+      cache,
+      ancestors,
+    );
   }
   if (type.kind !== 'named') return undefined;
   if (type.reference.kind === 'ambient') {
@@ -250,10 +257,13 @@ function resolveIrTypeObjectShapeCpp(
               ],
         );
   if (declaration.kind === 'class' && declaration.methods.some((method) => !method.static)) return undefined;
-  return mergeIrObjectShapePropertiesCpp([
-    ...inheritedProperties.flatMap((properties) => properties!),
-    ...ownProperties,
-  ]);
+  return mergeIrObjectShapePropertiesCpp(
+    [...inheritedProperties.flatMap((properties) => properties!), ...ownProperties],
+    location.module,
+    moduleSet,
+    cache,
+    nextAncestors,
+  );
 }
 
 function getIrObjectProjectionKeysCpp(type: Readonly<IrType>): ReadonlySet<string> | undefined {
@@ -270,6 +280,10 @@ function getIrObjectProjectionKeysCpp(type: Readonly<IrType>): ReadonlySet<strin
 
 function mergeIrObjectShapePropertiesCpp(
   properties: readonly Readonly<IrObjectTypeProperty>[],
+  module: Readonly<ReferenceModuleRecord>,
+  moduleSet: Readonly<ReferenceModuleSet>,
+  cache: ReferenceResolutionCache,
+  ancestors: ReadonlySet<string>,
 ): readonly Readonly<IrObjectTypeProperty>[] | undefined {
   const result = new Map<string, Readonly<IrObjectTypeProperty>>();
   for (const property of properties) {
@@ -279,19 +293,142 @@ function mergeIrObjectShapePropertiesCpp(
       continue;
     }
     if (
-      JSON.stringify(existing.type) !== JSON.stringify(property.type) ||
-      JSON.stringify(existing.computedKey) !== JSON.stringify(property.computedKey) ||
+      !areIrObjectShapeComputedKeysEquivalentCpp(existing, property, module, moduleSet) ||
       existing.role !== property.role
     ) {
       return undefined;
     }
+    const type = mergeIrObjectShapePropertyTypesCpp(existing.type, property.type, module, moduleSet, cache, ancestors, {
+      ancestors: new WeakMap(),
+    });
+    if (!type) return undefined;
     result.set(property.name, {
       ...existing,
       optional: existing.optional && property.optional,
       readonly: existing.readonly && property.readonly,
+      type,
     });
   }
   return [...result.values()];
+}
+
+function areIrObjectShapeComputedKeysEquivalentCpp(
+  left: Readonly<IrObjectTypeProperty>,
+  right: Readonly<IrObjectTypeProperty>,
+  module: Readonly<ReferenceModuleRecord>,
+  moduleSet: Readonly<ReferenceModuleSet>,
+): boolean {
+  if (!left.computedKey || !right.computedKey) return left.computedKey === right.computedKey;
+  return (
+    getIrComputedPropertySourceNameCpp(left.computedKey, module, moduleSet) ===
+    getIrComputedPropertySourceNameCpp(right.computedKey, module, moduleSet)
+  );
+}
+
+function getIrComputedPropertySourceNameCpp(
+  reference: NonNullable<Readonly<IrObjectTypeProperty>['computedKey']>,
+  module: Readonly<ReferenceModuleRecord>,
+  moduleSet: Readonly<ReferenceModuleSet>,
+): string {
+  if (reference.kind === 'ambient') return reference.name;
+  if (reference.binding.kind === 'import') {
+    const local = module.importsByBindingId.has(reference.binding.id);
+    const owners = moduleSet.namedBindingOwnersByBindingId.get(reference.binding.id) ?? [];
+    const owner = local ? module : owners.length === 1 ? owners[0] : undefined;
+    const imported = owner?.importsByBindingId.get(reference.binding.id);
+    if (imported?.length === 1 && imported[0]!.imported !== '*') {
+      return [imported[0]!.imported, ...reference.path].join('.');
+    }
+  }
+  return [reference.binding.name, ...reference.path].join('.');
+}
+
+function mergeIrObjectShapePropertyTypesCpp(
+  existing: Readonly<IrType>,
+  property: Readonly<IrType>,
+  module: Readonly<ReferenceModuleRecord>,
+  moduleSet: Readonly<ReferenceModuleSet>,
+  cache: ReferenceResolutionCache,
+  ancestors: ReadonlySet<string>,
+  comparison: IrTypeStructuralComparisonStateCpp,
+): Readonly<IrType> | undefined {
+  if (JSON.stringify(existing) === JSON.stringify(property)) return existing;
+  if (isIrTypeStructurallyAssignableCpp(property, existing, module, moduleSet, cache, ancestors, comparison)) {
+    return property;
+  }
+  if (isIrTypeStructurallyAssignableCpp(existing, property, module, moduleSet, cache, ancestors, comparison)) {
+    return existing;
+  }
+  const existingProperties = resolveIrTypeObjectShapeCpp(existing, module, moduleSet, cache, ancestors);
+  const propertyProperties = resolveIrTypeObjectShapeCpp(property, module, moduleSet, cache, ancestors);
+  if (!existingProperties || !propertyProperties) return undefined;
+  const properties = mergeIrObjectShapePropertiesCpp(
+    [...existingProperties, ...propertyProperties],
+    module,
+    moduleSet,
+    cache,
+    ancestors,
+  );
+  return properties ? { kind: 'object', properties } : undefined;
+}
+
+interface IrTypeStructuralComparisonStateCpp {
+  readonly ancestors: WeakMap<object, WeakSet<object>>;
+}
+
+function isIrTypeStructurallyAssignableCpp(
+  source: Readonly<IrType>,
+  target: Readonly<IrType>,
+  module: Readonly<ReferenceModuleRecord>,
+  moduleSet: Readonly<ReferenceModuleSet>,
+  cache: ReferenceResolutionCache,
+  shapeAncestors: ReadonlySet<string>,
+  comparison: IrTypeStructuralComparisonStateCpp,
+): boolean {
+  if (JSON.stringify(source) === JSON.stringify(target)) return true;
+  const targets = comparison.ancestors.get(source) ?? new WeakSet<object>();
+  if (targets.has(target)) return true;
+  targets.add(target);
+  comparison.ancestors.set(source, targets);
+  try {
+    if (source.kind === 'union') {
+      return source.types.every((member) =>
+        isIrTypeStructurallyAssignableCpp(member, target, module, moduleSet, cache, shapeAncestors, comparison),
+      );
+    }
+    if (target.kind === 'union') {
+      return target.types.some((member) =>
+        isIrTypeStructurallyAssignableCpp(source, member, module, moduleSet, cache, shapeAncestors, comparison),
+      );
+    }
+    const sourceProperties = resolveIrTypeObjectShapeCpp(source, module, moduleSet, cache, shapeAncestors);
+    const targetProperties = resolveIrTypeObjectShapeCpp(target, module, moduleSet, cache, shapeAncestors);
+    if (sourceProperties && targetProperties) {
+      const sourceByName = new Map(sourceProperties.map((candidate) => [candidate.name, candidate]));
+      return targetProperties.every((targetProperty) => {
+        const sourceProperty = sourceByName.get(targetProperty.name);
+        if (!sourceProperty) return targetProperty.optional;
+        return (
+          areIrObjectShapeComputedKeysEquivalentCpp(sourceProperty, targetProperty, module, moduleSet) &&
+          sourceProperty.role === targetProperty.role &&
+          (!sourceProperty.optional || targetProperty.optional) &&
+          (!sourceProperty.readonly || targetProperty.readonly) &&
+          isIrTypeStructurallyAssignableCpp(
+            sourceProperty.type,
+            targetProperty.type,
+            module,
+            moduleSet,
+            cache,
+            shapeAncestors,
+            comparison,
+          )
+        );
+      });
+    }
+    return analyzeIrTypeStructuralAssignability(source, target).status === 'compatible';
+  } finally {
+    targets.delete(target);
+  }
 }
 
 function createIrTypeReferenceRepresentationPlanInternalCpp(

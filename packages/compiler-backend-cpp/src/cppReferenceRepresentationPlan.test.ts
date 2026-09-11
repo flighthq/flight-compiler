@@ -75,6 +75,85 @@ describe('C++ reference planner object shapes', () => {
     ]);
   });
 
+  it('selects the narrower compatible property when flattening Node2D-style intersections', () => {
+    const module = lower(
+      'node-2d-shape.ts',
+      `
+        interface NodeData { id: number; }
+        interface Node2DData extends NodeData { x: number; }
+        interface NodeTraits { data: NodeData | null; enabled: boolean; }
+        interface Node<Traits extends object = NodeTraits> extends NodeTraits { runtime: Traits; }
+        interface HasBounds { bounds: number; }
+        interface Node2DTraits extends NodeTraits, HasBounds { data: Node2DData | null; }
+        export type Node2D = Node<Node2DTraits> & Node2DTraits;
+      `,
+    );
+    const resolver = createIrTypeReferenceRepresentationPlannerCpp([module]);
+    const properties = resolver.resolveObjectShape(declarationType(module, 'Node2D'), module);
+
+    expect(properties?.map((property) => property.name)).toEqual(['data', 'enabled', 'runtime', 'bounds']);
+    expect(properties?.find((property) => property.name === 'data')?.type).toMatchObject({
+      kind: 'union',
+      types: [{ kind: 'named', reference: { binding: { name: 'Node2DData' } } }, { kind: 'null' }],
+    });
+  });
+
+  it('merges Host-style capability roots and closed required projections', () => {
+    const module = lower(
+      'host-shape.ts',
+      `
+        interface HasColor { readonly ui: { readonly color: number; }; }
+        interface HasStyle { readonly ui: { readonly style: string; }; }
+        export type StatusBar = HasColor & HasStyle;
+        interface WindowBackend { attach?: () => void; close?: () => void; title: string; }
+      `,
+    );
+    const resolver = createIrTypeReferenceRepresentationPlannerCpp([module]);
+    const statusBar = resolver.resolveObjectShape(declarationType(module, 'StatusBar'), module);
+    const windowBackend = declarationType(module, 'WindowBackend');
+    const requiredWindowOperations = ambientType('Required', [
+      ambientType('Pick', [
+        windowBackend,
+        {
+          kind: 'union',
+          types: [
+            { kind: 'literal', value: 'attach' },
+            { kind: 'literal', value: 'close' },
+          ],
+        },
+      ]),
+    ]);
+    const window = resolver.resolveObjectShape(
+      { kind: 'intersection', types: [windowBackend, requiredWindowOperations] },
+      module,
+    );
+
+    expect(statusBar).toEqual([
+      {
+        name: 'ui',
+        optional: false,
+        readonly: true,
+        type: {
+          kind: 'object',
+          properties: [
+            { name: 'color', optional: false, readonly: true, type: numberType },
+            {
+              name: 'style',
+              optional: false,
+              readonly: true,
+              type: { kind: 'primitive', name: 'string' },
+            },
+          ],
+        },
+      },
+    ]);
+    expect(window?.map(({ name, optional }) => ({ name, optional }))).toEqual([
+      { name: 'attach', optional: false },
+      { name: 'close', optional: false },
+      { name: 'title', optional: false },
+    ]);
+  });
+
   it('rejects unresolved, conflicting, behavioral, and malformed object shapes', () => {
     const module = lower(
       'object-shape-refusals.ts',
@@ -716,7 +795,7 @@ function ambientType(name: string, typeArguments: readonly IrType[] = []): IrTyp
   return { kind: 'named', reference: { kind: 'ambient', name }, typeArguments };
 }
 
-function declarationType(module: Readonly<IrModule>, name: string): IrType {
+function declarationType(module: Readonly<IrModule>, name: string): Extract<IrType, { kind: 'named' }> {
   for (const declaration of module.declarations) {
     if (
       (declaration.kind === 'class' ||
