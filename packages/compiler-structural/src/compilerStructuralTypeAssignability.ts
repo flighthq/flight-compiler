@@ -78,6 +78,16 @@ function analyzeIrTypeStructuralAssignabilityPair(
     if (target.kind === 'unknown' && (target.source === 'any' || target.source === 'unknown')) {
       return compatibleStructuralAssignability();
     }
+    if (
+      source.kind === 'unknown' &&
+      source.source === 'object' &&
+      target.kind === 'unknown' &&
+      target.source === 'object'
+    ) {
+      return compatibleStructuralAssignability();
+    }
+    if (source.kind === 'union') return analyzeIrSourceUnionAssignability(source.types, target, path, state);
+    if (target.kind === 'union') return analyzeIrTargetUnionAssignability(source, target.types, path, state);
     if (source.kind === 'unknown' || target.kind === 'unknown') {
       return createStructuralAssignabilityDiagnostic(
         'unknown-type-indeterminate',
@@ -86,8 +96,6 @@ function analyzeIrTypeStructuralAssignabilityPair(
         'Unknown, object, any, and this evidence requires semantic narrowing before assignment',
       );
     }
-    if (source.kind === 'union') return analyzeIrSourceUnionAssignability(source.types, target, path, state);
-    if (target.kind === 'union') return analyzeIrTargetUnionAssignability(source, target.types, path, state);
     if (source.kind === 'literal' && target.kind === 'primitive' && typeof source.value === target.name) {
       return compatibleStructuralAssignability();
     }

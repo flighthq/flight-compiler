@@ -232,6 +232,26 @@ describe('createCompilerLoweringPassInterfaceInheritance', () => {
     ]);
   });
 
+  it('proves structural intersection refinements through matching object evidence', () => {
+    const module = lower(
+      'intersection-object-refinement.ts',
+      `
+        interface EntityRuntime { binding: object | null; }
+        interface NodeRuntime extends EntityRuntime { revision: number; }
+        type Entity = { runtime: EntityRuntime | undefined };
+        type Node = { runtime: NodeRuntime | undefined };
+        type Combined = Node & Entity;
+        export interface Derived extends Combined { active: boolean; }
+      `,
+    );
+    const output = lowerIrModuleWithCompilerPasses(module, [createCompilerLoweringPassInterfaceInheritance([module])]);
+
+    expect(getInterface(output, 'Derived').properties).toMatchObject([
+      { name: 'runtime', type: { kind: 'union', types: [{ kind: 'named' }, { kind: 'undefined' }] } },
+      { name: 'active' },
+    ]);
+  });
+
   it('keeps TypeScript interface method parameter refinements', () => {
     const module = lower(
       'method-refinement.ts',

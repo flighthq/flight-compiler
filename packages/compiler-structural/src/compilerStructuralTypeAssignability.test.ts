@@ -51,6 +51,16 @@ describe('analyzeIrTypeStructuralAssignability', () => {
       codes: [],
       status: 'compatible',
     });
+    expect(codes({ kind: 'unknown', source: 'object' }, { kind: 'unknown', source: 'object' })).toEqual({
+      codes: [],
+      status: 'compatible',
+    });
+    expect(
+      codes(
+        { kind: 'union', types: [{ kind: 'unknown', source: 'object' }, { kind: 'null' }] },
+        { kind: 'union', types: [{ kind: 'unknown', source: 'object' }, { kind: 'null' }] },
+      ),
+    ).toEqual({ codes: [], status: 'compatible' });
     expect(codes({ kind: 'literal', value: 'left' }, { kind: 'literal', value: 'right' })).toEqual({
       codes: ['type-incompatible'],
       status: 'incompatible',
