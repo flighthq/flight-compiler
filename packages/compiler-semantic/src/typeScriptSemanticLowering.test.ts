@@ -5351,6 +5351,30 @@ it('lowers enum value namespace functions and their qualified references', () =>
   ]);
 });
 
+it('distinguishes an ambient namespace constructor from its instance members', () => {
+  const result = lower(
+    'ambient-namespace-class.ts',
+    `export function compare(left: string, right: string): number {
+      return new Intl.Collator('en').compare(left, right);
+    }`,
+  );
+
+  expect(result.diagnostics).toEqual([]);
+  const declaration = result.module.declarations.find(
+    (candidate) => candidate.kind === 'function' && candidate.binding.name === 'compare',
+  );
+  const returned = declaration?.kind === 'function' ? declaration.body[0] : undefined;
+  const call = returned?.kind === 'return' ? returned.expression : undefined;
+  if (call?.kind !== 'call' || call.callee.kind !== 'property' || call.callee.object.kind !== 'new') {
+    throw new Error('Expected Intl.Collator instance call');
+  }
+  expect(call.callee.namespaceMember).toBeUndefined();
+  expect(call.callee.object.callee).toMatchObject({
+    kind: 'property',
+    namespaceMember: { kind: 'ambient', name: 'Intl.Collator' },
+  });
+});
+
 it('handles type members and overload diagnostics in merged enum value namespaces', () => {
   const overloaded = lower(
     'enum-namespace-overload.ts',

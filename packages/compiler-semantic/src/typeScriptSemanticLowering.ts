@@ -2776,13 +2776,9 @@ function getTypeScriptValueNamespaceMemberReference(
   context: LoweringContext,
 ): Readonly<{ namespaceMember: IrValueNameReference }> | undefined {
   const symbol = context.checker.getSymbolAtLocation(node.name);
-  const namespaceMember = symbol?.declarations?.some((declaration) => {
-    for (let parent: ts.Node | undefined = declaration.parent; parent; parent = parent.parent) {
-      if (ts.isModuleDeclaration(parent)) return true;
-      if (ts.isSourceFile(parent)) return false;
-    }
-    return false;
-  });
+  const namespaceMember = symbol?.declarations?.some(
+    (declaration) => ts.isModuleBlock(declaration.parent) && ts.isModuleDeclaration(declaration.parent.parent),
+  );
   return namespaceMember ? { namespaceMember: lowerValueNameReference(node, context) } : undefined;
 }
 
