@@ -590,7 +590,11 @@ function createCompilerTypeValueIdentityAnalysis(
 }
 
 function validateIdentityModuleResolutionPlan(resolution: Readonly<CompilerModuleResolutionPlan>): void {
-  if (!resolution || resolution.schema !== 'flight-compiler-module-resolution/1' || !Array.isArray(resolution.edges)) {
+  if (
+    !resolution ||
+    resolution.schema !== 'flight-compiler-module-resolution/1' ||
+    !Array.isArray(resolution.edges as unknown)
+  ) {
     throw new TypeError('Type value identity module resolution plan is invalid');
   }
   const importedNamesBySpecifier = new Map<string, ReadonlySet<string> | undefined>();

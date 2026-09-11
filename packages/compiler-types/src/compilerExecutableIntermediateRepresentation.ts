@@ -23,6 +23,7 @@ import type {
   IrAssignmentOperatorSemantics,
   IrBinaryOperatorSemantics,
   IrOperatorValueDomain,
+  IrUnionMemberTestEvidence,
   IrUnaryOperatorSemantics,
 } from './compilerOperatorSemanticIntermediateRepresentation.js';
 import type { CompilerSourceOrigin } from './compilerSourceIdentity.js';

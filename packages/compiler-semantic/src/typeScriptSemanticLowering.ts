@@ -4319,7 +4319,7 @@ function getTypeScriptInstanceofIrTypeName(type: Readonly<IrType>, context: Lowe
     return getTypeScriptInstanceofIrTypeName(type.typeArguments[0], context);
   }
   const resolved = getIrTypeConstructionTargetShape(type, context);
-  if (resolved !== type) return getTypeScriptInstanceofIrTypeName(resolved, context);
+  if (resolved && resolved !== type) return getTypeScriptInstanceofIrTypeName(resolved, context);
   return type.kind === 'named' && type.reference.kind === 'ambient' ? type.reference.name : undefined;
 }
 
@@ -4849,7 +4849,9 @@ function getTypeScriptCheckerNamedTypeEvidence(
   depth: number,
 ): Readonly<IrType> | undefined {
   const symbol = type.aliasSymbol ?? type.getSymbol();
-  if (!symbol) return undefined;
+  // TypeScript gives anonymous call/object types implementation-detail symbol names. They must
+  // continue to structural lowering rather than escape as runtime ambient dependencies.
+  if (!symbol || symbol.name === '__type' || symbol.name === '__object') return undefined;
   const binding = getTypeScriptCheckerTypeBinding(symbol, context);
   const ambient =
     symbol.declarations?.some(
@@ -5396,6 +5398,9 @@ function typeBindingDeclarationName(declaration: TypeScriptTypeBindingDeclaratio
 function bindingDeclarationScope(node: TypeScriptBindingDeclaration): IrBindingScope {
   if (ts.isImportClause(node) || ts.isImportSpecifier(node) || ts.isNamespaceImport(node)) return 'module';
   if (ts.isFunctionExpression(node) || ts.isParameter(node)) return 'function';
+  if (ts.isFunctionDeclaration(node) && ts.isModuleBlock(node.parent) && ts.isModuleDeclaration(node.parent.parent)) {
+    return 'module';
+  }
   if (ts.isFunctionDeclaration(node) && ts.isBlock(node.parent) && ts.isFunctionLike(node.parent.parent)) {
     return 'function';
   }

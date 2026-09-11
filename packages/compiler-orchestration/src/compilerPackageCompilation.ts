@@ -380,7 +380,7 @@ function createCompilerPackageGraphModuleDependencies(
       const requestKey = `${getCompilerPackageGraphModuleKey(module)}\0${specifier}`;
       const requestDependencies = dependencyByRequest.get(requestKey);
       if (requestDependencies?.length !== 1 || requestDependencies[0]?.importedNames) continue;
-      const dependency = requestDependencies[0];
+      const dependency = requestDependencies[0]!;
       const barrel = modulesByIdentity.get(getCompilerPackageGraphModuleKey(dependency.target));
       if (!barrel) continue;
       const targets = bindings.map((binding) =>

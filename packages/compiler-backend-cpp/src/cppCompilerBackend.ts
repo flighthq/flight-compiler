@@ -2674,7 +2674,7 @@ function emitUnionMemberTestCpp(evidence: Readonly<IrUnionMemberTestEvidence>, c
   const test = representation.direct
     ? 'true'
     : `${emitBindingValueCpp(evidence.binding, context)}.index() == ${String(alternativeIndex)}`;
-  return evidence.whenResult ? test : `!${test}`;
+  return evidence.whenResult ? test : `!(${test})`;
 }
 
 function doesCppVariantAlternativeMatchType(
@@ -3435,7 +3435,11 @@ function getIrExpressionTypeEvidenceCpp(
         return {
           kind: 'named',
           reference: { binding: context.currentClass.binding, kind: 'binding', path: [] },
-          typeArguments: [],
+          typeArguments: context.currentClass.typeParameters.map((parameter) => ({
+            kind: 'named',
+            reference: { binding: parameter.binding, kind: 'binding', path: [] },
+            typeArguments: [],
+          })),
         };
       }
       if (expression.reference.kind !== 'binding') return undefined;
@@ -3460,6 +3464,13 @@ function getIrExpressionTypeEvidenceCpp(
       return objectType ? getIrIndexedElementTypeCpp(objectType, expression, context, new Set()) : undefined;
     }
     case 'property': {
+      if (expression.object.kind === 'identifier' && expression.object.reference.kind === 'this') {
+        const memberType =
+          context.currentClass?.fields.find((field) => field.name === expression.name)?.type ??
+          context.currentClass?.methods.find((method) => method.name === expression.name && method.accessor === 'get')
+            ?.returns;
+        if (memberType) return memberType;
+      }
       const objectType = getIrExpressionTypeEvidenceCpp(expression.object, context);
       return objectType ? getIrObjectPropertyTypeCpp(objectType, expression.name, context) : undefined;
     }
@@ -4862,9 +4873,10 @@ function getCppDirectBindingOwner(
   if (type.kind !== 'named' || type.reference.kind !== 'binding' || type.reference.binding.kind === 'import') {
     return undefined;
   }
+  const bindingId = type.reference.binding.id;
   const matches = context.sourceModules.flatMap((module) =>
     module.declarations.flatMap((declaration) =>
-      'binding' in declaration && declaration.binding.id === type.reference.binding.id ? [{ declaration, module }] : [],
+      'binding' in declaration && declaration.binding.id === bindingId ? [{ declaration, module }] : [],
     ),
   );
   return matches.length === 1 ? matches[0] : undefined;

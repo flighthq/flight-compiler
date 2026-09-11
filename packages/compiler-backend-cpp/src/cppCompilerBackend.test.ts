@@ -805,9 +805,9 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
 
     expect(emitted.contents).toContain('#include <variant>');
     expect(emitted.contents).toContain('std::variant<double, flight::String> value');
-    expect(emitted.contents).toContain('std::holds_alternative<flight::String>(value)');
-    expect(emitted.contents).toContain('std::get<flight::String>(value)');
-    expect(emitted.contents).toContain('std::get<double>(value)');
+    expect(emitted.contents).toContain('value.index() == 1');
+    expect(emitted.contents).toContain('std::get<1>(value)');
+    expect(emitted.contents).toContain('std::get<0>(value)');
   });
 
   it('emits escaping mutable bindings as shared cells selected from closure evidence', () => {
@@ -1509,7 +1509,7 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     const emitted = emitIrModuleCpp(result.module);
 
     expect(emitted.contents).toContain('#include <variant>');
-    expect(emitted.contents).toContain('return std::get<double>(x)');
+    expect(emitted.contents).toContain('return std::get<0>(x)');
 
     const invalid = structuredClone(result.module);
     const declaration = invalid.declarations[0];
@@ -1767,7 +1767,7 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     const emitted = emitIrModuleCpp(result.module);
 
     expect(emitted.contents).toContain('std::variant<bool, double, std::string> input');
-    expect(emitted.contents).toContain('return std::get<double>(input)');
+    expect(emitted.contents).toContain('return std::get<1>(input)');
   });
 
   it('emits nullable types as std::optional', () => {
@@ -3156,12 +3156,12 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     const emitted = emitIrModuleCpp(result.module);
 
     expect(emitted.contents).toContain('using Shape = std::variant<Circle, Square>');
-    expect(emitted.contents).toContain('std::holds_alternative<Circle>(shape)');
-    expect(emitted.contents).toContain('std::get<Circle>(shape).radius');
-    expect(emitted.contents).toContain('std::get<Square>(shape).side');
+    expect(emitted.contents).toContain('shape.index() == 0');
+    expect(emitted.contents).toContain('std::get<0>(shape).radius');
+    expect(emitted.contents).toContain('std::get<1>(shape).side');
   });
 
-  it('collapses equivalent alternatives, emits optional variants, and still refuses unproven member access', () => {
+  it('collapses equivalent alternatives, projects common properties, and emits optional variants', () => {
     const duplicate = lower(
       'duplicate.ts',
       'type Numeric = number; export function duplicate(value: Numeric | number): Numeric | number { return value; }',
@@ -3181,8 +3181,8 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     );
 
     expect(emitIrModuleCpp(duplicate.module).contents).toContain('double duplicate(double value)');
-    expect(() => emitIrModuleCpp(open.module)).toThrow(
-      'property kind on a C++ variant requires proven union member access',
+    expect(emitIrModuleCpp(open.module).contents).toContain(
+      'std::visit([](const auto& value) { return value.value; }, value)',
     );
     expect(emitIrModuleCpp(nullable.module).contents).toContain(
       'std::optional<std::variant<double, std::string>> maybe(std::optional<std::variant<double, std::string>> value)',
@@ -3955,14 +3955,15 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(emitted.contents).toContain('"other"');
   });
 
-  it('emits intersection type as an emission error', () => {
+  it('emits compatible structural intersections as anonymous values', () => {
     const result = lower(
       'intersection.ts',
       'interface A { x: number } interface B { y: number } export function test(value: A & B): number { return value.x; }',
     );
-    expect(() => emitIrModuleCpp(result.module)).toThrow(
-      'intersection types require C++ multiple-inheritance lowering',
-    );
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('double x;');
+    expect(emitted.contents).toContain('double y;');
+    expect(emitted.contents).toContain('return value.x;');
   });
 
   it('emits new Promise with flight-cpp profile as Task::create', () => {
@@ -6169,7 +6170,7 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     );
     const emitted = emitIrModuleCpp(result.module);
     expect(emitted.contents).toContain('std::variant');
-    expect(emitted.contents).toContain('std::holds_alternative');
+    expect(emitted.contents).toContain('x.index() == 1');
   });
 
   it('parenthesizes consecutive unary minus to avoid pre-decrement', () => {
@@ -7036,7 +7037,7 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
        }`,
     );
     const emitted = emitIrModuleCpp(result.module);
-    expect(emitted.contents).toContain('!std::holds_alternative');
+    expect(emitted.contents).toContain('!(value.index() == 1)');
   });
 
   it('emits optional property chain with no ambient member and no accessor', () => {
