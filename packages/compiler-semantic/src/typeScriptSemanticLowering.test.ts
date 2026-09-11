@@ -1312,6 +1312,47 @@ describe('lowerTypeScriptSource', () => {
     expect(result.diagnostics.map((diagnostic) => diagnostic.message)).toEqual(['unsupported type MappedType']);
   });
 
+  it('keeps unsupported aliases opaque when another source module re-exports them', () => {
+    const helper = ts.createSourceFile(
+      '/flight/packages/math/src/helper.ts',
+      'export type Platform<Value> = Value extends string ? number : boolean;',
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const index = ts.createSourceFile(
+      '/flight/packages/math/src/index.ts',
+      "export type { Platform } from './helper';",
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const [helperResult] = lowerTypeScriptSources(
+      [
+        { packageName: '@flighthq/math', sourceFile: helper, upstreamDirectory: '/flight' },
+        { packageName: '@flighthq/math', sourceFile: index, upstreamDirectory: '/flight' },
+      ],
+      {
+        edges: [
+          {
+            specifier: './helper',
+            target: { packageName: '@flighthq/math', source: 'packages/math/src/helper.ts' },
+          },
+        ],
+        schema: 'flight-compiler-module-resolution/1',
+      },
+    );
+
+    expect(helperResult!.module.declarations).toContainEqual(
+      expect.objectContaining({
+        binding: expect.objectContaining({ name: 'Platform' }),
+        kind: 'typeAlias',
+        type: { kind: 'unknown', source: 'unknown' },
+      }),
+    );
+    expect(helperResult!.diagnostics.map((diagnostic) => diagnostic.message)).toEqual([
+      'unsupported type ConditionalType',
+    ]);
+  });
+
   it('substitutes conditional helper parameters inside selected named type arguments', () => {
     const result = lower(
       'conditional-named-substitution.ts',

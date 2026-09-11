@@ -78,6 +78,7 @@ const packageRules: Readonly<Record<string, PackageRule>> = {
       'compiler-emission',
       'compiler-ir-traversal',
       'compiler-lowering',
+      'compiler-module',
       'compiler-runtime-contract',
       'compiler-structural',
       'compiler-task',

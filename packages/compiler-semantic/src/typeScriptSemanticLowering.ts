@@ -94,6 +94,7 @@ import {
 } from './compilerTypeScriptSyntacticTypeEvidence.js';
 
 interface LoweringContext {
+  analysisSourceFiles: readonly ts.SourceFile[];
   bindingTypes: Map<ts.Symbol, IrType>;
   bindings: Map<ts.Symbol, IrBindingIdentity>;
   checker: ts.TypeChecker;
@@ -128,7 +129,7 @@ export function lowerTypeScriptSource(
   options: Readonly<LowerTypeScriptSourceOptions>,
 ): TypeScriptLoweringResult {
   const analysis = createTypeScriptAnalysis([{ ...options, sourceFile }], compilerEmptyModuleResolutionPlan);
-  return lowerTypeScriptSourceWithAnalysis(analysis.sourceFiles[0]!, options, analysis.checker);
+  return lowerTypeScriptSourceWithAnalysis(analysis.sourceFiles[0]!, options, analysis.checker, analysis.sourceFiles);
 }
 
 export function lowerTypeScriptSources(
@@ -137,7 +138,7 @@ export function lowerTypeScriptSources(
 ): readonly TypeScriptLoweringResult[] {
   const analysis = createTypeScriptAnalysis(sources, moduleResolution);
   return sources.map((source, index) =>
-    lowerTypeScriptSourceWithAnalysis(analysis.sourceFiles[index]!, source, analysis.checker),
+    lowerTypeScriptSourceWithAnalysis(analysis.sourceFiles[index]!, source, analysis.checker, analysis.sourceFiles),
   );
 }
 
@@ -145,8 +146,10 @@ function lowerTypeScriptSourceWithAnalysis(
   sourceFile: ts.SourceFile,
   options: Readonly<LowerTypeScriptSourceOptions>,
   checker: ts.TypeChecker,
+  analysisSourceFiles: readonly ts.SourceFile[],
 ): TypeScriptLoweringResult {
   const context: LoweringContext = {
+    analysisSourceFiles,
     bindingTypes: new Map(),
     bindings: new Map(),
     checker,
@@ -2710,14 +2713,23 @@ function isTypeAliasReferencedOutsideDeclaration(node: ts.TypeAliasDeclaration, 
   let referenced = false;
   const visit = (candidate: ts.Node): void => {
     if (referenced) return;
-    if (ts.isIdentifier(candidate) && context.checker.getSymbolAtLocation(candidate) === symbol) {
-      referenced = true;
-      return;
+    if (ts.isIdentifier(candidate)) {
+      const candidateSymbol = context.checker.getSymbolAtLocation(candidate);
+      const resolvedCandidate =
+        candidateSymbol?.flags && candidateSymbol.flags & ts.SymbolFlags.Alias
+          ? context.checker.getAliasedSymbol(candidateSymbol)
+          : candidateSymbol;
+      if (resolvedCandidate === symbol) {
+        referenced = true;
+        return;
+      }
     }
     ts.forEachChild(candidate, visit);
   };
-  for (const statement of context.sourceFile.statements) {
-    if (statement !== node) visit(statement);
+  for (const sourceFile of context.analysisSourceFiles) {
+    for (const statement of sourceFile.statements) {
+      if (statement !== node) visit(statement);
+    }
   }
   return referenced;
 }

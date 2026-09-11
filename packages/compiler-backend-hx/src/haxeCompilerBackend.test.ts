@@ -104,6 +104,67 @@ describe('createHaxeCompilerBackend', () => {
 
     expect(files[0]!.contents).toContain('import flighthq.math.Helper.helper;');
   });
+
+  it('emits star re-export facades from graph-wide module context', () => {
+    const target = lowerPackage(
+      '@flighthq/types',
+      'target.ts',
+      `
+        export interface Shape { value: number }
+        export enum Choice { first }
+        export function add(left: number, right: number): number { return left + right; }
+        export const version: number = 1;
+        export const Mode = { basic: 0 } as const;
+        export type Mode = (typeof Mode)[keyof typeof Mode];
+        export default function hidden(): number { return 0; }
+      `,
+    ).module;
+    const barrel = lowerPackage('@flighthq/math', 'barrel.ts', "export * from './target';").module;
+    const output = createHaxeCompilerBackend().emitModule(barrel, {
+      moduleResolution: {
+        edges: [
+          {
+            importer: { name: barrel.name, packageName: barrel.packageName, source: barrel.source },
+            specifier: './target',
+            target: { packageName: target.packageName, source: target.source },
+          },
+        ],
+        schema: 'flight-compiler-module-resolution/1',
+      },
+      modules: [barrel, target],
+      options: {},
+    })[0]!.contents;
+
+    expect(output).toContain('typedef Shape = flighthq.types.Target.Shape;');
+    expect(output).toContain('typedef Choice = flighthq.types.Target.Choice;');
+    expect(output).toContain('function add(left:Float, right:Float):Float');
+    expect(output).toContain('return flighthq.types.Target.add(left, right);');
+    expect(output).toContain('final version:Float = flighthq.types.Target.version;');
+    expect(output).toContain('typedef Mode_2 = flighthq.types.Target.Mode_2;');
+    expect(output).toContain('final Mode:{ basic:Float } = flighthq.types.Target.Mode;');
+    expect(output).not.toContain('hidden');
+  });
+
+  it('reuses same-package Haxe type identities in star re-export facades', () => {
+    const target = lower('target.ts', 'export interface Shape { value: number }').module;
+    const barrel = lower('barrel.ts', "export * from './target';").module;
+    const output = createHaxeCompilerBackend().emitModule(barrel, {
+      moduleResolution: {
+        edges: [
+          {
+            importer: { name: barrel.name, packageName: barrel.packageName, source: barrel.source },
+            specifier: './target',
+            target: { packageName: target.packageName, source: target.source },
+          },
+        ],
+        schema: 'flight-compiler-module-resolution/1',
+      },
+      modules: [barrel, target],
+      options: {},
+    })[0]!.contents;
+
+    expect(output).not.toContain('typedef Shape');
+  });
 });
 
 describe('emitIrModuleHaxe', () => {
@@ -706,6 +767,27 @@ describe('emitIrModuleHaxe', () => {
 
     expect(emitIrModuleHaxe(numeric.module).contents).toContain('var D = 9;');
     expect(emitIrModuleHaxe(strings.module).contents).toContain('enum abstract Kind(String) from String to String');
+  });
+
+  it('emits merged enum value namespace functions as static abstract members', () => {
+    const result = lower(
+      'enum-namespace.ts',
+      `
+        export enum Flags { None = 0, Visible = 1 }
+        export namespace Flags {
+          export function any(flags: Flags, test: Flags): boolean { return (flags & test) !== 0; }
+          export function clear(): Flags { return Flags.None; }
+        }
+        export function visible(flags: Flags): boolean { return Flags.any(flags, Flags.Visible); }
+      `,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(result.diagnostics).toEqual([]);
+    expect(output).toContain('public static function any(flags:Flags, test:Flags):Bool');
+    expect(output).toContain('public static function clear():Flags');
+    expect(output).toContain('return Flags.any(flags, Flags.Visible);');
+    expect(output).not.toContain('\nfunction any(');
   });
 
   it('uses one identity for emitted and imported index modules and rejects default imports', () => {
