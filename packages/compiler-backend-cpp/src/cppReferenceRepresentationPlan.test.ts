@@ -1,7 +1,7 @@
 import ts from 'typescript';
 import { describe, expect, it } from 'vitest';
 
-import { lowerTypeScriptSource } from '../../compiler-semantic/src/index.js';
+import { lowerTypeScriptSource, lowerTypeScriptSources } from '../../compiler-semantic/src/index.js';
 import type {
   CompilerCppReferenceRepresentationPlan,
   CompilerModuleResolutionPlan,
@@ -477,55 +477,125 @@ describe('createIrTypeReferenceRepresentationPlannerCpp', () => {
     expect(forward.resolveModule('@flighthq/models', consumer)).toEqual(model);
   });
 
-  it('preserves caller type-parameter identity through an imported generic identity alias', () => {
-    const types = lower(
-      'Entity.ts',
-      `export interface Entity {}
-       export interface Adjustment extends Entity { kind: string }
-       export type AdjustmentKind = string;
-       export type EntityConstruction<Type extends Entity> = { -readonly [Key in keyof Type]: Type[Key] };`,
-      '@flighthq/types',
-    );
-    const adjustments = lower(
-      'adjustment.ts',
-      `import type { Adjustment, AdjustmentKind, EntityConstruction } from '@flighthq/types/contract';
-       export function initializeAdjustment<T extends Adjustment>(out: EntityConstruction<T>, kind: AdjustmentKind): void {
-         out.kind = kind;
-       }`,
-      '@flighthq/adjustments',
-    );
+  it('preserves caller-owned generic and concrete identity through an imported identity alias', () => {
     const resolution: CompilerModuleResolutionPlan = {
       edges: [
         {
-          importer: { name: adjustments.name, packageName: adjustments.packageName, source: adjustments.source },
           importedNames: ['Adjustment', 'AdjustmentKind', 'EntityConstruction'],
           specifier: '@flighthq/types/contract',
-          target: { packageName: types.packageName, source: types.source },
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/Entity.ts' },
+        },
+        {
+          importedNames: ['BrightnessContrastAdjustment'],
+          specifier: '@flighthq/types/contract',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/BrightnessContrastAdjustment.ts' },
         },
       ],
       schema: 'flight-compiler-module-resolution/1',
     };
-    const declaration = adjustments.declarations.find(
-      (candidate) => candidate.kind === 'function' && candidate.binding.name === 'initializeAdjustment',
+    const results = lowerTypeScriptSources(
+      [
+        {
+          packageName: '@flighthq/types',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/types/src/Entity.ts',
+            `export interface Entity {}
+             export interface Adjustment extends Entity { kind: string }
+             export type AdjustmentKind = string;
+             export type EntityConstruction<Type extends Entity> = {
+               -readonly [Key in keyof Type]: Type[Key]
+             };`,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+        {
+          packageName: '@flighthq/types',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/types/src/BrightnessContrastAdjustment.ts',
+            `import type { Adjustment } from './Entity';
+             export interface BrightnessContrastAdjustment extends Adjustment { brightness?: number }`,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+        {
+          packageName: '@flighthq/adjustments',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/adjustments/src/adjustment.ts',
+            `import type {
+               Adjustment,
+               AdjustmentKind,
+               BrightnessContrastAdjustment,
+               EntityConstruction,
+             } from '@flighthq/types/contract';
+             interface LocalAdjustment extends Adjustment { local?: number }
+             export function initializeAdjustment<T extends Adjustment>(
+               out: EntityConstruction<T>,
+               kind: AdjustmentKind,
+             ): void {
+               out.kind = kind;
+             }
+             export function initializeBrightnessContrastAdjustment(
+               out: EntityConstruction<BrightnessContrastAdjustment>,
+             ): void {
+               out.brightness = 0;
+             }
+             export function initializeLocalAdjustment(out: EntityConstruction<LocalAdjustment>): void {
+               out.local = 0;
+             }`,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+      ],
+      resolution,
     );
-    if (declaration?.kind !== 'function') throw new TypeError('expected adjustment initializer');
+    expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
+    const modules = results.map((result) => result.module);
+    const adjustments = modules.find((module) => module.packageName === '@flighthq/adjustments');
+    if (!adjustments) throw new TypeError('expected adjustments module');
+    const declarations = new Map(
+      adjustments.declarations.flatMap((candidate) =>
+        candidate.kind === 'function' ? [[candidate.binding.name, candidate] as const] : [],
+      ),
+    );
+    const initializers = [
+      declarations.get('initializeAdjustment'),
+      declarations.get('initializeBrightnessContrastAdjustment'),
+      declarations.get('initializeLocalAdjustment'),
+    ];
+    if (initializers.some((declaration) => declaration?.kind !== 'function')) {
+      throw new TypeError('expected adjustment initializers');
+    }
 
-    const planner = createIrTypeReferenceRepresentationPlannerCpp([types, adjustments], resolution);
-    const constructionType = declaration.parameters[0]!.type;
-    expect(planner.plan(constructionType, adjustments)).toMatchObject({
-      category: 'interface',
-      identity: { identity: 'reference', reason: 'declared-reference' },
-      kind: 'represented',
-      valueRepresentation: 'flightReference',
-    });
+    const planner = createIrTypeReferenceRepresentationPlannerCpp(modules, resolution);
+    const constructionTypes = initializers.map((declaration) => declaration!.parameters[0]!.type);
+    const [genericConstruction, importedConstruction, localConstruction] = constructionTypes;
+    if (!genericConstruction || !importedConstruction || !localConstruction) {
+      throw new TypeError('expected construction types');
+    }
+    for (const constructionType of constructionTypes) {
+      expect(planner.plan(constructionType, adjustments)).toMatchObject({
+        category: 'interface',
+        identity: { identity: 'reference', reason: 'declared-reference' },
+        kind: 'represented',
+        valueRepresentation: 'flightReference',
+      });
+    }
     const emitted = createCppCompilerBackend().createEmissionSession!({
       moduleResolution: resolution,
-      modules: [types, adjustments],
+      modules,
       options: { runtimeProfile: 'flight-cpp' },
     }).emitModule(adjustments)[0]!.contents;
     expect(emitted).toContain('initialize_adjustment');
+    expect(emitted).toContain('initialize_brightness_contrast_adjustment');
+    expect(emitted).toContain('initialize_local_adjustment');
 
-    if (constructionType.kind !== 'named' || !constructionType.typeArguments[0]) {
+    if (constructionTypes.some((type) => type.kind !== 'named' || !type.typeArguments[0])) {
       throw new TypeError('expected applied construction alias');
     }
     const collision = {
@@ -534,13 +604,22 @@ describe('createIrTypeReferenceRepresentationPlannerCpp', () => {
       packageName: '@flighthq/collision',
       source: 'packages/collision/src/adjustment.ts',
     };
-    const collidingPlanner = createIrTypeReferenceRepresentationPlannerCpp([types, adjustments, collision], resolution);
-    expect(collidingPlanner.plan(constructionType.typeArguments[0], adjustments)).toMatchObject({
-      kind: 'represented',
-    });
-    expect(collidingPlanner.plan(constructionType, adjustments)).toMatchObject({
+    const collidingPlanner = createIrTypeReferenceRepresentationPlannerCpp([...modules, collision], resolution);
+    for (const constructionType of constructionTypes) {
+      if (constructionType.kind !== 'named' || !constructionType.typeArguments[0]) continue;
+      expect(collidingPlanner.plan(constructionType.typeArguments[0], adjustments)).toMatchObject({
+        kind: 'represented',
+      });
+    }
+    expect(collidingPlanner.plan(genericConstruction, adjustments)).toMatchObject({
       identity: { identity: 'indeterminate', reason: 'unconstrained-type-parameter' },
       kind: 'refused',
+    });
+    expect(collidingPlanner.plan(importedConstruction, adjustments)).toMatchObject({
+      identity: { identity: 'indeterminate', reason: 'unresolved-reference' },
+    });
+    expect(collidingPlanner.plan(localConstruction, adjustments)).toMatchObject({
+      identity: { identity: 'indeterminate', reason: 'unresolved-reference' },
     });
   });
 
