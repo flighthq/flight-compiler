@@ -29,8 +29,24 @@ describe('createCompilerAmbientSurfaceSource', () => {
     expect(source).toContain('exp(value: number): number;');
     expect(source).toContain('log(value: number): number;');
     expect(source).toContain('for(key: string): symbol;');
+    expect(source).toContain('keys(value: object): string[];');
+    expect(source).toContain('stringify(value: unknown, replacer?: unknown, space?: number | string): string;');
     expect(source).toContain('toUpperCase(): string;');
     expect(source).toContain('interface WeakMap<K extends object, V>');
+  });
+
+  it('declares the portable binary, text, regexp, URL, and internationalization surfaces', () => {
+    const source = createCompilerAmbientSurfaceSource();
+
+    expect(source).toContain('new (byteLength: number): ArrayBuffer;');
+    expect(source).toContain('getFloat64(byteOffset: number, littleEndian?: boolean): number;');
+    expect(source).toContain('decode(input?: Uint8Array): string;');
+    expect(source).toContain('exec(value: string): RegExpExecArray | null;');
+    expect(source).toContain('new (pattern: string | RegExp, flags?: string): RegExp;');
+    expect(source).toContain('declare function parseInt(value: string, radix?: number): number;');
+    expect(source).toContain('new (url: string, base?: string | URL): URL;');
+    expect(source).toContain('declare namespace Intl');
+    expect(source).toContain('class RelativeTimeFormat');
   });
 
   it('declares the typed array index signatures the type-directed operator layer requires', () => {
@@ -43,6 +59,8 @@ describe('createCompilerAmbientSurfaceSource', () => {
     expect(source).toContain('[index: number]: number;');
     expect(source).toContain('subarray(begin?: number, end?: number): Uint8Array;');
     expect(source).toContain('slice(begin?: number, end?: number): Float32Array;');
+    expect(source).toContain('readonly buffer: ArrayBuffer;');
+    expect(source).toContain('new (buffer: ArrayBuffer): Uint16Array;');
   });
 
   it('returns the same text every call, because it is analysis input rather than state', () => {

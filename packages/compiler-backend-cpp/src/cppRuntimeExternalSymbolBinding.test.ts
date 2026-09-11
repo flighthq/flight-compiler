@@ -69,7 +69,7 @@ describe('createCompilerRuntimeExternalSymbolBindingPlanCpp', () => {
   it('elects semantic containers and strings as flight-cpp runtime capabilities', () => {
     const plan = createCompilerRuntimeExternalSymbolBindingPlanCpp('flight-cpp');
 
-    expect(plan.bindings).toHaveLength(50);
+    expect(plan.bindings).toHaveLength(77);
     expect(plan.bindings).toContainEqual({
       capability: 'array',
       externalSymbol: { sourceName: 'Array', space: 'type' },
@@ -98,6 +98,21 @@ describe('createCompilerRuntimeExternalSymbolBindingPlanCpp', () => {
     expect(plan.bindings).toContainEqual({
       capability: 'symbol',
       externalSymbol: { sourceName: 'Symbol', space: 'value' },
+      kind: 'runtime',
+    });
+    expect(plan.bindings).toContainEqual({
+      capability: 'internationalization',
+      externalSymbol: { sourceName: 'Intl.NumberFormatOptions', space: 'type' },
+      kind: 'runtime',
+    });
+    expect(plan.bindings).toContainEqual({
+      capability: 'regexp',
+      externalSymbol: { sourceName: 'RegExpExecArray', space: 'type' },
+      kind: 'runtime',
+    });
+    expect(plan.bindings).toContainEqual({
+      capability: 'object',
+      externalSymbol: { sourceName: 'Object', space: 'value' },
       kind: 'runtime',
     });
   });
@@ -164,15 +179,30 @@ describe('getCompilerExternalBindingHeadersCpp', () => {
     ]);
   });
 
-  it.each(['flight-cpp', 'standard-library'] as const)(
-    'returns Object.is support headers in the %s profile',
-    (profile) => {
-      expect(getCompilerExternalBindingHeadersCpp('Object', 'value', undefined, profile)).toEqual([
-        'cmath',
-        'type_traits',
-      ]);
-    },
-  );
+  it('returns profile-specific Object operation support headers', () => {
+    expect(getCompilerExternalBindingHeadersCpp('Object', 'value', undefined, 'flight-cpp')).toEqual([
+      'cmath',
+      'flight/object.hpp',
+      'type_traits',
+    ]);
+    expect(getCompilerExternalBindingHeadersCpp('Object', 'value', undefined, 'standard-library')).toEqual([
+      'cmath',
+      'type_traits',
+      'vector',
+    ]);
+  });
+
+  it('returns semantic runtime headers for the newly modeled portable services', () => {
+    expect(getCompilerExternalBindingHeadersCpp('ArrayBuffer', 'value', undefined, 'flight-cpp')).toEqual([
+      'flight/array_buffer.hpp',
+    ]);
+    expect(getCompilerExternalBindingHeadersCpp('Intl.Collator', 'type', undefined, 'flight-cpp')).toEqual([
+      'flight/intl.hpp',
+    ]);
+    expect(getCompilerExternalBindingHeadersCpp('RegExp', 'type', undefined, 'flight-cpp')).toEqual([
+      'flight/regexp.hpp',
+    ]);
+  });
 });
 
 describe('getCompilerRuntimeExternalSymbolTargetCpp', () => {
@@ -223,8 +253,9 @@ describe('getCompilerRuntimeExternalSymbolTargetCpp', () => {
       ['WebGLProgram', 'type'],
     ] as const) {
       expect(getCompilerRuntimeExternalSymbolTargetCpp(unsupported, space)).toBeUndefined();
-      expect(getCompilerRuntimeExternalSymbolTargetCpp(unsupported, space, 'flight-cpp')).toBeUndefined();
     }
+    expect(getCompilerRuntimeExternalSymbolTargetCpp('console', 'value', 'flight-cpp')).toBeUndefined();
+    expect(getCompilerRuntimeExternalSymbolTargetCpp('WebGLProgram', 'type', 'flight-cpp')).toBeUndefined();
   });
 
   it('resolves downstream native symbols and static members in their exact spaces', () => {
@@ -255,6 +286,8 @@ describe('getCompilerRuntimeExternalSymbolTargetCpp', () => {
 
   it.each([
     ['Array', 'type', 'flight::Array'],
+    ['ArrayBuffer', 'value', 'flight::ArrayBuffer'],
+    ['DataView', 'type', 'flight::DataView'],
     ['Date', 'value', 'flight::Date'],
     ['Error', 'type', 'flight::Error'],
     ['Map', 'type', 'flight::Map'],
@@ -263,7 +296,9 @@ describe('getCompilerRuntimeExternalSymbolTargetCpp', () => {
     ['ReadonlySet', 'type', 'flight::Set'],
     ['Set', 'value', 'flight::Set'],
     ['String', 'type', 'flight::String'],
+    ['TextDecoder', 'value', 'flight::TextDecoder'],
     ['Uint8ClampedArray', 'value', 'flight::Uint8ClampedArray'],
+    ['URL', 'value', 'flight::Url'],
   ] as const)('maps %s in %s space to the semantic runtime target %s', (sourceName, space, targetName) => {
     expect(getCompilerRuntimeExternalSymbolTargetCpp(sourceName, space, 'flight-cpp')).toBe(targetName);
   });
@@ -277,10 +312,22 @@ describe('getCompilerRuntimeExternalSymbolTargetCpp', () => {
       expect(getCompilerRuntimeExternalSymbolTargetCpp('NaN', 'value', runtimeProfile)).toBe(
         'std::numeric_limits<double>::quiet_NaN()',
       );
-      expect(getCompilerRuntimeExternalSymbolTargetCpp('Number', 'value', runtimeProfile)).toBe('double');
+      expect(getCompilerRuntimeExternalSymbolTargetCpp('Number', 'value', runtimeProfile)).toBe(
+        runtimeProfile === 'flight-cpp' ? 'flight::to_number' : 'double',
+      );
       expect(getCompilerRuntimeExternalSymbolTargetCpp('RangeError', 'value', runtimeProfile)).toBe('std::range_error');
     },
   );
+
+  it('maps portable service namespaces and functions through the semantic runtime profile', () => {
+    expect(getCompilerRuntimeExternalMemberTargetCpp('Object', 'keys', 'flight-cpp')).toBe('flight::object_keys');
+    expect(getCompilerRuntimeExternalMemberTargetCpp('JSON', 'parse', 'flight-cpp')).toBe('flight::Json::parse');
+    expect(getCompilerRuntimeExternalMemberTargetCpp('Intl', 'Collator', 'flight-cpp')).toBe('flight::IntlCollator');
+    expect(getCompilerRuntimeExternalMemberTargetCpp('String', 'fromCodePoint', 'flight-cpp')).toBe(
+      'flight::String::from_code_point',
+    );
+    expect(getCompilerRuntimeExternalSymbolTargetCpp('parseInt', 'value', 'flight-cpp')).toBe('flight::parse_int');
+  });
 });
 
 describe('getCompilerRuntimeExternalMemberTargetCpp', () => {
@@ -367,7 +414,10 @@ describe('isCompilerRuntimeExternalSymbolProvidedCpp', () => {
     expect(isCompilerRuntimeExternalSymbolProvidedCpp('NotASymbol', 'type')).toBe(false);
     expect(isCompilerRuntimeExternalSymbolProvidedCpp('Map', 'type', 'flight-cpp')).toBe(true);
     expect(isCompilerRuntimeExternalSymbolProvidedCpp('ReadonlyMap', 'type', 'flight-cpp')).toBe(true);
+    expect(isCompilerRuntimeExternalSymbolProvidedCpp('Object', 'value', 'flight-cpp')).toBe(true);
     expect(isCompilerRuntimeExternalSymbolProvidedCpp('Symbol', 'value', 'flight-cpp')).toBe(true);
+    expect(isCompilerRuntimeExternalSymbolProvidedCpp('JSON', 'value', 'flight-cpp')).toBe(true);
+    expect(isCompilerRuntimeExternalSymbolProvidedCpp('RegExpExecArray', 'type', 'flight-cpp')).toBe(true);
     expect(isCompilerRuntimeExternalSymbolProvidedCpp('WeakMap', 'type', 'flight-cpp')).toBe(false);
   });
 });

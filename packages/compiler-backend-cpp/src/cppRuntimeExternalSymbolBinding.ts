@@ -205,6 +205,26 @@ const cppMathImulTarget =
 const cppObjectIsTarget =
   '([](const auto& left, const auto& right) { using Left = std::remove_cvref_t<decltype(left)>; using Right = std::remove_cvref_t<decltype(right)>; if constexpr (!std::is_same_v<Left, Right>) { return false; } else if constexpr (std::is_floating_point_v<Left>) { if (std::isnan(left) && std::isnan(right)) return true; if (left == 0.0 && right == 0.0) return std::signbit(left) == std::signbit(right); return left == right; } else { return left == right; } })';
 
+const cppObjectKeysTarget =
+  '([](const auto& value) { using Key = std::remove_cvref_t<decltype(value.begin()->first)>; std::vector<Key> keys; keys.reserve(value.size()); for (const auto& entry : value) keys.push_back(entry.first); return keys; })';
+
+const cppIntlRuntimeTypeTargets = [
+  ['Intl.Collator', 'flight::IntlCollator'],
+  ['Intl.CollatorOptions', 'flight::IntlCollatorOptions'],
+  ['Intl.DateTimeFormat', 'flight::IntlDateTimeFormat'],
+  ['Intl.DateTimeFormatOptions', 'flight::IntlDateTimeFormatOptions'],
+  ['Intl.LDMLPluralRule', 'flight::IntlPluralRule'],
+  ['Intl.ListFormat', 'flight::IntlListFormat'],
+  ['Intl.ListFormatOptions', 'flight::IntlListFormatOptions'],
+  ['Intl.NumberFormat', 'flight::IntlNumberFormat'],
+  ['Intl.NumberFormatOptions', 'flight::IntlNumberFormatOptions'],
+  ['Intl.PluralRules', 'flight::IntlPluralRules'],
+  ['Intl.PluralRulesOptions', 'flight::IntlPluralRulesOptions'],
+  ['Intl.RelativeTimeFormat', 'flight::IntlRelativeTimeFormat'],
+  ['Intl.RelativeTimeFormatOptions', 'flight::IntlRelativeTimeFormatOptions'],
+  ['Intl.RelativeTimeFormatUnit', 'flight::IntlRelativeTimeFormatUnit'],
+] as const;
+
 const cppFlightRuntimeExternalSymbolBindings = [
   {
     headers: ['cmath', 'cstdint'],
@@ -251,11 +271,20 @@ const cppFlightRuntimeExternalSymbolBindings = [
     targetName: 'flight::Array',
   },
   {
-    headers: ['cstdint', 'vector'],
-    kind: 'native',
+    capability: 'array-buffer',
+    headers: ['flight/array_buffer.hpp'],
+    kind: 'runtime',
     sourceName: 'ArrayBuffer',
     space: 'type',
-    targetName: 'std::vector<uint8_t>',
+    targetName: 'flight::ArrayBuffer',
+  },
+  {
+    capability: 'array-buffer',
+    headers: ['flight/array_buffer.hpp'],
+    kind: 'runtime',
+    sourceName: 'ArrayBuffer',
+    space: 'value',
+    targetName: 'flight::ArrayBuffer',
   },
   { kind: 'native', sourceName: 'Boolean', space: 'type', targetName: 'bool' },
   { capability: 'date', kind: 'runtime', sourceName: 'Date', space: 'type', targetName: 'flight::Date' },
@@ -266,6 +295,22 @@ const cppFlightRuntimeExternalSymbolBindings = [
     sourceName: 'Date',
     space: 'value',
     targetName: 'flight::Date',
+  },
+  {
+    capability: 'data-view',
+    headers: ['flight/data_view.hpp'],
+    kind: 'runtime',
+    sourceName: 'DataView',
+    space: 'type',
+    targetName: 'flight::DataView',
+  },
+  {
+    capability: 'data-view',
+    headers: ['flight/data_view.hpp'],
+    kind: 'runtime',
+    sourceName: 'DataView',
+    space: 'value',
+    targetName: 'flight::DataView',
   },
   { capability: 'error', kind: 'runtime', sourceName: 'Error', space: 'type', targetName: 'flight::Error' },
   { capability: 'error', kind: 'runtime', sourceName: 'Error', space: 'value', targetName: 'flight::Error' },
@@ -345,6 +390,42 @@ const cppFlightRuntimeExternalSymbolBindings = [
     space: 'value',
     targetName: 'flight::Int8Array',
   },
+  {
+    capability: 'internationalization',
+    headers: ['flight/intl.hpp'],
+    kind: 'runtime',
+    members: [
+      { sourceMember: 'Collator', targetName: 'flight::IntlCollator' },
+      { sourceMember: 'DateTimeFormat', targetName: 'flight::IntlDateTimeFormat' },
+      { sourceMember: 'ListFormat', targetName: 'flight::IntlListFormat' },
+      { sourceMember: 'NumberFormat', targetName: 'flight::IntlNumberFormat' },
+      { sourceMember: 'PluralRules', targetName: 'flight::IntlPluralRules' },
+      { sourceMember: 'RelativeTimeFormat', targetName: 'flight::IntlRelativeTimeFormat' },
+    ],
+    sourceName: 'Intl',
+    space: 'value',
+    targetName: 'flight::Intl',
+  },
+  ...cppIntlRuntimeTypeTargets.map(([sourceName, targetName]) => ({
+    capability: 'internationalization' as const,
+    headers: ['flight/intl.hpp'],
+    kind: 'runtime' as const,
+    sourceName,
+    space: 'type' as const,
+    targetName,
+  })),
+  {
+    capability: 'json',
+    headers: ['flight/json.hpp'],
+    kind: 'runtime',
+    members: [
+      { sourceMember: 'parse', targetName: 'flight::Json::parse' },
+      { sourceMember: 'stringify', targetName: 'flight::Json::stringify' },
+    ],
+    sourceName: 'JSON',
+    space: 'value',
+    targetName: 'flight::Json',
+  },
   { capability: 'map', kind: 'runtime', sourceName: 'Map', space: 'type', targetName: 'flight::Map' },
   { capability: 'map', kind: 'runtime', sourceName: 'Map', space: 'value', targetName: 'flight::Map' },
   {
@@ -355,7 +436,9 @@ const cppFlightRuntimeExternalSymbolBindings = [
   },
   { kind: 'native', sourceName: 'Number', space: 'type', targetName: 'double' },
   {
-    kind: 'native',
+    capability: 'number-parsing',
+    headers: ['flight/number.hpp'],
+    kind: 'runtime',
     members: [
       { sourceMember: 'EPSILON', targetName: 'std::numeric_limits<double>::epsilon()' },
       { sourceMember: 'MAX_SAFE_INTEGER', targetName: '9007199254740991.0' },
@@ -369,15 +452,19 @@ const cppFlightRuntimeExternalSymbolBindings = [
     ],
     sourceName: 'Number',
     space: 'value',
-    targetName: 'double',
+    targetName: 'flight::to_number',
   },
   {
-    headers: ['cmath', 'type_traits'],
-    kind: 'native',
-    members: [{ sourceMember: 'is', targetName: cppObjectIsTarget }],
+    capability: 'object',
+    headers: ['cmath', 'flight/object.hpp', 'type_traits'],
+    kind: 'runtime',
+    members: [
+      { sourceMember: 'is', targetName: cppObjectIsTarget },
+      { sourceMember: 'keys', targetName: 'flight::object_keys' },
+    ],
     sourceName: 'Object',
     space: 'value',
-    targetName: cppObjectIsTarget,
+    targetName: 'flight::Object',
   },
   { capability: 'task', kind: 'runtime', sourceName: 'Promise', space: 'type', targetName: 'flight::Task' },
   {
@@ -394,6 +481,30 @@ const cppFlightRuntimeExternalSymbolBindings = [
   },
   { kind: 'native', sourceName: 'RangeError', space: 'type', targetName: 'std::range_error' },
   { kind: 'native', sourceName: 'RangeError', space: 'value', targetName: 'std::range_error' },
+  {
+    capability: 'regexp',
+    headers: ['flight/regexp.hpp'],
+    kind: 'runtime',
+    sourceName: 'RegExp',
+    space: 'type',
+    targetName: 'flight::RegExp',
+  },
+  {
+    capability: 'regexp',
+    headers: ['flight/regexp.hpp'],
+    kind: 'runtime',
+    sourceName: 'RegExp',
+    space: 'value',
+    targetName: 'flight::RegExp',
+  },
+  {
+    capability: 'regexp',
+    headers: ['flight/regexp.hpp'],
+    kind: 'runtime',
+    sourceName: 'RegExpExecArray',
+    space: 'type',
+    targetName: 'flight::RegExpExecArray',
+  },
   {
     capability: 'map',
     headers: ['flight/map.hpp'],
@@ -422,7 +533,10 @@ const cppFlightRuntimeExternalSymbolBindings = [
   {
     capability: 'string',
     kind: 'runtime',
-    members: [{ sourceMember: 'fromCharCode', targetName: 'flight::String::from_char_code' }],
+    members: [
+      { sourceMember: 'fromCharCode', targetName: 'flight::String::from_char_code' },
+      { sourceMember: 'fromCodePoint', targetName: 'flight::String::from_code_point' },
+    ],
     sourceName: 'String',
     space: 'value',
     targetName: 'flight::String',
@@ -435,6 +549,22 @@ const cppFlightRuntimeExternalSymbolBindings = [
     sourceName: 'Symbol',
     space: 'value',
     targetName: 'flight::Symbol',
+  },
+  {
+    capability: 'text-decoder',
+    headers: ['flight/text_decoder.hpp'],
+    kind: 'runtime',
+    sourceName: 'TextDecoder',
+    space: 'type',
+    targetName: 'flight::TextDecoder',
+  },
+  {
+    capability: 'text-decoder',
+    headers: ['flight/text_decoder.hpp'],
+    kind: 'runtime',
+    sourceName: 'TextDecoder',
+    space: 'value',
+    targetName: 'flight::TextDecoder',
   },
   { kind: 'native', sourceName: 'TypeError', space: 'type', targetName: 'std::runtime_error' },
   { kind: 'native', sourceName: 'TypeError', space: 'value', targetName: 'std::runtime_error' },
@@ -488,6 +618,22 @@ const cppFlightRuntimeExternalSymbolBindings = [
     targetName: 'flight::Uint8ClampedArray',
   },
   {
+    capability: 'url',
+    headers: ['flight/url.hpp'],
+    kind: 'runtime',
+    sourceName: 'URL',
+    space: 'type',
+    targetName: 'flight::Url',
+  },
+  {
+    capability: 'url',
+    headers: ['flight/url.hpp'],
+    kind: 'runtime',
+    sourceName: 'URL',
+    space: 'value',
+    targetName: 'flight::Url',
+  },
+  {
     capability: 'uint8-clamped-array',
     kind: 'runtime',
     sourceName: 'Uint8ClampedArray',
@@ -507,6 +653,14 @@ const cppFlightRuntimeExternalSymbolBindings = [
     sourceName: 'WeakMap',
     space: 'value',
     targetName: 'std::unordered_map',
+  },
+  {
+    capability: 'number-parsing',
+    headers: ['flight/number.hpp'],
+    kind: 'runtime',
+    sourceName: 'parseInt',
+    space: 'value',
+    targetName: 'flight::parse_int',
   },
 ] as const satisfies readonly CppRuntimeExternalSymbolBinding[];
 
@@ -606,9 +760,12 @@ const cppRuntimeExternalSymbolBindings = [
     targetName: 'double',
   },
   {
-    headers: ['cmath', 'type_traits'],
+    headers: ['cmath', 'type_traits', 'vector'],
     kind: 'native',
-    members: [{ sourceMember: 'is', targetName: cppObjectIsTarget }],
+    members: [
+      { sourceMember: 'is', targetName: cppObjectIsTarget },
+      { sourceMember: 'keys', targetName: cppObjectKeysTarget },
+    ],
     sourceName: 'Object',
     space: 'value',
     targetName: cppObjectIsTarget,

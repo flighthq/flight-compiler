@@ -864,6 +864,8 @@ function emitExpression(
       if (expression.semantics.nullishComparison) {
         return emitNullishComparisonCpp(expression, context);
       }
+      const boundAmbientTypeof = emitBoundAmbientTypeofUndefinedComparisonCpp(expression, context);
+      if (boundAmbientTypeof) return boundAmbientTypeof;
       if (expression.operator === '??') {
         const leftType = getIrExpressionBindingTypeCpp(expression.left, context);
         const union = leftType ? getIrUnionTypeCpp(leftType, context, new Set()) : undefined;
@@ -1167,35 +1169,41 @@ function emitExpression(
       if (expression.semantics.construction === 'factory') {
         return `${emitExpression(expression.callee, context)}.construct(${args.join(', ')})`;
       }
-      if (expression.callee.kind !== 'identifier') {
+      const ambientConstructorName = getIrAmbientConstructorNameCpp(expression.callee);
+      if (
+        expression.callee.kind !== 'identifier' &&
+        !(
+          expression.callee.kind === 'property' &&
+          expression.callee.object.kind === 'identifier' &&
+          expression.callee.object.reference.kind === 'ambient'
+        )
+      ) {
         emissionError(context, 'qualified constructors require C++ type-path lowering');
       }
-      const typeName = emitIdentifierReference(expression.callee.reference, context);
+      const typeName =
+        expression.callee.kind === 'identifier'
+          ? emitIdentifierReference(expression.callee.reference, context)
+          : emitExpression(expression.callee, context);
       const externalConstruction =
-        expression.callee.reference.kind === 'ambient'
-          ? getCompilerExternalBindingConstructionCpp(
-              expression.callee.reference.name,
-              context.options.externalBindings,
-            )
-          : undefined;
+        ambientConstructorName === undefined
+          ? undefined
+          : getCompilerExternalBindingConstructionCpp(ambientConstructorName, context.options.externalBindings);
+      if (ambientConstructorName?.includes('.')) {
+        addCppExternalBindingHeaders(ambientConstructorName, 'value', context);
+      }
       if (typeName === 'std::runtime_error' || typeName === 'std::range_error') {
         context.includes.add('stdexcept');
       }
       const typeArguments = emitCppTypeArguments(expression.typeArguments, context);
       if (
         getCppRuntimeProfile(context.options) === 'flight-cpp' &&
-        expression.callee.reference.kind === 'ambient' &&
-        expression.callee.reference.name === 'Array' &&
+        ambientConstructorName === 'Array' &&
         args.length > 0 &&
         !denseArrayLengthInitialized
       ) {
         emissionError(context, 'Array length construction is outside the dense flight-cpp array profile');
       }
-      if (
-        getCppRuntimeProfile(context.options) === 'flight-cpp' &&
-        expression.callee.reference.kind === 'ambient' &&
-        expression.callee.reference.name === 'Promise'
-      ) {
+      if (getCppRuntimeProfile(context.options) === 'flight-cpp' && ambientConstructorName === 'Promise') {
         if (expression.typeArguments.length !== 1) {
           emissionError(context, 'flight-cpp Promise construction requires one explicit type argument');
         }
@@ -1212,7 +1220,7 @@ function emitExpression(
         return `${typeName}(${args[0]}.to_utf8())`;
       }
       const constructedType: IrType | undefined =
-        expression.callee.reference.kind === 'binding'
+        expression.callee.kind === 'identifier' && expression.callee.reference.kind === 'binding'
           ? {
               kind: 'named',
               reference: { binding: expression.callee.reference.binding, kind: 'binding', path: [] },
@@ -1249,9 +1257,6 @@ function emitExpression(
     }
     case 'property': {
       if (expression.optional) return emitOptionalPropertyExpressionCpp(expression, context);
-      if (expression.namespaceMember) {
-        return `${emitExpression(expression.object, context)}::${safeCppName(expression.name)}`;
-      }
       if (expression.member) {
         const binding = getCompilerCppAmbientMemberBinding(expression.member, getCppRuntimeProfile(context.options));
         if (binding && binding.kind === 'sizeMethod') {
@@ -1284,6 +1289,9 @@ function emitExpression(
           `ambient value ${expression.object.reference.name} member ${expression.name} has no C++ binding`,
         );
       }
+      if (expression.namespaceMember) {
+        return `${emitExpression(expression.object, context)}::${safeCppName(expression.name)}`;
+      }
       if (
         expression.object.kind === 'identifier' &&
         expression.object.reference.kind === 'binding' &&
@@ -1311,7 +1319,11 @@ function emitExpression(
       return `${emitExpression(expression.object, context)}${memberOp(expression.object, context)}${safeCppName(expression.name)}`;
     }
     case 'regexp':
-      emissionError(context, 'regular expressions require a downstream standard-library mapping');
+      if (getCppRuntimeProfile(context.options) !== 'flight-cpp') {
+        emissionError(context, 'regular expressions require a downstream standard-library mapping');
+      }
+      context.includes.add('flight/regexp.hpp');
+      return `flight::RegExp(flight::String(${JSON.stringify(expression.pattern)}), flight::String(${JSON.stringify(expression.flags)}))`;
     case 'spread':
       emissionError(context, 'spreading an unbounded collection requires a fold or a variadic target');
     case 'template': {
@@ -3686,6 +3698,20 @@ function emitTypeParameters(parameters: readonly IrTypeParameter[], context: Emi
   return `<${parameters.map((parameter) => `typename ${context.targetNames.get(parameter.binding.id) ?? pascalCase(parameter.binding.name)}`).join(', ')}>`;
 }
 
+function getIrAmbientConstructorNameCpp(expression: Readonly<IrExpression>): string | undefined {
+  if (expression.kind === 'identifier' && expression.reference.kind === 'ambient') {
+    return expression.reference.name;
+  }
+  if (
+    expression.kind === 'property' &&
+    expression.object.kind === 'identifier' &&
+    expression.object.reference.kind === 'ambient'
+  ) {
+    return `${expression.object.reference.name}.${expression.name}`;
+  }
+  return undefined;
+}
+
 function emitIdentifierReference(
   reference: Readonly<IrExpression & { kind: 'identifier' }>['reference'],
   context: EmitContext,
@@ -3909,6 +3935,47 @@ function emitBinaryOperator(
   if (operator === '&&') return '&&';
   if (operator === '||') return '||';
   return operator;
+}
+
+function emitBoundAmbientTypeofUndefinedComparisonCpp(
+  expression: Readonly<Extract<IrExpression, { kind: 'binary' }>>,
+  context: EmitContext,
+): string | undefined {
+  if (
+    expression.operator !== '==' &&
+    expression.operator !== '===' &&
+    expression.operator !== '!=' &&
+    expression.operator !== '!=='
+  ) {
+    return undefined;
+  }
+  const operands = [
+    [expression.left, expression.right],
+    [expression.right, expression.left],
+  ] as const;
+  const ambient = operands.find(
+    ([typeQuery, undefinedLiteral]) =>
+      typeQuery.kind === 'unary' &&
+      typeQuery.operator === 'typeof' &&
+      typeQuery.operand.kind === 'identifier' &&
+      typeQuery.operand.reference.kind === 'ambient' &&
+      undefinedLiteral.kind === 'literal' &&
+      undefinedLiteral.value === 'undefined',
+  )?.[0];
+  if (
+    ambient?.kind !== 'unary' ||
+    ambient.operand.kind !== 'identifier' ||
+    ambient.operand.reference.kind !== 'ambient' ||
+    !getCompilerRuntimeExternalSymbolTargetCpp(
+      ambient.operand.reference.name,
+      'value',
+      getCppRuntimeProfile(context.options),
+      context.options.externalBindings,
+    )
+  ) {
+    return undefined;
+  }
+  return expression.operator === '!=' || expression.operator === '!==' ? 'true' : 'false';
 }
 
 function emitPrefixUnaryOperator(operator: string): string {

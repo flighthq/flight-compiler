@@ -110,6 +110,29 @@ describe('getCompilerCppAmbientMemberBinding', () => {
     }
   });
 
+  it('maps binary, text, regexp, and URL members through the semantic runtime', () => {
+    expect(getCompilerCppAmbientMemberBinding({ name: 'getFloat64', receiver: 'dataView' }, 'flight-cpp')).toEqual({
+      kind: 'method',
+      targetName: 'get_float64',
+    });
+    expect(getCompilerCppAmbientMemberBinding({ name: 'decode', receiver: 'textDecoder' }, 'flight-cpp')).toEqual({
+      kind: 'method',
+      targetName: 'decode',
+    });
+    expect(getCompilerCppAmbientMemberBinding({ name: 'exec', receiver: 'regexp' }, 'flight-cpp')).toEqual({
+      kind: 'method',
+      targetName: 'exec',
+    });
+    expect(getCompilerCppAmbientMemberBinding({ name: 'protocol', receiver: 'url' }, 'flight-cpp')).toEqual({
+      kind: 'property',
+      targetName: 'protocol',
+    });
+    expect(getCompilerCppAmbientMemberBinding({ name: 'byteOffset', receiver: 'typedArray' }, 'flight-cpp')).toEqual({
+      kind: 'property',
+      targetName: 'byte_offset',
+    });
+  });
+
   it('answers nothing for a member with no agreed spelling, so emission refuses rather than guesses', () => {
     expect(getCompilerCppAmbientMemberBinding({ name: 'sort', receiver: 'array' })).toBeUndefined();
     expect(getCompilerCppAmbientMemberBinding({ name: 'toFixed', receiver: 'number' })).toBeUndefined();

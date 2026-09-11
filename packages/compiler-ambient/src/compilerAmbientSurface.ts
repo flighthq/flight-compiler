@@ -24,9 +24,25 @@ export function getCompilerAmbientSurfaceFileName(): string {
 
 const ambientSurfaceSource = `
 interface Object {}
+interface ObjectConstructor {
+  is(left: unknown, right: unknown): boolean;
+  keys(value: object): string[];
+}
+declare var Object: ObjectConstructor;
 interface Function {}
 interface IArguments {}
-interface RegExp {}
+interface RegExp {
+  exec(value: string): RegExpExecArray | null;
+  test(value: string): boolean;
+}
+interface RegExpExecArray extends Array<string> {
+  readonly index: number;
+  readonly input: string;
+}
+interface RegExpConstructor {
+  new (pattern: string | RegExp, flags?: string): RegExp;
+}
+declare var RegExp: RegExpConstructor;
 
 interface Boolean {}
 
@@ -36,6 +52,7 @@ interface Number {
 }
 
 interface NumberConstructor {
+  (value?: unknown): number;
   readonly EPSILON: number;
   readonly MAX_SAFE_INTEGER: number;
   readonly MIN_SAFE_INTEGER: number;
@@ -46,6 +63,7 @@ interface NumberConstructor {
   parseInt(value: string, radix?: number): number;
 }
 declare var Number: NumberConstructor;
+declare function parseInt(value: string, radix?: number): number;
 
 interface String {
   readonly length: number;
@@ -59,6 +77,9 @@ interface String {
   padStart(length: number, fill?: string): string;
   repeat(count: number): string;
   replace(search: string, replacement: string): string;
+  replace(search: RegExp, replacement: string): string;
+  replace(search: RegExp, replacement: (...values: string[]) => string): string;
+  match(expression: RegExp): RegExpExecArray | null;
   slice(start?: number, end?: number): string;
   split(separator: string): string[];
   startsWith(search: string): boolean;
@@ -70,6 +91,7 @@ interface String {
 
 interface StringConstructor {
   fromCharCode(...codes: number[]): string;
+  fromCodePoint(...codePoints: number[]): string;
 }
 declare var String: StringConstructor;
 
@@ -259,9 +281,74 @@ declare var Date: DateConstructor;
 
 interface JSON {
   parse(text: string): unknown;
-  stringify(value: unknown): string;
+  stringify(value: unknown, replacer?: unknown, space?: number | string): string;
 }
 declare var JSON: JSON;
+
+interface ArrayBuffer {}
+interface ArrayBufferConstructor {
+  new (byteLength: number): ArrayBuffer;
+}
+declare var ArrayBuffer: ArrayBufferConstructor;
+
+interface DataView {
+  getFloat64(byteOffset: number, littleEndian?: boolean): number;
+}
+interface DataViewConstructor {
+  new (buffer: ArrayBuffer, byteOffset?: number, byteLength?: number): DataView;
+}
+declare var DataView: DataViewConstructor;
+
+interface TextDecoder {
+  decode(input?: Uint8Array): string;
+}
+interface TextDecoderConstructor {
+  new (): TextDecoder;
+}
+declare var TextDecoder: TextDecoderConstructor;
+
+interface URL {
+  readonly protocol: string;
+}
+interface URLConstructor {
+  new (url: string, base?: string | URL): URL;
+}
+declare var URL: URLConstructor;
+
+declare namespace Intl {
+  interface CollatorOptions {}
+  class Collator {
+    constructor(locales?: string | string[], options?: CollatorOptions);
+    compare(left: string, right: string): number;
+  }
+  interface DateTimeFormatOptions {}
+  class DateTimeFormat {
+    constructor(locales?: string | string[], options?: DateTimeFormatOptions);
+    format(value: Date | number): string;
+  }
+  interface ListFormatOptions {}
+  class ListFormat {
+    constructor(locales?: string | string[], options?: ListFormatOptions);
+    format(value: string[]): string;
+  }
+  type LDMLPluralRule = 'zero' | 'one' | 'two' | 'few' | 'many' | 'other';
+  interface NumberFormatOptions {}
+  class NumberFormat {
+    constructor(locales?: string | string[], options?: NumberFormatOptions);
+    format(value: number): string;
+  }
+  interface PluralRulesOptions {}
+  class PluralRules {
+    constructor(locales?: string | string[], options?: PluralRulesOptions);
+    select(value: number): LDMLPluralRule;
+  }
+  interface RelativeTimeFormatOptions {}
+  type RelativeTimeFormatUnit = 'year' | 'quarter' | 'month' | 'week' | 'day' | 'hour' | 'minute' | 'second';
+  class RelativeTimeFormat {
+    constructor(locales?: string | string[], options?: RelativeTimeFormatOptions);
+    format(value: number, unit: RelativeTimeFormatUnit): string;
+  }
+}
 
 interface Console {
   error(...values: unknown[]): void;
@@ -271,6 +358,8 @@ interface Console {
 declare var console: Console;
 
 interface Int8Array {
+  readonly buffer: ArrayBuffer;
+  readonly byteOffset: number;
   readonly length: number;
   [index: number]: number;
   slice(begin?: number, end?: number): Int8Array;
@@ -281,10 +370,13 @@ interface Int8ArrayConstructor {
   new (): Int8Array;
   new (length: number): Int8Array;
   new (array: number[]): Int8Array;
+  new (buffer: ArrayBuffer): Int8Array;
 }
 declare var Int8Array: Int8ArrayConstructor;
 
 interface Uint8Array {
+  readonly buffer: ArrayBuffer;
+  readonly byteOffset: number;
   readonly length: number;
   [index: number]: number;
   slice(begin?: number, end?: number): Uint8Array;
@@ -295,10 +387,13 @@ interface Uint8ArrayConstructor {
   new (): Uint8Array;
   new (length: number): Uint8Array;
   new (array: number[]): Uint8Array;
+  new (buffer: ArrayBuffer): Uint8Array;
 }
 declare var Uint8Array: Uint8ArrayConstructor;
 
 interface Uint8ClampedArray {
+  readonly buffer: ArrayBuffer;
+  readonly byteOffset: number;
   readonly length: number;
   [index: number]: number;
   slice(begin?: number, end?: number): Uint8ClampedArray;
@@ -309,10 +404,13 @@ interface Uint8ClampedArrayConstructor {
   new (): Uint8ClampedArray;
   new (length: number): Uint8ClampedArray;
   new (array: number[]): Uint8ClampedArray;
+  new (buffer: ArrayBuffer): Uint8ClampedArray;
 }
 declare var Uint8ClampedArray: Uint8ClampedArrayConstructor;
 
 interface Int16Array {
+  readonly buffer: ArrayBuffer;
+  readonly byteOffset: number;
   readonly length: number;
   [index: number]: number;
   slice(begin?: number, end?: number): Int16Array;
@@ -323,10 +421,13 @@ interface Int16ArrayConstructor {
   new (): Int16Array;
   new (length: number): Int16Array;
   new (array: number[]): Int16Array;
+  new (buffer: ArrayBuffer): Int16Array;
 }
 declare var Int16Array: Int16ArrayConstructor;
 
 interface Uint16Array {
+  readonly buffer: ArrayBuffer;
+  readonly byteOffset: number;
   readonly length: number;
   [index: number]: number;
   slice(begin?: number, end?: number): Uint16Array;
@@ -337,10 +438,13 @@ interface Uint16ArrayConstructor {
   new (): Uint16Array;
   new (length: number): Uint16Array;
   new (array: number[]): Uint16Array;
+  new (buffer: ArrayBuffer): Uint16Array;
 }
 declare var Uint16Array: Uint16ArrayConstructor;
 
 interface Int32Array {
+  readonly buffer: ArrayBuffer;
+  readonly byteOffset: number;
   readonly length: number;
   [index: number]: number;
   slice(begin?: number, end?: number): Int32Array;
@@ -351,10 +455,13 @@ interface Int32ArrayConstructor {
   new (): Int32Array;
   new (length: number): Int32Array;
   new (array: number[]): Int32Array;
+  new (buffer: ArrayBuffer): Int32Array;
 }
 declare var Int32Array: Int32ArrayConstructor;
 
 interface Uint32Array {
+  readonly buffer: ArrayBuffer;
+  readonly byteOffset: number;
   readonly length: number;
   [index: number]: number;
   slice(begin?: number, end?: number): Uint32Array;
@@ -365,10 +472,13 @@ interface Uint32ArrayConstructor {
   new (): Uint32Array;
   new (length: number): Uint32Array;
   new (array: number[]): Uint32Array;
+  new (buffer: ArrayBuffer): Uint32Array;
 }
 declare var Uint32Array: Uint32ArrayConstructor;
 
 interface Float32Array {
+  readonly buffer: ArrayBuffer;
+  readonly byteOffset: number;
   readonly length: number;
   [index: number]: number;
   slice(begin?: number, end?: number): Float32Array;
@@ -379,10 +489,13 @@ interface Float32ArrayConstructor {
   new (): Float32Array;
   new (length: number): Float32Array;
   new (array: number[]): Float32Array;
+  new (buffer: ArrayBuffer): Float32Array;
 }
 declare var Float32Array: Float32ArrayConstructor;
 
 interface Float64Array {
+  readonly buffer: ArrayBuffer;
+  readonly byteOffset: number;
   readonly length: number;
   [index: number]: number;
   slice(begin?: number, end?: number): Float64Array;
@@ -393,6 +506,7 @@ interface Float64ArrayConstructor {
   new (): Float64Array;
   new (length: number): Float64Array;
   new (array: number[]): Float64Array;
+  new (buffer: ArrayBuffer): Float64Array;
 }
 declare var Float64Array: Float64ArrayConstructor;
 

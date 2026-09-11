@@ -37,15 +37,19 @@ export type IrParameter = Omit<IrFunctionTypeParameter, 'name'> &
 // unique, and what lets it refuse a member it has not decided how to lower.
 export type IrResolvedMemberReceiver =
   | 'array'
+  | 'dataView'
   | 'date'
   | 'error'
   | 'map'
   | 'number'
+  | 'regexp'
   | 'set'
   | 'string'
   | 'task'
+  | 'textDecoder'
   | 'typedArray'
-  | 'tuple';
+  | 'tuple'
+  | 'url';
 
 export interface IrResolvedMember {
   readonly name: string;

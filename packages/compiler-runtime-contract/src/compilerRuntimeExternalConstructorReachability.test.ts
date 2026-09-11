@@ -28,13 +28,15 @@ describe('collectIrModulesRuntimeExternalConstructorInvocations', () => {
     ]);
   });
 
-  it('ignores bound and qualified constructors because they do not name a direct ambient ABI', () => {
+  it('collects qualified ambient namespace constructors while ignoring bound constructors', () => {
     const module = lower(
       'bound.ts',
-      'class Local {} export function create(namespace: { Value: typeof Local }): void { new Local(); new namespace.Value(); }',
+      "class Local {} export function create(namespace: { Value: typeof Local }): void { new Local(); new namespace.Value(); new Intl.Collator('en'); }",
     );
 
-    expect(collectIrModulesRuntimeExternalConstructorInvocations([module])).toEqual([]);
+    expect(collectIrModulesRuntimeExternalConstructorInvocations([module])).toEqual([
+      { externalSymbol: { sourceName: 'Intl.Collator', space: 'value' }, providedArgumentCount: 1 },
+    ]);
   });
 
   it('normalizes ambient source identity and does not mutate caller-owned modules', () => {

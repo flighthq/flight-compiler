@@ -4320,6 +4320,7 @@ function getIrResolvedMemberReceiver(type: Readonly<IrType> | undefined): IrReso
   if (type.kind === 'tuple') return 'tuple';
   if (type.kind === 'named' && type.reference.kind === 'ambient') {
     const ambientReceivers: Record<string, IrResolvedMemberReceiver> = {
+      DataView: 'dataView',
       Date: 'date',
       Error: 'error',
       Float32Array: 'typedArray',
@@ -4329,12 +4330,16 @@ function getIrResolvedMemberReceiver(type: Readonly<IrType> | undefined): IrReso
       Int8Array: 'typedArray',
       Map: 'map',
       Promise: 'task',
+      RegExp: 'regexp',
+      RegExpExecArray: 'array',
       ReadonlyMap: 'map',
       Set: 'set',
+      TextDecoder: 'textDecoder',
       Uint16Array: 'typedArray',
       Uint32Array: 'typedArray',
       Uint8Array: 'typedArray',
       Uint8ClampedArray: 'typedArray',
+      URL: 'url',
       WeakMap: 'map',
     };
     return ambientReceivers[type.reference.name];

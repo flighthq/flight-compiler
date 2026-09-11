@@ -7,6 +7,8 @@
 // audit warns about, so aspirational names are removed until a demonstrated target path returns them.
 export type CompilerRuntimeCapabilityName =
   | 'array'
+  | 'array-buffer'
+  | 'data-view'
   | 'date'
   | 'error'
   | 'float32-array'
@@ -14,15 +16,22 @@ export type CompilerRuntimeCapabilityName =
   | 'int8-array'
   | 'int16-array'
   | 'int32-array'
+  | 'internationalization'
+  | 'json'
   | 'map'
+  | 'number-parsing'
+  | 'object'
+  | 'regexp'
   | 'set'
   | 'string'
   | 'symbol'
   | 'task'
+  | 'text-decoder'
   | 'uint8-array'
   | 'uint8-clamped-array'
   | 'uint16-array'
   | 'uint32-array'
+  | 'url'
   | 'weak-map';
 
 export type CompilerRuntimeContractVersion = 'flight-runtime-contract/2';

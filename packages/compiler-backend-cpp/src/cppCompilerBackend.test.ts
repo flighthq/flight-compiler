@@ -284,6 +284,111 @@ export function preferred(): number { return NativeSurface.preferredFormat; }`,
     expect(emitted.contents).toContain('return host::preferred_format');
   });
 
+  it('binds process and browser host surfaces without making them compiler runtime policy', () => {
+    const result = lower(
+      'host-surfaces.ts',
+      `export function browserPermissions(): Permissions { return navigator.permissions; }
+export function argumentsAndExit(): string[] { process.exitCode = 1; return process.argv; }
+export function hasBrowserRuntime(): boolean { return typeof navigator !== 'undefined'; }
+export interface BrowserPermissionMediaTypes {
+  readonly descriptor: PermissionDescriptor;
+  readonly devices: MediaDevices;
+  readonly permissions: Permissions;
+  readonly stream: MediaStream;
+  readonly track: MediaStreamTrack;
+}`,
+    );
+    const externalBindings = {
+      bindings: [
+        {
+          headers: ['host/browser.hpp'],
+          nullability: 'non-null' as const,
+          ownership: 'borrowed' as const,
+          sourceName: 'Permissions',
+          space: 'type' as const,
+          targetName: 'host::Permissions',
+        },
+        {
+          headers: ['host/browser.hpp'],
+          members: [
+            { sourceMember: 'mediaDevices', targetName: 'host::browser_media_devices' },
+            { sourceMember: 'permissions', targetName: 'host::browser_permissions' },
+            { sourceMember: 'wakeLock', targetName: 'host::browser_wake_lock' },
+          ],
+          nullability: 'non-null' as const,
+          ownership: 'borrowed' as const,
+          sourceName: 'navigator',
+          space: 'value' as const,
+          targetName: 'host::navigator',
+        },
+        ...(['MediaDevices', 'MediaStream', 'MediaStreamTrack', 'PermissionDescriptor'] as const).map((sourceName) => ({
+          headers: ['host/browser.hpp'],
+          nullability: 'non-null' as const,
+          ownership: 'borrowed' as const,
+          sourceName,
+          space: 'type' as const,
+          targetName: `host::${sourceName}`,
+        })),
+        {
+          headers: ['host/process.hpp'],
+          members: [
+            { sourceMember: 'argv', targetName: 'host::process_arguments' },
+            { sourceMember: 'exitCode', targetName: 'host::process_exit_code' },
+          ],
+          nullability: 'non-null' as const,
+          ownership: 'borrowed' as const,
+          sourceName: 'process',
+          space: 'value' as const,
+          targetName: 'host::process',
+        },
+      ],
+      schema: 'flight-cpp-external-bindings/1' as const,
+    };
+
+    const emitted = emitIrModuleCpp(result.module, { externalBindings, runtimeProfile: 'flight-cpp' });
+    expect(emitted.contents).toContain('host::Permissions browser_permissions()');
+    expect(emitted.contents).toContain('return host::browser_permissions');
+    expect(emitted.contents).toContain('host::process_exit_code = 1.0');
+    expect(emitted.contents).toContain('return host::process_arguments');
+    expect(emitted.contents).toContain('bool has_browser_runtime() {\n  return true;');
+    expect(emitted.contents).toContain('host::PermissionDescriptor descriptor;');
+    expect(emitted.contents).toContain('host::MediaDevices devices;');
+    expect(emitted.contents).toContain('host::MediaStream stream;');
+    expect(emitted.contents).toContain('host::MediaStreamTrack track;');
+  });
+
+  it('emits portable service surfaces through explicit flight-cpp runtime contracts', () => {
+    const result = lower(
+      'portable-services.ts',
+      `export function read(bytes: Uint8Array): number {
+  return new DataView(bytes.buffer, bytes.byteOffset, 8).getFloat64(0, true);
+}
+export function decode(bytes: Uint8Array): string { return new TextDecoder().decode(bytes); }
+export function allocate(length: number): ArrayBuffer { return new ArrayBuffer(length); }
+export function matches(value: string): boolean { return /^flight$/i.test(value); }
+export function protocol(value: string): string { return new URL(value).protocol; }
+export function integer(value: string): number { return parseInt(value, 16); }
+export function number(value: string): number { return Number(value); }
+export function keys(value: Record<string, string>): string[] { return Object.keys(value); }
+export function json(value: object): string { return JSON.stringify(value, null, 2); }
+export function compare(left: string, right: string, locale: string, options: Intl.CollatorOptions): number {
+  return new Intl.Collator(locale, options).compare(left, right);
+}`,
+    );
+
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+    expect(emitted.contents).toContain('flight::DataView(bytes.buffer, bytes.byte_offset, 8.0).get_float64(0.0, true)');
+    expect(emitted.contents).toContain('flight::TextDecoder().decode(bytes)');
+    expect(emitted.contents).toContain('flight::ArrayBuffer(length)');
+    expect(emitted.contents).toContain('flight::RegExp(flight::String("^flight$"), flight::String("i")).test(value)');
+    expect(emitted.contents).toContain('flight::Url(value).protocol');
+    expect(emitted.contents).toContain('flight::parse_int(value, 16.0)');
+    expect(emitted.contents).toContain('flight::to_number(value)');
+    expect(emitted.contents).toContain('flight::object_keys(value)');
+    expect(emitted.contents).toContain('flight::Json::stringify(value, nullptr, 2.0)');
+    expect(emitted.contents).toContain('flight::IntlCollator(locale, options).compare(left, right)');
+  });
+
   it('emits a function with parameters', () => {
     const result = lower('add.ts', 'export function add(a: number, b: number): number { return a + b; }');
     const emitted = emitIrModuleCpp(result.module);
@@ -4018,9 +4123,14 @@ export function preferred(): number { return NativeSurface.preferredFormat; }`,
     expect(emitted.contents).toContain('v =');
   });
 
-  it('refuses missing ambient runtime symbol binding', () => {
+  it('refuses a runtime-only number parser in the standard-library profile', () => {
     const result = lower('unknown-ambient.ts', 'export function read(): number { return parseInt("42"); }');
-    expect(() => emitIrModuleCpp(result.module)).toThrow('runtime external symbol binding plan is incomplete');
+    expect(() => emitIrModuleCpp(result.module, { runtimeProfile: 'standard-library' })).toThrow(
+      'runtime external symbol binding plan is incomplete',
+    );
+    expect(emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents).toContain(
+      'return flight::parse_int(flight::String("42"))',
+    );
   });
 
   it('emits try-catch return detection through if-else branches', () => {

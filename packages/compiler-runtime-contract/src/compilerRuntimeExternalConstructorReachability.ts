@@ -1,6 +1,10 @@
 import { compareTextCodeUnits } from '../../compiler-canonical-form/src/index.js';
 import { analyzeIrModuleTraversal } from '../../compiler-ir-traversal/src/index.js';
-import type { CompilerRuntimeExternalConstructorInvocation, IrModule } from '../../compiler-types/src/index.js';
+import type {
+  CompilerRuntimeExternalConstructorInvocation,
+  IrExpression,
+  IrModule,
+} from '../../compiler-types/src/index.js';
 
 export function collectIrModulesRuntimeExternalConstructorInvocations(
   modules: readonly Readonly<IrModule>[],
@@ -9,15 +13,11 @@ export function collectIrModulesRuntimeExternalConstructorInvocations(
   for (const module of modules) {
     analyzeIrModuleTraversal(module, {
       expression(expression) {
-        if (
-          expression.kind !== 'new' ||
-          expression.callee.kind !== 'identifier' ||
-          expression.callee.reference.kind !== 'ambient'
-        ) {
-          return;
-        }
+        if (expression.kind !== 'new') return;
+        const sourceName = getIrRuntimeExternalConstructorSourceName(expression.callee);
+        if (!sourceName) return;
         const invocation = {
-          externalSymbol: { sourceName: expression.callee.reference.name.normalize('NFC'), space: 'value' },
+          externalSymbol: { sourceName: sourceName.normalize('NFC'), space: 'value' },
           providedArgumentCount: expression.arguments.some((argument) => argument.kind === 'spread')
             ? ('dynamic' as const)
             : expression.arguments.length,
@@ -27,6 +27,12 @@ export function collectIrModulesRuntimeExternalConstructorInvocations(
     });
   }
   return [...invocations.values()].sort(compareExternalConstructorInvocations);
+}
+
+function getIrRuntimeExternalConstructorSourceName(callee: Readonly<IrExpression>): string | undefined {
+  if (callee.kind === 'identifier' && callee.reference.kind === 'ambient') return callee.reference.name;
+  if (callee.kind === 'property' && callee.namespaceMember?.kind === 'ambient') return callee.namespaceMember.name;
+  return undefined;
 }
 
 function compareExternalConstructorInvocations(
