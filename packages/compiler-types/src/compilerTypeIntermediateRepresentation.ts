@@ -13,6 +13,9 @@ export type IrFunctionTypeParameter = Readonly<
 >;
 
 export interface IrObjectTypeProperty {
+  // A computed symbol key retains the value identity which names the source slot. `name` remains the
+  // deterministic storage spelling used by targets which represent a closed object as fields.
+  readonly computedKey?: IrValueNameReference | undefined;
   readonly name: string;
   readonly optional: boolean;
   readonly readonly: boolean;

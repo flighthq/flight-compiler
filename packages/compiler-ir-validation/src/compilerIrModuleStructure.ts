@@ -1368,6 +1368,25 @@ function visitType(type: Readonly<IrType>, path: string, state: IrModuleValidati
             addFailure('invalid-node-shape', `${propertyPath}.name`, 'object property names must be unique', state);
           }
           propertyNames.add(property.name);
+          if (property.computedKey) {
+            if (property.computedKey.kind === 'ambient') {
+              if (property.computedKey.name.length === 0) {
+                addFailure(
+                  'invalid-node-shape',
+                  `${propertyPath}.computedKey.name`,
+                  'computed object property ambient key must be nonempty',
+                  state,
+                );
+              }
+            } else if (property.computedKey.binding.space !== 'value') {
+              addFailure(
+                'invalid-node-shape',
+                `${propertyPath}.computedKey.binding.space`,
+                'computed object property key must refer to a value binding',
+                state,
+              );
+            }
+          }
           if (typeof property.optional !== 'boolean') {
             addFailure(
               'invalid-node-shape',

@@ -30,6 +30,21 @@ describe('createIrObjectTypeShapeIdentity', () => {
     expect(createIrObjectTypeShapeIdentity([property('value', numberType)])).not.toBe(
       createIrObjectTypeShapeIdentity([property('value', numberType, false, true)]),
     );
+    const computed = {
+      ...property('value', numberType),
+      computedKey: { binding: valueBinding('binding:key', 'key'), kind: 'binding', path: [] },
+    } as const;
+    expect(createIrObjectTypeShapeIdentity([computed])).not.toBe(
+      createIrObjectTypeShapeIdentity([property('value', numberType)]),
+    );
+    expect(createIrObjectTypeShapeIdentity([computed])).not.toBe(
+      createIrObjectTypeShapeIdentity([
+        {
+          ...computed,
+          computedKey: { binding: valueBinding('binding:other-key', 'key'), kind: 'binding', path: [] },
+        },
+      ]),
+    );
   });
 
   it('canonically composes nested type families and keeps value-level distinctions exact', () => {

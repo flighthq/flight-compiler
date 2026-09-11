@@ -1920,7 +1920,25 @@ describe('validateIrModuleStructure', () => {
     if (roDecl?.kind !== 'typeAlias' || roDecl.type.kind !== 'object') throw new Error('Expected object type');
     (roDecl.type.properties[0] as { readonly: unknown }).readonly = 'true';
 
-    for (const module of [emptyName, nonBoolOptional, nonBoolReadonly]) {
+    const emptyComputedKey = structuredClone(typeModule);
+    const emptyKeyDecl = emptyComputedKey.declarations[0];
+    if (emptyKeyDecl?.kind !== 'typeAlias' || emptyKeyDecl.type.kind !== 'object') {
+      throw new Error('Expected object type');
+    }
+    (emptyKeyDecl.type.properties[0] as { computedKey: unknown }).computedKey = { kind: 'ambient', name: '' };
+
+    const typeComputedKey = structuredClone(typeModule);
+    const typeKeyDecl = typeComputedKey.declarations[0];
+    if (typeKeyDecl?.kind !== 'typeAlias' || typeKeyDecl.type.kind !== 'object') {
+      throw new Error('Expected object type');
+    }
+    (typeKeyDecl.type.properties[0] as { computedKey: unknown }).computedKey = {
+      binding: { ...typeDeclaration.binding, space: 'type' },
+      kind: 'binding',
+      path: [],
+    };
+
+    for (const module of [emptyName, nonBoolOptional, nonBoolReadonly, emptyComputedKey, typeComputedKey]) {
       const result = validateIrModuleStructure(module);
       expect(result.kind).toBe('invalid');
       if (result.kind === 'invalid') {

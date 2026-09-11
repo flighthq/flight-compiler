@@ -182,7 +182,9 @@ function createIrObjectTypeCanonical(
   return normalizeCompilerStructuralValueCanonical([
     'object',
     ordered.map(({ index, property }) => [
-      property.name,
+      property.computedKey
+        ? ['computed', property.name, createIrValueNameReferenceCanonical(property.computedKey)]
+        : property.name,
       property.optional,
       property.readonly,
       createIrTypeCanonical(property.type, context, [...path, 'properties', index, 'type']),

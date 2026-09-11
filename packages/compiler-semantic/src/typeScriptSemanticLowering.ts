@@ -2796,6 +2796,23 @@ function lowerTypeProperties(members: readonly ts.TypeElement[], context: Loweri
   );
 }
 
+function lowerTypeScriptTypePropertyKey(
+  node: ts.PropertyName,
+  context: LoweringContext,
+): Readonly<{ computedKey?: IrValueNameReference | undefined; name: string }> | undefined {
+  const name = tryPropertyName(node);
+  if (name !== undefined) return { name };
+  if (!ts.isComputedPropertyName(node)) return undefined;
+  const flags = context.checker.getTypeAtLocation(node.expression).flags;
+  if ((flags & ts.TypeFlags.ESSymbolLike) === 0) return undefined;
+  const computedKey = lowerValueNameReference(node.expression, context);
+  const storageName =
+    computedKey.kind === 'binding'
+      ? [computedKey.binding.name, ...computedKey.path].join('_')
+      : computedKey.name.replaceAll('.', '_');
+  return storageName.length > 0 ? { computedKey, name: storageName } : undefined;
+}
+
 function lowerTypeScriptTypeProperties(
   members: readonly ts.TypeElement[],
   context: LoweringContext,
@@ -2831,14 +2848,14 @@ function lowerTypeScriptTypeProperties(
       continue;
     }
     if (ts.isPropertySignature(member)) {
-      const name = tryPropertyName(member.name);
-      if (name === undefined) continue;
+      const key = lowerTypeScriptTypePropertyKey(member.name, context);
+      if (!key) continue;
       if (!member.type) unsupported(member, 'property signature requires a type');
-      if (properties.some((property) => property.name === name)) {
-        unsupported(member, `object type property ${name} is declared more than once`);
+      if (properties.some((property) => property.name === key.name)) {
+        unsupported(member, `object type property ${key.name} is declared more than once`);
       }
       properties.push({
-        name,
+        ...key,
         optional: member.questionToken !== undefined,
         readonly: hasModifier(member, ts.SyntaxKind.ReadonlyKeyword),
         type: lowerPropertyType(member.type),
@@ -2878,10 +2895,46 @@ function lowerTypeScriptTypeProperties(
 }
 
 function lowerConcreteMappedType(node: ts.MappedTypeNode, context: LoweringContext): IrType | undefined {
+  const identity = lowerTypeScriptReadonlyRemovalIdentityMappedType(node, context);
+  if (identity) return identity;
   if (hasExternalTypeScriptTypeParameter(node, context)) return undefined;
   const type = context.checker.getTypeFromTypeNode(node);
   const properties = lowerTypeScriptCheckerObjectProperties(type, context, 0, node);
   return properties ? { kind: 'object', properties } : undefined;
+}
+
+// `{ -readonly [Key in keyof Type]: Type[Key] }` changes compile-time mutability only. Every current
+// static backend already stores a generic object through the same representation, so retaining Type
+// is both more precise and more useful than dropping the public alias as an unresolved mapped type.
+function lowerTypeScriptReadonlyRemovalIdentityMappedType(
+  node: ts.MappedTypeNode,
+  context: LoweringContext,
+): IrType | undefined {
+  if (
+    node.readonlyToken?.kind !== ts.SyntaxKind.MinusToken ||
+    node.questionToken ||
+    node.nameType ||
+    !node.type ||
+    !ts.isIndexedAccessTypeNode(node.type)
+  ) {
+    return undefined;
+  }
+  const constraint = node.typeParameter.constraint;
+  if (!constraint || !ts.isTypeOperatorNode(constraint) || constraint.operator !== ts.SyntaxKind.KeyOfKeyword) {
+    return undefined;
+  }
+  const mappedParameter = context.checker.getSymbolAtLocation(node.typeParameter.name);
+  const indexParameter = getTypeScriptTypeReferenceSymbol(node.type.indexType, context);
+  const source = getTypeScriptTypeReferenceSymbol(constraint.type, context);
+  const indexedSource = getTypeScriptTypeReferenceSymbol(node.type.objectType, context);
+  if (!mappedParameter || mappedParameter !== indexParameter || !source || source !== indexedSource) return undefined;
+  return lowerType(constraint.type, context);
+}
+
+function getTypeScriptTypeReferenceSymbol(node: ts.TypeNode, context: LoweringContext): ts.Symbol | undefined {
+  return ts.isTypeReferenceNode(node) && ts.isIdentifier(node.typeName)
+    ? context.checker.getSymbolAtLocation(node.typeName)
+    : undefined;
 }
 
 function hasExternalTypeScriptTypeParameter(node: ts.TypeNode, context: LoweringContext): boolean {

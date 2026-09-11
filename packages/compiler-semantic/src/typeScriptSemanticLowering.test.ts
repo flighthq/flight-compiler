@@ -1215,6 +1215,58 @@ describe('lowerTypeScriptSource', () => {
     expect(result.diagnostics.map((diagnostic) => diagnostic.message)).toEqual(['unsupported type MappedType']);
   });
 
+  it('preserves readonly-removal identity mappings over a generic source type', () => {
+    const result = lower(
+      'entity-construction.ts',
+      `
+        interface Entity { value: number }
+        export type EntityConstruction<Type extends Entity> = {
+          -readonly [Key in keyof Type]: Type[Key]
+        };
+      `,
+    );
+    const construction = result.module.declarations.find(
+      (declaration) => declaration.kind === 'typeAlias' && declaration.binding.name === 'EntityConstruction',
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    expect(construction).toMatchObject({
+      kind: 'typeAlias',
+      type: {
+        kind: 'named',
+        reference: { binding: { kind: 'typeParameter', name: 'Type' }, kind: 'binding', path: [] },
+        typeArguments: [],
+      },
+      typeParameters: [{ binding: { kind: 'typeParameter', name: 'Type' } }],
+    });
+  });
+
+  it('retains unique-symbol interface property identity', () => {
+    const result = lower(
+      'symbol-property.ts',
+      `
+        export interface Runtime { uid?: string }
+        export const RuntimeKey = Symbol.for('Runtime');
+        export interface Entity { [RuntimeKey]: Runtime | undefined }
+      `,
+    );
+    const entity = result.module.declarations.find(
+      (declaration) => declaration.kind === 'interface' && declaration.binding.name === 'Entity',
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    expect(entity).toMatchObject({
+      kind: 'interface',
+      properties: [
+        {
+          computedKey: { binding: { name: 'RuntimeKey', space: 'value' }, kind: 'binding', path: [] },
+          name: 'RuntimeKey',
+          optional: false,
+        },
+      ],
+    });
+  });
+
   it('keeps referenced unsupported helper aliases opaque so public bindings remain valid', () => {
     const result = lower(
       'referenced-mapped-helper.ts',

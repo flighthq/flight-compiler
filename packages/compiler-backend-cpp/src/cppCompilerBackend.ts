@@ -40,6 +40,7 @@ import {
 import type {
   CompilerBackend,
   CompilerCppReferenceRepresentationPlanner,
+  CompilerLoweringPass,
   CompilerModuleResolutionPlan,
   CppCompilerBackendOptions,
   CppCompilerRuntimeProfile,
@@ -57,6 +58,7 @@ import type {
   IrBindingIdentity,
   IrInterfaceDeclaration,
   IrModule,
+  IrObjectTypeProperty,
   IrParameter,
   IrStatement,
   IrSwitchCase,
@@ -65,6 +67,7 @@ import type {
   IrTypeBindingIdentity,
   IrTypeParameter,
   IrUnionMemberTestEvidence,
+  IrValueNameReference,
   IrVariable,
   IrVariableDeclaration,
 } from '../../compiler-types/src/index.js';
@@ -124,10 +127,18 @@ export function createCppCompilerBackend(): CompilerBackend<CppCompilerBackendOp
       const referenceRepresentationPlanner = moduleResolution
         ? createIrTypeReferenceRepresentationPlannerCpp(modules, moduleResolution)
         : createIrTypeReferenceRepresentationPlannerCpp(modules);
+      const interfaceInheritancePass = createCompilerLoweringPassInterfaceInheritance(modules, moduleResolution);
       return Object.freeze({
         emitModule(module: Readonly<IrModule>) {
           return [
-            emitIrModuleCppWithContext(module, options, modules, moduleResolution, referenceRepresentationPlanner),
+            emitIrModuleCppWithContext(
+              module,
+              options,
+              modules,
+              moduleResolution,
+              referenceRepresentationPlanner,
+              interfaceInheritancePass,
+            ),
           ];
         },
       });
@@ -152,6 +163,7 @@ function emitIrModuleCppWithContext(
   sourceModules: readonly Readonly<IrModule>[],
   moduleResolution?: Readonly<CompilerModuleResolutionPlan> | undefined,
   referenceRepresentationPlanner?: CompilerCppReferenceRepresentationPlanner | undefined,
+  interfaceInheritancePass?: Readonly<CompilerLoweringPass> | undefined,
 ): EmittedFile {
   let module: IrModule;
   try {
@@ -162,7 +174,7 @@ function emitIrModuleCppWithContext(
       createCompilerLoweringPassBindingPattern(),
       createCompilerLoweringPassVariableHoisting(),
       createCompilerLoweringPassCStyleFor(),
-      createCompilerLoweringPassInterfaceInheritance(sourceModules, moduleResolution),
+      interfaceInheritancePass ?? createCompilerLoweringPassInterfaceInheritance(sourceModules, moduleResolution),
       createCompilerLoweringPassSwitchFallthrough(),
       createCompilerLoweringPassSwitchSuspension(),
     ]);
@@ -1001,6 +1013,8 @@ function emitExpression(
       return `(${emitExpression(expression.condition, context)} ? ${emitExpression(expression.whenTrue, context, expectedType)} : ${emitExpression(expression.whenFalse, context, expectedType)})`;
     case 'element': {
       if (expression.optional) return emitOptionalElementExpressionCpp(expression, context);
+      const computedProperty = emitComputedSymbolElementAccessCpp(expression, context);
+      if (computedProperty) return computedProperty;
       if (expression.semantics.receivers.includes('tuple')) {
         context.includes.add('tuple');
         const index = getElementAccessTupleIndexCpp(expression, context);
@@ -1781,6 +1795,10 @@ function emitType(type: Readonly<IrType>, context: EmitContext, representation: 
       if (type.source === 'this' && context.currentClass) {
         return getBindingTargetName(context.currentClass.binding, context);
       }
+      if (type.source === 'object') {
+        context.includes.add('memory');
+        return 'std::shared_ptr<void>';
+      }
       return 'auto';
   }
 }
@@ -2057,6 +2075,8 @@ function getIrExpressionTypeForUnionConstructionCpp(
       return getIrCallReturnTypeCpp(expression, context);
     case 'cast':
       return expression.type;
+    case 'element':
+      return getIrExpressionTypeEvidenceCpp(expression, context);
     case 'function':
       return {
         kind: 'function',
@@ -2244,6 +2264,59 @@ function getIrObjectPropertyTypeCpp(
     : undefined;
 }
 
+function emitComputedSymbolElementAccessCpp(
+  expression: Readonly<Extract<IrExpression, { kind: 'element' }>>,
+  context: EmitContext,
+): string | undefined {
+  const property = getComputedSymbolElementPropertyCpp(expression, context);
+  return property
+    ? `${emitExpression(expression.object, context)}${memberOp(expression.object, context)}${safeCppName(property.name)}`
+    : undefined;
+}
+
+function getComputedSymbolElementPropertyCpp(
+  expression: Readonly<Extract<IrExpression, { kind: 'element' }>>,
+  context: EmitContext,
+): Readonly<IrObjectTypeProperty> | undefined {
+  if (expression.semantics.key !== 'symbol') return undefined;
+  const key = getIrExpressionValueNameReferenceCpp(expression.index);
+  const objectType = getIrExpressionTypeEvidenceCpp(expression.object, context);
+  if (!key || !objectType) return undefined;
+  const properties =
+    objectType.kind === 'object'
+      ? objectType.properties
+      : context.referenceRepresentationPlanner.resolveObjectShape(objectType, context.module);
+  if (!properties) return undefined;
+  const keyName = getCppComputedPropertySourceName(key, context);
+  const matches = properties.filter(
+    (property) => property.computedKey && getCppComputedPropertySourceName(property.computedKey, context) === keyName,
+  );
+  return matches.length === 1 ? matches[0] : undefined;
+}
+
+function getIrExpressionValueNameReferenceCpp(
+  expression: Readonly<IrExpression>,
+): Readonly<IrValueNameReference> | undefined {
+  if (expression.kind === 'identifier') {
+    if (expression.reference.kind === 'binding') {
+      return { binding: expression.reference.binding, kind: 'binding', path: [] };
+    }
+    if (expression.reference.kind === 'ambient') return expression.reference;
+  }
+  return expression.kind === 'property' ? expression.namespaceMember : undefined;
+}
+
+function getCppComputedPropertySourceName(reference: Readonly<IrValueNameReference>, context: EmitContext): string {
+  if (reference.kind === 'ambient') return reference.name;
+  if (reference.binding.kind === 'import') {
+    for (const importItem of context.module.imports) {
+      const imported = importItem.bindings.find((candidate) => candidate.binding.id === reference.binding.id);
+      if (imported && imported.imported !== '*') return [imported.imported, ...reference.path].join('.');
+    }
+  }
+  return [reference.binding.name, ...reference.path].join('.');
+}
+
 function getIrExpressionTypeEvidenceCpp(
   expression: Readonly<IrExpression>,
   context: EmitContext,
@@ -2309,12 +2382,13 @@ function getIrExpressionTypeEvidenceCpp(
         : undefined;
     case 'object':
       return expression.type;
+    case 'element':
+      return getComputedSymbolElementPropertyCpp(expression, context)?.type;
     case 'property': {
       const objectType = getIrExpressionTypeEvidenceCpp(expression.object, context);
       return objectType ? getIrObjectPropertyTypeCpp(objectType, expression.name, context) : undefined;
     }
     case 'binary':
-    case 'element':
     case 'literal':
     case 'objectRest':
     case 'regexp':
@@ -2783,7 +2857,7 @@ function getIrAssignmentTargetTypeCpp(
   expression: Readonly<IrExpression>,
   context: EmitContext,
 ): Readonly<IrType> | undefined {
-  return getIrExpressionBindingTypeCpp(expression, context);
+  return getIrExpressionBindingTypeCpp(expression, context) ?? getIrExpressionTypeEvidenceCpp(expression, context);
 }
 
 function getIrExpressionBindingTypeCpp(

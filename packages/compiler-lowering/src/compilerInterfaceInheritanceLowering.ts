@@ -81,7 +81,7 @@ export function createCompilerLoweringPassInterfaceInheritance(
   return {
     idempotent: true,
     lowerIrModule(module) {
-      moduleRecords ??= modules.map(createInterfaceInheritanceModuleRecord);
+      moduleRecords ??= createInterfaceInheritanceModuleRecords(modules);
       return lowerIrModuleInterfaceInheritance(
         module,
         moduleRecords,
@@ -103,6 +103,16 @@ export function createCompilerLoweringPassInterfaceInheritance(
         : { kind: 'valid' };
     },
   };
+}
+
+function createInterfaceInheritanceModuleRecords(
+  modules: readonly Readonly<IrModule>[],
+): readonly InterfaceInheritanceModuleRecord[] {
+  const records = modules.map(createInterfaceInheritanceModuleRecord).sort(compareInterfaceInheritanceRecords);
+  if (records.some((record, index) => index > 0 && record.identity === records[index - 1]!.identity)) {
+    throw new TypeError('Interface inheritance module set contains a duplicate module identity');
+  }
+  return records;
 }
 
 function lowerIrModuleInterfaceInheritance(
@@ -856,11 +866,17 @@ function createInterfaceInheritanceModuleSet(
   resolution: Readonly<CompilerModuleResolutionPlan>,
 ): InterfaceInheritanceModuleSet {
   const subjectIdentity = getInterfaceInheritanceModuleIdentity(subject);
-  const records = [
-    ...moduleRecords.filter((record) => record.identity !== subjectIdentity),
-    moduleRecords.find((record) => record.module === subject) ?? createInterfaceInheritanceModuleRecord(subject),
-  ];
-  records.sort(compareInterfaceInheritanceRecords);
+  const existingIndex = moduleRecords.findIndex((record) => record.identity === subjectIdentity);
+  if (existingIndex >= 0 && moduleRecords[existingIndex]!.module === subject) {
+    return { modules: moduleRecords, resolution };
+  }
+  const subjectRecord = createInterfaceInheritanceModuleRecord(subject);
+  const records = [...moduleRecords];
+  if (existingIndex >= 0) records[existingIndex] = subjectRecord;
+  else {
+    records.push(subjectRecord);
+    records.sort(compareInterfaceInheritanceRecords);
+  }
   if (records.some((record, index) => index > 0 && record.identity === records[index - 1]!.identity)) {
     throw new TypeError('Interface inheritance module set contains a duplicate module identity');
   }

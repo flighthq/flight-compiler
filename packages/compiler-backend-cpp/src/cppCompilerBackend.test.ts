@@ -279,6 +279,7 @@ export function preferred(): number { return NativeSurface.preferredFormat; }`,
 
     expect(emitted.contents).toContain('#include <flight/symbol.hpp>');
     expect(emitted.contents).toContain('flight::Symbol key = flight::Symbol::for_key(flight::String("key"))');
+    expect(emitted.dependencies).toContain('flight/symbol.hpp');
   });
 
   it('uses source numeric and error semantics in the runtime profile', () => {
@@ -1974,18 +1975,29 @@ export function preferred(): number { return NativeSurface.preferredFormat; }`,
       `export interface Entity { [EntityRuntimeKey]: EntityRuntime | undefined; }
        export type EntityConstruction<Type extends Entity> = { -readonly [Key in keyof Type]: Type[Key] };
        export type EntityWithoutRuntime<Type extends Entity> = Omit<Type, typeof EntityRuntimeKey>;
-       export interface EntityRuntime { uid?: string; }
-       export const EntityRuntimeKey = Symbol.for('EntityRuntime');`,
+       export interface EntityRuntime { binding: object | null; uid?: string; }
+       export const EntityRuntimeKey = Symbol.for('EntityRuntime');
+       export function getRuntime(entity: Entity): EntityRuntime | undefined { return entity[EntityRuntimeKey]; }
+       export function setRuntime(entity: Entity, runtime: EntityRuntime | undefined): void {
+         entity[EntityRuntimeKey] = runtime;
+       }`,
     );
 
-    expect(result.diagnostics.every((diagnostic) => diagnostic.severity === 'warning')).toBe(true);
+    expect(result.diagnostics).toEqual([]);
     const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
     expect(emitted.contents).toContain('struct Entity : public flight::ReferenceEnabled');
+    expect(emitted.contents).toContain('std::optional<flight::Ref<EntityRuntime>> entity_runtime_key;');
+    expect(emitted.contents).toContain('using EntityConstruction = flight::Ref<Type>');
     expect(emitted.contents).toContain('using EntityWithoutRuntime = flight::Ref<Type>');
     expect(emitted.contents).toContain('struct EntityRuntime : public flight::ReferenceEnabled');
+    expect(emitted.contents).toContain('std::optional<std::shared_ptr<void>> binding;');
     expect(emitted.contents).toContain(
       'flight::Symbol entity_runtime_key = flight::Symbol::for_key(flight::String("EntityRuntime"))',
     );
+    expect(emitted.contents).toContain('return entity->entity_runtime_key;');
+    expect(emitted.contents).toContain('entity->entity_runtime_key = runtime;');
+    expect(emitted.contents).not.toContain('std::optional<auto>');
+    expect(emitted.dependencies).toEqual(expect.arrayContaining(['flight/runtime.hpp', 'flight/symbol.hpp', 'memory']));
   });
 
   it('refuses indexedAccess types', () => {
