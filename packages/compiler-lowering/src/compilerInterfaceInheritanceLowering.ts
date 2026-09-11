@@ -34,7 +34,14 @@ interface InterfaceInheritanceLoweringContext {
   readonly imports: IrImport[];
   readonly module: InterfaceInheritanceModuleRecord;
   readonly moduleSet: InterfaceInheritanceModuleSet;
+  readonly options: Readonly<CompilerInterfaceInheritanceLoweringOptions>;
   readonly subject: Readonly<IrModule>;
+}
+
+export interface CompilerInterfaceInheritanceLoweringOptions {
+  readonly eraseAmbientUtilityHeritage?:
+    | ((reference: Readonly<IrTypeReference>, declaration: Readonly<IrInterfaceDeclaration>) => boolean)
+    | undefined;
 }
 
 interface InterfaceInheritanceTypeImport {
@@ -67,14 +74,20 @@ const compilerLoweringPassNameInterfaceInheritance = 'interface-inheritance';
 
 export function createCompilerLoweringPassInterfaceInheritance(
   modules: readonly Readonly<IrModule>[] = [],
-  resolution: Readonly<CompilerModuleResolutionPlan> = compilerEmptyModuleResolutionPlan,
+  resolution: Readonly<CompilerModuleResolutionPlan> | undefined = compilerEmptyModuleResolutionPlan,
+  options: Readonly<CompilerInterfaceInheritanceLoweringOptions> = {},
 ): CompilerLoweringPass {
   let moduleRecords: readonly InterfaceInheritanceModuleRecord[] | undefined;
   return {
     idempotent: true,
     lowerIrModule(module) {
       moduleRecords ??= modules.map(createInterfaceInheritanceModuleRecord);
-      return lowerIrModuleInterfaceInheritance(module, moduleRecords, resolution);
+      return lowerIrModuleInterfaceInheritance(
+        module,
+        moduleRecords,
+        resolution ?? compilerEmptyModuleResolutionPlan,
+        options,
+      );
     },
     name: compilerLoweringPassNameInterfaceInheritance,
     runsAfter: [],
@@ -96,6 +109,7 @@ function lowerIrModuleInterfaceInheritance(
   module: Readonly<IrModule>,
   moduleRecords: readonly InterfaceInheritanceModuleRecord[],
   resolution: Readonly<CompilerModuleResolutionPlan>,
+  options: Readonly<CompilerInterfaceInheritanceLoweringOptions>,
 ): IrModule {
   const moduleSet = createInterfaceInheritanceModuleSet(module, moduleRecords, resolution);
   const subject = getInterfaceInheritanceModuleRecord(module, moduleSet);
@@ -105,6 +119,7 @@ function lowerIrModuleInterfaceInheritance(
     imports: module.imports.map((imported) => ({ ...imported, bindings: [...imported.bindings] })),
     module: subject,
     moduleSet,
+    options,
     subject: module,
   };
   return {
@@ -208,6 +223,12 @@ function getIrInterfaceUtilityHeritagePropertiesFlattened(
   substitutions: Readonly<CompilerStructuralTypeSubstitutionPlan>,
   context: InterfaceInheritanceLoweringContext,
 ): readonly IrObjectTypeProperty[] | undefined {
+  if (
+    location.declaration.kind === 'interface' &&
+    context.options.eraseAmbientUtilityHeritage?.(reference, location.declaration)
+  ) {
+    return [];
+  }
   if (reference.reference.kind !== 'ambient') return undefined;
   const utility = reference.reference.name;
   if (!['Omit', 'Partial', 'Pick', 'Readonly', 'Required'].includes(utility)) return undefined;

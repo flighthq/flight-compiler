@@ -76,6 +76,7 @@ import { convertPackageNameToHaxePackageName, convertSourcePathToHaxeModuleName 
 import { emitIrModuleHaxeExternWithContext } from './haxeExternEmission.js';
 import { createCompilerRuntimeExternalConstructorAbiPlanHaxe } from './haxeRuntimeExternalConstructorAbi.js';
 import {
+  getCompilerAmbientUtilityHeritageTargetHaxe,
   getCompilerRuntimeExternalMemberTargetHaxe,
   createCompilerRuntimeExternalSymbolBindingPlanHaxe,
   getCompilerRuntimeExternalSymbolTargetHaxe,
@@ -86,6 +87,7 @@ import { isCompilerHaxeTaskLoweringFailure, lowerCompilerAsyncStateMachinesHaxe 
 import { emitIrTypeHaxe } from './haxeTypeEmission.js';
 
 interface EmitContext {
+  ambientUtilityHeritageTargets: ReadonlyMap<string, string>;
   breakableDepth: number;
   controlFlowLabels: HaxeControlFlowLabel[];
   generatedNames: Set<string>;
@@ -150,13 +152,17 @@ function emitIrModuleHaxeWithContext(
   moduleResolution: Readonly<CompilerModuleResolutionPlan> | undefined,
   options: Readonly<HaxeCompilerBackendOptions>,
 ): EmittedFile {
+  const ambientUtilityHeritageTargets = createAmbientUtilityHeritageTargetsHaxe(sourceModule);
   const module = lowerIrModuleWithCompilerPasses(sourceModule, [
     createCompilerLoweringPassExtraArgumentErasure(),
     createCompilerLoweringPassAwaitConditionHoisting(),
     createCompilerLoweringPassBindingPattern(),
     createCompilerLoweringPassVariableHoisting(),
     createCompilerLoweringPassCStyleFor(),
-    createCompilerLoweringPassInterfaceInheritance(sourceModules, moduleResolution),
+    createCompilerLoweringPassInterfaceInheritance(sourceModules, moduleResolution, {
+      eraseAmbientUtilityHeritage: (_reference, declaration) =>
+        ambientUtilityHeritageTargets.has(declaration.binding.id),
+    }),
     createCompilerLoweringPassSwitchFallthrough(),
     createCompilerLoweringPassSwitchSuspension(),
   ]);
@@ -203,6 +209,7 @@ function emitIrModuleHaxeWithContext(
     throw error;
   }
   const context: EmitContext = {
+    ambientUtilityHeritageTargets,
     breakableDepth: 0,
     controlFlowLabels: [],
     generatedNames: new Set(targetNames.values()),
@@ -999,6 +1006,12 @@ function emitStructInitRecordHaxe(
 }
 
 function emitInterface(declaration: Readonly<IrInterfaceDeclaration>, context: EmitContext): string[] {
+  const ambientTarget = context.ambientUtilityHeritageTargets.get(declaration.binding.id);
+  if (ambientTarget) {
+    return [
+      `typedef ${getBindingTargetNameHaxe(declaration.binding, context)}${emitTypeParameters(declaration.typeParameters, context)} = ${ambientTarget};`,
+    ];
+  }
   if (context.options.structuralRecords === 'structInit' && !hasIrModuleClassImplementingHaxe(declaration, context)) {
     return emitStructInitRecordHaxe(
       getBindingTargetNameHaxe(declaration.binding, context),
@@ -1021,6 +1034,16 @@ function emitInterface(declaration: Readonly<IrInterfaceDeclaration>, context: E
     ...declaration.properties.map((property) => `  ${emitInterfaceMemberHaxe(property, context)}`),
     '}',
   ];
+}
+
+function createAmbientUtilityHeritageTargetsHaxe(module: Readonly<IrModule>): ReadonlyMap<string, string> {
+  return new Map(
+    module.declarations.flatMap((declaration) => {
+      if (declaration.kind !== 'interface') return [];
+      const target = getCompilerAmbientUtilityHeritageTargetHaxe(declaration);
+      return target ? [[declaration.binding.id, target] as const] : [];
+    }),
+  );
 }
 
 function emitInterfaceMemberHaxe(property: Readonly<IrObjectTypeProperty>, context: EmitContext): string {

@@ -28,10 +28,14 @@ import type {
   IrVariableDeclaration,
 } from '../../compiler-types/src/index.js';
 import { convertPackageNameToHaxePackageName } from './haxeCompilerIdentity.js';
-import { getCompilerRuntimeExternalSymbolTargetHaxe } from './haxeRuntimeExternalSymbolBinding.js';
+import {
+  getCompilerAmbientUtilityHeritageTargetHaxe,
+  getCompilerRuntimeExternalSymbolTargetHaxe,
+} from './haxeRuntimeExternalSymbolBinding.js';
 import { emitIrTypeHaxe } from './haxeTypeEmission.js';
 
 interface HaxeExternEmissionContext {
+  readonly ambientUtilityHeritageTargets: ReadonlyMap<string, string>;
   readonly module: Readonly<IrModule>;
   readonly moduleResolution: Readonly<CompilerModuleResolutionPlan> | undefined;
   readonly modules: readonly Readonly<IrModule>[];
@@ -63,13 +67,16 @@ export function emitIrModuleHaxeExternWithContext(
   moduleResolution: Readonly<CompilerModuleResolutionPlan> | undefined,
   options: Readonly<HaxeCompilerBackendOptions>,
 ): readonly EmittedFile[] {
+  const ambientUtilityHeritageTargets = createAmbientUtilityHeritageTargetsHaxeExtern(sourceModule);
   const module = lowerIrModuleWithCompilerPasses(sourceModule, [
-    moduleResolution
-      ? createCompilerLoweringPassInterfaceInheritance(sourceModules, moduleResolution)
-      : createCompilerLoweringPassInterfaceInheritance(sourceModules),
+    createCompilerLoweringPassInterfaceInheritance(sourceModules, moduleResolution, {
+      eraseAmbientUtilityHeritage: (_reference, declaration) =>
+        ambientUtilityHeritageTargets.has(declaration.binding.id),
+    }),
   ]);
   const modules = replaceIrModuleHaxeExtern(sourceModules, module);
   const context: HaxeExternEmissionContext = {
+    ambientUtilityHeritageTargets,
     module,
     moduleResolution,
     modules,
@@ -124,19 +131,36 @@ function emitInterfaceFilesHaxeExtern(
   return getLocalExportNamesHaxeExtern(declaration, context.module).map((exportName) => {
     const targetName = safeHaxeExternTypeName(exportName);
     const packageName = `${context.rootPackage}._js`;
+    const ambientTarget = context.ambientUtilityHeritageTargets.get(declaration.binding.id);
     const lines = [
       createCompilerGeneratedFileHeader(context.module, '//', context.options.upstreamCommit),
       `package ${packageName};`,
       '',
-      `typedef ${targetName}${emitTypeParametersHaxeExtern(declaration.typeParameters, context)} = {`,
-      ...declaration.properties.map((property) => `  ${emitInterfacePropertyHaxeExtern(property, context)}`),
-      '};',
+      ...(ambientTarget
+        ? [
+            `typedef ${targetName}${emitTypeParametersHaxeExtern(declaration.typeParameters, context)} = ${ambientTarget};`,
+          ]
+        : [
+            `typedef ${targetName}${emitTypeParametersHaxeExtern(declaration.typeParameters, context)} = {`,
+            ...declaration.properties.map((property) => `  ${emitInterfacePropertyHaxeExtern(property, context)}`),
+            '};',
+          ]),
     ];
     return {
       contents: lines.join('\n'),
       path: `${packageName.replaceAll('.', '/')}/${targetName}.hx`,
     };
   });
+}
+
+function createAmbientUtilityHeritageTargetsHaxeExtern(module: Readonly<IrModule>): ReadonlyMap<string, string> {
+  return new Map(
+    module.declarations.flatMap((declaration) => {
+      if (declaration.kind !== 'interface') return [];
+      const target = getCompilerAmbientUtilityHeritageTargetHaxe(declaration);
+      return target ? [[declaration.binding.id, target] as const] : [];
+    }),
+  );
 }
 
 function emitInterfacePropertyHaxeExtern(

@@ -9,7 +9,7 @@ describe('createCompilerRuntimeExternalSymbolBindingPlanHaxe', () => {
     const plan = createCompilerRuntimeExternalSymbolBindingPlanHaxe();
 
     expect(plan.contract).toBe('flight-runtime-contract/2');
-    expect(plan.bindings).toHaveLength(46);
+    expect(plan.bindings).toHaveLength(99);
     expect(plan.bindings.filter(({ externalSymbol }) => externalSymbol.sourceName === 'Promise')).toEqual([
       {
         capability: 'task',
@@ -43,6 +43,14 @@ describe('createCompilerRuntimeExternalSymbolBindingPlanHaxe', () => {
       externalSymbol: { sourceName: 'ReadonlyMap', space: 'type' },
       kind: 'runtime',
     });
+    expect(plan.bindings).toContainEqual({
+      externalSymbol: { sourceName: 'WebGLProgram', space: 'type' },
+      kind: 'native',
+    });
+    expect(plan.bindings).toContainEqual({
+      externalSymbol: { sourceName: 'GPUDevice', space: 'type' },
+      kind: 'native',
+    });
     expect(plan.bindings).not.toContainEqual({
       externalSymbol: { sourceName: 'Math', space: 'type' },
       kind: 'native',
@@ -57,7 +65,7 @@ describe('createCompilerRuntimeExternalSymbolBindingPlanHaxe', () => {
     const second = createCompilerRuntimeExternalSymbolBindingPlanHaxe();
 
     (first.bindings as unknown[]).pop();
-    expect(second.bindings).toHaveLength(46);
+    expect(second.bindings).toHaveLength(99);
   });
 });
 
@@ -91,6 +99,12 @@ describe('getCompilerRuntimeExternalSymbolTargetHaxe', () => {
     ['Date', 'value', 'flighthq._internal._Date'],
     ['Error', 'type', 'haxe.Exception'],
     ['Error', 'value', 'haxe.Exception'],
+    ['AbortSignal', 'type', 'js.html.AbortSignal'],
+    ['AudioContext', 'type', 'js.html.audio.AudioContext'],
+    ['CanvasRenderingContext2D', 'type', 'js.html.CanvasRenderingContext2D'],
+    ['GPUDevice', 'type', 'Dynamic'],
+    ['GPUTextureFormat', 'type', 'String'],
+    ['HTMLCanvasElement', 'type', 'js.html.CanvasElement'],
     ['Float32Array', 'type', 'flighthq._internal._Float32Array'],
     ['Float32Array', 'value', 'flighthq._internal._Float32Array'],
     ['Float64Array', 'type', 'flighthq._internal._Float64Array'],
@@ -113,6 +127,7 @@ describe('getCompilerRuntimeExternalSymbolTargetHaxe', () => {
     ['Set', 'value', 'flighthq._internal._Set'],
     ['String', 'type', 'String'],
     ['String', 'value', 'String'],
+    ['Symbol', 'value', 'js.lib.Symbol'],
     ['Uint16Array', 'type', 'flighthq._internal._UInt16Array'],
     ['Uint16Array', 'value', 'flighthq._internal._UInt16Array'],
     ['Uint32Array', 'type', 'flighthq._internal._UInt32Array'],
@@ -123,6 +138,9 @@ describe('getCompilerRuntimeExternalSymbolTargetHaxe', () => {
     ['Uint8ClampedArray', 'value', 'flighthq._internal._UInt8ClampedArray'],
     ['WeakMap', 'type', 'flighthq._internal._WeakMap'],
     ['WeakMap', 'value', 'flighthq._internal._WeakMap'],
+    ['WebGLProgram', 'type', 'js.html.webgl.Program'],
+    ['WebGLPowerPreference', 'type', 'js.html.webgl.PowerPreference'],
+    ['WritableStream', 'type', 'Dynamic'],
   ] as const)('maps %s in %s space to %s', (sourceName, space, targetName) => {
     expect(getCompilerRuntimeExternalSymbolTargetHaxe(sourceName, space)).toBe(targetName);
   });

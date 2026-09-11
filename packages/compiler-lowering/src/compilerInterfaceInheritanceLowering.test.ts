@@ -292,6 +292,28 @@ describe('createCompilerLoweringPassInterfaceInheritance', () => {
     expect(getInterface(output, 'WithoutPointer').properties.map((property) => property.name)).toEqual(['key', 'text']);
   });
 
+  it('erases ambient utility heritage only through an explicit target policy', () => {
+    const module = lower(
+      'ambient-pick.ts',
+      "export interface Context extends Pick<WebGL2RenderingContext, 'clear'> {}",
+    );
+
+    expect(() =>
+      lowerIrModuleWithCompilerPasses(module, [createCompilerLoweringPassInterfaceInheritance([module])]),
+    ).toThrow('inherits a nonlocal interface that cannot be structurally resolved');
+
+    const output = lowerIrModuleWithCompilerPasses(module, [
+      createCompilerLoweringPassInterfaceInheritance([module], undefined, {
+        eraseAmbientUtilityHeritage: (reference, declaration) =>
+          declaration.binding.name === 'Context' &&
+          reference.reference.kind === 'ambient' &&
+          reference.reference.name === 'Pick',
+      }),
+    ]);
+
+    expect(getInterface(output, 'Context')).toMatchObject({ extends: [], properties: [] });
+  });
+
   it('flattens Partial heritage over a local generic structure', () => {
     const module = lower(
       'partial-heritage.ts',

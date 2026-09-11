@@ -1104,10 +1104,10 @@ describe('emitIrModuleHaxe', () => {
     // Narrowing proved the value present, so it is returned directly: `Null<T>` exists to unify
     // with `T`, and the proof guarantees any runtime check that unification inserts will pass.
     expect(singleOutput).toContain('return value;');
-    // The type refuses before the comparison does, which is the earlier and better place for it:
-    // a type Haxe cannot spell is a refusal about the signature, not about one operator.
+    // The signature is safely widened to Dynamic, but the comparison still refuses: erasing the
+    // distinction is sound for storage and unsound for an operation that observes the sentinel.
     expect(() => emitIrModuleHaxe(both.module)).toThrow(
-      'types containing both null and undefined require distinct Haxe sentinels',
+      'operator === against undefined requires Haxe nullability lowering',
     );
   });
 
@@ -5915,7 +5915,9 @@ describe('emitIrModuleHaxe nullish comparison admitting both null and undefined'
        }`,
     );
 
-    expect(() => emitIrModuleHaxe(result.module)).toThrow('distinct Haxe sentinels');
+    expect(() => emitIrModuleHaxe(result.module)).toThrow(
+      'operator == against null requires Haxe nullability lowering',
+    );
   });
 });
 
@@ -6244,6 +6246,15 @@ describe('emitIrModuleHaxe interface extends chain', () => {
     ).contents;
     expect(output).toContain('typedef Extended');
     expect(output).toContain('typedef Base');
+  });
+
+  it('widens a Pick of an explicitly bound ambient host interface to the native Haxe extern', () => {
+    const output = emitIrModuleHaxe(
+      lower('ambient-interface-pick.ts', "export interface Context extends Pick<WebGL2RenderingContext, 'clear'> {}")
+        .module,
+    ).contents;
+
+    expect(output).toContain('typedef Context = js.html.webgl.WebGL2RenderingContext;');
   });
 });
 

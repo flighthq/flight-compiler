@@ -32,10 +32,7 @@ export function emitIrTypeHaxe(type: Readonly<IrType>, context: Readonly<IrTypeH
       return typeof type.value === 'boolean' ? 'Bool' : typeof type.value === 'number' ? 'Float' : 'String';
     case 'named': {
       const sourceName = type.reference.kind === 'ambient' ? type.reference.name : undefined;
-      if (
-        (sourceName === 'Readonly' || sourceName === 'Partial' || sourceName === 'Required') &&
-        type.typeArguments[0]
-      ) {
+      if (sourceName !== undefined && haxeErasedUtilityTypeNames.has(sourceName) && type.typeArguments[0]) {
         return emitIrTypeHaxe(type.typeArguments[0], context);
       }
       if (sourceName === 'Record' && type.typeArguments[1]) {
@@ -57,7 +54,9 @@ export function emitIrTypeHaxe(type: Readonly<IrType>, context: Readonly<IrTypeH
         ].join('.');
       }
       const arguments_ = type.typeArguments.map((argument) => emitIrTypeHaxe(argument, context));
-      return `${targetName}${arguments_.length > 0 ? `<${arguments_.join(', ')}>` : ''}`;
+      return targetName === 'Dynamic'
+        ? targetName
+        : `${targetName}${arguments_.length > 0 ? `<${arguments_.join(', ')}>` : ''}`;
     }
     case 'never':
     case 'null':
@@ -89,7 +88,7 @@ export function emitIrTypeHaxe(type: Readonly<IrType>, context: Readonly<IrTypeH
     case 'union': {
       const concrete = type.types.filter((item) => item.kind !== 'null' && item.kind !== 'undefined');
       if (hasIrTypeKindHaxe(type, 'null') && hasIrTypeKindHaxe(type, 'undefined')) {
-        context.fail('types containing both null and undefined require distinct Haxe sentinels');
+        return 'Dynamic';
       }
       return concrete.length === 1 && concrete.length !== type.types.length
         ? `Null<${emitIrTypeHaxe(concrete[0]!, context)}>`
@@ -99,6 +98,17 @@ export function emitIrTypeHaxe(type: Readonly<IrType>, context: Readonly<IrTypeH
       return 'Dynamic';
   }
 }
+
+const haxeErasedUtilityTypeNames = new Set([
+  'Exclude',
+  'Extract',
+  'NoInfer',
+  'Omit',
+  'Partial',
+  'Pick',
+  'Readonly',
+  'Required',
+]);
 
 function hasIrTypeKindHaxe(type: Readonly<IrType>, kind: IrType['kind']): boolean {
   return type.kind === kind || (type.kind === 'union' && type.types.some((member) => member.kind === kind));

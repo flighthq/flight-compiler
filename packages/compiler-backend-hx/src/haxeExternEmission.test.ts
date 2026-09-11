@@ -108,6 +108,18 @@ describe('emitIrModuleHaxeExtern', () => {
     expect(typedef.contents).not.toContain('extends');
   });
 
+  it('widens a Pick of a bound ambient host interface to its native Haxe extern', () => {
+    const module = lower(
+      '@flighthq/types',
+      'context.ts',
+      "export interface Context extends Pick<WebGL2RenderingContext, 'clear'> {}",
+    );
+
+    const typedef = findFile(emitIrModuleHaxeExtern(module, { rootPackage: 'flight' }), 'flight/_js/Context.hx');
+
+    expect(typedef.contents).toContain('typedef Context = js.html.webgl.WebGL2RenderingContext;');
+  });
+
   it('emits callable interface members, generic constraints, and runtime types', () => {
     const module = lower(
       '@flighthq/types',

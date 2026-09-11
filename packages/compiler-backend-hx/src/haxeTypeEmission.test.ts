@@ -67,12 +67,12 @@ describe('emitIrTypeHaxe', () => {
     expect(() =>
       emitIrTypeHaxe({ kind: 'named', reference: { kind: 'ambient', name: 'Missing' }, typeArguments: [] }, context),
     ).toThrow('external type Missing has no Haxe binding');
-    expect(() =>
+    expect(
       emitIrTypeHaxe(
         { kind: 'union', types: [{ kind: 'primitive', name: 'string' }, { kind: 'null' }, { kind: 'undefined' }] },
         context,
       ),
-    ).toThrow('types containing both null and undefined require distinct Haxe sentinels');
+    ).toBe('Dynamic');
     expect(
       emitIrTypeHaxe(
         {
@@ -83,5 +83,53 @@ describe('emitIrTypeHaxe', () => {
         context,
       ),
     ).toBe('String');
+  });
+
+  it.each(['Exclude', 'Extract', 'NoInfer', 'Omit', 'Partial', 'Pick', 'Readonly', 'Required'])(
+    'erases the representation-only utility %s to its subject type',
+    (name) => {
+      expect(
+        emitIrTypeHaxe(
+          {
+            kind: 'named',
+            reference: { kind: 'ambient', name },
+            typeArguments: [
+              { kind: 'primitive', name: 'string' },
+              { kind: 'literal', value: 'field' },
+            ],
+          },
+          {
+            fail(message: string): never {
+              throw new Error(message);
+            },
+            getBindingName: () => 'Binding',
+            getExternalTypeName: () => undefined,
+            getMemberName: (member) => member,
+            getTypeName: (type) => type,
+          },
+        ),
+      ).toBe('String');
+    },
+  );
+
+  it('does not apply generic arguments to an explicitly opaque external host type', () => {
+    expect(
+      emitIrTypeHaxe(
+        {
+          kind: 'named',
+          reference: { kind: 'ambient', name: 'ReadableStream' },
+          typeArguments: [{ kind: 'primitive', name: 'string' }],
+        },
+        {
+          fail(message: string): never {
+            throw new Error(message);
+          },
+          getBindingName: () => 'Binding',
+          getExternalTypeName: () => 'Dynamic',
+          getMemberName: (member) => member,
+          getTypeName: (type) => type,
+        },
+      ),
+    ).toBe('Dynamic');
   });
 });
