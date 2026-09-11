@@ -1707,6 +1707,58 @@ describe('lowerTypeScriptSource', () => {
     expect(declarations.get('Property')).toMatchObject({ type: { kind: 'indexedAccess' } });
   });
 
+  it('preserves closed callable-object indexed provenance through NonNullable', () => {
+    const model = ts.createSourceFile(
+      '/flight/packages/model/src/runtime.ts',
+      `export interface Runtime {
+         callback: ((() => void) & { clear(): void }) | null;
+         label: string | null;
+       }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const consumer = ts.createSourceFile(
+      '/flight/packages/app/src/callback.ts',
+      `import type { Runtime } from '@flight/model';
+       export type Callback = NonNullable<Runtime['callback']>;
+       export type Label = NonNullable<Runtime['label']>;`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const [, result] = lowerTypeScriptSources(
+      [
+        { packageName: '@flight/model', sourceFile: model, upstreamDirectory: '/flight' },
+        { packageName: '@flight/app', sourceFile: consumer, upstreamDirectory: '/flight' },
+      ],
+      {
+        edges: [
+          {
+            specifier: '@flight/model',
+            target: { packageName: '@flight/model', source: 'packages/model/src/runtime.ts' },
+          },
+        ],
+        schema: 'flight-compiler-module-resolution/1',
+      },
+    );
+    const aliases = new Map(
+      result!.module.declarations.flatMap((declaration) =>
+        declaration.kind === 'typeAlias' ? [[declaration.binding.name, declaration.type] as const] : [],
+      ),
+    );
+
+    expect(result!.diagnostics).toEqual([]);
+    expect(aliases.get('Callback')).toMatchObject({
+      kind: 'named',
+      reference: { kind: 'ambient', name: 'NonNullable' },
+      typeArguments: [{ kind: 'indexedAccess', index: { kind: 'literal', value: 'callback' } }],
+    });
+    expect(aliases.get('Label')).toMatchObject({
+      kind: 'named',
+      reference: { kind: 'ambient', name: 'NonNullable' },
+      typeArguments: [{ kind: 'union' }],
+    });
+  });
+
   it('separates executable defaults from function types', () => {
     const result = lower('contracts.ts', 'export const callback = (value: number = 1): number => value;');
     const [callback] = result.module.declarations;

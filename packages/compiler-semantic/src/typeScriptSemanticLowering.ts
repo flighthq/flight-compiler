@@ -2711,7 +2711,14 @@ function lowerType(node: ts.TypeNode, context: LoweringContext): IrType {
     const conditional = lowerConcreteTypeScriptConditionalAliasReference(node, context);
     if (conditional) return conditional;
     const name = getTypeScriptNodeText(node.typeName, context);
-    const arguments_ = node.typeArguments?.map((type) => lowerType(type, context)) ?? [];
+    const arguments_ =
+      node.typeArguments?.map((type) =>
+        name === 'NonNullable' &&
+        ts.isIndexedAccessTypeNode(type) &&
+        isTypeScriptClosedCallableObjectIndexedAccess(type, context)
+          ? lowerTypeScriptIndexedAccessSyntax(type, context)
+          : lowerType(type, context),
+      ) ?? [];
     const reference = lowerTypeNameReference(node.typeName, context);
     if (!reference) return { kind: 'unknown', source: 'unknown' };
     if (reference.kind === 'ambient' && (name === 'Array' || name === 'ReadonlyArray') && arguments_.length === 1) {
@@ -2929,6 +2936,37 @@ function getIrTypeRuntimeRepresentationSemantic(type: IrType): IrType {
 function lowerConcreteIndexedAccessType(node: ts.IndexedAccessTypeNode, context: LoweringContext): IrType | undefined {
   if (hasExternalTypeScriptTypeParameter(node, context)) return undefined;
   return getTypeScriptCheckerTypeEvidence(context.checker.getTypeFromTypeNode(node), context, 0, true);
+}
+
+function isTypeScriptClosedCallableObjectIndexedAccess(
+  node: ts.IndexedAccessTypeNode,
+  context: LoweringContext,
+): boolean {
+  const concrete = lowerConcreteIndexedAccessType(node, context);
+  const present =
+    concrete?.kind === 'union'
+      ? concrete.types.filter((member) => member.kind !== 'null' && member.kind !== 'undefined')
+      : concrete
+        ? [concrete]
+        : [];
+  if (present.length !== 1 || present[0]?.kind !== 'intersection' || present[0].types.length !== 2) return false;
+  const callable = present[0].types.filter(
+    (member): member is Extract<IrType, { kind: 'function' }> => member.kind === 'function',
+  );
+  return (
+    callable.length === 1 &&
+    callable[0]!.typeParameters.length === 0 &&
+    callable[0]!.parameters.every((parameter) => !parameter.optional && !parameter.rest) &&
+    present[0].types.some((member) => member.kind === 'object')
+  );
+}
+
+function lowerTypeScriptIndexedAccessSyntax(node: ts.IndexedAccessTypeNode, context: LoweringContext): IrType {
+  return {
+    index: lowerType(node.indexType, context),
+    kind: 'indexedAccess',
+    object: lowerType(node.objectType, context),
+  };
 }
 
 function lowerTypeAlias(node: ts.TypeAliasDeclaration, context: LoweringContext): IrTypeAliasDeclaration {
@@ -4092,11 +4130,7 @@ function getTypeScriptCheckerStringLiteralTypeValues(
   const type = context.checker.getTypeFromTypeNode(node);
   const members = type.isUnion() ? type.types : [type];
   if (members.some((member) => !(member.flags & ts.TypeFlags.StringLiteral))) return undefined;
-  return [
-    ...new Set(
-      members.map((member) => (member as ts.StringLiteralType).value),
-    ),
-  ];
+  return [...new Set(members.map((member) => (member as ts.StringLiteralType).value))];
 }
 
 function lowerTypeScriptClassPropertiesEvidence(
