@@ -171,6 +171,127 @@ describe('createCompilerLoweringPassInterfaceInheritance', () => {
     });
   });
 
+  it('resolves imported aliases before checking direct property refinements', () => {
+    const kind = lowerInPackage('@flighthq/model', 'model', 'kind.ts', 'export type Kind = string;');
+    const base = lowerInPackage(
+      '@flighthq/model',
+      'model',
+      'base.ts',
+      "import type { Kind } from './kind'; export interface Base { kind: Kind; }",
+    );
+    const derived = lowerInPackage(
+      '@flighthq/model',
+      'model',
+      'derived.ts',
+      "import type { Base } from './base'; export interface Derived extends Base { kind: 'Derived'; }",
+    );
+    const output = lowerIrModuleWithCompilerPasses(derived, [
+      createCompilerLoweringPassInterfaceInheritance([derived, base, kind]),
+    ]);
+
+    expect(getInterface(output, 'Derived')).toMatchObject({
+      extends: [],
+      properties: [{ name: 'kind', type: { kind: 'literal', value: 'Derived' } }],
+    });
+  });
+
+  it('resolves typeof constants before checking direct property refinements', () => {
+    const module = lower(
+      'typeof-refined-property.ts',
+      `
+        type Kind = string;
+        const DerivedKind = 'Derived';
+        interface Base { kind: Kind; }
+        export interface Derived extends Base { kind: typeof DerivedKind; }
+      `,
+    );
+    const output = lowerIrModuleWithCompilerPasses(module, [createCompilerLoweringPassInterfaceInheritance([module])]);
+
+    expect(getInterface(output, 'Derived').properties).toMatchObject([
+      { name: 'kind', type: { kind: 'literal', value: 'Derived' } },
+    ]);
+  });
+
+  it('keeps the narrower property contributed by structural intersections', () => {
+    const module = lower(
+      'intersection-refined-property.ts',
+      `
+        interface BaseData { base: number; }
+        interface DerivedData extends BaseData { derived: number; }
+        type Base = { data: BaseData | null };
+        type Refined = { data: DerivedData | null };
+        type Combined = Base & Refined;
+        export interface Derived extends Combined { active: boolean; }
+      `,
+    );
+    const output = lowerIrModuleWithCompilerPasses(module, [createCompilerLoweringPassInterfaceInheritance([module])]);
+
+    expect(getInterface(output, 'Derived').properties).toMatchObject([
+      { name: 'data', type: { kind: 'union', types: [{ kind: 'named' }, { kind: 'null' }] } },
+      { name: 'active' },
+    ]);
+  });
+
+  it('keeps TypeScript interface method parameter refinements', () => {
+    const module = lower(
+      'method-refinement.ts',
+      `
+        interface Renderable { kind: string; }
+        interface Sprite extends Renderable { image: string; }
+        interface Renderer { create(source: Renderable): object | null; }
+        export interface SpriteRenderer extends Renderer { create(source: Sprite): object | null; }
+      `,
+    );
+    const output = lowerIrModuleWithCompilerPasses(module, [createCompilerLoweringPassInterfaceInheritance([module])]);
+    const create = getInterface(output, 'SpriteRenderer').properties.find((property) => property.name === 'create');
+
+    expect(create).toMatchObject({
+      type: { kind: 'function', parameters: [{ type: { kind: 'named', reference: { binding: { name: 'Sprite' } } } }] },
+    });
+  });
+
+  it('ignores nested property readonly markers when proving a direct refinement', () => {
+    const module = lower(
+      'readonly-refinement.ts',
+      `
+        interface Source { kind: string; }
+        interface RenderTarget extends Source { readonly kind: 'renderTarget'; }
+        interface Texture { source: Source | null; }
+        export interface RenderTexture extends Texture { source: RenderTarget; }
+      `,
+    );
+    const output = lowerIrModuleWithCompilerPasses(module, [createCompilerLoweringPassInterfaceInheritance([module])]);
+
+    expect(getInterface(output, 'RenderTexture').properties).toMatchObject([
+      { name: 'source', type: { kind: 'named', reference: { binding: { name: 'RenderTarget' } } } },
+    ]);
+  });
+
+  it('flattens Pick and Omit heritage over imported package-owned structures', () => {
+    const signals = lowerInPackage(
+      '@flighthq/model',
+      'model',
+      'signals.ts',
+      'export interface Signals { key: string; pointer: number; text: string; }',
+    );
+    const source = lowerInPackage(
+      '@flighthq/model',
+      'model',
+      'source.ts',
+      `
+        import type { Signals } from './signals';
+        export interface Keyboard extends Pick<Signals, 'key' | 'text'> {}
+        export interface WithoutPointer extends Omit<Signals, 'pointer'> {}
+      `,
+    );
+    const output = lowerIrModuleWithCompilerPasses(source, [
+      createCompilerLoweringPassInterfaceInheritance([source, signals]),
+    ]);
+
+    expect(getInterface(output, 'Keyboard').properties.map((property) => property.name)).toEqual(['key', 'text']);
+    expect(getInterface(output, 'WithoutPointer').properties.map((property) => property.name)).toEqual(['key', 'text']);
+  });
+
   it('flattens Partial heritage over a local generic structure', () => {
     const module = lower(
       'partial-heritage.ts',

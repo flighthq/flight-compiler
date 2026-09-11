@@ -15,6 +15,7 @@ import type {
   CompilerStructuralTypeSubstitutionPlan,
   IrClassDeclaration,
   IrClassMethod,
+  IrBindingIdentity,
   IrInterfaceDeclaration,
   IrImport,
   IrModule,
@@ -24,6 +25,7 @@ import type {
   IrTypeBindingIdentity,
   IrTypeNameReference,
   IrTypeReference,
+  IrVariableDeclaration,
 } from '../../compiler-types/src/index.js';
 import { createCompilerLoweringFailure } from './compilerLoweringPass.js';
 
@@ -206,18 +208,48 @@ function getIrInterfaceUtilityHeritagePropertiesFlattened(
   substitutions: Readonly<CompilerStructuralTypeSubstitutionPlan>,
   context: InterfaceInheritanceLoweringContext,
 ): readonly IrObjectTypeProperty[] | undefined {
-  if (reference.reference.kind !== 'ambient' || reference.reference.name !== 'Partial') return undefined;
-  if (reference.typeArguments.length !== 1) {
+  if (reference.reference.kind !== 'ambient') return undefined;
+  const utility = reference.reference.name;
+  if (!['Omit', 'Partial', 'Pick', 'Readonly', 'Required'].includes(utility)) return undefined;
+  const expectedArguments = utility === 'Omit' || utility === 'Pick' ? 2 : 1;
+  if (reference.typeArguments.length !== expectedArguments) {
     return failIrInterfaceInheritanceLowering(
       context.subject,
-      `interface ${location.declaration.binding.name} inherits Partial with invalid type argument count`,
+      `interface ${location.declaration.binding.name} inherits ${utility} with invalid type argument count`,
     );
   }
   const target = resolveIrTypeStructuralSubstitution(reference.typeArguments[0]!, substitutions);
-  return getIrInterfaceHeritageTypePropertiesFlattened(target, location, ancestors, context).map((property) => ({
-    ...property,
-    optional: true,
-  }));
+  const properties = getIrInterfaceHeritageTypePropertiesFlattened(target, location, ancestors, context);
+  if (utility === 'Partial') return properties.map((property) => ({ ...property, optional: true }));
+  if (utility === 'Readonly') return properties.map((property) => ({ ...property, readonly: true }));
+  if (utility === 'Required') return properties.map((property) => ({ ...property, optional: false }));
+  const keys = getIrInterfaceUtilityHeritageKeys(
+    resolveIrTypeStructuralSubstitution(reference.typeArguments[1]!, substitutions),
+    location,
+    context,
+  );
+  return properties.filter((property) => (utility === 'Pick') === keys.has(property.name));
+}
+
+function getIrInterfaceUtilityHeritageKeys(
+  type: Readonly<IrType>,
+  location: Readonly<InterfaceInheritanceDeclarationLocation>,
+  context: InterfaceInheritanceLoweringContext,
+): ReadonlySet<string> {
+  const resolved = resolveIrTypeInterfaceInheritance(type, location.module, context, new Set());
+  const members = resolved.kind === 'union' ? resolved.types : [resolved];
+  const keys = new Set<string>();
+  for (const member of members) {
+    if (member.kind === 'never') continue;
+    if (member.kind !== 'literal' || typeof member.value !== 'string') {
+      return failIrInterfaceInheritanceLowering(
+        context.subject,
+        `interface ${location.declaration.binding.name} inherits utility with nonliteral property keys`,
+      );
+    }
+    keys.add(member.value);
+  }
+  return keys;
 }
 
 function getIrInterfaceHeritageClassPropertiesFlattened(
@@ -342,11 +374,24 @@ function getIrInterfaceDeclarationBase(
   location: Readonly<InterfaceInheritanceDeclarationLocation>,
   context: InterfaceInheritanceLoweringContext,
 ): Readonly<InterfaceInheritanceDeclarationLocation> {
-  const declaration = location.declaration;
+  return getIrInterfaceDeclarationBaseFromModule(
+    reference,
+    location.module,
+    location.declaration.binding.name,
+    context,
+  );
+}
+
+function getIrInterfaceDeclarationBaseFromModule(
+  reference: Readonly<IrTypeReference>,
+  module: Readonly<InterfaceInheritanceModuleRecord>,
+  subjectName: string,
+  context: InterfaceInheritanceLoweringContext,
+): Readonly<InterfaceInheritanceDeclarationLocation> {
   if (reference.reference.kind !== 'binding') {
     return failIrInterfaceInheritanceLowering(
       context.subject,
-      `interface ${declaration.binding.name} inherits a nonlocal interface that cannot be structurally resolved`,
+      `interface ${subjectName} inherits a nonlocal interface that cannot be structurally resolved`,
     );
   }
   const bindingReference = reference.reference;
@@ -354,17 +399,17 @@ function getIrInterfaceDeclarationBase(
     if (bindingReference.path.length > 0) {
       return failIrInterfaceInheritanceLowering(
         context.subject,
-        `interface ${declaration.binding.name} inherits a nonlocal interface that cannot be structurally resolved`,
+        `interface ${subjectName} inherits a nonlocal interface that cannot be structurally resolved`,
       );
     }
-    const base = location.module.declarations.get(bindingReference.binding.id);
+    const base = module.declarations.get(bindingReference.binding.id);
     if (base) return base;
     return failIrInterfaceInheritanceLowering(
       context.subject,
-      `interface ${declaration.binding.name} inherits unavailable interface ${bindingReference.binding.name}`,
+      `interface ${subjectName} inherits unavailable interface ${bindingReference.binding.name}`,
     );
   }
-  const imported = location.module.module.imports.flatMap((entry) =>
+  const imported = module.module.imports.flatMap((entry) =>
     entry.bindings
       .filter((candidate) => candidate.binding.id === bindingReference.binding.id)
       .flatMap((candidate) => {
@@ -378,8 +423,8 @@ function getIrInterfaceDeclarationBase(
   );
   const bases = deduplicateInterfaceInheritanceDeclarationLocations(
     imported.flatMap(({ exportName, specifier }) =>
-      getInterfaceInheritanceSpecifierModules(location.module, specifier, context.moduleSet).flatMap((module) =>
-        getInterfaceInheritanceExportLocations(module, exportName, context.moduleSet, new Set()),
+      getInterfaceInheritanceSpecifierModules(module, specifier, context.moduleSet).flatMap((target) =>
+        getInterfaceInheritanceExportLocations(target, exportName, context.moduleSet, new Set()),
       ),
     ),
   );
@@ -387,12 +432,12 @@ function getIrInterfaceDeclarationBase(
   if (bases.length > 1) {
     return failIrInterfaceInheritanceLowering(
       context.subject,
-      `interface ${declaration.binding.name} inherits ambiguous interface ${bindingReference.binding.name}`,
+      `interface ${subjectName} inherits ambiguous interface ${bindingReference.binding.name}`,
     );
   }
   return failIrInterfaceInheritanceLowering(
     context.subject,
-    `interface ${declaration.binding.name} inherits unavailable interface ${bindingReference.binding.name}`,
+    `interface ${subjectName} inherits unavailable interface ${bindingReference.binding.name}`,
   );
 }
 
@@ -441,20 +486,347 @@ function addIrInterfacePropertyFlattened(
     return;
   }
   const existing = properties[existingIndex]!;
+  const propertyType = resolveIrTypeInterfaceInheritance(property.type, context.module, context, new Set());
+  const existingType = resolveIrTypeInterfaceInheritance(existing.type, context.module, context, new Set());
+  const propertyToExisting = analyzeIrTypeStructuralAssignability(
+    removeIrObjectPropertyReadonlyInterfaceInheritance(propertyType),
+    removeIrObjectPropertyReadonlyInterfaceInheritance(existingType),
+  );
   if (
-    directOverride &&
     (!property.optional || existing.optional) &&
-    analyzeIrTypeStructuralAssignability(property.type, existing.type).status === 'compatible'
+    (propertyToExisting.status === 'compatible' ||
+      (directOverride && propertyToExisting.status === 'indeterminate') ||
+      (directOverride && isIrInterfaceMethodOverrideCompatible(propertyType, existingType)))
   ) {
     properties[existingIndex] = property;
     return;
   }
+  const existingToProperty = analyzeIrTypeStructuralAssignability(
+    removeIrObjectPropertyReadonlyInterfaceInheritance(existingType),
+    removeIrObjectPropertyReadonlyInterfaceInheritance(propertyType),
+  );
+  if ((!existing.optional || property.optional) && existingToProperty.status === 'compatible') {
+    return;
+  }
   if (!isDeepStrictEqual(existing, property)) {
+    const diagnostic = propertyToExisting.diagnostics[0] ?? existingToProperty.diagnostics[0];
+    const detail = diagnostic ? ` (${diagnostic.code} at ${diagnostic.path.map(String).join('.') || 'type'})` : '';
     failIrInterfaceInheritanceLowering(
       context.subject,
-      `interface ${declaration.binding.name} inherits incompatible property ${property.name}`,
+      `interface ${declaration.binding.name} inherits incompatible property ${property.name}${detail}`,
     );
   }
+}
+
+function removeIrObjectPropertyReadonlyInterfaceInheritance(type: Readonly<IrType>): IrType {
+  switch (type.kind) {
+    case 'array':
+      return { ...type, element: removeIrObjectPropertyReadonlyInterfaceInheritance(type.element) };
+    case 'function':
+      return {
+        ...type,
+        parameters: type.parameters.map((parameter) => ({
+          ...parameter,
+          type: removeIrObjectPropertyReadonlyInterfaceInheritance(parameter.type),
+        })),
+        returns: removeIrObjectPropertyReadonlyInterfaceInheritance(type.returns),
+      };
+    case 'indexedAccess':
+      return {
+        ...type,
+        index: removeIrObjectPropertyReadonlyInterfaceInheritance(type.index),
+        object: removeIrObjectPropertyReadonlyInterfaceInheritance(type.object),
+      };
+    case 'intersection': {
+      const types = type.types.map(removeIrObjectPropertyReadonlyInterfaceInheritance);
+      return { ...type, types: [types[0]!, types[1]!, ...types.slice(2)] };
+    }
+    case 'keyof':
+      return { ...type, type: removeIrObjectPropertyReadonlyInterfaceInheritance(type.type) };
+    case 'named':
+      return {
+        ...type,
+        typeArguments: type.typeArguments.map(removeIrObjectPropertyReadonlyInterfaceInheritance),
+      };
+    case 'object':
+      return {
+        ...type,
+        properties: type.properties.map((property) => ({
+          ...property,
+          readonly: false,
+          type: removeIrObjectPropertyReadonlyInterfaceInheritance(property.type),
+        })),
+      };
+    case 'tuple':
+      return {
+        ...type,
+        elements: type.elements.map((element) => ({
+          ...element,
+          type: removeIrObjectPropertyReadonlyInterfaceInheritance(element.type),
+        })),
+      };
+    case 'union': {
+      const types = type.types.map(removeIrObjectPropertyReadonlyInterfaceInheritance);
+      return { ...type, types: [types[0]!, types[1]!, ...types.slice(2)] };
+    }
+    case 'literal':
+    case 'never':
+    case 'null':
+    case 'primitive':
+    case 'typeOf':
+    case 'undefined':
+    case 'unknown':
+      return type;
+  }
+}
+
+function isIrInterfaceMethodOverrideCompatible(source: Readonly<IrType>, target: Readonly<IrType>): boolean {
+  if (source.kind !== 'function' || target.kind !== 'function') return false;
+  if (source.typeParameters.length !== target.typeParameters.length) return false;
+  const sourceRequired = source.parameters.filter((parameter) => !parameter.optional && !parameter.rest).length;
+  const targetRequired = target.parameters.filter((parameter) => !parameter.optional && !parameter.rest).length;
+  if (sourceRequired !== targetRequired) return false;
+  return analyzeIrTypeStructuralAssignability(source.returns, target.returns).status !== 'incompatible';
+}
+
+function resolveIrTypeInterfaceInheritance(
+  type: Readonly<IrType>,
+  module: Readonly<InterfaceInheritanceModuleRecord>,
+  context: InterfaceInheritanceLoweringContext,
+  declarations: ReadonlySet<string>,
+  expandStructures = true,
+): IrType {
+  switch (type.kind) {
+    case 'array':
+      return {
+        ...type,
+        element: resolveIrTypeInterfaceInheritance(type.element, module, context, declarations, expandStructures),
+      };
+    case 'function':
+      return {
+        ...type,
+        parameters: type.parameters.map((parameter) => ({
+          ...parameter,
+          type: resolveIrTypeInterfaceInheritance(parameter.type, module, context, declarations, expandStructures),
+        })),
+        returns: resolveIrTypeInterfaceInheritance(type.returns, module, context, declarations, expandStructures),
+      };
+    case 'indexedAccess':
+      return {
+        ...type,
+        index: resolveIrTypeInterfaceInheritance(type.index, module, context, declarations, expandStructures),
+        object: resolveIrTypeInterfaceInheritance(type.object, module, context, declarations, expandStructures),
+      };
+    case 'intersection': {
+      const types = type.types.map((member) =>
+        resolveIrTypeInterfaceInheritance(member, module, context, declarations, expandStructures),
+      );
+      return { ...type, types: [types[0]!, types[1]!, ...types.slice(2)] };
+    }
+    case 'keyof':
+      return {
+        ...type,
+        type: resolveIrTypeInterfaceInheritance(type.type, module, context, declarations, expandStructures),
+      };
+    case 'named': {
+      const location = getInterfaceInheritanceTypeDeclaration(type, module, context);
+      if (!location && type.reference.kind === 'binding' && type.reference.binding.space === 'value') {
+        const declaration = getInterfaceInheritanceValueDeclaration(type.reference, module, context);
+        if (
+          declaration?.declarationKind === 'const' &&
+          declaration.initializer?.kind === 'literal' &&
+          declaration.initializer.value !== null
+        ) {
+          return { kind: 'literal', value: declaration.initializer.value };
+        }
+      }
+      if (!location || declarations.has(location.identity)) {
+        return {
+          ...type,
+          typeArguments: type.typeArguments.map((argument) =>
+            resolveIrTypeInterfaceInheritance(argument, module, context, declarations, expandStructures),
+          ),
+        };
+      }
+      const substitutions = getIrInterfaceTypeSubstitutionPlan(
+        type,
+        location.declaration,
+        createIrTypeParameterSubstitutionPlan([], []),
+        context,
+      );
+      const nextDeclarations = new Set(declarations).add(location.identity);
+      if (location.declaration.kind === 'typeAlias') {
+        return resolveIrTypeInterfaceInheritance(
+          resolveIrTypeStructuralSubstitution(location.declaration.type, substitutions),
+          location.module,
+          context,
+          nextDeclarations,
+          expandStructures,
+        );
+      }
+      if (!expandStructures) {
+        return {
+          ...type,
+          reference: { binding: location.declaration.binding, kind: 'binding', path: [] },
+          typeArguments: type.typeArguments.map((argument) =>
+            resolveIrTypeInterfaceInheritance(argument, module, context, declarations, false),
+          ),
+        };
+      }
+      return {
+        kind: 'object',
+        properties: getIrInterfaceDeclarationPropertiesFlattened(location, substitutions, new Set(), context).map(
+          (property) => ({
+            ...property,
+            type: resolveIrTypeInterfaceInheritance(property.type, location.module, context, nextDeclarations, false),
+          }),
+        ),
+      };
+    }
+    case 'object':
+      return {
+        ...type,
+        properties: type.properties.map((property) => ({
+          ...property,
+          type: resolveIrTypeInterfaceInheritance(property.type, module, context, declarations, expandStructures),
+        })),
+      };
+    case 'tuple':
+      return {
+        ...type,
+        elements: type.elements.map((element) => ({
+          ...element,
+          type: resolveIrTypeInterfaceInheritance(element.type, module, context, declarations, expandStructures),
+        })),
+      };
+    case 'union': {
+      const types = type.types.map((member) =>
+        resolveIrTypeInterfaceInheritance(member, module, context, declarations, expandStructures),
+      );
+      return { ...type, types: [types[0]!, types[1]!, ...types.slice(2)] };
+    }
+    case 'literal':
+    case 'never':
+    case 'null':
+    case 'primitive':
+      return type;
+    case 'typeOf': {
+      const declaration = getInterfaceInheritanceValueDeclaration(type.reference, module, context);
+      return declaration?.declarationKind === 'const' &&
+        declaration.initializer?.kind === 'literal' &&
+        declaration.initializer.value !== null
+        ? { kind: 'literal', value: declaration.initializer.value }
+        : type;
+    }
+    case 'undefined':
+    case 'unknown':
+      return type;
+  }
+}
+
+function getInterfaceInheritanceTypeDeclaration(
+  type: Readonly<IrTypeReference>,
+  module: Readonly<InterfaceInheritanceModuleRecord>,
+  context: InterfaceInheritanceLoweringContext,
+): InterfaceInheritanceDeclarationLocation | undefined {
+  if (type.reference.kind !== 'binding') return undefined;
+  const reference = type.reference;
+  const origin = getInterfaceInheritanceBindingModule(reference.binding, context) ?? module;
+  const declaration = origin.declarations.get(reference.binding.id);
+  if (declaration) return declaration;
+  if (reference.binding.space === 'value') {
+    const declarations = [...origin.declarations.values()].filter(
+      (candidate) => candidate.declaration.binding.name === reference.binding.name,
+    );
+    if (declarations.length === 1) return declarations[0];
+  }
+  if (
+    origin.module.imports.some((imported) =>
+      imported.bindings.some(({ binding }) => binding.id === reference.binding.id),
+    )
+  ) {
+    const imported = origin.module.imports.flatMap((entry) =>
+      entry.bindings
+        .filter((candidate) => candidate.binding.id === reference.binding.id)
+        .flatMap((candidate) => {
+          if (candidate.imported === '*' && reference.path.length === 1) {
+            return [{ exportName: reference.path[0]!, specifier: entry.specifier }];
+          }
+          return reference.path.length === 0 && candidate.imported !== '*'
+            ? [{ exportName: candidate.imported, specifier: entry.specifier }]
+            : [];
+        }),
+    );
+    const locations = deduplicateInterfaceInheritanceDeclarationLocations(
+      imported.flatMap(({ exportName, specifier }) =>
+        getInterfaceInheritanceSpecifierModules(origin, specifier, context.moduleSet).flatMap((target) =>
+          getInterfaceInheritanceExportLocations(target, exportName, context.moduleSet, new Set()),
+        ),
+      ),
+    );
+    return locations.length === 1 ? locations[0] : undefined;
+  }
+  return undefined;
+}
+
+function getInterfaceInheritanceValueDeclaration(
+  reference: Readonly<IrTypeNameReference | Extract<IrType, { kind: 'typeOf' }>['reference']>,
+  module: Readonly<InterfaceInheritanceModuleRecord>,
+  context: InterfaceInheritanceLoweringContext,
+): Readonly<IrVariableDeclaration & { readonly binding: IrBindingIdentity }> | undefined {
+  const origins =
+    reference.kind === 'binding'
+      ? [getInterfaceInheritanceBindingModule(reference.binding, context) ?? module]
+      : context.moduleSet.modules;
+  const declarations = new Map<string, IrVariableDeclaration & { readonly binding: IrBindingIdentity }>();
+  for (const origin of origins) {
+    const local = origin.module.declarations.find(
+      (declaration): declaration is IrVariableDeclaration & { readonly binding: IrBindingIdentity } =>
+        declaration.kind === 'variable' &&
+        'binding' in declaration &&
+        (reference.kind === 'binding'
+          ? declaration.binding.id === reference.binding.id
+          : declaration.binding.name === reference.name),
+    );
+    if (local) declarations.set(`${origin.identity}\0${local.binding.id}`, local);
+    for (const imported of origin.module.imports) {
+      const candidate = imported.bindings.find(({ binding }) =>
+        reference.kind === 'binding' ? binding.id === reference.binding.id : binding.name === reference.name,
+      );
+      if (!candidate) continue;
+      const exportName =
+        candidate.imported === '*' && reference.kind === 'binding' ? reference.path[0] : candidate.imported;
+      if (!exportName) continue;
+      for (const target of getInterfaceInheritanceSpecifierModules(origin, imported.specifier, context.moduleSet)) {
+        const declaration = target.module.declarations.find(
+          (item): item is IrVariableDeclaration & { readonly binding: IrBindingIdentity } => {
+            if (item.kind !== 'variable' || !('binding' in item)) return false;
+            return (
+              (item.exported && item.binding.name === exportName) ||
+              target.module.exports.some(
+                (exported) =>
+                  exported.kind === 'local' &&
+                  exported.exported === exportName &&
+                  exported.binding.id === item.binding.id,
+              )
+            );
+          },
+        );
+        if (declaration) declarations.set(`${target.identity}\0${declaration.binding.id}`, declaration);
+      }
+    }
+  }
+  return declarations.size === 1 ? declarations.values().next().value : undefined;
+}
+
+function getInterfaceInheritanceBindingModule(
+  binding: Readonly<IrBindingIdentity | IrTypeBindingIdentity>,
+  context: InterfaceInheritanceLoweringContext,
+): InterfaceInheritanceModuleRecord | undefined {
+  const source = normalizePathPortable(binding.source);
+  return context.moduleSet.modules.find(
+    (module) => module.module.packageName === binding.packageName && module.source === source,
+  );
 }
 
 function createInterfaceInheritanceModuleSet(
@@ -783,10 +1155,11 @@ function rebindIrTypeInterfaceInheritance(
     case 'never':
     case 'null':
     case 'primitive':
-    case 'typeOf':
     case 'undefined':
     case 'unknown':
       return type;
+    case 'typeOf':
+      return resolveIrTypeInterfaceInheritance(type, context.module, context, new Set());
   }
 }
 
