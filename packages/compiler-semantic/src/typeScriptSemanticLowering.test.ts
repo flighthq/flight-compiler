@@ -12614,7 +12614,8 @@ it('materializes scalar type queries from type-only imports without guessing obj
          export type Kind = typeof EntityKind;
          export const settings = { enabled: true };
          export type Settings = typeof settings;
-         export type Console = typeof console;`,
+         export type Console = typeof console;
+         export type TimerFunction = typeof setTimeout;`,
         ts.ScriptTarget.Latest,
         true,
       ),
@@ -12633,6 +12634,13 @@ it('materializes scalar type queries from type-only imports without guessing obj
   expect(declarations.get('Kind')).toMatchObject({ type: { kind: 'literal', value: 'entity' } });
   expect(declarations.get('Settings')).toMatchObject({ type: { kind: 'typeOf', reference: { kind: 'binding' } } });
   expect(declarations.get('Console')).toMatchObject({ type: { kind: 'typeOf', reference: { kind: 'ambient' } } });
+  expect(declarations.get('TimerFunction')).toMatchObject({
+    type: {
+      kind: 'function',
+      parameters: expect.arrayContaining([expect.objectContaining({ rest: true })]),
+      returns: { kind: 'primitive', name: 'number' },
+    },
+  });
 });
 
 it('lowers unique symbol syntax through the ordinary symbol representation', () => {

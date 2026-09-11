@@ -2796,8 +2796,11 @@ function lowerType(node: ts.TypeNode, context: LoweringContext): IrType {
   if (ts.isTypeQueryNode(node)) {
     const reference = lowerValueNameReference(node.exprName, context);
     if (reference.kind === 'ambient') {
-      const checkerType = getTypeScriptCheckerTypeEvidence(context.checker.getTypeFromTypeNode(node), context, 0, true);
+      const sourceType = context.checker.getTypeFromTypeNode(node);
+      const checkerType = getTypeScriptCheckerTypeEvidence(sourceType, context, 0, true);
       if (checkerType?.kind === 'literal' || checkerType?.kind === 'primitive') return checkerType;
+      const callableType = getTypeScriptCheckerFunctionTypeEvidence(sourceType, context, 0);
+      if (callableType) return callableType;
     }
     return { kind: 'typeOf', reference };
   }
