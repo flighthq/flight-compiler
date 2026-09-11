@@ -184,8 +184,9 @@ function resolveIrTypeObjectShapeCpp(
       if (!properties || !keys) return undefined;
       const available = new Set(properties.map((property) => property.name));
       if ([...keys].some((key) => !available.has(key))) return undefined;
+      const projection = type.reference.name;
       return properties.filter((property) =>
-        type.reference.name === 'Pick' ? keys.has(property.name) : !keys.has(property.name),
+        projection === 'Pick' ? keys.has(property.name) : !keys.has(property.name),
       );
     }
     if (type.typeArguments.length !== 1 || !type.typeArguments[0]) return undefined;
