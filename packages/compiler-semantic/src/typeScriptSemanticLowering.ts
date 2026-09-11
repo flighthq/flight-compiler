@@ -4519,14 +4519,18 @@ function isTypeScriptClosedCallableObjectAliasReference(node: ts.TypeNode, conte
   const symbol = context.checker.getSymbolAtLocation(node.typeName);
   const declaration = symbol?.declarations?.find(ts.isTypeAliasDeclaration);
   if (!declaration) return false;
+  const nonNullableArgument =
+    ts.isTypeReferenceNode(declaration.type) && declaration.type.typeArguments?.length === 1
+      ? declaration.type.typeArguments[0]
+      : undefined;
   if (
     ts.isTypeReferenceNode(declaration.type) &&
     ts.isIdentifier(declaration.type.typeName) &&
     declaration.type.typeName.text === 'NonNullable' &&
-    declaration.type.typeArguments?.length === 1 &&
-    ts.isIndexedAccessTypeNode(declaration.type.typeArguments[0])
+    nonNullableArgument &&
+    ts.isIndexedAccessTypeNode(nonNullableArgument)
   ) {
-    return isTypeScriptClosedCallableObjectIndexedAccess(declaration.type.typeArguments[0], context);
+    return isTypeScriptClosedCallableObjectIndexedAccess(nonNullableArgument, context);
   }
   return isTypeScriptClosedCallableObjectType(declaration.type, context);
 }
