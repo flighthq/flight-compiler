@@ -113,6 +113,7 @@ describe('createHaxeCompilerBackend', () => {
         export interface Shape { value: number }
         export enum Choice { first }
         export function add(left: number, right: number): number { return left + right; }
+        export function area(shape: Shape): number { return shape.value; }
         export const version: number = 1;
         export const Mode = { basic: 0 } as const;
         export type Mode = (typeof Mode)[keyof typeof Mode];
@@ -139,6 +140,7 @@ describe('createHaxeCompilerBackend', () => {
     expect(output).toContain('typedef Choice = flighthq.types.Target.Choice;');
     expect(output).toContain('function add(left:Float, right:Float):Float');
     expect(output).toContain('return flighthq.types.Target.add(left, right);');
+    expect(output).toContain('function area(shape:Shape):Float');
     expect(output).toContain('final version:Float = flighthq.types.Target.version;');
     expect(output).toContain('typedef Mode_2 = flighthq.types.Target.Mode_2;');
     expect(output).toContain('final Mode:{ basic:Float } = flighthq.types.Target.Mode;');
@@ -164,6 +166,107 @@ describe('createHaxeCompilerBackend', () => {
     })[0]!.contents;
 
     expect(output).not.toContain('typedef Shape');
+  });
+
+  it('shares a star facade plan across a transpile emission session', () => {
+    const target = lower('target.ts', 'export function value(): number { return 1; }').module;
+    const barrel = lower('barrel.ts', "export * from './target';").module;
+    const session = createHaxeCompilerBackend().createEmissionSession!({
+      moduleResolution: {
+        edges: [
+          {
+            importer: { name: barrel.name, packageName: barrel.packageName, source: barrel.source },
+            specifier: './target',
+            target: { packageName: target.packageName, source: target.source },
+          },
+        ],
+        schema: 'flight-compiler-module-resolution/1',
+      },
+      modules: [barrel, target],
+      options: {},
+    });
+
+    expect(session.emitModule(barrel)[0]!.contents).toContain('return flighthq.math.Target.value();');
+  });
+
+  it('refuses mutable, namespace, and ambiguous star facade values', () => {
+    const mutable = lower('mutable.ts', 'export let value: number = 1;').module;
+    const mutableBarrel = lower('mutable-barrel.ts', "export * from './mutable';").module;
+    const mutableResolution = {
+      edges: [
+        {
+          importer: {
+            name: mutableBarrel.name,
+            packageName: mutableBarrel.packageName,
+            source: mutableBarrel.source,
+          },
+          specifier: './mutable',
+          target: { packageName: mutable.packageName, source: mutable.source },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1' as const,
+    };
+    expect(() =>
+      createHaxeCompilerBackend().emitModule(mutableBarrel, {
+        moduleResolution: mutableResolution,
+        modules: [mutableBarrel, mutable],
+        options: {},
+      }),
+    ).toThrow('re-exporting mutable value value requires a live Haxe module facade');
+
+    const origin = lower('origin.ts', 'export const value: number = 1;').module;
+    const namespace = lower('namespace.ts', "export * as values from './origin';").module;
+    const namespaceBarrel = lower('namespace-barrel.ts', "export * from './namespace';").module;
+    expect(() =>
+      createHaxeCompilerBackend().emitModule(namespaceBarrel, {
+        moduleResolution: {
+          edges: [
+            {
+              importer: { name: namespace.name, packageName: namespace.packageName, source: namespace.source },
+              specifier: './origin',
+              target: { packageName: origin.packageName, source: origin.source },
+            },
+            {
+              importer: {
+                name: namespaceBarrel.name,
+                packageName: namespaceBarrel.packageName,
+                source: namespaceBarrel.source,
+              },
+              specifier: './namespace',
+              target: { packageName: namespace.packageName, source: namespace.source },
+            },
+          ],
+          schema: 'flight-compiler-module-resolution/1',
+        },
+        modules: [namespaceBarrel, namespace, origin],
+        options: {},
+      }),
+    ).toThrow('re-exporting values requires a bound Haxe module-facade route');
+
+    const first = lower('first.ts', 'export const value: number = 1;').module;
+    const second = lower('second.ts', 'export const value: number = 2;').module;
+    const ambiguous = lower('ambiguous.ts', "export * from './first'; export * from './second';").module;
+    expect(() =>
+      createHaxeCompilerBackend().emitModule(ambiguous, {
+        moduleResolution: {
+          edges: [
+            {
+              importer: { name: ambiguous.name, packageName: ambiguous.packageName, source: ambiguous.source },
+              specifier: './first',
+              target: { packageName: first.packageName, source: first.source },
+            },
+            {
+              importer: { name: ambiguous.name, packageName: ambiguous.packageName, source: ambiguous.source },
+              specifier: './second',
+              target: { packageName: second.packageName, source: second.source },
+            },
+          ],
+          schema: 'flight-compiler-module-resolution/1',
+        },
+        modules: [ambiguous, first, second],
+        options: {},
+      }),
+    ).toThrow('all exports require Haxe module-facade lowering');
   });
 });
 
