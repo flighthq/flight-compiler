@@ -596,7 +596,11 @@ function lowerIrSwitchCasesFallthrough(
     for (let index = start; index < cases.length; index += 1) {
       const item = cases[index]!;
       const completion = completions[index]!;
-      statements.push(...(completion.kind === 'localBreak' ? item.statements.slice(0, -1) : item.statements));
+      statements.push(
+        ...(completion.kind === 'localBreak'
+          ? consumeIrSwitchCaseTerminalBreak(item.statements, switchLabel)
+          : item.statements),
+      );
       if (completion.kind !== 'fallthrough') break;
     }
     const last = statements.at(-1);
@@ -672,8 +676,17 @@ function createIrSwitchStateMachineFallthrough(
     const completion = completions[index]!;
     const last = switchCase.statements.at(-1);
     const continues = last?.kind === 'continue' && !last.target;
-    const statements =
-      completion.kind === 'localBreak' || continues ? switchCase.statements.slice(0, -1) : [...switchCase.statements];
+    let statements =
+      completion.kind === 'localBreak'
+        ? consumeIrSwitchCaseTerminalBreak(switchCase.statements, statement.label?.id)
+        : continues
+          ? switchCase.statements.slice(0, -1)
+          : [...switchCase.statements];
+    if (completion.kind === 'localBreak') {
+      statements = statements.map((item) =>
+        rewriteIrStatementSwitchBreakForStateMachine(item, statement.label?.id, assignState(-1)),
+      );
+    }
     if (completion.kind === 'fallthrough' || completion.kind === 'localBreak' || continues) {
       statements.push(
         assignState(
@@ -744,6 +757,115 @@ function createIrSwitchStateMachineFallthrough(
         : []),
     ],
   };
+}
+
+function consumeIrSwitchCaseTerminalBreak(
+  statements: readonly Readonly<IrStatement>[],
+  switchLabel?: string,
+): IrStatement[] {
+  const last = statements.at(-1);
+  if (!last) return [];
+  if (last.kind === 'break' && (!last.target || last.target.id === switchLabel)) {
+    return statements.slice(0, -1);
+  }
+  if (last.kind === 'block') {
+    return [
+      ...statements.slice(0, -1),
+      { ...last, statements: consumeIrSwitchCaseTerminalBreak(last.statements, switchLabel) },
+    ];
+  }
+  return [...statements];
+}
+
+function rewriteIrStatementSwitchBreakForStateMachine(
+  statement: Readonly<IrStatement>,
+  switchLabel: string | undefined,
+  assignExit: Readonly<IrStatement>,
+): IrStatement {
+  switch (statement.kind) {
+    case 'block':
+      return {
+        ...statement,
+        statements: statement.statements.map((item) =>
+          rewriteIrStatementSwitchBreakForStateMachine(item, switchLabel, assignExit),
+        ),
+      };
+    case 'if':
+      return {
+        ...statement,
+        consequent: rewriteIrStatementSwitchBreakForStateMachine(statement.consequent, switchLabel, assignExit),
+        ...(statement.otherwise
+          ? {
+              otherwise: rewriteIrStatementSwitchBreakForStateMachine(statement.otherwise, switchLabel, assignExit),
+            }
+          : {}),
+      };
+    case 'try':
+      return {
+        ...statement,
+        tryBody: rewriteIrStatementSwitchBreakForStateMachine(statement.tryBody, switchLabel, assignExit),
+        ...(statement.catchClause
+          ? {
+              catchClause: {
+                ...statement.catchClause,
+                body: rewriteIrStatementSwitchBreakForStateMachine(
+                  statement.catchClause.body,
+                  switchLabel,
+                  assignExit,
+                ),
+              },
+            }
+          : {}),
+        ...(statement.finallyBody
+          ? {
+              finallyBody: rewriteIrStatementSwitchBreakForStateMachine(
+                statement.finallyBody,
+                switchLabel,
+                assignExit,
+              ),
+            }
+          : {}),
+      };
+    case 'break':
+      return !statement.target || statement.target.id === switchLabel
+        ? { kind: 'block', statements: [assignExit, { kind: 'break' }] }
+        : statement;
+    case 'do':
+    case 'while':
+      return switchLabel
+        ? {
+            ...statement,
+            body: rewriteIrStatementSwitchBreakForStateMachine(statement.body, switchLabel, assignExit),
+          }
+        : statement;
+    case 'for':
+    case 'forIn':
+    case 'forOf':
+      return switchLabel
+        ? {
+            ...statement,
+            body: rewriteIrStatementSwitchBreakForStateMachine(statement.body, switchLabel, assignExit),
+          }
+        : statement;
+    case 'switch':
+      return switchLabel
+        ? {
+            ...statement,
+            cases: statement.cases.map((switchCase) => ({
+              ...switchCase,
+              statements: switchCase.statements.map((item) =>
+                rewriteIrStatementSwitchBreakForStateMachine(item, switchLabel, assignExit),
+              ),
+            })),
+          }
+        : statement;
+    case 'continue':
+    case 'expression':
+    case 'return':
+    case 'throw':
+    case 'variable':
+      return statement;
+  }
 }
 
 function lowerIrVariableSwitchFallthrough(

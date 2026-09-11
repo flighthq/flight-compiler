@@ -99,6 +99,59 @@ describe('createCompilerLoweringPassSwitchFallthrough', () => {
     }
   });
 
+  it('preserves nested early exits in a clause terminated by a direct break', () => {
+    const output = lowerIrModuleWithCompilerPasses(
+      lower(
+        'switch-early-exit.ts',
+        'export function read(value: number): number { let result = 0; switch (value) { case 0: { if (value === 0) break; result = 1; break; } default: result = 2; break; } return result; }',
+      ),
+      [
+        createCompilerLoweringPassBindingPattern(),
+        createCompilerLoweringPassVariableHoisting(),
+        createCompilerLoweringPassSwitchFallthrough(),
+      ],
+    );
+    const statement = getFunctionSwitch(output);
+
+    expect(statement.cases[0]?.statements).toMatchObject([
+      { kind: 'block', statements: [{ consequent: { kind: 'break' }, kind: 'if' }, { kind: 'expression' }] },
+      { kind: 'break' },
+    ]);
+    expect(createCompilerLoweringPassSwitchFallthrough().verifyIrModule(output)).toEqual({ kind: 'valid' });
+  });
+
+  it('terminates a binding-sensitive fallthrough state machine on a nested early exit', () => {
+    const output = lowerIrModuleWithCompilerPasses(
+      lower(
+        'switch-state-early-exit.ts',
+        'export function read(value: number): number { let result = 0; switch (value) { case 0: result += 1; case 1: { if (value === 1) break; const local = result; result = local + 1; break; } default: break; } return result; }',
+      ),
+      [
+        createCompilerLoweringPassBindingPattern(),
+        createCompilerLoweringPassVariableHoisting(),
+        createCompilerLoweringPassSwitchFallthrough(),
+      ],
+    );
+    const declaration = output.declarations[0];
+    if (declaration?.kind !== 'function' || declaration.body[1]?.kind !== 'block') {
+      throw new Error('Expected switch state machine');
+    }
+    const machine = declaration.body[1].statements[2];
+    if (machine?.kind !== 'while' || machine.body.kind !== 'switch') {
+      throw new Error('Expected switch state machine execution loop');
+    }
+    const caseBlock = machine.body.cases[1]?.statements[0];
+    if (caseBlock?.kind !== 'block' || caseBlock.statements[0]?.kind !== 'if') {
+      throw new Error('Expected nested early-exit clause');
+    }
+
+    expect(caseBlock.statements[0].consequent).toMatchObject({
+      kind: 'block',
+      statements: [{ expression: { right: { value: -1 } }, kind: 'expression' }, { kind: 'break' }],
+    });
+    expect(createCompilerLoweringPassSwitchFallthrough().verifyIrModule(output)).toEqual({ kind: 'valid' });
+  });
+
   it('uses a state machine to preserve one binding identity across fallthrough execution', () => {
     const output = lowerIrModuleWithCompilerPasses(
       lower(

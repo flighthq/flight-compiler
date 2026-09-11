@@ -6,14 +6,13 @@ export function getIrSwitchCaseCompletion(
 ): IrSwitchCaseCompletion {
   const last = switchCase.statements.at(-1);
   const preceding = last ? switchCase.statements.slice(0, -1) : switchCase.statements;
+  const terminalBreak = last ? getIrStatementTerminalSwitchBreak(last, switchLabel) : undefined;
+  if (terminalBreak) return { kind: terminalBreak };
   if (preceding.some((statement) => hasIrStatementSwitchTargetBreak(statement, switchLabel))) {
     return {
       kind: 'unsupported',
       reason: 'switch-local break must be the final direct statement of its clause',
     };
-  }
-  if (last?.kind === 'break') {
-    return !last.target || last.target.id === switchLabel ? { kind: 'localBreak' } : { kind: 'abrupt' };
   }
   if (last && hasIrStatementAbruptCompletion(last)) return { kind: 'abrupt' };
   if (last && hasIrStatementSwitchTargetBreak(last, switchLabel)) {
@@ -23,6 +22,18 @@ export function getIrSwitchCaseCompletion(
     };
   }
   return { kind: 'fallthrough' };
+}
+
+function getIrStatementTerminalSwitchBreak(
+  statement: Readonly<IrStatement>,
+  switchLabel?: string,
+): 'abrupt' | 'localBreak' | undefined {
+  if (statement.kind === 'break') {
+    return !statement.target || statement.target.id === switchLabel ? 'localBreak' : 'abrupt';
+  }
+  if (statement.kind !== 'block') return undefined;
+  const last = statement.statements.at(-1);
+  return last ? getIrStatementTerminalSwitchBreak(last, switchLabel) : undefined;
 }
 
 function hasIrStatementAbruptCompletion(statement: Readonly<IrStatement>): boolean {

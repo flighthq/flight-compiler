@@ -46,6 +46,22 @@ describe('getIrSwitchCaseCompletion', () => {
     expect(getIrSwitchCaseCompletion(nested)).toEqual({ kind: 'fallthrough' });
   });
 
+  it('accepts nested early exits when a final direct break prevents fallthrough', () => {
+    const conditional: IrSwitchCase = {
+      statements: [
+        {
+          condition: { kind: 'literal', value: true },
+          consequent: { kind: 'break' },
+          kind: 'if',
+        },
+        { expression: { kind: 'literal', value: 1 }, kind: 'expression' },
+        { kind: 'break' },
+      ],
+    };
+
+    expect(getIrSwitchCaseCompletion(conditional)).toEqual({ kind: 'localBreak' });
+  });
+
   it('recognizes abrupt completions nested inside blocks', () => {
     expect(
       getIrSwitchCaseCompletion({
@@ -71,9 +87,6 @@ describe('getIrSwitchCaseCompletion', () => {
           otherwise: { kind: 'break', target: switchLabel },
         },
       ],
-    };
-    const blockBreak: IrSwitchCase = {
-      statements: [{ kind: 'block', statements: [{ kind: 'break', target: switchLabel }] }],
     };
     const tryBreak: IrSwitchCase = {
       statements: [
@@ -189,7 +202,6 @@ describe('getIrSwitchCaseCompletion', () => {
 
     for (const fixture of [
       ifElseBreak,
-      blockBreak,
       tryBreak,
       catchBreak,
       finallyBreak,
@@ -204,6 +216,13 @@ describe('getIrSwitchCaseCompletion', () => {
         reason: 'switch-local break must be the final direct statement of its clause',
       });
     }
+
+    expect(
+      getIrSwitchCaseCompletion(
+        { statements: [{ kind: 'block', statements: [{ kind: 'break', target: switchLabel }] }] },
+        switchLabel.id,
+      ),
+    ).toEqual({ kind: 'localBreak' });
   });
 
   it('visits preceding containers without finding breaks when the clause ends differently', () => {
