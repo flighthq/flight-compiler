@@ -3925,8 +3925,8 @@ describe('lowerTypeScriptSource', () => {
       body: [
         {
           expression: {
-            kind: 'optionalChain',
-            valueType: { kind: 'primitive', name: 'number' },
+            kind: 'property',
+            optionalChain: { valueType: { kind: 'primitive', name: 'number' } },
           },
           kind: 'return',
         },
