@@ -1287,6 +1287,55 @@ describe('lowerTypeScriptSource', () => {
     });
   });
 
+  it('materializes an imported mapped helper after its authored type arguments are substituted', () => {
+    const helper = ts.createSourceFile(
+      '/flight/packages/types/src/MethodsOf.ts',
+      'export type MethodsOf<Value> = { [Key in keyof Value as Value[Key] extends (...args: any) => any ? Key : never]: Value[Key] };',
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const consumer = ts.createSourceFile(
+      '/flight/packages/app/src/runtime.ts',
+      `import type { MethodsOf } from '@flight/types';
+       interface Runtime { count: number; run(value: number): string; }
+       export const defaults: Partial<MethodsOf<Runtime>> = { run: value => String(value) };`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const [, result] = lowerTypeScriptSources(
+      [
+        { packageName: '@flight/types', sourceFile: helper, upstreamDirectory: '/flight' },
+        { packageName: '@flight/app', sourceFile: consumer, upstreamDirectory: '/flight' },
+      ],
+      {
+        edges: [
+          {
+            specifier: '@flight/types',
+            target: { packageName: '@flight/types', source: 'packages/types/src/MethodsOf.ts' },
+          },
+        ],
+        schema: 'flight-compiler-module-resolution/1',
+      },
+    );
+
+    expect(result!.diagnostics).toEqual([]);
+    expect(result!.module.declarations).toContainEqual(
+      expect.objectContaining({ binding: expect.objectContaining({ name: 'defaults' }), kind: 'variable' }),
+    );
+  });
+
+  it('materializes the concrete result of ReturnType callable utility references', () => {
+    const result = lower(
+      'return-type.ts',
+      'function create(): { value: number } { return { value: 1 }; } interface Scratch { item: ReturnType<typeof create>; } export function read(scratch: Scratch): number { return scratch.item.value; }',
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    expect(result.module.declarations).toContainEqual(
+      expect.objectContaining({ binding: expect.objectContaining({ name: 'Scratch' }), kind: 'interface' }),
+    );
+  });
+
   it('retains unique-symbol interface property identity', () => {
     const result = lower(
       'symbol-property.ts',
@@ -4251,6 +4300,12 @@ describe('lowerTypeScriptSource', () => {
     expect(conflict.diagnostics).toContainEqual(
       expect.objectContaining({ message: 'interface Combined inherits incompatible property value' }),
     );
+
+    const override = lower(
+      'covariant-interface-evidence.ts',
+      'interface Base { value: object | undefined } interface Derived extends Base { value: { count: number } | undefined } export function read(input: Derived): void { const { value }: Derived = input; value; }',
+    );
+    expect(override.diagnostics).toEqual([]);
   });
 
   it('distinguishes contextual fixed tuple expressions from open array expressions', () => {

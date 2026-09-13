@@ -2870,6 +2870,8 @@ function lowerType(node: ts.TypeNode, context: LoweringContext): IrType {
   }
   if (ts.isParenthesizedTypeNode(node)) return lowerType(node.type, context);
   if (ts.isTypeReferenceNode(node)) {
+    const callableUtility = lowerConcreteTypeScriptCallableUtilityReference(node, context);
+    if (callableUtility) return callableUtility;
     const projection = lowerConcreteTypeScriptObjectProjection(node, context);
     if (projection) return projection;
     const conditional = lowerConcreteTypeScriptConditionalAliasReference(node, context);
@@ -2979,6 +2981,27 @@ function lowerType(node: ts.TypeNode, context: LoweringContext): IrType {
   unsupported(node, `unsupported type ${ts.SyntaxKind[node.kind]}`);
 }
 
+function lowerConcreteTypeScriptCallableUtilityReference(
+  node: ts.TypeReferenceNode,
+  context: LoweringContext,
+): Readonly<IrType> | undefined {
+  if (
+    !ts.isIdentifier(node.typeName) ||
+    (node.typeName.text !== 'Parameters' && node.typeName.text !== 'ReturnType') ||
+    node.typeArguments?.length !== 1
+  ) {
+    return undefined;
+  }
+  // Leave a dependent Parameters<T> authored against a callable type parameter intact: the IR's
+  // dependent-callable-pack contract describes it more faithfully than eagerly widening it here.
+  const argument = node.typeArguments[0]!;
+  if (node.typeName.text === 'Parameters' && ts.isTypeReferenceNode(argument)) {
+    const symbol = context.checker.getSymbolAtLocation(argument.typeName);
+    if (symbol?.declarations?.some(ts.isTypeParameterDeclaration)) return undefined;
+  }
+  return getTypeScriptCheckerTypeEvidence(context.checker.getTypeFromTypeNode(node), context, 0, true);
+}
+
 function lowerConcreteTypeScriptObjectProjection(
   node: ts.TypeReferenceNode,
   context: LoweringContext,
@@ -3002,7 +3025,8 @@ function lowerConcreteTypeScriptConditionalAliasReference(
   node: ts.TypeReferenceNode,
   context: LoweringContext,
 ): IrType | undefined {
-  const symbol = context.checker.getSymbolAtLocation(node.typeName);
+  const unresolved = context.checker.getSymbolAtLocation(node.typeName);
+  const symbol = unresolved ? (resolveTypeBindingAliasTarget(unresolved, context) ?? unresolved) : undefined;
   const declaration = symbol?.declarations?.find(ts.isTypeAliasDeclaration);
   if (!symbol || !declaration || !ts.isConditionalTypeNode(declaration.type)) return undefined;
   const substitutions = createTypeScriptSyntacticDeclarationSubstitutions(
@@ -3019,7 +3043,8 @@ function lowerOpenTypeScriptConditionalFacetAliasReference(
   node: ts.TypeReferenceNode,
   context: LoweringContext,
 ): IrType | undefined {
-  const symbol = context.checker.getSymbolAtLocation(node.typeName);
+  const unresolved = context.checker.getSymbolAtLocation(node.typeName);
+  const symbol = unresolved ? (resolveTypeBindingAliasTarget(unresolved, context) ?? unresolved) : undefined;
   const declaration = symbol?.declarations?.find(ts.isTypeAliasDeclaration);
   if (!symbol || !declaration || !ts.isConditionalTypeNode(declaration.type)) return undefined;
   const substitutions = createTypeScriptSyntacticDeclarationSubstitutions(
@@ -4051,6 +4076,10 @@ function lowerTypeScriptTypeNodeEvidence(
     if (conditionalFacet) return conditionalFacet;
   }
   if (ts.isTypeReferenceNode(type)) {
+    const mapped = lowerConcreteTypeScriptMappedAliasReference(type, context);
+    if (mapped) return mapped;
+    const conditional = lowerConcreteTypeScriptConditionalAliasReference(type, context);
+    if (conditional) return conditional;
     const parts = getTypeNameNodeParts(type.typeName);
     const name = parts ? [parts.root.text, ...parts.path].join('.') : undefined;
     const element = type.typeArguments?.[0];
@@ -4158,6 +4187,26 @@ function lowerTypeScriptTypeNodeEvidence(
   return lowerType(type, context);
 }
 
+// Checker evidence frequently reaches an imported mapped helper through a contextual object type.
+// The authored type reference has already instantiated the helper, so query that instantiated shape
+// before recursively opening the alias declaration and losing its substitutions.
+function lowerConcreteTypeScriptMappedAliasReference(
+  node: ts.TypeReferenceNode,
+  context: LoweringContext,
+): Readonly<Extract<IrType, { kind: 'object' }>> | undefined {
+  const unresolved = context.checker.getSymbolAtLocation(node.typeName);
+  const symbol = unresolved ? (resolveTypeBindingAliasTarget(unresolved, context) ?? unresolved) : undefined;
+  const declaration = symbol?.declarations?.find(ts.isTypeAliasDeclaration);
+  if (!declaration || !ts.isMappedTypeNode(declaration.type)) return undefined;
+  const properties = lowerTypeScriptCheckerObjectProperties(
+    context.checker.getTypeFromTypeNode(node),
+    context,
+    0,
+    declaration.type,
+  );
+  return properties ? { kind: 'object', properties } : undefined;
+}
+
 function lowerConcreteTypeScriptConditionalTypeEvidence(
   node: ts.ConditionalTypeNode,
   context: LoweringContext,
@@ -4231,13 +4280,16 @@ function lowerTypeScriptInterfacePropertiesEvidence(
   substitutions: ReadonlyMap<ts.Symbol, ts.TypeNode>,
 ): readonly IrObjectTypeProperty[] {
   const properties: IrObjectTypeProperty[] = [];
-  const mergeProperty = (property: IrObjectTypeProperty, node: ts.Node): void => {
+  // Conflicting inherited branches are ambiguous and remain a refusal. An authored member is the
+  // interface's selected view of that slot, however, so it replaces the inherited representation;
+  // this is how a derived Entity narrows its runtime slot from EntityRuntime to NodeRuntime.
+  const mergeProperty = (property: IrObjectTypeProperty, node: ts.Node, authoredOverride = false): void => {
     const index = properties.findIndex((candidate) => candidate.name === property.name);
     if (index < 0) {
       properties.push(property);
       return;
     }
-    if (JSON.stringify(properties[index]) !== JSON.stringify(property)) {
+    if (!authoredOverride && JSON.stringify(properties[index]) !== JSON.stringify(property)) {
       unsupported(node, `interface ${declaration.name.text} inherits incompatible property ${property.name}`);
     }
     properties[index] = property;
@@ -4294,7 +4346,7 @@ function lowerTypeScriptInterfacePropertiesEvidence(
     }
   }
   lowerTypeScriptTypePropertiesEvidence(declaration.members, context, seen, substitutions).forEach((property) =>
-    mergeProperty(property, declaration),
+    mergeProperty(property, declaration, true),
   );
   return properties;
 }
