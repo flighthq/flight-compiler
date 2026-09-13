@@ -2055,6 +2055,62 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(emitted.contents).toContain('outcome = co_await task');
   });
 
+  it('preserves an imported written outcome alias through an awaited method call', () => {
+    const types = ts.createSourceFile(
+      '/flight/packages/types/src/log.ts',
+      `export type Delivery = 'process-buffer' | 'durable-storage';
+       export type Outcome =
+         | { readonly reason: 'drained'; readonly delivery: Delivery }
+         | { readonly reason: 'destroyed' }
+         | { readonly reason: 'operation-failed'; readonly message: string };
+       export interface Transport { flush(): Promise<Outcome>; }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const log = ts.createSourceFile(
+      '/flight/packages/log/src/log.ts',
+      `import type { Outcome, Transport } from '@flighthq/types/log';
+       export async function flush(transport: Transport): Promise<Outcome> {
+         let outcome: Outcome;
+         outcome = await transport.flush();
+         return outcome;
+       }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          specifier: '@flighthq/types/log',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/log.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const results = lowerTypeScriptSources(
+      [
+        { packageName: '@flighthq/types', sourceFile: types, upstreamDirectory: '/flight' },
+        { packageName: '@flighthq/log', sourceFile: log, upstreamDirectory: '/flight' },
+      ],
+      moduleResolution,
+    );
+    const modules = results.map((result) => result.module);
+    const emitted = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules,
+      options: {
+        packageTargets: {
+          '@flighthq/log': { includePrefix: 'flight/log', namespace: 'flight::log' },
+          '@flighthq/types': { includePrefix: 'flight/types', namespace: 'flight::types' },
+        },
+        runtimeProfile: 'flight-cpp',
+      },
+    }).emitModule(modules[1]!)[0]!.contents;
+
+    expect(results[1]!.diagnostics).toEqual([]);
+    expect(emitted).toContain('co_await transport->flush()');
+  });
+
   it('hoists co_await out of catch handlers into a deferred block', () => {
     const result = lower(
       'catch-await.ts',

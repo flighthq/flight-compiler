@@ -1468,6 +1468,7 @@ function lowerCallSemantics(
     ...lowerInvocationSemantics(node, signature, context),
     resultType:
       getTypeScriptMapLookupResultTypeEvidence(node, context) ??
+      getTypeScriptWrittenCallResultTypeEvidence(signature, context) ??
       getTypeScriptCheckerTypeEvidence(context.checker.getTypeAtLocation(node), context, 0) ??
       inferInitializerType(node, context),
   };
@@ -1520,6 +1521,35 @@ function getTypeScriptMapLookupResultTypeEvidence(
   if (!value || value.kind === 'unknown') return undefined;
   const values = value.kind === 'union' ? value.types : [value];
   return commonType([{ kind: 'undefined' }, values[0]!, ...values.slice(1)]);
+}
+
+// Prefer an explicit result annotation when it is already concrete. Besides being the source
+// contract, it preserves imported aliases that the checker may expand into anonymous structural
+// types. A result mentioning a type parameter or `this` still needs checker instantiation.
+function getTypeScriptWrittenCallResultTypeEvidence(
+  signature: Readonly<TypeScriptInvocationSignatureResolution> | undefined,
+  context: LoweringContext,
+): Readonly<IrType> | undefined {
+  const result = signature?.resolved.type;
+  if (!result || !ts.isTypeNode(result) || hasTypeScriptContextualResultReference(result, context.checker)) {
+    return undefined;
+  }
+  return lowerTypeScriptTypeNodeEvidence(result, context);
+}
+
+function hasTypeScriptContextualResultReference(node: ts.TypeNode, checker: ts.TypeChecker): boolean {
+  if (ts.isThisTypeNode(node)) return true;
+  if (ts.isTypeReferenceNode(node)) {
+    const unresolved = checker.getSymbolAtLocation(node.typeName);
+    const symbol =
+      unresolved?.flags && unresolved.flags & ts.SymbolFlags.Alias ? checker.getAliasedSymbol(unresolved) : unresolved;
+    if (symbol?.flags && symbol.flags & ts.SymbolFlags.TypeParameter) return true;
+  }
+  let found = false;
+  ts.forEachChild(node, (child) => {
+    if (!found && ts.isTypeNode(child) && hasTypeScriptContextualResultReference(child, checker)) found = true;
+  });
+  return found;
 }
 
 function lowerInvocationSemantics(
