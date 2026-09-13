@@ -48,6 +48,34 @@ interface CompilerModuleFacadeCandidate {
 }
 
 export function createCompilerModuleFacadePlan(input: Readonly<CompilerModuleFacadeInput>): CompilerModuleFacadePlan {
+  return createCompilerModuleFacadePlanForModuleKeys(input);
+}
+
+export function createCompilerModuleFacadePlanForEntries(
+  input: Readonly<CompilerModuleFacadeInput>,
+  entries: readonly Readonly<CompilerModuleIdentity>[],
+): CompilerModuleFacadePlan {
+  if (!Array.isArray(entries)) {
+    throw createCompilerModuleFacadeLoweringFailure(
+      'invalid-facade-module',
+      'entries',
+      'Module facade entry selection requires a module identity array',
+    );
+  }
+  const entryKeys = new Set(
+    entries.map((entry, index) =>
+      normalizeCompilerModuleFacadeIdentityKey(
+        normalizeCompilerModuleFacadeIdentity(entry, `entries[${String(index)}]`),
+      ),
+    ),
+  );
+  return createCompilerModuleFacadePlanForModuleKeys(input, entryKeys);
+}
+
+function createCompilerModuleFacadePlanForModuleKeys(
+  input: Readonly<CompilerModuleFacadeInput>,
+  selectedModuleKeys?: ReadonlySet<string> | undefined,
+): CompilerModuleFacadePlan {
   if (input === null || typeof input !== 'object' || !Array.isArray(input.modules)) {
     throw createCompilerModuleFacadeLoweringFailure(
       'invalid-facade-module',
@@ -71,7 +99,18 @@ export function createCompilerModuleFacadePlan(input: Readonly<CompilerModuleFac
   }
   const records = createCompilerModuleFacadeRecords(input.modules, input.evaluation.modules);
   connectCompilerModuleFacadeRecords(records);
+  if (selectedModuleKeys) {
+    const missing = [...selectedModuleKeys].find((key) => !records.has(key));
+    if (missing) {
+      throw createCompilerModuleFacadeLoweringFailure(
+        'mismatched-facade-module',
+        missing,
+        `Module facade entry does not belong to the input module set: ${missing}`,
+      );
+    }
+  }
   const modules = [...records.values()]
+    .filter((record) => !selectedModuleKeys || selectedModuleKeys.has(record.identityKey))
     .sort((left, right) => compareTextCodeUnits(left.identityKey, right.identityKey))
     .map((record) => ({
       module: record.identity,

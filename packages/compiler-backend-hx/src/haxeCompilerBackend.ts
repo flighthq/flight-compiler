@@ -25,7 +25,10 @@ import {
   createIrClassInitializationPlan,
   lowerIrModuleWithCompilerPasses,
 } from '../../compiler-lowering/src/index.js';
-import { createCompilerModuleEvaluationPlan, createCompilerModuleFacadePlan } from '../../compiler-module/src/index.js';
+import {
+  createCompilerModuleEvaluationPlan,
+  createCompilerModuleFacadePlanForEntries,
+} from '../../compiler-module/src/index.js';
 import {
   analyzeCompilerRuntimeExternalConstructorAbiCompleteness,
   analyzeCompilerRuntimeExternalSymbolCompleteness,
@@ -2653,7 +2656,10 @@ function createCompilerModuleFacadePlannerHaxe(
         entries: [{ name: entryModule.name, packageName: entryModule.packageName, source: entryModule.source }],
         modules: plannedModules,
       });
-      const plan = createCompilerModuleFacadePlan({ evaluation, modules: plannedModules });
+      const plan = createCompilerModuleFacadePlanForEntries(
+        { evaluation, modules: plannedModules },
+        [entryModule],
+      );
       plans.set(entryKey, plan);
       return plan;
     } catch {

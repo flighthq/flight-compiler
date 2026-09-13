@@ -10,7 +10,10 @@ import type {
 } from '../../compiler-types/src/index.js';
 import { createCompilerModuleEvaluationPlan } from './compilerModuleEvaluation.js';
 import { isCompilerModuleFacadeFailure } from './compilerModuleFacadeIdentity.js';
-import { createCompilerModuleFacadePlan } from './compilerModuleFacadeLowering.js';
+import {
+  createCompilerModuleFacadePlan,
+  createCompilerModuleFacadePlanForEntries,
+} from './compilerModuleFacadeLowering.js';
 
 describe('createCompilerModuleFacadePlan', () => {
   it('resolves local, imported, named, namespace, default, and star routes as immutable live slots', () => {
@@ -61,6 +64,10 @@ describe('createCompilerModuleFacadePlan', () => {
     const originPlan = plan.modules.find((module) => module.module.source === origin.source)!;
     const getSlot = (name: string, lane: 'type' | 'value') =>
       entryPlan.slots.find((slot) => slot.exportName === name && slot.lane === lane);
+    const entryOnlyPlan = createCompilerModuleFacadePlanForEntries(
+      { evaluation, modules: input.modules },
+      [getIdentity(entry)],
+    );
 
     expect(plan.semantics).toEqual({
       bindingAccess: 'live',
@@ -94,6 +101,7 @@ describe('createCompilerModuleFacadePlan', () => {
       binding: { name: 'create' },
       kind: 'binding',
     });
+    expect(entryOnlyPlan.modules).toEqual([entryPlan]);
     expect(new Set(entryPlan.slots.map((slot) => slot.identity)).size).toBe(entryPlan.slots.length);
     expect({ evaluation, modules: input.modules }).toEqual(snapshot);
     expect(isDeeplyFrozen(plan, new WeakSet())).toBe(true);
