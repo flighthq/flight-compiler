@@ -6235,6 +6235,26 @@ it('models nullish comparison evidence through equality operators', () => {
   expect(result.diagnostics).toEqual([]);
 });
 
+it('retains nullable object evidence returned by a local call', () => {
+  const result = lower(
+    'call-nullish-compare.ts',
+    'function value(): object | null { return null; } export function hasValue(): boolean { return value() !== null; }',
+  );
+  const fn = result.module.declarations.find(
+    (declaration) => declaration.kind === 'function' && declaration.binding.name === 'hasValue',
+  );
+  const returned = fn?.kind === 'function' ? fn.body[0] : undefined;
+
+  expect(result.diagnostics).toEqual([]);
+  expect(returned).toMatchObject({
+    expression: {
+      kind: 'binary',
+      semantics: { nullishComparison: { admitsNull: true, admitsUndefined: false, literal: 'null' } },
+    },
+    kind: 'return',
+  });
+});
+
 it('lowers destructured catch clause and finally block in try statement', () => {
   const result = lower(
     'try-catch.ts',

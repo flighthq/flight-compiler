@@ -980,7 +980,13 @@ function lowerExpression(
         kind: 'assignment',
         left: lowerExpression(node.left, context),
         operator: lowerAssignmentOperator(node.operatorToken.kind),
-        right: lowerExpression(node.right, context),
+        right: lowerExpression(
+          node.right,
+          context,
+          node.operatorToken.kind === ts.SyntaxKind.EqualsToken
+            ? getTypeScriptExpressionBindingTypeEvidence(node.left, context)
+            : undefined,
+        ),
         semantics: lowerAssignmentOperatorSemantics(node, context),
       };
     }
@@ -3027,6 +3033,7 @@ function lowerConcreteTypeScriptConditionalAliasReference(
   node: ts.TypeReferenceNode,
   context: LoweringContext,
 ): IrType | undefined {
+  if (hasExternalTypeScriptTypeParameter(node, context)) return undefined;
   const unresolved = context.checker.getSymbolAtLocation(node.typeName);
   const symbol = unresolved ? (resolveTypeBindingAliasTarget(unresolved, context) ?? unresolved) : undefined;
   const declaration = symbol?.declarations?.find(ts.isTypeAliasDeclaration);
@@ -4196,6 +4203,7 @@ function lowerConcreteTypeScriptMappedAliasReference(
   node: ts.TypeReferenceNode,
   context: LoweringContext,
 ): Readonly<Extract<IrType, { kind: 'object' }>> | undefined {
+  if (hasExternalTypeScriptTypeParameter(node, context)) return undefined;
   const unresolved = context.checker.getSymbolAtLocation(node.typeName);
   const symbol = unresolved ? (resolveTypeBindingAliasTarget(unresolved, context) ?? unresolved) : undefined;
   const declaration = symbol?.declarations?.find(ts.isTypeAliasDeclaration);
@@ -5792,7 +5800,7 @@ function getTypeScriptExpressionBindingTypeEvidence(
   // surface returns the surface's own type parameter. The checker's instantiation is what says an
   // array came back, which is what decides whether the member read next is an array's.
   if (ts.isCallExpression(expression)) {
-    return getTypeScriptCheckerTypeEvidence(context.checker.getTypeAtLocation(expression), context, 0);
+    return getTypeScriptCheckerTypeEvidence(context.checker.getTypeAtLocation(expression), context, 0, true);
   }
   if (ts.isElementAccessExpression(expression)) {
     const index =
