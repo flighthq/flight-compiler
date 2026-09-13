@@ -87,6 +87,39 @@ describe('getCompilerHaxeAmbientMemberBinding', () => {
       kind: 'method',
       targetName: 'set',
     });
+    expect(getCompilerHaxeAmbientMemberBinding({ name: 'byteLength', receiver: 'typedArray' })).toEqual({
+      kind: 'property',
+      targetName: 'byteLength',
+    });
+    expect(getCompilerHaxeAmbientMemberBinding({ name: 'buffer', receiver: 'typedArray' })).toEqual({
+      kind: 'property',
+      targetName: 'buffer',
+    });
+  });
+
+  it('binds portable DataView, RegExp, task, and string wrapper members explicitly', () => {
+    expect(getCompilerHaxeAmbientMemberBinding({ name: 'getUint16', receiver: 'dataView' })).toEqual({
+      intArguments: [0],
+      kind: 'method',
+      targetName: 'getUint16',
+    });
+    expect(getCompilerHaxeAmbientMemberBinding({ name: 'setFloat32', receiver: 'dataView' })).toEqual({
+      intArguments: [0],
+      kind: 'method',
+      targetName: 'setFloat32',
+    });
+    expect(getCompilerHaxeAmbientMemberBinding({ name: 'exec', receiver: 'regexp' })).toEqual({
+      kind: 'method',
+      targetName: 'exec',
+    });
+    expect(getCompilerHaxeAmbientMemberBinding({ name: 'then', receiver: 'task' })).toEqual({
+      kind: 'method',
+      targetName: 'then',
+    });
+    expect(getCompilerHaxeAmbientMemberBinding({ name: 'padEnd', receiver: 'string' })).toEqual({
+      kind: 'runtimeCall',
+      targetName: '_StringTools.padEnd',
+    });
   });
 
   it('answers nothing for a member with no agreed spelling, so emission refuses rather than guesses', () => {

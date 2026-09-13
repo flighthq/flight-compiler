@@ -98,6 +98,7 @@ interface EmitContext {
   breakableDepth: number;
   controlFlowLabels: HaxeControlFlowLabel[];
   facadeBindingTargetNames: Map<string, string>;
+  finallyCompletion: HaxeFinallyCompletion | undefined;
   generatedNames: Set<string>;
   machineNames: Map<string, string>;
   module: Readonly<IrModule>;
@@ -115,6 +116,12 @@ interface EmitContext {
   taskLowering: Readonly<CompilerHaxeTaskLowering>;
 }
 
+interface HaxeFinallyCompletion {
+  readonly returnSignalName: string;
+  readonly returnValueName: string | undefined;
+  readonly returnedName: string;
+}
+
 interface HaxeControlFlowLabel {
   readonly continuable: boolean;
   readonly depth: number;
@@ -125,15 +132,10 @@ interface HaxeControlFlowLabel {
 export function createHaxeCompilerBackend(): CompilerBackend<HaxeCompilerBackendOptions> {
   return {
     createEmissionSession({ moduleResolution, modules, options }) {
-      const moduleFacades = new Map<string, CompilerModuleFacadePlan | undefined>();
-      const getModuleFacade = (module: Readonly<IrModule>): CompilerModuleFacadePlan | undefined => {
-        if (options.emissionMode === 'extern') return undefined;
-        const key = getHaxeCompilerModuleKey(module);
-        if (!moduleFacades.has(key)) {
-          moduleFacades.set(key, createCompilerModuleFacadePlanHaxe(modules, moduleResolution, module));
-        }
-        return moduleFacades.get(key);
-      };
+      const getModuleFacade =
+        options.emissionMode === 'extern'
+          ? () => undefined
+          : createCompilerModuleFacadePlannerHaxe(modules, moduleResolution);
       const ambientUtilityHeritageBindingIds = new Set(
         modules.flatMap((module) => [...createAmbientUtilityHeritageTargetsHaxe(module).keys()]),
       );
@@ -167,7 +169,7 @@ export function createHaxeCompilerBackend(): CompilerBackend<HaxeCompilerBackend
               modules,
               moduleResolution,
               options,
-              createCompilerModuleFacadePlanHaxe(modules, moduleResolution, module),
+              createCompilerModuleFacadePlannerHaxe(modules, moduleResolution)(module),
             ),
           ];
     },
@@ -253,6 +255,7 @@ function emitIrModuleHaxeWithContext(
     breakableDepth: 0,
     controlFlowLabels: [],
     facadeBindingTargetNames: new Map(),
+    finallyCompletion: undefined,
     generatedNames: new Set(targetNames.values()),
     machineNames: new Map(),
     module,
@@ -532,7 +535,11 @@ function emitEnum(declaration: Readonly<IrEnumDeclaration>, context: EmitContext
 }
 
 function emitEnumNamespaceFunctionHaxe(declaration: Readonly<IrFunctionDeclaration>, outer: EmitContext): string[] {
-  const context: EmitContext = { ...outer, returnsAbsent: hasIrTypeAbsentMember(declaration.returns) };
+  const context: EmitContext = {
+    ...outer,
+    finallyCompletion: undefined,
+    returnsAbsent: hasIrTypeAbsentMember(declaration.returns),
+  };
   return [
     `public static function ${getBindingTargetNameHaxe(declaration.binding, context)}${emitTypeParameters(declaration.typeParameters, context)}(${emitParameters(declaration.parameters, context)}):${emitType(declaration.returns, context)} {`,
     ...indentSourceLines(
@@ -574,6 +581,8 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
     case 'array':
       return emitArrayExpressionHaxe(expression, context);
     case 'assignment': {
+      const reflectiveAssignment = emitReflectiveElementAssignmentHaxe(expression, context);
+      if (reflectiveAssignment) return reflectiveAssignment;
       if (
         (expression.operator === '&=' ||
           expression.operator === '|=' ||
@@ -767,35 +776,51 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
         if (storageName) {
           return `${emitExpression(expression.object, context)}${expression.optional ? '?.' : '.'}${storageName}`;
         }
+        const object = emitExpression(expression.object, context);
+        const index = emitExpression(expression.index, context);
+        const runtime = `${context.options.runtimeModule ?? 'flighthq._internal'}._Js`;
         if (expression.optional) {
-          emissionError(context, 'optional computed object access requires reflective null-safe lowering');
+          const receiver = getGeneratedTargetNameHaxe('optionalObject', context);
+          return `(function() { final ${receiver}:Dynamic = ${object}; return ${receiver} == null ? null : ${runtime}.getProperty(${receiver}, ${index}); })()`;
         }
-        if (expression.semantics.receivers.length !== 1 || expression.semantics.key !== 'string') {
-          emissionError(context, 'computed object access requires unresolved JavaScript property-key coercion');
-        }
-        return `Reflect.field(${emitExpression(expression.object, context)}, ${emitExpression(expression.index, context)})`;
+        return expression.semantics.receivers.length === 1 && expression.semantics.key === 'string'
+          ? `Reflect.field(${object}, ${index})`
+          : `${runtime}.getProperty(${object}, ${index})`;
       }
       if (expression.semantics.receivers.includes('tuple')) {
-        const index = getElementAccessTupleIndexHaxe(expression, context);
-        return `${emitExpression(expression.object, context)}[${String(index)}]`;
+        return `${emitExpression(expression.object, context)}[${emitArrayIndexHaxe(expression.index, context)}]`;
+      }
+      if (expression.optional) {
+        const receiver = getGeneratedTargetNameHaxe('optionalIndexedValue', context);
+        const object = emitExpression(expression.object, context);
+        const index = emitExpression(expression.index, context);
+        const access =
+          expression.semantics.key === 'number'
+            ? `${receiver}[${emitArrayIndexHaxe(expression.index, context)}]`
+            : `${context.options.runtimeModule ?? 'flighthq._internal'}._Js.getProperty(${receiver}, ${index})`;
+        return `(function() { final ${receiver}:Dynamic = ${object}; return ${receiver} == null ? null : ${access}; })()`;
+      }
+      if (expression.semantics.key !== 'number') {
+        return `${context.options.runtimeModule ?? 'flighthq._internal'}._Js.getProperty(${emitExpression(expression.object, context)}, ${emitExpression(expression.index, context)})`;
       }
       // Haxe indexes arrays with `Int`, and the neutral numeric domain has only `number`, so every
       // index arrives as `Float` and `values[index]` does not compile. A literal integer is already
       // an `Int` to Haxe; anything else is narrowed here. `Std.int` truncates, which matches the
       // source for an integral index and differs for a fractional one — where the source itself
       // produces `undefined`, so such an index is a defect in either language.
-      return `${emitExpression(expression.object, context)}${expression.optional ? '?.' : ''}[${emitArrayIndexHaxe(expression.index, context)}]`;
+      return `${emitExpression(expression.object, context)}[${emitArrayIndexHaxe(expression.index, context)}]`;
     case 'function':
       if (expression.typeParameters.length > 0)
         emissionError(context, 'generic function expressions are not valid Haxe values');
+      const functionContext: EmitContext = { ...context, finallyCompletion: undefined };
       if (expression.async) {
-        return `function(${emitParameters(expression.parameters, context)}) {\n${indentSourceLines(
-          emitCompilerHaxeTaskFunctionBody(expression, context),
+        return `function(${emitParameters(expression.parameters, functionContext)}) {\n${indentSourceLines(
+          emitCompilerHaxeTaskFunctionBody(expression, functionContext),
         ).join('\n')}\n}`;
       }
       return expression.expression
-        ? `function(${emitParameters(expression.parameters, context)}) return ${emitExpression(expression.expression, context)}`
-        : `function(${emitParameters(expression.parameters, context)}) {\n${indentSourceLines(emitStatements(expression.body, context)).join('\n')}\n}`;
+        ? `function(${emitParameters(expression.parameters, functionContext)}) return ${emitExpression(expression.expression, functionContext)}`
+        : `function(${emitParameters(expression.parameters, functionContext)}) {\n${indentSourceLines(emitStatements(expression.body, functionContext)).join('\n')}\n}`;
     case 'identifier':
       return emitIdentifierReferenceHaxe(expression.reference, context);
     case 'literal':
@@ -969,6 +994,48 @@ function emitJavaScriptAssignmentOperatorHaxe(
   return `(function() { final ${receiver}:Dynamic = ${emitExpression(expression.left.object, context)}; ${assignment}; return ${target}; })()`;
 }
 
+function emitReflectiveElementAssignmentHaxe(
+  expression: Readonly<Extract<IrExpression, { kind: 'assignment' }>>,
+  context: EmitContext,
+): string | undefined {
+  const left = expression.left;
+  if (
+    left.kind !== 'element' ||
+    getComputedObjectStorageNameHaxe(left) ||
+    (!left.semantics.receivers.includes('object') && !left.semantics.receivers.includes('unknown'))
+  ) {
+    return undefined;
+  }
+  const runtime = `${context.options.runtimeModule ?? 'flighthq._internal'}._Js`;
+  const receiver = getGeneratedTargetNameHaxe('assignmentReceiver', context);
+  const key = getGeneratedTargetNameHaxe('assignmentKey', context);
+  const value = getGeneratedTargetNameHaxe('assignmentValue', context);
+  const setup = `final ${receiver}:Dynamic = ${emitExpression(left.object, context)}; final ${key}:Dynamic = ${emitExpression(left.index, context)};`;
+  const right = emitAssignmentRightHaxe(expression, context);
+  if (expression.operator === '=') {
+    return `(function() { ${setup} final ${value}:Dynamic = ${right}; ${runtime}.setProperty(${receiver}, ${key}, ${value}); return ${value}; })()`;
+  }
+  const current = `${runtime}.getProperty(${receiver}, ${key})`;
+  if (expression.operator === '&&=' || expression.operator === '||=' || expression.operator === '??=') {
+    const condition =
+      expression.operator === '??='
+        ? `${value} == null`
+        : expression.operator === '&&='
+          ? `${runtime}.truthy(${value})`
+          : `!${runtime}.truthy(${value})`;
+    return `(function() { ${setup} var ${value}:Dynamic = ${current}; if (${condition}) { ${value} = ${right}; ${runtime}.setProperty(${receiver}, ${key}, ${value}); } return ${value}; })()`;
+  }
+  const updated = emitJavaScriptBinaryRuntimeCallHaxe(
+    expression.operator.slice(0, -1) as IrBinaryOperator,
+    value,
+    right,
+    runtime,
+  );
+  if (!updated) return undefined;
+  const result = getGeneratedTargetNameHaxe('assignmentResult', context);
+  return `(function() { ${setup} final ${value}:Dynamic = ${current}; final ${result}:Dynamic = ${updated}; ${runtime}.setProperty(${receiver}, ${key}, ${result}); return ${result}; })()`;
+}
+
 function emitJavaScriptAssignmentToTargetHaxe(
   operator: IrAssignmentOperator,
   target: string,
@@ -1135,9 +1202,10 @@ function emitObjectExpressionHaxe(expression: Readonly<IrObjectExpression>, cont
     }
     if (member.kind === 'computedProperty') {
       const storageName = getComputedObjectPropertyStorageNameHaxe(member.key, context);
-      if (!storageName) emissionError(context, 'computed object properties require Haxe property-key lowering');
       lines.push(
-        `Reflect.setField(${target}, ${JSON.stringify(storageName)}, ${emitExpression(member.value, context)});`,
+        storageName
+          ? `Reflect.setField(${target}, ${JSON.stringify(storageName)}, ${emitExpression(member.value, context)});`
+          : `${context.options.runtimeModule ?? 'flighthq._internal'}._Js.setProperty(${target}, ${emitExpression(member.key, context)}, ${emitExpression(member.value, context)});`,
       );
       continue;
     }
@@ -1197,7 +1265,11 @@ function emitFunction(declaration: Readonly<IrFunctionDeclaration>, outer: EmitC
   // A module-level static carries no access or `static` keyword: it is already a member of the
   // module rather than of a type, and Haxe rejects both there.
   const access = '';
-  const context: EmitContext = { ...outer, returnsAbsent: hasIrTypeAbsentMember(declaration.returns) };
+  const context: EmitContext = {
+    ...outer,
+    finallyCompletion: undefined,
+    returnsAbsent: hasIrTypeAbsentMember(declaration.returns),
+  };
   return [
     `${access}function ${getBindingTargetNameHaxe(declaration.binding, context)}${emitTypeParameters(declaration.typeParameters, context)}(${emitParameters(declaration.parameters, context)}):${emitType(declaration.returns, context)} {`,
     ...indentSourceLines(
@@ -1755,6 +1827,18 @@ function emitStatement(statement: Readonly<IrStatement>, context: EmitContext): 
       ) {
         emissionError(context, 'returning a nullable binding requires Haxe narrowing evidence');
       }
+      if (context.finallyCompletion) {
+        const completion = context.finallyCompletion;
+        return [
+          ...(statement.expression && completion.returnValueName
+            ? [
+                `${completion.returnValueName} = ${normalizeSourceTextGrouping(emitExpression(statement.expression, context))};`,
+              ]
+            : []),
+          `${completion.returnedName} = true;`,
+          `throw ${completion.returnSignalName};`,
+        ];
+      }
       return [
         `return${statement.expression ? ` ${normalizeSourceTextGrouping(emitExpression(statement.expression, context))}` : ''};`,
       ];
@@ -1781,19 +1865,9 @@ function emitStatement(statement: Readonly<IrStatement>, context: EmitContext): 
     case 'throw':
       return [`throw ${emitExpression(statement.expression, context)};`];
     case 'try':
-      if (statement.finallyBody) emissionError(context, 'finally blocks require completion-preserving Haxe lowering');
-      return [
-        'try {',
-        ...indentSourceLines(emitStatementBody(statement.tryBody, context)),
-        '}',
-        ...(statement.catchClause
-          ? [
-              `catch (${statement.catchClause.binding ? getBindingTargetNameHaxe(statement.catchClause.binding, context) : 'error'}:Dynamic) {`,
-              ...indentSourceLines(emitStatementBody(statement.catchClause.body, context)),
-              '}',
-            ]
-          : []),
-      ];
+      return statement.finallyBody
+        ? emitTryFinallyHaxe(statement as typeof statement & { finallyBody: IrStatement }, context)
+        : emitTryCatchHaxe(statement, context);
     case 'variable':
       return statement.declarations.map((variable) => emitVariable(variable, context));
     case 'while':
@@ -1802,6 +1876,132 @@ function emitStatement(statement: Readonly<IrStatement>, context: EmitContext): 
         ...indentSourceLines(emitStatementBody(statement.body, context)),
         '}',
       ]);
+  }
+}
+
+function emitTryCatchHaxe(
+  statement: Readonly<Extract<IrStatement, { kind: 'try' }>>,
+  context: EmitContext,
+): string[] {
+  const lines = ['try {', ...indentSourceLines(emitStatementBody(statement.tryBody, context)), '}'];
+  if (!statement.catchClause) return lines;
+  const errorName = statement.catchClause.binding
+    ? getBindingTargetNameHaxe(statement.catchClause.binding, context)
+    : getGeneratedTargetNameHaxe('error', context);
+  lines.push(`catch (${errorName}:Dynamic) {`);
+  if (context.finallyCompletion) {
+    lines.push(...indentSourceLines([`if (${errorName} == ${context.finallyCompletion.returnSignalName}) throw ${errorName};`]));
+  }
+  lines.push(...indentSourceLines(emitStatementBody(statement.catchClause.body, context)), '}');
+  return lines;
+}
+
+function emitTryFinallyHaxe(
+  statement: Readonly<Extract<IrStatement, { kind: 'try' }>> & { finallyBody: IrStatement },
+  context: EmitContext,
+): string[] {
+  const hasReturn =
+    containsReturnStatementHaxe(statement.tryBody) ||
+    (statement.catchClause ? containsReturnStatementHaxe(statement.catchClause.body) : false);
+  const hasValueReturn =
+    containsValueReturnStatementHaxe(statement.tryBody) ||
+    (statement.catchClause ? containsValueReturnStatementHaxe(statement.catchClause.body) : false);
+  const returnSignalName = getGeneratedTargetNameHaxe('finallyReturnSignal', context);
+  const returnedName = getGeneratedTargetNameHaxe('finallyReturned', context);
+  const returnValueName = hasValueReturn ? getGeneratedTargetNameHaxe('finallyReturnValue', context) : undefined;
+  const failedName = getGeneratedTargetNameHaxe('finallyFailed', context);
+  const failureName = getGeneratedTargetNameHaxe('finallyFailure', context);
+  const errorName = getGeneratedTargetNameHaxe('finallyError', context);
+  const completion: HaxeFinallyCompletion = { returnSignalName, returnValueName, returnedName };
+  const innerContext: EmitContext = hasReturn ? { ...context, finallyCompletion: completion } : context;
+  const lines = [
+    ...(hasReturn
+      ? [
+          `final ${returnSignalName}:Dynamic = {};`,
+          `var ${returnedName}:Bool = false;`,
+          ...(returnValueName ? [`var ${returnValueName}:Dynamic = null;`] : []),
+        ]
+      : []),
+    `var ${failedName}:Bool = false;`,
+    `var ${failureName}:Dynamic = null;`,
+    'try {',
+    ...indentSourceLines(
+      statement.catchClause
+        ? emitTryCatchHaxe(statement, innerContext)
+        : emitStatementBody(statement.tryBody, innerContext),
+    ),
+    `} catch (${errorName}:Dynamic) {`,
+    ...indentSourceLines([
+      ...(hasReturn ? [`if (${errorName} != ${returnSignalName}) {`] : []),
+      `${hasReturn ? '  ' : ''}${failedName} = true;`,
+      `${hasReturn ? '  ' : ''}${failureName} = ${errorName};`,
+      ...(hasReturn ? ['}'] : []),
+    ]),
+    '}',
+    ...emitStatementBody(statement.finallyBody, context),
+    `if (${failedName}) throw ${failureName};`,
+  ];
+  if (!hasReturn) return lines;
+  if (context.finallyCompletion) {
+    const outer = context.finallyCompletion;
+    lines.push(`if (${returnedName}) {`);
+    if (outer.returnValueName) {
+      lines.push(`  ${outer.returnValueName} = ${returnValueName ?? 'null'};`);
+    }
+    lines.push(`  ${outer.returnedName} = true;`, `  throw ${outer.returnSignalName};`, '}');
+  } else {
+    lines.push(`if (${returnedName}) return${returnValueName ? ` cast(${returnValueName})` : ''};`);
+  }
+  return lines;
+}
+
+function containsReturnStatementHaxe(statement: Readonly<IrStatement>): boolean {
+  return containsReturnStatementMatchingHaxe(statement, () => true);
+}
+
+function containsValueReturnStatementHaxe(statement: Readonly<IrStatement>): boolean {
+  return containsReturnStatementMatchingHaxe(statement, (candidate) => candidate.expression !== undefined);
+}
+
+function containsReturnStatementMatchingHaxe(
+  statement: Readonly<IrStatement>,
+  matches: (statement: Readonly<Extract<IrStatement, { kind: 'return' }>>) => boolean,
+): boolean {
+  switch (statement.kind) {
+    case 'return':
+      return matches(statement);
+    case 'block':
+      return statement.statements.some((child) => containsReturnStatementMatchingHaxe(child, matches));
+    case 'do':
+    case 'while':
+      return containsReturnStatementMatchingHaxe(statement.body, matches);
+    case 'for':
+    case 'forIn':
+    case 'forOf':
+      return containsReturnStatementMatchingHaxe(statement.body, matches);
+    case 'if':
+      return (
+        containsReturnStatementMatchingHaxe(statement.consequent, matches) ||
+        (statement.otherwise ? containsReturnStatementMatchingHaxe(statement.otherwise, matches) : false)
+      );
+    case 'switch':
+      return statement.cases.some((clause) =>
+        clause.statements.some((child) => containsReturnStatementMatchingHaxe(child, matches)),
+      );
+    case 'try':
+      return (
+        containsReturnStatementMatchingHaxe(statement.tryBody, matches) ||
+        (statement.catchClause
+          ? containsReturnStatementMatchingHaxe(statement.catchClause.body, matches)
+          : false) ||
+        (statement.finallyBody ? containsReturnStatementMatchingHaxe(statement.finallyBody, matches) : false)
+      );
+    case 'break':
+    case 'continue':
+    case 'expression':
+    case 'throw':
+    case 'variable':
+      return false;
   }
 }
 
@@ -2300,31 +2500,14 @@ function getGeneratedTargetNameHaxe(preferredName: string, context: EmitContext)
   return name;
 }
 
-function getElementAccessTupleIndexHaxe(
-  expression: Readonly<Extract<IrExpression, { kind: 'element' }>>,
-  context: EmitContext,
-): number {
-  if (
-    expression.semantics.receivers.length !== 1 ||
-    expression.index.kind !== 'literal' ||
-    typeof expression.index.value !== 'number' ||
-    !Number.isSafeInteger(expression.index.value) ||
-    expression.index.value < 0
-  ) {
-    emissionError(context, 'tuple projection requires one statically known nonnegative integer index');
-  }
-  return expression.index.value;
-}
-
 function emissionError(context: EmitContext, message: string): never {
   throw createBackendEmissionFailure('haxe', context.module, message);
 }
 
-function createCompilerModuleFacadePlanHaxe(
+function createCompilerModuleFacadePlannerHaxe(
   modules: readonly Readonly<IrModule>[],
   moduleResolution: Readonly<CompilerModuleResolutionPlan> | undefined,
-  entryModule: Readonly<IrModule>,
-): CompilerModuleFacadePlan | undefined {
+): (entryModule: Readonly<IrModule>) => CompilerModuleFacadePlan | undefined {
   const facadeModules = modules.map((module) => ({
     ...module,
     exports: [...new Map(module.exports.map((exported) => [JSON.stringify(exported), exported])).values()],
@@ -2397,52 +2580,66 @@ function createCompilerModuleFacadePlanHaxe(
       if ([...targetKeys].some((targetKey) => invalidModuleKeys.has(targetKey))) invalidModuleKeys.add(moduleKey);
     }
   }
-  try {
-    const validDependencies = dependencies.filter(
-      (dependency) =>
-        !invalidModuleKeys.has(getHaxeCompilerModuleKey(dependency.importer)) &&
-        !invalidModuleKeys.has(getHaxeCompilerModuleKey(dependency.target)),
-    );
+  const validDependencies = dependencies.filter(
+    (dependency) =>
+      !invalidModuleKeys.has(getHaxeCompilerModuleKey(dependency.importer)) &&
+      !invalidModuleKeys.has(getHaxeCompilerModuleKey(dependency.target)),
+  );
+  const plans = new Map<string, CompilerModuleFacadePlan | undefined>();
+  return (entryModule) => {
     const entryKey = getHaxeCompilerModuleKey(entryModule);
-    if (invalidModuleKeys.has(entryKey)) return undefined;
-    const reachableModuleKeys = new Set([entryKey]);
-    let reachableCount = -1;
-    while (reachableCount !== reachableModuleKeys.size) {
-      reachableCount = reachableModuleKeys.size;
-      for (const dependency of validDependencies) {
-        if (reachableModuleKeys.has(getHaxeCompilerModuleKey(dependency.importer))) {
-          reachableModuleKeys.add(getHaxeCompilerModuleKey(dependency.target));
+    if (plans.has(entryKey)) return plans.get(entryKey);
+    const facadeModule = facadeModules.find((module) => getHaxeCompilerModuleKey(module) === entryKey);
+    const hasFacadeRequest = facadeModule?.exports.some(
+      (exported) => 'specifier' in exported || (exported.kind === 'local' && exported.binding.kind === 'import'),
+    );
+    if (!hasFacadeRequest || invalidModuleKeys.has(entryKey)) {
+      plans.set(entryKey, undefined);
+      return undefined;
+    }
+    try {
+      const reachableModuleKeys = new Set([entryKey]);
+      let reachableCount = -1;
+      while (reachableCount !== reachableModuleKeys.size) {
+        reachableCount = reachableModuleKeys.size;
+        for (const dependency of validDependencies) {
+          if (reachableModuleKeys.has(getHaxeCompilerModuleKey(dependency.importer))) {
+            reachableModuleKeys.add(getHaxeCompilerModuleKey(dependency.target));
+          }
         }
       }
-    }
-    const plannedDependencies = validDependencies.filter(
-      (dependency) =>
-        reachableModuleKeys.has(getHaxeCompilerModuleKey(dependency.importer)) &&
-        reachableModuleKeys.has(getHaxeCompilerModuleKey(dependency.target)),
-    );
-    const linkedSpecifiers = new Map<string, Set<string>>();
-    for (const dependency of plannedDependencies) {
-      const key = `${dependency.importer.packageName}\0${dependency.importer.source}`;
-      const specifiers = linkedSpecifiers.get(key);
-      if (specifiers) specifiers.add(dependency.specifier);
-      else linkedSpecifiers.set(key, new Set([dependency.specifier]));
-    }
-    const plannedModules = facadeModules
-      .filter((module) => reachableModuleKeys.has(getHaxeCompilerModuleKey(module)))
-      .map((module) => {
-        const key = `${module.packageName}\0${module.source}`;
-        const specifiers = linkedSpecifiers.get(key) ?? new Set<string>();
-        return { ...module, imports: module.imports.filter((imported) => specifiers.has(imported.specifier)) };
+      const plannedDependencies = validDependencies.filter(
+        (dependency) =>
+          reachableModuleKeys.has(getHaxeCompilerModuleKey(dependency.importer)) &&
+          reachableModuleKeys.has(getHaxeCompilerModuleKey(dependency.target)),
+      );
+      const linkedSpecifiers = new Map<string, Set<string>>();
+      for (const dependency of plannedDependencies) {
+        const key = `${dependency.importer.packageName}\0${dependency.importer.source}`;
+        const specifiers = linkedSpecifiers.get(key);
+        if (specifiers) specifiers.add(dependency.specifier);
+        else linkedSpecifiers.set(key, new Set([dependency.specifier]));
+      }
+      const plannedModules = facadeModules
+        .filter((module) => reachableModuleKeys.has(getHaxeCompilerModuleKey(module)))
+        .map((module) => {
+          const key = `${module.packageName}\0${module.source}`;
+          const specifiers = linkedSpecifiers.get(key) ?? new Set<string>();
+          return { ...module, imports: module.imports.filter((imported) => specifiers.has(imported.specifier)) };
+        });
+      const evaluation = createCompilerModuleEvaluationPlan({
+        dependencies: plannedDependencies,
+        entries: [{ name: entryModule.name, packageName: entryModule.packageName, source: entryModule.source }],
+        modules: plannedModules,
       });
-    const evaluation = createCompilerModuleEvaluationPlan({
-      dependencies: plannedDependencies,
-      entries: [{ name: entryModule.name, packageName: entryModule.packageName, source: entryModule.source }],
-      modules: plannedModules,
-    });
-    return createCompilerModuleFacadePlan({ evaluation, modules: plannedModules });
-  } catch {
-    return undefined;
-  }
+      const plan = createCompilerModuleFacadePlan({ evaluation, modules: plannedModules });
+      plans.set(entryKey, plan);
+      return plan;
+    } catch {
+      plans.set(entryKey, undefined);
+      return undefined;
+    }
+  };
 }
 
 function getHaxeCompilerModuleKey(module: Readonly<CompilerModuleIdentity>): string {

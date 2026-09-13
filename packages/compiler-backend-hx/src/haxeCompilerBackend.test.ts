@@ -835,9 +835,7 @@ describe('emitIrModuleHaxe', () => {
     expect(emitIrModuleHaxe(iteration.module).contents).toContain(
       'for (arrayPatternValue in rows) {\n    final first:Float = arrayPatternValue[0];\n    final second:Float = arrayPatternValue[1];',
     );
-    expect(() => emitIrModuleHaxe(dynamicIndex.module)).toThrow(
-      'tuple projection requires one statically known nonnegative integer index',
-    );
+    expect(emitIrModuleHaxe(dynamicIndex.module).contents).toContain('return values[Std.int(index)];');
   });
 
   it('elects object binding lowering with named and proven-string computed rest copies', () => {
@@ -1871,6 +1869,37 @@ describe('emitIrModuleHaxe expression coverage', () => {
     expect(emitIrModuleHaxe(result.module).contents).toContain('Reflect.field(record, key)');
   });
 
+  it('routes coercive and optional computed property access through the selected runtime', () => {
+    const result = lower(
+      'computed-property-key.ts',
+      `interface Values { first: number; second: number; }
+       export function read(record: Values, key: keyof Values): number { return record[key]; }
+       export function optionalRead(record: Values | null, key: keyof Values): number | undefined {
+         return record?.[key];
+       }`,
+    );
+    const output = emitIrModuleHaxe(result.module, { runtimeModule: 'flight._hx._runtime' }).contents;
+
+    expect(output).toContain('flight._hx._runtime._Js.getProperty(record, key)');
+    expect(output).toContain('== null ? null : flight._hx._runtime._Js.getProperty(optionalIndexedValue, key)');
+  });
+
+  it('routes computed property construction and writes through the selected runtime', () => {
+    const result = lower(
+      'computed-property-write.ts',
+      `export function create(key: string, value: number): Record<string, number> { return { [key]: value }; }
+       export function write(record: Record<string, number>, key: string, value: number): number {
+         record[key] = value;
+         return record[key] += value;
+       }`,
+    );
+    const output = emitIrModuleHaxe(result.module, { runtimeModule: 'flight._hx._runtime' }).contents;
+
+    expect(output).toContain('flight._hx._runtime._Js.setProperty(objectSpreadValue, key, value)');
+    expect(output).toContain('flight._hx._runtime._Js.setProperty(assignmentReceiver, assignmentKey, assignmentValue)');
+    expect(output).toContain('flight._hx._runtime._Js.getProperty(assignmentReceiver_2, assignmentKey_2)');
+  });
+
   it('emits untyped cast when target type is array with element type', () => {
     const result = lower(
       'cast-array.ts',
@@ -2251,13 +2280,35 @@ describe('emitIrModuleHaxe statement coverage', () => {
     expect(() => emitIrModuleHaxe(module)).toThrow('async iteration requires the Haxe async-lowering pass');
   });
 
-  it('refuses finally blocks until completion-preserving lowering', () => {
+  it('preserves return and throw completion through finally blocks', () => {
     const result = lower(
       'try-finally.ts',
       'export function safe(value: number): number { try { return value; } finally { value; } }',
     );
+    const output = emitIrModuleHaxe(result.module).contents;
 
-    expect(() => emitIrModuleHaxe(result.module)).toThrow('finally blocks require completion-preserving Haxe lowering');
+    expect(output).toContain('final finallyReturnSignal:Dynamic = {};');
+    expect(output).toContain('finallyReturnValue = value;');
+    expect(output).toContain('throw finallyReturnSignal;');
+    expect(output).toContain('if (finallyFailed) throw finallyFailure;');
+    expect(output).toContain('if (finallyReturned) return cast(finallyReturnValue);');
+  });
+
+  it('keeps synthetic finally returns out of source catch clauses and nested functions', () => {
+    const result = lower(
+      'nested-try-finally.ts',
+      `export function safe(value: number): number {
+         try {
+           try { return value; } finally { (() => value)(); }
+         } catch (error) { return 0; }
+         finally { value; }
+       }`,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('if (error == finallyReturnSignal) throw error;');
+    expect(output).toContain('finallyReturned = true;');
+    expect(output).toContain('throw finallyReturnSignal;');
   });
 
   it('emits try-catch without a catch binding as a named placeholder', () => {
