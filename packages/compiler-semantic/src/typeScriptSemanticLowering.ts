@@ -1220,7 +1220,7 @@ function getTypeScriptInstantiatedInvocationParameterType(
 ): IrType | undefined {
   const signature = context.checker.getResolvedSignature(node);
   const signatureParameters = signature?.getParameters() ?? [];
-  const declarationParameters = signature?.declaration?.parameters ?? [];
+  const declarationParameters = signature?.declaration?.parameters.filter(ts.isParameter) ?? [];
   const restIndex = declarationParameters.findIndex((parameter) => parameter.dotDotDotToken !== undefined);
   const parameterIndex = restIndex >= 0 && index >= restIndex ? restIndex : index;
   const parameter = signatureParameters[parameterIndex];
@@ -1233,7 +1233,7 @@ function getTypeScriptInstantiatedInvocationParameterType(
       if (!element) return undefined;
       type = element;
     } else if (context.checker.isArrayType(type)) {
-      const element = context.checker.getElementTypeOfArrayType(type);
+      const element = context.checker.getIndexTypeOfType(type, ts.IndexKind.Number);
       if (!element) return undefined;
       type = element;
     }
