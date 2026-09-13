@@ -1203,8 +1203,13 @@ function emitExpression(
       const boundAmbientTypeof = emitBoundAmbientTypeofUndefinedComparisonCpp(expression, context);
       if (boundAmbientTypeof) return boundAmbientTypeof;
       if (expression.operator === '??') {
-        const leftType = getIrExpressionBindingTypeCpp(expression.left, context);
+        const leftType =
+          getIrExpressionBindingTypeCpp(expression.left, context) ??
+          getIrExpressionTypeEvidenceCpp(expression.left, context);
         const union = leftType ? getIrUnionTypeCpp(leftType, context, new Set()) : undefined;
+        if (leftType && !union && leftType.kind !== 'null' && leftType.kind !== 'undefined') {
+          return emitExpression(expression.left, context, leftType);
+        }
         if (union && getCppUnionRepresentationPlan(union, context).kind === 'dualSentinelVariant') {
           emissionError(context, 'dual-sentinel nullish coalescing requires presence projection lowering');
         }
@@ -1782,6 +1787,18 @@ function emitExpression(
           hasFlightStructuralRowRepresentationCpp(expectedType, context))
           ? expectedType
           : expression.type;
+      const record = getCppRecordTypeArgumentsCpp(constructionType, context, new Set());
+      if (record) {
+        if (expression.members.some((member) => member.kind !== 'property')) {
+          emissionError(context, 'Record construction with spreads requires ordered entry lowering');
+        }
+        const entries = expression.members.map((member) => {
+          if (member.kind !== 'property') throw new TypeError('expected Record property');
+          const key = emitCppRecordLiteralKey(member.name, record.key, context);
+          return `{${key}, ${emitExpression(member.value, context, record.value)}}`;
+        });
+        return `{${entries.join(', ')}}`;
+      }
       const structuralRow = context.referenceRepresentationPlanner.resolveStructuralRow(
         constructionType,
         context.module,
@@ -3857,6 +3874,24 @@ function getCppRecordTypeArgumentsCpp(
   return getCppRecordTypeArgumentsCpp(alias, context, nextResolvingAliases);
 }
 
+function emitCppRecordLiteralKey(name: string, keyType: Readonly<IrType>, context: EmitContext): string {
+  const runtimeType = getIrTypeRuntimeDomainCpp(keyType, context, new Set());
+  if (runtimeType?.kind !== 'primitive') {
+    emissionError(context, `Record literal key ${name} requires a single string or number runtime domain`);
+  }
+  if (runtimeType.name === 'string') {
+    return emitExpression({ kind: 'literal', value: name }, context, runtimeType);
+  }
+  if (runtimeType.name !== 'number') {
+    emissionError(context, `Record literal key ${name} requires a string or number runtime domain`);
+  }
+  const numeric = Number(name);
+  if (!Number.isFinite(numeric)) {
+    emissionError(context, `Record literal key ${name} is not a finite numeric key`);
+  }
+  return emitExpression({ kind: 'literal', value: numeric }, context, runtimeType);
+}
+
 function isCppFunctionExpressionCompatibleWithCallableObjectCpp(
   expression: Readonly<Extract<IrExpression, { kind: 'function' }>>,
   representation: Readonly<CppCallableObject>,
@@ -4770,6 +4805,19 @@ function getCppRuntimeMemberCallResultTypeEvidence(
   if (receiver === 'typedArray' && cppTypedArrayReturningCallNames.has(callee.name)) {
     return getIrExpressionTypeEvidenceCpp(callee.object, context);
   }
+  if (receiver === 'regexp') {
+    if (callee.name === 'exec') {
+      return createIrTypeEvidenceUnionCpp([
+        {
+          kind: 'named',
+          reference: { kind: 'ambient', name: 'RegExpExecArray' },
+          typeArguments: [],
+        },
+        { kind: 'null' },
+      ]);
+    }
+    if (callee.name === 'test') return { kind: 'primitive', name: 'boolean' };
+  }
   return undefined;
 }
 
@@ -5482,6 +5530,13 @@ function getIrIndexedElementTypeCpp(
   }
   if (type.kind !== 'named') return undefined;
   if (type.reference.kind === 'ambient') {
+    if (
+      (type.reference.name === 'Readonly' || type.reference.name === 'Required') &&
+      type.typeArguments.length === 1 &&
+      type.typeArguments[0]
+    ) {
+      return getIrIndexedElementTypeCpp(type.typeArguments[0], expression, context, resolvingAliases);
+    }
     if (
       (type.reference.name === 'Array' || type.reference.name === 'ReadonlyArray') &&
       type.typeArguments.length === 1

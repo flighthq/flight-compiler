@@ -833,6 +833,27 @@ describe('createCppCompilerBackend', () => {
     expect(emitted).toContain('std::optional<flight::String>{std::visit(');
   });
 
+  it('recovers indexed utility and RegExp call result evidence', () => {
+    const module = lower(
+      'runtime-container-evidence.ts',
+      `const names: Readonly<Record<number, string>> = { 1: 'one' };
+       export function nameFor(index: number): string | null {
+         return names[index] ?? null;
+       }
+       export function firstMatch(input: string): RegExpExecArray | null {
+         const expression = /value/g;
+         return expression.exec(input);
+       }`,
+    ).module;
+
+    const emitted = emitIrModuleCpp(module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    expect(emitted).toContain('names = {{1.0, flight::String("one")}};');
+    expect(emitted).toContain('return names[static_cast<size_t>(index)];');
+    expect(emitted).toContain('return expression.exec(input);');
+    expect(emitted).not.toContain('std::optional<auto>');
+  });
+
   it('recovers imported Map.get value evidence without guessing for lookalike get methods', () => {
     const level = ts.createSourceFile(
       '/flight/packages/types/src/logLevel.ts',
