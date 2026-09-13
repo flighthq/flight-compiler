@@ -1220,7 +1220,6 @@ function createTypeScriptCallArgumentBinding(
 }
 
 function hasIrTypeContextualUndefinedOption(type: Readonly<IrType>): boolean {
-  if (type.kind === 'unknown') return true;
   if (type.kind !== 'union' || !type.types.some((member) => member.kind === 'undefined')) return false;
   return type.types.some((member) => member.kind !== 'null' && member.kind !== 'undefined');
 }

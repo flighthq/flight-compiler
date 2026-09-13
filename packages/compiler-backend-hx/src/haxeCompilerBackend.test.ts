@@ -1069,16 +1069,10 @@ describe('emitIrModuleHaxe', () => {
     expect(output.match(/final local/g)).toHaveLength(1);
   });
 
-  it.each([
-    [
-      'keyword unary',
-      'export function type(a: number): string { return typeof a; }',
-      'operator typeof requires Haxe semantic lowering',
-    ],
-  ])('refuses unsupported %s operators explicitly', (family, source, message) => {
-    const result = lower(`${family.replaceAll(' ', '-')}-operator.ts`, source);
+  it('routes standalone typeof through the JavaScript-semantics runtime', () => {
+    const result = lower('keyword-unary-operator.ts', 'export function type(a: number): string { return typeof a; }');
 
-    expect(() => emitIrModuleHaxe(result.module)).toThrow(message);
+    expect(emitIrModuleHaxe(result.module).contents).toContain('flighthq._internal._Js.typeOf(a)');
   });
 
   it('emits typeof type-test comparisons as Std.isOfType and casts narrowed primitive members', () => {
@@ -1239,12 +1233,8 @@ describe('emitIrModuleHaxe', () => {
     );
 
     expect(emitIrModuleHaxe(strings.module).contents).toContain('return left + right;');
-    expect(() => emitIrModuleHaxe(mixed.module)).toThrow(
-      'operator + on string and number requires Haxe type-directed lowering',
-    );
-    expect(() => emitIrModuleHaxe(loose.module)).toThrow(
-      'operator == on number and number requires Haxe type-directed lowering',
-    );
+    expect(emitIrModuleHaxe(mixed.module).contents).toContain('flighthq._internal._Js.add(left, right)');
+    expect(emitIrModuleHaxe(loose.module).contents).toContain('flighthq._internal._Js.looseEqual(left, right)');
   });
 
   it('emits exponentiation as Math.pow and bitwise operators with Std.int wrapping', () => {
@@ -1811,6 +1801,15 @@ describe('emitIrModuleHaxe expression coverage', () => {
     expect(emitIrModuleHaxe(result.module, { runtimeModule: 'flight._hx._runtime' }).contents).toContain(
       'entity.RuntimeKey = null;',
     );
+  });
+
+  it('uses null for undefined assigned to a dynamically represented slot', () => {
+    const result = lower(
+      'clear-dynamic-property.ts',
+      'export function clear(copy: Record<string, unknown>): void { copy.value = undefined; }',
+    );
+
+    expect(emitIrModuleHaxe(result.module).contents).toContain('copy.value = null;');
   });
 
   it('retains reflective access for a dynamically computed object key', () => {
@@ -8014,21 +8013,21 @@ describe('emitIrModuleHaxe typeof narrowing', () => {
 });
 
 describe('emitIrModuleHaxe binary operator errors', () => {
-  it('refuses in operator as requiring semantic lowering', () => {
-    expect(() =>
-      emitIrModuleHaxe(
-        lower(
-          'in-op.ts',
-          `export interface Circle { radius: number }
+  it('routes the in operator through the JavaScript-semantics runtime', () => {
+    const output = emitIrModuleHaxe(
+      lower(
+        'in-op.ts',
+        `export interface Circle { radius: number }
            export interface Square { side: number }
            export type Shape = Circle | Square;
            export function area(s: Shape): number {
              if ("radius" in s) { return s.radius; }
              return s.side;
            }`,
-        ).module,
-      ),
-    ).toThrow('requires Haxe semantic lowering');
+      ).module,
+    ).contents;
+
+    expect(output).toContain('flighthq._internal._Js.inOperator("radius", s)');
   });
 });
 
@@ -8627,7 +8626,7 @@ describe('emitIrModuleHaxe prefix unary operator on non-number', () => {
 });
 
 describe('emitIrModuleHaxe binary operator on non-matching types', () => {
-  it('refuses a non-direct binary operator', () => {
+  it('routes a non-direct binary operator through the JavaScript-semantics runtime', () => {
     const result = lower('bad-binary.ts', 'export function add(a: number, b: number): number { return a + b; }');
     const fn = result.module.declarations.find((d) => d.kind === 'function');
     if (fn?.kind !== 'function') throw new Error('Expected function');
@@ -8653,6 +8652,6 @@ describe('emitIrModuleHaxe binary operator on non-matching types', () => {
       ...result.module,
       declarations: result.module.declarations.map((d) => (d === fn ? modified : d)) as IrModule['declarations'],
     };
-    expect(() => emitIrModuleHaxe(module)).toThrow('requires Haxe type-directed lowering');
+    expect(emitIrModuleHaxe(module).contents).toContain('flighthq._internal._Js.add(a, b)');
   });
 });

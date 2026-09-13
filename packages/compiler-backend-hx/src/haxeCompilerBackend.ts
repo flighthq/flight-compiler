@@ -620,7 +620,7 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
         return `{ if (${left} == null) ${left} = ${right}; ${left}; }`;
       }
       const left = emitExpression(expression.left, context);
-      const right = emitExpression(expression.right, context);
+      const right = emitAssignmentRightHaxe(expression, context);
       return `${left} ${emitAssignmentOperatorHaxe(expression.operator, expression.semantics, context)} ${right}`;
     }
     case 'await':
@@ -669,6 +669,8 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
         const right = emitExpression(expression.right, context);
         return `(Std.int(${left}) >>> Std.int(${right}))`;
       }
+      const runtimeOperator = emitJavaScriptBinaryOperatorHaxe(expression, context);
+      if (runtimeOperator) return runtimeOperator;
       const op = emitBinaryOperatorHaxe(expression.operator, expression.semantics, context);
       const bitwise =
         expression.operator === '&' ||
@@ -895,6 +897,10 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
       return `${emitExpression(expression.object, context)}.slice(${String(expression.start)})`;
     case 'unary': {
       const operand = emitExpression(expression.operand, context);
+      if (!expression.postfix) {
+        const runtimeOperator = emitJavaScriptPrefixUnaryOperatorHaxe(expression, operand, context);
+        if (runtimeOperator) return runtimeOperator;
+      }
       const operator = expression.postfix
         ? emitPostfixUnaryOperatorHaxe(expression.operator, expression.semantics, context)
         : emitPrefixUnaryOperatorHaxe(expression.operator, expression.semantics, context);
@@ -906,6 +912,84 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
     case 'undefinedDefault':
       return `(${emitExpression(expression.value, context)} ?? ${emitExpression(expression.fallback, context)})`;
   }
+}
+
+function emitJavaScriptBinaryOperatorHaxe(
+  expression: Readonly<Extract<IrExpression, { kind: 'binary' }>>,
+  context: EmitContext,
+): string | undefined {
+  if (isBinaryOperatorDirectHaxe(expression.operator, expression.semantics)) return undefined;
+  const runtime = `${context.options.runtimeModule ?? 'flighthq._internal'}._Js`;
+  const left = emitExpression(expression.left, context);
+  const right = emitExpression(expression.right, context);
+  if (expression.operator === '&&' || expression.operator === '||') {
+    const value = getGeneratedTargetNameHaxe('logicalLeftValue', context);
+    const whenTruthy = expression.operator === '&&' ? right : value;
+    const whenFalsy = expression.operator === '&&' ? value : right;
+    return `(function() { final ${value}:Dynamic = ${left}; return ${runtime}.truthy(${value}) ? ${whenTruthy} : ${whenFalsy}; })()`;
+  }
+  const method: Partial<Record<IrBinaryOperator, string>> = {
+    '!=': 'looseEqual',
+    '!==': 'strictEqual',
+    '%': 'remainder',
+    '&': 'bitwiseAnd',
+    '*': 'multiply',
+    '**': 'power',
+    '+': 'add',
+    '-': 'subtract',
+    '/': 'divide',
+    '<': 'lessThan',
+    '<<': 'shiftLeft',
+    '<=': 'lessThanOrEqual',
+    '==': 'looseEqual',
+    '===': 'strictEqual',
+    '>': 'greaterThan',
+    '>=': 'greaterThanOrEqual',
+    '>>': 'shiftRight',
+    '>>>': 'shiftRightUnsigned',
+    '^': 'bitwiseXor',
+    in: 'inOperator',
+    instanceof: 'instanceOf',
+    '|': 'bitwiseOr',
+  };
+  const target = method[expression.operator];
+  if (!target) return undefined;
+  const call = `${runtime}.${target}(${left}, ${right})`;
+  return expression.operator === '!=' || expression.operator === '!==' ? `!${call}` : call;
+}
+
+function emitJavaScriptPrefixUnaryOperatorHaxe(
+  expression: Readonly<Extract<IrExpression, { kind: 'unary'; postfix: false }>>,
+  operand: string,
+  context: EmitContext,
+): string | undefined {
+  if (isPrefixUnaryOperatorDirectHaxe(expression.operator, expression.semantics)) return undefined;
+  const runtime = `${context.options.runtimeModule ?? 'flighthq._internal'}._Js`;
+  if (expression.operator === '!') return `!${runtime}.truthy(${operand})`;
+  if (expression.operator === '+') return `${runtime}.toNumber(${operand})`;
+  if (expression.operator === '-') return `-${runtime}.toNumber(${operand})`;
+  if (expression.operator === '~') return `${runtime}.bitwiseNot(${operand})`;
+  if (expression.operator === 'typeof') return `${runtime}.typeOf(${operand})`;
+  if (expression.operator === 'void') return `(function() { ${operand}; return null; })()`;
+  return undefined;
+}
+
+function emitAssignmentRightHaxe(
+  expression: Readonly<Extract<IrExpression, { kind: 'assignment' }>>,
+  context: EmitContext,
+): string {
+  if (
+    expression.operator === '=' &&
+    expression.semantics.left.flow === 'unknown' &&
+    expression.right.kind === 'identifier' &&
+    expression.right.reference.kind === 'ambient' &&
+    expression.right.reference.name === 'undefined'
+  ) {
+    // A source assignment to an unknown/any slot is valid precisely because that slot admits every
+    // value. Haxe represents such a slot as Dynamic and its sole absent sentinel as null.
+    return 'null';
+  }
+  return emitExpression(expression.right, context);
 }
 
 function getComputedObjectStorageNameHaxe(
