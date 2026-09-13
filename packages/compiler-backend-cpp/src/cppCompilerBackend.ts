@@ -1076,9 +1076,33 @@ function getCppStructurallyEquivalentInitializerTypeCpp(
     initializerValues[0]!,
     context.module,
   );
-  return variableShape && initializerShape && isDeepStrictEqual(variableShape, initializerShape)
+  return variableShape &&
+    initializerShape &&
+    areCppObjectShapesRepresentationEquivalent(variableShape, initializerShape, context)
     ? initializerType
     : undefined;
+}
+
+function areCppObjectShapesRepresentationEquivalent(
+  left: readonly Readonly<IrObjectTypeProperty>[],
+  right: readonly Readonly<IrObjectTypeProperty>[],
+  context: EmitContext,
+): boolean {
+  if (left.length !== right.length) return false;
+  const rightByName = new Map(right.map((property) => [property.name, property] as const));
+  return left.every((property) => {
+    const other = rightByName.get(property.name);
+    if (
+      !other ||
+      property.optional !== other.optional ||
+      property.readonly !== other.readonly ||
+      Boolean(property.computedKey) !== Boolean(other.computedKey)
+    ) {
+      return false;
+    }
+    const isolatedContext = { ...context, anonymousStructs: new Map(), includes: new Set<string>() };
+    return emitType(property.type, isolatedContext) === emitType(other.type, isolatedContext);
+  });
 }
 
 function emitExpression(
@@ -3875,7 +3899,15 @@ function getCppRecordTypeArgumentsCpp(
 }
 
 function emitCppRecordLiteralKey(name: string, keyType: Readonly<IrType>, context: EmitContext): string {
-  const runtimeType = getIrTypeRuntimeDomainCpp(keyType, context, new Set());
+  const keyUnion = getIrUnionTypeCpp(keyType, context, new Set());
+  const keyPlan = keyUnion ? getCppUnionRepresentationPlan(keyUnion, context) : undefined;
+  const runtimeType =
+    keyPlan &&
+    keyPlan.valueSlots.length === 1 &&
+    keyPlan.sentinels.null === 'absent' &&
+    keyPlan.sentinels.undefined === 'absent'
+      ? keyPlan.valueSlots[0]!.runtimeType
+      : getIrTypeRuntimeDomainCpp(keyType, context, new Set());
   if (runtimeType?.kind !== 'primitive') {
     emissionError(context, `Record literal key ${name} requires a single string or number runtime domain`);
   }

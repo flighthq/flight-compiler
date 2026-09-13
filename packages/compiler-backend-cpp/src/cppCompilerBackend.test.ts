@@ -854,6 +854,65 @@ describe('createCppCompilerBackend', () => {
     expect(emitted).not.toContain('std::optional<auto>');
   });
 
+  it('preserves an imported anonymous call result across local import identities', () => {
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          specifier: '@flighthq/producer',
+          target: { packageName: '@flighthq/producer', source: 'packages/producer/src/producer.ts' },
+        },
+        {
+          specifier: '@flighthq/types',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/types.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const modules = lowerTypeScriptSources(
+      [
+        {
+          packageName: '@flighthq/types',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/types/src/types.ts',
+            'export interface Item { value: number }',
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+        {
+          packageName: '@flighthq/producer',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/producer/src/producer.ts',
+            "import type { Item } from '@flighthq/types'; export function make(): { readonly items: Item[] } | null { return null; }",
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+        {
+          packageName: '@flighthq/consumer',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/consumer/src/consumer.ts',
+            "import type { Item } from '@flighthq/types'; import { make } from '@flighthq/producer'; export function read(): Item[] | null { const result = make(); if (result === null) return null; return result.items; }",
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+      ],
+      moduleResolution,
+    ).map((result) => result.module);
+    const emitted = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules,
+      options: { runtimeProfile: 'flight-cpp' },
+    }).emitModule(modules[2]!)[0]!.contents;
+
+    expect(emitted).toContain('auto result = flighthq_producer::make();');
+    expect(emitted).toContain('{result.value()->items};');
+  });
+
   it('recovers imported Map.get value evidence without guessing for lookalike get methods', () => {
     const level = ts.createSourceFile(
       '/flight/packages/types/src/logLevel.ts',
