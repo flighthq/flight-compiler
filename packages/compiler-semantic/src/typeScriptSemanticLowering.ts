@@ -5552,6 +5552,7 @@ function getTypeScriptCheckerTypeEvidence(
   if (type.flags & ts.TypeFlags.Never) return { kind: 'never' };
   if (type.flags & ts.TypeFlags.Any) return { kind: 'unknown', source: 'any' };
   if (type.flags & ts.TypeFlags.Unknown) return { kind: 'unknown', source: 'unknown' };
+  if (type.flags & ts.TypeFlags.NonPrimitive) return { kind: 'unknown', source: 'object' };
   if (checker.isTupleType(type)) {
     const reference = type as ts.TupleTypeReference;
     if (reference.target.combinedFlags & ts.ElementFlags.Variable) return undefined;
