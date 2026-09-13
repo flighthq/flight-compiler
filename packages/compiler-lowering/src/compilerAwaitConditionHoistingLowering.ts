@@ -36,9 +36,21 @@ function hasIrModuleAwaitConditionResidual(module: Readonly<IrModule>): boolean 
   let residual = false;
   analyzeIrModuleTraversal(module, {
     statement(statement) {
-      if (statement.kind !== 'if' || !hasIrExpressionAwait(statement.condition)) return undefined;
-      residual = true;
-      return false;
+      if (statement.kind === 'if' && hasIrExpressionAwait(statement.condition)) {
+        residual = true;
+        return false;
+      }
+      if (
+        statement.kind === 'variable' &&
+        statement.declarations.some(
+          (declaration) =>
+            declaration.initializer?.kind === 'conditional' && hasIrExpressionAwait(declaration.initializer),
+        )
+      ) {
+        residual = true;
+        return false;
+      }
+      return undefined;
     },
   });
   return residual;
@@ -83,17 +95,17 @@ function lowerIrDeclarationAwaitConditionHoisting(declaration: Readonly<IrDeclar
           ? {
               classConstructor: {
                 ...declaration.classConstructor,
-                body: declaration.classConstructor.body.map(lowerIrStatementAwaitConditionHoisting),
+                body: lowerIrStatementListAwaitConditionHoisting(declaration.classConstructor.body),
               },
             }
           : {}),
         methods: declaration.methods.map((method) => ({
           ...method,
-          body: method.body.map(lowerIrStatementAwaitConditionHoisting),
+          body: lowerIrStatementListAwaitConditionHoisting(method.body),
         })),
       };
     case 'function':
-      return { ...declaration, body: declaration.body.map(lowerIrStatementAwaitConditionHoisting) };
+      return { ...declaration, body: lowerIrStatementListAwaitConditionHoisting(declaration.body) };
     case 'enum':
     case 'interface':
     case 'typeAlias':
@@ -102,10 +114,20 @@ function lowerIrDeclarationAwaitConditionHoisting(declaration: Readonly<IrDeclar
   }
 }
 
+function lowerIrStatementListAwaitConditionHoisting(statements: readonly IrStatement[]): IrStatement[] {
+  return statements.flatMap((statement) => {
+    if (statement.kind === 'variable') {
+      const conditional = lowerIrAwaitConditionalVariable(statement);
+      if (conditional) return conditional;
+    }
+    return [lowerIrStatementAwaitConditionHoisting(statement)];
+  });
+}
+
 function lowerIrStatementAwaitConditionHoisting(statement: Readonly<IrStatement>): IrStatement {
   switch (statement.kind) {
     case 'block':
-      return { ...statement, statements: statement.statements.map(lowerIrStatementAwaitConditionHoisting) };
+      return { ...statement, statements: lowerIrStatementListAwaitConditionHoisting(statement.statements) };
     case 'do':
     case 'while':
       return { ...statement, body: lowerIrStatementAwaitConditionHoisting(statement.body) };
@@ -142,7 +164,7 @@ function lowerIrStatementAwaitConditionHoisting(statement: Readonly<IrStatement>
         ...statement,
         cases: statement.cases.map((clause) => ({
           ...clause,
-          statements: clause.statements.map(lowerIrStatementAwaitConditionHoisting),
+          statements: lowerIrStatementListAwaitConditionHoisting(clause.statements),
         })),
       };
     case 'try':
@@ -169,6 +191,58 @@ function lowerIrStatementAwaitConditionHoisting(statement: Readonly<IrStatement>
     case 'variable':
       return statement;
   }
+}
+
+function lowerIrAwaitConditionalVariable(
+  statement: Readonly<Extract<IrStatement, { kind: 'variable' }>>,
+): readonly IrStatement[] | undefined {
+  if (statement.declarations.length !== 1) return undefined;
+  const variable = statement.declarations[0];
+  if (
+    !variable ||
+    !('binding' in variable) ||
+    variable.initializer?.kind !== 'conditional' ||
+    !hasIrExpressionAwait(variable.initializer)
+  ) {
+    return undefined;
+  }
+  const initializer = variable.initializer;
+  const target: IrExpression = {
+    kind: 'identifier',
+    reference: { binding: variable.binding, kind: 'binding' },
+  };
+  const assign = (right: IrExpression): IrStatement => ({
+    expression: {
+      kind: 'assignment',
+      left: target,
+      operator: '=',
+      right,
+      semantics: {
+        left: { declared: 'unknown', flow: 'unknown' },
+        result: 'unknown',
+        right: { declared: 'unknown', flow: 'unknown' },
+      },
+    },
+    kind: 'expression',
+  });
+  return [
+    {
+      declarations: [
+        {
+          binding: variable.binding,
+          mutable: true,
+          ...(variable.type ? { type: variable.type } : {}),
+        },
+      ],
+      kind: 'variable',
+    },
+    {
+      condition: initializer.condition,
+      consequent: assign(initializer.whenTrue),
+      kind: 'if',
+      otherwise: assign(initializer.whenFalse),
+    },
+  ];
 }
 
 const compilerLoweringPassNameAwaitConditionHoisting = 'await-condition-hoisting';

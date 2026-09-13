@@ -20,6 +20,28 @@ const numberType = { kind: 'primitive', name: 'number' } as const satisfies IrTy
 const stringType = { kind: 'primitive', name: 'string' } as const satisfies IrType;
 
 describe('analyzeIrModuleStructuralObjectCompatibility', () => {
+  it('accepts a construction matching the merged surface of a discriminated object union', () => {
+    const outcome = aliasDeclaration('type:outcome', 'Outcome', {
+      kind: 'union',
+      types: [
+        {
+          kind: 'object',
+          properties: [property('reason', { kind: 'literal', value: 'ok' }), property('value', numberType)],
+        },
+        {
+          kind: 'object',
+          properties: [property('reason', { kind: 'literal', value: 'failed' }), property('message', stringType)],
+        },
+      ],
+    });
+    const expression = objectExpression(typeReference(outcome.binding), [
+      { kind: 'property', name: 'reason', value: { kind: 'literal', value: 'ok' } },
+      { kind: 'property', name: 'value', value: { kind: 'literal', value: 1 } },
+    ]);
+
+    expect(analyzeIrModuleStructuralObjectCompatibility(createModule([outcome], [expression])).diagnostics).toEqual([]);
+  });
+
   it('resolves generic aliases, sequential defaults, and optional properties without changing input', () => {
     const value = typeBinding('type-parameter:value', 'Value', 'typeParameter');
     const box = interfaceDeclaration(

@@ -90,16 +90,17 @@ describe('lowerCompilerAsyncStateMachinesHaxe', () => {
     expect(result.runtime.taskTypeName).toBe('custom.runtime._Promise');
   });
 
-  it('preserves every neutral refusal instead of silently dropping unsupported async syntax', () => {
+  it('lowers a terminal return in a non-suspending branch', () => {
     const analysis = analyzeIrModuleAsyncStateMachines(
       lower(`export async function branch(value: boolean): Promise<void> { if (value) return; }`),
     );
     const result = lowerCompilerAsyncStateMachinesHaxe(analysis, createCompilerRuntimeTaskCapabilityPlanHaxe());
 
-    expect(result.functions).toEqual([]);
-    expect(result.refusals).toEqual([
-      expect.objectContaining({ code: 'unsupported-control-flow', kind: 'neutralStateMachine' }),
-    ]);
+    expect(result.functions).toHaveLength(1);
+    expect(result.refusals).toEqual([]);
+    expect(result.functions[0]?.states.flatMap((state) => state.steps)).toContainEqual(
+      expect.objectContaining({ kind: 'resolveTask', value: { kind: 'implicitUndefined' } }),
+    );
   });
 
   it('maps direct resolution, evaluation failure, and terminal suspension exactly', () => {

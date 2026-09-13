@@ -528,4 +528,11 @@ const haxeRuntimeExternalSymbolBindings = [
   { kind: 'native', sourceName: 'parseFloat', space: 'value', targetName: 'Std.parseFloat' },
   { kind: 'native', sourceName: 'isFinite', space: 'value', targetName: 'Math.isFinite' },
   { kind: 'native', sourceName: 'isNaN', space: 'value', targetName: 'Math.isNaN' },
+  {
+    capability: 'object',
+    kind: 'runtime',
+    sourceName: 'structuredClone',
+    space: 'value',
+    targetName: '_Object.structuredClone',
+  },
 ] as const satisfies readonly HaxeRuntimeExternalSymbolBinding[];

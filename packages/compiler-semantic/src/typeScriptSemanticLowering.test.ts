@@ -1776,6 +1776,30 @@ describe('lowerTypeScriptSource', () => {
     }
   });
 
+  it('erases a recursive deep-readonly conditional to its source runtime representation', () => {
+    const result = lower(
+      'deep-readonly.ts',
+      `
+        export type Immutable<Value> = Value extends (infer Element)[]
+          ? ReadonlyArray<Immutable<Element>>
+          : Value extends readonly (infer Element)[]
+            ? ReadonlyArray<Immutable<Element>>
+            : Value extends object
+              ? { readonly [Key in keyof Value]: Immutable<Value[Key]> }
+              : Value;
+        export function preserve<Value>(value: Immutable<Value>): void { value; }
+      `,
+    );
+    const alias = result.module.declarations.find(
+      (declaration) => declaration.kind === 'typeAlias' && declaration.binding.name === 'Immutable',
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    expect(alias).toMatchObject({
+      type: { kind: 'named', reference: { binding: { kind: 'typeParameter', name: 'Value' } } },
+    });
+  });
+
   it('resolves checker-concrete indexed access while preserving generic type computation', () => {
     const result = lower(
       'indexed-access.ts',
@@ -9282,6 +9306,33 @@ it('reports a diagnostic for an unsupported statement kind', () => {
     `,
   );
   expect(result.diagnostics).toMatchObject([{ message: expect.stringContaining('unsupported statement') }]);
+});
+
+it('erases function-local interface and type declarations after using them as type evidence', () => {
+  const result = lower(
+    'local-types.ts',
+    `
+      export function collect(): number {
+        interface Entry { value: number }
+        type Entries = Entry[];
+        const entries: Entries = [{ value: 3 }];
+        return entries[0]!.value;
+      }
+    `,
+  );
+  expect(result.diagnostics).toEqual([]);
+  const declaration = result.module.declarations[0];
+  expect(declaration).toMatchObject({ kind: 'function' });
+  expect(declaration?.kind === 'function' ? declaration.body[0] : undefined).toMatchObject({
+    declarations: [
+      {
+        type: {
+          element: { kind: 'object', properties: [{ name: 'value', type: { kind: 'primitive', name: 'number' } }] },
+          kind: 'array',
+        },
+      },
+    ],
+  });
 });
 
 it('preserves unique symbol initializers while erasing type-level uniqueness', () => {

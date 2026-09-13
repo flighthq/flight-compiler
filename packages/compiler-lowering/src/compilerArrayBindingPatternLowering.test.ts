@@ -1290,14 +1290,20 @@ describe('createCompilerLoweringPassArrayBindingPattern', () => {
   });
 
   it.each([
+    'export function read(values: number[]): number { const [value] = values; return value; }',
+    'export function read(values: number[][]): void { for (const [value] of values) value; }',
+    'export function read(values: Readonly<[number, number]>): number { const [first, second] = values; return first + second; }',
+  ])('lowers fixed destructuring when every array element binding has type evidence', (source) => {
+    const pass = createCompilerLoweringPassArrayBindingPattern();
+    const output = lowerIrModuleWithCompilerPasses(lower('fixed-array.ts', source), [pass]);
+    expect(pass.verifyIrModule(output)).toEqual({ kind: 'valid' });
+  });
+
+  it.each([
     {
       reason: 'nested variadic array binding rest requires variadic tuple-tail destructuring lowering',
       source:
         'export function split(values: [number, ...number[]]): number { const [first, ...[second]]: [number, ...number[]] = values; first; return second; }',
-    },
-    {
-      reason: 'array binding lowering requires a statically known tuple type',
-      source: 'export const [value]: number[] = [1];',
     },
     {
       reason: 'array binding index 0 requires a present tuple element or default initializer',
@@ -1306,10 +1312,6 @@ describe('createCompilerLoweringPassArrayBindingPattern', () => {
     {
       reason: 'array binding index 1 requires a present tuple element or default initializer',
       source: 'export const [first, second]: [number] = [1];',
-    },
-    {
-      reason: 'array binding lowering requires a statically known tuple type',
-      source: 'export function read(values: number[]): number { const [value] = values; return value; }',
     },
     {
       reason: 'array binding pattern requires an initializer outside iteration statements',
@@ -1327,10 +1329,6 @@ describe('createCompilerLoweringPassArrayBindingPattern', () => {
     {
       reason: 'forOf array binding lowering requires a statically known element type',
       source: 'export function read(values: any): void { for (const [value] of values) value; }',
-    },
-    {
-      reason: 'array binding lowering requires a statically known tuple type',
-      source: 'export function read(values: number[][]): void { for (const [value] of values) value; }',
     },
     {
       reason: 'async forOf array bindings require task-aware iteration destructuring lowering',

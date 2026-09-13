@@ -52,6 +52,18 @@ describe('getCompilerHaxeAmbientMemberBinding', () => {
       kind: 'method',
       targetName: 'values',
     });
+    expect(getCompilerHaxeAmbientMemberBinding({ name: 'entries', receiver: 'map' })).toEqual({
+      kind: 'method',
+      targetName: 'entries',
+    });
+    expect(getCompilerHaxeAmbientMemberBinding({ name: 'forEach', receiver: 'array' })).toEqual({
+      kind: 'staticCall',
+      targetPath: 'Lambda.iter',
+    });
+    expect(getCompilerHaxeAmbientMemberBinding({ name: 'flatMap', receiver: 'array' })).toEqual({
+      kind: 'runtimeCall',
+      targetName: '_Array.flatMap',
+    });
   });
 
   it('marks index arguments for Int coercion on methods that take Haxe Int', () => {

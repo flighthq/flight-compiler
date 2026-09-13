@@ -11,7 +11,7 @@ describe('createCompilerRuntimeExternalSymbolBindingPlanHaxe', () => {
     const plan = createCompilerRuntimeExternalSymbolBindingPlanHaxe();
 
     expect(plan.contract).toBe('flight-runtime-contract/2');
-    expect(plan.bindings).toHaveLength(134);
+    expect(plan.bindings).toHaveLength(135);
     expect(plan.bindings.filter(({ externalSymbol }) => externalSymbol.sourceName === 'Promise')).toEqual([
       {
         capability: 'task',
@@ -82,7 +82,7 @@ describe('createCompilerRuntimeExternalSymbolBindingPlanHaxe', () => {
     const second = createCompilerRuntimeExternalSymbolBindingPlanHaxe();
 
     (first.bindings as unknown[]).pop();
-    expect(second.bindings).toHaveLength(134);
+    expect(second.bindings).toHaveLength(135);
   });
 });
 
@@ -224,6 +224,7 @@ describe('getCompilerRuntimeExternalSymbolTargetHaxe', () => {
     ['WritableStream', 'type', 'Dynamic'],
     ['JSON', 'value', 'flighthq._internal._Json'],
     ['parseInt', 'value', 'flighthq._internal._Number.parseInt'],
+    ['structuredClone', 'value', 'flighthq._internal._Object.structuredClone'],
   ] as const)('maps %s in %s space to %s', (sourceName, space, targetName) => {
     expect(getCompilerRuntimeExternalSymbolTargetHaxe(sourceName, space)).toBe(targetName);
   });

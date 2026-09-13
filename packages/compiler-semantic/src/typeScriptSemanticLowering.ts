@@ -2677,7 +2677,10 @@ function lowerStatementList(nodes: readonly ts.Statement[], context: LoweringCon
     ...localFunction,
     lowering: lowerLocalFunctionDeclaration(localFunction.node, localFunction.binding, context),
   }));
-  if (localFunctions.length === 0) return nodes.map((node) => lowerStatement(node, context));
+  if (localFunctions.length === 0)
+    return nodes.flatMap((node) =>
+      ts.isInterfaceDeclaration(node) || ts.isTypeAliasDeclaration(node) ? [] : [lowerStatement(node, context)],
+    );
 
   const initializationByIndex = new Map<number, IrStatement[]>();
   for (const localFunction of localFunctions) {
@@ -2719,7 +2722,14 @@ function lowerStatementList(nodes: readonly ts.Statement[], context: LoweringCon
   for (let index = 0; index <= nodes.length; index += 1) {
     statements.push(...(initializationByIndex.get(index) ?? []));
     const node = nodes[index];
-    if (node && !ts.isFunctionDeclaration(node)) statements.push(lowerStatement(node, context));
+    if (
+      node &&
+      !ts.isFunctionDeclaration(node) &&
+      !ts.isInterfaceDeclaration(node) &&
+      !ts.isTypeAliasDeclaration(node)
+    ) {
+      statements.push(lowerStatement(node, context));
+    }
   }
   return statements;
 }
@@ -2878,6 +2888,8 @@ function lowerType(node: ts.TypeNode, context: LoweringContext): IrType {
   }
   if (ts.isParenthesizedTypeNode(node)) return lowerType(node.type, context);
   if (ts.isTypeReferenceNode(node)) {
+    const localType = lowerTypeScriptFunctionLocalTypeReference(node, context);
+    if (localType) return localType;
     const callableUtility = lowerConcreteTypeScriptCallableUtilityReference(node, context);
     if (callableUtility) return callableUtility;
     const mapped = lowerConcreteTypeScriptMappedAliasReference(node, context);
@@ -2989,6 +3001,35 @@ function lowerType(node: ts.TypeNode, context: LoweringContext): IrType {
     if (concrete) return concrete;
   }
   unsupported(node, `unsupported type ${ts.SyntaxKind[node.kind]}`);
+}
+
+function lowerTypeScriptFunctionLocalTypeReference(
+  node: ts.TypeReferenceNode,
+  context: LoweringContext,
+): Readonly<IrType> | undefined {
+  const unresolved = context.checker.getSymbolAtLocation(node.typeName);
+  const symbol = unresolved ? (resolveTypeBindingAliasTarget(unresolved, context) ?? unresolved) : undefined;
+  const declaration = symbol?.declarations?.find(
+    (candidate): candidate is ts.InterfaceDeclaration | ts.TypeAliasDeclaration =>
+      (ts.isInterfaceDeclaration(candidate) || ts.isTypeAliasDeclaration(candidate)) &&
+      !ts.isSourceFile(candidate.parent) &&
+      !ts.isModuleBlock(candidate.parent),
+  );
+  if (!declaration) return undefined;
+  const substitutions = createTypeScriptSyntacticDeclarationSubstitutions(
+    node,
+    declaration,
+    context.checker,
+    new Map(),
+  );
+  if (!substitutions) return undefined;
+  if (ts.isTypeAliasDeclaration(declaration)) {
+    return lowerTypeScriptTypeNodeEvidence(declaration.type, context, new Set([symbol!]), substitutions);
+  }
+  return {
+    kind: 'object',
+    properties: lowerTypeScriptInterfacePropertiesEvidence(declaration, context, new Set([symbol!]), substitutions),
+  };
 }
 
 function lowerConcreteTypeScriptCallableUtilityReference(
@@ -3194,10 +3235,136 @@ function getTypeScriptObjectProjectionKeys(node: ts.TypeNode): ReadonlySet<strin
 }
 
 function lowerConcreteConditionalType(node: ts.ConditionalTypeNode, context: LoweringContext): IrType | undefined {
+  const readonlyIdentity = lowerTypeScriptDeepReadonlyConditionalRepresentation(node, context);
+  if (readonlyIdentity) return readonlyIdentity;
   if (hasExternalTypeScriptTypeParameter(node, context)) {
     return lowerTypeScriptConditionalRuntimeRepresentation(node, context);
   }
   return getTypeScriptCheckerTypeEvidence(context.checker.getTypeFromTypeNode(node), context, 0, true);
+}
+
+function lowerTypeScriptDeepReadonlyConditionalRepresentation(
+  node: ts.ConditionalTypeNode,
+  context: LoweringContext,
+): Readonly<IrType> | undefined {
+  const declaration = node.parent;
+  if (
+    !ts.isTypeAliasDeclaration(declaration) ||
+    declaration.type !== node ||
+    declaration.typeParameters?.length !== 1
+  ) {
+    return undefined;
+  }
+  const parameter = declaration.typeParameters[0]!;
+  const parameterSymbol = context.checker.getSymbolAtLocation(parameter.name);
+  const aliasSymbol = context.checker.getSymbolAtLocation(declaration.name);
+  if (
+    !parameterSymbol ||
+    !aliasSymbol ||
+    !isTypeScriptDeepReadonlyArrayBranch(node, parameterSymbol, aliasSymbol, false, context) ||
+    !ts.isConditionalTypeNode(node.falseType) ||
+    !isTypeScriptDeepReadonlyArrayBranch(node.falseType, parameterSymbol, aliasSymbol, true, context) ||
+    !ts.isConditionalTypeNode(node.falseType.falseType) ||
+    !isTypeScriptDeepReadonlyObjectBranch(node.falseType.falseType, parameterSymbol, aliasSymbol, context)
+  ) {
+    return undefined;
+  }
+  return lowerType(node.checkType, context);
+}
+
+function isTypeScriptDeepReadonlyArrayBranch(
+  node: ts.ConditionalTypeNode,
+  parameterSymbol: ts.Symbol,
+  aliasSymbol: ts.Symbol,
+  readonly: boolean,
+  context: LoweringContext,
+): boolean {
+  if (!isTypeScriptBareTypeReferenceToSymbol(node.checkType, parameterSymbol, context)) return false;
+  const array = readonly
+    ? ts.isTypeOperatorNode(node.extendsType) && node.extendsType.operator === ts.SyntaxKind.ReadonlyKeyword
+      ? node.extendsType.type
+      : undefined
+    : node.extendsType;
+  if (!array || !ts.isArrayTypeNode(array)) return false;
+  const element = ts.isParenthesizedTypeNode(array.elementType) ? array.elementType.type : array.elementType;
+  if (!ts.isInferTypeNode(element)) return false;
+  const elementSymbol = context.checker.getSymbolAtLocation(element.typeParameter.name);
+  if (!elementSymbol || !ts.isTypeReferenceNode(node.trueType)) return false;
+  const trueName = getTypeScriptNodeText(node.trueType.typeName, context);
+  const recursive = node.trueType.typeArguments?.[0];
+  return (
+    trueName === 'ReadonlyArray' &&
+    node.trueType.typeArguments?.length === 1 &&
+    recursive !== undefined &&
+    isTypeScriptRecursiveReadonlyReference(recursive, elementSymbol, aliasSymbol, context)
+  );
+}
+
+function isTypeScriptDeepReadonlyObjectBranch(
+  node: ts.ConditionalTypeNode,
+  parameterSymbol: ts.Symbol,
+  aliasSymbol: ts.Symbol,
+  context: LoweringContext,
+): boolean {
+  if (
+    !isTypeScriptBareTypeReferenceToSymbol(node.checkType, parameterSymbol, context) ||
+    node.extendsType.kind !== ts.SyntaxKind.ObjectKeyword ||
+    !isTypeScriptBareTypeReferenceToSymbol(node.falseType, parameterSymbol, context) ||
+    !ts.isMappedTypeNode(node.trueType) ||
+    node.trueType.nameType ||
+    node.trueType.questionToken ||
+    node.trueType.readonlyToken?.kind !== ts.SyntaxKind.ReadonlyKeyword ||
+    !node.trueType.type
+  ) {
+    return false;
+  }
+  const keySymbol = context.checker.getSymbolAtLocation(node.trueType.typeParameter.name);
+  const constraint = node.trueType.typeParameter.constraint;
+  if (
+    !keySymbol ||
+    !constraint ||
+    !ts.isTypeOperatorNode(constraint) ||
+    constraint.operator !== ts.SyntaxKind.KeyOfKeyword ||
+    !isTypeScriptBareTypeReferenceToSymbol(constraint.type, parameterSymbol, context)
+  ) {
+    return false;
+  }
+  if (!ts.isTypeReferenceNode(node.trueType.type) || node.trueType.type.typeArguments?.length !== 1) return false;
+  const recursiveSymbol = context.checker.getSymbolAtLocation(node.trueType.type.typeName);
+  const argument = node.trueType.type.typeArguments[0]!;
+  return (
+    recursiveSymbol === aliasSymbol &&
+    ts.isIndexedAccessTypeNode(argument) &&
+    isTypeScriptBareTypeReferenceToSymbol(argument.objectType, parameterSymbol, context) &&
+    isTypeScriptBareTypeReferenceToSymbol(argument.indexType, keySymbol, context)
+  );
+}
+
+function isTypeScriptRecursiveReadonlyReference(
+  node: ts.TypeNode,
+  argumentSymbol: ts.Symbol,
+  aliasSymbol: ts.Symbol,
+  context: LoweringContext,
+): boolean {
+  return (
+    ts.isTypeReferenceNode(node) &&
+    context.checker.getSymbolAtLocation(node.typeName) === aliasSymbol &&
+    node.typeArguments?.length === 1 &&
+    isTypeScriptBareTypeReferenceToSymbol(node.typeArguments[0]!, argumentSymbol, context)
+  );
+}
+
+function isTypeScriptBareTypeReferenceToSymbol(
+  node: ts.TypeNode,
+  symbol: ts.Symbol,
+  context: LoweringContext,
+): boolean {
+  const unwrapped = ts.isParenthesizedTypeNode(node) ? node.type : node;
+  return (
+    ts.isTypeReferenceNode(unwrapped) &&
+    !unwrapped.typeArguments &&
+    context.checker.getSymbolAtLocation(unwrapped.typeName) === symbol
+  );
 }
 
 // A conditional type can reject some generic instantiations without changing the representation of
@@ -4688,7 +4855,12 @@ function lowerBindingPattern(
       rest = lowerBindingPattern(element.name, context, restType);
       return;
     }
-    const elementType = sourceType?.kind === 'tuple' ? sourceType.elements[index]?.type : undefined;
+    const elementType =
+      sourceType?.kind === 'tuple'
+        ? sourceType.elements[index]?.type
+        : sourceType?.kind === 'array'
+          ? sourceType.element
+          : undefined;
     const initializerType = element.initializer ? removeIrTypeBindingPatternUndefined(elementType) : elementType;
     elements.push({
       ...(element.initializer ? { initializer: lowerExpression(element.initializer, context, initializerType) } : {}),
@@ -5504,6 +5676,14 @@ function getTypeScriptDeclaredTypeEvidence(type: ts.Type, context: LoweringConte
   const symbol = type.aliasSymbol ?? type.getSymbol();
   const declaration = symbol?.declarations?.[0];
   if (!symbol || !declaration || declaration.getSourceFile() !== context.sourceFile) return undefined;
+  if (
+    ts.isInterfaceDeclaration(declaration) &&
+    !ts.isSourceFile(declaration.parent) &&
+    !ts.isModuleBlock(declaration.parent)
+  ) {
+    const properties = lowerTypeScriptCheckerObjectProperties(type, context, 0);
+    return properties ? { kind: 'object', properties } : undefined;
+  }
   const name = ts.getNameOfDeclaration(declaration);
   if (!name || !ts.isIdentifier(name)) return undefined;
   // Which space the name lives in decides which identity it has, exactly as it does when the source

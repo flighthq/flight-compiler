@@ -817,6 +817,40 @@ function createIrStatementArmAsyncStateMachine(
       draft,
     );
   }
+  if (armSuspensions.length === 0 && statement.kind === 'return') {
+    const value = statement.expression
+      ? createCompilerAsyncStateMachineExpressionValue([...path, 'expression'], 'result')
+      : ({ kind: 'implicitUndefined' } as const);
+    const cleanup = draft.cleanups.at(-1);
+    if (cleanup) {
+      draft.currentSteps.push({ binding: cleanup.carrier, kind: 'carry', path, value });
+      draft.currentSteps.push({ kind: 'goto', path, target: cleanup.target });
+    } else {
+      draft.currentSteps.push({
+        ...(statement.expression
+          ? { evaluationRejection: addCompilerAsyncStateMachineAbruptCompletion([...path, 'expression'], draft) }
+          : {}),
+        kind: 'resolve',
+        path,
+        value,
+      });
+      draft.completionPaths.push({ kind: 'return', path, value });
+    }
+    draft.terminal = true;
+    return undefined;
+  }
+  if (armSuspensions.length === 0 && statement.kind === 'throw') {
+    const value = createCompilerAsyncStateMachineExpressionValue([...path, 'expression'], 'result');
+    draft.currentSteps.push({
+      evaluationRejection: addCompilerAsyncStateMachineAbruptCompletion([...path, 'expression'], draft),
+      kind: 'reject',
+      path,
+      value,
+    });
+    draft.completionPaths.push({ kind: 'throw', path, value });
+    draft.terminal = true;
+    return undefined;
+  }
   if (armSuspensions.length > 0) {
     return createIrStatementSuspensionAsyncStateMachine(scope, statement, path, armSuspensions, draft);
   }

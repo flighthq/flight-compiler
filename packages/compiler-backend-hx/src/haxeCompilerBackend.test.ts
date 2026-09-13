@@ -1143,7 +1143,7 @@ describe('emitIrModuleHaxe', () => {
     expect(output).not.toContain('Array<Float>');
   });
 
-  it('emits contextual undefined as null but rejects unrepresentable undefined expressions', () => {
+  it('emits contextual and exact undefined values with Haxe absent-value storage', () => {
     const nullable = lower('nullable.ts', 'export function nullable(): string | null { return null; }');
     const undefinedNullable = lower(
       'undefined-nullable.ts',
@@ -1156,9 +1156,7 @@ describe('emitIrModuleHaxe', () => {
     );
 
     expect(emitIrModuleHaxe(nullable.module).contents).toContain('function nullable():Null<String> {\n  return null;');
-    expect(() => emitIrModuleHaxe(undefinedValue.module)).toThrow(
-      'undefined expressions require Haxe nullability lowering',
-    );
+    expect(emitIrModuleHaxe(undefinedValue.module).contents).toContain('function missing():Dynamic {\n  return null;');
     expect(emitIrModuleHaxe(undefinedNullable.module).contents).toContain('return null;');
     expect(() => emitIrModuleHaxe(explicitDefault.module)).toThrow(
       'explicit undefined default arguments require Haxe omission lowering',
@@ -1340,26 +1338,33 @@ describe('emitIrModuleHaxe', () => {
     }
   });
 
-  it('returns a tagged emission failure', () => {
+  it('emits an async early-return branch through task states', () => {
     const result = lower(
-      'unsupported.ts',
+      'early-return.ts',
       'export async function read(value: boolean): Promise<number> { if (value) return 1; return 0; }',
     );
+    const output = emitIrModuleHaxe(result.module).contents;
 
-    try {
-      emitIrModuleHaxe(result.module);
-      expect.unreachable('Expected Haxe emission to fail');
-    } catch (error) {
-      expect(isBackendEmissionFailure(error)).toBe(true);
-      expect(error).toMatchObject({
-        backend: 'haxe',
-        code: 'unsupported-ir',
-        kind: 'backend-emission',
-        name: 'BackendEmissionError',
-        packageName: '@flighthq/math',
-        source: 'packages/math/src/unsupported.ts',
-      });
-    }
+    expect(output).toContain('if (value)');
+    expect(output).toContain('resolveTask(1)');
+    expect(output).toContain('resolveTask(0)');
+  });
+
+  it('emits a conditional await initializer through two branch continuations', () => {
+    const result = lower(
+      'conditional-await.ts',
+      `export async function read(flag: boolean, first: Promise<number>, second: Promise<number>): Promise<number> {
+         const value = flag ? await first : await second;
+         return value;
+       }`,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('var value:Float;');
+    expect(output).toContain('if (flag)');
+    expect(output).toContain('_Promise.resolve(first).then(');
+    expect(output).toContain('_Promise.resolve(second).then(');
+    expect(output).not.toContain('await ');
   });
 
   it('emits nested labeled exits through Haxe completion state', () => {
@@ -2466,7 +2471,7 @@ describe('emitIrModuleHaxe ambient member coverage', () => {
     expect(output).toContain('return -9.007199254740991e15;');
   });
 
-  it('keeps Number conversion explicit while emitting the portable parseFloat spelling', () => {
+  it('routes Number conversion and parseFloat through their portable spellings', () => {
     const conversion = lower(
       'number-conversion.ts',
       'export function parse(value: string): number { return Number(value); }',
@@ -2476,9 +2481,7 @@ describe('emitIrModuleHaxe ambient member coverage', () => {
       'export function parse(value: string): number { return Number.parseFloat(value); }',
     );
 
-    expect(() => emitIrModuleHaxe(conversion.module)).toThrow(
-      'bare Number values require JavaScript numeric-conversion lowering',
-    );
+    expect(emitIrModuleHaxe(conversion.module).contents).toContain('return flighthq._internal._Js.toNumber(value);');
     expect(emitIrModuleHaxe(parseFloat.module).contents).toContain('return Std.parseFloat(value);');
   });
 
@@ -2494,6 +2497,16 @@ describe('emitIrModuleHaxe ambient member coverage', () => {
     expect(output).toContain('flight._hx._runtime._Object.keys(value)');
     expect(output).toContain('flight._hx._runtime._StringTools.replaceFirst(value, "a", "b")');
     expect(output).toContain('flight._hx._runtime._Number.toFixed(value, 2)');
+  });
+
+  it('routes structuredClone through the portable object runtime', () => {
+    const result = lower(
+      'structured-clone.ts',
+      'export function clone<T>(value: T): T { return structuredClone(value); }',
+    );
+    const output = emitIrModuleHaxe(result.module, { runtimeModule: 'flight._hx._runtime' }).contents;
+
+    expect(output).toContain('return flight._hx._runtime._Object.structuredClone(value);');
   });
 
   it('emits array.reduce as Lambda.fold with exchanged closure', () => {
@@ -2514,6 +2527,22 @@ describe('emitIrModuleHaxe ambient member coverage', () => {
     const output = emitIrModuleHaxe(result.module).contents;
 
     expect(output).toContain('Lambda.foreach(');
+  });
+
+  it('emits array.forEach as Lambda.iter and flatMap through the runtime', () => {
+    const result = lower(
+      'array-iteration.ts',
+      `export function visit(values: number[], effect: (value: number, index: number) => void): void {
+         values.forEach(effect);
+       }
+       export function pairs(values: number[]): number[] {
+         return values.flatMap((value) => [value, value]);
+       }`,
+    );
+    const output = emitIrModuleHaxe(result.module, { runtimeModule: 'flight._hx._runtime' }).contents;
+
+    expect(output).toContain('Lambda.iter(values, effect)');
+    expect(output).toContain('flight._hx._runtime._Array.flatMap(values,');
   });
 
   it('emits string.endsWith as StringTools.endsWith static call', () => {
@@ -4936,13 +4965,22 @@ describe('emitIrModuleHaxe re-export facade', () => {
     expect(output).toContain('...values:Float');
   });
 
-  it('refuses value re-export when exported name is not a function', () => {
+  it('forwards an immutable value re-export with its declared type', () => {
     const helper = lower('helper.ts', 'export const value: number = 42;');
     const facade = lower('facade.ts', `export { value } from './helper.js';`);
     const backend = createHaxeCompilerBackend();
-    expect(() => backend.emitModule(facade.module, { modules: [facade.module, helper.module], options: {} })).toThrow(
-      're-exporting the value',
-    );
+    const output = backend.emitModule(facade.module, { modules: [facade.module, helper.module], options: {} })[0]!
+      .contents;
+    expect(output).toContain('final value:Float = flighthq.math.Helper.value;');
+  });
+
+  it('aliases a nominal value re-export to preserve constructor and static-member access', () => {
+    const helper = lower('helper.ts', 'export enum Kind { Value }');
+    const facade = lower('facade.ts', `export { Kind } from './helper.js';`);
+    const backend = createHaxeCompilerBackend();
+    const output = backend.emitModule(facade.module, { modules: [facade.module, helper.module], options: {} })[0]!
+      .contents;
+    expect(output).toContain('typedef Kind = flighthq.math.Helper.Kind;');
   });
 
   it('refuses value re-export when sibling module is not available', () => {
@@ -6904,6 +6942,14 @@ describe('emitIrModuleHaxe spread call emission', () => {
     ).contents;
     expect(output).toContain('Reflect.callMethod');
   });
+
+  it('routes a spread passed to a mapped array member before fixed-arity member emission', () => {
+    const output = emitIrModuleHaxe(
+      lower('spread-push.ts', 'export function append(out: number[], values: number[]): void { out.push(...values); }')
+        .module,
+    ).contents;
+    expect(output).toContain('Reflect.callMethod(out, out.push, values)');
+  });
 });
 
 describe('emitIrModuleHaxe template literal emission', () => {
@@ -8340,6 +8386,20 @@ describe('emitIrModuleHaxe assignment operator lowering', () => {
     expect(output).toContain('final assignmentReceiver:Dynamic = state;');
     expect(output).toContain('assignmentReceiver.value = flighthq._internal._Js.add(assignmentReceiver.value, amount)');
   });
+
+  it('evaluates a coercive array element target once and writes the converted result back', () => {
+    const output = emitIrModuleHaxe(
+      lower(
+        'compound-array-element.ts',
+        'export function add(values: unknown[], index: number, amount: number): unknown { return values[index] += amount; }',
+      ).module,
+    ).contents;
+
+    expect(output).toContain('final assignmentReceiver:Dynamic = values;');
+    expect(output).toContain('final assignmentKey:Dynamic = index;');
+    expect(output).toContain('assignmentReceiver[Std.int(assignmentKey)] = assignmentResult');
+    expect(output).toContain('flighthq._internal._Js.add(assignmentValue, amount)');
+  });
 });
 
 describe('emitIrModuleHaxe unsigned right shift', () => {
@@ -8640,7 +8700,7 @@ describe('emitIrModuleHaxe for-of with async iteration', () => {
 });
 
 describe('emitIrModuleHaxe postfix unary operator on non-number', () => {
-  it('refuses a postfix operator on a non-number operand', () => {
+  it('routes a postfix operator on an unknown operand through numeric coercion', () => {
     const result = lower(
       'postfix-op.ts',
       'export function inc(value: number): number { let x = value; x++; return x; }',
@@ -8664,7 +8724,10 @@ describe('emitIrModuleHaxe postfix unary operator on non-number', () => {
       ...result.module,
       declarations: result.module.declarations.map((d) => (d === fn ? modified : d)) as IrModule['declarations'],
     };
-    expect(() => emitIrModuleHaxe(module)).toThrow('requires Haxe type-directed lowering');
+    const output = emitIrModuleHaxe(module).contents;
+    expect(output).toContain('flighthq._internal._Js.toNumber(x)');
+    expect(output).toContain('updateOldValue');
+    expect(output).toContain('return updateOldValue');
   });
 });
 
@@ -8674,6 +8737,15 @@ describe('emitIrModuleHaxe exponentiation binary operator', () => {
       lower('pow.ts', 'export function square(n: number): number { return n ** 2; }').module,
     ).contents;
     expect(output).toContain('Math.pow(');
+  });
+});
+
+describe('emitIrModuleHaxe comma operator', () => {
+  it('preserves left evaluation and returns the right completion', () => {
+    const output = emitIrModuleHaxe(
+      lower('comma.ts', 'export function last(out: number[]): number { return (out.push(1), 2); }').module,
+    ).contents;
+    expect(output).toContain('out.push(1); return 2;');
   });
 });
 
@@ -8717,7 +8789,7 @@ describe('emitIrModuleHaxe bitwise binary operators', () => {
 });
 
 describe('emitIrModuleHaxe prefix unary operator on non-number', () => {
-  it('refuses a prefix operator on a non-number operand', () => {
+  it('routes a prefix operator on an unknown operand through numeric coercion', () => {
     const result = lower(
       'prefix-op.ts',
       'export function dec(value: number): number { let x = value; --x; return x; }',
@@ -8745,7 +8817,10 @@ describe('emitIrModuleHaxe prefix unary operator on non-number', () => {
       ...result.module,
       declarations: result.module.declarations.map((d) => (d === fn ? modified : d)) as IrModule['declarations'],
     };
-    expect(() => emitIrModuleHaxe(module)).toThrow('requires Haxe type-directed lowering');
+    const output = emitIrModuleHaxe(module).contents;
+    expect(output).toContain('flighthq._internal._Js.toNumber(x)');
+    expect(output).toContain('updateResult');
+    expect(output).toContain('return updateResult');
   });
 });
 

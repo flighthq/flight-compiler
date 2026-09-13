@@ -175,10 +175,9 @@ describe('analyzeIrModuleAsyncStateMachines', () => {
       `),
     );
 
-    expect(analysis.machines).toEqual([]);
+    expect(analysis.machines).toHaveLength(1);
     expect(analysis.refusals.map((refusal) => refusal.code)).toEqual([
       'unsupported-async-iteration',
-      'unsupported-control-flow',
       'unreachable-statement',
       'escaping-control-flow',
       'unsupported-suspension-expression',

@@ -217,6 +217,30 @@ function getIrTypeStructuralConstructionTarget(
   ancestors: ReadonlySet<string>,
 ): StructuralTargetResolution {
   if (type.kind === 'object') return { kind: 'closed', properties: type.properties };
+  if (type.kind === 'union' || type.kind === 'intersection') {
+    const resolutions = type.types.map((member) =>
+      getIrTypeStructuralConstructionTarget(member, module, moduleSet, ancestors),
+    );
+    const closed = resolutions.filter(
+      (resolution): resolution is Extract<StructuralTargetResolution, { kind: 'closed' }> =>
+        resolution.kind === 'closed',
+    );
+    if (type.kind === 'intersection' && closed.length !== resolutions.length) {
+      return resolutions.find(
+        (resolution): resolution is Extract<StructuralTargetResolution, { kind: 'diagnostic' }> =>
+          resolution.kind === 'diagnostic',
+      )!;
+    }
+    if (closed.length > 0) {
+      return {
+        kind: 'closed',
+        properties: mergeIrStructuralConstructionProperties(
+          closed.map((resolution) => resolution.properties),
+          type.kind,
+        ),
+      };
+    }
+  }
   if (type.kind !== 'named') {
     return {
       code: 'open-construction-target',
@@ -281,12 +305,39 @@ function getIrTypeStructuralConstructionTarget(
       new Set(ancestors).add(location.identity),
     );
   }
+  if (resolved.kind === 'union' || resolved.kind === 'intersection') {
+    return getIrTypeStructuralConstructionTarget(
+      resolved,
+      location.module,
+      moduleSet,
+      new Set(ancestors).add(location.identity),
+    );
+  }
   return {
     code: 'non-structural-construction-target',
     disposition: 'incompatible',
     kind: 'diagnostic',
     message: `object construction target ${target} does not resolve to a structural record`,
   };
+}
+
+function mergeIrStructuralConstructionProperties(
+  branches: readonly (readonly IrObjectTypeProperty[])[],
+  kind: 'intersection' | 'union',
+): readonly IrObjectTypeProperty[] {
+  const names = new Set(branches.flatMap((properties) => properties.map((property) => property.name)));
+  return [...names].sort(compareTextCodeUnits).map((name) => {
+    const matches = branches.flatMap((properties) => {
+      const property = properties.find((candidate) => candidate.name === name);
+      return property ? [property] : [];
+    });
+    const representative = matches[0]!;
+    const optional =
+      kind === 'union'
+        ? matches.length !== branches.length || matches.some((property) => property.optional)
+        : matches.every((property) => property.optional);
+    return { ...representative, optional };
+  });
 }
 
 function getStructuralDeclarationLocation(
@@ -438,9 +489,7 @@ function getStructuralSpecifierModules(
     (edge) => `${edge.target.packageName}\0${normalizePathPortable(edge.target.source)}`,
   );
   return moduleSet.modules
-    .map((candidate) =>
-      moduleSet.replacement?.identity === candidate.identity ? moduleSet.replacement : candidate,
-    )
+    .map((candidate) => (moduleSet.replacement?.identity === candidate.identity ? moduleSet.replacement : candidate))
     .filter(
       (candidate) =>
         (candidate.module.packageName === from.module.packageName && candidates.has(candidate.source)) ||
@@ -492,7 +541,11 @@ function createStructuralModuleSet(
   if (records.some((record, index) => index > 0 && record.identity === records[index - 1]!.identity)) {
     throw new TypeError('Structural module set contains a duplicate module identity');
   }
-  return { moduleByIdentity: new Map(records.map((record) => [record.identity, record])), modules: records, resolution };
+  return {
+    moduleByIdentity: new Map(records.map((record) => [record.identity, record])),
+    modules: records,
+    resolution,
+  };
 }
 
 function validateCompilerModuleResolutionPlan(resolution: Readonly<CompilerModuleResolutionPlan>): void {

@@ -662,6 +662,9 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
     case 'await':
       emissionError(context, 'await requires the Haxe async-lowering pass');
     case 'binary': {
+      if (expression.operator === ',') {
+        return `(function() { ${emitExpression(expression.left, context)}; return ${emitExpression(expression.right, context)}; })()`;
+      }
       if (expression.semantics.nullishComparison) {
         const evidence = expression.semantics.nullishComparison;
         if (evidence.admitsNull && evidence.admitsUndefined) {
@@ -733,6 +736,12 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
         const bounds = expression.arguments.map((argument) => `Std.int(${emitExpression(argument, context)})`);
         return `${receiver}.slice(${bounds.join(', ')})`;
       }
+      // Member mapping normally emits arguments while selecting the target spelling. A spread has
+      // runtime arity, so it must take the reflective-call route before that fixed-arity mapper sees
+      // the residual spread expression (notably for Array.push(...values)).
+      if (expression.arguments.some((argument) => argument.kind === 'spread')) {
+        return emitSpreadCallHaxe(expression, context);
+      }
       const ambient = expression.callee.kind === 'property' ? expression.callee.member : undefined;
       if (ambient && expression.callee.kind === 'property') {
         const binding = getCompilerHaxeAmbientMemberBinding(ambient);
@@ -772,9 +781,6 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
         expression.arguments.length === 1
       ) {
         return `Std.string(${emitExpression(expression.arguments[0]!, context)})`;
-      }
-      if (expression.arguments.some((argument) => argument.kind === 'spread')) {
-        return emitSpreadCallHaxe(expression, context);
       }
       return `${expression.callee.kind === 'function' ? `(${emitExpression(expression.callee, context)})` : emitExpression(expression.callee, context)}${expression.optional ? '?.' : ''}(${emitCallArgumentsHaxe(expression, context)})`;
     }
@@ -948,6 +954,8 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
     case 'tupleSuffix':
       return `${emitExpression(expression.object, context)}.slice(${String(expression.start)})`;
     case 'unary': {
+      const runtimeUpdate = emitJavaScriptUpdateOperatorHaxe(expression, context);
+      if (runtimeUpdate) return runtimeUpdate;
       const operand = emitExpression(expression.operand, context);
       if (!expression.postfix) {
         const runtimeOperator = emitJavaScriptPrefixUnaryOperatorHaxe(expression, operand, context);
@@ -964,6 +972,58 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
     case 'undefinedDefault':
       return `(${emitExpression(expression.value, context)} ?? ${emitExpression(expression.fallback, context)})`;
   }
+}
+
+function emitJavaScriptUpdateOperatorHaxe(
+  expression: Readonly<Extract<IrExpression, { kind: 'unary' }>>,
+  context: EmitContext,
+): string | undefined {
+  if (
+    (expression.operator !== '++' && expression.operator !== '--') ||
+    (expression.semantics.operand.flow === 'number' && expression.semantics.result === 'number')
+  ) {
+    return undefined;
+  }
+  const runtime = `${context.options.runtimeModule ?? 'flighthq._internal'}._Js`;
+  const oldValue = getGeneratedTargetNameHaxe('updateOldValue', context);
+  const result = getGeneratedTargetNameHaxe('updateResult', context);
+  const updated = `${oldValue} ${expression.operator === '++' ? '+' : '-'} 1.0`;
+  const completion = expression.postfix ? oldValue : result;
+  const body = (setup: string, read: string, write: (value: string) => string): string =>
+    `(function() { ${setup} final ${oldValue}:Float = ${runtime}.toNumber(${read}); final ${result}:Float = ${updated}; ${write(result)}; return ${completion}; })()`;
+
+  if (expression.operand.kind === 'identifier') {
+    const target = emitExpression(expression.operand, context);
+    return body('', target, (value) => `${target} = ${value}`);
+  }
+  if (expression.operand.kind === 'property') {
+    const receiver = getGeneratedTargetNameHaxe('updateReceiver', context);
+    const target = `${receiver}.${safeHaxeName(expression.operand.name)}`;
+    return body(
+      `final ${receiver}:Dynamic = ${emitExpression(expression.operand.object, context)};`,
+      target,
+      (value) => `${target} = ${value}`,
+    );
+  }
+  if (expression.operand.kind === 'element') {
+    const receiver = getGeneratedTargetNameHaxe('updateReceiver', context);
+    const key = getGeneratedTargetNameHaxe('updateKey', context);
+    const setup = `final ${receiver}:Dynamic = ${emitExpression(expression.operand.object, context)}; final ${key}:Dynamic = ${emitExpression(expression.operand.index, context)};`;
+    if (
+      !getComputedObjectStorageNameHaxe(expression.operand) &&
+      (expression.operand.semantics.receivers.includes('object') ||
+        expression.operand.semantics.receivers.includes('unknown'))
+    ) {
+      return body(
+        setup,
+        `${runtime}.getProperty(${receiver}, ${key})`,
+        (value) => `${runtime}.setProperty(${receiver}, ${key}, ${value})`,
+      );
+    }
+    const target = `${receiver}[${key}]`;
+    return body(setup, target, (value) => `${target} = ${value}`);
+  }
+  emissionError(context, `operator ${expression.operator} requires an assignable Haxe update target`);
 }
 
 function emitArrayExpressionHaxe(
@@ -1015,13 +1075,11 @@ function emitReflectiveElementAssignmentHaxe(
   context: EmitContext,
 ): string | undefined {
   const left = expression.left;
-  if (
-    left.kind !== 'element' ||
-    getComputedObjectStorageNameHaxe(left) ||
-    (!left.semantics.receivers.includes('object') && !left.semantics.receivers.includes('unknown'))
-  ) {
-    return undefined;
-  }
+  if (left.kind !== 'element') return undefined;
+  const storageName = getComputedObjectStorageNameHaxe(left);
+  const reflective =
+    !storageName && (left.semantics.receivers.includes('object') || left.semantics.receivers.includes('unknown'));
+  if (!reflective && isAssignmentOperatorDirectHaxe(expression.operator, expression.semantics)) return undefined;
   const runtime = `${context.options.runtimeModule ?? 'flighthq._internal'}._Js`;
   const receiver = getGeneratedTargetNameHaxe('assignmentReceiver', context);
   const key = getGeneratedTargetNameHaxe('assignmentKey', context);
@@ -1031,7 +1089,10 @@ function emitReflectiveElementAssignmentHaxe(
   if (expression.operator === '=') {
     return `(function() { ${setup} final ${value}:Dynamic = ${right}; ${runtime}.setProperty(${receiver}, ${key}, ${value}); return ${value}; })()`;
   }
-  const current = `${runtime}.getProperty(${receiver}, ${key})`;
+  const directTarget = storageName ? `${receiver}.${safeHaxeName(storageName)}` : `${receiver}[Std.int(${key})]`;
+  const current = reflective ? `${runtime}.getProperty(${receiver}, ${key})` : directTarget;
+  const write = (result: string): string =>
+    reflective ? `${runtime}.setProperty(${receiver}, ${key}, ${result})` : `${directTarget} = ${result}`;
   if (expression.operator === '&&=' || expression.operator === '||=' || expression.operator === '??=') {
     const condition =
       expression.operator === '??='
@@ -1039,7 +1100,7 @@ function emitReflectiveElementAssignmentHaxe(
         : expression.operator === '&&='
           ? `${runtime}.truthy(${value})`
           : `!${runtime}.truthy(${value})`;
-    return `(function() { ${setup} var ${value}:Dynamic = ${current}; if (${condition}) { ${value} = ${right}; ${runtime}.setProperty(${receiver}, ${key}, ${value}); } return ${value}; })()`;
+    return `(function() { ${setup} var ${value}:Dynamic = ${current}; if (${condition}) { ${value} = ${right}; ${write(value)}; } return ${value}; })()`;
   }
   const updated = emitJavaScriptBinaryRuntimeCallHaxe(
     expression.operator.slice(0, -1) as IrBinaryOperator,
@@ -1049,7 +1110,7 @@ function emitReflectiveElementAssignmentHaxe(
   );
   if (!updated) return undefined;
   const result = getGeneratedTargetNameHaxe('assignmentResult', context);
-  return `(function() { ${setup} final ${value}:Dynamic = ${current}; final ${result}:Dynamic = ${updated}; ${runtime}.setProperty(${receiver}, ${key}, ${result}); return ${result}; })()`;
+  return `(function() { ${setup} final ${value}:Dynamic = ${current}; final ${result}:Dynamic = ${updated}; ${write(result)}; return ${result}; })()`;
 }
 
 function emitJavaScriptAssignmentToTargetHaxe(
@@ -1472,15 +1533,7 @@ function emitValueReexportForwardingHaxe(
   );
   if (facadeSlot) {
     const target = getModuleFacadeBindingTargetHaxe(facadeSlot, context);
-    if (target.declaration.kind === 'function') {
-      return emitFunctionReexportForwardingHaxe(
-        safeHaxeName(exported.exported),
-        getSourceBindingTargetNameHaxe(target.module, target.binding, context),
-        target.declaration,
-        getHaxeModulePath(target.module, context.options),
-        context,
-      );
-    }
+    return emitValueReexportTargetHaxe(exported.exported, target, context);
   }
   const sourceModule = getHaxeResolvedImportModule(exported.specifier, context, exported.imported);
   if (!sourceModule) {
@@ -1490,7 +1543,8 @@ function emitValueReexportForwardingHaxe(
     );
   }
   const declaration = sourceModule.declarations.find(
-    (d): d is IrFunctionDeclaration => d.kind === 'function' && d.binding.name === exported.imported,
+    (candidate): candidate is Readonly<IrDeclaration & { binding: IrBindingIdentity | IrTypeBindingIdentity }> =>
+      'binding' in candidate && candidate.binding.name === exported.imported,
   );
   if (!declaration) {
     emissionError(
@@ -1498,13 +1552,44 @@ function emitValueReexportForwardingHaxe(
       `re-exporting the value ${exported.exported} requires the re-exported signature to forward to`,
     );
   }
-  return emitFunctionReexportForwardingHaxe(
-    safeHaxeName(exported.exported),
-    getSourceBindingTargetNameHaxe(sourceModule, declaration.binding, context),
-    declaration,
-    modulePath,
+  return emitValueReexportTargetHaxe(
+    exported.exported,
+    { binding: declaration.binding, declaration, module: sourceModule },
     context,
   );
+}
+
+function emitValueReexportTargetHaxe(
+  exportName: string,
+  target: Readonly<{
+    binding: IrBindingIdentity | IrTypeBindingIdentity;
+    declaration: Readonly<IrDeclaration>;
+    module: Readonly<IrModule>;
+  }>,
+  context: EmitContext,
+): string[] {
+  const modulePath = getHaxeModulePath(target.module, context.options);
+  const sourceName = getSourceBindingTargetNameHaxe(target.module, target.binding, context);
+  if (target.declaration.kind === 'function') {
+    return emitFunctionReexportForwardingHaxe(
+      safeHaxeName(exportName),
+      sourceName,
+      target.declaration,
+      modulePath,
+      context,
+    );
+  }
+  if (target.declaration.kind === 'variable') {
+    if (target.declaration.mutable) {
+      emissionError(context, `re-exporting mutable value ${exportName} requires a live Haxe module facade`);
+    }
+    const type = target.declaration.type ? emitType(target.declaration.type, context) : 'Dynamic';
+    return [`final ${safeHaxeName(exportName)}:${type} = ${modulePath}.${sourceName};`];
+  }
+  if (target.declaration.kind === 'class' || target.declaration.kind === 'enum') {
+    return [`typedef ${safeHaxeTypeName(exportName)} = ${modulePath}.${sourceName};`];
+  }
+  emissionError(context, `re-exporting value ${exportName} requires Haxe module-facade lowering`);
 }
 
 function emitFunctionReexportForwardingHaxe(
@@ -1517,7 +1602,7 @@ function emitFunctionReexportForwardingHaxe(
   const params = declaration.parameters
     .map((p) => {
       const name = safeHaxeName(p.binding.name);
-      const type = emitType(p.type, context);
+      const type = p.dependentCallablePack ? 'Dynamic' : emitType(p.type, context);
       if (p.rest) {
         const elementType = p.type.kind === 'array' ? emitType(p.type.element, context) : type;
         return `...${name}:${elementType}`;
@@ -1670,10 +1755,13 @@ function emitIdentifierReferenceHaxe(reference: Readonly<IrIdentifierReference>,
   if (reference.kind === 'this') return 'this';
   if (reference.kind === 'ambient') {
     if (reference.name === 'undefined') {
-      emissionError(context, 'undefined expressions require Haxe nullability lowering');
+      // Haxe has one absent representation. The type emitter already maps both `undefined` and
+      // nullable source slots onto null-bearing storage, so the value expression must use the same
+      // representation even when its contextual type is exactly `undefined` or `Dynamic`.
+      return 'null';
     }
     if (reference.name === 'Number') {
-      emissionError(context, 'bare Number values require JavaScript numeric-conversion lowering');
+      return `${context.options.runtimeModule ?? 'flighthq._internal'}._Js.toNumber`;
     }
     const targetName = getCompilerRuntimeExternalSymbolTargetHaxe(
       reference.name,
@@ -1895,10 +1983,7 @@ function emitStatement(statement: Readonly<IrStatement>, context: EmitContext): 
   }
 }
 
-function emitTryCatchHaxe(
-  statement: Readonly<Extract<IrStatement, { kind: 'try' }>>,
-  context: EmitContext,
-): string[] {
+function emitTryCatchHaxe(statement: Readonly<Extract<IrStatement, { kind: 'try' }>>, context: EmitContext): string[] {
   const lines = ['try {', ...indentSourceLines(emitStatementBody(statement.tryBody, context)), '}'];
   if (!statement.catchClause) return lines;
   const errorName = statement.catchClause.binding
@@ -1906,7 +1991,9 @@ function emitTryCatchHaxe(
     : getGeneratedTargetNameHaxe('error', context);
   lines.push(`catch (${errorName}:Dynamic) {`);
   if (context.finallyCompletion) {
-    lines.push(...indentSourceLines([`if (${errorName} == ${context.finallyCompletion.returnSignalName}) throw ${errorName};`]));
+    lines.push(
+      ...indentSourceLines([`if (${errorName} == ${context.finallyCompletion.returnSignalName}) throw ${errorName};`]),
+    );
   }
   lines.push(...indentSourceLines(emitStatementBody(statement.catchClause.body, context)), '}');
   return lines;
@@ -2007,9 +2094,7 @@ function containsReturnStatementMatchingHaxe(
     case 'try':
       return (
         containsReturnStatementMatchingHaxe(statement.tryBody, matches) ||
-        (statement.catchClause
-          ? containsReturnStatementMatchingHaxe(statement.catchClause.body, matches)
-          : false) ||
+        (statement.catchClause ? containsReturnStatementMatchingHaxe(statement.catchClause.body, matches) : false) ||
         (statement.finallyBody ? containsReturnStatementMatchingHaxe(statement.finallyBody, matches) : false)
       );
     case 'break':
@@ -2542,9 +2627,7 @@ function createCompilerModuleFacadePlannerHaxe(
         imported.bindings
           .filter((binding) => exportedImportBindingIds.has(binding.binding.id))
           .map((binding) => ({
-            ...(binding.imported === '*' || binding.imported === 'default'
-              ? {}
-              : { importedName: binding.imported }),
+            ...(binding.imported === '*' || binding.imported === 'default' ? {} : { importedName: binding.imported }),
             required: true,
             specifier: imported.specifier,
           })),
@@ -2656,10 +2739,7 @@ function createCompilerModuleFacadePlannerHaxe(
         entries: [{ name: entryModule.name, packageName: entryModule.packageName, source: entryModule.source }],
         modules: plannedModules,
       });
-      const plan = createCompilerModuleFacadePlanForEntries(
-        { evaluation, modules: plannedModules },
-        [entryModule],
-      );
+      const plan = createCompilerModuleFacadePlanForEntries({ evaluation, modules: plannedModules }, [entryModule]);
       plans.set(entryKey, plan);
       return plan;
     } catch {
@@ -2899,9 +2979,8 @@ function assertStructuralObjectCompatibilityHaxe(
   resolution: Readonly<CompilerModuleResolutionPlan> | undefined,
   analyzer?: ((module: Readonly<IrModule>) => Readonly<CompilerStructuralObjectCompatibilityReport>) | undefined,
 ): void {
-  const diagnostic = (analyzer
-    ? analyzer(module)
-    : analyzeIrModuleStructuralObjectCompatibilityAcrossModules(module, modules, resolution)
+  const diagnostic = (
+    analyzer ? analyzer(module) : analyzeIrModuleStructuralObjectCompatibilityAcrossModules(module, modules, resolution)
   ).diagnostics.find(
     (candidate) =>
       candidate.code !== 'open-construction-target' &&

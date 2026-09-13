@@ -94,6 +94,37 @@ describe('createCompilerLoweringPassAwaitConditionHoisting', () => {
     expect(output).toEqual(module);
   });
 
+  it('hoists a conditional await initializer into one shared binding and two branch assignments', () => {
+    const pass = createCompilerLoweringPassAwaitConditionHoisting();
+    const output = lowerIrModuleWithCompilerPasses(
+      lower(`
+        export async function choose(
+          flag: boolean,
+          first: Promise<number>,
+          second: Promise<number>,
+        ): Promise<number> {
+          const value = flag ? await first : await second;
+          return value;
+        }
+      `),
+      [pass],
+      { verificationDepth: 'idempotence' },
+    );
+    const declaration = output.declarations[0];
+    const body = declaration?.kind === 'function' ? declaration.body : undefined;
+
+    expect(body).toMatchObject([
+      { declarations: [{ binding: { name: 'value' }, mutable: true }] },
+      {
+        consequent: { expression: { kind: 'assignment', right: { kind: 'await' } } },
+        kind: 'if',
+        otherwise: { expression: { kind: 'assignment', right: { kind: 'await' } } },
+      },
+      { kind: 'return' },
+    ]);
+    expect(pass.verifyIrModule(output)).toEqual({ kind: 'valid' });
+  });
+
   it('leaves a loop condition alone, because a loop re-evaluates it every iteration', () => {
     // Hoisting a loop condition would evaluate it once and turn a loop into a branch. The state
     // machine settles a loop condition inside the header instead, which is why this pass must not.

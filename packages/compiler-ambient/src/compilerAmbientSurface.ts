@@ -104,6 +104,7 @@ interface ReadonlyArray<T> {
   concat(...values: readonly T[][]): T[];
   every(predicate: (value: T, index: number) => boolean): boolean;
   filter(predicate: (value: T, index: number) => boolean): T[];
+  flatMap<U>(project: (value: T, index: number) => U[]): U[];
   find(predicate: (value: T, index: number) => boolean): T | undefined;
   findIndex(predicate: (value: T, index: number) => boolean): number;
   forEach(visit: (value: T, index: number) => void): void;
@@ -125,6 +126,7 @@ interface Array<T> {
   every(predicate: (value: T, index: number) => boolean): boolean;
   fill(value: T, start?: number, end?: number): T[];
   filter(predicate: (value: T, index: number) => boolean): T[];
+  flatMap<U>(project: (value: T, index: number) => U[]): U[];
   find(predicate: (value: T, index: number) => boolean): T | undefined;
   findIndex(predicate: (value: T, index: number) => boolean): number;
   forEach(visit: (value: T, index: number) => void): void;
