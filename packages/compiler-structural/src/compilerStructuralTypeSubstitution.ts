@@ -136,6 +136,17 @@ function resolveIrTypeStructuralSubstitutionInternal(
           `Substituted type parameter ${type.reference.binding.name} must be an unqualified bare reference`,
         );
       }
+      const replacement = context.substitutions.get(type.reference.binding.id)!;
+      if (
+        replacement.kind === 'named' &&
+        replacement.reference.kind === 'binding' &&
+        replacement.reference.binding.kind === 'typeParameter' &&
+        replacement.reference.binding.id === type.reference.binding.id &&
+        replacement.reference.path.length === 0 &&
+        replacement.typeArguments.length === 0
+      ) {
+        return { ...type, reference: { ...type.reference, path: [] }, typeArguments: [] };
+      }
       if (context.active.has(type.reference.binding.id)) {
         throw createCompilerStructuralTypeSubstitutionFailure(
           'cyclic-type-substitution',
@@ -145,7 +156,7 @@ function resolveIrTypeStructuralSubstitutionInternal(
       }
       const active = new Set(context.active).add(type.reference.binding.id);
       return resolveIrTypeStructuralSubstitutionInternal(
-        context.substitutions.get(type.reference.binding.id)!,
+        replacement,
         { ...context, active },
         path,
       );

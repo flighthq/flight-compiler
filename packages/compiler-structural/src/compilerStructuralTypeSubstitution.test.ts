@@ -105,7 +105,13 @@ describe('isCompilerStructuralTypeSubstitutionFailure', () => {
       () =>
         resolveIrTypeStructuralSubstitution(
           typeReference(value),
-          plan([{ parameter: value, type: typeReference(value) }]),
+          plan([
+            { parameter: value, type: typeReference(typeParameter('type-parameter:cycle', 'Cycle')) },
+            {
+              parameter: typeParameter('type-parameter:cycle', 'Cycle'),
+              type: typeReference(value),
+            },
+          ]),
         ),
     ];
     for (const attempt of attempts) {
@@ -221,7 +227,7 @@ describe('resolveIrTypeStructuralSubstitution', () => {
     expect(input).toEqual(snapshot);
   });
 
-  it('resolves substitution chains and rejects cyclic or qualified substituted references', () => {
+  it('resolves identity and substitution chains and rejects cyclic or qualified substituted references', () => {
     const first = typeParameter('type-parameter:first', 'First');
     const second = typeParameter('type-parameter:second', 'Second');
     const local = typeParameter('type-parameter:local', 'Local');
@@ -235,6 +241,9 @@ describe('resolveIrTypeStructuralSubstitution', () => {
         ]),
       ),
     ).toEqual(numberType);
+    expect(
+      resolveIrTypeStructuralSubstitution(typeReference(first), plan([{ parameter: first, type: typeReference(first) }])),
+    ).toEqual(typeReference(first));
     expect(
       resolveIrTypeStructuralSubstitution(
         {
