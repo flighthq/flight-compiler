@@ -524,6 +524,7 @@ const cppFlightRuntimeExternalSymbolBindings = [
     headers: ['cmath', 'flight/object.hpp', 'type_traits'],
     kind: 'runtime',
     members: [
+      { sourceMember: 'assign', targetName: 'flight::object_assign' },
       { sourceMember: 'entries', targetName: 'flight::object_entries' },
       { sourceMember: 'is', targetName: cppObjectIsTarget },
       { sourceMember: 'keys', targetName: 'flight::object_keys' },

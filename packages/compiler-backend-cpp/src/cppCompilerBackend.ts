@@ -1170,6 +1170,8 @@ function emitExpression(
       const optionalPropertyCall = emitOptionalPropertyCallExpressionCpp(expression, context);
       if (optionalPropertyCall) return optionalPropertyCall;
       if (isCppAmbientObjectMemberCallCpp(expression, 'assign')) {
+        const recordAssigned = emitRecordObjectAssignCpp(expression, context);
+        if (recordAssigned) return recordAssigned;
         const assigned = emitClosedCallableObjectAssignCpp(expression, context);
         if (!assigned) {
           emissionError(
@@ -3351,6 +3353,64 @@ function emitClosedCallableObjectAssignCpp(
       `${targetName}->${safeCppName(property.name)} = ${emitExpression(value, context, property.type)};`,
   );
   return `([&]() { auto ${targetName} = ${targetExpression}; ${writes.join(' ')} return ${targetName}; }())`;
+}
+
+function emitRecordObjectAssignCpp(
+  expression: Readonly<Extract<IrExpression, { kind: 'call' }>>,
+  context: EmitContext,
+): string | undefined {
+  const [target, ...sources] = expression.arguments;
+  if (!target || sources.length === 0) return undefined;
+  const targetRecord = getCppRecordTypeArgumentsCpp(getIrExpressionTypeEvidenceCpp(target, context), context, new Set());
+  if (!targetRecord) return undefined;
+  const sourceRecords = sources.map((source) =>
+    getCppRecordTypeArgumentsCpp(getIrExpressionTypeEvidenceCpp(source, context), context, new Set()),
+  );
+  if (
+    sourceRecords.some(
+      (record) =>
+        !record ||
+        normalizeCompilerStructuralValueCanonical(record.key) !==
+          normalizeCompilerStructuralValueCanonical(targetRecord.key) ||
+        normalizeCompilerStructuralValueCanonical(record.value) !==
+          normalizeCompilerStructuralValueCanonical(targetRecord.value),
+    )
+  ) {
+    return undefined;
+  }
+  if (getCppRuntimeProfile(context.options) === 'flight-cpp') {
+    addCppExternalBindingHeaders('Object', 'value', context);
+    return `flight::object_assign(${[target, ...sources].map((argument) => emitExpression(argument, context)).join(', ')})`;
+  }
+  const targetName = getGeneratedTargetName('object_assign_target', context);
+  const writes = sources.map((source) => {
+    const sourceName = getGeneratedTargetName('object_assign_source', context);
+    const entryName = getGeneratedTargetName('object_assign_entry', context);
+    return `const auto& ${sourceName} = ${emitExpression(source, context)}; for (const auto& ${entryName} : ${sourceName}) { ${targetName}[${entryName}.first] = ${entryName}.second; }`;
+  });
+  return `([&]() -> decltype(auto) { auto&& ${targetName} = ${emitExpression(target, context)}; ${writes.join(' ')} return (${targetName}); }())`;
+}
+
+function getCppRecordTypeArgumentsCpp(
+  type: Readonly<IrType> | undefined,
+  context: EmitContext,
+  resolvingAliases: ReadonlySet<string>,
+): Readonly<{ key: IrType; value: IrType }> | undefined {
+  if (!type || type.kind !== 'named') return undefined;
+  if (type.reference.kind === 'ambient') {
+    if (type.reference.name === 'Record' && type.typeArguments[0] && type.typeArguments[1]) {
+      return { key: type.typeArguments[0], value: type.typeArguments[1] };
+    }
+    if (type.reference.name === 'Readonly' && type.typeArguments.length === 1) {
+      return getCppRecordTypeArgumentsCpp(type.typeArguments[0], context, resolvingAliases);
+    }
+    return undefined;
+  }
+  if (resolvingAliases.has(type.reference.binding.id)) return undefined;
+  const alias = resolveCppTypeAliasTarget(type, context);
+  if (!alias) return undefined;
+  const nextResolvingAliases = new Set(resolvingAliases).add(type.reference.binding.id);
+  return getCppRecordTypeArgumentsCpp(alias, context, nextResolvingAliases);
 }
 
 function isCppFunctionExpressionCompatibleWithCallableObjectCpp(

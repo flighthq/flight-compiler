@@ -437,6 +437,9 @@ describe('getCompilerRuntimeExternalSymbolTargetCpp', () => {
   );
 
   it('maps portable service namespaces and functions through the semantic runtime profile', () => {
+    expect(getCompilerRuntimeExternalMemberTargetCpp('Object', 'assign', 'flight-cpp')).toBe(
+      'flight::object_assign',
+    );
     expect(getCompilerRuntimeExternalMemberTargetCpp('Object', 'entries', 'flight-cpp')).toBe(
       'flight::object_entries',
     );

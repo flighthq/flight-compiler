@@ -70,7 +70,7 @@ The Signals `connection`, `emitter`, and `safe` modules use `...args: Parameters
 
 - [ ] Add `flight/json.hpp` with `flight::Json::parse` and `flight::Json::stringify`. Stringification must accept the emitted replacer and indentation arguments. Choose and version a JSON value representation that can preserve null, boolean, number, string, array, and object values; do not substitute an unrelated opaque type for `unknown`.
 - [ ] Add `flight/number.hpp` with `flight::parse_int` and `flight::to_number`, plus the currently mapped integer predicate. Cover radix inference, leading whitespace/signs, partial parses, NaN, infinities, empty strings, and safe-integer boundaries.
-- [ ] Add `flight/object.hpp`, `flight::Object`, and generic `flight::object_keys` and `flight::object_entries`. Preserve the emitted key/value types and deterministic JavaScript-compatible key order where it is observable.
+- [ ] Add `flight/object.hpp`, `flight::Object`, and generic `flight::object_keys`, `flight::object_entries`, and `flight::object_assign`. Preserve the emitted key/value types, source-order overwrites, target identity, and deterministic JavaScript-compatible key order where it is observable.
 - [ ] Adopt the compiler's eventual portable `Record<PropertyKey, V>` storage contract. Prove string, number, and symbol key identity plus JavaScript-compatible iteration order in native tests; do not treat a `std::hash<flight::Symbol>` specialization by itself as completion.
 
 ## Internationalization
