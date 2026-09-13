@@ -24,6 +24,7 @@ export type CompilerRuntimeCapabilityName =
   | 'regexp'
   | 'set'
   | 'string'
+  | 'structural-proxy'
   | 'symbol'
   | 'task'
   | 'text-decoder'

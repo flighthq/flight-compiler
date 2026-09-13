@@ -1624,6 +1624,13 @@ function emitExpression(
         return emitUndefinedWithExpectedTypeCpp(expectedType, context);
       }
       if (
+        getCppRuntimeProfile(context.options) === 'flight-cpp' &&
+        expression.reference.kind === 'ambient' &&
+        expression.reference.name === 'Proxy'
+      ) {
+        emissionError(context, 'Proxy values require exact structural write-proxy construction');
+      }
+      if (
         expression.reference.kind === 'this' &&
         expectedType &&
         hasFlightReferenceRepresentationCpp(expectedType, context)
@@ -1666,6 +1673,8 @@ function emitExpression(
     case 'literal':
       return emitLiteralWithExpectedTypeCpp(expression.value, expectedType, context);
     case 'new': {
+      const structuralWriteProxy = emitCppStructuralWriteProxyConstructionCpp(expression, expectedType, context);
+      if (structuralWriteProxy) return structuralWriteProxy;
       const args = expression.arguments.map((argument, index) =>
         emitExpression(argument, context, getIrInvocationArgumentExpectedTypeCpp(expression, index)),
       );
@@ -6250,6 +6259,195 @@ function emitAssignmentTargetCpp(expression: Readonly<IrExpression>, context: Em
     return emitIdentifierReference(expression.reference, context);
   }
   return emitExpression(expression, context);
+}
+
+function emitCppStructuralWriteProxyConstructionCpp(
+  expression: Readonly<Extract<IrExpression, { kind: 'new' }>>,
+  expectedType: Readonly<IrType> | undefined,
+  context: EmitContext,
+): string | undefined {
+  if (
+    expression.callee.kind !== 'identifier' ||
+    expression.callee.reference.kind !== 'ambient' ||
+    expression.callee.reference.name !== 'Proxy'
+  ) {
+    return undefined;
+  }
+  if (getCppRuntimeProfile(context.options) !== 'flight-cpp') {
+    emissionError(context, 'Proxy construction requires flight-cpp structural write-proxy lowering');
+  }
+  const plan = getCppStructuralWriteProxyConstructionPlanCpp(expression, expectedType, context);
+  if (!plan) {
+    emissionError(context, 'Proxy construction requires an exact structural write-forwarding handler');
+  }
+  context.includes.add('flight/structural_ref.hpp');
+  const schema = emitCppStructuralRowSchemaTypeCpp(plan.row, context);
+  const target = emitExpression(plan.target, context, plan.type);
+  const key = emitExpression(plan.key, context);
+  const enabled = emitExpression(plan.enabled, context);
+  const report = emitExpression(plan.report, context);
+  return `flight::make_structural_write_proxy<${schema}>(${target}, ${key}, [=]() { if (${enabled}) { ${report}; } })`;
+}
+
+function getCppStructuralWriteProxyConstructionPlanCpp(
+  expression: Readonly<Extract<IrExpression, { kind: 'new' }>>,
+  expectedType: Readonly<IrType> | undefined,
+  context: EmitContext,
+):
+  | Readonly<{
+      enabled: IrExpression;
+      key: IrExpression;
+      report: Extract<IrExpression, { kind: 'call' }>;
+      row: CompilerCppStructuralRowPlan;
+      target: IrExpression;
+      type: IrType;
+    }>
+  | undefined {
+  if (expression.typeArguments.length !== 0 || expression.arguments.length !== 2 || !expectedType) return undefined;
+  const target = expression.arguments[0]!;
+  const handler = expression.arguments[1]!;
+  const type = getIrExpressionTypeEvidenceCpp(target, context);
+  if (!type) return undefined;
+  const row = context.referenceRepresentationPlanner.resolveStructuralRow(type, context.module);
+  const resultRow = context.referenceRepresentationPlanner.resolveStructuralRow(expectedType, context.module);
+  if (
+    !row ||
+    !resultRow ||
+    normalizeCompilerStructuralValueCanonical(row) !== normalizeCompilerStructuralValueCanonical(resultRow) ||
+    handler.kind !== 'object' ||
+    handler.members.length !== 1
+  ) {
+    return undefined;
+  }
+  const setMember = handler.members[0];
+  if (
+    setMember?.kind !== 'property' ||
+    setMember.name !== 'set' ||
+    setMember.value.kind !== 'function' ||
+    setMember.value.async ||
+    setMember.value.thisMode !== 'dynamic' ||
+    setMember.value.typeParameters.length !== 0 ||
+    setMember.value.parameters.length !== 3 ||
+    setMember.value.parameters.some((parameter) => parameter.optional || parameter.rest) ||
+    setMember.value.expression ||
+    setMember.value.body.length !== 3
+  ) {
+    return undefined;
+  }
+  const [targetParameter, keyParameter, valueParameter] = setMember.value.parameters;
+  const [guardStatement, forwardStatement, returnStatement] = setMember.value.body;
+  if (
+    !targetParameter ||
+    !keyParameter ||
+    !valueParameter ||
+    guardStatement?.kind !== 'if' ||
+    guardStatement.otherwise ||
+    guardStatement.condition.kind !== 'binary' ||
+    guardStatement.condition.operator !== '&&' ||
+    guardStatement.condition.left.kind !== 'binary' ||
+    guardStatement.condition.left.operator !== '===' ||
+    !isIrBindingIdentifierCpp(guardStatement.condition.left.left, keyParameter.binding.id) ||
+    guardStatement.condition.right.kind !== 'identifier' ||
+    guardStatement.condition.right.reference.kind !== 'binding' ||
+    guardStatement.condition.right.reference.binding.kind !== 'variable' ||
+    guardStatement.condition.right.reference.binding.scope !== 'module' ||
+    !isCppBooleanExpressionTypeCpp(guardStatement.condition.right, context) ||
+    guardStatement.consequent.kind !== 'block' ||
+    guardStatement.consequent.statements.length !== 1
+  ) {
+    return undefined;
+  }
+  const key = guardStatement.condition.left.right;
+  const reportStatement = guardStatement.consequent.statements[0];
+  if (
+    !isCppStructuralWriteProxyComputedKeyCpp(type, key, context) ||
+    reportStatement?.kind !== 'expression' ||
+    reportStatement.expression.kind !== 'call' ||
+    !reportStatement.expression.optional ||
+    reportStatement.expression.callee.kind !== 'identifier' ||
+    reportStatement.expression.callee.reference.kind !== 'binding' ||
+    reportStatement.expression.callee.reference.binding.kind !== 'variable' ||
+    reportStatement.expression.callee.reference.binding.scope !== 'module' ||
+    reportStatement.expression.typeArguments.length !== 0 ||
+    reportStatement.expression.arguments.length !== 1 ||
+    reportStatement.expression.arguments[0]?.kind !== 'literal' ||
+    reportStatement.expression.arguments[0].value !== 'runtime-slot' ||
+    forwardStatement?.kind !== 'expression' ||
+    forwardStatement.expression.kind !== 'assignment' ||
+    forwardStatement.expression.operator !== '=' ||
+    forwardStatement.expression.left.kind !== 'element' ||
+    forwardStatement.expression.left.optional ||
+    !isCppStructuralWriteProxyForwardTargetCpp(forwardStatement.expression.left.object, targetParameter.binding.id) ||
+    !isIrBindingIdentifierCpp(forwardStatement.expression.left.index, keyParameter.binding.id) ||
+    !isIrBindingIdentifierCpp(forwardStatement.expression.right, valueParameter.binding.id) ||
+    returnStatement?.kind !== 'return' ||
+    returnStatement.expression?.kind !== 'literal' ||
+    returnStatement.expression.value !== true
+  ) {
+    return undefined;
+  }
+  return {
+    enabled: guardStatement.condition.right,
+    key,
+    report: reportStatement.expression,
+    row,
+    target,
+    type,
+  };
+}
+
+function isCppBooleanExpressionTypeCpp(expression: Readonly<IrExpression>, context: EmitContext): boolean {
+  const type = getIrExpressionTypeEvidenceCpp(expression, context);
+  return type?.kind === 'primitive' && type.name === 'boolean';
+}
+
+function isCppStructuralWriteProxyComputedKeyCpp(
+  type: Readonly<IrType>,
+  key: Readonly<IrExpression>,
+  context: EmitContext,
+): boolean {
+  const keyReference = getIrExpressionValueNameReferenceCpp(key);
+  if (!keyReference) return false;
+  const keyName = getCppComputedPropertySourceName(keyReference, context);
+  const members = type.kind === 'intersection' ? type.types : [type];
+  const matches = members.flatMap(
+    (member) =>
+      context.referenceRepresentationPlanner
+        .resolveObjectShape(member, context.module)
+        ?.filter(
+          (property) =>
+            property.computedKey && getCppComputedPropertySourceName(property.computedKey, context) === keyName,
+        ) ?? [],
+  );
+  return matches.length === 1;
+}
+
+function isCppStructuralWriteProxyForwardTargetCpp(
+  expression: Readonly<IrExpression>,
+  targetBindingId: string,
+): boolean {
+  if (
+    expression.kind !== 'cast' ||
+    expression.type.kind !== 'named' ||
+    expression.type.reference.kind !== 'ambient' ||
+    expression.type.reference.name !== 'Record' ||
+    expression.type.typeArguments.length !== 2 ||
+    expression.type.typeArguments[0]?.kind !== 'named' ||
+    expression.type.typeArguments[0].reference.kind !== 'ambient' ||
+    expression.type.typeArguments[0].reference.name !== 'PropertyKey' ||
+    expression.type.typeArguments[0].typeArguments.length !== 0 ||
+    expression.type.typeArguments[1]?.kind !== 'unknown' ||
+    expression.type.typeArguments[1].source !== 'unknown'
+  ) {
+    return false;
+  }
+  const unknownTarget = expression.expression;
+  return (
+    unknownTarget.kind === 'cast' &&
+    unknownTarget.type.kind === 'unknown' &&
+    unknownTarget.type.source === 'unknown' &&
+    isIrBindingIdentifierCpp(unknownTarget.expression, targetBindingId)
+  );
 }
 
 function emitCppStructuralRowAssignment(

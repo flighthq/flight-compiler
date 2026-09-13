@@ -72,7 +72,7 @@ describe('createCompilerRuntimeExternalSymbolBindingPlanCpp', () => {
   it('elects semantic containers and strings as flight-cpp runtime capabilities', () => {
     const plan = createCompilerRuntimeExternalSymbolBindingPlanCpp('flight-cpp');
 
-    expect(plan.bindings).toHaveLength(78);
+    expect(plan.bindings).toHaveLength(79);
     expect(plan.bindings).toContainEqual({
       capability: 'array',
       externalSymbol: { sourceName: 'Array', space: 'type' },
@@ -101,6 +101,11 @@ describe('createCompilerRuntimeExternalSymbolBindingPlanCpp', () => {
     expect(plan.bindings).toContainEqual({
       capability: 'symbol',
       externalSymbol: { sourceName: 'Symbol', space: 'value' },
+      kind: 'runtime',
+    });
+    expect(plan.bindings).toContainEqual({
+      capability: 'structural-proxy',
+      externalSymbol: { sourceName: 'Proxy', space: 'value' },
       kind: 'runtime',
     });
     expect(plan.bindings).toContainEqual({

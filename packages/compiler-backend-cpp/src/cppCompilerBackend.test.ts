@@ -3752,6 +3752,83 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     );
   });
 
+  it('emits the exact structural Entity write proxy and refuses a handler with another trap', () => {
+    const types = ts.createSourceFile(
+      '/flight/packages/types/src/contract.ts',
+      `export interface Entity { [EntityRuntimeKey]: EntityRuntime | undefined; }
+       export interface EntityRuntime { binding: object | null; }
+       export type EntityRuntimeWriteGuard = (slot: 'runtime-slot') => void;
+       export const EntityRuntimeKey = Symbol.for('EntityRuntime');`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const source = (extraTrap: string) =>
+      ts.createSourceFile(
+        '/flight/packages/entity/src/guards.ts',
+        `import type { Entity, EntityRuntimeWriteGuard } from '@flighthq/types/contract';
+         import { EntityRuntimeKey } from '@flighthq/types/contract';
+         export function createGuardedEntity<Type extends object>(entity: Type & Entity): Type & Entity {
+           if (!_guardsEnabled || typeof Proxy === 'undefined') return entity;
+           return new Proxy(entity, {
+             ${extraTrap}
+             set(target, prop, value) {
+               if (prop === EntityRuntimeKey && _guardsEnabled) {
+                 _writeGuard?.('runtime-slot');
+               }
+               (target as unknown as Record<PropertyKey, unknown>)[prop] = value;
+               return true;
+             },
+           });
+         }
+         let _guardsEnabled = false;
+         let _writeGuard: EntityRuntimeWriteGuard | null = null;`,
+        ts.ScriptTarget.Latest,
+        true,
+      );
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          specifier: '@flighthq/types/contract',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/contract.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const lowerGuards = (extraTrap: string) =>
+      lowerTypeScriptSources(
+        [
+          { packageName: '@flighthq/types', sourceFile: types, upstreamDirectory: '/flight' },
+          { packageName: '@flighthq/entity', sourceFile: source(extraTrap), upstreamDirectory: '/flight' },
+        ],
+        moduleResolution,
+      ).map((result) => result.module);
+    const modules = lowerGuards('');
+    const emitted = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules,
+      options: { runtimeProfile: 'flight-cpp' },
+    }).emitModule(modules[1]!)[0]!.contents;
+
+    expect(emitted).toContain(
+      'flight::StructuralRef<flight::RowMerge<flight::RowOf<Type>, flight::RowOf<flighthq_types::Entity>>>',
+    );
+    expect(emitted).toContain(
+      'flight::make_structural_write_proxy<flight::RowMerge<flight::RowOf<Type>, flight::RowOf<flighthq_types::Entity>>>(entity, flighthq_types::entity_runtime_key, [=]()',
+    );
+    expect(emitted).toContain('return entity;');
+
+    const nonmatching = lowerGuards(
+      'get(target, prop) { return (target as unknown as Record<PropertyKey, unknown>)[prop]; },',
+    );
+    expect(() =>
+      createCppCompilerBackend().createEmissionSession!({
+        moduleResolution,
+        modules: nonmatching,
+        options: { runtimeProfile: 'flight-cpp' },
+      }).emitModule(nonmatching[1]!),
+    ).toThrow('Proxy construction requires an exact structural write-forwarding handler');
+  });
+
   it('uses ambient undefined as contextual evidence when clearing a computed optional slot', () => {
     const result = lower(
       'runtime-slot-reset.ts',

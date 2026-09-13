@@ -242,9 +242,7 @@ function getCppCompilerExternalBindings(
       sourceName: binding.sourceName.normalize('NFC'),
       space: binding.space,
       targetName: binding.targetName,
-      ...(binding.weakKeyPolicyTargetName
-        ? { weakKeyPolicyTargetName: binding.weakKeyPolicyTargetName }
-        : {}),
+      ...(binding.weakKeyPolicyTargetName ? { weakKeyPolicyTargetName: binding.weakKeyPolicyTargetName } : {}),
     };
   });
   const identities = new Set<string>();
@@ -638,6 +636,14 @@ const cppFlightRuntimeExternalSymbolBindings = [
     sourceName: 'Symbol',
     space: 'value',
     targetName: 'flight::Symbol',
+  },
+  {
+    capability: 'structural-proxy',
+    headers: ['flight/structural_ref.hpp'],
+    kind: 'runtime',
+    sourceName: 'Proxy',
+    space: 'value',
+    targetName: 'flight::make_structural_write_proxy',
   },
   {
     capability: 'text-decoder',
