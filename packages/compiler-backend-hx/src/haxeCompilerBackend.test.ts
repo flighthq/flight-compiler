@@ -236,6 +236,41 @@ describe('createHaxeCompilerBackend', () => {
     expect(() => session.emitModule(unavailable)).toThrow('all exports require Haxe module-facade lowering');
   });
 
+  it('isolates a valid star facade from an unrelated ambiguous barrel', () => {
+    const target = lower('target.ts', 'export function value(): number { return 1; }').module;
+    const valid = lower('valid.ts', "export * from './target';").module;
+    const first = lower('first.ts', 'export const collision: number = 1;').module;
+    const second = lower('second.ts', 'export const collision: number = 2;').module;
+    const ambiguous = lower('ambiguous.ts', "export * from './first'; export * from './second';").module;
+    const session = createHaxeCompilerBackend().createEmissionSession!({
+      moduleResolution: {
+        edges: [
+          {
+            importer: { name: valid.name, packageName: valid.packageName, source: valid.source },
+            specifier: './target',
+            target: { packageName: target.packageName, source: target.source },
+          },
+          {
+            importer: { name: ambiguous.name, packageName: ambiguous.packageName, source: ambiguous.source },
+            specifier: './first',
+            target: { packageName: first.packageName, source: first.source },
+          },
+          {
+            importer: { name: ambiguous.name, packageName: ambiguous.packageName, source: ambiguous.source },
+            specifier: './second',
+            target: { packageName: second.packageName, source: second.source },
+          },
+        ],
+        schema: 'flight-compiler-module-resolution/1',
+      },
+      modules: [ambiguous, first, second, target, valid],
+      options: {},
+    });
+
+    expect(session.emitModule(valid)[0]!.contents).toContain('return flighthq.math.Target.value();');
+    expect(() => session.emitModule(ambiguous)).toThrow('all exports require Haxe module-facade lowering');
+  });
+
   it('uses imported-name routes for value re-export forwarding', () => {
     const helper = lower('helper.ts', 'export function helper(): number { return 1; }').module;
     const facade = lower('facade.ts', "export { helper } from './helper';").module;

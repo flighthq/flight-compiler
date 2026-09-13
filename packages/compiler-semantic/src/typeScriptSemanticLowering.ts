@@ -3045,7 +3045,12 @@ function lowerConcreteTypeScriptConditionalAliasReference(
     new Map(),
   );
   if (!substitutions) return undefined;
-  return lowerConcreteTypeScriptConditionalTypeEvidence(declaration.type, context, new Set([symbol]), substitutions);
+  try {
+    return lowerConcreteTypeScriptConditionalTypeEvidence(declaration.type, context, new Set([symbol]), substitutions);
+  } catch (error) {
+    if (isUnsupportedSyntaxFailure(error)) return undefined;
+    throw error;
+  }
 }
 
 function lowerOpenTypeScriptConditionalFacetAliasReference(
@@ -4208,12 +4213,18 @@ function lowerConcreteTypeScriptMappedAliasReference(
   const symbol = unresolved ? (resolveTypeBindingAliasTarget(unresolved, context) ?? unresolved) : undefined;
   const declaration = symbol?.declarations?.find(ts.isTypeAliasDeclaration);
   if (!declaration || !ts.isMappedTypeNode(declaration.type)) return undefined;
-  const properties = lowerTypeScriptCheckerObjectProperties(
-    context.checker.getTypeFromTypeNode(node),
-    context,
-    0,
-    declaration.type,
-  );
+  let properties: readonly IrObjectTypeProperty[] | undefined;
+  try {
+    properties = lowerTypeScriptCheckerObjectProperties(
+      context.checker.getTypeFromTypeNode(node),
+      context,
+      0,
+      declaration.type,
+    );
+  } catch (error) {
+    if (isUnsupportedSyntaxFailure(error)) return undefined;
+    throw error;
+  }
   return properties ? { kind: 'object', properties } : undefined;
 }
 

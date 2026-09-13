@@ -1324,6 +1324,53 @@ describe('lowerTypeScriptSource', () => {
     );
   });
 
+  it('preserves imported mapped and conditional helpers instantiated with a consumer type parameter', () => {
+    const helper = ts.createSourceFile(
+      '/flight/packages/types/src/generic-helpers.ts',
+      `export type MethodsOf<Value> = { [Key in keyof Value as Value[Key] extends (...args: any) => any ? Key : never]: Value[Key] };
+       export type PartialNode<Value> = { data?: Partial<Value extends { data: infer Data } ? Data : never> } & Partial<Omit<Value, 'data'>>;`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const consumer = ts.createSourceFile(
+      '/flight/packages/node/src/node.ts',
+      `import type { MethodsOf, PartialNode } from '@flight/types';
+       interface Runtime<Value> { create(value: Value): Value; }
+       export function create<Value extends { data: object }>(
+         obj?: Readonly<PartialNode<Value>>,
+         methods?: Readonly<Partial<MethodsOf<Runtime<Value>>>>,
+       ): void { void obj; void methods; }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const [, result] = lowerTypeScriptSources(
+      [
+        { packageName: '@flight/types', sourceFile: helper, upstreamDirectory: '/flight' },
+        { packageName: '@flight/node', sourceFile: consumer, upstreamDirectory: '/flight' },
+      ],
+      {
+        edges: [
+          {
+            importer: {
+              name: 'node',
+              packageName: '@flight/node',
+              source: 'packages/node/src/node.ts',
+            },
+            importedNames: ['MethodsOf', 'PartialNode'],
+            specifier: '@flight/types',
+            target: { packageName: '@flight/types', source: 'packages/types/src/generic-helpers.ts' },
+          },
+        ],
+        schema: 'flight-compiler-module-resolution/1',
+      },
+    );
+
+    expect(result!.diagnostics).toEqual([]);
+    expect(result!.module.declarations).toContainEqual(
+      expect.objectContaining({ binding: expect.objectContaining({ name: 'create' }), kind: 'function' }),
+    );
+  });
+
   it('materializes the concrete result of ReturnType callable utility references', () => {
     const result = lower(
       'return-type.ts',

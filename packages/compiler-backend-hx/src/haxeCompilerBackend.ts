@@ -125,8 +125,15 @@ interface HaxeControlFlowLabel {
 export function createHaxeCompilerBackend(): CompilerBackend<HaxeCompilerBackendOptions> {
   return {
     createEmissionSession({ moduleResolution, modules, options }) {
-      const moduleFacade =
-        options.emissionMode === 'extern' ? undefined : createCompilerModuleFacadePlanHaxe(modules, moduleResolution);
+      const moduleFacades = new Map<string, CompilerModuleFacadePlan | undefined>();
+      const getModuleFacade = (module: Readonly<IrModule>): CompilerModuleFacadePlan | undefined => {
+        if (options.emissionMode === 'extern') return undefined;
+        const key = getHaxeCompilerModuleKey(module);
+        if (!moduleFacades.has(key)) {
+          moduleFacades.set(key, createCompilerModuleFacadePlanHaxe(modules, moduleResolution, module));
+        }
+        return moduleFacades.get(key);
+      };
       const ambientUtilityHeritageBindingIds = new Set(
         modules.flatMap((module) => [...createAmbientUtilityHeritageTargetsHaxe(module).keys()]),
       );
@@ -144,7 +151,7 @@ export function createHaxeCompilerBackend(): CompilerBackend<HaxeCompilerBackend
                   modules,
                   moduleResolution,
                   options,
-                  moduleFacade,
+                  getModuleFacade(module),
                   interfaceInheritancePass,
                 ),
               ];
@@ -160,7 +167,7 @@ export function createHaxeCompilerBackend(): CompilerBackend<HaxeCompilerBackend
               modules,
               moduleResolution,
               options,
-              createCompilerModuleFacadePlanHaxe(modules, moduleResolution),
+              createCompilerModuleFacadePlanHaxe(modules, moduleResolution, module),
             ),
           ];
     },
@@ -2316,6 +2323,7 @@ function emissionError(context: EmitContext, message: string): never {
 function createCompilerModuleFacadePlanHaxe(
   modules: readonly Readonly<IrModule>[],
   moduleResolution: Readonly<CompilerModuleResolutionPlan> | undefined,
+  entryModule: Readonly<IrModule>,
 ): CompilerModuleFacadePlan | undefined {
   const facadeModules = modules.map((module) => ({
     ...module,
@@ -2325,21 +2333,28 @@ function createCompilerModuleFacadePlanHaxe(
   const invalidModuleKeys = new Set<string>();
   const requiredTargetsByModule = new Map<string, Set<string>>();
   for (const module of facadeModules) {
+    const exportedImportBindingIds = new Set(
+      module.exports.flatMap((exported) =>
+        exported.kind === 'local' && exported.binding.kind === 'import' ? [exported.binding.id] : [],
+      ),
+    );
     const requests: { importedName?: string; required: boolean; specifier: string }[] = [
       ...module.imports.flatMap((imported) =>
-        imported.bindings.length === 0
-          ? [{ required: false, specifier: imported.specifier }]
-          : imported.bindings.map((binding) => ({
-              importedName: binding.imported === '*' || binding.imported === 'default' ? undefined : binding.imported,
-              required: false,
-              specifier: imported.specifier,
-            })),
+        imported.bindings
+          .filter((binding) => exportedImportBindingIds.has(binding.binding.id))
+          .map((binding) => ({
+            ...(binding.imported === '*' || binding.imported === 'default'
+              ? {}
+              : { importedName: binding.imported }),
+            required: true,
+            specifier: imported.specifier,
+          })),
       ),
       ...module.exports.flatMap((exported) =>
         'specifier' in exported
           ? [
               {
-                importedName: exported.kind === 'reexport' ? exported.imported : undefined,
+                ...(exported.kind === 'reexport' ? { importedName: exported.imported } : {}),
                 required: true,
                 specifier: exported.specifier,
               },
@@ -2383,10 +2398,27 @@ function createCompilerModuleFacadePlanHaxe(
     }
   }
   try {
-    const plannedDependencies = dependencies.filter(
+    const validDependencies = dependencies.filter(
       (dependency) =>
         !invalidModuleKeys.has(getHaxeCompilerModuleKey(dependency.importer)) &&
         !invalidModuleKeys.has(getHaxeCompilerModuleKey(dependency.target)),
+    );
+    const entryKey = getHaxeCompilerModuleKey(entryModule);
+    if (invalidModuleKeys.has(entryKey)) return undefined;
+    const reachableModuleKeys = new Set([entryKey]);
+    let reachableCount = -1;
+    while (reachableCount !== reachableModuleKeys.size) {
+      reachableCount = reachableModuleKeys.size;
+      for (const dependency of validDependencies) {
+        if (reachableModuleKeys.has(getHaxeCompilerModuleKey(dependency.importer))) {
+          reachableModuleKeys.add(getHaxeCompilerModuleKey(dependency.target));
+        }
+      }
+    }
+    const plannedDependencies = validDependencies.filter(
+      (dependency) =>
+        reachableModuleKeys.has(getHaxeCompilerModuleKey(dependency.importer)) &&
+        reachableModuleKeys.has(getHaxeCompilerModuleKey(dependency.target)),
     );
     const linkedSpecifiers = new Map<string, Set<string>>();
     for (const dependency of plannedDependencies) {
@@ -2396,7 +2428,7 @@ function createCompilerModuleFacadePlanHaxe(
       else linkedSpecifiers.set(key, new Set([dependency.specifier]));
     }
     const plannedModules = facadeModules
-      .filter((module) => !invalidModuleKeys.has(getHaxeCompilerModuleKey(module)))
+      .filter((module) => reachableModuleKeys.has(getHaxeCompilerModuleKey(module)))
       .map((module) => {
         const key = `${module.packageName}\0${module.source}`;
         const specifiers = linkedSpecifiers.get(key) ?? new Set<string>();
@@ -2404,7 +2436,7 @@ function createCompilerModuleFacadePlanHaxe(
       });
     const evaluation = createCompilerModuleEvaluationPlan({
       dependencies: plannedDependencies,
-      entries: plannedModules.map(({ name, packageName, source }) => ({ name, packageName, source })),
+      entries: [{ name: entryModule.name, packageName: entryModule.packageName, source: entryModule.source }],
       modules: plannedModules,
     });
     return createCompilerModuleFacadePlan({ evaluation, modules: plannedModules });
