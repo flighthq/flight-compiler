@@ -118,6 +118,7 @@ No current refusal in this group has a sound compiler-only relaxation: accepting
 
 These are not portable runtime globals and must not become unconditional `flight-cpp` core bindings. A host adapter or consuming application supplies a versioned `flight-cpp-external-bindings/1` manifest and the named native headers.
 
+- [ ] Provide a timing-host value binding for `performance` with a callable `now` member returning monotonic milliseconds. `@flighthq/log` reaches `performance.now()` behind a `typeof performance !== 'undefined'` fallback to `Date.now()`; native emission still requires an explicit binding because the ambient value is reachable. The binding must state the native header and qualified value/member names and define its time origin and monotonicity. Do not rewrite it to `flight::Date::now`: wall-clock time can move backward and is not the source contract.
 - [ ] Provide a Node/tooling host manifest for `process`, including the members reached by Flight's shell and tool-pipeline packages.
 - [ ] Provide a browser/media host manifest for `navigator`, `Permissions`, `PermissionDescriptor`, `MediaDevices`, `MediaStream`, and `MediaStreamTrack`.
 - [ ] Extend the external-binding ABI with an explicit weak-key identity/hash/equality guarantee before admitting native `CanvasImageSource`, `GPUShaderModule`, or similar handles as `WeakMap` keys. Ownership and nullability evidence alone do not prove compatibility with the emitted key container.
