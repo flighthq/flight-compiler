@@ -609,6 +609,8 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
           const condition = expression.operator === '||=' ? `${left} == ""` : `${left} != ""`;
           return `{ if (${condition}) ${left} = ${right}; ${left}; }`;
         }
+        const runtimeAssignment = emitJavaScriptAssignmentOperatorHaxe(expression, context);
+        if (runtimeAssignment) return runtimeAssignment;
         emissionError(
           context,
           `operator ${expression.operator} on ${expression.semantics.left.flow} requires Haxe semantic lowering`,
