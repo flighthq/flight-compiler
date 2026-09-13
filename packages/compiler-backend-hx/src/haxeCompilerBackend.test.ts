@@ -258,6 +258,34 @@ describe('createHaxeCompilerBackend', () => {
     expect(output).toContain('return flighthq.math.Helper.helper();');
   });
 
+  it('forwards an explicit value re-export through an intermediate star barrel', () => {
+    const helper = lower('helper.ts', 'export function helper(): number { return 1; }').module;
+    const barrel = lower('barrel.ts', "export * from './helper';").module;
+    const facade = lower('facade.ts', "export { helper } from './barrel';").module;
+    const session = createHaxeCompilerBackend().createEmissionSession!({
+      moduleResolution: {
+        edges: [
+          {
+            importer: { name: barrel.name, packageName: barrel.packageName, source: barrel.source },
+            specifier: './helper',
+            target: { packageName: helper.packageName, source: helper.source },
+          },
+          {
+            importer: { name: facade.name, packageName: facade.packageName, source: facade.source },
+            importedNames: ['helper'],
+            specifier: './barrel',
+            target: { packageName: barrel.packageName, source: barrel.source },
+          },
+        ],
+        schema: 'flight-compiler-module-resolution/1',
+      },
+      modules: [barrel, facade, helper],
+      options: {},
+    });
+
+    expect(session.emitModule(facade)[0]!.contents).toContain('return flighthq.math.Helper.helper();');
+  });
+
   it('refuses mutable, namespace, and ambiguous star facade values', () => {
     const mutable = lower('mutable.ts', 'export let value: number = 1;').module;
     const mutableBarrel = lower('mutable-barrel.ts', "export * from './mutable';").module;
@@ -452,6 +480,15 @@ describe('emitIrModuleHaxe', () => {
     expect(emitIrModuleHaxe(result.module, { runtimeModule: 'flight._hx._runtime' }).contents).toContain(
       'new flight._hx._runtime._IntlSegmenter("en")',
     );
+  });
+
+  it('represents dependent callable parameter packs as dynamic Haxe rest elements', () => {
+    const result = lower(
+      'dependent-parameters.ts',
+      'export function emit<T extends (...args: any[]) => void>(slot: T, ...args: Parameters<T>): void { slot(...args); }',
+    );
+
+    expect(emitIrModuleHaxe(result.module).contents).toContain('...args:Dynamic');
   });
 
   it('elects C-style for lowering without lowering native Haxe default parameters', () => {
@@ -1740,6 +1777,29 @@ describe('emitIrModuleHaxe expression coverage', () => {
     expect(output).toContain('cast(record, Dynamic)');
   });
 
+  it('uses the lowered storage field for computed symbol property reads and writes', () => {
+    const result = lower(
+      'computed-symbol-property.ts',
+      `const RuntimeKey = Symbol.for('Runtime');
+       interface Entity { [RuntimeKey]: number | undefined; }
+       export function read(entity: Entity): number | undefined { return entity[RuntimeKey]; }
+       export function write(entity: Entity, value: number): void { entity[RuntimeKey] = value; }`,
+    );
+    const output = emitIrModuleHaxe(result.module, { runtimeModule: 'flight._hx._runtime' }).contents;
+
+    expect(output).toContain('return entity.RuntimeKey;');
+    expect(output).toContain('entity.RuntimeKey = value;');
+  });
+
+  it('retains reflective access for a dynamically computed object key', () => {
+    const result = lower(
+      'computed-dynamic-property.ts',
+      'export function read(record: Record<string, number>, key: string): number { return record[key]; }',
+    );
+
+    expect(emitIrModuleHaxe(result.module).contents).toContain('Reflect.field(record, Std.string(key))');
+  });
+
   it('emits untyped cast when target type is array with element type', () => {
     const result = lower(
       'cast-array.ts',
@@ -2302,12 +2362,14 @@ describe('emitIrModuleHaxe ambient member coverage', () => {
     const result = lower(
       'runtime-members.ts',
       `export function keys(value: object): string[] { return Object.keys(value); }
-       export function replace(value: string): string { return value.replace('a', 'b'); }`,
+       export function replace(value: string): string { return value.replace('a', 'b'); }
+       export function fixed(value: number): string { return value.toFixed(2); }`,
     );
     const output = emitIrModuleHaxe(result.module, { runtimeModule: 'flight._hx._runtime' }).contents;
 
     expect(output).toContain('flight._hx._runtime._Object.keys(value)');
     expect(output).toContain('flight._hx._runtime._StringTools.replaceFirst(value, "a", "b")');
+    expect(output).toContain('flight._hx._runtime._Number.toFixed(value, 2)');
   });
 
   it('emits array.reduce as Lambda.fold with exchanged closure', () => {
@@ -4181,6 +4243,20 @@ describe('emitIrModuleHaxe switch fallthrough detection', () => {
 
     expect(output).toContain('switch');
     expect(output).toContain('"one"');
+  });
+
+  it('trusts normalized abrupt completion nested in a switch-case block', () => {
+    const result = lower(
+      'switch-block-return-hx.ts',
+      `export function label(x: number): string {
+        switch (x) {
+          case 1: { return "one"; }
+          default: { return "other"; }
+        }
+      }`,
+    );
+
+    expect(emitIrModuleHaxe(result.module).contents).toContain('return "one";');
   });
 });
 

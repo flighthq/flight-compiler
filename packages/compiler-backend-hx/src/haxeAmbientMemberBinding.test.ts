@@ -83,7 +83,7 @@ describe('getCompilerHaxeAmbientMemberBinding', () => {
 
   it('answers nothing for a member with no agreed spelling, so emission refuses rather than guesses', () => {
     expect(getCompilerHaxeAmbientMemberBinding({ name: 'at', receiver: 'array' })).toBeUndefined();
-    expect(getCompilerHaxeAmbientMemberBinding({ name: 'toFixed', receiver: 'number' })).toBeUndefined();
+    expect(getCompilerHaxeAmbientMemberBinding({ name: 'toPrecision', receiver: 'number' })).toBeUndefined();
     expect(getCompilerHaxeAmbientMemberBinding({ name: 'length', receiver: 'number' })).toBeUndefined();
   });
 });

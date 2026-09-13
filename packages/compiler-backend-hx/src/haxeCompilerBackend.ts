@@ -743,6 +743,10 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
       return `(${emitExpression(expression.condition, context)} ? ${emitExpression(expression.whenTrue, context)} : ${emitExpression(expression.whenFalse, context)})`;
     case 'element':
       if (expression.semantics.receivers.includes('object')) {
+        const storageName = getComputedObjectStorageNameHaxe(expression);
+        if (storageName) {
+          return `${emitExpression(expression.object, context)}${expression.optional ? '?.' : '.'}${storageName}`;
+        }
         if (expression.optional) {
           emissionError(context, 'optional computed object access requires reflective null-safe lowering');
         }
@@ -902,6 +906,15 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
     case 'undefinedDefault':
       return `(${emitExpression(expression.value, context)} ?? ${emitExpression(expression.fallback, context)})`;
   }
+}
+
+function getComputedObjectStorageNameHaxe(
+  expression: Readonly<Extract<IrExpression, { kind: 'element' }>>,
+): string | undefined {
+  const index = expression.index;
+  return expression.semantics.key === 'symbol' && index.kind === 'identifier' && index.reference.kind === 'binding'
+    ? safeHaxeName(index.reference.binding.name)
+    : undefined;
 }
 
 function emitCallArgumentsHaxe(
@@ -1129,6 +1142,26 @@ function emitValueReexportForwardingHaxe(
   modulePath: string,
   context: EmitContext,
 ): string[] {
+  const facadeSlot = context.moduleFacadeSlots.find(
+    (slot) =>
+      slot.lane === 'value' &&
+      slot.exportName === exported.exported &&
+      slot.source.kind === 'module-binding' &&
+      slot.source.specifier === exported.specifier &&
+      slot.source.imported === exported.imported,
+  );
+  if (facadeSlot) {
+    const target = getModuleFacadeBindingTargetHaxe(facadeSlot, context);
+    if (target.declaration.kind === 'function') {
+      return emitFunctionReexportForwardingHaxe(
+        safeHaxeName(exported.exported),
+        getSourceBindingTargetNameHaxe(target.module, target.binding, context),
+        target.declaration,
+        getHaxeModulePath(target.module, context.options),
+        context,
+      );
+    }
+  }
   const sourceModule = getHaxeResolvedImportModule(exported.specifier, context, exported.imported);
   if (!sourceModule) {
     emissionError(
@@ -1394,7 +1427,10 @@ function emitParameters(parameters: readonly IrParameter[], context: EmitContext
   return parameters
     .map((parameter) => {
       const name = getBindingTargetNameHaxe(parameter.binding, context);
-      const type = emitType(parameter.type, context);
+      // Haxe represents a rest pack as one element type. A dependent TypeScript `Parameters<T>`
+      // cannot name that element until T is instantiated, so keep the pack dynamically represented;
+      // its semantic evidence still preserves the callable relationship for targets that specialize it.
+      const type = parameter.dependentCallablePack ? 'Dynamic' : emitType(parameter.type, context);
       if (type === 'Array<Dynamic>') context.dynamicBindingIds.add(parameter.binding.id);
       if (parameter.rest) {
         const elementType = parameter.type.kind === 'array' ? emitType(parameter.type.element, context) : type;
@@ -1494,7 +1530,6 @@ function emitStatement(statement: Readonly<IrStatement>, context: EmitContext): 
       if (statement.label) {
         emissionError(context, `labeled switch ${statement.label.name} requires Haxe switch completion lowering`);
       }
-      assertNoSwitchFallthrough(statement, context);
       const lines = [`switch (${emitExpression(statement.expression, context)}) {`];
       for (const clause of statement.cases) {
         lines.push(`  ${clause.expression ? `case ${emitExpression(clause.expression, context)}` : 'default'}:`);
@@ -2344,15 +2379,6 @@ function hasMatchingOperatorDomains(
     semantics.left.flow === semantics.result &&
     supported.includes(semantics.left.flow)
   );
-}
-
-function assertNoSwitchFallthrough(statement: Extract<IrStatement, { kind: 'switch' }>, context: EmitContext): void {
-  statement.cases.slice(0, -1).forEach((clause) => {
-    const last = clause.statements.at(-1);
-    if (!last || (last.kind !== 'break' && last.kind !== 'return' && last.kind !== 'throw')) {
-      emissionError(context, 'switch fallthrough requires control-flow lowering before Haxe emission');
-    }
-  });
 }
 
 function assertStructuralObjectCompatibilityHaxe(

@@ -15,6 +15,7 @@ export function getCompilerHaxeAmbientMemberBinding(
 
 const haxeAmbientMemberBindings: Readonly<Record<string, CompilerHaxeAmbientMemberBinding>> = {
   'array.concat': { kind: 'method', targetName: 'concat' },
+  'array.copyWithin': { kind: 'runtimeCall', targetName: '_Array.copyWithin' },
   'array.every': { kind: 'staticCall', targetPath: 'Lambda.foreach' },
   'array.filter': { kind: 'method', targetName: 'filter' },
   'array.find': { kind: 'staticCall', targetPath: 'Lambda.find' },
@@ -46,6 +47,7 @@ const haxeAmbientMemberBindings: Readonly<Record<string, CompilerHaxeAmbientMemb
   'date.toISOString': { kind: 'method', targetName: 'toISOString' },
   'date.toString': { kind: 'method', targetName: 'toString' },
   'error.message': { kind: 'property', targetName: 'message' },
+  'number.toFixed': { kind: 'runtimeCall', targetName: '_Number.toFixed' },
   'number.toString': { kind: 'staticCall', targetPath: 'Std.string' },
   'map.delete': { kind: 'method', targetName: 'delete' },
   'map.clear': { kind: 'method', targetName: 'clear' },
