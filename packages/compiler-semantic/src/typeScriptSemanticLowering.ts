@@ -5904,6 +5904,10 @@ function getTypeScriptCheckerTypeEvidence(
   lexicalSite?: ts.Node,
 ): Readonly<IrType> | undefined {
   const checker = context.checker;
+  if (depth > 4 && !(type.flags & ts.TypeFlags.TypeParameter)) {
+    const named = getTypeScriptCheckerNamedTypeEvidence(type, context, depth, lexicalSite);
+    if (named) return named;
+  }
   if (depth > 4) return undefined;
   // A raw checker type parameter has no call-site instantiation to carry and may belong to a
   // different generic declaration than the expression currently being lowered. Authored references
@@ -5928,9 +5932,16 @@ function getTypeScriptCheckerTypeEvidence(
   }
   if (type.isUnion()) {
     const symbol = type.aliasSymbol ?? type.getSymbol();
-    if (symbol?.flags && symbol.flags & ts.SymbolFlags.Enum) {
+    const isEnum = Boolean(symbol?.flags && symbol.flags & ts.SymbolFlags.Enum);
+    if (isEnum || type.aliasSymbol) {
       const named = getTypeScriptCheckerNamedTypeEvidence(type, context, depth, lexicalSite);
-      if (named) return named;
+      if (
+        named &&
+        (isEnum ||
+          (named.kind === 'named' && named.reference.kind === 'binding' && named.reference.binding.kind === 'import'))
+      ) {
+        return named;
+      }
     }
     if (structural && type.types.every((member) => member.flags & ts.TypeFlags.BooleanLiteral)) {
       return { kind: 'primitive', name: 'boolean' };

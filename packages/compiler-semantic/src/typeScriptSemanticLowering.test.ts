@@ -5112,9 +5112,12 @@ describe('lowerTypeScriptSource', () => {
       '/flight/packages/types/src/Diagnostic.ts',
       `export const Severity = { Error: 'Error', Warning: 'Warning' } as const;
        export type Severity = (typeof Severity)[keyof typeof Severity];
+       export type Outcome = { readonly ok: true } | { readonly ok: false };
        export enum Level { Error, Warning }
        export interface Diagnostic { severity: Severity; level: Level; }
-       export function getLevel(): Level { return Level.Error; }`,
+       interface Runtime { pending: Promise<Outcome> | null; }
+       export function getLevel(): Level { return Level.Error; }
+       export function getRuntime(): Runtime | undefined { return undefined; }`,
       ts.ScriptTarget.Latest,
       true,
     );
@@ -5126,11 +5129,12 @@ describe('lowerTypeScriptSource', () => {
     );
     const consumer = ts.createSourceFile(
       '/flight/packages/app/src/format.ts',
-      `import { getLevel } from '@flight/types/contract';
+      `import { getLevel, getRuntime } from '@flight/types/contract';
        import type { Diagnostic } from '@flight/types/contract';
        export function format(value: Readonly<Diagnostic>): string {
          const { severity, level } = value;
          const current = getLevel();
+         const runtime = getRuntime();
          return severity + String(level) + String(current);
        }`,
       ts.ScriptTarget.Latest,
@@ -5162,7 +5166,9 @@ describe('lowerTypeScriptSource', () => {
       .find((binding) => binding.imported === 'Level');
 
     expect(result.diagnostics).toEqual([]);
-    expect(imports).toEqual(expect.arrayContaining(['Diagnostic', 'Severity', 'Level', 'getLevel']));
+    expect(imports).toEqual(
+      expect.arrayContaining(['Diagnostic', 'Severity', 'Outcome', 'Level', 'getLevel', 'getRuntime']),
+    );
     expect(imports.filter((imported) => imported === 'Severity')).toHaveLength(1);
     expect(imports.filter((imported) => imported === 'Level')).toHaveLength(1);
     expect(current).toMatchObject({
@@ -5175,6 +5181,9 @@ describe('lowerTypeScriptSource', () => {
         },
       ],
     });
+    const serialized = JSON.stringify(result.module);
+    expect(serialized).toContain('"name":"Promise"');
+    expect(serialized).not.toMatch(/"name":"(?:catch|finally|then)"/u);
   });
   it('names the union member a reference was narrowed to, and leaves an unnarrowed one open', () => {
     const result = lower(
