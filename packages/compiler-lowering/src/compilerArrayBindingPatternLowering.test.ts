@@ -1243,7 +1243,7 @@ describe('createCompilerLoweringPassArrayBindingPattern', () => {
     expect(pass.verifyIrModule(output)).toEqual({ kind: 'valid' });
   });
 
-  it('refuses array pattern variables without any type information', () => {
+  it('normalizes array pattern variables without type information through opaque indexed elements', () => {
     const module = lower(
       'no-type.ts',
       `
@@ -1263,10 +1263,19 @@ describe('createCompilerLoweringPassArrayBindingPattern', () => {
     if (!patternVar || !('pattern' in patternVar) || patternVar.pattern.kind !== 'array') {
       throw new Error('Expected array pattern');
     }
+    const element = patternVar.pattern.elements[0];
+    if (!element) throw new Error('Expected array pattern element');
     delete (patternVar.pattern as unknown as Record<string, unknown>).type;
+    delete (element.pattern as unknown as Record<string, unknown>).type;
     delete (patternVar as unknown as Record<string, unknown>).type;
-    const run = () => pass.lowerIrModule(injected);
-    expectLoweringFailure(run, 'array binding lowering requires a statically known tuple type');
+    const output = pass.lowerIrModule(injected);
+    const declarations = getVariableStatement(getFunctionDeclaration(output, 'read').body[0]).declarations.map(
+      getNamedVariable,
+    );
+    expect(declarations).toMatchObject([
+      { binding: { name: 'arrayPatternValue' }, type: { kind: 'unknown' } },
+      { binding: { name: 'x' }, initializer: { kind: 'element' }, type: { kind: 'unknown' } },
+    ]);
   });
 
   it('prepends empty lowered variables as a no-op for empty iteration patterns', () => {
@@ -1327,10 +1336,6 @@ describe('createCompilerLoweringPassArrayBindingPattern', () => {
       source: 'export function read<T>(values: [T]): T { const [value = undefined as T]: [T] = values; return value; }',
     },
     {
-      reason: 'forOf array binding lowering requires a statically known element type',
-      source: 'export function read(values: any): void { for (const [value] of values) value; }',
-    },
-    {
       reason: 'async forOf array bindings require task-aware iteration destructuring lowering',
       source:
         'export async function read(values: Array<[number]>): Promise<void> { for await (const [value] of values) value; }',
@@ -1350,6 +1355,25 @@ describe('createCompilerLoweringPassArrayBindingPattern', () => {
 
     expectLoweringFailure(run, reason);
     expectLoweringFailure(run, reason);
+  });
+
+  it('normalizes an opaque for-of row into a dynamic tuple-shaped iteration value', () => {
+    const pass = createCompilerLoweringPassArrayBindingPattern();
+    const output = lowerIrModuleWithCompilerPasses(
+      lower('opaque-row.ts', 'export function read(values: any): void { for (const [value] of values) value; }'),
+      [pass],
+    );
+    const loop = getFunctionDeclaration(output, 'read').body[0];
+
+    expect(loop).toMatchObject({
+      kind: 'forOf',
+      variable: { binding: { name: 'arrayPatternValue' }, type: { kind: 'tuple' } },
+    });
+    if (loop?.kind !== 'forOf' || loop.body.kind !== 'block') throw new Error('Expected lowered for-of body');
+    expect(loop.body.statements[0]).toMatchObject({
+      declarations: [{ binding: { name: 'value' }, type: { kind: 'unknown' } }],
+      kind: 'variable',
+    });
   });
 });
 

@@ -1502,13 +1502,16 @@ function addInterfaceInheritanceTypeImport(
   imported: Readonly<InterfaceInheritanceTypeImport>,
   context: InterfaceInheritanceLoweringContext,
 ): void {
-  if (imported.target.module.packageName !== context.subject.packageName) {
+  const specifier =
+    imported.target.module.packageName === context.subject.packageName
+      ? getInterfaceInheritanceRelativeSpecifier(context.subject.source, imported.target.source)
+      : getInterfaceInheritanceAuthoredCrossPackageSpecifier(imported, context);
+  if (!specifier) {
     failIrInterfaceInheritanceLowering(
       context.subject,
-      `inherited type ${imported.imported} requires cross-package import materialization`,
+      `inherited type ${imported.imported} requires one authored cross-package import route`,
     );
   }
-  const specifier = getInterfaceInheritanceRelativeSpecifier(context.subject.source, imported.target.source);
   const index = context.imports.findIndex((candidate) => candidate.specifier === specifier);
   const importBinding = {
     binding,
@@ -1528,6 +1531,36 @@ function addInterfaceInheritanceTypeImport(
     ...existing,
     bindings: [...existing.bindings, importBinding],
   };
+}
+
+// A compiler cannot invent a package subpath, but it can reuse an authored request whose export
+// graph already exposes the inherited leaf type. This is the same provenance boundary the source
+// used for its base interface and keeps a contract-barrel import stable across package layouts.
+function getInterfaceInheritanceAuthoredCrossPackageSpecifier(
+  imported: Readonly<InterfaceInheritanceTypeImport>,
+  context: InterfaceInheritanceLoweringContext,
+): string | undefined {
+  const routes = new Set<string>();
+  for (const request of context.subject.imports) {
+    for (const target of getInterfaceInheritanceSpecifierModules(
+      context.module,
+      request.specifier,
+      context.moduleSet,
+    )) {
+      const reachesImportedTarget = getInterfaceInheritanceExportLocations(
+        target,
+        imported.imported,
+        context.moduleSet,
+        new Set(),
+      ).some(
+        (location) =>
+          location.module.identity === imported.target.identity &&
+          location.declaration.binding.name === imported.imported,
+      );
+      if (reachesImportedTarget) routes.add(request.specifier);
+    }
+  }
+  return routes.size === 1 ? [...routes][0] : undefined;
 }
 
 function getInterfaceInheritanceRelativeSpecifier(fromSource: string, targetSource: string): string {

@@ -626,6 +626,57 @@ describe('createCompilerLoweringPassInterfaceInheritance', () => {
     expect(derived.imports).toHaveLength(1);
   });
 
+  it('rebinds inherited cross-package property types through an authored contract barrel', () => {
+    const detail = lowerInPackage(
+      '@flighthq/model',
+      'model',
+      'detail.ts',
+      'export interface Detail { value: number; }',
+    );
+    const base = lowerInPackage(
+      '@flighthq/model',
+      'model',
+      'base.ts',
+      "import type { Detail } from './detail'; export interface Base { detail: Detail; }",
+    );
+    const contract = lowerInPackage(
+      '@flighthq/model',
+      'model',
+      'contract.ts',
+      "export * from './base'; export * from './detail';",
+    );
+    const derived = lowerInPackage(
+      '@flighthq/app',
+      'app',
+      'derived.ts',
+      "import type { Base } from '@flighthq/model/contract'; export interface Derived extends Base { active: boolean; }",
+    );
+    const resolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          importer: identity(derived),
+          specifier: '@flighthq/model/contract',
+          target: { packageName: contract.packageName, source: contract.source },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const output = lowerIrModuleWithCompilerPasses(
+      derived,
+      [createCompilerLoweringPassInterfaceInheritance([derived, contract, base, detail], resolution)],
+      { verificationDepth: 'idempotence' },
+    );
+    const imported = output.imports.find((request) => request.specifier === '@flighthq/model/contract');
+
+    expect(imported?.bindings.map((binding) => binding.imported)).toEqual(['Base', 'Detail']);
+    expect(getInterface(output, 'Derived')).toMatchObject({
+      properties: [
+        { name: 'detail', type: { kind: 'named', reference: { binding: imported!.bindings[1]!.binding } } },
+        { name: 'active' },
+      ],
+    });
+  });
+
   it('resolves named imports through relative star exports and source extension mappings', () => {
     const base = lowerInPackage(
       '@flighthq/model',

@@ -419,6 +419,28 @@ describe('emitIrModuleHaxe', () => {
     }
   });
 
+  it('treats asserted literals and conditional spread fragments as partial constructions', () => {
+    const asserted = lower(
+      'asserted-construction.ts',
+      `interface RecordValue { required: number }
+       export function create(): RecordValue {
+         const value = {} as RecordValue;
+         value.required = 1;
+         return value;
+       }`,
+    );
+    const spread = lower(
+      'conditional-spread-construction.ts',
+      `interface RecordValue { first: number; second: number }
+       export function create(flag: boolean): RecordValue {
+         return { first: 1, second: 2, ...(flag ? { second: 3 } : {}) };
+       }`,
+    );
+
+    expect(() => emitIrModuleHaxe(asserted.module)).not.toThrow();
+    expect(() => emitIrModuleHaxe(spread.module)).not.toThrow();
+  });
+
   it('constructs generic structural records with substituted nested target types', () => {
     const result = lower(
       'generic-object.ts',
@@ -1365,6 +1387,28 @@ describe('emitIrModuleHaxe', () => {
     expect(output).toContain('_Promise.resolve(first).then(');
     expect(output).toContain('_Promise.resolve(second).then(');
     expect(output).not.toContain('await ');
+  });
+
+  it('emits leading awaited comparisons and negated branch conditions through continuations', () => {
+    const compared = emitIrModuleHaxe(
+      lower(
+        'awaited-comparison.ts',
+        'export async function present(task: Promise<number | null>): Promise<boolean> { return (await task) !== null; }',
+      ).module,
+    ).contents;
+    const negated = emitIrModuleHaxe(
+      lower(
+        'awaited-negated-condition.ts',
+        'export async function decide(task: Promise<boolean>): Promise<number> { if (!(await task)) return 1; return 2; }',
+      ).module,
+    ).contents;
+
+    expect(compared).toContain('_Promise.resolve(task).then(');
+    expect(compared).toContain('resolveTask(!flighthq._internal._Js.strictEqual(awaitValue, null));');
+    expect(negated).toContain('_Promise.resolve(task).then(');
+    expect(negated).toContain('if (! awaitValue)');
+    expect(compared).not.toContain('await ');
+    expect(negated).not.toContain('await ');
   });
 
   it('emits nested labeled exits through Haxe completion state', () => {
@@ -2367,6 +2411,21 @@ describe('emitIrModuleHaxe statement coverage', () => {
     const output = emitIrModuleHaxe(result.module).contents;
 
     expect(output).toContain('return values[0];');
+  });
+
+  it('emits a narrowed module binding declared below its lazy getter', () => {
+    const result = lower(
+      'lazy-module-binding.ts',
+      `interface Backend { value: number }
+       export function getBackend(): Backend {
+         if (_backend === null) _backend = { value: 1 };
+         return _backend;
+       }
+       let _backend: Backend | null = null;`,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('return _backend;');
   });
 
   it('emits type parameters with constraints on functions and classes', () => {
@@ -6452,16 +6511,23 @@ describe('emitIrModuleHaxe module variable without type annotation', () => {
 });
 
 describe('emitIrModuleHaxe nullish comparison admitting both null and undefined', () => {
-  it('refuses loose equality with null when operand admits both null and undefined', () => {
+  it('collapses loose null equality while preserving the strict-comparison refusal', () => {
     const result = lower(
       'both-nullish.ts',
       `export function check(value: number | null | undefined): boolean {
          return value == null;
        }`,
     );
+    const strict = lower(
+      'strict-nullish.ts',
+      `export function check(value: number | null | undefined): boolean {
+         return value === null;
+       }`,
+    );
 
-    expect(() => emitIrModuleHaxe(result.module)).toThrow(
-      'operator == against null requires Haxe nullability lowering',
+    expect(emitIrModuleHaxe(result.module).contents).toContain('return value == null;');
+    expect(() => emitIrModuleHaxe(strict.module)).toThrow(
+      'operator === against null requires Haxe nullability lowering',
     );
   });
 });
@@ -8485,7 +8551,7 @@ describe('emitIrModuleHaxe nullable return', () => {
            }`,
         ).module,
       ),
-    ).toThrow('returning a nullable binding requires Haxe narrowing evidence');
+    ).toThrow('returning nullable binding found requires Haxe narrowing evidence');
   });
 });
 

@@ -36,6 +36,10 @@ describe('getCompilerHaxeAmbientMemberBinding', () => {
   });
 
   it('routes source-only collection and string semantics through the selected runtime', () => {
+    expect(getCompilerHaxeAmbientMemberBinding({ name: 'slice', receiver: 'arrayBuffer' })).toEqual({
+      kind: 'runtimeCall',
+      targetName: '_ArrayBuffer.slice',
+    });
     expect(getCompilerHaxeAmbientMemberBinding({ name: 'sort', receiver: 'array' })).toEqual({
       kind: 'runtimeCall',
       targetName: '_Array.sort',
@@ -47,6 +51,10 @@ describe('getCompilerHaxeAmbientMemberBinding', () => {
     expect(getCompilerHaxeAmbientMemberBinding({ name: 'slice', receiver: 'string' })).toEqual({
       kind: 'runtimeCall',
       targetName: '_StringTools.slice',
+    });
+    expect(getCompilerHaxeAmbientMemberBinding({ name: 'repeat', receiver: 'string' })).toEqual({
+      kind: 'runtimeCall',
+      targetName: '_StringTools.repeat',
     });
     expect(getCompilerHaxeAmbientMemberBinding({ name: 'values', receiver: 'map' })).toEqual({
       kind: 'method',
@@ -82,6 +90,10 @@ describe('getCompilerHaxeAmbientMemberBinding', () => {
   });
 
   it('keeps the typed-array members supplied by the Haxe runtime wrappers', () => {
+    expect(getCompilerHaxeAmbientMemberBinding({ name: 'copyWithin', receiver: 'typedArray' })).toEqual({
+      kind: 'runtimeCall',
+      targetName: '_TypedArray.copyWithin',
+    });
     expect(getCompilerHaxeAmbientMemberBinding({ name: 'length', receiver: 'typedArray' })).toEqual({
       kind: 'property',
       targetName: 'length',

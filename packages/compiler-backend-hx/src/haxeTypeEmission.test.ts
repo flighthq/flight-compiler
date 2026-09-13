@@ -85,7 +85,7 @@ describe('emitIrTypeHaxe', () => {
     ).toBe('String');
   });
 
-  it.each(['Exclude', 'Extract', 'NoInfer', 'Omit', 'Partial', 'Pick', 'Readonly', 'Required'])(
+  it.each(['Exclude', 'Extract', 'NoInfer', 'NonNullable', 'Omit', 'Partial', 'Pick', 'Readonly', 'Required'])(
     'erases the representation-only utility %s to its subject type',
     (name) => {
       expect(
@@ -111,6 +111,27 @@ describe('emitIrTypeHaxe', () => {
       ).toBe('String');
     },
   );
+
+  it.each(['Parameters', 'ReturnType'])('widens unresolved computed utility %s to Dynamic', (name) => {
+    expect(
+      emitIrTypeHaxe(
+        {
+          kind: 'named',
+          reference: { kind: 'ambient', name },
+          typeArguments: [{ kind: 'unknown', source: 'unknown' }],
+        },
+        {
+          fail(message: string): never {
+            throw new Error(message);
+          },
+          getBindingName: () => 'Binding',
+          getExternalTypeName: () => undefined,
+          getMemberName: (member) => member,
+          getTypeName: (type) => type,
+        },
+      ),
+    ).toBe('Dynamic');
+  });
 
   it('does not apply generic arguments to an explicitly opaque external host type', () => {
     expect(

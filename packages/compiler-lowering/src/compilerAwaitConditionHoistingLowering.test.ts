@@ -21,14 +21,93 @@ describe('createCompilerLoweringPassAwaitConditionHoisting', () => {
 
     if (wrapper?.kind !== 'block') throw new Error('Expected the branch to be wrapped in a block');
     expect(wrapper.statements[0]).toMatchObject({
-      declarations: [{ binding: { name: 'awaitCondition' }, initializer: { kind: 'await' } }],
+      declarations: [{ binding: { name: 'awaitValue' }, initializer: { kind: 'await' } }],
       kind: 'variable',
     });
     expect(wrapper.statements[1]).toMatchObject({
-      condition: { kind: 'identifier', reference: { binding: { name: 'awaitCondition' }, kind: 'binding' } },
+      condition: { kind: 'identifier', reference: { binding: { name: 'awaitValue' }, kind: 'binding' } },
       kind: 'if',
     });
     expect(pass.verifyIrModule(output)).toEqual({ kind: 'valid' });
+  });
+
+  it('binds a leading await before a negated branch condition', () => {
+    const output = lowerIrModuleWithCompilerPasses(
+      lower(
+        'export async function decide(task: Promise<boolean>): Promise<number> { if (!(await task)) return 1; return 2; }',
+      ),
+      [createCompilerLoweringPassAwaitConditionHoisting()],
+    );
+    const declaration = output.declarations[0];
+    const wrapper = declaration?.kind === 'function' ? declaration.body[0] : undefined;
+
+    expect(wrapper).toMatchObject({
+      kind: 'block',
+      statements: [
+        { declarations: [{ binding: { name: 'awaitValue' }, initializer: { kind: 'await' } }], kind: 'variable' },
+        { condition: { kind: 'unary', operand: { kind: 'identifier' } }, kind: 'if' },
+      ],
+    });
+  });
+
+  it('preserves short-circuit evaluation when only the right branch condition suspends', () => {
+    const output = lowerIrModuleWithCompilerPasses(
+      lower(`
+        export async function decide(skip: boolean, task: Promise<boolean>): Promise<number> {
+          if (skip || !(await task)) return 1;
+          return 2;
+        }
+      `),
+      [createCompilerLoweringPassAwaitConditionHoisting()],
+    );
+    const declaration = output.declarations[0];
+    const wrapper = declaration?.kind === 'function' ? declaration.body[0] : undefined;
+
+    expect(wrapper).toMatchObject({
+      kind: 'block',
+      statements: [
+        { declarations: [{ binding: { name: 'awaitLogicalCondition' }, initializer: { kind: 'identifier' } }] },
+        {
+          condition: { kind: 'unary', operator: '!' },
+          consequent: {
+            kind: 'block',
+            statements: [
+              { declarations: [{ binding: { name: 'awaitValue' }, initializer: { kind: 'await' } }] },
+              { expression: { kind: 'assignment', right: { kind: 'unary', operator: '!' } } },
+            ],
+          },
+          kind: 'if',
+        },
+        { condition: { kind: 'identifier' }, kind: 'if' },
+      ],
+    });
+  });
+
+  it('binds a leading await before evaluating a returned comparison or conditional', () => {
+    const output = lowerIrModuleWithCompilerPasses(
+      lower(`
+        export async function present(task: Promise<number | null>): Promise<boolean> {
+          return (await task) !== null;
+        }
+        export async function choose(task: Promise<boolean>): Promise<number> {
+          return (await task) ? 1 : 2;
+        }
+      `),
+      [createCompilerLoweringPassAwaitConditionHoisting()],
+    );
+
+    for (const declaration of output.declarations) {
+      if (declaration.kind !== 'function') continue;
+      expect(declaration.body).toMatchObject([
+        {
+          kind: 'block',
+          statements: [
+            { declarations: [{ binding: { name: 'awaitValue' }, initializer: { kind: 'await' } }] },
+            { kind: 'return' },
+          ],
+        },
+      ]);
+    }
   });
 
   it('reports an un-lowered module with suspending branch conditions as invalid', () => {
@@ -153,6 +232,47 @@ describe('createCompilerLoweringPassAwaitConditionHoisting', () => {
     );
 
     expect(pass.verifyIrModule(output)).toEqual({ kind: 'valid' });
+  });
+
+  it('lowers a suspending snapshot-array for-of body to indexed task-compatible control flow', () => {
+    const output = lowerIrModuleWithCompilerPasses(
+      lower(`
+        export async function visit(tasks: Promise<number>[]): Promise<number> {
+          let total = 0;
+          for (const task of [...tasks]) {
+            const value = await task;
+            if (value === 0) continue;
+            total += value;
+          }
+          return total;
+        }
+      `),
+      [createCompilerLoweringPassAwaitConditionHoisting()],
+    );
+    const declaration = output.declarations[0];
+    const loop = declaration?.kind === 'function' ? declaration.body[1] : undefined;
+
+    expect(loop).toMatchObject({
+      kind: 'block',
+      statements: [
+        { declarations: [{ binding: { name: 'awaitLoopIterable' }, initializer: { kind: 'array' } }] },
+        { declarations: [{ binding: { name: 'awaitLoopIndex' }, initializer: { kind: 'literal', value: 0 } }] },
+        {
+          body: {
+            kind: 'block',
+          },
+          condition: { kind: 'binary', operator: '<', right: { kind: 'property', name: 'length' } },
+          kind: 'while',
+        },
+      ],
+    });
+    if (loop?.kind !== 'block' || loop.statements[2]?.kind !== 'while') throw new Error('Expected indexed loop');
+    const body = loop.statements[2].body;
+    if (body.kind !== 'block') throw new Error('Expected indexed loop body');
+    expect(body.statements.slice(0, 2)).toMatchObject([
+      { declarations: [{ binding: { name: 'task' }, initializer: { kind: 'element' } }] },
+      { expression: { kind: 'unary', operator: '++' }, kind: 'expression' },
+    ]);
   });
 });
 

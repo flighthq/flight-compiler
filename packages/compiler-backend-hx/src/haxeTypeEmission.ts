@@ -36,6 +36,10 @@ export function emitIrTypeHaxe(type: Readonly<IrType>, context: Readonly<IrTypeH
       if (sourceName !== undefined && haxeErasedUtilityTypeNames.has(sourceName) && type.typeArguments[0]) {
         return emitIrTypeHaxe(type.typeArguments[0], context);
       }
+      // These utilities compute types rather than changing runtime representation. When semantic
+      // lowering cannot close their operand, Dynamic is the faithful Haxe boundary: emitting the
+      // callable operand itself for ReturnType/Parameters would describe the wrong representation.
+      if (sourceName !== undefined && haxeDynamicUtilityTypeNames.has(sourceName)) return 'Dynamic';
       if (sourceName === 'Record' && type.typeArguments[1]) {
         const externalTypeName = context.getExternalTypeName(sourceName);
         if (!externalTypeName) context.fail(`external type ${sourceName} has no Haxe binding`);
@@ -104,12 +108,15 @@ const haxeErasedUtilityTypeNames = new Set([
   'Exclude',
   'Extract',
   'NoInfer',
+  'NonNullable',
   'Omit',
   'Partial',
   'Pick',
   'Readonly',
   'Required',
 ]);
+
+const haxeDynamicUtilityTypeNames = new Set(['Parameters', 'ReturnType']);
 
 function hasIrTypeKindHaxe(type: Readonly<IrType>, kind: IrType['kind']): boolean {
   return type.kind === kind || (type.kind === 'union' && type.types.some((member) => member.kind === kind));

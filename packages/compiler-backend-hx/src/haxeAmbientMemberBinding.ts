@@ -14,6 +14,7 @@ export function getCompilerHaxeAmbientMemberBinding(
 }
 
 const haxeAmbientMemberBindings: Readonly<Record<string, CompilerHaxeAmbientMemberBinding>> = {
+  'arrayBuffer.slice': { kind: 'runtimeCall', targetName: '_ArrayBuffer.slice' },
   'array.concat': { kind: 'method', targetName: 'concat' },
   'array.copyWithin': { kind: 'runtimeCall', targetName: '_Array.copyWithin' },
   'array.every': { kind: 'staticCall', targetPath: 'Lambda.foreach' },
@@ -100,6 +101,7 @@ const haxeAmbientMemberBindings: Readonly<Record<string, CompilerHaxeAmbientMemb
   'string.padStart': { kind: 'runtimeCall', targetName: '_StringTools.padStart' },
   'string.padEnd': { kind: 'runtimeCall', targetName: '_StringTools.padEnd' },
   'string.replace': { kind: 'runtimeCall', targetName: '_StringTools.replaceFirst' },
+  'string.repeat': { kind: 'runtimeCall', targetName: '_StringTools.repeat' },
   'string.search': { kind: 'runtimeCall', targetName: '_StringTools.search' },
   'string.slice': { kind: 'runtimeCall', targetName: '_StringTools.slice' },
   'string.split': { kind: 'method', targetName: 'split' },
@@ -114,6 +116,7 @@ const haxeAmbientMemberBindings: Readonly<Record<string, CompilerHaxeAmbientMemb
   'typedArray.buffer': { kind: 'property', targetName: 'buffer' },
   'typedArray.byteLength': { kind: 'property', targetName: 'byteLength' },
   'typedArray.byteOffset': { kind: 'property', targetName: 'byteOffset' },
+  'typedArray.copyWithin': { kind: 'runtimeCall', targetName: '_TypedArray.copyWithin' },
   'typedArray.length': { kind: 'property', targetName: 'length' },
   'typedArray.fill': { intArguments: [1, 2], kind: 'method', targetName: 'fill' },
   'typedArray.set': { intArguments: [1], kind: 'method', targetName: 'set' },

@@ -667,7 +667,14 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
       }
       if (expression.semantics.nullishComparison) {
         const evidence = expression.semantics.nullishComparison;
-        if (evidence.admitsNull && evidence.admitsUndefined) {
+        // Loose null equality deliberately treats null and undefined as the same absent value, so
+        // Haxe's single null representation preserves it exactly. Strict equality still observes
+        // which source sentinel was present and therefore needs a distinct runtime representation.
+        if (
+          evidence.admitsNull &&
+          evidence.admitsUndefined &&
+          (expression.operator === '===' || expression.operator === '!==')
+        ) {
           emissionError(
             context,
             `operator ${expression.operator} against ${evidence.literal} requires Haxe nullability lowering`,
@@ -1929,7 +1936,10 @@ function emitStatement(statement: Readonly<IrStatement>, context: EmitContext): 
         statement.expression.presence !== 'narrowedPresent' &&
         context.nullableBindingIds.has(statement.expression.reference.binding.id)
       ) {
-        emissionError(context, 'returning a nullable binding requires Haxe narrowing evidence');
+        emissionError(
+          context,
+          `returning nullable binding ${statement.expression.reference.binding.name} requires Haxe narrowing evidence`,
+        );
       }
       if (context.finallyCompletion) {
         const completion = context.finallyCompletion;

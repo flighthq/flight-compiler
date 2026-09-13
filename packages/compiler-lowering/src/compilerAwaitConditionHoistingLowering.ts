@@ -1,9 +1,11 @@
 import {
   analyzeIrExpressionSubtreeTraversal,
   analyzeIrModuleTraversal,
+  analyzeIrStatementSubtreeTraversal,
 } from '../../compiler-ir-traversal/src/index.js';
 import type {
   CompilerLoweringPass,
+  CompilerSourceOrigin,
   IrBindingIdentity,
   IrDeclaration,
   IrExpression,
@@ -67,9 +69,63 @@ function createIrAwaitConditionBinding(origin: Readonly<IrDeclaration>['origin']
   };
 }
 
+function createIrAwaitValueBinding(origin: Readonly<CompilerSourceOrigin>, ordinal: number): IrBindingIdentity {
+  return {
+    ...origin,
+    id: `binding:${JSON.stringify([origin.packageName, origin.source, origin.line, origin.column, 'await-value', ordinal])}`,
+    kind: 'variable',
+    name: 'awaitValue',
+    scope: 'block',
+    space: 'value',
+  };
+}
+
+function createIrAwaitLoopBinding(
+  origin: Readonly<CompilerSourceOrigin>,
+  ordinal: number,
+  role: 'index' | 'iterable',
+): IrBindingIdentity {
+  return {
+    ...origin,
+    id: `binding:${JSON.stringify([origin.packageName, origin.source, origin.line, origin.column, 'await-loop', role, ordinal])}`,
+    kind: 'variable',
+    name: role === 'index' ? 'awaitLoopIndex' : 'awaitLoopIterable',
+    scope: 'block',
+    space: 'value',
+  };
+}
+
+function createIrAwaitLogicalBinding(origin: Readonly<CompilerSourceOrigin>, ordinal: number): IrBindingIdentity {
+  return {
+    ...origin,
+    id: `binding:${JSON.stringify([origin.packageName, origin.source, origin.line, origin.column, 'await-logical', ordinal])}`,
+    kind: 'variable',
+    name: 'awaitLogicalCondition',
+    scope: 'block',
+    space: 'value',
+  };
+}
+
+interface AwaitConditionHoistingContext {
+  readonly origin: Readonly<CompilerSourceOrigin>;
+  nextBindingOrdinal: number;
+}
+
 function hasIrExpressionAwait(expression: Readonly<IrExpression>): boolean {
   let found = false;
   analyzeIrExpressionSubtreeTraversal(expression, {
+    expression(candidate) {
+      if (candidate.kind !== 'await') return undefined;
+      found = true;
+      return false;
+    },
+  });
+  return found;
+}
+
+function hasIrStatementAwait(statement: Readonly<IrStatement>): boolean {
+  let found = false;
+  analyzeIrStatementSubtreeTraversal(statement, {
     expression(candidate) {
       if (candidate.kind !== 'await') return undefined;
       found = true;
@@ -87,6 +143,7 @@ function lowerIrModuleAwaitConditionHoisting(module: Readonly<IrModule>): IrModu
 }
 
 function lowerIrDeclarationAwaitConditionHoisting(declaration: Readonly<IrDeclaration>): IrDeclaration {
+  const context: AwaitConditionHoistingContext = { nextBindingOrdinal: 0, origin: declaration.origin };
   switch (declaration.kind) {
     case 'class':
       return {
@@ -95,17 +152,17 @@ function lowerIrDeclarationAwaitConditionHoisting(declaration: Readonly<IrDeclar
           ? {
               classConstructor: {
                 ...declaration.classConstructor,
-                body: lowerIrStatementListAwaitConditionHoisting(declaration.classConstructor.body),
+                body: lowerIrStatementListAwaitConditionHoisting(declaration.classConstructor.body, context),
               },
             }
           : {}),
         methods: declaration.methods.map((method) => ({
           ...method,
-          body: lowerIrStatementListAwaitConditionHoisting(method.body),
+          body: lowerIrStatementListAwaitConditionHoisting(method.body, context),
         })),
       };
     case 'function':
-      return { ...declaration, body: lowerIrStatementListAwaitConditionHoisting(declaration.body) };
+      return { ...declaration, body: lowerIrStatementListAwaitConditionHoisting(declaration.body, context) };
     case 'enum':
     case 'interface':
     case 'typeAlias':
@@ -114,48 +171,148 @@ function lowerIrDeclarationAwaitConditionHoisting(declaration: Readonly<IrDeclar
   }
 }
 
-function lowerIrStatementListAwaitConditionHoisting(statements: readonly IrStatement[]): IrStatement[] {
+function lowerIrStatementListAwaitConditionHoisting(
+  statements: readonly IrStatement[],
+  context: AwaitConditionHoistingContext,
+): IrStatement[] {
   return statements.flatMap((statement) => {
     if (statement.kind === 'variable') {
       const conditional = lowerIrAwaitConditionalVariable(statement);
       if (conditional) return conditional;
     }
-    return [lowerIrStatementAwaitConditionHoisting(statement)];
+    return [lowerIrStatementAwaitConditionHoisting(statement, context)];
   });
 }
 
-function lowerIrStatementAwaitConditionHoisting(statement: Readonly<IrStatement>): IrStatement {
+function lowerIrStatementAwaitConditionHoisting(
+  statement: Readonly<IrStatement>,
+  context: AwaitConditionHoistingContext,
+): IrStatement {
   switch (statement.kind) {
     case 'block':
-      return { ...statement, statements: lowerIrStatementListAwaitConditionHoisting(statement.statements) };
+      return { ...statement, statements: lowerIrStatementListAwaitConditionHoisting(statement.statements, context) };
     case 'do':
     case 'while':
-      return { ...statement, body: lowerIrStatementAwaitConditionHoisting(statement.body) };
+      return { ...statement, body: lowerIrStatementAwaitConditionHoisting(statement.body, context) };
     case 'for':
       return {
         ...statement,
-        body: lowerIrStatementAwaitConditionHoisting(statement.body),
+        body: lowerIrStatementAwaitConditionHoisting(statement.body, context),
         ...(statement.initializer ? { initializer: statement.initializer } : {}),
       };
     case 'forIn':
-    case 'forOf':
-      return { ...statement, body: lowerIrStatementAwaitConditionHoisting(statement.body) };
-    case 'if': {
-      const lowered: Extract<IrStatement, { kind: 'if' }> = {
-        ...statement,
-        consequent: lowerIrStatementAwaitConditionHoisting(statement.consequent),
-        ...(statement.otherwise ? { otherwise: lowerIrStatementAwaitConditionHoisting(statement.otherwise) } : {}),
+      return { ...statement, body: lowerIrStatementAwaitConditionHoisting(statement.body, context) };
+    case 'forOf': {
+      const body = lowerIrStatementAwaitConditionHoisting(statement.body, context);
+      if (statement.await || statement.iterable.kind !== 'array' || !hasIrStatementAwait(body)) {
+        return { ...statement, body };
+      }
+      const iterableBinding = createIrAwaitLoopBinding(context.origin, context.nextBindingOrdinal++, 'iterable');
+      const indexBinding = createIrAwaitLoopBinding(context.origin, context.nextBindingOrdinal++, 'index');
+      const iterable: IrExpression = {
+        kind: 'identifier',
+        reference: { binding: iterableBinding, kind: 'binding' },
       };
-      if (!statement.origin || !hasIrExpressionAwait(statement.condition)) return lowered;
-      const binding = createIrAwaitConditionBinding(statement.origin);
+      const index: IrExpression = {
+        kind: 'identifier',
+        reference: { binding: indexBinding, kind: 'binding' },
+      };
       return {
         kind: 'block',
         statements: [
           {
-            declarations: [{ binding, initializer: lowered.condition, mutable: false }],
+            declarations: [{ binding: iterableBinding, initializer: statement.iterable, mutable: false }],
             kind: 'variable',
           },
-          { ...lowered, condition: { kind: 'identifier', reference: { binding, kind: 'binding' } } },
+          {
+            declarations: [{ binding: indexBinding, initializer: { kind: 'literal', value: 0 }, mutable: true }],
+            kind: 'variable',
+          },
+          {
+            body: {
+              kind: 'block',
+              statements: [
+                {
+                  declarations: [
+                    {
+                      ...statement.variable,
+                      initializer: {
+                        index,
+                        kind: 'element',
+                        object: iterable,
+                        optional: false,
+                        semantics: { key: 'number', receivers: ['array'] },
+                      },
+                    },
+                  ],
+                  kind: 'variable',
+                },
+                {
+                  expression: {
+                    kind: 'unary',
+                    operand: index,
+                    operator: '++',
+                    postfix: true,
+                    semantics: {
+                      operand: { declared: 'number', flow: 'number' },
+                      result: 'number',
+                    },
+                  },
+                  kind: 'expression',
+                },
+                body,
+              ],
+            },
+            condition: {
+              kind: 'binary',
+              left: index,
+              operator: '<',
+              right: {
+                kind: 'property',
+                member: { name: 'length', receiver: 'array' },
+                name: 'length',
+                object: iterable,
+                optional: false,
+              },
+              semantics: {
+                left: { declared: 'number', flow: 'number' },
+                result: 'boolean',
+                right: { declared: 'number', flow: 'number' },
+              },
+            },
+            kind: 'while',
+            ...(statement.label ? { label: statement.label } : {}),
+          },
+        ],
+      };
+    }
+    case 'if': {
+      const lowered: Extract<IrStatement, { kind: 'if' }> = {
+        ...statement,
+        consequent: lowerIrStatementAwaitConditionHoisting(statement.consequent, context),
+        ...(statement.otherwise
+          ? { otherwise: lowerIrStatementAwaitConditionHoisting(statement.otherwise, context) }
+          : {}),
+      };
+      if (!statement.origin || !hasIrExpressionAwait(statement.condition)) return lowered;
+      const valueBinding = createIrAwaitValueBinding(context.origin, context.nextBindingOrdinal++);
+      const extracted = extractIrLeadingAwait(statement.condition, valueBinding);
+      if (!extracted) {
+        const logical = lowerIrLazyAwaitCondition(lowered, valueBinding, context);
+        if (logical) return logical;
+      }
+      const binding = extracted ? valueBinding : createIrAwaitConditionBinding(statement.origin);
+      return {
+        kind: 'block',
+        statements: [
+          {
+            declarations: [{ binding, initializer: extracted?.await ?? lowered.condition, mutable: false }],
+            kind: 'variable',
+          },
+          {
+            ...lowered,
+            condition: extracted?.expression ?? { kind: 'identifier', reference: { binding, kind: 'binding' } },
+          },
         ],
       };
     }
@@ -164,7 +321,7 @@ function lowerIrStatementAwaitConditionHoisting(statement: Readonly<IrStatement>
         ...statement,
         cases: statement.cases.map((clause) => ({
           ...clause,
-          statements: lowerIrStatementListAwaitConditionHoisting(clause.statements),
+          statements: lowerIrStatementListAwaitConditionHoisting(clause.statements, context),
         })),
       };
     case 'try':
@@ -174,23 +331,147 @@ function lowerIrStatementAwaitConditionHoisting(statement: Readonly<IrStatement>
           ? {
               catchClause: {
                 ...statement.catchClause,
-                body: lowerIrStatementAwaitConditionHoisting(statement.catchClause.body),
+                body: lowerIrStatementAwaitConditionHoisting(statement.catchClause.body, context),
               },
             }
           : {}),
         ...(statement.finallyBody
-          ? { finallyBody: lowerIrStatementAwaitConditionHoisting(statement.finallyBody) }
+          ? { finallyBody: lowerIrStatementAwaitConditionHoisting(statement.finallyBody, context) }
           : {}),
-        tryBody: lowerIrStatementAwaitConditionHoisting(statement.tryBody),
+        tryBody: lowerIrStatementAwaitConditionHoisting(statement.tryBody, context),
       };
     case 'break':
     case 'continue':
     case 'expression':
-    case 'return':
     case 'throw':
     case 'variable':
       return statement;
+    case 'return': {
+      if (
+        !statement.expression ||
+        statement.expression.kind === 'await' ||
+        !hasIrExpressionAwait(statement.expression)
+      ) {
+        return statement;
+      }
+      const binding = createIrAwaitValueBinding(context.origin, context.nextBindingOrdinal++);
+      const extracted = extractIrLeadingAwait(statement.expression, binding);
+      if (!extracted) return statement;
+      return {
+        kind: 'block',
+        statements: [
+          { declarations: [{ binding, initializer: extracted.await, mutable: false }], kind: 'variable' },
+          { expression: extracted.expression, kind: 'return' },
+        ],
+      };
+    }
   }
+}
+
+function lowerIrLazyAwaitCondition(
+  statement: Readonly<Extract<IrStatement, { kind: 'if' }>>,
+  valueBinding: Readonly<IrBindingIdentity>,
+  context: AwaitConditionHoistingContext,
+): IrStatement | undefined {
+  const condition = statement.condition;
+  if (
+    condition.kind !== 'binary' ||
+    (condition.operator !== '&&' && condition.operator !== '||') ||
+    condition.semantics.result !== 'boolean' ||
+    hasIrExpressionAwait(condition.left)
+  ) {
+    return undefined;
+  }
+  const extracted = extractIrLeadingAwait(condition.right, valueBinding);
+  if (!extracted) return undefined;
+  const conditionBinding = createIrAwaitLogicalBinding(context.origin, context.nextBindingOrdinal++);
+  const conditionValue: IrExpression = {
+    kind: 'identifier',
+    reference: { binding: conditionBinding, kind: 'binding' },
+  };
+  const gateCondition: IrExpression =
+    condition.operator === '&&'
+      ? conditionValue
+      : {
+          kind: 'unary',
+          operand: conditionValue,
+          operator: '!',
+          postfix: false,
+          semantics: {
+            operand: { declared: 'boolean', flow: 'boolean' },
+            result: 'boolean',
+          },
+        };
+  return {
+    kind: 'block',
+    statements: [
+      {
+        declarations: [{ binding: conditionBinding, initializer: condition.left, mutable: true }],
+        kind: 'variable',
+      },
+      {
+        condition: gateCondition,
+        consequent: {
+          kind: 'block',
+          statements: [
+            {
+              declarations: [{ binding: valueBinding, initializer: extracted.await, mutable: false }],
+              kind: 'variable',
+            },
+            {
+              expression: {
+                kind: 'assignment',
+                left: conditionValue,
+                operator: '=',
+                right: extracted.expression,
+                semantics: {
+                  left: { declared: 'boolean', flow: 'boolean' },
+                  result: 'boolean',
+                  right: { declared: 'boolean', flow: 'boolean' },
+                },
+              },
+              kind: 'expression',
+            },
+          ],
+        },
+        kind: 'if',
+      },
+      { ...statement, condition: conditionValue },
+    ],
+  };
+}
+
+// An await at the leading evaluation position of these expression forms can be bound before the
+// enclosing expression without reordering work or making a lazy arm eager. This covers the common
+// `!(await task)`, `(await task) !== null`, and `(await task) ? a : b` shapes while deliberately
+// leaving right-hand logical operands and conditional arms to structured control-flow lowering.
+function extractIrLeadingAwait(
+  expression: Readonly<IrExpression>,
+  binding: Readonly<IrBindingIdentity>,
+): Readonly<{ await: Extract<IrExpression, { kind: 'await' }>; expression: IrExpression }> | undefined {
+  if (expression.kind === 'await') {
+    return {
+      await: expression,
+      expression: { kind: 'identifier', reference: { binding, kind: 'binding' } },
+    };
+  }
+  if (expression.kind === 'unary') {
+    const nested = extractIrLeadingAwait(expression.operand, binding);
+    return nested ? { await: nested.await, expression: { ...expression, operand: nested.expression } } : undefined;
+  }
+  if (expression.kind === 'binary') {
+    const nested = extractIrLeadingAwait(expression.left, binding);
+    return nested ? { await: nested.await, expression: { ...expression, left: nested.expression } } : undefined;
+  }
+  if (expression.kind === 'conditional') {
+    const nested = extractIrLeadingAwait(expression.condition, binding);
+    return nested ? { await: nested.await, expression: { ...expression, condition: nested.expression } } : undefined;
+  }
+  if (expression.kind === 'cast') {
+    const nested = extractIrLeadingAwait(expression.expression, binding);
+    return nested ? { await: nested.await, expression: { ...expression, expression: nested.expression } } : undefined;
+  }
+  return undefined;
 }
 
 function lowerIrAwaitConditionalVariable(

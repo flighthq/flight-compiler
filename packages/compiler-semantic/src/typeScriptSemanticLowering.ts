@@ -196,6 +196,7 @@ function lowerTypeScriptSourceWithAnalysis(
     typeBindings: new Map(),
   };
   context.imports.push(...lowerImports(context.sourceFile, context));
+  seedTypeScriptModuleVariableBindingTypeEvidence(context.sourceFile, context);
   const declarations: IrDeclaration[] = [];
   const exports: IrExport[] = [];
   const pendingOverloads = new Map<string, IrFunctionSignature[]>();
@@ -302,6 +303,29 @@ function lowerTypeScriptSourceWithAnalysis(
       source: relativeSource(sourceFile.fileName, options.upstreamDirectory),
     },
   };
+}
+
+// Functions are lowered before module variables which appear below them in source, but TypeScript's
+// lexical scope makes those variables visible throughout the module. Seed their authored types before
+// walking declarations so flow-narrowed references in lazy getters retain the same declared-vs-flow
+// evidence as a local declared above its use. Unsupported variable types remain owned by the ordinary
+// declaration lowering path, which will report the source diagnostic at its authored location.
+function seedTypeScriptModuleVariableBindingTypeEvidence(sourceFile: ts.SourceFile, context: LoweringContext): void {
+  for (const statement of sourceFile.statements) {
+    if (!ts.isVariableStatement(statement)) continue;
+    for (const declaration of statement.declarationList.declarations) {
+      if (!ts.isIdentifier(declaration.name) || !declaration.type) continue;
+      try {
+        addTypeScriptBindingTypeEvidence(
+          declaration.name,
+          lowerTypeScriptTypeNodeEvidence(declaration.type, context),
+          context,
+        );
+      } catch (error) {
+        if (!isUnsupportedSyntaxFailure(error)) throw error;
+      }
+    }
+  }
 }
 
 function isTypeScriptModuleInitializationStatement(statement: ts.Statement): boolean {
@@ -800,11 +824,12 @@ function lowerExpression(
   context: LoweringContext,
   contextualType?: Readonly<IrType>,
   contextualTargetType?: Readonly<IrType>,
+  constructionAssertion = false,
 ): IrExpression {
   if (ts.isParenthesizedExpression(node))
-    return lowerExpression(node.expression, context, contextualType, contextualTargetType);
+    return lowerExpression(node.expression, context, contextualType, contextualTargetType, constructionAssertion);
   if (isTypeScriptConstAssertion(node)) {
-    return lowerExpression(node.expression, context, contextualType, contextualTargetType);
+    return lowerExpression(node.expression, context, contextualType, contextualTargetType, constructionAssertion);
   }
   if (ts.isSatisfiesExpression(node)) {
     const type = lowerType(node.type, context);
@@ -813,13 +838,13 @@ function lowerExpression(
   if (ts.isAsExpression(node) || ts.isTypeAssertionExpression(node)) {
     const type = lowerType(node.type, context);
     return {
-      expression: lowerExpression(node.expression, context, type, contextualTargetType ?? contextualType ?? type),
+      expression: lowerExpression(node.expression, context, type, contextualTargetType ?? contextualType ?? type, true),
       kind: 'cast',
       type,
     };
   }
   if (ts.isNonNullExpression(node))
-    return lowerExpression(node.expression, context, contextualType, contextualTargetType);
+    return lowerExpression(node.expression, context, contextualType, contextualTargetType, constructionAssertion);
   if (ts.isIdentifier(node)) {
     const reference = lowerIdentifierReference(node, context);
     if (
@@ -882,17 +907,21 @@ function lowerExpression(
     // the shape the literal itself states. The position a literal is passed to often knows nothing —
     // an ambient signature's own type parameter means nothing here — and treating that as a target
     // leaves the construction with no shape at all.
-    const contextualEvidence =
-      [contextualTargetType, contextualType].find(
-        (candidate) => candidate !== undefined && candidate.kind !== 'unknown',
-      ) ??
-      // The position may still know what is being built even where no written type says so: a
-      // parameter declared in the ambient surface is written in the surface's own type parameters,
-      // and only the checker's instantiation of them names the module's type.
-      (() => {
-        const contextual = context.checker.getContextualType(node);
-        return contextual ? getTypeScriptCheckerTypeEvidence(contextual, context, 0) : undefined;
-      })();
+    const contextualEvidence = constructionAssertion
+      ? undefined
+      : ([contextualTargetType, contextualType].find(
+          (candidate) => candidate !== undefined && candidate.kind !== 'unknown',
+        ) ??
+        // The position may still know what is being built even where no written type says so: a
+        // parameter declared in the ambient surface is written in the surface's own type parameters,
+        // and only the checker's instantiation of them names the module's type. A spread operand is
+        // only a partial contribution to its outer target, so the outer context must not turn that
+        // partial literal into a supposedly complete construction on its own.
+        (() => {
+          if (isTypeScriptObjectLiteralWithinSpreadOperand(node)) return undefined;
+          const contextual = context.checker.getContextualType(node);
+          return contextual ? getTypeScriptCheckerTypeEvidence(contextual, context, 0) : undefined;
+        })());
     const common = {
       kind: 'object',
       members,
@@ -1032,8 +1061,8 @@ function lowerExpression(
     return {
       condition: lowerExpression(node.condition, context),
       kind: 'conditional',
-      whenFalse: lowerExpression(node.whenFalse, context, contextualType, contextualTargetType),
-      whenTrue: lowerExpression(node.whenTrue, context, contextualType, contextualTargetType),
+      whenFalse: lowerExpression(node.whenFalse, context, contextualType, contextualTargetType, constructionAssertion),
+      whenTrue: lowerExpression(node.whenTrue, context, contextualType, contextualTargetType, constructionAssertion),
     };
   }
   if (ts.isArrowFunction(node) || ts.isFunctionExpression(node)) {
@@ -1095,6 +1124,14 @@ function lowerExpression(
     return { flags: node.text.slice(lastSlash + 1), kind: 'regexp', pattern: node.text.slice(1, lastSlash) };
   }
   unsupported(node, `unsupported expression ${ts.SyntaxKind[node.kind]}`);
+}
+
+function isTypeScriptObjectLiteralWithinSpreadOperand(node: ts.ObjectLiteralExpression): boolean {
+  for (let current: ts.Node = node; current.parent; current = current.parent) {
+    if (ts.isSpreadAssignment(current.parent)) return true;
+    if (ts.isObjectLiteralExpression(current.parent) || ts.isStatement(current.parent)) return false;
+  }
+  return false;
 }
 
 function lowerContextualDependentCallableImplementationPack(
@@ -1332,7 +1369,9 @@ function lowerTupleExpression(
   let targetIndex = 0;
   for (const value of node.elements) {
     if (ts.isSpreadElement(value)) {
-      const spreadType = lowerTypeScriptExpressionTypeEvidence(value.expression, context);
+      const spreadType =
+        getTypeScriptExpressionBindingTypeEvidence(value.expression, context) ??
+        lowerTypeScriptExpressionTypeEvidence(value.expression, context);
       if (spreadType?.kind !== 'tuple' || spreadType.elements.some((element) => element.rest)) {
         return unsupported(value, 'contextual tuple expression spread requires a statically known fixed tuple');
       }
@@ -2091,7 +2130,8 @@ function lowerParameterBindingEntries(
   return sourceNodes.flatMap((node, index): IrStatement[] => {
     if (ts.isIdentifier(node.name)) return [];
     const parameter = parameters[index]!;
-    const bindingType = node.type ? lowerTypeScriptTypeNodeEvidence(node.type, context) : parameter.type;
+    const authoredBindingType = node.type ? lowerTypeScriptTypeNodeEvidence(node.type, context) : parameter.type;
+    const bindingType = getIrTypeConstructionTargetShape(authoredBindingType, context) ?? authoredBindingType;
     return [
       {
         declarations: [
@@ -2985,7 +3025,7 @@ function lowerType(node: ts.TypeNode, context: LoweringContext): IrType {
   }
   if (ts.isTypeQueryNode(node)) {
     const reference = lowerValueNameReference(node.exprName, context);
-    if (reference.kind === 'ambient') {
+    if (reference.kind === 'ambient' || !isTypeScriptBindingIntroducedInModule(reference.binding, context)) {
       const checkerType = getTypeScriptCheckerTypeEvidence(context.checker.getTypeFromTypeNode(node), context, 0, true);
       if (checkerType?.kind === 'literal' || checkerType?.kind === 'primitive') return checkerType;
     }
@@ -3757,13 +3797,7 @@ function getTypeScriptReadonlyRemovalIdentityMappedTypeSource(
   const indexParameter = getTypeScriptTypeReferenceSymbol(node.type.indexType, context);
   const source = getTypeScriptTypeReferenceSymbol(constraint.type, context);
   const indexedSource = getTypeScriptTypeReferenceSymbol(node.type.objectType, context);
-  if (
-    !mappedParameter ||
-    mappedParameter !== indexParameter ||
-    !source ||
-    source !== indexedSource ||
-    !source.declarations?.some(ts.isTypeParameterDeclaration)
-  ) {
+  if (!mappedParameter || mappedParameter !== indexParameter || !source || source !== indexedSource) {
     return undefined;
   }
   return constraint.type;
@@ -3854,7 +3888,13 @@ function lowerVariable(
   const valueType = node.type ? lowerTypeScriptTypeNodeEvidence(node.type, context) : type;
   const target = ts.isIdentifier(node.name)
     ? { binding: lowerBindingIdentity(node.name, context) }
-    : { pattern: lowerBindingPattern(node.name, context, valueType) };
+    : {
+        pattern: lowerBindingPattern(
+          node.name,
+          context,
+          getIrTypeConstructionTargetShape(valueType, context) ?? valueType,
+        ),
+      };
   if (ts.isIdentifier(node.name) && valueType) addTypeScriptBindingTypeEvidence(node.name, valueType, context);
   return {
     ...target,
@@ -4279,6 +4319,17 @@ function lowerTypeScriptTypeNodeEvidence(
         ts.isInterfaceDeclaration(candidate) || ts.isTypeAliasDeclaration(candidate),
     );
     if (declaration?.getSourceFile().fileName === getCompilerAmbientSurfaceFileName()) {
+      return lowerType(type, context);
+    }
+    // A failed concrete expansion of an authored mapped/conditional alias must not then open the
+    // declaration without its instantiation and report the helper syntax itself. Preserve the named
+    // alias instead: targets can represent an opaque generic boundary, while the successful paths
+    // above still materialize every shape for which the checker supplied closed evidence.
+    if (
+      declaration &&
+      ts.isTypeAliasDeclaration(declaration) &&
+      (ts.isMappedTypeNode(declaration.type) || ts.isConditionalTypeNode(declaration.type))
+    ) {
       return lowerType(type, context);
     }
     if (symbol && declaration && !seen.has(symbol)) {
@@ -5706,6 +5757,11 @@ function getTypeScriptCheckerTypeEvidence(
 ): Readonly<IrType> | undefined {
   const checker = context.checker;
   if (depth > 4) return undefined;
+  // A raw checker type parameter has no call-site instantiation to carry and may belong to a
+  // different generic declaration than the expression currently being lowered. Authored references
+  // already travel through lowerType with their lexical binding; inferred evidence must fall back
+  // rather than leak another function's type parameter into this scope.
+  if (type.flags & ts.TypeFlags.TypeParameter) return undefined;
   if (structural && type.flags & ts.TypeFlags.StringLiteral) {
     return { kind: 'literal', value: (type as ts.StringLiteralType).value };
   }
@@ -5871,13 +5927,45 @@ function getTypeScriptCheckerTypeBinding(
   context: LoweringContext,
 ): IrBindingIdentity | IrTypeBindingIdentity | undefined {
   const direct = context.typeBindings.get(symbol) ?? context.bindings.get(symbol);
-  if (direct) return direct;
+  if (
+    direct &&
+    isTypeScriptNominalCheckerTypeBinding(direct) &&
+    isTypeScriptBindingIntroducedInModule(direct, context)
+  ) {
+    return direct;
+  }
   const aliases = [...context.typeBindings, ...context.bindings].flatMap(([candidate, binding]) =>
-    candidate.flags & ts.SymbolFlags.Alias && context.checker.getAliasedSymbol(candidate) === symbol ? [binding] : [],
+    candidate.flags & ts.SymbolFlags.Alias &&
+    context.checker.getAliasedSymbol(candidate) === symbol &&
+    isTypeScriptNominalCheckerTypeBinding(binding) &&
+    isTypeScriptBindingIntroducedInModule(binding, context)
+      ? [binding]
+      : [],
   );
   const unique = new Map(aliases.map((binding) => [binding.id, binding]));
   if (unique.size > 0) return unique.size === 1 ? [...unique.values()][0] : undefined;
   return lowerTypeScriptInferredTypeImportBinding(symbol, context);
+}
+
+function isTypeScriptNominalCheckerTypeBinding(binding: Readonly<IrBindingIdentity | IrTypeBindingIdentity>): boolean {
+  return binding.space === 'type' || binding.kind === 'class' || binding.kind === 'enum' || binding.kind === 'import';
+}
+
+// Structural checker evidence may open a declaration from another module while retaining the
+// consumer as its provenance boundary. The shared per-module binding cache then contains identities
+// owned by that foreign declaration, but those identities were never introduced by one of the
+// consumer's imports. Never let such a cache hit escape into the consumer IR: recover a stable import
+// route for nominal declarations and let const-derived/object evidence continue structurally.
+function isTypeScriptBindingIntroducedInModule(
+  binding: Readonly<IrBindingIdentity | IrTypeBindingIdentity>,
+  context: LoweringContext,
+): boolean {
+  const options = context.analysisModuleOptions.get(context.moduleSourceFile.fileName);
+  return (
+    options !== undefined &&
+    binding.packageName === options.packageName &&
+    binding.source === relativeSource(context.moduleSourceFile.fileName, options.upstreamDirectory)
+  );
 }
 
 function getTypeScriptCheckerTypeArguments(type: ts.Type, checker: ts.TypeChecker): readonly ts.Type[] {
@@ -6477,9 +6565,15 @@ function lowerTypeScriptInferredTypeImportBinding(
   context: LoweringContext,
 ): IrTypeBindingIdentity | undefined {
   const declaration = symbol.declarations?.find(
-    (candidate): candidate is ts.InterfaceDeclaration | ts.TypeAliasDeclaration =>
-      (ts.isInterfaceDeclaration(candidate) || ts.isTypeAliasDeclaration(candidate)) &&
+    (
+      candidate,
+    ): candidate is ts.ClassDeclaration | ts.EnumDeclaration | ts.InterfaceDeclaration | ts.TypeAliasDeclaration =>
+      (ts.isClassDeclaration(candidate) ||
+        ts.isEnumDeclaration(candidate) ||
+        ts.isInterfaceDeclaration(candidate) ||
+        ts.isTypeAliasDeclaration(candidate)) &&
       ts.isSourceFile(candidate.parent) &&
+      candidate.name !== undefined &&
       isExported(candidate),
   );
   if (!declaration || declaration.getSourceFile().fileName === context.moduleSourceFile.fileName) return undefined;
@@ -6554,10 +6648,14 @@ function getTypeScriptUniqueSamePackageTypeImportRoute(
   const ownerFiles = new Map<string, ts.SourceFile>();
   for (const declaration of symbol.declarations ?? []) {
     if (
-      (!ts.isInterfaceDeclaration(declaration) && !ts.isTypeAliasDeclaration(declaration)) ||
+      (!ts.isClassDeclaration(declaration) &&
+        !ts.isEnumDeclaration(declaration) &&
+        !ts.isInterfaceDeclaration(declaration) &&
+        !ts.isTypeAliasDeclaration(declaration)) ||
       !ts.isSourceFile(declaration.parent) ||
       !isExported(declaration) ||
       hasModifier(declaration, ts.SyntaxKind.DefaultKeyword) ||
+      declaration.name === undefined ||
       declaration.name.text !== symbol.name
     ) {
       continue;

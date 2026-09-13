@@ -125,9 +125,6 @@ function createIrForOfArrayBindingPatternElementType(
     rest: false,
     type: element?.pattern.type ?? ({ kind: 'unknown', source: 'any' } as const),
   }));
-  if (elements.some((element, index) => pattern.elements[index] !== undefined && element.type.kind === 'unknown')) {
-    return undefined;
-  }
   return { elements, kind: 'tuple', readonly: false };
 }
 
@@ -148,17 +145,6 @@ function lowerIrArrayBindingPattern(
         compilerLoweringPassNameArrayBindingPattern,
         pattern,
         'array binding defaults and rest require a statically known tuple type',
-      );
-    }
-    if (
-      representedSourceType.kind !== 'array' &&
-      pattern.elements.some((element) => element !== undefined && element.pattern.type === undefined)
-    ) {
-      throw createCompilerLoweringFailure(
-        'unsupported-ir',
-        compilerLoweringPassNameArrayBindingPattern,
-        pattern,
-        'array binding lowering requires statically known element types',
       );
     }
   }
@@ -204,15 +190,15 @@ function lowerIrArrayBindingPattern(
     if (!element) return [];
     const tupleElement = tuple?.elements[index];
     const sourceElementType = representedSourceType.kind === 'array' ? representedSourceType.element : undefined;
-    const elementType = tupleElement?.type ?? element.pattern.type ?? sourceElementType;
-    if (!elementType) {
-      throw createCompilerLoweringFailure(
-        'unsupported-ir',
-        compilerLoweringPassNameArrayBindingPattern,
-        pattern,
-        `array binding index ${String(index)} requires statically known element type evidence`,
-      );
-    }
+    // Array binding syntax itself proves indexed access. Preserve exact evidence where it exists,
+    // and keep an opaque element where the source checker cannot recover a named iterable's row.
+    // Target backends may represent that boundary dynamically or refuse it on their own terms.
+    const elementType = tupleElement?.type ??
+      element.pattern.type ??
+      sourceElementType ?? {
+        kind: 'unknown',
+        source: 'unknown',
+      };
     const elementPath = `${path}.elements[${String(index)}]`;
     const elementAccess = createIrArrayBindingPatternElementAccess(
       sourceBinding,
@@ -979,15 +965,7 @@ function lowerIrVariableArrayBindingPattern(
       'array binding pattern requires an initializer outside iteration statements',
     );
   }
-  const sourceType = variable.pattern.type ?? variable.type;
-  if (!sourceType) {
-    throw createCompilerLoweringFailure(
-      'unsupported-ir',
-      compilerLoweringPassNameArrayBindingPattern,
-      analysis.sourceIdentity,
-      'array binding lowering requires a statically known tuple type',
-    );
-  }
+  const sourceType = variable.pattern.type ?? variable.type ?? ({ kind: 'unknown', source: 'unknown' } as const);
   const temporaryBinding = createIrArrayBindingPatternTemporary(variable.pattern, path);
   return [
     {
