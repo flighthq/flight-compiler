@@ -213,6 +213,7 @@ const haxeRuntimeExternalSymbolBindings = [
     targetName: 'js.html.CanvasRenderingContext2D',
   },
   { kind: 'native', sourceName: 'CanvasRenderingContext2DSettings', space: 'type', targetName: 'Dynamic' },
+  { kind: 'native', sourceName: 'CSSStyleDeclaration', space: 'type', targetName: 'js.html.CSSStyleDeclaration' },
   { capability: 'data-view', kind: 'runtime', sourceName: 'DataView', space: 'type', targetName: '_DataView' },
   { capability: 'data-view', kind: 'runtime', sourceName: 'DataView', space: 'value', targetName: '_DataView' },
   { capability: 'date', kind: 'runtime', sourceName: 'Date', space: 'type', targetName: '_Date' },

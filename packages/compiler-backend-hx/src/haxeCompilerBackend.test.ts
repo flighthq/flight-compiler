@@ -293,6 +293,46 @@ describe('createHaxeCompilerBackend', () => {
     expect(output).toContain('return flighthq.math.Helper.helper();');
   });
 
+  it('plans exported imports whose names resolve through distinct barrel routes', () => {
+    const first = lowerPackage('@flighthq/types', 'first.ts', 'export interface First { first: number }').module;
+    const second = lowerPackage('@flighthq/types', 'second.ts', 'export interface Second { second: number }').module;
+    const hidden = lowerPackage('@flighthq/types', 'hidden.ts', 'export interface Hidden { hidden: number }').module;
+    const facade = lowerPackage(
+      '@flighthq/model',
+      'facade.ts',
+      "import type { First, Second, Hidden } from '@flighthq/types/contract'; export type { First, Second }; export function keep(value: Hidden): Hidden { return value; }",
+    ).module;
+    const session = createHaxeCompilerBackend().createEmissionSession!({
+      moduleResolution: {
+        edges: [
+          {
+            importer: { name: facade.name, packageName: facade.packageName, source: facade.source },
+            importedNames: ['First'],
+            specifier: '@flighthq/types/contract',
+            target: { packageName: first.packageName, source: first.source },
+          },
+          {
+            importer: { name: facade.name, packageName: facade.packageName, source: facade.source },
+            importedNames: ['Hidden'],
+            specifier: '@flighthq/types/contract',
+            target: { packageName: hidden.packageName, source: hidden.source },
+          },
+          {
+            importer: { name: facade.name, packageName: facade.packageName, source: facade.source },
+            importedNames: ['Second'],
+            specifier: '@flighthq/types/contract',
+            target: { packageName: second.packageName, source: second.source },
+          },
+        ],
+        schema: 'flight-compiler-module-resolution/1',
+      },
+      modules: [facade, first, hidden, second],
+      options: {},
+    });
+
+    expect(() => session.emitModule(facade)).not.toThrow();
+  });
+
   it('forwards an explicit value re-export through an intermediate star barrel', () => {
     const helper = lower('helper.ts', 'export function helper(): number { return 1; }').module;
     const barrel = lower('barrel.ts', "export * from './helper';").module;
@@ -321,7 +361,7 @@ describe('createHaxeCompilerBackend', () => {
     expect(session.emitModule(facade)[0]!.contents).toContain('return flighthq.math.Helper.helper();');
   });
 
-  it('refuses mutable, namespace, and ambiguous star facade values', () => {
+  it('forwards mutable star facade values and refuses namespace and ambiguous star values', () => {
     const mutable = lower('mutable.ts', 'export let value: number = 1;').module;
     const mutableBarrel = lower('mutable-barrel.ts', "export * from './mutable';").module;
     const mutableResolution = {
@@ -338,13 +378,13 @@ describe('createHaxeCompilerBackend', () => {
       ],
       schema: 'flight-compiler-module-resolution/1' as const,
     };
-    expect(() =>
-      createHaxeCompilerBackend().emitModule(mutableBarrel, {
-        moduleResolution: mutableResolution,
-        modules: [mutableBarrel, mutable],
-        options: {},
-      }),
-    ).toThrow('re-exporting mutable value value requires a live Haxe module facade');
+    const mutableOutput = createHaxeCompilerBackend().emitModule(mutableBarrel, {
+      moduleResolution: mutableResolution,
+      modules: [mutableBarrel, mutable],
+      options: {},
+    })[0]!.contents;
+    expect(mutableOutput).toContain('var value(get, never):Float;');
+    expect(mutableOutput).toContain('inline function get_value():Float return flighthq.math.Mutable.value;');
 
     const origin = lower('origin.ts', 'export const value: number = 1;').module;
     const namespace = lower('namespace.ts', "export * as values from './origin';").module;
@@ -1472,6 +1512,20 @@ describe('emitIrModuleHaxe', () => {
     const output = emitIrModuleHaxe(result.module).contents;
 
     expect(output).toContain('typedef Child = { value:Float, own:Bool };');
+  });
+
+  it('represents private ambient host heritage through the Haxe target binding', () => {
+    const result = lower(
+      'ambient-interface-inheritance.ts',
+      `interface Style extends CSSStyleDeclaration { webkitClipPath: string; }
+       export function set(style: CSSStyleDeclaration): void {
+         (style as Style).webkitClipPath = '';
+       }`,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('typedef Style = { webkitClipPath:String };');
+    expect(output).toContain('cast(style).webkitClipPath = "";');
   });
 
   it('emits an implemented shape as a nominal interface and leaves an unimplemented one structural', () => {
@@ -5093,6 +5147,16 @@ describe('emitIrModuleHaxe re-export facade', () => {
     expect(output).toContain('final value:Float = flighthq.math.Helper.value;');
   });
 
+  it('forwards a mutable value re-export through a live read-only property', () => {
+    const helper = lower('helper.ts', 'export let value: number = 42;');
+    const facade = lower('facade.ts', `export { value } from './helper.js';`);
+    const backend = createHaxeCompilerBackend();
+    const output = backend.emitModule(facade.module, { modules: [facade.module, helper.module], options: {} })[0]!
+      .contents;
+    expect(output).toContain('var value(get, never):Float;');
+    expect(output).toContain('inline function get_value():Float return flighthq.math.Helper.value;');
+  });
+
   it('aliases a nominal value re-export to preserve constructor and static-member access', () => {
     const helper = lower('helper.ts', 'export enum Kind { Value }');
     const facade = lower('facade.ts', `export { Kind } from './helper.js';`);
@@ -8612,6 +8676,22 @@ describe('emitIrModuleHaxe nullable return', () => {
         ).module,
       ),
     ).toThrow('returning nullable binding found requires Haxe narrowing evidence');
+  });
+
+  it('refuses an undefined comparison when a local alias also admits null', () => {
+    const result = lower(
+      'aliased-nullish-map-return.ts',
+      `type Value = boolean | number | string | null;
+       export function read(values: Map<string, Value>): Value {
+         const memo = values.get('key');
+         if (memo !== undefined) return memo;
+         return null;
+       }`,
+    );
+
+    expect(() => emitIrModuleHaxe(result.module)).toThrow(
+      'operator !== against undefined requires Haxe nullability lowering',
+    );
   });
 });
 

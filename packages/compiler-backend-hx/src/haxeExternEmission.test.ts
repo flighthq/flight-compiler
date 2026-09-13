@@ -63,6 +63,19 @@ describe('emitIrModuleHaxeExtern', () => {
     expect(holders[0]!.contents.indexOf('createVector2')).toBeLessThan(holders[0]!.contents.indexOf('distanceBetween'));
   });
 
+  it('erases private ambient host heritage through the Haxe target policy', () => {
+    const module = lower(
+      '@flighthq/dom',
+      'style.ts',
+      `interface Style extends CSSStyleDeclaration { webkitClipPath: string; }
+       export function set(style: CSSStyleDeclaration): void {}`,
+    );
+
+    const holder = findFile(emitIrModuleHaxeExtern(module), 'flighthq/_js/_fn/Dom.hx');
+
+    expect(holder.contents).toContain('static function set(style:js.html.CSSStyleDeclaration):Void;');
+  });
+
   it('emits only the package contract facade and applies explicit precedence over star collisions', () => {
     const public_ = lower(
       '@flighthq/geometry',

@@ -4,6 +4,9 @@ import type { CompilerSourceIdentity } from './compilerSourceIdentity.js';
 import type { IrTypeReference } from './compilerTypeIntermediateRepresentation.js';
 
 export interface CompilerInterfaceInheritanceLoweringOptions {
+  readonly eraseAmbientHeritage?:
+    | ((reference: Readonly<IrTypeReference>, declaration: Readonly<IrInterfaceDeclaration>) => boolean)
+    | undefined;
   readonly eraseAmbientUtilityHeritage?:
     | ((reference: Readonly<IrTypeReference>, declaration: Readonly<IrInterfaceDeclaration>) => boolean)
     | undefined;

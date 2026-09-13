@@ -7,6 +7,7 @@ Durable implementation plans and migration state live here. These documents comp
 - [Compiler breadth](compiler-breadth.md): missing cells, the domains that should not become packages, and whether each existing package owns one irreducible job.
 - [Compiler naming](compiler-naming.md): globally unique concept files, exported declaration identity, and verb–type–modifier API grammar.
 - [flight-cpp adoption register](flight-cpp-adoption.md): runtime, host-binding, build, ABI, and regeneration work incubated here until the downstream repository adopts it.
+- [flight-hx adoption register](flight-hx-adoption.md): current full-SDK emission counts and the runtime, host-binding, public-facade, and build work required downstream.
 
 ## Conventions
 

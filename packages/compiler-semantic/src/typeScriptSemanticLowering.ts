@@ -5653,9 +5653,15 @@ function getTypeScriptNullishComparisonEvidence(
   const type = getTypeScriptExpressionBindingTypeEvidence(operand, context);
   if (!type) return undefined;
   const members = type.kind === 'union' ? type.types : [type];
+  const declared = getTypeScriptExpressionDeclaredType(operand, context);
+  const declaredMembers = declared?.isUnion() ? declared.types : declared ? [declared] : [];
   return {
-    admitsNull: members.some((member) => member.kind === 'null'),
-    admitsUndefined: members.some((member) => member.kind === 'undefined'),
+    admitsNull:
+      members.some((member) => member.kind === 'null') ||
+      declaredMembers.some((member) => (member.flags & ts.TypeFlags.Null) !== 0),
+    admitsUndefined:
+      members.some((member) => member.kind === 'undefined') ||
+      declaredMembers.some((member) => (member.flags & (ts.TypeFlags.Undefined | ts.TypeFlags.Void)) !== 0),
     literal,
   };
 }

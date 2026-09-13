@@ -85,16 +85,18 @@ export function emitIrModuleHaxeExternWithContext(
   const inheritancePass =
     interfaceInheritancePass ??
     createCompilerLoweringPassInterfaceInheritance(sourceModules, moduleResolution, {
+      eraseAmbientHeritage: (reference, declaration) =>
+        !declaration.exported &&
+        reference.reference.kind === 'ambient' &&
+        getCompilerRuntimeExternalSymbolTargetHaxe(reference.reference.name, 'type') !== undefined,
       eraseAmbientUtilityHeritage: (reference, declaration) =>
         ambientUtilityHeritageTargets.has(declaration.binding.id) ||
         canEraseCompilerAmbientUtilityHeritageHaxe(reference),
     });
-  const module = lowerIrModuleWithCompilerPasses(sourceModule, [
-    inheritancePass,
-  ]);
+  const module = lowerIrModuleWithCompilerPasses(sourceModule, [inheritancePass]);
   const modules = replaceIrModuleHaxeExtern(sourceModules, module);
   const contract = packageContract
-    ? modules.find((candidate) => isSameModuleHaxeExtern(candidate, packageContract)) ?? packageContract
+    ? (modules.find((candidate) => isSameModuleHaxeExtern(candidate, packageContract)) ?? packageContract)
     : undefined;
   const context: HaxeExternEmissionContext = {
     ambientUtilityHeritageTargets,
@@ -286,17 +288,17 @@ function collectPackageValuesHaxeExtern(
         return [{ declaration: location.declaration, exportName: slot.exportName, module: location.module }];
       })
     : context.modules
-    .filter((module) => module.packageName === packageName)
-    .flatMap((module) =>
-      module.declarations.flatMap((declaration) => {
-        if (declaration.kind !== 'function' && declaration.kind !== 'variable') return [];
-        return getLocalExportNamesHaxeExtern(declaration, module).map((exportName) => ({
-          declaration,
-          exportName,
-          module,
-        }));
-      }),
-    );
+        .filter((module) => module.packageName === packageName)
+        .flatMap((module) =>
+          module.declarations.flatMap((declaration) => {
+            if (declaration.kind !== 'function' && declaration.kind !== 'variable') return [];
+            return getLocalExportNamesHaxeExtern(declaration, module).map((exportName) => ({
+              declaration,
+              exportName,
+              module,
+            }));
+          }),
+        );
   return values.sort(
     (left, right) =>
       compareTextCodeUnits(left.exportName, right.exportName) ||
@@ -481,7 +483,10 @@ function emitPrivateInterfaceReferenceHaxeExtern(
       candidate.kind === 'interface' && candidate.binding.id === location.declaration.binding.id,
   );
   if (!declaration) {
-    emissionErrorHaxeExtern(context, `private interface ${location.declaration.binding.name} disappeared during lowering`);
+    emissionErrorHaxeExtern(
+      context,
+      `private interface ${location.declaration.binding.name} disappeared during lowering`,
+    );
   }
   let plan: CompilerStructuralTypeSubstitutionPlan;
   try {
@@ -516,9 +521,7 @@ function getInterfaceLocationHaxeExtern(
   return context.modules
     .flatMap((module) =>
       module.declarations.flatMap((declaration) =>
-        declaration.kind === 'interface' && declaration.binding.id === binding.id
-          ? [{ declaration, module }]
-          : [],
+        declaration.kind === 'interface' && declaration.binding.id === binding.id ? [{ declaration, module }] : [],
       ),
     )
     .at(0);

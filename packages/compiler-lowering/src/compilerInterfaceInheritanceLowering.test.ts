@@ -361,6 +361,32 @@ describe('createCompilerLoweringPassInterfaceInheritance', () => {
     ).toThrow('inherits utility with nonliteral property keys');
   });
 
+  it('erases direct ambient heritage only through an explicit target policy', () => {
+    const module = lower(
+      'ambient-base.ts',
+      'interface HostStyle { color: string } export interface Style extends HostStyle { accent: string }',
+    );
+    const style = getInterface(module, 'Style');
+    const ambient = replaceInterface(module, style, {
+      extends: [{ kind: 'named', reference: { kind: 'ambient', name: 'HostStyle' }, typeArguments: [] }],
+    });
+
+    expect(() =>
+      lowerIrModuleWithCompilerPasses(ambient, [createCompilerLoweringPassInterfaceInheritance([ambient])]),
+    ).toThrow('inherits a nonlocal interface that cannot be structurally resolved');
+
+    const output = lowerIrModuleWithCompilerPasses(ambient, [
+      createCompilerLoweringPassInterfaceInheritance([ambient], undefined, {
+        eraseAmbientHeritage: (reference, declaration) =>
+          declaration.binding.name === 'Style' &&
+          reference.reference.kind === 'ambient' &&
+          reference.reference.name === 'HostStyle',
+      }),
+    ]);
+
+    expect(getInterface(output, 'Style')).toMatchObject({ extends: [], properties: [{ name: 'accent' }] });
+  });
+
   it('flattens Partial heritage over a local generic structure', () => {
     const module = lower(
       'partial-heritage.ts',

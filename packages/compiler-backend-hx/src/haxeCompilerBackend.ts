@@ -146,6 +146,10 @@ export function createHaxeCompilerBackend(): CompilerBackend<HaxeCompilerBackend
         modules.flatMap((module) => [...createAmbientUtilityHeritageTargetsHaxe(module).keys()]),
       );
       const interfaceInheritancePass = createCompilerLoweringPassInterfaceInheritance(modules, moduleResolution, {
+        eraseAmbientHeritage: (reference, declaration) =>
+          !declaration.exported &&
+          reference.reference.kind === 'ambient' &&
+          getCompilerRuntimeExternalSymbolTargetHaxe(reference.reference.name, 'type') !== undefined,
         eraseAmbientUtilityHeritage: (reference, declaration) =>
           ambientUtilityHeritageBindingIds.has(declaration.binding.id) ||
           canEraseCompilerAmbientUtilityHeritageHaxe(reference),
@@ -212,8 +216,7 @@ function getPackageContractModuleHaxe(
 ): Readonly<IrModule> | undefined {
   const candidates = modules.filter(
     (module) =>
-      module.packageName === packageName &&
-      /(?:^|\/)contract\.[cm]?tsx?$/u.test(normalizePathPortable(module.source)),
+      module.packageName === packageName && /(?:^|\/)contract\.[cm]?tsx?$/u.test(normalizePathPortable(module.source)),
   );
   if (candidates.length === 0) return undefined;
   const publicTargets = new Set(
@@ -262,6 +265,10 @@ function emitIrModuleHaxeWithContext(
     createCompilerLoweringPassCStyleFor(),
     interfaceInheritancePass ??
       createCompilerLoweringPassInterfaceInheritance(sourceModules, moduleResolution, {
+        eraseAmbientHeritage: (reference, declaration) =>
+          !declaration.exported &&
+          reference.reference.kind === 'ambient' &&
+          getCompilerRuntimeExternalSymbolTargetHaxe(reference.reference.name, 'type') !== undefined,
         eraseAmbientUtilityHeritage: (reference, declaration) =>
           ambientUtilityHeritageTargets.has(declaration.binding.id) ||
           canEraseCompilerAmbientUtilityHeritageHaxe(reference),
@@ -1359,9 +1366,7 @@ function emitObjectAccessorExpressionHaxe(expression: Readonly<IrObjectExpressio
   }
   const className = getGeneratedTargetNameHaxe('ObjectAccessor', context);
   const constructorParameters = expression.members.map((member, index) =>
-    member.kind === 'getAccessor'
-      ? `_getter_${String(index)}:()->Dynamic`
-      : `_value_${String(index)}:Dynamic`,
+    member.kind === 'getAccessor' ? `_getter_${String(index)}:()->Dynamic` : `_value_${String(index)}:Dynamic`,
   );
   const constructorAssignments = expression.members.map((member, index) => {
     if (member.kind === 'getAccessor') return `this._getter_${String(index)} = _getter_${String(index)};`;
@@ -1477,10 +1482,9 @@ function emitImports(imports: readonly IrImport[], context: EmitContext): string
   return [...emitted].sort();
 }
 
-// Haxe re-exports a type by aliasing it and cannot re-export a value at all: a static lives on its
-// own module's class, and forwarding to it would need the signature this module does not have. So a
-// type facade is a typedef and a value facade is refused with the reason, rather than emitted as an
-// import that only this module can see.
+// Haxe re-exports types with aliases and values with forwarding module fields. Mutable bindings are
+// exposed through a read-only property: every access calls through to the source module, preserving
+// JavaScript's live re-export semantics without allowing assignment through the exported binding.
 // The source's own closure with its first two parameters exchanged. Wrapping it in another closure
 // would work too, and would put a call where the source wrote none; exchanging the names leaves the
 // body exactly as written.
@@ -1584,10 +1588,11 @@ function emitStarReexportFacadeHaxe(
       continue;
     }
     if (valueTarget.declaration.kind === 'variable') {
-      if (valueTarget.declaration.mutable) {
-        emissionError(context, `re-exporting mutable value ${exportName} requires a live Haxe module facade`);
-      }
       const type = valueTarget.declaration.type ? emitType(valueTarget.declaration.type, context) : 'Dynamic';
+      if (valueTarget.declaration.mutable) {
+        valueLines.push(...emitMutableValueReexportForwardingHaxe(valueName, sourceName, type, modulePath, context));
+        continue;
+      }
       valueLines.push(`final ${valueName}:${type} = ${modulePath}.${sourceName};`);
       continue;
     }
@@ -1679,16 +1684,34 @@ function emitValueReexportTargetHaxe(
     );
   }
   if (target.declaration.kind === 'variable') {
-    if (target.declaration.mutable) {
-      emissionError(context, `re-exporting mutable value ${exportName} requires a live Haxe module facade`);
-    }
     const type = target.declaration.type ? emitType(target.declaration.type, context) : 'Dynamic';
+    if (target.declaration.mutable) {
+      return emitMutableValueReexportForwardingHaxe(safeHaxeName(exportName), sourceName, type, modulePath, context);
+    }
     return [`final ${safeHaxeName(exportName)}:${type} = ${modulePath}.${sourceName};`];
   }
   if (target.declaration.kind === 'class' || target.declaration.kind === 'enum') {
     return [`typedef ${safeHaxeTypeName(exportName)} = ${modulePath}.${sourceName};`];
   }
   emissionError(context, `re-exporting value ${exportName} requires Haxe module-facade lowering`);
+}
+
+function emitMutableValueReexportForwardingHaxe(
+  targetName: string,
+  sourceName: string,
+  type: string,
+  modulePath: string,
+  context: EmitContext,
+): string[] {
+  const getterName = `get_${targetName}`;
+  if (context.generatedNames.has(getterName)) {
+    emissionError(context, `mutable value re-export ${targetName} conflicts with Haxe accessor ${getterName}`);
+  }
+  context.generatedNames.add(getterName);
+  return [
+    `var ${targetName}(get, never):${type};`,
+    `inline function ${getterName}():${type} return ${modulePath}.${sourceName};`,
+  ];
 }
 
 function emitFunctionReexportForwardingHaxe(
@@ -2724,12 +2747,13 @@ function createCompilerModuleFacadePlannerHaxe(
         exported.kind === 'local' && exported.binding.kind === 'import' ? [exported.binding.id] : [],
       ),
     );
-    const requests: { importedName?: string; required: boolean; specifier: string }[] = [
+    const requests: { importedName?: string; namedRoute: boolean; required: boolean; specifier: string }[] = [
       ...module.imports.flatMap((imported) =>
         imported.bindings
           .filter((binding) => exportedImportBindingIds.has(binding.binding.id))
           .map((binding) => ({
             ...(binding.imported === '*' || binding.imported === 'default' ? {} : { importedName: binding.imported }),
+            namedRoute: binding.imported !== '*' && binding.imported !== 'default',
             required: true,
             specifier: imported.specifier,
           })),
@@ -2739,6 +2763,7 @@ function createCompilerModuleFacadePlannerHaxe(
           ? [
               {
                 ...(exported.kind === 'reexport' ? { importedName: exported.imported } : {}),
+                namedRoute: false,
                 required: true,
                 specifier: exported.specifier,
               },
@@ -2764,10 +2789,11 @@ function createCompilerModuleFacadePlannerHaxe(
         if (targets) targets.add(getHaxeCompilerModuleKey(target));
         else requiredTargetsByModule.set(getHaxeCompilerModuleKey(module), new Set([getHaxeCompilerModuleKey(target)]));
       }
-      const key = `${request.specifier}\0${target.packageName}\0${target.source}`;
+      const key = `${request.specifier}\0${request.namedRoute ? (request.importedName ?? '*') : '*'}\0${target.packageName}\0${target.source}`;
       if (seen.has(key)) continue;
       seen.add(key);
       dependencies.push({
+        ...(request.namedRoute && request.importedName ? { importedNames: [request.importedName] } : {}),
         importer: { name: module.name, packageName: module.packageName, source: module.source },
         specifier: request.specifier,
         target: { name: target.name, packageName: target.packageName, source: target.source },
@@ -2822,19 +2848,31 @@ function createCompilerModuleFacadePlannerHaxe(
           reachableModuleKeys.has(getHaxeCompilerModuleKey(dependency.importer)) &&
           reachableModuleKeys.has(getHaxeCompilerModuleKey(dependency.target)),
       );
-      const linkedSpecifiers = new Map<string, Set<string>>();
+      const linkedRequests = new Map<string, Map<string, { all: boolean; importedNames: Set<string> }>>();
       for (const dependency of plannedDependencies) {
         const key = `${dependency.importer.packageName}\0${dependency.importer.source}`;
-        const specifiers = linkedSpecifiers.get(key);
-        if (specifiers) specifiers.add(dependency.specifier);
-        else linkedSpecifiers.set(key, new Set([dependency.specifier]));
+        const requests = linkedRequests.get(key) ?? new Map();
+        const request = requests.get(dependency.specifier) ?? { all: false, importedNames: new Set<string>() };
+        if (dependency.importedNames) dependency.importedNames.forEach((name) => request.importedNames.add(name));
+        else request.all = true;
+        requests.set(dependency.specifier, request);
+        linkedRequests.set(key, requests);
       }
       const plannedModules = facadeModules
         .filter((module) => reachableModuleKeys.has(getHaxeCompilerModuleKey(module)))
         .map((module) => {
           const key = `${module.packageName}\0${module.source}`;
-          const specifiers = linkedSpecifiers.get(key) ?? new Set<string>();
-          return { ...module, imports: module.imports.filter((imported) => specifiers.has(imported.specifier)) };
+          const requests = linkedRequests.get(key) ?? new Map();
+          return {
+            ...module,
+            imports: module.imports.flatMap((imported) => {
+              const request = requests.get(imported.specifier);
+              if (!request) return [];
+              if (request.all) return [imported];
+              const bindings = imported.bindings.filter((binding) => request.importedNames.has(binding.imported));
+              return bindings.length > 0 ? [{ ...imported, bindings }] : [];
+            }),
+          };
         });
       const evaluation = createCompilerModuleEvaluationPlan({
         dependencies: plannedDependencies,

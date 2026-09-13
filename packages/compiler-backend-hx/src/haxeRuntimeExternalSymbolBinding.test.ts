@@ -12,7 +12,7 @@ describe('createCompilerRuntimeExternalSymbolBindingPlanHaxe', () => {
     const plan = createCompilerRuntimeExternalSymbolBindingPlanHaxe();
 
     expect(plan.contract).toBe('flight-runtime-contract/2');
-    expect(plan.bindings).toHaveLength(135);
+    expect(plan.bindings).toHaveLength(136);
     expect(plan.bindings.filter(({ externalSymbol }) => externalSymbol.sourceName === 'Promise')).toEqual([
       {
         capability: 'task',
@@ -35,6 +35,10 @@ describe('createCompilerRuntimeExternalSymbolBindingPlanHaxe', () => {
     });
     expect(plan.bindings).toContainEqual({
       externalSymbol: { sourceName: 'Error', space: 'value' },
+      kind: 'native',
+    });
+    expect(plan.bindings).toContainEqual({
+      externalSymbol: { sourceName: 'CSSStyleDeclaration', space: 'type' },
       kind: 'native',
     });
     expect(plan.bindings).toContainEqual({
@@ -83,7 +87,7 @@ describe('createCompilerRuntimeExternalSymbolBindingPlanHaxe', () => {
     const second = createCompilerRuntimeExternalSymbolBindingPlanHaxe();
 
     (first.bindings as unknown[]).pop();
-    expect(second.bindings).toHaveLength(135);
+    expect(second.bindings).toHaveLength(136);
   });
 });
 

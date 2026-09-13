@@ -6708,6 +6708,27 @@ it('retains nullable object evidence returned by a local call', () => {
   });
 });
 
+it('retains nullish comparison evidence hidden behind a local type alias', () => {
+  const result = lower(
+    'aliased-nullish-compare.ts',
+    `type Value = boolean | number | string | null;
+     export function read(values: Map<string, Value>): Value {
+       const memo = values.get('key');
+       if (memo !== undefined) return memo;
+       return null;
+     }`,
+  );
+  const read = result.module.declarations.find(
+    (declaration) => declaration.kind === 'function' && declaration.binding.name === 'read',
+  );
+  const compared = read?.kind === 'function' && read.body[1]?.kind === 'if' ? read.body[1].condition : undefined;
+
+  expect(compared).toMatchObject({
+    kind: 'binary',
+    semantics: { nullishComparison: { admitsNull: true, admitsUndefined: true, literal: 'undefined' } },
+  });
+});
+
 it('lowers destructured catch clause and finally block in try statement', () => {
   const result = lower(
     'try-catch.ts',

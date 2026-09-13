@@ -284,6 +284,16 @@ function getIrInterfaceUtilityHeritagePropertiesFlattened(
   substitutions: Readonly<CompilerStructuralTypeSubstitutionPlan>,
   context: InterfaceInheritanceLoweringContext,
 ): readonly IrObjectTypeProperty[] | undefined {
+  // A backend may intentionally represent a direct ambient base through its host ABI rather than
+  // copying a platform declaration into the portable structural surface. This is opt-in because
+  // erasing an unknown base without a target-owned representation would lose its contract.
+  if (
+    reference.reference.kind === 'ambient' &&
+    location.declaration.kind === 'interface' &&
+    context.options.eraseAmbientHeritage?.(reference, location.declaration)
+  ) {
+    return [];
+  }
   // Semantic lowering has already materialized a successfully lowered ReturnType heritage into the
   // interface's own property list. There is no callable type left to resolve at this structural pass,
   // and retaining the ambient utility edge would turn complete evidence back into a nonlocal refusal.
