@@ -1519,7 +1519,7 @@ function getTypeScriptMapLookupResultTypeEvidence(
   const value = receiver.typeArguments[1];
   if (!value || value.kind === 'unknown') return undefined;
   const values = value.kind === 'union' ? value.types : [value];
-  return commonType([values[0]!, ...values.slice(1), { kind: 'undefined' }]);
+  return commonType([{ kind: 'undefined' }, values[0]!, ...values.slice(1)]);
 }
 
 function lowerInvocationSemantics(
@@ -4526,7 +4526,7 @@ function getTypeScriptWrittenNewExpressionTypeEvidence(
   if (reference.kind === 'super' || reference.kind === 'this') return undefined;
   return {
     kind: 'named',
-    reference,
+    reference: reference.kind === 'binding' ? { ...reference, path: [] } : reference,
     typeArguments: node.typeArguments.map((type) => lowerTypeScriptTypeNodeEvidence(type, context)),
   };
 }
