@@ -815,7 +815,12 @@ describe('createCppCompilerBackend', () => {
        export function getLogChannelLevel(channel: string): LogLevel | null {
          return channelLevels.get(channel) ?? null;
        }
-       const channelLevels = new Map<string, LogLevel>();`,
+       export function hasSerializer(kind: string): boolean {
+         const serializer = serializers.get(kind);
+         return serializer !== undefined;
+       }
+       const channelLevels = new Map<string, LogLevel>();
+       const serializers = new Map<string, (value: unknown) => Record<string, unknown>>();`,
       ts.ScriptTarget.Latest,
       true,
     );
@@ -853,6 +858,9 @@ describe('createCppCompilerBackend', () => {
     }).emitModule(modules[2]!)[0]!.contents;
 
     expect(emitted).toContain('return channel_levels.get(channel);');
+    expect(emitted).toContain(
+      'std::optional<std::function<std::unordered_map<flight::String, auto>(auto)>> serializer',
+    );
 
     const lookalike = lower(
       'lookalike-get.ts',

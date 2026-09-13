@@ -4467,6 +4467,13 @@ function inferInitializerType(node: ts.Expression, context: LoweringContext): Ir
   if (node.kind === ts.SyntaxKind.NullKeyword) return { kind: 'null' };
   if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node))
     return { kind: 'primitive', name: 'string' };
+  if (ts.isCallExpression(node)) {
+    const signature = getTypeScriptInvocationSignatureResolution(node, context.checker);
+    const callResult =
+      getTypeScriptMapLookupResultTypeEvidence(node, context) ??
+      getTypeScriptWrittenCallResultTypeEvidence(signature, context);
+    if (callResult) return callResult;
+  }
   const writtenConstruction = getTypeScriptWrittenNewExpressionTypeEvidence(node, context);
   if (writtenConstruction) return writtenConstruction;
   if (ts.isArrayLiteralExpression(node)) {
