@@ -192,7 +192,7 @@ describe('collectIrModulesRuntimeExternalSymbolIdentities', () => {
     ]);
   });
 
-  it('treats callable projections as intrinsic while retaining their subjects and runtime-backed views', () => {
+  it('treats unresolved callable projections as intrinsic while retaining runtime-backed views', () => {
     const lowered = lowerTypeScriptSource(
       ts.createSourceFile(
         '/flight/packages/runtime/src/callable-utilities.ts',
@@ -212,9 +212,6 @@ describe('collectIrModulesRuntimeExternalSymbolIdentities', () => {
       { sourceName: 'ArrayBufferLike', space: 'type' },
       { sourceName: 'ArrayLike', space: 'type' },
       { sourceName: 'ArrayStorage', space: 'type' },
-      { sourceName: 'ParameterStorage', space: 'type' },
-      { sourceName: 'ReturnStorage', space: 'type' },
-      { sourceName: 'externalCall', space: 'value' },
     ]);
   });
 
@@ -320,6 +317,7 @@ describe('collectIrModulesRuntimeExternalSymbolIdentities', () => {
     expect(collectIrModulesRuntimeExternalSymbolIdentities([lowered.module])).toEqual([
       { sourceName: 'Date', space: 'value' },
       { sourceName: 'Math', space: 'value' },
+      { sourceName: 'Promise', space: 'type' },
       { sourceName: 'Promise', space: 'value' },
     ]);
   });

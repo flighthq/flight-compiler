@@ -291,7 +291,7 @@ describe('getCompilerRuntimeExternalSymbolTargetHaxe', () => {
     expect(getCompilerRuntimeExternalSymbolTargetHaxe('Uint8Array', 'value', 'custom.runtime')).toBe(
       'custom.runtime._UInt8Array',
     );
-    expect(getCompilerRuntimeExternalSymbolTargetHaxe('Boolean', 'value')).toBeUndefined();
+    expect(getCompilerRuntimeExternalSymbolTargetHaxe('Boolean', 'value')).toBe('js.Syntax.code("Boolean")');
     expect(getCompilerRuntimeExternalSymbolTargetHaxe('Math', 'type')).toBeUndefined();
     expect(getCompilerRuntimeExternalSymbolTargetHaxe('Unmapped', 'type')).toBeUndefined();
   });
