@@ -730,7 +730,7 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
           return `js.Syntax.${operation}(${emitExpression(operand, context)}, ${literal})`;
         }
         // JavaScript loose equality deliberately treats null and undefined as the same absent value.
-        const negated = expression.operator === '!=' || expression.operator === '!==';
+        const negated = expression.operator === '!=';
         return `(${emitExpression(operand, context)} ${negated ? '!=' : '=='} null)`;
       }
       const ambientPresenceTest = getTypeofBoundAmbientPresenceTestHaxe(expression, context);
@@ -1938,9 +1938,10 @@ function hasIrTypeAbsentMemberHaxe(
   ) {
     return false;
   }
+  const bindingId = type.reference.binding.id;
   const declaration = module.declarations.find(
     (candidate): candidate is IrTypeAliasDeclaration =>
-      candidate.kind === 'typeAlias' && candidate.binding.id === type.reference.binding.id,
+      candidate.kind === 'typeAlias' && candidate.binding.id === bindingId,
   );
   if (!declaration) return false;
   try {
