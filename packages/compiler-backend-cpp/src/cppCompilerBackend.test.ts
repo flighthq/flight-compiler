@@ -819,6 +819,20 @@ describe('createCppCompilerBackend', () => {
     expect(emitted).toContain('std::optional<flight::Uint8Array>{flight::Uint8Array(length)}');
   });
 
+  it('recovers common property evidence from every variant alternative', () => {
+    const module = lower(
+      'variant-property-evidence.ts',
+      `type Shape = { kind: 'circle'; radius: number } | { kind: string };
+       export function shapeKind(shape: Shape): string | null {
+         return shape.kind;
+       }`,
+    ).module;
+
+    const emitted = emitIrModuleCpp(module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    expect(emitted).toContain('std::optional<flight::String>{std::visit(');
+  });
+
   it('recovers imported Map.get value evidence without guessing for lookalike get methods', () => {
     const level = ts.createSourceFile(
       '/flight/packages/types/src/logLevel.ts',

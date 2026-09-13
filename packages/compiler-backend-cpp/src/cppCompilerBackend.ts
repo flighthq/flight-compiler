@@ -5063,6 +5063,12 @@ function getIrObjectPropertyTypeCpp(
   propertyName: string,
   context: EmitContext,
 ): Readonly<IrType> | undefined {
+  const union = getIrUnionTypeCpp(type, context, new Set());
+  if (union) {
+    const memberTypes = union.types.map((member) => getIrObjectPropertyTypeCpp(member, propertyName, context));
+    if (memberTypes.some((member) => !member)) return undefined;
+    return createIrTypeEvidenceUnionCpp(memberTypes.map((member) => member!));
+  }
   if (type.kind === 'object') {
     return getIrObjectPropertyReadTypeCpp(type.properties.find((property) => property.name === propertyName));
   }
