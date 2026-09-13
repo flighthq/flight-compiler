@@ -3895,18 +3895,26 @@ describe('lowerTypeScriptSource', () => {
   });
 
   it('resolves authored conditional arguments nested in bundled mapped utilities', () => {
-    const sourceFile = ts.createSourceFile(
-      '/flight/packages/math/src/project-conditional.ts',
+    const types = ts.createSourceFile(
+      '/flight/packages/math/src/project-conditional-types.ts',
       `type PartialNode<Value> = {
         data?: Partial<Value extends { data: infer Data } ? Data : never>
       } & Partial<Omit<Value, 'data'>>;
-      interface Node { data: { value: number } }
+      export { PartialNode };
+      export interface Node { data: { value: number } }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const consumer = ts.createSourceFile(
+      '/flight/packages/math/src/project-conditional-consumer.ts',
+      `import type { Node, PartialNode } from './project-conditional-types.js';
       export function read(node: PartialNode<Node>): number | undefined { return node.data?.value; }`,
       ts.ScriptTarget.Latest,
       true,
     );
-    const [result] = lowerTypeScriptSources([
-      { packageName: '@flighthq/math', sourceFile, upstreamDirectory: '/flight' },
+    const [, result] = lowerTypeScriptSources([
+      { packageName: '@flighthq/math', sourceFile: types, upstreamDirectory: '/flight' },
+      { packageName: '@flighthq/math', sourceFile: consumer, upstreamDirectory: '/flight' },
     ]);
     const declaration = result?.module.declarations.find(
       (candidate) => candidate.kind === 'function' && candidate.binding.name === 'read',
