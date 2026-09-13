@@ -2696,6 +2696,22 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(emitted.contents).toContain('std::get<');
   });
 
+  it('retains inferred property evidence after object destructuring', () => {
+    const result = lower(
+      'destructured-property-evidence.ts',
+      `interface Context { channel: string | null; }
+       export function getChannel(context: Readonly<Context>): string | null {
+         const { channel } = context;
+         return channel;
+       }`,
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+
+    expect(result.diagnostics).toEqual([]);
+    expect(emitted.contents).toContain('auto channel = object_pattern_value->channel;');
+    expect(emitted.contents).toContain('return channel;');
+  });
+
   it('emits undefined literals as std::nullopt', () => {
     const result = lower('undef.ts', 'export function nothing(): number | undefined { return undefined; }');
     const emitted = emitIrModuleCpp(result.module);

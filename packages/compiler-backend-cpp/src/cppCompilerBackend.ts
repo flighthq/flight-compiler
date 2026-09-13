@@ -879,7 +879,8 @@ function emitVariable(variable: Readonly<IrVariable>, context: EmitContext): str
     !arrayElement &&
     !variable.mutable &&
     variable.initializer &&
-    (variable.type?.kind === 'unknown' ||
+    (!variable.type ||
+      variable.type.kind === 'unknown' ||
       (variable.type?.kind === 'array' &&
         variable.type.element.kind === 'union' &&
         variable.type.element.types.some((type) => type.kind === 'unknown')))
