@@ -383,7 +383,7 @@ function emitIrModuleCppWithContext(
 
 function assertCppOutputHasNoUnresolvedTypePlaceholder(contents: string, context: EmitContext): void {
   const invalid =
-    contents.match(/\b(?:flight::Array|flight::Ref|std::function|std::optional|std::variant)<[^;\n]*\bauto\b/u)?.[0] ??
+    contents.match(/\b[A-Za-z_][A-Za-z0-9_:]*<[^>\n]*\bauto\b/u)?.[0] ??
     contents.match(/\busing\s+[A-Za-z_][A-Za-z0-9_]*\s*=\s*auto\s*;/u)?.[0] ??
     contents.match(/^\s*auto\s+[A-Za-z_][A-Za-z0-9_]*\s*;/mu)?.[0];
   if (invalid) {

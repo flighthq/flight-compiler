@@ -863,6 +863,12 @@ describe('createCppCompilerBackend', () => {
         'flight-cpp type position retains unresolved auto placeholder',
       );
     }
+
+    const optionalChain = lower(
+      'optional-chain.ts',
+      'interface Box { value: number } export function read(box: Box | null): number | null { return box?.value ?? null; }',
+    ).module;
+    expect(() => emitIrModuleCpp(optionalChain, { runtimeProfile: 'flight-cpp' })).not.toThrow();
   });
 
   it('preserves an imported anonymous call result across local import identities', () => {
