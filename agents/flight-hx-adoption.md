@@ -1,45 +1,48 @@
 # flight-hx adoption register
 
-Status: compiler emission is progressing; downstream adoption is not yet buildable.
+Status: the compiler publishes the Haxe integration contracts; full downstream adoption is not yet buildable.
 
-This register separates Haxe source-generation failures owned by `flight-compiler` from the runtime, host-binding, and public-package assembly owned by `flight-hx`. The measured input is the full Flight SDK closure at Flight revision `65889a191bb0d312c28c0dc1cb06e253f52587c6` (154 packages and 2,866 source modules).
+This register separates Haxe source-generation failures owned by `flight-compiler` from runtime, host-binding, and public-package assembly owned by `flight-hx`. The measured input is the full Flight SDK closure at Flight revision `65889a191bb0d2f5f2f95148590874f3e49bf9d4`, using flight-hx integration revision `0d8dd838b03601dc3bb6e771bd3f1edfbcb37e7d`. The extern graph has 154 packages and 2,855 source modules; the transpile graph has 2,866 modules.
 
 ## Current compiler output
 
-The latest full transpile emitted 2,233 Haxe modules and refused 633. Of those refusals, 153 are direct; the rest are dependency propagation. The latest full extern pass emitted 2,025 files from 1,635 modules and refused 1,231 modules, with only 15 direct roots.
+The last completed extern baseline, at compiler revision `de46714a749b7add8a1667b0603a75e175480871`, emitted 2,025 Haxe files from 1,630 modules and refused 1,225 modules. Only 15 refusals were direct; the rest were dependency propagation. The earlier transpile measurement emitted 2,233 modules and refused 633, including 153 direct refusals; it predates the current Haxe compiler batch and is retained only as a comparison point.
 
-This compiler batch removed the last observed compiler-owned roots from the focused Flight package closures:
+The current compiler publishes three integration contracts in `flight-compiler-package-report/1`:
 
-- mutable re-exports now retain JavaScript live-binding behavior through read-only Haxe getters;
-- per-export package-resolution edges select the correct barrel route without retaining unrelated imports in the reduced facade plan;
-- private interfaces may erase a direct ambient base only under an explicit backend policy and only when Haxe has a target binding for that base;
-- nullish comparison evidence consults the declared aliased type as well as the flow-lowered type, so a `null` member hidden by a local alias is not mistaken for an undefined-only value.
+- `exports` is the compiler-resolved public type/value facade plan, including barrels and re-export routes;
+- `typescript` pins TypeScript 5.9.3 and the package-graph checker configuration as compiler identity; and
+- `runtimeAbi` is the versioned Haxe runtime manifest, including target spellings for external symbols, constructors, task operations, and ambient members.
 
-The real spritesheet closure now emits its contract and index facade. A fresh full-source run improved from 2,229 emitted modules and 156 direct refusals to 2,233 and 153 respectively. No direct refusal in that run names an unimplemented neutral language construct, facade route, interface-inheritance path, or lost nullable-return proof.
+The package graph is checked as one TypeScript project with the pinned bundled standard library. Library declarations supply semantic evidence but remain external ABI identities, and built-in utility aliases stay on their explicit neutral lowering paths instead of being expanded into TypeScript implementation shapes.
+
+The current extern batch assigns exact representations to all 15 direct roots from the baseline. `AppearanceFlags`, `LogLevel`, `RenderRegistry`, and `TextureAtlasRotation` emit as exact numeric or string Haxe enum abstracts, including merged enum namespace functions. The external types `GPULoadOp`, `GPUPrimitiveTopology`, `GPUAdapter`, `AsyncIterable`, `ImageBitmap`, `PointerEvent`, `AudioNode`, `WebGLShader`, `HTMLDivElement`, and `HTMLVideoElement` have explicit native or runtime bindings. `ImageBitmap` accounts for two root modules.
+
+The compiler also absorbs the correction classes proven by focused flight-hx output: nested callback return parentheses, stable string-union enum member identifiers, generic defaults, callable-constraint erasure, Promise-void carriers, unique-symbol phantom fields, optional calls, assignment grouping, variadic `Math.min`/`Math.max`, runtime `Math` members, multi-value `Array.push`, and callable `Symbol` construction.
 
 ## flight-hx blockers
 
-The locally pinned Haxe 4.3.7 toolchain is healthy: `npm run proof` passes. Compiling the compiler outputs stops at downstream seams:
+The updated flight-hx integration still has three compiler-report adoption gaps:
 
-- Transpiled source fails first because `flight._hx._runtime._WeakMap` does not exist. The generated tree depends on the versioned runtime surface under `flight._hx._runtime`; `flight-hx` currently contains only the proof-of-shape `_hx` implementation and no production runtime package.
-- Extern output initially fails because the new hidden `flight._js.*` typedefs have no matching regenerated public `flight.*` selector modules. Supplying temporary selectors advances compilation to the next downstream seam, the absent `flighthq._internal._Promise` runtime type. The extern tree references 22 runtime types: ArrayBuffer, DataView, Date, Map, Set, WeakMap, Promise, seven typed-array variants, and eight Intl option/unit types.
-- `flight-hx` must replace or adapt its skunkworks public-facade generator so that the checked-in `flight.*` surface selects the compiler-emitted `_js` externs and `_hx` source modules. This is project assembly across independently generated backends, not TypeScript semantic lowering.
-- Haxe needs a target contract for distinct TypeScript `null` and `undefined`. Until that ABI exists, strict comparisons and optional-plus-null parameters remain explicit refusals rather than being silently collapsed.
-- The source runtime/host profile still needs browser, media, timing, encoding, WebGL, and WebGPU bindings, Intl two-argument constructors, `String.localeCompare`, and `Array.flat`.
+- `createNormalizedHaxeBackend` copies `name`, `emitModule`, and `createEmissionSession`, but drops the backend's `runtimeAbi` function. The wrapper must forward that function for `compilation.report.runtimeAbi` to reach its manifest or adoption gate.
+- The extern driver still discovers contract value exports with a regular-expression walker and filters holder members downstream. It must consume `compilation.report.exports` as the authoritative type/value/function surface.
+- The generated manifest always declares 24 common compatibility corrections and five extern-only corrections, even when a correction no longer changes compiler output. The driver must remove absorbed transformations and report only corrections actually applied before the correction ledger can reach zero.
 
-The extern pass has 15 direct roots. Ten distinct host types account for eleven of them because `ImageBitmap` occurs in two contracts: `GPULoadOp`, `GPUPrimitiveTopology`, `AsyncIterable`, `ImageBitmap`, `PointerEvent`, `AudioNode`, `WebGLShader`, `HTMLImageElement`, `HTMLDivElement`, and `HTMLVideoElement`. The remaining four roots require an agreed extern representation for source enums: `AppearanceFlags`, `LogLevel`, `RenderRegistry`, and `TextureAtlasRotation`.
+The maintained runtime under `src/flight/_internal` currently implements arrays, dates, maps, math, promises, sets, strings, typed arrays, and weak maps. Comparing its module files with the compiler manifest leaves 33 top-level targets unimplemented, including `_AsyncIterable`, `_ArrayBuffer`, `_DataView`, `_Intl`, `_Object`, `_Proxy`, `_RegExp`, `_Symbol`, `_TextDecoder`, `_Url`, and `_WeakSet`. The complete work queue should be derived from `report.runtimeAbi` rather than maintained by hand. Haxe also still needs an explicit target contract for distinct TypeScript `null` and `undefined`; strict comparisons and optional-plus-null parameters must continue to refuse until that ABI is exact.
 
 ## Reproduction
 
-From the local `flight-hx` checkout, with the generated roots on the Haxe classpath:
+From the updated local flight-hx checkout with its dependency lock pointed at the compiler revision under test:
 
 ```sh
-node tools/haxe.mjs -cp <transpile-output> -cp src -D flight_hx --no-output --macro "include('flight._hx')"
-node tools/haxe.mjs -cp <extern-output> -cp generated -D flight_esm -js /tmp/flight-haxe-extern.js --macro "include('flight._js')"
+npm run generate -- --extern
+npm run generate -- --transpile
+node tools/haxe.mjs -cp generated/js -cp generated -D flight_esm -js /tmp/flight-haxe-extern.js --macro "include('flight._js')"
+node tools/haxe.mjs -cp generated/hx -cp src -D flight_hx --no-output --macro "include('flight._hx')"
 ```
 
-The first command reports `Type not found : flight._hx._runtime._WeakMap`. The second reports the first missing public selector (`flight.TauriDialogMessageOptions`); after adding temporary selectors for emitted extern typedefs, it reports `Type not found : flighthq._internal._Promise`.
+The transpile generator already invokes the pinned Haxe 4.3.7 complete-source callback. It must remain fail-loud: no stubs, silent omissions, or approximate semantics.
 
 ## Adoption exit
 
-Adoption is complete when `flight-hx` provides the runtime and host-binding profile above, regenerates the public selector/facade layer from compiler output, and its Haxe compiler callback accepts the complete emitted file set for both the ESM extern and transpiled-source modes. The current output is therefore useful and substantially broader, but it is not yet a full buildable Flight API.
+Adoption is complete at 2,855/2,855 extern modules and 2,866/2,866 transpiled modules, with dependency-closed output, zero direct or propagated refusals, zero internal-error records, and zero downstream compatibility corrections. The complete emitted trees must compile through the Haxe 4.3.7 callback and pass behavioral parity.
