@@ -948,27 +948,33 @@ function emitJavaScriptAssignmentOperatorHaxe(
   context: EmitContext,
 ): string | undefined {
   if (isAssignmentOperatorDirectHaxe(expression.operator, expression.semantics)) return undefined;
-  const stableTarget =
-    expression.left.kind === 'identifier' ||
-    (expression.left.kind === 'property' && expression.left.object.kind === 'identifier');
-  if (!stableTarget) return undefined;
-  const left = emitExpression(expression.left, context);
   const right = emitExpression(expression.right, context);
   const runtime = `${context.options.runtimeModule ?? 'flighthq._internal'}._Js`;
-  if (expression.operator === '&&=' || expression.operator === '||=') {
-    const condition = `${runtime}.truthy(${left})`;
-    const assignWhenTrue = expression.operator === '&&=';
-    return `{ if (${assignWhenTrue ? condition : `!${condition}`}) ${left} = ${right}; ${left}; }`;
+  if (expression.left.kind === 'identifier') {
+    const left = emitExpression(expression.left, context);
+    return emitJavaScriptAssignmentToTargetHaxe(expression.operator, left, right, runtime);
   }
-  const synthetic: Extract<IrExpression, { kind: 'binary' }> = {
-    kind: 'binary',
-    left: expression.left,
-    operator: expression.operator.slice(0, -1) as IrBinaryOperator,
-    right: expression.right,
-    semantics: expression.semantics,
-  };
-  const value = emitJavaScriptBinaryOperatorHaxe(synthetic, context);
-  return value ? `${left} = ${value}` : undefined;
+  if (expression.left.kind !== 'property') return undefined;
+  const receiver = getGeneratedTargetNameHaxe('assignmentReceiver', context);
+  const target = `${receiver}.${safeHaxeName(expression.left.name)}`;
+  const assignment = emitJavaScriptAssignmentToTargetHaxe(expression.operator, target, right, runtime);
+  if (!assignment) return undefined;
+  return `(function() { final ${receiver}:Dynamic = ${emitExpression(expression.left.object, context)}; ${assignment}; return ${target}; })()`;
+}
+
+function emitJavaScriptAssignmentToTargetHaxe(
+  operator: IrAssignmentOperator,
+  target: string,
+  right: string,
+  runtime: string,
+): string | undefined {
+  if (operator === '&&=' || operator === '||=') {
+    const condition = `${runtime}.truthy(${target})`;
+    const assignWhenTrue = operator === '&&=';
+    return `{ if (${assignWhenTrue ? condition : `!${condition}`}) ${target} = ${right}; ${target}; }`;
+  }
+  const value = emitJavaScriptBinaryRuntimeCallHaxe(operator.slice(0, -1) as IrBinaryOperator, target, right, runtime);
+  return value ? `${target} = ${value}` : undefined;
 }
 
 function emitJavaScriptBinaryOperatorHaxe(
@@ -985,6 +991,15 @@ function emitJavaScriptBinaryOperatorHaxe(
     const whenFalsy = expression.operator === '&&' ? value : right;
     return `(function() { final ${value}:Dynamic = ${left}; return ${runtime}.truthy(${value}) ? ${whenTruthy} : ${whenFalsy}; })()`;
   }
+  return emitJavaScriptBinaryRuntimeCallHaxe(expression.operator, left, right, runtime);
+}
+
+function emitJavaScriptBinaryRuntimeCallHaxe(
+  operator: IrBinaryOperator,
+  left: string,
+  right: string,
+  runtime: string,
+): string | undefined {
   const method: Partial<Record<IrBinaryOperator, string>> = {
     '!=': 'looseEqual',
     '!==': 'strictEqual',
@@ -1009,10 +1024,10 @@ function emitJavaScriptBinaryOperatorHaxe(
     instanceof: 'instanceOf',
     '|': 'bitwiseOr',
   };
-  const target = method[expression.operator];
+  const target = method[operator];
   if (!target) return undefined;
   const call = `${runtime}.${target}(${left}, ${right})`;
-  return expression.operator === '!=' || expression.operator === '!==' ? `!${call}` : call;
+  return operator === '!=' || operator === '!==' ? `!${call}` : call;
 }
 
 function emitJavaScriptPrefixUnaryOperatorHaxe(

@@ -8240,6 +8240,18 @@ describe('emitIrModuleHaxe assignment operator lowering', () => {
 
     expect(output).toContain('flighthq._internal._Js.truthy(v)');
   });
+
+  it('evaluates a compound property receiver once before runtime coercion', () => {
+    const output = emitIrModuleHaxe(
+      lower(
+        'compound-dynamic-property.ts',
+        'export function add(state: { value: unknown }, amount: number): void { state.value += amount; }',
+      ).module,
+    ).contents;
+
+    expect(output).toContain('final assignmentReceiver:Dynamic = state;');
+    expect(output).toContain('assignmentReceiver.value = flighthq._internal._Js.add(assignmentReceiver.value, amount)');
+  });
 });
 
 describe('emitIrModuleHaxe unsigned right shift', () => {
