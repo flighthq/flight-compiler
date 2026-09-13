@@ -1812,6 +1812,21 @@ describe('emitIrModuleHaxe expression coverage', () => {
     expect(emitIrModuleHaxe(result.module).contents).toContain('copy.value = null;');
   });
 
+  it('deletes symbol-backed and dynamic properties through their represented keys', () => {
+    const result = lower(
+      'delete-properties.ts',
+      `const RuntimeKey = Symbol.for('Runtime');
+       interface Entity { [RuntimeKey]: number | undefined; }
+       export function clear(entity: Entity, record: Record<string, unknown>, key: string): void {
+         delete entity[RuntimeKey]; delete record[key];
+       }`,
+    );
+    const output = emitIrModuleHaxe(result.module, { runtimeModule: 'flight._hx._runtime' }).contents;
+
+    expect(output).toContain('Reflect.deleteField(entity, "RuntimeKey")');
+    expect(output).toContain('flight._hx._runtime._Js.deleteProperty(record, key)');
+  });
+
   it('retains reflective access for a dynamically computed object key', () => {
     const result = lower(
       'computed-dynamic-property.ts',
@@ -3964,6 +3979,15 @@ describe('emitIrModuleHaxe object literal', () => {
 
     expect(output).toContain('for (objectSpreadKey in Reflect.fields(objectSpreadSource))');
     expect(output).toContain('Reflect.setField(objectSpreadValue, objectSpreadKey');
+  });
+
+  it('copies array spreads before concatenating following elements', () => {
+    const result = lower(
+      'array-spread.ts',
+      'export function append(values: number[], value: number): number[] { return [...values, value]; }',
+    );
+
+    expect(emitIrModuleHaxe(result.module).contents).toContain('values.copy().concat([value])');
   });
 
   it('uses a declared unique-symbol storage slot for a computed object property', () => {
@@ -8206,15 +8230,15 @@ describe('emitIrModuleHaxe assignment operator lowering', () => {
     expect(output).toContain('== null');
   });
 
-  it('refuses ||= on unknown domain requiring semantic lowering', () => {
-    expect(() =>
-      emitIrModuleHaxe(
-        lower(
-          'or-unknown.ts',
-          'export function use(x: unknown): unknown { let v: unknown = x; v ||= "fallback"; return v; }',
-        ).module,
-      ),
-    ).toThrow('requires Haxe semantic lowering');
+  it('routes ||= on an unknown domain through runtime truthiness', () => {
+    const output = emitIrModuleHaxe(
+      lower(
+        'or-unknown.ts',
+        'export function use(x: unknown): unknown { let v: unknown = x; v ||= "fallback"; return v; }',
+      ).module,
+    ).contents;
+
+    expect(output).toContain('flighthq._internal._Js.truthy(v)');
   });
 });
 

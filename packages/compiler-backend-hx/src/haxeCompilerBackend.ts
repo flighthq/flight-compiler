@@ -565,7 +565,7 @@ function emitCompilerHaxeTaskFunctionBody(source: object, context: EmitContext):
 function emitExpression(expression: Readonly<IrExpression>, context: EmitContext): string {
   switch (expression.kind) {
     case 'array':
-      return `[${expression.elements.map((element) => (element ? emitExpression(element, context) : 'null')).join(', ')}]`;
+      return emitArrayExpressionHaxe(expression, context);
     case 'assignment': {
       if (
         (expression.operator === '&=' ||
@@ -619,6 +619,8 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
         const right = emitExpression(expression.right, context);
         return `{ if (${left} == null) ${left} = ${right}; ${left}; }`;
       }
+      const runtimeAssignment = emitJavaScriptAssignmentOperatorHaxe(expression, context);
+      if (runtimeAssignment) return runtimeAssignment;
       const left = emitExpression(expression.left, context);
       const right = emitAssignmentRightHaxe(expression, context);
       return `${left} ${emitAssignmentOperatorHaxe(expression.operator, expression.semantics, context)} ${right}`;
@@ -914,6 +916,59 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
   }
 }
 
+function emitArrayExpressionHaxe(
+  expression: Readonly<Extract<IrExpression, { kind: 'array' }>>,
+  context: EmitContext,
+): string {
+  if (!expression.elements.some((element) => element?.kind === 'spread')) {
+    return `[${expression.elements.map((element) => (element ? emitExpression(element, context) : 'null')).join(', ')}]`;
+  }
+  const groups: Array<{ kind: 'fixed' | 'spread'; value: string }> = [];
+  let fixed: string[] = [];
+  for (const element of expression.elements) {
+    if (element?.kind === 'spread') {
+      if (fixed.length > 0) groups.push({ kind: 'fixed', value: `[${fixed.join(', ')}]` });
+      fixed = [];
+      groups.push({ kind: 'spread', value: emitExpression(element.expression, context) });
+      continue;
+    }
+    fixed.push(element ? emitExpression(element, context) : 'null');
+  }
+  if (fixed.length > 0) groups.push({ kind: 'fixed', value: `[${fixed.join(', ')}]` });
+  const [first, ...rest] = groups;
+  if (!first) return '[]';
+  const initial = first.kind === 'spread' ? `${first.value}.copy()` : first.value;
+  return `${initial}${rest.map((group) => `.concat(${group.value})`).join('')}`;
+}
+
+function emitJavaScriptAssignmentOperatorHaxe(
+  expression: Readonly<Extract<IrExpression, { kind: 'assignment' }>>,
+  context: EmitContext,
+): string | undefined {
+  if (isAssignmentOperatorDirectHaxe(expression.operator, expression.semantics)) return undefined;
+  const stableTarget =
+    expression.left.kind === 'identifier' ||
+    (expression.left.kind === 'property' && expression.left.object.kind === 'identifier');
+  if (!stableTarget) return undefined;
+  const left = emitExpression(expression.left, context);
+  const right = emitExpression(expression.right, context);
+  const runtime = `${context.options.runtimeModule ?? 'flighthq._internal'}._Js`;
+  if (expression.operator === '&&=' || expression.operator === '||=') {
+    const condition = `${runtime}.truthy(${left})`;
+    const assignWhenTrue = expression.operator === '&&=';
+    return `{ if (${assignWhenTrue ? condition : `!${condition}`}) ${left} = ${right}; ${left}; }`;
+  }
+  const synthetic: Extract<IrExpression, { kind: 'binary' }> = {
+    kind: 'binary',
+    left: expression.left,
+    operator: expression.operator.slice(0, -1) as IrBinaryOperator,
+    right: expression.right,
+    semantics: expression.semantics,
+  };
+  const value = emitJavaScriptBinaryOperatorHaxe(synthetic, context);
+  return value ? `${left} = ${value}` : undefined;
+}
+
 function emitJavaScriptBinaryOperatorHaxe(
   expression: Readonly<Extract<IrExpression, { kind: 'binary' }>>,
   context: EmitContext,
@@ -971,6 +1026,18 @@ function emitJavaScriptPrefixUnaryOperatorHaxe(
   if (expression.operator === '~') return `${runtime}.bitwiseNot(${operand})`;
   if (expression.operator === 'typeof') return `${runtime}.typeOf(${operand})`;
   if (expression.operator === 'void') return `(function() { ${operand}; return null; })()`;
+  if (expression.operator === 'delete') {
+    if (expression.operand.kind === 'property') {
+      return `Reflect.deleteField(${emitExpression(expression.operand.object, context)}, ${JSON.stringify(safeHaxeName(expression.operand.name))})`;
+    }
+    if (expression.operand.kind === 'element') {
+      const storageName = getComputedObjectStorageNameHaxe(expression.operand);
+      if (storageName) {
+        return `Reflect.deleteField(${emitExpression(expression.operand.object, context)}, ${JSON.stringify(storageName)})`;
+      }
+      return `${runtime}.deleteProperty(${emitExpression(expression.operand.object, context)}, ${emitExpression(expression.operand.index, context)})`;
+    }
+  }
   return undefined;
 }
 
