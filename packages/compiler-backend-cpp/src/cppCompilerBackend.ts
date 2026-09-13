@@ -3554,8 +3554,29 @@ function emitUnionMemberAssertionCpp(
 }
 
 function emitUnionMemberTestCpp(evidence: Readonly<IrUnionMemberTestEvidence>, context: EmitContext): string {
-  const union = getIrBindingVariantUnionTypeCpp(evidence.binding.id, context);
+  const bindingType = getCppBindingTypeCpp(evidence.binding.id, context);
+  const union = bindingType ? getIrUnionTypeCpp(bindingType, context, new Set()) : undefined;
   if (!union) emissionError(context, 'union member test requires a C++ variant binding');
+  const plan = getCppUnionRepresentationPlan(union, context);
+  if (plan.kind === 'optionalSingle' || plan.kind === 'optionalVariant') {
+    const alternatives = plan.valueSlots.filter((slot) =>
+      slot.sourceAlternatives.some(
+        (member) =>
+          isDeepStrictEqual(member, evidence.member) ||
+          slot.targetType ===
+            emitType(evidence.member, { ...context, anonymousStructs: new Map(), includes: new Set() }),
+      ),
+    );
+    if (alternatives.length !== 1) {
+      emissionError(context, 'union member test must identify exactly one C++ optional value alternative');
+    }
+    const binding = emitBindingValueCpp(evidence.binding, context);
+    const present =
+      plan.kind === 'optionalSingle'
+        ? `${binding}.has_value()`
+        : `(${binding}.has_value() && ${binding}.value().index() == ${String(plan.valueSlots.indexOf(alternatives[0]!))})`;
+    return evidence.whenResult ? present : `!(${present})`;
+  }
   const representation = getCppVariantRepresentationForInspection(union, context);
   const alternatives = representation.alternatives.filter((alternative) =>
     doesCppVariantAlternativeMatchType(alternative, evidence.member, context),

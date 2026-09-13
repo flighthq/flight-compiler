@@ -2666,6 +2666,20 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(emitted.contents).toContain('.value()');
   });
 
+  it('emits typeof function narrowing for an optional callable as a presence test', () => {
+    const result = lower(
+      'optional-callable-typeof.ts',
+      `type Transform = (value: number) => number;
+       export function hasTransform(transform: Transform | undefined): boolean {
+         return typeof transform === 'function';
+       }`,
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+
+    expect(result.diagnostics).toEqual([]);
+    expect(emitted.contents).toContain('return transform.has_value()');
+  });
+
   it('emits undefined literals as std::nullopt', () => {
     const result = lower('undef.ts', 'export function nothing(): number | undefined { return undefined; }');
     const emitted = emitIrModuleCpp(result.module);
