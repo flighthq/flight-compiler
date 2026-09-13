@@ -1848,6 +1848,10 @@ function collectIrModuleApiReferencedBindingIdsRust(module: Readonly<IrModule>):
       case 'array':
         collectFromType(type.element);
         break;
+      case 'conditionalFacet':
+        collectFromType(type.check);
+        collectFromType(type.facet);
+        break;
       case 'function':
         for (const parameter of type.parameters) collectFromType(parameter.type);
         collectFromType(type.returns);
@@ -2651,6 +2655,7 @@ function emitType(type: Readonly<IrType>, context: EmitContext): string {
       return `Rc<dyn Fn(${parameters.join(', ')}) -> ${returns}>`;
     }
     case 'indexedAccess':
+    case 'conditionalFacet':
     case 'keyof':
     case 'typeOf':
       return opaqueHostType(context);
@@ -3241,6 +3246,7 @@ function isIrTypeCloneSafeRust(type: Readonly<IrType>): boolean {
     case 'union':
       return type.types.every(isIrTypeCloneSafeRust);
     case 'function':
+    case 'conditionalFacet':
     case 'indexedAccess':
     case 'intersection':
     case 'keyof':

@@ -156,6 +156,13 @@ function resolveIrTypeStructuralSubstitutionInternal(
           ...type,
           element: resolveIrTypeStructuralSubstitutionInternal(type.element, context, [...path, 'element']),
         };
+      case 'conditionalFacet':
+        return {
+          ...type,
+          check: resolveIrTypeStructuralSubstitutionInternal(type.check, context, [...path, 'check']),
+          facet: resolveIrTypeStructuralSubstitutionInternal(type.facet, context, [...path, 'facet']),
+          path: [...type.path] as [string, ...string[]],
+        };
       case 'function': {
         const substitutions = new Map(context.substitutions);
         type.typeParameters.forEach((parameter) => substitutions.delete(parameter.binding.id));

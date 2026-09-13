@@ -14030,3 +14030,92 @@ function getVariableBinding(value: unknown): IrBindingIdentity {
   }
   return (value as { readonly binding: IrBindingIdentity }).binding;
 }
+
+describe('conditional capability facet lowering', () => {
+  it('preserves closed required-member paths and type-only facet markers', () => {
+    const result = lower(
+      'conditional-facet.ts',
+      `
+        interface Entity { runtime: number }
+        interface Icon extends Entity {}
+        declare const ImageFacetKey: unique symbol;
+        interface WithImage extends Icon { readonly [ImageFacetKey]: true }
+        type FacetFor<Host, Slot extends string, Facet> = Host extends {
+          readonly tray: { readonly [Key in Slot]: unknown }
+        } ? Facet : unknown;
+        export type IconForHost<Host> = Icon & FacetFor<Host, 'image', WithImage>;
+      `,
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    expect(result.module.declarations).not.toContainEqual(
+      expect.objectContaining({ binding: expect.objectContaining({ name: 'FacetFor' }) }),
+    );
+    expect(result.module.declarations).toContainEqual(
+      expect.objectContaining({
+        binding: expect.objectContaining({ name: 'WithImage' }),
+        kind: 'interface',
+        properties: [
+          expect.objectContaining({
+            computedKey: expect.objectContaining({ kind: 'binding' }),
+            phantom: true,
+            readonly: true,
+            type: { kind: 'literal', value: true },
+          }),
+        ],
+      }),
+    );
+    expect(result.module.declarations).toContainEqual(
+      expect.objectContaining({
+        binding: expect.objectContaining({ name: 'IconForHost' }),
+        kind: 'typeAlias',
+        type: expect.objectContaining({
+          kind: 'intersection',
+          types: expect.arrayContaining([
+            expect.objectContaining({
+              check: expect.objectContaining({ kind: 'named' }),
+              facet: expect.objectContaining({ kind: 'named' }),
+              kind: 'conditionalFacet',
+              path: ['tray', 'image'],
+            }),
+          ]),
+        }),
+      }),
+    );
+  });
+
+  it.each([
+    [
+      'optional-path',
+      `type FacetFor<Host, Facet> = Host extends { readonly tray?: { readonly image: unknown } }
+        ? Facet : unknown;`,
+      "FacetFor<Host, WithImage>",
+    ],
+    [
+      'open-key-domain',
+      `type FacetFor<Host, Slot extends string, Facet> = Host extends {
+        readonly tray: { readonly [Key in Slot]: unknown }
+      } ? Facet : unknown;`,
+      'FacetFor<Host, string, WithImage>',
+    ],
+    [
+      'nonidentity-false-arm',
+      `type FacetFor<Host, Facet> = Host extends { readonly tray: { readonly image: unknown } }
+        ? Facet : object;`,
+      'FacetFor<Host, WithImage>',
+    ],
+  ])('keeps %s outside the closed conditional-facet contract', (_name, helper, use) => {
+    const result = lower(
+      'invalid-conditional-facet.ts',
+      `
+        interface Icon {}
+        declare const ImageFacetKey: unique symbol;
+        interface WithImage extends Icon { readonly [ImageFacetKey]: true }
+        ${helper}
+        export type IconForHost<Host> = Icon & ${use};
+      `,
+    );
+
+    expect(result.diagnostics).not.toEqual([]);
+  });
+});

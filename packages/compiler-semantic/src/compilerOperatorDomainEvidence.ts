@@ -69,6 +69,7 @@ export function getIrTypeOperatorValueDomain(type: Readonly<IrType> | undefined)
       return domains.size === 1 ? [...domains][0]! : 'unknown';
     }
     case 'indexedAccess':
+    case 'conditionalFacet':
     case 'intersection':
     case 'keyof':
     case 'named':

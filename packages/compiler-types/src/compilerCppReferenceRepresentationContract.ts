@@ -8,6 +8,7 @@ export type CompilerCppReferenceRepresentationCategory =
   | 'class'
   | 'date'
   | 'external'
+  | 'facet'
   | 'interface'
   | 'map'
   | 'objectAlias'
@@ -55,9 +56,33 @@ export type CompilerCppReferenceRepresentationPlan =
   | CompilerCppReferenceRepresentationRefusal
   | CompilerCppReferenceRepresentationSuccess;
 
+export interface CompilerCppFacetReferencePlan {
+  readonly base: IrType;
+  readonly facet: IrType;
+}
+
+export interface CompilerCppConditionalFacetRulePlan {
+  readonly facet: IrType;
+  readonly path: readonly [string, ...string[]];
+}
+
+export interface CompilerCppConditionalFacetReferencePlan {
+  readonly base: IrType;
+  readonly check: IrType;
+  readonly rules: readonly CompilerCppConditionalFacetRulePlan[];
+}
+
 export interface CompilerCppReferenceRepresentationPlanner {
   readonly plan: (type: Readonly<IrType>, module: Readonly<IrModule>) => CompilerCppReferenceRepresentationPlan;
   readonly resolveAlias: (type: Readonly<IrType>, module: Readonly<IrModule>) => Readonly<IrType> | undefined;
+  readonly resolveConditionalFacetReference: (
+    type: Readonly<IrType>,
+    module: Readonly<IrModule>,
+  ) => Readonly<CompilerCppConditionalFacetReferencePlan> | undefined;
+  readonly resolveFacetReference: (
+    type: Readonly<IrType>,
+    module: Readonly<IrModule>,
+  ) => Readonly<CompilerCppFacetReferencePlan> | undefined;
   readonly resolveClosedIntersectionDistribution: (
     type: Readonly<Extract<IrType, { kind: 'intersection' }>>,
     module: Readonly<IrModule>,

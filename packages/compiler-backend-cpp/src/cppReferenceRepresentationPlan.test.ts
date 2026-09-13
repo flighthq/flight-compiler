@@ -1192,3 +1192,85 @@ function lower(file: string, source: string, packageName = '@flighthq/reference-
 function planDeclaration(module: Readonly<IrModule>, name: string): CompilerCppReferenceRepresentationPlan {
   return createIrTypeReferenceRepresentationPlanCpp(declarationType(module, name), module);
 }
+
+describe('C++ conditional facet reference planning', () => {
+  it('plans one shared referent with closed required-member facet rules', () => {
+    const module = lower(
+      'conditional-facet.ts',
+      `
+        interface Entity { runtime: number }
+        interface Icon extends Entity {}
+        declare const ImageFacetKey: unique symbol;
+        interface WithImage extends Icon { readonly [ImageFacetKey]: true }
+        type FacetFor<Host, Slot extends string, Facet> = Host extends {
+          readonly tray: { readonly [Key in Slot]: unknown }
+        } ? Facet : unknown;
+        export type IconForHost<Host> = Icon & FacetFor<Host, 'image', WithImage>;
+      `,
+    );
+    const planner = createIrTypeReferenceRepresentationPlannerCpp([module]);
+    const alias = module.declarations.find(
+      (declaration) => declaration.kind === 'typeAlias' && declaration.binding.name === 'IconForHost',
+    );
+    if (alias?.kind !== 'typeAlias') throw new TypeError('missing IconForHost');
+
+    expect(planner.resolveFacetReference(declarationType(module, 'WithImage'), module)).toMatchObject({
+      base: expect.objectContaining({ kind: 'named' }),
+      facet: expect.objectContaining({ kind: 'named' }),
+    });
+    expect(planner.resolveConditionalFacetReference(alias.type, module)).toMatchObject({
+      base: expect.objectContaining({ kind: 'named' }),
+      check: expect.objectContaining({ kind: 'named' }),
+      rules: [
+        {
+          facet: expect.objectContaining({ kind: 'named' }),
+          path: ['tray', 'image'],
+        },
+      ],
+    });
+    expect(planner.plan(alias.type, module)).toMatchObject({
+      category: 'facet',
+      identity: { identity: 'reference' },
+      kind: 'represented',
+      storageRepresentation: 'runtimeManaged',
+      valueRepresentation: 'runtimeReference',
+    });
+  });
+
+  it('refuses runtime-bearing markers, mismatched bases, and duplicate paths', () => {
+    const module = lower(
+      'invalid-conditional-facets.ts',
+      `
+        interface Entity { runtime: number }
+        interface Icon extends Entity {}
+        interface Other extends Entity {}
+        declare const FirstKey: unique symbol;
+        declare const SecondKey: unique symbol;
+        interface Valid extends Icon { readonly [FirstKey]: true }
+        interface RuntimeBearing extends Icon { readonly [FirstKey]: true; value: number }
+        interface WrongBase extends Other { readonly [SecondKey]: true }
+        type FacetFor<Host, Slot extends string, Facet> = Host extends {
+          readonly tray: { readonly [Key in Slot]: unknown }
+        } ? Facet : unknown;
+        export type RuntimeBearingHost<Host> = Icon & FacetFor<Host, 'first', RuntimeBearing>;
+        export type WrongBaseHost<Host> = Icon & FacetFor<Host, 'second', WrongBase>;
+        export type DuplicateHost<Host> = Icon &
+          FacetFor<Host, 'first', Valid> & FacetFor<Host, 'first', WrongBase>;
+      `,
+    );
+    const planner = createIrTypeReferenceRepresentationPlannerCpp([module]);
+    const aliases = new Map(
+      module.declarations.flatMap((declaration) =>
+        declaration.kind === 'typeAlias' ? [[declaration.binding.name, declaration.type] as const] : [],
+      ),
+    );
+
+    expect(planner.resolveFacetReference(declarationType(module, 'RuntimeBearing'), module)).toBeUndefined();
+    for (const name of ['RuntimeBearingHost', 'WrongBaseHost', 'DuplicateHost']) {
+      const type = aliases.get(name);
+      if (!type) throw new TypeError(`missing ${name}`);
+      expect(planner.resolveConditionalFacetReference(type, module)).toBeUndefined();
+      expect(planner.plan(type, module)).toMatchObject({ kind: 'refused', reason: 'compoundReference' });
+    }
+  });
+});

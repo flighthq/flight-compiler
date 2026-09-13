@@ -384,6 +384,7 @@ function getIrTypeRustOwnershipStorage(type: Readonly<IrType>): CompilerRustOwne
     case 'tuple':
       return 'sharedIdentity';
     case 'indexedAccess':
+    case 'conditionalFacet':
     case 'intersection':
     case 'keyof':
     case 'named':

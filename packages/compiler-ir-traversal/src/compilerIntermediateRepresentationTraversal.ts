@@ -591,6 +591,10 @@ function analyzeIrTypeTraversal(
     case 'array':
       analyzeIrTypeTraversal(type.element, observer, createIrTraversalPath(path, 'element'));
       break;
+    case 'conditionalFacet':
+      analyzeIrTypeTraversal(type.check, observer, createIrTraversalPath(path, 'check'));
+      analyzeIrTypeTraversal(type.facet, observer, createIrTraversalPath(path, 'facet'));
+      break;
     case 'function':
       type.typeParameters.forEach((parameter, index) =>
         analyzeIrTypeParameterTraversal(parameter, observer, createIrTraversalPath(path, 'typeParameters', index)),

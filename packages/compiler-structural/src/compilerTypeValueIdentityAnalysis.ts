@@ -98,6 +98,8 @@ function analyzeIrTypeValueIdentityInternal(
     case 'object':
     case 'tuple':
       return createCompilerTypeValueIdentityAnalysis('reference', 'intrinsic-reference');
+    case 'conditionalFacet':
+      return createCompilerTypeValueIdentityAnalysis('indeterminate', 'type-operator');
     case 'intersection':
     case 'union':
       return analyzeIrCompoundTypeValueIdentity(type.types, context);

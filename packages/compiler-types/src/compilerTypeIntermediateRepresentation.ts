@@ -18,6 +18,9 @@ export interface IrObjectTypeProperty {
   readonly computedKey?: IrValueNameReference | undefined;
   readonly name: string;
   readonly optional: boolean;
+  // A non-exported ambient unique-symbol key used only by type declarations carries no runtime
+  // slot. Targets may use it as nominal/tag evidence, but must not silently erase its type gate.
+  readonly phantom?: true | undefined;
   readonly readonly: boolean;
   // A source construct signature is represented as a function-valued factory slot. Keeping the role
   // explicit lets invocation lowering preserve `new` semantics without inventing a callable-object type.
@@ -47,6 +50,12 @@ export interface IrTypeReference {
 
 export type IrType =
   | Readonly<{ kind: 'array'; element: IrType; readonly: boolean }>
+  | Readonly<{
+      check: IrType;
+      facet: IrType;
+      kind: 'conditionalFacet';
+      path: readonly [string, ...string[]];
+    }>
   | Readonly<{
       kind: 'function';
       parameters: readonly IrFunctionTypeParameter[];

@@ -23,6 +23,7 @@ export function emitIrTypeHaxe(type: Readonly<IrType>, context: Readonly<IrTypeH
       return `(${parameters.join(', ')})->${emitIrTypeHaxe(type.returns, context)}`;
     }
     case 'indexedAccess':
+    case 'conditionalFacet':
     case 'keyof':
     case 'typeOf':
       return 'Dynamic';

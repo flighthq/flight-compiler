@@ -70,6 +70,15 @@ export function getCompilerExternalBindingCallResultTypeCpp(
   )?.callResultType;
 }
 
+export function getCompilerExternalBindingWeakKeyPolicyTargetCpp(
+  sourceName: string,
+  externalBindings?: Readonly<CppCompilerExternalBindingManifest> | undefined,
+): string | undefined {
+  return getCppCompilerExternalBindings(externalBindings).find(
+    (binding) => binding.sourceName === sourceName.normalize('NFC') && binding.space === 'type',
+  )?.weakKeyPolicyTargetName;
+}
+
 export function getCompilerExternalBindingEvidenceCpp(
   sourceName: string,
   space: CompilerRuntimeExternalSymbolSpace,
@@ -207,6 +216,16 @@ function getCppCompilerExternalBindings(
     ) {
       throw new TypeError(`${subject} has a malformed call-result type`);
     }
+    if (
+      binding.weakKeyPolicyTargetName !== undefined &&
+      (binding.space !== 'type' ||
+        binding.ownership !== 'shared' ||
+        binding.nullability !== 'non-null' ||
+        typeof binding.weakKeyPolicyTargetName !== 'string' ||
+        binding.weakKeyPolicyTargetName.length === 0)
+    ) {
+      throw new TypeError(`${subject} has a malformed weak-key policy target`);
+    }
     return {
       ...(binding.callResultType ? { callResultType: binding.callResultType } : {}),
       ...(binding.construction ? { construction: { ...binding.construction } } : {}),
@@ -223,6 +242,9 @@ function getCppCompilerExternalBindings(
       sourceName: binding.sourceName.normalize('NFC'),
       space: binding.space,
       targetName: binding.targetName,
+      ...(binding.weakKeyPolicyTargetName
+        ? { weakKeyPolicyTargetName: binding.weakKeyPolicyTargetName }
+        : {}),
     };
   });
   const identities = new Set<string>();
@@ -708,18 +730,20 @@ const cppFlightRuntimeExternalSymbolBindings = [
     targetName: 'flight::Uint8ClampedArray',
   },
   {
-    headers: ['unordered_map'],
-    kind: 'native',
+    capability: 'weak-map',
+    headers: ['flight/weak_map.hpp'],
+    kind: 'runtime',
     sourceName: 'WeakMap',
     space: 'type',
-    targetName: 'std::unordered_map',
+    targetName: 'flight::WeakMap',
   },
   {
-    headers: ['unordered_map'],
-    kind: 'native',
+    capability: 'weak-map',
+    headers: ['flight/weak_map.hpp'],
+    kind: 'runtime',
     sourceName: 'WeakMap',
     space: 'value',
-    targetName: 'std::unordered_map',
+    targetName: 'flight::WeakMap',
   },
   {
     capability: 'number-parsing',

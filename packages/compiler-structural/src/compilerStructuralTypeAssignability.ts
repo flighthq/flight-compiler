@@ -132,6 +132,7 @@ function analyzeIrTypeStructuralAssignabilityPair(
         if (target.kind !== 'tuple') return incompatibleTypeStructuralAssignability(source, target, path);
         return analyzeIrTupleTypeStructuralAssignability(source, target, path, state);
       case 'indexedAccess':
+      case 'conditionalFacet':
       case 'intersection':
       case 'keyof':
       case 'typeOf':

@@ -238,6 +238,7 @@ function lowerTypeScriptSourceWithAnalysis(
         declarations.push(...lowered);
         exports.push(...lowered.flatMap((declaration) => createTypeScriptDeclarationExports(declaration, false)));
       } else if (ts.isTypeAliasDeclaration(statement)) {
+        if (isErasableTypeScriptConditionalFacetHelper(statement, context)) continue;
         const declaration = lowerTypeAlias(statement, context);
         declarations.push(declaration);
         exports.push(...createTypeScriptDeclarationExports(declaration, false));
@@ -2872,6 +2873,8 @@ function lowerType(node: ts.TypeNode, context: LoweringContext): IrType {
     if (projection) return projection;
     const conditional = lowerConcreteTypeScriptConditionalAliasReference(node, context);
     if (conditional) return conditional;
+    const conditionalFacet = lowerOpenTypeScriptConditionalFacetAliasReference(node, context);
+    if (conditionalFacet) return conditionalFacet;
     const name = getTypeScriptNodeText(node.typeName, context);
     const arguments_ =
       node.typeArguments?.map((type) =>
@@ -3009,6 +3012,128 @@ function lowerConcreteTypeScriptConditionalAliasReference(
   );
   if (!substitutions) return undefined;
   return lowerConcreteTypeScriptConditionalTypeEvidence(declaration.type, context, new Set([symbol]), substitutions);
+}
+
+function lowerOpenTypeScriptConditionalFacetAliasReference(
+  node: ts.TypeReferenceNode,
+  context: LoweringContext,
+): IrType | undefined {
+  const symbol = context.checker.getSymbolAtLocation(node.typeName);
+  const declaration = symbol?.declarations?.find(ts.isTypeAliasDeclaration);
+  if (!symbol || !declaration || !ts.isConditionalTypeNode(declaration.type)) return undefined;
+  const substitutions = createTypeScriptSyntacticDeclarationSubstitutions(
+    node,
+    declaration,
+    context.checker,
+    new Map(),
+  );
+  if (!substitutions) return undefined;
+  return lowerOpenTypeScriptConditionalFacetEvidence(declaration.type, context, substitutions);
+}
+
+function lowerOpenTypeScriptConditionalFacetEvidence(
+  node: ts.ConditionalTypeNode,
+  context: LoweringContext,
+  substitutions: ReadonlyMap<ts.Symbol, ts.TypeNode>,
+): Readonly<Extract<IrType, { kind: 'conditionalFacet' }>> | undefined {
+  const checkType = getTypeScriptSyntacticTypeSubstitution(node.checkType, context.checker, substitutions);
+  const falseType = getTypeScriptSyntacticTypeSubstitution(node.falseType, context.checker, substitutions);
+  const trueType = getTypeScriptSyntacticTypeSubstitution(node.trueType, context.checker, substitutions);
+  if (!ts.isTypeReferenceNode(checkType) || checkType.typeArguments || falseType.kind !== ts.SyntaxKind.UnknownKeyword) {
+    return undefined;
+  }
+  const checkSymbol = context.checker.getSymbolAtLocation(checkType.typeName);
+  if (!checkSymbol?.declarations?.some(ts.isTypeParameterDeclaration)) return undefined;
+  const path = getTypeScriptConditionalFacetRequiredPath(node.extendsType, context, substitutions);
+  if (!path) return undefined;
+  const check = lowerType(checkType, context);
+  const facet = lowerType(trueType, context);
+  if (
+    check.kind !== 'named' ||
+    check.reference.kind !== 'binding' ||
+    check.reference.binding.kind !== 'typeParameter' ||
+    check.reference.path.length > 0 ||
+    check.typeArguments.length > 0 ||
+    facet.kind !== 'named' ||
+    facet.reference.kind !== 'binding' ||
+    facet.reference.path.length > 0
+  ) {
+    return undefined;
+  }
+  return { check, facet, kind: 'conditionalFacet', path };
+}
+
+function getTypeScriptConditionalFacetRequiredPath(
+  node: ts.TypeNode,
+  context: LoweringContext,
+  substitutions: ReadonlyMap<ts.Symbol, ts.TypeNode>,
+): readonly [string, ...string[]] | undefined {
+  const substituted = getTypeScriptSyntacticTypeSubstitution(node, context.checker, substitutions);
+  if (substituted !== node) {
+    return getTypeScriptConditionalFacetRequiredPath(substituted, context, substitutions);
+  }
+  if (ts.isTypeLiteralNode(node)) {
+    if (node.members.length !== 1) return undefined;
+    const property = node.members[0];
+    if (
+      !property ||
+      !ts.isPropertySignature(property) ||
+      property.questionToken ||
+      !hasModifier(property, ts.SyntaxKind.ReadonlyKeyword) ||
+      !property.type
+    ) {
+      return undefined;
+    }
+    const name = tryPropertyName(property.name);
+    const nested = getTypeScriptConditionalFacetRequiredPath(property.type, context, substitutions);
+    return name !== undefined && nested ? [name, ...nested] : undefined;
+  }
+  if (
+    !ts.isMappedTypeNode(node) ||
+    node.nameType ||
+    node.questionToken ||
+    node.readonlyToken?.kind !== ts.SyntaxKind.ReadonlyKeyword ||
+    node.type?.kind !== ts.SyntaxKind.UnknownKeyword
+  ) {
+    return undefined;
+  }
+  const constraint = node.typeParameter.constraint;
+  if (!constraint) return undefined;
+  const key = getTypeScriptSyntacticTypeSubstitution(constraint, context.checker, substitutions);
+  return ts.isLiteralTypeNode(key) && ts.isStringLiteral(key.literal) && key.literal.text.length > 0
+    ? [key.literal.text]
+    : undefined;
+}
+
+function isErasableTypeScriptConditionalFacetHelper(
+  node: ts.TypeAliasDeclaration,
+  context: LoweringContext,
+): boolean {
+  if (isExported(node) || !ts.isConditionalTypeNode(node.type)) return false;
+  const symbol = context.checker.getSymbolAtLocation(node.name);
+  if (!symbol) return false;
+  let references = 0;
+  let supported = true;
+  const visit = (candidate: ts.Node): void => {
+    if (!supported) return;
+    if (ts.isIdentifier(candidate) && context.checker.getSymbolAtLocation(candidate) === symbol) {
+      if (candidate === node.name) return;
+      const reference = candidate.parent;
+      if (
+        !ts.isTypeReferenceNode(reference) ||
+        reference.typeName !== candidate ||
+        !lowerOpenTypeScriptConditionalFacetAliasReference(reference, context)
+      ) {
+        supported = false;
+        return;
+      }
+      references += 1;
+      return;
+    }
+    ts.forEachChild(candidate, visit);
+  };
+  visit(context.sourceFile);
+  return supported && references > 0;
 }
 
 function getTypeScriptObjectProjectionKeys(node: ts.TypeNode): ReadonlySet<string> | undefined {
@@ -3263,7 +3388,7 @@ function lowerTypeProperties(members: readonly ts.TypeElement[], context: Loweri
 function lowerTypeScriptTypePropertyKey(
   node: ts.PropertyName,
   context: LoweringContext,
-): Readonly<{ computedKey?: IrValueNameReference | undefined; name: string }> | undefined {
+): Readonly<{ computedKey?: IrValueNameReference | undefined; name: string; phantom?: true | undefined }> | undefined {
   const name = tryPropertyName(node);
   if (name !== undefined) return { name };
   if (!ts.isComputedPropertyName(node)) return undefined;
@@ -3274,7 +3399,47 @@ function lowerTypeScriptTypePropertyKey(
     computedKey.kind === 'binding'
       ? [computedKey.binding.name, ...computedKey.path].join('_')
       : computedKey.name.replaceAll('.', '_');
-  return storageName.length > 0 ? { computedKey, name: storageName } : undefined;
+  return storageName.length > 0
+    ? {
+        computedKey,
+        name: storageName,
+        ...(isTypeScriptPhantomUniqueSymbolKey(node.expression, context) ? { phantom: true as const } : {}),
+      }
+    : undefined;
+}
+
+function isTypeScriptPhantomUniqueSymbolKey(node: ts.Expression, context: LoweringContext): boolean {
+  const symbol = context.checker.getSymbolAtLocation(node);
+  const declaration = symbol?.valueDeclaration;
+  const statement = declaration?.parent?.parent;
+  if (
+    !symbol ||
+    !declaration ||
+    !ts.isVariableDeclaration(declaration) ||
+    !statement ||
+    !ts.isVariableStatement(statement) ||
+    !isErasableTypeScriptUniqueSymbolDeclaration(statement)
+  ) {
+    return false;
+  }
+  let typeOnly = true;
+  const visit = (candidate: ts.Node): void => {
+    if (!typeOnly) return;
+    if (ts.isIdentifier(candidate) && context.checker.getSymbolAtLocation(candidate) === symbol) {
+      if (candidate === declaration.name) return;
+      if (
+        ts.isComputedPropertyName(candidate.parent) &&
+        (ts.isPropertySignature(candidate.parent.parent) || ts.isMethodSignature(candidate.parent.parent))
+      ) {
+        return;
+      }
+      typeOnly = false;
+      return;
+    }
+    ts.forEachChild(candidate, visit);
+  };
+  visit(context.sourceFile);
+  return typeOnly;
 }
 
 function lowerTypeScriptTypeProperties(
@@ -3889,6 +4054,8 @@ function lowerTypeScriptTypeNodeEvidence(
   if (ts.isConditionalTypeNode(type)) {
     const conditional = lowerConcreteTypeScriptConditionalTypeEvidence(type, context, seen, substitutions);
     if (conditional) return conditional;
+    const conditionalFacet = lowerOpenTypeScriptConditionalFacetEvidence(type, context, substitutions);
+    if (conditionalFacet) return conditionalFacet;
   }
   if (ts.isTypeReferenceNode(type)) {
     const parts = getTypeNameNodeParts(type.typeName);

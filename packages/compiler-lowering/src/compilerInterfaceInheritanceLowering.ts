@@ -636,6 +636,12 @@ function removeIrObjectPropertyReadonlyInterfaceInheritance(type: Readonly<IrTyp
         ...type,
         element: removeIrObjectPropertyReadonlyInterfaceInheritance(type.element),
       };
+    case 'conditionalFacet':
+      return {
+        ...type,
+        check: removeIrObjectPropertyReadonlyInterfaceInheritance(type.check),
+        facet: removeIrObjectPropertyReadonlyInterfaceInheritance(type.facet),
+      };
     case 'function':
       return {
         ...type,
@@ -718,6 +724,12 @@ function resolveIrTypeInterfaceInheritance(
       return {
         ...type,
         element: resolveIrTypeInterfaceInheritance(type.element, module, context, declarations, expandStructures),
+      };
+    case 'conditionalFacet':
+      return {
+        ...type,
+        check: resolveIrTypeInterfaceInheritance(type.check, module, context, declarations, expandStructures),
+        facet: resolveIrTypeInterfaceInheritance(type.facet, module, context, declarations, false),
       };
     case 'function':
       return {
@@ -1241,6 +1253,12 @@ function rebindIrTypeInterfaceInheritance(
       return {
         ...type,
         element: rebindIrTypeInterfaceInheritance(type.element, declaration, `${path}.element`, bindings, context),
+      };
+    case 'conditionalFacet':
+      return {
+        ...type,
+        check: rebindIrTypeInterfaceInheritance(type.check, declaration, `${path}.check`, bindings, context),
+        facet: rebindIrTypeInterfaceInheritance(type.facet, declaration, `${path}.facet`, bindings, context),
       };
     case 'function': {
       const nestedBindings = new Map(bindings);

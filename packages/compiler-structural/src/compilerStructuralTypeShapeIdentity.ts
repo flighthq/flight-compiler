@@ -62,6 +62,13 @@ function createIrTypeCanonical(
           type.readonly,
           createIrTypeCanonical(type.element, context, [...path, 'element']),
         ]);
+      case 'conditionalFacet':
+        return normalizeCompilerStructuralValueCanonical([
+          'conditionalFacet',
+          createIrTypeCanonical(type.check, context, [...path, 'check']),
+          type.path,
+          createIrTypeCanonical(type.facet, context, [...path, 'facet']),
+        ]);
       case 'function':
         return createIrFunctionTypeCanonical(type, context, path);
       case 'indexedAccess':
@@ -186,6 +193,7 @@ function createIrObjectTypeCanonical(
         ? ['computed', property.name, createIrValueNameReferenceCanonical(property.computedKey)]
         : property.name,
       property.optional,
+      property.phantom === true,
       property.readonly,
       createIrTypeCanonical(property.type, context, [...path, 'properties', index, 'type']),
     ]),

@@ -81,6 +81,7 @@ export interface CppCompilerExternalBinding {
   readonly sourceName: string;
   readonly space: 'type' | 'value';
   readonly targetName: string;
+  readonly weakKeyPolicyTargetName?: string | undefined;
 }
 
 export interface CppCompilerExternalBindingManifest {

@@ -1759,7 +1759,9 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     );
 
     const flightCpp = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
-    expect(flightCpp.contents).toContain('unordered_map');
+    expect(flightCpp.contents).toContain('#include <flight/weak_map.hpp>');
+    expect(flightCpp.contents).toContain('flight::WeakMap<flight::Ref<Key>, double>');
+    expect(flightCpp.contents).not.toContain('unordered_map');
     const standardLibrary = emitIrModuleCpp(result.module);
     expect(standardLibrary.contents).toContain('unordered_map');
   });
@@ -1827,13 +1829,118 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     const velocity = session.emitModule(modules[4]!)[0]!.contents;
 
     expect(renderState).toContain(
-      'std::unordered_map<flighthq_types::Renderable, flight::Ref<flighthq_types::RenderCache>> render_proxy_map;',
+      'flight::WeakMap<flighthq_types::Renderable, flight::Ref<flighthq_types::RenderCache>> render_proxy_map;',
     );
-    expect(velocity).toContain('std::unordered_map<flight::Ref<void>, flight::Ref<VelocitySample>> samples;');
+    expect(velocity).toContain('flight::WeakMap<flight::Ref<void>, flight::Ref<VelocitySample>> samples;');
 
     const invalid = lower('weak-map-invalid.ts', 'export interface Invalid { values: WeakMap<string, number> }');
     expect(() => emitIrModuleCpp(invalid.module, { runtimeProfile: 'flight-cpp' })).toThrow(
-      'flight-cpp WeakMap key requires a proven flight reference representation',
+      'flight-cpp WeakMap key requires a proven Flight reference or external weak-key policy',
+    );
+  });
+
+  it('emits one cohesive weak-key policy for exact and homogeneous external key types', () => {
+    const result = lower(
+      'wgpu-device-runtime.ts',
+      `type CanvasImageSource = HTMLImageElement | HTMLCanvasElement;
+       export interface WgpuTextureEntry { version: number }
+       export interface WgpuDeviceRuntime {
+         imageTextureCache: WeakMap<CanvasImageSource, WgpuTextureEntry>;
+         shaderCache: WeakMap<GPUShaderModule, number>;
+       }
+       export function createWgpuDeviceRuntime(): WgpuDeviceRuntime {
+         return { imageTextureCache: new WeakMap(), shaderCache: new WeakMap() };
+       }`,
+    );
+    const canvasBindings = (['HTMLImageElement', 'HTMLCanvasElement'] as const).map((sourceName) => ({
+      headers: ['host/canvas.hpp'],
+      nullability: 'non-null' as const,
+      ownership: 'shared' as const,
+      sourceName,
+      space: 'type' as const,
+      targetName: `host::${sourceName}`,
+      weakKeyPolicyTargetName: 'host::CanvasImageSourceWeakKeyPolicy',
+    }));
+    const shaderBinding = {
+      headers: ['host/gpu.hpp'],
+      nullability: 'non-null' as const,
+      ownership: 'shared' as const,
+      sourceName: 'GPUShaderModule',
+      space: 'type' as const,
+      targetName: 'host::GpuShaderModule',
+      weakKeyPolicyTargetName: 'host::GpuShaderModuleWeakKeyPolicy',
+    };
+    const externalBindings = {
+      bindings: [...canvasBindings, shaderBinding],
+      schema: 'flight-cpp-external-bindings/1' as const,
+    };
+
+    const emitted = emitIrModuleCpp(result.module, { externalBindings, runtimeProfile: 'flight-cpp' }).contents;
+    expect(emitted).toContain('#include <flight/weak_map.hpp>');
+    expect(emitted).toContain('#include <host/canvas.hpp>');
+    expect(emitted).toContain(
+      'flight::WeakMap<CanvasImageSource, flight::Ref<WgpuTextureEntry>, host::CanvasImageSourceWeakKeyPolicy> image_texture_cache;',
+    );
+    expect(emitted).toContain(
+      'flight::WeakMap<host::GpuShaderModule, double, host::GpuShaderModuleWeakKeyPolicy> shader_cache;',
+    );
+    expect(emitted).toContain(
+      '.image_texture_cache = flight::WeakMap<CanvasImageSource, flight::Ref<WgpuTextureEntry>, host::CanvasImageSourceWeakKeyPolicy>()',
+    );
+    expect(emitted).toContain(
+      '.shader_cache = flight::WeakMap<host::GpuShaderModule, double, host::GpuShaderModuleWeakKeyPolicy>()',
+    );
+
+    expect(() =>
+      emitIrModuleCpp(result.module, {
+        externalBindings: {
+          bindings: [
+            {
+              headers: ['host/canvas.hpp'],
+              nullability: 'non-null',
+              ownership: 'shared',
+              sourceName: 'HTMLImageElement',
+              space: 'type',
+              targetName: 'host::HTMLImageElement',
+            },
+            canvasBindings[1]!,
+            shaderBinding,
+          ],
+          schema: 'flight-cpp-external-bindings/1',
+        },
+        runtimeProfile: 'flight-cpp',
+      }),
+    ).toThrow('flight-cpp WeakMap key requires a proven Flight reference or external weak-key policy');
+
+    const mixed = lower(
+      'mixed-weak-map.ts',
+      `interface LocalKey { id: number }
+       export interface Invalid { values: WeakMap<GPUShaderModule | LocalKey, number> }`,
+    );
+    expect(() => emitIrModuleCpp(mixed.module, { externalBindings, runtimeProfile: 'flight-cpp' })).toThrow(
+      'flight-cpp WeakMap key requires a proven Flight reference or external weak-key policy',
+    );
+
+    expect(() =>
+      emitIrModuleCpp(result.module, {
+        externalBindings: {
+          bindings: [
+            canvasBindings[0]!,
+            { ...canvasBindings[1]!, weakKeyPolicyTargetName: 'host::OtherCanvasWeakKeyPolicy' },
+            shaderBinding,
+          ],
+          schema: 'flight-cpp-external-bindings/1',
+        },
+        runtimeProfile: 'flight-cpp',
+      }),
+    ).toThrow('flight-cpp WeakMap key requires a proven Flight reference or external weak-key policy');
+
+    const unknownValue = lower(
+      'unknown-weak-map-value.ts',
+      'export interface Invalid { values: WeakMap<object, unknown> }',
+    );
+    expect(() => emitIrModuleCpp(unknownValue.module, { runtimeProfile: 'flight-cpp' })).toThrow(
+      'flight-cpp WeakMap value requires a proven C++ representation',
     );
   });
 
@@ -9547,5 +9654,41 @@ describe('emitIrModuleCpp reexport emission', () => {
     });
     const emitted = session.emitModule(facade);
     expect(emitted[0]?.contents).toContain('using');
+  });
+});
+
+describe('emitIrModuleCpp conditional capability facets', () => {
+  it('emits one shared Tray referent with statically gated host facets', () => {
+    const result = lower(
+      'conditional-facet.ts',
+      `
+        interface Entity { runtime: number }
+        interface TrayIcon extends Entity {}
+        declare const TrayImageFacetKey: unique symbol;
+        export interface TrayWithImage extends TrayIcon { readonly [TrayImageFacetKey]: true }
+        type TrayFacetFor<Host, Slot extends string, Facet> = Host extends {
+          readonly tray: { readonly [Key in Slot]: unknown }
+        } ? Facet : unknown;
+        export type TrayIconForHost<Host> =
+          TrayIcon & TrayFacetFor<Host, 'image', TrayWithImage>;
+        export function assumeTrayFacets<Host>(icon: TrayIcon): TrayIconForHost<Host> {
+          return icon as TrayIconForHost<Host>;
+        }
+        export function readRuntime(icon: TrayWithImage): number { return icon.runtime; }
+      `,
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    expect(result.diagnostics).toEqual([]);
+    expect(emitted).toContain('#include <flight/conditional_facet_ref.hpp>');
+    expect(emitted).toContain('struct TrayWithImageFacet final {};');
+    expect(emitted).toContain('using TrayWithImage = flight::FacetRef<TrayIcon, TrayWithImageFacet>;');
+    expect(emitted).toContain(
+      'flight::RequiredMemberFacet<TrayWithImageFacet, flight::MemberPath<[]<typename Value>(Value& value) -> decltype((value.tray)) { return value.tray; }, []<typename Value>(Value& value) -> decltype((value.image)) { return value.image; }>>',
+    );
+    expect(emitted).toContain(
+      'flight::assume_conditional_facets<TrayIconForHost<Host>>(icon)',
+    );
+    expect(emitted).toContain('return icon->runtime;');
   });
 });

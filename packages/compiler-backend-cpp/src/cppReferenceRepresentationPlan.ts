@@ -106,6 +106,23 @@ export function createIrTypeReferenceRepresentationPlannerCpp(
     resolveAlias(type: Readonly<IrType>, module: Readonly<IrModule>): Readonly<IrType> | undefined {
       return resolveIrTypeAliasCpp(type, module, moduleSet, resolutionCache, aliasCache);
     },
+    resolveConditionalFacetReference(type: Readonly<IrType>, module: Readonly<IrModule>) {
+      const subject = getReferenceModuleRecordCpp(module, moduleSet);
+      if (!subject) throw new TypeError('C++ conditional-facet subject must belong to the explicit module set');
+      return resolveIrConditionalFacetReferenceCpp(
+        type,
+        subject,
+        moduleSet,
+        resolutionCache,
+        aliasCache,
+        new Set(),
+      );
+    },
+    resolveFacetReference(type: Readonly<IrType>, module: Readonly<IrModule>) {
+      const subject = getReferenceModuleRecordCpp(module, moduleSet);
+      if (!subject) throw new TypeError('C++ facet subject must belong to the explicit module set');
+      return resolveIrFacetReferenceCpp(type, subject, moduleSet, resolutionCache);
+    },
     resolveClosedIntersectionDistribution(
       type: Readonly<Extract<IrType, { kind: 'intersection' }>>,
       module: Readonly<IrModule>,
@@ -182,6 +199,9 @@ function resolveIrTypeObjectShapeCpp(
   ancestors: ReadonlySet<string>,
 ): readonly Readonly<IrObjectTypeProperty>[] | undefined {
   if (type.kind === 'object') return type.properties;
+  if (type.kind === 'conditionalFacet') {
+    return resolveIrConditionalFacetArmCpp(type, module, moduleSet, cache) ? [] : undefined;
+  }
   if (type.kind === 'intersection') {
     const members = type.types.map((member) =>
       resolveIrTypeObjectShapeCpp(member, module, moduleSet, cache, ancestors),
@@ -281,6 +301,121 @@ function resolveIrTypeObjectShapeCpp(
     cache,
     nextAncestors,
   );
+}
+
+function resolveIrFacetReferenceCpp(
+  type: Readonly<IrType>,
+  module: Readonly<ReferenceModuleRecord>,
+  moduleSet: Readonly<ReferenceModuleSet>,
+  cache: ReferenceResolutionCache,
+): Readonly<{ base: IrType; facet: IrType }> | undefined {
+  if (
+    type.kind !== 'named' ||
+    type.reference.kind !== 'binding' ||
+    type.reference.binding.kind === 'typeParameter' ||
+    type.reference.path.length > 0 ||
+    type.typeArguments.length > 0
+  ) {
+    return undefined;
+  }
+  const resolution = getReferenceDeclarationResolutionCpp(type.reference, module, moduleSet, cache);
+  if (resolution.kind !== 'location' || resolution.location.declaration.kind !== 'interface') return undefined;
+  const declaration = resolution.location.declaration;
+  if (declaration.typeParameters.length > 0 || declaration.extends.length !== 1 || declaration.properties.length !== 1) {
+    return undefined;
+  }
+  const marker = declaration.properties[0]!;
+  if (
+    marker.phantom !== true ||
+    !marker.computedKey ||
+    marker.optional ||
+    !marker.readonly ||
+    marker.role ||
+    marker.type.kind !== 'literal' ||
+    marker.type.value !== true
+  ) {
+    return undefined;
+  }
+  return { base: declaration.extends[0]!, facet: type };
+}
+
+function resolveIrConditionalFacetArmCpp(
+  type: Readonly<Extract<IrType, { kind: 'conditionalFacet' }>>,
+  module: Readonly<ReferenceModuleRecord>,
+  moduleSet: Readonly<ReferenceModuleSet>,
+  cache: ReferenceResolutionCache,
+): Readonly<{ base: IrType; facet: IrType; path: readonly [string, ...string[]] }> | undefined {
+  if (
+    type.path.length === 0 ||
+    type.path.some((segment) => segment.length === 0) ||
+    type.check.kind !== 'named' ||
+    type.check.reference.kind !== 'binding' ||
+    type.check.reference.binding.kind !== 'typeParameter' ||
+    type.check.reference.path.length > 0 ||
+    type.check.typeArguments.length > 0
+  ) {
+    return undefined;
+  }
+  const facet = resolveIrFacetReferenceCpp(type.facet, module, moduleSet, cache);
+  return facet ? { base: facet.base, facet: facet.facet, path: type.path } : undefined;
+}
+
+function resolveIrConditionalFacetReferenceCpp(
+  type: Readonly<IrType>,
+  module: Readonly<ReferenceModuleRecord>,
+  moduleSet: Readonly<ReferenceModuleSet>,
+  cache: ReferenceResolutionCache,
+  aliasCache: Map<string, Readonly<IrType> | null>,
+  aliases: ReadonlySet<string>,
+):
+  | Readonly<{
+      base: IrType;
+      check: IrType;
+      rules: readonly Readonly<{ facet: IrType; path: readonly [string, ...string[]] }>[];
+    }>
+  | undefined {
+  if (type.kind === 'named' && type.reference.kind === 'binding') {
+    const key = `${type.reference.binding.id}\0${JSON.stringify(type.typeArguments)}`;
+    if (aliases.has(key)) return undefined;
+    const resolved = resolveIrTypeAliasCpp(type, module.module, moduleSet, cache, aliasCache);
+    return resolved
+      ? resolveIrConditionalFacetReferenceCpp(
+          resolved,
+          module,
+          moduleSet,
+          cache,
+          aliasCache,
+          new Set(aliases).add(key),
+        )
+      : undefined;
+  }
+  if (type.kind !== 'intersection') return undefined;
+  const conditional = type.types.filter(
+    (member): member is Extract<IrType, { kind: 'conditionalFacet' }> => member.kind === 'conditionalFacet',
+  );
+  const bases = type.types.filter((member) => member.kind !== 'conditionalFacet');
+  if (conditional.length === 0 || bases.length !== 1) return undefined;
+  const base = bases[0]!;
+  if (base.kind !== 'named') return undefined;
+  const arms = conditional.map((member) => resolveIrConditionalFacetArmCpp(member, module, moduleSet, cache));
+  if (arms.some((arm) => !arm)) return undefined;
+  const check = conditional[0]!.check;
+  const checkIdentity = normalizeCompilerStructuralValueCanonical(check);
+  if (
+    conditional.some(
+      (member) => normalizeCompilerStructuralValueCanonical(member.check) !== checkIdentity,
+    ) ||
+    arms.some(
+      (arm) => normalizeCompilerStructuralValueCanonical(arm!.base) !== normalizeCompilerStructuralValueCanonical(base),
+    )
+  ) {
+    return undefined;
+  }
+  const rules = arms.map((arm) => ({ facet: arm!.facet, path: arm!.path }));
+  const paths = rules.map((rule) => JSON.stringify(rule.path));
+  const facets = rules.map((rule) => normalizeCompilerStructuralValueCanonical(rule.facet));
+  if (new Set(paths).size !== paths.length || new Set(facets).size !== facets.length) return undefined;
+  return { base, check, rules };
 }
 
 function resolveIrTypeClosedIntersectionDistributionCpp(
@@ -606,6 +741,26 @@ function createIrTypeReferenceRepresentationPlanInternalCpp(
   module: Readonly<ReferenceModuleRecord>,
   context: Readonly<ReferencePlanningContext>,
 ): CompilerCppReferenceRepresentationPlan {
+  const conditionalFacet = resolveIrConditionalFacetReferenceCpp(
+    type,
+    module,
+    context.moduleSet,
+    context.resolutionCache,
+    new Map(),
+    new Set(),
+  );
+  if (conditionalFacet) {
+    const base = createIrTypeReferenceRepresentationPlanInternalCpp(conditionalFacet.base, module, context);
+    if (base.kind === 'represented' && base.valueRepresentation === 'flightReference') {
+      return createCompilerCppReferenceRepresentationSuccessCpp(
+        base.identity,
+        'facet',
+        'object',
+        'runtimeManaged',
+        'runtimeReference',
+      );
+    }
+  }
   if (type.kind === 'named' && type.reference.kind === 'ambient') {
     const external = getCompilerExternalBindingEvidenceCpp(type.reference.name, 'type', context.externalBindings);
     if (external) {
@@ -814,6 +969,20 @@ function createNamedReferenceRepresentationPlanCpp(
       );
     }
     return createCompilerCppReferenceRepresentationRefusalCpp(identity, 'unresolvedReferenceRepresentation');
+  }
+  const facet = resolveIrFacetReferenceCpp(type, module, context.moduleSet, context.resolutionCache);
+  if (facet) {
+    const base = createIrTypeReferenceRepresentationPlanInternalCpp(facet.base, resolution.location.module, context);
+    if (base.kind !== 'represented' || base.valueRepresentation !== 'flightReference') {
+      return createCompilerCppReferenceRepresentationRefusalCpp(identity, 'compoundReference');
+    }
+    return createCompilerCppReferenceRepresentationSuccessCpp(
+      identity,
+      'facet',
+      'object',
+      'runtimeManaged',
+      'runtimeReference',
+    );
   }
   const declaration = resolution.location.declaration;
   if (declaration.kind === 'class') {

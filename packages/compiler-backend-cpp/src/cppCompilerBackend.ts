@@ -41,6 +41,7 @@ import {
 } from '../../compiler-structural/src/index.js';
 import type {
   CompilerBackend,
+  CompilerCppConditionalFacetReferencePlan,
   CompilerCppReferenceRepresentationPlanner,
   CompilerLoweringPass,
   CompilerModuleResolutionPlan,
@@ -88,6 +89,7 @@ import {
   getCompilerExternalBindingCallResultTypeCpp,
   getCompilerExternalBindingConstructionCpp,
   getCompilerExternalBindingHeadersCpp,
+  getCompilerExternalBindingWeakKeyPolicyTargetCpp,
   getCompilerRuntimeExternalMemberTargetCpp,
   getCompilerRuntimeExternalSymbolTargetCpp,
 } from './cppRuntimeExternalSymbolBinding.js';
@@ -148,6 +150,7 @@ interface EmitContext {
   directBindingOwners: ReadonlyMap<string, CppDirectBindingOwner | null>;
   importBindingOwners: ReadonlyMap<string, CppImportBindingOwner | null>;
   finallyReturnVar?: string | undefined;
+  facetTagNames: Map<string, string>;
   includes: Set<string>;
   module: Readonly<IrModule>;
   namespaceScope: boolean;
@@ -266,6 +269,7 @@ function emitIrModuleCppWithContext(
     denseArrayLengthBindingIds: collectIrModuleDenseArrayLengthBindingIdsCpp(sourceModule),
     dependentCallablePacks: collectIrModuleDependentCallablePacksCpp(module),
     directBindingOwners: directBindingOwners ?? createCppDirectBindingOwners(sourceModules),
+    facetTagNames: new Map(),
     importBindingOwners: importBindingOwners ?? createCppImportBindingOwners(sourceModules),
     includes: new Set<string>(),
     module,
@@ -781,6 +785,29 @@ function emitInterface(declaration: Readonly<IrInterfaceDeclaration>, outer: Emi
     ),
   };
   const name = getBindingTargetName(declaration.binding, context);
+  const facet = context.referenceRepresentationPlanner.resolveFacetReference(
+    {
+      kind: 'named',
+      reference: { binding: declaration.binding, kind: 'binding', path: [] },
+      typeArguments: declaration.typeParameters.map((parameter) => ({
+        kind: 'named',
+        reference: { binding: parameter.binding, kind: 'binding', path: [] },
+        typeArguments: [],
+      })),
+    },
+    context.module,
+  );
+  if (facet && getCppRuntimeProfile(context.options) === 'flight-cpp') {
+    if (declaration.typeParameters.length > 0) {
+      emissionError(context, `facet interface ${declaration.binding.name} must be nongeneric`);
+    }
+    context.includes.add('flight/conditional_facet_ref.hpp');
+    const tag = getCppFacetTagNameCpp(declaration.binding, context);
+    return [
+      `struct ${tag} final {};`,
+      `using ${name} = flight::FacetRef<${emitType(facet.base, context, 'storage')}, ${tag}>;`,
+    ];
+  }
   const typeParams = emitTypeParameters(declaration.typeParameters, context);
   const lines: string[] = [];
   if (typeParams) lines.push(`template ${typeParams}`);
@@ -803,6 +830,18 @@ function emitTypeAlias(declaration: Readonly<IrTypeAliasDeclaration>, outer: Emi
       declaration.typeParameters,
     ),
   };
+  const conditionalFacet = context.referenceRepresentationPlanner.resolveConditionalFacetReference(
+    declaration.type,
+    context.module,
+  );
+  if (conditionalFacet && getCppRuntimeProfile(context.options) === 'flight-cpp') {
+    const name = getBindingTargetName(declaration.binding, context);
+    const typeParams = emitTypeParameters(declaration.typeParameters, context);
+    const lines: string[] = [];
+    if (typeParams) lines.push(`template ${typeParams}`);
+    lines.push(`using ${name} = ${emitCppConditionalFacetReferenceTypeCpp(conditionalFacet, context)};`);
+    return lines;
+  }
   const stringLiterals = getIrUnionTypeStringLiteralValues(declaration.type);
   if (stringLiterals) return emitStringLiteralUnionCpp(declaration, context);
   const callableObject = getCppCallableObjectIntersectionCpp(declaration.type, context);
@@ -1327,6 +1366,33 @@ function emitExpression(
       return `${invocationTarget}${emitCppTypeArguments(expression.typeArguments, context)}(${args.join(', ')})`;
     }
     case 'cast': {
+      const conditionalFacet = context.referenceRepresentationPlanner.resolveConditionalFacetReference(
+        expression.type,
+        context.module,
+      );
+      if (conditionalFacet) {
+        if (getCppRuntimeProfile(context.options) !== 'flight-cpp') {
+          emissionError(context, 'conditional facet assertion requires the flight-cpp runtime profile');
+        }
+        const sourceType = getIrExpressionTypeEvidenceCpp(expression.expression, context);
+        const sourcePlan = sourceType
+          ? context.referenceRepresentationPlanner.plan(sourceType, context.module)
+          : undefined;
+        if (
+          !sourceType ||
+          sourcePlan?.kind !== 'represented' ||
+          sourcePlan.valueRepresentation !== 'flightReference' ||
+          normalizeCompilerStructuralValueCanonical(sourceType) !==
+            normalizeCompilerStructuralValueCanonical(conditionalFacet.base)
+        ) {
+          emissionError(
+            context,
+            'conditional facet assertion requires the exact proven Flight reference base',
+          );
+        }
+        context.includes.add('flight/conditional_facet_ref.hpp');
+        return `flight::assume_conditional_facets<${emitType(expression.type, context)}>(${emitExpression(expression.expression, context, conditionalFacet.base)})`;
+      }
       const asserted = emitUnionMemberAssertionCpp(expression.expression, expression.type, context);
       const callableTypeParameter = getCppCallableTypeParameterCpp(expression.type, context);
       if (
@@ -1552,6 +1618,14 @@ function emitExpression(
         context.includes.add('stdexcept');
       }
       const constructedType = getIrNewExpressionTypeEvidenceCpp(expression, context);
+      const weakMapConstructionType =
+        getCppRuntimeProfile(context.options) === 'flight-cpp' && ambientConstructorName === 'WeakMap'
+          ? getIrWeakMapTypeCpp(
+              expression.typeArguments.length > 0 ? constructedType : expectedType,
+              context,
+              new Set(),
+            )
+          : undefined;
       const contextualArrayTypeArguments =
         ambientConstructorName === 'Array' && expectedType?.kind === 'array' ? [expectedType.element] : [];
       const typeArguments = emitCppTypeArguments(
@@ -1575,6 +1649,12 @@ function emitExpression(
           emissionError(context, 'flight-cpp Promise construction requires one explicit type argument');
         }
         return `${typeName}${typeArguments}::create(${args.join(', ')})`;
+      }
+      if (getCppRuntimeProfile(context.options) === 'flight-cpp' && ambientConstructorName === 'WeakMap') {
+        if (!weakMapConstructionType) {
+          emissionError(context, 'flight-cpp WeakMap construction requires explicit or contextual type arguments');
+        }
+        return `${emitType(weakMapConstructionType, context)}(${args.join(', ')})`;
       }
       if (
         getCppRuntimeProfile(context.options) !== 'flight-cpp' &&
@@ -2563,6 +2643,49 @@ function emitTryFinallyCpp(
   return lines;
 }
 
+function emitCppConditionalFacetReferenceTypeCpp(
+  representation: Readonly<CompilerCppConditionalFacetReferencePlan>,
+  context: EmitContext,
+): string {
+  context.includes.add('flight/conditional_facet_ref.hpp');
+  if (
+    representation.check.kind !== 'named' ||
+    representation.check.reference.kind !== 'binding' ||
+    representation.check.reference.binding.kind !== 'typeParameter'
+  ) {
+    emissionError(context, 'conditional facet check requires one bare C++ type parameter');
+  }
+  const base = emitType(representation.base, context, 'storage');
+  const check = emitType(representation.check, context, 'storage');
+  const rules = representation.rules.map((rule) => {
+    if (
+      rule.facet.kind !== 'named' ||
+      rule.facet.reference.kind !== 'binding' ||
+      rule.facet.reference.binding.kind === 'import' ||
+      rule.facet.reference.path.length > 0 ||
+      rule.facet.typeArguments.length > 0
+    ) {
+      emissionError(context, 'conditional facet rule requires one local nongeneric facet interface');
+    }
+    const tag = getCppFacetTagNameCpp(rule.facet.reference.binding, context);
+    const accessors = rule.path.map((segment) => {
+      const member = safeCppName(segment);
+      return `[]<typename Value>(Value& value) -> decltype((value.${member})) { return value.${member}; }`;
+    });
+    return `flight::RequiredMemberFacet<${tag}, flight::MemberPath<${accessors.join(', ')}>>`;
+  });
+  return `flight::ConditionalFacetRef<${base}, ${check}, ${rules.join(', ')}>`;
+}
+
+function getCppFacetTagNameCpp(binding: Readonly<IrTypeBindingIdentity>, context: EmitContext): string {
+  const existing = context.facetTagNames.get(binding.id);
+  if (existing) return existing;
+  const base = `${getBindingTargetName(binding, context)}Facet`;
+  const name = getGeneratedTargetName(base, context);
+  context.facetTagNames.set(binding.id, name);
+  return name;
+}
+
 function emitType(type: Readonly<IrType>, context: EmitContext, representation: 'storage' | 'value' = 'value'): string {
   if (getCppRuntimeProfile(context.options) === 'flight-cpp') {
     const projection = getCppCallableObjectIndexedProjectionCpp(type, context);
@@ -2630,6 +2753,8 @@ function emitType(type: Readonly<IrType>, context: EmitContext, representation: 
       }
       context.includes.add('vector');
       return `std::vector<${emitType(type.element, context)}>`;
+    case 'conditionalFacet':
+      emissionError(context, 'conditional facet must be enclosed by one proven shared-referent base');
     case 'function': {
       context.includes.add('functional');
       const parameters = type.parameters.map((parameter) => emitType(parameter.type, context));
@@ -2652,6 +2777,13 @@ function emitType(type: Readonly<IrType>, context: EmitContext, representation: 
       return emitType(valueType, context, representation);
     }
     case 'intersection': {
+      const conditionalFacet = context.referenceRepresentationPlanner.resolveConditionalFacetReference(
+        type,
+        context.module,
+      );
+      if (conditionalFacet && getCppRuntimeProfile(context.options) === 'flight-cpp') {
+        return emitCppConditionalFacetReferenceTypeCpp(conditionalFacet, context);
+      }
       const erasedValue = getCppErasedIntersectionValueType(type, context);
       if (erasedValue) return emitType(erasedValue, context, representation);
       const callableOverloads = getCppCallableOverloadIntersectionCpp(type);
@@ -2749,11 +2881,13 @@ function emitType(type: Readonly<IrType>, context: EmitContext, representation: 
           representation,
         );
       }
-      if (sourceName === 'WeakMap' && getCppRuntimeProfile(context.options) === 'flight-cpp') {
-        assertWeakMapTypeArgumentsCpp(type.typeArguments, context);
-      }
+      const weakKeyPolicyTargetName =
+        sourceName === 'WeakMap' && getCppRuntimeProfile(context.options) === 'flight-cpp'
+          ? assertWeakMapTypeArgumentsCpp(type.typeArguments, context)
+          : undefined;
       const mapped = getTypeReferenceTargetName(type, context);
       const arguments_ = type.typeArguments.map((argument) => emitType(argument, context));
+      if (weakKeyPolicyTargetName) arguments_.push(weakKeyPolicyTargetName);
       return `${mapped}${arguments_.length > 0 ? `<${arguments_.join(', ')}>` : ''}`;
     }
     case 'never':
@@ -3031,38 +3165,63 @@ function getCppTypeOfValueType(
   return valueType;
 }
 
-function assertWeakMapTypeArgumentsCpp(typeArguments: readonly IrType[], context: EmitContext): void {
+function assertWeakMapTypeArgumentsCpp(typeArguments: readonly IrType[], context: EmitContext): string | undefined {
   if (typeArguments.length !== 2 || !typeArguments[0] || !typeArguments[1]) {
     emissionError(context, 'flight-cpp WeakMap requires explicit key and value type arguments');
   }
-  if (!hasWeakMapKeyFlightReferenceRepresentationCpp(typeArguments[0], context, new Set())) {
-    emissionError(context, 'flight-cpp WeakMap key requires a proven flight reference representation');
+  const key = getWeakMapKeyRepresentationCpp(typeArguments[0], context, new Set());
+  if (!key) {
+    emissionError(context, 'flight-cpp WeakMap key requires a proven Flight reference or external weak-key policy');
   }
   const value = context.referenceRepresentationPlanner.plan(typeArguments[1], context.module);
   if (value.kind !== 'represented') {
     emissionError(context, 'flight-cpp WeakMap value requires a proven C++ representation');
   }
+  return key.weakKeyPolicyTargetName;
 }
 
-function hasWeakMapKeyFlightReferenceRepresentationCpp(
+function getIrWeakMapTypeCpp(
+  type: Readonly<IrType> | undefined,
+  context: EmitContext,
+  resolvingAliases: ReadonlySet<string>,
+): Readonly<Extract<IrType, { kind: 'named' }>> | undefined {
+  if (!type || type.kind !== 'named') return undefined;
+  if (type.reference.kind === 'ambient' && type.reference.name === 'WeakMap') return type;
+  if (type.reference.kind !== 'binding' || resolvingAliases.has(type.reference.binding.id)) return undefined;
+  const alias = context.referenceRepresentationPlanner.resolveAlias(type, context.module);
+  if (!alias) return undefined;
+  return getIrWeakMapTypeCpp(alias, context, new Set(resolvingAliases).add(type.reference.binding.id));
+}
+
+function getWeakMapKeyRepresentationCpp(
   type: Readonly<IrType>,
   context: EmitContext,
   resolvingAliases: ReadonlySet<string>,
-): boolean {
-  if (type.kind === 'unknown' && type.source === 'object') return true;
-  const plan = context.referenceRepresentationPlanner.plan(type, context.module);
-  if (plan.kind === 'represented' && plan.valueRepresentation === 'flightReference') return true;
+): Readonly<{ weakKeyPolicyTargetName?: string | undefined }> | undefined {
+  if (type.kind === 'unknown' && type.source === 'object') return {};
   if (type.kind === 'union') {
-    return type.types.every((member) =>
-      hasWeakMapKeyFlightReferenceRepresentationCpp(member, context, resolvingAliases),
-    );
+    const members = type.types.map((member) => getWeakMapKeyRepresentationCpp(member, context, resolvingAliases));
+    if (members.some((member) => member === undefined)) return undefined;
+    const policies = new Set(members.map((member) => member?.weakKeyPolicyTargetName));
+    if (policies.size !== 1) return undefined;
+    const weakKeyPolicyTargetName = members[0]?.weakKeyPolicyTargetName;
+    return weakKeyPolicyTargetName ? { weakKeyPolicyTargetName } : {};
   }
-  if (type.kind !== 'named' || type.reference.kind !== 'binding') return false;
+  if (type.kind === 'named' && type.reference.kind === 'ambient' && type.typeArguments.length === 0) {
+    const weakKeyPolicyTargetName = getCompilerExternalBindingWeakKeyPolicyTargetCpp(
+      type.reference.name,
+      context.options.externalBindings,
+    );
+    if (weakKeyPolicyTargetName) return { weakKeyPolicyTargetName };
+  }
+  const plan = context.referenceRepresentationPlanner.plan(type, context.module);
+  if (plan.kind === 'represented' && plan.valueRepresentation === 'flightReference') return {};
+  if (type.kind !== 'named' || type.reference.kind !== 'binding') return undefined;
   const key = `${type.reference.binding.id}\0${JSON.stringify(type.typeArguments)}`;
-  if (resolvingAliases.has(key)) return false;
+  if (resolvingAliases.has(key)) return undefined;
   const alias = context.referenceRepresentationPlanner.resolveAlias(type, context.module);
-  if (!alias) return false;
-  return hasWeakMapKeyFlightReferenceRepresentationCpp(alias, context, new Set(resolvingAliases).add(key));
+  if (!alias) return undefined;
+  return getWeakMapKeyRepresentationCpp(alias, context, new Set(resolvingAliases).add(key));
 }
 
 function getCppNonNullableType(
@@ -6277,6 +6436,13 @@ function hasFlightReferenceRepresentationCpp(type: Readonly<IrType>, context: Em
   return plan.kind === 'represented' && plan.valueRepresentation === 'flightReference';
 }
 
+function hasFlightFacetReferenceRepresentationCpp(type: Readonly<IrType>, context: EmitContext): boolean {
+  if (getCppRuntimeProfile(context.options) !== 'flight-cpp') return false;
+  const owner = getCppDirectBindingOwner(type, context);
+  const plan = context.referenceRepresentationPlanner.plan(type, owner?.module ?? context.module);
+  return plan.kind === 'represented' && plan.category === 'facet' && plan.valueRepresentation === 'runtimeReference';
+}
+
 function getCppIdentityPreservingUtilityArgument(type: Readonly<IrType>): Readonly<IrType> | undefined {
   return type.kind === 'named' &&
     type.reference.kind === 'ambient' &&
@@ -6689,7 +6855,10 @@ function memberOp(object: Readonly<IrExpression>, context: EmitContext): string 
   if (type && hasIrTypeAbsentMember(type) && getCppCallableObjectIrTypeCpp(type, context, new Set())) {
     return '.value()->';
   }
-  return type && hasFlightReferenceRepresentationCpp(type, context) ? '->' : '.';
+  return type &&
+    (hasFlightReferenceRepresentationCpp(type, context) || hasFlightFacetReferenceRepresentationCpp(type, context))
+    ? '->'
+    : '.';
 }
 
 function emitLiteralWithExpectedTypeCpp(

@@ -4,6 +4,7 @@ import {
   getCompilerExternalBindingConstructionCpp,
   getCompilerExternalBindingEvidenceCpp,
   getCompilerExternalBindingHeadersCpp,
+  getCompilerExternalBindingWeakKeyPolicyTargetCpp,
   getCompilerRuntimeExternalMemberTargetCpp,
   getCompilerRuntimeExternalSymbolTargetCpp,
   isCompilerRuntimeExternalSymbolProvidedCpp,
@@ -113,6 +114,11 @@ describe('createCompilerRuntimeExternalSymbolBindingPlanCpp', () => {
       kind: 'runtime',
     });
     expect(plan.bindings).toContainEqual({
+      capability: 'weak-map',
+      externalSymbol: { sourceName: 'WeakMap', space: 'type' },
+      kind: 'runtime',
+    });
+    expect(plan.bindings).toContainEqual({
       capability: 'object',
       externalSymbol: { sourceName: 'Object', space: 'value' },
       kind: 'runtime',
@@ -195,6 +201,55 @@ describe('getCompilerExternalBindingCallResultTypeCpp', () => {
         schema: 'flight-cpp-external-bindings/1',
       }),
     ).toThrow('ambiguous for setTimeout[value]');
+  });
+});
+
+describe('getCompilerExternalBindingWeakKeyPolicyTargetCpp', () => {
+  const binding = {
+    headers: ['host/gpu.hpp'],
+    nullability: 'non-null' as const,
+    ownership: 'shared' as const,
+    sourceName: 'GPUShaderModule',
+    space: 'type' as const,
+    targetName: 'host::GpuShaderModule',
+    weakKeyPolicyTargetName: 'host::GpuShaderModuleWeakKeyPolicy',
+  };
+  const manifest = {
+    bindings: [binding],
+    schema: 'flight-cpp-external-bindings/1' as const,
+  };
+
+  it('returns one cohesive weak-key policy only for an exact shared non-null type binding', () => {
+    expect(getCompilerExternalBindingWeakKeyPolicyTargetCpp('GPUShaderModule', manifest)).toBe(
+      'host::GpuShaderModuleWeakKeyPolicy',
+    );
+    expect(getCompilerExternalBindingWeakKeyPolicyTargetCpp('Missing', manifest)).toBeUndefined();
+    expect(getCompilerExternalBindingWeakKeyPolicyTargetCpp('NativeSurface', externalBindings)).toBeUndefined();
+  });
+
+  it.each([
+    ['an empty policy target', { weakKeyPolicyTargetName: '' }],
+    ['value-space evidence', { space: 'value' as const }],
+    ['borrowed ownership', { ownership: 'borrowed' as const }],
+    ['owned ownership', { ownership: 'owned' as const }],
+    ['value ownership', { ownership: 'value' as const }],
+    ['nullable ownership', { nullability: 'nullable' as const }],
+  ])('rejects %s', (_label, replacement) => {
+    expect(() =>
+      getCompilerExternalBindingWeakKeyPolicyTargetCpp('GPUShaderModule', {
+        bindings: [{ ...binding, ...replacement }],
+        schema: 'flight-cpp-external-bindings/1',
+      }),
+    ).toThrow('malformed weak-key policy');
+  });
+
+  it('rejects ambiguous policy-bearing identities rather than choosing one', () => {
+    expect(() =>
+      getCompilerExternalBindingWeakKeyPolicyTargetCpp('GPUShaderModule', {
+        bindings: [binding, { ...binding, weakKeyPolicyTargetName: 'host::OtherWeakKeyPolicy' }],
+        schema: 'flight-cpp-external-bindings/1',
+      }),
+    ).toThrow('ambiguous for GPUShaderModule[type]');
   });
 });
 
@@ -307,6 +362,9 @@ describe('getCompilerExternalBindingHeadersCpp', () => {
     expect(getCompilerExternalBindingHeadersCpp('RegExp', 'type', undefined, 'flight-cpp')).toEqual([
       'flight/regexp.hpp',
     ]);
+    expect(getCompilerExternalBindingHeadersCpp('WeakMap', 'type', undefined, 'flight-cpp')).toEqual([
+      'flight/weak_map.hpp',
+    ]);
   });
 });
 
@@ -404,6 +462,7 @@ describe('getCompilerRuntimeExternalSymbolTargetCpp', () => {
     ['TextDecoder', 'value', 'flight::TextDecoder'],
     ['Uint8ClampedArray', 'value', 'flight::Uint8ClampedArray'],
     ['URL', 'value', 'flight::Url'],
+    ['WeakMap', 'type', 'flight::WeakMap'],
   ] as const)('maps %s in %s space to the semantic runtime target %s', (sourceName, space, targetName) => {
     expect(getCompilerRuntimeExternalSymbolTargetCpp(sourceName, space, 'flight-cpp')).toBe(targetName);
   });
@@ -541,6 +600,6 @@ describe('isCompilerRuntimeExternalSymbolProvidedCpp', () => {
     expect(isCompilerRuntimeExternalSymbolProvidedCpp('Symbol', 'value', 'flight-cpp')).toBe(true);
     expect(isCompilerRuntimeExternalSymbolProvidedCpp('JSON', 'value', 'flight-cpp')).toBe(true);
     expect(isCompilerRuntimeExternalSymbolProvidedCpp('RegExpExecArray', 'type', 'flight-cpp')).toBe(true);
-    expect(isCompilerRuntimeExternalSymbolProvidedCpp('WeakMap', 'type', 'flight-cpp')).toBe(false);
+    expect(isCompilerRuntimeExternalSymbolProvidedCpp('WeakMap', 'type', 'flight-cpp')).toBe(true);
   });
 });

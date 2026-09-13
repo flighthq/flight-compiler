@@ -1359,6 +1359,18 @@ function visitType(type: Readonly<IrType>, path: string, state: IrModuleValidati
     case 'array':
       visitType(type.element, `${path}.element`, state);
       break;
+    case 'conditionalFacet':
+      if (type.path.length === 0 || type.path.some((segment) => segment.length === 0)) {
+        addFailure(
+          'invalid-node-shape',
+          `${path}.path`,
+          'conditional facet path requires one or more nonempty member names',
+          state,
+        );
+      }
+      visitType(type.check, `${path}.check`, state);
+      visitType(type.facet, `${path}.facet`, state);
+      break;
     case 'function':
       visitLexicalScope('function', path, state, () => {
         validateParameterCardinality(type.parameters, `${path}.parameters`, state);
@@ -1441,6 +1453,14 @@ function visitType(type: Readonly<IrType>, path: string, state: IrModuleValidati
               'invalid-node-shape',
               `${propertyPath}.readonly`,
               'object readonly marker must be boolean',
+              state,
+            );
+          }
+          if (property.phantom !== undefined && (property.phantom !== true || !property.computedKey)) {
+            addFailure(
+              'invalid-node-shape',
+              `${propertyPath}.phantom`,
+              'phantom object property must be a computed key marked true',
               state,
             );
           }

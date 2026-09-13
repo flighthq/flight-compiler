@@ -154,6 +154,7 @@ function getIrTypeVariableHoistingDomain(type: Readonly<IrType> | undefined): Ir
       return domains.size === 1 ? [...domains][0]! : 'unknown';
     }
     case 'indexedAccess':
+    case 'conditionalFacet':
     case 'intersection':
     case 'keyof':
     case 'named':
