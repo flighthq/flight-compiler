@@ -1622,10 +1622,7 @@ describe('emitIrModuleHaxe', () => {
     expect(() => emitIrModuleHaxe(external.module)).toThrow('implements an interface declared outside this module');
   });
 
-  it('compares against a single absent value directly, and refuses where the source admits both', () => {
-    // Haxe has one absent value, so `x == null` says exactly what `x === undefined` says when the
-    // operand cannot also be null. When it can be both, the two comparisons differ and Haxe cannot
-    // tell them apart, so the difference has to be lowered rather than emitted.
+  it('uses JavaScript strict equality to preserve distinct null and undefined values', () => {
     const single = lower(
       'single.ts',
       'export function widen(value: number | undefined, fallback: number): number { if (value === undefined) return fallback; return value; }',
@@ -1636,15 +1633,11 @@ describe('emitIrModuleHaxe', () => {
     );
 
     const singleOutput = emitIrModuleHaxe(single.module).contents;
-    expect(singleOutput).toContain('if (value == null) {');
+    expect(singleOutput).toContain('if (js.Syntax.strictEq(value, js.Syntax.code("undefined"))) {');
     // Narrowing proved the value present, so it is returned directly: `Null<T>` exists to unify
     // with `T`, and the proof guarantees any runtime check that unification inserts will pass.
     expect(singleOutput).toContain('return value;');
-    // The signature is safely widened to Dynamic, but the comparison still refuses: erasing the
-    // distinction is sound for storage and unsound for an operation that observes the sentinel.
-    expect(() => emitIrModuleHaxe(both.module)).toThrow(
-      'operator === against undefined requires Haxe nullability lowering',
-    );
+    expect(emitIrModuleHaxe(both.module).contents).toContain('js.Syntax.strictEq(value, js.Syntax.code("undefined"))');
   });
 
   it('emits class accessors as Haxe property pairs with get_/set_ bodies', () => {
@@ -6721,7 +6714,7 @@ describe('emitIrModuleHaxe module variable without type annotation', () => {
 });
 
 describe('emitIrModuleHaxe nullish comparison admitting both null and undefined', () => {
-  it('collapses loose null equality while preserving the strict-comparison refusal', () => {
+  it('collapses loose null equality while preserving strict null identity', () => {
     const result = lower(
       'both-nullish.ts',
       `export function check(value: number | null | undefined): boolean {
@@ -6736,9 +6729,7 @@ describe('emitIrModuleHaxe nullish comparison admitting both null and undefined'
     );
 
     expect(emitIrModuleHaxe(result.module).contents).toContain('return value == null;');
-    expect(() => emitIrModuleHaxe(strict.module)).toThrow(
-      'operator === against null requires Haxe nullability lowering',
-    );
+    expect(emitIrModuleHaxe(strict.module).contents).toContain('return js.Syntax.strictEq(value, null);');
   });
 });
 
@@ -7225,6 +7216,16 @@ describe('emitIrModuleHaxe spread call emission', () => {
         .module,
     ).contents;
     expect(output).toContain('Reflect.callMethod(out, out.push, values)');
+  });
+
+  it('routes mixed fixed and spread array pushes through reflective arity', () => {
+    const output = emitIrModuleHaxe(
+      lower(
+        'mixed-spread-push.ts',
+        'export function append(out: number[], first: number, middle: number[], last: number): void { out.push(first, ...middle, last); }',
+      ).module,
+    ).contents;
+    expect(output).toContain('Reflect.callMethod(out, out.push, [first].concat(middle).concat([last]))');
   });
 });
 
@@ -8764,7 +8765,7 @@ describe('emitIrModuleHaxe nullable return', () => {
     ).toThrow('returning nullable binding found requires Haxe narrowing evidence');
   });
 
-  it('refuses an undefined comparison when a local alias also admits null', () => {
+  it('preserves an undefined comparison when a local alias also admits null', () => {
     const result = lower(
       'aliased-nullish-map-return.ts',
       `type Value = boolean | number | string | null;
@@ -8775,9 +8776,26 @@ describe('emitIrModuleHaxe nullable return', () => {
        }`,
     );
 
-    expect(() => emitIrModuleHaxe(result.module)).toThrow(
-      'operator !== against undefined requires Haxe nullability lowering',
+    expect(emitIrModuleHaxe(result.module).contents).toContain(
+      'js.Syntax.strictNeq(memo, js.Syntax.code("undefined"))',
     );
+  });
+
+  it('resolves local return aliases before applying nullable return guards', () => {
+    const result = lower(
+      'nullable-return-alias.ts',
+      `const FAILURE = Symbol('failure');
+       type Value = null | boolean | number;
+       type Parsed = Value | typeof FAILURE;
+       function parse(): Parsed { return null; }
+       export function read(): Parsed {
+         const value = parse();
+         if (value === FAILURE) return FAILURE;
+         return value;
+       }`,
+    );
+
+    expect(() => emitIrModuleHaxe(result.module)).not.toThrow();
   });
 });
 

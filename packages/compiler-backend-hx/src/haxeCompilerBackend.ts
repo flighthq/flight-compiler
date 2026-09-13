@@ -37,7 +37,9 @@ import {
 } from '../../compiler-runtime-contract/src/index.js';
 import {
   analyzeIrModuleStructuralObjectCompatibilityAcrossModules,
+  createIrTypeParameterSubstitutionPlan,
   createIrModuleStructuralObjectCompatibilityAnalyzer,
+  resolveIrTypeStructuralSubstitution,
 } from '../../compiler-structural/src/index.js';
 import { analyzeIrModuleAsyncStateMachines } from '../../compiler-task/src/index.js';
 import type {
@@ -605,7 +607,7 @@ function emitEnumNamespaceFunctionHaxe(declaration: Readonly<IrFunctionDeclarati
   const context: EmitContext = {
     ...outer,
     finallyCompletion: undefined,
-    returnsAbsent: hasIrTypeAbsentMember(declaration.returns),
+    returnsAbsent: hasIrTypeAbsentMemberHaxe(declaration.returns, outer.module),
   };
   return [
     `public static function ${getBindingTargetNameHaxe(declaration.binding, context)}${emitTypeParameters(declaration.typeParameters, context)}(${emitParameters(declaration.parameters, context)}):${emitType(declaration.returns, context)} {`,
@@ -718,25 +720,16 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
       }
       if (expression.semantics.nullishComparison) {
         const evidence = expression.semantics.nullishComparison;
-        // Loose null equality deliberately treats null and undefined as the same absent value, so
-        // Haxe's single null representation preserves it exactly. Strict equality still observes
-        // which source sentinel was present and therefore needs a distinct runtime representation.
-        if (
-          evidence.admitsNull &&
-          evidence.admitsUndefined &&
-          (expression.operator === '===' || expression.operator === '!==')
-        ) {
-          emissionError(
-            context,
-            `operator ${expression.operator} against ${evidence.literal} requires Haxe nullability lowering`,
-          );
-        }
-        // Haxe has one absent value, so the comparison is against `null` and the source's own absent
-        // literal is never emitted. That is what lets `x === undefined` lower at all.
         const operand =
           expression.left.kind === 'identifier' && expression.left.reference.kind === 'ambient'
             ? expression.right
             : expression.left;
+        if (expression.operator === '===' || expression.operator === '!==') {
+          const operation = expression.operator === '===' ? 'strictEq' : 'strictNeq';
+          const literal = evidence.literal === 'undefined' ? 'js.Syntax.code("undefined")' : 'null';
+          return `js.Syntax.${operation}(${emitExpression(operand, context)}, ${literal})`;
+        }
+        // JavaScript loose equality deliberately treats null and undefined as the same absent value.
         const negated = expression.operator === '!=' || expression.operator === '!==';
         return `(${emitExpression(operand, context)} ${negated ? '!=' : '=='} null)`;
       }
@@ -816,7 +809,8 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
         expression.callee.kind === 'property' &&
         expression.callee.member?.receiver === 'array' &&
         expression.callee.member.name === 'push' &&
-        expression.arguments.length > 1
+        expression.arguments.length > 1 &&
+        expression.arguments.every((argument) => argument.kind !== 'spread')
       ) {
         const receiver = emitExpression(expression.callee.object, context);
         const values = expression.arguments.map((argument) => emitExpression(argument, context));
@@ -1486,7 +1480,7 @@ function emitFunction(declaration: Readonly<IrFunctionDeclaration>, outer: EmitC
   const context: EmitContext = {
     ...outer,
     finallyCompletion: undefined,
-    returnsAbsent: hasIrTypeAbsentMember(declaration.returns),
+    returnsAbsent: hasIrTypeAbsentMemberHaxe(declaration.returns, outer.module),
   };
   return [
     `${access}function ${getBindingTargetNameHaxe(declaration.binding, context)}${emitTypeParameters(declaration.typeParameters, context)}(${emitParameters(declaration.parameters, context)}):${emitType(declaration.returns, context)} {`,
@@ -1914,10 +1908,7 @@ function emitIdentifierReferenceHaxe(reference: Readonly<IrIdentifierReference>,
   if (reference.kind === 'this') return 'this';
   if (reference.kind === 'ambient') {
     if (reference.name === 'undefined') {
-      // Haxe has one absent representation. The type emitter already maps both `undefined` and
-      // nullable source slots onto null-bearing storage, so the value expression must use the same
-      // representation even when its contextual type is exactly `undefined` or `Dynamic`.
-      return 'null';
+      return 'js.Syntax.code("undefined")';
     }
     if (reference.name === 'Number') {
       return `${context.options.runtimeModule ?? 'flighthq._internal'}._Js.toNumber`;
@@ -1931,6 +1922,36 @@ function emitIdentifierReferenceHaxe(reference: Readonly<IrIdentifierReference>,
     return targetName;
   }
   return getBindingTargetNameHaxe(reference.binding, context);
+}
+
+function hasIrTypeAbsentMemberHaxe(
+  type: Readonly<IrType>,
+  module: Readonly<IrModule>,
+  activeAliases: ReadonlySet<string> = new Set(),
+): boolean {
+  if (hasIrTypeAbsentMember(type)) return true;
+  if (
+    type.kind !== 'named' ||
+    type.reference.kind !== 'binding' ||
+    type.reference.path.length > 0 ||
+    activeAliases.has(type.reference.binding.id)
+  ) {
+    return false;
+  }
+  const declaration = module.declarations.find(
+    (candidate): candidate is IrTypeAliasDeclaration =>
+      candidate.kind === 'typeAlias' && candidate.binding.id === type.reference.binding.id,
+  );
+  if (!declaration) return false;
+  try {
+    const substituted = resolveIrTypeStructuralSubstitution(
+      declaration.type,
+      createIrTypeParameterSubstitutionPlan(declaration.typeParameters, type.typeArguments),
+    );
+    return hasIrTypeAbsentMemberHaxe(substituted, module, new Set(activeAliases).add(type.reference.binding.id));
+  } catch {
+    return false;
+  }
 }
 
 function emitIrClassFieldInitializationsHaxe(

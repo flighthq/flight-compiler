@@ -479,6 +479,20 @@ function extractIrLeadingAwait(
     const nested = extractIrLeadingAwait(expression.object, binding);
     return nested ? { await: nested.await, expression: { ...expression, object: nested.expression } } : undefined;
   }
+  if (
+    expression.kind === 'call' &&
+    expression.callee.kind === 'identifier' &&
+    expression.callee.reference.kind === 'binding' &&
+    expression.arguments[0]
+  ) {
+    const nested = extractIrLeadingAwait(expression.arguments[0], binding);
+    return nested
+      ? {
+          await: nested.await,
+          expression: { ...expression, arguments: [nested.expression, ...expression.arguments.slice(1)] },
+        }
+      : undefined;
+  }
   return undefined;
 }
 

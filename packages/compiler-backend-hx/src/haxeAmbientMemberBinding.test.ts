@@ -152,6 +152,10 @@ describe('getCompilerHaxeAmbientMemberBinding', () => {
       kind: 'method',
       targetName: 'then',
     });
+    expect(getCompilerHaxeAmbientMemberBinding({ name: 'catch', receiver: 'task' })).toEqual({
+      kind: 'method',
+      targetName: 'catchError',
+    });
     expect(getCompilerHaxeAmbientMemberBinding({ name: 'finally', receiver: 'task' })).toEqual({
       kind: 'runtimeCall',
       targetName: '_Promise.finallyTask',

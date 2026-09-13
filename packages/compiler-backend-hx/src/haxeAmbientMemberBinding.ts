@@ -136,6 +136,7 @@ const haxeAmbientMemberBindings: Readonly<Record<string, CompilerHaxeAmbientMemb
   'string.trim': { kind: 'staticCall', targetPath: 'StringTools.trim' },
   'string.trimEnd': { kind: 'runtimeCall', targetName: '_StringTools.trimEnd' },
   'string.trimStart': { kind: 'runtimeCall', targetName: '_StringTools.trimStart' },
+  'task.catch': { kind: 'method', targetName: 'catchError' },
   'task.finally': { kind: 'runtimeCall', targetName: '_Promise.finallyTask' },
   'task.then': { kind: 'method', targetName: 'then' },
   'textDecoder.decode': { kind: 'method', targetName: 'decode' },
