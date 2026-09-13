@@ -262,12 +262,27 @@ describe('emitIrModuleHaxeExtern', () => {
     ).not.toContain('return 1;');
   });
 
-  it('refuses exported source classes', () => {
-    const module = lower('@flighthq/types', 'unsupported.ts', 'export class Model {}');
-
-    expect(() => emitIrModuleHaxeExtern(module)).toThrow(
-      'source class Model extern representation is not yet specified by flight-hx',
+  it('emits exported source classes through their public JavaScript contract', () => {
+    const module = lower(
+      '@flighthq/types',
+      'model.ts',
+      `export class Model {
+         static count = 0;
+         optional?: string;
+         constructor(readonly value: number) {}
+         read(extra?: number): number { return this.value + (extra ?? 0); }
+       }`,
     );
+
+    const contents = findFile(emitIrModuleHaxeExtern(module), 'flighthq/_js/Model.hx').contents;
+
+    expect(contents).toContain('@:jsImport("@flighthq/types/contract", "Model")');
+    expect(contents).toContain('extern class Model {');
+    expect(contents).toContain('public static var count:Float;');
+    expect(contents).toContain('@:optional public var optional:String;');
+    expect(contents).toContain('public var value(default, null):Float;');
+    expect(contents).toContain('public function new(value:Float);');
+    expect(contents).toContain('public function read(?extra:Float):Float;');
   });
 
   it('emits source enums as exact Haxe enum abstracts', () => {
@@ -391,7 +406,7 @@ describe('emitIrModuleHaxeExtern', () => {
     [
       'source class type',
       'class Model {} export function read(value: Model): void {}',
-      'source class Model extern representation is not yet specified by flight-hx',
+      'private source class Model has no public Haxe extern',
     ],
   ])('refuses unsupported public %s shapes', (_kind, source, message) => {
     const module = lower('@flighthq/types', 'unsupported-shape.ts', source);

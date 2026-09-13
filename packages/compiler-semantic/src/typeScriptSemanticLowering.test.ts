@@ -5492,6 +5492,71 @@ describe('lowerTypeScriptSources', () => {
   it('returns no module results for an empty source graph', () => {
     expect(lowerTypeScriptSources([])).toEqual([]);
   });
+
+  it('keeps bundled utility aliases opaque while narrowing project expressions', () => {
+    const sourceFile = ts.createSourceFile(
+      '/flight/packages/runtime/src/runtime.ts',
+      `interface Runtime { acquireGuard?: (value: number) => void }
+       export function invoke(runtime: Readonly<Runtime>): void { runtime.acquireGuard?.(1); }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const [result] = lowerTypeScriptSources([
+      { packageName: '@flighthq/runtime', sourceFile, upstreamDirectory: '/flight' },
+    ]);
+
+    expect(result!.diagnostics).toEqual([]);
+  });
+
+  it('materializes closed ambient Pick heritage with checker-resolved project aliases', () => {
+    const sourceFile = ts.createSourceFile(
+      '/flight/packages/types/src/GlContext.ts',
+      `type GlContextMember = 'ACTIVE_TEXTURE' | 'clear';
+       export interface GlContext extends Pick<WebGL2RenderingContext, GlContextMember> {}`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const [result] = lowerTypeScriptSources([
+      { packageName: '@flighthq/types', sourceFile, upstreamDirectory: '/flight' },
+    ]);
+    const declaration = result!.module.declarations.find(
+      (candidate) => candidate.kind === 'interface' && candidate.binding.name === 'GlContext',
+    );
+    if (declaration?.kind !== 'interface') throw new Error('Expected GlContext interface');
+
+    expect(result!.diagnostics).toEqual([]);
+    expect(declaration.properties).toHaveLength(2);
+    expect(new Set(declaration.properties.map((property) => property.name))).toEqual(
+      new Set(['ACTIVE_TEXTURE', 'clear']),
+    );
+  });
+
+  it('contextualizes each generic rest call argument against its instantiated tuple element', () => {
+    const sourceFile = ts.createSourceFile(
+      '/flight/packages/assets/src/resourceLoader.ts',
+      `interface Signal<Listener extends (...args: any[]) => void> {}
+       function emitSignal<Listener extends (...args: any[]) => void>(
+         signal: Signal<Listener>,
+         ...args: Parameters<Listener>
+       ): void { void signal; void args; }
+       interface Loader { onComplete: Signal<(reports: readonly number[]) => void> }
+       export function complete(loader: Loader): void { emitSignal(loader.onComplete, []); }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const [result] = lowerTypeScriptSources([
+      { packageName: '@flighthq/assets', sourceFile, upstreamDirectory: '/flight' },
+    ]);
+    const declaration = result!.module.declarations.find(
+      (candidate) => candidate.kind === 'function' && candidate.binding.name === 'complete',
+    );
+    const statement = declaration?.kind === 'function' ? declaration.body[0] : undefined;
+    const call =
+      statement?.kind === 'expression' && statement.expression.kind === 'call' ? statement.expression : undefined;
+
+    expect(result!.diagnostics).toEqual([]);
+    expect(call?.arguments[1]).toMatchObject({ kind: 'array' });
+  });
 });
 
 it('lowers abstract methods, get/set accessors, and branded private class members', () => {

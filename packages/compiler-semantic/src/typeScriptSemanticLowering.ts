@@ -1197,7 +1197,8 @@ function lowerTypeScriptInvocationArguments(
   const parameters = signature?.resolved.parameters.filter(ts.isParameter) ?? [];
   return (node.arguments ?? []).map((argument, index) => {
     if (ts.isSpreadElement(argument)) return lowerExpression(argument, context);
-    const parameter = parameters[index];
+    const trailing = parameters.at(-1);
+    const parameter = parameters[index] ?? (trailing?.dotDotDotToken ? trailing : undefined);
     if (!parameter) return lowerExpression(argument, context);
     const declaredType = lowerFunctionTypeParameter(parameter, context).type;
     const type =
@@ -1217,9 +1218,26 @@ function getTypeScriptInstantiatedInvocationParameterType(
   argument: ts.Expression,
   context: LoweringContext,
 ): IrType | undefined {
-  const parameter = context.checker.getResolvedSignature(node)?.parameters[index];
+  const signature = context.checker.getResolvedSignature(node);
+  const signatureParameters = signature?.getParameters() ?? [];
+  const declarationParameters = signature?.declaration?.parameters ?? [];
+  const restIndex = declarationParameters.findIndex((parameter) => parameter.dotDotDotToken !== undefined);
+  const parameterIndex = restIndex >= 0 && index >= restIndex ? restIndex : index;
+  const parameter = signatureParameters[parameterIndex];
   if (!parameter) return undefined;
-  const type = context.checker.getTypeOfSymbolAtLocation(parameter, argument);
+  let type = context.checker.getTypeOfSymbolAtLocation(parameter, argument);
+  if (restIndex >= 0 && index >= restIndex) {
+    if (context.checker.isTupleType(type)) {
+      const tupleElements = context.checker.getTypeArguments(type as ts.TypeReference);
+      const element = tupleElements[index - restIndex];
+      if (!element) return undefined;
+      type = element;
+    } else if (context.checker.isArrayType(type)) {
+      const element = context.checker.getElementTypeOfArrayType(type);
+      if (!element) return undefined;
+      type = element;
+    }
+  }
   // Contextual return inference can leave a resolved signature's parameter as the callee's raw type
   // parameter. That binding is not in scope at the call site; the argument's own initializer evidence
   // is the only local proof available to the caller.
@@ -4808,7 +4826,9 @@ function lowerTypeScriptUnresolvedUtilityHeritageProperties(
   if (!ts.isIdentifier(heritage.expression)) return undefined;
   const arguments_ = heritage.typeArguments ?? [];
   if (heritage.expression.text === 'Pick' && arguments_.length === 2) {
-    const keys = getTypeScriptStringLiteralTypeValues(arguments_[1]!, context, new Set());
+    const keys =
+      getTypeScriptStringLiteralTypeValues(arguments_[1]!, context, new Set()) ??
+      getTypeScriptCheckerStringLiteralTypeValues(arguments_[1]!, context);
     if (!keys) unsupported(heritage, 'Pick heritage requires a closed set of string literal keys');
     const inherited = lowerTypeScriptHeritageTypeNodeProperties(arguments_[0]!, context, seen, substitutions);
     return keys.map(
@@ -4934,7 +4954,10 @@ function lowerTypeScriptHeritageTypeNodeProperties(
       if (!properties) return undefined;
       if (utility === 'Pick' || utility === 'Omit') {
         const keysType = type.typeArguments?.[1];
-        const keys = keysType ? getTypeScriptStringLiteralTypeValues(keysType, context, new Set()) : undefined;
+        const keys = keysType
+          ? (getTypeScriptStringLiteralTypeValues(keysType, context, new Set()) ??
+            getTypeScriptCheckerStringLiteralTypeValues(keysType, context))
+          : undefined;
         if (!keys) return undefined;
         const available = new Set(properties.map((property) => property.name));
         if (keys.some((key) => !available.has(key))) return undefined;
@@ -5608,9 +5631,8 @@ function getTypeScriptNarrowingAlternatives(
   if (!declaration) return [type];
   const declarationSourceFile = declaration.getSourceFile();
   const declarationOptions = context.analysisModuleOptions.get(declarationSourceFile.fileName);
-  const declarationContext = declarationOptions
-    ? { ...context, options: declarationOptions, sourceFile: declarationSourceFile }
-    : context;
+  if (!declarationOptions) return [type];
+  const declarationContext = { ...context, options: declarationOptions, sourceFile: declarationSourceFile };
   const target = resolveIrTypeStructuralSubstitution(
     lowerType(declaration.type, declarationContext),
     createIrTypeParameterSubstitutionPlan(
@@ -5896,7 +5918,8 @@ function getIrResolvedMemberReceiverFromNarrowedFlow(
 }
 
 function isTypeScriptOptionalMemberAccess(node: ts.PropertyAccessExpression, context: LoweringContext): boolean {
-  const declaration = context.checker.getSymbolAtLocation(node.name)?.declarations?.[0];
+  const symbol = context.checker.getSymbolAtLocation(node.name);
+  const declaration = symbol ? getTypeScriptPreferredSymbolDeclaration(symbol, context) : undefined;
   return (
     declaration !== undefined &&
     (ts.isPropertySignature(declaration) || ts.isPropertyDeclaration(declaration)) &&
@@ -6332,7 +6355,8 @@ function getTypeScriptExpressionBindingTypeEvidence(
     }
     // The member's own declaration carries the written type, which a receiver named by a reference
     // does not: resolving the reference would mean resolving every alias the source went through.
-    const declaration = context.checker.getSymbolAtLocation(expression.name)?.declarations?.[0];
+    const symbol = context.checker.getSymbolAtLocation(expression.name);
+    const declaration = symbol ? getTypeScriptPreferredSymbolDeclaration(symbol, context) : undefined;
     if (
       declaration &&
       (ts.isPropertySignature(declaration) || ts.isPropertyDeclaration(declaration)) &&
@@ -6378,6 +6402,20 @@ function getTypeScriptExpressionBindingTypeEvidence(
   return declaration.initializer
     ? getTypeScriptWrittenNewExpressionTypeEvidence(declaration.initializer, context)
     : undefined;
+}
+
+function getTypeScriptPreferredSymbolDeclaration(
+  symbol: ts.Symbol,
+  context: LoweringContext,
+): ts.Declaration | undefined {
+  return (
+    symbol.declarations?.find(
+      (candidate) => candidate.getSourceFile().fileName === getCompilerAmbientSurfaceFileName(),
+    ) ??
+    symbol.valueDeclaration ??
+    symbol.declarations?.find((candidate) => context.analysisModuleOptions.has(candidate.getSourceFile().fileName)) ??
+    symbol.declarations?.[0]
+  );
 }
 
 function resolveTypeScriptExpressionPropertyTypeEvidence(type: Readonly<IrType>, context: LoweringContext): IrType {

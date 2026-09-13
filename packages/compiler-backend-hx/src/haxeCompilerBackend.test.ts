@@ -1,7 +1,7 @@
 import ts from 'typescript';
 
 import { isBackendEmissionFailure } from '../../compiler-emission/src/index.js';
-import { lowerTypeScriptSource } from '../../compiler-semantic/src/index.js';
+import { lowerTypeScriptSource, lowerTypeScriptSources } from '../../compiler-semantic/src/index.js';
 import type { IrModule } from '../../compiler-types/src/index.js';
 import { createHaxeCompilerBackend, emitIrModuleHaxe } from './haxeCompilerBackend.js';
 
@@ -32,6 +32,29 @@ describe('createHaxeCompilerBackend', () => {
     expect(first).not.toBe(second);
     expect(first.name).toBe('haxe');
     expect(first.emitModule(module, { modules: [module], options: {} })).toEqual([emitIrModuleHaxe(module)]);
+  });
+
+  it('uses the compiler ambient member declaration when project libraries merge generic methods', () => {
+    const sourceFile = ts.createSourceFile(
+      '/flight/packages/formats/src/shared.ts',
+      `export function findTwice(values?: number[]): void {
+         values?.find(value => value > 0);
+         values?.find(value => value < 0);
+       }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const [result] = lowerTypeScriptSources([
+      { packageName: '@flighthq/formats', sourceFile, upstreamDirectory: '/flight' },
+    ]);
+
+    expect(result!.diagnostics).toEqual([]);
+    expect(() =>
+      createHaxeCompilerBackend().emitModule(result!.module, {
+        modules: [result!.module],
+        options: {},
+      }),
+    ).not.toThrow();
   });
 
   it('uses explicit package-export resolution from the complete backend module context', () => {

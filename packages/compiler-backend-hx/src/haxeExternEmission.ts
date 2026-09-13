@@ -15,6 +15,7 @@ import type {
   EmittedFile,
   HaxeCompilerBackendOptions,
   IrBindingIdentity,
+  IrClassDeclaration,
   IrDeclaration,
   IrEnumDeclaration,
   IrFunctionDeclaration,
@@ -111,6 +112,7 @@ export function emitIrModuleHaxeExternWithContext(
   };
   assertModuleShapeHaxeExtern(context);
   const files = module.declarations.flatMap((declaration) => {
+    if (declaration.kind === 'class') return emitClassFilesHaxeExtern(declaration, context);
     if (declaration.kind === 'interface') return emitInterfaceFilesHaxeExtern(declaration, context);
     if (declaration.kind === 'enum') return emitEnumFilesHaxeExtern(declaration, context);
     return [];
@@ -132,14 +134,6 @@ function assertModuleShapeHaxeExtern(context: HaxeExternEmissionContext): void {
       if (slot.route.kind === 'namespace') {
         emissionErrorHaxeExtern(context, 'namespace exports have no flight-hx extern representation');
       }
-      const location = getFacadeDeclarationLocationHaxeExtern(slot.route, context);
-      if (!location) continue;
-      if (location.declaration.kind === 'class') {
-        emissionErrorHaxeExtern(
-          context,
-          `source class ${location.declaration.binding.name} extern representation is not yet specified by flight-hx`,
-        );
-      }
     }
     return;
   }
@@ -151,12 +145,6 @@ function assertModuleShapeHaxeExtern(context: HaxeExternEmissionContext): void {
   for (const declaration of context.module.declarations) {
     const exportNames = getLocalExportNamesHaxeExtern(declaration, context.module);
     if (exportNames.length === 0) continue;
-    if (declaration.kind === 'class') {
-      emissionErrorHaxeExtern(
-        context,
-        `source class ${declaration.binding.name} extern representation is not yet specified by flight-hx`,
-      );
-    }
     if (declaration.kind === 'variable' && !('binding' in declaration)) {
       emissionErrorHaxeExtern(
         context,
@@ -164,6 +152,67 @@ function assertModuleShapeHaxeExtern(context: HaxeExternEmissionContext): void {
       );
     }
   }
+}
+
+function emitClassFilesHaxeExtern(
+  declaration: Readonly<IrClassDeclaration>,
+  context: HaxeExternEmissionContext,
+): EmittedFile[] {
+  if (declaration.classConstructor && declaration.classConstructor.overloads.length > 0) {
+    emissionErrorHaxeExtern(context, `class ${declaration.binding.name} constructor overloads require Haxe metadata`);
+  }
+  const unsupportedMethod = declaration.methods.find(
+    (method) => method.visibility === 'public' && (method.accessor !== undefined || method.overloads.length > 0),
+  );
+  if (unsupportedMethod?.accessor) {
+    emissionErrorHaxeExtern(
+      context,
+      `class ${declaration.binding.name} ${unsupportedMethod.accessor} accessor ${unsupportedMethod.name} requires Haxe property metadata`,
+    );
+  }
+  if (unsupportedMethod) {
+    emissionErrorHaxeExtern(
+      context,
+      `class ${declaration.binding.name} method ${unsupportedMethod.name} overloads require Haxe metadata`,
+    );
+  }
+  return getDeclarationExportNamesHaxeExtern(declaration, context, 'type').map((exportName) => {
+    const targetName = safeHaxeExternTypeName(exportName);
+    const packageName = `${context.rootPackage}._js`;
+    const heritage = [
+      ...(declaration.extends ? [`extends ${emitTypeHaxeExtern(declaration.extends, context)}`] : []),
+      ...declaration.implements.map((type) => `implements ${emitTypeHaxeExtern(type, context)}`),
+    ].join(' ');
+    const lines = [
+      createCompilerGeneratedFileHeader(context.module, '//', context.options.upstreamCommit),
+      '#if js',
+      `package ${packageName};`,
+      '',
+      `@:jsImport(${JSON.stringify(`${context.module.packageName}/contract`)}, ${JSON.stringify(exportName)})`,
+      `extern class ${targetName}${emitTypeParametersHaxeExtern(declaration.typeParameters, context)}${heritage ? ` ${heritage}` : ''} {`,
+    ];
+    for (const field of declaration.fields.filter((candidate) => candidate.visibility === 'public')) {
+      const name = safeHaxeExternName(field.name);
+      if (name !== field.name) lines.push(`  @:native(${JSON.stringify(field.name)})`);
+      const optional = field.optional ? '@:optional ' : '';
+      const target = field.readonly ? `${name}(default, null)` : name;
+      lines.push(
+        `  ${optional}public ${field.static ? 'static ' : ''}var ${target}:${emitTypeHaxeExtern(field.type, context)};`,
+      );
+    }
+    const constructorParameters = declaration.classConstructor?.parameters ?? [];
+    lines.push(`  public function new(${emitParametersHaxeExtern(constructorParameters, context)});`);
+    for (const method of declaration.methods.filter((candidate) => candidate.visibility === 'public')) {
+      const name = safeHaxeExternName(method.name);
+      if (name !== method.name) lines.push(`  @:native(${JSON.stringify(method.name)})`);
+      lines.push(`  public ${method.static ? 'static ' : ''}${emitFunctionSignatureHaxeExtern(name, method, context)}`);
+    }
+    lines.push('}', '#end');
+    return {
+      contents: lines.join('\n'),
+      path: `${packageName.replaceAll('.', '/')}/${targetName}.hx`,
+    };
+  });
 }
 
 function emitEnumFilesHaxeExtern(
@@ -700,12 +749,6 @@ function getTypeBindingTargetHaxeExtern(
     )
     .at(0);
   const declaration = declarationLocation?.declaration;
-  if (declaration?.kind === 'class') {
-    emissionErrorHaxeExtern(
-      context,
-      `source class ${declaration.binding.name} extern representation is not yet specified by flight-hx`,
-    );
-  }
   const localExport = declarationLocation
     ? context.packageFacade &&
       declarationLocation.module.packageName === context.packageFacade.modules[0]?.module.packageName
@@ -721,6 +764,9 @@ function getTypeBindingTargetHaxeExtern(
   const importedName = getImportedTypeNameHaxeExtern(binding, context.modules);
   if (declaration && localExport === undefined && declaration.kind === 'interface') {
     emissionErrorHaxeExtern(context, `private interface ${declaration.binding.name} was not structurally inlined`);
+  }
+  if (declaration && localExport === undefined && declaration.kind === 'class') {
+    emissionErrorHaxeExtern(context, `private source class ${declaration.binding.name} has no public Haxe extern`);
   }
   return `${context.rootPackage}.${safeHaxeExternTypeName(localExport ?? importedName ?? binding.name)}`;
 }

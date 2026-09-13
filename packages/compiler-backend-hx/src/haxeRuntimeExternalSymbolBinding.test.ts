@@ -12,7 +12,7 @@ describe('createCompilerRuntimeExternalSymbolBindingPlanHaxe', () => {
     const plan = createCompilerRuntimeExternalSymbolBindingPlanHaxe();
 
     expect(plan.contract).toBe('flight-runtime-contract/2');
-    expect(plan.bindings).toHaveLength(147);
+    expect(plan.bindings).toHaveLength(152);
     expect(plan.bindings.filter(({ externalSymbol }) => externalSymbol.sourceName === 'Promise')).toEqual([
       {
         capability: 'task',
@@ -87,6 +87,10 @@ describe('createCompilerRuntimeExternalSymbolBindingPlanHaxe', () => {
       kind: 'native',
     });
     expect(plan.bindings).toContainEqual({
+      externalSymbol: { sourceName: 'MediaStream', space: 'type' },
+      kind: 'native',
+    });
+    expect(plan.bindings).toContainEqual({
       externalSymbol: { sourceName: 'GPUDevice', space: 'type' },
       kind: 'native',
     });
@@ -104,7 +108,7 @@ describe('createCompilerRuntimeExternalSymbolBindingPlanHaxe', () => {
     const second = createCompilerRuntimeExternalSymbolBindingPlanHaxe();
 
     (first.bindings as unknown[]).pop();
-    expect(second.bindings).toHaveLength(147);
+    expect(second.bindings).toHaveLength(152);
   });
 });
 
@@ -206,11 +210,15 @@ describe('getCompilerRuntimeExternalSymbolTargetHaxe', () => {
     ['Error', 'value', 'haxe.Exception'],
     ['AbortSignal', 'type', 'js.html.AbortSignal'],
     ['AudioContext', 'type', 'js.html.audio.AudioContext'],
+    ['AudioBufferSourceNode', 'type', 'js.html.audio.AudioBufferSourceNode'],
     ['CanvasRenderingContext2D', 'type', 'js.html.CanvasRenderingContext2D'],
     ['GPUAdapter', 'type', 'Dynamic'],
+    ['GPUBlendState', 'type', 'Dynamic'],
     ['GPUDevice', 'type', 'Dynamic'],
     ['GPUTextureFormat', 'type', 'String'],
     ['HTMLCanvasElement', 'type', 'js.html.CanvasElement'],
+    ['KeyboardEvent', 'type', 'js.html.KeyboardEvent'],
+    ['MediaStream', 'type', 'js.html.MediaStream'],
     ['Float32Array', 'type', 'flighthq._internal._Float32Array'],
     ['Float32Array', 'value', 'flighthq._internal._Float32Array'],
     ['Float64Array', 'type', 'flighthq._internal._Float64Array'],
@@ -221,6 +229,7 @@ describe('getCompilerRuntimeExternalSymbolTargetHaxe', () => {
     ['Int32Array', 'value', 'flighthq._internal._Int32Array'],
     ['Int8Array', 'type', 'flighthq._internal._Int8Array'],
     ['Int8Array', 'value', 'flighthq._internal._Int8Array'],
+    ['TexImageSource', 'type', 'Dynamic'],
     ['Intl', 'value', 'flighthq._internal._Intl'],
     ['Intl.Segmenter', 'type', 'flighthq._internal._IntlSegmenter'],
     ['Map', 'type', 'flighthq._internal._Map'],
