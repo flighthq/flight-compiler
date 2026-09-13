@@ -630,8 +630,10 @@ describe('createCppCompilerBackend', () => {
     }).emitModule(modules[2]!)[0]!.contents;
 
     expect(emitted).toContain('auto brightness = options.value()->brightness.value_or(0.0)');
-    expect(emitted).toContain('out->brightness = std::optional<double>{brightness}');
-    expect(emitted).toContain('out->contrast = std::optional<double>{options.value()->contrast.value_or(1.0)}');
+    expect(emitted).toContain('flight::row_set<flight::RowKey<"brightness">>(out, std::optional<double>{brightness})');
+    expect(emitted).toContain(
+      'flight::row_set<flight::RowKey<"contrast">>(out, std::optional<double>{options.value()->contrast.value_or(1.0)})',
+    );
     expect(emitted).not.toContain('std::optional<auto>');
   });
 
@@ -3615,7 +3617,9 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
     expect(emitted.contents).toContain('struct Entity : public flight::ReferenceEnabled');
     expect(emitted.contents).toContain('std::optional<flight::Ref<EntityRuntime>> entity_runtime_key;');
-    expect(emitted.contents).toContain('using EntityConstruction = flight::Ref<Type>');
+    expect(emitted.contents).toContain(
+      'using EntityConstruction = flight::StructuralRef<flight::RowWritable<flight::RowOf<Type>>>',
+    );
     expect(emitted.contents).toContain('using EntityWithoutRuntime = flight::Ref<Type>');
     expect(emitted.contents).toContain('struct EntityRuntime : public flight::ReferenceEnabled');
     expect(emitted.contents).toContain('std::optional<std::shared_ptr<void>> binding;');
@@ -3625,7 +3629,9 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(emitted.contents).toContain('return entity->entity_runtime_key;');
     expect(emitted.contents).toContain('entity->entity_runtime_key = runtime;');
     expect(emitted.contents).not.toContain('std::optional<auto>');
-    expect(emitted.dependencies).toEqual(expect.arrayContaining(['flight/runtime.hpp', 'flight/symbol.hpp', 'memory']));
+    expect(emitted.dependencies).toEqual(
+      expect.arrayContaining(['flight/runtime.hpp', 'flight/structural_ref.hpp', 'flight/symbol.hpp', 'memory']),
+    );
   });
 
   it('uses ambient undefined as contextual evidence when clearing a computed optional slot', () => {
@@ -9686,9 +9692,7 @@ describe('emitIrModuleCpp conditional capability facets', () => {
     expect(emitted).toContain(
       'flight::RequiredMemberFacet<TrayWithImageFacet, flight::MemberPath<[]<typename Value>(Value& value) -> decltype((value.tray)) { return value.tray; }, []<typename Value>(Value& value) -> decltype((value.image)) { return value.image; }>>',
     );
-    expect(emitted).toContain(
-      'flight::assume_conditional_facets<TrayIconForHost<Host>>(icon)',
-    );
+    expect(emitted).toContain('flight::assume_conditional_facets<TrayIconForHost<Host>>(icon)');
     expect(emitted).toContain('return icon->runtime;');
   });
 });

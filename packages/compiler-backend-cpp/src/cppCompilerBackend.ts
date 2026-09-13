@@ -43,6 +43,7 @@ import type {
   CompilerBackend,
   CompilerCppConditionalFacetReferencePlan,
   CompilerCppReferenceRepresentationPlanner,
+  CompilerCppStructuralRowPlan,
   CompilerLoweringPass,
   CompilerModuleResolutionPlan,
   CppCompilerBackendOptions,
@@ -830,6 +831,26 @@ function emitTypeAlias(declaration: Readonly<IrTypeAliasDeclaration>, outer: Emi
       declaration.typeParameters,
     ),
   };
+  const structuralRow = context.referenceRepresentationPlanner.resolveStructuralRow(
+    {
+      kind: 'named',
+      reference: { binding: declaration.binding, kind: 'binding', path: [] },
+      typeArguments: declaration.typeParameters.map((parameter) => ({
+        kind: 'named',
+        reference: { binding: parameter.binding, kind: 'binding', path: [] },
+        typeArguments: [],
+      })),
+    },
+    context.module,
+  );
+  if (structuralRow && getCppRuntimeProfile(context.options) === 'flight-cpp') {
+    const name = getBindingTargetName(declaration.binding, context);
+    const typeParams = emitTypeParameters(declaration.typeParameters, context);
+    const lines: string[] = [];
+    if (typeParams) lines.push(`template ${typeParams}`);
+    lines.push(`using ${name} = ${emitCppStructuralRowReferenceTypeCpp(structuralRow, context)};`);
+    return lines;
+  }
   const conditionalFacet = context.referenceRepresentationPlanner.resolveConditionalFacetReference(
     declaration.type,
     context.module,
@@ -1068,6 +1089,11 @@ function emitExpression(
         context,
         exactCallableFieldAssignment ? rightType : assignmentType,
       );
+      const structuralRowAssignment =
+        expression.operator === '=' && getCppRuntimeProfile(context.options) === 'flight-cpp'
+          ? emitCppStructuralRowAssignment(expression.left, right, context)
+          : undefined;
+      if (structuralRowAssignment) return structuralRowAssignment;
       const sharedCaptureTargetName = getSharedCaptureTargetNameCpp(expression.left, context);
       if (sharedCaptureTargetName && getCppRuntimeProfile(context.options) === 'flight-cpp') {
         return emitSharedCaptureAssignmentCpp(
@@ -1366,6 +1392,33 @@ function emitExpression(
       return `${invocationTarget}${emitCppTypeArguments(expression.typeArguments, context)}(${args.join(', ')})`;
     }
     case 'cast': {
+      const structuralTarget = context.referenceRepresentationPlanner.resolveStructuralRow(
+        expression.type,
+        context.module,
+      );
+      if (structuralTarget && getCppRuntimeProfile(context.options) === 'flight-cpp') {
+        if (expression.expression.kind === 'object') {
+          return emitExpression(expression.expression, context, expression.type);
+        }
+        return `flight::structural_ref_cast<${emitType(expression.type, context)}>(${emitExpression(expression.expression, context)})`;
+      }
+      const structuralSourceType = getIrExpressionTypeEvidenceCpp(expression.expression, context);
+      if (
+        structuralSourceType &&
+        getCppRuntimeProfile(context.options) === 'flight-cpp' &&
+        context.referenceRepresentationPlanner.resolveStructuralRow(structuralSourceType, context.module)
+      ) {
+        const targetPlan = context.referenceRepresentationPlanner.plan(expression.type, context.module);
+        if (
+          targetPlan.kind !== 'represented' ||
+          targetPlan.identityDomain !== 'object' ||
+          targetPlan.valueRepresentation === 'inlineValue'
+        ) {
+          emissionError(context, 'structural-row projection requires a represented object-reference target');
+        }
+        context.includes.add('flight/structural_ref.hpp');
+        return `flight::structural_ref_cast<${emitType(expression.type, context)}>(${emitExpression(expression.expression, context)})`;
+      }
       const conditionalFacet = context.referenceRepresentationPlanner.resolveConditionalFacetReference(
         expression.type,
         context.module,
@@ -1385,10 +1438,7 @@ function emitExpression(
           normalizeCompilerStructuralValueCanonical(sourceType) !==
             normalizeCompilerStructuralValueCanonical(conditionalFacet.base)
         ) {
-          emissionError(
-            context,
-            'conditional facet assertion requires the exact proven Flight reference base',
-          );
+          emissionError(context, 'conditional facet assertion requires the exact proven Flight reference base');
         }
         context.includes.add('flight/conditional_facet_ref.hpp');
         return `flight::assume_conditional_facets<${emitType(expression.type, context)}>(${emitExpression(expression.expression, context, conditionalFacet.base)})`;
@@ -1437,6 +1487,13 @@ function emitExpression(
     }
     case 'element': {
       if (expression.optional) return emitOptionalElementExpressionCpp(expression, context);
+      const structuralRow = getCppStructuralRowExpressionPlanCpp(expression.object, context);
+      if (structuralRow) {
+        const valueType = getIrExpressionTypeEvidenceCpp(expression, context);
+        if (!valueType) emissionError(context, 'structural-row computed access requires concrete value evidence');
+        context.includes.add('flight/structural_ref.hpp');
+        return `flight::row_get<${emitType(valueType, context)}>(${emitExpression(expression.object, context)}, ${emitExpression(expression.index, context)})`;
+      }
       const computedProperty = emitComputedSymbolElementAccessCpp(expression, context);
       if (computedProperty) return computedProperty;
       if (getCppRuntimeProfile(context.options) === 'flight-cpp' && hasIndexedRuntimeReceiverCpp(expression, context)) {
@@ -1686,7 +1743,27 @@ function emitExpression(
     }
     case 'object': {
       const constructionType =
-        expectedType && hasFlightReferenceRepresentationCpp(expectedType, context) ? expectedType : expression.type;
+        expectedType &&
+        (hasFlightReferenceRepresentationCpp(expectedType, context) ||
+          hasFlightStructuralRowRepresentationCpp(expectedType, context))
+          ? expectedType
+          : expression.type;
+      const structuralRow = context.referenceRepresentationPlanner.resolveStructuralRow(
+        constructionType,
+        context.module,
+      );
+      if (structuralRow && getCppRuntimeProfile(context.options) === 'flight-cpp') {
+        if (expression.members.some((member) => member.kind !== 'property')) {
+          emissionError(context, 'structural-row construction requires explicit named properties');
+        }
+        const fields = expression.members.map((member) => {
+          if (member.kind !== 'property') throw new TypeError('expected structural-row property');
+          const propertyType = getIrObjectPropertyTypeCpp(constructionType, member.name, context);
+          return `flight::row_field<flight::RowKey<${JSON.stringify(member.name)}>>(${emitExpression(member.value, context, propertyType)})`;
+        });
+        context.includes.add('flight/structural_ref.hpp');
+        return `flight::make_structural_ref<${emitCppStructuralRowSchemaTypeCpp(structuralRow, context)}>(${fields.join(', ')})`;
+      }
       const spread =
         expression.members.length === 1 && expression.members[0]?.kind === 'spread' ? expression.members[0] : undefined;
       if (spread) {
@@ -1755,6 +1832,10 @@ function emitExpression(
     }
     case 'property': {
       if (expression.optional) return emitOptionalPropertyExpressionCpp(expression, context, expectedType);
+      if (getCppStructuralRowExpressionPlanCpp(expression.object, context)) {
+        context.includes.add('flight/structural_ref.hpp');
+        return `flight::row_get<flight::RowKey<${JSON.stringify(expression.name)}>>(${emitExpression(expression.object, context)})`;
+      }
       if (expression.member) {
         const binding = getCompilerCppAmbientMemberBinding(expression.member, getCppRuntimeProfile(context.options));
         if (binding && binding.kind === 'sizeMethod') {
@@ -2677,6 +2758,32 @@ function emitCppConditionalFacetReferenceTypeCpp(
   return `flight::ConditionalFacetRef<${base}, ${check}, ${rules.join(', ')}>`;
 }
 
+function emitCppStructuralRowReferenceTypeCpp(
+  representation: Readonly<CompilerCppStructuralRowPlan>,
+  context: EmitContext,
+): string {
+  context.includes.add('flight/structural_ref.hpp');
+  return `flight::StructuralRef<${emitCppStructuralRowSchemaTypeCpp(representation, context)}>`;
+}
+
+function emitCppStructuralRowSchemaTypeCpp(
+  representation: Readonly<CompilerCppStructuralRowPlan>,
+  context: EmitContext,
+): string {
+  switch (representation.kind) {
+    case 'merge':
+      return `flight::RowMerge<${representation.rows.map((row) => emitCppStructuralRowSchemaTypeCpp(row, context)).join(', ')}>`;
+    case 'partial':
+      return `flight::RowPartial<${emitCppStructuralRowSchemaTypeCpp(representation.row, context)}>`;
+    case 'readonly':
+      return `flight::RowReadonly<${emitCppStructuralRowSchemaTypeCpp(representation.row, context)}>`;
+    case 'rowOf':
+      return `flight::RowOf<${emitType(representation.type, context)}>`;
+    case 'writable':
+      return `flight::RowWritable<${emitCppStructuralRowSchemaTypeCpp(representation.row, context)}>`;
+  }
+}
+
 function getCppFacetTagNameCpp(binding: Readonly<IrTypeBindingIdentity>, context: EmitContext): string {
   const existing = context.facetTagNames.get(binding.id);
   if (existing) return existing;
@@ -2688,6 +2795,19 @@ function getCppFacetTagNameCpp(binding: Readonly<IrTypeBindingIdentity>, context
 
 function emitType(type: Readonly<IrType>, context: EmitContext, representation: 'storage' | 'value' = 'value'): string {
   if (getCppRuntimeProfile(context.options) === 'flight-cpp') {
+    if (
+      type.kind === 'named' &&
+      type.reference.kind === 'binding' &&
+      type.reference.binding.kind === 'typeParameter' &&
+      type.reference.path.length === 0 &&
+      type.typeArguments.length === 0
+    ) {
+      return getTypeReferenceTargetName(type, context);
+    }
+    if (type.kind !== 'named' || type.reference.kind === 'ambient') {
+      const structuralRow = context.referenceRepresentationPlanner.resolveStructuralRow(type, context.module);
+      if (structuralRow) return emitCppStructuralRowReferenceTypeCpp(structuralRow, context);
+    }
     const projection = getCppCallableObjectIndexedProjectionCpp(type, context);
     if (projection) {
       const valueType = emitCppCallableObjectIndexedProjectionTypeCpp(projection, context);
@@ -6041,6 +6161,22 @@ function emitAssignmentTargetCpp(expression: Readonly<IrExpression>, context: Em
   return emitExpression(expression, context);
 }
 
+function emitCppStructuralRowAssignment(
+  target: Readonly<IrExpression>,
+  value: string,
+  context: EmitContext,
+): string | undefined {
+  if (target.kind === 'property' && getCppStructuralRowExpressionPlanCpp(target.object, context)) {
+    context.includes.add('flight/structural_ref.hpp');
+    return `flight::row_set<flight::RowKey<${JSON.stringify(target.name)}>>(${emitExpression(target.object, context)}, ${value})`;
+  }
+  if (target.kind === 'element' && getCppStructuralRowExpressionPlanCpp(target.object, context)) {
+    context.includes.add('flight/structural_ref.hpp');
+    return `flight::row_set(${emitExpression(target.object, context)}, ${emitExpression(target.index, context)}, ${value})`;
+  }
+  return undefined;
+}
+
 function getSharedCaptureTargetNameCpp(expression: Readonly<IrExpression>, context: EmitContext): string | undefined {
   return expression.kind === 'identifier' && expression.reference.kind === 'binding'
     ? context.sharedCaptureTargetNames.get(expression.reference.binding.id)
@@ -6434,6 +6570,22 @@ function hasFlightReferenceRepresentationCpp(type: Readonly<IrType>, context: Em
   const owner = getCppDirectBindingOwner(type, context);
   const plan = context.referenceRepresentationPlanner.plan(type, owner?.module ?? context.module);
   return plan.kind === 'represented' && plan.valueRepresentation === 'flightReference';
+}
+
+function hasFlightStructuralRowRepresentationCpp(type: Readonly<IrType>, context: EmitContext): boolean {
+  return (
+    getCppRuntimeProfile(context.options) === 'flight-cpp' &&
+    Boolean(context.referenceRepresentationPlanner.resolveStructuralRow(type, context.module))
+  );
+}
+
+function getCppStructuralRowExpressionPlanCpp(
+  expression: Readonly<IrExpression>,
+  context: EmitContext,
+): Readonly<CompilerCppStructuralRowPlan> | undefined {
+  if (getCppRuntimeProfile(context.options) !== 'flight-cpp') return undefined;
+  const type = getIrExpressionTypeEvidenceCpp(expression, context);
+  return type ? context.referenceRepresentationPlanner.resolveStructuralRow(type, context.module) : undefined;
 }
 
 function hasFlightFacetReferenceRepresentationCpp(type: Readonly<IrType>, context: EmitContext): boolean {

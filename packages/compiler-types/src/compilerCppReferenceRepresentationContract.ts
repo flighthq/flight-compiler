@@ -13,6 +13,7 @@ export type CompilerCppReferenceRepresentationCategory =
   | 'map'
   | 'objectAlias'
   | 'set'
+  | 'structuralRow'
   | 'task'
   | 'typedArray'
   | 'value'
@@ -72,6 +73,16 @@ export interface CompilerCppConditionalFacetReferencePlan {
   readonly rules: readonly CompilerCppConditionalFacetRulePlan[];
 }
 
+export type CompilerCppStructuralRowPlan =
+  | Readonly<{
+      kind: 'merge';
+      rows: readonly [CompilerCppStructuralRowPlan, CompilerCppStructuralRowPlan, ...CompilerCppStructuralRowPlan[]];
+    }>
+  | Readonly<{ kind: 'partial'; row: CompilerCppStructuralRowPlan }>
+  | Readonly<{ kind: 'readonly'; row: CompilerCppStructuralRowPlan }>
+  | Readonly<{ kind: 'rowOf'; type: IrType }>
+  | Readonly<{ kind: 'writable'; row: CompilerCppStructuralRowPlan }>;
+
 export interface CompilerCppReferenceRepresentationPlanner {
   readonly plan: (type: Readonly<IrType>, module: Readonly<IrModule>) => CompilerCppReferenceRepresentationPlan;
   readonly resolveAlias: (type: Readonly<IrType>, module: Readonly<IrModule>) => Readonly<IrType> | undefined;
@@ -93,5 +104,9 @@ export interface CompilerCppReferenceRepresentationPlanner {
     type: Readonly<IrType>,
     module: Readonly<IrModule>,
   ) => readonly Readonly<IrObjectTypeProperty>[] | undefined;
+  readonly resolveStructuralRow: (
+    type: Readonly<IrType>,
+    module: Readonly<IrModule>,
+  ) => Readonly<CompilerCppStructuralRowPlan> | undefined;
   readonly schema: 'flight-compiler-cpp-reference-representation-planner/1';
 }

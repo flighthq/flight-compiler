@@ -51,6 +51,10 @@ export interface IrTypeAliasDeclaration {
   readonly binding: IrTypeBindingIdentity;
   readonly exported: boolean;
   readonly kind: 'typeAlias';
+  // Identity mapped types can change the permissions of an object view without changing its
+  // referent. Targets which store structural objects indirectly need this evidence to preserve the
+  // shared owner while changing which operations the alias admits.
+  readonly objectView?: 'writable' | undefined;
   readonly origin: CompilerSourceOrigin;
   readonly type: IrType;
   readonly typeParameters: readonly IrTypeParameter[];

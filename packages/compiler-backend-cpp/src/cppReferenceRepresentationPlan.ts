@@ -8,6 +8,7 @@ import {
 import type {
   CompilerCppReferenceRepresentationPlan,
   CompilerCppReferenceRepresentationPlanner,
+  CompilerCppStructuralRowPlan,
   CompilerModuleIdentity,
   CompilerModuleResolutionPlan,
   CompilerTypeValueIdentityAnalysis,
@@ -34,6 +35,7 @@ interface ReferenceModuleRecord {
   readonly importsByBindingId: ReadonlyMap<string, readonly ReferenceImport[]>;
   readonly module: Readonly<IrModule>;
   readonly source: string;
+  readonly typeParameterBindingIds: ReadonlySet<string>;
   readonly valueTypesByBindingId: ReadonlyMap<string, Readonly<IrType>>;
 }
 
@@ -49,6 +51,7 @@ interface ReferenceModuleSet {
   readonly modulesByPackageSource: ReadonlyMap<string, readonly ReferenceModuleRecord[]>;
   readonly namedBindingOwnersByBindingId: ReadonlyMap<string, readonly ReferenceModuleRecord[]>;
   readonly resolutionTargetsBySpecifier: ReadonlyMap<string, ReferenceResolutionTargets>;
+  readonly typeParameterOwnersByBindingId: ReadonlyMap<string, readonly ReferenceModuleRecord[]>;
   readonly valueBindingOwnersByBindingId: ReadonlyMap<string, readonly ReferenceModuleRecord[]>;
 }
 
@@ -109,14 +112,7 @@ export function createIrTypeReferenceRepresentationPlannerCpp(
     resolveConditionalFacetReference(type: Readonly<IrType>, module: Readonly<IrModule>) {
       const subject = getReferenceModuleRecordCpp(module, moduleSet);
       if (!subject) throw new TypeError('C++ conditional-facet subject must belong to the explicit module set');
-      return resolveIrConditionalFacetReferenceCpp(
-        type,
-        subject,
-        moduleSet,
-        resolutionCache,
-        aliasCache,
-        new Set(),
-      );
+      return resolveIrConditionalFacetReferenceCpp(type, subject, moduleSet, resolutionCache, aliasCache, new Set());
     },
     resolveFacetReference(type: Readonly<IrType>, module: Readonly<IrModule>) {
       const subject = getReferenceModuleRecordCpp(module, moduleSet);
@@ -149,8 +145,112 @@ export function createIrTypeReferenceRepresentationPlannerCpp(
       if (!subject) throw new TypeError('C++ object-shape subject must belong to the explicit module set');
       return resolveIrTypeObjectShapeCpp(type, subject, moduleSet, resolutionCache, new Set());
     },
+    resolveStructuralRow(type: Readonly<IrType>, module: Readonly<IrModule>) {
+      const subject = getReferenceModuleRecordCpp(module, moduleSet);
+      if (!subject) throw new TypeError('C++ structural-row subject must belong to the explicit module set');
+      return resolveIrTypeStructuralRowCpp(type, subject, moduleSet, resolutionCache, new Set(), false);
+    },
     schema: 'flight-compiler-cpp-reference-representation-planner/1',
   });
+}
+
+function resolveIrTypeStructuralRowCpp(
+  type: Readonly<IrType>,
+  module: Readonly<ReferenceModuleRecord>,
+  moduleSet: Readonly<ReferenceModuleSet>,
+  cache: ReferenceResolutionCache,
+  aliases: ReadonlySet<string>,
+  allowRowOf: boolean,
+): Readonly<CompilerCppStructuralRowPlan> | undefined {
+  if (type.kind === 'named' && type.reference.kind === 'ambient') {
+    if (
+      (type.reference.name === 'NoInfer' || type.reference.name === 'Readonly') &&
+      type.typeArguments.length === 1 &&
+      type.typeArguments[0]
+    ) {
+      const row = resolveIrTypeStructuralRowCpp(
+        type.typeArguments[0],
+        module,
+        moduleSet,
+        cache,
+        aliases,
+        type.reference.name === 'NoInfer' ? allowRowOf : true,
+      );
+      if (!row) return undefined;
+      return type.reference.name === 'Readonly' ? { kind: 'readonly', row } : row;
+    }
+    if (type.reference.name === 'Partial' && type.typeArguments.length === 1 && type.typeArguments[0]) {
+      if (resolveIrTypeObjectShapeCpp(type.typeArguments[0], module, moduleSet, cache, new Set())) return undefined;
+      const row = resolveIrTypeStructuralRowCpp(type.typeArguments[0], module, moduleSet, cache, aliases, true);
+      return row ? { kind: 'partial', row } : undefined;
+    }
+    return undefined;
+  }
+  if (type.kind === 'named' && type.reference.kind === 'binding') {
+    if (type.reference.binding.kind === 'typeParameter') {
+      const local = module.typeParameterBindingIds.has(type.reference.binding.id);
+      const owners = moduleSet.typeParameterOwnersByBindingId.get(type.reference.binding.id) ?? [];
+      const owner = local ? module : owners.length === 1 ? owners[0] : undefined;
+      return owner && allowRowOf && type.reference.path.length === 0 && type.typeArguments.length === 0
+        ? { kind: 'rowOf', type }
+        : undefined;
+    }
+    const resolution = getReferenceDeclarationResolutionCpp(type.reference, module, moduleSet, cache);
+    if (resolution.kind !== 'location') return undefined;
+    const location = resolution.location;
+    const declaration = location.declaration;
+    if (declaration.kind !== 'typeAlias') return allowRowOf ? { kind: 'rowOf', type } : undefined;
+    const key = `${location.identity}\0${JSON.stringify(type.typeArguments)}`;
+    if (aliases.has(key)) return undefined;
+    const resolved = resolveIrTypeStructuralSubstitution(
+      declaration.type,
+      createIrTypeParameterSubstitutionPlan(declaration.typeParameters, type.typeArguments),
+    );
+    const row = resolveIrTypeStructuralRowCpp(
+      resolved,
+      location.module,
+      moduleSet,
+      cache,
+      new Set(aliases).add(key),
+      declaration.objectView === 'writable',
+    );
+    if (row) return declaration.objectView === 'writable' ? { kind: 'writable', row } : row;
+    return allowRowOf && resolveIrTypeObjectShapeCpp(type, module, moduleSet, cache, new Set())
+      ? { kind: 'rowOf', type }
+      : undefined;
+  }
+  if (type.kind === 'intersection') {
+    if (resolveIrTypeObjectShapeCpp(type, module, moduleSet, cache, new Set())) return undefined;
+    const rows = type.types.map((member) =>
+      resolveIrTypeStructuralRowCpp(member, module, moduleSet, cache, aliases, true),
+    );
+    if (
+      rows.some((row) => !row) ||
+      !type.types.some(
+        (member, index) => isIrBareStructuralRowTypeParameterCpp(member) || rows[index]?.kind !== 'rowOf',
+      )
+    ) {
+      return undefined;
+    }
+    return {
+      kind: 'merge',
+      rows: [rows[0]!, rows[1]!, ...rows.slice(2).map((row) => row!)],
+    };
+  }
+  return allowRowOf && type.kind === 'object' ? { kind: 'rowOf', type } : undefined;
+}
+
+function isIrBareStructuralRowTypeParameterCpp(type: Readonly<IrType>): boolean {
+  if (type.kind === 'named' && type.reference.kind === 'binding' && type.reference.binding.kind === 'typeParameter') {
+    return type.reference.path.length === 0 && type.typeArguments.length === 0;
+  }
+  return (
+    type.kind === 'named' &&
+    type.reference.kind === 'ambient' &&
+    type.reference.name === 'NoInfer' &&
+    type.typeArguments.length === 1 &&
+    Boolean(type.typeArguments[0] && isIrBareStructuralRowTypeParameterCpp(type.typeArguments[0]))
+  );
 }
 
 function resolveIrTypeAliasCpp(
@@ -321,7 +421,11 @@ function resolveIrFacetReferenceCpp(
   const resolution = getReferenceDeclarationResolutionCpp(type.reference, module, moduleSet, cache);
   if (resolution.kind !== 'location' || resolution.location.declaration.kind !== 'interface') return undefined;
   const declaration = resolution.location.declaration;
-  if (declaration.typeParameters.length > 0 || declaration.extends.length !== 1 || declaration.properties.length !== 1) {
+  if (
+    declaration.typeParameters.length > 0 ||
+    declaration.extends.length !== 1 ||
+    declaration.properties.length !== 1
+  ) {
     return undefined;
   }
   const marker = declaration.properties[0]!;
@@ -379,14 +483,7 @@ function resolveIrConditionalFacetReferenceCpp(
     if (aliases.has(key)) return undefined;
     const resolved = resolveIrTypeAliasCpp(type, module.module, moduleSet, cache, aliasCache);
     return resolved
-      ? resolveIrConditionalFacetReferenceCpp(
-          resolved,
-          module,
-          moduleSet,
-          cache,
-          aliasCache,
-          new Set(aliases).add(key),
-        )
+      ? resolveIrConditionalFacetReferenceCpp(resolved, module, moduleSet, cache, aliasCache, new Set(aliases).add(key))
       : undefined;
   }
   if (type.kind !== 'intersection') return undefined;
@@ -402,9 +499,7 @@ function resolveIrConditionalFacetReferenceCpp(
   const check = conditional[0]!.check;
   const checkIdentity = normalizeCompilerStructuralValueCanonical(check);
   if (
-    conditional.some(
-      (member) => normalizeCompilerStructuralValueCanonical(member.check) !== checkIdentity,
-    ) ||
+    conditional.some((member) => normalizeCompilerStructuralValueCanonical(member.check) !== checkIdentity) ||
     arms.some(
       (arm) => normalizeCompilerStructuralValueCanonical(arm!.base) !== normalizeCompilerStructuralValueCanonical(base),
     )
@@ -741,6 +836,23 @@ function createIrTypeReferenceRepresentationPlanInternalCpp(
   module: Readonly<ReferenceModuleRecord>,
   context: Readonly<ReferencePlanningContext>,
 ): CompilerCppReferenceRepresentationPlan {
+  const structuralRow = resolveIrTypeStructuralRowCpp(
+    type,
+    module,
+    context.moduleSet,
+    context.resolutionCache,
+    new Set(),
+    false,
+  );
+  if (structuralRow) {
+    return createCompilerCppReferenceRepresentationSuccessCpp(
+      context.analyzeIdentity(type, module.module),
+      'structuralRow',
+      'object',
+      'runtimeManaged',
+      'runtimeReference',
+    );
+  }
   const conditionalFacet = resolveIrConditionalFacetReferenceCpp(
     type,
     module,
@@ -1228,6 +1340,7 @@ function createReferenceModuleSetCpp(
   const declarationsByBindingId = new Map<string, ReferenceDeclarationLocation[]>();
   const modulesByPackageSource = new Map<string, ReferenceModuleRecord[]>();
   const namedBindingOwnersByBindingId = new Map<string, ReferenceModuleRecord[]>();
+  const typeParameterOwnersByBindingId = new Map<string, ReferenceModuleRecord[]>();
   const valueBindingOwnersByBindingId = new Map<string, ReferenceModuleRecord[]>();
   for (const record of records) {
     const moduleKey = `${record.module.packageName}\0${record.source}`;
@@ -1244,6 +1357,11 @@ function createReferenceModuleSetCpp(
       owners.push(record);
       namedBindingOwnersByBindingId.set(bindingId, owners);
     }
+    for (const bindingId of record.typeParameterBindingIds) {
+      const owners = typeParameterOwnersByBindingId.get(bindingId) ?? [];
+      owners.push(record);
+      typeParameterOwnersByBindingId.set(bindingId, owners);
+    }
     for (const bindingId of record.valueTypesByBindingId.keys()) {
       const owners = valueBindingOwnersByBindingId.get(bindingId) ?? [];
       owners.push(record);
@@ -1257,6 +1375,7 @@ function createReferenceModuleSetCpp(
     modulesByPackageSource,
     namedBindingOwnersByBindingId,
     resolutionTargetsBySpecifier: createReferenceResolutionTargetsCpp(resolution),
+    typeParameterOwnersByBindingId,
     valueBindingOwnersByBindingId,
   };
 }
@@ -1297,13 +1416,18 @@ function createReferenceModuleRecordCpp(module: Readonly<IrModule>): ReferenceMo
   const record: {
     declarations: Map<string, ReferenceDeclarationLocation>;
     importsByBindingId: Map<string, ReferenceImport[]>;
+    typeParameterBindingIds: Set<string>;
     valueTypesByBindingId: Map<string, Readonly<IrType>>;
-  } & Omit<ReferenceModuleRecord, 'declarations' | 'importsByBindingId' | 'valueTypesByBindingId'> = {
+  } & Omit<
+    ReferenceModuleRecord,
+    'declarations' | 'importsByBindingId' | 'typeParameterBindingIds' | 'valueTypesByBindingId'
+  > = {
     declarations: new Map(),
     identity,
     importsByBindingId: new Map(),
     module,
     source,
+    typeParameterBindingIds: new Set(),
     valueTypesByBindingId: new Map(),
   };
   for (const declaration of module.declarations) {
@@ -1317,6 +1441,7 @@ function createReferenceModuleRecordCpp(module: Readonly<IrModule>): ReferenceMo
     if (declaration.kind === 'variable' && 'binding' in declaration && declaration.type) {
       record.valueTypesByBindingId.set(declaration.binding.id, declaration.type);
     }
+    collectReferenceDeclarationTypeParameterBindingIdsCpp(declaration, record.typeParameterBindingIds);
   }
   for (const entry of module.imports) {
     for (const binding of entry.bindings) {
@@ -1326,6 +1451,35 @@ function createReferenceModuleRecordCpp(module: Readonly<IrModule>): ReferenceMo
     }
   }
   return record;
+}
+
+function collectReferenceDeclarationTypeParameterBindingIdsCpp(
+  declaration: Readonly<IrDeclaration>,
+  bindingIds: Set<string>,
+): void {
+  switch (declaration.kind) {
+    case 'class':
+      addReferenceTypeParameterBindingIdsCpp(declaration.typeParameters, bindingIds);
+      declaration.methods.forEach((method) =>
+        addReferenceTypeParameterBindingIdsCpp(method.typeParameters, bindingIds),
+      );
+      break;
+    case 'function':
+    case 'interface':
+    case 'typeAlias':
+      addReferenceTypeParameterBindingIdsCpp(declaration.typeParameters, bindingIds);
+      break;
+    case 'enum':
+    case 'variable':
+      break;
+  }
+}
+
+function addReferenceTypeParameterBindingIdsCpp(
+  parameters: readonly Readonly<{ binding: Readonly<{ id: string }> }>[],
+  bindingIds: Set<string>,
+): void {
+  for (const parameter of parameters) bindingIds.add(parameter.binding.id);
 }
 
 function getReferenceModuleRecordCpp(

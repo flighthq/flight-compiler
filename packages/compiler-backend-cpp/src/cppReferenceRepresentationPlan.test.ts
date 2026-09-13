@@ -1024,10 +1024,14 @@ describe('createIrTypeReferenceRepresentationPlannerCpp', () => {
     }
     for (const constructionType of constructionTypes) {
       expect(planner.plan(constructionType, adjustments)).toMatchObject({
-        category: 'interface',
-        identity: { identity: 'reference', reason: 'declared-reference' },
+        category: 'structuralRow',
+        identity: { identity: 'reference', reason: 'runtime-contract' },
         kind: 'represented',
-        valueRepresentation: 'flightReference',
+        valueRepresentation: 'runtimeReference',
+      });
+      expect(planner.resolveStructuralRow(constructionType, adjustments)).toMatchObject({
+        kind: 'writable',
+        row: { kind: 'rowOf' },
       });
     }
     const emitted = createCppCompilerBackend().createEmissionSession!({
@@ -1059,6 +1063,7 @@ describe('createIrTypeReferenceRepresentationPlannerCpp', () => {
       identity: { identity: 'indeterminate', reason: 'unconstrained-type-parameter' },
       kind: 'refused',
     });
+    expect(collidingPlanner.resolveStructuralRow(genericConstruction, adjustments)).toBeUndefined();
     expect(collidingPlanner.plan(importedConstruction, adjustments)).toMatchObject({
       identity: { identity: 'indeterminate', reason: 'unresolved-reference' },
     });
@@ -1123,6 +1128,74 @@ describe('createIrTypeReferenceRepresentationPlannerCpp', () => {
       kind: 'represented',
       valueRepresentation: 'flightReference',
     });
+  });
+
+  it('plans open node rows, partial views, and writable identity aliases without flattening fields', () => {
+    const module = lower(
+      'open-rows.ts',
+      `interface Entity { readonly runtime: object | undefined }
+       interface NodeData extends Entity {}
+       interface Node<Traits extends object> extends Entity { enabled: boolean }
+       type NodeOf<Traits extends object> = Node<Traits> & NoInfer<Traits>;
+       interface HasAppearance { alpha: number; visible: boolean }
+       interface HasBlendMode { blendMode: string }
+       interface HasBoundsRectangle { bounds: object }
+       interface HasClip { clip: object }
+       interface HasColorScaleBias { colorScale: number }
+       interface HasMaterial { material: object }
+       interface HasTransform2D { transform2D: object }
+       interface HasTransform3D { transform3D: object }
+       export type AppearanceNode<Traits extends object> = NodeOf<Traits> & HasAppearance;
+       export type BlendModeNode<Traits extends object> = NodeOf<Traits> & HasBlendMode;
+       export type BoundsNode<Traits extends object> = NodeOf<Traits> & HasBoundsRectangle;
+       export type ClipNode<Traits extends object> = NodeOf<Traits> & HasClip;
+       export type ColorScaleBiasNode<Traits extends object> = NodeOf<Traits> & HasColorScaleBias;
+       export type MaterialNode<Traits extends object> = NodeOf<Traits> & HasMaterial;
+       export type Transform2DNode<Traits extends object> = NodeOf<Traits> & HasTransform2D;
+       export type Transform3DNode<Traits extends object> = NodeOf<Traits> & HasTransform3D;
+       export type NodeDataFactory<D extends NodeData> = (obj?: Readonly<Partial<D>>) => D;
+       export type EntityConstruction<Type extends Entity> = {
+         -readonly [Key in keyof Type]: Type[Key]
+       };
+       export type Incompatible = { value: number } & { value: string };`,
+    );
+    const planner = createIrTypeReferenceRepresentationPlannerCpp([module]);
+    const appearance = planner.resolveStructuralRow(declarationType(module, 'AppearanceNode'), module);
+    const construction = planner.resolveStructuralRow(declarationType(module, 'EntityConstruction'), module);
+    const factory = module.declarations.find(
+      (declaration) => declaration.kind === 'typeAlias' && declaration.binding.name === 'NodeDataFactory',
+    );
+    if (factory?.kind !== 'typeAlias' || factory.type.kind !== 'function') {
+      throw new TypeError('expected NodeDataFactory function alias');
+    }
+    const partial = planner.resolveStructuralRow(factory.type.parameters[0]!.type, module);
+
+    expect(appearance).toMatchObject({
+      kind: 'merge',
+      rows: [{ kind: 'merge', rows: [{ kind: 'rowOf' }, { kind: 'rowOf' }] }, { kind: 'rowOf' }],
+    });
+    expect(partial).toMatchObject({ kind: 'readonly', row: { kind: 'partial', row: { kind: 'rowOf' } } });
+    expect(construction).toMatchObject({ kind: 'writable', row: { kind: 'rowOf' } });
+    expect(planner.plan(declarationType(module, 'AppearanceNode'), module)).toMatchObject({
+      category: 'structuralRow',
+      identityDomain: 'object',
+      kind: 'represented',
+      storageRepresentation: 'runtimeManaged',
+      valueRepresentation: 'runtimeReference',
+    });
+    for (const name of [
+      'AppearanceNode',
+      'BlendModeNode',
+      'BoundsNode',
+      'ClipNode',
+      'ColorScaleBiasNode',
+      'MaterialNode',
+      'Transform2DNode',
+      'Transform3DNode',
+    ]) {
+      expect(planner.resolveStructuralRow(declarationType(module, name), module)).toMatchObject({ kind: 'merge' });
+    }
+    expect(planner.resolveStructuralRow(declarationType(module, 'Incompatible'), module)).toBeUndefined();
   });
 
   it('snapshots its graph and rejects subjects outside that explicit graph', () => {

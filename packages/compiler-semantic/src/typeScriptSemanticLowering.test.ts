@@ -1277,6 +1277,7 @@ describe('lowerTypeScriptSource', () => {
     expect(result.diagnostics).toEqual([]);
     expect(construction).toMatchObject({
       kind: 'typeAlias',
+      objectView: 'writable',
       type: {
         kind: 'named',
         reference: { binding: { kind: 'typeParameter', name: 'Type' }, kind: 'binding', path: [] },
@@ -14089,7 +14090,7 @@ describe('conditional capability facet lowering', () => {
       'optional-path',
       `type FacetFor<Host, Facet> = Host extends { readonly tray?: { readonly image: unknown } }
         ? Facet : unknown;`,
-      "FacetFor<Host, WithImage>",
+      'FacetFor<Host, WithImage>',
     ],
     [
       'open-key-domain',

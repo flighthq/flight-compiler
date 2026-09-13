@@ -3039,7 +3039,11 @@ function lowerOpenTypeScriptConditionalFacetEvidence(
   const checkType = getTypeScriptSyntacticTypeSubstitution(node.checkType, context.checker, substitutions);
   const falseType = getTypeScriptSyntacticTypeSubstitution(node.falseType, context.checker, substitutions);
   const trueType = getTypeScriptSyntacticTypeSubstitution(node.trueType, context.checker, substitutions);
-  if (!ts.isTypeReferenceNode(checkType) || checkType.typeArguments || falseType.kind !== ts.SyntaxKind.UnknownKeyword) {
+  if (
+    !ts.isTypeReferenceNode(checkType) ||
+    checkType.typeArguments ||
+    falseType.kind !== ts.SyntaxKind.UnknownKeyword
+  ) {
     return undefined;
   }
   const checkSymbol = context.checker.getSymbolAtLocation(checkType.typeName);
@@ -3105,10 +3109,7 @@ function getTypeScriptConditionalFacetRequiredPath(
     : undefined;
 }
 
-function isErasableTypeScriptConditionalFacetHelper(
-  node: ts.TypeAliasDeclaration,
-  context: LoweringContext,
-): boolean {
+function isErasableTypeScriptConditionalFacetHelper(node: ts.TypeAliasDeclaration, context: LoweringContext): boolean {
   if (isExported(node) || !ts.isConditionalTypeNode(node.type)) return false;
   const symbol = context.checker.getSymbolAtLocation(node.name);
   if (!symbol) return false;
@@ -3257,10 +3258,14 @@ function lowerTypeScriptIndexedAccessSyntax(node: ts.IndexedAccessTypeNode, cont
 }
 
 function lowerTypeAlias(node: ts.TypeAliasDeclaration, context: LoweringContext): IrTypeAliasDeclaration {
+  const objectView = getTypeScriptReadonlyRemovalIdentityMappedTypeSource(node.type, context)
+    ? ('writable' as const)
+    : undefined;
   return {
     binding: lowerTypeBindingIdentity(node.name, context),
     exported: isExported(node),
     kind: 'typeAlias',
+    ...(objectView ? { objectView } : {}),
     origin: origin(node, context),
     type: lowerType(node.type, context),
     typeParameters: lowerTypeParameters(node.typeParameters, context),
@@ -3532,14 +3537,22 @@ function lowerConcreteMappedType(node: ts.MappedTypeNode, context: LoweringConte
   return properties ? { kind: 'object', properties } : undefined;
 }
 
-// `{ -readonly [Key in keyof Type]: Type[Key] }` changes compile-time mutability only. Every current
-// static backend already stores a generic object through the same representation, so retaining Type
-// is both more precise and more useful than dropping the public alias as an unresolved mapped type.
+// `{ -readonly [Key in keyof Type]: Type[Key] }` changes view permissions but not object identity or
+// storage. Retaining Type lets each target preserve the referent while honoring that writable view.
 function lowerTypeScriptReadonlyRemovalIdentityMappedType(
   node: ts.MappedTypeNode,
   context: LoweringContext,
 ): IrType | undefined {
+  const source = getTypeScriptReadonlyRemovalIdentityMappedTypeSource(node, context);
+  return source ? lowerType(source, context) : undefined;
+}
+
+function getTypeScriptReadonlyRemovalIdentityMappedTypeSource(
+  node: ts.TypeNode,
+  context: LoweringContext,
+): ts.TypeNode | undefined {
   if (
+    !ts.isMappedTypeNode(node) ||
     node.readonlyToken?.kind !== ts.SyntaxKind.MinusToken ||
     node.questionToken ||
     node.nameType ||
@@ -3565,7 +3578,7 @@ function lowerTypeScriptReadonlyRemovalIdentityMappedType(
   ) {
     return undefined;
   }
-  return lowerType(constraint.type, context);
+  return constraint.type;
 }
 
 function getTypeScriptTypeReferenceSymbol(node: ts.TypeNode, context: LoweringContext): ts.Symbol | undefined {
