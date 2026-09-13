@@ -2733,8 +2733,12 @@ function emitOptionalCallHaxe(
 function emitVariable(variable: Readonly<IrVariable>, context: EmitContext): string {
   if ('pattern' in variable)
     emissionError(context, 'binding patterns require destructuring lowering before Haxe emission');
-  if (variable.initialValue === 'undefined') {
-    return `var ${getBindingTargetNameHaxe(variable.binding, context)}:Dynamic = null;`;
+  if (
+    variable.initialValue === 'undefined' ||
+    (variable.initialValue === 'uninitialized' && variable.type && hasIrTypeAbsentMember(variable.type))
+  ) {
+    const type = variable.type ? `:${emitType(variable.type, context)}` : ':Dynamic';
+    return `var ${getBindingTargetNameHaxe(variable.binding, context)}${type} = js.Syntax.code("undefined");`;
   }
   const type = variable.type ? `:${emitType(variable.type, context)}` : '';
   // A rest taken from a mixed tuple is an `Array<Dynamic>`, because that is the only Haxe type the

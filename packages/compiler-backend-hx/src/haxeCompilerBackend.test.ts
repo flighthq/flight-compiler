@@ -1296,8 +1296,10 @@ describe('emitIrModuleHaxe', () => {
     );
 
     expect(emitIrModuleHaxe(nullable.module).contents).toContain('function nullable():Null<String> {\n  return null;');
-    expect(emitIrModuleHaxe(undefinedValue.module).contents).toContain('function missing():Dynamic {\n  return null;');
-    expect(emitIrModuleHaxe(undefinedNullable.module).contents).toContain('return null;');
+    expect(emitIrModuleHaxe(undefinedValue.module).contents).toContain(
+      'function missing():Dynamic {\n  return js.Syntax.code("undefined");',
+    );
+    expect(emitIrModuleHaxe(undefinedNullable.module).contents).toContain('return js.Syntax.code("undefined");');
     expect(() => emitIrModuleHaxe(explicitDefault.module)).toThrow(
       'explicit undefined default arguments require Haxe omission lowering',
     );
@@ -3116,7 +3118,7 @@ describe('emitIrModuleHaxe operator coverage', () => {
     );
     const output = emitIrModuleHaxe(result.module).contents;
 
-    expect(output).toContain('!= null');
+    expect(output).toContain('js.Syntax.strictNeq(value, null)');
   });
 });
 
@@ -3146,7 +3148,7 @@ describe('emitIrModuleHaxe variable and module-level coverage', () => {
     expect(output).toContain('final PI:Float = 3.14;');
   });
 
-  it('emits variable with undefined initialValue as Dynamic null', () => {
+  it('emits a possibly undefined uninitialized variable with its JavaScript value', () => {
     const result = lower(
       'undef-var.ts',
       'export function init(): number { let x: number | undefined; if (x !== undefined) { return x; } return 0; }',
@@ -3154,7 +3156,7 @@ describe('emitIrModuleHaxe variable and module-level coverage', () => {
     const output = emitIrModuleHaxe(result.module).contents;
 
     expect(output).toContain('var ');
-    expect(output).toContain('= null');
+    expect(output).toContain('= js.Syntax.code("undefined")');
   });
 
   it('emits new expression', () => {
@@ -3881,7 +3883,7 @@ describe('emitIrModuleHaxe nullish comparison with ambient on left', () => {
     );
     const output = emitIrModuleHaxe(result.module).contents;
 
-    expect(output).toContain('== null');
+    expect(output).toContain('js.Syntax.strictEq(x, js.Syntax.code("undefined"))');
   });
 });
 
@@ -4542,7 +4544,7 @@ describe('emitIrModuleHaxe nullish comparison', () => {
     );
     const output = emitIrModuleHaxe(result.module).contents;
 
-    expect(output).toContain('!= null');
+    expect(output).toContain('js.Syntax.strictNeq(value, js.Syntax.code("undefined"))');
   });
 });
 
@@ -6079,7 +6081,7 @@ describe('emitIrModuleHaxe nullish comparison with undefined operand', () => {
     );
     const output = emitIrModuleHaxe(result.module).contents;
 
-    expect(output).toContain('!= null');
+    expect(output).toContain('js.Syntax.strictNeq(value, js.Syntax.code("undefined"))');
   });
 });
 
@@ -8230,7 +8232,7 @@ describe('emitIrModuleHaxe null comparison', () => {
     const output = emitIrModuleHaxe(
       lower('null-check.ts', `export function isPresent(x: number | null): boolean { return x !== null; }`).module,
     ).contents;
-    expect(output).toContain('!= null');
+    expect(output).toContain('js.Syntax.strictNeq(x, null)');
   });
 });
 
@@ -8839,7 +8841,7 @@ describe('emitIrModuleHaxe nullish comparison', () => {
     const output = emitIrModuleHaxe(
       lower('null-check.ts', `export function isPresent(x: number | null): boolean { return x !== null; }`).module,
     ).contents;
-    expect(output).toContain('!= null');
+    expect(output).toContain('js.Syntax.strictNeq(x, null)');
   });
 });
 
@@ -8936,7 +8938,7 @@ describe('emitIrModuleHaxe exponentiation operators', () => {
       }`,
     );
     const output = emitIrModuleHaxe(result.module).contents;
-    expect(output).toContain('== null');
+    expect(output).toContain('js.Syntax.strictEq(x, null)');
   });
 
   it('emits string equality comparison', () => {
