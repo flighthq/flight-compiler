@@ -3966,6 +3966,18 @@ describe('emitIrModuleHaxe object literal', () => {
     expect(output).toContain('for (objectSpreadKey in Reflect.fields(objectSpreadSource))');
     expect(output).toContain('Reflect.setField(objectSpreadValue, objectSpreadKey');
   });
+
+  it('uses a declared unique-symbol storage slot for a computed object property', () => {
+    const result = lower(
+      'computed-object-property.ts',
+      `const RuntimeKey = Symbol.for('Runtime');
+       interface Entity { [RuntimeKey]: number; }
+       export function create(): Entity { return { [RuntimeKey]: 1 }; }`,
+    );
+    const output = emitIrModuleHaxe(result.module, { runtimeModule: 'flight._hx._runtime' }).contents;
+
+    expect(output).toContain('Reflect.setField(objectSpreadValue, "RuntimeKey", 1)');
+  });
 });
 
 describe('emitIrModuleHaxe for-of loop', () => {

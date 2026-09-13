@@ -949,9 +949,6 @@ function emitObjectExpressionHaxe(expression: Readonly<IrObjectExpression>, cont
       .map((member) => `${safeHaxeName(member.name)}: ${emitExpression(member.value, context)}`)
       .join(', ')} }`;
   }
-  if (expression.members.some((member) => member.kind === 'computedProperty')) {
-    emissionError(context, 'computed object properties require Haxe property-key lowering');
-  }
   const target = getGeneratedTargetNameHaxe('objectSpreadValue', context);
   const lines = [`final ${target}:Dynamic = {};`];
   for (const member of expression.members) {
@@ -961,7 +958,14 @@ function emitObjectExpressionHaxe(expression: Readonly<IrObjectExpression>, cont
       );
       continue;
     }
-    if (member.kind === 'computedProperty') continue;
+    if (member.kind === 'computedProperty') {
+      const storageName = getComputedObjectPropertyStorageNameHaxe(member.key, context);
+      if (!storageName) emissionError(context, 'computed object properties require Haxe property-key lowering');
+      lines.push(
+        `Reflect.setField(${target}, ${JSON.stringify(storageName)}, ${emitExpression(member.value, context)});`,
+      );
+      continue;
+    }
     const source = getGeneratedTargetNameHaxe('objectSpreadSource', context);
     const key = getGeneratedTargetNameHaxe('objectSpreadKey', context);
     lines.push(
@@ -971,6 +975,29 @@ function emitObjectExpressionHaxe(expression: Readonly<IrObjectExpression>, cont
   }
   lines.push(`return ${target};`);
   return `(function() {\n${indentSourceLines(lines).join('\n')}\n})()`;
+}
+
+function getComputedObjectPropertyStorageNameHaxe(
+  key: Readonly<IrExpression>,
+  context: EmitContext,
+): string | undefined {
+  if (key.kind !== 'identifier' || key.reference.kind !== 'binding') return undefined;
+  const bindingId = key.reference.binding.id;
+  for (const module of context.sourceModules) {
+    for (const declaration of module.declarations) {
+      const properties =
+        declaration.kind === 'interface'
+          ? declaration.properties
+          : declaration.kind === 'typeAlias' && declaration.type.kind === 'object'
+            ? declaration.type.properties
+            : [];
+      const property = properties.find(
+        (candidate) => candidate.computedKey?.kind === 'binding' && candidate.computedKey.binding.id === bindingId,
+      );
+      if (property) return safeHaxeName(property.name);
+    }
+  }
+  return undefined;
 }
 
 function emitStatementValueExpressionHaxe(
@@ -2454,6 +2481,7 @@ function assertStructuralObjectCompatibilityHaxe(
   ).diagnostics.find(
     (candidate) =>
       candidate.code !== 'open-construction-target' &&
+      candidate.code !== 'computed-property-indeterminate' &&
       candidate.code !== 'spread-membership-indeterminate' &&
       candidate.code !== 'unresolved-named-construction-target',
   );
