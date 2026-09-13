@@ -4623,6 +4623,57 @@ describe('lowerTypeScriptSource', () => {
     expect(parameter.diagnostics[0]?.message).toBe('rest parameters cannot be optional or defaulted');
   });
 
+  it('records only direct dependent Parameters<T> rest projections as callable packs', () => {
+    const result = lower(
+      'dependent-callable-pack.ts',
+      `type Args<T extends (...values: any[]) => void> = Parameters<T>;
+       export function direct<T extends (value: number, flag?: boolean) => void>(
+         slot: T,
+         ...args: Parameters<T>
+       ): void { slot(...args); }
+       export function aliased<T extends (...values: any[]) => void>(...args: Args<T>): void {}
+       export function implementation<T extends (...values: any[]) => void>(slot: T): T {
+         return ((...args: any[]): void => slot(...args)) as unknown as T;
+       }`,
+    );
+    const direct = result.module.declarations.find(
+      (declaration) => declaration.kind === 'function' && declaration.binding.name === 'direct',
+    );
+    const aliased = result.module.declarations.find(
+      (declaration) => declaration.kind === 'function' && declaration.binding.name === 'aliased',
+    );
+    const implementation = result.module.declarations.find(
+      (declaration) => declaration.kind === 'function' && declaration.binding.name === 'implementation',
+    );
+    if (direct?.kind !== 'function' || aliased?.kind !== 'function' || implementation?.kind !== 'function') {
+      throw new Error('Expected functions');
+    }
+
+    expect(result.diagnostics).toEqual([]);
+    expect(direct.parameters[1]?.dependentCallablePack).toMatchObject({
+      callable: direct.typeParameters[0]?.binding,
+      constraint: {
+        kind: 'function',
+        parameters: [
+          { name: 'value', optional: false, rest: false, type: { kind: 'primitive', name: 'number' } },
+          { name: 'flag', optional: true, rest: false, type: { kind: 'primitive', name: 'boolean' } },
+        ],
+      },
+      kind: 'parameters',
+      schema: 'flight-compiler-dependent-callable-pack/1',
+    });
+    expect(aliased.parameters[0]?.dependentCallablePack).toBeUndefined();
+    const returned = implementation.body[0];
+    const erased =
+      returned?.kind === 'return' && returned.expression?.kind === 'cast' ? returned.expression.expression : undefined;
+    const closure = erased?.kind === 'cast' && erased.expression.kind === 'function' ? erased.expression : undefined;
+    expect(closure?.parameters[0]?.dependentCallablePack).toMatchObject({
+      callable: implementation.typeParameters[0]?.binding,
+      kind: 'implementation',
+      schema: 'flight-compiler-dependent-callable-pack/1',
+    });
+  });
+
   it('diagnoses optional rest tuple elements instead of constructing invalid IR', () => {
     const tuple = lower('tuple.ts', 'export type Invalid = [...values?: number[]];');
 

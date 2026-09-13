@@ -141,7 +141,7 @@ interface Array<T> {
   slice(start?: number, end?: number): T[];
   some(predicate: (value: T, index: number) => boolean): boolean;
   sort(compare?: (left: T, right: T) => number): T[];
-  splice(start: number, count?: number): T[];
+  splice(start: number, count?: number, ...items: T[]): T[];
   unshift(...values: T[]): number;
   [Symbol.iterator](): Iterator<T>;
 }

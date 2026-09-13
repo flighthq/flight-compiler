@@ -73,6 +73,7 @@ import type {
   IrVariable,
   IrVariableDeclaration,
 } from '../../compiler-types/src/index.js';
+import { cppCallableSignatureAbi } from './cppCallableSignatureAbi.js';
 import { getCompilerCppAmbientMemberBinding } from './cppAmbientMemberBinding.js';
 import { createIrModuleClosureCapturePlanCpp } from './cppClosureCapturePlan.js';
 import {
@@ -132,6 +133,7 @@ type CppDirectBindingOwner = Readonly<{ declaration: IrDeclaration; module: IrMo
 type CppImportBindingOwner = Readonly<{ imported: string; module: IrModule; specifier: string }>;
 
 interface EmitContext {
+  activeDependentCallablePackIds: ReadonlySet<string>;
   anonymousStructs: Map<string, AnonymousStruct>;
   anonymousStructTypeParameters: readonly IrTypeParameter[];
   arrayElementBindingIds: ReadonlySet<string>;
@@ -142,6 +144,7 @@ interface EmitContext {
   currentClass?: Readonly<IrClassDeclaration> | undefined;
   defaultedParameterIds: ReadonlySet<string>;
   denseArrayLengthBindingIds: ReadonlySet<string>;
+  dependentCallablePacks: ReadonlyMap<string, Readonly<IrParameter>>;
   directBindingOwners: ReadonlyMap<string, CppDirectBindingOwner | null>;
   importBindingOwners: ReadonlyMap<string, CppImportBindingOwner | null>;
   finallyReturnVar?: string | undefined;
@@ -252,6 +255,7 @@ function emitIrModuleCppWithContext(
   const sharedCaptureTargetNames = new Map<string, string>();
   const uninitializedCaptureStorageBindingIds = collectIrModuleUninitializedBindingIdsCpp(module);
   const context: EmitContext = {
+    activeDependentCallablePackIds: new Set(),
     anonymousStructs: new Map(),
     anonymousStructTypeParameters: [],
     arrayElementBindingIds: collectIrModuleArrayElementBindingIdsCpp(module, bindingTypes),
@@ -260,6 +264,7 @@ function emitIrModuleCppWithContext(
     bindingTypes,
     defaultedParameterIds: new Set(),
     denseArrayLengthBindingIds: collectIrModuleDenseArrayLengthBindingIdsCpp(sourceModule),
+    dependentCallablePacks: collectIrModuleDependentCallablePacksCpp(module),
     directBindingOwners: directBindingOwners ?? createCppDirectBindingOwners(sourceModules),
     importBindingOwners: importBindingOwners ?? createCppImportBindingOwners(sourceModules),
     includes: new Set<string>(),
@@ -678,6 +683,10 @@ function emitNumericEnumNamespaceWrapperCpp(
 function emitEnumNamespaceFunctionCpp(declaration: Readonly<IrFunctionDeclaration>, outer: EmitContext): string[] {
   const context: EmitContext = {
     ...outer,
+    activeDependentCallablePackIds: mergeCppDependentCallablePackIds(
+      outer.activeDependentCallablePackIds,
+      declaration.parameters,
+    ),
     anonymousStructTypeParameters: mergeIrTypeParametersCpp(
       outer.anonymousStructTypeParameters,
       declaration.typeParameters,
@@ -690,10 +699,11 @@ function emitEnumNamespaceFunctionCpp(declaration: Readonly<IrFunctionDeclaratio
   };
   if (declaration.async) context.includes.add('coroutine');
   const returnType = emitType(declaration.returns, context);
-  const typeParams = emitTypeParameters(declaration.typeParameters, context);
+  const template = emitCppFunctionTemplate(declaration.typeParameters, declaration.parameters, context);
   const params = declaration.parameters.map((parameter) => emitParameter(parameter, context)).join(', ');
   const lines: string[] = [];
-  if (typeParams) lines.push(`template ${typeParams}`);
+  if (template.parameters) lines.push(`template ${template.parameters}`);
+  if (template.requirement) lines.push(`  requires ${template.requirement}`);
   lines.push(`static ${returnType} ${safeCppName(declaration.binding.name)}(${params}) {`);
   lines.push(
     ...indentSourceLines([
@@ -728,6 +738,10 @@ function emitStringEnumCpp(declaration: Readonly<IrEnumDeclaration>, context: Em
 function emitFunction(declaration: Readonly<IrFunctionDeclaration>, outer: EmitContext): string[] {
   const context: EmitContext = {
     ...outer,
+    activeDependentCallablePackIds: mergeCppDependentCallablePackIds(
+      outer.activeDependentCallablePackIds,
+      declaration.parameters,
+    ),
     anonymousStructTypeParameters: mergeIrTypeParametersCpp(
       outer.anonymousStructTypeParameters,
       declaration.typeParameters,
@@ -740,11 +754,12 @@ function emitFunction(declaration: Readonly<IrFunctionDeclaration>, outer: EmitC
   };
   if (declaration.async) context.includes.add('coroutine');
   const returnType = emitType(declaration.returns, context);
-  const typeParams = emitTypeParameters(declaration.typeParameters, context);
+  const template = emitCppFunctionTemplate(declaration.typeParameters, declaration.parameters, context);
   const params = declaration.parameters.map((parameter) => emitParameter(parameter, context)).join(', ');
   const name = getBindingTargetName(declaration.binding, context);
   const lines: string[] = [];
-  if (typeParams) lines.push(`template ${typeParams}`);
+  if (template.parameters) lines.push(`template ${template.parameters}`);
+  if (template.requirement) lines.push(`  requires ${template.requirement}`);
   lines.push(`inline ${returnType} ${name}(${params}) {`);
   lines.push(
     ...indentSourceLines([
@@ -1281,11 +1296,24 @@ function emitExpression(
         context.includes.add('string');
         return `std::to_string(${arg})`;
       }
+      const hasDependentCallableSpread = expression.arguments.some(
+        (argument) => getCppDependentCallableSpreadParameter(argument, context) !== undefined,
+      );
+      const callableExpression = hasDependentCallableSpread
+        ? unwrapCppAnyRestCallableCast(expression.callee)
+        : expression.callee;
       const callee =
-        expression.callee.kind === 'function'
-          ? `(${emitExpression(expression.callee, context)})`
-          : emitExpression(expression.callee, context);
+        callableExpression.kind === 'function'
+          ? `(${emitExpression(callableExpression, context)})`
+          : emitExpression(callableExpression, context);
       const args = expression.arguments.map((argument, index) => {
+        const dependentSpread = emitCppDependentCallableSpreadArgument(
+          argument,
+          index,
+          expression.arguments.length,
+          context,
+        );
+        if (dependentSpread) return dependentSpread;
         if (
           argument.kind === 'spread' &&
           expression.semantics.signature?.restParameter === index &&
@@ -1300,6 +1328,14 @@ function emitExpression(
     }
     case 'cast': {
       const asserted = emitUnionMemberAssertionCpp(expression.expression, expression.type, context);
+      const callableTypeParameter = getCppCallableTypeParameterCpp(expression.type, context);
+      if (
+        callableTypeParameter &&
+        expression.expression.kind === 'cast' &&
+        expression.expression.type.kind === 'unknown'
+      ) {
+        return `${cppCallableSignatureAbi.bind}<${callableTypeParameter}>(${emitExpression(expression.expression.expression, context)})`;
+      }
       const callableObject = getCppCallableObjectIrTypeCpp(expression.type, context, new Set());
       if (callableObject && getCppRuntimeProfile(context.options) === 'flight-cpp') {
         if (
@@ -1378,6 +1414,10 @@ function emitExpression(
           : expression.returns;
       const functionContext: EmitContext = {
         ...context,
+        activeDependentCallablePackIds: mergeCppDependentCallablePackIds(
+          context.activeDependentCallablePackIds,
+          parameters,
+        ),
         anonymousStructTypeParameters: mergeIrTypeParametersCpp(
           context.anonymousStructTypeParameters,
           expression.typeParameters,
@@ -1396,6 +1436,7 @@ function emitExpression(
         emissionError(context, 'lexical-this closure requires class receiver context');
       }
       functionContext.includes.add('functional');
+      const template = emitCppFunctionTemplate(expression.typeParameters, parameters, functionContext);
       const params = parameters.map((parameter) => emitParameter(parameter, functionContext));
       const capture = usesThis
         ? context.namespaceScope
@@ -1404,14 +1445,16 @@ function emitExpression(
         : context.namespaceScope
           ? '[]'
           : '[=]';
+      const lambdaTemplate = template.parameters ? template.parameters : '';
+      const lambdaRequirement = template.requirement ? ` requires ${template.requirement}` : '';
       if (
         expression.expression &&
         functionContext.defaultedParameterIds.size === 0 &&
         !hasSharedCaptureParameterCpp(parameters, functionContext)
       ) {
-        return `${capture}(${params.join(', ')}) { return ${emitExpression(expression.expression, functionContext, returns)}; }`;
+        return `${capture}${lambdaTemplate}(${params.join(', ')})${lambdaRequirement} { return ${emitExpression(expression.expression, functionContext, returns)}; }`;
       }
-      return `${capture}(${params.join(', ')}) {\n${indentSourceLines([
+      return `${capture}${lambdaTemplate}(${params.join(', ')})${lambdaRequirement} {\n${indentSourceLines([
         ...emitParameterInitializersCpp(parameters, functionContext),
         ...(expression.expression
           ? [`return ${emitExpression(expression.expression, functionContext, returns)};`]
@@ -1422,6 +1465,15 @@ function emitExpression(
       ]).join('\n')}\n}`;
     }
     case 'identifier': {
+      if (
+        expression.reference.kind === 'binding' &&
+        context.dependentCallablePacks.has(expression.reference.binding.id)
+      ) {
+        emissionError(
+          context,
+          `dependent callable parameter pack ${expression.reference.binding.name} may only be used as a terminal call spread`,
+        );
+      }
       if (expression.reference.kind === 'ambient' && expression.reference.name === 'undefined') {
         return emitUndefinedWithExpectedTypeCpp(expectedType, context);
       }
@@ -2536,6 +2588,9 @@ function emitType(type: Readonly<IrType>, context: EmitContext, representation: 
   }
   const rebound = getCppEquivalentImportedTypeCpp(type, context);
   if (rebound) return emitType(rebound, context, representation);
+  const callableTypeParameter =
+    getCppRuntimeProfile(context.options) === 'flight-cpp' ? getCppCallableTypeParameterCpp(type, context) : undefined;
+  if (callableTypeParameter) return callableTypeParameter;
   if (
     type.kind === 'named' &&
     type.reference.kind === 'ambient' &&
@@ -4444,6 +4499,72 @@ function getIrCallArgumentExpectedTypeCpp(
   return declaration?.kind === 'function' ? declaration.parameters[index]?.type : undefined;
 }
 
+function getCppDependentCallableSpreadParameter(
+  argument: Readonly<IrExpression>,
+  context: EmitContext,
+): Readonly<IrParameter> | undefined {
+  if (
+    argument.kind !== 'spread' ||
+    argument.expression.kind !== 'identifier' ||
+    argument.expression.reference.kind !== 'binding'
+  ) {
+    return undefined;
+  }
+  return context.dependentCallablePacks.get(argument.expression.reference.binding.id);
+}
+
+function emitCppDependentCallableSpreadArgument(
+  argument: Readonly<IrExpression>,
+  index: number,
+  argumentCount: number,
+  context: EmitContext,
+): string | undefined {
+  const parameter = getCppDependentCallableSpreadParameter(argument, context);
+  if (!parameter) return undefined;
+  if (!context.activeDependentCallablePackIds.has(parameter.binding.id)) {
+    emissionError(context, 'dependent callable pack expansion escaped its declaring function boundary');
+  }
+  if (index !== argumentCount - 1) {
+    emissionError(context, 'dependent callable parameter packs require terminal call expansion');
+  }
+  const pack = getCppDependentCallablePack(parameter, context);
+  context.includes.add('utility');
+  return `std::forward<${pack.typeName}>(${getBindingTargetName(parameter.binding, context)})...`;
+}
+
+function unwrapCppAnyRestCallableCast(expression: Readonly<IrExpression>): Readonly<IrExpression> {
+  if (expression.kind !== 'cast' || !isCppAnyRestCallableType(expression.type)) return expression;
+  return expression.expression;
+}
+
+function isCppAnyRestCallableType(type: Readonly<IrType>): boolean {
+  if (type.kind !== 'function' || type.typeParameters.length > 0 || type.parameters.length !== 1) return false;
+  const parameter = type.parameters[0]!;
+  return (
+    parameter.rest &&
+    parameter.type.kind === 'array' &&
+    parameter.type.element.kind === 'unknown' &&
+    parameter.type.element.source === 'any'
+  );
+}
+
+function getCppCallableTypeParameterCpp(type: Readonly<IrType>, context: EmitContext): string | undefined {
+  if (
+    type.kind !== 'named' ||
+    type.reference.kind !== 'binding' ||
+    type.reference.path.length !== 0 ||
+    type.reference.binding.kind !== 'typeParameter'
+  ) {
+    return undefined;
+  }
+  const bindingId = type.reference.binding.id;
+  const declaration = context.anonymousStructTypeParameters.find((parameter) => parameter.binding.id === bindingId);
+  if (declaration?.constraint?.kind !== 'function' || declaration.constraint.typeParameters.length > 0) {
+    return undefined;
+  }
+  return context.targetNames.get(declaration.binding.id) ?? pascalCase(declaration.binding.name);
+}
+
 function getIrInvocationArgumentExpectedTypeCpp(
   expression: Readonly<Extract<IrExpression, { kind: 'call' | 'new' }>>,
   index: number,
@@ -6250,6 +6371,13 @@ function statementDefinitelyCompletesCpp(statement: Readonly<IrStatement>): bool
 
 function emitParameter(parameter: Readonly<IrParameter>, context: EmitContext): string {
   const name = getBindingTargetName(parameter.binding, context);
+  if (parameter.dependentCallablePack) {
+    if (!context.activeDependentCallablePackIds.has(parameter.binding.id)) {
+      emissionError(context, 'dependent callable parameter packs require a generic function or closure boundary');
+    }
+    const pack = getCppDependentCallablePack(parameter, context);
+    return `${pack.typeName}&&... ${name}`;
+  }
   const type = parameter.type ? emitType(parameter.type, context) : 'auto';
   if (parameter.optional) {
     context.includes.add('optional');
@@ -6356,6 +6484,109 @@ function emitReexportsCpp(module: Readonly<IrModule>, context: EmitContext): str
 function emitTypeParameters(parameters: readonly IrTypeParameter[], context: EmitContext): string {
   if (parameters.length === 0) return '';
   return `<${parameters.map((parameter) => `typename ${context.targetNames.get(parameter.binding.id) ?? pascalCase(parameter.binding.name)}`).join(', ')}>`;
+}
+
+interface CppDependentCallablePack {
+  readonly callableTypeName: string;
+  readonly typeName: string;
+}
+
+interface CppFunctionTemplate {
+  readonly parameters: string;
+  readonly requirement: string;
+}
+
+function emitCppFunctionTemplate(
+  typeParameters: readonly IrTypeParameter[],
+  parameters: readonly Readonly<IrParameter>[],
+  context: EmitContext,
+): CppFunctionTemplate {
+  const declared = typeParameters.map(
+    (parameter) => `typename ${context.targetNames.get(parameter.binding.id) ?? pascalCase(parameter.binding.name)}`,
+  );
+  const packs = parameters.flatMap((parameter) =>
+    parameter.dependentCallablePack ? [getCppDependentCallablePack(parameter, context)] : [],
+  );
+  const names = [
+    ...declared.map((parameter) => parameter.replace(/^typename /u, '')),
+    ...packs.map((pack) => pack.typeName),
+  ];
+  if (new Set(names).size !== names.length) {
+    emissionError(context, 'dependent callable parameter-pack type names must be unique within their function');
+  }
+  return {
+    parameters:
+      declared.length + packs.length > 0
+        ? `<${[...declared, ...packs.map((pack) => `typename... ${pack.typeName}`)].join(', ')}>`
+        : '',
+    requirement: packs
+      .map(
+        (pack) => `${cppCallableSignatureAbi.trait}<${pack.callableTypeName}>::template accepts<${pack.typeName}...>`,
+      )
+      .join(' && '),
+  };
+}
+
+function getCppDependentCallablePack(parameter: Readonly<IrParameter>, context: EmitContext): CppDependentCallablePack {
+  const evidence = parameter.dependentCallablePack;
+  const projection = parameter.type;
+  const projectedCallable =
+    projection.kind === 'named' &&
+    projection.reference.kind === 'ambient' &&
+    projection.reference.name === 'Parameters' &&
+    projection.typeArguments.length === 1
+      ? projection.typeArguments[0]
+      : undefined;
+  const declaredCallable = evidence
+    ? context.anonymousStructTypeParameters.find((candidate) => candidate.binding.id === evidence.callable.id)
+    : undefined;
+  if (
+    !parameter.rest ||
+    !evidence ||
+    (evidence.kind !== 'parameters' && evidence.kind !== 'implementation') ||
+    evidence.schema !== 'flight-compiler-dependent-callable-pack/1' ||
+    (evidence.kind === 'parameters'
+      ? projectedCallable?.kind !== 'named' ||
+        projectedCallable.reference.kind !== 'binding' ||
+        projectedCallable.reference.path.length !== 0 ||
+        projectedCallable.reference.binding.id !== evidence.callable.id
+      : projection.kind !== 'array' || projection.element.kind !== 'unknown' || projection.element.source !== 'any') ||
+    !declaredCallable?.constraint ||
+    declaredCallable.constraint.kind !== 'function' ||
+    declaredCallable.constraint.typeParameters.length > 0 ||
+    !isDeepStrictEqual(declaredCallable.constraint, evidence.constraint)
+  ) {
+    emissionError(
+      context,
+      'dependent Parameters<T> requires coherent evidence for one in-scope nongeneric callable type parameter',
+    );
+  }
+  return {
+    callableTypeName: context.targetNames.get(evidence.callable.id) ?? pascalCase(evidence.callable.name),
+    typeName: safeCppTypeName(`${parameter.binding.name} pack`),
+  };
+}
+
+function mergeCppDependentCallablePackIds(
+  inherited: ReadonlySet<string>,
+  parameters: readonly Readonly<IrParameter>[],
+): ReadonlySet<string> {
+  return new Set([
+    ...inherited,
+    ...parameters.flatMap((parameter) => (parameter.dependentCallablePack ? [parameter.binding.id] : [])),
+  ]);
+}
+
+function collectIrModuleDependentCallablePacksCpp(
+  module: Readonly<IrModule>,
+): ReadonlyMap<string, Readonly<IrParameter>> {
+  const packs = new Map<string, Readonly<IrParameter>>();
+  analyzeIrModuleTraversal(module, {
+    parameter(parameter) {
+      if (parameter.dependentCallablePack) packs.set(parameter.binding.id, parameter);
+    },
+  });
+  return packs;
 }
 
 function mergeIrTypeParametersCpp(

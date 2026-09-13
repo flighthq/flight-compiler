@@ -39,6 +39,7 @@ import type {
   IrCallSemantics,
   IrControlFlowLabelIdentity,
   IrDeclaration,
+  IrDependentCallableParameterPackEvidence,
   IrEnumDeclaration,
   IrExpression,
   IrExport,
@@ -807,7 +808,11 @@ function lowerExpression(
   }
   if (ts.isAsExpression(node) || ts.isTypeAssertionExpression(node)) {
     const type = lowerType(node.type, context);
-    return { expression: lowerExpression(node.expression, context, type), kind: 'cast', type };
+    return {
+      expression: lowerExpression(node.expression, context, type, contextualTargetType ?? contextualType ?? type),
+      kind: 'cast',
+      type,
+    };
   }
   if (ts.isNonNullExpression(node))
     return lowerExpression(node.expression, context, contextualType, contextualTargetType);
@@ -1022,7 +1027,11 @@ function lowerExpression(
     };
   }
   if (ts.isArrowFunction(node) || ts.isFunctionExpression(node)) {
-    const signature = lowerFunctionSignature(node, context);
+    const signature = lowerContextualDependentCallableImplementationPack(
+      lowerFunctionSignature(node, context),
+      contextualTargetType,
+      context,
+    );
     const returnType = getTypeScriptFunctionReturnValueType(node, signature.returns, context);
     const parameterEntries = lowerParameterBindingEntries(node.parameters, signature.parameters, context);
     return {
@@ -1076,6 +1085,26 @@ function lowerExpression(
     return { flags: node.text.slice(lastSlash + 1), kind: 'regexp', pattern: node.text.slice(1, lastSlash) };
   }
   unsupported(node, `unsupported expression ${ts.SyntaxKind[node.kind]}`);
+}
+
+function lowerContextualDependentCallableImplementationPack(
+  signature: Readonly<IrFunctionSignature>,
+  contextualTargetType: Readonly<IrType> | undefined,
+  context: LoweringContext,
+): IrFunctionSignature {
+  if (
+    !contextualTargetType ||
+    signature.parameters.length !== 1 ||
+    !signature.parameters[0]?.rest ||
+    signature.parameters[0].type.kind !== 'array' ||
+    signature.parameters[0].type.element.kind !== 'unknown' ||
+    signature.parameters[0].type.element.source !== 'any'
+  ) {
+    return signature;
+  }
+  const evidence = lowerDependentCallableTypeParameterEvidence(contextualTargetType, 'implementation', context);
+  if (!evidence) return signature;
+  return { ...signature, parameters: [{ ...signature.parameters[0], dependentCallablePack: evidence }] };
 }
 
 function lowerTypeScriptInvocationArguments(
@@ -2089,7 +2118,15 @@ function lowerParameter(node: ts.ParameterDeclaration, context: LoweringContext)
       : createTypeScriptParameterPatternBinding(node, context),
     type: typeParameter.type,
   };
-  if (typeParameter.rest) return { ...parameter, optional: false, rest: true };
+  if (typeParameter.rest) {
+    const dependentCallablePack = lowerDependentCallableParameterPackEvidence(node, typeParameter.type, context);
+    return {
+      ...parameter,
+      ...(dependentCallablePack ? { dependentCallablePack } : {}),
+      optional: false,
+      rest: true,
+    };
+  }
   if (!typeParameter.optional) return { ...parameter, optional: false, rest: false };
   return node.initializer
     ? {
@@ -2099,6 +2136,70 @@ function lowerParameter(node: ts.ParameterDeclaration, context: LoweringContext)
         rest: false,
       }
     : { ...parameter, optional: true, rest: false };
+}
+
+function lowerDependentCallableParameterPackEvidence(
+  node: ts.ParameterDeclaration,
+  type: Readonly<IrType>,
+  context: LoweringContext,
+): IrDependentCallableParameterPackEvidence | undefined {
+  if (
+    !node.dotDotDotToken ||
+    !node.type ||
+    !ts.isTypeReferenceNode(node.type) ||
+    !ts.isIdentifier(node.type.typeName) ||
+    node.type.typeName.text !== 'Parameters' ||
+    node.type.typeArguments?.length !== 1 ||
+    type.kind !== 'named' ||
+    type.reference.kind !== 'ambient' ||
+    type.reference.name !== 'Parameters' ||
+    type.typeArguments.length !== 1
+  ) {
+    return undefined;
+  }
+  const callable = type.typeArguments[0]!;
+  const callableNode = node.type.typeArguments[0]!;
+  if (
+    callable.kind !== 'named' ||
+    callable.reference.kind !== 'binding' ||
+    callable.reference.path.length !== 0 ||
+    callable.reference.binding.kind !== 'typeParameter' ||
+    !ts.isTypeReferenceNode(callableNode) ||
+    !ts.isIdentifier(callableNode.typeName) ||
+    callableNode.typeArguments?.length
+  ) {
+    return undefined;
+  }
+  return lowerDependentCallableTypeParameterEvidence(callable, 'parameters', context);
+}
+
+function lowerDependentCallableTypeParameterEvidence(
+  type: Readonly<IrType>,
+  kind: IrDependentCallableParameterPackEvidence['kind'],
+  context: LoweringContext,
+): IrDependentCallableParameterPackEvidence | undefined {
+  if (
+    type.kind !== 'named' ||
+    type.reference.kind !== 'binding' ||
+    type.reference.path.length !== 0 ||
+    type.reference.binding.kind !== 'typeParameter'
+  ) {
+    return undefined;
+  }
+  const callableBinding = type.reference.binding;
+  const symbol = [...context.typeBindings].find(([, binding]) => binding.id === callableBinding.id)?.[0];
+  const declaration = symbol?.declarations?.find(ts.isTypeParameterDeclaration);
+  if (!declaration?.constraint) return undefined;
+  const constraint = lowerType(declaration.constraint, context);
+  if (constraint.kind !== 'function' || constraint.typeParameters.length > 0) return undefined;
+  const binding = lowerTypeBindingIdentity(declaration.name, context);
+  if (binding.id !== callableBinding.id) return undefined;
+  return {
+    callable: binding,
+    constraint,
+    kind,
+    schema: 'flight-compiler-dependent-callable-pack/1',
+  };
 }
 
 function lowerFunctionTypeParameter(node: ts.ParameterDeclaration, context: LoweringContext): IrFunctionTypeParameter {

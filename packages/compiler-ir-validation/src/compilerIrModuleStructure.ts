@@ -1087,6 +1087,41 @@ function visitParameters(
       state,
     );
     visitType(parameter.type, `${parameterPath}.type`, state);
+    const dependentPack = parameter.dependentCallablePack;
+    if (dependentPack) {
+      const projectedCallable =
+        parameter.type.kind === 'named' &&
+        parameter.type.reference.kind === 'ambient' &&
+        parameter.type.reference.name === 'Parameters' &&
+        parameter.type.typeArguments.length === 1
+          ? parameter.type.typeArguments[0]
+          : undefined;
+      const coherent =
+        parameter.rest &&
+        (dependentPack.kind === 'parameters' || dependentPack.kind === 'implementation') &&
+        dependentPack.schema === 'flight-compiler-dependent-callable-pack/1' &&
+        dependentPack.callable.kind === 'typeParameter' &&
+        dependentPack.constraint.kind === 'function' &&
+        dependentPack.constraint.typeParameters.length === 0 &&
+        (dependentPack.kind === 'parameters'
+          ? projectedCallable?.kind === 'named' &&
+            projectedCallable.reference.kind === 'binding' &&
+            projectedCallable.reference.path.length === 0 &&
+            projectedCallable.reference.binding.id === dependentPack.callable.id
+          : parameter.type.kind === 'array' &&
+            parameter.type.element.kind === 'unknown' &&
+            parameter.type.element.source === 'any');
+      if (!coherent) {
+        addFailure(
+          'invalid-node-shape',
+          `${parameterPath}.dependentCallablePack`,
+          'dependent callable-pack evidence requires a rest Parameters<T> projection or cast-bound any[] implementation of one nongeneric callable type parameter',
+          state,
+        );
+      }
+      addBindingReference(dependentPack.callable, `${parameterPath}.dependentCallablePack.callable`, state);
+      visitType(dependentPack.constraint, `${parameterPath}.dependentCallablePack.constraint`, state);
+    }
     if (parameter.initializer) visitExpression(parameter.initializer, `${parameterPath}.initializer`, state);
   });
 }

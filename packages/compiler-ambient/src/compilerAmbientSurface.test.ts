@@ -23,6 +23,7 @@ describe('createCompilerAmbientSurfaceSource', () => {
 
     // These are the members whose absence collapsed ordinary expressions to unknown.
     expect(source).toContain('map<U>(project: (value: T, index: number) => U): U[];');
+    expect(source).toContain('splice(start: number, count?: number, ...items: T[]): T[];');
     expect(source).toContain('join(separator?: string): string;');
     expect(source).toContain('indexOf(search: string, position?: number): number;');
     expect(source).toContain('asin(value: number): number;');

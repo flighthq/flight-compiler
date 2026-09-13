@@ -24,6 +24,7 @@ export type * from './compilerCompletionContract.js';
 export type * from './compilerCppClosureCaptureContract.js';
 export type * from './compilerCppReferenceRepresentationContract.js';
 export type * from './compilerDeclarationIntermediateRepresentation.js';
+export type * from './compilerDependentCallablePackContract.js';
 export type * from './compilerDiagnosticContract.js';
 export type * from './compilerExecutableIntermediateRepresentation.js';
 export type * from './compilerEmittedSourceSyntaxContract.js';

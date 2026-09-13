@@ -1142,6 +1142,42 @@ export function preferred(): number { return NativeSurface.preferredFormat; }`,
     );
   });
 
+  it('emits dependent Parameters<T> as constrained forwarding packs and refuses value use', () => {
+    const module = lower(
+      'dependent-callable-pack.ts',
+      `export function forward<T extends (...values: any[]) => void>(slot: T, ...args: Parameters<T>): void {
+         slot(...args);
+       }
+       export function wrap<T extends (...values: any[]) => void>(slot: T): T {
+         return ((...args: Parameters<T>): void => slot(...args)) as unknown as T;
+       }
+       export function wrapErased<T extends (...values: any[]) => void>(slot: T): T {
+         return ((...args: any[]): void => slot(...args)) as unknown as T;
+       }`,
+    ).module;
+    const emitted = emitIrModuleCpp(module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    expect(emitted).toContain('template <typename T, typename... ArgsPack>');
+    expect(emitted).toContain('requires flight::callable_signature_v1<T>::template accepts<ArgsPack...>');
+    expect(emitted).toContain('inline void forward(T slot, ArgsPack&&... args)');
+    expect(emitted).toContain('ArgsPack&&... args');
+    expect(emitted).toContain('slot(std::forward<ArgsPack>(args)...);');
+    expect(emitted).toContain('flight::bind_callable_v1<T>(');
+    expect(emitted).toContain('inline T wrap(T slot)');
+    expect(emitted).toContain('[=]<typename... ArgsPack>');
+    expect(emitted).not.toContain('flight::Array<auto>');
+
+    const valueUse = lower(
+      'dependent-callable-pack-value.ts',
+      `export function count<T extends (...values: any[]) => void>(...args: Parameters<T>): number {
+         return args.length;
+       }`,
+    ).module;
+    expect(() => emitIrModuleCpp(valueUse, { runtimeProfile: 'flight-cpp' })).toThrow(
+      'dependent callable parameter pack args may only be used as a terminal call spread',
+    );
+  });
+
   it('binds process and browser host surfaces without making them compiler runtime policy', () => {
     const result = lower(
       'host-surfaces.ts',
@@ -2927,6 +2963,18 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     );
     const emitted = emitIrModuleCpp(result.module);
     expect(emitted.contents).toContain('push_back');
+  });
+
+  it('emits Array.splice insertion through the coordinated runtime member contract', () => {
+    const emitted = emitIrModuleCpp(
+      lower(
+        'splice-insertion.ts',
+        'export function insert(items: number[], index: number, value: number): void { items.splice(index, 0, value); }',
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    );
+
+    expect(emitted.contents).toContain('items.splice(index, 0.0, value)');
   });
 
   it('emits for-in with preserve evaluation wrapping object reference', () => {

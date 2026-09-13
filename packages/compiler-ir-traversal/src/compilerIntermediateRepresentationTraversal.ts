@@ -456,6 +456,13 @@ function analyzeIrParameterTraversal(
 ): void {
   observeIrTraversalValue(observer.parameter, parameter, path);
   analyzeIrTypeTraversal(parameter.type, observer, createIrTraversalPath(path, 'type'));
+  if (parameter.dependentCallablePack) {
+    analyzeIrTypeTraversal(
+      parameter.dependentCallablePack.constraint,
+      observer,
+      createIrTraversalPath(path, 'dependentCallablePack', 'constraint'),
+    );
+  }
   if (parameter.initializer) {
     analyzeIrExpressionTraversal(parameter.initializer, observer, createIrTraversalPath(path, 'initializer'));
   }

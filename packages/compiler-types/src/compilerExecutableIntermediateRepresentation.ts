@@ -27,10 +27,12 @@ import type {
   IrUnaryOperatorSemantics,
 } from './compilerOperatorSemanticIntermediateRepresentation.js';
 import type { CompilerSourceOrigin } from './compilerSourceIdentity.js';
+import type { IrDependentCallableParameterPackEvidence } from './compilerDependentCallablePackContract.js';
 import type { IrFunctionTypeParameter, IrType, IrTypeParameter } from './compilerTypeIntermediateRepresentation.js';
 
 export type IrParameter = Omit<IrFunctionTypeParameter, 'name'> &
   Readonly<{ binding: IrBindingIdentity }> &
+  Readonly<{ dependentCallablePack?: IrDependentCallableParameterPackEvidence | undefined }> &
   (Readonly<{ initializer?: never; optional: false }> | Readonly<{ initializer?: IrExpression; optional: true }>);
 
 // A member of the ambient surface, named together with the kind of value it was resolved against.
