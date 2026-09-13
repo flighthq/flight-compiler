@@ -742,7 +742,11 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
     case 'conditional':
       return `(${emitExpression(expression.condition, context)} ? ${emitExpression(expression.whenTrue, context)} : ${emitExpression(expression.whenFalse, context)})`;
     case 'element':
-      if (expression.semantics.receivers.includes('object')) {
+      if (
+        expression.semantics.receivers.includes('object') ||
+        (expression.semantics.key === 'string' &&
+          expression.semantics.receivers.every((receiver) => receiver === 'unknown'))
+      ) {
         const storageName = getComputedObjectStorageNameHaxe(expression);
         if (storageName) {
           return `${emitExpression(expression.object, context)}${expression.optional ? '?.' : '.'}${storageName}`;

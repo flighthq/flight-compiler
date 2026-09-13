@@ -2872,6 +2872,8 @@ function lowerType(node: ts.TypeNode, context: LoweringContext): IrType {
   if (ts.isTypeReferenceNode(node)) {
     const callableUtility = lowerConcreteTypeScriptCallableUtilityReference(node, context);
     if (callableUtility) return callableUtility;
+    const mapped = lowerConcreteTypeScriptMappedAliasReference(node, context);
+    if (mapped) return mapped;
     const projection = lowerConcreteTypeScriptObjectProjection(node, context);
     if (projection) return projection;
     const conditional = lowerConcreteTypeScriptConditionalAliasReference(node, context);
