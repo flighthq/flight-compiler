@@ -381,6 +381,27 @@ describe('createCompilerLoweringPassInterfaceInheritance', () => {
     });
   });
 
+  it('keeps materialized ReturnType heritage properties while erasing its ambient edge', () => {
+    const module = lower(
+      'return-type-heritage.ts',
+      `
+        interface Runtime { id: number; }
+        function createRuntime(): Runtime { return { id: 1 }; }
+        export interface DetailedRuntime extends ReturnType<typeof createRuntime> { label: string; }
+      `,
+    );
+
+    const output = lowerIrModuleWithCompilerPasses(module, [createCompilerLoweringPassInterfaceInheritance([module])]);
+
+    expect(getInterface(output, 'DetailedRuntime')).toMatchObject({
+      extends: [],
+      properties: [
+        { name: 'id', type: { kind: 'primitive', name: 'number' } },
+        { name: 'label', type: { kind: 'primitive', name: 'string' } },
+      ],
+    });
+  });
+
   it('deduplicates identical diamonds and refuses unresolved, cyclic, arity, and incompatible heritage', () => {
     const module = lower(
       'failures.ts',

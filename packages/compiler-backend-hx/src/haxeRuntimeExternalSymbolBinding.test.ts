@@ -1,5 +1,6 @@
 import type { IrInterfaceDeclaration } from '../../compiler-types/src/index.js';
 import {
+  canEraseCompilerAmbientUtilityHeritageHaxe,
   createCompilerRuntimeExternalSymbolBindingPlanHaxe,
   getCompilerAmbientUtilityHeritageTargetHaxe,
   getCompilerRuntimeExternalMemberTargetHaxe,
@@ -83,6 +84,21 @@ describe('createCompilerRuntimeExternalSymbolBindingPlanHaxe', () => {
 
     (first.bindings as unknown[]).pop();
     expect(second.bindings).toHaveLength(135);
+  });
+});
+
+describe('canEraseCompilerAmbientUtilityHeritageHaxe', () => {
+  it('accepts a closed Pick over a bound Haxe host type without requiring sole heritage', () => {
+    expect(
+      canEraseCompilerAmbientUtilityHeritageHaxe({
+        kind: 'named',
+        reference: { kind: 'ambient', name: 'Pick' },
+        typeArguments: [
+          { kind: 'named', reference: { kind: 'ambient', name: 'WebGL2RenderingContext' }, typeArguments: [] },
+          { kind: 'literal', value: 'clear' },
+        ],
+      }),
+    ).toBe(true);
   });
 });
 

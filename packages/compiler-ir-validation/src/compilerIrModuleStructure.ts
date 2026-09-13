@@ -1061,6 +1061,7 @@ function visitObjectMember(member: Readonly<IrObjectMember>, path: string, state
       visitExpression(member.key, `${path}.key`, state);
       visitExpression(member.value, `${path}.value`, state);
       break;
+    case 'getAccessor':
     case 'property':
       visitExpression(member.value, `${path}.value`, state);
       break;

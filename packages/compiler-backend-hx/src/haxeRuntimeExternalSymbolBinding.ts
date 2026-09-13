@@ -7,6 +7,7 @@ import type {
   IrInterfaceDeclaration,
   IrModule,
   IrType,
+  IrTypeReference,
 } from '../../compiler-types/src/index.js';
 
 type HaxeRuntimeExternalSymbolBinding =
@@ -64,6 +65,22 @@ export function getCompilerAmbientUtilityHeritageTargetHaxe(
   const target = heritage.typeArguments[0]!;
   if (target.kind !== 'named' || target.reference.kind !== 'ambient') return undefined;
   return getCompilerRuntimeExternalSymbolTargetHaxe(target.reference.name, 'type');
+}
+
+export function canEraseCompilerAmbientUtilityHeritageHaxe(reference: Readonly<IrTypeReference>): boolean {
+  if (
+    reference.reference.kind !== 'ambient' ||
+    reference.reference.name !== 'Pick' ||
+    reference.typeArguments.length !== 2
+  ) {
+    return false;
+  }
+  const target = reference.typeArguments[0]!;
+  return (
+    target.kind === 'named' &&
+    target.reference.kind === 'ambient' &&
+    getCompilerRuntimeExternalSymbolTargetHaxe(target.reference.name, 'type') !== undefined
+  );
 }
 
 // Namespace-like ambient values have no Haxe value of their own. Their members decide the complete

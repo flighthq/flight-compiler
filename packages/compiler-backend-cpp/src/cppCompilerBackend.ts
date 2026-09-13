@@ -1819,6 +1819,9 @@ function emitExpression(
       return `${typeName}${typeArguments}(${args.join(', ')})`;
     }
     case 'object': {
+      if (expression.members.some((member) => member.kind === 'getAccessor')) {
+        emissionError(context, 'object getters require target-specific accessor lowering');
+      }
       const constructionType =
         expectedType &&
         (hasFlightReferenceRepresentationCpp(expectedType, context) ||

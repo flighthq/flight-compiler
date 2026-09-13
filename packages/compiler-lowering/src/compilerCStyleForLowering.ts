@@ -164,6 +164,7 @@ function hasIrObjectMemberCStyleForStatement(member: Readonly<IrObjectMember>): 
   switch (member.kind) {
     case 'computedProperty':
       return hasIrExpressionCStyleForStatement(member.key) || hasIrExpressionCStyleForStatement(member.value);
+    case 'getAccessor':
     case 'property':
       return hasIrExpressionCStyleForStatement(member.value);
     case 'spread':
@@ -448,6 +449,11 @@ function lowerIrObjectMember(member: Readonly<IrObjectMember>, analysis: CStyleF
         key: lowerIrExpression(member.key, analysis),
         value: lowerIrExpression(member.value, analysis),
       };
+    case 'getAccessor': {
+      const value = lowerIrExpression(member.value, analysis);
+      if (value.kind !== 'function') throw new TypeError('object getter lowering must preserve its function value');
+      return { ...member, value };
+    }
     case 'property':
       return { ...member, value: lowerIrExpression(member.value, analysis) };
     case 'spread':

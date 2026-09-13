@@ -333,6 +333,7 @@ function analyzeIrObjectMemberVariableInitialization(
       addIrVariableInitializationCompletion(completion, 'throw', initialized);
       analyzeIrExpressionVariableInitialization(member.value, initialized, variables, sourceIdentity, completion);
       return;
+    case 'getAccessor':
     case 'property':
       analyzeIrExpressionVariableInitialization(member.value, initialized, variables, sourceIdentity, completion);
       return;

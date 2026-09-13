@@ -640,6 +640,11 @@ function lowerIrObjectMemberVariableHoisting(
         key: lowerIrExpressionVariableHoisting(member.key, analysis),
         value: lowerIrExpressionVariableHoisting(member.value, analysis),
       };
+    case 'getAccessor': {
+      const value = lowerIrExpressionVariableHoisting(member.value, analysis);
+      if (value.kind !== 'function') throw new TypeError('object getter lowering must preserve its function value');
+      return { ...member, value };
+    }
     case 'property':
       return { ...member, value: lowerIrExpressionVariableHoisting(member.value, analysis) };
     case 'spread':

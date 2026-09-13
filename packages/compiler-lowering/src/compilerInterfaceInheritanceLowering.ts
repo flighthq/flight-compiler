@@ -284,6 +284,10 @@ function getIrInterfaceUtilityHeritagePropertiesFlattened(
   substitutions: Readonly<CompilerStructuralTypeSubstitutionPlan>,
   context: InterfaceInheritanceLoweringContext,
 ): readonly IrObjectTypeProperty[] | undefined {
+  // Semantic lowering has already materialized a successfully lowered ReturnType heritage into the
+  // interface's own property list. There is no callable type left to resolve at this structural pass,
+  // and retaining the ambient utility edge would turn complete evidence back into a nonlocal refusal.
+  if (reference.reference.kind === 'ambient' && reference.reference.name === 'ReturnType') return [];
   if (
     location.declaration.kind === 'interface' &&
     context.options.eraseAmbientUtilityHeritage?.(reference, location.declaration) &&

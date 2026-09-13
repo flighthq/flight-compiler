@@ -10,6 +10,7 @@ import {
 } from '../../compiler-structural/src/index.js';
 import type {
   CompilerModuleResolutionPlan,
+  CompilerModuleFacadePlan,
   CompilerLoweringPass,
   EmittedFile,
   HaxeCompilerBackendOptions,
@@ -27,9 +28,11 @@ import type {
   IrTypeParameter,
   IrTypeReference,
   IrVariableDeclaration,
+  CompilerStructuralTypeSubstitutionPlan,
 } from '../../compiler-types/src/index.js';
 import { convertPackageNameToHaxePackageName } from './haxeCompilerIdentity.js';
 import {
+  canEraseCompilerAmbientUtilityHeritageHaxe,
   getCompilerAmbientUtilityHeritageTargetHaxe,
   getCompilerRuntimeExternalSymbolTargetHaxe,
 } from './haxeRuntimeExternalSymbolBinding.js';
@@ -37,8 +40,10 @@ import { emitIrTypeHaxe } from './haxeTypeEmission.js';
 
 interface HaxeExternEmissionContext {
   readonly ambientUtilityHeritageTargets: ReadonlyMap<string, string>;
+  readonly interfaceInheritancePass: Readonly<CompilerLoweringPass>;
   readonly module: Readonly<IrModule>;
   readonly moduleResolution: Readonly<CompilerModuleResolutionPlan> | undefined;
+  readonly packageFacade: Readonly<CompilerModuleFacadePlan> | undefined;
   readonly modules: readonly Readonly<IrModule>[];
   readonly options: Readonly<HaxeCompilerBackendOptions>;
   readonly rootPackage: string;
@@ -55,6 +60,11 @@ interface HaxeExternTypeAliasLocation {
   readonly module: Readonly<IrModule>;
 }
 
+interface HaxeExternInterfaceLocation {
+  readonly declaration: Readonly<IrInterfaceDeclaration>;
+  readonly module: Readonly<IrModule>;
+}
+
 export function emitIrModuleHaxeExtern(
   module: Readonly<IrModule>,
   options: Readonly<HaxeCompilerBackendOptions> = {},
@@ -68,22 +78,32 @@ export function emitIrModuleHaxeExternWithContext(
   moduleResolution: Readonly<CompilerModuleResolutionPlan> | undefined,
   options: Readonly<HaxeCompilerBackendOptions>,
   interfaceInheritancePass?: Readonly<CompilerLoweringPass> | undefined,
+  packageContract?: Readonly<IrModule> | undefined,
+  getModuleFacade?: ((module: Readonly<IrModule>) => CompilerModuleFacadePlan | undefined) | undefined,
 ): readonly EmittedFile[] {
   const ambientUtilityHeritageTargets = createAmbientUtilityHeritageTargetsHaxeExtern(sourceModule);
-  const module = lowerIrModuleWithCompilerPasses(sourceModule, [
+  const inheritancePass =
     interfaceInheritancePass ??
-      createCompilerLoweringPassInterfaceInheritance(sourceModules, moduleResolution, {
-        eraseAmbientUtilityHeritage: (_reference, declaration) =>
-          ambientUtilityHeritageTargets.has(declaration.binding.id),
-      }),
+    createCompilerLoweringPassInterfaceInheritance(sourceModules, moduleResolution, {
+      eraseAmbientUtilityHeritage: (reference, declaration) =>
+        ambientUtilityHeritageTargets.has(declaration.binding.id) ||
+        canEraseCompilerAmbientUtilityHeritageHaxe(reference),
+    });
+  const module = lowerIrModuleWithCompilerPasses(sourceModule, [
+    inheritancePass,
   ]);
   const modules = replaceIrModuleHaxeExtern(sourceModules, module);
+  const contract = packageContract
+    ? modules.find((candidate) => isSameModuleHaxeExtern(candidate, packageContract)) ?? packageContract
+    : undefined;
   const context: HaxeExternEmissionContext = {
     ambientUtilityHeritageTargets,
+    interfaceInheritancePass: inheritancePass,
     module,
     moduleResolution,
     modules,
     options,
+    packageFacade: contract && getModuleFacade ? getModuleFacade(contract) : undefined,
     rootPackage: getRootPackageHaxeExtern(module.packageName, options),
   };
   assertModuleShapeHaxeExtern(context);
@@ -98,6 +118,32 @@ export function emitIrModuleHaxeExternWithContext(
 }
 
 function assertModuleShapeHaxeExtern(context: HaxeExternEmissionContext): void {
+  if (context.packageFacade) {
+    if (!isPackageHolderOwnerHaxeExtern(context.module, context.modules)) return;
+    for (const slot of getPackageFacadeSlotsHaxeExtern(context)) {
+      if (slot.route.kind === 'expression') {
+        emissionErrorHaxeExtern(context, 'default expression exports have no flight-hx extern representation');
+      }
+      if (slot.route.kind === 'namespace') {
+        emissionErrorHaxeExtern(context, 'namespace exports have no flight-hx extern representation');
+      }
+      const location = getFacadeDeclarationLocationHaxeExtern(slot.route, context);
+      if (!location) continue;
+      if (location.declaration.kind === 'class') {
+        emissionErrorHaxeExtern(
+          context,
+          `source class ${location.declaration.binding.name} extern representation is not yet specified by flight-hx`,
+        );
+      }
+      if (location.declaration.kind === 'enum') {
+        emissionErrorHaxeExtern(
+          context,
+          `source enum ${location.declaration.binding.name} extern representation is not yet specified by flight-hx`,
+        );
+      }
+    }
+    return;
+  }
   for (const exported of context.module.exports) {
     if (exported.kind === 'default') {
       emissionErrorHaxeExtern(context, 'default expression exports have no flight-hx extern representation');
@@ -131,7 +177,7 @@ function emitInterfaceFilesHaxeExtern(
   declaration: Readonly<IrInterfaceDeclaration>,
   context: HaxeExternEmissionContext,
 ): EmittedFile[] {
-  return getLocalExportNamesHaxeExtern(declaration, context.module).map((exportName) => {
+  return getDeclarationExportNamesHaxeExtern(declaration, context, 'type').map((exportName) => {
     const targetName = safeHaxeExternTypeName(exportName);
     const packageName = `${context.rootPackage}._js`;
     const ambientTarget = context.ambientUtilityHeritageTargets.get(declaration.binding.id);
@@ -188,7 +234,7 @@ function emitInterfacePropertyHaxeExtern(
 }
 
 function emitPackageHolderHaxeExtern(packageName: string, context: HaxeExternEmissionContext): EmittedFile | undefined {
-  const values = collectPackageValuesHaxeExtern(packageName, context.modules);
+  const values = collectPackageValuesHaxeExtern(packageName, context);
   if (values.length === 0) return undefined;
   assertPackageValueNamesHaxeExtern(values, context);
   const holderName = getPackageHolderNameHaxeExtern(packageName, context.options);
@@ -227,9 +273,19 @@ function emitPackageHolderHaxeExtern(packageName: string, context: HaxeExternEmi
 
 function collectPackageValuesHaxeExtern(
   packageName: string,
-  modules: readonly Readonly<IrModule>[],
+  context: HaxeExternEmissionContext,
 ): HaxeExternExportedValue[] {
-  const values = modules
+  const slots = context.packageFacade ? getPackageFacadeSlotsHaxeExtern(context) : undefined;
+  const values = slots
+    ? slots.flatMap((slot) => {
+        if (slot.lane !== 'value' || slot.route.kind !== 'binding') return [];
+        const location = getFacadeDeclarationLocationHaxeExtern(slot.route, context);
+        if (!location || (location.declaration.kind !== 'function' && location.declaration.kind !== 'variable')) {
+          return [];
+        }
+        return [{ declaration: location.declaration, exportName: slot.exportName, module: location.module }];
+      })
+    : context.modules
     .filter((module) => module.packageName === packageName)
     .flatMap((module) =>
       module.declarations.flatMap((declaration) => {
@@ -250,6 +306,41 @@ function collectPackageValuesHaxeExtern(
         getDeclarationIdentityHaxeExtern(right.declaration),
       ),
   );
+}
+
+function getDeclarationExportNamesHaxeExtern(
+  declaration: Readonly<IrDeclaration>,
+  context: HaxeExternEmissionContext,
+  lane: 'type' | 'value',
+): readonly string[] {
+  if (!context.packageFacade || !('binding' in declaration)) {
+    return getLocalExportNamesHaxeExtern(declaration, context.module);
+  }
+  return getPackageFacadeSlotsHaxeExtern(context)
+    .filter(
+      (slot) =>
+        slot.lane === lane &&
+        slot.route.kind === 'binding' &&
+        slot.route.binding.id === declaration.binding.id &&
+        isSameModuleHaxeExtern(slot.route.module, context.module),
+    )
+    .map((slot) => slot.exportName)
+    .sort(compareTextCodeUnits);
+}
+
+function getPackageFacadeSlotsHaxeExtern(context: HaxeExternEmissionContext) {
+  return context.packageFacade?.modules[0]?.slots ?? [];
+}
+
+function getFacadeDeclarationLocationHaxeExtern(
+  route: Extract<CompilerModuleFacadePlan['modules'][number]['slots'][number]['route'], { kind: 'binding' }>,
+  context: HaxeExternEmissionContext,
+): { declaration: Readonly<IrDeclaration>; module: Readonly<IrModule> } | undefined {
+  const module = context.modules.find((candidate) => isSameModuleHaxeExtern(candidate, route.module));
+  const declaration = module?.declarations.find(
+    (candidate) => 'binding' in candidate && candidate.binding.id === route.binding.id,
+  );
+  return module && declaration ? { declaration, module } : undefined;
 }
 
 function assertPackageValueNamesHaxeExtern(
@@ -335,7 +426,7 @@ function emitTypeAliasReferenceHaxeExtern(
   activeAliases: ReadonlySet<string>,
 ): string | undefined {
   const location = getTypeAliasLocationHaxeExtern(reference, context);
-  if (!location) return undefined;
+  if (!location) return emitPrivateInterfaceReferenceHaxeExtern(reference, context, activeAliases);
   if (reference.reference.kind !== 'binding' || reference.reference.path.length > 0) {
     emissionErrorHaxeExtern(context, 'qualified type alias references cannot be inlined into Haxe externs');
   }
@@ -363,6 +454,90 @@ function emitTypeAliasReferenceHaxeExtern(
     substituted,
     replaceHaxeExternEmissionModule(context, location.module),
     new Set(activeAliases).add(identity),
+  );
+}
+
+function emitPrivateInterfaceReferenceHaxeExtern(
+  reference: Readonly<IrTypeReference>,
+  context: HaxeExternEmissionContext,
+  activeDeclarations: ReadonlySet<string>,
+): string | undefined {
+  const location = getInterfaceLocationHaxeExtern(reference, context);
+  if (!location || isInterfacePublicHaxeExtern(location, context)) return undefined;
+  if (reference.reference.kind !== 'binding' || reference.reference.path.length > 0) {
+    emissionErrorHaxeExtern(context, 'qualified private interface references cannot be inlined into Haxe externs');
+  }
+  const identity = [
+    location.module.packageName,
+    normalizePathPortable(location.module.source),
+    location.declaration.binding.id,
+  ].join('\0');
+  if (activeDeclarations.has(identity)) {
+    emissionErrorHaxeExtern(context, `private interface ${location.declaration.binding.name} is cyclic`);
+  }
+  const loweredModule = lowerIrModuleWithCompilerPasses(location.module, [context.interfaceInheritancePass]);
+  const declaration = loweredModule.declarations.find(
+    (candidate): candidate is IrInterfaceDeclaration =>
+      candidate.kind === 'interface' && candidate.binding.id === location.declaration.binding.id,
+  );
+  if (!declaration) {
+    emissionErrorHaxeExtern(context, `private interface ${location.declaration.binding.name} disappeared during lowering`);
+  }
+  let plan: CompilerStructuralTypeSubstitutionPlan;
+  try {
+    plan = createIrTypeParameterSubstitutionPlan(declaration.typeParameters, reference.typeArguments);
+  } catch (error) {
+    emissionErrorHaxeExtern(
+      context,
+      `private interface ${declaration.binding.name} cannot be inlined: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  }
+  return emitTypeHaxeExtern(
+    {
+      kind: 'object',
+      properties: declaration.properties.map((property) => ({
+        ...property,
+        type: resolveIrTypeStructuralSubstitution(property.type, plan),
+      })),
+    },
+    replaceHaxeExternEmissionModule(context, loweredModule),
+    new Set(activeDeclarations).add(identity),
+  );
+}
+
+function getInterfaceLocationHaxeExtern(
+  reference: Readonly<IrTypeReference>,
+  context: HaxeExternEmissionContext,
+): HaxeExternInterfaceLocation | undefined {
+  if (reference.reference.kind !== 'binding' || reference.reference.binding.kind === 'import') return undefined;
+  const binding = reference.reference.binding;
+  return context.modules
+    .flatMap((module) =>
+      module.declarations.flatMap((declaration) =>
+        declaration.kind === 'interface' && declaration.binding.id === binding.id
+          ? [{ declaration, module }]
+          : [],
+      ),
+    )
+    .at(0);
+}
+
+function isInterfacePublicHaxeExtern(
+  location: Readonly<HaxeExternInterfaceLocation>,
+  context: HaxeExternEmissionContext,
+): boolean {
+  const facadePackageName = context.packageFacade?.modules[0]?.module.packageName;
+  if (!context.packageFacade || location.module.packageName !== facadePackageName) {
+    return getLocalExportNamesHaxeExtern(location.declaration, location.module).length > 0;
+  }
+  return getPackageFacadeSlotsHaxeExtern(context).some(
+    (slot) =>
+      slot.lane === 'type' &&
+      slot.route.kind === 'binding' &&
+      slot.route.binding.id === location.declaration.binding.id &&
+      isSameModuleHaxeExtern(slot.route.module, location.module),
   );
 }
 
@@ -476,14 +651,20 @@ function getTypeBindingTargetHaxeExtern(
     );
   }
   const localExport = declarationLocation
-    ? getLocalExportNamesHaxeExtern(declarationLocation.declaration, declarationLocation.module)[0]
+    ? context.packageFacade &&
+      declarationLocation.module.packageName === context.packageFacade.modules[0]?.module.packageName
+      ? getPackageFacadeSlotsHaxeExtern(context).find(
+          (slot) =>
+            slot.lane === 'type' &&
+            slot.route.kind === 'binding' &&
+            slot.route.binding.id === declarationLocation.declaration.binding.id &&
+            isSameModuleHaxeExtern(slot.route.module, declarationLocation.module),
+        )?.exportName
+      : getLocalExportNamesHaxeExtern(declarationLocation.declaration, declarationLocation.module)[0]
     : undefined;
   const importedName = getImportedTypeNameHaxeExtern(binding, context.modules);
   if (declaration && localExport === undefined && declaration.kind === 'interface') {
-    emissionErrorHaxeExtern(
-      context,
-      `non-exported interface ${declaration.binding.name} cannot appear in a public flight-hx extern shape`,
-    );
+    emissionErrorHaxeExtern(context, `private interface ${declaration.binding.name} was not structurally inlined`);
   }
   return `${context.rootPackage}.${safeHaxeExternTypeName(localExport ?? importedName ?? binding.name)}`;
 }

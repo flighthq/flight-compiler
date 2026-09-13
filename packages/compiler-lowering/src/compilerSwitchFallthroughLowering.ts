@@ -442,6 +442,11 @@ function lowerIrObjectMemberSwitchFallthrough(
         key: lowerIrExpressionSwitchFallthrough(member.key, sourceIdentity),
         value: lowerIrExpressionSwitchFallthrough(member.value, sourceIdentity),
       };
+    case 'getAccessor': {
+      const value = lowerIrExpressionSwitchFallthrough(member.value, sourceIdentity);
+      if (value.kind !== 'function') throw new TypeError('object getter lowering must preserve its function value');
+      return { ...member, value };
+    }
     case 'property':
       return { ...member, value: lowerIrExpressionSwitchFallthrough(member.value, sourceIdentity) };
     case 'spread':

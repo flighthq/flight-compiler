@@ -790,6 +790,11 @@ function lowerIrObjectMemberObjectBindingPattern(
         key: lowerIrExpressionObjectBindingPattern(member.key, `${path}.key`, analysis),
         value: lowerIrExpressionObjectBindingPattern(member.value, `${path}.value`, analysis),
       };
+    case 'getAccessor': {
+      const value = lowerIrExpressionObjectBindingPattern(member.value, `${path}.value`, analysis);
+      if (value.kind !== 'function') throw new TypeError('object getter lowering must preserve its function value');
+      return { ...member, value };
+    }
     case 'property':
       return { ...member, value: lowerIrExpressionObjectBindingPattern(member.value, `${path}.value`, analysis) };
     case 'spread':

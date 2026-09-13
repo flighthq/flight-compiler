@@ -1951,6 +1951,9 @@ function emitObjectExpressionRust(
   expression: Readonly<Extract<IrExpression, { kind: 'object' }>>,
   context: EmitContext,
 ): string {
+  if (expression.members.some((member) => member.kind === 'getAccessor')) {
+    emissionError(context, 'object getters require target-specific accessor lowering');
+  }
   const target = emitType(expression.type, context);
   const properties = getIrObjectConstructionPropertiesRust(expression.type, context);
   const members = expression.members.filter(

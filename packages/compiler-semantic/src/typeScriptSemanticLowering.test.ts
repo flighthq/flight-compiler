@@ -1824,6 +1824,41 @@ describe('lowerTypeScriptSource', () => {
     }
   });
 
+  it('preserves a common array carrier across dependent conditional element types', () => {
+    const result = lower(
+      'conditional-array-carrier.ts',
+      `
+        export function overwrite<Key extends 'numbers' | 'strings'>(
+          key: Key,
+          values: Key extends 'numbers' ? readonly number[] : readonly string[],
+        ): void { key; values.slice(); }
+      `,
+    );
+    const overwrite = result.module.declarations.find(
+      (declaration) => declaration.kind === 'function' && declaration.binding.name === 'overwrite',
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    expect(overwrite).toMatchObject({
+      parameters: [
+        {},
+        {
+          type: {
+            element: {
+              kind: 'union',
+              types: [
+                { kind: 'primitive', name: 'number' },
+                { kind: 'primitive', name: 'string' },
+              ],
+            },
+            kind: 'array',
+            readonly: true,
+          },
+        },
+      ],
+    });
+  });
+
   it('erases a recursive deep-readonly conditional to its source runtime representation', () => {
     const result = lower(
       'deep-readonly.ts',
@@ -6470,7 +6505,7 @@ it('lowers object literal method declarations', () => {
   expect(decl.initializer).toMatchObject({ kind: 'object' });
 });
 
-it('diagnoses unsupported object member kinds', () => {
+it('lowers object literal getters as delayed accessor functions', () => {
   const result = lower(
     'obj-unsupported.ts',
     `
@@ -6479,7 +6514,55 @@ it('diagnoses unsupported object member kinds', () => {
         };
       `,
   );
-  expect(result.diagnostics.length).toBeGreaterThanOrEqual(0);
+  expect(result.diagnostics).toEqual([]);
+  const declaration = result.module.declarations[0];
+  if (declaration?.kind !== 'variable') throw new Error('Expected variable');
+  expect(declaration.initializer).toMatchObject({
+    kind: 'object',
+    members: [
+      {
+        kind: 'getAccessor',
+        name: 'value',
+        value: { kind: 'function', returns: { kind: 'primitive', name: 'number' } },
+      },
+    ],
+  });
+});
+
+it('does not leak a double-asserted structural target into nested object construction', () => {
+  const result = lower(
+    'double-assertion-construction.ts',
+    `
+      declare const RuntimeKey: unique symbol;
+      interface Runtime { [RuntimeKey]: object; shader: { [RuntimeKey]: object; bind(): void } }
+      export function create(): Runtime {
+        return { shader: { bind: () => {} } } as unknown as Runtime;
+      }
+    `,
+  );
+  const create = result.module.declarations.find(
+    (declaration) => declaration.kind === 'function' && declaration.binding.name === 'create',
+  );
+
+  expect(result.diagnostics).toEqual([]);
+  expect(create).toMatchObject({
+    body: [
+      {
+        expression: {
+          expression: {
+            expression: {
+              kind: 'object',
+              type: {
+                kind: 'object',
+                properties: [{ name: 'shader', type: { kind: 'object', properties: [{ name: 'bind' }] } }],
+              },
+            },
+          },
+        },
+        kind: 'return',
+      },
+    ],
+  });
 });
 
 it('lowers import default, namespace, and named bindings', () => {

@@ -4208,6 +4208,35 @@ describe('emitIrModuleHaxe object literal', () => {
 
     expect(output).toContain('Reflect.setField(objectSpreadValue, "RuntimeKey", 1)');
   });
+
+  it('preserves an object getter with a generated cross-target accessor carrier', () => {
+    const result = lower(
+      'object-getter.ts',
+      `export interface Cursor { offset: number; readonly length: number }
+       export function createCursor(): Cursor {
+         const cursor: Cursor = { offset: 0, get length(): number { return cursor.offset; } };
+         return cursor;
+       }`,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('new ObjectAccessor(0, function()');
+    expect(output).toContain('public var length(get, never):Dynamic;');
+    expect(output).toContain('private function get_length():Dynamic return this._getter_1();');
+  });
+
+  it('accepts an intentionally incomplete nested object behind a double assertion', () => {
+    const result = lower(
+      'double-assertion-object.ts',
+      `declare const RuntimeKey: unique symbol;
+       interface Runtime { [RuntimeKey]: object; shader: { [RuntimeKey]: object; bind(): void } }
+       export function create(): Runtime {
+         return { shader: { bind: () => {} } } as unknown as Runtime;
+       }`,
+    );
+
+    expect(() => emitIrModuleHaxe(result.module)).not.toThrow();
+  });
 });
 
 describe('emitIrModuleHaxe for-of loop', () => {

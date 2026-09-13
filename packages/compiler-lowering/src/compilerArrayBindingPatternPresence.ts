@@ -134,6 +134,7 @@ function hasIrObjectMemberArrayBindingPattern(member: Readonly<IrObjectMember>):
   switch (member.kind) {
     case 'computedProperty':
       return hasIrExpressionArrayBindingPattern(member.key) || hasIrExpressionArrayBindingPattern(member.value);
+    case 'getAccessor':
     case 'property':
       return hasIrExpressionArrayBindingPattern(member.value);
     case 'spread':

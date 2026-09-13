@@ -902,7 +902,12 @@ function lowerExpression(
   if (ts.isObjectLiteralExpression(node)) {
     const inferredType = inferInitializerType(node, context);
     const memberContext = contextualType?.kind === 'object' ? contextualType : inferredType;
-    const memberTarget = getIrTypeConstructionTargetShape(contextualTargetType ?? contextualType, context);
+    // An assertion explicitly opts out of structural construction checking. Preserve contextual
+    // member typing for callbacks, but do not let the asserted target leak back into a nested object
+    // literal and manufacture missing-property errors underneath `as unknown as Target`.
+    const memberTarget = constructionAssertion
+      ? inferredType
+      : getIrTypeConstructionTargetShape(contextualTargetType ?? contextualType, context);
     const members = node.properties.map((member) =>
       lowerObjectMember(member, context, memberContext, memberTarget ?? memberContext),
     );
@@ -1964,7 +1969,12 @@ function lowerInterface(node: ts.InterfaceDeclaration, context: LoweringContext)
   const properties: IrObjectTypeProperty[] = [];
   for (const clause of node.heritageClauses ?? []) {
     for (const heritage of clause.types) {
-      for (const property of lowerTypeScriptClosedAmbientPickHeritageProperties(heritage, context) ?? []) {
+      const materialized =
+        lowerTypeScriptClosedAmbientPickHeritageProperties(heritage, context) ??
+        (ts.isIdentifier(heritage.expression) && heritage.expression.text === 'ReturnType'
+          ? lowerTypeScriptUnresolvedUtilityHeritageProperties(heritage, context, new Set(), new Map())
+          : undefined);
+      for (const property of materialized ?? []) {
         if (!properties.some((candidate) => candidate.name === property.name)) properties.push(property);
       }
     }
@@ -2198,6 +2208,32 @@ function lowerObjectMember(
         kind: 'function',
         thisMode: 'dynamic',
         ...signature,
+      },
+    };
+  }
+  if (ts.isGetAccessorDeclaration(node)) {
+    if (!node.body) unsupported(node, 'object getters require a body');
+    const signature = lowerFunctionSignature(node, context);
+    const parameterEntries = lowerParameterBindingEntries(node.parameters, signature.parameters, context);
+    return {
+      kind: 'getAccessor',
+      name: propertyName(node.name, context),
+      value: {
+        async: false,
+        body: [
+          ...parameterEntries,
+          ...lowerStatementListWithTypeScriptReturnType(
+            node.body.statements,
+            getTypeScriptFunctionReturnValueType(node, signature.returns, context),
+            signature.returns,
+            context,
+          ),
+        ],
+        kind: 'function',
+        parameters: signature.parameters,
+        returns: signature.returns,
+        thisMode: 'dynamic',
+        typeParameters: signature.typeParameters,
       },
     };
   }
@@ -3527,6 +3563,20 @@ function lowerTypeScriptConditionalRuntimeRepresentation(
   const object = lowerTypeScriptConditionalCommonObjectEvidence(branches, context);
   if (object) return object;
   const lowered = branches.map((branch) => lowerType(branch, context));
+  const arrays = lowered.filter((branch): branch is Extract<IrType, { kind: 'array' }> => branch.kind === 'array');
+  if (arrays.length === lowered.length) {
+    const elements = [
+      ...new Map(arrays.map((array) => [JSON.stringify(array.element), array.element] as const)).values(),
+    ];
+    return {
+      element:
+        elements.length === 1
+          ? elements[0]!
+          : { kind: 'union', types: [elements[0]!, elements[1]!, ...elements.slice(2)] },
+      kind: 'array',
+      readonly: arrays.every((array) => array.readonly),
+    };
+  }
   const represented = lowered.map(getIrTypeRuntimeRepresentationSemantic);
   const first = represented[0]!;
   return represented.every((candidate) => JSON.stringify(candidate) === JSON.stringify(first)) ? first : undefined;
@@ -4777,7 +4827,17 @@ function lowerTypeScriptUnresolvedUtilityHeritageProperties(
   if (!symbol || !declaration?.type) {
     unsupported(heritage, 'ReturnType heritage requires a function with an explicit object return type');
   }
-  const inherited = lowerTypeScriptHeritageTypeNodeProperties(declaration.type, context, seen, substitutions);
+  const declarationSource = declaration.getSourceFile();
+  const declarationOptions = context.analysisModuleOptions.get(declarationSource.fileName);
+  const declarationContext = declarationOptions
+    ? { ...context, options: declarationOptions, sourceFile: declarationSource }
+    : context;
+  const inherited = lowerTypeScriptHeritageTypeNodeProperties(
+    declaration.type,
+    declarationContext,
+    seen,
+    substitutions,
+  );
   if (!inherited) unsupported(heritage, 'ReturnType heritage function must return an object-shaped type');
   return inherited;
 }

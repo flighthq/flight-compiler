@@ -667,6 +667,11 @@ function lowerIrObjectMemberArrayBindingPattern(
         key: lowerIrExpressionArrayBindingPattern(member.key, `${path}.key`, analysis),
         value: lowerIrExpressionArrayBindingPattern(member.value, `${path}.value`, analysis),
       };
+    case 'getAccessor': {
+      const value = lowerIrExpressionArrayBindingPattern(member.value, `${path}.value`, analysis);
+      if (value.kind !== 'function') throw new TypeError('object getter lowering must preserve its function value');
+      return { ...member, value };
+    }
     case 'property':
       return {
         ...member,

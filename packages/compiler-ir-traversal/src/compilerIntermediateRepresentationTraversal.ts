@@ -427,6 +427,7 @@ function analyzeIrObjectMemberTraversal(
       analyzeIrExpressionTraversal(member.key, observer, createIrTraversalPath(path, 'key'));
       analyzeIrExpressionTraversal(member.value, observer, createIrTraversalPath(path, 'value'));
       break;
+    case 'getAccessor':
     case 'property':
       analyzeIrExpressionTraversal(member.value, observer, createIrTraversalPath(path, 'value'));
       break;

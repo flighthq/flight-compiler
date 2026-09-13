@@ -1,6 +1,6 @@
 import path from 'node:path';
 
-import { compareTextCodeUnits } from '../../compiler-canonical-form/src/index.js';
+import { compareTextCodeUnits, normalizePathPortable } from '../../compiler-canonical-form/src/index.js';
 import {
   collectIrModuleNullableBindingIds,
   createBackendEmissionFailure,
@@ -90,6 +90,7 @@ import { convertPackageNameToHaxePackageName, convertSourcePathToHaxeModuleName 
 import { emitIrModuleHaxeExternWithContext } from './haxeExternEmission.js';
 import { createCompilerRuntimeExternalConstructorAbiPlanHaxe } from './haxeRuntimeExternalConstructorAbi.js';
 import {
+  canEraseCompilerAmbientUtilityHeritageHaxe,
   getCompilerAmbientUtilityHeritageTargetHaxe,
   getCompilerRuntimeExternalMemberTargetHaxe,
   createCompilerRuntimeExternalSymbolBindingPlanHaxe,
@@ -112,6 +113,7 @@ interface EmitContext {
   moduleFacadeSlots: readonly Readonly<CompilerModuleFacadeSlot>[];
   moduleResolution: Readonly<CompilerModuleResolutionPlan> | undefined;
   nullableBindingIds: ReadonlySet<string>;
+  objectAccessorClasses: string[][];
   options: Readonly<HaxeCompilerBackendOptions>;
   returnsAbsent: boolean;
   dynamicBindingIds: Set<string>;
@@ -139,16 +141,14 @@ interface HaxeControlFlowLabel {
 export function createHaxeCompilerBackend(): CompilerBackend<HaxeCompilerBackendOptions> {
   return {
     createEmissionSession({ moduleResolution, modules, options }) {
-      const getModuleFacade =
-        options.emissionMode === 'extern'
-          ? () => undefined
-          : createCompilerModuleFacadePlannerHaxe(modules, moduleResolution);
+      const getModuleFacade = createCompilerModuleFacadePlannerHaxe(modules, moduleResolution);
       const ambientUtilityHeritageBindingIds = new Set(
         modules.flatMap((module) => [...createAmbientUtilityHeritageTargetsHaxe(module).keys()]),
       );
       const interfaceInheritancePass = createCompilerLoweringPassInterfaceInheritance(modules, moduleResolution, {
-        eraseAmbientUtilityHeritage: (_reference, declaration) =>
-          ambientUtilityHeritageBindingIds.has(declaration.binding.id),
+        eraseAmbientUtilityHeritage: (reference, declaration) =>
+          ambientUtilityHeritageBindingIds.has(declaration.binding.id) ||
+          canEraseCompilerAmbientUtilityHeritageHaxe(reference),
       });
       const analyzeStructuralObjectCompatibility = createIrModuleStructuralObjectCompatibilityAnalyzer(
         modules,
@@ -157,7 +157,15 @@ export function createHaxeCompilerBackend(): CompilerBackend<HaxeCompilerBackend
       return Object.freeze({
         emitModule(module: Readonly<IrModule>) {
           return options.emissionMode === 'extern'
-            ? emitIrModuleHaxeExternWithContext(module, modules, moduleResolution, options, interfaceInheritancePass)
+            ? emitIrModuleHaxeExternWithContext(
+                module,
+                modules,
+                moduleResolution,
+                options,
+                interfaceInheritancePass,
+                getPackageContractModuleHaxe(module.packageName, modules, moduleResolution),
+                getModuleFacade,
+              )
             : [
                 emitIrModuleHaxeWithContext(
                   module,
@@ -174,7 +182,15 @@ export function createHaxeCompilerBackend(): CompilerBackend<HaxeCompilerBackend
     },
     emitModule(module, { moduleResolution, modules, options }) {
       return options.emissionMode === 'extern'
-        ? emitIrModuleHaxeExternWithContext(module, modules, moduleResolution, options)
+        ? emitIrModuleHaxeExternWithContext(
+            module,
+            modules,
+            moduleResolution,
+            options,
+            undefined,
+            getPackageContractModuleHaxe(module.packageName, modules, moduleResolution),
+            createCompilerModuleFacadePlannerHaxe(modules, moduleResolution),
+          )
         : [
             emitIrModuleHaxeWithContext(
               module,
@@ -187,6 +203,29 @@ export function createHaxeCompilerBackend(): CompilerBackend<HaxeCompilerBackend
     },
     name: 'haxe',
   };
+}
+
+function getPackageContractModuleHaxe(
+  packageName: string,
+  modules: readonly Readonly<IrModule>[],
+  moduleResolution: Readonly<CompilerModuleResolutionPlan> | undefined,
+): Readonly<IrModule> | undefined {
+  const candidates = modules.filter(
+    (module) =>
+      module.packageName === packageName &&
+      /(?:^|\/)contract\.[cm]?tsx?$/u.test(normalizePathPortable(module.source)),
+  );
+  if (candidates.length === 0) return undefined;
+  const publicTargets = new Set(
+    (moduleResolution?.edges ?? [])
+      .filter((edge) => edge.specifier === `${packageName}/contract`)
+      .map((edge) => `${edge.target.packageName}\0${normalizePathPortable(edge.target.source)}`),
+  );
+  return (
+    candidates.find((candidate) =>
+      publicTargets.has(`${candidate.packageName}\0${normalizePathPortable(candidate.source)}`),
+    ) ?? candidates.sort((left, right) => compareTextCodeUnits(left.source, right.source))[0]
+  );
 }
 
 export function emitIrModuleHaxe(
@@ -223,8 +262,9 @@ function emitIrModuleHaxeWithContext(
     createCompilerLoweringPassCStyleFor(),
     interfaceInheritancePass ??
       createCompilerLoweringPassInterfaceInheritance(sourceModules, moduleResolution, {
-        eraseAmbientUtilityHeritage: (_reference, declaration) =>
-          ambientUtilityHeritageTargets.has(declaration.binding.id),
+        eraseAmbientUtilityHeritage: (reference, declaration) =>
+          ambientUtilityHeritageTargets.has(declaration.binding.id) ||
+          canEraseCompilerAmbientUtilityHeritageHaxe(reference),
       }),
     createCompilerLoweringPassSwitchFallthrough(),
     createCompilerLoweringPassSwitchSuspension(),
@@ -280,6 +320,7 @@ function emitIrModuleHaxeWithContext(
       [],
     moduleResolution,
     nullableBindingIds: collectIrModuleNullableBindingIds(module),
+    objectAccessorClasses: [],
     options,
     dynamicBindingIds: new Set<string>(),
     packageName,
@@ -330,6 +371,7 @@ function emitIrModuleHaxeWithContext(
   valueDeclarations.forEach((declaration) => {
     lines.push('', ...emitModuleValue(declaration, context));
   });
+  for (const helper of context.objectAccessorClasses) lines.push('', ...helper);
   return {
     contents: lines.join('\n'),
     path: `${packageName.replaceAll('.', '/')}/${moduleName}.hx`,
@@ -1270,6 +1312,9 @@ function emitCallArgumentsHaxe(
 }
 
 function emitObjectExpressionHaxe(expression: Readonly<IrObjectExpression>, context: EmitContext): string {
+  if (expression.members.some((member) => member.kind === 'getAccessor')) {
+    return emitObjectAccessorExpressionHaxe(expression, context);
+  }
   if (expression.members.every((member) => member.kind === 'property')) {
     return `{ ${expression.members
       .map((member) => `${safeHaxeName(member.name)}: ${emitExpression(member.value, context)}`)
@@ -1293,15 +1338,62 @@ function emitObjectExpressionHaxe(expression: Readonly<IrObjectExpression>, cont
       );
       continue;
     }
-    const source = getGeneratedTargetNameHaxe('objectSpreadSource', context);
-    const key = getGeneratedTargetNameHaxe('objectSpreadKey', context);
-    lines.push(
-      `final ${source}:Dynamic = ${emitExpression(member.expression, context)};`,
-      `if (${source} != null) for (${key} in Reflect.fields(${source})) Reflect.setField(${target}, ${key}, Reflect.field(${source}, ${key}));`,
-    );
+    if (member.kind === 'spread') {
+      const source = getGeneratedTargetNameHaxe('objectSpreadSource', context);
+      const key = getGeneratedTargetNameHaxe('objectSpreadKey', context);
+      lines.push(
+        `final ${source}:Dynamic = ${emitExpression(member.expression, context)};`,
+        `if (${source} != null) for (${key} in Reflect.fields(${source})) Reflect.setField(${target}, ${key}, Reflect.field(${source}, ${key}));`,
+      );
+      continue;
+    }
+    emissionError(context, 'object getter escaped accessor-specific Haxe lowering');
   }
   lines.push(`return ${target};`);
   return `(function() {\n${indentSourceLines(lines).join('\n')}\n})()`;
+}
+
+function emitObjectAccessorExpressionHaxe(expression: Readonly<IrObjectExpression>, context: EmitContext): string {
+  if (expression.members.some((member) => member.kind === 'computedProperty' || member.kind === 'spread')) {
+    emissionError(context, 'object accessors mixed with computed properties or spreads require ordered lowering');
+  }
+  const className = getGeneratedTargetNameHaxe('ObjectAccessor', context);
+  const constructorParameters = expression.members.map((member, index) =>
+    member.kind === 'getAccessor'
+      ? `_getter_${String(index)}:()->Dynamic`
+      : `_value_${String(index)}:Dynamic`,
+  );
+  const constructorAssignments = expression.members.map((member, index) => {
+    if (member.kind === 'getAccessor') return `this._getter_${String(index)} = _getter_${String(index)};`;
+    if (member.kind === 'property') return `this.${safeHaxeName(member.name)} = _value_${String(index)};`;
+    return emissionError(context, 'object accessor member escaped named-member validation');
+  });
+  const fields = expression.members.flatMap((member, index): string[] =>
+    member.kind === 'getAccessor'
+      ? [
+          `  public var ${safeHaxeName(member.name)}(get, never):Dynamic;`,
+          `  private final _getter_${String(index)}:()->Dynamic;`,
+          `  private function get_${safeHaxeName(member.name)}():Dynamic return this._getter_${String(index)}();`,
+        ]
+      : member.kind === 'property'
+        ? [`  public var ${safeHaxeName(member.name)}:Dynamic;`]
+        : emissionError(context, 'object accessor member escaped named-member validation'),
+  );
+  context.objectAccessorClasses.push([
+    `private class ${className} {`,
+    ...fields,
+    '',
+    `  public function new(${constructorParameters.join(', ')}) {`,
+    ...constructorAssignments.map((assignment) => `    ${assignment}`),
+    '  }',
+    '}',
+  ]);
+  const arguments_ = expression.members.map((member) =>
+    member.kind === 'property' || member.kind === 'getAccessor'
+      ? emitExpression(member.value, context)
+      : emissionError(context, 'object accessor member escaped named-member validation'),
+  );
+  return `new ${className}(${arguments_.join(', ')})`;
 }
 
 function getComputedObjectPropertyStorageNameHaxe(

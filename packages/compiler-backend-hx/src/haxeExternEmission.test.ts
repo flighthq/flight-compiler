@@ -63,6 +63,55 @@ describe('emitIrModuleHaxeExtern', () => {
     expect(holders[0]!.contents.indexOf('createVector2')).toBeLessThan(holders[0]!.contents.indexOf('distanceBetween'));
   });
 
+  it('emits only the package contract facade and applies explicit precedence over star collisions', () => {
+    const public_ = lower(
+      '@flighthq/geometry',
+      'public.ts',
+      'export function initialize(value: number): number { return value; } export interface Public { value: number }',
+    );
+    const internal = lower(
+      '@flighthq/geometry',
+      'internal.ts',
+      'export function initialize(value: string): string { return value; } export interface Hidden { hidden: boolean }',
+    );
+    const contract = lower(
+      '@flighthq/geometry',
+      'contract.ts',
+      "export * from './public.js'; export * from './internal.js'; export { initialize } from './public.js';",
+    );
+    const session = createHaxeCompilerBackend().createEmissionSession!({
+      modules: [internal, public_, contract],
+      options: { emissionMode: 'extern', rootPackage: 'flight' },
+    });
+
+    const files = [contract, internal, public_].flatMap((module) => session.emitModule(module));
+    const holder = findFile(files, 'flight/_js/_fn/Geometry.hx');
+
+    expect(holder.contents.match(/static function initialize/gu)).toHaveLength(1);
+    expect(holder.contents).toContain('static function initialize(value:Float):Float;');
+    expect(files.some((file) => file.path === 'flight/_js/Public.hx')).toBe(true);
+    expect(files.some((file) => file.path === 'flight/_js/Hidden.hx')).toBe(true);
+  });
+
+  it('ignores source-file classes and interfaces absent from the package contract', () => {
+    const internal = lower(
+      '@flighthq/geometry',
+      'internal.ts',
+      'export class Internal {} export interface Hidden { value: number }',
+    );
+    const public_ = lower('@flighthq/geometry', 'public.ts', 'export function value(): number { return 1; }');
+    const contract = lower('@flighthq/geometry', 'contract.ts', "export { value } from './public.js';");
+    const session = createHaxeCompilerBackend().createEmissionSession!({
+      modules: [internal, public_, contract],
+      options: { emissionMode: 'extern', rootPackage: 'flight' },
+    });
+
+    const files = [contract, internal, public_].flatMap((module) => session.emitModule(module));
+
+    expect(findFile(files, 'flight/_js/_fn/Geometry.hx').contents).toContain('static function value():Float;');
+    expect(files.some((file) => file.path === 'flight/_js/Hidden.hx')).toBe(false);
+  });
+
   it('inlines local and imported generic aliases at holder use sites without alias files', () => {
     const aliases = lower(
       '@flighthq/geometry',
@@ -257,6 +306,35 @@ describe('emitIrModuleHaxeExtern', () => {
     expect(holder.contents).toContain('static function value():Float;');
   });
 
+  it('structurally inlines a private interface exposed by a public function', () => {
+    const module = lower(
+      '@flighthq/types',
+      'private-shape.ts',
+      'interface Base<Value> { value: Value } interface Private extends Base<number> { label: string } export function read(value: Private): number { return value.value; }',
+    );
+
+    const holder = findFile(emitIrModuleHaxeExtern(module), 'flighthq/_js/_fn/Types.hx');
+
+    expect(holder.contents).toContain('static function read(value:{ value:Float, label:String }):Float;');
+  });
+
+  it('lowers a private interface from a contract implementation before structurally inlining it', () => {
+    const implementation = lower(
+      '@flighthq/types',
+      'implementation.ts',
+      'interface Base { id: number } interface Private extends Base { label: string } export function read(value: Private): number { return value.id; }',
+    );
+    const contract = lower('@flighthq/types', 'contract.ts', "export { read } from './implementation.js';");
+    const session = createHaxeCompilerBackend().createEmissionSession!({
+      modules: [contract, implementation],
+      options: { emissionMode: 'extern', rootPackage: 'flight' },
+    });
+
+    const holder = findFile(session.emitModule(contract), 'flight/_js/_fn/Types.hx');
+
+    expect(holder.contents).toContain('static function read(value:{ id:Float, label:String }):Float;');
+  });
+
   it.each([
     ['default expression', 'export default 1;', 'default expression exports have no flight-hx extern representation'],
     [
@@ -265,11 +343,6 @@ describe('emitIrModuleHaxeExtern', () => {
       'exported binding patterns require declaration splitting before extern emission',
     ],
     ['external type', 'export interface Public { value: Missing }', 'external type Missing has no Haxe binding'],
-    [
-      'private interface',
-      'interface Private { value: number } export function read(value: Private): number { return value.value; }',
-      'non-exported interface Private cannot appear in a public flight-hx extern shape',
-    ],
     [
       'source class type',
       'class Model {} export function read(value: Model): void {}',
@@ -336,6 +409,42 @@ describe('emitIrModuleHaxeExternWithContext', () => {
     );
 
     expect(holder.contents).toContain('static function accept(model:flight.Model):Void;');
+  });
+
+  it('keeps a public interface nested in an imported alias public across a contract facade', () => {
+    const model = lower(
+      '@flighthq/types',
+      'model.ts',
+      'export interface Model { child: Model | null } export type ModelView = Readonly<Model>;',
+    );
+    const consumer = lower(
+      '@flighthq/consumer',
+      'consumer.ts',
+      "import type { ModelView } from '@flighthq/types/contract'; export function read(): ModelView { throw new Error(); }",
+    );
+    const contract = lower('@flighthq/consumer', 'contract.ts', "export { read } from './consumer.js';");
+    const resolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          importer: { name: consumer.name, packageName: consumer.packageName, source: consumer.source },
+          specifier: '@flighthq/types/contract',
+          target: { packageName: model.packageName, source: model.source },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const session = createHaxeCompilerBackend().createEmissionSession!({
+      moduleResolution: resolution,
+      modules: [contract, consumer, model],
+      options: { emissionMode: 'extern', rootPackage: 'flight' },
+    });
+
+    const holder = findFile(
+      [contract, consumer, model].flatMap((module) => session.emitModule(module)),
+      'flight/_js/_fn/Consumer.hx',
+    );
+
+    expect(holder.contents).toContain('static function read():flight.Model;');
   });
 
   it('follows named and star reexports while inlining imported aliases', () => {

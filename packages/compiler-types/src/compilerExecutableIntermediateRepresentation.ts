@@ -216,6 +216,11 @@ export type IrExpression =
 
 export type IrObjectMember =
   | Readonly<{ key: IrExpression; kind: 'computedProperty'; value: IrExpression }>
+  | Readonly<{
+      kind: 'getAccessor';
+      name: string;
+      value: Extract<IrExpression, { kind: 'function' }>;
+    }>
   | Readonly<{ kind: 'property'; name: string; value: IrExpression }>
   | Readonly<{ expression: IrExpression; kind: 'spread' }>;
 
