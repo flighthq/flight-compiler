@@ -1797,7 +1797,7 @@ describe('emitIrModuleHaxe expression coverage', () => {
       'export function read(record: Record<string, number>, key: string): number { return record[key]; }',
     );
 
-    expect(emitIrModuleHaxe(result.module).contents).toContain('Reflect.field(record, Std.string(key))');
+    expect(emitIrModuleHaxe(result.module).contents).toContain('Reflect.field(record, key)');
   });
 
   it('emits untyped cast when target type is array with element type', () => {
