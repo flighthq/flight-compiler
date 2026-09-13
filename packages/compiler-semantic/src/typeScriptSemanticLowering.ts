@@ -2119,9 +2119,8 @@ function getIrTypeConstructionTargetShape(
   if (!declaration) return type;
   const declarationSourceFile = declaration.getSourceFile();
   const declarationOptions = context.analysisModuleOptions.get(declarationSourceFile.fileName);
-  const declarationContext = declarationOptions
-    ? { ...context, options: declarationOptions, sourceFile: declarationSourceFile }
-    : context;
+  if (!declarationOptions) return type;
+  const declarationContext = { ...context, options: declarationOptions, sourceFile: declarationSourceFile };
   let unresolved: Readonly<IrType>;
   if (ts.isInterfaceDeclaration(declaration)) {
     const evidence = lowerTypeScriptInterfacePropertiesEvidence(

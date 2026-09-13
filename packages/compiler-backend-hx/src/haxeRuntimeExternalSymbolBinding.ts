@@ -52,16 +52,18 @@ export function createCompilerHaxeRuntimeExternalSymbolBindingPlan(): CompilerHa
   return {
     bindings: haxeRuntimeExternalSymbolBindings.map((sourceBinding) => {
       const binding: HaxeRuntimeExternalSymbolBinding = sourceBinding;
-      return {
-        ...(binding.kind === 'runtime' ? { capability: binding.capability } : {}),
+      const common = {
         externalSymbol: { sourceName: binding.sourceName, space: binding.space },
-        kind: binding.kind,
         ...(binding.members ? { members: structuredClone(binding.members) } : {}),
-        ...(binding.kind === 'native' && binding.runtimeMembers
-          ? { runtimeMembers: structuredClone(binding.runtimeMembers) }
-          : {}),
         targetName: binding.targetName,
       };
+      return binding.kind === 'runtime'
+        ? { ...common, capability: binding.capability, kind: binding.kind }
+        : {
+            ...common,
+            kind: binding.kind,
+            ...(binding.runtimeMembers ? { runtimeMembers: structuredClone(binding.runtimeMembers) } : {}),
+          };
     }),
     contract: 'flight-runtime-contract/2',
     schema: 'flight-haxe-runtime-external-symbol-bindings/1',

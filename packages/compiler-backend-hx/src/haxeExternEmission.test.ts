@@ -296,7 +296,7 @@ describe('emitIrModuleHaxeExtern', () => {
 
     const contents = findFile(emitIrModuleHaxeExtern(module), 'flighthq/_js/Flags.hx').contents;
 
-    expect(contents).toContain('public static extern function any(flags:Flags, test:Flags):Bool;');
+    expect(contents).toContain('public static extern function any(flags:flighthq.Flags, test:flighthq.Flags):Bool;');
   });
 
   it('preserves keyword export identity with native metadata on the package holder', () => {

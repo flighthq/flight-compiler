@@ -663,7 +663,7 @@ describe('emitIrModuleHaxe', () => {
 
     expect(output).toContain('var index:Float = 0;');
     expect(output).toContain('while (index < limit)');
-    expect(output).toContain('index += 1;');
+    expect(output).toContain('(index += 1);');
     expect(emitIrModuleHaxe(defaults.module).contents).toContain('factor:Float = 2');
   });
 
@@ -846,7 +846,7 @@ describe('emitIrModuleHaxe', () => {
     expect(output).toContain('class Timeout extends haxe.Exception {');
     expect(output).toContain('public var name:String;');
     expect(output).toContain(
-      'super(channel);\n    this.name = "Error";\n    this.name = "Timeout";\n    this.channel = channel;',
+      'super(channel);\n    this.name = "Error";\n    (this.name = "Timeout");\n    (this.channel = channel);',
     );
   });
 
@@ -1004,17 +1004,17 @@ describe('emitIrModuleHaxe', () => {
     const patternOutput = emitIrModuleHaxe(pattern.module).contents;
     const iterationOutput = emitIrModuleHaxe(iteration.module).contents;
 
-    expect(namedOutput).toContain('var value:Float;\n  {\n    value = 1;\n  }\n  return value;');
+    expect(namedOutput).toContain('var value:Float;\n  {\n    (value = 1);\n  }\n  return value;');
     expect(patternOutput).toContain(
-      'var first:Float;\n  var second:String;\n  final arrayPatternValue:Array<Dynamic> = values;\n  first = arrayPatternValue[0];\n  second = arrayPatternValue[1];',
+      'var first:Float;\n  var second:String;\n  final arrayPatternValue:Array<Dynamic> = values;\n  (first = arrayPatternValue[0]);\n  (second = arrayPatternValue[1]);',
     );
     expect(iterationOutput).toContain(
-      'var value:Float;\n  for (variableHoistingIterationValue in values) {\n    value = variableHoistingIterationValue;\n    value += 1;',
+      'var value:Float;\n  for (variableHoistingIterationValue in values) {\n    (value = variableHoistingIterationValue);\n    (value += 1);',
     );
     // A written shape has a known key set, so iteration is over that set rather than over whatever
     // reflection reports at runtime.
     expect(iterationOutput).toContain(
-      'var key:String;\n  for (variableHoistingIterationValue in ["value"]) {\n    key = variableHoistingIterationValue;\n    key;',
+      'var key:String;\n  for (variableHoistingIterationValue in ["value"]) {\n    (key = variableHoistingIterationValue);\n    key;',
     );
   });
 
@@ -1090,7 +1090,7 @@ describe('emitIrModuleHaxe', () => {
     const output = emitIrModuleHaxe(result.module).contents;
 
     expect(output).toContain('return { final destructuringAssignmentValue:Array<Float> = tuple;');
-    expect(output).toContain('value = destructuringAssignmentValue[0];');
+    expect(output).toContain('(value = destructuringAssignmentValue[0]);');
     expect(output).toContain('destructuringAssignmentValue; }');
     expect(output).not.toContain('(function()');
   });
@@ -1364,7 +1364,7 @@ describe('emitIrModuleHaxe', () => {
     );
     const output = emitIrModuleHaxe(result.module).contents;
 
-    expect(output).toContain('value += right;');
+    expect(output).toContain('(value += right);');
     expect(output).toContain('return (value == right) && ! disabled;');
   });
 
@@ -1400,9 +1400,9 @@ describe('emitIrModuleHaxe', () => {
     );
 
     expect(emitIrModuleHaxe(power.module).contents).toContain('return Math.pow(a, b);');
-    expect(emitIrModuleHaxe(powerAssign.module).contents).toContain('x = Math.pow(x, b);');
+    expect(emitIrModuleHaxe(powerAssign.module).contents).toContain('(x = Math.pow(x, b));');
     expect(emitIrModuleHaxe(bitAnd.module).contents).toContain('return Std.int(a) & Std.int(b);');
-    expect(emitIrModuleHaxe(bitAndAssign.module).contents).toContain('x = Std.int(x) & Std.int(b);');
+    expect(emitIrModuleHaxe(bitAndAssign.module).contents).toContain('(x = Std.int(x) & Std.int(b));');
   });
 
   it('emits completion-preserving async functions through the Haxe task runtime ABI', () => {
@@ -1570,7 +1570,7 @@ describe('emitIrModuleHaxe', () => {
     const output = emitIrModuleHaxe(result.module).contents;
 
     expect(output).toContain('typedef Style = { webkitClipPath:String };');
-    expect(output).toContain('cast(style).webkitClipPath = "";');
+    expect(output).toContain('(cast(style).webkitClipPath = "");');
   });
 
   it('emits an implemented shape as a nominal interface and leaves an unimplemented one structural', () => {
@@ -1704,7 +1704,7 @@ describe('emitIrModuleHaxe', () => {
     const throwStatement = lower('throw.ts', 'export function fail(): never { throw new Error("fail"); }');
 
     expect(emitIrModuleHaxe(doWhile.module).contents).toContain('do {');
-    expect(emitIrModuleHaxe(doWhile.module).contents).toContain('count += 1;');
+    expect(emitIrModuleHaxe(doWhile.module).contents).toContain('(count += 1);');
     expect(emitIrModuleHaxe(doWhile.module).contents).toContain('} while ((count < 3));');
     expect(emitIrModuleHaxe(throwStatement.module).contents).toContain('throw');
   });
@@ -2001,7 +2001,7 @@ describe('emitIrModuleHaxe expression coverage', () => {
     const output = emitIrModuleHaxe(result.module, { runtimeModule: 'flight._hx._runtime' }).contents;
 
     expect(output).toContain('return entity.RuntimeKey;');
-    expect(output).toContain('entity.RuntimeKey = value;');
+    expect(output).toContain('(entity.RuntimeKey = value);');
   });
 
   it('uses the nullable target of a computed symbol assignment to lower undefined', () => {
@@ -2013,7 +2013,7 @@ describe('emitIrModuleHaxe expression coverage', () => {
     );
 
     expect(emitIrModuleHaxe(result.module, { runtimeModule: 'flight._hx._runtime' }).contents).toContain(
-      'entity.RuntimeKey = null;',
+      '(entity.RuntimeKey = null);',
     );
   });
 
@@ -2023,7 +2023,7 @@ describe('emitIrModuleHaxe expression coverage', () => {
       'export function clear(copy: Record<string, unknown>): void { copy.value = undefined; }',
     );
 
-    expect(emitIrModuleHaxe(result.module).contents).toContain('copy.value = null;');
+    expect(emitIrModuleHaxe(result.module).contents).toContain('(copy.value = null);');
   });
 
   it('deletes symbol-backed and dynamic properties through their represented keys', () => {
@@ -2321,7 +2321,7 @@ describe('emitIrModuleHaxe class coverage', () => {
 
     expect(result.diagnostics).toEqual([]);
     expect(output).toMatch(/final moduleSideEffect(?:_2)?:Bool = \(\{ register\(\); true; \}\);/u);
-    expect(output).toMatch(/final moduleSideEffect(?:_2)?:Bool = \(\{ value = 1; true; \}\);/u);
+    expect(output).toMatch(/final moduleSideEffect(?:_2)?:Bool = \(\{ \(value = 1\); true; \}\);/u);
     expect(output.indexOf('register(); true;')).toBeLessThan(output.indexOf('var value:Float'));
     expect(output.indexOf('var value:Float')).toBeLessThan(output.indexOf('value = 1; true;'));
   });

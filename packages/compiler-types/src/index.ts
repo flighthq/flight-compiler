@@ -8,6 +8,8 @@ export type {
 export type {
   CompilerCppAmbientMemberBinding,
   CompilerHaxeAmbientMemberBinding,
+  CompilerHaxeAmbientMemberBindingPlan,
+  CompilerHaxeAmbientMemberBindingRecord,
   CompilerRustAmbientMemberBinding,
 } from './compilerAmbientMemberBindingContract.js';
 export type * from './compilerAccessSemanticIntermediateRepresentation.js';
