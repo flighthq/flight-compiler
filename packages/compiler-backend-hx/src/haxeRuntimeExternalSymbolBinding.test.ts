@@ -12,7 +12,7 @@ describe('createCompilerRuntimeExternalSymbolBindingPlanHaxe', () => {
     const plan = createCompilerRuntimeExternalSymbolBindingPlanHaxe();
 
     expect(plan.contract).toBe('flight-runtime-contract/2');
-    expect(plan.bindings).toHaveLength(152);
+    expect(plan.bindings).toHaveLength(308);
     expect(plan.bindings.filter(({ externalSymbol }) => externalSymbol.sourceName === 'Promise')).toEqual([
       {
         capability: 'task',
@@ -91,6 +91,14 @@ describe('createCompilerRuntimeExternalSymbolBindingPlanHaxe', () => {
       kind: 'native',
     });
     expect(plan.bindings).toContainEqual({
+      externalSymbol: { sourceName: 'SharedArrayBuffer', space: 'type' },
+      kind: 'native',
+    });
+    expect(plan.bindings).toContainEqual({
+      externalSymbol: { sourceName: 'navigator', space: 'value' },
+      kind: 'native',
+    });
+    expect(plan.bindings).toContainEqual({
       externalSymbol: { sourceName: 'GPUDevice', space: 'type' },
       kind: 'native',
     });
@@ -108,7 +116,7 @@ describe('createCompilerRuntimeExternalSymbolBindingPlanHaxe', () => {
     const second = createCompilerRuntimeExternalSymbolBindingPlanHaxe();
 
     (first.bindings as unknown[]).pop();
-    expect(second.bindings).toHaveLength(152);
+    expect(second.bindings).toHaveLength(308);
   });
 });
 
@@ -230,6 +238,9 @@ describe('getCompilerRuntimeExternalSymbolTargetHaxe', () => {
     ['Int8Array', 'type', 'flighthq._internal._Int8Array'],
     ['Int8Array', 'value', 'flighthq._internal._Int8Array'],
     ['TexImageSource', 'type', 'Dynamic'],
+    ['SharedArrayBuffer', 'type', 'js.lib.SharedArrayBuffer'],
+    ['SharedArrayBuffer', 'value', 'js.lib.SharedArrayBuffer'],
+    ['navigator', 'value', 'js.Browser.navigator'],
     ['Intl', 'value', 'flighthq._internal._Intl'],
     ['Intl.Segmenter', 'type', 'flighthq._internal._IntlSegmenter'],
     ['Map', 'type', 'flighthq._internal._Map'],

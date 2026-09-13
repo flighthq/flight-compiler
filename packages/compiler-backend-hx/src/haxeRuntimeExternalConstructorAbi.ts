@@ -28,6 +28,7 @@ const haxeRuntimeExternalConstructorAbis = [
   createHaxeRuntimeExternalConstructorAbi('RangeError', [0, 1]),
   createHaxeRuntimeExternalConstructorAbi('RegExp', [0, 1, 2]),
   createHaxeRuntimeExternalConstructorAbi('Set', [0, 1]),
+  createHaxeRuntimeExternalConstructorAbi('SharedArrayBuffer', [1]),
   createHaxeRuntimeExternalConstructorAbi('TextDecoder', [0, 1, 2]),
   createHaxeRuntimeExternalConstructorAbi('TypeError', [0, 1]),
   createHaxeRuntimeExternalConstructorAbi('Uint16Array', [0, 1, 2, 3]),

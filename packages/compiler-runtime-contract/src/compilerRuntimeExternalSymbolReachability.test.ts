@@ -174,6 +174,24 @@ describe('collectIrModulesRuntimeExternalSymbolIdentities', () => {
     ]);
   });
 
+  it('treats Awaited and ThisType as compiler-intrinsic wrappers while retaining their storage', () => {
+    const lowered = lowerTypeScriptSource(
+      ts.createSourceFile(
+        '/flight/packages/runtime/src/intrinsic-wrappers.ts',
+        'export type IntrinsicViews = Awaited<Promise<Storage>> | ThisType<Context>;',
+        ts.ScriptTarget.Latest,
+        true,
+      ),
+      { packageName: '@flighthq/runtime', upstreamDirectory: '/flight' },
+    );
+
+    expect(collectIrModulesRuntimeExternalSymbolIdentities([lowered.module])).toEqual([
+      { sourceName: 'Context', space: 'type' },
+      { sourceName: 'Promise', space: 'type' },
+      { sourceName: 'Storage', space: 'type' },
+    ]);
+  });
+
   it('treats callable projections as intrinsic while retaining their subjects and runtime-backed views', () => {
     const lowered = lowerTypeScriptSource(
       ts.createSourceFile(
