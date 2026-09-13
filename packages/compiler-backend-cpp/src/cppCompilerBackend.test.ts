@@ -2036,6 +2036,25 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(emitted.contents).not.toContain(' return ');
   });
 
+  it('preserves awaited discriminated-union evidence in a contextual assignment', () => {
+    const result = lower(
+      'awaited-outcome.ts',
+      `type Outcome =
+         | { readonly reason: 'drained'; readonly delivery: 'process-buffer' | 'durable-storage' }
+         | { readonly reason: 'destroyed' }
+         | { readonly reason: 'operation-failed'; readonly message: string };
+       export async function flush(task: Promise<Outcome>): Promise<Outcome> {
+         let outcome: Outcome;
+         outcome = await task;
+         return outcome;
+       }`,
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+
+    expect(result.diagnostics).toEqual([]);
+    expect(emitted.contents).toContain('outcome = co_await task');
+  });
+
   it('hoists co_await out of catch handlers into a deferred block', () => {
     const result = lower(
       'catch-await.ts',

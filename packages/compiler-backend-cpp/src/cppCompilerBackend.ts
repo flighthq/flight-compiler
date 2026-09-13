@@ -3894,6 +3894,8 @@ function getIrExpressionTypeForUnionConstructionCpp(
       return getSingleIrTypeKindCpp(valueSlots, 'array');
     case 'assignment':
       return getIrAssignmentTargetTypeCpp(expression.left, context);
+    case 'await':
+      return getIrExpressionTypeEvidenceCpp(expression, context);
     case 'binary':
       return (
         getIrOperatorValueDomainTypeCpp(expression.semantics.result) ??
