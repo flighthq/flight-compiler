@@ -2045,10 +2045,11 @@ function lowerTypeScriptClosedAmbientPickHeritageProperties(
   heritage: ts.ExpressionWithTypeArguments,
   context: LoweringContext,
 ): readonly IrObjectTypeProperty[] | undefined {
+  const utility = context.checker.getSymbolAtLocation(heritage.expression);
   if (
     !ts.isIdentifier(heritage.expression) ||
     heritage.expression.text !== 'Pick' ||
-    context.checker.getSymbolAtLocation(heritage.expression) !== undefined ||
+    (utility !== undefined && !isTypeScriptAmbientSymbol(utility, context)) ||
     heritage.typeArguments?.length !== 2
   ) {
     return undefined;
