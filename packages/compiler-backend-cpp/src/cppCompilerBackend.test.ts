@@ -796,6 +796,76 @@ describe('createCppCompilerBackend', () => {
     ).toThrow('external call result type host::TimeoutHandle is not one represented contextual runtime domain');
   });
 
+  it('recovers imported Map.get value evidence without guessing for lookalike get methods', () => {
+    const level = ts.createSourceFile(
+      '/flight/packages/types/src/logLevel.ts',
+      'export enum LogLevel { None = 0, Error = 1 }',
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const contract = ts.createSourceFile(
+      '/flight/packages/types/src/contract.ts',
+      "export { LogLevel } from './logLevel.js';",
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const log = ts.createSourceFile(
+      '/flight/packages/log/src/log.ts',
+      `import { LogLevel } from '@flighthq/types/contract';
+       export function getLogChannelLevel(channel: string): LogLevel | null {
+         return channelLevels.get(channel) ?? null;
+       }
+       const channelLevels = new Map<string, LogLevel>();`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          specifier: '@flighthq/types/contract',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/contract.ts' },
+        },
+        {
+          specifier: './logLevel.js',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/logLevel.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const modules = lowerTypeScriptSources(
+      [
+        { packageName: '@flighthq/types', sourceFile: level, upstreamDirectory: '/flight' },
+        { packageName: '@flighthq/types', sourceFile: contract, upstreamDirectory: '/flight' },
+        { packageName: '@flighthq/log', sourceFile: log, upstreamDirectory: '/flight' },
+      ],
+      moduleResolution,
+    ).map((result) => result.module);
+    const emitted = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules,
+      options: {
+        packageTargets: {
+          '@flighthq/log': { includePrefix: 'flight/log', namespace: 'flight::log' },
+          '@flighthq/types': { includePrefix: 'flight/types', namespace: 'flight::types' },
+        },
+        runtimeProfile: 'flight-cpp',
+      },
+    }).emitModule(modules[2]!)[0]!.contents;
+
+    expect(emitted).toContain('return channel_levels.get(channel);');
+
+    const lookalike = lower(
+      'lookalike-get.ts',
+      `interface LevelStore { get(key: string): unknown }
+       export function getLevel(store: LevelStore): number | null {
+         return store.get('level') ?? null;
+       }`,
+    ).module;
+    expect(() => emitIrModuleCpp(lookalike, { runtimeProfile: 'flight-cpp' })).toThrow(
+      'contextual optionalSingle construction requires expression type evidence',
+    );
+  });
+
   it('constructs an imported nullable reference from an imported function result', () => {
     const types = ts.createSourceFile(
       '/flight/packages/types/src/color.ts',

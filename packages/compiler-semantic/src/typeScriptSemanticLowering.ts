@@ -1467,6 +1467,7 @@ function lowerCallSemantics(
   const semantics: IrCallSemantics = {
     ...lowerInvocationSemantics(node, signature, context),
     resultType:
+      getTypeScriptMapLookupResultTypeEvidence(node, context) ??
       getTypeScriptCheckerTypeEvidence(context.checker.getTypeAtLocation(node), context, 0) ??
       inferInitializerType(node, context),
   };
@@ -1489,6 +1490,36 @@ function lowerCallSemantics(
     ...semantics,
     typedArraySet: { receivers: receivers as [IrTypedArrayReceiver, ...IrTypedArrayReceiver[]] },
   };
+}
+
+// The checker exposes numeric enums through Map.get as `number`, losing the imported identity that
+// the receiver's written Map<K, V> preserves. Derive this one standard-library result from that
+// explicit value argument; neither WeakMap nor a lookalike `get` method qualifies by spelling.
+function getTypeScriptMapLookupResultTypeEvidence(
+  node: ts.CallExpression,
+  context: LoweringContext,
+): Readonly<IrType> | undefined {
+  if (
+    node.questionDotToken ||
+    node.arguments.length !== 1 ||
+    !ts.isPropertyAccessExpression(node.expression) ||
+    node.expression.questionDotToken ||
+    node.expression.name.text !== 'get'
+  ) {
+    return undefined;
+  }
+  const receiver = getTypeScriptExpressionBindingTypeEvidence(node.expression.expression, context);
+  if (
+    receiver?.kind !== 'named' ||
+    receiver.reference.kind !== 'ambient' ||
+    (receiver.reference.name !== 'Map' && receiver.reference.name !== 'ReadonlyMap')
+  ) {
+    return undefined;
+  }
+  const value = receiver.typeArguments[1];
+  if (!value || value.kind === 'unknown') return undefined;
+  const values = value.kind === 'union' ? value.types : [value];
+  return commonType([values[0]!, ...values.slice(1), { kind: 'undefined' }]);
 }
 
 function lowerInvocationSemantics(
@@ -4406,6 +4437,8 @@ function inferInitializerType(node: ts.Expression, context: LoweringContext): Ir
   if (node.kind === ts.SyntaxKind.NullKeyword) return { kind: 'null' };
   if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node))
     return { kind: 'primitive', name: 'string' };
+  const writtenConstruction = getTypeScriptWrittenNewExpressionTypeEvidence(node, context);
+  if (writtenConstruction) return writtenConstruction;
   if (ts.isArrayLiteralExpression(node)) {
     const elementTypes = node.elements.flatMap((element) => {
       if (ts.isOmittedExpression(element)) return [];
@@ -4482,6 +4515,20 @@ function inferInitializerType(node: ts.Expression, context: LoweringContext): Ir
       source: 'any',
     }
   );
+}
+
+function getTypeScriptWrittenNewExpressionTypeEvidence(
+  node: ts.Expression,
+  context: LoweringContext,
+): Readonly<Extract<IrType, { kind: 'named' }>> | undefined {
+  if (!ts.isNewExpression(node) || !ts.isIdentifier(node.expression) || !node.typeArguments?.length) return undefined;
+  const reference = lowerIdentifierReference(node.expression, context);
+  if (reference.kind === 'super' || reference.kind === 'this') return undefined;
+  return {
+    kind: 'named',
+    reference,
+    typeArguments: node.typeArguments.map((type) => lowerTypeScriptTypeNodeEvidence(type, context)),
+  };
 }
 
 function isTypeScriptConstAssertion(node: ts.Expression): node is ts.AsExpression | ts.TypeAssertion {
@@ -5373,8 +5420,10 @@ function getTypeScriptExpressionBindingTypeEvidence(
   const recorded = context.bindingTypes.get(symbol);
   if (recorded) return recorded;
   const declaration = symbol.valueDeclaration ?? symbol.declarations?.[0];
-  return declaration && ts.isVariableDeclaration(declaration) && declaration.type
-    ? lowerTypeScriptTypeNodeEvidence(declaration.type, context)
+  if (!declaration || !ts.isVariableDeclaration(declaration)) return undefined;
+  if (declaration.type) return lowerTypeScriptTypeNodeEvidence(declaration.type, context);
+  return declaration.initializer
+    ? getTypeScriptWrittenNewExpressionTypeEvidence(declaration.initializer, context)
     : undefined;
 }
 
