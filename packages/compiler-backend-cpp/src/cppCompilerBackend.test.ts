@@ -2680,6 +2680,22 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(emitted.contents).toContain('return transform.has_value()');
   });
 
+  it('narrows the complementary branch of a nested callable union', () => {
+    const result = lower(
+      'callable-union-complement.ts',
+      `type Data = string | Readonly<Record<string, unknown>>;
+       type Provider = () => Data;
+       export function resolve(data: Data | Provider): Data {
+         return typeof data === 'function' ? data() : data;
+       }`,
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+
+    expect(result.diagnostics).toEqual([]);
+    expect(emitted.contents).toContain('data.index() ==');
+    expect(emitted.contents).toContain('std::get<');
+  });
+
   it('emits undefined literals as std::nullopt', () => {
     const result = lower('undef.ts', 'export function nothing(): number | undefined { return undefined; }');
     const emitted = emitIrModuleCpp(result.module);

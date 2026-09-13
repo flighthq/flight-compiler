@@ -1319,13 +1319,17 @@ function emitExpression(
     case 'conditional': {
       const evidence =
         expression.condition.kind === 'binary' ? expression.condition.semantics.unionMemberTest : undefined;
-      const branchContext = (result: boolean): EmitContext =>
-        evidence?.whenResult === result
+      const branchContext = (result: boolean): EmitContext => {
+        if (!evidence) return context;
+        const narrowedType =
+          evidence.whenResult === result ? evidence.member : getCppUnionMemberComplementTypeCpp(evidence, context);
+        return narrowedType
           ? {
               ...context,
-              narrowedBindingTypes: new Map(context.narrowedBindingTypes).set(evidence.binding.id, evidence.member),
+              narrowedBindingTypes: new Map(context.narrowedBindingTypes).set(evidence.binding.id, narrowedType),
             }
           : context;
+      };
       return `(${emitExpression(expression.condition, context)} ? ${emitExpression(expression.whenTrue, branchContext(true), expectedType)} : ${emitExpression(expression.whenFalse, branchContext(false), expectedType)})`;
     }
     case 'element': {
@@ -3591,6 +3595,29 @@ function emitUnionMemberTestCpp(evidence: Readonly<IrUnionMemberTestEvidence>, c
   return evidence.whenResult ? test : `!(${test})`;
 }
 
+function getCppUnionMemberComplementTypeCpp(
+  evidence: Readonly<IrUnionMemberTestEvidence>,
+  context: EmitContext,
+): Readonly<IrType> | undefined {
+  const bindingType = getCppBindingTypeCpp(evidence.binding.id, context);
+  const union = bindingType ? getIrUnionTypeCpp(bindingType, context, new Set()) : undefined;
+  if (!union) return undefined;
+  const isolatedContext = { ...context, anonymousStructs: new Map(), includes: new Set<string>() };
+  const plan = getCppUnionRepresentationPlan(union, isolatedContext);
+  if (plan.sentinels.null !== 'absent' || plan.sentinels.undefined !== 'absent') return undefined;
+  const evidenceTarget = emitType(evidence.member, isolatedContext);
+  const selected = plan.valueSlots.filter(
+    (slot) =>
+      slot.targetType === evidenceTarget ||
+      slot.sourceAlternatives.some((member) => isDeepStrictEqual(member, evidence.member)),
+  );
+  if (selected.length !== 1) return undefined;
+  const remaining: Readonly<IrType>[] = plan.valueSlots
+    .filter((slot) => slot !== selected[0])
+    .flatMap((slot) => slot.sourceAlternatives);
+  return createIrTypeEvidenceUnionCpp(remaining);
+}
+
 function doesCppVariantAlternativeMatchType(
   alternative: CppVariantRepresentation['alternatives'][number],
   type: Readonly<IrType>,
@@ -3650,6 +3677,35 @@ function emitNarrowedUnionMemberCpp(
   const union = getIrBindingVariantUnionTypeCpp(expression.reference.binding.id, context);
   if (!union) return undefined;
   const representation = getCppVariantRepresentationForInspection(union, context);
+  const narrowedUnion = narrowedType ? getIrUnionTypeCpp(narrowedType, context, new Set()) : undefined;
+  if (narrowedUnion) {
+    const narrowedPlan = getCppUnionRepresentationPlan(narrowedUnion, context);
+    const mapped = narrowedPlan.valueSlots.map((slot) => ({
+      sourceIndex: representation.alternatives.findIndex((alternative) => alternative.targetType === slot.targetType),
+      slot,
+    }));
+    if (
+      narrowedPlan.kind === 'multiVariant' &&
+      mapped.length < representation.alternatives.length &&
+      mapped.every(({ sourceIndex }) => sourceIndex >= 0)
+    ) {
+      const binding = emitIdentifierReference(expression.reference, context);
+      const expressions = mapped.map(({ slot, sourceIndex }) =>
+        emitCppUnionValueConstruction(
+          `std::get<${String(sourceIndex)}>(${binding})`,
+          slot.targetType,
+          narrowedUnion,
+          narrowedPlan.kind,
+          context,
+        ),
+      );
+      let emitted = expressions.at(-1)!;
+      for (let index = mapped.length - 2; index >= 0; index -= 1) {
+        emitted = `(${binding}.index() == ${String(mapped[index]!.sourceIndex)} ? ${expressions[index]!} : ${emitted})`;
+      }
+      return emitted;
+    }
+  }
   const sourceAlternatives = representation.alternatives.flatMap((alternative) =>
     alternative.members.map((member) => ({ alternative, member })),
   );
