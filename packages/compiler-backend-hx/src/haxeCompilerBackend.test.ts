@@ -1118,7 +1118,7 @@ describe('emitIrModuleHaxe', () => {
     expect(output).not.toContain('(function()');
   });
 
-  it('represents observable function-entry undefined as a Dynamic null sentinel', () => {
+  it('represents observable function-entry undefined as its JavaScript value', () => {
     const result = lower('entry-undefined.ts', 'export function read(): number { var value: number; return value; }');
     const declaration = result.module.declarations[0];
     if (declaration?.kind !== 'function' || declaration.body[0]?.kind !== 'variable') {
@@ -1128,7 +1128,7 @@ describe('emitIrModuleHaxe', () => {
     if (!variable || 'pattern' in variable) throw new Error('Expected named variable');
     (variable as { initialValue?: 'undefined' }).initialValue = 'undefined';
 
-    expect(emitIrModuleHaxe(result.module).contents).toContain('var value:Dynamic = null;');
+    expect(emitIrModuleHaxe(result.module).contents).toContain('var value:Float = js.Syntax.code("undefined");');
   });
 
   it('emits fixed tuple spreads with collision-free sequential evaluation carriers', () => {
@@ -2031,17 +2031,17 @@ describe('emitIrModuleHaxe expression coverage', () => {
     );
 
     expect(emitIrModuleHaxe(result.module, { runtimeModule: 'flight._hx._runtime' }).contents).toContain(
-      '(entity.RuntimeKey = null);',
+      '(entity.RuntimeKey = js.Syntax.code("undefined"));',
     );
   });
 
-  it('uses null for undefined assigned to a dynamically represented slot', () => {
+  it('preserves undefined assigned to a dynamically represented slot', () => {
     const result = lower(
       'clear-dynamic-property.ts',
       'export function clear(copy: Record<string, unknown>): void { copy.value = undefined; }',
     );
 
-    expect(emitIrModuleHaxe(result.module).contents).toContain('(copy.value = null);');
+    expect(emitIrModuleHaxe(result.module).contents).toContain('(copy.value = js.Syntax.code("undefined"));');
   });
 
   it('deletes symbol-backed and dynamic properties through their represented keys', () => {
@@ -5686,7 +5686,7 @@ describe('emitIrModuleHaxe array reduce with fold binding', () => {
 });
 
 describe('emitIrModuleHaxe undefined-initialized variable', () => {
-  it('emits Dynamic null for hoisted variable whose type includes undefined', () => {
+  it('emits JavaScript undefined for a hoisted variable whose type includes undefined', () => {
     const result = lower(
       'undef-init.ts',
       `export function init(): number {
@@ -5698,8 +5698,7 @@ describe('emitIrModuleHaxe undefined-initialized variable', () => {
     );
     const output = emitIrModuleHaxe(result.module).contents;
 
-    expect(output).toContain('Dynamic');
-    expect(output).toContain('null');
+    expect(output).toContain('var x:Null<Float> = js.Syntax.code("undefined");');
   });
 });
 

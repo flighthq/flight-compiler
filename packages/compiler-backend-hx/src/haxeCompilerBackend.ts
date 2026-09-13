@@ -1055,7 +1055,7 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
       return expression.postfix ? `${operand}${operator}` : `${operator} ${operand}`;
     }
     case 'undefinedValue':
-      return 'null';
+      return 'js.Syntax.code("undefined")';
     case 'undefinedDefault':
       return `(${emitExpression(expression.value, context)} ?? ${emitExpression(expression.fallback, context)})`;
   }
@@ -1308,8 +1308,8 @@ function emitAssignmentRightHaxe(
     expression.right.reference.name === 'undefined'
   ) {
     // A source assignment to an unknown/any slot is valid precisely because that slot admits every
-    // value. Haxe represents such a slot as Dynamic and its sole absent sentinel as null.
-    return 'null';
+    // value. Preserve JavaScript's observable distinction between undefined and null on the JS target.
+    return 'js.Syntax.code("undefined")';
   }
   return emitExpression(expression.right, context);
 }
@@ -2735,7 +2735,7 @@ function emitVariable(variable: Readonly<IrVariable>, context: EmitContext): str
     emissionError(context, 'binding patterns require destructuring lowering before Haxe emission');
   if (
     variable.initialValue === 'undefined' ||
-    (variable.initialValue === 'uninitialized' && variable.type && hasIrTypeAbsentMember(variable.type))
+    (variable.initializer === undefined && variable.type && hasIrTypeAbsentMemberHaxe(variable.type, context.module))
   ) {
     const type = variable.type ? `:${emitType(variable.type, context)}` : ':Dynamic';
     return `var ${getBindingTargetNameHaxe(variable.binding, context)}${type} = js.Syntax.code("undefined");`;
