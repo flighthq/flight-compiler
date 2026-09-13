@@ -132,6 +132,16 @@ interface CppVariantRepresentation {
   direct: boolean;
 }
 
+interface CppWeakMapTypeArgumentPlan {
+  readonly valueRepresentation: 'direct' | 'erased';
+  readonly weakKeyPolicyTargetName?: string | undefined;
+}
+
+interface CppWeakMapViewPlan {
+  readonly key: Readonly<IrType>;
+  readonly value: Readonly<IrType>;
+}
+
 type CppDirectBindingOwner = Readonly<{ declaration: IrDeclaration; module: IrModule }>;
 type CppImportBindingOwner = Readonly<{ imported: string; module: IrModule; specifier: string }>;
 
@@ -950,6 +960,10 @@ function emitVariable(variable: Readonly<IrVariable>, context: EmitContext): str
   }
   const name = getBindingTargetName(variable.binding, context);
   const arrayElement = context.arrayElementBindingIds.has(variable.binding.id);
+  const weakMapViewPlan =
+    !variable.mutable && variable.initializer?.kind === 'cast'
+      ? getCppErasedWeakMapViewPlan(variable.initializer, context)
+      : undefined;
   const inferredInitializerType =
     !arrayElement &&
     !variable.mutable &&
@@ -968,20 +982,23 @@ function emitVariable(variable: Readonly<IrVariable>, context: EmitContext): str
   if (preservedInitializerType) {
     context.preservedInitializerTypes.set(variable.binding.id, preservedInitializerType);
   }
-  const type = variable.type && !preservedInitializerType ? emitType(variable.type, context) : 'auto';
+  const type =
+    weakMapViewPlan || !variable.type || preservedInitializerType ? 'auto' : emitType(variable.type, context);
   const emittedType = arrayElement ? emitOptionalTypeCpp(type, true, context) : type;
   const constness = emitBindingConstnessCpp(variable.mutable, variable.type);
   const initializer = variable.initializer
     ? ` = ${
-        arrayElement
-          ? emitOptionalExpressionCpp(variable.initializer, context, variable.type)
-          : emitExpression(
-              variable.initializer,
-              context,
-              preservedInitializerType ?? variable.type,
-              true,
-              context.denseArrayLengthBindingIds.has(variable.binding.id),
-            )
+        weakMapViewPlan
+          ? emitCppErasedWeakMapViewAcquisition(variable.initializer, weakMapViewPlan, context)
+          : arrayElement
+            ? emitOptionalExpressionCpp(variable.initializer, context, variable.type)
+            : emitExpression(
+                variable.initializer,
+                context,
+                preservedInitializerType ?? variable.type,
+                true,
+                context.denseArrayLengthBindingIds.has(variable.binding.id),
+              )
       }`
     : '';
   const sharedCaptureTargetName = context.sharedCaptureTargetNames.get(variable.binding.id);
@@ -1392,6 +1409,12 @@ function emitExpression(
       return `${invocationTarget}${emitCppTypeArguments(expression.typeArguments, context)}(${args.join(', ')})`;
     }
     case 'cast': {
+      if (isCppErasedWeakMapType(getIrExpressionTypeEvidenceCpp(expression.expression, context), context)) {
+        if (getCppErasedWeakMapViewPlan(expression, context)) {
+          emissionError(context, 'erased WeakMap assertion requires a local typed-view binding');
+        }
+        emissionError(context, 'erased WeakMap assertion target requires an approved typed WeakMap view');
+      }
       const structuralTarget = context.referenceRepresentationPlanner.resolveStructuralRow(
         expression.type,
         context.module,
@@ -3001,13 +3024,19 @@ function emitType(type: Readonly<IrType>, context: EmitContext, representation: 
           representation,
         );
       }
-      const weakKeyPolicyTargetName =
+      const weakMapTypeArgumentPlan =
         sourceName === 'WeakMap' && getCppRuntimeProfile(context.options) === 'flight-cpp'
           ? assertWeakMapTypeArgumentsCpp(type.typeArguments, context)
           : undefined;
       const mapped = getTypeReferenceTargetName(type, context);
-      const arguments_ = type.typeArguments.map((argument) => emitType(argument, context));
-      if (weakKeyPolicyTargetName) arguments_.push(weakKeyPolicyTargetName);
+      const arguments_ = type.typeArguments.map((argument, index) =>
+        weakMapTypeArgumentPlan?.valueRepresentation === 'erased' && index === 1
+          ? 'flight::ErasedValue'
+          : emitType(argument, context),
+      );
+      if (weakMapTypeArgumentPlan?.weakKeyPolicyTargetName) {
+        arguments_.push(weakMapTypeArgumentPlan.weakKeyPolicyTargetName);
+      }
       return `${mapped}${arguments_.length > 0 ? `<${arguments_.join(', ')}>` : ''}`;
     }
     case 'never':
@@ -3285,7 +3314,10 @@ function getCppTypeOfValueType(
   return valueType;
 }
 
-function assertWeakMapTypeArgumentsCpp(typeArguments: readonly IrType[], context: EmitContext): string | undefined {
+function assertWeakMapTypeArgumentsCpp(
+  typeArguments: readonly IrType[],
+  context: EmitContext,
+): Readonly<CppWeakMapTypeArgumentPlan> {
   if (typeArguments.length !== 2 || !typeArguments[0] || !typeArguments[1]) {
     emissionError(context, 'flight-cpp WeakMap requires explicit key and value type arguments');
   }
@@ -3293,11 +3325,20 @@ function assertWeakMapTypeArgumentsCpp(typeArguments: readonly IrType[], context
   if (!key) {
     emissionError(context, 'flight-cpp WeakMap key requires a proven Flight reference or external weak-key policy');
   }
+  if (typeArguments[1].kind === 'unknown' && typeArguments[1].source === 'unknown') {
+    if (typeArguments[0].kind !== 'unknown' || typeArguments[0].source !== 'object') {
+      emissionError(context, 'flight-cpp erased WeakMap value requires the exact object key type');
+    }
+    return { valueRepresentation: 'erased' };
+  }
   const value = context.referenceRepresentationPlanner.plan(typeArguments[1], context.module);
   if (value.kind !== 'represented') {
     emissionError(context, 'flight-cpp WeakMap value requires a proven C++ representation');
   }
-  return key.weakKeyPolicyTargetName;
+  return {
+    valueRepresentation: 'direct',
+    ...(key.weakKeyPolicyTargetName ? { weakKeyPolicyTargetName: key.weakKeyPolicyTargetName } : {}),
+  };
 }
 
 function getIrWeakMapTypeCpp(
@@ -3311,6 +3352,56 @@ function getIrWeakMapTypeCpp(
   const alias = context.referenceRepresentationPlanner.resolveAlias(type, context.module);
   if (!alias) return undefined;
   return getIrWeakMapTypeCpp(alias, context, new Set(resolvingAliases).add(type.reference.binding.id));
+}
+
+function getCppErasedWeakMapViewPlan(
+  expression: Readonly<Extract<IrExpression, { kind: 'cast' }>>,
+  context: EmitContext,
+): Readonly<CppWeakMapViewPlan> | undefined {
+  if (getCppRuntimeProfile(context.options) !== 'flight-cpp') return undefined;
+  const sourceType = getIrExpressionTypeEvidenceCpp(expression.expression, context);
+  if (!isCppErasedWeakMapType(sourceType, context)) return undefined;
+  const target = getIrWeakMapTypeCpp(expression.type, context, new Set());
+  if (!target || target.typeArguments.length !== 2 || !target.typeArguments[0] || !target.typeArguments[1]) {
+    return undefined;
+  }
+  if (
+    target.typeArguments[0].kind === 'unknown' &&
+    target.typeArguments[0].source === 'object' &&
+    target.typeArguments[1].kind === 'unknown' &&
+    target.typeArguments[1].source === 'unknown'
+  ) {
+    return undefined;
+  }
+  const key = context.referenceRepresentationPlanner.plan(target.typeArguments[0], context.module);
+  if (key.kind !== 'represented' || key.valueRepresentation !== 'flightReference') {
+    emissionError(context, 'erased WeakMap typed view requires a proven Flight reference key');
+  }
+  const value = context.referenceRepresentationPlanner.plan(target.typeArguments[1], context.module);
+  if (value.kind !== 'represented') {
+    emissionError(context, 'erased WeakMap typed view requires a represented value type');
+  }
+  return { key: target.typeArguments[0], value: target.typeArguments[1] };
+}
+
+function isCppErasedWeakMapType(type: Readonly<IrType> | undefined, context: EmitContext): boolean {
+  const resolved = getIrWeakMapTypeCpp(type, context, new Set());
+  return (
+    resolved?.typeArguments.length === 2 &&
+    resolved.typeArguments[0]?.kind === 'unknown' &&
+    resolved.typeArguments[0].source === 'object' &&
+    resolved.typeArguments[1]?.kind === 'unknown' &&
+    resolved.typeArguments[1].source === 'unknown'
+  );
+}
+
+function emitCppErasedWeakMapViewAcquisition(
+  expression: Readonly<Extract<IrExpression, { kind: 'cast' }>>,
+  plan: Readonly<CppWeakMapViewPlan>,
+  context: EmitContext,
+): string {
+  context.includes.add('flight/weak_map.hpp');
+  return `flight::checked_weak_map_view<${emitType(plan.key, context)}, ${emitType(plan.value, context)}>(${emitExpression(expression.expression, context)})`;
 }
 
 function getWeakMapKeyRepresentationCpp(

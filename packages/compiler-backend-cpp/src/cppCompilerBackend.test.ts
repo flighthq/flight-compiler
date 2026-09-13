@@ -1939,10 +1939,128 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
 
     const unknownValue = lower(
       'unknown-weak-map-value.ts',
-      'export interface Invalid { values: WeakMap<object, unknown> }',
+      'interface Key { id: number } export interface Invalid { values: WeakMap<Key, unknown> }',
     );
     expect(() => emitIrModuleCpp(unknownValue.module, { runtimeProfile: 'flight-cpp' })).toThrow(
-      'flight-cpp WeakMap value requires a proven C++ representation',
+      'flight-cpp erased WeakMap value requires the exact object key type',
+    );
+  });
+
+  it('emits opaque scene caches and acquires two checked local typed views', () => {
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          importedNames: ['ShadedMaterial', 'WgpuScene3DRuntime'],
+          specifier: '@flighthq/types/contract',
+          target: {
+            packageName: '@flighthq/types',
+            source: 'packages/types/src/WgpuScene3DRuntime.ts',
+          },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const results = lowerTypeScriptSources(
+      [
+        {
+          packageName: '@flighthq/types',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/types/src/WgpuScene3DRuntime.ts',
+            `export interface ShadedMaterial { id: number }
+             export interface WgpuScene3DRuntime {
+               shadedMaterialBindingCache: WeakMap<object, unknown>;
+               shadedMaterialPlanCache: WeakMap<object, unknown>;
+             }`,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+        {
+          packageName: '@flighthq/scene3d-wgpu',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/scene3d-wgpu/src/wgpuShadedPrelude.ts',
+            `import type { ShadedMaterial, WgpuScene3DRuntime } from '@flighthq/types/contract';
+             interface ShadedBinding { version: number }
+             interface CachedShadedPlan { version: number }
+             export function createWgpuScene3DRuntime(): WgpuScene3DRuntime {
+               return { shadedMaterialBindingCache: new WeakMap(), shadedMaterialPlanCache: new WeakMap() };
+             }
+             export function cacheWgpuShadedValues(
+               runtime: WgpuScene3DRuntime,
+               material: ShadedMaterial,
+             ): void {
+               const stateBindings = runtime.shadedMaterialBindingCache as WeakMap<ShadedMaterial, ShadedBinding>;
+               const plans = runtime.shadedMaterialPlanCache as WeakMap<ShadedMaterial, CachedShadedPlan>;
+               stateBindings.set(material, { version: 1 });
+               plans.set(material, { version: 2 });
+             }`,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+      ],
+      moduleResolution,
+    );
+    expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
+    const modules = results.map((result) => result.module);
+    const session = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules,
+      options: {
+        packageTargets: {
+          '@flighthq/scene3d-wgpu': { includePrefix: 'flight/scene3d-wgpu', namespace: 'flight::scene3d_wgpu' },
+          '@flighthq/types': { includePrefix: 'flight/types', namespace: 'flight::types' },
+        },
+        runtimeProfile: 'flight-cpp',
+      },
+    });
+    const types = session.emitModule(modules[0]!)[0]!.contents;
+    const shaded = session.emitModule(modules[1]!)[0]!.contents;
+
+    expect(types).toContain('flight::WeakMap<flight::Ref<void>, flight::ErasedValue> shaded_material_binding_cache;');
+    expect(types).toContain('flight::WeakMap<flight::Ref<void>, flight::ErasedValue> shaded_material_plan_cache;');
+    expect(shaded).toContain(
+      '.shaded_material_binding_cache = flight::WeakMap<flight::Ref<void>, flight::ErasedValue>()',
+    );
+    expect(shaded).toContain(
+      'const auto state_bindings = flight::checked_weak_map_view<flight::Ref<flight::types::ShadedMaterial>, flight::Ref<ShadedBinding>>(runtime->shaded_material_binding_cache);',
+    );
+    expect(shaded).toContain(
+      'const auto plans = flight::checked_weak_map_view<flight::Ref<flight::types::ShadedMaterial>, flight::Ref<CachedShadedPlan>>(runtime->shaded_material_plan_cache);',
+    );
+    expect(shaded).not.toContain('static_cast<flight::WeakMap');
+
+    const mutable = lower(
+      'mutable-erased-weak-map-view.ts',
+      `interface Key { id: number } interface Value { id: number }
+       export function invalid(values: WeakMap<object, unknown>): void {
+         let typed = values as WeakMap<Key, Value>;
+         typed = new WeakMap();
+       }`,
+    );
+    expect(() => emitIrModuleCpp(mutable.module, { runtimeProfile: 'flight-cpp' })).toThrow(
+      'erased WeakMap assertion requires a local typed-view binding',
+    );
+
+    const escaped = lower(
+      'escaped-erased-weak-map-view.ts',
+      `interface Key { id: number } interface Value { id: number }
+       export function invalid(values: WeakMap<object, unknown>): WeakMap<Key, Value> {
+         return values as WeakMap<Key, Value>;
+       }`,
+    );
+    expect(() => emitIrModuleCpp(escaped.module, { runtimeProfile: 'flight-cpp' })).toThrow(
+      'erased WeakMap assertion requires a local typed-view binding',
+    );
+
+    const wrongTarget = lower(
+      'erased-weak-map-object-assertion.ts',
+      'export function invalid(values: WeakMap<object, unknown>): object { return values as object; }',
+    );
+    expect(() => emitIrModuleCpp(wrongTarget.module, { runtimeProfile: 'flight-cpp' })).toThrow(
+      'erased WeakMap assertion target requires an approved typed WeakMap view',
     );
   });
 
