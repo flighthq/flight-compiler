@@ -364,10 +364,14 @@ function emitIrModuleCppWithContext(
     lines.push('', ...declaration.lines);
   });
   lines.push('', `} // namespace ${namespaceName}`);
+  const contents = lines.join('\n');
+  if (getCppRuntimeProfile(options) === 'flight-cpp') {
+    assertCppOutputHasNoUnresolvedTypePlaceholder(contents, context);
+  }
   const runtimeDependency =
     options.runtimeHeader ?? (getCppRuntimeProfile(options) === 'flight-cpp' ? 'flight/runtime.hpp' : undefined);
   return {
-    contents: lines.join('\n'),
+    contents,
     dependencies: [
       ...context.includes,
       ...imports.map(getCppIncludeDirectivePath),
@@ -375,6 +379,16 @@ function emitIrModuleCppWithContext(
     ],
     path: getCppModuleFilePath(module, options),
   };
+}
+
+function assertCppOutputHasNoUnresolvedTypePlaceholder(contents: string, context: EmitContext): void {
+  const invalid =
+    contents.match(/\b(?:flight::Array|flight::Ref|std::function|std::optional|std::variant)<[^;\n]*\bauto\b/u)?.[0] ??
+    contents.match(/\busing\s+[A-Za-z_][A-Za-z0-9_]*\s*=\s*auto\s*;/u)?.[0] ??
+    contents.match(/^\s*auto\s+[A-Za-z_][A-Za-z0-9_]*\s*;/mu)?.[0];
+  if (invalid) {
+    emissionError(context, `flight-cpp type position retains unresolved auto placeholder: ${invalid.trim()}`);
+  }
 }
 
 function createCompilerLoweringPassInterfaceInheritanceCpp(

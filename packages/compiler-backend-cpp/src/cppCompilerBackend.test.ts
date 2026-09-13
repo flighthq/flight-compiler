@@ -854,6 +854,17 @@ describe('createCppCompilerBackend', () => {
     expect(emitted).not.toContain('std::optional<auto>');
   });
 
+  it('refuses unresolved auto placeholders in flight-cpp type positions', () => {
+    const alias = lower('unknown-alias.ts', 'export type UnknownAlias = unknown;').module;
+    const property = lower('unknown-property.ts', 'export interface UnknownProperty { value?: unknown }').module;
+
+    for (const module of [alias, property]) {
+      expect(() => emitIrModuleCpp(module, { runtimeProfile: 'flight-cpp' })).toThrow(
+        'flight-cpp type position retains unresolved auto placeholder',
+      );
+    }
+  });
+
   it('preserves an imported anonymous call result across local import identities', () => {
     const moduleResolution: CompilerModuleResolutionPlan = {
       edges: [
