@@ -1562,21 +1562,57 @@ function emitExpression(
         }
         return value;
       }
-      const members = expression.members
-        .filter((member): member is typeof member & { kind: 'property' } => member.kind === 'property')
-        .map(
-          (member) =>
-            `.${safeCppName(member.name)} = ${emitExpression(member.value, context, getIrObjectPropertyTypeCpp(constructionType, member.name, context))}`,
+      const properties = expression.members.filter(
+        (member): member is typeof member & { kind: 'property' } => member.kind === 'property',
+      );
+      const constructionProperties = context.referenceRepresentationPlanner.resolveObjectShape(
+        constructionType,
+        context.module,
+      );
+      const propertiesByName = new Map(properties.map((property) => [property.name, property] as const));
+      const orderedProperties =
+        constructionProperties && propertiesByName.size === properties.length
+          ? constructionProperties.flatMap((property) => {
+              const member = propertiesByName.get(property.name);
+              return member ? [member] : [];
+            })
+          : properties;
+      const construction = (initializer: string): string => {
+        if (
+          getCppRuntimeProfile(context.options) === 'flight-cpp' &&
+          hasFlightReferenceRepresentationCpp(constructionType, context)
+        ) {
+          const storageType = emitType(constructionType, context, 'storage');
+          return `flight::make_ref<${storageType}>(${storageType}${initializer})`;
+        }
+        return initializer;
+      };
+      const reordered =
+        orderedProperties.length === properties.length &&
+        orderedProperties.some((property, index) => property !== properties[index]);
+      if (reordered) {
+        const temporaries = new Map(
+          properties.map((property) => [
+            property,
+            getGeneratedTargetName(`object_member_${property.name}`, context),
+          ] as const),
         );
-      const initializer = `{${members.join(', ')}}`;
-      if (
-        getCppRuntimeProfile(context.options) === 'flight-cpp' &&
-        hasFlightReferenceRepresentationCpp(constructionType, context)
-      ) {
-        const storageType = emitType(constructionType, context, 'storage');
-        return `flight::make_ref<${storageType}>(${storageType}${initializer})`;
+        const evaluations = properties.map(
+          (property) =>
+            `auto ${temporaries.get(property)!} = ${emitExpression(property.value, context, getIrObjectPropertyTypeCpp(constructionType, property.name, context))};`,
+        );
+        const initializer = `{${orderedProperties
+          .map((property) => `.${safeCppName(property.name)} = ${temporaries.get(property)!}`)
+          .join(', ')}}`;
+        return `([&]() { ${evaluations.join(' ')} return ${construction(initializer)}; }())`;
       }
-      return initializer;
+      const initializer = `{${properties
+        .map(
+          (property) =>
+            `.${safeCppName(property.name)} = ${emitExpression(property.value, context, getIrObjectPropertyTypeCpp(constructionType, property.name, context))}`,
+        )
+        .join(', ')}}`;
+      return construction(initializer);
     }
     case 'property': {
       if (expression.optional) return emitOptionalPropertyExpressionCpp(expression, context, expectedType);
@@ -3941,7 +3977,7 @@ function getIrExpressionTypeForUnionConstructionCpp(
           }
         : undefined;
     case 'object':
-      return expression.type;
+      return getCppContextualObjectUnionRuntimeTypeCpp(expression, valueSlots, context) ?? expression.type;
     case 'tuple':
       return getSingleIrTypeKindCpp(valueSlots, 'tuple');
     case 'unary':
@@ -3951,6 +3987,42 @@ function getIrExpressionTypeForUnionConstructionCpp(
     default:
       return undefined;
   }
+}
+
+function getCppContextualObjectUnionRuntimeTypeCpp(
+  expression: Readonly<Extract<IrExpression, { kind: 'object' }>>,
+  valueSlots: readonly Readonly<{ runtimeType: IrType }>[],
+  context: EmitContext,
+): Readonly<IrType> | undefined {
+  if (expression.members.some((member) => member.kind !== 'property')) return undefined;
+  const members = expression.members as readonly Readonly<
+    Extract<(typeof expression.members)[number], { kind: 'property' }>
+  >[];
+  const byName = new Map(members.map((member) => [member.name, member] as const));
+  if (byName.size !== members.length) return undefined;
+  const matches = valueSlots.filter((slot) => {
+    const properties = context.referenceRepresentationPlanner.resolveObjectShape(slot.runtimeType, context.module);
+    if (!properties) return false;
+    const targetByName = new Map(properties.map((property) => [property.name, property] as const));
+    if (members.some((member) => !targetByName.has(member.name))) return false;
+    if (properties.some((property) => !property.optional && !byName.has(property.name))) return false;
+    return members.every((member) =>
+      isCppExpressionRepresentableAsRuntimeTypeCpp(member.value, targetByName.get(member.name)!.type, context),
+    );
+  });
+  return matches.length === 1 ? matches[0]!.runtimeType : undefined;
+}
+
+function isCppExpressionRepresentableAsRuntimeTypeCpp(
+  expression: Readonly<IrExpression>,
+  target: Readonly<IrType>,
+  context: EmitContext,
+): boolean {
+  if (expression.kind !== 'literal') return isCppExpressionExactlyRepresentableAsTypeCpp(expression, target, context);
+  const runtime = getIrTypeRuntimeDomainCpp(target, context, new Set());
+  if (expression.value === null) return runtime?.kind === 'null';
+  if (runtime?.kind !== 'primitive') return false;
+  return runtime.name === (typeof expression.value === 'number' ? 'number' : typeof expression.value);
 }
 
 function getIrTypeRuntimeDomainCpp(

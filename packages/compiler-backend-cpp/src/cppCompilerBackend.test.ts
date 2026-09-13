@@ -2073,8 +2073,10 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
        export async function flush(transport: Transport): Promise<Outcome> {
          let outcome: Outcome;
          outcome = await transport.flush();
+         outcome = { message: failureMessage(), reason: 'operation-failed' };
          return outcome;
-       }`,
+       }
+       function failureMessage(): string { return 'failed'; }`,
       ts.ScriptTarget.Latest,
       true,
     );
@@ -2109,6 +2111,13 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
 
     expect(results[1]!.diagnostics).toEqual([]);
     expect(emitted).toContain('co_await transport->flush()');
+    const messageEvaluation = emitted.indexOf('auto object_member_message = failure_message()');
+    const reasonEvaluation = emitted.indexOf('auto object_member_reason = flight::String("operation-failed")');
+    expect(messageEvaluation).toBeGreaterThan(-1);
+    expect(reasonEvaluation).toBeGreaterThan(messageEvaluation);
+    expect(emitted).toContain(
+      '.reason = object_member_reason, .message = object_member_message',
+    );
   });
 
   it('hoists co_await out of catch handlers into a deferred block', () => {
