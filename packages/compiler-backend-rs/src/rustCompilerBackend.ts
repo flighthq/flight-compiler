@@ -1776,21 +1776,35 @@ function emitObjectRestExpressionRust(
   if (expression.excluded.some((key) => key.kind === 'computed')) {
     emissionError(context, 'computed object rest requires Rust property-key and record projection lowering');
   }
-  if (expression.type.kind !== 'object') {
-    emissionError(context, 'object rest requires closed residual-record type evidence');
-  }
-  const shape = createIrObjectTypeShapeIdentity(expression.type.properties);
+  const properties = getIrObjectRestPropertiesRust(expression, context);
+  if (!properties) emissionError(context, 'object rest requires closed residual-record type evidence');
+  const shape = createIrObjectTypeShapeIdentity(properties);
   const existing = context.objectRestRecords.get(shape);
   const recordName = existing?.name ?? getGeneratedTargetNameRust('ObjectRestRecord', context);
-  if (!existing) context.objectRestRecords.set(shape, { name: recordName, properties: expression.type.properties });
+  if (!existing) context.objectRestRecords.set(shape, { name: recordName, properties });
   const object = emitExpression(expression.object, context);
-  const fields = expression.type.properties.map((property) => {
+  const fields = properties.map((property) => {
     const name = safeRustValueName(property.name);
     return {
       initializer: `${name}: ${object}.${name}.clone(),`,
     };
   });
   return `${recordName} { ${fields.map((field) => field.initializer).join(' ')} }`;
+}
+
+function getIrObjectRestPropertiesRust(
+  expression: Readonly<Extract<IrExpression, { kind: 'objectRest' }>>,
+  context: EmitContext,
+): readonly IrObjectTypeProperty[] | undefined {
+  const explicit = getIrObjectTypePropertiesRust(expression.type, context);
+  if (explicit) return explicit;
+  if (expression.object.reference.kind !== 'binding') return undefined;
+  const sourceType = context.bindingTypes.get(expression.object.reference.binding.id);
+  if (!sourceType) return undefined;
+  const sourceProperties = getIrObjectTypePropertiesRust(sourceType, context);
+  if (!sourceProperties) return undefined;
+  const excluded = new Set(expression.excluded.flatMap((key) => (key.kind === 'named' ? [key.name] : [])));
+  return sourceProperties.filter((property) => !excluded.has(property.name));
 }
 
 function emitObjectExpressionRust(
