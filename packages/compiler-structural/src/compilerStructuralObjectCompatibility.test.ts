@@ -13,6 +13,7 @@ import type {
 import {
   analyzeIrModuleStructuralObjectCompatibility,
   analyzeIrModuleStructuralObjectCompatibilityAcrossModules,
+  createIrModuleStructuralObjectCompatibilityAnalyzer,
 } from './compilerStructuralObjectCompatibility.js';
 
 const numberType = { kind: 'primitive', name: 'number' } as const satisfies IrType;
@@ -185,6 +186,29 @@ describe('analyzeIrModuleStructuralObjectCompatibility', () => {
 });
 
 describe('analyzeIrModuleStructuralObjectCompatibilityAcrossModules', () => {
+  it('reuses an explicit module set while honoring same-identity lowered replacements', () => {
+    const box = interfaceDeclaration('type:box', 'Box', [property('value', numberType)]);
+    const compatible = createModule(
+      [box],
+      [
+        objectExpression(typeReference(box.binding), [
+          { kind: 'property', name: 'value', value: { kind: 'literal', value: 1 } },
+        ]),
+      ],
+    );
+    const incompatible = createModule([box], [objectExpression(typeReference(box.binding), [])]);
+    const analyze = createIrModuleStructuralObjectCompatibilityAnalyzer([compatible]);
+
+    expect(analyze(compatible).status).toBe('compatible');
+    expect(analyze(incompatible)).toMatchObject({
+      diagnostics: [{ code: 'missing-required-property' }],
+      status: 'incompatible',
+    });
+    expect(() => analyze({ ...incompatible, source: 'packages/structural/src/other.ts' })).toThrow(
+      'must belong to the explicit module set',
+    );
+  });
+
   it('resolves imported generic structural targets from an explicit immutable module set', () => {
     const value = typeBinding('type-parameter:value', 'Value', 'typeParameter');
     const box = {

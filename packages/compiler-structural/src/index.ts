@@ -2,6 +2,7 @@ export { createIrObjectCopySemantics } from './compilerStructuralObjectCopySeman
 export {
   analyzeIrModuleStructuralObjectCompatibility,
   analyzeIrModuleStructuralObjectCompatibilityAcrossModules,
+  createIrModuleStructuralObjectCompatibilityAnalyzer,
 } from './compilerStructuralObjectCompatibility.js';
 export {
   analyzeIrTypeStructuralAssignability,

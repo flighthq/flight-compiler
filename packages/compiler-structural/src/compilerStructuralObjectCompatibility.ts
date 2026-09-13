@@ -43,7 +43,9 @@ interface StructuralModuleRecord {
 }
 
 interface StructuralModuleSet {
+  readonly moduleByIdentity: ReadonlyMap<string, StructuralModuleRecord>;
   readonly modules: readonly StructuralModuleRecord[];
+  readonly replacement?: StructuralModuleRecord | undefined;
   readonly resolution: Readonly<CompilerModuleResolutionPlan>;
 }
 
@@ -77,10 +79,30 @@ export function analyzeIrModuleStructuralObjectCompatibilityAcrossModules(
   modules: readonly Readonly<IrModule>[],
   resolution?: Readonly<CompilerModuleResolutionPlan> | undefined,
 ): CompilerStructuralObjectCompatibilityReport {
+  return createIrModuleStructuralObjectCompatibilityAnalyzer(modules, resolution)(module);
+}
+
+export function createIrModuleStructuralObjectCompatibilityAnalyzer(
+  modules: readonly Readonly<IrModule>[],
+  resolution?: Readonly<CompilerModuleResolutionPlan> | undefined,
+): (module: Readonly<IrModule>) => CompilerStructuralObjectCompatibilityReport {
   const moduleSet = createStructuralModuleSet(
     modules,
     resolution === undefined ? compilerEmptyModuleResolutionPlan : resolution,
   );
+  return (module) => {
+    const replacement = createStructuralModuleRecord(module);
+    if (!moduleSet.moduleByIdentity.has(replacement.identity)) {
+      throw new TypeError('Structural compatibility subject must belong to the explicit module set');
+    }
+    return analyzeIrModuleStructuralObjectCompatibilityWithModuleSet(module, { ...moduleSet, replacement });
+  };
+}
+
+function analyzeIrModuleStructuralObjectCompatibilityWithModuleSet(
+  module: Readonly<IrModule>,
+  moduleSet: Readonly<StructuralModuleSet>,
+): CompilerStructuralObjectCompatibilityReport {
   const subject = getStructuralModuleRecord(module, moduleSet);
   if (!subject) throw new TypeError('Structural compatibility subject must belong to the explicit module set');
   const diagnostics: CompilerStructuralObjectCompatibilityDiagnostic[] = [];
@@ -415,11 +437,15 @@ function getStructuralSpecifierModules(
   const resolutionTargets = (exact.length > 0 ? exact : matching.filter((edge) => !edge.importer)).map(
     (edge) => `${edge.target.packageName}\0${normalizePathPortable(edge.target.source)}`,
   );
-  return moduleSet.modules.filter(
-    (candidate) =>
-      (candidate.module.packageName === from.module.packageName && candidates.has(candidate.source)) ||
-      resolutionTargets.includes(`${candidate.module.packageName}\0${candidate.source}`),
-  );
+  return moduleSet.modules
+    .map((candidate) =>
+      moduleSet.replacement?.identity === candidate.identity ? moduleSet.replacement : candidate,
+    )
+    .filter(
+      (candidate) =>
+        (candidate.module.packageName === from.module.packageName && candidates.has(candidate.source)) ||
+        resolutionTargets.includes(`${candidate.module.packageName}\0${candidate.source}`),
+    );
 }
 
 function getStructuralSpecifierSourceCandidates(source: string, specifier: string): ReadonlySet<string> {
@@ -466,7 +492,7 @@ function createStructuralModuleSet(
   if (records.some((record, index) => index > 0 && record.identity === records[index - 1]!.identity)) {
     throw new TypeError('Structural module set contains a duplicate module identity');
   }
-  return { modules: records, resolution };
+  return { moduleByIdentity: new Map(records.map((record) => [record.identity, record])), modules: records, resolution };
 }
 
 function validateCompilerModuleResolutionPlan(resolution: Readonly<CompilerModuleResolutionPlan>): void {
@@ -558,12 +584,10 @@ function getStructuralModuleRecord(
   moduleSet: Readonly<StructuralModuleSet>,
 ): StructuralModuleRecord | undefined {
   const source = normalizePathPortable(module.source);
-  return moduleSet.modules.find(
-    (candidate) =>
-      candidate.module.packageName === module.packageName &&
-      candidate.module.name === module.name &&
-      candidate.source === source,
-  );
+  const identity = `${module.packageName}\0${source}\0${module.name}`;
+  return moduleSet.replacement?.identity === identity
+    ? moduleSet.replacement
+    : moduleSet.moduleByIdentity.get(identity);
 }
 
 function deduplicateStructuralDeclarationLocations(

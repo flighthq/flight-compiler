@@ -32,7 +32,10 @@ import {
   collectIrModulesRuntimeExternalConstructorInvocations,
   collectIrModulesRuntimeExternalSymbolIdentities,
 } from '../../compiler-runtime-contract/src/index.js';
-import { analyzeIrModuleStructuralObjectCompatibilityAcrossModules } from '../../compiler-structural/src/index.js';
+import {
+  analyzeIrModuleStructuralObjectCompatibilityAcrossModules,
+  createIrModuleStructuralObjectCompatibilityAnalyzer,
+} from '../../compiler-structural/src/index.js';
 import { analyzeIrModuleAsyncStateMachines } from '../../compiler-task/src/index.js';
 import type {
   CompilerBackend,
@@ -44,6 +47,7 @@ import type {
   CompilerModuleIdentity,
   CompilerModuleLinkDependency,
   CompilerModuleResolutionPlan,
+  CompilerStructuralObjectCompatibilityReport,
   EmittedFile,
   HaxeCompilerBackendOptions,
 } from '../../compiler-types/src/index.js';
@@ -143,6 +147,10 @@ export function createHaxeCompilerBackend(): CompilerBackend<HaxeCompilerBackend
         eraseAmbientUtilityHeritage: (_reference, declaration) =>
           ambientUtilityHeritageBindingIds.has(declaration.binding.id),
       });
+      const analyzeStructuralObjectCompatibility = createIrModuleStructuralObjectCompatibilityAnalyzer(
+        modules,
+        moduleResolution,
+      );
       return Object.freeze({
         emitModule(module: Readonly<IrModule>) {
           return options.emissionMode === 'extern'
@@ -155,6 +163,7 @@ export function createHaxeCompilerBackend(): CompilerBackend<HaxeCompilerBackend
                   options,
                   getModuleFacade(module),
                   interfaceInheritancePass,
+                  analyzeStructuralObjectCompatibility,
                 ),
               ];
         },
@@ -198,6 +207,9 @@ function emitIrModuleHaxeWithContext(
   options: Readonly<HaxeCompilerBackendOptions>,
   moduleFacade: Readonly<CompilerModuleFacadePlan> | undefined,
   interfaceInheritancePass?: Readonly<CompilerLoweringPass> | undefined,
+  structuralObjectCompatibilityAnalyzer?:
+    | ((module: Readonly<IrModule>) => Readonly<CompilerStructuralObjectCompatibilityReport>)
+    | undefined,
 ): EmittedFile {
   const ambientUtilityHeritageTargets = createAmbientUtilityHeritageTargetsHaxe(sourceModule);
   const module = lowerIrModuleWithCompilerPasses(sourceModule, [
@@ -216,8 +228,9 @@ function emitIrModuleHaxeWithContext(
   ]);
   assertStructuralObjectCompatibilityHaxe(
     module,
-    replaceIrModuleBackendContext(sourceModules, module),
+    structuralObjectCompatibilityAnalyzer ? sourceModules : replaceIrModuleBackendContext(sourceModules, module),
     moduleResolution,
+    structuralObjectCompatibilityAnalyzer,
   );
   assertRuntimeExternalSymbolBindingsHaxe(module);
   assertRuntimeExternalConstructorAbiHaxe(module);
@@ -2585,6 +2598,13 @@ function createCompilerModuleFacadePlannerHaxe(
       !invalidModuleKeys.has(getHaxeCompilerModuleKey(dependency.importer)) &&
       !invalidModuleKeys.has(getHaxeCompilerModuleKey(dependency.target)),
   );
+  const dependenciesByImporter = new Map<string, CompilerModuleLinkDependency[]>();
+  for (const dependency of validDependencies) {
+    const key = getHaxeCompilerModuleKey(dependency.importer);
+    const current = dependenciesByImporter.get(key);
+    if (current) current.push(dependency);
+    else dependenciesByImporter.set(key, [dependency]);
+  }
   const plans = new Map<string, CompilerModuleFacadePlan | undefined>();
   return (entryModule) => {
     const entryKey = getHaxeCompilerModuleKey(entryModule);
@@ -2599,12 +2619,13 @@ function createCompilerModuleFacadePlannerHaxe(
     }
     try {
       const reachableModuleKeys = new Set([entryKey]);
-      let reachableCount = -1;
-      while (reachableCount !== reachableModuleKeys.size) {
-        reachableCount = reachableModuleKeys.size;
-        for (const dependency of validDependencies) {
-          if (reachableModuleKeys.has(getHaxeCompilerModuleKey(dependency.importer))) {
-            reachableModuleKeys.add(getHaxeCompilerModuleKey(dependency.target));
+      const pendingModuleKeys = [entryKey];
+      for (let index = 0; index < pendingModuleKeys.length; index += 1) {
+        for (const dependency of dependenciesByImporter.get(pendingModuleKeys[index]!) ?? []) {
+          const targetKey = getHaxeCompilerModuleKey(dependency.target);
+          if (!reachableModuleKeys.has(targetKey)) {
+            reachableModuleKeys.add(targetKey);
+            pendingModuleKeys.push(targetKey);
           }
         }
       }
@@ -2870,11 +2891,11 @@ function assertStructuralObjectCompatibilityHaxe(
   module: Readonly<IrModule>,
   modules: readonly Readonly<IrModule>[],
   resolution: Readonly<CompilerModuleResolutionPlan> | undefined,
+  analyzer?: ((module: Readonly<IrModule>) => Readonly<CompilerStructuralObjectCompatibilityReport>) | undefined,
 ): void {
-  const diagnostic = analyzeIrModuleStructuralObjectCompatibilityAcrossModules(
-    module,
-    modules,
-    resolution,
+  const diagnostic = (analyzer
+    ? analyzer(module)
+    : analyzeIrModuleStructuralObjectCompatibilityAcrossModules(module, modules, resolution)
   ).diagnostics.find(
     (candidate) =>
       candidate.code !== 'open-construction-target' &&

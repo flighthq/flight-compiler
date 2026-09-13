@@ -949,7 +949,7 @@ describe('emitIrModuleHaxe', () => {
     expect(output).toContain('return value?.read();');
   });
 
-  it('emits neutral optional element and call contracts through Haxe safe navigation', () => {
+  it('emits neutral optional element and call contracts without duplicating receiver evaluation', () => {
     const result = lower(
       'optional-targets.ts',
       `
@@ -959,7 +959,9 @@ describe('emitIrModuleHaxe', () => {
     );
     const output = emitIrModuleHaxe(result.module).contents;
 
-    expect(output).toContain('return values?.[0];');
+    expect(output).toContain(
+      'final optionalIndexedValue:Dynamic = values; return optionalIndexedValue == null ? null : optionalIndexedValue[0];',
+    );
     expect(output).toContain('return callback?.();');
   });
 
@@ -6277,7 +6279,7 @@ describe('emitIrModuleHaxe interface with function property implemented by class
 });
 
 describe('emitIrModuleHaxe typeof with unmapped type', () => {
-  it('refuses typeof check against unmapped type', () => {
+  it('routes typeof checks against unmapped types through the runtime contract', () => {
     const result = lower(
       'typeof-unmapped.ts',
       `export function isObj(value: unknown): boolean {
@@ -6285,7 +6287,7 @@ describe('emitIrModuleHaxe typeof with unmapped type', () => {
        }`,
     );
 
-    expect(() => emitIrModuleHaxe(result.module)).toThrow('semantic lowering');
+    expect(emitIrModuleHaxe(result.module).contents).toContain('flighthq._internal._Js.typeOf(value)');
   });
 });
 
@@ -6619,7 +6621,7 @@ describe('emitIrModuleHaxe tuple spread with trailing omitted optional elements'
 });
 
 describe('emitIrModuleHaxe loose equality without nullish literal', () => {
-  it('refuses loose equality between non-nullish values', () => {
+  it('routes loose equality between non-nullish values through the runtime contract', () => {
     const result = lower(
       'loose-eq.ts',
       `export function check(a: number, b: number): boolean {
@@ -6627,7 +6629,7 @@ describe('emitIrModuleHaxe loose equality without nullish literal', () => {
        }`,
     );
 
-    expect(() => emitIrModuleHaxe(result.module)).toThrow('type-directed lowering');
+    expect(emitIrModuleHaxe(result.module).contents).toContain('flighthq._internal._Js.looseEqual(a, b)');
   });
 });
 

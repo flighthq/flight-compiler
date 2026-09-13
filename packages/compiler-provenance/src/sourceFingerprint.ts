@@ -5,7 +5,6 @@ import ts from 'typescript';
 import { compareTextCodeUnits } from '../../compiler-canonical-form/src/index.js';
 import type { CompilerSourceFingerprint } from '../../compiler-types/src/index.js';
 
-const typeScriptNodeFingerprints = new WeakMap<ts.Node, CompilerSourceFingerprint>();
 let typeScriptSyntaxKindNames: ReadonlyMap<ts.SyntaxKind, string> | undefined;
 
 export function fingerprintSourceText(value: string): CompilerSourceFingerprint {
@@ -13,11 +12,7 @@ export function fingerprintSourceText(value: string): CompilerSourceFingerprint 
 }
 
 export function fingerprintTypeScriptNode(node: ts.Node, sourceFile: ts.SourceFile): CompilerSourceFingerprint {
-  const cached = typeScriptNodeFingerprints.get(node);
-  if (cached) return cached;
-  const fingerprint = fingerprintSourceText(normalizeTypeScriptNode(node, sourceFile));
-  typeScriptNodeFingerprints.set(node, fingerprint);
-  return fingerprint;
+  return fingerprintSourceText(normalizeTypeScriptNode(node, sourceFile));
 }
 
 export function isCompilerSourceFingerprint(value: unknown): value is CompilerSourceFingerprint {
