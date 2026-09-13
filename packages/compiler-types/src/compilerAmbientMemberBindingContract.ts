@@ -17,6 +17,9 @@ export type CompilerHaxeAmbientMemberBinding =
   | Readonly<{ kind: 'property'; targetName: string }>
   | Readonly<{ intArguments?: readonly number[]; kind: 'method'; targetName: string }>
   | Readonly<{ kind: 'staticCall'; targetPath: string }>
+  // A helper supplied by the selected Haxe runtime module. Unlike a static call, this follows the
+  // backend's configurable runtime path instead of baking the default package into emitted code.
+  | Readonly<{ kind: 'runtimeCall'; targetName: string }>
   // A fold whose accumulator is the second parameter where the source's is the first. The closure is
   // emitted with its parameters exchanged rather than wrapped, so the body is the source's own.
   | Readonly<{ kind: 'staticFold'; targetPath: string }>;

@@ -12,7 +12,9 @@ export function createCompilerRuntimeExternalConstructorAbiPlanHaxe(): CompilerR
 }
 
 const haxeRuntimeExternalConstructorAbis = [
-  createHaxeRuntimeExternalConstructorAbi('Array', [0]),
+  createHaxeRuntimeExternalConstructorAbi('Array', [0, 1]),
+  createHaxeRuntimeExternalConstructorAbi('ArrayBuffer', [1]),
+  createHaxeRuntimeExternalConstructorAbi('DataView', [1, 2, 3]),
   createHaxeRuntimeExternalConstructorAbi('Date', [0, 1]),
   createHaxeRuntimeExternalConstructorAbi('Error', [0, 1]),
   createHaxeRuntimeExternalConstructorAbi('Float32Array', [0, 1, 2, 3]),
@@ -23,12 +25,16 @@ const haxeRuntimeExternalConstructorAbis = [
   createHaxeRuntimeExternalConstructorAbi('Map', [0, 1]),
   createHaxeRuntimeExternalConstructorAbi('Promise', [1]),
   createHaxeRuntimeExternalConstructorAbi('RangeError', [0, 1]),
+  createHaxeRuntimeExternalConstructorAbi('RegExp', [0, 1, 2]),
   createHaxeRuntimeExternalConstructorAbi('Set', [0, 1]),
+  createHaxeRuntimeExternalConstructorAbi('TextDecoder', [0, 1, 2]),
   createHaxeRuntimeExternalConstructorAbi('TypeError', [0, 1]),
   createHaxeRuntimeExternalConstructorAbi('Uint16Array', [0, 1, 2, 3]),
   createHaxeRuntimeExternalConstructorAbi('Uint32Array', [0, 1, 2, 3]),
   createHaxeRuntimeExternalConstructorAbi('Uint8Array', [0, 1, 2, 3]),
   createHaxeRuntimeExternalConstructorAbi('Uint8ClampedArray', [0, 1, 2, 3]),
+  createHaxeRuntimeExternalConstructorAbi('URL', [1, 2]),
+  createHaxeRuntimeExternalConstructorAbi('WeakMap', [0, 1]),
 ] as const;
 
 function createHaxeRuntimeExternalConstructorAbi(sourceName: string, fixedArgumentCounts: readonly number[]) {

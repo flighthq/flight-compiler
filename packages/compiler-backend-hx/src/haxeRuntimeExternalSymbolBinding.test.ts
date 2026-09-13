@@ -11,7 +11,7 @@ describe('createCompilerRuntimeExternalSymbolBindingPlanHaxe', () => {
     const plan = createCompilerRuntimeExternalSymbolBindingPlanHaxe();
 
     expect(plan.contract).toBe('flight-runtime-contract/2');
-    expect(plan.bindings).toHaveLength(99);
+    expect(plan.bindings).toHaveLength(132);
     expect(plan.bindings.filter(({ externalSymbol }) => externalSymbol.sourceName === 'Promise')).toEqual([
       {
         capability: 'task',
@@ -46,6 +46,16 @@ describe('createCompilerRuntimeExternalSymbolBindingPlanHaxe', () => {
       kind: 'runtime',
     });
     expect(plan.bindings).toContainEqual({
+      capability: 'data-view',
+      externalSymbol: { sourceName: 'DataView', space: 'value' },
+      kind: 'runtime',
+    });
+    expect(plan.bindings).toContainEqual({
+      capability: 'object',
+      externalSymbol: { sourceName: 'Object', space: 'value' },
+      kind: 'runtime',
+    });
+    expect(plan.bindings).toContainEqual({
       externalSymbol: { sourceName: 'WebGLProgram', space: 'type' },
       kind: 'native',
     });
@@ -67,7 +77,7 @@ describe('createCompilerRuntimeExternalSymbolBindingPlanHaxe', () => {
     const second = createCompilerRuntimeExternalSymbolBindingPlanHaxe();
 
     (first.bindings as unknown[]).pop();
-    expect(second.bindings).toHaveLength(99);
+    expect(second.bindings).toHaveLength(132);
   });
 });
 
@@ -112,6 +122,8 @@ describe('getCompilerRuntimeExternalMemberTargetHaxe', () => {
     ['EPSILON', '2.220446049250313e-16'],
     ['MAX_SAFE_INTEGER', '9.007199254740991e15'],
     ['MIN_SAFE_INTEGER', '-9.007199254740991e15'],
+    ['POSITIVE_INFINITY', 'Math.POSITIVE_INFINITY'],
+    ['NEGATIVE_INFINITY', 'Math.NEGATIVE_INFINITY'],
     ['isFinite', 'Math.isFinite'],
     ['isNaN', 'Math.isNaN'],
   ] as const)('maps Number.%s to %s', (member, target) => {
@@ -122,19 +134,31 @@ describe('getCompilerRuntimeExternalMemberTargetHaxe', () => {
     expect(getCompilerRuntimeExternalMemberTargetHaxe('Number', 'isInteger')).toContain('Math.ffloor');
   });
 
-  it('has no fallback for unsupported members or non-namespace values', () => {
-    expect(getCompilerRuntimeExternalMemberTargetHaxe('Number', 'parseFloat')).toBeUndefined();
+  it('maps portable parseFloat and has no fallback for unsupported members or non-namespace values', () => {
+    expect(getCompilerRuntimeExternalMemberTargetHaxe('Number', 'parseFloat')).toBe('Std.parseFloat');
     expect(getCompilerRuntimeExternalMemberTargetHaxe('Array', 'isFinite')).toBeUndefined();
+  });
+
+  it('routes runtime members through the configured runtime module', () => {
+    expect(getCompilerRuntimeExternalMemberTargetHaxe('Object', 'keys', 'custom.runtime')).toBe(
+      'custom.runtime._Object.keys',
+    );
+    expect(getCompilerRuntimeExternalMemberTargetHaxe('Number', 'parseInt', 'custom.runtime')).toBe(
+      'custom.runtime._Number.parseInt',
+    );
   });
 });
 
 describe('getCompilerRuntimeExternalSymbolTargetHaxe', () => {
   it.each([
     ['Array', 'type', 'Array'],
-    ['Array', 'value', 'Array'],
+    ['Array', 'value', 'flighthq._internal._Array'],
+    ['ArrayBuffer', 'type', 'flighthq._internal._ArrayBuffer'],
+    ['ArrayBuffer', 'value', 'flighthq._internal._ArrayBuffer'],
     ['Boolean', 'type', 'Bool'],
     ['Date', 'type', 'flighthq._internal._Date'],
     ['Date', 'value', 'flighthq._internal._Date'],
+    ['DataView', 'value', 'flighthq._internal._DataView'],
     ['Error', 'type', 'haxe.Exception'],
     ['Error', 'value', 'haxe.Exception'],
     ['AbortSignal', 'type', 'js.html.AbortSignal'],
@@ -153,19 +177,27 @@ describe('getCompilerRuntimeExternalSymbolTargetHaxe', () => {
     ['Int32Array', 'value', 'flighthq._internal._Int32Array'],
     ['Int8Array', 'type', 'flighthq._internal._Int8Array'],
     ['Int8Array', 'value', 'flighthq._internal._Int8Array'],
+    ['Intl', 'value', 'flighthq._internal._Intl'],
+    ['Intl.Segmenter', 'type', 'flighthq._internal._IntlSegmenter'],
     ['Map', 'type', 'flighthq._internal._Map'],
     ['Map', 'value', 'flighthq._internal._Map'],
     ['Math', 'value', 'Math'],
     ['Number', 'value', 'Number'],
+    ['Object', 'value', 'flighthq._internal._Object'],
     ['Promise', 'type', 'flighthq._internal._Promise'],
     ['Promise', 'value', 'flighthq._internal._Promise'],
     ['Record', 'type', 'haxe.DynamicAccess'],
     ['ReadonlyMap', 'type', 'flighthq._internal._Map'],
+    ['ReadonlySet', 'type', 'flighthq._internal._Set'],
+    ['RegExp', 'type', 'flighthq._internal._RegExp'],
+    ['RegExp', 'value', 'flighthq._internal._RegExp'],
     ['Set', 'type', 'flighthq._internal._Set'],
     ['Set', 'value', 'flighthq._internal._Set'],
     ['String', 'type', 'String'],
     ['String', 'value', 'String'],
-    ['Symbol', 'value', 'js.lib.Symbol'],
+    ['Symbol', 'value', 'flighthq._internal._Symbol'],
+    ['TextDecoder', 'type', 'flighthq._internal._TextDecoder'],
+    ['TextDecoder', 'value', 'flighthq._internal._TextDecoder'],
     ['Uint16Array', 'type', 'flighthq._internal._UInt16Array'],
     ['Uint16Array', 'value', 'flighthq._internal._UInt16Array'],
     ['Uint32Array', 'type', 'flighthq._internal._UInt32Array'],
@@ -174,11 +206,15 @@ describe('getCompilerRuntimeExternalSymbolTargetHaxe', () => {
     ['Uint8Array', 'value', 'flighthq._internal._UInt8Array'],
     ['Uint8ClampedArray', 'type', 'flighthq._internal._UInt8ClampedArray'],
     ['Uint8ClampedArray', 'value', 'flighthq._internal._UInt8ClampedArray'],
+    ['URL', 'type', 'flighthq._internal._Url'],
+    ['URL', 'value', 'flighthq._internal._Url'],
     ['WeakMap', 'type', 'flighthq._internal._WeakMap'],
     ['WeakMap', 'value', 'flighthq._internal._WeakMap'],
     ['WebGLProgram', 'type', 'js.html.webgl.Program'],
     ['WebGLPowerPreference', 'type', 'js.html.webgl.PowerPreference'],
     ['WritableStream', 'type', 'Dynamic'],
+    ['JSON', 'value', 'flighthq._internal._Json'],
+    ['parseInt', 'value', 'flighthq._internal._Number.parseInt'],
   ] as const)('maps %s in %s space to %s', (sourceName, space, targetName) => {
     expect(getCompilerRuntimeExternalSymbolTargetHaxe(sourceName, space)).toBe(targetName);
   });

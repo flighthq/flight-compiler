@@ -30,8 +30,19 @@ describe('getCompilerHaxeAmbientMemberBinding', () => {
 
   it('spells first-occurrence replace as a runtime helper because Haxe replaces every occurrence', () => {
     expect(getCompilerHaxeAmbientMemberBinding({ name: 'replace', receiver: 'string' })).toEqual({
-      kind: 'staticCall',
-      targetPath: 'flighthq._internal._StringTools.replaceFirst',
+      kind: 'runtimeCall',
+      targetName: '_StringTools.replaceFirst',
+    });
+  });
+
+  it('routes source-only collection and string semantics through the selected runtime', () => {
+    expect(getCompilerHaxeAmbientMemberBinding({ name: 'sort', receiver: 'array' })).toEqual({
+      kind: 'runtimeCall',
+      targetName: '_Array.sort',
+    });
+    expect(getCompilerHaxeAmbientMemberBinding({ name: 'padStart', receiver: 'string' })).toEqual({
+      kind: 'runtimeCall',
+      targetName: '_StringTools.padStart',
     });
   });
 
@@ -63,10 +74,15 @@ describe('getCompilerHaxeAmbientMemberBinding', () => {
       kind: 'method',
       targetName: 'subarray',
     });
+    expect(getCompilerHaxeAmbientMemberBinding({ name: 'set', receiver: 'typedArray' })).toEqual({
+      intArguments: [1],
+      kind: 'method',
+      targetName: 'set',
+    });
   });
 
   it('answers nothing for a member with no agreed spelling, so emission refuses rather than guesses', () => {
-    expect(getCompilerHaxeAmbientMemberBinding({ name: 'sort', receiver: 'array' })).toBeUndefined();
+    expect(getCompilerHaxeAmbientMemberBinding({ name: 'at', receiver: 'array' })).toBeUndefined();
     expect(getCompilerHaxeAmbientMemberBinding({ name: 'toFixed', receiver: 'number' })).toBeUndefined();
     expect(getCompilerHaxeAmbientMemberBinding({ name: 'length', receiver: 'number' })).toBeUndefined();
   });

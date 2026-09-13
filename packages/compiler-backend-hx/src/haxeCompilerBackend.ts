@@ -716,9 +716,11 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
             }
             return emitted;
           });
-          return binding.kind === 'staticCall'
-            ? `${binding.targetPath}(${[receiver, ...values].join(', ')})`
-            : `${receiver}.${binding.targetName}(${values.join(', ')})`;
+          if (binding.kind === 'staticCall') return `${binding.targetPath}(${[receiver, ...values].join(', ')})`;
+          if (binding.kind === 'runtimeCall') {
+            return `${context.options.runtimeModule ?? 'flighthq._internal'}.${binding.targetName}(${[receiver, ...values].join(', ')})`;
+          }
+          return `${receiver}.${binding.targetName}(${values.join(', ')})`;
         }
       }
       if (expression.semantics.statementValue) return emitStatementValueExpressionHaxe(expression, context);
@@ -775,6 +777,20 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
     case 'literal':
       return emitLiteral(expression.value);
     case 'new':
+      if (
+        expression.callee.kind === 'property' &&
+        expression.callee.object.kind === 'identifier' &&
+        expression.callee.object.reference.kind === 'ambient'
+      ) {
+        const target = getCompilerRuntimeExternalMemberTargetHaxe(
+          expression.callee.object.reference.name,
+          expression.callee.name,
+          context.options.runtimeModule,
+        );
+        if (target) {
+          return `new ${target}(${expression.arguments.map((argument) => emitExpression(argument, context)).join(', ')})`;
+        }
+      }
       if (expression.callee.kind !== 'identifier') {
         emissionError(context, 'qualified constructors require Haxe type-path lowering');
       }
@@ -804,7 +820,11 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
     case 'property': {
       if (expression.object.kind === 'identifier' && expression.object.reference.kind === 'ambient') {
         const sourceName = expression.object.reference.name;
-        const target = getCompilerRuntimeExternalMemberTargetHaxe(sourceName, expression.name);
+        const target = getCompilerRuntimeExternalMemberTargetHaxe(
+          sourceName,
+          expression.name,
+          context.options.runtimeModule,
+        );
         if (target) {
           if (expression.optional) {
             emissionError(context, `optional ${sourceName} member access requires null-safe Haxe lowering`);

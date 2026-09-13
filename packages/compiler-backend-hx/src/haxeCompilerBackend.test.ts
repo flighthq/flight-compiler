@@ -421,16 +421,14 @@ describe('emitIrModuleHaxe', () => {
     expect(weakMapOutput).toContain('flighthq._internal._WeakMap');
   });
 
-  it('refuses runtime constructor arities absent from the versioned Haxe ABI plan', () => {
+  it('emits fixed-length arrays through the versioned Haxe runtime ABI and refuses dynamic arity', () => {
     const fixed = lower('array-constructor.ts', 'export function create(): number[] { return new Array<number>(3); }');
     const dynamic = lower(
       'map-constructor-spread.ts',
       'export function create(values: []): Map<string, number> { return new Map<string, number>(...values); }',
     );
 
-    expect(() => emitIrModuleHaxe(fixed.module)).toThrow(
-      'runtime external constructor ABI plan is incomplete (missing: Array[value](1))',
-    );
+    expect(emitIrModuleHaxe(fixed.module).contents).toContain('new flighthq._internal._Array(3)');
     expect(() => emitIrModuleHaxe(dynamic.module)).toThrow(
       'runtime external constructor ABI plan is incomplete (missing: Map[value](...))',
     );
@@ -443,6 +441,17 @@ describe('emitIrModuleHaxe', () => {
     );
 
     expect(() => emitIrModuleHaxe(result.module)).toThrow('qualified constructors require Haxe type-path lowering');
+  });
+
+  it('emits qualified ambient runtime constructors through their runtime member contract', () => {
+    const result = lower(
+      'intl-segmenter.ts',
+      'export function create(): Intl.Segmenter { return new Intl.Segmenter("en"); }',
+    );
+
+    expect(emitIrModuleHaxe(result.module, { runtimeModule: 'flight._hx._runtime' }).contents).toContain(
+      'new flight._hx._runtime._IntlSegmenter("en")',
+    );
   });
 
   it('elects C-style for lowering without lowering native Haxe default parameters', () => {
@@ -2273,7 +2282,7 @@ describe('emitIrModuleHaxe ambient member coverage', () => {
     expect(output).toContain('return -9.007199254740991e15;');
   });
 
-  it('keeps Number conversion and unsupported static members as explicit refusals', () => {
+  it('keeps Number conversion explicit while emitting the portable parseFloat spelling', () => {
     const conversion = lower(
       'number-conversion.ts',
       'export function parse(value: string): number { return Number(value); }',
@@ -2286,7 +2295,19 @@ describe('emitIrModuleHaxe ambient member coverage', () => {
     expect(() => emitIrModuleHaxe(conversion.module)).toThrow(
       'bare Number values require JavaScript numeric-conversion lowering',
     );
-    expect(() => emitIrModuleHaxe(parseFloat.module)).toThrow('Number member parseFloat has no Haxe binding');
+    expect(emitIrModuleHaxe(parseFloat.module).contents).toContain('return Std.parseFloat(value);');
+  });
+
+  it('routes runtime member helpers through the configured runtime module', () => {
+    const result = lower(
+      'runtime-members.ts',
+      `export function keys(value: object): string[] { return Object.keys(value); }
+       export function replace(value: string): string { return value.replace('a', 'b'); }`,
+    );
+    const output = emitIrModuleHaxe(result.module, { runtimeModule: 'flight._hx._runtime' }).contents;
+
+    expect(output).toContain('flight._hx._runtime._Object.keys(value)');
+    expect(output).toContain('flight._hx._runtime._StringTools.replaceFirst(value, "a", "b")');
   });
 
   it('emits array.reduce as Lambda.fold with exchanged closure', () => {
