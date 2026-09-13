@@ -283,6 +283,7 @@ describe('getCompilerExternalBindingHeadersCpp', () => {
     ]);
     expect(getCompilerExternalBindingHeadersCpp('Object', 'value', undefined, 'standard-library')).toEqual([
       'cmath',
+      'tuple',
       'type_traits',
       'vector',
     ]);
@@ -436,6 +437,9 @@ describe('getCompilerRuntimeExternalSymbolTargetCpp', () => {
   );
 
   it('maps portable service namespaces and functions through the semantic runtime profile', () => {
+    expect(getCompilerRuntimeExternalMemberTargetCpp('Object', 'entries', 'flight-cpp')).toBe(
+      'flight::object_entries',
+    );
     expect(getCompilerRuntimeExternalMemberTargetCpp('Object', 'keys', 'flight-cpp')).toBe('flight::object_keys');
     expect(getCompilerRuntimeExternalMemberTargetCpp('JSON', 'parse', 'flight-cpp')).toBe('flight::Json::parse');
     expect(getCompilerRuntimeExternalMemberTargetCpp('Intl', 'Collator', 'flight-cpp')).toBe('flight::IntlCollator');

@@ -261,6 +261,9 @@ const cppObjectIsTarget =
 const cppObjectKeysTarget =
   '([](const auto& value) { using Key = std::remove_cvref_t<decltype(value.begin()->first)>; std::vector<Key> keys; keys.reserve(value.size()); for (const auto& entry : value) keys.push_back(entry.first); return keys; })';
 
+const cppObjectEntriesTarget =
+  '([](const auto& value) { using Key = std::remove_cvref_t<decltype(value.begin()->first)>; using Value = std::remove_cvref_t<decltype(value.begin()->second)>; using Entry = std::tuple<Key, Value>; std::vector<Entry> entries; entries.reserve(value.size()); for (const auto& entry : value) entries.emplace_back(entry.first, entry.second); return entries; })';
+
 const cppIntlRuntimeTypeTargets = [
   ['Intl.Collator', 'flight::IntlCollator'],
   ['Intl.CollatorOptions', 'flight::IntlCollatorOptions'],
@@ -521,6 +524,7 @@ const cppFlightRuntimeExternalSymbolBindings = [
     headers: ['cmath', 'flight/object.hpp', 'type_traits'],
     kind: 'runtime',
     members: [
+      { sourceMember: 'entries', targetName: 'flight::object_entries' },
       { sourceMember: 'is', targetName: cppObjectIsTarget },
       { sourceMember: 'keys', targetName: 'flight::object_keys' },
     ],
@@ -831,9 +835,10 @@ const cppRuntimeExternalSymbolBindings = [
     targetName: 'double',
   },
   {
-    headers: ['cmath', 'type_traits', 'vector'],
+    headers: ['cmath', 'tuple', 'type_traits', 'vector'],
     kind: 'native',
     members: [
+      { sourceMember: 'entries', targetName: cppObjectEntriesTarget },
       { sourceMember: 'is', targetName: cppObjectIsTarget },
       { sourceMember: 'keys', targetName: cppObjectKeysTarget },
     ],

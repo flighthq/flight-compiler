@@ -1225,6 +1225,7 @@ export function protocol(value: string): string { return new URL(value).protocol
 export function integer(value: string): number { return parseInt(value, 16); }
 export function number(value: string): number { return Number(value); }
 export function keys(value: Record<string, string>): string[] { return Object.keys(value); }
+export function entries(value: Record<string, string>): [string, string][] { return Object.entries(value); }
 export function json(value: object): string { return JSON.stringify(value, null, 2); }
 export function compare(left: string, right: string, locale: string, options: Intl.CollatorOptions): number {
   return new Intl.Collator(locale, options).compare(left, right);
@@ -1244,6 +1245,7 @@ export function compare(left: string, right: string, locale: string, options: In
     expect(emitted.contents).toContain('flight::parse_int(value, 16.0)');
     expect(emitted.contents).toContain('flight::to_number(value)');
     expect(emitted.contents).toContain('flight::object_keys(value)');
+    expect(emitted.contents).toContain('flight::object_entries(value)');
     expect(emitted.contents).toContain('flight::Json::stringify(value, nullptr, 2.0)');
     expect(emitted.contents).toContain('flight::IntlCollator(locale, options).compare(left, right)');
   });
