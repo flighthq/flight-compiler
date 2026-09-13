@@ -1,4 +1,8 @@
-import { compareTextCodeUnits, normalizePathPortable } from '../../compiler-canonical-form/src/index.js';
+import {
+  compareTextCodeUnits,
+  normalizeCompilerStructuralValueCanonical,
+  normalizePathPortable,
+} from '../../compiler-canonical-form/src/index.js';
 import {
   analyzeIrTypeStructuralAssignability,
   createIrTypeParameterSubstitutionPlan,

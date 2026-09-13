@@ -108,7 +108,7 @@ function createConditionalBindingTypeInferenceModule(): IrModule {
 
 function createCompilerCppBindingTypeInferenceIdentifier(module: Readonly<IrModule>, name: string): IrExpression {
   const variable = getCompilerCppBindingTypeInferenceVariable(module, name);
-  return { kind: 'identifier', reference: { binding: variable.binding, kind: 'binding', path: [] } };
+  return { kind: 'identifier', reference: { binding: variable.binding, kind: 'binding' } };
 }
 
 function createSeededBindingTypeInferenceCycle(): IrModule {

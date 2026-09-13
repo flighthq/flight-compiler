@@ -961,10 +961,10 @@ function emitVariable(variable: Readonly<IrVariable>, context: EmitContext): str
   }
   const name = getBindingTargetName(variable.binding, context);
   const arrayElement = context.arrayElementBindingIds.has(variable.binding.id);
+  const weakMapViewInitializer =
+    !variable.mutable && variable.initializer?.kind === 'cast' ? variable.initializer : undefined;
   const weakMapViewPlan =
-    !variable.mutable && variable.initializer?.kind === 'cast'
-      ? getCppErasedWeakMapViewPlan(variable.initializer, context)
-      : undefined;
+    weakMapViewInitializer ? getCppErasedWeakMapViewPlan(weakMapViewInitializer, context) : undefined;
   const inferredInitializerType =
     !arrayElement &&
     !variable.mutable &&
@@ -989,8 +989,8 @@ function emitVariable(variable: Readonly<IrVariable>, context: EmitContext): str
   const constness = emitBindingConstnessCpp(variable.mutable, variable.type);
   const initializer = variable.initializer
     ? ` = ${
-        weakMapViewPlan
-          ? emitCppErasedWeakMapViewAcquisition(variable.initializer, weakMapViewPlan, context)
+        weakMapViewPlan && weakMapViewInitializer
+          ? emitCppErasedWeakMapViewAcquisition(weakMapViewInitializer, weakMapViewPlan, context)
           : arrayElement
             ? emitOptionalExpressionCpp(variable.initializer, context, variable.type)
             : emitExpression(
@@ -2775,7 +2775,7 @@ function emitCppConditionalFacetReferenceTypeCpp(
     if (
       rule.facet.kind !== 'named' ||
       rule.facet.reference.kind !== 'binding' ||
-      rule.facet.reference.binding.kind === 'import' ||
+      rule.facet.reference.binding.kind !== 'interface' ||
       rule.facet.reference.path.length > 0 ||
       rule.facet.typeArguments.length > 0
     ) {
