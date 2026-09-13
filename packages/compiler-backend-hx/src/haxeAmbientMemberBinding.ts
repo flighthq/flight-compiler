@@ -1,4 +1,10 @@
-import type { CompilerHaxeAmbientMemberBinding, IrResolvedMember } from '../../compiler-types/src/index.js';
+import { compareTextCodeUnits } from '../../compiler-canonical-form/src/index.js';
+import type {
+  CompilerHaxeAmbientMemberBinding,
+  CompilerHaxeAmbientMemberBindingPlan,
+  IrResolvedMember,
+  IrResolvedMemberReceiver,
+} from '../../compiler-types/src/index.js';
 
 // How Haxe spells a member of the ambient surface.
 //
@@ -11,6 +17,22 @@ export function getCompilerHaxeAmbientMemberBinding(
   member: Readonly<IrResolvedMember>,
 ): CompilerHaxeAmbientMemberBinding | undefined {
   return haxeAmbientMemberBindings[`${member.receiver}.${member.name}`];
+}
+
+export function createCompilerHaxeAmbientMemberBindingPlan(): CompilerHaxeAmbientMemberBindingPlan {
+  return {
+    bindings: Object.entries(haxeAmbientMemberBindings)
+      .sort(([left], [right]) => compareTextCodeUnits(left, right))
+      .map(([identity, binding]) => {
+        const separator = identity.indexOf('.');
+        return {
+          binding: structuredClone(binding),
+          receiver: identity.slice(0, separator) as IrResolvedMemberReceiver,
+          sourceMember: identity.slice(separator + 1),
+        };
+      }),
+    schema: 'flight-haxe-ambient-member-bindings/1',
+  };
 }
 
 const haxeAmbientMemberBindings: Readonly<Record<string, CompilerHaxeAmbientMemberBinding>> = {

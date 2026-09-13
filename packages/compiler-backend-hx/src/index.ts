@@ -3,8 +3,11 @@ export { createHaxeCompilerEmittedSourceParser } from './haxeCompilerEmittedSour
 export { convertPackageNameToHaxePackageName, convertSourcePathToHaxeModuleName } from './haxeCompilerIdentity.js';
 export { createHaxeCompilerTargetCompilationSmoke } from './haxeCompilerTargetCompilationSmoke.js';
 export { emitIrModuleHaxeExtern } from './haxeExternEmission.js';
+export { createCompilerHaxeAmbientMemberBindingPlan } from './haxeAmbientMemberBinding.js';
+export { createCompilerHaxeRuntimeAbiManifest } from './haxeRuntimeAbiManifest.js';
 export { createCompilerRuntimeExternalConstructorAbiPlanHaxe } from './haxeRuntimeExternalConstructorAbi.js';
 export {
+  createCompilerHaxeRuntimeExternalSymbolBindingPlan,
   createCompilerRuntimeExternalSymbolBindingPlanHaxe,
   getCompilerRuntimeExternalSymbolTargetHaxe,
 } from './haxeRuntimeExternalSymbolBinding.js';

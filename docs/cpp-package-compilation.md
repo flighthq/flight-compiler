@@ -13,7 +13,10 @@ The result report uses `flight-compiler-package-report/1` and contains:
 - dependency-closed partial output, so no reported file depends on a refused module;
 - source ownership and normalized dependencies for every emitted file;
 - package dependency and output-file inventories; and
-- the target-neutral ECMAScript module evaluation plan for the surviving entry closure.
+- the target-neutral ECMAScript module evaluation plan for the surviving entry closure;
+- the compiler-resolved type/value export lanes and re-export routes for every surviving entry;
+- the pinned TypeScript version and package-graph checker mode used for semantic evidence; and
+- when supplied by the selected backend, its versioned, machine-readable runtime ABI manifest.
 
 The C++ backend accepts a `packageTargets` record. Namespace and installed include identity are separate, so `@flighthq/types` can emit under namespace `flight::types` and include prefix `flight/types` without rewriting generated text.
 

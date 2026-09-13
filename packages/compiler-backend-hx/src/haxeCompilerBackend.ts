@@ -98,6 +98,7 @@ import {
 } from './haxeRuntimeExternalSymbolBinding.js';
 import { createCompilerRuntimeTaskCapabilityPlanHaxe } from './haxeRuntimeTaskCapability.js';
 import { emitCompilerHaxeTaskLoweringFunction } from './haxeTaskEmission.js';
+import { createCompilerHaxeRuntimeAbiManifest } from './haxeRuntimeAbiManifest.js';
 import { isCompilerHaxeTaskLoweringFailure, lowerCompilerAsyncStateMachinesHaxe } from './haxeTaskLowering.js';
 import { emitIrTypeHaxe } from './haxeTypeEmission.js';
 
@@ -206,6 +207,7 @@ export function createHaxeCompilerBackend(): CompilerBackend<HaxeCompilerBackend
           ];
     },
     name: 'haxe',
+    runtimeAbi: createCompilerHaxeRuntimeAbiManifest,
   };
 }
 
@@ -661,7 +663,7 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
         const left = emitExpression(expression.left, context);
         const right = emitExpression(expression.right, context);
         const binaryOp = expression.operator.slice(0, -1);
-        return `${left} = Std.int(${left}) ${binaryOp} Std.int(${right})`;
+        return `(${left} = Std.int(${left}) ${binaryOp} Std.int(${right}))`;
       }
       if (
         expression.operator === '**=' &&
@@ -670,7 +672,7 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
       ) {
         const left = emitExpression(expression.left, context);
         const right = emitExpression(expression.right, context);
-        return `${left} = Math.pow(${left}, ${right})`;
+        return `(${left} = Math.pow(${left}, ${right}))`;
       }
       if (expression.operator === '||=' || expression.operator === '&&=') {
         const left = emitExpression(expression.left, context);
@@ -706,7 +708,7 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
       if (runtimeAssignment) return runtimeAssignment;
       const left = emitExpression(expression.left, context);
       const right = emitAssignmentRightHaxe(expression, context);
-      return `${left} ${emitAssignmentOperatorHaxe(expression.operator, expression.semantics, context)} ${right}`;
+      return `(${left} ${emitAssignmentOperatorHaxe(expression.operator, expression.semantics, context)} ${right})`;
     }
     case 'await':
       emissionError(context, 'await requires the Haxe async-lowering pass');
@@ -779,6 +781,24 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
       return `(${left} ${op} ${right})`;
     }
     case 'call': {
+      if (expression.optional) {
+        if (expression.arguments.some((argument) => argument.kind === 'spread')) {
+          return emitSpreadCallHaxe(expression, context);
+        }
+        return emitOptionalCallHaxe(expression, context);
+      }
+      if (
+        expression.callee.kind === 'property' &&
+        expression.callee.object.kind === 'identifier' &&
+        expression.callee.object.reference.kind === 'ambient' &&
+        expression.callee.object.reference.name === 'Math' &&
+        (expression.callee.name === 'max' || expression.callee.name === 'min') &&
+        expression.arguments.length > 2
+      ) {
+        const method = expression.callee.name;
+        const values = expression.arguments.map((argument) => emitExpression(argument, context));
+        return values.slice(1).reduce((left, right) => `Math.${method}(${left}, ${right})`, values[0]!);
+      }
       // Haxe's `slice` takes a required position and counts in `Int`, where the source's takes
       // optional bounds and counts in its one numeric type. With no bounds at all the source means a
       // copy, which Haxe spells as `copy`.
@@ -791,6 +811,16 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
         if (expression.arguments.length === 0) return `${receiver}.copy()`;
         const bounds = expression.arguments.map((argument) => `Std.int(${emitExpression(argument, context)})`);
         return `${receiver}.slice(${bounds.join(', ')})`;
+      }
+      if (
+        expression.callee.kind === 'property' &&
+        expression.callee.member?.receiver === 'array' &&
+        expression.callee.member.name === 'push' &&
+        expression.arguments.length > 1
+      ) {
+        const receiver = emitExpression(expression.callee.object, context);
+        const values = expression.arguments.map((argument) => emitExpression(argument, context));
+        return `${context.options.runtimeModule ?? 'flighthq._internal'}._ArrayTools.pushMany(${receiver}, [${values.join(', ')}])`;
       }
       // Member mapping normally emits arguments while selecting the target spelling. A spread has
       // runtime arity, so it must take the reflective-call route before that fixed-arity mapper sees
@@ -837,6 +867,13 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
         expression.arguments.length === 1
       ) {
         return `Std.string(${emitExpression(expression.arguments[0]!, context)})`;
+      }
+      if (
+        expression.callee.kind === 'identifier' &&
+        expression.callee.reference.kind === 'ambient' &&
+        expression.callee.reference.name === 'Symbol'
+      ) {
+        return `new ${emitExpression(expression.callee, context)}(${emitCallArgumentsHaxe(expression, context)})`;
       }
       return `${expression.callee.kind === 'function' ? `(${emitExpression(expression.callee, context)})` : emitExpression(expression.callee, context)}${expression.optional ? '?.' : ''}(${emitCallArgumentsHaxe(expression, context)})`;
     }
@@ -2378,11 +2415,36 @@ function emitStringLiteralUnionHaxe(
   values: readonly string[],
   context: EmitContext,
 ): string[] {
+  const members = values.map((value) => ({ name: getStringLiteralEnumMemberNameHaxe(value), value }));
+  if (new Set(members.map(({ name }) => name)).size !== members.length) {
+    emissionError(context, `string literal union ${declaration.binding.name} has colliding Haxe member names`);
+  }
   return [
     `enum abstract ${getBindingTargetNameHaxe(declaration.binding, context)}(String) from String to String {`,
-    ...values.map((value) => `  var ${safeHaxeTypeName(value)} = ${JSON.stringify(value)};`),
+    ...members.map(({ name, value }) => `  var ${name} = ${JSON.stringify(value)};`),
     '}',
   ];
+}
+
+function getStringLiteralEnumMemberNameHaxe(value: string): string {
+  const operators: Readonly<Record<string, string>> = {
+    '!=': 'NotEqual',
+    '<': 'LessThan',
+    '<=': 'LessThanOrEqual',
+    '==': 'Equal',
+    '>': 'GreaterThan',
+    '>=': 'GreaterThanOrEqual',
+  };
+  const operator = operators[value];
+  if (operator) return operator;
+  if (value.length === 0) return 'Empty';
+  const words = value
+    .split(/[^A-Za-z0-9]+/u)
+    .filter(Boolean)
+    .map((part) => `${part.slice(0, 1).toUpperCase()}${part.slice(1)}`)
+    .join('');
+  const identifier = words || `Value${[...value].map((character) => character.codePointAt(0)!.toString(16)).join('_')}`;
+  return safeHaxeName(/^[0-9]/u.test(identifier) ? `Value${identifier}` : identifier);
 }
 
 function emitTypeAlias(declaration: Readonly<IrTypeAliasDeclaration>, context: EmitContext): string[] {
@@ -2629,9 +2691,22 @@ function emitTypeParameters(parameters: readonly IrTypeParameter[], context: Emi
   return `<${parameters
     .map(
       (parameter) =>
-        `${getBindingTargetNameHaxe(parameter.binding, context)}${parameter.constraint ? `:${emitType(parameter.constraint, context)}` : ''}`,
+        `${getBindingTargetNameHaxe(parameter.binding, context)}${parameter.constraint && parameter.constraint.kind !== 'function' ? `:${emitType(parameter.constraint, context)}` : ''}${parameter.default ? ` = ${emitType(parameter.default, context)}` : ''}`,
     )
     .join(', ')}>`;
+}
+
+function emitOptionalCallHaxe(
+  expression: Readonly<Extract<IrExpression, { kind: 'call' }>>,
+  context: EmitContext,
+): string {
+  const callable = getGeneratedTargetNameHaxe('optionalCall', context);
+  const args = expression.arguments.map((argument) => emitExpression(argument, context));
+  if (expression.callee.kind === 'property') {
+    const receiver = getGeneratedTargetNameHaxe('optionalCallReceiver', context);
+    return `(function() { final ${receiver}:Dynamic = ${emitExpression(expression.callee.object, context)}; final ${callable}:Dynamic = ${receiver}.${safeHaxeName(expression.callee.name)}; return ${callable} == null ? null : Reflect.callMethod(${receiver}, ${callable}, [${args.join(', ')}]); })()`;
+  }
+  return `(function() { final ${callable}:Dynamic = ${emitExpression(expression.callee, context)}; return ${callable} == null ? null : Reflect.callMethod(null, ${callable}, [${args.join(', ')}]); })()`;
 }
 
 function emitVariable(variable: Readonly<IrVariable>, context: EmitContext): string {

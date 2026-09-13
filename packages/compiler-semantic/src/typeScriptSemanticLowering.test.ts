@@ -3218,6 +3218,39 @@ describe('lowerTypeScriptSource', () => {
     });
   });
 
+  it('uses the pinned TypeScript standard library as project type evidence', () => {
+    const sourceFile = ts.createSourceFile(
+      '/flight/packages/math/src/dom-project-evidence.ts',
+      'export function offset(event: PointerEvent): number { return event.clientX + 1; }',
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const [result] = lowerTypeScriptSources([
+      { packageName: '@flighthq/math', sourceFile, upstreamDirectory: '/flight' },
+    ]);
+    if (!result) throw new Error('Expected project lowering result');
+    const [offset] = result.module.declarations;
+
+    expect(result.diagnostics).toEqual([]);
+    if (
+      offset?.kind !== 'function' ||
+      offset.body[0]?.kind !== 'return' ||
+      offset.body[0].expression?.kind !== 'binary'
+    ) {
+      throw new Error('Expected DOM-backed operator evidence');
+    }
+    expect(offset.parameters[0]?.type).toEqual({
+      kind: 'named',
+      reference: { kind: 'ambient', name: 'PointerEvent' },
+      typeArguments: [],
+    });
+    expect(offset.body[0].expression.semantics).toEqual({
+      left: { declared: 'number', flow: 'number' },
+      result: 'number',
+      right: { declared: 'number', flow: 'number' },
+    });
+  });
+
   it('preserves indexed receiver sets without target policy or union aliases', () => {
     const result = lower(
       'indexed-receivers.ts',

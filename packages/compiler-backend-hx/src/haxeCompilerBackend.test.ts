@@ -604,7 +604,50 @@ describe('emitIrModuleHaxe', () => {
       'export function emit<T extends (...args: any[]) => void>(slot: T, ...args: Parameters<T>): void { slot(...args); }',
     );
 
-    expect(emitIrModuleHaxe(result.module).contents).toContain('...args:Dynamic');
+    const output = emitIrModuleHaxe(result.module).contents;
+    expect(output).toContain('function emit<T>(slot:T, ...args:Dynamic):Void');
+  });
+
+  it('routes missing Math members and variadic extrema through exact Haxe spellings', () => {
+    const result = lower(
+      'math-members.ts',
+      'export function calculate(value: number): number { return Math.max(Math.log2(value), Math.sign(value), Math.trunc(value)); }',
+    );
+    const output = emitIrModuleHaxe(result.module, { runtimeModule: 'flight._internal' }).contents;
+
+    expect(output).toContain(
+      'Math.max(Math.max(flight._internal._Math.log2(value), flight._internal._Math.sign(value)), flight._internal._Math.trunc(value))',
+    );
+  });
+
+  it('uses the Haxe self-call constructor spelling for Symbol', () => {
+    const result = lower('symbol-call.ts', 'export function key(name: string): symbol { return Symbol(name); }');
+
+    expect(emitIrModuleHaxe(result.module, { runtimeModule: 'flight._internal' }).contents).toContain(
+      'return new flight._internal._Symbol(name);',
+    );
+  });
+
+  it('uses the runtime helper for multi-value Array.push', () => {
+    const result = lower(
+      'push-many.ts',
+      'export function append(values: number[]): number { return values.push(1, 2); }',
+    );
+
+    expect(emitIrModuleHaxe(result.module, { runtimeModule: 'flight._internal' }).contents).toContain(
+      'flight._internal._ArrayTools.pushMany(values, [1, 2])',
+    );
+  });
+
+  it('emits source generic defaults and Promise void carriers accepted by Haxe', () => {
+    const result = lower(
+      'generic-defaults.ts',
+      'export type Box<Value = string> = { value: Value }; export function settle(task: Promise<void>): Promise<void> { return task; }',
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('typedef Box<Value = String>');
+    expect(output).toContain('_Promise<Dynamic>');
   });
 
   it('elects C-style for lowering without lowering native Haxe default parameters', () => {
@@ -1034,7 +1077,9 @@ describe('emitIrModuleHaxe', () => {
     expect(output).toContain(
       'final optionalIndexedValue:Dynamic = values; return optionalIndexedValue == null ? null : optionalIndexedValue[0];',
     );
-    expect(output).toContain('return callback?.();');
+    expect(output).toContain(
+      'final optionalCall:Dynamic = callback; return optionalCall == null ? null : Reflect.callMethod(null, optionalCall, []);',
+    );
   });
 
   it('emits expression-position destructuring with the original aggregate completion value', () => {
@@ -2377,6 +2422,24 @@ describe('emitIrModuleHaxe type coverage', () => {
     expect(output).toContain('enum abstract Direction(String) from String to String');
     expect(output).toContain('var North = "north";');
     expect(output).toContain('var South = "south";');
+  });
+
+  it('allocates valid stable names for symbolic string literal members', () => {
+    const result = lower('symbolic-string-union.ts', "export type Comparison = '' | '!=' | '<=' | 'two-words' | '2d';");
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('var Empty = "";');
+    expect(output).toContain('var NotEqual = "!=";');
+    expect(output).toContain('var LessThanOrEqual = "<=";');
+    expect(output).toContain('var TwoWords = "two-words";');
+    expect(output).toContain('var Value2d = "2d";');
+  });
+
+  it('parenthesizes nested callback returns in Haxe function types', () => {
+    const result = lower('nested-callback.ts', 'export type Factory = () => () => void;');
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('typedef Factory = ()->(()->Void);');
   });
 
   it('emits union of record types as flattened anonymous structure', () => {

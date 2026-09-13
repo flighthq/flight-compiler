@@ -16,6 +16,7 @@ import type {
   HaxeCompilerBackendOptions,
   IrBindingIdentity,
   IrDeclaration,
+  IrEnumDeclaration,
   IrFunctionDeclaration,
   IrFunctionSignature,
   IrInterfaceDeclaration,
@@ -109,9 +110,11 @@ export function emitIrModuleHaxeExternWithContext(
     rootPackage: getRootPackageHaxeExtern(module.packageName, options),
   };
   assertModuleShapeHaxeExtern(context);
-  const files = module.declarations.flatMap((declaration) =>
-    declaration.kind === 'interface' ? emitInterfaceFilesHaxeExtern(declaration, context) : [],
-  );
+  const files = module.declarations.flatMap((declaration) => {
+    if (declaration.kind === 'interface') return emitInterfaceFilesHaxeExtern(declaration, context);
+    if (declaration.kind === 'enum') return emitEnumFilesHaxeExtern(declaration, context);
+    return [];
+  });
   if (isPackageHolderOwnerHaxeExtern(module, modules)) {
     const holder = emitPackageHolderHaxeExtern(module.packageName, context);
     if (holder) files.push(holder);
@@ -137,12 +140,6 @@ function assertModuleShapeHaxeExtern(context: HaxeExternEmissionContext): void {
           `source class ${location.declaration.binding.name} extern representation is not yet specified by flight-hx`,
         );
       }
-      if (location.declaration.kind === 'enum') {
-        emissionErrorHaxeExtern(
-          context,
-          `source enum ${location.declaration.binding.name} extern representation is not yet specified by flight-hx`,
-        );
-      }
     }
     return;
   }
@@ -160,12 +157,6 @@ function assertModuleShapeHaxeExtern(context: HaxeExternEmissionContext): void {
         `source class ${declaration.binding.name} extern representation is not yet specified by flight-hx`,
       );
     }
-    if (declaration.kind === 'enum') {
-      emissionErrorHaxeExtern(
-        context,
-        `source enum ${declaration.binding.name} extern representation is not yet specified by flight-hx`,
-      );
-    }
     if (declaration.kind === 'variable' && !('binding' in declaration)) {
       emissionErrorHaxeExtern(
         context,
@@ -173,6 +164,64 @@ function assertModuleShapeHaxeExtern(context: HaxeExternEmissionContext): void {
       );
     }
   }
+}
+
+function emitEnumFilesHaxeExtern(
+  declaration: Readonly<IrEnumDeclaration>,
+  context: HaxeExternEmissionContext,
+): EmittedFile[] {
+  const kinds = new Set(declaration.members.map((member) => typeof member.value));
+  if (kinds.size > 1) {
+    emissionErrorHaxeExtern(context, `enum ${declaration.binding.name} mixes string and numeric values`);
+  }
+  if (declaration.members.some((member) => typeof member.value === 'number' && !Number.isFinite(member.value))) {
+    emissionErrorHaxeExtern(context, `enum ${declaration.binding.name} has a non-finite numeric value`);
+  }
+  const underlying = kinds.has('string')
+    ? 'String'
+    : declaration.members.some((member) => !Number.isInteger(member.value))
+      ? 'Float'
+      : 'Int';
+  return getDeclarationExportNamesHaxeExtern(declaration, context, 'type').map((exportName) => {
+    const targetName = safeHaxeExternTypeName(exportName);
+    const packageName = `${context.rootPackage}._js`;
+    const namespaceFunctions = getIrEnumNamespaceFunctionsHaxeExtern(declaration, context);
+    const lines = [
+      createCompilerGeneratedFileHeader(context.module, '//', context.options.upstreamCommit),
+      '#if js',
+      `package ${packageName};`,
+      '',
+      `@:jsImport(${JSON.stringify(`${context.module.packageName}/contract`)}, ${JSON.stringify(exportName)})`,
+      `enum abstract ${targetName}(${underlying}) from ${underlying} to ${underlying} {`,
+      ...declaration.members.map(
+        (member) =>
+          `  var ${safeHaxeExternName(member.name)} = ${typeof member.value === 'string' ? JSON.stringify(member.value) : String(member.value)};`,
+      ),
+      ...namespaceFunctions.flatMap((declaration) => [
+        '',
+        `  public static extern ${emitFunctionSignatureHaxeExtern(safeHaxeExternName(declaration.binding.name), declaration, context)}`,
+      ]),
+      '}',
+      '#end',
+    ];
+    return {
+      contents: lines.join('\n'),
+      path: `${packageName.replaceAll('.', '/')}/${targetName}.hx`,
+    };
+  });
+}
+
+function getIrEnumNamespaceFunctionsHaxeExtern(
+  declaration: Readonly<IrEnumDeclaration>,
+  context: HaxeExternEmissionContext,
+): readonly Readonly<IrFunctionDeclaration>[] {
+  return context.module.declarations.filter(
+    (candidate): candidate is IrFunctionDeclaration =>
+      candidate.kind === 'function' &&
+      candidate.namespaceMember?.kind === 'binding' &&
+      candidate.namespaceMember.binding.id === declaration.binding.id &&
+      candidate.namespaceMember.path.length === 1,
+  );
 }
 
 function emitInterfaceFilesHaxeExtern(
@@ -400,8 +449,12 @@ function emitTypeParametersHaxeExtern(
   if (parameters.length === 0) return '';
   return `<${parameters
     .map((parameter) => {
-      const constraint = parameter.constraint ? `:${emitTypeHaxeExtern(parameter.constraint, context)}` : '';
-      return `${safeHaxeExternTypeName(parameter.binding.name)}${constraint}`;
+      const constraint =
+        parameter.constraint && parameter.constraint.kind !== 'function'
+          ? `:${emitTypeHaxeExtern(parameter.constraint, context)}`
+          : '';
+      const default_ = parameter.default ? ` = ${emitTypeHaxeExtern(parameter.default, context)}` : '';
+      return `${safeHaxeExternTypeName(parameter.binding.name)}${constraint}${default_}`;
     })
     .join(', ')}>`;
 }
@@ -647,10 +700,10 @@ function getTypeBindingTargetHaxeExtern(
     )
     .at(0);
   const declaration = declarationLocation?.declaration;
-  if (declaration?.kind === 'class' || declaration?.kind === 'enum') {
+  if (declaration?.kind === 'class') {
     emissionErrorHaxeExtern(
       context,
-      `source ${declaration.kind} ${declaration.binding.name} extern representation is not yet specified by flight-hx`,
+      `source class ${declaration.binding.name} extern representation is not yet specified by flight-hx`,
     );
   }
   const localExport = declarationLocation

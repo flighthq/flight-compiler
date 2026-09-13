@@ -1,8 +1,8 @@
 import type { IrBinaryOperator, IrOperatorValueDomain, IrType } from '../../compiler-types/src/index.js';
 
-// The analysis checker runs with `noLib`, so it often cannot type a whole binary expression even
-// when both operands are known. The result of an operator over known operand domains is a property
-// of the source language rather than of any target, so it belongs here rather than in a backend.
+// A checker can still leave a whole binary expression unresolved when generic or cyclic evidence is
+// involved. The result of an operator over known operand domains is a property of the source
+// language rather than of any target, so it belongs here rather than in a backend.
 export function getIrBinaryOperatorResultDomain(
   operator: IrBinaryOperator,
   left: IrOperatorValueDomain,

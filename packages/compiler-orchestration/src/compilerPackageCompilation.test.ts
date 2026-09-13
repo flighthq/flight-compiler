@@ -82,6 +82,28 @@ describe('compileTypeScriptPackageGraph', () => {
       modelIdentity,
       rendererIdentity,
     ]);
+    expect(result.report.exports).toMatchObject({
+      modules: [
+        {
+          module: rendererIdentity,
+          slots: [expect.objectContaining({ exportName: 'render', lane: 'value' })],
+        },
+      ],
+      schema: 'flight-compiler-module-facade/1',
+    });
+    expect(result.report.typescript).toEqual({
+      checkerMode: 'package-graph-program',
+      compilerOptions: {
+        module: 'ESNext',
+        moduleResolution: 'compiler-graph-with-typescript-fallback',
+        noImplicitAny: true,
+        standardLibrary: 'typescript-bundled',
+        strictNullChecks: true,
+        target: 'ESNext',
+      },
+      schema: 'flight-compiler-typescript-analysis/1',
+      typescriptVersion: '5.9.3',
+    });
     expect(result.report.packages).toEqual([
       {
         dependencies: ['@flighthq/types'],

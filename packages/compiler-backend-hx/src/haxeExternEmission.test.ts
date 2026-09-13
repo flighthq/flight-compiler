@@ -225,6 +225,14 @@ describe('emitIrModuleHaxeExtern', () => {
     expect(typedef.contents).toContain('function validate(value:Float):Value;');
   });
 
+  it('preserves public type parameter defaults', () => {
+    const module = lower('@flighthq/types', 'box.ts', 'export interface Box<Value = string> { value: Value }');
+
+    expect(findFile(emitIrModuleHaxeExtern(module), 'flighthq/_js/Box.hx').contents).toContain(
+      'typedef Box<Value = String> = {',
+    );
+  });
+
   it('emits generic package functions, rest parameters, and untyped variables', () => {
     const module = lower(
       '@flighthq/types',
@@ -254,17 +262,41 @@ describe('emitIrModuleHaxeExtern', () => {
     ).not.toContain('return 1;');
   });
 
-  it.each([
-    ['class', 'export class Model {}', 'source class Model extern representation is not yet specified by flight-hx'],
-    [
-      'enum',
-      "export enum Mode { Ready = 'ready' }",
-      'source enum Mode extern representation is not yet specified by flight-hx',
-    ],
-  ])('refuses exported source %s declarations', (_kind, source, message) => {
-    const module = lower('@flighthq/types', 'unsupported.ts', source);
+  it('refuses exported source classes', () => {
+    const module = lower('@flighthq/types', 'unsupported.ts', 'export class Model {}');
 
-    expect(() => emitIrModuleHaxeExtern(module)).toThrow(message);
+    expect(() => emitIrModuleHaxeExtern(module)).toThrow(
+      'source class Model extern representation is not yet specified by flight-hx',
+    );
+  });
+
+  it('emits source enums as exact Haxe enum abstracts', () => {
+    const module = lower(
+      '@flighthq/types',
+      'modes.ts',
+      "export enum Mode { None = 0, Ready = 1 } export enum Label { Ready = 'ready' }",
+    );
+
+    const files = emitIrModuleHaxeExtern(module);
+
+    expect(findFile(files, 'flighthq/_js/Mode.hx').contents).toContain(
+      '@:jsImport("@flighthq/types/contract", "Mode")\nenum abstract Mode(Int) from Int to Int {\n  var None = 0;\n  var Ready = 1;\n}',
+    );
+    expect(findFile(files, 'flighthq/_js/Label.hx').contents).toContain(
+      '@:jsImport("@flighthq/types/contract", "Label")\nenum abstract Label(String) from String to String {\n  var Ready = "ready";\n}',
+    );
+  });
+
+  it('binds merged enum namespace functions through the public contract export', () => {
+    const module = lower(
+      '@flighthq/types',
+      'flags.ts',
+      'export enum Flags { None = 0, Visible = 1 } export namespace Flags { export function any(flags: Flags, test: Flags): boolean { return (flags & test) !== 0; } }',
+    );
+
+    const contents = findFile(emitIrModuleHaxeExtern(module), 'flighthq/_js/Flags.hx').contents;
+
+    expect(contents).toContain('public static extern function any(flags:Flags, test:Flags):Bool;');
   });
 
   it('preserves keyword export identity with native metadata on the package holder', () => {

@@ -9,11 +9,12 @@ import {
 } from '../../compiler-emission/src/index.js';
 import { isCompilerLoweringFailure } from '../../compiler-lowering/src/index.js';
 import {
+  createCompilerModuleFacadePlanForEntries,
   createCompilerModuleEvaluationPlan,
   isCompilerModuleEvaluationFailure,
 } from '../../compiler-module/src/index.js';
 import { applySemanticPatchSet } from '../../compiler-patch/src/index.js';
-import { lowerTypeScriptSources } from '../../compiler-semantic/src/index.js';
+import { createCompilerTypeScriptAnalysisIdentity, lowerTypeScriptSources } from '../../compiler-semantic/src/index.js';
 import type {
   CompileTypeScriptPackageGraphOptions,
   CompilerDiagnostic,
@@ -127,6 +128,7 @@ export function compileTypeScriptPackageGraph<BackendOptions>(
   propagateCompilerPackageGraphRefusals(records, moduleDependencies);
   const initialization = createCompilerPackageGraphInitialization(records, graphEntries, moduleDependencies);
   propagateCompilerPackageGraphRefusals(records, moduleDependencies);
+  const exports = createCompilerPackageGraphExportPlan(modules, initialization);
 
   const files = [...records.values()]
     .filter((record) => record.refusals.length === 0)
@@ -142,6 +144,7 @@ export function compileTypeScriptPackageGraph<BackendOptions>(
     report: {
       backend: options.backend.name,
       entries: graphEntries.map(cloneCompilerPackageGraphIdentity).sort(compareCompilerPackageGraphModules),
+      exports,
       files: fileReports,
       initialization,
       modules: moduleReports,
@@ -154,9 +157,28 @@ export function compileTypeScriptPackageGraph<BackendOptions>(
           outputFiles: packageModules.flatMap((module) => module.outputFiles).sort(compareTextCodeUnits),
         };
       }),
+      ...(options.backend.runtimeAbi ? { runtimeAbi: options.backend.runtimeAbi() } : {}),
       schema: 'flight-compiler-package-report/1',
+      typescript: createCompilerTypeScriptAnalysisIdentity(),
     },
   };
+}
+
+function createCompilerPackageGraphExportPlan(
+  modules: readonly Readonly<IrModule>[],
+  initialization: Readonly<ReturnType<typeof createCompilerModuleEvaluationPlan>>,
+) {
+  const available = new Set(initialization.modules.map(({ module }) => getCompilerPackageGraphModuleKey(module)));
+  const facadeModules = modules
+    .filter((module) => available.has(getCompilerPackageGraphModuleKey(module)))
+    .map((module) => ({
+      ...module,
+      exports: [...new Map(module.exports.map((exported) => [JSON.stringify(exported), exported])).values()],
+    }));
+  return createCompilerModuleFacadePlanForEntries(
+    { evaluation: initialization, modules: facadeModules },
+    initialization.entries,
+  );
 }
 
 export function isCompilerPackageGraphFailure(value: unknown): value is CompilerPackageGraphFailure {

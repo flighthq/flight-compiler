@@ -10,9 +10,12 @@ import type {
   CompilerModuleLinkDependency,
 } from './compilerModuleEvaluationContract.js';
 import type { CompilerModuleResolutionPlan } from './compilerModuleResolutionContract.js';
+import type { CompilerModuleFacadePlan } from './compilerModuleFacadeContract.js';
 import type { PatchAudit, SemanticPatch } from './compilerSemanticPatchContract.js';
 import type { CompilerModuleIdentity } from './compilerSourceIdentity.js';
 import type { CompilerTargetCompilationSmoke } from './compilerTargetCompilationSmokeContract.js';
+import type { CompilerRuntimeAbiManifest } from './compilerRuntimeContract.js';
+import type { CompilerTypeScriptAnalysisIdentity } from './compilerTypeScriptContract.js';
 
 export interface CompilerPackageGraphPackage {
   readonly dependencies: readonly string[];
@@ -102,11 +105,15 @@ export interface CompilerPackageCompilationPackageReport {
 export interface CompilerPackageCompilationReport {
   readonly backend: string;
   readonly entries: readonly CompilerModuleIdentity[];
+  /** Compiler-resolved public lanes and routes for every successfully emitted entry module. */
+  readonly exports: CompilerModuleFacadePlan;
   readonly files: readonly CompilerPackageCompilationFileReport[];
   readonly initialization: CompilerModuleEvaluationPlan;
   readonly modules: readonly CompilerPackageCompilationModuleReport[];
   readonly packages: readonly CompilerPackageCompilationPackageReport[];
+  readonly runtimeAbi?: CompilerRuntimeAbiManifest | undefined;
   readonly schema: 'flight-compiler-package-report/1';
+  readonly typescript: CompilerTypeScriptAnalysisIdentity;
 }
 
 export interface CompilerPackageCompilationResult {

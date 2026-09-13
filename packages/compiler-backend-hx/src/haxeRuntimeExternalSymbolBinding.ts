@@ -1,5 +1,6 @@
 import type {
   CompilerRuntimeCapabilityName,
+  CompilerHaxeRuntimeExternalSymbolBindingPlan,
   CompilerRuntimeExternalMemberBinding,
   CompilerRuntimeExternalSymbolBinding,
   CompilerRuntimeExternalSymbolBindingPlan,
@@ -29,20 +30,41 @@ type HaxeRuntimeExternalSymbolBinding =
     }>;
 
 export function createCompilerRuntimeExternalSymbolBindingPlanHaxe(): CompilerRuntimeExternalSymbolBindingPlan {
+  const targetPlan = createCompilerHaxeRuntimeExternalSymbolBindingPlan();
   return {
-    bindings: haxeRuntimeExternalSymbolBindings.map((binding) =>
+    bindings: targetPlan.bindings.map((binding) =>
       binding.kind === 'runtime'
         ? {
             capability: binding.capability,
-            externalSymbol: { sourceName: binding.sourceName, space: binding.space },
+            externalSymbol: { ...binding.externalSymbol },
             kind: binding.kind,
           }
         : {
-            externalSymbol: { sourceName: binding.sourceName, space: binding.space },
+            externalSymbol: { ...binding.externalSymbol },
             kind: binding.kind,
           },
     ),
+    contract: targetPlan.contract,
+  };
+}
+
+export function createCompilerHaxeRuntimeExternalSymbolBindingPlan(): CompilerHaxeRuntimeExternalSymbolBindingPlan {
+  return {
+    bindings: haxeRuntimeExternalSymbolBindings.map((sourceBinding) => {
+      const binding: HaxeRuntimeExternalSymbolBinding = sourceBinding;
+      return {
+        ...(binding.kind === 'runtime' ? { capability: binding.capability } : {}),
+        externalSymbol: { sourceName: binding.sourceName, space: binding.space },
+        kind: binding.kind,
+        ...(binding.members ? { members: structuredClone(binding.members) } : {}),
+        ...(binding.kind === 'native' && binding.runtimeMembers
+          ? { runtimeMembers: structuredClone(binding.runtimeMembers) }
+          : {}),
+        targetName: binding.targetName,
+      };
+    }),
     contract: 'flight-runtime-contract/2',
+    schema: 'flight-haxe-runtime-external-symbol-bindings/1',
   };
 }
 
@@ -198,8 +220,16 @@ const haxeRuntimeExternalSymbolBindings = [
   { kind: 'native', sourceName: 'ArrayBufferLike', space: 'type', targetName: 'haxe.io.Bytes' },
   { kind: 'native', sourceName: 'ArrayBufferView', space: 'type', targetName: 'haxe.io.ArrayBufferView' },
   { kind: 'native', sourceName: 'ArrayLike', space: 'type', targetName: 'Dynamic' },
+  {
+    capability: 'async-iterable',
+    kind: 'runtime',
+    sourceName: 'AsyncIterable',
+    space: 'type',
+    targetName: '_AsyncIterable',
+  },
   { kind: 'native', sourceName: 'AudioBuffer', space: 'type', targetName: 'js.html.audio.AudioBuffer' },
   { kind: 'native', sourceName: 'AudioContext', space: 'type', targetName: 'js.html.audio.AudioContext' },
+  { kind: 'native', sourceName: 'AudioNode', space: 'type', targetName: 'js.html.audio.AudioNode' },
   { kind: 'native', sourceName: 'Blob', space: 'type', targetName: 'js.html.Blob' },
   { kind: 'native', sourceName: 'Boolean', space: 'type', targetName: 'Bool' },
   { kind: 'native', sourceName: 'CanvasFillRule', space: 'type', targetName: 'js.html.CanvasWindingRule' },
@@ -235,6 +265,7 @@ const haxeRuntimeExternalSymbolBindings = [
   },
   { kind: 'native', sourceName: 'FontFace', space: 'type', targetName: 'js.html.FontFace' },
   { kind: 'native', sourceName: 'GlobalCompositeOperation', space: 'type', targetName: 'js.html.CompositeOperation' },
+  { kind: 'native', sourceName: 'GPUAdapter', space: 'type', targetName: 'Dynamic' },
   { kind: 'native', sourceName: 'GPUBindGroup', space: 'type', targetName: 'Dynamic' },
   { kind: 'native', sourceName: 'GPUBindGroupLayout', space: 'type', targetName: 'Dynamic' },
   { kind: 'native', sourceName: 'GPUBuffer', space: 'type', targetName: 'Dynamic' },
@@ -243,8 +274,10 @@ const haxeRuntimeExternalSymbolBindings = [
   { kind: 'native', sourceName: 'GPUDevice', space: 'type', targetName: 'Dynamic' },
   { kind: 'native', sourceName: 'GPUDeviceLostInfo', space: 'type', targetName: 'Dynamic' },
   { kind: 'native', sourceName: 'GPUIndexFormat', space: 'type', targetName: 'String' },
+  { kind: 'native', sourceName: 'GPULoadOp', space: 'type', targetName: 'String' },
   { kind: 'native', sourceName: 'GPUPipelineLayout', space: 'type', targetName: 'Dynamic' },
   { kind: 'native', sourceName: 'GPUPowerPreference', space: 'type', targetName: 'String' },
+  { kind: 'native', sourceName: 'GPUPrimitiveTopology', space: 'type', targetName: 'String' },
   { kind: 'native', sourceName: 'GPURenderPassEncoder', space: 'type', targetName: 'Dynamic' },
   { kind: 'native', sourceName: 'GPURenderPipeline', space: 'type', targetName: 'Dynamic' },
   { kind: 'native', sourceName: 'GPUSampler', space: 'type', targetName: 'Dynamic' },
@@ -254,7 +287,11 @@ const haxeRuntimeExternalSymbolBindings = [
   { kind: 'native', sourceName: 'GPUTextureView', space: 'type', targetName: 'Dynamic' },
   { kind: 'native', sourceName: 'GPUVertexBufferLayout', space: 'type', targetName: 'Dynamic' },
   { kind: 'native', sourceName: 'HTMLCanvasElement', space: 'type', targetName: 'js.html.CanvasElement' },
+  { kind: 'native', sourceName: 'HTMLDivElement', space: 'type', targetName: 'js.html.DivElement' },
   { kind: 'native', sourceName: 'HTMLElement', space: 'type', targetName: 'js.html.Element' },
+  { kind: 'native', sourceName: 'HTMLImageElement', space: 'type', targetName: 'js.html.ImageElement' },
+  { kind: 'native', sourceName: 'HTMLVideoElement', space: 'type', targetName: 'js.html.VideoElement' },
+  { kind: 'native', sourceName: 'ImageBitmap', space: 'type', targetName: 'js.html.ImageBitmap' },
   { kind: 'native', sourceName: 'ImageSmoothingQuality', space: 'type', targetName: 'String' },
   {
     capability: 'float32-array',
@@ -345,7 +382,17 @@ const haxeRuntimeExternalSymbolBindings = [
   { capability: 'map', kind: 'runtime', sourceName: 'Map', space: 'type', targetName: '_Map' },
   { capability: 'map', kind: 'runtime', sourceName: 'Map', space: 'value', targetName: '_Map' },
   { kind: 'native', sourceName: 'Infinity', space: 'value', targetName: 'Math.POSITIVE_INFINITY' },
-  { kind: 'native', sourceName: 'Math', space: 'value', targetName: 'Math' },
+  {
+    kind: 'native',
+    runtimeMembers: [
+      { sourceMember: 'log2', targetName: '_Math.log2' },
+      { sourceMember: 'sign', targetName: '_Math.sign' },
+      { sourceMember: 'trunc', targetName: '_Math.trunc' },
+    ],
+    sourceName: 'Math',
+    space: 'value',
+    targetName: 'Math',
+  },
   { kind: 'native', sourceName: 'NaN', space: 'value', targetName: 'Math.NaN' },
   {
     kind: 'native',
@@ -515,6 +562,7 @@ const haxeRuntimeExternalSymbolBindings = [
   { kind: 'native', sourceName: 'WebGLPowerPreference', space: 'type', targetName: 'js.html.webgl.PowerPreference' },
   { kind: 'native', sourceName: 'WebGLProgram', space: 'type', targetName: 'js.html.webgl.Program' },
   { kind: 'native', sourceName: 'WebGLRenderbuffer', space: 'type', targetName: 'js.html.webgl.Renderbuffer' },
+  { kind: 'native', sourceName: 'WebGLShader', space: 'type', targetName: 'js.html.webgl.Shader' },
   { kind: 'native', sourceName: 'WebGLTexture', space: 'type', targetName: 'js.html.webgl.Texture' },
   {
     kind: 'native',
@@ -534,6 +582,7 @@ const haxeRuntimeExternalSymbolBindings = [
     space: 'type',
     targetName: 'js.html.webgl.VertexArrayObject',
   },
+  { kind: 'native', sourceName: 'PointerEvent', space: 'type', targetName: 'js.html.PointerEvent' },
   { kind: 'native', sourceName: 'WritableStream', space: 'type', targetName: 'Dynamic' },
   { capability: 'json', kind: 'runtime', sourceName: 'JSON', space: 'value', targetName: '_Json' },
   {

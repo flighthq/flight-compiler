@@ -37,9 +37,9 @@ export function getTypeScriptSyntacticExpressionTypeEvidence(
   return getTypeScriptSyntacticExpressionTypeEvidenceAt(expression, checker, new Set());
 }
 
-// The analysis checker runs with `noLib` and `noResolve`, so a library type such as `Promise<T>`
-// never resolves and the checker reports its awaited type as unknown. The type argument is right
-// there in the source, though, which is what this evidence reads.
+// Keep direct source evidence as a deterministic fallback when a project declaration is incomplete
+// or a type is cyclic. The type argument is already explicit here, so recovering it does not guess at
+// target semantics.
 function getTypeScriptSyntacticAwaitedTypeEvidence(type: ts.TypeNode | undefined): ts.TypeNode | undefined {
   if (!type || !ts.isTypeReferenceNode(type) || type.typeArguments?.length !== 1) return undefined;
   const name = ts.isIdentifier(type.typeName) ? type.typeName.text : type.typeName.right.text;

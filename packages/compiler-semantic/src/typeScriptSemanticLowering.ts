@@ -79,6 +79,7 @@ import type {
   IrVariable,
   IrVariableDeclaration,
   TypeScriptLoweringResult,
+  CompilerTypeScriptAnalysisIdentity,
   TypeScriptModuleInput,
   TypeScriptInvocationSignatureResolution,
   LowerTypeScriptSourceOptions,
@@ -140,7 +141,11 @@ export function lowerTypeScriptSource(
   sourceFile: ts.SourceFile,
   options: Readonly<LowerTypeScriptSourceOptions>,
 ): TypeScriptLoweringResult {
-  const analysis = createTypeScriptAnalysis([{ ...options, sourceFile }], compilerEmptyModuleResolutionPlan);
+  const analysis = createTypeScriptAnalysis(
+    [{ ...options, sourceFile }],
+    compilerEmptyModuleResolutionPlan,
+    'isolated',
+  );
   return lowerTypeScriptSourceWithAnalysis(
     analysis.sourceFiles[0]!,
     options,
@@ -150,11 +155,27 @@ export function lowerTypeScriptSource(
   );
 }
 
+export function createCompilerTypeScriptAnalysisIdentity(): CompilerTypeScriptAnalysisIdentity {
+  return {
+    checkerMode: 'package-graph-program',
+    compilerOptions: {
+      module: 'ESNext',
+      moduleResolution: 'compiler-graph-with-typescript-fallback',
+      noImplicitAny: true,
+      standardLibrary: 'typescript-bundled',
+      strictNullChecks: true,
+      target: 'ESNext',
+    },
+    schema: 'flight-compiler-typescript-analysis/1',
+    typescriptVersion: ts.version,
+  };
+}
+
 export function lowerTypeScriptSources(
   sources: readonly Readonly<TypeScriptModuleInput>[],
   moduleResolution: Readonly<CompilerModuleResolutionPlan> = compilerEmptyModuleResolutionPlan,
 ): readonly TypeScriptLoweringResult[] {
-  const analysis = createTypeScriptAnalysis(sources, moduleResolution);
+  const analysis = createTypeScriptAnalysis(sources, moduleResolution, 'project');
   const analysisModuleOptions = new Map(
     sources.map(({ packageName, sourceFile, upstreamDirectory }) => [
       sourceFile.fileName,
@@ -3711,7 +3732,7 @@ function lowerTypeNameNodeReference(
   const parts = getTypeNameNodeParts(node);
   if (!parts) return { kind: 'ambient', name: getTypeScriptNodeText(node, context) };
   const symbol = context.checker.getSymbolAtLocation(parts.root);
-  if (isTypeScriptAmbientSurfaceSymbol(symbol)) {
+  if (isTypeScriptAmbientSymbol(symbol, context)) {
     return { kind: 'ambient', name: getTypeScriptNodeText(node, context) };
   }
   if (symbol?.declarations?.some(isTypeBindingDeclaration)) {
@@ -3743,7 +3764,7 @@ function lowerValueNameReference(node: ts.EntityName | ts.Expression, context: L
   const parts = getTypeNameNodeParts(node);
   if (!parts) return { kind: 'ambient', name: getTypeScriptNodeText(node, context) };
   const symbol = context.checker.getSymbolAtLocation(parts.root);
-  return symbol?.declarations?.some(isValueBindingDeclaration) && !isTypeScriptAmbientSurfaceSymbol(symbol)
+  return symbol?.declarations?.some(isValueBindingDeclaration) && !isTypeScriptAmbientSymbol(symbol, context)
     ? { binding: lowerBindingSymbol(symbol, parts.root, context), kind: 'binding', path: parts.path }
     : { kind: 'ambient', name: getTypeScriptNodeText(node, context) };
 }
@@ -4728,7 +4749,7 @@ function lowerTypeScriptInterfacePropertiesEvidence(
           ts.isInterfaceDeclaration(candidate) ||
           ts.isTypeAliasDeclaration(candidate),
       );
-      if (!symbol || !base || isTypeScriptAmbientSurfaceSymbol(symbol)) {
+      if (!symbol || !base || isTypeScriptAmbientSymbol(symbol, context)) {
         const utilityProperties = lowerTypeScriptUnresolvedUtilityHeritageProperties(
           heritage,
           context,
@@ -6134,10 +6155,7 @@ function getTypeScriptCheckerNamedTypeEvidence(
   // continue to structural lowering rather than escape as runtime ambient dependencies.
   if (!symbol || symbol.name === '__type' || symbol.name === '__object') return undefined;
   const binding = getTypeScriptCheckerTypeBinding(symbol, context);
-  const ambient =
-    symbol.declarations?.some(
-      (declaration) => declaration.getSourceFile().fileName === getCompilerAmbientSurfaceFileName(),
-    ) === true;
+  const ambient = isTypeScriptAmbientSymbol(symbol, context);
   if (!binding && !ambient) return undefined;
   const typeArguments = getTypeScriptCheckerTypeArguments(type, context.checker);
   const loweredArguments = typeArguments.flatMap((argument) => {
@@ -6149,15 +6167,17 @@ function getTypeScriptCheckerNamedTypeEvidence(
     kind: 'named',
     reference: binding
       ? { binding, kind: 'binding', path: [] }
-      : { kind: 'ambient', name: getTypeScriptAmbientSymbolName(symbol) },
+      : { kind: 'ambient', name: getTypeScriptAmbientSymbolName(symbol, context) },
     typeArguments: loweredArguments,
   };
 }
 
-function getTypeScriptAmbientSymbolName(symbol: ts.Symbol): string {
-  const declaration = symbol.declarations?.find(
-    (candidate) => candidate.getSourceFile().fileName === getCompilerAmbientSurfaceFileName(),
-  );
+function getTypeScriptAmbientSymbolName(symbol: ts.Symbol, context: LoweringContext): string {
+  const declaration =
+    symbol.declarations?.find(
+      (candidate) => candidate.getSourceFile().fileName === getCompilerAmbientSurfaceFileName(),
+    ) ??
+    symbol.declarations?.find((candidate) => !context.analysisModuleOptions.has(candidate.getSourceFile().fileName));
   const namespaceNames: string[] = [];
   for (let parent = declaration?.parent; parent; parent = parent.parent) {
     if (ts.isModuleDeclaration(parent) && (ts.isIdentifier(parent.name) || ts.isStringLiteral(parent.name))) {
@@ -6437,13 +6457,16 @@ function isTypeScriptParameterProperty(node: ts.ParameterDeclaration): boolean {
 function createTypeScriptAnalysis(
   sources: readonly Readonly<TypeScriptModuleInput>[],
   moduleResolution: Readonly<CompilerModuleResolutionPlan>,
+  mode: 'isolated' | 'project',
 ): TypeScriptAnalysis {
   const analysisSourceFiles = sources.map(({ sourceFile }) =>
     ts.createSourceFile(sourceFile.fileName, sourceFile.text, sourceFile.languageVersion, true),
   );
-  // The only library the analysis checker sees is the one this compiler declares. `noLib` stays on
-  // so nothing from the machine's installed definitions can leak in and be typed against a member no
-  // backend has agreed to lower.
+  // The package graph is checked as one real TypeScript program. The TypeScript dependency is pinned
+  // by this package, so its bundled standard-library declarations are part of compiler identity rather
+  // than host-machine state. The compiler ambient surface augments that project with the runtime
+  // members whose lowering contracts are explicit; backend completeness checks still reject any
+  // external symbol or constructor for which a target has not elected an ABI.
   const surfaceFile = ts.createSourceFile(
     getCompilerAmbientSurfaceFileName(),
     createCompilerAmbientSurfaceSource(),
@@ -6451,11 +6474,12 @@ function createTypeScriptAnalysis(
     true,
   );
   const options: ts.CompilerOptions = {
+    module: ts.ModuleKind.ESNext,
+    moduleResolution: ts.ModuleResolutionKind.Bundler,
     noImplicitAny: true,
-    noLib: true,
-    noResolve: true,
+    ...(mode === 'isolated' ? { noLib: true, noResolve: true } : {}),
     strictNullChecks: true,
-    target: analysisSourceFiles[0]?.languageVersion ?? ts.ScriptTarget.Latest,
+    target: ts.ScriptTarget.ESNext,
   };
   const files = new Map(analysisSourceFiles.map((sourceFile) => [sourceFile.fileName, sourceFile] as const));
   files.set(surfaceFile.fileName, surfaceFile);
@@ -6466,11 +6490,24 @@ function createTypeScriptAnalysis(
   }));
   const resolutionIndex = createTypeScriptAnalysisModuleResolutionIndex(modules, moduleResolution);
   const host = ts.createCompilerHost(options, true);
-  host.fileExists = (file) => files.has(file);
-  host.getSourceFile = (file) => files.get(file);
-  host.readFile = (file) => files.get(file)?.text;
+  const defaultFileExists = host.fileExists.bind(host);
+  const defaultGetSourceFile = host.getSourceFile.bind(host);
+  const defaultReadFile = host.readFile.bind(host);
+  host.fileExists = (file) => files.has(file) || (mode === 'project' && defaultFileExists(file));
+  host.getSourceFile = (file, languageVersionOrOptions, onError, shouldCreateNewSourceFile) =>
+    files.get(file) ??
+    (mode === 'project'
+      ? defaultGetSourceFile(file, languageVersionOrOptions, onError, shouldCreateNewSourceFile)
+      : undefined);
+  host.readFile = (file) => files.get(file)?.text ?? (mode === 'project' ? defaultReadFile(file) : undefined);
   host.resolveModuleNames = (moduleNames, containingFile) =>
-    moduleNames.map((specifier) => resolveTypeScriptAnalysisModule(specifier, containingFile, resolutionIndex));
+    moduleNames.map(
+      (specifier) =>
+        resolveTypeScriptAnalysisModule(specifier, containingFile, resolutionIndex) ??
+        (mode === 'project'
+          ? ts.resolveModuleName(specifier, containingFile, options, host).resolvedModule
+          : undefined),
+    );
   host.writeFile = () => undefined;
   const program = ts.createProgram({
     host,
@@ -6612,7 +6649,7 @@ function lowerIdentifierReference(node: ts.Identifier, context: LoweringContext)
     ts.isShorthandPropertyAssignment(node.parent) && node.parent.name === node
       ? context.checker.getShorthandAssignmentValueSymbol(node.parent)
       : context.checker.getSymbolAtLocation(node);
-  return symbol?.declarations?.some(isValueBindingDeclaration) && !isTypeScriptAmbientSurfaceSymbol(symbol)
+  return symbol?.declarations?.some(isValueBindingDeclaration) && !isTypeScriptAmbientSymbol(symbol, context)
     ? { binding: lowerBindingSymbol(symbol, node, context), kind: 'binding' }
     : { kind: 'ambient', name: node.text };
 }
@@ -6625,14 +6662,16 @@ function getTypeScriptNodeText(node: ts.Node, context: LoweringContext): string 
   return node.getText(sourceFile === context.sourceFile ? context.sourceFile : sourceFile);
 }
 
-// A name the ambient surface declares is ambient however well the checker resolves it. The surface
-// exists so those names can be typed, not so they become bindings this module introduced — a binding
-// whose declaration lives outside the module has nowhere to be introduced.
-function isTypeScriptAmbientSurfaceSymbol(symbol: ts.Symbol | undefined): boolean {
+// A declaration supplied by the compiler surface, TypeScript's pinned standard library, or an
+// external declaration package is ambient however well the checker resolves it. Those declarations
+// provide exact type evidence but are not bindings introduced by a source module; the backend's
+// external-symbol plan decides whether their names have a target representation.
+function isTypeScriptAmbientSymbol(symbol: ts.Symbol | undefined, context: LoweringContext): boolean {
+  const declarations = symbol?.declarations;
   return (
-    symbol?.declarations?.some(
-      (declaration) => declaration.getSourceFile().fileName === getCompilerAmbientSurfaceFileName(),
-    ) === true
+    declarations !== undefined &&
+    declarations.length > 0 &&
+    declarations.every((declaration) => !context.analysisModuleOptions.has(declaration.getSourceFile().fileName))
   );
 }
 

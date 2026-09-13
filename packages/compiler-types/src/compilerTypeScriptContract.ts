@@ -19,6 +19,20 @@ export interface TypeScriptProject {
   readonly program: ts.Program;
 }
 
+export interface CompilerTypeScriptAnalysisIdentity {
+  readonly checkerMode: 'package-graph-program';
+  readonly compilerOptions: Readonly<{
+    module: 'ESNext';
+    moduleResolution: 'compiler-graph-with-typescript-fallback';
+    noImplicitAny: true;
+    standardLibrary: 'typescript-bundled';
+    strictNullChecks: true;
+    target: 'ESNext';
+  }>;
+  readonly schema: 'flight-compiler-typescript-analysis/1';
+  readonly typescriptVersion: string;
+}
+
 export interface TypeScriptLoweringResult {
   readonly diagnostics: readonly CompilerDiagnostic[];
   readonly module: IrModule;

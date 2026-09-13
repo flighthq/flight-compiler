@@ -12,7 +12,7 @@ describe('createCompilerRuntimeExternalSymbolBindingPlanHaxe', () => {
     const plan = createCompilerRuntimeExternalSymbolBindingPlanHaxe();
 
     expect(plan.contract).toBe('flight-runtime-contract/2');
-    expect(plan.bindings).toHaveLength(136);
+    expect(plan.bindings).toHaveLength(147);
     expect(plan.bindings.filter(({ externalSymbol }) => externalSymbol.sourceName === 'Promise')).toEqual([
       {
         capability: 'task',
@@ -39,6 +39,19 @@ describe('createCompilerRuntimeExternalSymbolBindingPlanHaxe', () => {
     });
     expect(plan.bindings).toContainEqual({
       externalSymbol: { sourceName: 'CSSStyleDeclaration', space: 'type' },
+      kind: 'native',
+    });
+    expect(plan.bindings).toContainEqual({
+      capability: 'async-iterable',
+      externalSymbol: { sourceName: 'AsyncIterable', space: 'type' },
+      kind: 'runtime',
+    });
+    expect(plan.bindings).toContainEqual({
+      externalSymbol: { sourceName: 'ImageBitmap', space: 'type' },
+      kind: 'native',
+    });
+    expect(plan.bindings).toContainEqual({
+      externalSymbol: { sourceName: 'WebGLShader', space: 'type' },
       kind: 'native',
     });
     expect(plan.bindings).toContainEqual({
@@ -70,6 +83,10 @@ describe('createCompilerRuntimeExternalSymbolBindingPlanHaxe', () => {
       kind: 'native',
     });
     expect(plan.bindings).toContainEqual({
+      externalSymbol: { sourceName: 'GPUAdapter', space: 'type' },
+      kind: 'native',
+    });
+    expect(plan.bindings).toContainEqual({
       externalSymbol: { sourceName: 'GPUDevice', space: 'type' },
       kind: 'native',
     });
@@ -87,7 +104,7 @@ describe('createCompilerRuntimeExternalSymbolBindingPlanHaxe', () => {
     const second = createCompilerRuntimeExternalSymbolBindingPlanHaxe();
 
     (first.bindings as unknown[]).pop();
-    expect(second.bindings).toHaveLength(136);
+    expect(second.bindings).toHaveLength(147);
   });
 });
 
@@ -190,6 +207,7 @@ describe('getCompilerRuntimeExternalSymbolTargetHaxe', () => {
     ['AbortSignal', 'type', 'js.html.AbortSignal'],
     ['AudioContext', 'type', 'js.html.audio.AudioContext'],
     ['CanvasRenderingContext2D', 'type', 'js.html.CanvasRenderingContext2D'],
+    ['GPUAdapter', 'type', 'Dynamic'],
     ['GPUDevice', 'type', 'Dynamic'],
     ['GPUTextureFormat', 'type', 'String'],
     ['HTMLCanvasElement', 'type', 'js.html.CanvasElement'],

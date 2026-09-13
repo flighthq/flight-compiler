@@ -1,6 +1,7 @@
 import type { IrModule } from './compilerModuleIntermediateRepresentation.js';
 import type { CompilerModuleResolutionPlan } from './compilerModuleResolutionContract.js';
 import type { CompilerSourceIdentity } from './compilerSourceIdentity.js';
+import type { CompilerRuntimeAbiManifest } from './compilerRuntimeContract.js';
 
 export interface EmittedFileIdentity {
   readonly path: string;
@@ -28,6 +29,8 @@ export interface CompilerBackend<Options = Record<string, never>> {
     | undefined;
   readonly emitModule: (module: Readonly<IrModule>, context: BackendEmitContext<Options>) => readonly EmittedFile[];
   readonly name: string;
+  /** Versioned runtime surface required by this backend's emitted code. */
+  readonly runtimeAbi?: (() => CompilerRuntimeAbiManifest) | undefined;
 }
 
 export interface CompilerBackendEmissionSession {

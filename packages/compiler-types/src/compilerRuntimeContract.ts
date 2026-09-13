@@ -1,3 +1,6 @@
+import type { CompilerHaxeAmbientMemberBindingPlan } from './compilerAmbientMemberBindingContract.js';
+import type { CompilerRuntimeTaskCapabilityPlan } from './compilerRuntimeTaskCapabilityContract.js';
+
 // Runtime capabilities name what the ambient runtime surface must provide. Host concerns do not
 // belong here: the host lane is discovered and registered explicitly, and a target's representation
 // for an opaque host value is a backend option (`opaqueHostType`), not a runtime capability.
@@ -8,6 +11,7 @@
 export type CompilerRuntimeCapabilityName =
   | 'array'
   | 'array-buffer'
+  | 'async-iterable'
   | 'data-view'
   | 'date'
   | 'error'
@@ -115,6 +119,32 @@ export interface CompilerRuntimeExternalSymbolBindingPlan {
   readonly bindings: readonly CompilerRuntimeExternalSymbolBinding[];
   readonly contract: CompilerRuntimeContractVersion;
 }
+
+interface CompilerHaxeRuntimeExternalSymbolBindingCommon {
+  readonly externalSymbol: CompilerRuntimeExternalSymbolIdentity;
+  readonly members?: readonly CompilerRuntimeExternalMemberBinding[] | undefined;
+  readonly runtimeMembers?: readonly CompilerRuntimeExternalMemberBinding[] | undefined;
+  readonly targetName: string;
+}
+
+export type CompilerHaxeRuntimeExternalSymbolBinding = CompilerHaxeRuntimeExternalSymbolBindingCommon &
+  (Readonly<{ capability: CompilerRuntimeCapabilityName; kind: 'runtime' }> | Readonly<{ kind: 'native' }>);
+
+export interface CompilerHaxeRuntimeExternalSymbolBindingPlan {
+  readonly bindings: readonly CompilerHaxeRuntimeExternalSymbolBinding[];
+  readonly contract: CompilerRuntimeContractVersion;
+  readonly schema: 'flight-haxe-runtime-external-symbol-bindings/1';
+}
+
+export interface CompilerHaxeRuntimeAbiManifest {
+  readonly ambientMembers: CompilerHaxeAmbientMemberBindingPlan;
+  readonly constructors: CompilerRuntimeExternalConstructorAbiPlan;
+  readonly externalSymbols: CompilerHaxeRuntimeExternalSymbolBindingPlan;
+  readonly schema: 'flight-haxe-runtime-abi/1';
+  readonly tasks: CompilerRuntimeTaskCapabilityPlan;
+}
+
+export type CompilerRuntimeAbiManifest = CompilerHaxeRuntimeAbiManifest;
 
 export interface CompilerRuntimeContractMismatchFailure extends Error {
   readonly expected: CompilerRuntimeContractVersion;

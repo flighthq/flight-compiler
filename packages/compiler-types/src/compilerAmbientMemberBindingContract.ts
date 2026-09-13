@@ -1,3 +1,5 @@
+import type { IrResolvedMemberReceiver } from './compilerExecutableIntermediateRepresentation.js';
+
 // How each target spells a member of the ambient surface.
 //
 // A rename is the common case. A member the target puts somewhere else entirely, or reaches through
@@ -23,6 +25,17 @@ export type CompilerHaxeAmbientMemberBinding =
   // A fold whose accumulator is the second parameter where the source's is the first. The closure is
   // emitted with its parameters exchanged rather than wrapped, so the body is the source's own.
   | Readonly<{ kind: 'staticFold'; targetPath: string }>;
+
+export interface CompilerHaxeAmbientMemberBindingRecord {
+  readonly binding: CompilerHaxeAmbientMemberBinding;
+  readonly receiver: IrResolvedMemberReceiver;
+  readonly sourceMember: string;
+}
+
+export interface CompilerHaxeAmbientMemberBindingPlan {
+  readonly bindings: readonly CompilerHaxeAmbientMemberBindingRecord[];
+  readonly schema: 'flight-haxe-ambient-member-bindings/1';
+}
 
 export type CompilerRustAmbientMemberBinding =
   // `owns` marks a member whose result is borrowed from the receiver where the source's is a value of

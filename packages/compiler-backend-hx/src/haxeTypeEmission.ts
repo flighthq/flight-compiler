@@ -20,7 +20,8 @@ export function emitIrTypeHaxe(type: Readonly<IrType>, context: Readonly<IrTypeH
       return `Array<${emitIrTypeHaxe(type.element, context)}>`;
     case 'function': {
       const parameters = type.parameters.map((parameter) => emitIrTypeHaxe(parameter.type, context));
-      return `(${parameters.join(', ')})->${emitIrTypeHaxe(type.returns, context)}`;
+      const returns = emitIrTypeHaxe(type.returns, context);
+      return `(${parameters.join(', ')})->${type.returns.kind === 'function' ? `(${returns})` : returns}`;
     }
     case 'indexedAccess':
     case 'conditionalFacet':
@@ -58,7 +59,11 @@ export function emitIrTypeHaxe(type: Readonly<IrType>, context: Readonly<IrTypeH
           ...type.reference.path.map(context.getTypeName),
         ].join('.');
       }
-      const arguments_ = type.typeArguments.map((argument) => emitIrTypeHaxe(argument, context));
+      const arguments_ = type.typeArguments.map((argument) =>
+        sourceName === 'Promise' && argument.kind === 'primitive' && argument.name === 'void'
+          ? 'Dynamic'
+          : emitIrTypeHaxe(argument, context),
+      );
       return targetName === 'Dynamic'
         ? targetName
         : `${targetName}${arguments_.length > 0 ? `<${arguments_.join(', ')}>` : ''}`;
@@ -71,7 +76,11 @@ export function emitIrTypeHaxe(type: Readonly<IrType>, context: Readonly<IrTypeH
       return `{ ${type.properties
         .map((property) => {
           const optional = property.optional ? '?' : '';
-          return `${optional}${context.getMemberName(property.name)}:${emitIrTypeHaxe(property.type, context)}`;
+          const emittedType =
+            property.phantom && property.type.kind === 'primitive' && property.type.name === 'void'
+              ? 'Dynamic'
+              : emitIrTypeHaxe(property.type, context);
+          return `${optional}${context.getMemberName(property.name)}:${emittedType}`;
         })
         .join(', ')} }`;
     case 'primitive':
