@@ -3897,8 +3897,9 @@ describe('lowerTypeScriptSource', () => {
   it('resolves authored conditional arguments nested in bundled mapped utilities', () => {
     const sourceFile = ts.createSourceFile(
       '/flight/packages/math/src/project-conditional.ts',
-      `type DataOf<Value> = Value extends { data: infer Data } ? Data : never;
-      type PartialNode<Value> = { data?: Partial<DataOf<Value>> };
+      `type PartialNode<Value> = {
+        data?: Partial<Value extends { data: infer Data } ? Data : never>
+      } & Partial<Omit<Value, 'data'>>;
       interface Node { data: { value: number } }
       export function read(node: PartialNode<Node>): number | undefined { return node.data?.value; }`,
       ts.ScriptTarget.Latest,

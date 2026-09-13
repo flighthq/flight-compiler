@@ -6375,6 +6375,16 @@ function getTypeScriptExpressionBindingTypeEvidence(
       (ts.isPropertySignature(declaration) || ts.isPropertyDeclaration(declaration)) &&
       declaration.type
     ) {
+      if (hasExternalTypeScriptTypeParameter(declaration.type, context)) {
+        const instantiated = getTypeScriptCheckerTypeEvidence(
+          context.checker.getTypeAtLocation(expression),
+          context,
+          0,
+          true,
+          expression,
+        );
+        if (instantiated) return instantiated;
+      }
       const written = lowerTypeScriptTypeNodeEvidence(declaration.type, context);
       return declaration.questionToken ? { kind: 'union', types: [written, { kind: 'undefined' }] } : written;
     }
