@@ -103,6 +103,7 @@ interface LoweringContext {
   imports: IrImport[];
   moduleSourceFile: ts.SourceFile;
   options: Readonly<LowerTypeScriptSourceOptions>;
+  origins: WeakMap<ts.Node, CompilerSourceOrigin>;
   returnTargetTypes: IrType[];
   returnTypes: IrType[];
   sourceFile: ts.SourceFile;
@@ -187,6 +188,7 @@ function lowerTypeScriptSourceWithAnalysis(
     imports: [],
     moduleSourceFile: sourceFile,
     options,
+    origins: new WeakMap(),
     returnTargetTypes: [],
     returnTypes: [],
     sourceFile,
@@ -6514,15 +6516,19 @@ function moduleNameFromSource(file: string): string {
 }
 
 function origin(node: ts.Node, context: LoweringContext): CompilerSourceOrigin {
+  const cached = context.origins.get(node);
+  if (cached) return cached;
   const start = node.getStart(context.sourceFile);
   const position = context.sourceFile.getLineAndCharacterOfPosition(start);
-  return {
+  const resolved = {
     column: position.character + 1,
     fingerprint: fingerprintTypeScriptNode(node, context.sourceFile),
     line: position.line + 1,
     packageName: context.options.packageName,
     source: relativeSource(context.sourceFile.fileName, context.options.upstreamDirectory),
   };
+  context.origins.set(node, resolved);
+  return resolved;
 }
 
 function propertyName(node: ts.PropertyName, _context: LoweringContext): string {

@@ -5,12 +5,19 @@ import ts from 'typescript';
 import { compareTextCodeUnits } from '../../compiler-canonical-form/src/index.js';
 import type { CompilerSourceFingerprint } from '../../compiler-types/src/index.js';
 
+const typeScriptNodeFingerprints = new WeakMap<ts.Node, CompilerSourceFingerprint>();
+let typeScriptSyntaxKindNames: ReadonlyMap<ts.SyntaxKind, string> | undefined;
+
 export function fingerprintSourceText(value: string): CompilerSourceFingerprint {
   return `sha256:${createHash('sha256').update(value).digest('hex')}`;
 }
 
 export function fingerprintTypeScriptNode(node: ts.Node, sourceFile: ts.SourceFile): CompilerSourceFingerprint {
-  return fingerprintSourceText(normalizeTypeScriptNode(node, sourceFile));
+  const cached = typeScriptNodeFingerprints.get(node);
+  if (cached) return cached;
+  const fingerprint = fingerprintSourceText(normalizeTypeScriptNode(node, sourceFile));
+  typeScriptNodeFingerprints.set(node, fingerprint);
+  return fingerprint;
 }
 
 export function isCompilerSourceFingerprint(value: unknown): value is CompilerSourceFingerprint {
@@ -18,7 +25,12 @@ export function isCompilerSourceFingerprint(value: unknown): value is CompilerSo
 }
 
 export function normalizeTypeScriptNode(node: ts.Node, sourceFile: ts.SourceFile): string {
-  return `flight-typescript-node/2;${serializeTypeScriptNode(node, sourceFile, createTypeScriptSyntaxKindNames())}`;
+  return `flight-typescript-node/2;${serializeTypeScriptNode(node, sourceFile, getTypeScriptSyntaxKindNames())}`;
+}
+
+function getTypeScriptSyntaxKindNames(): ReadonlyMap<ts.SyntaxKind, string> {
+  typeScriptSyntaxKindNames ??= createTypeScriptSyntaxKindNames();
+  return typeScriptSyntaxKindNames;
 }
 
 function createTypeScriptSyntaxKindNames(): ReadonlyMap<ts.SyntaxKind, string> {
