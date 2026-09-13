@@ -77,6 +77,7 @@ import type {
 } from '../../compiler-types/src/index.js';
 import { cppCallableSignatureAbi } from './cppCallableSignatureAbi.js';
 import { getCompilerCppAmbientMemberBinding } from './cppAmbientMemberBinding.js';
+import { collectIrModuleBindingTypesCpp } from './cppBindingTypeInference.js';
 import { createIrModuleClosureCapturePlanCpp } from './cppClosureCapturePlan.js';
 import {
   convertSourcePathToCppFileName,
@@ -5522,87 +5523,6 @@ function collectIrModuleBindingInitializersCpp(
     },
   });
   return result;
-}
-
-function collectIrModuleBindingTypesCpp(module: Readonly<IrModule>): ReadonlyMap<string, Readonly<IrType>> {
-  const result = new Map<string, Readonly<IrType>>();
-  const inferred = new Map<string, Readonly<IrExpression>>();
-  analyzeIrModuleTraversal(module, {
-    parameter(parameter) {
-      result.set(parameter.binding.id, parameter.type);
-    },
-    variable(variable) {
-      if (!('binding' in variable)) return;
-      if (variable.type) result.set(variable.binding.id, variable.type);
-      if (variable.initializer) inferred.set(variable.binding.id, variable.initializer);
-    },
-  });
-  let changed = true;
-  while (changed) {
-    changed = false;
-    for (const [bindingId, initializer] of inferred) {
-      const existing = result.get(bindingId);
-      if (existing && existing.kind !== 'unknown') continue;
-      const type = inferIrExpressionTypeCpp(initializer, result);
-      if (!type || type.kind === 'unknown') continue;
-      result.set(bindingId, type);
-      changed = true;
-    }
-  }
-  return result;
-}
-
-function inferIrExpressionTypeCpp(
-  expression: Readonly<IrExpression>,
-  bindingTypes: ReadonlyMap<string, Readonly<IrType>>,
-): Readonly<IrType> | undefined {
-  switch (expression.kind) {
-    case 'assignment':
-      return expression.left.kind === 'identifier' && expression.left.reference.kind === 'binding'
-        ? bindingTypes.get(expression.left.reference.binding.id)
-        : undefined;
-    case 'call':
-      return expression.semantics.resultType.kind === 'unknown' ? undefined : expression.semantics.resultType;
-    case 'cast':
-      return expression.type;
-    case 'conditional':
-      return (
-        inferIrExpressionTypeCpp(expression.whenTrue, bindingTypes) ??
-        inferIrExpressionTypeCpp(expression.whenFalse, bindingTypes)
-      );
-    case 'identifier':
-      return expression.reference.kind === 'binding' ? bindingTypes.get(expression.reference.binding.id) : undefined;
-    case 'new':
-      return expression.callee.kind === 'identifier' && expression.callee.reference.kind === 'binding'
-        ? {
-            kind: 'named',
-            reference: { binding: expression.callee.reference.binding, kind: 'binding', path: [] },
-            typeArguments: expression.typeArguments,
-          }
-        : undefined;
-    case 'object':
-      return expression.type;
-    case 'undefinedValue':
-      return expression.type;
-    case 'array':
-    case 'await':
-    case 'binary':
-    case 'element':
-    case 'function':
-    case 'literal':
-    case 'objectRest':
-    case 'property':
-    case 'regexp':
-    case 'spread':
-    case 'template':
-    case 'tuple':
-    case 'tupleRest':
-    case 'tupleSpread':
-    case 'tupleSuffix':
-    case 'unary':
-    case 'undefinedDefault':
-      return undefined;
-  }
 }
 
 function collectIrModuleArrayElementBindingIdsCpp(
