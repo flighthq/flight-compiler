@@ -1109,7 +1109,7 @@ function emitValueReexportForwardingHaxe(
   modulePath: string,
   context: EmitContext,
 ): string[] {
-  const sourceModule = getHaxeResolvedImportModule(exported.specifier, context);
+  const sourceModule = getHaxeResolvedImportModule(exported.specifier, context, exported.imported);
   if (!sourceModule) {
     emissionError(
       context,
@@ -2011,31 +2011,99 @@ function createCompilerModuleFacadePlanHaxe(
     exports: [...new Map(module.exports.map((exported) => [JSON.stringify(exported), exported])).values()],
   }));
   const dependencies: CompilerModuleLinkDependency[] = [];
+  const invalidModuleKeys = new Set<string>();
+  const requiredTargetsByModule = new Map<string, Set<string>>();
   for (const module of facadeModules) {
-    const specifiers = new Set([
-      ...module.imports.map((imported) => imported.specifier),
-      ...module.exports.flatMap((exported) => ('specifier' in exported ? [exported.specifier] : [])),
-    ]);
-    for (const specifier of specifiers) {
-      const target = getHaxeResolvedImportModuleFrom(module, specifier, facadeModules, moduleResolution);
-      if (!target) return undefined;
+    const requests: { importedName?: string; required: boolean; specifier: string }[] = [
+      ...module.imports.flatMap((imported) =>
+        imported.bindings.length === 0
+          ? [{ required: false, specifier: imported.specifier }]
+          : imported.bindings.map((binding) => ({
+              importedName: binding.imported === '*' || binding.imported === 'default' ? undefined : binding.imported,
+              required: false,
+              specifier: imported.specifier,
+            })),
+      ),
+      ...module.exports.flatMap((exported) =>
+        'specifier' in exported
+          ? [
+              {
+                importedName: exported.kind === 'reexport' ? exported.imported : undefined,
+                required: true,
+                specifier: exported.specifier,
+              },
+            ]
+          : [],
+      ),
+    ];
+    const seen = new Set<string>();
+    for (const request of requests) {
+      const target = getHaxeResolvedImportModuleFrom(
+        module,
+        request.specifier,
+        facadeModules,
+        moduleResolution,
+        request.importedName,
+      );
+      if (!target) {
+        if (request.required) invalidModuleKeys.add(getHaxeCompilerModuleKey(module));
+        continue;
+      }
+      if (request.required) {
+        const targets = requiredTargetsByModule.get(getHaxeCompilerModuleKey(module));
+        if (targets) targets.add(getHaxeCompilerModuleKey(target));
+        else requiredTargetsByModule.set(getHaxeCompilerModuleKey(module), new Set([getHaxeCompilerModuleKey(target)]));
+      }
+      const key = `${request.specifier}\0${target.packageName}\0${target.source}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
       dependencies.push({
         importer: { name: module.name, packageName: module.packageName, source: module.source },
-        specifier,
+        specifier: request.specifier,
         target: { name: target.name, packageName: target.packageName, source: target.source },
       });
     }
   }
+  let invalidCount = -1;
+  while (invalidCount !== invalidModuleKeys.size) {
+    invalidCount = invalidModuleKeys.size;
+    for (const [moduleKey, targetKeys] of requiredTargetsByModule) {
+      if ([...targetKeys].some((targetKey) => invalidModuleKeys.has(targetKey))) invalidModuleKeys.add(moduleKey);
+    }
+  }
   try {
+    const plannedDependencies = dependencies.filter(
+      (dependency) =>
+        !invalidModuleKeys.has(getHaxeCompilerModuleKey(dependency.importer)) &&
+        !invalidModuleKeys.has(getHaxeCompilerModuleKey(dependency.target)),
+    );
+    const linkedSpecifiers = new Map<string, Set<string>>();
+    for (const dependency of plannedDependencies) {
+      const key = `${dependency.importer.packageName}\0${dependency.importer.source}`;
+      const specifiers = linkedSpecifiers.get(key);
+      if (specifiers) specifiers.add(dependency.specifier);
+      else linkedSpecifiers.set(key, new Set([dependency.specifier]));
+    }
+    const plannedModules = facadeModules
+      .filter((module) => !invalidModuleKeys.has(getHaxeCompilerModuleKey(module)))
+      .map((module) => {
+        const key = `${module.packageName}\0${module.source}`;
+        const specifiers = linkedSpecifiers.get(key) ?? new Set<string>();
+        return { ...module, imports: module.imports.filter((imported) => specifiers.has(imported.specifier)) };
+      });
     const evaluation = createCompilerModuleEvaluationPlan({
-      dependencies,
-      entries: facadeModules.map(({ name, packageName, source }) => ({ name, packageName, source })),
-      modules: facadeModules,
+      dependencies: plannedDependencies,
+      entries: plannedModules.map(({ name, packageName, source }) => ({ name, packageName, source })),
+      modules: plannedModules,
     });
-    return createCompilerModuleFacadePlan({ evaluation, modules: facadeModules });
+    return createCompilerModuleFacadePlan({ evaluation, modules: plannedModules });
   } catch {
     return undefined;
   }
+}
+
+function getHaxeCompilerModuleKey(module: Readonly<CompilerModuleIdentity>): string {
+  return `${module.packageName}\0${module.source}\0${module.name}`;
 }
 
 function haxeImportModule(specifier: string, context: EmitContext, importedName?: string): string {
