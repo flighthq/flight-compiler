@@ -195,6 +195,28 @@ describe('emitIrModuleRust', () => {
     expect(emitIrModuleRust(boundValue.module).contents).toContain('return f64::max(left, right);');
   });
 
+  it('emits a downstream-provided host type through the Rust external binding manifest', () => {
+    const module = lower('host-type.ts', 'export function preserve(value: Blob): Blob { return value; }').module;
+    const backend = createRustCompilerBackend();
+    const externalBindings = {
+      bindings: [
+        {
+          nullability: 'non-null' as const,
+          ownership: 'shared' as const,
+          sourceName: 'Blob',
+          space: 'type' as const,
+          targetName: 'flight_host::Blob',
+        },
+      ],
+      schema: 'flight-rust-external-bindings/1' as const,
+    };
+
+    expect(() => emitIrModuleRust(module)).toThrow('runtime external symbol binding plan is incomplete');
+    expect(
+      backend.emitModule(module, { modules: [module], options: { hostBindings: externalBindings } })[0]!.contents,
+    ).toContain('value: flight_host::Blob');
+  });
+
   it('elects C-style for lowering and default-parameter declaration expansion', () => {
     const loop = lower(
       'loop.ts',
@@ -776,7 +798,7 @@ describe('emitIrModuleRust', () => {
     expect(emitIrModuleRust(bitAndAssign.module).contents).toContain('x = (((x as i32) & (b as i32)) as f64)');
   });
 
-  it('rejects module facades and emits normalized switch fallthrough', () => {
+  it('emits module facades and normalized switch fallthrough', () => {
     const barrel = lower('barrel.ts', "export * from './other.js';");
     const fallthrough = lower(
       'switch.ts',
@@ -784,7 +806,7 @@ describe('emitIrModuleRust', () => {
     );
     const output = emitIrModuleRust(fallthrough.module).contents;
 
-    expect(() => emitIrModuleRust(barrel.module)).toThrow('module-facade lowering');
+    expect(emitIrModuleRust(barrel.module).contents).toContain('pub use crate::other::*;');
     expect(output).toContain('let switch_value = a;');
     expect(output).toContain('if switch_value == 1.0 {\n      return 2.0;\n    }\n    else if switch_value == 2.0');
   });
@@ -1776,6 +1798,16 @@ describe('emitIrModuleRust', () => {
       lower('string-union.ts', "export type Direction = 'up' | 'down' | 'left' | 'right';").module,
     ).contents;
     expect(output).toContain('pub type Direction = String;');
+  });
+
+  it('preserves one primitive representation for numeric and open-string literal unions', () => {
+    const numeric = emitIrModuleRust(lower('numeric-union.ts', 'export type Opcode = 1 | 2 | 4;').module).contents;
+    const openString = emitIrModuleRust(
+      lower('open-string-union.ts', "export type Role = 'button' | 'link' | (string & {});").module,
+    ).contents;
+
+    expect(numeric).toContain('pub type Opcode = f64;');
+    expect(openString).toContain('pub type Role = String;');
   });
 
   it('emits type alias for object type as struct record', () => {
@@ -4408,7 +4440,26 @@ describe('emitIrModuleRust', () => {
     expect(() => emitIrModuleRust(module)).toThrow('intersection types require');
   });
 
-  it('refuses Partial type before lowering', () => {
+  it('materializes closed intersections and Partial projections as Rust records', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'object-utilities.ts',
+        `interface Position { x: number; y: number }
+         interface Named { name: string }
+         export type PositionedName = Position & Named;
+         export type PositionPatch = Partial<Position>;`,
+      ).module,
+    ).contents;
+
+    expect(output).toContain('pub struct PositionedName');
+    expect(output).toContain('pub x: f64');
+    expect(output).toContain('pub name: String');
+    expect(output).toContain('pub struct PositionPatch');
+    expect(output).toContain('pub x: Option<f64>');
+    expect(output).toContain('pub y: Option<f64>');
+  });
+
+  it('refuses Partial when its object shape is not statically resolvable', () => {
     const module = structuredClone(lower('partial.ts', 'export function id(x: number): number { return x; }').module);
     const fn = module.declarations.find((d) => d.kind === 'function');
     if (fn && fn.kind === 'function') {
@@ -4418,7 +4469,7 @@ describe('emitIrModuleRust', () => {
         typeArguments: [{ kind: 'primitive', name: 'number' }],
       } as never;
     }
-    expect(() => emitIrModuleRust(module)).toThrow('Partial<T> requires');
+    expect(() => emitIrModuleRust(module)).toThrow('Partial<T> requires a statically resolvable Rust object shape');
   });
 
   it('refuses synchronous try/finally', () => {
@@ -6859,6 +6910,56 @@ describe('emitIrModuleRust', () => {
     expect(output).toContain('fn name(');
   });
 
+  it('resolves imported named-record alternatives for tagged unions', () => {
+    const dog = lower('dog.ts', 'export interface Dog { name: string; breed: string }').module;
+    const cat = lower('cat.ts', 'export interface Cat { name: string; color: string }').module;
+    const subject = lower(
+      'pet.ts',
+      `import type { Dog } from './dog';
+       import type { Cat } from './cat';
+       export type Pet = Dog | Cat;`,
+    ).module;
+    const output = createRustCompilerBackend().emitModule(subject, {
+      modules: [subject, dog, cat],
+      options: {},
+    })[0]!.contents;
+
+    expect(output).toContain('enum Pet');
+    expect(output).toContain('Dog(Dog)');
+    expect(output).toContain('Cat(Cat)');
+    expect(output).toContain('fn name(&self) -> String');
+  });
+
+  it('resolves imported object projections and closed union filters', () => {
+    const options = lower(
+      'options.ts',
+      `export interface Detail { label: string }
+       export const HiddenKey = Symbol.for('hidden');
+       export interface Options { [HiddenKey]: number; detail: Detail; first: number; second: string }
+       export type Outcome = { kind: 'ok'; value: number } | { kind: 'error'; message: string };`,
+    ).module;
+    const subject = lower(
+      'selected.ts',
+      `import { HiddenKey, type Options, type Outcome } from './options';
+       export type Selected = Pick<Options, 'detail' | 'first'>;
+       export type PublicKeys = Exclude<keyof Options, typeof HiddenKey>;
+       export type Success = Extract<Outcome, { kind: 'ok' }>;`,
+    ).module;
+    const output = createRustCompilerBackend().emitModule(subject, {
+      modules: [subject, options],
+      options: {},
+    })[0]!.contents;
+
+    expect(output).toContain('pub struct Selected');
+    expect(output).toContain('pub detail: crate::options::Detail');
+    expect(output).toContain('pub first: f64');
+    expect(output).not.toContain('pub second: String');
+    expect(output).toContain('pub type PublicKeys = String');
+    expect(output).toContain('pub struct Success');
+    expect(output).toContain('pub value: f64');
+    expect(output).not.toContain('pub message: String');
+  });
+
   it('emits object type as anonymous record struct', () => {
     const output = emitIrModuleRust(
       lower(
@@ -8273,6 +8374,28 @@ describe('emitIrModuleRust re-export', () => {
     const output = emitIrModuleRust(lower('reexport.ts', `export { add } from "./helper.js";`).module).contents;
     expect(output).toContain('pub use');
   });
+
+  it('emits namespace re-exports as module aliases', () => {
+    const output = emitIrModuleRust(lower('reexport.ts', `export * as helpers from "./helper";`).module).contents;
+
+    expect(output).toContain('pub use crate::helper as helpers;');
+  });
+});
+
+describe('createRustCompilerBackend package layout', () => {
+  it('keeps single-package output flat and separates multi-package output by crate', () => {
+    const math = lowerPackage('@flighthq/math', 'value.ts', 'export const value = 1;').module;
+    const types = lowerPackage('@flighthq/types', 'value.ts', 'export const value = 2;').module;
+    const backend = createRustCompilerBackend();
+
+    expect(backend.emitModule(math, { modules: [math], options: {} })[0]!.path).toBe('value.rs');
+    expect(backend.emitModule(math, { modules: [math, types], options: {} })[0]!.path).toBe(
+      'flighthq-math/src/value.rs',
+    );
+    expect(backend.emitModule(types, { modules: [math, types], options: {} })[0]!.path).toBe(
+      'flighthq-types/src/value.rs',
+    );
+  });
 });
 
 describe('emitIrModuleRust relative import', () => {
@@ -8285,6 +8408,34 @@ describe('emitIrModuleRust relative import', () => {
       ).module,
     ).contents;
     expect(output).toContain('use ');
+  });
+
+  it('maps extensionless TypeScript imports to Rust modules', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'import.ts',
+        `import { add } from "./helper";
+         export function double(x: number): number { return add(x, x); }`,
+      ).module,
+    ).contents;
+
+    expect(output).toContain('use crate::helper::add;');
+  });
+
+  it('uses the resolved index module identity for directory imports', () => {
+    const target = lower(
+      'support/index.ts',
+      'export function add(x: number, y: number): number { return x + y; }',
+    ).module;
+    const subject = lower(
+      'import.ts',
+      `import { add } from "./support";
+       export function double(x: number): number { return add(x, x); }`,
+    ).module;
+    const backend = createRustCompilerBackend();
+    const output = backend.emitModule(subject, { modules: [subject, target], options: {} })[0]!.contents;
+
+    expect(output).toContain('use crate::_internal_index::add;');
   });
 });
 
@@ -10809,17 +10960,20 @@ describe('emitIrModuleRust enum discriminant domain', () => {
 });
 
 describe('emitIrModuleRust intersection type', () => {
-  it('refuses an intersection type requiring record lowering', () => {
-    expect(() =>
-      emitIrModuleRust(
-        lower(
-          'intersect.ts',
-          `interface A { a: number }
-           interface B { b: string }
-           export function use(val: A & B): A & B { return val; }`,
-        ).module,
-      ),
-    ).toThrow(/intersection/u);
+  it('interns a closed intersection shape used by a function signature', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'intersect.ts',
+        `interface A { a: number }
+         interface B { b: string }
+         export function use(val: A & B): A & B { return val; }`,
+      ).module,
+    ).contents;
+
+    expect(output.match(/struct AnonymousObjectRecord/gu)).toHaveLength(1);
+    expect(output).toContain('pub a: f64');
+    expect(output).toContain('pub b: String');
+    expect(output).toContain('fn use_(val: AnonymousObjectRecord) -> AnonymousObjectRecord');
   });
 });
 

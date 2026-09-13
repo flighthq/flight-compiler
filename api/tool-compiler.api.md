@@ -579,6 +579,8 @@ to the published surface, so review it as one.
 | `RuntimeBindingRecord` | type |
 | `RuntimeExportDecision` | type |
 | `RustCompilerBackendOptions` | type |
+| `RustCompilerExternalBinding` | type |
+| `RustCompilerExternalBindingManifest` | type |
 | `SdkExposure` | type |
 | `SemanticPatch` | type |
 | `SemanticPatchAnalysis` | type |

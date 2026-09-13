@@ -21,6 +21,18 @@ describe('compiler backend contracts', () => {
       upstreamCommit: 'a'.repeat(40),
     };
     const rustOptions: RustCompilerBackendOptions = {
+      hostBindings: {
+        bindings: [
+          {
+            nullability: 'non-null',
+            ownership: 'shared',
+            sourceName: 'Blob',
+            space: 'type',
+            targetName: 'flight_host::Blob',
+          },
+        ],
+        schema: 'flight-rust-external-bindings/1',
+      },
       opaqueHostType: 'FlightHostValue',
       upstreamCommit: 'a'.repeat(40),
     };
@@ -33,7 +45,22 @@ describe('compiler backend contracts', () => {
     const compilation: BackendCompilation = { backend: backend.name, files: [...backend.emitModule(module, context)] };
 
     expect(compilation).toEqual({ backend: 'haxe', files: [file] });
-    expect(rustOptions).toEqual({ opaqueHostType: 'FlightHostValue', upstreamCommit: 'a'.repeat(40) });
+    expect(rustOptions).toEqual({
+      hostBindings: {
+        bindings: [
+          {
+            nullability: 'non-null',
+            ownership: 'shared',
+            sourceName: 'Blob',
+            space: 'type',
+            targetName: 'flight_host::Blob',
+          },
+        ],
+        schema: 'flight-rust-external-bindings/1',
+      },
+      opaqueHostType: 'FlightHostValue',
+      upstreamCommit: 'a'.repeat(40),
+    });
     const cppOptions: CppCompilerBackendOptions = {
       externalBindings: {
         bindings: [

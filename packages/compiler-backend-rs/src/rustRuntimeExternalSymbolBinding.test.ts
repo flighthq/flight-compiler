@@ -10,7 +10,7 @@ describe('createCompilerRuntimeExternalSymbolBindingPlanRust', () => {
     const plan = createCompilerRuntimeExternalSymbolBindingPlanRust();
 
     expect(plan.contract).toBe('flight-runtime-contract/2');
-    expect(plan.bindings).toHaveLength(44);
+    expect(plan.bindings).toHaveLength(47);
     expect(plan.bindings.filter(({ externalSymbol }) => externalSymbol.sourceName === 'Promise')).toEqual([
       {
         capability: 'task',
@@ -41,7 +41,62 @@ describe('createCompilerRuntimeExternalSymbolBindingPlanRust', () => {
     const second = createCompilerRuntimeExternalSymbolBindingPlanRust();
 
     (first.bindings as unknown[]).pop();
-    expect(second.bindings).toHaveLength(44);
+    expect(second.bindings).toHaveLength(47);
+  });
+
+  it('adds versioned downstream host bindings without treating them as runtime capabilities', () => {
+    const externalBindings = {
+      bindings: [
+        {
+          nullability: 'non-null' as const,
+          ownership: 'shared' as const,
+          sourceName: 'HTMLImageElement',
+          space: 'type' as const,
+          targetName: 'host::Image',
+        },
+        {
+          members: [{ sourceMember: 'create', targetName: 'host::Image::create' }],
+          nullability: 'non-null' as const,
+          ownership: 'shared' as const,
+          sourceName: 'HTMLImageElement',
+          space: 'value' as const,
+          targetName: 'host::Image',
+        },
+      ],
+      schema: 'flight-rust-external-bindings/1' as const,
+    };
+
+    expect(createCompilerRuntimeExternalSymbolBindingPlanRust(externalBindings).bindings).toContainEqual({
+      externalSymbol: { sourceName: 'HTMLImageElement', space: 'type' },
+      kind: 'native',
+    });
+    expect(getCompilerRuntimeExternalSymbolTargetRust('HTMLImageElement', 'type', externalBindings)).toBe(
+      'host::Image',
+    );
+    expect(getCompilerRuntimeExternalMemberTargetRust('HTMLImageElement', 'create', externalBindings)).toBe(
+      'host::Image::create',
+    );
+    expect(isCompilerRuntimeExternalSymbolProvidedRust('HTMLImageElement', 'type', externalBindings)).toBe(false);
+  });
+
+  it('rejects malformed downstream host binding manifests', () => {
+    expect(() =>
+      createCompilerRuntimeExternalSymbolBindingPlanRust({ bindings: [], schema: 'wrong' } as never),
+    ).toThrow('flight-rust-external-bindings/1');
+    expect(() =>
+      createCompilerRuntimeExternalSymbolBindingPlanRust({
+        bindings: [
+          {
+            nullability: 'non-null',
+            ownership: 'shared',
+            sourceName: '',
+            space: 'type',
+            targetName: 'host::Image',
+          },
+        ],
+        schema: 'flight-rust-external-bindings/1',
+      }),
+    ).toThrow('Rust external binding 0 is malformed');
   });
 });
 
@@ -49,6 +104,7 @@ describe('getCompilerRuntimeExternalSymbolTargetRust', () => {
   it.each([
     ['Array', 'type', 'Vec'],
     ['Array', 'value', 'Vec'],
+    ['ArrayLike', 'type', 'Vec'],
     ['Boolean', 'type', 'bool'],
     ['Date', 'type', 'FlightDate'],
     ['Date', 'value', 'FlightDate'],
@@ -68,6 +124,8 @@ describe('getCompilerRuntimeExternalSymbolTargetRust', () => {
     ['Map', 'value', 'std::collections::HashMap'],
     ['Promise', 'type', 'FlightTask'],
     ['Promise', 'value', 'FlightTask'],
+    ['ReadonlyMap', 'type', 'std::collections::HashMap'],
+    ['ReadonlySet', 'type', 'std::collections::HashSet'],
     ['Set', 'type', 'std::collections::HashSet'],
     ['Set', 'value', 'std::collections::HashSet'],
     ['String', 'type', 'String'],
@@ -102,10 +160,13 @@ describe('getCompilerRuntimeExternalMemberTargetRust', () => {
     expect(getCompilerRuntimeExternalMemberTargetRust('Math', 'pow')).toBe('f64::powf');
     expect(getCompilerRuntimeExternalMemberTargetRust('Math', 'ceil')).toBe('f64::ceil');
     expect(getCompilerRuntimeExternalMemberTargetRust('Math', 'round')).toBe('flight_runtime::round');
+    expect(getCompilerRuntimeExternalMemberTargetRust('Math', 'atan2')).toBe('f64::atan2');
+    expect(getCompilerRuntimeExternalMemberTargetRust('Math', 'hypot')).toBe('f64::hypot');
+    expect(getCompilerRuntimeExternalMemberTargetRust('Math', 'log')).toBe('f64::ln');
   });
 
   it('claims nothing for an unbound member or an unbound symbol', () => {
-    expect(getCompilerRuntimeExternalMemberTargetRust('Math', 'atan2')).toBeUndefined();
+    expect(getCompilerRuntimeExternalMemberTargetRust('Math', 'random')).toBeUndefined();
     expect(getCompilerRuntimeExternalMemberTargetRust('Array', 'from')).toBeUndefined();
     expect(getCompilerRuntimeExternalMemberTargetRust('Date', 'now')).toBeUndefined();
   });

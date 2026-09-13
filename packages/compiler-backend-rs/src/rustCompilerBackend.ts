@@ -37,7 +37,11 @@ import {
 } from '../../compiler-runtime-contract/src/index.js';
 import {
   analyzeIrModuleStructuralObjectCompatibilityAcrossModules,
+  analyzeIrTypeStructuralAssignability,
   createIrObjectTypeShapeIdentity,
+  createIrTypeParameterSubstitutionPlan,
+  isCompilerStructuralTypeSubstitutionFailure,
+  resolveIrTypeStructuralSubstitution,
 } from '../../compiler-structural/src/index.js';
 import { analyzeIrModuleAsyncStateMachines } from '../../compiler-task/src/index.js';
 import type {
@@ -107,6 +111,17 @@ interface PrimitiveUnionEnum {
   readonly variants: ReadonlyArray<{ primitiveKind: string; rustType: string; variantName: string }>;
 }
 
+interface RustUnionMemberRecord {
+  readonly name: string;
+  readonly properties: readonly IrObjectTypeProperty[];
+  readonly targetName: string;
+}
+
+interface RustNamedTypeDeclarationLocation {
+  readonly declaration: Readonly<IrInterfaceDeclaration | IrTypeAliasDeclaration>;
+  readonly module: Readonly<IrModule>;
+}
+
 interface EmitContext {
   abstractFieldNames: ReadonlySet<string>;
   anonymousObjectRecords: Map<string, Readonly<{ name: string; properties: readonly IrObjectTypeProperty[] }>>;
@@ -134,6 +149,8 @@ interface EmitContext {
   reboundBindingIds: ReadonlySet<string>;
   generatedNames: Set<string>;
   module: Readonly<IrModule>;
+  moduleResolution: Readonly<CompilerModuleResolutionPlan> | undefined;
+  sourceModules: readonly Readonly<IrModule>[];
   needsCellImport: Set<'Cell'>;
   needsRcImport: Set<'Rc'>;
   needsRefCellImport: Set<'RefCell'>;
@@ -183,7 +200,7 @@ function emitIrModuleRustWithContext(
     replaceIrModuleBackendContext(sourceModules, module),
     moduleResolution,
   );
-  assertRuntimeExternalSymbolBindingsRust(module);
+  assertRuntimeExternalSymbolBindingsRust(module, options);
   assertRuntimeExternalConstructorAbiRust(module);
   const asyncAnalysis = analyzeIrModuleAsyncStateMachines(module);
   const asyncTryStatements = collectAsyncTryStatementsRust(module, asyncAnalysis);
@@ -278,6 +295,8 @@ function emitIrModuleRustWithContext(
     taggedUnionBindingNames,
     bindingTypes,
     module,
+    moduleResolution,
+    sourceModules: replaceIrModuleBackendContext(sourceModules, module),
     needsCellImport: new Set(),
     needsRcImport: new Set(),
     needsRefCellImport: new Set(),
@@ -355,7 +374,7 @@ function emitIrModuleRustWithContext(
   declarations.forEach((declaration) => lines.push('', ...declaration));
   return {
     contents: lines.join('\n'),
-    path: `${convertSourcePathToRustModuleName(module.source) ?? `_internal_${snakeCase(module.name)}`}.rs`,
+    path: getRustModuleFilePath(module, context.sourceModules),
   };
 }
 
@@ -1227,7 +1246,11 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
       // A namespace-like ambient symbol has no target name of its own, so the member decides the
       // whole spelling: `Math.max` is `f64::max`, not `Math::max`.
       if (expression.object.kind === 'identifier' && expression.object.reference.kind === 'ambient') {
-        const member = getCompilerRuntimeExternalMemberTargetRust(expression.object.reference.name, expression.name);
+        const member = getCompilerRuntimeExternalMemberTargetRust(
+          expression.object.reference.name,
+          expression.name,
+          context.options.hostBindings,
+        );
         if (member) return member;
       }
       if (
@@ -1463,9 +1486,16 @@ function emitReexportsRust(exports: readonly IrExport[], context: EmitContext): 
   const lines = new Set<string>();
   for (const exported of exports) {
     if (exported.kind === 'local') continue;
-    if (exported.kind !== 'reexport') {
-      emissionError(context, `${exported.kind} exports require Rust module-facade lowering`);
+    if (exported.kind === 'all') {
+      lines.add(`pub use ${rustImportModule(exported.specifier, context)}::*;`);
+      continue;
     }
+    if (exported.kind === 'namespace') {
+      const target = safeRustValueName(exported.exported);
+      lines.add(`pub use ${rustImportModule(exported.specifier, context)} as ${target};`);
+      continue;
+    }
+    if (exported.kind !== 'reexport') emissionError(context, 'default exports require Rust module-facade lowering');
     const module = rustImportModule(exported.specifier, context);
     const source =
       exported.typeOnly || /^[A-Z]/u.test(exported.imported)
@@ -1546,9 +1576,9 @@ function emitConstructorReferenceRust(reference: Readonly<IrIdentifierReference>
   if (reference.kind === 'super') emissionError(context, 'super cannot be used as a Rust constructor value');
   if (reference.kind === 'this') emissionError(context, 'this cannot be used as a Rust constructor');
   if (reference.kind !== 'ambient') return getBindingTargetNameRust(reference.binding, context);
-  const targetName = getCompilerRuntimeExternalSymbolTargetRust(reference.name, 'value');
+  const targetName = getCompilerRuntimeExternalSymbolTargetRust(reference.name, 'value', context.options.hostBindings);
   if (!targetName) emissionError(context, `external constructor ${reference.name} has no Rust binding`);
-  return isCompilerRuntimeExternalSymbolProvidedRust(reference.name, 'value')
+  return isCompilerRuntimeExternalSymbolProvidedRust(reference.name, 'value', context.options.hostBindings)
     ? recordRuntimeTypeRust(targetName, context)
     : targetName;
 }
@@ -1585,9 +1615,13 @@ function emitIdentifierReferenceRust(reference: Readonly<IrIdentifierReference>,
     if (reference.name === 'undefined') {
       emissionError(context, 'undefined expressions require Rust Option-aware lowering');
     }
-    const targetName = getCompilerRuntimeExternalSymbolTargetRust(reference.name, 'value');
+    const targetName = getCompilerRuntimeExternalSymbolTargetRust(
+      reference.name,
+      'value',
+      context.options.hostBindings,
+    );
     if (!targetName) emissionError(context, `external value ${reference.name} has no Rust binding`);
-    return isCompilerRuntimeExternalSymbolProvidedRust(reference.name, 'value')
+    return isCompilerRuntimeExternalSymbolProvidedRust(reference.name, 'value', context.options.hostBindings)
       ? recordRuntimeTypeRust(targetName, context)
       : targetName;
   }
@@ -1786,17 +1820,7 @@ function getIrObjectConstructionPropertiesRust(
   type: Readonly<IrType>,
   context: EmitContext,
 ): readonly IrObjectTypeProperty[] | undefined {
-  if (type.kind === 'object') return type.properties;
-  if (type.kind !== 'named' || type.reference.kind !== 'binding' || type.reference.path.length > 0) return undefined;
-  const bindingId = type.reference.binding.id;
-  const declaration = context.module.declarations.find(
-    (candidate) =>
-      (candidate.kind === 'interface' || candidate.kind === 'typeAlias') && candidate.binding.id === bindingId,
-  );
-  if (declaration?.kind === 'interface') return declaration.properties;
-  return declaration?.kind === 'typeAlias' && declaration.type.kind === 'object'
-    ? declaration.type.properties
-    : undefined;
+  return getIrObjectTypePropertiesRust(type, context);
 }
 
 function getIrObjectTypeTargetNameRust(properties: readonly IrObjectTypeProperty[], context: EmitContext): string {
@@ -2656,11 +2680,20 @@ function emitType(type: Readonly<IrType>, context: EmitContext): string {
     }
     case 'indexedAccess':
     case 'conditionalFacet':
-    case 'keyof':
     case 'typeOf':
       return opaqueHostType(context);
-    case 'intersection':
+    case 'keyof': {
+      const resolved = getIrKeyofTypeRust(type.type, context);
+      if (!resolved) return opaqueHostType(context);
+      return emitType(resolved, context);
+    }
+    case 'intersection': {
+      const erasedScalar = getIrIntersectionErasedScalarRust(type);
+      if (erasedScalar) return emitType(erasedScalar, context);
+      const properties = getIrObjectTypePropertiesRust(type, context);
+      if (properties) return getIrObjectTypeTargetNameRust(properties, context);
       emissionError(context, 'intersection types require Rust record or trait lowering');
+    }
     case 'literal':
       return typeof type.value === 'boolean' ? 'bool' : typeof type.value === 'number' ? 'f64' : 'String';
     case 'named': {
@@ -2668,8 +2701,19 @@ function emitType(type: Readonly<IrType>, context: EmitContext): string {
       if ((sourceName === 'Readonly' || sourceName === 'Required') && type.typeArguments[0]) {
         return emitType(type.typeArguments[0], context);
       }
-      if (sourceName === 'Partial' && type.typeArguments[0])
-        emissionError(context, 'Partial<T> requires structural field lowering');
+      if (sourceName === 'NoInfer' && type.typeArguments.length === 1 && type.typeArguments[0]) {
+        return emitType(type.typeArguments[0], context);
+      }
+      if (sourceName === 'Exclude' || sourceName === 'Extract') {
+        const projected = getIrFilteredTypeRust(sourceName, type.typeArguments, context);
+        if (!projected) emissionError(context, `${sourceName} types require closed Rust type computation lowering`);
+        return emitType(projected, context);
+      }
+      if (sourceName === 'Partial' || sourceName === 'Pick' || sourceName === 'Omit') {
+        const properties = getIrObjectTypePropertiesRust(type, context);
+        if (!properties) emissionError(context, `${sourceName}<T> requires a statically resolvable Rust object shape`);
+        return getIrObjectTypeTargetNameRust(properties, context);
+      }
       const mapped = getTypeReferenceTargetNameRust(type, context);
       const arguments_ = type.typeArguments.map((argument) => emitType(argument, context));
       return `${mapped}${arguments_.length > 0 ? `<${arguments_.join(', ')}>` : ''}`;
@@ -2700,6 +2744,8 @@ function emitType(type: Readonly<IrType>, context: EmitContext): string {
       }
       if (concrete.length === 1 && concrete.length !== type.types.length)
         return `Option<${emitType(concrete[0]!, context)}>`;
+      const primitiveDomain = getIrUnionPrimitiveDomainRust(concrete);
+      if (primitiveDomain) return emitType({ kind: 'primitive', name: primitiveDomain }, context);
       const primitiveEnum = getOrCreatePrimitiveUnionEnumRust(concrete, context);
       if (primitiveEnum) return primitiveEnum.name;
       emissionError(context, 'non-nullable unions require Rust tagged-union lowering');
@@ -2707,6 +2753,336 @@ function emitType(type: Readonly<IrType>, context: EmitContext): string {
     case 'unknown':
       return opaqueHostType(context);
   }
+}
+
+// TypeScript's object utilities and intersections are representation decisions in Rust: once every
+// participating declaration is closed, the result is one concrete record. Keep the resolver local
+// to the backend because it decides Rust storage, but consume the shared substitution machinery so
+// generic aliases and inherited interfaces do not acquire a second set of type-argument rules.
+function getIrObjectTypePropertiesRust(
+  type: Readonly<IrType>,
+  context: EmitContext,
+  module: Readonly<IrModule> = context.module,
+  resolving: ReadonlySet<string> = new Set(),
+): readonly IrObjectTypeProperty[] | undefined {
+  if (type.kind === 'object') return type.properties;
+  if (type.kind === 'intersection') {
+    const shapes = type.types.map((member) => getIrObjectTypePropertiesRust(member, context, module, resolving));
+    return shapes.some((shape) => !shape)
+      ? undefined
+      : mergeIrObjectTypePropertiesRust(shapes.flatMap((shape) => shape!));
+  }
+  if (type.kind !== 'named') return undefined;
+  if (type.reference.kind === 'ambient') {
+    const utility = type.reference.name;
+    if (utility === 'NoInfer' || utility === 'Partial' || utility === 'Readonly' || utility === 'Required') {
+      if (type.typeArguments.length !== 1 || !type.typeArguments[0]) return undefined;
+      const properties = getIrObjectTypePropertiesRust(type.typeArguments[0], context, module, resolving);
+      if (!properties) return undefined;
+      return properties.map((property) => ({
+        ...property,
+        ...(utility === 'Partial' ? { optional: true } : {}),
+        ...(utility === 'Readonly' ? { readonly: true } : {}),
+        ...(utility === 'Required' ? { optional: false } : {}),
+      }));
+    }
+    if (utility === 'Exclude' || utility === 'Extract') {
+      const projected = getIrFilteredTypeRust(utility, type.typeArguments, context, module, resolving);
+      return projected ? getIrObjectTypePropertiesRust(projected, context, module, resolving) : undefined;
+    }
+    if (utility !== 'Omit' && utility !== 'Pick') return undefined;
+    if (type.typeArguments.length !== 2 || !type.typeArguments[0] || !type.typeArguments[1]) return undefined;
+    const properties = getIrObjectTypePropertiesRust(type.typeArguments[0], context, module, resolving);
+    const keys = getIrObjectProjectionKeysRust(type.typeArguments[1], context, module, resolving);
+    if (!properties || !keys) return undefined;
+    return properties.filter((property) => (utility === 'Pick') === keys.has(property.name));
+  }
+  if (type.reference.path.length > 0) return undefined;
+  if (type.reference.binding.space !== 'type' || type.reference.binding.kind === 'typeParameter') return undefined;
+  const location = getIrNamedTypeDeclarationLocationRust(type.reference.binding, context, module);
+  if (!location) return undefined;
+  const key = `${location.module.packageName}\0${location.module.source}\0${location.declaration.binding.id}`;
+  if (resolving.has(key)) return undefined;
+  const active = new Set(resolving).add(key);
+  let plan;
+  try {
+    plan = createIrTypeParameterSubstitutionPlan(location.declaration.typeParameters, type.typeArguments);
+  } catch (error) {
+    if (isCompilerStructuralTypeSubstitutionFailure(error)) return undefined;
+    throw error;
+  }
+  if (location.declaration.kind === 'typeAlias') {
+    let resolved: IrType;
+    try {
+      resolved = resolveIrTypeStructuralSubstitution(location.declaration.type, plan);
+    } catch (error) {
+      if (isCompilerStructuralTypeSubstitutionFailure(error)) return undefined;
+      throw error;
+    }
+    return getIrObjectTypePropertiesRust(resolved, context, location.module, active);
+  }
+  const inherited = location.declaration.extends.map((reference) => {
+    let resolved: IrType;
+    try {
+      resolved = resolveIrTypeStructuralSubstitution(reference, plan);
+    } catch (error) {
+      if (isCompilerStructuralTypeSubstitutionFailure(error)) return undefined;
+      throw error;
+    }
+    return getIrObjectTypePropertiesRust(resolved, context, location.module, active);
+  });
+  if (inherited.some((properties) => !properties)) return undefined;
+  let own: IrObjectTypeProperty[];
+  try {
+    own = location.declaration.properties.map((property) => ({
+      ...property,
+      type: resolveIrTypeStructuralSubstitution(property.type, plan),
+    }));
+  } catch (error) {
+    if (isCompilerStructuralTypeSubstitutionFailure(error)) return undefined;
+    throw error;
+  }
+  return mergeIrObjectTypePropertiesRust([...inherited.flatMap((properties) => properties!), ...own]);
+}
+
+function mergeIrObjectTypePropertiesRust(
+  properties: readonly Readonly<IrObjectTypeProperty>[],
+): readonly IrObjectTypeProperty[] | undefined {
+  const merged = new Map<string, IrObjectTypeProperty>();
+  for (const property of properties) {
+    const existing = merged.get(property.name);
+    if (!existing) {
+      merged.set(property.name, { ...property });
+      continue;
+    }
+    if (
+      JSON.stringify(existing.type) !== JSON.stringify(property.type) ||
+      JSON.stringify(existing.computedKey) !== JSON.stringify(property.computedKey) ||
+      existing.phantom !== property.phantom ||
+      existing.role !== property.role
+    ) {
+      return undefined;
+    }
+    merged.set(property.name, {
+      ...existing,
+      optional: existing.optional && property.optional,
+      readonly: existing.readonly && property.readonly,
+    });
+  }
+  return [...merged.values()];
+}
+
+function getIrObjectProjectionKeysRust(
+  type: Readonly<IrType>,
+  context: EmitContext,
+  module: Readonly<IrModule>,
+  resolving: ReadonlySet<string>,
+): ReadonlySet<string> | undefined {
+  const members = getIrClosedTypeMembersRust(type, context, module, resolving);
+  if (!members || members.some((member) => member.kind !== 'literal' || typeof member.value === 'boolean')) {
+    return undefined;
+  }
+  return new Set(members.map((member) => String((member as Extract<IrType, { kind: 'literal' }>).value)));
+}
+
+function getIrKeyofTypeRust(type: Readonly<IrType>, context: EmitContext): Readonly<IrType> | undefined {
+  const properties = getIrObjectTypePropertiesRust(type, context);
+  if (!properties) return undefined;
+  const keys: IrType[] = [];
+  if (properties.some((property) => !property.computedKey && !property.phantom)) {
+    keys.push({ kind: 'primitive', name: 'string' });
+  }
+  if (properties.some((property) => property.computedKey && !property.phantom)) {
+    keys.push({ kind: 'primitive', name: 'symbol' });
+  }
+  return createIrClosedTypeUnionRust(keys);
+}
+
+function getIrFilteredTypeRust(
+  utility: 'Exclude' | 'Extract',
+  typeArguments: readonly Readonly<IrType>[],
+  context: EmitContext,
+  module: Readonly<IrModule> = context.module,
+  resolving: ReadonlySet<string> = new Set(),
+): Readonly<IrType> | undefined {
+  if (typeArguments.length !== 2 || !typeArguments[0] || !typeArguments[1]) return undefined;
+  const included = getIrClosedTypeMembersRust(typeArguments[0], context, module, resolving);
+  const filters = getIrClosedTypeMembersRust(typeArguments[1], context, module, resolving);
+  if (!included || !filters) return undefined;
+  const retained: IrType[] = [];
+  for (const member of included) {
+    const matches = filters.map((filter) =>
+      isIrTypeAssignableForFilterRust(member, filter, context, module, resolving),
+    );
+    if (!matches.includes(true) && matches.includes(undefined)) return undefined;
+    const matched = matches.includes(true);
+    if ((utility === 'Extract') === matched) retained.push(member);
+  }
+  return createIrClosedTypeUnionRust(retained);
+}
+
+function getIrClosedTypeMembersRust(
+  type: Readonly<IrType>,
+  context: EmitContext,
+  module: Readonly<IrModule> = context.module,
+  resolving: ReadonlySet<string> = new Set(),
+): readonly Readonly<IrType>[] | undefined {
+  if (type.kind === 'never') return [];
+  if (type.kind === 'union') {
+    const members = type.types.map((member) => getIrClosedTypeMembersRust(member, context, module, resolving));
+    return members.some((member) => !member) ? undefined : members.flatMap((member) => member!);
+  }
+  if (type.kind === 'keyof') {
+    const resolved = getIrKeyofTypeRustInModule(type.type, context, module, resolving);
+    return resolved ? getIrClosedTypeMembersRust(resolved, context, module, resolving) : undefined;
+  }
+  if (type.kind === 'typeOf') {
+    const resolved = getIrTypeOfValueTypeRust(type, context, module);
+    return resolved ? getIrClosedTypeMembersRust(resolved, context, module, resolving) : undefined;
+  }
+  if (type.kind === 'named' && type.reference.kind === 'binding' && type.reference.path.length === 0) {
+    if (type.reference.binding.space !== 'type' || type.reference.binding.kind === 'typeParameter') return undefined;
+    const location = getIrNamedTypeDeclarationLocationRust(type.reference.binding, context, module);
+    if (location?.declaration.kind === 'typeAlias') {
+      const key = `${location.module.packageName}\0${location.module.source}\0${location.declaration.binding.id}`;
+      if (resolving.has(key)) return undefined;
+      try {
+        const plan = createIrTypeParameterSubstitutionPlan(location.declaration.typeParameters, type.typeArguments);
+        const resolved = resolveIrTypeStructuralSubstitution(location.declaration.type, plan);
+        return getIrClosedTypeMembersRust(resolved, context, location.module, new Set(resolving).add(key));
+      } catch (error) {
+        if (isCompilerStructuralTypeSubstitutionFailure(error)) return undefined;
+        throw error;
+      }
+    }
+  }
+  if (type.kind === 'conditionalFacet' || type.kind === 'indexedAccess' || type.kind === 'unknown') {
+    return undefined;
+  }
+  return [type];
+}
+
+function getIrTypeOfValueTypeRust(
+  type: Readonly<Extract<IrType, { kind: 'typeOf' }>>,
+  context: EmitContext,
+  module: Readonly<IrModule>,
+): Readonly<IrType> | undefined {
+  if (type.reference.kind !== 'binding' || type.reference.path.length > 0) return undefined;
+  const binding = type.reference.binding;
+  const local = module.declarations.find(
+    (declaration) =>
+      declaration.kind === 'variable' && 'binding' in declaration && declaration.binding.id === binding.id,
+  );
+  if (local?.kind === 'variable' && 'binding' in local) return getIrVariableTypeRust(local);
+  const imported = module.imports
+    .flatMap((item) => item.bindings.map((candidate) => ({ candidate, specifier: item.specifier })))
+    .find(({ candidate }) => candidate.binding.id === binding.id);
+  if (!imported || imported.candidate.imported === '*' || imported.candidate.imported === 'default') return undefined;
+  const targetModule = resolveImportModuleRust(imported.specifier, imported.candidate.imported, context, module);
+  const declaration = targetModule?.declarations.find(
+    (candidate) =>
+      candidate.kind === 'variable' && 'binding' in candidate && candidate.binding.name === imported.candidate.imported,
+  );
+  return declaration?.kind === 'variable' && 'binding' in declaration ? getIrVariableTypeRust(declaration) : undefined;
+}
+
+function getIrVariableTypeRust(variable: Readonly<IrVariableDeclaration>): Readonly<IrType> | undefined {
+  if ('pattern' in variable) return undefined;
+  if (variable.type && variable.type.kind !== 'unknown') return variable.type;
+  const initializer = variable.initializer;
+  if (initializer?.kind !== 'call') return variable.type;
+  const directSymbol =
+    initializer.callee.kind === 'identifier' &&
+    initializer.callee.reference.kind === 'ambient' &&
+    initializer.callee.reference.name === 'Symbol';
+  const symbolMember =
+    initializer.callee.kind === 'property' &&
+    initializer.callee.object.kind === 'identifier' &&
+    initializer.callee.object.reference.kind === 'ambient' &&
+    initializer.callee.object.reference.name === 'Symbol';
+  return directSymbol || symbolMember ? { kind: 'primitive', name: 'symbol' } : variable.type;
+}
+
+function getIrKeyofTypeRustInModule(
+  type: Readonly<IrType>,
+  context: EmitContext,
+  module: Readonly<IrModule>,
+  resolving: ReadonlySet<string>,
+): Readonly<IrType> | undefined {
+  const properties = getIrObjectTypePropertiesRust(type, context, module, resolving);
+  if (!properties) return undefined;
+  const keys: IrType[] = [];
+  if (properties.some((property) => !property.computedKey && !property.phantom)) {
+    keys.push({ kind: 'primitive', name: 'string' });
+  }
+  if (properties.some((property) => property.computedKey && !property.phantom)) {
+    keys.push({ kind: 'primitive', name: 'symbol' });
+  }
+  return createIrClosedTypeUnionRust(keys);
+}
+
+function isIrTypeAssignableForFilterRust(
+  source: Readonly<IrType>,
+  target: Readonly<IrType>,
+  context: EmitContext,
+  module: Readonly<IrModule>,
+  resolving: ReadonlySet<string>,
+): boolean | undefined {
+  if (target.kind === 'primitive') {
+    if (source.kind === 'primitive') return source.name === target.name;
+    if (source.kind !== 'literal') return false;
+    return typeof source.value === target.name;
+  }
+  if (target.kind === 'literal') return source.kind === 'literal' && Object.is(source.value, target.value);
+  if (target.kind === 'null' || target.kind === 'undefined') return source.kind === target.kind;
+  const sourceProperties = getIrObjectTypePropertiesRust(source, context, module, resolving);
+  const targetProperties = getIrObjectTypePropertiesRust(target, context, module, resolving);
+  if (!sourceProperties || !targetProperties) return undefined;
+  const report = analyzeIrTypeStructuralAssignability(
+    { kind: 'object', properties: sourceProperties },
+    { kind: 'object', properties: targetProperties },
+  );
+  return report.status === 'indeterminate' ? undefined : report.status === 'compatible';
+}
+
+function createIrClosedTypeUnionRust(types: readonly Readonly<IrType>[]): Readonly<IrType> {
+  const unique = [...new Map(types.map((type) => [JSON.stringify(type), type])).values()];
+  if (unique.length === 0) return { kind: 'never' };
+  if (unique.length === 1) return unique[0]!;
+  return { kind: 'union', types: [unique[0]!, unique[1]!, ...unique.slice(2)] };
+}
+
+function getIrIntersectionErasedScalarRust(
+  type: Readonly<Extract<IrType, { kind: 'intersection' }>>,
+): Readonly<IrType> | undefined {
+  const values = type.types.filter((member) => member.kind !== 'object');
+  if (values.length !== 1 || type.types.some((member) => member.kind !== 'object' && member !== values[0])) {
+    return undefined;
+  }
+  const value = values[0]!;
+  return value.kind === 'literal' || value.kind === 'primitive' ? value : undefined;
+}
+
+function getIrUnionPrimitiveDomainRust(
+  types: readonly Readonly<IrType>[],
+): 'boolean' | 'number' | 'string' | undefined {
+  const domains = types.map(getIrTypePrimitiveDomainRust);
+  const domain = domains[0];
+  return domain !== undefined && domains.every((candidate) => candidate === domain) ? domain : undefined;
+}
+
+function getIrTypePrimitiveDomainRust(type: Readonly<IrType>): 'boolean' | 'number' | 'string' | undefined {
+  if (type.kind === 'literal') {
+    const domain = typeof type.value;
+    return domain === 'boolean' || domain === 'number' || domain === 'string' ? domain : undefined;
+  }
+  if (type.kind === 'primitive' && (type.name === 'boolean' || type.name === 'number' || type.name === 'string')) {
+    return type.name;
+  }
+  if (type.kind !== 'intersection') return undefined;
+  const meaningful = type.types.filter((member) => member.kind !== 'object' || member.properties.length > 0);
+  if (meaningful.length !== 1) return undefined;
+  return getIrTypePrimitiveDomainRust(meaningful[0]!);
 }
 
 // A union of string literals is how the source language spells a closed set of names, and the source
@@ -2733,10 +3109,13 @@ function emitTypeAlias(declaration: Readonly<IrTypeAliasDeclaration>, context: E
       context,
     );
   }
-  if (declaration.type.kind === 'object') {
+  const recordProperties = isIrTypeRecordMaterializationRust(declaration.type)
+    ? getIrObjectTypePropertiesRust(declaration.type, context)
+    : undefined;
+  if (recordProperties) {
     return emitRecord(
       getBindingTargetNameRust(declaration.binding, context),
-      declaration.type.properties,
+      recordProperties,
       declaration.typeParameters,
       declaration.exported,
       context,
@@ -2745,6 +3124,15 @@ function emitTypeAlias(declaration: Readonly<IrTypeAliasDeclaration>, context: E
   return [
     `${declaration.exported ? 'pub ' : ''}type ${getBindingTargetNameRust(declaration.binding, context)}${emitTypeParameters(declaration.typeParameters, context)} = ${emitType(declaration.type, context)};`,
   ];
+}
+
+function isIrTypeRecordMaterializationRust(type: Readonly<IrType>): boolean {
+  if (type.kind === 'object' || type.kind === 'intersection') return true;
+  return (
+    type.kind === 'named' &&
+    type.reference.kind === 'ambient' &&
+    ['Exclude', 'Extract', 'Omit', 'Partial', 'Pick', 'Required'].includes(type.reference.name)
+  );
 }
 
 function emitTupleSpreadExpressionRust(
@@ -2927,15 +3315,51 @@ function getPreferredBindingNameRust(
 
 function getTypeReferenceTargetNameRust(type: Readonly<IrTypeReference>, context: EmitContext): string {
   if (type.reference.kind === 'ambient') {
-    const targetName = getCompilerRuntimeExternalSymbolTargetRust(type.reference.name, 'type');
+    const targetName = getCompilerRuntimeExternalSymbolTargetRust(
+      type.reference.name,
+      'type',
+      context.options.hostBindings,
+    );
     if (!targetName) emissionError(context, `external type ${type.reference.name} has no Rust binding`);
-    return isCompilerRuntimeExternalSymbolProvidedRust(type.reference.name, 'type')
+    return isCompilerRuntimeExternalSymbolProvidedRust(type.reference.name, 'type', context.options.hostBindings)
       ? recordRuntimeTypeRust(targetName, context)
       : targetName;
   }
-  return [getBindingTargetNameRust(type.reference.binding, context), ...type.reference.path.map(safeRustTypeName)].join(
-    '::',
-  );
+  return [
+    getTypeBindingTargetNameRust(type.reference.binding, context),
+    ...type.reference.path.map(safeRustTypeName),
+  ].join('::');
+}
+
+function getTypeBindingTargetNameRust(
+  binding: Readonly<IrBindingIdentity | IrTypeBindingIdentity>,
+  context: EmitContext,
+): string {
+  const allocated = context.targetNames.get(binding.id);
+  if (allocated) return allocated;
+  for (const module of context.sourceModules) {
+    const declaration = module.declarations.find(
+      (candidate) => 'binding' in candidate && candidate.binding.id === binding.id,
+    );
+    if (declaration && 'binding' in declaration) {
+      return getRustQualifiedTypeName(module, declaration.binding.name, context);
+    }
+    const imported = module.imports
+      .flatMap((item) => item.bindings.map((candidate) => ({ candidate, specifier: item.specifier })))
+      .find(({ candidate }) => candidate.binding.id === binding.id);
+    if (!imported || imported.candidate.imported === '*' || imported.candidate.imported === 'default') continue;
+    const target = resolveImportModuleRust(imported.specifier, imported.candidate.imported, context, module);
+    if (target) return getRustQualifiedTypeName(target, imported.candidate.imported, context);
+  }
+  emissionError(context, `binding ${binding.name} has no Rust type target resolution`);
+}
+
+function getRustQualifiedTypeName(module: Readonly<IrModule>, name: string, context: EmitContext): string {
+  const targetName = safeRustTypeName(name);
+  if (module.packageName === context.module.packageName) {
+    return `crate::${getRustModuleName(module)}::${targetName}`;
+  }
+  return `${convertPackageNameToRustCrateName(module.packageName).replaceAll('-', '_')}::${targetName}`;
 }
 
 function assertStructuralObjectCompatibilityRust(
@@ -2973,10 +3397,13 @@ function replaceIrModuleBackendContext(
   );
 }
 
-function assertRuntimeExternalSymbolBindingsRust(module: Readonly<IrModule>): void {
+function assertRuntimeExternalSymbolBindingsRust(
+  module: Readonly<IrModule>,
+  options: Readonly<RustCompilerBackendOptions>,
+): void {
   const completeness = analyzeCompilerRuntimeExternalSymbolCompleteness(
     collectIrModulesRuntimeExternalSymbolIdentities([module]),
-    createCompilerRuntimeExternalSymbolBindingPlanRust(),
+    createCompilerRuntimeExternalSymbolBindingPlanRust(options.hostBindings),
   );
   if (completeness.kind === 'complete') return;
   const problems = [
@@ -3264,10 +3691,13 @@ function opaqueHostType(context: EmitContext): string {
 
 function rustImportModule(specifier: string, context: EmitContext): string {
   if (specifier.startsWith('.')) {
+    const resolvedModule = resolveImportModuleRust(specifier, undefined, context);
+    if (resolvedModule) return `crate::${getRustModuleName(resolvedModule)}`;
     const target = path.posix.normalize(
       path.posix.join(path.posix.dirname(context.module.source), specifier.replace(/\.[cm]?js$/u, '.ts')),
     );
-    return `crate::${convertSourcePathToRustModuleName(target) ?? `_internal_${snakeCase(path.posix.basename(target))}`}`;
+    const resolved = /\.tsx?$/u.test(target) ? target : `${target}.ts`;
+    return `crate::${convertSourcePathToRustModuleName(resolved) ?? `_internal_${snakeCase(path.posix.basename(target))}`}`;
   }
   if (specifier.startsWith('@')) {
     const packageName = /^(@[^/]+\/[^/]+)/u.exec(specifier)?.[1];
@@ -3275,6 +3705,68 @@ function rustImportModule(specifier: string, context: EmitContext): string {
     return convertPackageNameToRustCrateName(packageName).replaceAll('-', '_');
   }
   emissionError(context, `external import ${specifier} requires a runtime or standard-library mapping`);
+}
+
+function resolveImportModuleRust(
+  specifier: string,
+  importedName: string | undefined,
+  context: EmitContext,
+  importer: Readonly<IrModule> = context.module,
+): Readonly<IrModule> | undefined {
+  const matching = context.moduleResolution?.edges.filter((edge) => edge.specifier === specifier) ?? [];
+  const exact = matching.filter((edge) => edge.importer && isRustCompilerModuleIdentityEqual(edge.importer, importer));
+  const scoped = exact.length > 0 ? exact : matching.filter((edge) => !edge.importer);
+  const targets = scoped.filter(
+    (edge) =>
+      edge.importedNames === undefined || (importedName !== undefined && edge.importedNames.includes(importedName)),
+  );
+  const resolved = targets.flatMap((edge) =>
+    context.sourceModules.filter(
+      (module) =>
+        module.packageName === edge.target.packageName &&
+        path.posix.normalize(module.source) === path.posix.normalize(edge.target.source),
+    ),
+  );
+  const unique = [
+    ...new Map(resolved.map((module) => [`${module.packageName}\0${module.source}\0${module.name}`, module])).values(),
+  ];
+  if (unique.length === 1) return unique[0];
+  return specifier.startsWith('.') ? resolveRelativeImportModuleRust(specifier, context, importer) : undefined;
+}
+
+function resolveRelativeImportModuleRust(
+  specifier: string,
+  context: EmitContext,
+  importer: Readonly<IrModule>,
+): Readonly<IrModule> | undefined {
+  const source = path.posix.normalize(
+    path.posix.join(path.posix.dirname(importer.source), specifier.replace(/\.[cm]?js$/u, '.ts')),
+  );
+  const candidates = new Set([source, `${source}.ts`, `${source}/index.ts`]);
+  return context.sourceModules.find(
+    (module) => module.packageName === importer.packageName && candidates.has(path.posix.normalize(module.source)),
+  );
+}
+
+function isRustCompilerModuleIdentityEqual(
+  left: Readonly<{ name: string; packageName: string; source: string }>,
+  right: Readonly<{ name: string; packageName: string; source: string }>,
+): boolean {
+  return (
+    left.packageName === right.packageName &&
+    path.posix.normalize(left.source) === path.posix.normalize(right.source) &&
+    left.name === right.name
+  );
+}
+
+function getRustModuleName(module: Readonly<IrModule>): string {
+  return convertSourcePathToRustModuleName(module.source) ?? `_internal_${snakeCase(module.name)}`;
+}
+
+function getRustModuleFilePath(module: Readonly<IrModule>, sourceModules: readonly Readonly<IrModule>[]): string {
+  const fileName = `${getRustModuleName(module)}.rs`;
+  const packageNames = new Set(sourceModules.map((candidate) => candidate.packageName));
+  return packageNames.size > 1 ? `${convertPackageNameToRustCrateName(module.packageName)}/src/${fileName}` : fileName;
 }
 
 function safeRustTypeName(name: string): string {
@@ -3286,31 +3778,64 @@ function safeRustTypeName(name: string): string {
   return isRustCompilerKeyword(value) ? `${value}_` : value;
 }
 
-// A union alias becomes a Rust enum only when every alternative is a named record this module
-// declares: the variant needs a name and the accessors need the alternative's fields, and neither
-// exists for an anonymous shape or a primitive.
+// A union alias becomes a Rust enum only when every alternative is a named record available through
+// this module's own declarations or imports. Anonymous shapes still have no stable variant identity.
 function getIrUnionTypeMemberRecordsRust(
   type: Readonly<Extract<IrType, { kind: 'union' }>>,
   context: EmitContext,
-): ReadonlyArray<{ name: string; properties: readonly IrObjectTypeProperty[] }> | undefined {
-  const members: Array<{ name: string; properties: readonly IrObjectTypeProperty[] }> = [];
+): readonly RustUnionMemberRecord[] | undefined {
+  const members: RustUnionMemberRecord[] = [];
   for (const member of type.types) {
-    if (member.kind !== 'named' || member.reference.kind !== 'binding') return undefined;
+    if (
+      member.kind !== 'named' ||
+      member.reference.kind !== 'binding' ||
+      member.reference.binding.space !== 'type' ||
+      member.reference.path.length > 0 ||
+      member.typeArguments.length > 0
+    ) {
+      return undefined;
+    }
     const name = member.reference.binding.name;
-    const declaration = context.module.declarations.find(
-      (candidate) =>
-        (candidate.kind === 'interface' || candidate.kind === 'typeAlias') && candidate.binding.name === name,
-    );
+    const declaration = getIrNamedTypeDeclarationLocationRust(
+      member.reference.binding,
+      context,
+      context.module,
+    )?.declaration;
     const properties =
-      declaration?.kind === 'interface'
+      declaration?.kind === 'interface' && declaration.typeParameters.length === 0
         ? declaration.properties
-        : declaration?.kind === 'typeAlias' && declaration.type.kind === 'object'
+        : declaration?.kind === 'typeAlias' &&
+            declaration.typeParameters.length === 0 &&
+            declaration.type.kind === 'object'
           ? declaration.type.properties
           : undefined;
     if (!properties) return undefined;
-    members.push({ name, properties });
+    members.push({ name, properties, targetName: getTypeBindingTargetNameRust(member.reference.binding, context) });
   }
   return members.length > 1 ? members : undefined;
+}
+
+function getIrNamedTypeDeclarationLocationRust(
+  binding: Readonly<IrTypeBindingIdentity>,
+  context: EmitContext,
+  module: Readonly<IrModule>,
+): RustNamedTypeDeclarationLocation | undefined {
+  const local = module.declarations.find(
+    (candidate): candidate is IrInterfaceDeclaration | IrTypeAliasDeclaration =>
+      (candidate.kind === 'interface' || candidate.kind === 'typeAlias') && candidate.binding.id === binding.id,
+  );
+  if (local) return { declaration: local, module };
+  const imported = module.imports
+    .flatMap((item) => item.bindings.map((candidate) => ({ candidate, specifier: item.specifier })))
+    .find(({ candidate }) => candidate.binding.id === binding.id);
+  if (!imported || imported.candidate.imported === '*' || imported.candidate.imported === 'default') return undefined;
+  const targetModule = resolveImportModuleRust(imported.specifier, imported.candidate.imported, context, module);
+  const declaration = targetModule?.declarations.find(
+    (candidate): candidate is IrInterfaceDeclaration | IrTypeAliasDeclaration =>
+      (candidate.kind === 'interface' || candidate.kind === 'typeAlias') &&
+      candidate.binding.name === imported.candidate.imported,
+  );
+  return declaration && targetModule ? { declaration, module: targetModule } : undefined;
 }
 
 function getIrCallBorrowedPositionsRust(
@@ -3629,12 +4154,12 @@ function emitTaggedUnionRust(
   const visibility = exported ? 'pub ' : '';
   const lines = ['#[derive(Clone, Debug)]', `${visibility}enum ${targetName} {`];
   for (const member of members) {
-    lines.push(`  ${pascalCase(member.name)}(${getTargetNameForDeclaredRustType(member.name, context)}),`);
+    lines.push(`  ${pascalCase(member.name)}(${member.targetName}),`);
   }
   lines.push('}', '', `impl ${targetName} {`);
   for (const member of members) {
     lines.push(
-      `  ${visibility}fn as_${safeRustValueName(member.name)}(&self) -> &${getTargetNameForDeclaredRustType(member.name, context)} {`,
+      `  ${visibility}fn as_${safeRustValueName(member.name)}(&self) -> &${member.targetName} {`,
       '    match self {',
       `      ${targetName}::${pascalCase(member.name)}(value) => value,`,
       ...(members.length > 1 ? [`      _ => panic!("${targetName} is not ${pascalCase(member.name)}"),`] : []),
@@ -3659,16 +4184,6 @@ function emitTaggedUnionRust(
   }
   lines.push('}');
   return lines;
-}
-
-function getTargetNameForDeclaredRustType(name: string, context: EmitContext): string {
-  const declaration = context.module.declarations.find(
-    (candidate) =>
-      (candidate.kind === 'interface' || candidate.kind === 'typeAlias') && candidate.binding.name === name,
-  );
-  return declaration && (declaration.kind === 'interface' || declaration.kind === 'typeAlias')
-    ? getBindingTargetNameRust(declaration.binding, context)
-    : pascalCase(name);
 }
 
 // Rust spells a constant in upper snake case, and the name is otherwise the source's own.

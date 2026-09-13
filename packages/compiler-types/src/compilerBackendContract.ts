@@ -109,8 +109,24 @@ export interface CppCompilerBackendOptions {
 }
 
 export interface RustCompilerBackendOptions {
+  /** Target-native host bindings supplied by the embedding Rust workspace. */
+  readonly hostBindings?: Readonly<RustCompilerExternalBindingManifest> | undefined;
   readonly opaqueHostType?: string | undefined;
   /** Crate the runtime contract's Rust types are imported from. */
   readonly runtimeCrate?: string | undefined;
   readonly upstreamCommit?: string | undefined;
+}
+
+export interface RustCompilerExternalBinding {
+  readonly members?: readonly Readonly<{ sourceMember: string; targetName: string }>[] | undefined;
+  readonly nullability: 'non-null' | 'nullable';
+  readonly ownership: 'borrowed' | 'owned' | 'shared' | 'value';
+  readonly sourceName: string;
+  readonly space: 'type' | 'value';
+  readonly targetName: string;
+}
+
+export interface RustCompilerExternalBindingManifest {
+  readonly bindings: readonly RustCompilerExternalBinding[];
+  readonly schema: 'flight-rust-external-bindings/1';
 }
