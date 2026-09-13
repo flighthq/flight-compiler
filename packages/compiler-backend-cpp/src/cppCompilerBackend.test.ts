@@ -798,6 +798,27 @@ describe('createCppCompilerBackend', () => {
     ).toThrow('external call result type host::TimeoutHandle is not one represented contextual runtime domain');
   });
 
+  it('recovers exact runtime result evidence for standard calls and constructors', () => {
+    const module = lower(
+      'runtime-result-evidence.ts',
+      `export function clipped(value: number): number | null {
+         return Math.max(0, Math.min(1, value));
+       }
+       export function suffix(value: string): string | null {
+         return value.slice(1);
+       }
+       export function bytes(length: number): Uint8Array | null {
+         return new Uint8Array(length);
+       }`,
+    ).module;
+
+    const emitted = emitIrModuleCpp(module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    expect(emitted).toContain('std::optional<double>{flight::maximum(');
+    expect(emitted).toContain('std::optional<flight::String>{value.slice(1.0)}');
+    expect(emitted).toContain('std::optional<flight::Uint8Array>{flight::Uint8Array(length)}');
+  });
+
   it('recovers imported Map.get value evidence without guessing for lookalike get methods', () => {
     const level = ts.createSourceFile(
       '/flight/packages/types/src/logLevel.ts',
@@ -2393,9 +2414,7 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     const reasonEvaluation = emitted.indexOf('auto object_member_reason = flight::String("operation-failed")');
     expect(messageEvaluation).toBeGreaterThan(-1);
     expect(reasonEvaluation).toBeGreaterThan(messageEvaluation);
-    expect(emitted).toContain(
-      '.reason = object_member_reason, .message = object_member_message',
-    );
+    expect(emitted).toContain('.reason = object_member_reason, .message = object_member_message');
   });
 
   it('hoists co_await out of catch handlers into a deferred block', () => {

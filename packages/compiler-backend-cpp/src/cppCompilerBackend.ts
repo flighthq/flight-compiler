@@ -963,8 +963,9 @@ function emitVariable(variable: Readonly<IrVariable>, context: EmitContext): str
   const arrayElement = context.arrayElementBindingIds.has(variable.binding.id);
   const weakMapViewInitializer =
     !variable.mutable && variable.initializer?.kind === 'cast' ? variable.initializer : undefined;
-  const weakMapViewPlan =
-    weakMapViewInitializer ? getCppErasedWeakMapViewPlan(weakMapViewInitializer, context) : undefined;
+  const weakMapViewPlan = weakMapViewInitializer
+    ? getCppErasedWeakMapViewPlan(weakMapViewInitializer, context)
+    : undefined;
   const inferredInitializerType =
     !arrayElement &&
     !variable.mutable &&
@@ -1841,10 +1842,9 @@ function emitExpression(
         orderedProperties.some((property, index) => property !== properties[index]);
       if (reordered) {
         const temporaries = new Map(
-          properties.map((property) => [
-            property,
-            getGeneratedTargetName(`object_member_${property.name}`, context),
-          ] as const),
+          properties.map(
+            (property) => [property, getGeneratedTargetName(`object_member_${property.name}`, context)] as const,
+          ),
         );
         const evaluations = properties.map(
           (property) =>
@@ -3801,7 +3801,11 @@ function emitRecordObjectAssignCpp(
 ): string | undefined {
   const [target, ...sources] = expression.arguments;
   if (!target || sources.length === 0) return undefined;
-  const targetRecord = getCppRecordTypeArgumentsCpp(getIrExpressionTypeEvidenceCpp(target, context), context, new Set());
+  const targetRecord = getCppRecordTypeArgumentsCpp(
+    getIrExpressionTypeEvidenceCpp(target, context),
+    context,
+    new Set(),
+  );
   if (!targetRecord) return undefined;
   const sourceRecords = sources.map((source) =>
     getCppRecordTypeArgumentsCpp(getIrExpressionTypeEvidenceCpp(source, context), context, new Set()),
@@ -4542,13 +4546,7 @@ function getIrExpressionTypeForUnionConstructionCpp(
             ? { kind: 'primitive', name: 'string' }
             : { kind: 'null' };
     case 'new':
-      return expression.callee.kind === 'identifier' && expression.callee.reference.kind === 'binding'
-        ? {
-            kind: 'named',
-            reference: { binding: expression.callee.reference.binding, kind: 'binding', path: [] },
-            typeArguments: expression.typeArguments,
-          }
-        : undefined;
+      return getIrNewExpressionTypeEvidenceCpp(expression, context);
     case 'object':
       return getCppContextualObjectUnionRuntimeTypeCpp(expression, valueSlots, context) ?? expression.type;
     case 'tuple':
@@ -4723,9 +4721,113 @@ function getIrCallReturnTypeCpp(
     }
   }
   if (expression.semantics.resultType.kind !== 'unknown') return expression.semantics.resultType;
+  const runtimeResult = getCppRuntimeMemberCallResultTypeEvidence(expression, context);
+  if (runtimeResult) return runtimeResult;
   const calleeType = getIrExpressionTypeEvidenceCpp(expression.callee, context);
   return calleeType ? getCppCallableReturnType(calleeType, context, new Set()) : undefined;
 }
+
+// The package-graph source program deliberately does not make a host TypeScript library part of
+// module identity. Consequently the checker may report `any` for a standard runtime member even
+// though semantic lowering retained its resolved receiver. Preserve the small, versioned
+// flight-cpp runtime contract here instead of treating an `any` result as evidence or guessing for
+// lookalike user methods.
+function getCppRuntimeMemberCallResultTypeEvidence(
+  expression: Readonly<Extract<IrExpression, { kind: 'call' }>>,
+  context: EmitContext,
+): Readonly<IrType> | undefined {
+  if (expression.optional || expression.semantics.optionalChain || expression.callee.kind !== 'property') {
+    return undefined;
+  }
+  const callee = expression.callee;
+  if (callee.object.kind === 'identifier' && callee.object.reference.kind === 'ambient') {
+    if (callee.object.reference.name === 'Math' && cppNumericMathCallNames.has(callee.name)) {
+      return { kind: 'primitive', name: 'number' };
+    }
+  }
+  const receiver = callee.member?.receiver;
+  if (receiver === 'string') {
+    if (cppStringReturningCallNames.has(callee.name)) return { kind: 'primitive', name: 'string' };
+    if (cppNumberReturningStringCallNames.has(callee.name)) return { kind: 'primitive', name: 'number' };
+    if (cppBooleanReturningStringCallNames.has(callee.name)) return { kind: 'primitive', name: 'boolean' };
+    if (callee.name === 'split')
+      return { element: { kind: 'primitive', name: 'string' }, kind: 'array', readonly: false };
+    return undefined;
+  }
+  if (receiver === 'array') {
+    const array = getIrExpressionTypeEvidenceCpp(callee.object, context);
+    const element = array ? getIrIterableElementTypeCpp(array, context, new Set()) : undefined;
+    if (element && (callee.name === 'pop' || callee.name === 'shift' || callee.name === 'find')) {
+      return createIrTypeEvidenceUnionCpp([element, { kind: 'undefined' }]);
+    }
+    if (array && cppArrayReturningCallNames.has(callee.name)) return array;
+    if (cppBooleanReturningArrayCallNames.has(callee.name)) return { kind: 'primitive', name: 'boolean' };
+    if (cppNumberReturningArrayCallNames.has(callee.name)) return { kind: 'primitive', name: 'number' };
+    if (callee.name === 'join') return { kind: 'primitive', name: 'string' };
+    if (callee.name === 'forEach') return { kind: 'primitive', name: 'void' };
+    return undefined;
+  }
+  if (receiver === 'typedArray' && cppTypedArrayReturningCallNames.has(callee.name)) {
+    return getIrExpressionTypeEvidenceCpp(callee.object, context);
+  }
+  return undefined;
+}
+
+const cppNumericMathCallNames = new Set([
+  'abs',
+  'acos',
+  'acosh',
+  'asin',
+  'asinh',
+  'atan',
+  'atan2',
+  'atanh',
+  'cbrt',
+  'ceil',
+  'clz32',
+  'cos',
+  'cosh',
+  'exp',
+  'expm1',
+  'floor',
+  'fround',
+  'hypot',
+  'imul',
+  'log',
+  'log10',
+  'log1p',
+  'log2',
+  'max',
+  'min',
+  'pow',
+  'random',
+  'round',
+  'sign',
+  'sin',
+  'sinh',
+  'sqrt',
+  'tan',
+  'tanh',
+  'trunc',
+]);
+const cppStringReturningCallNames = new Set([
+  'charAt',
+  'concat',
+  'padStart',
+  'repeat',
+  'replace',
+  'slice',
+  'substring',
+  'toLowerCase',
+  'toUpperCase',
+  'trim',
+]);
+const cppNumberReturningStringCallNames = new Set(['charCodeAt', 'indexOf', 'lastIndexOf']);
+const cppBooleanReturningStringCallNames = new Set(['endsWith', 'includes', 'startsWith']);
+const cppArrayReturningCallNames = new Set(['concat', 'fill', 'filter', 'reverse', 'slice', 'sort']);
+const cppBooleanReturningArrayCallNames = new Set(['every', 'includes', 'some']);
+const cppNumberReturningArrayCallNames = new Set(['findIndex', 'indexOf', 'lastIndexOf', 'push', 'unshift']);
+const cppTypedArrayReturningCallNames = new Set(['fill', 'slice', 'subarray']);
 
 function getCppFunctionDeclarationForBindingCpp(
   bindingId: string,
