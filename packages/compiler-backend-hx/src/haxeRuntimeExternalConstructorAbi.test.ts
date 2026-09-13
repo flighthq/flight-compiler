@@ -6,7 +6,7 @@ describe('createCompilerRuntimeExternalConstructorAbiPlanHaxe', () => {
     const plan = createCompilerRuntimeExternalConstructorAbiPlanHaxe();
 
     expect(plan.contract).toBe('flight-runtime-constructor-abi/1');
-    expect(plan.constructors).toHaveLength(23);
+    expect(plan.constructors).toHaveLength(25);
     expect(plan.constructors).toContainEqual({
       dynamicArguments: false,
       externalSymbol: { sourceName: 'Uint8Array', space: 'value' },
@@ -22,6 +22,11 @@ describe('createCompilerRuntimeExternalConstructorAbiPlanHaxe', () => {
       externalSymbol: { sourceName: 'DataView', space: 'value' },
       fixedArgumentCounts: [1, 2, 3],
     });
+    expect(plan.constructors).toContainEqual({
+      dynamicArguments: false,
+      externalSymbol: { sourceName: 'Proxy', space: 'value' },
+      fixedArgumentCounts: [2],
+    });
     expect(
       plan.constructors.every(
         ({ externalSymbol }) =>
@@ -36,7 +41,7 @@ describe('createCompilerRuntimeExternalConstructorAbiPlanHaxe', () => {
 
     (first.constructors as unknown[]).pop();
     (first.constructors[0]!.fixedArgumentCounts as number[]).push(2);
-    expect(second.constructors).toHaveLength(23);
+    expect(second.constructors).toHaveLength(25);
     expect(second.constructors[0]?.fixedArgumentCounts).toEqual([0, 1]);
   });
 });

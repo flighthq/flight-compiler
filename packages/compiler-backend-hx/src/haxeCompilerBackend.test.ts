@@ -482,6 +482,15 @@ describe('emitIrModuleHaxe', () => {
     );
   });
 
+  it('folds typeof availability checks for contracted ambient runtime values', () => {
+    const result = lower(
+      'proxy-availability.ts',
+      "export function available(): boolean { return typeof Proxy !== 'undefined'; }",
+    );
+
+    expect(emitIrModuleHaxe(result.module).contents).toContain('return true;');
+  });
+
   it('represents dependent callable parameter packs as dynamic Haxe rest elements', () => {
     const result = lower(
       'dependent-parameters.ts',
@@ -1789,6 +1798,19 @@ describe('emitIrModuleHaxe expression coverage', () => {
 
     expect(output).toContain('return entity.RuntimeKey;');
     expect(output).toContain('entity.RuntimeKey = value;');
+  });
+
+  it('uses the nullable target of a computed symbol assignment to lower undefined', () => {
+    const result = lower(
+      'clear-computed-symbol-property.ts',
+      `const RuntimeKey = Symbol.for('Runtime');
+       interface Entity { [RuntimeKey]: number | undefined; }
+       export function clear(entity: Entity): void { entity[RuntimeKey] = undefined; }`,
+    );
+
+    expect(emitIrModuleHaxe(result.module, { runtimeModule: 'flight._hx._runtime' }).contents).toContain(
+      'entity.RuntimeKey = null;',
+    );
   });
 
   it('retains reflective access for a dynamically computed object key', () => {
@@ -3932,6 +3954,17 @@ describe('emitIrModuleHaxe object literal', () => {
 
     expect(output).toContain('x:');
     expect(output).toContain('y:');
+  });
+
+  it('copies object spreads left-to-right through Haxe reflection', () => {
+    const result = lower(
+      'object-spread.ts',
+      'export function clone<Type extends object>(source: Readonly<Type>): Type { return { ...source } as Type; }',
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('for (objectSpreadKey in Reflect.fields(objectSpreadSource))');
+    expect(output).toContain('Reflect.setField(objectSpreadValue, objectSpreadKey');
   });
 });
 

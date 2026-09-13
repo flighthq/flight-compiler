@@ -64,6 +64,7 @@ import type {
   IrImport,
   IrInterfaceDeclaration,
   IrModule,
+  IrObjectExpression,
   IrObjectTypeProperty,
   IrParameter,
   IrPostfixUnaryOperator,
@@ -642,6 +643,8 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
         const negated = expression.operator === '!=' || expression.operator === '!==';
         return `(${emitExpression(operand, context)} ${negated ? '!=' : '=='} null)`;
       }
+      const ambientPresenceTest = getTypeofBoundAmbientPresenceTestHaxe(expression, context);
+      if (ambientPresenceTest !== undefined) return String(ambientPresenceTest);
       const typeofTest = getTypeofTypeTestHaxe(expression);
       if (typeofTest) {
         const operand = emitExpression(typeofTest.operand, context);
@@ -804,14 +807,7 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
       }
       return `new ${emitExpression(expression.callee, context)}(${expression.arguments.map((argument) => emitExpression(argument, context)).join(', ')})`;
     case 'object':
-      return `{ ${expression.members
-        .map((member) => {
-          if (member.kind !== 'property') {
-            emissionError(context, 'structural object compatibility preflight accepted an unresolved member');
-          }
-          return `${safeHaxeName(member.name)}: ${emitExpression(member.value, context)}`;
-        })
-        .join(', ')} }`;
+      return emitObjectExpressionHaxe(expression, context);
     case 'objectRest': {
       if (expression.excluded.some((key) => key.kind === 'computed' && key.coercion !== 'string')) {
         emissionError(context, 'computed object-rest exclusions require unresolved JavaScript property-key coercion');
@@ -945,6 +941,36 @@ function emitCallArgumentsHaxe(
       return emitExpression(argument, context);
     })
     .join(', ');
+}
+
+function emitObjectExpressionHaxe(expression: Readonly<IrObjectExpression>, context: EmitContext): string {
+  if (expression.members.every((member) => member.kind === 'property')) {
+    return `{ ${expression.members
+      .map((member) => `${safeHaxeName(member.name)}: ${emitExpression(member.value, context)}`)
+      .join(', ')} }`;
+  }
+  if (expression.members.some((member) => member.kind === 'computedProperty')) {
+    emissionError(context, 'computed object properties require Haxe property-key lowering');
+  }
+  const target = getGeneratedTargetNameHaxe('objectSpreadValue', context);
+  const lines = [`final ${target}:Dynamic = {};`];
+  for (const member of expression.members) {
+    if (member.kind === 'property') {
+      lines.push(
+        `Reflect.setField(${target}, ${JSON.stringify(safeHaxeName(member.name))}, ${emitExpression(member.value, context)});`,
+      );
+      continue;
+    }
+    if (member.kind === 'computedProperty') continue;
+    const source = getGeneratedTargetNameHaxe('objectSpreadSource', context);
+    const key = getGeneratedTargetNameHaxe('objectSpreadKey', context);
+    lines.push(
+      `final ${source}:Dynamic = ${emitExpression(member.expression, context)};`,
+      `if (${source} != null) for (${key} in Reflect.fields(${source})) Reflect.setField(${target}, ${key}, Reflect.field(${source}, ${key}));`,
+    );
+  }
+  lines.push(`return ${target};`);
+  return `(function() {\n${indentSourceLines(lines).join('\n')}\n})()`;
 }
 
 function emitStatementValueExpressionHaxe(
@@ -1864,6 +1890,37 @@ function getTypeofTypeTestHaxe(
   };
 }
 
+function getTypeofBoundAmbientPresenceTestHaxe(
+  expression: Readonly<Extract<IrExpression, { kind: 'binary' }>>,
+  context: EmitContext,
+): boolean | undefined {
+  if (!['===', '==', '!==', '!='].includes(expression.operator)) return undefined;
+  const typeofSide =
+    expression.left.kind === 'unary' && !expression.left.postfix && expression.left.operator === 'typeof'
+      ? expression.left
+      : expression.right.kind === 'unary' && !expression.right.postfix && expression.right.operator === 'typeof'
+        ? expression.right
+        : undefined;
+  const literalSide = typeofSide === expression.left ? expression.right : expression.left;
+  if (
+    !typeofSide ||
+    literalSide.kind !== 'literal' ||
+    literalSide.value !== 'undefined' ||
+    typeofSide.operand.kind !== 'identifier' ||
+    typeofSide.operand.reference.kind !== 'ambient' ||
+    !getCompilerRuntimeExternalSymbolTargetHaxe(
+      typeofSide.operand.reference.name,
+      'value',
+      context.options.runtimeModule,
+    )
+  ) {
+    return undefined;
+  }
+  // A value elected into the runtime binding contract is present by definition. This preserves
+  // source feature tests without emitting Haxe's nonexistent JavaScript `typeof` operator.
+  return expression.operator === '!==' || expression.operator === '!=';
+}
+
 function getIrModuleDeclaredTypeNameHaxe(name: string, context: EmitContext): string | undefined {
   const declaration = context.module.declarations.find(
     (candidate) =>
@@ -2396,7 +2453,9 @@ function assertStructuralObjectCompatibilityHaxe(
     resolution,
   ).diagnostics.find(
     (candidate) =>
-      candidate.code !== 'open-construction-target' && candidate.code !== 'unresolved-named-construction-target',
+      candidate.code !== 'open-construction-target' &&
+      candidate.code !== 'spread-membership-indeterminate' &&
+      candidate.code !== 'unresolved-named-construction-target',
   );
   if (diagnostic) {
     throw createBackendEmissionFailure(

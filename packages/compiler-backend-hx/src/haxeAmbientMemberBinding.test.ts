@@ -44,6 +44,14 @@ describe('getCompilerHaxeAmbientMemberBinding', () => {
       kind: 'runtimeCall',
       targetName: '_StringTools.padStart',
     });
+    expect(getCompilerHaxeAmbientMemberBinding({ name: 'slice', receiver: 'string' })).toEqual({
+      kind: 'runtimeCall',
+      targetName: '_StringTools.slice',
+    });
+    expect(getCompilerHaxeAmbientMemberBinding({ name: 'values', receiver: 'map' })).toEqual({
+      kind: 'method',
+      targetName: 'values',
+    });
   });
 
   it('marks index arguments for Int coercion on methods that take Haxe Int', () => {

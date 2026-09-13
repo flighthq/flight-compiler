@@ -24,6 +24,7 @@ const haxeRuntimeExternalConstructorAbis = [
   createHaxeRuntimeExternalConstructorAbi('Int8Array', [0, 1, 2, 3]),
   createHaxeRuntimeExternalConstructorAbi('Map', [0, 1]),
   createHaxeRuntimeExternalConstructorAbi('Promise', [1]),
+  createHaxeRuntimeExternalConstructorAbi('Proxy', [2]),
   createHaxeRuntimeExternalConstructorAbi('RangeError', [0, 1]),
   createHaxeRuntimeExternalConstructorAbi('RegExp', [0, 1, 2]),
   createHaxeRuntimeExternalConstructorAbi('Set', [0, 1]),
@@ -35,6 +36,7 @@ const haxeRuntimeExternalConstructorAbis = [
   createHaxeRuntimeExternalConstructorAbi('Uint8ClampedArray', [0, 1, 2, 3]),
   createHaxeRuntimeExternalConstructorAbi('URL', [1, 2]),
   createHaxeRuntimeExternalConstructorAbi('WeakMap', [0, 1]),
+  createHaxeRuntimeExternalConstructorAbi('WeakSet', [0, 1]),
 ] as const;
 
 function createHaxeRuntimeExternalConstructorAbi(sourceName: string, fixedArgumentCounts: readonly number[]) {

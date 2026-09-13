@@ -33,7 +33,8 @@ export type CompilerRuntimeCapabilityName =
   | 'uint16-array'
   | 'uint32-array'
   | 'url'
-  | 'weak-map';
+  | 'weak-map'
+  | 'weak-set';
 
 export type CompilerRuntimeContractVersion = 'flight-runtime-contract/2';
 

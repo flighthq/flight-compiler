@@ -11,7 +11,7 @@ describe('createCompilerRuntimeExternalSymbolBindingPlanHaxe', () => {
     const plan = createCompilerRuntimeExternalSymbolBindingPlanHaxe();
 
     expect(plan.contract).toBe('flight-runtime-contract/2');
-    expect(plan.bindings).toHaveLength(132);
+    expect(plan.bindings).toHaveLength(134);
     expect(plan.bindings.filter(({ externalSymbol }) => externalSymbol.sourceName === 'Promise')).toEqual([
       {
         capability: 'task',
@@ -56,6 +56,11 @@ describe('createCompilerRuntimeExternalSymbolBindingPlanHaxe', () => {
       kind: 'runtime',
     });
     expect(plan.bindings).toContainEqual({
+      capability: 'weak-set',
+      externalSymbol: { sourceName: 'WeakSet', space: 'value' },
+      kind: 'runtime',
+    });
+    expect(plan.bindings).toContainEqual({
       externalSymbol: { sourceName: 'WebGLProgram', space: 'type' },
       kind: 'native',
     });
@@ -77,7 +82,7 @@ describe('createCompilerRuntimeExternalSymbolBindingPlanHaxe', () => {
     const second = createCompilerRuntimeExternalSymbolBindingPlanHaxe();
 
     (first.bindings as unknown[]).pop();
-    expect(second.bindings).toHaveLength(132);
+    expect(second.bindings).toHaveLength(134);
   });
 });
 
@@ -122,6 +127,7 @@ describe('getCompilerRuntimeExternalMemberTargetHaxe', () => {
     ['EPSILON', '2.220446049250313e-16'],
     ['MAX_SAFE_INTEGER', '9.007199254740991e15'],
     ['MIN_SAFE_INTEGER', '-9.007199254740991e15'],
+    ['NaN', 'Math.NaN'],
     ['POSITIVE_INFINITY', 'Math.POSITIVE_INFINITY'],
     ['NEGATIVE_INFINITY', 'Math.NEGATIVE_INFINITY'],
     ['isFinite', 'Math.isFinite'],
@@ -186,6 +192,7 @@ describe('getCompilerRuntimeExternalSymbolTargetHaxe', () => {
     ['Object', 'value', 'flighthq._internal._Object'],
     ['Promise', 'type', 'flighthq._internal._Promise'],
     ['Promise', 'value', 'flighthq._internal._Promise'],
+    ['Proxy', 'value', 'flighthq._internal._Proxy'],
     ['Record', 'type', 'haxe.DynamicAccess'],
     ['ReadonlyMap', 'type', 'flighthq._internal._Map'],
     ['ReadonlySet', 'type', 'flighthq._internal._Set'],
@@ -210,6 +217,8 @@ describe('getCompilerRuntimeExternalSymbolTargetHaxe', () => {
     ['URL', 'value', 'flighthq._internal._Url'],
     ['WeakMap', 'type', 'flighthq._internal._WeakMap'],
     ['WeakMap', 'value', 'flighthq._internal._WeakMap'],
+    ['WeakSet', 'type', 'flighthq._internal._WeakSet'],
+    ['WeakSet', 'value', 'flighthq._internal._WeakSet'],
     ['WebGLProgram', 'type', 'js.html.webgl.Program'],
     ['WebGLPowerPreference', 'type', 'js.html.webgl.PowerPreference'],
     ['WritableStream', 'type', 'Dynamic'],
