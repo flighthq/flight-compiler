@@ -285,6 +285,28 @@ describe('emitIrModuleHaxeExtern', () => {
     expect(contents).toContain('public function read(?extra:Float):Float;');
   });
 
+  it('emits source class accessors as direct JavaScript extern properties', () => {
+    const module = lower(
+      '@flighthq/types',
+      'accessors.ts',
+      `export class Model {
+         get readonlyValue(): number { return 1; }
+         private _value = 0;
+         get value(): number { return this._value; }
+         set value(next: number) { this._value = next; }
+         set writeOnly(next: string) {}
+       }`,
+    );
+
+    const contents = findFile(emitIrModuleHaxeExtern(module), 'flighthq/_js/Model.hx').contents;
+
+    expect(contents).toContain('public var readonlyValue(default, null):Float;');
+    expect(contents).toContain('public var value:Float;');
+    expect(contents).toContain('public var writeOnly(never, default):String;');
+    expect(contents).not.toContain('function get_');
+    expect(contents).not.toContain('function set_');
+  });
+
   it('emits source enums as exact Haxe enum abstracts', () => {
     const module = lower(
       '@flighthq/types',

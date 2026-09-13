@@ -4266,6 +4266,9 @@ function lowerTypeScriptForOfElementType(
         : unresolved;
     const declaration = symbol?.declarations?.find(ts.isTypeAliasDeclaration);
     if (symbol && declaration) {
+      if (!context.analysisModuleOptions.has(declaration.getSourceFile().fileName)) {
+        return lowerTypeScriptTypeNodeEvidence(element.type, context, new Set(), element.substitutions);
+      }
       const substitutions = createTypeScriptSyntacticAliasSubstitutions(
         element.type,
         declaration,
@@ -4537,7 +4540,16 @@ function lowerTypeScriptTypeNodeEvidence(
         ts.isInterfaceDeclaration(candidate) || ts.isTypeAliasDeclaration(candidate),
     );
     if (isTypeScriptAmbientSymbol(symbol, context)) {
-      return lowerType(type, context);
+      const reference = lowerTypeNameReference(type.typeName, context);
+      if (!reference) return { kind: 'unknown', source: 'unknown' };
+      return {
+        kind: 'named',
+        reference,
+        typeArguments:
+          type.typeArguments?.map((argument) =>
+            lowerTypeScriptTypeNodeEvidence(argument, context, seen, substitutions),
+          ) ?? [],
+      };
     }
     // A failed concrete expansion of an authored mapped/conditional alias must not then open the
     // declaration without its instantiation and report the helper syntax itself. Preserve the named

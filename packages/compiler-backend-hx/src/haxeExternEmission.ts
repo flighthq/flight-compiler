@@ -162,14 +162,8 @@ function emitClassFilesHaxeExtern(
     emissionErrorHaxeExtern(context, `class ${declaration.binding.name} constructor overloads require Haxe metadata`);
   }
   const unsupportedMethod = declaration.methods.find(
-    (method) => method.visibility === 'public' && (method.accessor !== undefined || method.overloads.length > 0),
+    (method) => method.visibility === 'public' && method.overloads.length > 0,
   );
-  if (unsupportedMethod?.accessor) {
-    emissionErrorHaxeExtern(
-      context,
-      `class ${declaration.binding.name} ${unsupportedMethod.accessor} accessor ${unsupportedMethod.name} requires Haxe property metadata`,
-    );
-  }
   if (unsupportedMethod) {
     emissionErrorHaxeExtern(
       context,
@@ -200,9 +194,44 @@ function emitClassFilesHaxeExtern(
         `  ${optional}public ${field.static ? 'static ' : ''}var ${target}:${emitTypeHaxeExtern(field.type, context)};`,
       );
     }
+    const accessors = new Map<string, { get: boolean; set: boolean; static: boolean; type: Readonly<IrType> }>();
+    for (const method of declaration.methods.filter(
+      (candidate) => candidate.visibility === 'public' && candidate.accessor !== undefined,
+    )) {
+      const type = method.accessor === 'get' ? method.returns : method.parameters[0]?.type;
+      if (!type) {
+        emissionErrorHaxeExtern(context, `class ${declaration.binding.name} setter ${method.name} requires a value`);
+      }
+      const existing = accessors.get(method.name);
+      if (existing && existing.static !== method.static) {
+        emissionErrorHaxeExtern(
+          context,
+          `class ${declaration.binding.name} accessor ${method.name} has mixed static state`,
+        );
+      }
+      accessors.set(method.name, {
+        get: existing?.get === true || method.accessor === 'get',
+        set: existing?.set === true || method.accessor === 'set',
+        static: method.static,
+        type: existing?.type ?? type,
+      });
+    }
+    for (const [sourceName, accessor] of accessors) {
+      const name = safeHaxeExternName(sourceName);
+      if (name !== sourceName) lines.push(`  @:native(${JSON.stringify(sourceName)})`);
+      const target =
+        accessor.get && accessor.set
+          ? name
+          : `${name}(${accessor.get ? 'default' : 'never'}, ${accessor.set ? 'default' : 'null'})`;
+      lines.push(
+        `  public ${accessor.static ? 'static ' : ''}var ${target}:${emitTypeHaxeExtern(accessor.type, context)};`,
+      );
+    }
     const constructorParameters = declaration.classConstructor?.parameters ?? [];
     lines.push(`  public function new(${emitParametersHaxeExtern(constructorParameters, context)});`);
-    for (const method of declaration.methods.filter((candidate) => candidate.visibility === 'public')) {
+    for (const method of declaration.methods.filter(
+      (candidate) => candidate.visibility === 'public' && candidate.accessor === undefined,
+    )) {
       const name = safeHaxeExternName(method.name);
       if (name !== method.name) lines.push(`  @:native(${JSON.stringify(method.name)})`);
       lines.push(`  public ${method.static ? 'static ' : ''}${emitFunctionSignatureHaxeExtern(name, method, context)}`);

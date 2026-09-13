@@ -3862,6 +3862,70 @@ describe('lowerTypeScriptSource', () => {
     expect(loops[7]?.variable.type).toBeUndefined();
   });
 
+  it('keeps bundled mapped utilities closed while deriving project iterable elements', () => {
+    const sourceFile = ts.createSourceFile(
+      '/flight/packages/math/src/project-iterable.ts',
+      `export function read(items: ReadonlyArray<Readonly<{ value: number }>>): number {
+        let result = 0;
+        for (const item of items) result += item.value;
+        return result;
+      }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const [result] = lowerTypeScriptSources([
+      { packageName: '@flighthq/math', sourceFile, upstreamDirectory: '/flight' },
+    ]);
+    const declaration = result?.module.declarations.find(
+      (candidate) => candidate.kind === 'function' && candidate.binding.name === 'read',
+    );
+    const loop = declaration?.kind === 'function' ? declaration.body[1] : undefined;
+
+    expect(result?.diagnostics).toEqual([]);
+    expect(loop).toMatchObject({
+      kind: 'forOf',
+      variable: {
+        type: {
+          kind: 'named',
+          reference: { kind: 'ambient', name: 'Readonly' },
+          typeArguments: [{ kind: 'object', properties: [{ name: 'value' }] }],
+        },
+      },
+    });
+  });
+
+  it('resolves authored conditional arguments nested in bundled mapped utilities', () => {
+    const sourceFile = ts.createSourceFile(
+      '/flight/packages/math/src/project-conditional.ts',
+      `type DataOf<Value> = Value extends { data: infer Data } ? Data : never;
+      type PartialNode<Value> = { data?: Partial<DataOf<Value>> };
+      interface Node { data: { value: number } }
+      export function read(node: PartialNode<Node>): number | undefined { return node.data?.value; }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const [result] = lowerTypeScriptSources([
+      { packageName: '@flighthq/math', sourceFile, upstreamDirectory: '/flight' },
+    ]);
+    const declaration = result?.module.declarations.find(
+      (candidate) => candidate.kind === 'function' && candidate.binding.name === 'read',
+    );
+
+    expect(result?.diagnostics).toEqual([]);
+    expect(declaration).toMatchObject({
+      body: [
+        {
+          expression: {
+            kind: 'optionalChain',
+            valueType: { kind: 'primitive', name: 'number' },
+          },
+          kind: 'return',
+        },
+      ],
+      kind: 'function',
+    });
+  });
+
   it('uses the caller type parameter for a generic call iterated by for-of', () => {
     const result = lower(
       'generic-call-iterable.ts',
