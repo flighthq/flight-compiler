@@ -4517,7 +4517,7 @@ function lowerTypeScriptTypeNodeEvidence(
       (candidate): candidate is ts.InterfaceDeclaration | ts.TypeAliasDeclaration =>
         ts.isInterfaceDeclaration(candidate) || ts.isTypeAliasDeclaration(candidate),
     );
-    if (declaration?.getSourceFile().fileName === getCompilerAmbientSurfaceFileName()) {
+    if (isTypeScriptAmbientSymbol(symbol, context)) {
       return lowerType(type, context);
     }
     // A failed concrete expansion of an authored mapped/conditional alias must not then open the
@@ -4627,7 +4627,15 @@ function lowerConcreteTypeScriptMappedAliasReference(
   node: ts.TypeReferenceNode,
   context: LoweringContext,
 ): Readonly<Extract<IrType, { kind: 'object' }>> | undefined {
-  if (hasExternalTypeScriptTypeParameter(node, context)) return undefined;
+  // Built-in utilities have explicit neutral representations. Expanding TypeScript's library aliases
+  // here would erase nominal member identities that a barrel must introduce into the current module.
+  if (
+    hasExternalTypeScriptTypeParameter(node, context) ||
+    (ts.isIdentifier(node.typeName) &&
+      ['Omit', 'Partial', 'Pick', 'Readonly', 'Record', 'Required'].includes(node.typeName.text))
+  ) {
+    return undefined;
+  }
   const unresolved = context.checker.getSymbolAtLocation(node.typeName);
   const symbol = unresolved ? (resolveTypeBindingAliasTarget(unresolved, context) ?? unresolved) : undefined;
   const declaration = symbol?.declarations?.find(ts.isTypeAliasDeclaration);

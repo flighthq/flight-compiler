@@ -2323,7 +2323,7 @@ describe('emitIrModuleHaxe class coverage', () => {
     expect(output).toMatch(/final moduleSideEffect(?:_2)?:Bool = \(\{ register\(\); true; \}\);/u);
     expect(output).toMatch(/final moduleSideEffect(?:_2)?:Bool = \(\{ \(value = 1\); true; \}\);/u);
     expect(output.indexOf('register(); true;')).toBeLessThan(output.indexOf('var value:Float'));
-    expect(output.indexOf('var value:Float')).toBeLessThan(output.indexOf('value = 1; true;'));
+    expect(output.indexOf('var value:Float')).toBeLessThan(output.indexOf('(value = 1); true;'));
   });
 });
 
