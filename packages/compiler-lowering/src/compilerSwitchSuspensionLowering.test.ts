@@ -149,6 +149,21 @@ describe('createCompilerLoweringPassSwitchSuspension', () => {
     expect(pass.verifyIrModule(output)).toEqual({ kind: 'valid' });
   });
 
+  it('converts a non-suspending switch inside an async state-machine scope', () => {
+    const pass = createCompilerLoweringPassSwitchSuspension();
+    const output = run(
+      `export async function pick(task: Promise<number>, mode: number): Promise<number> {
+         const settled = await task;
+         switch (mode) { case 1: return settled; default: return 0; }
+       }`,
+      pass,
+    );
+    const declaration = output.declarations[0];
+
+    expect(declaration?.kind === 'function' && declaration.body[1]?.kind).toBe('block');
+    expect(pass.verifyIrModule(output)).toEqual({ kind: 'valid' });
+  });
+
   it('converts a switch without a default case', () => {
     const pass = createCompilerLoweringPassSwitchSuspension();
     const output = run(

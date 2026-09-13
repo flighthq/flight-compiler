@@ -7,6 +7,7 @@ import type {
   CompilerStructuralObjectCompatibilityDiagnostic,
   CompilerStructuralObjectCompatibilityDisposition,
   CompilerStructuralObjectCompatibilityReport,
+  CompilerStructuralTypeSubstitutionPlan,
   IrInterfaceDeclaration,
   IrModule,
   IrObjectExpression,
@@ -274,19 +275,9 @@ function getIrTypeStructuralConstructionTarget(
     };
   }
   const declaration = location.declaration;
-  let resolved: IrType;
+  let plan: CompilerStructuralTypeSubstitutionPlan;
   try {
-    const plan = createIrTypeParameterSubstitutionPlan(declaration.typeParameters, type.typeArguments);
-    resolved =
-      declaration.kind === 'interface'
-        ? {
-            kind: 'object',
-            properties: declaration.properties.map((property) => ({
-              ...property,
-              type: resolveIrTypeStructuralSubstitution(property.type, plan),
-            })),
-          }
-        : resolveIrTypeStructuralSubstitution(declaration.type, plan);
+    plan = createIrTypeParameterSubstitutionPlan(declaration.typeParameters, type.typeArguments);
   } catch (error) {
     if (!isCompilerStructuralTypeSubstitutionFailure(error)) throw error;
     return {
@@ -296,22 +287,31 @@ function getIrTypeStructuralConstructionTarget(
       message: `structural construction target ${target} has invalid generic application (${error.code})`,
     };
   }
+  const nextAncestors = new Set(ancestors).add(location.identity);
+  if (declaration.kind === 'interface') {
+    const inherited: (readonly IrObjectTypeProperty[])[] = [];
+    for (const base of declaration.extends) {
+      const resolvedBase = resolveIrTypeStructuralSubstitution(base, plan);
+      const resolution = getIrTypeStructuralConstructionTarget(resolvedBase, location.module, moduleSet, nextAncestors);
+      if (resolution.kind === 'diagnostic') return resolution;
+      inherited.push(resolution.properties);
+    }
+    const own = declaration.properties.map((property) => ({
+      ...property,
+      type: resolveIrTypeStructuralSubstitution(property.type, plan),
+    }));
+    return {
+      kind: 'closed',
+      properties: mergeIrStructuralConstructionProperties([...inherited, own], 'intersection'),
+    };
+  }
+  const resolved = resolveIrTypeStructuralSubstitution(declaration.type, plan);
   if (resolved.kind === 'object') return { kind: 'closed', properties: resolved.properties };
   if (resolved.kind === 'named') {
-    return getIrTypeStructuralConstructionTarget(
-      resolved,
-      location.module,
-      moduleSet,
-      new Set(ancestors).add(location.identity),
-    );
+    return getIrTypeStructuralConstructionTarget(resolved, location.module, moduleSet, nextAncestors);
   }
   if (resolved.kind === 'union' || resolved.kind === 'intersection') {
-    return getIrTypeStructuralConstructionTarget(
-      resolved,
-      location.module,
-      moduleSet,
-      new Set(ancestors).add(location.identity),
-    );
+    return getIrTypeStructuralConstructionTarget(resolved, location.module, moduleSet, nextAncestors);
   }
   return {
     code: 'non-structural-construction-target',

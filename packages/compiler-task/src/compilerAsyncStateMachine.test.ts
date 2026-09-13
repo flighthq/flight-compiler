@@ -448,6 +448,22 @@ describe('analyzeIrModuleAsyncStateMachines', () => {
     });
   });
 
+  it('walks an else-if return chain after an earlier suspension', () => {
+    const analysis = analyzeIrModuleAsyncStateMachines(
+      lower(`
+        export async function choose(task: Promise<number>, mode: number): Promise<number> {
+          const value = await task;
+          if (mode === 0) return value;
+          else if (mode === 1) return value + 1;
+          else return 0;
+        }
+      `),
+    );
+
+    expect(analysis.refusals).toEqual([]);
+    expect(analysis.machines).toHaveLength(1);
+  });
+
   it('sends the false route straight to the join when the branch has no else', () => {
     const analysis = analyzeIrModuleAsyncStateMachines(
       lower(`

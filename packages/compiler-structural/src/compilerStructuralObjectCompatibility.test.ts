@@ -81,6 +81,23 @@ describe('analyzeIrModuleStructuralObjectCompatibility', () => {
     expect(module).toEqual(snapshot);
   });
 
+  it('includes inherited interface properties in a closed construction target', () => {
+    const base = interfaceDeclaration('type:base', 'Base', [property('binding', stringType)]);
+    const derived = {
+      ...interfaceDeclaration('type:derived', 'Derived', [property('signals', numberType)]),
+      extends: [typeReference(base.binding) as IrInterfaceDeclaration['extends'][number]],
+    };
+    const expression = objectExpression(typeReference(derived.binding), [
+      { kind: 'property', name: 'binding', value: { kind: 'literal', value: 'ready' } },
+      { kind: 'property', name: 'signals', value: { kind: 'literal', value: 1 } },
+    ]);
+
+    expect(analyzeIrModuleStructuralObjectCompatibility(createModule([base, derived], [expression]))).toMatchObject({
+      diagnostics: [],
+      status: 'compatible',
+    });
+  });
+
   it('reports every incompatibility, indeterminate target, and required lowering through stable paths', () => {
     const value = typeBinding('type-parameter:value', 'Value', 'typeParameter');
     const box = interfaceDeclaration('type:box', 'Box', [property('value', numberType)], [{ binding: value }]);

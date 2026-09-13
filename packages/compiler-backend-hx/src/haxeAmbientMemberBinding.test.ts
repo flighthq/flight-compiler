@@ -72,6 +72,18 @@ describe('getCompilerHaxeAmbientMemberBinding', () => {
       kind: 'runtimeCall',
       targetName: '_Array.flatMap',
     });
+    expect(getCompilerHaxeAmbientMemberBinding({ name: 'entries', receiver: 'array' })).toEqual({
+      kind: 'runtimeCall',
+      targetName: '_Array.entries',
+    });
+    expect(getCompilerHaxeAmbientMemberBinding({ name: 'fill', receiver: 'array' })).toEqual({
+      kind: 'runtimeCall',
+      targetName: '_Array.fill',
+    });
+    expect(getCompilerHaxeAmbientMemberBinding({ name: 'every', receiver: 'tuple' })).toEqual({
+      kind: 'staticCall',
+      targetPath: 'Lambda.foreach',
+    });
   });
 
   it('marks index arguments for Int coercion on methods that take Haxe Int', () => {
@@ -140,9 +152,17 @@ describe('getCompilerHaxeAmbientMemberBinding', () => {
       kind: 'method',
       targetName: 'then',
     });
+    expect(getCompilerHaxeAmbientMemberBinding({ name: 'finally', receiver: 'task' })).toEqual({
+      kind: 'runtimeCall',
+      targetName: '_Promise.finallyTask',
+    });
     expect(getCompilerHaxeAmbientMemberBinding({ name: 'padEnd', receiver: 'string' })).toEqual({
       kind: 'runtimeCall',
       targetName: '_StringTools.padEnd',
+    });
+    expect(getCompilerHaxeAmbientMemberBinding({ name: 'trimEnd', receiver: 'string' })).toEqual({
+      kind: 'runtimeCall',
+      targetName: '_StringTools.trimEnd',
     });
   });
 

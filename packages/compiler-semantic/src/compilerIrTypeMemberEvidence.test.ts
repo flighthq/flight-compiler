@@ -83,6 +83,39 @@ describe('getIrTypeMemberEvidence', () => {
     expect(getIrTypeMemberEvidence(object, 'label')).toBeUndefined();
   });
 
+  it('merges a property shared by every member of a written union', () => {
+    const union: IrType = {
+      kind: 'union',
+      types: [
+        {
+          kind: 'named',
+          reference: { kind: 'ambient', name: 'Readonly' },
+          typeArguments: [
+            {
+              kind: 'object',
+              properties: [
+                { name: 'reason', optional: false, readonly: true, type: { kind: 'literal', value: 'ready' } },
+              ],
+            },
+          ],
+        },
+        {
+          kind: 'object',
+          properties: [{ name: 'reason', optional: false, readonly: true, type: { kind: 'literal', value: 'empty' } }],
+        },
+      ],
+    };
+
+    expect(getIrTypeMemberEvidence(union, 'reason')).toEqual({
+      kind: 'union',
+      types: [
+        { kind: 'literal', value: 'ready' },
+        { kind: 'literal', value: 'empty' },
+      ],
+    });
+    expect(getIrTypeMemberEvidence(union, 'missing')).toBeUndefined();
+  });
+
   it('claims nothing for a member the written type does not decide', () => {
     const array: IrType = { element: { kind: 'primitive', name: 'number' }, kind: 'array', readonly: true };
     const object: IrType = { kind: 'object', properties: [] };

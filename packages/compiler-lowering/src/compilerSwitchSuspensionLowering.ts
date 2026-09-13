@@ -94,10 +94,13 @@ function hasIrStatementSwitchLocalBreak(statement: Readonly<IrStatement>): boole
   return false;
 }
 
-function isIrSwitchStatementSuspensionConvertible(statement: Readonly<Extract<IrStatement, { kind: 'switch' }>>) {
+function isIrSwitchStatementSuspensionConvertible(
+  statement: Readonly<Extract<IrStatement, { kind: 'switch' }>>,
+  asyncScope = false,
+) {
   if (statement.label || !statement.origin || !statement.subjectDomain) return false;
   if (statement.subjectDomain === 'unknown') return false;
-  if (!hasIrSwitchCasesAwait(statement.cases)) return false;
+  if (!asyncScope && !hasIrSwitchCasesAwait(statement.cases)) return false;
   const defaults = statement.cases.filter((clause) => !clause.expression);
   if (defaults.length > 1) return false;
   const last = statement.cases.at(-1);
@@ -116,17 +119,22 @@ function lowerIrDeclarationSwitchSuspension(declaration: Readonly<IrDeclaration>
           ? {
               classConstructor: {
                 ...declaration.classConstructor,
-                body: declaration.classConstructor.body.map(lowerIrStatementSwitchSuspension),
+                body: declaration.classConstructor.body.map((statement) =>
+                  lowerIrStatementSwitchSuspension(statement, false),
+                ),
               },
             }
           : {}),
         methods: declaration.methods.map((method) => ({
           ...method,
-          body: method.body.map(lowerIrStatementSwitchSuspension),
+          body: method.body.map((statement) => lowerIrStatementSwitchSuspension(statement, method.async)),
         })),
       };
     case 'function':
-      return { ...declaration, body: declaration.body.map(lowerIrStatementSwitchSuspension) };
+      return {
+        ...declaration,
+        body: declaration.body.map((statement) => lowerIrStatementSwitchSuspension(statement, declaration.async)),
+      };
     case 'enum':
     case 'interface':
     case 'typeAlias':
@@ -139,31 +147,36 @@ function lowerIrModuleSwitchSuspension(module: Readonly<IrModule>): IrModule {
   return { ...module, declarations: module.declarations.map(lowerIrDeclarationSwitchSuspension) };
 }
 
-function lowerIrStatementSwitchSuspension(statement: Readonly<IrStatement>): IrStatement {
+function lowerIrStatementSwitchSuspension(statement: Readonly<IrStatement>, asyncScope: boolean): IrStatement {
   switch (statement.kind) {
     case 'block':
-      return { ...statement, statements: statement.statements.map(lowerIrStatementSwitchSuspension) };
+      return {
+        ...statement,
+        statements: statement.statements.map((nested) => lowerIrStatementSwitchSuspension(nested, asyncScope)),
+      };
     case 'do':
     case 'for':
     case 'forIn':
     case 'forOf':
     case 'while':
-      return { ...statement, body: lowerIrStatementSwitchSuspension(statement.body) };
+      return { ...statement, body: lowerIrStatementSwitchSuspension(statement.body, asyncScope) };
     case 'if':
       return {
         ...statement,
-        consequent: lowerIrStatementSwitchSuspension(statement.consequent),
-        ...(statement.otherwise ? { otherwise: lowerIrStatementSwitchSuspension(statement.otherwise) } : {}),
+        consequent: lowerIrStatementSwitchSuspension(statement.consequent, asyncScope),
+        ...(statement.otherwise
+          ? { otherwise: lowerIrStatementSwitchSuspension(statement.otherwise, asyncScope) }
+          : {}),
       };
     case 'switch': {
       const lowered: Extract<IrStatement, { kind: 'switch' }> = {
         ...statement,
         cases: statement.cases.map((clause) => ({
           ...clause,
-          statements: clause.statements.map(lowerIrStatementSwitchSuspension),
+          statements: clause.statements.map((nested) => lowerIrStatementSwitchSuspension(nested, asyncScope)),
         })),
       };
-      if (!isIrSwitchStatementSuspensionConvertible(lowered)) return lowered;
+      if (!isIrSwitchStatementSuspensionConvertible(lowered, asyncScope)) return lowered;
       return lowerIrSwitchStatementToBranches(lowered);
     }
     case 'try':
@@ -173,12 +186,14 @@ function lowerIrStatementSwitchSuspension(statement: Readonly<IrStatement>): IrS
           ? {
               catchClause: {
                 ...statement.catchClause,
-                body: lowerIrStatementSwitchSuspension(statement.catchClause.body),
+                body: lowerIrStatementSwitchSuspension(statement.catchClause.body, asyncScope),
               },
             }
           : {}),
-        ...(statement.finallyBody ? { finallyBody: lowerIrStatementSwitchSuspension(statement.finallyBody) } : {}),
-        tryBody: lowerIrStatementSwitchSuspension(statement.tryBody),
+        ...(statement.finallyBody
+          ? { finallyBody: lowerIrStatementSwitchSuspension(statement.finallyBody, asyncScope) }
+          : {}),
+        tryBody: lowerIrStatementSwitchSuspension(statement.tryBody, asyncScope),
       };
     case 'break':
     case 'continue':

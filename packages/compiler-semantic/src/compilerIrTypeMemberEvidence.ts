@@ -38,6 +38,24 @@ export function getIrTypeMemberEvidence(
   name: string,
 ): Readonly<IrType> | undefined {
   if (!type) return undefined;
+  if (
+    type.kind === 'named' &&
+    type.reference.kind === 'ambient' &&
+    (type.reference.name === 'Readonly' || type.reference.name === 'Required') &&
+    type.typeArguments.length === 1
+  ) {
+    return getIrTypeMemberEvidence(type.typeArguments[0], name);
+  }
+  if (type.kind === 'union') {
+    const members = type.types.map((member) => getIrTypeMemberEvidence(member, name));
+    if (members.some((member) => member === undefined)) return undefined;
+    const unique = [...new Map(members.map((member) => [JSON.stringify(member), member!])).values()];
+    return unique.length === 1
+      ? unique[0]
+      : unique.length > 1
+        ? { kind: 'union', types: [unique[0]!, unique[1]!, ...unique.slice(2)] }
+        : undefined;
+  }
   if (name === 'length' && (type.kind === 'array' || type.kind === 'tuple')) {
     return { kind: 'primitive', name: 'number' };
   }

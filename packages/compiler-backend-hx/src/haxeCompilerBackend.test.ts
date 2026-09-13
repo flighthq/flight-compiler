@@ -434,11 +434,21 @@ describe('emitIrModuleHaxe', () => {
       `interface RecordValue { first: number; second: number }
        export function create(flag: boolean): RecordValue {
          return { first: 1, second: 2, ...(flag ? { second: 3 } : {}) };
+      }`,
+    );
+    const coalesced = lower(
+      'asserted-coalesce-construction.ts',
+      `interface RecordValue { required: number }
+       export function create(source?: RecordValue): RecordValue {
+         const value = (source ?? {}) as RecordValue;
+         value.required = 1;
+         return value;
        }`,
     );
 
     expect(() => emitIrModuleHaxe(asserted.module)).not.toThrow();
     expect(() => emitIrModuleHaxe(spread.module)).not.toThrow();
+    expect(() => emitIrModuleHaxe(coalesced.module)).not.toThrow();
   });
 
   it('constructs generic structural records with substituted nested target types', () => {
@@ -1386,6 +1396,27 @@ describe('emitIrModuleHaxe', () => {
     expect(output).toContain('if (flag)');
     expect(output).toContain('_Promise.resolve(first).then(');
     expect(output).toContain('_Promise.resolve(second).then(');
+    expect(output).not.toContain('await ');
+  });
+
+  it('emits a conditional await initializer inside a guarded task region', () => {
+    const result = lower(
+      'conditional-await-try.ts',
+      `interface Outcome { reason: string; }
+       interface Provider { install(): Promise<Outcome>; }
+       export async function install(selected: Provider, origin: Provider): Promise<string> {
+         try {
+           const outcome = selected === origin ? await selected.install() : await origin.install();
+           return outcome.reason;
+         } catch {
+           return 'failed';
+         }
+       }`,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('_Promise.resolve(selected.install()).then(');
+    expect(output).toContain('_Promise.resolve(origin.install()).then(');
     expect(output).not.toContain('await ');
   });
 

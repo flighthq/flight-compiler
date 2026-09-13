@@ -1371,6 +1371,54 @@ describe('lowerTypeScriptSource', () => {
     );
   });
 
+  it('keeps unresolved generic utility construction targets opaque through a barrel', () => {
+    const helper = ts.createSourceFile(
+      '/flight/packages/types/src/generic-helpers.ts',
+      `export type MethodsOf<Value> = { [Key in keyof Value as Value[Key] extends (...args: any) => any ? Key : never]: Value[Key] };
+       export type PartialNode<Value> = { data?: Partial<Value extends { data: infer Data } ? Data : never> } & Partial<Omit<Value, 'data'>>;`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const contract = ts.createSourceFile(
+      '/flight/packages/types/src/contract.ts',
+      "export * from './generic-helpers';",
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const consumer = ts.createSourceFile(
+      '/flight/packages/node/src/node.ts',
+      `import type { MethodsOf, PartialNode } from '@flight/types/contract';
+       interface Runtime<Value> { create(value: Value): Value; }
+       export function create<Value extends { data: object }>(
+         obj?: Readonly<PartialNode<Value>>,
+         methods?: Readonly<Partial<MethodsOf<Runtime<Value>>>>,
+       ): void { void obj; void methods; }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const result = lowerTypeScriptSources(
+      [
+        { packageName: '@flight/types', sourceFile: helper, upstreamDirectory: '/flight' },
+        { packageName: '@flight/types', sourceFile: contract, upstreamDirectory: '/flight' },
+        { packageName: '@flight/node', sourceFile: consumer, upstreamDirectory: '/flight' },
+      ],
+      {
+        edges: [
+          {
+            specifier: '@flight/types/contract',
+            target: { packageName: '@flight/types', source: 'packages/types/src/contract.ts' },
+          },
+        ],
+        schema: 'flight-compiler-module-resolution/1',
+      },
+    ).at(-1)!;
+
+    expect(result.diagnostics).toEqual([]);
+    expect(result.module.declarations).toContainEqual(
+      expect.objectContaining({ binding: expect.objectContaining({ name: 'create' }), kind: 'function' }),
+    );
+  });
+
   it('materializes the concrete result of ReturnType callable utility references', () => {
     const result = lower(
       'return-type.ts',
@@ -2496,7 +2544,7 @@ describe('lowerTypeScriptSource', () => {
     ).not.toContain('Hidden');
   });
 
-  it('expands concrete mapped properties through imported named type bindings', () => {
+  it('preserves an imported named type through a writable mapped view', () => {
     const model = ts.createSourceFile(
       '/flight/packages/model/src/model.ts',
       'export interface Remote { id: number } export interface Source { readonly remote: Remote; readonly values: Remote[]; }',
@@ -2531,23 +2579,10 @@ describe('lowerTypeScriptSource', () => {
     expect(result!.diagnostics).toEqual([]);
     expect(mutable).toMatchObject({
       kind: 'typeAlias',
+      objectView: 'writable',
       type: {
-        kind: 'object',
-        properties: [
-          {
-            name: 'remote',
-            readonly: false,
-            type: { kind: 'named', reference: { binding: { kind: 'import', name: 'Remote' } } },
-          },
-          {
-            name: 'values',
-            readonly: false,
-            type: {
-              element: { kind: 'named', reference: { binding: { kind: 'import', name: 'Remote' } } },
-              kind: 'array',
-            },
-          },
-        ],
+        kind: 'named',
+        reference: { binding: { kind: 'import', name: 'Source' } },
       },
     });
   });
@@ -2638,6 +2673,27 @@ describe('lowerTypeScriptSource', () => {
         export function read({ value, label, active }: Model): string {
           return label + String(value) + String(active);
         }
+      `,
+    );
+
+    expect(result.diagnostics).toEqual([]);
+  });
+
+  it('selects the narrower property from an intersection alias used as interface heritage', () => {
+    const result = lower(
+      'narrowed-alias-heritage.ts',
+      `
+        declare const RuntimeKey: unique symbol;
+        interface Runtime { binding: object | null; }
+        interface Entity { [RuntimeKey]: Runtime | undefined; }
+        interface Data extends Entity { id: number; }
+        interface DetailedData extends Data { label: string; }
+        interface DetailedRuntime<Value> extends Runtime { value?: Value; }
+        interface Base<Value> extends Entity { [RuntimeKey]: DetailedRuntime<Value> | undefined; data: Data | null; }
+        interface DetailedTraits extends Entity { data: DetailedData | null; }
+        type Detailed = Base<DetailedTraits> & DetailedTraits;
+        interface Model extends Detailed { active: boolean; }
+        export function read({ data, active }: Model): string { return active && data ? data.label : ''; }
       `,
     );
 
@@ -3071,7 +3127,7 @@ describe('lowerTypeScriptSource', () => {
       throw new Error('Expected asserted binary expression');
     }
     expect(asserted.expression.semantics).toEqual({
-      left: { declared: 'unknown', flow: 'number' },
+      left: { declared: 'number', flow: 'number' },
       result: 'number',
       right: { declared: 'number', flow: 'number' },
     });
@@ -3737,7 +3793,10 @@ describe('lowerTypeScriptSource', () => {
     });
     expect(optionalChain?.receiverType).toMatchObject({
       kind: 'union',
-      types: [{ kind: 'object' }, { kind: 'undefined' }],
+      types: [
+        { kind: 'named', reference: { binding: { kind: 'import', name: 'Backend' }, kind: 'binding' } },
+        { kind: 'undefined' },
+      ],
     });
     expect(optionalChain?.valueType).toMatchObject({
       kind: 'function',
@@ -4035,6 +4094,32 @@ describe('lowerTypeScriptSource', () => {
           },
         },
       },
+    });
+  });
+
+  it('uses call-site evidence for a provided optional generic parameter type', () => {
+    const result = lower(
+      'optional-generic-parameter.ts',
+      `function accept<Value extends object>(first: Value, second?: Readonly<Value>): void {}
+       export function forward<Current extends object>(first: Current, second: Readonly<Current>): void {
+         accept(first, second);
+       }`,
+    );
+    const forward = result.module.declarations.find(
+      (candidate) => candidate.kind === 'function' && candidate.binding.name === 'forward',
+    );
+    const call = forward?.kind === 'function' ? forward.body[0] : undefined;
+    const parameterType =
+      call?.kind === 'expression' && call.expression.kind === 'call'
+        ? call.expression.semantics.optionalParameters?.provided[0]?.parameterType
+        : undefined;
+
+    expect(result.diagnostics).toEqual([]);
+    expect(parameterType).toMatchObject({
+      kind: 'named',
+      typeArguments: [
+        { reference: { binding: { id: forward?.kind === 'function' ? forward.typeParameters[0]?.binding.id : '' } } },
+      ],
     });
   });
 
@@ -4885,6 +4970,56 @@ describe('lowerTypeScriptSource', () => {
       expression: { kind: 'conditional', whenTrue: { kind: 'tuple' } },
       kind: 'return',
     });
+  });
+
+  it('introduces checker-reached merged aliases and enums through an imported barrel', () => {
+    const model = ts.createSourceFile(
+      '/flight/packages/types/src/Diagnostic.ts',
+      `export const Severity = { Error: 'Error', Warning: 'Warning' } as const;
+       export type Severity = (typeof Severity)[keyof typeof Severity];
+       export enum Level { Error, Warning }
+       export interface Diagnostic { severity: Severity; level: Level; }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const contract = ts.createSourceFile(
+      '/flight/packages/types/src/contract.ts',
+      "export * from './Diagnostic';",
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const consumer = ts.createSourceFile(
+      '/flight/packages/app/src/format.ts',
+      `import type { Diagnostic } from '@flight/types/contract';
+       export function format(value: Readonly<Diagnostic>): string {
+         const { severity, level } = value;
+         return severity + String(level);
+       }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const result = lowerTypeScriptSources(
+      [
+        { packageName: '@flight/types', sourceFile: model, upstreamDirectory: '/flight' },
+        { packageName: '@flight/types', sourceFile: contract, upstreamDirectory: '/flight' },
+        { packageName: '@flight/app', sourceFile: consumer, upstreamDirectory: '/flight' },
+      ],
+      {
+        edges: [
+          {
+            specifier: '@flight/types/contract',
+            target: { packageName: '@flight/types', source: 'packages/types/src/contract.ts' },
+          },
+        ],
+        schema: 'flight-compiler-module-resolution/1',
+      },
+    ).at(-1)!;
+    const imports = result.module.imports.flatMap((imported) => imported.bindings.map((binding) => binding.imported));
+
+    expect(result.diagnostics).toEqual([]);
+    expect(imports).toEqual(expect.arrayContaining(['Diagnostic', 'Severity', 'Level']));
+    expect(imports.filter((imported) => imported === 'Severity')).toHaveLength(1);
+    expect(imports.filter((imported) => imported === 'Level')).toHaveLength(1);
   });
   it('names the union member a reference was narrowed to, and leaves an unnarrowed one open', () => {
     const result = lower(
@@ -6982,7 +7117,7 @@ it('lowers conditional ternary expression', () => {
   expect(ret.expression).toMatchObject({ kind: 'conditional' });
 });
 
-it('lowers non-null assertion as transparent pass-through', () => {
+it('lowers non-null assertion as present binding evidence', () => {
   const result = lower(
     'non-null.ts',
     `
@@ -6996,7 +7131,7 @@ it('lowers non-null assertion as transparent pass-through', () => {
   if (fn?.kind !== 'function') throw new Error('Expected function');
   const ret = fn.body[0];
   if (ret?.kind !== 'return') throw new Error('Expected return');
-  expect(ret.expression).toMatchObject({ kind: 'identifier' });
+  expect(ret.expression).toMatchObject({ kind: 'identifier', presence: 'narrowedPresent' });
 });
 
 it('lowers as type assertion expression', () => {
@@ -9952,6 +10087,7 @@ it('records structural union-member evidence on discriminant switch cases', () =
     binding: { name: 'outcome' },
     whenResult: true,
   });
+  expect(statement?.kind === 'switch' ? statement.subjectDomain : undefined).toBe('string');
 });
 
 // --- Destructuring assignment ---
@@ -12808,9 +12944,12 @@ it('resolves binding evidence through call expression result for member access',
   expect(result.diagnostics).toEqual([]);
 });
 
-it('reports diagnostic for unsupported top-level statement', () => {
+it('lowers a labeled top-level loop as executable module initialization', () => {
   const result = lower('label.ts', 'label: for (;;) break label;');
-  expect(result.diagnostics).toMatchObject([{ message: expect.stringContaining('unsupported top-level') }]);
+  expect(result.diagnostics).toEqual([]);
+  expect(result.module.declarations).toMatchObject([
+    { initializer: { callee: { body: [{ kind: 'for', label: { name: 'label' } }, { kind: 'return' }] } } },
+  ]);
 });
 
 it('reports diagnostic for export-all declaration without a module specifier', () => {
@@ -12850,7 +12989,8 @@ it('materializes scalar type queries from type-only imports without guessing obj
       sourceFile: ts.createSourceFile(
         '/flight/packages/types/src/Entity.ts',
         `export const EntityRuntimeKey = Symbol.for('EntityRuntime');
-         export const EntityKind = 'entity' as const;`,
+         export const EntityKind = 'entity' as const;
+         export const EntityKinds = { Child: 'child', Entity: 'entity' } as const;`,
         ts.ScriptTarget.Latest,
         true,
       ),
@@ -12860,9 +13000,10 @@ it('materializes scalar type queries from type-only imports without guessing obj
       packageName: '@flighthq/types',
       sourceFile: ts.createSourceFile(
         '/flight/packages/types/src/InteractionManager.ts',
-        `import type { EntityKind, EntityRuntimeKey } from './Entity';
+        `import type { EntityKind, EntityKinds, EntityRuntimeKey } from './Entity';
          export type RuntimeKey = typeof EntityRuntimeKey;
          export type Kind = typeof EntityKind;
+         export type KindUnion = (typeof EntityKinds)[keyof typeof EntityKinds];
          export const settings = { enabled: true };
          export type Settings = typeof settings;
          export type Console = typeof console;`,
@@ -12882,6 +13023,9 @@ it('materializes scalar type queries from type-only imports without guessing obj
   expect(result.diagnostics).toEqual([]);
   expect(declarations.get('RuntimeKey')).toMatchObject({ type: { kind: 'primitive', name: 'symbol' } });
   expect(declarations.get('Kind')).toMatchObject({ type: { kind: 'literal', value: 'entity' } });
+  expect(declarations.get('KindUnion')).toMatchObject({
+    type: { kind: 'union', types: [{ kind: 'literal' }, { kind: 'literal' }] },
+  });
   expect(declarations.get('Settings')).toMatchObject({ type: { kind: 'typeOf', reference: { kind: 'binding' } } });
   expect(declarations.get('Console')).toMatchObject({ type: { kind: 'typeOf', reference: { kind: 'ambient' } } });
 });

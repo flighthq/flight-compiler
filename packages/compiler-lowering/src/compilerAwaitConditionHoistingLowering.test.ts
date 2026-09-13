@@ -110,6 +110,34 @@ describe('createCompilerLoweringPassAwaitConditionHoisting', () => {
     }
   });
 
+  it('binds a leading await before reading a property from its settled value', () => {
+    const output = lowerIrModuleWithCompilerPasses(
+      lower(`
+        interface Outcome { reason: string; }
+        export async function reason(task: Promise<Outcome>): Promise<string> {
+          return (await task).reason;
+        }
+      `),
+      [createCompilerLoweringPassAwaitConditionHoisting()],
+    );
+    const declaration = output.declarations.find(
+      (candidate) => candidate.kind === 'function' && candidate.binding.name === 'reason',
+    );
+
+    expect(declaration).toMatchObject({
+      kind: 'function',
+      body: [
+        {
+          kind: 'block',
+          statements: [
+            { declarations: [{ binding: { name: 'awaitValue' }, initializer: { kind: 'await' } }] },
+            { expression: { kind: 'property', object: { kind: 'identifier' } }, kind: 'return' },
+          ],
+        },
+      ],
+    });
+  });
+
   it('reports an un-lowered module with suspending branch conditions as invalid', () => {
     const pass = createCompilerLoweringPassAwaitConditionHoisting();
     const module = lower(

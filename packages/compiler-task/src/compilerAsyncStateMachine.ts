@@ -854,6 +854,12 @@ function createIrStatementArmAsyncStateMachine(
   if (armSuspensions.length > 0) {
     return createIrStatementSuspensionAsyncStateMachine(scope, statement, path, armSuspensions, draft);
   }
+  // An else-if remains a structured branch even when every suspension happened before it. It still
+  // owns return/throw completion routes, so walk it with the branch state builder instead of asking
+  // the opaque-step path to pretend those exits are local to one execute step.
+  if (statement.kind === 'if') {
+    return createIrStatementSuspensionAsyncStateMachine(scope, statement, path, [], draft);
+  }
   if (!isIrStatementAsyncStateMachineOpaque(statement)) {
     return createCompilerAsyncStateMachineRefusal('unsupported-control-flow', path, scope.path);
   }
