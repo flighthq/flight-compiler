@@ -4755,8 +4755,11 @@ function getTypeScriptTypeofUnionMemberTestEvidence(
 function getIrTypeTypeofName(type: Readonly<IrType>): string | undefined {
   if (type.kind === 'primitive') return type.name === 'void' ? 'undefined' : type.name;
   if (type.kind === 'literal') return typeof type.value;
+  if (type.kind === 'function') return 'function';
   if (type.kind === 'undefined') return 'undefined';
   if (type.kind === 'null') return 'object';
+  if (type.kind === 'array' || type.kind === 'object' || type.kind === 'tuple') return 'object';
+  if (type.kind === 'named' && type.reference.kind === 'ambient') return 'object';
   return undefined;
 }
 
@@ -4791,10 +4794,46 @@ function getTypeScriptUnionBindingEvidence(
 ): Readonly<{ binding: IrBindingIdentity; type: Extract<IrType, { kind: 'union' }> }> | undefined {
   const symbol = context.checker.getSymbolAtLocation(node);
   const declared = symbol ? context.bindingTypes.get(symbol) : undefined;
-  const type = declared ? getIrTypeConstructionTargetShape(declared, context) : undefined;
+  const members = declared ? getTypeScriptNarrowingAlternatives(declared, context, new Set()) : [];
+  const type = members[0] ? commonType([members[0], ...members.slice(1)]) : undefined;
   if (type?.kind !== 'union') return undefined;
   const reference = lowerIdentifierReference(node, context);
   return reference.kind === 'binding' ? { binding: reference.binding, type } : undefined;
+}
+
+function getTypeScriptNarrowingAlternatives(
+  type: Readonly<IrType>,
+  context: LoweringContext,
+  resolvingAliases: ReadonlySet<string>,
+): IrType[] {
+  if (type.kind === 'union') {
+    return type.types.flatMap((member) => getTypeScriptNarrowingAlternatives(member, context, resolvingAliases));
+  }
+  if (
+    type.kind !== 'named' ||
+    type.reference.kind !== 'binding' ||
+    type.reference.path.length > 0 ||
+    resolvingAliases.has(type.reference.binding.id)
+  ) {
+    return [type];
+  }
+  const bindingId = type.reference.binding.id;
+  const symbol = [...context.typeBindings].find(([, binding]) => binding.id === bindingId)?.[0];
+  const declarationSymbol =
+    symbol?.flags && symbol.flags & ts.SymbolFlags.Alias ? context.checker.getAliasedSymbol(symbol) : symbol;
+  const declaration = declarationSymbol?.declarations?.find(ts.isTypeAliasDeclaration);
+  if (!declaration) return [type];
+  const declarationSourceFile = declaration.getSourceFile();
+  const declarationOptions = context.analysisModuleOptions.get(declarationSourceFile.fileName);
+  const declarationContext = declarationOptions
+    ? { ...context, options: declarationOptions, sourceFile: declarationSourceFile }
+    : context;
+  const target = resolveIrTypeStructuralSubstitution(
+    lowerType(declaration.type, declarationContext),
+    createIrTypeParameterSubstitutionPlan(lowerTypeParameters(declaration.typeParameters, declarationContext), type.typeArguments),
+  );
+  const nextResolvingAliases = new Set(resolvingAliases).add(bindingId);
+  return getTypeScriptNarrowingAlternatives(target, context, nextResolvingAliases);
 }
 
 function getTypeScriptLiteralExpressionValue(expression: ts.Expression): boolean | number | string | undefined {

@@ -4772,6 +4772,32 @@ describe('lowerTypeScriptSource', () => {
     });
   });
 
+  it('expands nested type aliases when recording typeof union-member evidence', () => {
+    const result = lower(
+      'nested-alias-narrowing.ts',
+      `type Data = string | Readonly<Record<string, unknown>>;
+       type Provider = () => Data;
+       export function resolve(data: Data | Provider): Data {
+         return typeof data === 'function' ? data() : data;
+       }`,
+    );
+    const resolve = result.module.declarations.find(
+      (declaration) => declaration.kind === 'function' && declaration.binding.name === 'resolve',
+    );
+    const returned = resolve?.kind === 'function' ? resolve.body[0] : undefined;
+    const condition =
+      returned?.kind === 'return' && returned.expression?.kind === 'conditional'
+        ? returned.expression.condition
+        : undefined;
+
+    expect(result.diagnostics).toEqual([]);
+    expect(condition?.kind === 'binary' ? condition.semantics.unionMemberTest : undefined).toMatchObject({
+      binding: { name: 'data' },
+      member: { kind: 'function' },
+      whenResult: true,
+    });
+  });
+
   it('records instanceof evidence for exactly one constructible union alternative', () => {
     const result = lower(
       'instanceof-narrowing.ts',
