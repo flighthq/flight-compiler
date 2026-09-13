@@ -24,6 +24,14 @@ This is a pin-specific snapshot, not an additional contract. JSON deliberately r
 
 A focused native compile also found that compiler-emitted `Record<PropertyKey, V>` is not yet a usable portable contract. It currently becomes `std::unordered_map<std::variant<flight::String, double, flight::Symbol>, V>`, but the variant is not hashable at this pin. More importantly, adding a hash alone would retain the wrong observable object-key order. The compiler and runtime need one coherent record representation with JavaScript-compatible key identity and order before Entity's cloned-record path is native-complete.
 
+## Latest complete-corpus gate
+
+The 2026-09-13 report sweep used Flight `1274ec5c923947dc64d5ffedcbd8169fc758cd9f` and compiler `002f8a6b481f896990f5a27111afae540941f17d`. It processed all 154 packages and 2,851 source modules, emitted 1,032 dependency-closed headers, and refused 1,819 modules: 1,250 through dependency propagation, 538 during emission, and 51 during lowering. The initialization manifest contains 1,032 module entries in 1,030 dependency-ordered groups. Every generated-to-generated include resolves. A fail-closed compiler gate now rejects unresolved C++ type placeholders, and the emitted set contains no `std::optional<auto>`, `flight::Ref<auto>`, `std::variant<auto`, `using ... = auto`, or standalone `auto` field declaration.
+
+This is a successful complete _report_ sweep, not a successful native SDK build. The no-host-manifest profile still has 236 direct external-symbol or ambient-member binding refusals. The recurring portable names include `ArrayLike`, `WeakSet`, and `ArrayBufferLike`; the recurring host names include `AbortSignal`, `HTMLCanvasElement`, WebGL handles, Canvas 2D types, and WebGPU handles. `Node` remains directly refused because its inherited `EntityRuntimeKey` property is incompatible in six source modules, so the Entity-dependent package closure is not yet native-complete.
+
+The exact-pin compile could not run in the reporting workspace. `dependencies.lock.json` pins flight-cpp `538fe1d57229cd5a73ec7d4e8133004a2dff5ba9`, while the materialized checkout was the dirty, off-pin revision `70656d466841ae7ce9b014a36eb81a442a79ddb5`; no C/C++ compiler, CMake, Ninja, Bazel/Bazelisk, or Zig was installed. Against that local off-pin header inventory, generated output refers to ten unavailable runtime headers: `flight/array_buffer.hpp`, `flight/data_view.hpp`, `flight/json.hpp`, `flight/number.hpp`, `flight/object.hpp`, `flight/regexp.hpp`, `flight/structural_ref.hpp`, `flight/symbol.hpp`, `flight/text_decoder.hpp`, and `flight/weak_map.hpp`. This inventory does not supersede the pin-specific snapshot above. Rehydrate the exact lock and run both native build systems before changing any adoption state.
+
 ## Release and dependency contract
 
 - [ ] Advance the unreleased C++ ABI coherently. The compiler and pinned runtime currently assert ABI 1, but ABI 1 was never released. Land the intended ABI revision in `flight-cpp`, update the compiler assertion and dependency lock in the same integration, and compile an emitted header against the new pin.
@@ -71,7 +79,7 @@ The Signals `connection`, `emitter`, and `safe` modules use `...args: Parameters
 - [ ] Add `flight/json.hpp` with `flight::Json::parse` and `flight::Json::stringify`. Stringification must accept the emitted replacer and indentation arguments. Choose and version a JSON value representation that can preserve null, boolean, number, string, array, and object values; do not substitute an unrelated opaque type for `unknown`.
 - [ ] Add `flight/number.hpp` with `flight::parse_int` and `flight::to_number`, plus the currently mapped integer predicate. Cover radix inference, leading whitespace/signs, partial parses, NaN, infinities, empty strings, and safe-integer boundaries.
 - [ ] Add `flight/object.hpp`, `flight::Object`, and generic `flight::object_keys`, `flight::object_entries`, and `flight::object_assign`. Preserve the emitted key/value types, source-order overwrites, target identity, and deterministic JavaScript-compatible key order where it is observable.
-- [ ] Adopt the compiler's eventual portable `Record<PropertyKey, V>` storage contract. Prove string, number, and symbol key identity plus JavaScript-compatible iteration order in native tests; do not treat a `std::hash<flight::Symbol>` specialization by itself as completion.
+- [ ] Adopt the compiler's eventual portable `Record<K, V>` storage contract for string, number, and symbol key domains. Missing-key reads must preserve JavaScript `undefined` semantics without inserting a default value; writes must preserve target identity; enumeration must use JavaScript-compatible integer/string/symbol order. The current `std::unordered_map::operator[]` representation violates both missing-key and ordering semantics even when `K` does not include `Symbol`; do not treat a hash specialization by itself as completion.
 
 ## Internationalization
 
@@ -134,6 +142,8 @@ No unchecked compiler-only relaxation is sound for the two `unknown` values: spe
 
 These are not portable runtime globals and must not become unconditional `flight-cpp` core bindings. A host adapter or consuming application supplies a versioned `flight-cpp-external-bindings/1` manifest and the named native headers.
 
+- [ ] Make SDK regeneration accept one or more explicit external-binding manifests, validate their schema and complete reachable symbol coverage, and record each manifest's stable identity, digest, and selected profile in generated provenance. Keep the manifest-free sweep as the portable floor, but do not treat its host refusals as proof that a configured native profile is incomplete.
+- [ ] Publish maintained binding profiles separately for portable core, headless native, SDL/OpenGL, SDL/Vulkan, SDL/WebGPU, and Node/tooling integration. Profiles compose only when symbol ownership, nullability, lifetime, and value/type-space declarations agree; do not introduce a blanket opaque or dynamic fallback.
 - [ ] Provide a timing-host value binding for `performance` with a callable `now` member returning monotonic milliseconds. `@flighthq/log` reaches `performance.now()` behind a `typeof performance !== 'undefined'` fallback to `Date.now()`; native emission still requires an explicit binding because the ambient value is reachable. The binding must state the native header and qualified value/member names and define its time origin and monotonicity. Do not rewrite it to `flight::Date::now`: wall-clock time can move backward and is not the source contract.
 - [ ] Provide a Node/tooling host manifest for `process`, including the members reached by Flight's shell and tool-pipeline packages.
 - [ ] Provide a browser/media host manifest for `navigator`, `Permissions`, `PermissionDescriptor`, `MediaDevices`, `MediaStream`, and `MediaStreamTrack`.
@@ -144,9 +154,9 @@ These are not portable runtime globals and must not become unconditional `flight
 ## SDK regeneration and release gate
 
 - [ ] Regenerate the pinned Flight package graph with the adopted runtime and host manifests, then commit deterministic source/output ownership, dependency, refusal, and initialization manifests in `flight-cpp`.
-- [ ] Compile every dependency-closed emitted header and implementation unit through both the CMake and Bazel build surfaces.
+- [ ] Add installed/exported `Flight::Sdk` CMake and Bazel targets driven from the generated package manifest. Compile every dependency-closed emitted header and implementation unit through both surfaces, with an explicit arbitrary-toolchain lane and at least one hermetic/reproducible locked-toolchain lane.
 - [ ] Run TypeScript-versus-native behavioral oracles for every adopted capability with runtime semantics, then make the same corpus a release gate.
-- [ ] Publish generated SDK targets only when their complete dependency closure compiles. Partial report output remains useful for bring-up but must not masquerade as a production SDK target.
+- [ ] Publish generated SDK targets only when their complete dependency closure compiles under the declared binding profile. Partial report output remains useful for bring-up but must not masquerade as a production SDK target.
 
 ## Compiler-owned follow-up, not flight-cpp runtime work
 
