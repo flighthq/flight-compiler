@@ -48,6 +48,7 @@ import type {
   CompilerAsyncStateMachineAnalysis,
   CompilerBackend,
   CompilerIrTraversalPath,
+  CompilerLoweringPass,
   CompilerModuleResolutionPlan,
   EmittedFile,
   RustCompilerBackendOptions,
@@ -111,6 +112,28 @@ interface PrimitiveUnionEnum {
   readonly variants: ReadonlyArray<{ primitiveKind: string; rustType: string; variantName: string }>;
 }
 
+interface RustAnonymousUnionEnum {
+  readonly name: string;
+  readonly typeParameters: readonly IrTypeParameter[];
+  readonly variants: RustGeneralUnionVariant[];
+}
+
+interface RustCallableObjectRecord {
+  readonly callable: Readonly<{ parameters: readonly string[]; returns: string }>;
+  readonly fields: readonly Readonly<{ name: string; optional: boolean; rustType: string }>[];
+  readonly name: string;
+  readonly typeParameters: readonly IrTypeParameter[];
+}
+
+type RustGeneralUnionVariant =
+  | Readonly<{
+      fields: readonly Readonly<{ name: string; optional: boolean; rustType: string }>[];
+      kind: 'struct';
+      name: string;
+    }>
+  | Readonly<{ kind: 'tuple'; name: string; rustType: string }>
+  | Readonly<{ kind: 'unit'; name: string }>;
+
 interface RustUnionMemberRecord {
   readonly name: string;
   readonly properties: readonly IrObjectTypeProperty[];
@@ -124,7 +147,9 @@ interface RustNamedTypeDeclarationLocation {
 
 interface EmitContext {
   abstractFieldNames: ReadonlySet<string>;
+  activeTypeParameters: readonly IrTypeParameter[];
   anonymousObjectRecords: Map<string, Readonly<{ name: string; properties: readonly IrObjectTypeProperty[] }>>;
+  anonymousUnionEnums: Map<string, RustAnonymousUnionEnum>;
   arrayElementBindingIds: ReadonlySet<string>;
   asyncTryStatements: ReadonlySet<object>;
   compositionBase?: Readonly<{ baseDeclaration: IrClassDeclaration; fieldName: string }> | undefined;
@@ -139,6 +164,7 @@ interface EmitContext {
   enclosingReturnType?: Readonly<IrType> | undefined;
   runtimeTypeNames: Set<string>;
   borrowedParameterPositions: ReadonlyMap<string, ReadonlySet<number>>;
+  callableObjectRecords: Map<string, RustCallableObjectRecord>;
   deferredBindingIds: ReadonlySet<string>;
   primitiveUnionEnums: Map<string, PrimitiveUnionEnum>;
   primitiveUnionBindingIds: Map<string, string>;
@@ -155,6 +181,7 @@ interface EmitContext {
   needsRcImport: Set<'Rc'>;
   needsRefCellImport: Set<'RefCell'>;
   nullableBindingIds: ReadonlySet<string>;
+  numericEnumNamespaceNames: ReadonlyMap<string, string>;
   objectRestRecords: Map<string, Readonly<{ name: string; properties: readonly IrObjectTypeProperty[] }>>;
   options: Readonly<RustCompilerBackendOptions>;
   returnsAbsent: boolean;
@@ -179,6 +206,18 @@ export function emitIrModuleRust(
   return emitIrModuleRustWithContext(sourceModule, [sourceModule], undefined, options);
 }
 
+function createCompilerLoweringPassInterfaceInheritanceRust(
+  modules: readonly Readonly<IrModule>[],
+  moduleResolution: Readonly<CompilerModuleResolutionPlan> | undefined,
+): CompilerLoweringPass {
+  return createCompilerLoweringPassInterfaceInheritance(modules, moduleResolution, {
+    // TypeScript has already materialized every selected ambient member on the interface. The
+    // shared pass verifies that evidence before it erases the otherwise nonlocal DOM heritage.
+    eraseAmbientUtilityHeritage: (reference) =>
+      reference.reference.kind === 'ambient' && reference.reference.name === 'Pick',
+  });
+}
+
 function emitIrModuleRustWithContext(
   sourceModule: Readonly<IrModule>,
   sourceModules: readonly Readonly<IrModule>[],
@@ -191,7 +230,7 @@ function emitIrModuleRustWithContext(
     createCompilerLoweringPassBindingPattern(),
     createCompilerLoweringPassVariableHoisting(),
     createCompilerLoweringPassCStyleFor(),
-    createCompilerLoweringPassInterfaceInheritance(sourceModules, moduleResolution),
+    createCompilerLoweringPassInterfaceInheritanceRust(sourceModules, moduleResolution),
     createCompilerLoweringPassSwitchFallthrough(),
     createCompilerLoweringPassSwitchSuspension(),
   ]);
@@ -258,10 +297,24 @@ function emitIrModuleRustWithContext(
   const primitiveUnionEnums = new Map<string, PrimitiveUnionEnum>();
   const primitiveUnionBindingIds = new Map<string, string>();
   const taggedUnionBindingNames = new Map<string, string>();
+  const numericEnumNamespaceNames = new Map(
+    module.declarations.flatMap((declaration) =>
+      declaration.kind === 'enum' && getIrEnumNamespaceFunctionsRust(declaration, module).length > 0
+        ? [
+            [
+              declaration.binding.id,
+              targetNames.get(declaration.binding.id) ?? safeRustTypeName(declaration.binding.name),
+            ] as const,
+          ]
+        : [],
+    ),
+  );
   const context: EmitContext = {
     abstractFieldNames: new Set(),
+    activeTypeParameters: [],
     accessorClassNames,
     anonymousObjectRecords: new Map(),
+    anonymousUnionEnums: new Map(),
     apiReferencedBindingIds: collectIrModuleApiReferencedBindingIdsRust(module),
     arrayElementBindingIds: collectIrModuleArrayElementBindingIdsRust(module),
     asyncTryStatements,
@@ -269,6 +322,7 @@ function emitIrModuleRustWithContext(
     refCellWrappedBindingIds,
     classBindingNames,
     borrowedParameterPositions,
+    callableObjectRecords: new Map(),
     deferredBindingIds: new Set(
       analyzeIrModuleOwnershipEvidenceRust(module).bindings.flatMap((evidence) =>
         evidence.uses.filter((use) => use.kind === 'rebind').length === 1 ? [evidence.binding.id] : [],
@@ -301,6 +355,7 @@ function emitIrModuleRustWithContext(
     needsRcImport: new Set(),
     needsRefCellImport: new Set(),
     nullableBindingIds: collectIrModuleNullableBindingIds(module),
+    numericEnumNamespaceNames,
     objectRestRecords: new Map(),
     options,
     returnsAbsent: false,
@@ -348,7 +403,9 @@ function emitIrModuleRustWithContext(
   collectPrimitiveUnionBindingsRust(module, context);
   const lines = [createCompilerGeneratedFileHeader(module, '//', options.upstreamCommit), '#![forbid(unsafe_code)]'];
   const imports = [...emitImports(module.imports, context), ...emitReexportsRust(module.exports, context)];
-  const declarations = module.declarations.map((declaration) => emitDeclaration(declaration, context));
+  const declarations = module.declarations
+    .filter((declaration) => declaration.kind !== 'function' || !declaration.namespaceMember)
+    .map((declaration) => emitDeclaration(declaration, context));
   // The runtime contract's types are named bare in emitted source, so the module has to bring them
   // into scope. Which ones it needs is only known once everything is emitted, which is why the use
   // line is assembled here rather than beside the source's own imports.
@@ -370,6 +427,12 @@ function emitIrModuleRustWithContext(
   });
   context.primitiveUnionEnums.forEach((union) => {
     lines.push('', ...emitPrimitiveUnionEnumRust(union));
+  });
+  context.anonymousUnionEnums.forEach((union) => {
+    lines.push('', ...emitGeneralUnionRust(union.name, union.variants, union.typeParameters, true, context));
+  });
+  context.callableObjectRecords.forEach((record) => {
+    lines.push('', ...emitCallableObjectRecordRust(record, context));
   });
   declarations.forEach((declaration) => lines.push('', ...declaration));
   return {
@@ -643,6 +706,16 @@ function emitDeclaration(declaration: Readonly<IrDeclaration>, context: EmitCont
 
 function emitEnum(declaration: Readonly<IrEnumDeclaration>, context: EmitContext): string[] {
   const values = declaration.members.map((member) => member.value);
+  const namespaceFunctions = getIrEnumNamespaceFunctionsRust(declaration, context.module);
+  if (namespaceFunctions.length > 0) {
+    if (values.some((value) => typeof value !== 'number' || !Number.isInteger(value))) {
+      emissionError(context, `enum ${declaration.binding.name} value namespace requires integer discriminants`);
+    }
+    if (values.some((value) => Number(value) < -2_147_483_648 || Number(value) > 2_147_483_647)) {
+      emissionError(context, `enum ${declaration.binding.name} has a discriminant outside the Rust i32 range`);
+    }
+    return emitNumericEnumNamespaceWrapperRust(declaration, namespaceFunctions, context);
+  }
   if (values.every((value) => typeof value === 'string')) return emitStringEnumRust(declaration, context);
   if (values.some((value) => typeof value !== 'number' || !Number.isInteger(value))) {
     emissionError(context, `enum ${declaration.binding.name} requires one discriminant domain for Rust`);
@@ -661,6 +734,57 @@ function emitEnum(declaration: Readonly<IrEnumDeclaration>, context: EmitContext
   });
   lines.push('}');
   return lines;
+}
+
+function getIrEnumNamespaceFunctionsRust(
+  declaration: Readonly<IrEnumDeclaration>,
+  module: Readonly<IrModule>,
+): readonly Readonly<IrFunctionDeclaration>[] {
+  return module.declarations.filter(
+    (candidate): candidate is IrFunctionDeclaration =>
+      candidate.kind === 'function' &&
+      candidate.namespaceMember?.kind === 'binding' &&
+      candidate.namespaceMember.binding.id === declaration.binding.id &&
+      candidate.namespaceMember.path.length === 1,
+  );
+}
+
+function emitNumericEnumNamespaceWrapperRust(
+  declaration: Readonly<IrEnumDeclaration>,
+  namespaceFunctions: readonly Readonly<IrFunctionDeclaration>[],
+  context: EmitContext,
+): string[] {
+  const name = getBindingTargetNameRust(declaration.binding, context);
+  const visibility = declaration.exported || context.apiReferencedBindingIds.has(declaration.binding.id) ? 'pub ' : '';
+  const lines = [
+    '#[derive(Clone, Copy, Debug, PartialEq, Eq)]',
+    `${visibility}struct ${name}(i32);`,
+    '',
+    `impl ${name} {`,
+    ...declaration.members.map(
+      (member) => `  ${visibility}const ${safeRustTypeName(member.name)}: Self = Self(${String(member.value)});`,
+    ),
+  ];
+  for (const namespaceFunction of namespaceFunctions) {
+    lines.push('', ...indentSourceLines(emitEnumNamespaceFunctionRust(namespaceFunction, context)));
+  }
+  lines.push('}');
+  return lines;
+}
+
+function emitEnumNamespaceFunctionRust(declaration: Readonly<IrFunctionDeclaration>, outer: EmitContext): string[] {
+  const context: EmitContext = {
+    ...outer,
+    activeTypeParameters: declaration.typeParameters,
+    enclosingReturnType: declaration.returns,
+    returnsAbsent: hasIrTypeAbsentMember(declaration.returns),
+  };
+  if (declaration.async) emissionError(context, 'async enum namespace functions require Rust task lowering');
+  return [
+    `pub fn ${safeRustValueName(declaration.binding.name)}${emitTypeParameters(declaration.typeParameters, context)}(${declaration.parameters.map((parameter) => emitParameter(parameter, context)).join(', ')}) -> ${emitType(declaration.returns, context)} {`,
+    ...indentSourceLines(emitStatements(declaration.body, context)),
+    '}',
+  ];
 }
 
 // Rust discriminants are integers, so a string enum keeps unit variants and carries its source
@@ -967,8 +1091,8 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
         expression.operator === '^' ||
         expression.operator === '<<' ||
         expression.operator === '>>';
-      const left = emitExpression(expression.left, context);
-      const right = emitExpression(expression.right, context);
+      const left = emitNumericEnumOperandRust(expression.left, context);
+      const right = emitNumericEnumOperandRust(expression.right, context);
       if (bitwise) return `(((${left} as i32) ${op} (${right} as i32)) as f64)`;
       return `(${left} ${op} ${right})`;
     }
@@ -1186,6 +1310,18 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
       return emitObjectRestExpressionRust(expression, context);
     case 'property': {
       if (expression.optional) return emitOptionalPropertyExpressionRust(expression, context);
+      const namespaceMember = expression.namespaceMember;
+      if (namespaceMember?.kind === 'binding') {
+        const owner = context.numericEnumNamespaceNames.get(namespaceMember.binding.id);
+        const namespaceFunction = context.module.declarations.some(
+          (declaration) =>
+            declaration.kind === 'function' &&
+            declaration.binding.name === expression.name &&
+            declaration.namespaceMember?.kind === 'binding' &&
+            declaration.namespaceMember.binding.id === namespaceMember.binding.id,
+        );
+        if (owner && namespaceFunction) return `${owner}::${safeRustValueName(expression.name)}`;
+      }
       // Rust spells a collection's length `len()`, and it counts in `usize` while the neutral numeric
       // domain is one type. The cast is what keeps the comparison it feeds well typed.
       // A member of the ambient surface is spelled by the table, not by the source's name. Rust
@@ -1316,7 +1452,10 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
       return `(${elements.join(', ')}${elements.length === 1 ? ',' : ''})`;
     }
     case 'unary': {
-      const operand = emitExpression(expression.operand, context);
+      const operand =
+        expression.semantics.operand.flow === 'number'
+          ? emitNumericEnumOperandRust(expression.operand, context)
+          : emitExpression(expression.operand, context);
       const operator = expression.postfix
         ? emitPostfixUnaryOperatorRust(expression.operator, context)
         : emitPrefixUnaryOperatorRust(expression.operator, expression.semantics, context);
@@ -1436,6 +1575,7 @@ function emitFunction(declaration: Readonly<IrFunctionDeclaration>, outer: EmitC
   }
   const context: EmitContext = {
     ...outer,
+    activeTypeParameters: declaration.typeParameters,
     enclosingReturnType: declaration.returns,
     returnsAbsent: hasIrTypeAbsentMember(declaration.returns),
   };
@@ -1844,6 +1984,76 @@ function getIrObjectTypeTargetNameRust(properties: readonly IrObjectTypeProperty
   const name = getGeneratedTargetNameRust('AnonymousObjectRecord', context);
   context.anonymousObjectRecords.set(shape, { name, properties });
   return name;
+}
+
+function getOrCreateCallableObjectRecordRust(
+  type: Readonly<Extract<IrType, { kind: 'intersection' }>>,
+  context: EmitContext,
+): RustCallableObjectRecord | undefined {
+  const callables = type.types.filter(
+    (member): member is Extract<IrType, { kind: 'function' }> => member.kind === 'function',
+  );
+  if (callables.length !== 1) return undefined;
+  const callable = callables[0]!;
+  if (callable.typeParameters.length > 0) {
+    emissionError(context, 'generic callable-object intersections require Rust monomorphization');
+  }
+  const shapes = type.types
+    .filter((member) => member !== callable)
+    .map((member) => getIrObjectTypePropertiesRust(member, context));
+  if (shapes.length === 0 || shapes.some((shape) => !shape)) return undefined;
+  const properties = mergeIrObjectTypePropertiesRust(shapes.flatMap((shape) => shape!));
+  if (!properties) return undefined;
+  const key = JSON.stringify({
+    callable,
+    parameters: context.activeTypeParameters.map((parameter) => parameter.binding.id),
+    shape: createIrObjectTypeShapeIdentity(properties),
+  });
+  const existing = context.callableObjectRecords.get(key);
+  if (existing) return existing;
+  context.needsRcImport.add('Rc');
+  const record: RustCallableObjectRecord = {
+    callable: {
+      parameters: callable.parameters.map((parameter) => {
+        const emitted = emitType(parameter.type, context);
+        return parameter.optional ? `Option<${emitted}>` : emitted;
+      }),
+      returns: emitType(callable.returns, context),
+    },
+    fields: properties.map((property) => ({
+      name: safeRustValueName(property.name),
+      optional: property.optional,
+      rustType: emitType(property.type, context),
+    })),
+    name: getGeneratedTargetNameRust('AnonymousCallableObject', context),
+    typeParameters: context.activeTypeParameters,
+  };
+  context.callableObjectRecords.set(key, record);
+  return record;
+}
+
+function emitCallableObjectRecordRust(record: Readonly<RustCallableObjectRecord>, context: EmitContext): string[] {
+  const parameters = record.callable.parameters.join(', ');
+  const signature = `dyn Fn(${parameters}) -> ${record.callable.returns}`;
+  const typeParameters = emitTypeParameters(record.typeParameters, context);
+  const typeArguments = emitTypeArguments(record.typeParameters, context);
+  return [
+    '#[derive(Clone)]',
+    `pub struct ${record.name}${typeParameters} {`,
+    `  pub callback: Rc<${signature}>,`,
+    ...record.fields.map(
+      (field) => `  pub ${field.name}: ${field.optional ? `Option<${field.rustType}>` : field.rustType},`,
+    ),
+    '}',
+    '',
+    `impl${typeParameters} std::ops::Deref for ${record.name}${typeArguments} {`,
+    `  type Target = ${signature};`,
+    '',
+    '  fn deref(&self) -> &Self::Target {',
+    '    self.callback.as_ref()',
+    '  }',
+    '}',
+  ];
 }
 
 // A value Rust moves is invalidated at the site that consumes it, so a binding the source still
@@ -2467,9 +2677,10 @@ function emitRecord(
   // the source did not export is still named by one often enough that hiding it only produces a
   // private-interface warning. What leaves the crate is the crate root's decision, not this module's.
   void exported;
+  const typeContext: EmitContext = { ...context, activeTypeParameters: typeParameters };
   const lines = ['#[derive(Clone, Debug)]', `pub struct ${targetName}${emitTypeParameters(typeParameters, context)} {`];
   for (const property of properties) {
-    const type = emitType(property.type, context);
+    const type = emitType(property.type, typeContext);
     lines.push(`  pub ${safeRustValueName(property.name)}: ${property.optional ? `Option<${type}>` : type},`);
   }
   lines.push('}');
@@ -2563,6 +2774,12 @@ function emitStatement(statement: Readonly<IrStatement>, context: EmitContext): 
         emissionError(context, 'returning a nullable binding requires Rust narrowing evidence');
       }
       if (statement.expression && context.enclosingReturnType) {
+        const numericEnum = getIrTypeNumericEnumNamespaceNameRust(context.enclosingReturnType, context);
+        if (numericEnum) {
+          const expressionEnum = getIrExpressionNumericEnumNamespaceNameRust(statement.expression, context);
+          const emitted = emitReturnedExpressionRust(statement.expression, context);
+          return [`return ${expressionEnum === numericEnum ? emitted : `${numericEnum}((${emitted}) as i32)`};`];
+        }
         const targetEnum = resolvePrimitiveUnionEnumRust(context.enclosingReturnType, context);
         if (targetEnum) {
           if (
@@ -2702,8 +2919,12 @@ function emitType(type: Readonly<IrType>, context: EmitContext): string {
       return emitType(resolved, context);
     }
     case 'intersection': {
-      const erasedScalar = getIrIntersectionErasedScalarRust(type);
-      if (erasedScalar) return emitType(erasedScalar, context);
+      const scalarDomain = getIrTypePrimitiveDomainRust(type, context);
+      if (scalarDomain) return emitType({ kind: 'primitive', name: scalarDomain }, context);
+      const callableObject = getOrCreateCallableObjectRecordRust(type, context);
+      if (callableObject) {
+        return `${callableObject.name}${emitTypeArguments(callableObject.typeParameters, context)}`;
+      }
       const properties = getIrObjectTypePropertiesRust(type, context);
       if (properties) return getIrObjectTypeTargetNameRust(properties, context);
       emissionError(context, 'intersection types require Rust record or trait lowering');
@@ -2753,16 +2974,22 @@ function emitType(type: Readonly<IrType>, context: EmitContext): string {
     }
     case 'union': {
       const concrete = type.types.filter((item) => item.kind !== 'null' && item.kind !== 'undefined');
+      const optional = concrete.length !== type.types.length;
       if (hasIrTypeNullMemberRust(type) && hasIrTypeUndefinedMemberRust(type)) {
         emissionError(context, 'types containing both null and undefined require distinct Rust sentinels');
       }
       if (concrete.length === 1 && concrete.length !== type.types.length)
         return `Option<${emitType(concrete[0]!, context)}>`;
-      const primitiveDomain = getIrUnionPrimitiveDomainRust(concrete);
-      if (primitiveDomain) return emitType({ kind: 'primitive', name: primitiveDomain }, context);
+      const primitiveDomain = getIrUnionPrimitiveDomainRust(concrete, context);
+      if (primitiveDomain) {
+        const emitted = emitType({ kind: 'primitive', name: primitiveDomain }, context);
+        return optional ? `Option<${emitted}>` : emitted;
+      }
       const primitiveEnum = getOrCreatePrimitiveUnionEnumRust(concrete, context);
-      if (primitiveEnum) return primitiveEnum.name;
-      emissionError(context, 'non-nullable unions require Rust tagged-union lowering');
+      if (primitiveEnum) return optional ? `Option<${primitiveEnum.name}>` : primitiveEnum.name;
+      const generalEnum = getOrCreateAnonymousUnionEnumRust(concrete, context);
+      const emitted = `${generalEnum.name}${emitTypeArguments(generalEnum.typeParameters, context)}`;
+      return optional ? `Option<${emitted}>` : emitted;
     }
     case 'unknown':
       return opaqueHostType(context);
@@ -2789,6 +3016,17 @@ function getIrObjectTypePropertiesRust(
   if (type.kind !== 'named') return undefined;
   if (type.reference.kind === 'ambient') {
     const utility = type.reference.name;
+    if (utility === 'Record') {
+      if (type.typeArguments.length !== 2 || !type.typeArguments[0] || !type.typeArguments[1]) return undefined;
+      const keys = getIrObjectProjectionKeysRust(type.typeArguments[0], context, module, resolving);
+      if (!keys) return undefined;
+      return [...keys].map((name) => ({
+        name,
+        optional: false,
+        readonly: false,
+        type: type.typeArguments[1]!,
+      }));
+    }
     if (utility === 'NoInfer' || utility === 'Partial' || utility === 'Readonly' || utility === 'Required') {
       if (type.typeArguments.length !== 1 || !type.typeArguments[0]) return undefined;
       const properties = getIrObjectTypePropertiesRust(type.typeArguments[0], context, module, resolving);
@@ -2870,17 +3108,21 @@ function mergeIrObjectTypePropertiesRust(
       continue;
     }
     if (
-      JSON.stringify(existing.type) !== JSON.stringify(property.type) ||
       JSON.stringify(existing.computedKey) !== JSON.stringify(property.computedKey) ||
       existing.phantom !== property.phantom ||
       existing.role !== property.role
     ) {
       return undefined;
     }
+    const type =
+      JSON.stringify(existing.type) === JSON.stringify(property.type)
+        ? existing.type
+        : createIrIntersectionTypeRust(existing.type, property.type);
     merged.set(property.name, {
       ...existing,
       optional: existing.optional && property.optional,
       readonly: existing.readonly && property.readonly,
+      type,
     });
   }
   return [...merged.values()];
@@ -3052,6 +3294,25 @@ function isIrTypeAssignableForFilterRust(
   const sourceProperties = getIrObjectTypePropertiesRust(source, context, module, resolving);
   const targetProperties = getIrObjectTypePropertiesRust(target, context, module, resolving);
   if (!sourceProperties || !targetProperties) return undefined;
+  // Discriminant filters are closed even when the wider structural comparison is indeterminate.
+  // `Extract<Union, { kind: "x" }>` only asks whether each alternative's named literal slot is
+  // compatible; unrelated fields and their host types cannot affect that decision.
+  if (targetProperties.length > 0 && targetProperties.every((property) => property.type.kind === 'literal')) {
+    const decisions = targetProperties.map((targetProperty) => {
+      const sourceProperty = sourceProperties.find((property) => property.name === targetProperty.name);
+      if (!sourceProperty || sourceProperty.optional) return false;
+      const members = getIrClosedTypeMembersRust(sourceProperty.type, context, module, resolving);
+      if (!members) return undefined;
+      return members.every(
+        (member) =>
+          member.kind === 'literal' &&
+          targetProperty.type.kind === 'literal' &&
+          Object.is(member.value, targetProperty.type.value),
+      );
+    });
+    if (decisions.includes(false)) return false;
+    if (decisions.every((decision) => decision === true)) return true;
+  }
   const report = analyzeIrTypeStructuralAssignability(
     { kind: 'object', properties: sourceProperties },
     { kind: 'object', properties: targetProperties },
@@ -3066,26 +3327,29 @@ function createIrClosedTypeUnionRust(types: readonly Readonly<IrType>[]): Readon
   return { kind: 'union', types: [unique[0]!, unique[1]!, ...unique.slice(2)] };
 }
 
-function getIrIntersectionErasedScalarRust(
-  type: Readonly<Extract<IrType, { kind: 'intersection' }>>,
-): Readonly<IrType> | undefined {
-  const values = type.types.filter((member) => member.kind !== 'object');
-  if (values.length !== 1 || type.types.some((member) => member.kind !== 'object' && member !== values[0])) {
-    return undefined;
-  }
-  const value = values[0]!;
-  return value.kind === 'literal' || value.kind === 'primitive' ? value : undefined;
+function createIrIntersectionTypeRust(left: Readonly<IrType>, right: Readonly<IrType>): Readonly<IrType> {
+  const types = [
+    ...(left.kind === 'intersection' ? left.types : [left]),
+    ...(right.kind === 'intersection' ? right.types : [right]),
+  ];
+  return { kind: 'intersection', types: [types[0]!, types[1]!, ...types.slice(2)] };
 }
 
 function getIrUnionPrimitiveDomainRust(
   types: readonly Readonly<IrType>[],
+  context: EmitContext,
 ): 'boolean' | 'number' | 'string' | undefined {
-  const domains = types.map(getIrTypePrimitiveDomainRust);
+  const domains = types.map((type) => getIrTypePrimitiveDomainRust(type, context));
   const domain = domains[0];
   return domain !== undefined && domains.every((candidate) => candidate === domain) ? domain : undefined;
 }
 
-function getIrTypePrimitiveDomainRust(type: Readonly<IrType>): 'boolean' | 'number' | 'string' | undefined {
+function getIrTypePrimitiveDomainRust(
+  type: Readonly<IrType>,
+  context: EmitContext,
+  module: Readonly<IrModule> = context.module,
+  resolving: ReadonlySet<string> = new Set(),
+): 'boolean' | 'number' | 'string' | undefined {
   if (type.kind === 'literal') {
     const domain = typeof type.value;
     return domain === 'boolean' || domain === 'number' || domain === 'string' ? domain : undefined;
@@ -3093,10 +3357,40 @@ function getIrTypePrimitiveDomainRust(type: Readonly<IrType>): 'boolean' | 'numb
   if (type.kind === 'primitive' && (type.name === 'boolean' || type.name === 'number' || type.name === 'string')) {
     return type.name;
   }
-  if (type.kind !== 'intersection') return undefined;
-  const meaningful = type.types.filter((member) => member.kind !== 'object' || member.properties.length > 0);
-  if (meaningful.length !== 1) return undefined;
-  return getIrTypePrimitiveDomainRust(meaningful[0]!);
+  if (type.kind === 'typeOf') {
+    const resolved = getIrTypeOfValueTypeRust(type, context, module);
+    return resolved ? getIrTypePrimitiveDomainRust(resolved, context, module, resolving) : undefined;
+  }
+  if (type.kind === 'intersection') {
+    const meaningful = type.types.filter(
+      (member) =>
+        member.kind !== 'object' && getIrObjectTypePropertiesRust(member, context, module, resolving) === undefined,
+    );
+    const domains = meaningful.map((member) => getIrTypePrimitiveDomainRust(member, context, module, resolving));
+    const domain = domains[0];
+    return domain !== undefined && domains.every((candidate) => candidate === domain) ? domain : undefined;
+  }
+  if (
+    type.kind !== 'named' ||
+    type.reference.kind !== 'binding' ||
+    type.reference.path.length > 0 ||
+    type.reference.binding.space !== 'type' ||
+    type.reference.binding.kind === 'typeParameter'
+  ) {
+    return undefined;
+  }
+  const location = getIrNamedTypeDeclarationLocationRust(type.reference.binding, context, module);
+  if (location?.declaration.kind !== 'typeAlias') return undefined;
+  const key = `${location.module.packageName}\0${location.module.source}\0${location.declaration.binding.id}`;
+  if (resolving.has(key)) return undefined;
+  try {
+    const plan = createIrTypeParameterSubstitutionPlan(location.declaration.typeParameters, type.typeArguments);
+    const resolved = resolveIrTypeStructuralSubstitution(location.declaration.type, plan);
+    return getIrTypePrimitiveDomainRust(resolved, context, location.module, new Set(resolving).add(key));
+  } catch (error) {
+    if (isCompilerStructuralTypeSubstitutionFailure(error)) return undefined;
+    throw error;
+  }
 }
 
 // A union of string literals is how the source language spells a closed set of names, and the source
@@ -3123,6 +3417,21 @@ function emitTypeAlias(declaration: Readonly<IrTypeAliasDeclaration>, context: E
       context,
     );
   }
+  const typeContext: EmitContext = { ...context, activeTypeParameters: declaration.typeParameters };
+  if (
+    declaration.type.kind === 'union' &&
+    !hasIrTypeNullMemberRust(declaration.type) &&
+    !hasIrTypeUndefinedMemberRust(declaration.type) &&
+    !getIrUnionPrimitiveDomainRust(declaration.type.types, typeContext)
+  ) {
+    return emitGeneralUnionRust(
+      getBindingTargetNameRust(declaration.binding, context),
+      createGeneralUnionVariantsRust(declaration.type.types, typeContext),
+      declaration.typeParameters,
+      declaration.exported,
+      typeContext,
+    );
+  }
   const recordProperties = isIrTypeRecordMaterializationRust(declaration.type)
     ? getIrObjectTypePropertiesRust(declaration.type, context)
     : undefined;
@@ -3136,7 +3445,7 @@ function emitTypeAlias(declaration: Readonly<IrTypeAliasDeclaration>, context: E
     );
   }
   return [
-    `${declaration.exported ? 'pub ' : ''}type ${getBindingTargetNameRust(declaration.binding, context)}${emitTypeParameters(declaration.typeParameters, context)} = ${emitType(declaration.type, context)};`,
+    `${declaration.exported ? 'pub ' : ''}type ${getBindingTargetNameRust(declaration.binding, context)}${emitTypeParameters(declaration.typeParameters, context)} = ${emitType(declaration.type, typeContext)};`,
   ];
 }
 
@@ -3201,8 +3510,11 @@ function emitTypeParameters(parameters: readonly IrTypeParameter[], context: Emi
   return `<${parameters
     .map((parameter) => {
       const name = getBindingTargetNameRust(parameter.binding, context);
-      const bound = parameter.constraint ? emitType(parameter.constraint, context) : 'Clone';
-      return `${name}: ${bound}`;
+      // A TypeScript constraint is a value shape, not a Rust trait. Spelling `T extends string` as
+      // `T: String` produces invalid Rust because `String` is a concrete type. Generated records do
+      // clone generic storage, so Clone is the one target capability this declaration can require
+      // without claiming that a source value type is a trait.
+      return `${name}: Clone`;
     })
     .join(', ')}>`;
 }
@@ -3834,16 +4146,28 @@ function getIrNamedTypeDeclarationLocationRust(
   context: EmitContext,
   module: Readonly<IrModule>,
 ): RustNamedTypeDeclarationLocation | undefined {
-  const local = module.declarations.find(
+  const declarationModule = [module, ...context.sourceModules].find((candidateModule) =>
+    candidateModule.declarations.some(
+      (candidate) =>
+        (candidate.kind === 'interface' || candidate.kind === 'typeAlias') && candidate.binding.id === binding.id,
+    ),
+  );
+  const local = declarationModule?.declarations.find(
     (candidate): candidate is IrInterfaceDeclaration | IrTypeAliasDeclaration =>
       (candidate.kind === 'interface' || candidate.kind === 'typeAlias') && candidate.binding.id === binding.id,
   );
-  if (local) return { declaration: local, module };
-  const imported = module.imports
+  if (local && declarationModule) return { declaration: local, module: declarationModule };
+  // A flattened imported declaration can retain a type reference introduced by its own module.
+  // Follow the binding back to that importer rather than assuming every inherited property was
+  // rebound into the subject module.
+  const importer = [module, ...context.sourceModules].find((candidateModule) =>
+    candidateModule.imports.some((item) => item.bindings.some((candidate) => candidate.binding.id === binding.id)),
+  );
+  const imported = importer?.imports
     .flatMap((item) => item.bindings.map((candidate) => ({ candidate, specifier: item.specifier })))
     .find(({ candidate }) => candidate.binding.id === binding.id);
   if (!imported || imported.candidate.imported === '*' || imported.candidate.imported === 'default') return undefined;
-  const targetModule = resolveImportModuleRust(imported.specifier, imported.candidate.imported, context, module);
+  const targetModule = resolveImportModuleRust(imported.specifier, imported.candidate.imported, context, importer);
   const declaration = targetModule?.declarations.find(
     (candidate): candidate is IrInterfaceDeclaration | IrTypeAliasDeclaration =>
       (candidate.kind === 'interface' || candidate.kind === 'typeAlias') &&
@@ -3954,6 +4278,33 @@ function getIrExpressionEnumDeclarationRust(
     (candidate) => candidate.kind === 'enum' && candidate.binding.id === binding.id,
   );
   return declaration?.kind === 'enum' ? declaration : undefined;
+}
+
+function getIrTypeNumericEnumNamespaceNameRust(type: Readonly<IrType>, context: EmitContext): string | undefined {
+  return type.kind === 'named' && type.reference.kind === 'binding'
+    ? context.numericEnumNamespaceNames.get(type.reference.binding.id)
+    : undefined;
+}
+
+function getIrExpressionNumericEnumNamespaceNameRust(
+  expression: Readonly<IrExpression>,
+  context: EmitContext,
+): string | undefined {
+  if (expression.kind === 'identifier' && expression.reference.kind === 'binding') {
+    const type = context.bindingTypes.get(expression.reference.binding.id);
+    return type ? getIrTypeNumericEnumNamespaceNameRust(type, context) : undefined;
+  }
+  if (expression.kind !== 'property') return undefined;
+  if (expression.namespaceMember?.kind === 'binding') {
+    return context.numericEnumNamespaceNames.get(expression.namespaceMember.binding.id);
+  }
+  const declaration = getIrExpressionEnumDeclarationRust(expression.object, context);
+  return declaration ? context.numericEnumNamespaceNames.get(declaration.binding.id) : undefined;
+}
+
+function emitNumericEnumOperandRust(expression: Readonly<IrExpression>, context: EmitContext): string {
+  const emitted = emitExpression(expression, context);
+  return getIrExpressionNumericEnumNamespaceNameRust(expression, context) ? `((${emitted}).0 as f64)` : emitted;
 }
 
 function getIrExpressionClassAccessorRust(
@@ -4195,6 +4546,133 @@ function emitTaggedUnionRust(
       '    }',
       '  }',
     );
+  }
+  lines.push('}');
+  return lines;
+}
+
+function getOrCreateAnonymousUnionEnumRust(
+  types: readonly Readonly<IrType>[],
+  context: EmitContext,
+): RustAnonymousUnionEnum {
+  const key = JSON.stringify({
+    parameters: context.activeTypeParameters.map((parameter) => parameter.binding.id),
+    types,
+  });
+  const existing = context.anonymousUnionEnums.get(key);
+  if (existing) return existing;
+  const record: RustAnonymousUnionEnum = {
+    name: getGeneratedTargetNameRust('AnonymousUnion', context),
+    typeParameters: context.activeTypeParameters,
+    variants: [],
+  };
+  // Register the identity before rendering payload types so a recursive named alias can lead back
+  // to this generated enum without allocating a second definition.
+  context.anonymousUnionEnums.set(key, record);
+  record.variants.push(...createGeneralUnionVariantsRust(types, context));
+  return record;
+}
+
+function createGeneralUnionVariantsRust(
+  types: readonly Readonly<IrType>[],
+  context: EmitContext,
+): RustGeneralUnionVariant[] {
+  const names = new Map<string, number>();
+  return types.flatMap((type): RustGeneralUnionVariant[] => {
+    if (type.kind === 'never' || type.kind === 'null' || type.kind === 'undefined') return [];
+    const preferred = getGeneralUnionVariantNameRust(type, context);
+    const occurrence = (names.get(preferred) ?? 0) + 1;
+    names.set(preferred, occurrence);
+    const name = occurrence === 1 ? preferred : `${preferred}${String(occurrence)}`;
+    if (type.kind === 'literal') return [{ kind: 'unit', name }];
+    const properties =
+      type.kind === 'object' || type.kind === 'intersection' ? getIrObjectTypePropertiesRust(type, context) : undefined;
+    if (properties) {
+      return [
+        {
+          fields: properties.map((property) => ({
+            name: safeRustValueName(property.name),
+            optional: property.optional,
+            rustType: emitType(property.type, context),
+          })),
+          kind: 'struct',
+          name,
+        },
+      ];
+    }
+    return [{ kind: 'tuple', name, rustType: emitType(type, context) }];
+  });
+}
+
+function getGeneralUnionVariantNameRust(type: Readonly<IrType>, context: EmitContext): string {
+  if (type.kind === 'literal') {
+    if (typeof type.value === 'boolean') return type.value ? 'True' : 'False';
+    if (typeof type.value === 'number') {
+      return safeRustTypeName(`Number ${String(type.value).replace('-', 'Negative ')}`) || 'Number';
+    }
+    return safeRustTypeName(type.value) || 'String';
+  }
+  if (type.kind === 'named') {
+    return safeRustTypeName(
+      type.reference.kind === 'ambient'
+        ? type.reference.name
+        : (type.reference.path.at(-1) ?? type.reference.binding.name),
+    );
+  }
+  if (type.kind === 'object' || type.kind === 'intersection') {
+    const properties = getIrObjectTypePropertiesRust(type, context);
+    const discriminant = properties?.find(
+      (property) => property.type.kind === 'literal' && typeof property.type.value === 'string',
+    );
+    if (discriminant?.type.kind === 'literal' && typeof discriminant.type.value === 'string') {
+      return safeRustTypeName(discriminant.type.value) || 'Object';
+    }
+  }
+  return {
+    array: 'Array',
+    conditionalFacet: 'ConditionalFacet',
+    function: 'Function',
+    indexedAccess: 'IndexedAccess',
+    intersection: 'Intersection',
+    keyof: 'Key',
+    never: 'Never',
+    null: 'Null',
+    object: 'Object',
+    primitive:
+      type.kind === 'primitive'
+        ? { bigint: 'I64', boolean: 'Bool', number: 'F64', string: 'String', symbol: 'Symbol', void: 'Void' }[type.name]
+        : 'Value',
+    tuple: 'Tuple',
+    typeOf: 'TypeOf',
+    undefined: 'Undefined',
+    union: 'Union',
+    unknown: 'Unknown',
+  }[type.kind];
+}
+
+function emitGeneralUnionRust(
+  targetName: string,
+  variants: readonly RustGeneralUnionVariant[],
+  typeParameters: readonly IrTypeParameter[],
+  exported: boolean,
+  context: EmitContext,
+): string[] {
+  const visibility = exported ? 'pub ' : '';
+  const lines = ['#[derive(Clone)]', `${visibility}enum ${targetName}${emitTypeParameters(typeParameters, context)} {`];
+  for (const variant of variants) {
+    if (variant.kind === 'unit') {
+      lines.push(`  ${variant.name},`);
+    } else if (variant.kind === 'tuple') {
+      lines.push(`  ${variant.name}(${variant.rustType}),`);
+    } else {
+      lines.push(
+        `  ${variant.name} {`,
+        ...variant.fields.map(
+          (field) => `    ${field.name}: ${field.optional ? `Option<${field.rustType}>` : field.rustType},`,
+        ),
+        '  },',
+      );
+    }
   }
   lines.push('}');
   return lines;

@@ -698,6 +698,29 @@ describe('emitIrModuleRust', () => {
     expect(emitIrModuleRust(numeric.module).contents).toContain('D = 9,');
   });
 
+  it('lowers numeric enum value namespaces to opaque wrappers with associated functions', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'flags.ts',
+        `export enum Flags { None = 0, Visible = 1, Alpha = 2 }
+         export namespace Flags {
+           export function any(flags: Flags, test: Flags): boolean { return (flags & test) !== 0; }
+           export function add(flags: Flags, add: Flags): Flags { return flags | add; }
+           export function clear(): Flags { return Flags.None; }
+         }
+         export function visible(flags: Flags): boolean { return Flags.any(flags, Flags.Visible); }`,
+      ).module,
+    ).contents;
+
+    expect(output).toContain('pub struct Flags(i32);');
+    expect(output).toContain('pub const Visible: Self = Self(1);');
+    expect(output).toContain('pub fn any(flags: Flags, test: Flags) -> bool');
+    expect(output).toContain('pub fn add(flags: Flags, add: Flags) -> Flags');
+    expect(output).toContain('return Flags(((');
+    expect(output).toContain('Flags::any(flags, Flags::Visible)');
+    expect(output).not.toMatch(/^pub fn any/mu);
+  });
+
   it('emits type-only imports and their references from one type-space identity', () => {
     const result = lower(
       'type-import.ts',
@@ -3746,7 +3769,7 @@ describe('emitIrModuleRust', () => {
     const output = emitIrModuleRust(
       lower('generic-bound.ts', `export function identity<T extends number>(x: T): T { return x; }`).module,
     ).contents;
-    expect(output).toContain('f64');
+    expect(output).toContain('<T: Clone>');
   });
 
   it('emits while true as loop keyword', () => {
@@ -4457,6 +4480,70 @@ describe('emitIrModuleRust', () => {
     expect(output).toContain('pub struct PositionPatch');
     expect(output).toContain('pub x: Option<f64>');
     expect(output).toContain('pub y: Option<f64>');
+  });
+
+  it('intersects duplicate record fields and retains their narrower scalar domain', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'narrowed-intersection.ts',
+        `type Kind = string;
+         interface Base { readonly kind: Kind; value?: { first?: number } }
+         interface RequiredValue { readonly value: { first: number } }
+         export type Concrete = Base & RequiredValue & { readonly kind: 'concrete' };`,
+      ).module,
+    ).contents;
+
+    expect(output).toContain('pub struct Concrete');
+    expect(output).toContain('pub kind: String');
+    expect(output).toContain('pub value: AnonymousObjectRecord');
+    expect(output).toContain('pub first: f64');
+  });
+
+  it('erases scalar brands and open literal-set sentinels to their runtime domains', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'scalar-intersections.ts',
+        `export const BuiltIn = 'built-in';
+         export type Handle = number & { readonly __brand: 'Handle' };
+         export type OpenName = typeof BuiltIn | (string & Record<never, never>);`,
+      ).module,
+    ).contents;
+
+    expect(output).toContain('pub type Handle = f64;');
+    expect(output).toContain('pub type OpenName = String;');
+  });
+
+  it('represents callable-object intersections through a dereferenceable callback record', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'callable-object.ts',
+        `export interface Signals { count: number }
+         export type Emitter = ((value: number) => void) & {
+           clear(): void;
+           readonly signals: Signals;
+         };
+         export interface State { emitter: Emitter | null }`,
+      ).module,
+    ).contents;
+
+    expect(output).toContain('pub struct AnonymousCallableObject');
+    expect(output).toContain('pub callback: Rc<dyn Fn(f64) -> ()>');
+    expect(output).toContain('pub clear: Rc<dyn Fn() -> ()>');
+    expect(output).toContain('impl std::ops::Deref for AnonymousCallableObject');
+    expect(output).toContain('type Target = dyn Fn(f64) -> ();');
+  });
+
+  it('erases fully materialized ambient Pick heritage', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'ambient-pick.ts',
+        `type ContextMember = 'drawingBufferWidth';
+         export interface Context extends Pick<WebGL2RenderingContext, ContextMember> {}`,
+      ).module,
+    ).contents;
+
+    expect(output).toContain('pub struct Context');
+    expect(output).toContain('pub drawing_buffer_width: OpaqueHostValue');
   });
 
   it('refuses Partial when its object shape is not statically resolvable', () => {
@@ -8357,6 +8444,25 @@ describe('emitIrModuleRust tagged union type alias', () => {
     expect(output).toContain('enum Shape');
     expect(output).toContain('Circle');
     expect(output).toContain('Square');
+  });
+
+  it('emits anonymous and generic alternatives as structural Rust enum variants', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'generic-tagged-union.ts',
+        `export type Outcome<Failure extends string> =
+           | { readonly reason: 'ok' }
+           | { readonly reason: Failure; readonly detail: number };
+         export interface State { value: number | readonly number[] }`,
+      ).module,
+    ).contents;
+
+    expect(output).toContain('pub enum Outcome<Failure: Clone>');
+    expect(output).toContain('Ok {');
+    expect(output).toContain('reason: Failure');
+    expect(output).toContain('pub value: AnonymousUnion');
+    expect(output).toContain('F64(f64)');
+    expect(output).toContain('Array(Vec<f64>)');
   });
 });
 
