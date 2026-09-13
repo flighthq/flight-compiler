@@ -10,6 +10,7 @@ import {
 } from '../../compiler-structural/src/index.js';
 import type {
   CompilerModuleResolutionPlan,
+  CompilerLoweringPass,
   EmittedFile,
   HaxeCompilerBackendOptions,
   IrBindingIdentity,
@@ -66,13 +67,15 @@ export function emitIrModuleHaxeExternWithContext(
   sourceModules: readonly Readonly<IrModule>[],
   moduleResolution: Readonly<CompilerModuleResolutionPlan> | undefined,
   options: Readonly<HaxeCompilerBackendOptions>,
+  interfaceInheritancePass?: Readonly<CompilerLoweringPass> | undefined,
 ): readonly EmittedFile[] {
   const ambientUtilityHeritageTargets = createAmbientUtilityHeritageTargetsHaxeExtern(sourceModule);
   const module = lowerIrModuleWithCompilerPasses(sourceModule, [
-    createCompilerLoweringPassInterfaceInheritance(sourceModules, moduleResolution, {
-      eraseAmbientUtilityHeritage: (_reference, declaration) =>
-        ambientUtilityHeritageTargets.has(declaration.binding.id),
-    }),
+    interfaceInheritancePass ??
+      createCompilerLoweringPassInterfaceInheritance(sourceModules, moduleResolution, {
+        eraseAmbientUtilityHeritage: (_reference, declaration) =>
+          ambientUtilityHeritageTargets.has(declaration.binding.id),
+      }),
   ]);
   const modules = replaceIrModuleHaxeExtern(sourceModules, module);
   const context: HaxeExternEmissionContext = {

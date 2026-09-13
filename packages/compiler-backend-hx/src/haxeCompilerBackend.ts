@@ -38,6 +38,7 @@ import type {
   CompilerBackend,
   CompilerHaxeTaskLowering,
   CompilerHaxeTaskLoweringFunction,
+  CompilerLoweringPass,
   CompilerModuleFacadePlan,
   CompilerModuleFacadeSlot,
   CompilerModuleIdentity,
@@ -125,11 +126,27 @@ export function createHaxeCompilerBackend(): CompilerBackend<HaxeCompilerBackend
     createEmissionSession({ moduleResolution, modules, options }) {
       const moduleFacade =
         options.emissionMode === 'extern' ? undefined : createCompilerModuleFacadePlanHaxe(modules, moduleResolution);
+      const ambientUtilityHeritageBindingIds = new Set(
+        modules.flatMap((module) => [...createAmbientUtilityHeritageTargetsHaxe(module).keys()]),
+      );
+      const interfaceInheritancePass = createCompilerLoweringPassInterfaceInheritance(modules, moduleResolution, {
+        eraseAmbientUtilityHeritage: (_reference, declaration) =>
+          ambientUtilityHeritageBindingIds.has(declaration.binding.id),
+      });
       return Object.freeze({
         emitModule(module: Readonly<IrModule>) {
           return options.emissionMode === 'extern'
-            ? emitIrModuleHaxeExternWithContext(module, modules, moduleResolution, options)
-            : [emitIrModuleHaxeWithContext(module, modules, moduleResolution, options, moduleFacade)];
+            ? emitIrModuleHaxeExternWithContext(module, modules, moduleResolution, options, interfaceInheritancePass)
+            : [
+                emitIrModuleHaxeWithContext(
+                  module,
+                  modules,
+                  moduleResolution,
+                  options,
+                  moduleFacade,
+                  interfaceInheritancePass,
+                ),
+              ];
         },
       });
     },
@@ -170,6 +187,7 @@ function emitIrModuleHaxeWithContext(
   moduleResolution: Readonly<CompilerModuleResolutionPlan> | undefined,
   options: Readonly<HaxeCompilerBackendOptions>,
   moduleFacade: Readonly<CompilerModuleFacadePlan> | undefined,
+  interfaceInheritancePass?: Readonly<CompilerLoweringPass> | undefined,
 ): EmittedFile {
   const ambientUtilityHeritageTargets = createAmbientUtilityHeritageTargetsHaxe(sourceModule);
   const module = lowerIrModuleWithCompilerPasses(sourceModule, [
@@ -178,10 +196,11 @@ function emitIrModuleHaxeWithContext(
     createCompilerLoweringPassBindingPattern(),
     createCompilerLoweringPassVariableHoisting(),
     createCompilerLoweringPassCStyleFor(),
-    createCompilerLoweringPassInterfaceInheritance(sourceModules, moduleResolution, {
-      eraseAmbientUtilityHeritage: (_reference, declaration) =>
-        ambientUtilityHeritageTargets.has(declaration.binding.id),
-    }),
+    interfaceInheritancePass ??
+      createCompilerLoweringPassInterfaceInheritance(sourceModules, moduleResolution, {
+        eraseAmbientUtilityHeritage: (_reference, declaration) =>
+          ambientUtilityHeritageTargets.has(declaration.binding.id),
+      }),
     createCompilerLoweringPassSwitchFallthrough(),
     createCompilerLoweringPassSwitchSuspension(),
   ]);

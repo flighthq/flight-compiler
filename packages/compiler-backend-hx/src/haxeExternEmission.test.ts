@@ -120,6 +120,32 @@ describe('emitIrModuleHaxeExtern', () => {
     expect(typedef.contents).toContain('typedef Context = js.html.webgl.WebGL2RenderingContext;');
   });
 
+  it('widens ambient utility heritage for every module in one emission session', () => {
+    const context = lower(
+      '@flighthq/types',
+      'context.ts',
+      "export interface Context extends Pick<WebGL2RenderingContext, 'clear'> {}",
+    );
+    const viewport = lower(
+      '@flighthq/types',
+      'viewport.ts',
+      "export interface Viewport extends Pick<WebGL2RenderingContext, 'viewport'> {}",
+    );
+    const session = createHaxeCompilerBackend().createEmissionSession!({
+      modules: [context, viewport],
+      options: { emissionMode: 'extern', rootPackage: 'flight' },
+    });
+
+    const files = [context, viewport].flatMap((module) => session.emitModule(module));
+
+    expect(findFile(files, 'flight/_js/Context.hx').contents).toContain(
+      'typedef Context = js.html.webgl.WebGL2RenderingContext;',
+    );
+    expect(findFile(files, 'flight/_js/Viewport.hx').contents).toContain(
+      'typedef Viewport = js.html.webgl.WebGL2RenderingContext;',
+    );
+  });
+
   it('emits callable interface members, generic constraints, and runtime types', () => {
     const module = lower(
       '@flighthq/types',
