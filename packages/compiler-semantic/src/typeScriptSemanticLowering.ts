@@ -96,7 +96,6 @@ import {
 
 interface LoweringContext {
   analysisModuleOptions: ReadonlyMap<string, Readonly<LowerTypeScriptSourceOptions>>;
-  analysisSourceFiles: readonly ts.SourceFile[];
   bindingTypes: Map<ts.Symbol, IrType>;
   bindings: Map<ts.Symbol, IrBindingIdentity>;
   checker: ts.TypeChecker;
@@ -107,12 +106,14 @@ interface LoweringContext {
   returnTargetTypes: IrType[];
   returnTypes: IrType[];
   sourceFile: ts.SourceFile;
+  symbolReferenceStatements: () => ReadonlyMap<ts.Symbol, ReadonlySet<ts.Statement>>;
   typeBindings: Map<ts.Symbol, IrTypeBindingIdentity>;
 }
 
 interface TypeScriptAnalysis {
   checker: ts.TypeChecker;
   sourceFiles: readonly ts.SourceFile[];
+  symbolReferenceStatements: () => ReadonlyMap<ts.Symbol, ReadonlySet<ts.Statement>>;
 }
 
 interface TypeScriptAnalysisModuleRecord {
@@ -143,8 +144,8 @@ export function lowerTypeScriptSource(
     analysis.sourceFiles[0]!,
     options,
     analysis.checker,
-    analysis.sourceFiles,
     new Map([[sourceFile.fileName, options]]),
+    analysis.symbolReferenceStatements,
   );
 }
 
@@ -164,8 +165,8 @@ export function lowerTypeScriptSources(
       analysis.sourceFiles[index]!,
       source,
       analysis.checker,
-      analysis.sourceFiles,
       analysisModuleOptions,
+      analysis.symbolReferenceStatements,
     ),
   );
 }
@@ -174,12 +175,11 @@ function lowerTypeScriptSourceWithAnalysis(
   sourceFile: ts.SourceFile,
   options: Readonly<LowerTypeScriptSourceOptions>,
   checker: ts.TypeChecker,
-  analysisSourceFiles: readonly ts.SourceFile[],
   analysisModuleOptions: ReadonlyMap<string, Readonly<LowerTypeScriptSourceOptions>>,
+  symbolReferenceStatements: () => ReadonlyMap<ts.Symbol, ReadonlySet<ts.Statement>>,
 ): TypeScriptLoweringResult {
   const context: LoweringContext = {
     analysisModuleOptions,
-    analysisSourceFiles,
     bindingTypes: new Map(),
     bindings: new Map(),
     checker,
@@ -190,6 +190,7 @@ function lowerTypeScriptSourceWithAnalysis(
     returnTargetTypes: [],
     returnTypes: [],
     sourceFile,
+    symbolReferenceStatements,
     typeBindings: new Map(),
   };
   context.imports.push(...lowerImports(context.sourceFile, context));
@@ -3292,28 +3293,7 @@ function lowerOpaqueTypeAlias(node: ts.TypeAliasDeclaration, context: LoweringCo
 function isTypeAliasReferencedOutsideDeclaration(node: ts.TypeAliasDeclaration, context: LoweringContext): boolean {
   const symbol = context.checker.getSymbolAtLocation(node.name);
   if (!symbol) return false;
-  let referenced = false;
-  const visit = (candidate: ts.Node): void => {
-    if (referenced) return;
-    if (ts.isIdentifier(candidate)) {
-      const candidateSymbol = context.checker.getSymbolAtLocation(candidate);
-      const resolvedCandidate =
-        candidateSymbol?.flags && candidateSymbol.flags & ts.SymbolFlags.Alias
-          ? context.checker.getAliasedSymbol(candidateSymbol)
-          : candidateSymbol;
-      if (resolvedCandidate === symbol) {
-        referenced = true;
-        return;
-      }
-    }
-    ts.forEachChild(candidate, visit);
-  };
-  for (const sourceFile of context.analysisSourceFiles) {
-    for (const statement of sourceFile.statements) {
-      if (statement !== node) visit(statement);
-    }
-  }
-  return referenced;
+  return [...(context.symbolReferenceStatements().get(symbol) ?? [])].some((statement) => statement !== node);
 }
 
 function lowerTypeNameReference(node: ts.EntityName, context: LoweringContext): IrTypeNameReference | undefined {
@@ -5111,7 +5091,10 @@ function getTypeScriptNarrowingAlternatives(
     : context;
   const target = resolveIrTypeStructuralSubstitution(
     lowerType(declaration.type, declarationContext),
-    createIrTypeParameterSubstitutionPlan(lowerTypeParameters(declaration.typeParameters, declarationContext), type.typeArguments),
+    createIrTypeParameterSubstitutionPlan(
+      lowerTypeParameters(declaration.typeParameters, declarationContext),
+      type.typeArguments,
+    ),
   );
   const nextResolvingAliases = new Set(resolvingAliases).add(bindingId);
   return getTypeScriptNarrowingAlternatives(target, context, nextResolvingAliases);
@@ -5908,10 +5891,42 @@ function createTypeScriptAnalysis(
     options,
     rootNames: [surfaceFile.fileName, ...analysisSourceFiles.map((sourceFile) => sourceFile.fileName)],
   });
+  const checker = program.getTypeChecker();
+  const sourceFiles = analysisSourceFiles.map((sourceFile) => program.getSourceFile(sourceFile.fileName)!);
+  let referenceStatements: ReadonlyMap<ts.Symbol, ReadonlySet<ts.Statement>> | undefined;
   return {
-    checker: program.getTypeChecker(),
-    sourceFiles: analysisSourceFiles.map((sourceFile) => program.getSourceFile(sourceFile.fileName)!),
+    checker,
+    sourceFiles,
+    symbolReferenceStatements() {
+      return (referenceStatements ??= createTypeScriptSymbolReferenceStatements(sourceFiles, checker));
+    },
   };
+}
+
+function createTypeScriptSymbolReferenceStatements(
+  sourceFiles: readonly ts.SourceFile[],
+  checker: ts.TypeChecker,
+): ReadonlyMap<ts.Symbol, ReadonlySet<ts.Statement>> {
+  const statementsBySymbol = new Map<ts.Symbol, Set<ts.Statement>>();
+  const visit = (candidate: ts.Node, statement: ts.Statement): void => {
+    if (ts.isIdentifier(candidate)) {
+      const candidateSymbol = checker.getSymbolAtLocation(candidate);
+      const resolvedCandidate =
+        candidateSymbol?.flags && candidateSymbol.flags & ts.SymbolFlags.Alias
+          ? checker.getAliasedSymbol(candidateSymbol)
+          : candidateSymbol;
+      if (resolvedCandidate) {
+        const statements = statementsBySymbol.get(resolvedCandidate);
+        if (statements) statements.add(statement);
+        else statementsBySymbol.set(resolvedCandidate, new Set([statement]));
+      }
+    }
+    ts.forEachChild(candidate, (child) => visit(child, statement));
+  };
+  for (const sourceFile of sourceFiles) {
+    for (const statement of sourceFile.statements) visit(statement, statement);
+  }
+  return statementsBySymbol;
 }
 
 function createTypeScriptAnalysisModuleResolutionIndex(
