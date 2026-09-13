@@ -2717,6 +2717,56 @@ describe('lowerTypeScriptSource', () => {
     expect(result.diagnostics).toEqual([]);
   });
 
+  it('materializes mapped utility heritage and leaves bare host heritage external', () => {
+    const result = lower(
+      'mapped-utility-heritage.ts',
+      `interface Backend { readonly id: number; label: string; }
+       interface OptionalBackend extends Partial<Backend> { active: boolean; }
+       interface ReadonlyBackend extends Readonly<Backend> { active: boolean; }
+       interface RequiredBackend extends Required<OptionalBackend> {}
+       interface HostStyle extends CSSStyleDeclaration {}
+       export function read(optional: OptionalBackend, readonlyBackend: ReadonlyBackend, required: RequiredBackend): void {
+         const { id, label } = optional;
+         const { id: readonlyId, label: readonlyLabel } = readonlyBackend;
+         const { id: requiredId, label: requiredLabel, active } = required;
+       }`,
+    );
+    const read = result.module.declarations.find(
+      (declaration) => declaration.kind === 'function' && declaration.binding.name === 'read',
+    );
+    const types =
+      read?.kind === 'function'
+        ? read.body.flatMap((statement) =>
+            statement.kind === 'variable' && statement.declarations[0] && 'pattern' in statement.declarations[0]
+              ? [statement.declarations[0].pattern.type]
+              : [],
+          )
+        : [];
+
+    expect(result.diagnostics).toEqual([]);
+    expect(types[0]).toMatchObject({
+      properties: [
+        { name: 'id', optional: true, readonly: true },
+        { name: 'label', optional: true, readonly: false },
+        { name: 'active', optional: false },
+      ],
+    });
+    expect(types[1]).toMatchObject({
+      properties: [
+        { name: 'id', optional: false, readonly: true },
+        { name: 'label', optional: false, readonly: true },
+        { name: 'active', optional: false },
+      ],
+    });
+    expect(types[2]).toMatchObject({
+      properties: [
+        { name: 'id', optional: false },
+        { name: 'label', optional: false },
+        { name: 'active', optional: false },
+      ],
+    });
+  });
+
   it('extracts interface heritage evidence from public class instances', () => {
     const result = lower(
       'class-heritage.ts',
@@ -3343,6 +3393,70 @@ describe('lowerTypeScriptSource', () => {
     });
   });
 
+  it('retains checker-proven indexed absence in optional-chain receiver evidence', () => {
+    const result = lower(
+      'optional-indexed-member.ts',
+      `interface Element { attributes: Readonly<Record<string, string>>; }
+       export function read(element: Element, name: string): string | undefined {
+         return element.attributes[name]?.trim();
+       }`,
+    );
+    const read = result.module.declarations.find(
+      (declaration) => declaration.kind === 'function' && declaration.binding.name === 'read',
+    );
+    const returned = read?.kind === 'function' ? read.body[0] : undefined;
+    const call = returned?.kind === 'return' ? returned.expression : undefined;
+    const chain = call?.kind === 'call' && call.callee.kind === 'property' ? call.callee.optionalChain : undefined;
+
+    expect(result.diagnostics).toEqual([]);
+    expect(chain).toMatchObject({
+      receiverNullish: 'possible',
+      receiverType: {
+        kind: 'union',
+        types: [{ kind: 'primitive', name: 'string' }, { kind: 'undefined' }],
+      },
+    });
+  });
+
+  it('substitutes caller type parameters through asserted optional method calls', () => {
+    const result = lower(
+      'generic-optional-method.ts',
+      `interface Signal<Listener> { connect(listener: Listener): void; }
+       interface Backend<Event extends object> {
+         getSignal(): Signal<(event: Readonly<Event>) => void> | null;
+       }
+       export function attach<Event extends object>(value: unknown): void {
+         const backend = value as Backend<Event> | undefined;
+         const signal = backend?.getSignal() ?? null;
+         signal;
+       }`,
+    );
+    const attach = result.module.declarations.find(
+      (declaration) => declaration.kind === 'function' && declaration.binding.name === 'attach',
+    );
+    const event = attach?.kind === 'function' ? attach.typeParameters[0]?.binding : undefined;
+    const signal = attach?.kind === 'function' && attach.body[1]?.kind === 'variable' ? attach.body[1] : undefined;
+    const initializer = signal?.declarations[0]?.initializer;
+    const call = initializer?.kind === 'binary' ? initializer.left : undefined;
+    const chain = call?.kind === 'call' && call.callee.kind === 'property' ? call.callee.optionalChain : undefined;
+    const eventBindingId = (type: Readonly<IrType> | undefined): string | undefined => {
+      const signalType = type?.kind === 'union' ? type.types.find((member) => member.kind === 'named') : type;
+      if (signalType?.kind !== 'named') return undefined;
+      const listener = signalType.typeArguments[0];
+      if (listener?.kind !== 'function') return undefined;
+      const readonly = listener.parameters[0]?.type;
+      if (readonly?.kind !== 'named') return undefined;
+      const eventType = readonly.typeArguments[0];
+      return eventType?.kind === 'named' && eventType.reference.kind === 'binding'
+        ? eventType.reference.binding.id
+        : undefined;
+    };
+
+    expect(result.diagnostics).toEqual([]);
+    expect(eventBindingId(signal?.declarations[0]?.type)).toBe(event?.id);
+    expect(eventBindingId(chain?.valueType.kind === 'function' ? chain.valueType.returns : undefined)).toBe(event?.id);
+  });
+
   it('identifies typed-array set calls from receiver semantics rather than member spelling', () => {
     const result = lower(
       'typed-array-set.ts',
@@ -3678,6 +3792,27 @@ describe('lowerTypeScriptSource', () => {
       ]);
     }
     expect(loops[7]?.variable.type).toBeUndefined();
+  });
+
+  it('uses the caller type parameter for a generic call iterated by for-of', () => {
+    const result = lower(
+      'generic-call-iterable.ts',
+      `function values<Value>(items: readonly Value[]): readonly Value[] { return items; }
+       export function read<Item>(items: readonly Item[]): void {
+         for (const item of values(items)) item;
+       }`,
+    );
+    const read = result.module.declarations.find(
+      (declaration) => declaration.kind === 'function' && declaration.binding.name === 'read',
+    );
+    const item = read?.kind === 'function' ? read.typeParameters[0]?.binding : undefined;
+    const loop = read?.kind === 'function' ? read.body[0] : undefined;
+
+    expect(result.diagnostics).toEqual([]);
+    expect(loop?.kind === 'forOf' ? loop.variable.type : undefined).toMatchObject({
+      kind: 'named',
+      reference: { binding: { id: item?.id }, kind: 'binding' },
+    });
   });
 
   it('expands imported tuple aliases for for-of destructuring evidence', () => {
@@ -4978,7 +5113,8 @@ describe('lowerTypeScriptSource', () => {
       `export const Severity = { Error: 'Error', Warning: 'Warning' } as const;
        export type Severity = (typeof Severity)[keyof typeof Severity];
        export enum Level { Error, Warning }
-       export interface Diagnostic { severity: Severity; level: Level; }`,
+       export interface Diagnostic { severity: Severity; level: Level; }
+       export function getLevel(): Level { return Level.Error; }`,
       ts.ScriptTarget.Latest,
       true,
     );
@@ -4990,10 +5126,12 @@ describe('lowerTypeScriptSource', () => {
     );
     const consumer = ts.createSourceFile(
       '/flight/packages/app/src/format.ts',
-      `import type { Diagnostic } from '@flight/types/contract';
+      `import { getLevel } from '@flight/types/contract';
+       import type { Diagnostic } from '@flight/types/contract';
        export function format(value: Readonly<Diagnostic>): string {
          const { severity, level } = value;
-         return severity + String(level);
+         const current = getLevel();
+         return severity + String(level) + String(current);
        }`,
       ts.ScriptTarget.Latest,
       true,
@@ -5015,11 +5153,28 @@ describe('lowerTypeScriptSource', () => {
       },
     ).at(-1)!;
     const imports = result.module.imports.flatMap((imported) => imported.bindings.map((binding) => binding.imported));
+    const format = result.module.declarations.find(
+      (declaration) => declaration.kind === 'function' && declaration.binding.name === 'format',
+    );
+    const current = format?.kind === 'function' && format.body[1]?.kind === 'variable' ? format.body[1] : undefined;
+    const level = result.module.imports
+      .flatMap((imported) => imported.bindings)
+      .find((binding) => binding.imported === 'Level');
 
     expect(result.diagnostics).toEqual([]);
-    expect(imports).toEqual(expect.arrayContaining(['Diagnostic', 'Severity', 'Level']));
+    expect(imports).toEqual(expect.arrayContaining(['Diagnostic', 'Severity', 'Level', 'getLevel']));
     expect(imports.filter((imported) => imported === 'Severity')).toHaveLength(1);
     expect(imports.filter((imported) => imported === 'Level')).toHaveLength(1);
+    expect(current).toMatchObject({
+      declarations: [
+        {
+          type: {
+            kind: 'named',
+            reference: { binding: { id: level?.binding.id }, kind: 'binding' },
+          },
+        },
+      ],
+    });
   });
   it('names the union member a reference was narrowed to, and leaves an unnarrowed one open', () => {
     const result = lower(

@@ -1313,7 +1313,34 @@ function getTypeScriptOptionalChainReceiverNullish(
 
 function getTypeScriptOptionalChainTypeEvidence(expression: ts.Expression, context: LoweringContext): IrType {
   const binding = getTypeScriptExpressionBindingTypeEvidence(expression, context);
-  if (binding) return resolveTypeScriptExpressionPropertyTypeEvidence(binding, context);
+  if (binding) {
+    const resolved = resolveTypeScriptExpressionPropertyTypeEvidence(binding, context);
+    const checkerType = context.checker.getTypeAtLocation(expression);
+    const absent = checkerType.isUnion()
+      ? checkerType.types.filter((member) => member.flags & (ts.TypeFlags.Null | ts.TypeFlags.Undefined))
+      : [];
+    const absentEvidence = absent.flatMap((member): IrType[] => {
+      if (member.flags & ts.TypeFlags.Null) return [{ kind: 'null' }];
+      if (member.flags & ts.TypeFlags.Undefined) return [{ kind: 'undefined' }];
+      return [];
+    });
+    if (
+      absentEvidence.length === 0 &&
+      getTypeScriptOptionalChainReceiverNullish(expression, context) === 'possible' &&
+      (resolved.kind === 'array' ||
+        resolved.kind === 'function' ||
+        resolved.kind === 'literal' ||
+        resolved.kind === 'never' ||
+        resolved.kind === 'object' ||
+        resolved.kind === 'primitive' ||
+        resolved.kind === 'tuple')
+    ) {
+      absentEvidence.push({ kind: 'undefined' });
+    }
+    if (absentEvidence.length === 0) return resolved;
+    const present = resolved.kind === 'union' ? resolved.types : [resolved];
+    return commonType([present[0]!, ...present.slice(1), ...absentEvidence]);
+  }
   const evidence = getTypeScriptSyntacticExpressionTypeEvidence(expression, context.checker);
   return evidence ? lowerType(evidence, context) : { kind: 'unknown', source: 'unknown' };
 }
@@ -1556,6 +1583,7 @@ function lowerCallSemantics(
     ...lowerInvocationSemantics(node, signature, context),
     resultType:
       getTypeScriptMapLookupResultTypeEvidence(node, context) ??
+      getTypeScriptInstantiatedCallResultTypeEvidence(node, signature, context) ??
       getTypeScriptWrittenCallResultTypeEvidence(signature, context) ??
       getTypeScriptCheckerTypeEvidence(context.checker.getTypeAtLocation(node), context, 0) ??
       inferInitializerType(node, context),
@@ -1579,6 +1607,33 @@ function lowerCallSemantics(
     ...semantics,
     typedArraySet: { receivers: receivers as [IrTypedArrayReceiver, ...IrTypedArrayReceiver[]] },
   };
+}
+
+function getTypeScriptInstantiatedCallResultTypeEvidence(
+  node: ts.CallExpression,
+  signature: Readonly<TypeScriptInvocationSignatureResolution> | undefined,
+  context: LoweringContext,
+): Readonly<IrType> | undefined {
+  const result = signature?.resolved.type;
+  const source = result?.getSourceFile();
+  if (
+    !result ||
+    source?.fileName === getCompilerAmbientSurfaceFileName() ||
+    (source === context.moduleSourceFile &&
+      (!ts.isTypeNode(result) || !hasExternalTypeScriptTypeParameter(result, context)))
+  ) {
+    return undefined;
+  }
+  const callee = removeIrTypeBindingPatternUndefined(
+    getTypeScriptExpressionBindingTypeEvidence(node.expression, context),
+  );
+  if (callee?.kind === 'function') {
+    return (ts.isPropertyAccessExpression(node.expression) || ts.isElementAccessExpression(node.expression)) &&
+      node.expression.questionDotToken
+      ? addIrTypeBindingPatternUndefined(callee.returns)
+      : callee.returns;
+  }
+  return getTypeScriptCheckerTypeEvidence(context.checker.getTypeAtLocation(node), context, 0, true, node);
 }
 
 // The checker exposes numeric enums through Map.get as `number`, losing the imported identity that
@@ -3869,6 +3924,13 @@ function getTypeScriptTypeReferenceSymbol(node: ts.TypeNode, context: LoweringCo
     : undefined;
 }
 
+function isTypeScriptNodeWithin(node: ts.Node, ancestor: ts.Node): boolean {
+  for (let current: ts.Node | undefined = node; current; current = current.parent) {
+    if (current === ancestor) return true;
+  }
+  return false;
+}
+
 function hasExternalTypeScriptTypeParameter(node: ts.TypeNode, context: LoweringContext): boolean {
   const local = new Set<ts.Symbol>();
   const collect = (child: ts.Node): void => {
@@ -4060,6 +4122,13 @@ function lowerTypeScriptForOfElementType(
   }
   const ambientCallElement = lowerTypeScriptAmbientCallArrayElementType(expression, context);
   if (ambientCallElement) return ambientCallElement;
+  if (ts.isCallExpression(expression)) {
+    const signature = context.checker.getResolvedSignature(expression);
+    const resultType = signature ? context.checker.getReturnTypeOfSignature(signature) : undefined;
+    const result = resultType ? getTypeScriptCheckerTypeEvidence(resultType, context, 0, true, expression) : undefined;
+    const element = getIrTypeIndexedElementEvidence(result, undefined);
+    if (element) return element;
+  }
   const iterableType = getTypeScriptSyntacticExpressionTypeEvidence(expression, context.checker);
   if (!iterableType) return getTypeScriptForOfBindingElementType(expression, context);
   const element = getTypeScriptTypeNodeIterableElementEvidence(iterableType, context, new Set());
@@ -4609,7 +4678,7 @@ function lowerTypeScriptInterfacePropertiesEvidence(
           ts.isInterfaceDeclaration(candidate) ||
           ts.isTypeAliasDeclaration(candidate),
       );
-      if (!symbol || !base) {
+      if (!symbol || !base || isTypeScriptAmbientSurfaceSymbol(symbol)) {
         const utilityProperties = lowerTypeScriptUnresolvedUtilityHeritageProperties(
           heritage,
           context,
@@ -4617,6 +4686,8 @@ function lowerTypeScriptInterfacePropertiesEvidence(
           substitutions,
         );
         if (!utilityProperties) {
+          const external = lowerTypeNameNodeReference(heritage.expression, context);
+          if (external?.kind === 'ambient') continue;
           unsupported(heritage, 'syntactic interface heritage requires an object type declaration');
         }
         utilityProperties.forEach((property) => mergeProperty(property, heritage));
@@ -4671,6 +4742,22 @@ function lowerTypeScriptUnresolvedUtilityHeritageProperties(
           type: { kind: 'unknown', source: 'any' },
         },
     );
+  }
+  if (
+    (heritage.expression.text === 'Partial' ||
+      heritage.expression.text === 'Readonly' ||
+      heritage.expression.text === 'Required') &&
+    arguments_.length === 1
+  ) {
+    const inherited = lowerTypeScriptHeritageTypeNodeProperties(arguments_[0]!, context, seen, substitutions);
+    if (!inherited) return undefined;
+    if (heritage.expression.text === 'Partial') {
+      return inherited.map((property) => ({ ...property, optional: true }));
+    }
+    if (heritage.expression.text === 'Readonly') {
+      return inherited.map((property) => ({ ...property, readonly: true }));
+    }
+    return inherited.map((property) => ({ ...property, optional: false }));
   }
   if (heritage.expression.text !== 'ReturnType' || arguments_.length !== 1) return undefined;
   const query = arguments_[0]!;
@@ -5100,11 +5187,7 @@ function inferInitializerType(node: ts.Expression, context: LoweringContext): Ir
     return inferInitializerType(node.expression, context);
   }
   if (isTypeScriptConstAssertion(node)) return inferInitializerType(node.expression, context);
-  if (
-    (ts.isAsExpression(node) || ts.isTypeAssertionExpression(node)) &&
-    (isTypeScriptClosedCallableObjectType(node.type, context) ||
-      isTypeScriptClosedCallableObjectAliasReference(node.type, context))
-  ) {
+  if (ts.isAsExpression(node) || ts.isTypeAssertionExpression(node)) {
     return lowerType(node.type, context);
   }
   if (node.kind === ts.SyntaxKind.TrueKeyword || node.kind === ts.SyntaxKind.FalseKeyword) {
@@ -5114,10 +5197,16 @@ function inferInitializerType(node: ts.Expression, context: LoweringContext): Ir
   if (node.kind === ts.SyntaxKind.NullKeyword) return { kind: 'null' };
   if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node))
     return { kind: 'primitive', name: 'string' };
+  if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken) {
+    const left = removeIrTypeAbsentMembersSemantic(inferInitializerType(node.left, context));
+    const right = inferInitializerType(node.right, context);
+    return left ? commonType([left, right]) : right;
+  }
   if (ts.isCallExpression(node)) {
     const signature = getTypeScriptInvocationSignatureResolution(node, context.checker);
     const callResult =
       getTypeScriptMapLookupResultTypeEvidence(node, context) ??
+      getTypeScriptInstantiatedCallResultTypeEvidence(node, signature, context) ??
       getTypeScriptWrittenCallResultTypeEvidence(signature, context);
     if (callResult) return callResult;
   }
@@ -5223,47 +5312,6 @@ function isTypeScriptConstAssertion(node: ts.Expression): node is ts.AsExpressio
     node.type.typeName.text === 'const' &&
     !node.type.typeArguments
   );
-}
-
-function isTypeScriptClosedCallableObjectType(node: ts.TypeNode, context: LoweringContext): boolean {
-  const type = context.checker.getTypeFromTypeNode(node);
-  const callables = context.checker.getSignaturesOfType(type, ts.SignatureKind.Call);
-  if (
-    callables.length !== 1 ||
-    callables[0]!.getTypeParameters()?.length ||
-    context.checker.getSignaturesOfType(type, ts.SignatureKind.Construct).length > 0 ||
-    context.checker.getIndexInfosOfType(type).length > 0 ||
-    context.checker.getPropertiesOfType(type).length === 0
-  ) {
-    return false;
-  }
-  return callables[0]!.getParameters().every((parameter) => {
-    if (parameter.flags & ts.SymbolFlags.Optional) return false;
-    return !parameter.declarations?.some(
-      (declaration) => ts.isParameter(declaration) && declaration.dotDotDotToken !== undefined,
-    );
-  });
-}
-
-function isTypeScriptClosedCallableObjectAliasReference(node: ts.TypeNode, context: LoweringContext): boolean {
-  if (!ts.isTypeReferenceNode(node)) return false;
-  const symbol = context.checker.getSymbolAtLocation(node.typeName);
-  const declaration = symbol?.declarations?.find(ts.isTypeAliasDeclaration);
-  if (!declaration) return false;
-  const nonNullableArgument =
-    ts.isTypeReferenceNode(declaration.type) && declaration.type.typeArguments?.length === 1
-      ? declaration.type.typeArguments[0]
-      : undefined;
-  if (
-    ts.isTypeReferenceNode(declaration.type) &&
-    ts.isIdentifier(declaration.type.typeName) &&
-    declaration.type.typeName.text === 'NonNullable' &&
-    nonNullableArgument &&
-    ts.isIndexedAccessTypeNode(nonNullableArgument)
-  ) {
-    return isTypeScriptClosedCallableObjectIndexedAccess(nonNullableArgument, context);
-  }
-  return isTypeScriptClosedCallableObjectType(declaration.type, context);
 }
 
 function commonType(types: readonly [IrType, ...IrType[]]): IrType {
@@ -5811,7 +5859,12 @@ function getTypeScriptContextualParameterType(
 // A type the checker resolved to something this module declares. The declaration's own name is what
 // the neutral model carries, so the reference is rebuilt from it rather than from the checker's
 // spelling — a type named in a callback parameter is the same type the module already introduced.
-function getTypeScriptDeclaredTypeEvidence(type: ts.Type, context: LoweringContext): Readonly<IrType> | undefined {
+function getTypeScriptDeclaredTypeEvidence(
+  type: ts.Type,
+  context: LoweringContext,
+  depth: number,
+  lexicalSite?: ts.Node,
+): Readonly<IrType> | undefined {
   const symbol = type.aliasSymbol ?? type.getSymbol();
   const declaration = symbol?.declarations?.[0];
   if (!symbol || !declaration || declaration.getSourceFile() !== context.sourceFile) return undefined;
@@ -5820,7 +5873,7 @@ function getTypeScriptDeclaredTypeEvidence(type: ts.Type, context: LoweringConte
     !ts.isSourceFile(declaration.parent) &&
     !ts.isModuleBlock(declaration.parent)
   ) {
-    const properties = lowerTypeScriptCheckerObjectProperties(type, context, 0);
+    const properties = lowerTypeScriptCheckerObjectProperties(type, context, 0, undefined, lexicalSite);
     return properties ? { kind: 'object', properties } : undefined;
   }
   const name = ts.getNameOfDeclaration(declaration);
@@ -5834,7 +5887,13 @@ function getTypeScriptDeclaredTypeEvidence(type: ts.Type, context: LoweringConte
       ? lowerTypeBindingSymbol(symbol, name, context)
       : undefined;
   if (!binding) return undefined;
-  return { kind: 'named', reference: { binding, kind: 'binding', path: [] }, typeArguments: [] };
+  const typeArguments = getTypeScriptCheckerTypeArguments(type, context.checker);
+  const loweredArguments = typeArguments.flatMap((argument) => {
+    const lowered = getTypeScriptCheckerTypeEvidence(argument, context, depth + 1, true, lexicalSite);
+    return lowered ? [lowered] : [];
+  });
+  if (loweredArguments.length !== typeArguments.length) return undefined;
+  return { kind: 'named', reference: { binding, kind: 'binding', path: [] }, typeArguments: loweredArguments };
 }
 
 function getTypeScriptCheckerTypeEvidence(
@@ -5842,6 +5901,7 @@ function getTypeScriptCheckerTypeEvidence(
   context: LoweringContext,
   depth: number,
   structural = false,
+  lexicalSite?: ts.Node,
 ): Readonly<IrType> | undefined {
   const checker = context.checker;
   if (depth > 4) return undefined;
@@ -5849,7 +5909,14 @@ function getTypeScriptCheckerTypeEvidence(
   // different generic declaration than the expression currently being lowered. Authored references
   // already travel through lowerType with their lexical binding; inferred evidence must fall back
   // rather than leak another function's type parameter into this scope.
-  if (type.flags & ts.TypeFlags.TypeParameter) return undefined;
+  if (type.flags & ts.TypeFlags.TypeParameter) {
+    const symbol = type.getSymbol();
+    const declaration = symbol?.declarations?.find(ts.isTypeParameterDeclaration);
+    const binding = symbol ? context.typeBindings.get(symbol) : undefined;
+    return binding && declaration && lexicalSite && isTypeScriptNodeWithin(lexicalSite, declaration.parent)
+      ? { kind: 'named', reference: { binding, kind: 'binding', path: [] }, typeArguments: [] }
+      : undefined;
+  }
   if (structural && type.flags & ts.TypeFlags.StringLiteral) {
     return { kind: 'literal', value: (type as ts.StringLiteralType).value };
   }
@@ -5860,11 +5927,16 @@ function getTypeScriptCheckerTypeEvidence(
     return { kind: 'literal', value: checker.typeToString(type) === 'true' };
   }
   if (type.isUnion()) {
+    const symbol = type.aliasSymbol ?? type.getSymbol();
+    if (symbol?.flags && symbol.flags & ts.SymbolFlags.Enum) {
+      const named = getTypeScriptCheckerNamedTypeEvidence(type, context, depth, lexicalSite);
+      if (named) return named;
+    }
     if (structural && type.types.every((member) => member.flags & ts.TypeFlags.BooleanLiteral)) {
       return { kind: 'primitive', name: 'boolean' };
     }
     const members = type.types.flatMap((member) => {
-      const lowered = getTypeScriptCheckerTypeEvidence(member, context, depth + 1, structural);
+      const lowered = getTypeScriptCheckerTypeEvidence(member, context, depth + 1, structural, lexicalSite);
       return lowered ? [lowered] : [];
     });
     if (members.length !== type.types.length || members.length === 0) return undefined;
@@ -5872,7 +5944,7 @@ function getTypeScriptCheckerTypeEvidence(
   }
   if (type.isIntersection()) {
     const members = type.types.flatMap((member) => {
-      const lowered = getTypeScriptCheckerTypeEvidence(member, context, depth + 1, true);
+      const lowered = getTypeScriptCheckerTypeEvidence(member, context, depth + 1, true, lexicalSite);
       return lowered ? [lowered] : [];
     });
     if (members.length !== type.types.length || members.length < 2) return undefined;
@@ -5895,7 +5967,7 @@ function getTypeScriptCheckerTypeEvidence(
     if (reference.target.combinedFlags & ts.ElementFlags.Variable) return undefined;
     const arguments_ = checker.getTypeArguments(reference);
     const elements = arguments_.flatMap((argument, index): IrTupleTypeElement[] => {
-      const lowered = getTypeScriptCheckerTypeEvidence(argument, context, depth + 1, structural);
+      const lowered = getTypeScriptCheckerTypeEvidence(argument, context, depth + 1, structural, lexicalSite);
       if (!lowered) return [];
       return [
         reference.target.elementFlags[index] === ts.ElementFlags.Optional
@@ -5908,17 +5980,19 @@ function getTypeScriptCheckerTypeEvidence(
   }
   if (checker.isArrayType(type)) {
     const element = checker.getTypeArguments(type as ts.TypeReference)[0];
-    const lowered = element ? getTypeScriptCheckerTypeEvidence(element, context, depth + 1, structural) : undefined;
+    const lowered = element
+      ? getTypeScriptCheckerTypeEvidence(element, context, depth + 1, structural, lexicalSite)
+      : undefined;
     return lowered ? { element: lowered, kind: 'array', readonly: false } : undefined;
   }
-  const declared = getTypeScriptDeclaredTypeEvidence(type, context);
+  const declared = getTypeScriptDeclaredTypeEvidence(type, context, depth, lexicalSite);
   if (declared) return declared;
-  const named = getTypeScriptCheckerNamedTypeEvidence(type, context, depth);
+  const named = getTypeScriptCheckerNamedTypeEvidence(type, context, depth, lexicalSite);
   if (named) return named;
-  const functionType = getTypeScriptCheckerFunctionTypeEvidence(type, context, depth);
+  const functionType = getTypeScriptCheckerFunctionTypeEvidence(type, context, depth, lexicalSite);
   if (functionType) return functionType;
   if (!structural) return undefined;
-  const properties = lowerTypeScriptCheckerObjectProperties(type, context, depth);
+  const properties = lowerTypeScriptCheckerObjectProperties(type, context, depth, undefined, lexicalSite);
   return properties ? { kind: 'object', properties } : undefined;
 }
 
@@ -5926,6 +6000,7 @@ function getTypeScriptCheckerFunctionTypeEvidence(
   type: ts.Type,
   context: LoweringContext,
   depth: number,
+  lexicalSite?: ts.Node,
 ): Readonly<IrType> | undefined {
   if (context.checker.getSignaturesOfType(type, ts.SignatureKind.Construct).length > 0) return undefined;
   const signatures = context.checker.getSignaturesOfType(type, ts.SignatureKind.Call);
@@ -5936,8 +6011,11 @@ function getTypeScriptCheckerFunctionTypeEvidence(
     const parameters = signature.getParameters().flatMap((parameter): IrFunctionTypeParameter[] => {
       if (parameter.getName() === 'this') return [];
       const declaration = parameter.valueDeclaration;
-      const type = context.checker.getTypeOfSymbolAtLocation(parameter, declaration ?? context.sourceFile);
-      const lowered = getTypeScriptCheckerTypeEvidence(type, context, depth + 1, true);
+      const type = context.checker.getTypeOfSymbolAtLocation(
+        parameter,
+        lexicalSite ?? declaration ?? context.sourceFile,
+      );
+      const lowered = getTypeScriptCheckerTypeEvidence(type, context, depth + 1, true, lexicalSite);
       if (!lowered) return [];
       const value = { name: parameter.getName(), type: lowered };
       if (declaration && ts.isParameter(declaration) && declaration.dotDotDotToken) {
@@ -5958,6 +6036,7 @@ function getTypeScriptCheckerFunctionTypeEvidence(
       context,
       depth + 1,
       true,
+      lexicalSite,
     );
     return returns ? [{ kind: 'function', parameters, returns, typeParameters: [] }] : [];
   });
@@ -5971,6 +6050,7 @@ function getTypeScriptCheckerNamedTypeEvidence(
   type: ts.Type,
   context: LoweringContext,
   depth: number,
+  lexicalSite?: ts.Node,
 ): Readonly<IrType> | undefined {
   const symbol = type.aliasSymbol ?? type.getSymbol();
   // TypeScript gives anonymous call/object types implementation-detail symbol names. They must
@@ -5984,7 +6064,7 @@ function getTypeScriptCheckerNamedTypeEvidence(
   if (!binding && !ambient) return undefined;
   const typeArguments = getTypeScriptCheckerTypeArguments(type, context.checker);
   const loweredArguments = typeArguments.flatMap((argument) => {
-    const lowered = getTypeScriptCheckerTypeEvidence(argument, context, depth + 1, true);
+    const lowered = getTypeScriptCheckerTypeEvidence(argument, context, depth + 1, true, lexicalSite);
     return lowered ? [lowered] : [];
   });
   if (loweredArguments.length !== typeArguments.length) return undefined;
@@ -6064,6 +6144,7 @@ function lowerTypeScriptCheckerObjectProperties(
   context: LoweringContext,
   depth: number,
   mapped?: ts.MappedTypeNode,
+  lexicalSite?: ts.Node,
 ): readonly IrObjectTypeProperty[] | undefined {
   if (!(type.flags & (ts.TypeFlags.Object | ts.TypeFlags.Intersection)) || depth > 4) return undefined;
   if (
@@ -6079,7 +6160,7 @@ function lowerTypeScriptCheckerObjectProperties(
     if (name.startsWith('__@')) return undefined;
     const optional = Boolean(property.flags & ts.SymbolFlags.Optional);
     const propertyType = context.checker.getTypeOfSymbolAtLocation(property, mapped ?? context.sourceFile);
-    const lowered = lowerTypeScriptCheckerPropertyType(propertyType, optional, context, depth + 1);
+    const lowered = lowerTypeScriptCheckerPropertyType(propertyType, optional, context, depth + 1, lexicalSite);
     if (!lowered) return undefined;
     properties.push({
       name,
@@ -6096,6 +6177,7 @@ function lowerTypeScriptCheckerPropertyType(
   optional: boolean,
   context: LoweringContext,
   depth: number,
+  lexicalSite?: ts.Node,
 ): Readonly<IrType> | undefined {
   const candidates =
     optional && type.isUnion() && type.types.some((member) => !(member.flags & ts.TypeFlags.Undefined))
@@ -6105,7 +6187,7 @@ function lowerTypeScriptCheckerPropertyType(
     return { kind: 'primitive', name: 'boolean' };
   }
   const lowered = candidates.flatMap((candidate) => {
-    const evidence = getTypeScriptCheckerTypeEvidence(candidate, context, depth, true);
+    const evidence = getTypeScriptCheckerTypeEvidence(candidate, context, depth, true, lexicalSite);
     return evidence ? [evidence] : [];
   });
   return lowered.length === candidates.length && lowered[0] ? commonType([lowered[0], ...lowered.slice(1)]) : undefined;
@@ -6516,6 +6598,10 @@ function lowerBindingSymbol(symbol: ts.Symbol, node: ts.Identifier, context: Low
     space: 'value',
   };
   context.bindings.set(symbol, binding);
+  if (symbol.flags & ts.SymbolFlags.Alias) {
+    const aliased = context.checker.getAliasedSymbol(symbol);
+    if (aliased !== symbol && !context.bindings.has(aliased)) context.bindings.set(aliased, binding);
+  }
   return binding;
 }
 
