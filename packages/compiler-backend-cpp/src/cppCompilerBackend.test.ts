@@ -738,6 +738,57 @@ describe('createCppCompilerBackend', () => {
     expect(standalone.contents).toContain('flight::Ref<Model>');
   });
 
+  it('constructs and narrows object unions with an imported alternative', () => {
+    const types = ts.createSourceFile(
+      '/flight/packages/types/src/error.ts',
+      `export interface ParseError { token: string; reason: ParseErrorReason }
+       export type ParseErrorReason = 'empty' | 'invalid';`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const parser = ts.createSourceFile(
+      '/flight/packages/parser/src/parser.ts',
+      `import type { ParseError } from '@flight/types';
+       interface Parsed { value: string }
+       export function parse(empty: boolean): Parsed | ParseError {
+         if (empty) return { reason: 'empty', token: '' };
+         return { value: 'ok' };
+       }
+       export function failed(result: Parsed | ParseError): boolean {
+         return 'reason' in result;
+       }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          specifier: '@flight/types',
+          target: { packageName: '@flight/types', source: 'packages/types/src/error.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const results = lowerTypeScriptSources(
+      [
+        { packageName: '@flight/types', sourceFile: types, upstreamDirectory: '/flight' },
+        { packageName: '@flight/parser', sourceFile: parser, upstreamDirectory: '/flight' },
+      ],
+      moduleResolution,
+    );
+    const modules = results.map((result) => result.module);
+    const output = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules,
+      options: { runtimeProfile: 'flight-cpp' },
+    }).emitModule(modules[1]!)![0]!.contents;
+
+    expect(results[1]!.diagnostics).toEqual([]);
+    expect(output).toContain('std::in_place_type<flight::Ref<flighthq_types::ParseError>>');
+    expect(output).toContain('.index() ==');
+    expect(output).not.toContain('flight::String("reason") in result');
+  });
+
   it('constructs an imported optional reference from an imported function result', () => {
     const types = ts.createSourceFile(
       '/flight/packages/types/src/entity.ts',

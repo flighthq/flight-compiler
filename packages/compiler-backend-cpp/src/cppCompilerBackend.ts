@@ -1479,6 +1479,8 @@ function emitExpression(
       if (expression.semantics.unionMemberTest) {
         return emitUnionMemberTestCpp(expression.semantics.unionMemberTest, context);
       }
+      const inferredPropertyTest = emitCppInferredPropertyUnionMemberTestCpp(expression, context);
+      if (inferredPropertyTest) return inferredPropertyTest;
       if (expression.semantics.nullishComparison) {
         return emitNullishComparisonCpp(expression, context);
       }
@@ -5416,10 +5418,54 @@ function isCppExpressionRepresentableAsRuntimeTypeCpp(
     }
   }
   if (expression.kind !== 'literal') return isCppExpressionExactlyRepresentableAsTypeCpp(expression, target, context);
-  const runtime = getIrTypeRuntimeDomainCpp(target, context, new Set());
+  const union = getIrUnionTypeCpp(target, context, new Set());
+  const runtimeMembers = (union?.types ?? [target]).map((member) =>
+    getIrTypeRuntimeDomainCpp(member, context, new Set()),
+  );
+  const firstRuntime = runtimeMembers[0];
+  const runtime =
+    firstRuntime &&
+    runtimeMembers.every(
+      (member) =>
+        member &&
+        normalizeCompilerStructuralValueCanonical(member) === normalizeCompilerStructuralValueCanonical(firstRuntime),
+    )
+      ? firstRuntime
+      : undefined;
   if (expression.value === null) return runtime?.kind === 'null';
   if (runtime?.kind !== 'primitive') return false;
   return runtime.name === (typeof expression.value === 'number' ? 'number' : typeof expression.value);
+}
+
+function emitCppInferredPropertyUnionMemberTestCpp(
+  expression: Readonly<Extract<IrExpression, { kind: 'binary' }>>,
+  context: EmitContext,
+): string | undefined {
+  if (
+    expression.operator !== 'in' ||
+    expression.left.kind !== 'literal' ||
+    typeof expression.left.value !== 'string' ||
+    expression.right.kind !== 'identifier' ||
+    expression.right.reference.kind !== 'binding'
+  ) {
+    return undefined;
+  }
+  const propertyName = expression.left.value;
+  const type = getIrExpressionTypeEvidenceCpp(expression.right, context);
+  const union = type ? getIrVariantUnionTypeCpp(type, context, new Set()) : undefined;
+  if (!union) return undefined;
+  const representation = getCppVariantRepresentation(union, context);
+  if (representation.direct) return undefined;
+  const matches = representation.alternatives.flatMap((alternative, index) => {
+    const properties = context.referenceRepresentationPlanner.resolveObjectShape(
+      alternative.runtimeType,
+      context.module,
+    );
+    return properties?.some((property) => property.name === propertyName) ? [index] : [];
+  });
+  if (matches.length === 0 || matches.length === representation.alternatives.length) return undefined;
+  const value = emitExpression(expression.right, context);
+  return matches.map((index) => `${value}.index() == ${String(index)}`).join(' || ');
 }
 
 function getIrTypeRuntimeDomainCpp(
