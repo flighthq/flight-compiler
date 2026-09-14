@@ -367,6 +367,7 @@ const haxeJavaScriptHostValueBindings = [
   ['setTimeout', 'js.Browser.window.setTimeout'],
   ['TextEncoder', 'js.html.TextEncoder'],
   ['VideoFrame', 'js.Syntax.code("VideoFrame")'],
+  ['vi', 'js.Syntax.code("vi")'],
   ['WebSocket', 'js.html.WebSocket'],
   ['WheelEvent', 'js.html.WheelEvent'],
   ['window', 'js.Browser.window'],

@@ -1986,7 +1986,13 @@ function hasIrTypeAbsentMemberHaxe(
 }
 
 function canIrTypeReturnAbsentHaxe(type: Readonly<IrType>, module: Readonly<IrModule>): boolean {
-  return type.kind === 'unknown' || hasIrTypeAbsentMemberHaxe(type, module);
+  return (
+    type.kind === 'unknown' ||
+    (type.kind === 'named' &&
+      type.reference.kind === 'ambient' &&
+      getCompilerRuntimeExternalSymbolTargetHaxe(type.reference.name, 'type') === 'Dynamic') ||
+    hasIrTypeAbsentMemberHaxe(type, module)
+  );
 }
 
 function emitIrClassFieldInitializationsHaxe(

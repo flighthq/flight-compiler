@@ -8842,6 +8842,18 @@ describe('emitIrModuleHaxe nullable return', () => {
 
     expect(() => emitIrModuleHaxe(result.module)).not.toThrow();
   });
+
+  it('allows nullable source storage when the elected host representation is Dynamic', () => {
+    const result = lower(
+      'dynamic-host-return.ts',
+      `export function read(): GPUTextureView {
+         const value: GPUTextureView | null = null;
+         return value;
+       }`,
+    );
+
+    expect(() => emitIrModuleHaxe(result.module)).not.toThrow();
+  });
 });
 
 describe('emitIrModuleHaxe interface function property', () => {

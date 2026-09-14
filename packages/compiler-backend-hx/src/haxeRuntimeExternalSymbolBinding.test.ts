@@ -12,7 +12,7 @@ describe('createCompilerRuntimeExternalSymbolBindingPlanHaxe', () => {
     const plan = createCompilerRuntimeExternalSymbolBindingPlanHaxe();
 
     expect(plan.contract).toBe('flight-runtime-contract/2');
-    expect(plan.bindings).toHaveLength(336);
+    expect(plan.bindings).toHaveLength(337);
     expect(plan.bindings.filter(({ externalSymbol }) => externalSymbol.sourceName === 'Promise')).toEqual([
       {
         capability: 'task',
@@ -262,6 +262,7 @@ describe('getCompilerRuntimeExternalSymbolTargetHaxe', () => {
     ['SharedArrayBuffer', 'type', 'js.lib.SharedArrayBuffer'],
     ['SharedArrayBuffer', 'value', 'js.lib.SharedArrayBuffer'],
     ['navigator', 'value', 'js.Browser.navigator'],
+    ['vi', 'value', 'js.Syntax.code("vi")'],
     ['Intl', 'value', 'flighthq._internal._Intl'],
     ['Intl.Segmenter', 'type', 'flighthq._internal._IntlSegmenter'],
     ['Map', 'type', 'flighthq._internal._Map'],
