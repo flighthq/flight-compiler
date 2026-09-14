@@ -5140,6 +5140,59 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(angle).toContain(constants.match(/deg_to_rad_flight_value_variable_\S+/u)![0]);
   });
 
+  it('forward declares imported referents before mutually dependent includes', () => {
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          specifier: './a.js',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/a.ts' },
+        },
+        {
+          specifier: './b.js',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/b.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const modules = lowerTypeScriptSources(
+      [
+        {
+          packageName: '@flighthq/types',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/types/src/a.ts',
+            "import type { B } from './b.js'; export interface A { b: B }",
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+        {
+          packageName: '@flighthq/types',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/types/src/b.ts',
+            "import type { A } from './a.js'; export interface B { a: A }",
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+      ],
+      moduleResolution,
+    ).map((result) => result.module);
+    const session = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules,
+      options: { runtimeProfile: 'flight-cpp' },
+    });
+    const a = session.emitModule(modules[0]!)[0]!.contents;
+    const forward = 'namespace flighthq_types { struct B; }';
+    const include = '#include "b.hpp"';
+
+    expect(a).toContain(forward);
+    expect(a).toContain(include);
+    expect(a.indexOf(forward)).toBeLessThan(a.indexOf(include));
+  });
+
   it('falls back to _internal_ output path when source path does not resolve to a file name', () => {
     const result = lower('index.ts', 'export const value = 1;');
     const emitted = emitIrModuleCpp(result.module);

@@ -390,6 +390,8 @@ function emitIrModuleCppWithContext(
       'static_assert(flight::runtime_contract.cpp_abi == 1, "Flight C++ runtime ABI mismatch");',
     );
   }
+  const importedForwardDeclarations = emitCppImportedForwardDeclarations(context);
+  if (importedForwardDeclarations.length > 0) lines.push('', ...importedForwardDeclarations);
   if (imports.length > 0) lines.push('', ...imports);
   const namespaceName = getCppCompilerPackageNamespace(module.packageName, options.packageTargets);
   lines.push('', `namespace ${namespaceName} {`);
@@ -544,6 +546,44 @@ function emitCppForwardDeclarations(module: Readonly<IrModule>, context: EmitCon
     const declarationLine = `struct ${getBindingTargetName(declaration.binding, context)};`;
     return typeParameters ? [`template ${typeParameters}`, declarationLine] : [declarationLine];
   });
+}
+
+function emitCppImportedForwardDeclarations(context: EmitContext): string[] {
+  const declarations = new Map<string, { namespace: string; declaration: string }>();
+  for (const importItem of context.module.imports) {
+    const targetModules = getCppResolvedImportModules(importItem.specifier, context);
+    for (const binding of importItem.bindings) {
+      if (binding.imported === '*') continue;
+      const matches = targetModules.flatMap((targetModule) =>
+        targetModule.declarations.flatMap((declaration) => {
+          if (
+            (declaration.kind !== 'class' && declaration.kind !== 'interface') ||
+            declaration.binding.name !== binding.imported ||
+            !hasCppDirectExportName(targetModule, binding.imported)
+          ) {
+            return [];
+          }
+          return [{ declaration, targetModule }];
+        }),
+      );
+      if (matches.length !== 1) continue;
+      const match = matches[0]!;
+      const namespace = getCppCompilerPackageNamespace(match.targetModule.packageName, context.options.packageTargets);
+      const targetName =
+        context.targetNameMaps.get(getCppModuleIdentityKey(match.targetModule))?.get(match.declaration.binding.id) ??
+        safeCppTypeName(match.declaration.binding.name);
+      const typeParameters = match.declaration.typeParameters.map((parameter) =>
+        safeCppTypeName(parameter.binding.name),
+      );
+      const declaration = `${typeParameters.length > 0 ? `template <${typeParameters.map((name) => `typename ${name}`).join(', ')}> ` : ''}struct ${targetName};`;
+      declarations.set(`${namespace}\0${declaration}`, { declaration, namespace });
+    }
+  }
+  return [...declarations.values()]
+    .sort((left, right) =>
+      `${left.namespace}\0${left.declaration}`.localeCompare(`${right.namespace}\0${right.declaration}`),
+    )
+    .map(({ declaration, namespace }) => `namespace ${namespace} { ${declaration} }`);
 }
 
 function emitDeclaration(declaration: Readonly<IrDeclaration>, context: EmitContext): string[] {
