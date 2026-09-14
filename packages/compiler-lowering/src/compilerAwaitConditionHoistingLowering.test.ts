@@ -199,6 +199,39 @@ describe('createCompilerLoweringPassAwaitConditionHoisting', () => {
     });
   });
 
+  it('hoists awaited constructor arguments inside nested async functions', () => {
+    const output = lowerIrModuleWithCompilerPasses(
+      lower(`
+        export function create(): (blob: Blob) => Promise<Uint8Array> {
+          return async (blob: Blob): Promise<Uint8Array> => {
+            return new Uint8Array(await blob.arrayBuffer());
+          };
+        }
+      `),
+      [createCompilerLoweringPassAwaitConditionHoisting()],
+    );
+    const declaration = output.declarations.find(
+      (candidate) => candidate.kind === 'function' && candidate.binding.name === 'create',
+    );
+    const returned = declaration?.kind === 'function' ? declaration.body[0] : undefined;
+
+    expect(returned).toMatchObject({
+      expression: {
+        body: [
+          {
+            kind: 'block',
+            statements: [
+              { declarations: [{ binding: { name: 'awaitValue' }, initializer: { kind: 'await' } }] },
+              { expression: { arguments: [{ kind: 'identifier' }], kind: 'new' }, kind: 'return' },
+            ],
+          },
+        ],
+        kind: 'function',
+      },
+      kind: 'return',
+    });
+  });
+
   it('reports an un-lowered module with suspending branch conditions as invalid', () => {
     const pass = createCompilerLoweringPassAwaitConditionHoisting();
     const module = lower(
