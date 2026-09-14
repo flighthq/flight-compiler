@@ -1134,7 +1134,7 @@ describe('createCppCompilerBackend', () => {
          return serializer !== undefined;
        }
        const channelLevels = new Map<string, LogLevel>();
-       const serializers = new Map<string, (value: unknown) => Record<string, unknown>>();`,
+       const serializers = new Map<string, (value: number) => Record<string, number>>();`,
       ts.ScriptTarget.Latest,
       true,
     );
@@ -1173,7 +1173,7 @@ describe('createCppCompilerBackend', () => {
 
     expect(emitted).toContain('return channel_levels.get(channel);');
     expect(emitted).toContain(
-      'std::optional<std::function<std::unordered_map<flight::String, auto>(auto)>> serializer',
+      'std::optional<std::function<std::unordered_map<flight::String, double>(double)>> serializer',
     );
 
     const lookalike = lower(
