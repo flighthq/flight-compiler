@@ -6156,6 +6156,15 @@ function appendCppOmittedInvocationArguments(
   const optionals = expression.semantics.optionalParameters;
   const plan = defaults ?? optionals;
   if (!plan || emitted.length >= plan.parameterCount) return emitted;
+  if (expression.callee.kind === 'property') {
+    const receiverType = getIrExpressionTypeEvidenceCpp(expression.callee.object, context);
+    const standardRuntimeReceiver =
+      expression.callee.member !== undefined ||
+      getIrArrayTypeCpp(receiverType, context, new Set()) !== undefined ||
+      (receiverType !== undefined && isCppStringValueTypeCpp(receiverType, context, new Set())) ||
+      (receiverType?.kind === 'named' && receiverType.reference.kind === 'ambient');
+    if (standardRuntimeReceiver) return emitted;
+  }
   const declaration =
     expression.callee.kind === 'identifier' && expression.callee.reference.kind === 'binding'
       ? getCppFunctionDeclarationForBindingCpp(expression.callee.reference.binding.id, context)

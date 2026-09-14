@@ -6579,6 +6579,21 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(emitted.contents).not.toContain('values.slice(std::nullopt');
   });
 
+  it('leaves nested readonly-array defaults to the runtime declaration', () => {
+    const output = emitIrModuleCpp(
+      lower(
+        'nested-runtime-member-defaults.ts',
+        `export function copy(values: ReadonlyArray<Readonly<number[]>>): number[] {
+           return values[0].slice();
+         }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+
+    expect(output).toContain('.slice()');
+    expect(output).not.toContain('.slice(std::nullopt');
+  });
+
   it('represents optional callable parameters in std::function ABI types', () => {
     const result = lower(
       'optional-callable-parameter.ts',
