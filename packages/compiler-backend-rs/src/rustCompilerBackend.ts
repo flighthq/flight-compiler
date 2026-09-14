@@ -2328,6 +2328,10 @@ function inferIrExpressionTypeRust(
     }
     case 'object':
       return expression.type;
+    case 'property': {
+      const binding = expression.member ? getCompilerRustAmbientMemberBinding(expression.member) : undefined;
+      return binding?.kind === 'countingMethod' ? { kind: 'primitive', name: 'number' } : undefined;
+    }
     default:
       return undefined;
   }
@@ -4027,6 +4031,10 @@ function emitTypeParameters(parameters: readonly IrTypeParameter[], context: Emi
 function emitVariable(variable: Readonly<IrVariable>, context: EmitContext): string {
   if ('pattern' in variable)
     emissionError(context, 'binding patterns require destructuring lowering before Rust emission');
+  const representationType =
+    variable.type?.kind === 'unknown' && variable.initializer
+      ? (inferIrExpressionTypeRust(variable.initializer, context) ?? variable.type)
+      : variable.type;
   if (variable.initialValue === 'undefined') {
     if (!variable.type || !isNullableType(variable.type)) {
       emissionError(context, 'observable undefined function-entry value requires a nullable Rust type domain');
@@ -4076,8 +4084,8 @@ function emitVariable(variable: Readonly<IrVariable>, context: EmitContext): str
   }
   const isArrayElementBinding = 'binding' in variable && context.arrayElementBindingIds.has(variable.binding.id);
   const type =
-    variable.type && !(variable.initializer?.kind === 'objectRest' && variable.type.kind === 'object')
-      ? `: ${isArrayElementBinding ? `Option<${emitType(variable.type, context)}>` : emitType(variable.type, context)}`
+    representationType && !(variable.initializer?.kind === 'objectRest' && representationType.kind === 'object')
+      ? `: ${isArrayElementBinding ? `Option<${emitType(representationType, context)}>` : emitType(representationType, context)}`
       : '';
   const isCallbackInitializer = variable.type?.kind === 'function' && variable.initializer?.kind === 'function';
   if (isCallbackInitializer) context.needsRcImport.add('Rc');
