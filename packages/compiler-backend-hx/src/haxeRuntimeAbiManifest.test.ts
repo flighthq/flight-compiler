@@ -27,6 +27,13 @@ describe('createCompilerHaxeRuntimeAbiManifest', () => {
       kind: 'runtime',
       targetName: '_AsyncIterable',
     });
+    expect(manifest.externalSymbols.bindings).toContainEqual({
+      capability: 'async-iterable',
+      externalSymbol: { sourceName: 'AsyncIterable', space: 'value' },
+      kind: 'runtime',
+      members: [{ sourceMember: 'forEachAsync', targetName: '_AsyncIterable.forEachAsync' }],
+      targetName: '_AsyncIterable',
+    });
   });
 
   it('returns independent manifest values', () => {
