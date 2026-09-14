@@ -165,7 +165,7 @@ describe('createHaxeCompilerBackend', () => {
     expect(output).toContain('return flighthq.types.Target.add(left, right);');
     expect(output).toContain('function area(shape:Shape):Float');
     expect(output).toContain('final version:Float = flighthq.types.Target.version;');
-    expect(output).toContain('typedef Mode = flighthq.types.Target.Mode;');
+    expect(output).toContain('typedef Mode_2 = flighthq.types.Target.Mode_2;');
     expect(output).toContain('final Mode:{ basic:Float } = flighthq.types.Target.Mode;');
     expect(output).not.toContain('hidden');
   });
@@ -189,6 +189,48 @@ describe('createHaxeCompilerBackend', () => {
     })[0]!.contents;
 
     expect(output).toContain('typedef Shape = flighthq.math.Target.Shape;');
+  });
+
+  it('imports the allocated type name from a contract type and value collision', () => {
+    const state = lowerPackage(
+      '@flighthq/types',
+      'state.ts',
+      "export const State = { Ready: 'Ready' } as const; export type State = (typeof State)[keyof typeof State];",
+    ).module;
+    const contract = lowerPackage('@flighthq/types', 'contract.ts', "export * from './state';").module;
+    const consumer = lowerPackage(
+      '@flighthq/core',
+      'consumer.ts',
+      "import { State } from '@flighthq/types/contract'; import type { State as StateType } from '@flighthq/types/contract'; export function read(value: StateType): StateType { if (value === State.Ready) return value; return State.Ready; }",
+    ).module;
+    const moduleResolution = {
+      edges: [
+        {
+          importer: { name: contract.name, packageName: contract.packageName, source: contract.source },
+          specifier: './state',
+          target: { packageName: state.packageName, source: state.source },
+        },
+        {
+          importer: { name: consumer.name, packageName: consumer.packageName, source: consumer.source },
+          specifier: '@flighthq/types/contract',
+          target: { packageName: contract.packageName, source: contract.source },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1' as const,
+    };
+    const session = createHaxeCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules: [consumer, contract, state],
+      options: {},
+    });
+    const contractOutput = session.emitModule(contract)[0]!.contents;
+    const consumerOutput = session.emitModule(consumer)[0]!.contents;
+
+    expect(contractOutput).toContain('typedef State_2 = flighthq.types.State.State_2;');
+    expect(contractOutput).toContain('final State:{ Ready:String } = flighthq.types.State.State;');
+    expect(consumerOutput).toContain('import flighthq.types.Contract.State_2 as StateType;');
+    expect(consumerOutput).toContain('import flighthq.types.Contract.State;');
+    expect(consumerOutput).toContain('function read(value:StateType):StateType');
   });
 
   it('shares a star facade plan across a transpile emission session', () => {
@@ -1403,9 +1445,8 @@ describe('emitIrModuleHaxe', () => {
     );
     const output = emitIrModuleHaxe(result.module).contents;
 
-    expect(output).toContain('typedef State = String;');
+    expect(output).toContain('typedef State_2 = String;');
     expect(output).toContain('final State:{ Ready:String }');
-    expect(output).not.toContain('State_2');
     expect(output).toContain('return State.Ready;');
   });
 

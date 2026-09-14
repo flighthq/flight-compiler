@@ -113,7 +113,7 @@ interface EmitContext {
   facadeBindingTargetNames: Map<string, string>;
   finallyCompletion: HaxeFinallyCompletion | undefined;
   generatedNames: Set<string>;
-  generatedTypeNames: Set<string>;
+  getModuleFacade: ((module: Readonly<IrModule>) => CompilerModuleFacadePlan | undefined) | undefined;
   machineNames: Map<string, string>;
   module: Readonly<IrModule>;
   moduleFacadeSlots: readonly Readonly<CompilerModuleFacadeSlot>[];
@@ -191,6 +191,7 @@ export function createHaxeCompilerBackend(): CompilerBackend<HaxeCompilerBackend
                   moduleResolution,
                   options,
                   getModuleFacade(module),
+                  getModuleFacade,
                   interfaceInheritancePass,
                   analyzeStructuralObjectCompatibility,
                 ),
@@ -199,6 +200,7 @@ export function createHaxeCompilerBackend(): CompilerBackend<HaxeCompilerBackend
       });
     },
     emitModule(module, { moduleResolution, modules, options }) {
+      const getModuleFacade = createCompilerModuleFacadePlannerHaxe(modules, moduleResolution);
       return options.emissionMode === 'extern'
         ? emitIrModuleHaxeExternWithContext(
             module,
@@ -207,7 +209,7 @@ export function createHaxeCompilerBackend(): CompilerBackend<HaxeCompilerBackend
             options,
             undefined,
             getPackageContractModuleHaxe(module.packageName, modules, moduleResolution),
-            createCompilerModuleFacadePlannerHaxe(modules, moduleResolution),
+            getModuleFacade,
           )
         : [
             emitIrModuleHaxeWithContext(
@@ -215,7 +217,8 @@ export function createHaxeCompilerBackend(): CompilerBackend<HaxeCompilerBackend
               modules,
               moduleResolution,
               options,
-              createCompilerModuleFacadePlannerHaxe(modules, moduleResolution)(module),
+              getModuleFacade(module),
+              getModuleFacade,
             ),
           ];
     },
@@ -257,7 +260,7 @@ export function emitIrModuleHaxe(
       'emitIrModuleHaxe is the single-file transpile API; use the Haxe backend session for extern emission',
     );
   }
-  return emitIrModuleHaxeWithContext(sourceModule, [sourceModule], undefined, options, undefined);
+  return emitIrModuleHaxeWithContext(sourceModule, [sourceModule], undefined, options, undefined, undefined);
 }
 
 function emitIrModuleHaxeWithContext(
@@ -266,6 +269,7 @@ function emitIrModuleHaxeWithContext(
   moduleResolution: Readonly<CompilerModuleResolutionPlan> | undefined,
   options: Readonly<HaxeCompilerBackendOptions>,
   moduleFacade: Readonly<CompilerModuleFacadePlan> | undefined,
+  getModuleFacade: ((module: Readonly<IrModule>) => CompilerModuleFacadePlan | undefined) | undefined,
   interfaceInheritancePass?: Readonly<CompilerLoweringPass> | undefined,
   structuralObjectCompatibilityAnalyzer?:
     | ((module: Readonly<IrModule>) => Readonly<CompilerStructuralObjectCompatibilityReport>)
@@ -337,7 +341,7 @@ function emitIrModuleHaxeWithContext(
     facadeBindingTargetNames: new Map(),
     finallyCompletion: undefined,
     generatedNames: new Set(targetNames.values()),
-    generatedTypeNames: new Set(targetNames.values()),
+    getModuleFacade,
     machineNames: new Map(),
     module,
     moduleFacadeSlots:
@@ -1551,16 +1555,50 @@ function emitImports(imports: readonly IrImport[], context: EmitContext): string
       if (binding.imported === '*' || binding.imported === 'default') {
         emissionError(context, `${binding.imported} imports require explicit Haxe mapping for ${imported.specifier}`);
       }
-      const importedName =
-        binding.binding.space === 'type' || binding.binding.kind === 'class' || binding.binding.kind === 'enum'
-          ? safeHaxeTypeName(binding.imported)
-          : safeHaxeName(binding.imported);
+      const importedName = getImportedTargetNameHaxe(imported, binding, context);
       const localName = getBindingTargetNameHaxe(binding.binding, context);
       const modulePath = haxeImportModule(imported.specifier, context, binding.imported);
       emitted.add(`import ${modulePath}.${importedName}${importedName === localName ? '' : ` as ${localName}`};`);
     }
   }
   return [...emitted].sort();
+}
+
+function getImportedTargetNameHaxe(
+  imported: Readonly<IrImport>,
+  binding: Readonly<IrImport['bindings'][number]>,
+  context: EmitContext,
+): string {
+  const typeLane = binding.binding.space === 'type';
+  const fallback = typeLane ? safeHaxeTypeName(binding.imported) : safeHaxeName(binding.imported);
+  const sourceModule = getHaxeResolvedImportModule(imported.specifier, context, binding.imported);
+  if (!sourceModule) return fallback;
+  const direct = sourceModule.declarations.find(
+    (declaration) =>
+      'binding' in declaration &&
+      declaration.binding.name === binding.imported &&
+      (typeLane
+        ? declaration.kind === 'class' ||
+          declaration.kind === 'enum' ||
+          declaration.kind === 'interface' ||
+          declaration.kind === 'typeAlias'
+        : declaration.kind === 'class' ||
+          declaration.kind === 'enum' ||
+          declaration.kind === 'function' ||
+          declaration.kind === 'variable'),
+  );
+  if (direct && 'binding' in direct) return getSourceBindingTargetNameHaxe(sourceModule, direct.binding, context);
+  const facade = context.getModuleFacade?.(sourceModule);
+  const slot = facade?.modules
+    .find((module) => isHaxeCompilerModuleIdentityEqual(module.module, sourceModule))
+    ?.slots.find((candidate) => candidate.exportName === binding.imported && candidate.lane === binding.binding.space);
+  if (slot?.source.kind !== 'module-all' || slot.route.kind !== 'binding') return fallback;
+  const routeModule = context.sourceModules.find((module) =>
+    isHaxeCompilerModuleIdentityEqual(module, slot.route.module),
+  );
+  return routeModule?.packageName === sourceModule.packageName
+    ? getSourceBindingTargetNameHaxe(routeModule, slot.route.binding, context)
+    : fallback;
 }
 
 // Haxe re-exports types with aliases and values with forwarding module fields. Mutable bindings are
@@ -1640,7 +1678,7 @@ function emitStarReexportFacadeHaxe(
       const typeName = typeTarget
         ? typeTarget.module.packageName === context.module.packageName
           ? getSourceBindingTargetNameHaxe(typeTarget.module, typeTarget.binding, context)
-          : getGeneratedTargetNameHaxe(safeHaxeTypeName(exportName), context, 'type')
+          : getGeneratedTargetNameHaxe(safeHaxeTypeName(exportName), context)
         : undefined;
       if (typeTarget && typeName) context.facadeBindingTargetNames.set(typeTarget.binding.id, typeName);
       if (sharedNominal && valueTarget && typeName) {
@@ -2847,7 +2885,7 @@ function getBindingTargetNameHaxe(
 function createIrModuleTargetNamesHaxe(module: Readonly<IrModule>): Map<string, string> {
   return new Map(
     createIrModuleTargetNameAllocation(module, (binding) => ({
-      namespace: binding.space,
+      namespace: 'identifier',
       preferredName:
         binding.space === 'type' || binding.kind === 'class' || binding.kind === 'enum'
           ? safeHaxeTypeName(binding.name)
@@ -2874,15 +2912,10 @@ function getSourceBindingTargetNameHaxe(
   );
 }
 
-function getGeneratedTargetNameHaxe(
-  preferredName: string,
-  context: EmitContext,
-  namespace: 'type' | 'value' = 'value',
-): string {
-  const generatedNames = namespace === 'type' ? context.generatedTypeNames : context.generatedNames;
+function getGeneratedTargetNameHaxe(preferredName: string, context: EmitContext): string {
   let name = preferredName;
-  for (let suffix = 2; generatedNames.has(name); suffix += 1) name = `${preferredName}_${String(suffix)}`;
-  generatedNames.add(name);
+  for (let suffix = 2; context.generatedNames.has(name); suffix += 1) name = `${preferredName}_${String(suffix)}`;
+  context.generatedNames.add(name);
   return name;
 }
 
