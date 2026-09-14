@@ -266,9 +266,15 @@ try {
 }
 
 if (buildFailures.length > 0) {
-  const byTarget = new Map<string, number>();
-  for (const failure of buildFailures) byTarget.set(failure.target, (byTarget.get(failure.target) ?? 0) + 1);
-  const summary = [...byTarget.entries()].map(([target, count]) => `${target}: ${String(count)}`).join(', ');
+  const byTarget = new Map<string, string[]>();
+  for (const failure of buildFailures) {
+    const fixturesForTarget = byTarget.get(failure.target) ?? [];
+    fixturesForTarget.push(failure.fixture);
+    byTarget.set(failure.target, fixturesForTarget);
+  }
+  const summary = [...byTarget.entries()]
+    .map(([target, failedFixtures]) => `${target}: ${String(failedFixtures.length)} (${failedFixtures.join(', ')})`)
+    .join('; ');
   process.stderr.write(`\n${String(buildFailures.length)} fixture(s) failed to build (${summary}), skipped.\n`);
 }
 
@@ -424,7 +430,13 @@ function runRustOracle(fixture: string, cases: readonly OracleCase[]): readonly 
       ...['helper', ...modules].map((module) => `mod ${module};`),
       ...collectRustTraitUses(cases, modules[0] ?? 'fixture'),
       'fn say_number(value: f64) -> String {',
-      '    if value == 0.0 && value.is_sign_negative() {',
+      '    if value.is_nan() {',
+      '        "NaN".to_owned()',
+      '    } else if value == f64::INFINITY {',
+      '        "Infinity".to_owned()',
+      '    } else if value == f64::NEG_INFINITY {',
+      '        "-Infinity".to_owned()',
+      '    } else if value == 0.0 && value.is_sign_negative() {',
       '        "-0".to_owned()',
       '    } else if value == value.trunc() {',
       '        format!("{}", value as i64)',
