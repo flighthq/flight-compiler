@@ -185,7 +185,7 @@ describe('emitIrModuleRust', () => {
     const valueOutput = emitIrModuleRust(values.module).contents;
 
     expect(output).toContain('values: std::collections::HashMap<String, f64>');
-    expect(output).toContain('bytes: Vec<u8>');
+    expect(output).toContain('bytes: FlightUint8Array');
     expect(output).toContain('task: FlightTask<f64>');
     expect(valueOutput).toContain('std::collections::HashMap::new()');
     expect(valueOutput).toContain('FlightTask::resolve(1.0)');
@@ -312,10 +312,22 @@ describe('emitIrModuleRust', () => {
   it('emits typed array constructors with all declared fixed arities', () => {
     const result = lower(
       'typed-array-constructor.ts',
-      'export function create(): Uint8Array { return new Uint8Array(3); }',
+      'export function empty(): Uint8Array { return new Uint8Array(); } export function create(): Uint8Array { return new Uint8Array(3); }',
     );
 
-    expect(emitIrModuleRust(result.module).contents).toContain('Vec<u8>::new(3.0)');
+    expect(emitIrModuleRust(result.module).contents).toContain('FlightUint8Array::empty()');
+    expect(emitIrModuleRust(result.module).contents).toContain('FlightUint8Array::from_source(3.0)');
+  });
+
+  it('refuses buffer-backed typed array construction until ArrayBuffer shares the runtime storage model', () => {
+    const result = lower(
+      'typed-array-buffer-constructor.ts',
+      'export function create(buffer: ArrayBuffer): Uint8Array { return new Uint8Array(buffer, 1); }',
+    );
+
+    expect(() => emitIrModuleRust(result.module)).toThrow(
+      'runtime external constructor ABI plan is incomplete (missing: Uint8Array[value](2))',
+    );
   });
 
   it('elects fixed array binding lowering and reports residual destructuring semantics', () => {

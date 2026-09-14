@@ -10,7 +10,7 @@ describe('createCompilerRuntimeExternalConstructorAbiPlanRust', () => {
     expect(plan.constructors).toContainEqual({
       dynamicArguments: false,
       externalSymbol: { sourceName: 'Uint8Array', space: 'value' },
-      fixedArgumentCounts: [0, 1, 2, 3],
+      fixedArgumentCounts: [0, 1],
     });
     expect(plan.constructors).toContainEqual({
       dynamicArguments: false,

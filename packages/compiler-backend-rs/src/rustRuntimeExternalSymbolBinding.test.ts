@@ -23,6 +23,18 @@ describe('createCompilerRuntimeExternalSymbolBindingPlanRust', () => {
         kind: 'runtime',
       },
     ]);
+    expect(plan.bindings.filter(({ externalSymbol }) => externalSymbol.sourceName === 'Uint8Array')).toEqual([
+      {
+        capability: 'uint8-array',
+        externalSymbol: { sourceName: 'Uint8Array', space: 'type' },
+        kind: 'runtime',
+      },
+      {
+        capability: 'uint8-array',
+        externalSymbol: { sourceName: 'Uint8Array', space: 'value' },
+        kind: 'runtime',
+      },
+    ]);
     expect(plan.bindings).toContainEqual({
       externalSymbol: { sourceName: 'Error', space: 'type' },
       kind: 'native',
@@ -110,16 +122,16 @@ describe('getCompilerRuntimeExternalSymbolTargetRust', () => {
     ['Date', 'value', 'FlightDate'],
     ['Error', 'type', 'Error'],
     ['Error', 'value', 'Error'],
-    ['Float32Array', 'type', 'Vec<f32>'],
-    ['Float32Array', 'value', 'Vec<f32>'],
-    ['Float64Array', 'type', 'Vec<f64>'],
-    ['Float64Array', 'value', 'Vec<f64>'],
-    ['Int16Array', 'type', 'Vec<i16>'],
-    ['Int16Array', 'value', 'Vec<i16>'],
-    ['Int32Array', 'type', 'Vec<i32>'],
-    ['Int32Array', 'value', 'Vec<i32>'],
-    ['Int8Array', 'type', 'Vec<i8>'],
-    ['Int8Array', 'value', 'Vec<i8>'],
+    ['Float32Array', 'type', 'FlightFloat32Array'],
+    ['Float32Array', 'value', 'FlightFloat32Array'],
+    ['Float64Array', 'type', 'FlightFloat64Array'],
+    ['Float64Array', 'value', 'FlightFloat64Array'],
+    ['Int16Array', 'type', 'FlightInt16Array'],
+    ['Int16Array', 'value', 'FlightInt16Array'],
+    ['Int32Array', 'type', 'FlightInt32Array'],
+    ['Int32Array', 'value', 'FlightInt32Array'],
+    ['Int8Array', 'type', 'FlightInt8Array'],
+    ['Int8Array', 'value', 'FlightInt8Array'],
     ['Map', 'type', 'std::collections::HashMap'],
     ['Map', 'value', 'std::collections::HashMap'],
     ['Promise', 'type', 'FlightTask'],
@@ -130,14 +142,14 @@ describe('getCompilerRuntimeExternalSymbolTargetRust', () => {
     ['Set', 'value', 'std::collections::HashSet'],
     ['String', 'type', 'String'],
     ['String', 'value', 'String'],
-    ['Uint16Array', 'type', 'Vec<u16>'],
-    ['Uint16Array', 'value', 'Vec<u16>'],
-    ['Uint32Array', 'type', 'Vec<u32>'],
-    ['Uint32Array', 'value', 'Vec<u32>'],
-    ['Uint8Array', 'type', 'Vec<u8>'],
-    ['Uint8Array', 'value', 'Vec<u8>'],
-    ['Uint8ClampedArray', 'type', 'Vec<u8>'],
-    ['Uint8ClampedArray', 'value', 'Vec<u8>'],
+    ['Uint16Array', 'type', 'FlightUint16Array'],
+    ['Uint16Array', 'value', 'FlightUint16Array'],
+    ['Uint32Array', 'type', 'FlightUint32Array'],
+    ['Uint32Array', 'value', 'FlightUint32Array'],
+    ['Uint8Array', 'type', 'FlightUint8Array'],
+    ['Uint8Array', 'value', 'FlightUint8Array'],
+    ['Uint8ClampedArray', 'type', 'FlightUint8ClampedArray'],
+    ['Uint8ClampedArray', 'value', 'FlightUint8ClampedArray'],
     ['WeakMap', 'type', 'std::collections::HashMap'],
     ['WeakMap', 'value', 'std::collections::HashMap'],
   ] as const)('maps %s in %s space to %s', (sourceName, space, targetName) => {
@@ -177,6 +189,7 @@ describe('isCompilerRuntimeExternalSymbolProvidedRust', () => {
     // `Promise` becomes a type the runtime provides and the module has to import; `Map` becomes
     // `std::collections::HashMap`, which is already in scope and must not be imported from it.
     expect(isCompilerRuntimeExternalSymbolProvidedRust('Promise', 'type')).toBe(true);
+    expect(isCompilerRuntimeExternalSymbolProvidedRust('Uint8Array', 'type')).toBe(true);
     expect(isCompilerRuntimeExternalSymbolProvidedRust('Map', 'type')).toBe(false);
     expect(isCompilerRuntimeExternalSymbolProvidedRust('NotASymbol', 'type')).toBe(false);
   });

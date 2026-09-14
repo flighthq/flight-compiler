@@ -1,1 +1,0 @@
-rust emission failed for @flighthq/golden/packages/golden/src/typedArraySemantics.ts: typedArray member subarray has no Rust binding

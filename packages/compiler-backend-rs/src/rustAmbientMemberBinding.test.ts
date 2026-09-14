@@ -110,7 +110,7 @@ describe('getCompilerRustAmbientMemberBinding', () => {
     });
   });
 
-  it('maps fixed-width typed-array reads and copies onto their Vec representation', () => {
+  it('maps typed-array reads, copies, and shared views onto their runtime representation', () => {
     expect(getCompilerRustAmbientMemberBinding({ name: 'length', receiver: 'typedArray' })).toEqual({
       kind: 'countingMethod',
       targetName: 'len',
@@ -119,7 +119,10 @@ describe('getCompilerRustAmbientMemberBinding', () => {
       kind: 'method',
       targetName: 'slice',
     });
-    expect(getCompilerRustAmbientMemberBinding({ name: 'subarray', receiver: 'typedArray' })).toBeUndefined();
+    expect(getCompilerRustAmbientMemberBinding({ name: 'subarray', receiver: 'typedArray' })).toEqual({
+      kind: 'method',
+      targetName: 'subarray',
+    });
   });
 
   it('answers nothing for a member with no agreed spelling, so emission refuses rather than guesses', () => {

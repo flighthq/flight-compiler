@@ -70,6 +70,7 @@ import type {
   IrFunctionDeclaration,
   IrIdentifierReference,
   IrImport,
+  IrIndexedReceiver,
   IrInterfaceDeclaration,
   IrModule,
   IrObjectMember,
@@ -825,6 +826,8 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
     case 'array':
       return `vec![${expression.elements.map((element) => (element ? emitOwnedOperandRust(element, context) : 'Default::default()')).join(', ')}]`;
     case 'assignment': {
+      const typedArrayAssignment = emitTypedArrayElementAssignmentRust(expression, context);
+      if (typedArrayAssignment) return typedArrayAssignment;
       if (
         expression.left.kind === 'identifier' &&
         expression.left.reference.kind === 'binding' &&
@@ -1060,6 +1063,17 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
       ) {
         return emitStringConcatenationRust(expression, context);
       }
+      if (
+        (expression.operator === '==' ||
+          expression.operator === '===' ||
+          expression.operator === '!=' ||
+          expression.operator === '!==') &&
+        isIrExpressionTypedArrayRust(expression.left, context) &&
+        isIrExpressionTypedArrayRust(expression.right, context)
+      ) {
+        const operator = expression.operator === '!=' || expression.operator === '!==' ? '!=' : '==';
+        return `(${emitExpression(expression.left, context)} ${operator} ${emitExpression(expression.right, context)})`;
+      }
       const typeofTest = getTypeofTypeTestRust(expression, context);
       if (typeofTest) {
         const operand = emitExpression(typeofTest.operand, context);
@@ -1113,12 +1127,42 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
         }
         return `${emitExpression(expression.callee.object, context)}.join(${emitBorrowedTextRust(separator, context)})`;
       }
-      // A slice of a collection is a range in Rust, and the source's own optional bounds decide which
-      // range. Copied back into an owned collection because the source's slice is a new array, not a
-      // view into the one it came from.
+      // Typed arrays use runtime views rather than Vec: slice copies storage, while subarray creates
+      // a distinct view sharing storage. Their bounds stay numeric until the runtime applies source
+      // relative-index rules (including negative and infinite bounds).
       if (
         expression.callee.kind === 'property' &&
-        (expression.callee.member?.receiver === 'array' || expression.callee.member?.receiver === 'typedArray') &&
+        expression.callee.member?.receiver === 'typedArray' &&
+        (expression.callee.member.name === 'slice' || expression.callee.member.name === 'subarray')
+      ) {
+        if (expression.arguments.length > 2) {
+          emissionError(context, `${expression.callee.member.name} on a typed array takes at most a start and an end`);
+        }
+        const receiver = emitExpression(expression.callee.object, context);
+        const method = expression.callee.member.name;
+        if (expression.arguments.length === 0) return `${receiver}.${method}(0.0)`;
+        const start = emitExpression(expression.arguments[0]!, context);
+        if (expression.arguments.length === 1) return `${receiver}.${method}(${start})`;
+        return `${receiver}.${method}_range(${start}, ${emitExpression(expression.arguments[1]!, context)})`;
+      }
+      if (expression.semantics.typedArraySet) {
+        assertOneIrTypedArrayReceiverRust(expression.semantics.typedArraySet.receivers, context);
+        if (
+          expression.callee.kind !== 'property' ||
+          expression.arguments.length < 1 ||
+          expression.arguments.length > 2
+        ) {
+          emissionError(context, 'setting a typed array requires a source and an optional offset');
+        }
+        const receiver = emitExpression(expression.callee.object, context);
+        const source = emitOwnedOperandRust(expression.arguments[0]!, context);
+        const offset = expression.arguments[1] ? emitExpression(expression.arguments[1], context) : '0.0';
+        return `${receiver}.copy_from(${source}, ${offset})`;
+      }
+      // An ordinary array slice is a Rust range copied back into an owned Vec.
+      if (
+        expression.callee.kind === 'property' &&
+        expression.callee.member?.receiver === 'array' &&
         expression.callee.member.name === 'slice'
       ) {
         const receiver = emitExpression(expression.callee.object, context);
@@ -1261,6 +1305,10 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
         const index = getElementAccessTupleIndexRust(expression, context);
         return `${emitExpression(expression.object, context)}.${String(index)}`;
       }
+      if (hasOnlyIrTypedArrayReceiversRust(expression.semantics.receivers)) {
+        assertOneIrTypedArrayReceiverRust(expression.semantics.receivers, context);
+        return `${emitExpression(expression.object, context)}.get_index(${emitNumericEnumOperandRust(expression.index, context)})`;
+      }
       // A written index is already a whole number; sending it through the neutral numeric type and
       // back is noise the source never asked for.
       return `${emitExpression(expression.object, context)}[${emitIndexOperandRust(expression.index, context)}]`;
@@ -1303,7 +1351,18 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
         emissionError(context, 'qualified constructors require Rust type-path lowering');
       }
       assertIrConstructorInvocationAbiRust(expression, context);
-      return `${emitConstructorReferenceRust(expression.callee.reference, context)}::new(${expression.arguments.map((argument) => emitOwnedOperandRust(argument, context)).join(', ')})`;
+      {
+        const constructor = emitConstructorReferenceRust(expression.callee.reference, context);
+        if (
+          expression.callee.reference.kind === 'ambient' &&
+          rustTypedArrayConstructorNames.has(expression.callee.reference.name)
+        ) {
+          const method = ['empty', 'from_source'][expression.arguments.length];
+          if (!method) emissionError(context, 'typed-array construction supports zero or one argument');
+          return `${constructor}::${method}(${expression.arguments.map((argument) => emitOwnedOperandRust(argument, context)).join(', ')})`;
+        }
+        return `${constructor}::new(${expression.arguments.map((argument) => emitOwnedOperandRust(argument, context)).join(', ')})`;
+      }
     case 'object':
       return emitObjectExpressionRust(expression, context);
     case 'objectRest':
@@ -1469,6 +1528,118 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
     case 'undefinedDefault':
       return `${emitExpression(expression.value, context)}.unwrap_or_else(|| ${emitExpression(expression.fallback, context)})`;
   }
+}
+
+function emitTypedArrayElementAssignmentRust(
+  expression: Readonly<Extract<IrExpression, { kind: 'assignment' }>>,
+  context: EmitContext,
+): string | undefined {
+  if (expression.left.kind !== 'element' || !hasOnlyIrTypedArrayReceiversRust(expression.left.semantics.receivers)) {
+    return undefined;
+  }
+  assertOneIrTypedArrayReceiverRust(expression.left.semantics.receivers, context);
+  if (
+    expression.semantics.right.flow !== 'number' ||
+    (expression.operator !== '=' && expression.semantics.left.flow !== 'number')
+  ) {
+    emissionError(context, `operator ${expression.operator} on a typed-array element requires numeric Rust lowering`);
+  }
+
+  const receiverName = getGeneratedTargetNameRust('typed_array', context);
+  const indexName = getGeneratedTargetNameRust('typed_index', context);
+  const valueName = getGeneratedTargetNameRust('typed_value', context);
+  const receiver = emitExpression(expression.left.object, context);
+  const index = emitNumericEnumOperandRust(expression.left.index, context);
+  if (expression.operator === '=') {
+    const right =
+      expression.semantics.right.flow === 'number'
+        ? emitNumericEnumOperandRust(expression.right, context)
+        : emitExpression(expression.right, context);
+    return `{ let ${receiverName} = &${receiver}; let ${indexName} = ${index}; let ${valueName} = ${right}; ${receiverName}.set_index(${indexName}, ${valueName}) }`;
+  }
+
+  const currentName = getGeneratedTargetNameRust('typed_current', context);
+  const rightName = getGeneratedTargetNameRust('typed_right', context);
+  const right = emitNumericEnumOperandRust(expression.right, context);
+  if (expression.operator === '||=' || expression.operator === '&&=') {
+    const assignCondition =
+      expression.operator === '||='
+        ? `${currentName} == 0.0 || ${currentName}.is_nan()`
+        : `${currentName} != 0.0 && !${currentName}.is_nan()`;
+    return `{ let ${receiverName} = &${receiver}; let ${indexName} = ${index}; let ${currentName} = ${receiverName}.get_index(${indexName}); if ${assignCondition} { let ${valueName} = ${right}; ${receiverName}.set_index(${indexName}, ${valueName}) } else { ${currentName} } }`;
+  }
+  if (expression.operator === '??=') {
+    emissionError(context, 'operator ??= on a typed-array element requires absent-index lowering');
+  }
+
+  let operation: string;
+  if (expression.operator === '**=') {
+    operation = `f64::powf(${currentName}, ${rightName})`;
+  } else if (expression.operator === '>>>=') {
+    operation = `(((((${currentName} as i32) as u32) >> (${rightName} as u32)) as f64))`;
+  } else if (
+    expression.operator === '&=' ||
+    expression.operator === '|=' ||
+    expression.operator === '^=' ||
+    expression.operator === '<<=' ||
+    expression.operator === '>>='
+  ) {
+    operation = `(((${currentName} as i32) ${expression.operator.slice(0, -1)} (${rightName} as i32)) as f64)`;
+  } else if (
+    expression.operator === '+=' ||
+    expression.operator === '-=' ||
+    expression.operator === '*=' ||
+    expression.operator === '/=' ||
+    expression.operator === '%='
+  ) {
+    operation = `${currentName} ${expression.operator.slice(0, -1)} ${rightName}`;
+  } else {
+    emissionError(context, `operator ${expression.operator} on a typed-array element requires Rust lowering`);
+  }
+  return `{ let ${receiverName} = &${receiver}; let ${indexName} = ${index}; let ${currentName} = ${receiverName}.get_index(${indexName}); let ${rightName} = ${right}; let ${valueName} = ${operation}; ${receiverName}.set_index(${indexName}, ${valueName}) }`;
+}
+
+function hasOnlyIrTypedArrayReceiversRust(receivers: readonly IrIndexedReceiver[]): boolean {
+  return receivers.every((receiver) => rustTypedArrayReceiverNames.has(receiver));
+}
+
+function assertOneIrTypedArrayReceiverRust(receivers: readonly IrIndexedReceiver[], context: EmitContext): void {
+  if (receivers.length !== 1) {
+    emissionError(context, 'mixed typed-array receivers require Rust representation-union lowering');
+  }
+}
+
+function isIrExpressionTypedArrayRust(expression: Readonly<IrExpression>, context: EmitContext): boolean {
+  let type: Readonly<IrType> | undefined;
+  if (expression.kind === 'identifier' && expression.reference.kind === 'binding') {
+    type = context.bindingTypes.get(expression.reference.binding.id);
+  } else if (expression.kind === 'call') {
+    if (
+      expression.callee.kind === 'property' &&
+      expression.callee.member?.receiver === 'typedArray' &&
+      (expression.callee.member.name === 'slice' || expression.callee.member.name === 'subarray')
+    ) {
+      return true;
+    }
+    type = expression.semantics.resultType;
+  } else if (expression.kind === 'cast') {
+    type = expression.type;
+  } else if (
+    expression.kind === 'new' &&
+    expression.callee.kind === 'identifier' &&
+    expression.callee.reference.kind === 'ambient'
+  ) {
+    return rustTypedArrayConstructorNames.has(expression.callee.reference.name);
+  }
+  return isIrTypeTypedArrayRust(type);
+}
+
+function isIrTypeTypedArrayRust(type: Readonly<IrType> | undefined): boolean {
+  return (
+    type?.kind === 'named' &&
+    type.reference.kind === 'ambient' &&
+    rustTypedArrayConstructorNames.has(type.reference.name)
+  );
 }
 
 // `Promise<T>` in the return position of an `async fn` is the future Rust already builds, so the
@@ -1771,7 +1942,9 @@ function emitIdentifierReferenceRust(reference: Readonly<IrIdentifierReference>,
 function emitLiteral(value: boolean | null | number | string): string {
   if (typeof value === 'string') return `${JSON.stringify(value)}.to_owned()`;
   if (value === null) return 'None';
-  if (typeof value === 'number' && Number.isInteger(value)) return `${String(value)}.0`;
+  if (typeof value === 'number' && Number.isInteger(value) && !/[eE]/u.test(String(value))) {
+    return `${String(value)}.0`;
+  }
   return String(value);
 }
 
@@ -3553,7 +3726,9 @@ function emitVariable(variable: Readonly<IrVariable>, context: EmitContext): str
       const wrapped = emitPrimitiveUnionConstructionRust(variable.initializer, targetEnum, context);
       if (wrapped) {
         const deferred = !variable.initializer && context.deferredBindingIds.has(variable.binding.id);
-        const mutable = (variable.mutable && !deferred) || context.referentMutatedBindingIds.has(variable.binding.id);
+        const mutable =
+          (variable.mutable && !deferred) ||
+          (context.referentMutatedBindingIds.has(variable.binding.id) && !isIrTypeTypedArrayRust(variable.type));
         return `let ${mutable ? 'mut ' : ''}${getBindingTargetNameRust(variable.binding, context)}: ${emitType(variable.type, context)} = ${wrapped};`;
       }
     }
@@ -3580,7 +3755,9 @@ function emitVariable(variable: Readonly<IrVariable>, context: EmitContext): str
   const deferred = !variable.initializer && context.deferredBindingIds.has(variable.binding.id);
   // Rust asks for `mut` to reach a value's own fields through a method, where the source language
   // only asks for it to rebind the name. A `const` the source mutates through is still `mut` here.
-  const mutable = (variable.mutable && !deferred) || context.referentMutatedBindingIds.has(variable.binding.id);
+  const mutable =
+    (variable.mutable && !deferred) ||
+    (context.referentMutatedBindingIds.has(variable.binding.id) && !isIrTypeTypedArrayRust(variable.type));
   return `let ${mutable ? 'mut ' : ''}${getBindingTargetNameRust(variable.binding, context)}${type}${initializer};`;
 }
 
@@ -4731,6 +4908,30 @@ function snakeCase(value: string): string {
     .replace(/[-\s]+/gu, '_')
     .toLowerCase();
 }
+
+const rustTypedArrayConstructorNames = new Set([
+  'Float32Array',
+  'Float64Array',
+  'Int8Array',
+  'Int16Array',
+  'Int32Array',
+  'Uint8Array',
+  'Uint8ClampedArray',
+  'Uint16Array',
+  'Uint32Array',
+]);
+
+const rustTypedArrayReceiverNames = new Set<IrIndexedReceiver>([
+  'float32Array',
+  'float64Array',
+  'int8Array',
+  'int16Array',
+  'int32Array',
+  'uint8Array',
+  'uint8ClampedArray',
+  'uint16Array',
+  'uint32Array',
+]);
 
 const rustAssignmentOperatorEmission = {
   '%=': '%=',

@@ -71,5 +71,6 @@ const rustAmbientMemberBindings: Readonly<Record<string, CompilerRustAmbientMemb
   'string.trim': { kind: 'method', owns: true, targetName: 'trim' },
   'typedArray.length': { kind: 'countingMethod', targetName: 'len' },
   'typedArray.slice': { kind: 'method', targetName: 'slice' },
+  'typedArray.subarray': { kind: 'method', targetName: 'subarray' },
   'tuple.length': { kind: 'countingMethod', targetName: 'len' },
 };
