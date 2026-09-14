@@ -5592,7 +5592,10 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     }).contents;
 
     expect(output).toContain('std::optional<flight::Array<double>> value');
-    expect(output).toContain('value = static_cast<flight::Ref<color_matrix>>(operation)->color_matrix;');
+    expect(output).toMatch(
+      /value = static_cast<flight::Ref<color_matrix_[0-9a-f]+>>\(operation\)->color_matrix;/u,
+    );
+    expect(output).toContain('value.value().size()');
     expect(output).not.toContain('value = std::optional<flight::Array<double>>{static_cast');
   });
 

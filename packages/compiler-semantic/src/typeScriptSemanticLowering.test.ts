@@ -12967,6 +12967,33 @@ it('resolves narrowed presence for union type with absent member', () => {
   expect(result.diagnostics).toEqual([]);
 });
 
+it('records array predicate presence without relying on the ambient library declaration', () => {
+  const result = lower(
+    'array-predicate-presence.ts',
+    `export function select(value: readonly number[] | undefined): readonly number[] | null {
+       return Array.isArray(value) && value.length === 2 ? value : null;
+     }`,
+  );
+  const declaration = result.module.declarations[0];
+  if (declaration?.kind !== 'function') throw new Error('Expected function declaration');
+  const returned = declaration.body[0];
+  if (returned?.kind !== 'return' || returned.expression?.kind !== 'conditional') {
+    throw new Error('Expected conditional return');
+  }
+  const conjunction = returned.expression.condition;
+  if (conjunction.kind !== 'binary' || conjunction.right.kind !== 'binary') {
+    throw new Error('Expected conjunction');
+  }
+  const length = conjunction.right.left;
+  if (length.kind !== 'property' || length.object.kind !== 'identifier') {
+    throw new Error('Expected array length');
+  }
+
+  expect(length.member).toEqual({ name: 'length', receiver: 'array' });
+  expect(length.object.presence).toBe('narrowedPresent');
+  expect(returned.expression.whenTrue).toMatchObject({ kind: 'identifier', presence: 'narrowedPresent' });
+});
+
 it('resolves object construction target from type alias resolution', () => {
   const result = lower(
     'construction-target-alias.ts',

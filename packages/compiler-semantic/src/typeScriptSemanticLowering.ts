@@ -5889,7 +5889,28 @@ function hasTypeScriptSyntacticReferencePresence(
   const absentKinds = getIrTypeAbsentKindsSemantic(recordedType);
   if (absentKinds.size === 0) return false;
   for (let child: ts.Node = node, parent = node.parent; parent; child = parent, parent = parent.parent) {
+    if (
+      ts.isBinaryExpression(parent) &&
+      parent.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken &&
+      isTypeScriptNodeWithin(child, parent.right) &&
+      hasTypeScriptPositiveArrayPredicate(parent.left, symbol, recordedType, context)
+    ) {
+      return true;
+    }
+    if (
+      ts.isConditionalExpression(parent) &&
+      isTypeScriptNodeWithin(child, parent.whenTrue) &&
+      hasTypeScriptPositiveArrayPredicate(parent.condition, symbol, recordedType, context)
+    ) {
+      return true;
+    }
     if (ts.isIfStatement(parent)) {
+      if (
+        isTypeScriptNodeWithin(child, parent.thenStatement) &&
+        hasTypeScriptPositiveArrayPredicate(parent.expression, symbol, recordedType, context)
+      ) {
+        return true;
+      }
       const branch = getTypeScriptNullishComparisonPresence(parent.expression, symbol, absentKinds, context);
       if (branch && isTypeScriptNodeWithin(child, parent.thenStatement) && branch.whenTrue) return true;
       if (branch && parent.elseStatement && isTypeScriptNodeWithin(child, parent.elseStatement) && branch.whenFalse) {
@@ -5911,6 +5932,37 @@ function hasTypeScriptSyntacticReferencePresence(
     if (ts.isFunctionLike(parent)) break;
   }
   return false;
+}
+
+function hasTypeScriptPositiveArrayPredicate(
+  expression: ts.Expression,
+  symbol: ts.Symbol,
+  recordedType: Readonly<IrType> | undefined,
+  context: LoweringContext,
+): boolean {
+  while (ts.isParenthesizedExpression(expression)) expression = expression.expression;
+  if (ts.isBinaryExpression(expression) && expression.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken) {
+    return (
+      hasTypeScriptPositiveArrayPredicate(expression.left, symbol, recordedType, context) ||
+      hasTypeScriptPositiveArrayPredicate(expression.right, symbol, recordedType, context)
+    );
+  }
+  const presentType = recordedType ? removeIrTypeAbsentMembersSemantic(recordedType) : undefined;
+  if (
+    !presentType ||
+    (presentType.kind !== 'array' && presentType.kind !== 'tuple') ||
+    !ts.isCallExpression(expression) ||
+    expression.arguments.length !== 1 ||
+    !ts.isIdentifier(expression.arguments[0]!) ||
+    context.checker.getSymbolAtLocation(expression.arguments[0]!) !== symbol ||
+    !ts.isPropertyAccessExpression(expression.expression) ||
+    expression.expression.name.text !== 'isArray' ||
+    !ts.isIdentifier(expression.expression.expression)
+  ) {
+    return false;
+  }
+  const receiver = lowerIdentifierReference(expression.expression.expression, context);
+  return receiver.kind === 'ambient' && receiver.name === 'Array';
 }
 
 function getTypeScriptPriorPresentAssignment(
@@ -6127,6 +6179,13 @@ function getIrResolvedMemberReceiverFromNarrowedFlow(
   context: LoweringContext,
 ): IrResolvedMemberReceiver | undefined {
   if (!ts.isIdentifier(expression)) return undefined;
+  const symbol = context.checker.getSymbolAtLocation(expression);
+  const recorded = symbol ? context.bindingTypes.get(symbol) : undefined;
+  if (symbol && recorded && hasTypeScriptSyntacticReferencePresence(expression, symbol, recorded, context)) {
+    const present = removeIrTypeAbsentMembersSemantic(recorded);
+    const receiver = getIrResolvedMemberReceiver(present);
+    if (receiver) return receiver;
+  }
   const flow = context.checker.getTypeAtLocation(expression);
   if (flow.isUnion()) return undefined;
   const name = getTypeScriptPrimitiveTypeName(flow);
