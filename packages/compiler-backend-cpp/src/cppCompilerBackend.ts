@@ -1245,7 +1245,17 @@ function emitExpression(
           getIrExpressionBindingTypeCpp(expression.left, context) ??
           getIrExpressionTypeEvidenceCpp(expression.left, context);
         const union = leftType ? getIrUnionTypeCpp(leftType, context, new Set()) : undefined;
-        if (leftType && !union && leftType.kind !== 'null' && leftType.kind !== 'undefined') {
+        const leftUsesOptionalStorage =
+          expression.left.kind === 'identifier' &&
+          expression.left.reference.kind === 'binding' &&
+          context.nullableBindingIds.has(expression.left.reference.binding.id);
+        if (
+          leftType &&
+          !union &&
+          !leftUsesOptionalStorage &&
+          leftType.kind !== 'null' &&
+          leftType.kind !== 'undefined'
+        ) {
           return emitExpression(expression.left, context, leftType);
         }
         if (union && getCppUnionRepresentationPlan(union, context).kind === 'dualSentinelVariant') {
@@ -2942,6 +2952,8 @@ function emitType(type: Readonly<IrType>, context: EmitContext, representation: 
   }
   const rebound = getCppEquivalentImportedTypeCpp(type, context);
   if (rebound) return emitType(rebound, context, representation);
+  const importedScalarAlias = getCppImportedScalarAliasTypeCpp(type, context);
+  if (importedScalarAlias) return emitType(importedScalarAlias, context, representation);
   const callableTypeParameter =
     getCppRuntimeProfile(context.options) === 'flight-cpp' ? getCppCallableTypeParameterCpp(type, context) : undefined;
   if (callableTypeParameter) return callableTypeParameter;
@@ -3117,11 +3129,16 @@ function emitType(type: Readonly<IrType>, context: EmitContext, representation: 
           ? assertWeakMapTypeArgumentsCpp(type.typeArguments, context)
           : undefined;
       const mapped = getTypeReferenceTargetName(type, context);
-      const arguments_ = type.typeArguments.map((argument, index) =>
-        weakMapTypeArgumentPlan?.valueRepresentation === 'erased' && index === 1
-          ? 'flight::ErasedValue'
-          : emitType(argument, context),
-      );
+      const arguments_ =
+        sourceName &&
+        getCppRuntimeProfile(context.options) === 'flight-cpp' &&
+        isCppConcreteTypedArraySourceName(sourceName)
+          ? []
+          : type.typeArguments.map((argument, index) =>
+              weakMapTypeArgumentPlan?.valueRepresentation === 'erased' && index === 1
+                ? 'flight::ErasedValue'
+                : emitType(argument, context),
+            );
       if (weakMapTypeArgumentPlan?.weakKeyPolicyTargetName) {
         arguments_.push(weakMapTypeArgumentPlan.weakKeyPolicyTargetName);
       }
@@ -7225,7 +7242,7 @@ function emitReexportsCpp(module: Readonly<IrModule>, context: EmitContext): str
     if (exported.kind !== 'reexport') return [];
     const targetModule = getCppResolvedImportModule(exported.specifier, context);
     const targetName = targetModule
-      ? getCppResolvedExportTargetName(targetModule, exported.imported)
+      ? getCppResolvedExportTargetName(targetModule, exported.imported, exported.typeOnly ? 'type' : 'value')
       : pascalCase(exported.imported);
     const qualified =
       targetModule && targetModule.packageName !== module.packageName
@@ -7408,7 +7425,7 @@ function emitIdentifierReference(
       declaration.kind === 'function' && declaration.namespaceMember && declaration.binding.id === reference.binding.id,
   );
   if (namespaceFunction?.kind === 'function') return safeCppName(namespaceFunction.binding.name);
-  const imported = getCppImportedBindingTargetName(reference.binding.id, [], context);
+  const imported = getCppImportedBindingTargetName(reference.binding.id, [], 'value', context);
   if (imported) return imported;
   return emitBindingValueCpp(reference.binding, context);
 }
@@ -7715,7 +7732,7 @@ function getTypeReferenceTargetName(type: Readonly<IrType & { kind: 'named' }>, 
     if (target) return target;
     return type.reference.name;
   }
-  const imported = getCppImportedBindingTargetName(type.reference.binding.id, type.reference.path, context);
+  const imported = getCppImportedBindingTargetName(type.reference.binding.id, type.reference.path, 'type', context);
   if (imported) return imported;
   const foreignImported = getCppForeignImportedBindingTargetNameCpp(type, context);
   if (foreignImported) return foreignImported;
@@ -7788,7 +7805,7 @@ function getCppForeignImportedBindingTargetNameCpp(
       ? directTargets[0]!
       : context.referenceRepresentationPlanner.resolveModule(owner.specifier, owner.module);
   if (!targetModule) return undefined;
-  const targetName = getCppResolvedExportTargetName(targetModule, importedName);
+  const targetName = getCppResolvedExportTargetName(targetModule, importedName, 'type');
   return `${getCppCompilerPackageNamespace(targetModule.packageName, context.options.packageTargets)}::${targetName}`;
 }
 
@@ -7812,9 +7829,18 @@ function getCppEquivalentImportedTypeCpp(type: Readonly<IrType>, context: EmitCo
   };
 }
 
+function getCppImportedScalarAliasTypeCpp(type: Readonly<IrType>, context: EmitContext): Readonly<IrType> | undefined {
+  if (type.kind !== 'named' || type.reference.kind !== 'binding' || type.reference.binding.kind !== 'import') {
+    return undefined;
+  }
+  const alias = resolveCppTypeAliasTarget(type, context);
+  return alias?.kind === 'literal' || alias?.kind === 'primitive' ? alias : undefined;
+}
+
 function getCppImportedBindingTargetName(
   bindingId: string,
   referencePath: readonly string[],
+  space: 'type' | 'value',
   context: EmitContext,
 ): string | undefined {
   for (const importItem of context.module.imports) {
@@ -7832,7 +7858,7 @@ function getCppImportedBindingTargetName(
     if (!targetModule) {
       emissionError(context, `imported binding ${importedName} requires one module export target`);
     }
-    const targetName = getCppResolvedExportTargetName(targetModule, importedName);
+    const targetName = getCppResolvedExportTargetName(targetModule, importedName, space);
     return `${getCppCompilerPackageNamespace(targetModule.packageName, context.options.packageTargets)}::${targetName}`;
   }
   return undefined;
@@ -7866,23 +7892,55 @@ function getCppNamespaceImportMemberTargetNameCpp(
     if (!targetModule) {
       emissionError(context, `namespace import ${importedBinding.binding.name} requires module resolution`);
     }
-    const targetName = getCppResolvedExportTargetName(targetModule, expression.name);
+    const targetName = getCppResolvedExportTargetName(targetModule, expression.name, 'value');
     const namespaceName = getCppCompilerPackageNamespace(targetModule.packageName, context.options.packageTargets);
     return `${namespaceName}::${targetName}`;
   }
   return undefined;
 }
 
-function getCppResolvedExportTargetName(module: Readonly<IrModule>, exportedName: string): string {
+function getCppResolvedExportTargetName(
+  module: Readonly<IrModule>,
+  exportedName: string,
+  space: 'type' | 'value',
+): string {
   const directBindingId = module.declarations.flatMap((declaration) =>
-    'binding' in declaration && declaration.exported && declaration.binding.name === exportedName
+    'binding' in declaration &&
+    declaration.exported &&
+    declaration.binding.name === exportedName &&
+    (space === 'type'
+      ? declaration.kind === 'class' ||
+        declaration.kind === 'enum' ||
+        declaration.kind === 'interface' ||
+        declaration.kind === 'typeAlias'
+      : declaration.kind === 'class' ||
+        declaration.kind === 'enum' ||
+        declaration.kind === 'function' ||
+        declaration.kind === 'variable')
       ? [declaration.binding.id]
       : [],
   )[0];
-  const local = module.exports.find((exported) => exported.kind === 'local' && exported.exported === exportedName);
+  const local = module.exports.find(
+    (exported) =>
+      exported.kind === 'local' &&
+      exported.exported === exportedName &&
+      (space === 'value'
+        ? !exported.typeOnly
+        : exported.typeOnly ||
+          module.declarations.some(
+            (declaration) =>
+              'binding' in declaration &&
+              declaration.binding.id === exported.binding.id &&
+              (declaration.kind === 'class' || declaration.kind === 'enum'),
+          )),
+  );
   const bindingId = directBindingId ?? (local?.kind === 'local' ? local.binding.id : undefined);
   if (!bindingId) return pascalCase(exportedName);
   return createCppTargetNameMap(module).get(bindingId) ?? pascalCase(exportedName);
+}
+
+function isCppConcreteTypedArraySourceName(sourceName: string): boolean {
+  return /^(?:Float32|Float64|Int16|Int32|Int8|Uint16|Uint32|Uint8|Uint8Clamped)Array$/u.test(sourceName);
 }
 
 function getBindingTargetName(binding: Readonly<{ id: string; name: string }>, context: EmitContext): string {

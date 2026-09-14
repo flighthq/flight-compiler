@@ -114,6 +114,74 @@ describe('createCppCompilerBackend', () => {
     expect(emitted).not.toContain('flight::Ref<flighthq_types::');
   });
 
+  it('inlines imported scalar aliases when type and value exports share a source name', () => {
+    const vocabulary = lowerPackage(
+      '@flighthq/types',
+      'mode.ts',
+      `export const Mode = { Normal: 'Normal' } as const;
+       export type Mode = string;
+       export type ObjectId = number;`,
+    ).module;
+    const consumer = lowerPackage(
+      '@flighthq/render',
+      'material.ts',
+      `import type { Mode, ObjectId } from '@flighthq/types/mode';
+       export interface Material { mode: Mode; id: ObjectId; }`,
+    ).module;
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          importer: consumer,
+          specifier: '@flighthq/types/mode',
+          target: { packageName: vocabulary.packageName, source: vocabulary.source },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const emitted = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules: [consumer, vocabulary],
+      options: { runtimeProfile: 'flight-cpp' },
+    }).emitModule(consumer)[0]!.contents;
+
+    expect(emitted).toContain('flight::String mode;');
+    expect(emitted).toContain('double id;');
+    expect(emitted).not.toContain('flight::Ref<flight::types::mode>');
+  });
+
+  it('uses value-space target names for imported functions and constants', () => {
+    const library = lowerPackage(
+      '@flighthq/library',
+      'values.ts',
+      'export const DEFAULT_COUNT = 2; export function makeCount(): number { return DEFAULT_COUNT; }',
+    ).module;
+    const consumer = lowerPackage(
+      '@flighthq/consumer',
+      'consumer.ts',
+      "import { DEFAULT_COUNT, makeCount } from '@flighthq/library'; export function read(): number { return makeCount() + DEFAULT_COUNT; }",
+    ).module;
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          importer: consumer,
+          specifier: '@flighthq/library',
+          target: { packageName: library.packageName, source: library.source },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const emitted = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules: [consumer, library],
+      options: { runtimeProfile: 'flight-cpp' },
+    }).emitModule(consumer)[0]!.contents;
+
+    expect(emitted).toContain('flighthq_library::make_count()');
+    expect(emitted).toContain('flighthq_library::default_count');
+    expect(emitted).not.toContain('flighthq_library::MakeCount');
+    expect(emitted).not.toContain('flighthq_library::DEFAULTCOUNT');
+  });
+
   it('lowers for-of destructuring through an imported tuple element alias', () => {
     const rows = ts.createSourceFile(
       '/flight/packages/model/src/rows.ts',
@@ -2913,6 +2981,21 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(emitted.contents).toContain('flight::parse_float(value)');
     expect(emitted.contents).toContain('flight::is_safe_integer(value)');
     expect(emitted.contents).toContain('#include <flight/number.hpp>');
+  });
+
+  it('erases TypeScript backing-store arguments from concrete flight-cpp typed arrays', () => {
+    const result = lower(
+      'typed-array-backing.ts',
+      `export interface Buffers {
+         bytes: Uint8Array<ArrayBuffer>;
+         pixels: Uint8ClampedArray<ArrayBuffer>;
+       }`,
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+
+    expect(emitted.contents).toContain('flight::Uint8Array bytes;');
+    expect(emitted.contents).toContain('flight::Uint8ClampedArray pixels;');
+    expect(emitted.contents).not.toContain('Array<flight::ArrayBuffer>');
   });
 
   it('projects narrowed alternatives from an optional C++ variant', () => {
