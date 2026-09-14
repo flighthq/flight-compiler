@@ -122,9 +122,11 @@ const haxeAmbientMemberBindings: Readonly<Record<string, CompilerHaxeAmbientMemb
   'string.lastIndexOf': { intArguments: [1], kind: 'method', targetName: 'lastIndexOf' },
   'string.length': { kind: 'property', targetName: 'length' },
   'string.match': { kind: 'runtimeCall', targetName: '_StringTools.match' },
+  'string.localeCompare': { kind: 'runtimeCall', targetName: '_StringTools.localeCompare' },
   'string.padStart': { kind: 'runtimeCall', targetName: '_StringTools.padStart' },
   'string.padEnd': { kind: 'runtimeCall', targetName: '_StringTools.padEnd' },
   'string.replace': { kind: 'runtimeCall', targetName: '_StringTools.replaceFirst' },
+  'string.replaceAll': { kind: 'staticCall', targetPath: 'StringTools.replace' },
   'string.repeat': { kind: 'runtimeCall', targetName: '_StringTools.repeat' },
   'string.search': { kind: 'runtimeCall', targetName: '_StringTools.search' },
   'string.slice': { kind: 'runtimeCall', targetName: '_StringTools.slice' },
@@ -151,4 +153,6 @@ const haxeAmbientMemberBindings: Readonly<Record<string, CompilerHaxeAmbientMemb
   'typedArray.subarray': { kind: 'method', targetName: 'subarray' },
   'tuple.every': { kind: 'staticCall', targetPath: 'Lambda.foreach' },
   'tuple.length': { kind: 'property', targetName: 'length' },
+  'tuple.map': { kind: 'method', targetName: 'map' },
+  'tuple.slice': { kind: 'method', targetName: 'slice' },
 };

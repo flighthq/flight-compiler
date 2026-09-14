@@ -3935,6 +3935,60 @@ describe('lowerTypeScriptSource', () => {
     });
   });
 
+  it('keeps contextual host member symbols structural instead of inventing ambient types', () => {
+    const sourceFile = ts.createSourceFile(
+      '/flight/packages/math/src/project-proxy.ts',
+      `export function wrap(target: Record<PropertyKey, unknown>): object {
+        return new Proxy(target, {
+          get(source, key) { return source[key]; },
+          set(source, key, value) { source[key] = value; return true; }
+        });
+      }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const [result] = lowerTypeScriptSources([
+      { packageName: '@flighthq/math', sourceFile, upstreamDirectory: '/flight' },
+    ]);
+    const ambientTypes: string[] = [];
+    if (result) {
+      analyzeIrModuleTraversal(result.module, {
+        type(type) {
+          if (type.kind === 'named' && type.reference.kind === 'ambient') ambientTypes.push(type.reference.name);
+        },
+      });
+    }
+
+    expect(result?.diagnostics).toEqual([]);
+    expect(ambientTypes).not.toContain('get');
+    expect(ambientTypes).not.toContain('set');
+  });
+
+  it('treats module declare values as external host bindings rather than uninitialized storage', () => {
+    const result = lower(
+      'declared-host.ts',
+      `declare const HostConstructor: unknown;
+      export function read(): unknown {
+        return typeof HostConstructor === 'undefined' ? null : HostConstructor;
+      }`,
+    );
+    const read = result.module.declarations.find(
+      (candidate) => candidate.kind === 'function' && candidate.binding.name === 'read',
+    );
+    const hostReferences: string[] = [];
+    analyzeIrModuleTraversal(result.module, {
+      expression(expression) {
+        if (expression.kind === 'identifier' && expression.reference.kind === 'ambient') {
+          hostReferences.push(expression.reference.name);
+        }
+      },
+    });
+
+    expect(result.diagnostics).toEqual([]);
+    expect(result.module.declarations).toEqual([read]);
+    expect(hostReferences).toContain('HostConstructor');
+  });
+
   it('uses the caller type parameter for a generic call iterated by for-of', () => {
     const result = lower(
       'generic-call-iterable.ts',
@@ -5178,13 +5232,20 @@ describe('lowerTypeScriptSource', () => {
          if (value === undefined) { return fallback; }
          return value;
        }
-       export function passthrough(value: number | undefined): number | undefined { return value; }`,
+       export function passthrough(value: number | undefined): number | undefined { return value; }
+       export function assigned(value: number | undefined): number {
+         value = 1;
+         return value;
+       }`,
     );
     const widen = result.module.declarations.find(
       (declaration) => declaration.kind === 'function' && declaration.binding.name === 'widen',
     );
     const passthrough = result.module.declarations.find(
       (declaration) => declaration.kind === 'function' && declaration.binding.name === 'passthrough',
+    );
+    const assigned = result.module.declarations.find(
+      (declaration) => declaration.kind === 'function' && declaration.binding.name === 'assigned',
     );
     const narrowedReturn = widen?.kind === 'function' ? widen.body[1] : undefined;
     const openReturn = passthrough?.kind === 'function' ? passthrough.body[0] : undefined;
@@ -5194,6 +5255,10 @@ describe('lowerTypeScriptSource', () => {
     // Nothing narrowed this one, so it carries no proof and a target must keep treating it as absent.
     expect(openReturn?.kind === 'return' ? openReturn.expression : undefined).not.toMatchObject({
       presence: 'narrowedPresent',
+    });
+    expect(assigned?.kind === 'function' ? assigned.body[1] : undefined).toMatchObject({
+      expression: { presence: 'narrowedPresent' },
+      kind: 'return',
     });
   });
   it('uses checker flow evidence when destructuring a narrowed tuple', () => {

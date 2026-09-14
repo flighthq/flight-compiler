@@ -258,7 +258,12 @@ function lowerTypeScriptSourceWithAnalysis(
         );
         pendingOverloads.delete(name);
       } else if (ts.isVariableStatement(statement)) {
-        if (isErasableTypeScriptUniqueSymbolDeclaration(statement)) continue;
+        if (
+          isErasableTypeScriptUniqueSymbolDeclaration(statement) ||
+          hasModifier(statement, ts.SyntaxKind.DeclareKeyword)
+        ) {
+          continue;
+        }
         const lowered = lowerVariableStatement(statement, context);
         declarations.push(...lowered);
         exports.push(...lowered.flatMap((declaration) => createTypeScriptDeclarationExports(declaration, false)));
@@ -5829,8 +5834,17 @@ function getTypeScriptReferencePresence(
 ): { presence?: 'narrowedPresent' } {
   if (reference.kind !== 'binding') return {};
   const symbol = context.checker.getSymbolAtLocation(node);
-  const declared = symbol ? context.bindingTypes.get(symbol) : undefined;
-  if (!declared || !hasIrTypeAbsentMemberSemantic(declared)) return {};
+  const declaration = symbol?.valueDeclaration ?? symbol?.declarations?.[0];
+  if (!symbol || !declaration) return {};
+  const declared = context.checker.getTypeOfSymbolAtLocation(symbol, declaration);
+  const declaredMembers = declared.isUnion() ? declared.types : [declared];
+  if (
+    !declaredMembers.some(
+      (member) => (member.flags & (ts.TypeFlags.Undefined | ts.TypeFlags.Null | ts.TypeFlags.Void)) !== 0,
+    )
+  ) {
+    return {};
+  }
   const flow = context.checker.getTypeAtLocation(node);
   const members = flow.isUnion() ? flow.types : [flow];
   const absent = members.some(
@@ -6196,7 +6210,21 @@ function getTypeScriptCheckerNamedTypeEvidence(
   const symbol = type.aliasSymbol ?? type.getSymbol();
   // TypeScript gives anonymous call/object types implementation-detail symbol names. They must
   // continue to structural lowering rather than escape as runtime ambient dependencies.
-  if (!symbol || symbol.name === '__type' || symbol.name === '__object') return undefined;
+  if (
+    !symbol ||
+    symbol.name === '__type' ||
+    symbol.name === '__object' ||
+    Boolean(symbol.flags & ts.SymbolFlags.TypeParameter) ||
+    symbol.declarations?.some(
+      (declaration) =>
+        ts.isMethodSignature(declaration) ||
+        ts.isMethodDeclaration(declaration) ||
+        ts.isPropertySignature(declaration) ||
+        ts.isPropertyDeclaration(declaration),
+    )
+  ) {
+    return undefined;
+  }
   const binding = getTypeScriptCheckerTypeBinding(symbol, context);
   const ambient = isTypeScriptAmbientSymbol(symbol, context);
   if (!binding && !ambient) return undefined;
@@ -6739,8 +6767,19 @@ function isTypeScriptAmbientSymbol(symbol: ts.Symbol | undefined, context: Lower
   return (
     declarations !== undefined &&
     declarations.length > 0 &&
-    declarations.every((declaration) => !context.analysisModuleOptions.has(declaration.getSourceFile().fileName))
+    declarations.every(
+      (declaration) =>
+        !context.analysisModuleOptions.has(declaration.getSourceFile().fileName) ||
+        isTypeScriptDeclareDeclaration(declaration),
+    )
   );
+}
+
+function isTypeScriptDeclareDeclaration(declaration: ts.Declaration): boolean {
+  for (let node: ts.Node | undefined = declaration; node && !ts.isSourceFile(node); node = node.parent) {
+    if (hasModifier(node, ts.SyntaxKind.DeclareKeyword)) return true;
+  }
+  return false;
 }
 
 function addTypeScriptBindingTypeEvidence(node: ts.Identifier, type: Readonly<IrType>, context: LoweringContext): void {

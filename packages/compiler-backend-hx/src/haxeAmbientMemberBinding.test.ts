@@ -84,6 +84,14 @@ describe('getCompilerHaxeAmbientMemberBinding', () => {
       kind: 'staticCall',
       targetPath: 'Lambda.foreach',
     });
+    expect(getCompilerHaxeAmbientMemberBinding({ name: 'map', receiver: 'tuple' })).toEqual({
+      kind: 'method',
+      targetName: 'map',
+    });
+    expect(getCompilerHaxeAmbientMemberBinding({ name: 'slice', receiver: 'tuple' })).toEqual({
+      kind: 'method',
+      targetName: 'slice',
+    });
   });
 
   it('marks index arguments for Int coercion on methods that take Haxe Int', () => {
@@ -167,6 +175,14 @@ describe('getCompilerHaxeAmbientMemberBinding', () => {
     expect(getCompilerHaxeAmbientMemberBinding({ name: 'trimEnd', receiver: 'string' })).toEqual({
       kind: 'runtimeCall',
       targetName: '_StringTools.trimEnd',
+    });
+    expect(getCompilerHaxeAmbientMemberBinding({ name: 'replaceAll', receiver: 'string' })).toEqual({
+      kind: 'staticCall',
+      targetPath: 'StringTools.replace',
+    });
+    expect(getCompilerHaxeAmbientMemberBinding({ name: 'localeCompare', receiver: 'string' })).toEqual({
+      kind: 'runtimeCall',
+      targetName: '_StringTools.localeCompare',
     });
   });
 

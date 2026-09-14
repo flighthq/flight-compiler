@@ -530,12 +530,30 @@ describe('emitIrModuleHaxe', () => {
     expect(output).toContain('return { value: { label: "flight" } };');
   });
 
-  it('refuses optional nullable parameters until Haxe preserves distinct null and undefined sentinels', () => {
+  it('preserves optional nullable parameters for JavaScript strict absence checks', () => {
     const result = lower('optional-nullable.ts', 'export function choose(value?: number | null): void { value; }');
 
-    expect(() => emitIrModuleHaxe(result.module)).toThrow(
-      'optional nullable parameters require distinct Haxe null and undefined sentinels',
+    expect(emitIrModuleHaxe(result.module).contents).toContain('function choose(?value:Null<Float>):Void');
+  });
+
+  it('uses JavaScript syntax injection for host constructors without nominal Haxe classes', () => {
+    const result = lower(
+      'javascript-host-constructor.ts',
+      'export function create(width: number, height: number): OffscreenCanvas { return new OffscreenCanvas(width, height); }',
     );
+
+    expect(emitIrModuleHaxe(result.module).contents).toContain(
+      'js.Syntax.code("new OffscreenCanvas({0}, {1})", width, height)',
+    );
+  });
+
+  it('uses JavaScript syntax injection for the Function constructor', () => {
+    const result = lower(
+      'function-constructor.ts',
+      'export function create(source: string): Function { return new Function(source); }',
+    );
+
+    expect(emitIrModuleHaxe(result.module).contents).toContain('js.Syntax.code("new Function({0})", source)');
   });
 
   it('emits shared traceable provenance with an optional upstream commit', () => {

@@ -126,7 +126,7 @@ const haxeErasedUtilityTypeNames = new Set([
   'ThisType',
 ]);
 
-const haxeDynamicUtilityTypeNames = new Set(['Awaited', 'Parameters', 'PropertyKey', 'ReturnType']);
+const haxeDynamicUtilityTypeNames = new Set(['Awaited', 'FlatArray', 'Parameters', 'PropertyKey', 'ReturnType']);
 
 function hasIrTypeKindHaxe(type: Readonly<IrType>, kind: IrType['kind']): boolean {
   return type.kind === kind || (type.kind === 'union' && type.types.some((member) => member.kind === kind));

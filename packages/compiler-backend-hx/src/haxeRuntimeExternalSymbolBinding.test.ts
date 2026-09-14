@@ -12,7 +12,7 @@ describe('createCompilerRuntimeExternalSymbolBindingPlanHaxe', () => {
     const plan = createCompilerRuntimeExternalSymbolBindingPlanHaxe();
 
     expect(plan.contract).toBe('flight-runtime-contract/2');
-    expect(plan.bindings).toHaveLength(308);
+    expect(plan.bindings).toHaveLength(321);
     expect(plan.bindings.filter(({ externalSymbol }) => externalSymbol.sourceName === 'Promise')).toEqual([
       {
         capability: 'task',
@@ -116,7 +116,7 @@ describe('createCompilerRuntimeExternalSymbolBindingPlanHaxe', () => {
     const second = createCompilerRuntimeExternalSymbolBindingPlanHaxe();
 
     (first.bindings as unknown[]).pop();
-    expect(second.bindings).toHaveLength(308);
+    expect(second.bindings).toHaveLength(321);
   });
 });
 
@@ -220,6 +220,9 @@ describe('getCompilerRuntimeExternalSymbolTargetHaxe', () => {
     ['AudioContext', 'type', 'js.html.audio.AudioContext'],
     ['AudioBufferSourceNode', 'type', 'js.html.audio.AudioBufferSourceNode'],
     ['CanvasRenderingContext2D', 'type', 'js.html.CanvasRenderingContext2D'],
+    ['DOMException', 'type', 'js.html.DOMException'],
+    ['DOMRect', 'type', 'Dynamic'],
+    ['DeviceOrientationEvent', 'value', 'js.Syntax.code("DeviceOrientationEvent")'],
     ['GPUAdapter', 'type', 'Dynamic'],
     ['GPUBlendState', 'type', 'Dynamic'],
     ['GPUDevice', 'type', 'Dynamic'],
@@ -227,6 +230,7 @@ describe('getCompilerRuntimeExternalSymbolTargetHaxe', () => {
     ['HTMLCanvasElement', 'type', 'js.html.CanvasElement'],
     ['KeyboardEvent', 'type', 'js.html.KeyboardEvent'],
     ['MediaStream', 'type', 'js.html.MediaStream'],
+    ['Magnetometer', 'value', 'js.Syntax.code("Magnetometer")'],
     ['Float32Array', 'type', 'flighthq._internal._Float32Array'],
     ['Float32Array', 'value', 'flighthq._internal._Float32Array'],
     ['Float64Array', 'type', 'flighthq._internal._Float64Array'],
@@ -238,6 +242,7 @@ describe('getCompilerRuntimeExternalSymbolTargetHaxe', () => {
     ['Int8Array', 'type', 'flighthq._internal._Int8Array'],
     ['Int8Array', 'value', 'flighthq._internal._Int8Array'],
     ['TexImageSource', 'type', 'Dynamic'],
+    ['LDMLPluralRule', 'type', 'String'],
     ['SharedArrayBuffer', 'type', 'js.lib.SharedArrayBuffer'],
     ['SharedArrayBuffer', 'value', 'js.lib.SharedArrayBuffer'],
     ['navigator', 'value', 'js.Browser.navigator'],

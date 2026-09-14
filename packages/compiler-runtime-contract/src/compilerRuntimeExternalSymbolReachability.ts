@@ -55,6 +55,7 @@ const compilerIntrinsicTypeNames = new Set([
   'Awaited',
   'Exclude',
   'Extract',
+  'FlatArray',
   'NonNullable',
   'NoInfer',
   'Omit',

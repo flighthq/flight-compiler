@@ -952,6 +952,15 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
       if (expression.callee.kind !== 'identifier') {
         emissionError(context, 'qualified constructors require Haxe type-path lowering');
       }
+      if (expression.callee.reference.kind === 'ambient') {
+        const sourceName = expression.callee.reference.name;
+        const target = getCompilerRuntimeExternalSymbolTargetHaxe(sourceName, 'value', context.options.runtimeModule);
+        if (target?.startsWith('js.Syntax.code(')) {
+          const arguments_ = expression.arguments.map((argument) => emitExpression(argument, context));
+          const construction = `new ${sourceName}(${arguments_.map((_, index) => `{${String(index)}}`).join(', ')})`;
+          return `js.Syntax.code(${JSON.stringify(construction)}${arguments_.length > 0 ? `, ${arguments_.join(', ')}` : ''})`;
+        }
+      }
       return `new ${emitExpression(expression.callee, context)}(${expression.arguments.map((argument) => emitExpression(argument, context)).join(', ')})`;
     case 'object':
       return emitObjectExpressionHaxe(expression, context);
@@ -2026,9 +2035,6 @@ function emitParameters(parameters: readonly IrParameter[], context: EmitContext
         return `...${name}:${elementType}`;
       }
       if (parameter.initializer) return `${name}:${type} = ${emitExpression(parameter.initializer, context)}`;
-      if (parameter.optional && hasIrTypeNullMemberHaxe(parameter.type)) {
-        emissionError(context, 'optional nullable parameters require distinct Haxe null and undefined sentinels');
-      }
       return `${parameter.optional ? '?' : ''}${name}:${type}`;
     })
     .join(', ');
