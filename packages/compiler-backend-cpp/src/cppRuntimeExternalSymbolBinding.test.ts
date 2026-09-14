@@ -89,6 +89,16 @@ describe('createCompilerRuntimeExternalSymbolBindingPlanCpp', () => {
       kind: 'runtime',
     });
     expect(plan.bindings).toContainEqual({
+      capability: 'error',
+      externalSymbol: { sourceName: 'RangeError', space: 'value' },
+      kind: 'runtime',
+    });
+    expect(plan.bindings).toContainEqual({
+      capability: 'error',
+      externalSymbol: { sourceName: 'TypeError', space: 'type' },
+      kind: 'runtime',
+    });
+    expect(plan.bindings).toContainEqual({
       capability: 'map',
       externalSymbol: { sourceName: 'ReadonlyMap', space: 'type' },
       kind: 'runtime',
@@ -367,6 +377,9 @@ describe('getCompilerExternalBindingHeadersCpp', () => {
     expect(getCompilerExternalBindingHeadersCpp('RegExp', 'type', undefined, 'flight-cpp')).toEqual([
       'flight/regexp.hpp',
     ]);
+    expect(getCompilerExternalBindingHeadersCpp('RangeError', 'value', undefined, 'flight-cpp')).toEqual([
+      'flight/error.hpp',
+    ]);
     expect(getCompilerExternalBindingHeadersCpp('WeakMap', 'type', undefined, 'flight-cpp')).toEqual([
       'flight/weak_map.hpp',
     ]);
@@ -402,7 +415,8 @@ describe('getCompilerRuntimeExternalSymbolTargetCpp', () => {
     expect(getCompilerRuntimeExternalSymbolTargetCpp('Number', 'type')).toBe('double');
     expect(getCompilerRuntimeExternalSymbolTargetCpp('Number', 'type', 'flight-cpp')).toBe('double');
     expect(getCompilerRuntimeExternalSymbolTargetCpp('RangeError', 'type')).toBe('std::range_error');
-    expect(getCompilerRuntimeExternalSymbolTargetCpp('RangeError', 'type', 'flight-cpp')).toBe('std::range_error');
+    expect(getCompilerRuntimeExternalSymbolTargetCpp('RangeError', 'type', 'flight-cpp')).toBe('flight::RangeError');
+    expect(getCompilerRuntimeExternalSymbolTargetCpp('TypeError', 'type', 'flight-cpp')).toBe('flight::TypeError');
   });
 
   it('maps String in both spaces for the standard-library profile', () => {
@@ -487,7 +501,9 @@ describe('getCompilerRuntimeExternalSymbolTargetCpp', () => {
       expect(getCompilerRuntimeExternalMemberTargetCpp('Number', 'NaN', runtimeProfile)).toBe(
         'std::numeric_limits<double>::quiet_NaN()',
       );
-      expect(getCompilerRuntimeExternalSymbolTargetCpp('RangeError', 'value', runtimeProfile)).toBe('std::range_error');
+      expect(getCompilerRuntimeExternalSymbolTargetCpp('RangeError', 'value', runtimeProfile)).toBe(
+        runtimeProfile === 'flight-cpp' ? 'flight::RangeError' : 'std::range_error',
+      );
     },
   );
 
@@ -501,13 +517,14 @@ describe('getCompilerRuntimeExternalSymbolTargetCpp', () => {
   );
 
   it('maps portable service namespaces and functions through the semantic runtime profile', () => {
-    expect(getCompilerRuntimeExternalMemberTargetCpp('Object', 'assign', 'flight-cpp')).toBe(
-      'flight::object_assign',
-    );
-    expect(getCompilerRuntimeExternalMemberTargetCpp('Object', 'entries', 'flight-cpp')).toBe(
-      'flight::object_entries',
-    );
+    expect(getCompilerRuntimeExternalMemberTargetCpp('Object', 'assign', 'flight-cpp')).toBe('flight::object_assign');
+    expect(getCompilerRuntimeExternalMemberTargetCpp('Object', 'entries', 'flight-cpp')).toBe('flight::object_entries');
     expect(getCompilerRuntimeExternalMemberTargetCpp('Object', 'keys', 'flight-cpp')).toBe('flight::object_keys');
+    expect(getCompilerRuntimeExternalMemberTargetCpp('Number', 'isSafeInteger', 'flight-cpp')).toBe(
+      'flight::is_safe_integer',
+    );
+    expect(getCompilerRuntimeExternalMemberTargetCpp('Number', 'parseFloat', 'flight-cpp')).toBe('flight::parse_float');
+    expect(getCompilerRuntimeExternalMemberTargetCpp('Number', 'parseInt', 'flight-cpp')).toBe('flight::parse_int');
     expect(getCompilerRuntimeExternalMemberTargetCpp('JSON', 'parse', 'flight-cpp')).toBe('flight::Json::parse');
     expect(getCompilerRuntimeExternalMemberTargetCpp('Intl', 'Collator', 'flight-cpp')).toBe('flight::IntlCollator');
     expect(getCompilerRuntimeExternalMemberTargetCpp('String', 'fromCodePoint', 'flight-cpp')).toBe(

@@ -2883,11 +2883,28 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
       const emitted = emitIrModuleCpp(result.module, { runtimeProfile });
 
       expect(emitted.contents).toContain(
-        runtimeProfile === 'flight-cpp' ? 'std::range_error(message.to_utf8())' : 'std::range_error(message)',
+        runtimeProfile === 'flight-cpp' ? 'flight::RangeError(message)' : 'std::range_error(message)',
       );
-      expect(emitted.contents).toContain('#include <stdexcept>');
+      expect(emitted.contents).toContain(
+        runtimeProfile === 'flight-cpp' ? '#include <flight/error.hpp>' : '#include <stdexcept>',
+      );
     },
   );
+
+  it('emits flight-cpp numeric parsing and safe-integer operations through the semantic runtime', () => {
+    const result = lower(
+      'number-parsing.ts',
+      `export function parseInteger(value: string): number { return Number.parseInt(value, 16); }
+       export function parseDecimal(value: string): number { return Number.parseFloat(value); }
+       export function isSafe(value: number): boolean { return Number.isSafeInteger(value); }`,
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+
+    expect(emitted.contents).toContain('flight::parse_int(value, 16.0)');
+    expect(emitted.contents).toContain('flight::parse_float(value)');
+    expect(emitted.contents).toContain('flight::is_safe_integer(value)');
+    expect(emitted.contents).toContain('#include <flight/number.hpp>');
+  });
 
   it('emits template literals with std::to_string', () => {
     const result = lower('template.ts', 'export function label(n: number): string { return `item ${n}`; }');

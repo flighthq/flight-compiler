@@ -7366,7 +7366,7 @@ function emitIdentifierReference(
         context.includes.add('limits');
       }
       if (reference.name === 'Number') context.includes.add('cmath');
-      if (reference.name === 'RangeError' || reference.name === 'TypeError') context.includes.add('stdexcept');
+      if (target === 'std::range_error' || target === 'std::runtime_error') context.includes.add('stdexcept');
       return target;
     }
     return reference.name;
