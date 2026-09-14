@@ -5377,7 +5377,11 @@ function getIrExpressionTypeForUnionConstructionCpp(
 
 function getCppContextualObjectUnionRuntimeTypeCpp(
   expression: Readonly<Extract<IrExpression, { kind: 'object' }>>,
-  valueSlots: readonly Readonly<{ runtimeType: IrType }>[],
+  valueSlots: readonly Readonly<{
+    representationKey?: string;
+    runtimeType: IrType;
+    sourceAlternatives?: readonly IrType[];
+  }>[],
   context: EmitContext,
 ): Readonly<IrType> | undefined {
   if (expression.members.some((member) => member.kind !== 'property')) return undefined;
@@ -5387,16 +5391,73 @@ function getCppContextualObjectUnionRuntimeTypeCpp(
   const byName = new Map(members.map((member) => [member.name, member] as const));
   if (byName.size !== members.length) return undefined;
   const matches = valueSlots.filter((slot) => {
-    const properties = context.referenceRepresentationPlanner.resolveObjectShape(slot.runtimeType, context.module);
-    if (!properties) return false;
-    const targetByName = new Map(properties.map((property) => [property.name, property] as const));
-    if (members.some((member) => !targetByName.has(member.name))) return false;
-    if (properties.some((property) => !property.optional && !byName.has(property.name))) return false;
-    return members.every((member) =>
-      isCppExpressionRepresentableAsRuntimeTypeCpp(member.value, targetByName.get(member.name)!.type, context),
+    const sourceAlternatives = (slot.sourceAlternatives ?? [slot.runtimeType]).flatMap((alternative) =>
+      getCppExpandedUnionSourceAlternativesCpp(alternative, context, new Set()),
     );
+    const alternatives = slot.representationKey
+      ? sourceAlternatives.filter((alternative) => {
+          const isolatedContext = { ...context, anonymousStructs: new Map(), includes: new Set<string>() };
+          const candidatePlan = getCppUnionRepresentationPlan(
+            { kind: 'union', types: [alternative, { kind: 'null' }] },
+            isolatedContext,
+          );
+          return candidatePlan.valueSlots[0]?.representationKey === slot.representationKey;
+        })
+      : sourceAlternatives;
+    return alternatives.some((alternative) => {
+      const properties = context.referenceRepresentationPlanner.resolveObjectShape(alternative, context.module);
+      if (!properties) return false;
+      const targetByName = new Map(properties.map((property) => [property.name, property] as const));
+      if (members.some((member) => !targetByName.has(member.name))) return false;
+      if (properties.some((property) => !property.optional && !byName.has(property.name))) return false;
+      const discriminants = members.map((member) =>
+        getCppLiteralDiscriminantMatchCpp(member.value, targetByName.get(member.name)!.type, context),
+      );
+      if (discriminants.some((match) => match === false)) return false;
+      if (discriminants.some((match) => match === true)) return true;
+      return members.every((member) =>
+        isCppExpressionRepresentableAsRuntimeTypeCpp(member.value, targetByName.get(member.name)!.type, context),
+      );
+    });
   });
   return matches.length === 1 ? matches[0]!.runtimeType : undefined;
+}
+
+function getCppExpandedUnionSourceAlternativesCpp(
+  type: Readonly<IrType>,
+  context: EmitContext,
+  resolvingAliases: ReadonlySet<string>,
+): readonly Readonly<IrType>[] {
+  if (type.kind === 'union') {
+    return type.types.flatMap((member) =>
+      getCppExpandedUnionSourceAlternativesCpp(member, context, resolvingAliases),
+    );
+  }
+  if (
+    type.kind !== 'named' ||
+    type.reference.kind !== 'binding' ||
+    type.typeArguments.length > 0 ||
+    resolvingAliases.has(type.reference.binding.id)
+  ) {
+    return [type];
+  }
+  const alias = resolveCppTypeAliasTarget(type, context);
+  if (!alias) return [type];
+  const nextResolvingAliases = new Set(resolvingAliases);
+  nextResolvingAliases.add(type.reference.binding.id);
+  return getCppExpandedUnionSourceAlternativesCpp(alias, context, nextResolvingAliases);
+}
+
+function getCppLiteralDiscriminantMatchCpp(
+  expression: Readonly<IrExpression>,
+  target: Readonly<IrType>,
+  context: EmitContext,
+): boolean | undefined {
+  if (expression.kind !== 'literal') return undefined;
+  if (target.kind === 'literal') return target.value === expression.value;
+  const union = getIrUnionTypeCpp(target, context, new Set());
+  if (!union || !union.types.every((member) => member.kind === 'literal')) return undefined;
+  return union.types.some((member) => member.kind === 'literal' && member.value === expression.value);
 }
 
 function isCppExpressionRepresentableAsRuntimeTypeCpp(
@@ -5417,8 +5478,27 @@ function isCppExpressionRepresentableAsRuntimeTypeCpp(
       return true;
     }
   }
-  if (expression.kind !== 'literal') return isCppExpressionExactlyRepresentableAsTypeCpp(expression, target, context);
+  if (expression.kind !== 'literal') {
+    if (isCppExpressionExactlyRepresentableAsTypeCpp(expression, target, context)) return true;
+    const source = getIrExpressionTypeEvidenceCpp(expression, context);
+    if (!source) return false;
+    const sourceUnion = getIrUnionTypeCpp(source, context, new Set());
+    const targetUnion = getIrUnionTypeCpp(target, context, new Set());
+    if (!sourceUnion || !targetUnion) return false;
+    const isolatedContext = { ...context, anonymousStructs: new Map(), includes: new Set<string>() };
+    const sourcePlan = getCppUnionRepresentationPlan(sourceUnion, isolatedContext);
+    const targetPlan = getCppUnionRepresentationPlan(targetUnion, isolatedContext);
+    return (
+      sourcePlan.valueSlots.length === 1 &&
+      targetPlan.valueSlots.length === 1 &&
+      sourcePlan.valueSlots[0]!.representationKey === targetPlan.valueSlots[0]!.representationKey
+    );
+  }
+  if (target.kind === 'literal') return target.value === expression.value;
   const union = getIrUnionTypeCpp(target, context, new Set());
+  if (union?.types.every((member) => member.kind === 'literal')) {
+    return union.types.some((member) => member.kind === 'literal' && member.value === expression.value);
+  }
   const runtimeMembers = (union?.types ?? [target]).map((member) =>
     getIrTypeRuntimeDomainCpp(member, context, new Set()),
   );

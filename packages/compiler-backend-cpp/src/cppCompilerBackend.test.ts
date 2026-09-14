@@ -789,6 +789,29 @@ describe('createCppCompilerBackend', () => {
     expect(output).not.toContain('flight::String("reason") in result');
   });
 
+  it('retains literal discriminants while matching aliased string-union properties', () => {
+    const output = emitIrModuleCpp(
+      lower(
+        'nullable-explanation.ts',
+        `type State = 'closed' | 'connecting' | 'open';
+         type Explanation =
+           | { reason: 'disposed'; readyState: 'closed' }
+           | { reason: 'no-connection'; readyState: State }
+           | { reason: 'not-open'; readyState: 'closed' | 'connecting' };
+         type Runtime = { state: State };
+         export function explain(disposed: boolean, runtime: Runtime): Explanation | null {
+           if (disposed) return { reason: 'disposed', readyState: 'closed' };
+           if (runtime.state !== 'open') return { reason: 'not-open', readyState: runtime.state };
+           return null;
+         }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+
+    expect(output.match(/std::in_place_type<flight::Ref<reason_ready_state_/g)).toHaveLength(2);
+    expect(output).not.toContain('return {.reason =');
+  });
+
   it('constructs an imported optional reference from an imported function result', () => {
     const types = ts.createSourceFile(
       '/flight/packages/types/src/entity.ts',
