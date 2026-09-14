@@ -4021,7 +4021,10 @@ function getBindingTargetNameRust(
 
 function getGeneratedTargetNameRust(preferredName: string, context: EmitContext): string {
   let name = preferredName;
-  for (let suffix = 2; context.generatedNames.has(name); suffix += 1) name = `${preferredName}_${String(suffix)}`;
+  const separator = /^[A-Z]/u.test(preferredName) ? '' : '_';
+  for (let suffix = 2; context.generatedNames.has(name); suffix += 1) {
+    name = `${preferredName}${separator}${String(suffix)}`;
+  }
   context.generatedNames.add(name);
   return name;
 }

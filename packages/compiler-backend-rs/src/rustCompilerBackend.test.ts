@@ -1002,6 +1002,8 @@ describe('emitIrModuleRust', () => {
     const output = emitIrModuleRust(result.module).contents;
 
     expect(output).toContain('enum AnonymousUnion');
+    expect(output).toContain('enum AnonymousUnion2');
+    expect(output).not.toContain('AnonymousUnion_2');
     expect(output).toContain('Null,');
     expect(output).toContain('Undefined,');
     expect(output).toContain('matches!(&value, AnonymousUnion::Null)');

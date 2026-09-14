@@ -9,7 +9,7 @@ pub enum AnonymousUnion {
 }
 
 #[derive(Clone)]
-pub enum AnonymousUnion_2 {
+pub enum AnonymousUnion2 {
   F64(f64),
   Null,
   Undefined,
@@ -25,11 +25,11 @@ pub fn resolve(value: AnonymousUnion) -> String {
   return match &value { AnonymousUnion::String(value) => value.clone(), _ => unreachable!() };
 }
 
-pub fn coerce(value: AnonymousUnion_2, fallback: f64) -> f64 {
-  if matches!(&value, AnonymousUnion_2::Null) || matches!(&value, AnonymousUnion_2::Undefined) {
+pub fn coerce(value: AnonymousUnion2, fallback: f64) -> f64 {
+  if matches!(&value, AnonymousUnion2::Null) || matches!(&value, AnonymousUnion2::Undefined) {
     return fallback;
   }
-  return match &value { AnonymousUnion_2::F64(value) => value.clone(), _ => unreachable!() };
+  return match &value { AnonymousUnion2::F64(value) => value.clone(), _ => unreachable!() };
 }
 
 pub fn assign_dual(flag: f64) -> AnonymousUnion {
