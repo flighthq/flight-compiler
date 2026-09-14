@@ -10379,6 +10379,23 @@ it('retains imported named aliases in checker-resolved call result types', () =>
   });
 });
 
+it('instantiates optional Map and WeakMap lookup results from their receivers', () => {
+  const result = lower(
+    'optional-map-lookup.ts',
+    `interface Value { label: string }
+     interface Caches { optional?: Map<string, Value>; weak: WeakMap<object, Value> }
+     export function readOptional(caches: Caches): Value | undefined {
+       return caches.optional?.get('key');
+     }
+     export function readWeak(caches: Caches, key: object): Value | undefined {
+       return caches.weak.get(key);
+     }`,
+  );
+
+  expect(result.diagnostics).toEqual([]);
+  expect(JSON.stringify(result.module)).not.toMatch(/"name":"[KV]"/u);
+});
+
 it('resolves type reference through a type alias for indexed receivers', () => {
   const result = lower(
     'type-alias-receiver.ts',

@@ -1707,19 +1707,19 @@ function getTypeScriptMapLookupResultTypeEvidence(
   context: LoweringContext,
 ): Readonly<IrType> | undefined {
   if (
-    node.questionDotToken ||
     node.arguments.length !== 1 ||
     !ts.isPropertyAccessExpression(node.expression) ||
-    node.expression.questionDotToken ||
     node.expression.name.text !== 'get'
   ) {
     return undefined;
   }
-  const receiver = getTypeScriptExpressionBindingTypeEvidence(node.expression.expression, context);
+  const receiver = removeIrTypeBindingPatternUndefined(
+    getTypeScriptExpressionBindingTypeEvidence(node.expression.expression, context),
+  );
   if (
     receiver?.kind !== 'named' ||
     receiver.reference.kind !== 'ambient' ||
-    (receiver.reference.name !== 'Map' && receiver.reference.name !== 'ReadonlyMap')
+    !['Map', 'ReadonlyMap', 'WeakMap'].includes(receiver.reference.name)
   ) {
     return undefined;
   }
