@@ -159,13 +159,13 @@ describe('createHaxeCompilerBackend', () => {
       options: {},
     })[0]!.contents;
 
-    expect(output).toContain('typedef Shape = flighthq.types.Target.Shape;');
-    expect(output).toContain('typedef Choice = flighthq.types.Target.Choice;');
+    expect(output).toContain('typedef BarrelShape = flighthq.types.Target.Shape;');
+    expect(output).toContain('typedef BarrelChoice = flighthq.types.Target.Choice;');
     expect(output).toContain('function add(left:Float, right:Float):Float');
     expect(output).toContain('return flighthq.types.Target.add(left, right);');
-    expect(output).toContain('function area(shape:Shape):Float');
+    expect(output).toContain('function area(shape:BarrelShape):Float');
     expect(output).toContain('final version:Float = flighthq.types.Target.version;');
-    expect(output).toContain('typedef Mode_2 = flighthq.types.Target.Mode_2;');
+    expect(output).toContain('typedef BarrelMode = flighthq.types.Target.Mode_2;');
     expect(output).toContain('final Mode:{ basic:Float } = flighthq.types.Target.Mode;');
     expect(output).not.toContain('hidden');
   });
@@ -188,7 +188,7 @@ describe('createHaxeCompilerBackend', () => {
       options: {},
     })[0]!.contents;
 
-    expect(output).toContain('typedef Shape = flighthq.math.Target.Shape;');
+    expect(output).toContain('typedef BarrelShape = flighthq.math.Target.Shape;');
   });
 
   it('imports the allocated type name from a contract type and value collision', () => {
@@ -226,9 +226,9 @@ describe('createHaxeCompilerBackend', () => {
     const contractOutput = session.emitModule(contract)[0]!.contents;
     const consumerOutput = session.emitModule(consumer)[0]!.contents;
 
-    expect(contractOutput).toContain('typedef State_2 = flighthq.types.State.State_2;');
+    expect(contractOutput).toContain('typedef ContractState = flighthq.types.State.State_2;');
     expect(contractOutput).toContain('final State:{ Ready:String } = flighthq.types.State.State;');
-    expect(consumerOutput).toContain('import flighthq.types.Contract.State_2 as StateType;');
+    expect(consumerOutput).toContain('import flighthq.types.Contract.ContractState as StateType;');
     expect(consumerOutput).toContain('import flighthq.types.Contract.State;');
     expect(consumerOutput).toContain('function read(value:StateType):StateType');
   });
@@ -1904,7 +1904,7 @@ describe('emitIrModuleHaxe', () => {
     );
     const output = emitIrModuleHaxe(result.module).contents;
 
-    expect(output).toContain('typedef Renamed =');
+    expect(output).toContain('typedef ReexportRenamed =');
   });
 
   it('emits union types with one concrete member as Null<T> and multi-concrete as Dynamic', () => {
@@ -2739,8 +2739,8 @@ describe('emitIrModuleHaxe statement coverage', () => {
     const sameOutput = emitIrModuleHaxe(same.module).contents;
     const renamedOutput = emitIrModuleHaxe(renamed.module).contents;
 
-    expect(sameOutput).toContain('typedef Point = flighthq.math.Types.Point;');
-    expect(renamedOutput).toContain('typedef Coordinate =');
+    expect(sameOutput).toContain('typedef ReexportSamePoint = flighthq.math.Types.Point;');
+    expect(renamedOutput).toContain('typedef ReexportRenamedCoordinate =');
   });
 
   it('emits variable with local mutable storage', () => {
@@ -5343,7 +5343,7 @@ describe('emitIrModuleHaxe re-export facade', () => {
     const backend = createHaxeCompilerBackend();
     const output = backend.emitModule(facade.module, { modules: [facade.module, helper.module], options: {} })[0]!
       .contents;
-    expect(output).toContain('typedef Kind = flighthq.math.Helper.Kind;');
+    expect(output).toContain('typedef FacadeKind = flighthq.math.Helper.Kind;');
   });
 
   it('refuses value re-export when sibling module is not available', () => {
