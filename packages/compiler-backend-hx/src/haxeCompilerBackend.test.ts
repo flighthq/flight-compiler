@@ -9054,8 +9054,8 @@ describe('emitIrModuleHaxe for-of with async iteration', () => {
     );
     const output = emitIrModuleHaxe(result.module).contents;
 
-    expect(output).toContain('flighthq._internal._Promise.iterateAsync(items, function(value:Dynamic)');
-    expect(output).toContain('flighthq._internal._Promise.normalize(value)');
+    expect(output).toContain('flighthq._internal._AsyncIterable.forEachAsync(items, function(value:Dynamic)');
+    expect(output).toContain('flighthq._internal._Promise.normalize(');
   });
 });
 

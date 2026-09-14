@@ -78,8 +78,8 @@ function lowerIrValueAsyncIterationHaxe(value: unknown): unknown {
         arguments: [lowered.iterable, callback],
         callee: {
           kind: 'property',
-          name: 'iterateAsync',
-          object: { kind: 'identifier', reference: { kind: 'ambient', name: 'Promise' } },
+          name: 'forEachAsync',
+          object: { kind: 'identifier', reference: { kind: 'ambient', name: 'AsyncIterable' } },
           optional: false,
         },
         kind: 'call',
