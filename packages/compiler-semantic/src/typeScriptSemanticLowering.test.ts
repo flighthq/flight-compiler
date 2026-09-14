@@ -2501,7 +2501,8 @@ describe('lowerTypeScriptSource', () => {
       },
     );
     const value = result!.module.declarations.find(
-      (declaration) => declaration.kind === 'variable' && declaration.binding.name === 'value',
+      (declaration) =>
+        declaration.kind === 'variable' && 'binding' in declaration && declaration.binding.name === 'value',
     );
 
     expect(result!.diagnostics).toEqual([]);

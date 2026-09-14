@@ -278,6 +278,18 @@ describe('createCppCompilerBackend', () => {
     expect(output).toContain('std::get<1>');
   });
 
+  it('uses the destructured element type to materialize inline tuple arrays', () => {
+    const result = lower(
+      'inline-tuple-rows.ts',
+      'export function sum(): number { let total = 0; for (const [left, right] of [[1, 2], [3, 4]]) total += left + right; return total; }',
+    );
+    const output = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    expect(output).toContain('flight::Array<flight::Array<double>>');
+    expect(output).toContain('flight::Array<double>{1.0, 2.0}');
+    expect(output).toContain('array_pattern_value.element(0.0)');
+  });
+
   it('emits imported generic union aliases as inline values', () => {
     const types = lowerPackage(
       '@flighthq/types',
@@ -5262,6 +5274,19 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     const result = lower('elem-access.ts', 'export function get(arr: number[], i: number): number { return arr[i]; }');
     const emitted = emitIrModuleCpp(result.module);
     expect(emitted.contents).toContain('static_cast<size_t>');
+  });
+
+  it('visits represented collection unions for indexed reads and writes', () => {
+    const result = lower(
+      'variant-index.ts',
+      'export function write(out: number[] | Float32Array, index: number, value: number): number { out[index] = value; return out[index]; }',
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+
+    expect(emitted.contents).toContain('std::variant<flight::Array<double>, flight::Float32Array> out');
+    expect(emitted.contents).toContain('std::visit([&](auto& indexed_receiver)');
+    expect(emitted.contents).toContain('indexed_receiver.element(indexed_index) = indexed_value');
+    expect(emitted.contents).toContain('std::visit([&](const auto& indexed_receiver_2) -> double');
   });
 
   it('emits conditional expression as ternary', () => {

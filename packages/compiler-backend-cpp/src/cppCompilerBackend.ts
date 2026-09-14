@@ -1224,6 +1224,11 @@ function emitExpression(
           return `${emitExpression(expression.left.object, context)}${memberOp(expression.left.object, context)}${safeCppName(expression.left.name)}(${right})`;
         }
       }
+      const variantIndexedAssignment =
+        expression.left.kind === 'element'
+          ? emitCppVariantIndexedAssignmentCpp(expression.left, expression.operator, right, context)
+          : undefined;
+      if (variantIndexedAssignment) return variantIndexedAssignment;
       const left = emitAssignmentTargetCpp(expression.left, context);
       if (expression.operator === '**=') {
         if (getCppRuntimeProfile(context.options) === 'flight-cpp') {
@@ -1649,6 +1654,8 @@ function emitExpression(
       }
       const computedProperty = emitComputedSymbolElementAccessCpp(expression, context);
       if (computedProperty) return computedProperty;
+      const variantIndexedAccess = emitCppVariantIndexedElementAccessCpp(expression, context);
+      if (variantIndexedAccess) return variantIndexedAccess;
       if (getCppRuntimeProfile(context.options) === 'flight-cpp' && hasIndexedRuntimeReceiverCpp(expression, context)) {
         const access = `${emitExpression(expression.object, context)}.element(${emitExpression(expression.index, context)})`;
         return expectedType?.kind === 'primitive' &&
@@ -2677,7 +2684,12 @@ function emitStatement(statement: Readonly<IrStatement>, context: EmitContext): 
         emissionError(context, 'binding patterns require destructuring lowering before C++ emission');
       }
       const collectionView = getCppCollectionIterationView(statement.iterable, context);
-      const iterable = emitExpression(collectionView?.collection ?? statement.iterable, context);
+      const iterableExpression = collectionView?.collection ?? statement.iterable;
+      const literalElementType =
+        !collectionView && statement.iterable.kind === 'array' && statement.variable.type
+          ? ({ element: statement.variable.type, kind: 'array', readonly: false } as const)
+          : undefined;
+      const iterable = emitExpression(iterableExpression, context, literalElementType);
       const variableName = getBindingTargetName(statement.variable.binding, context);
       const sharedCaptureTargetName = context.sharedCaptureTargetNames.get(statement.variable.binding.id);
       if (collectionView && !(collectionView.collectionKind === 'set' && collectionView.projection !== 'entry')) {
@@ -6007,6 +6019,13 @@ function getIrIndexedElementTypeCpp(
   context: EmitContext,
   resolvingAliases: ReadonlySet<string>,
 ): Readonly<IrType> | undefined {
+  if (type.kind === 'union') {
+    const members = type.types.map((member) =>
+      getIrIndexedElementTypeCpp(member, expression, context, resolvingAliases),
+    );
+    if (members.some((member) => !member)) return undefined;
+    return createIrTypeEvidenceUnionCpp(members.map((member) => member!));
+  }
   if (type.kind === 'array') return type.element;
   if (type.kind === 'tuple') {
     if (expression.index.kind !== 'literal' || typeof expression.index.value !== 'number') return undefined;
@@ -6014,6 +6033,12 @@ function getIrIndexedElementTypeCpp(
   }
   if (type.kind !== 'named') return undefined;
   if (type.reference.kind === 'ambient') {
+    if (/^(?:Float32|Float64|Int16|Int32|Int8|Uint16|Uint32|Uint8|Uint8Clamped)Array$/u.test(type.reference.name)) {
+      return { kind: 'primitive', name: 'number' };
+    }
+    if (type.reference.name === 'BigInt64Array' || type.reference.name === 'BigUint64Array') {
+      return { kind: 'primitive', name: 'bigint' };
+    }
     if (
       (type.reference.name === 'Readonly' || type.reference.name === 'Required') &&
       type.typeArguments.length === 1 &&
@@ -6835,6 +6860,58 @@ function emitAssignmentTargetCpp(expression: Readonly<IrExpression>, context: Em
     return emitIdentifierReference(expression.reference, context);
   }
   return emitExpression(expression, context);
+}
+
+function isCppVariantIndexedReceiverCpp(
+  expression: Readonly<Extract<IrExpression, { kind: 'element' }>>,
+  context: EmitContext,
+): boolean {
+  if (getCppRuntimeProfile(context.options) !== 'flight-cpp') return false;
+  const type = getIrExpressionTypeEvidenceCpp(expression.object, context);
+  const union = type ? getIrUnionTypeCpp(type, context, new Set()) : undefined;
+  if (!union) return false;
+  const plan = getCppUnionRepresentationPlan(union, context);
+  return (
+    plan.kind === 'multiVariant' &&
+    plan.valueSlots.length > 1 &&
+    plan.valueSlots.every((slot) => {
+      const representation = context.referenceRepresentationPlanner.plan(slot.runtimeType, context.module);
+      return representation.kind === 'represented' &&
+        (representation.category === 'array' || representation.category === 'typedArray');
+    })
+  );
+}
+
+function emitCppVariantIndexedElementAccessCpp(
+  expression: Readonly<Extract<IrExpression, { kind: 'element' }>>,
+  context: EmitContext,
+): string | undefined {
+  if (!isCppVariantIndexedReceiverCpp(expression, context)) return undefined;
+  const valueType = getIrExpressionTypeEvidenceCpp(expression, context);
+  if (!valueType || valueType.kind === 'unknown') {
+    emissionError(context, 'variant indexed access requires concrete common element type evidence');
+  }
+  context.includes.add('variant');
+  const receiver = getGeneratedTargetName('indexedReceiver', context);
+  return `std::visit([&](const auto& ${receiver}) -> ${emitType(valueType, context)} { return ${receiver}.element(${emitExpression(expression.index, context)}); }, ${emitExpression(expression.object, context)})`;
+}
+
+function emitCppVariantIndexedAssignmentCpp(
+  expression: Readonly<Extract<IrExpression, { kind: 'element' }>>,
+  operator: string,
+  right: string,
+  context: EmitContext,
+): string | undefined {
+  if (!isCppVariantIndexedReceiverCpp(expression, context)) return undefined;
+  if (operator !== '=') {
+    emissionError(context, 'compound assignment through a variant indexed receiver requires coercion-aware lowering');
+  }
+  context.includes.add('variant');
+  const source = getGeneratedTargetName('indexedSource', context);
+  const index = getGeneratedTargetName('indexedIndex', context);
+  const value = getGeneratedTargetName('indexedValue', context);
+  const receiver = getGeneratedTargetName('indexedReceiver', context);
+  return `([&]() { auto&& ${source} = ${emitExpression(expression.object, context)}; const auto ${index} = ${emitExpression(expression.index, context)}; const auto ${value} = ${right}; std::visit([&](auto& ${receiver}) { ${receiver}.element(${index}) = ${value}; }, ${source}); return ${value}; }())`;
 }
 
 function emitCppStructuralWriteProxyConstructionCpp(
