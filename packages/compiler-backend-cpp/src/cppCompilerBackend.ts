@@ -163,6 +163,7 @@ interface EmitContext {
   dependentCallablePacks: ReadonlyMap<string, Readonly<IrParameter>>;
   directBindingOwners: ReadonlyMap<string, CppDirectBindingOwner | null>;
   importBindingOwners: ReadonlyMap<string, CppImportBindingOwner | null>;
+  importedBindingTypes: Map<string, Readonly<IrType> | null>;
   finallyReturnVar?: string | undefined;
   facetTagNames: Map<string, string>;
   includes: Set<string>;
@@ -285,6 +286,7 @@ function emitIrModuleCppWithContext(
     directBindingOwners: directBindingOwners ?? createCppDirectBindingOwners(sourceModules),
     facetTagNames: new Map(),
     importBindingOwners: importBindingOwners ?? createCppImportBindingOwners(sourceModules),
+    importedBindingTypes: new Map(),
     includes: new Set<string>(),
     module,
     namespaceScope: true,
@@ -1253,6 +1255,8 @@ function emitExpression(
       if (expression.semantics.nullishComparison) {
         return emitNullishComparisonCpp(expression, context);
       }
+      const inferredNullishComparison = emitCppInferredOptionalNullishComparison(expression, context);
+      if (inferredNullishComparison) return inferredNullishComparison;
       const boundAmbientTypeof = emitBoundAmbientTypeofUndefinedComparisonCpp(expression, context);
       if (boundAmbientTypeof) return boundAmbientTypeof;
       if (expression.operator === '??') {
@@ -1491,7 +1495,18 @@ function emitExpression(
           }
           return emitExpression(argument, context, getIrCallArgumentExpectedTypeCpp(expression, index, context));
         });
-      const invocationTarget = getCppCallableObjectExpressionCpp(expression.callee, context) ? `(*${callee})` : callee;
+      const calleeType = getIrExpressionTypeEvidenceCpp(expression.callee, context);
+      const optionalCallable = Boolean(
+        calleeType && hasIrTypeAbsentMember(calleeType) && getCppClosedCallableType(calleeType, context, new Set()),
+      );
+      const callableObject = getCppCallableObjectExpressionCpp(expression.callee, context);
+      const invocationTarget = callableObject
+        ? optionalCallable
+          ? `(*${callee}.value())`
+          : `(*${callee})`
+        : optionalCallable
+          ? `${callee}.value()`
+          : callee;
       return `${invocationTarget}${emitCppTypeArguments(expression.typeArguments, context)}(${args.join(', ')})`;
     }
     case 'cast': {
@@ -4183,6 +4198,38 @@ function emitNullishComparisonCpp(
   return `${negated ? '' : '!'}${emitExpression(operand, context)}.has_value()`;
 }
 
+function emitCppInferredOptionalNullishComparison(
+  expression: Readonly<Extract<IrExpression, { kind: 'binary' }>>,
+  context: EmitContext,
+): string | undefined {
+  if (!['==', '===', '!=', '!=='].includes(expression.operator)) return undefined;
+  const leftSentinel = getCppNullishLiteralKind(expression.left);
+  const rightSentinel = getCppNullishLiteralKind(expression.right);
+  if ((leftSentinel ? 1 : 0) + (rightSentinel ? 1 : 0) !== 1) return undefined;
+  const sentinel = leftSentinel ?? rightSentinel!;
+  const operand = leftSentinel ? expression.right : expression.left;
+  const operandType = getIrExpressionTypeEvidenceCpp(operand, context);
+  const union = operandType ? getIrUnionTypeCpp(operandType, context, new Set()) : undefined;
+  if (!union) return undefined;
+  const plan = getCppUnionRepresentationPlan(union, context);
+  if (plan.kind !== 'optionalSingle' && plan.kind !== 'optionalVariant') return undefined;
+  const strict = expression.operator === '===' || expression.operator === '!==';
+  if (strict && !union.types.some((member) => member.kind === sentinel)) return undefined;
+  context.includes.add('optional');
+  const present = expression.operator === '!=' || expression.operator === '!==';
+  return `${present ? '' : '!'}${emitExpression(operand, context)}.has_value()`;
+}
+
+function getCppNullishLiteralKind(expression: Readonly<IrExpression>): 'null' | 'undefined' | undefined {
+  if (expression.kind === 'literal' && expression.value === null) return 'null';
+  if (expression.kind === 'undefinedValue') return 'undefined';
+  return expression.kind === 'identifier' &&
+    expression.reference.kind === 'ambient' &&
+    expression.reference.name === 'undefined'
+    ? 'undefined'
+    : undefined;
+}
+
 function emitUnionMemberAssertionCpp(
   expression: Readonly<IrExpression>,
   assertedType: Readonly<IrType>,
@@ -5533,7 +5580,43 @@ function getCppComputedPropertySourceName(reference: Readonly<IrValueNameReferen
 }
 
 function getCppBindingTypeCpp(bindingId: string, context: EmitContext): Readonly<IrType> | undefined {
-  return context.preservedInitializerTypes.get(bindingId) ?? context.bindingTypes.get(bindingId);
+  return (
+    context.preservedInitializerTypes.get(bindingId) ??
+    context.bindingTypes.get(bindingId) ??
+    getCppImportedBindingTypeCpp(bindingId, context)
+  );
+}
+
+function getCppImportedBindingTypeCpp(bindingId: string, context: EmitContext): Readonly<IrType> | undefined {
+  const cached = context.importedBindingTypes.get(bindingId);
+  if (cached !== undefined) return cached ?? undefined;
+  const importItem = context.module.imports.find((candidate) =>
+    candidate.bindings.some((binding) => binding.binding.id === bindingId),
+  );
+  const importedBinding = importItem?.bindings.find((binding) => binding.binding.id === bindingId);
+  if (!importItem || !importedBinding || importedBinding.imported === '*') {
+    context.importedBindingTypes.set(bindingId, null);
+    return undefined;
+  }
+  const candidates = getCppResolvedImportModules(importItem.specifier, context).flatMap((targetModule) => {
+    const direct = targetModule.declarations.find(
+      (declaration) =>
+        'binding' in declaration && declaration.exported && declaration.binding.name === importedBinding.imported,
+    );
+    const local = targetModule.exports.find(
+      (exported) => exported.kind === 'local' && !exported.typeOnly && exported.exported === importedBinding.imported,
+    );
+    const targetBindingId =
+      direct && 'binding' in direct ? direct.binding.id : local?.kind === 'local' ? local.binding.id : undefined;
+    const type = targetBindingId ? collectIrModuleBindingTypesCpp(targetModule).get(targetBindingId) : undefined;
+    return type ? [type] : [];
+  });
+  const canonical = new Map(
+    candidates.map((candidate) => [normalizeCompilerStructuralValueCanonical(candidate), candidate]),
+  );
+  const resolved = canonical.size === 1 ? [...canonical.values()][0]! : null;
+  context.importedBindingTypes.set(bindingId, resolved);
+  return resolved ?? undefined;
 }
 
 function getIrNewExpressionTypeEvidenceCpp(

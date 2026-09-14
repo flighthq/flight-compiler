@@ -187,6 +187,37 @@ describe('createCppCompilerBackend', () => {
     expect(emitted).not.toContain('flighthq_library::DEFAULTCOUNT');
   });
 
+  it('recovers imported optional callback evidence for null checks and calls', () => {
+    const guards = lowerPackage(
+      '@flighthq/geometry',
+      'guards.ts',
+      'export let guard: ((name: string) => void) | null = null;',
+    ).module;
+    const consumer = lowerPackage(
+      '@flighthq/geometry',
+      'pool.ts',
+      "import { guard } from './guards.js'; export function release(): void { if (guard !== null) guard('release'); }",
+    ).module;
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          importer: consumer,
+          specifier: './guards.js',
+          target: { packageName: guards.packageName, source: guards.source },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const emitted = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules: [consumer, guards],
+      options: { runtimeProfile: 'flight-cpp' },
+    }).emitModule(consumer)[0]!.contents;
+
+    expect(emitted).toContain('if (flighthq_geometry::guard.has_value())');
+    expect(emitted).toContain('flighthq_geometry::guard.value()(flight::String("release"))');
+  });
+
   it('lowers for-of destructuring through an imported tuple element alias', () => {
     const rows = ts.createSourceFile(
       '/flight/packages/model/src/rows.ts',
