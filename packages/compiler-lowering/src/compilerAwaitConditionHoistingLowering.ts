@@ -443,8 +443,9 @@ function lowerIrLazyAwaitCondition(
 
 // An await at the leading evaluation position of these expression forms can be bound before the
 // enclosing expression without reordering work or making a lazy arm eager. This covers the common
-// `!(await task)`, `(await task) !== null`, and `(await task) ? a : b` shapes while deliberately
-// leaving right-hand logical operands and conditional arms to structured control-flow lowering.
+// `!(await task)`, `(await task) !== null`, `(await task) ? a : b`, and
+// `new External(await task)` shapes while deliberately leaving right-hand logical operands and
+// conditional arms to structured control-flow lowering.
 function extractIrLeadingAwait(
   expression: Readonly<IrExpression>,
   binding: Readonly<IrBindingIdentity>,
@@ -483,6 +484,20 @@ function extractIrLeadingAwait(
     expression.kind === 'call' &&
     expression.callee.kind === 'identifier' &&
     expression.callee.reference.kind === 'binding' &&
+    expression.arguments[0]
+  ) {
+    const nested = extractIrLeadingAwait(expression.arguments[0], binding);
+    return nested
+      ? {
+          await: nested.await,
+          expression: { ...expression, arguments: [nested.expression, ...expression.arguments.slice(1)] },
+        }
+      : undefined;
+  }
+  if (
+    expression.kind === 'new' &&
+    expression.callee.kind === 'identifier' &&
+    expression.callee.reference.kind === 'ambient' &&
     expression.arguments[0]
   ) {
     const nested = extractIrLeadingAwait(expression.arguments[0], binding);
