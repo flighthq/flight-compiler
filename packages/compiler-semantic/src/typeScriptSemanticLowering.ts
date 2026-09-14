@@ -3293,7 +3293,12 @@ function lowerConcreteTypeScriptCallableUtilityReference(
     const symbol = context.checker.getSymbolAtLocation(argument.typeName);
     if (symbol?.declarations?.some(ts.isTypeParameterDeclaration)) return undefined;
   }
-  return getTypeScriptCheckerTypeEvidence(context.checker.getTypeFromTypeNode(node), context, 0, true);
+  const evidence = getTypeScriptCheckerTypeEvidence(context.checker.getTypeFromTypeNode(node), context, 0, true);
+  // A deliberately minimal source program may not include a host library declaration for these
+  // standard utilities. In that case the checker reports `any`, but retaining the authored utility
+  // reference and its `typeof` operand gives backends exact access to the local callable signature.
+  // Concrete checker evidence still wins when a library or declaration supplies it.
+  return evidence?.kind === 'unknown' ? undefined : evidence;
 }
 
 function lowerConcreteTypeScriptObjectProjection(
