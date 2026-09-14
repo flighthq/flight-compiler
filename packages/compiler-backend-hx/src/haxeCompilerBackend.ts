@@ -18,6 +18,7 @@ import {
   createCompilerLoweringPassBindingPattern,
   createCompilerLoweringPassCStyleFor,
   createCompilerLoweringPassExtraArgumentErasure,
+  createCompilerLoweringPassFinallyAwaitHoisting,
   createCompilerLoweringPassInterfaceInheritance,
   createCompilerLoweringPassSwitchFallthrough,
   createCompilerLoweringPassSwitchSuspension,
@@ -264,6 +265,7 @@ function emitIrModuleHaxeWithContext(
   const module = lowerIrModuleWithCompilerPasses(sourceModule, [
     createCompilerLoweringPassExtraArgumentErasure(),
     createCompilerLoweringPassAwaitConditionHoisting(),
+    createCompilerLoweringPassFinallyAwaitHoisting(),
     createCompilerLoweringPassBindingPattern(),
     createCompilerLoweringPassVariableHoisting(),
     createCompilerLoweringPassCStyleFor(),

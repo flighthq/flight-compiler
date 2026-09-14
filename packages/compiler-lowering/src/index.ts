@@ -6,6 +6,7 @@ export { createIrClassInitializationPlan, isIrClassInitializationFailure } from 
 export { hasIrModuleArrayBindingPattern } from './compilerArrayBindingPatternPresence.js';
 export { createCompilerLoweringPassCStyleFor } from './compilerCStyleForLowering.js';
 export { createCompilerLoweringPassExtraArgumentErasure } from './compilerExtraArgumentErasureLowering.js';
+export { createCompilerLoweringPassFinallyAwaitHoisting } from './compilerFinallyAwaitHoistingLowering.js';
 export { createCompilerLoweringPassInterfaceInheritance } from './compilerInterfaceInheritanceLowering.js';
 export { createCompilerLoweringPassObjectBindingPattern } from './compilerObjectBindingPatternLowering.js';
 export { getIrSwitchCaseCompletion } from './compilerSwitchClauseCompletion.js';

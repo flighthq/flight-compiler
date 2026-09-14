@@ -556,6 +556,21 @@ describe('emitIrModuleHaxe', () => {
     expect(emitIrModuleHaxe(result.module).contents).toContain('js.Syntax.code("new Function({0})", source)');
   });
 
+  it('lowers a suspending finally after a normally completing protected region', () => {
+    const result = lower(
+      'finally-await.ts',
+      `export async function close(task: Promise<void>, cleanup: Promise<void>): Promise<void> {
+        let failed = false;
+        try { await task; } catch { failed = true; } finally { await cleanup; }
+      }`,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('finallyThrew');
+    expect(output).toContain('finallyError');
+    expect(output).toContain('normalize(cleanup)');
+  });
+
   it('emits shared traceable provenance with an optional upstream commit', () => {
     const module = lower('value.ts', 'export const value = 1;').module;
     const commit = '0123456789abcdef0123456789abcdef01234567';
