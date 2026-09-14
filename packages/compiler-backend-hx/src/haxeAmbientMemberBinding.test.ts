@@ -72,6 +72,10 @@ describe('getCompilerHaxeAmbientMemberBinding', () => {
       kind: 'runtimeCall',
       targetName: '_Array.flatMap',
     });
+    expect(getCompilerHaxeAmbientMemberBinding({ name: 'flat', receiver: 'array' })).toEqual({
+      kind: 'runtimeCall',
+      targetName: '_Array.flat',
+    });
     expect(getCompilerHaxeAmbientMemberBinding({ name: 'entries', receiver: 'array' })).toEqual({
       kind: 'runtimeCall',
       targetName: '_Array.entries',

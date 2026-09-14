@@ -43,6 +43,7 @@ const haxeAmbientMemberBindings: Readonly<Record<string, CompilerHaxeAmbientMemb
   'array.every': { kind: 'staticCall', targetPath: 'Lambda.foreach' },
   'array.fill': { kind: 'runtimeCall', targetName: '_Array.fill' },
   'array.filter': { kind: 'method', targetName: 'filter' },
+  'array.flat': { kind: 'runtimeCall', targetName: '_Array.flat' },
   'array.flatMap': { kind: 'runtimeCall', targetName: '_Array.flatMap' },
   'array.find': { kind: 'staticCall', targetPath: 'Lambda.find' },
   'array.findIndex': { kind: 'runtimeCall', targetName: '_Array.findIndex' },

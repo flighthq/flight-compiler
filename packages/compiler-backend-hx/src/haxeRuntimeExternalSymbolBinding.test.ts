@@ -12,7 +12,7 @@ describe('createCompilerRuntimeExternalSymbolBindingPlanHaxe', () => {
     const plan = createCompilerRuntimeExternalSymbolBindingPlanHaxe();
 
     expect(plan.contract).toBe('flight-runtime-contract/2');
-    expect(plan.bindings).toHaveLength(329);
+    expect(plan.bindings).toHaveLength(336);
     expect(plan.bindings.filter(({ externalSymbol }) => externalSymbol.sourceName === 'Promise')).toEqual([
       {
         capability: 'task',
@@ -231,6 +231,13 @@ describe('getCompilerRuntimeExternalSymbolTargetHaxe', () => {
     ['CanvasRenderingContext2D', 'type', 'js.html.CanvasRenderingContext2D'],
     ['DOMException', 'type', 'js.html.DOMException'],
     ['DOMRect', 'type', 'Dynamic'],
+    ['HTMLSpanElement', 'type', 'Dynamic'],
+    ['HTMLStyleElement', 'type', 'Dynamic'],
+    ['Navigator', 'type', 'Dynamic'],
+    ['PromiseFulfilledResult', 'type', 'Dynamic'],
+    ['PromiseRejectedResult', 'type', 'Dynamic'],
+    ['SVGFilterElement', 'type', 'Dynamic'],
+    ['SVGSVGElement', 'type', 'Dynamic'],
     ['DeviceOrientationEvent', 'value', 'js.Syntax.code("DeviceOrientationEvent")'],
     ['GPUAdapter', 'type', 'Dynamic'],
     ['GPUBlendState', 'type', 'Dynamic'],
