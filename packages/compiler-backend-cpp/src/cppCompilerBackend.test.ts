@@ -1277,6 +1277,23 @@ describe('createCppCompilerBackend', () => {
     );
   });
 
+  it('unwraps a Map.get result with an explicit non-null assertion', () => {
+    const output = emitIrModuleCpp(
+      lower(
+        'map-get-present.ts',
+        `interface Entry { width: number }
+         export function width(entries: Map<number, Entry>, id: number): number {
+           const entry = entries.get(id)!;
+           return entry.width;
+         }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+
+    expect(output).toContain('flight::Ref<Entry> entry = entries.get(id).value()');
+    expect(output).toContain('return entry->width');
+  });
+
   it('constructs an imported nullable reference from an imported function result', () => {
     const types = ts.createSourceFile(
       '/flight/packages/types/src/color.ts',
@@ -1896,10 +1913,8 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
 
   it('emits string element access through the UTF-16 character contract', () => {
     const output = emitIrModuleCpp(
-      lower(
-        'string-element.ts',
-        `export function hexDigit(hex: string, index: number): string { return hex[index]; }`,
-      ).module,
+      lower('string-element.ts', `export function hexDigit(hex: string, index: number): string { return hex[index]; }`)
+        .module,
       { runtimeProfile: 'flight-cpp' },
     ).contents;
 
@@ -5225,6 +5240,44 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(emitted.contents).toContain('||');
   });
 
+  it('preserves operand values and JavaScript truthiness for non-boolean logical OR', () => {
+    const output = emitIrModuleCpp(
+      lower(
+        'logical-or-value.ts',
+        `interface Existing { imagePath?: string }
+         export function imagePath(imageFile: string, existing?: Existing): string {
+           return imageFile || existing?.imagePath || '';
+         }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+
+    expect(output).toContain('#include <flight/boolean.hpp>');
+    expect(output).toContain('if (flight::to_boolean(logical_or_value)) return logical_or_value;');
+    expect(output).toContain('if (flight::to_boolean(logical_or_value_2)) return logical_or_value_2.value();');
+    expect(output).toContain('return flight::String("")');
+    expect(output).not.toContain(' || ');
+  });
+
+  it('uses a named contextual callback return type as the lambda ABI', () => {
+    const output = emitIrModuleCpp(
+      lower(
+        'contextual-callback-return.ts',
+        `interface Value { id: number }
+         type Resolver = (key: string) => Value | null;
+         export function create(values: Record<string, Value>): Resolver {
+           const resolver: Resolver = (key: string) => values[key] ?? null;
+           return resolver;
+         }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+
+    expect(output).toContain('std::optional<flight::Ref<Value>>');
+    expect(output).toContain('return values.get(key).value_or(std::nullopt)');
+    expect(output).not.toContain('return values.get(key).value()');
+  });
+
   it('uses stable source-identity spelling for colliding public C++ names', () => {
     const result = lower(
       'collision.ts',
@@ -6431,11 +6484,24 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(emitted.contents).toContain('flight::Array<flight::Ref<Node<>>> nodes;');
   });
 
-  it('uses a concrete uninhabited carrier for never in template arguments', () => {
-    const result = lower(
-      'never-record.ts',
-      'export interface Extension { marker?: Record<string, never>; }',
+  it('resolves later aliases used by forward-declaration template defaults', () => {
+    const output = emitIrModuleCpp(
+      lower(
+        'aliased-template-default.ts',
+        `export interface Outcome<ReasonType = Reason> { reason: ReasonType }
+         export type Reason = 'blocked' | 'unavailable';`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+
+    expect(output).toContain('template <typename ReasonType = flight::String>');
+    expect(output.indexOf('template <typename ReasonType = flight::String>')).toBeLessThan(
+      output.indexOf('using Reason = flight::String'),
     );
+  });
+
+  it('uses a concrete uninhabited carrier for never in template arguments', () => {
+    const result = lower('never-record.ts', 'export interface Extension { marker?: Record<string, never>; }');
     const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
 
     expect(emitted.contents).toContain('flight::Record<flight::String, std::monostate>');
@@ -8428,6 +8494,97 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
 
     expect(output).toContain(
       'cell = std::optional<flight::Ref<Cell>>{flight::make_ref<Cell>(Cell{.id = 1.0, .values = flight::Set<flight::String>()})}',
+    );
+  });
+
+  it('materializes an object literal returned through an optional referent', () => {
+    const output = emitIrModuleCpp(
+      lower(
+        'optional-object-return.ts',
+        `interface Metrics { ascent: number; descent: number }
+         export function read(valid: boolean): Metrics | null {
+           if (!valid) return null;
+           return { ascent: 1, descent: 2 };
+         }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+
+    expect(output).toContain(
+      'return std::optional<flight::Ref<Metrics>>{flight::make_ref<Metrics>(Metrics{.ascent = 1.0, .descent = 2.0})}',
+    );
+  });
+
+  it('dereferences a narrowed optional reference before accessing its members', () => {
+    const output = emitIrModuleCpp(
+      lower(
+        'narrowed-optional-reference-member.ts',
+        `interface Pair { a: number; b: number }
+         export function update(pairs: Pair[], index: number): void {
+           const pair = pairs[index];
+           if (pair === undefined) return;
+           pair.a = 1;
+           pair.b = 2;
+         }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+
+    expect(output).toContain('pair.value()->a = 1.0');
+    expect(output).toContain('pair.value()->b = 2.0');
+  });
+
+  it('unwraps a narrowed nullable variant before typed-array indexing', () => {
+    const output = emitIrModuleCpp(
+      lower(
+        'nullable-typed-array-variant.ts',
+        `export function read(
+           values: Readonly<Uint8Array | Uint8ClampedArray | null>,
+           index: number,
+         ): number {
+           return values !== null ? values[index] : index;
+         }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+
+    expect(output).toContain('std::visit');
+    expect(output).toContain(', values.value())');
+    expect(output).not.toContain('values[index]');
+  });
+
+  it('materializes an object literal returned through an imported optional referent', () => {
+    const model = lowerPackage(
+      '@flighthq/types',
+      'metrics.ts',
+      `export interface Metrics { ascent: number; descent: number }
+       export interface Source { getMetrics(): Readonly<Metrics> }`,
+    ).module;
+    const barrel = lowerPackage('@flighthq/types', 'contract.ts', "export type { Metrics } from './metrics';").module;
+    const consumer = lowerPackage(
+      '@flighthq/font-formats',
+      'read.ts',
+      `import type { Metrics } from '@flighthq/types/contract';
+       export function read(valid: boolean): Metrics | null {
+         if (!valid) return null;
+         return { ascent: 1, descent: 2 };
+       }`,
+    ).module;
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        { specifier: './metrics', target: { packageName: model.packageName, source: model.source } },
+        { specifier: '@flighthq/types/contract', target: { packageName: barrel.packageName, source: barrel.source } },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const output = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules: [model, barrel, consumer],
+      options: { runtimeProfile: 'flight-cpp' },
+    }).emitModule(consumer)[0]!.contents;
+
+    expect(output).toContain(
+      'return std::optional<flight::Ref<flighthq_types::Metrics>>{flight::make_ref<flighthq_types::Metrics>(flighthq_types::Metrics{.ascent = 1.0, .descent = 2.0})}',
     );
   });
 

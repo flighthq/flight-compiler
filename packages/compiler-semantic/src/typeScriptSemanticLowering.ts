@@ -1168,6 +1168,7 @@ function lowerExpression(
 
 function markIrExpressionPresent(expression: IrExpression): IrExpression {
   return (expression.kind === 'identifier' && expression.reference.kind === 'binding') ||
+    expression.kind === 'call' ||
     expression.kind === 'property' ||
     expression.kind === 'element'
     ? { ...expression, presence: 'narrowedPresent' }
@@ -1260,10 +1261,7 @@ function getTypeScriptInstantiatedInvocationParameterType(
   return refineTypeScriptInvocationParameterEvidence(evidence, inferInitializerType(argument, context));
 }
 
-function refineTypeScriptInvocationParameterEvidence(
-  parameter: Readonly<IrType>,
-  argument: Readonly<IrType>,
-): IrType {
+function refineTypeScriptInvocationParameterEvidence(parameter: Readonly<IrType>, argument: Readonly<IrType>): IrType {
   if (parameter.kind === 'union' && argument.kind === 'function') {
     const callableIndices = parameter.types.flatMap((member, index) => (member.kind === 'function' ? [index] : []));
     if (callableIndices.length !== 1) return parameter;
@@ -1284,14 +1282,10 @@ function refineTypeScriptInvocationParameterEvidence(
     parameters: parameter.parameters.map((value, index) => ({
       ...value,
       type:
-        value.type.kind === 'unknown' && value.type.source === 'any'
-          ? argument.parameters[index]!.type
-          : value.type,
+        value.type.kind === 'unknown' && value.type.source === 'any' ? argument.parameters[index]!.type : value.type,
     })),
     returns:
-      parameter.returns.kind === 'unknown' && parameter.returns.source === 'any'
-        ? argument.returns
-        : parameter.returns,
+      parameter.returns.kind === 'unknown' && parameter.returns.source === 'any' ? argument.returns : parameter.returns,
   };
 }
 
@@ -3375,10 +3369,7 @@ function lowerConcreteTypeScriptConditionalAliasReference(
   // Keep standard utility identity in neutral IR. Expanding lib.d.ts' conditional aliases here can
   // discard the exclusion predicate when its subject is an imported alias or a keyof expression;
   // target backends instead evaluate the retained utility against their resolved module graph.
-  if (
-    ts.isIdentifier(node.typeName) &&
-    (node.typeName.text === 'Exclude' || node.typeName.text === 'NonNullable')
-  ) {
+  if (ts.isIdentifier(node.typeName) && (node.typeName.text === 'Exclude' || node.typeName.text === 'NonNullable')) {
     return undefined;
   }
   if (hasExternalTypeScriptTypeParameter(node, context)) return undefined;

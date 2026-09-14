@@ -128,6 +128,8 @@ export type IrExpression =
       arguments: readonly IrExpression[];
       callee: IrExpression;
       optional: boolean;
+      // Whether an explicit source non-null assertion proves the invocation result is present.
+      presence?: 'narrowedPresent' | undefined;
       semantics: IrCallSemantics;
       typeArguments: readonly IrType[];
     }>
