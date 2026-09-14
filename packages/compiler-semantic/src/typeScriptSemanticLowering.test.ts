@@ -2007,6 +2007,36 @@ describe('lowerTypeScriptSource', () => {
     });
   });
 
+  it('preserves Exclude identity for backend module-graph evaluation', () => {
+    const result = lower(
+      'exclude.ts',
+      `interface Entity { name: string; [Symbol.iterator](): void }
+       export type EntityName = Exclude<keyof Entity, symbol>;
+       export type Remaining = Exclude<'first' | 'second', 'first'>;`,
+    );
+    const aliases = result.module.declarations.filter((declaration) => declaration.kind === 'typeAlias');
+
+    expect(result.diagnostics).toEqual([]);
+    expect(aliases).toMatchObject([
+      {
+        binding: { name: 'EntityName' },
+        type: {
+          kind: 'named',
+          reference: { kind: 'ambient', name: 'Exclude' },
+          typeArguments: [{ kind: 'keyof' }, { kind: 'primitive', name: 'symbol' }],
+        },
+      },
+      {
+        binding: { name: 'Remaining' },
+        type: {
+          kind: 'named',
+          reference: { kind: 'ambient', name: 'Exclude' },
+          typeArguments: [{ kind: 'union' }, { kind: 'literal', value: 'first' }],
+        },
+      },
+    ]);
+  });
+
   it('separates executable defaults from function types', () => {
     const result = lower('contracts.ts', 'export const callback = (value: number = 1): number => value;');
     const [callback] = result.module.declarations;

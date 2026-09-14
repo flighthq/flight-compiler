@@ -3324,6 +3324,15 @@ function lowerConcreteTypeScriptConditionalAliasReference(
   node: ts.TypeReferenceNode,
   context: LoweringContext,
 ): IrType | undefined {
+  // Keep standard utility identity in neutral IR. Expanding lib.d.ts' conditional aliases here can
+  // discard the exclusion predicate when its subject is an imported alias or a keyof expression;
+  // target backends instead evaluate the retained utility against their resolved module graph.
+  if (
+    ts.isIdentifier(node.typeName) &&
+    (node.typeName.text === 'Exclude' || node.typeName.text === 'NonNullable')
+  ) {
+    return undefined;
+  }
   if (hasExternalTypeScriptTypeParameter(node, context)) return undefined;
   const unresolved = context.checker.getSymbolAtLocation(node.typeName);
   const symbol = unresolved ? (resolveTypeBindingAliasTarget(unresolved, context) ?? unresolved) : undefined;
