@@ -2702,9 +2702,12 @@ function emitStatement(statement: Readonly<IrStatement>, context: EmitContext): 
       const otherwise = statement.cases.find((switchCase) => !switchCase.expression);
       const lines = [`auto ${name} = ${emitExpression(statement.expression, context)};`];
       cases.forEach((switchCase, index) => {
+        const unionMemberTest =
+          switchCase.unionMemberTest ??
+          getCppSwitchCaseUnionMemberTestCpp(statement.expression, switchCase.expression!, context);
         lines.push(
           `${index > 0 ? 'else ' : ''}if (${name} == ${emitExpression(switchCase.expression!, context)}) {`,
-          ...indentSourceLines(emitSwitchCaseStatementsCpp(switchCase, statement.label, context)),
+          ...indentSourceLines(emitSwitchCaseStatementsCpp(switchCase, statement.label, context, unionMemberTest)),
           '}',
         );
       });
@@ -2775,19 +2778,48 @@ function emitSwitchCaseStatementsCpp(
   switchCase: Readonly<IrSwitchCase>,
   switchLabel: Readonly<IrControlFlowLabelIdentity> | undefined,
   context: EmitContext,
+  unionMemberTest: Readonly<IrUnionMemberTestEvidence> | undefined = switchCase.unionMemberTest,
 ): string[] {
   const last = switchCase.statements.at(-1);
   const localBreak = last?.kind === 'break' && (!last.target || (switchLabel && last.target.id === switchLabel.id));
-  const caseContext = switchCase.unionMemberTest
+  const caseContext = unionMemberTest
     ? {
         ...context,
         narrowedBindingTypes: new Map(context.narrowedBindingTypes).set(
-          switchCase.unionMemberTest.binding.id,
-          switchCase.unionMemberTest.member,
+          unionMemberTest.binding.id,
+          unionMemberTest.member,
         ),
       }
     : context;
   return emitStatements(localBreak ? switchCase.statements.slice(0, -1) : switchCase.statements, caseContext);
+}
+
+function getCppSwitchCaseUnionMemberTestCpp(
+  discriminant: Readonly<IrExpression>,
+  caseExpression: Readonly<IrExpression>,
+  context: EmitContext,
+): Readonly<IrUnionMemberTestEvidence> | undefined {
+  if (
+    discriminant.kind !== 'property' ||
+    discriminant.object.kind !== 'identifier' ||
+    discriminant.object.reference.kind !== 'binding' ||
+    caseExpression.kind !== 'literal'
+  ) {
+    return undefined;
+  }
+  const binding = discriminant.object.reference.binding;
+  const declared = getCppBindingTypeCpp(binding.id, context);
+  const union = declared ? getIrUnionTypeCpp(declared, context, new Set()) : undefined;
+  if (!union) return undefined;
+  const matching = union.types.filter((member) => {
+    const property = getIrObjectPropertyTypeCpp(member, discriminant.name, context);
+    if (!property) return false;
+    if (property.kind === 'literal') return property.value === caseExpression.value;
+    return property.kind === 'union'
+      ? property.types.some((alternative) => alternative.kind === 'literal' && alternative.value === caseExpression.value)
+      : false;
+  });
+  return matching.length === 1 ? { binding, member: matching[0]!, whenResult: true } : undefined;
 }
 
 function emitStatementBody(statement: Readonly<IrStatement>, context: EmitContext): string[] {
@@ -4273,14 +4305,14 @@ function emitCppVariantCommonPropertyExpression(
   context: EmitContext,
 ): string | undefined {
   if (
-    expression.object.kind !== 'identifier' ||
-    expression.object.reference.kind !== 'binding' ||
-    expression.object.narrowedMember ||
-    context.narrowedBindingTypes.has(expression.object.reference.binding.id)
+    expression.object.kind === 'identifier' &&
+    expression.object.reference.kind === 'binding' &&
+    (expression.object.narrowedMember || context.narrowedBindingTypes.has(expression.object.reference.binding.id))
   ) {
     return undefined;
   }
-  const union = getIrBindingVariantUnionTypeCpp(expression.object.reference.binding.id, context);
+  const objectType = getIrExpressionTypeEvidenceCpp(expression.object, context);
+  const union = objectType ? getIrVariantUnionTypeCpp(objectType, context, new Set()) : undefined;
   if (!union) return undefined;
   const representation = getCppVariantRepresentationForInspection(union, context);
   if (representation.direct) return undefined;
@@ -4298,7 +4330,7 @@ function emitCppVariantCommonPropertyExpression(
   if (referenceModes.size !== 1) return undefined;
   context.includes.add('variant');
   const operator = referenceModes.has('reference') ? '->' : '.';
-  return `std::visit([](const auto& value) { return value${operator}${safeCppName(expression.name)}; }, ${emitIdentifierReference(expression.object.reference, context)})`;
+  return `std::visit([](const auto& value) { return value${operator}${safeCppName(expression.name)}; }, ${emitExpression(expression.object, context)})`;
 }
 
 function emitNarrowedUnionMemberCpp(

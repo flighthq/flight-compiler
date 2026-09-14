@@ -5,8 +5,13 @@ import { fileURLToPath } from 'node:url';
 import ts from 'typescript';
 
 import { isBackendEmissionFailure } from '../../compiler-emission/src/index.js';
+import { analyzeIrStatementSubtreeTraversal } from '../../compiler-ir-traversal/src/index.js';
 import { lowerTypeScriptSource, lowerTypeScriptSources } from '../../compiler-semantic/src/index.js';
-import type { CompilerModuleResolutionPlan, IrType } from '../../compiler-types/src/index.js';
+import type {
+  CompilerModuleResolutionPlan,
+  IrType,
+  IrUnionMemberTestEvidence,
+} from '../../compiler-types/src/index.js';
 import { createCppCompilerBackend, emitIrModuleCpp } from './cppCompilerBackend.js';
 
 function lower(file: string, source: string) {
@@ -5265,6 +5270,40 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(emitted.contents).toContain('shape.index() == 0');
     expect(emitted.contents).toContain('std::get<0>(shape).radius');
     expect(emitted.contents).toContain('std::get<1>(shape).side');
+  });
+
+  it('recovers closed switch discriminants from package-graph type evidence', () => {
+    const module = structuredClone(
+      lower(
+        'switch-graph-evidence.ts',
+        `interface Circle { readonly kind: 'circle'; readonly radius: number; }
+         interface Square { readonly kind: 'square'; readonly side: number; }
+         type Shape = Circle | Square;
+         export function area(shape: Shape): number {
+           switch (shape.kind) { case 'circle': return shape.radius; case 'square': return shape.side; }
+         }`,
+      ).module,
+    );
+    const declaration = module.declarations.find(
+      (candidate) => candidate.kind === 'function' && candidate.binding.name === 'area',
+    );
+    const switchStatement = declaration?.kind === 'function' ? declaration.body[0] : undefined;
+    if (switchStatement?.kind !== 'switch') throw new Error('Expected switch statement');
+    for (const switchCase of switchStatement.cases) {
+      delete (switchCase as { unionMemberTest?: IrUnionMemberTestEvidence }).unionMemberTest;
+    }
+    analyzeIrStatementSubtreeTraversal(switchStatement, {
+      expression(expression) {
+        if (expression.kind === 'identifier' && expression.reference.kind === 'binding') {
+          delete (expression as { narrowedMember?: string }).narrowedMember;
+        }
+      },
+    });
+    const output = emitIrModuleCpp(module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    expect(output).toContain('std::visit([](const auto& value) { return value->kind; }, shape)');
+    expect(output).toMatch(/std::get<[^>]+>\(shape\)->radius/u);
+    expect(output).toMatch(/std::get<[^>]+>\(shape\)->side/u);
   });
 
   it('collapses equivalent alternatives, projects common properties, and emits optional variants', () => {
