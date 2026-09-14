@@ -5330,6 +5330,13 @@ function inferInitializerType(node: ts.Expression, context: LoweringContext): Ir
     return inferInitializerType(node.expression, context);
   }
   if (isTypeScriptConstAssertion(node)) return inferInitializerType(node.expression, context);
+  if (ts.isNonNullExpression(node)) {
+    return (
+      removeIrTypeAbsentMembersSemantic(inferInitializerType(node.expression, context)) ?? {
+        kind: 'never',
+      }
+    );
+  }
   if (ts.isAsExpression(node) || ts.isTypeAssertionExpression(node)) {
     return lowerType(node.type, context);
   }
@@ -5852,19 +5859,188 @@ function getTypeScriptReferencePresence(
   if (!symbol || !declaration) return {};
   const declared = context.checker.getTypeOfSymbolAtLocation(symbol, declaration);
   const declaredMembers = declared.isUnion() ? declared.types : [declared];
-  if (
-    !declaredMembers.some(
-      (member) => (member.flags & (ts.TypeFlags.Undefined | ts.TypeFlags.Null | ts.TypeFlags.Void)) !== 0,
-    )
-  ) {
-    return {};
-  }
+  const checkerDeclaredAbsent = declaredMembers.some(
+    (member) => (member.flags & (ts.TypeFlags.Undefined | ts.TypeFlags.Null | ts.TypeFlags.Void)) !== 0,
+  );
+  const recordedType = context.bindingTypes.get(symbol);
+  if (!checkerDeclaredAbsent && (!recordedType || !hasIrTypeAbsentMemberSemantic(recordedType))) return {};
   const flow = context.checker.getTypeAtLocation(node);
   const members = flow.isUnion() ? flow.types : [flow];
   const absent = members.some(
     (member) => (member.flags & (ts.TypeFlags.Undefined | ts.TypeFlags.Null | ts.TypeFlags.Void)) !== 0,
   );
-  return absent ? {} : { presence: 'narrowedPresent' };
+  const indeterminate = members.some(
+    (member) => (member.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown | ts.TypeFlags.TypeParameter)) !== 0,
+  );
+  return !absent && !indeterminate
+    ? { presence: 'narrowedPresent' }
+    : hasTypeScriptSyntacticReferencePresence(node, symbol, recordedType, context)
+      ? { presence: 'narrowedPresent' }
+      : {};
+}
+
+function hasTypeScriptSyntacticReferencePresence(
+  node: ts.Identifier,
+  symbol: ts.Symbol,
+  recordedType: Readonly<IrType> | undefined,
+  context: LoweringContext,
+): boolean {
+  const absentKinds = getIrTypeAbsentKindsSemantic(recordedType);
+  if (absentKinds.size === 0) return false;
+  for (let child: ts.Node = node, parent = node.parent; parent; child = parent, parent = parent.parent) {
+    if (ts.isIfStatement(parent)) {
+      const branch = getTypeScriptNullishComparisonPresence(parent.expression, symbol, absentKinds, context);
+      if (branch && isTypeScriptNodeWithin(child, parent.thenStatement) && branch.whenTrue) return true;
+      if (branch && parent.elseStatement && isTypeScriptNodeWithin(child, parent.elseStatement) && branch.whenFalse) {
+        return true;
+      }
+    }
+    if (ts.isBlock(parent)) {
+      const statementIndex = parent.statements.findIndex((statement) => isTypeScriptNodeWithin(node, statement));
+      if (statementIndex >= 0) {
+        const established = getTypeScriptPriorPresentAssignment(
+          parent.statements.slice(0, statementIndex),
+          symbol,
+          absentKinds,
+          context,
+        );
+        if (established !== undefined) return established;
+      }
+    }
+    if (ts.isFunctionLike(parent)) break;
+  }
+  return false;
+}
+
+function getTypeScriptPriorPresentAssignment(
+  statements: readonly ts.Statement[],
+  symbol: ts.Symbol,
+  absentKinds: ReadonlySet<'null' | 'undefined'>,
+  context: LoweringContext,
+): boolean | undefined {
+  for (let index = statements.length - 1; index >= 0; index--) {
+    const statement = statements[index]!;
+    const assignment = getTypeScriptDirectBindingAssignment(statement, symbol, context);
+    if (assignment !== undefined) return assignment;
+    if (ts.isIfStatement(statement) && !statement.elseStatement) {
+      const branch = getTypeScriptNullishComparisonPresence(statement.expression, symbol, absentKinds, context);
+      if (branch?.whenFalse && getTypeScriptPresentAssignmentInBranch(statement.thenStatement, symbol, context)) {
+        return true;
+      }
+    }
+    if (doesTypeScriptStatementAssignBinding(statement, symbol, context.checker)) return false;
+  }
+  return undefined;
+}
+
+function getTypeScriptPresentAssignmentInBranch(
+  statement: ts.Statement,
+  symbol: ts.Symbol,
+  context: LoweringContext,
+): boolean {
+  const statements = ts.isBlock(statement) ? statement.statements : [statement];
+  for (let index = statements.length - 1; index >= 0; index--) {
+    const assignment = getTypeScriptDirectBindingAssignment(statements[index]!, symbol, context);
+    if (assignment !== undefined) return assignment;
+    if (doesTypeScriptStatementAssignBinding(statements[index]!, symbol, context.checker)) return false;
+  }
+  return false;
+}
+
+function getTypeScriptDirectBindingAssignment(
+  statement: ts.Statement,
+  symbol: ts.Symbol,
+  context: LoweringContext,
+): boolean | undefined {
+  if (
+    !ts.isExpressionStatement(statement) ||
+    !ts.isBinaryExpression(statement.expression) ||
+    statement.expression.operatorToken.kind !== ts.SyntaxKind.EqualsToken ||
+    !ts.isIdentifier(statement.expression.left) ||
+    context.checker.getSymbolAtLocation(statement.expression.left) !== symbol
+  ) {
+    return undefined;
+  }
+  const type = inferInitializerType(statement.expression.right, context);
+  return type.kind !== 'unknown' && !hasIrTypeAbsentMemberSemantic(type);
+}
+
+function doesTypeScriptStatementAssignBinding(
+  statement: ts.Statement,
+  symbol: ts.Symbol,
+  checker: ts.TypeChecker,
+): boolean {
+  let assigned = false;
+  const visit = (node: ts.Node): void => {
+    if (
+      ts.isBinaryExpression(node) &&
+      isAssignmentOperator(node.operatorToken.kind) &&
+      ts.isIdentifier(node.left) &&
+      checker.getSymbolAtLocation(node.left) === symbol
+    ) {
+      assigned = true;
+      return;
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(statement);
+  return assigned;
+}
+
+function getTypeScriptNullishComparisonPresence(
+  expression: ts.Expression,
+  symbol: ts.Symbol,
+  absentKinds: ReadonlySet<'null' | 'undefined'>,
+  context: LoweringContext,
+): Readonly<{ whenFalse: boolean; whenTrue: boolean }> | undefined {
+  while (ts.isParenthesizedExpression(expression)) expression = expression.expression;
+  if (!ts.isBinaryExpression(expression)) return undefined;
+  const left = getTypeScriptNullishComparisonOperand(expression.left, symbol, context);
+  const right = getTypeScriptNullishComparisonOperand(expression.right, symbol, context);
+  const compared = left.binding ? right.absent : right.binding ? left.absent : undefined;
+  if (!compared) return undefined;
+  const loose =
+    expression.operatorToken.kind === ts.SyntaxKind.EqualsEqualsToken ||
+    expression.operatorToken.kind === ts.SyntaxKind.ExclamationEqualsToken;
+  const excludesAll = loose || (absentKinds.size === 1 && absentKinds.has(compared));
+  const equality =
+    expression.operatorToken.kind === ts.SyntaxKind.EqualsEqualsToken ||
+    expression.operatorToken.kind === ts.SyntaxKind.EqualsEqualsEqualsToken;
+  const inequality =
+    expression.operatorToken.kind === ts.SyntaxKind.ExclamationEqualsToken ||
+    expression.operatorToken.kind === ts.SyntaxKind.ExclamationEqualsEqualsToken;
+  return equality
+    ? { whenFalse: excludesAll, whenTrue: false }
+    : inequality
+      ? { whenFalse: false, whenTrue: excludesAll }
+      : undefined;
+}
+
+function getTypeScriptNullishComparisonOperand(
+  expression: ts.Expression,
+  symbol: ts.Symbol,
+  context: LoweringContext,
+): Readonly<{ absent?: 'null' | 'undefined'; binding: boolean }> {
+  while (ts.isParenthesizedExpression(expression)) expression = expression.expression;
+  if (expression.kind === ts.SyntaxKind.NullKeyword) return { absent: 'null', binding: false };
+  if (ts.isIdentifier(expression)) {
+    const reference = lowerIdentifierReference(expression, context);
+    if (reference.kind === 'ambient' && reference.name === 'undefined') {
+      return { absent: 'undefined', binding: false };
+    }
+    return { binding: context.checker.getSymbolAtLocation(expression) === symbol };
+  }
+  return { binding: false };
+}
+
+function getIrTypeAbsentKindsSemantic(type: Readonly<IrType> | undefined): ReadonlySet<'null' | 'undefined'> {
+  const kinds = new Set<'null' | 'undefined'>();
+  const visit = (candidate: Readonly<IrType> | undefined): void => {
+    if (candidate?.kind === 'null' || candidate?.kind === 'undefined') kinds.add(candidate.kind);
+    else if (candidate?.kind === 'union') candidate.types.forEach(visit);
+  };
+  visit(type);
+  return kinds;
 }
 
 // Which alternative of a union-typed binding this reference was proved to hold. The proof is the

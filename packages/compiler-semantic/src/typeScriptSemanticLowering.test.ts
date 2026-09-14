@@ -5261,6 +5261,45 @@ describe('lowerTypeScriptSource', () => {
       kind: 'return',
     });
   });
+  it('retains source guards when unresolved nominal types make checker flow indeterminate', () => {
+    const result = lower(
+      'ambient-narrowing.ts',
+      `interface Cache {
+         create(): ExternalValue;
+         get(): ExternalValue | undefined;
+         nullable: ExternalValue | null;
+       }
+       export function direct(cache: Cache): ExternalValue {
+         const cached = cache.get();
+         if (cached !== undefined) return cached;
+         return cache.create();
+       }
+       export function assigned(cache: Cache): ExternalValue {
+         let cached = cache.get();
+         if (cached === undefined) cached = cache.create();
+         return cached;
+       }
+       export function asserted(cache: Cache): ExternalValue {
+         const value = cache.get()!;
+         return value;
+       }`,
+    );
+    const functions = result.module.declarations.filter((declaration) => declaration.kind === 'function');
+    const directReturn = functions[0]?.body[1];
+    const assignedReturn = functions[1]?.body[2];
+    const assertedVariable = functions[2]?.body[0];
+
+    expect(result.diagnostics).toEqual([]);
+    expect(directReturn).toMatchObject({
+      consequent: { expression: { presence: 'narrowedPresent' }, kind: 'return' },
+      kind: 'if',
+    });
+    expect(assignedReturn).toMatchObject({ expression: { presence: 'narrowedPresent' }, kind: 'return' });
+    expect(assertedVariable).toMatchObject({
+      declarations: [{ type: { kind: 'named', reference: { kind: 'ambient', name: 'ExternalValue' } } }],
+      kind: 'variable',
+    });
+  });
   it('uses checker flow evidence when destructuring a narrowed tuple', () => {
     const result = lower(
       'narrowed-tuple.ts',
