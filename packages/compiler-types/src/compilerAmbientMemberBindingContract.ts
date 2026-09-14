@@ -43,6 +43,9 @@ export type CompilerRustAmbientMemberBinding =
   | Readonly<{ kind: 'method'; leadingArguments?: readonly string[]; owns?: boolean; targetName: string }>
   | Readonly<{ kind: 'borrowedMethod'; owns?: boolean; targetName: string; trailingArguments?: readonly string[] }>
   | Readonly<{ kind: 'countingMethod'; targetName: string }>
+  // A source property whose Rust representation returns an owned value through a zero-argument
+  // method. Shared runtime objects use this shape rather than exposing their internal storage.
+  | Readonly<{ kind: 'propertyMethod'; targetName: string }>
   // `borrowsElement` marks an iterator adaptor that hands its closure a reference rather than the
   // element: `map` gives `T` and `filter` gives `&T`, and the closure has to be written for what it
   // is given.

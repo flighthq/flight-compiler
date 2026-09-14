@@ -123,6 +123,10 @@ describe('getCompilerRustAmbientMemberBinding', () => {
       kind: 'countingMethod',
       targetName: 'byte_offset',
     });
+    expect(getCompilerRustAmbientMemberBinding({ name: 'buffer', receiver: 'typedArray' })).toEqual({
+      kind: 'propertyMethod',
+      targetName: 'buffer',
+    });
     expect(getCompilerRustAmbientMemberBinding({ name: 'length', receiver: 'typedArray' })).toEqual({
       kind: 'countingMethod',
       targetName: 'len',
@@ -134,6 +138,25 @@ describe('getCompilerRustAmbientMemberBinding', () => {
     expect(getCompilerRustAmbientMemberBinding({ name: 'subarray', receiver: 'typedArray' })).toEqual({
       kind: 'method',
       targetName: 'subarray',
+    });
+  });
+
+  it('maps DataView metadata and endian-aware access onto shared runtime storage', () => {
+    expect(getCompilerRustAmbientMemberBinding({ name: 'buffer', receiver: 'dataView' })).toEqual({
+      kind: 'propertyMethod',
+      targetName: 'buffer',
+    });
+    expect(getCompilerRustAmbientMemberBinding({ name: 'byteLength', receiver: 'dataView' })).toEqual({
+      kind: 'countingMethod',
+      targetName: 'byte_length',
+    });
+    expect(getCompilerRustAmbientMemberBinding({ name: 'getUint16', receiver: 'dataView' })).toEqual({
+      kind: 'method',
+      targetName: 'get_uint16',
+    });
+    expect(getCompilerRustAmbientMemberBinding({ name: 'setFloat32', receiver: 'dataView' })).toEqual({
+      kind: 'method',
+      targetName: 'set_float32',
     });
   });
 

@@ -108,6 +108,261 @@ impl fmt::Debug for FlightArrayBuffer {
     }
 }
 
+/// A byte-oriented view over shared ArrayBuffer storage.
+pub struct FlightDataView {
+    buffer: FlightArrayBuffer,
+    byte_offset: usize,
+    byte_length: usize,
+    identity: Rc<()>,
+}
+
+impl Clone for FlightDataView {
+    fn clone(&self) -> Self {
+        Self {
+            buffer: self.buffer.clone(),
+            byte_offset: self.byte_offset,
+            byte_length: self.byte_length,
+            identity: self.identity.clone(),
+        }
+    }
+}
+
+impl PartialEq for FlightDataView {
+    fn eq(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.identity, &other.identity)
+    }
+}
+
+impl fmt::Debug for FlightDataView {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("FlightDataView")
+            .field("byte_offset", &self.byte_offset)
+            .field("byte_length", &self.byte_length)
+            .finish_non_exhaustive()
+    }
+}
+
+impl FlightDataView {
+    pub fn from_buffer(buffer: FlightArrayBuffer) -> Self {
+        Self::from_buffer_offset(buffer, 0.0)
+    }
+
+    pub fn from_buffer_offset(buffer: FlightArrayBuffer, byte_offset: f64) -> Self {
+        let buffer_length = buffer.byte_length();
+        let byte_offset = data_view_offset(byte_offset, buffer_length);
+        Self::from_buffer_parts(buffer, byte_offset, buffer_length - byte_offset)
+    }
+
+    pub fn from_buffer_range(
+        buffer: FlightArrayBuffer,
+        byte_offset: f64,
+        byte_length: f64,
+    ) -> Self {
+        let buffer_length = buffer.byte_length();
+        let byte_offset = data_view_offset(byte_offset, buffer_length);
+        let byte_length = typed_array_length(byte_length);
+        byte_offset
+            .checked_add(byte_length)
+            .filter(|end| *end <= buffer_length)
+            .expect("DataView exceeds its buffer");
+        Self::from_buffer_parts(buffer, byte_offset, byte_length)
+    }
+
+    pub fn buffer(&self) -> FlightArrayBuffer {
+        self.buffer.clone()
+    }
+
+    pub fn byte_length(&self) -> usize {
+        self.byte_length
+    }
+
+    pub fn byte_offset(&self) -> usize {
+        self.byte_offset
+    }
+
+    pub fn get_float32(&self, byte_offset: f64, little_endian: Option<bool>) -> f64 {
+        let bytes = self.read_bytes::<4>(byte_offset);
+        if little_endian.unwrap_or(false) {
+            f32::from_le_bytes(bytes) as f64
+        } else {
+            f32::from_be_bytes(bytes) as f64
+        }
+    }
+
+    pub fn get_float64(&self, byte_offset: f64, little_endian: Option<bool>) -> f64 {
+        let bytes = self.read_bytes::<8>(byte_offset);
+        if little_endian.unwrap_or(false) {
+            f64::from_le_bytes(bytes)
+        } else {
+            f64::from_be_bytes(bytes)
+        }
+    }
+
+    pub fn get_int8(&self, byte_offset: f64) -> f64 {
+        i8::from_ne_bytes(self.read_bytes::<1>(byte_offset)) as f64
+    }
+
+    pub fn get_int16(&self, byte_offset: f64, little_endian: Option<bool>) -> f64 {
+        let bytes = self.read_bytes::<2>(byte_offset);
+        if little_endian.unwrap_or(false) {
+            i16::from_le_bytes(bytes) as f64
+        } else {
+            i16::from_be_bytes(bytes) as f64
+        }
+    }
+
+    pub fn get_int32(&self, byte_offset: f64, little_endian: Option<bool>) -> f64 {
+        let bytes = self.read_bytes::<4>(byte_offset);
+        if little_endian.unwrap_or(false) {
+            i32::from_le_bytes(bytes) as f64
+        } else {
+            i32::from_be_bytes(bytes) as f64
+        }
+    }
+
+    pub fn get_uint8(&self, byte_offset: f64) -> f64 {
+        u8::from_ne_bytes(self.read_bytes::<1>(byte_offset)) as f64
+    }
+
+    pub fn get_uint16(&self, byte_offset: f64, little_endian: Option<bool>) -> f64 {
+        let bytes = self.read_bytes::<2>(byte_offset);
+        if little_endian.unwrap_or(false) {
+            u16::from_le_bytes(bytes) as f64
+        } else {
+            u16::from_be_bytes(bytes) as f64
+        }
+    }
+
+    pub fn get_uint32(&self, byte_offset: f64, little_endian: Option<bool>) -> f64 {
+        let bytes = self.read_bytes::<4>(byte_offset);
+        if little_endian.unwrap_or(false) {
+            u32::from_le_bytes(bytes) as f64
+        } else {
+            u32::from_be_bytes(bytes) as f64
+        }
+    }
+
+    pub fn set_float32(&self, byte_offset: f64, value: f64, little_endian: Option<bool>) {
+        let value = value as f32;
+        self.write_bytes(
+            byte_offset,
+            if little_endian.unwrap_or(false) {
+                value.to_le_bytes()
+            } else {
+                value.to_be_bytes()
+            },
+        );
+    }
+
+    pub fn set_float64(&self, byte_offset: f64, value: f64, little_endian: Option<bool>) {
+        self.write_bytes(
+            byte_offset,
+            if little_endian.unwrap_or(false) {
+                value.to_le_bytes()
+            } else {
+                value.to_be_bytes()
+            },
+        );
+    }
+
+    pub fn set_int8(&self, byte_offset: f64, value: f64) {
+        self.write_bytes(
+            byte_offset,
+            (coerce_signed_integer(value, 8) as i8).to_ne_bytes(),
+        );
+    }
+
+    pub fn set_int16(&self, byte_offset: f64, value: f64, little_endian: Option<bool>) {
+        let value = coerce_signed_integer(value, 16) as i16;
+        self.write_bytes(
+            byte_offset,
+            if little_endian.unwrap_or(false) {
+                value.to_le_bytes()
+            } else {
+                value.to_be_bytes()
+            },
+        );
+    }
+
+    pub fn set_int32(&self, byte_offset: f64, value: f64, little_endian: Option<bool>) {
+        let value = coerce_signed_integer(value, 32) as i32;
+        self.write_bytes(
+            byte_offset,
+            if little_endian.unwrap_or(false) {
+                value.to_le_bytes()
+            } else {
+                value.to_be_bytes()
+            },
+        );
+    }
+
+    pub fn set_uint8(&self, byte_offset: f64, value: f64) {
+        self.write_bytes(
+            byte_offset,
+            (coerce_unsigned_integer(value, 8) as u8).to_ne_bytes(),
+        );
+    }
+
+    pub fn set_uint16(&self, byte_offset: f64, value: f64, little_endian: Option<bool>) {
+        let value = coerce_unsigned_integer(value, 16) as u16;
+        self.write_bytes(
+            byte_offset,
+            if little_endian.unwrap_or(false) {
+                value.to_le_bytes()
+            } else {
+                value.to_be_bytes()
+            },
+        );
+    }
+
+    pub fn set_uint32(&self, byte_offset: f64, value: f64, little_endian: Option<bool>) {
+        let value = coerce_unsigned_integer(value, 32) as u32;
+        self.write_bytes(
+            byte_offset,
+            if little_endian.unwrap_or(false) {
+                value.to_le_bytes()
+            } else {
+                value.to_be_bytes()
+            },
+        );
+    }
+
+    fn from_buffer_parts(
+        buffer: FlightArrayBuffer,
+        byte_offset: usize,
+        byte_length: usize,
+    ) -> Self {
+        Self {
+            buffer,
+            byte_offset,
+            byte_length,
+            identity: Rc::new(()),
+        }
+    }
+
+    fn read_bytes<const WIDTH: usize>(&self, byte_offset: f64) -> [u8; WIDTH] {
+        let start = self.absolute_range_start(byte_offset, WIDTH);
+        self.buffer.storage.borrow()[start..start + WIDTH]
+            .try_into()
+            .expect("DataView access width")
+    }
+
+    fn write_bytes<const WIDTH: usize>(&self, byte_offset: f64, bytes: [u8; WIDTH]) {
+        let start = self.absolute_range_start(byte_offset, WIDTH);
+        self.buffer.storage.borrow_mut()[start..start + WIDTH].copy_from_slice(&bytes);
+    }
+
+    fn absolute_range_start(&self, byte_offset: f64, width: usize) -> usize {
+        let relative = data_view_offset(byte_offset, self.byte_length);
+        relative
+            .checked_add(width)
+            .filter(|end| *end <= self.byte_length)
+            .expect("DataView access exceeds its view");
+        self.byte_offset + relative
+    }
+}
+
 /// Defines the byte width and JavaScript numeric conversion for one typed-array element kind.
 pub trait FlightTypedArrayCodec: 'static {
     type Element: Copy + Default + 'static;
@@ -351,6 +606,14 @@ fn typed_array_byte_offset<C: FlightTypedArrayCodec>(value: f64, buffer_length: 
     offset
 }
 
+fn data_view_offset(value: f64, byte_length: usize) -> usize {
+    let offset = typed_array_length(value);
+    if offset > byte_length {
+        panic!("DataView byte offset exceeds its storage");
+    }
+    offset
+}
+
 fn typed_array_copy_offset(value: f64, length: usize) -> usize {
     let offset = typed_array_length(value);
     if offset > length {
@@ -543,8 +806,8 @@ pub struct OpaqueHostValue;
 #[cfg(test)]
 mod tests {
     use super::{
-        round, FlightArrayBuffer, FlightFloat32Array, FlightInt8Array, FlightUint16Array,
-        FlightUint8Array, FlightUint8ClampedArray,
+        round, FlightArrayBuffer, FlightDataView, FlightFloat32Array, FlightInt8Array,
+        FlightUint16Array, FlightUint8Array, FlightUint8ClampedArray,
     };
 
     #[test]
@@ -628,5 +891,51 @@ mod tests {
             bytes.into_iter().collect::<Vec<_>>(),
             258_u16.to_ne_bytes().map(f64::from),
         );
+    }
+
+    #[test]
+    fn data_view_reads_and_writes_shared_bytes_with_explicit_endianness() {
+        let buffer = FlightArrayBuffer::new(8.0);
+        let bytes = FlightUint8Array::from_buffer(buffer.clone());
+        let view = FlightDataView::from_buffer_range(buffer.clone(), 1.0, 6.0);
+
+        view.set_uint32(0.0, 0x01020304 as f64, None);
+        view.set_uint16(4.0, 0x0506 as f64, Some(true));
+
+        assert_eq!(
+            bytes.into_iter().collect::<Vec<_>>(),
+            vec![0.0, 1.0, 2.0, 3.0, 4.0, 6.0, 5.0, 0.0]
+        );
+        assert_eq!(view.get_uint32(0.0, None), 0x01020304 as f64);
+        assert_eq!(view.get_uint16(4.0, Some(true)), 0x0506 as f64);
+        assert_eq!(view.byte_offset(), 1);
+        assert_eq!(view.byte_length(), 6);
+        assert_eq!(view.buffer(), buffer);
+        assert_ne!(view, FlightDataView::from_buffer(buffer.clone()));
+        let tail = FlightDataView::from_buffer_offset(buffer, 2.0);
+        assert_eq!(tail.byte_offset(), 2);
+        assert_eq!(tail.byte_length(), 6);
+    }
+
+    #[test]
+    fn data_view_preserves_float_and_signed_integer_values() {
+        let view = FlightDataView::from_buffer(FlightArrayBuffer::new(16.0));
+
+        view.set_float32(0.0, -1.5, None);
+        view.set_float64(4.0, std::f64::consts::PI, Some(true));
+        view.set_int8(12.0, 255.0);
+        view.set_int16(13.0, -258.0, None);
+
+        assert_eq!(view.get_float32(0.0, None), -1.5);
+        assert_eq!(view.get_float64(4.0, Some(true)), std::f64::consts::PI);
+        assert_eq!(view.get_int8(12.0), -1.0);
+        assert_eq!(view.get_int16(13.0, None), -258.0);
+    }
+
+    #[test]
+    #[should_panic(expected = "DataView access exceeds its view")]
+    fn data_view_refuses_an_out_of_range_access() {
+        let view = FlightDataView::from_buffer(FlightArrayBuffer::new(2.0));
+        view.get_uint32(0.0, None);
     }
 }

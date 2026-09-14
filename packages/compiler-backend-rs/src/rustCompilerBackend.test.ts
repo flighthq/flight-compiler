@@ -334,6 +334,40 @@ describe('emitIrModuleRust', () => {
     expect(output).toContain('(view.byte_offset() as f64)');
   });
 
+  it('emits DataView construction and access over shared ArrayBuffer storage', () => {
+    const result = lower(
+      'data-view.ts',
+      `export function mutate(bytes: Uint8Array): number {
+         const buffer: ArrayBuffer = bytes.buffer;
+         const view = new DataView(buffer, bytes.byteOffset, bytes.byteLength);
+         view.setUint32(0, 42, true);
+         const returned: ArrayBuffer = view.buffer;
+         return view.getUint32(0) + view.getUint16(2, true) + view.byteLength + view.byteOffset + returned.byteLength;
+       }
+       export function sharesBuffer(bytes: Uint8Array): boolean {
+         const view = new DataView(bytes.buffer);
+         return view.buffer === bytes.buffer && view !== new DataView(bytes.buffer);
+       }
+       export function offsetView(buffer: ArrayBuffer): DataView {
+         return new DataView(buffer, 1);
+       }`,
+    );
+
+    const output = emitIrModuleRust(result.module).contents;
+    expect(output).toContain('let buffer: FlightArrayBuffer = bytes.buffer();');
+    expect(output).toContain('FlightDataView::from_buffer_range(buffer');
+    expect(output).toContain('view.set_uint32(0.0, 42.0, Some(true))');
+    expect(output).toContain('view.get_uint32(0.0, None)');
+    expect(output).toContain('view.get_uint16(2.0, Some(true))');
+    expect(output).toContain('(view.byte_length() as f64)');
+    expect(output).toContain('(view.byte_offset() as f64)');
+    expect(output).toContain('let returned: FlightArrayBuffer = view.buffer();');
+    expect(output).toContain('(returned.byte_length() as f64)');
+    expect(output).toContain('(view.buffer() == bytes.buffer())');
+    expect(output).toContain('view != FlightDataView::from_buffer(bytes.buffer())');
+    expect(output).toContain('return FlightDataView::from_buffer_offset(buffer, 1.0);');
+  });
+
   it('elects fixed array binding lowering and reports residual destructuring semantics', () => {
     const fixed = lower(
       'array-binding.ts',

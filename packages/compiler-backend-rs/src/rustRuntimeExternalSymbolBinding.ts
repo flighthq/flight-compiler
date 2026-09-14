@@ -214,6 +214,8 @@ const rustRuntimeExternalSymbolBindings = [
     targetName: 'FlightArrayBuffer',
   },
   { kind: 'native', sourceName: 'Boolean', space: 'type', targetName: 'bool' },
+  { capability: 'data-view', kind: 'runtime', sourceName: 'DataView', space: 'type', targetName: 'FlightDataView' },
+  { capability: 'data-view', kind: 'runtime', sourceName: 'DataView', space: 'value', targetName: 'FlightDataView' },
   { capability: 'date', kind: 'runtime', sourceName: 'Date', space: 'type', targetName: 'FlightDate' },
   { capability: 'date', kind: 'runtime', sourceName: 'Date', space: 'value', targetName: 'FlightDate' },
   { kind: 'native', sourceName: 'Error', space: 'type', targetName: 'Error' },

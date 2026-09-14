@@ -64,3 +64,18 @@ export function bufferBackedViewsShareStorage(): Uint8Array {
   middle[1] = 8;
   return whole;
 }
+
+export function dataViewAliasesTypedArray(): Uint8Array {
+  const bytes: Uint8Array = new Uint8Array(8);
+  const view: DataView = new DataView(bytes.buffer, 1, 6);
+  view.setUint32(0, 0x01020304);
+  view.setUint16(4, 0x0506, true);
+  const matches: boolean =
+    view.getUint32(0) === 0x01020304 &&
+    view.getUint16(4, true) === 0x0506 &&
+    view.byteLength === 6 &&
+    view.byteOffset === 1 &&
+    view.buffer === bytes.buffer;
+  bytes[7] = matches ? 1 : 0;
+  return bytes;
+}

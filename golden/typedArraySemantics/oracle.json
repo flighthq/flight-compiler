@@ -6,5 +6,6 @@
   { "call": "subarrayAliasesStorage", "arguments": [], "returns": "numbers", "targets": ["cpp", "rust"] },
   { "call": "sliceCopiesStorage", "arguments": [], "returns": "numbers", "targets": ["cpp", "rust"] },
   { "call": "viewsHaveDistinctIdentity", "arguments": [], "returns": "boolean", "targets": ["cpp", "rust"] },
-  { "call": "bufferBackedViewsShareStorage", "arguments": [], "returns": "numbers", "targets": ["cpp", "rust"] }
+  { "call": "bufferBackedViewsShareStorage", "arguments": [], "returns": "numbers", "targets": ["cpp", "rust"] },
+  { "call": "dataViewAliasesTypedArray", "arguments": [], "returns": "numbers", "targets": ["cpp", "rust"] }
 ]

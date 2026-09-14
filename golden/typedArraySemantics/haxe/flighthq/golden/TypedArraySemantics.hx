@@ -60,3 +60,22 @@ function viewsHaveDistinctIdentity():Bool {
   final source:flighthq._internal._UInt8Array = (cast new flighthq._internal._UInt8Array([(cast 1 : Float), 2]) : flighthq._internal._UInt8Array);
   return ((source.subarray(0) != source) && (source.slice(0) != source)) && (source.subarray(0) != source.subarray(0));
 }
+
+function bufferBackedViewsShareStorage():flighthq._internal._UInt8Array {
+  final buffer:flighthq._internal._ArrayBuffer = new flighthq._internal._ArrayBuffer(4);
+  final whole:flighthq._internal._UInt8Array = new flighthq._internal._UInt8Array(buffer);
+  final middle:flighthq._internal._UInt8Array = new flighthq._internal._UInt8Array(buffer, 1, 2);
+  (middle[0] = 9);
+  (middle[1] = 8);
+  return whole;
+}
+
+function dataViewAliasesTypedArray():flighthq._internal._UInt8Array {
+  final bytes:flighthq._internal._UInt8Array = new flighthq._internal._UInt8Array(8);
+  final view:flighthq._internal._DataView = new flighthq._internal._DataView(bytes.buffer, 1, 6);
+  view.setUint32(0, 16909060);
+  view.setUint16(4, 1286, true);
+  final matches:Bool = ((((view.getUint32(0) == 16909060) && (view.getUint16(4, true) == 1286)) && (view.byteLength == 6)) && (view.byteOffset == 1)) && (view.buffer == bytes.buffer);
+  (bytes[7] = (matches ? 1 : 0));
+  return bytes;
+}

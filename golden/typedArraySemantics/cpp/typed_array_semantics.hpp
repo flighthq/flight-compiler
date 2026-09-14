@@ -2,6 +2,7 @@
 #pragma once
 #include <cmath>
 #include <flight/array_buffer.hpp>
+#include <flight/data_view.hpp>
 #include <flight/runtime.hpp>
 
 static_assert(flight::runtime_contract.compiler_contract == "flight-runtime-contract/2", "Flight compiler/runtime contract mismatch");
@@ -74,6 +75,16 @@ inline flight::Uint8Array buffer_backed_views_share_storage() {
   middle.element(0.0) = 9.0;
   middle.element(1.0) = 8.0;
   return whole;
+}
+
+inline flight::Uint8Array data_view_aliases_typed_array() {
+  flight::Uint8Array bytes = flight::Uint8Array(8.0);
+  flight::DataView view = flight::DataView(bytes.buffer, 1.0, 6.0);
+  view.set_uint32(0.0, 16909060.0);
+  view.set_uint16(4.0, 1286.0, true);
+  const bool matches = (((((view.get_uint32(0.0) == 16909060.0) && (view.get_uint16(4.0, true) == 1286.0)) && (view.byte_length == 6.0)) && (view.byte_offset == 1.0)) && (view.buffer == bytes.buffer));
+  bytes.element(7.0) = (matches ? 1.0 : 0.0);
+  return bytes;
 }
 
 } // namespace flighthq_golden

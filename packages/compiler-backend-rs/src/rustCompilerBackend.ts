@@ -1068,8 +1068,12 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
           expression.operator === '===' ||
           expression.operator === '!=' ||
           expression.operator === '!==') &&
-        isIrExpressionTypedArrayRust(expression.left, context) &&
-        isIrExpressionTypedArrayRust(expression.right, context)
+        ((isIrExpressionTypedArrayRust(expression.left, context) &&
+          isIrExpressionTypedArrayRust(expression.right, context)) ||
+          (isIrExpressionDataViewRust(expression.left, context) &&
+            isIrExpressionDataViewRust(expression.right, context)) ||
+          (isIrExpressionArrayBufferRust(expression.left, context) &&
+            isIrExpressionArrayBufferRust(expression.right, context)))
       ) {
         const operator = expression.operator === '!=' || expression.operator === '!==' ? '!=' : '==';
         return `(${emitExpression(expression.left, context)} ${operator} ${emitExpression(expression.right, context)})`;
@@ -1221,15 +1225,18 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
       }
       if (expression.callee.kind === 'property' && expression.callee.member) {
         const binding = getCompilerRustAmbientMemberBinding(expression.callee.member);
-        if (binding && binding.kind !== 'countingMethod') {
+        if (binding && binding.kind !== 'countingMethod' && binding.kind !== 'propertyMethod') {
           const receiver =
             emitPrimitiveUnionNarrowedReceiverRust(expression.callee.object, context) ??
             emitExpression(expression.callee.object, context);
           const borrows =
             binding.kind === 'borrowedMethod' || binding.kind === 'sentinelSearch' || binding.kind === 'splitCollect';
-          const values = expression.arguments.map((argument) =>
-            borrows ? emitBorrowedTextRust(argument, context) : emitExpression(argument, context),
-          );
+          const values =
+            expression.callee.member.receiver === 'dataView'
+              ? emitCallArgumentsRust(expression, context)
+              : expression.arguments.map((argument) =>
+                  borrows ? emitBorrowedTextRust(argument, context) : emitExpression(argument, context),
+                );
           if (binding.kind === 'iterator') {
             const firstArg = expression.arguments[0];
             const closure = binding.borrowsElement
@@ -1365,6 +1372,13 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
           if (!method) emissionError(context, 'typed-array construction supports zero through three arguments');
           return `${constructor}::${method}(${expression.arguments.map((argument) => emitOwnedOperandRust(argument, context)).join(', ')})`;
         }
+        if (expression.callee.reference.kind === 'ambient' && expression.callee.reference.name === 'DataView') {
+          const method = [undefined, 'from_buffer', 'from_buffer_offset', 'from_buffer_range'][
+            expression.arguments.length
+          ];
+          if (!method) emissionError(context, 'DataView construction supports one through three arguments');
+          return `${constructor}::${method}(${expression.arguments.map((argument) => emitOwnedOperandRust(argument, context)).join(', ')})`;
+        }
         return `${constructor}::new(${expression.arguments.map((argument) => emitOwnedOperandRust(argument, context)).join(', ')})`;
       }
     case 'object':
@@ -1399,6 +1413,9 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
             emitPrimitiveUnionNarrowedReceiverRust(expression.object, context) ??
             emitExpression(expression.object, context);
           return `(${countingReceiver}.${binding.targetName}() as f64)`;
+        }
+        if (binding.kind === 'propertyMethod') {
+          return `${emitExpression(expression.object, context)}.${binding.targetName}()`;
         }
       }
       // A union is a closed set of alternatives in Rust, so its fields are not reachable by name.
@@ -1643,12 +1660,42 @@ function isIrExpressionArrayBufferRust(expression: Readonly<IrExpression>, conte
     const type = context.bindingTypes.get(expression.reference.binding.id);
     return type?.kind === 'named' && type.reference.kind === 'ambient' && type.reference.name === 'ArrayBuffer';
   }
+  if (
+    expression.kind === 'property' &&
+    expression.name === 'buffer' &&
+    (expression.member?.receiver === 'dataView' || expression.member?.receiver === 'typedArray')
+  ) {
+    return true;
+  }
+  if (expression.kind === 'cast') {
+    return (
+      expression.type.kind === 'named' &&
+      expression.type.reference.kind === 'ambient' &&
+      expression.type.reference.name === 'ArrayBuffer'
+    );
+  }
   return (
     expression.kind === 'new' &&
     expression.callee.kind === 'identifier' &&
     expression.callee.reference.kind === 'ambient' &&
     expression.callee.reference.name === 'ArrayBuffer'
   );
+}
+
+function isIrExpressionDataViewRust(expression: Readonly<IrExpression>, context: EmitContext): boolean {
+  let type: Readonly<IrType> | undefined;
+  if (expression.kind === 'identifier' && expression.reference.kind === 'binding') {
+    type = context.bindingTypes.get(expression.reference.binding.id);
+  } else if (expression.kind === 'cast') {
+    type = expression.type;
+  } else if (
+    expression.kind === 'new' &&
+    expression.callee.kind === 'identifier' &&
+    expression.callee.reference.kind === 'ambient'
+  ) {
+    return expression.callee.reference.name === 'DataView';
+  }
+  return type?.kind === 'named' && type.reference.kind === 'ambient' && type.reference.name === 'DataView';
 }
 
 function isIrTypeTypedArrayRust(type: Readonly<IrType> | undefined): boolean {
