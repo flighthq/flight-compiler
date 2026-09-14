@@ -1,6 +1,7 @@
 import { analyzeIrModuleTraversal } from '../../compiler-ir-traversal/src/index.js';
 import type {
   CompilerLoweringPass,
+  IrBindingIdentity,
   IrExpression,
   IrModule,
   IrStatement,
@@ -56,13 +57,23 @@ function lowerIrValueAsyncIterationHaxe(value: unknown): unknown {
     reference: { kind: 'ambient', name: 'Promise' },
     typeArguments: [voidType],
   } as const satisfies IrType;
+  const callbackBinding = {
+    ...lowered.variable.binding,
+    kind: 'parameter',
+    scope: 'function',
+  } as const;
+  const callbackBody = replaceIrBindingIdentityAsyncIterationHaxe(
+    lowered.body.kind === 'block' ? lowered.body.statements : [lowered.body],
+    lowered.variable.binding.id,
+    callbackBinding,
+  ) as readonly IrStatement[];
   const callback: IrExpression = {
     async: true,
-    body: lowered.body.kind === 'block' ? lowered.body.statements : [lowered.body],
+    body: callbackBody,
     kind: 'function',
     parameters: [
       {
-        binding: lowered.variable.binding,
+        binding: callbackBinding,
         optional: false,
         rest: false,
         type: lowered.variable.type ?? { kind: 'unknown', source: 'any' },
@@ -103,6 +114,25 @@ function lowerIrValueAsyncIterationHaxe(value: unknown): unknown {
     },
     kind: 'expression',
   } as const satisfies IrStatement;
+}
+
+function replaceIrBindingIdentityAsyncIterationHaxe(
+  value: unknown,
+  bindingId: string,
+  replacement: Readonly<IrBindingIdentity>,
+): unknown {
+  if (Array.isArray(value)) {
+    return value.map((child) => replaceIrBindingIdentityAsyncIterationHaxe(child, bindingId, replacement));
+  }
+  if (!value || typeof value !== 'object') return value;
+  const node = value as Record<string, unknown>;
+  if (node.id === bindingId && node.space === 'value') return replacement;
+  return Object.fromEntries(
+    Object.entries(node).map(([key, child]) => [
+      key,
+      replaceIrBindingIdentityAsyncIterationHaxe(child, bindingId, replacement),
+    ]),
+  );
 }
 
 function isIrAwaitForOfStatement(value: Record<string, unknown>): value is Extract<IrStatement, { kind: 'forOf' }> {
