@@ -196,7 +196,7 @@ describe('createCppCompilerBackend', () => {
     const consumer = lowerPackage(
       '@flighthq/geometry',
       'pool.ts',
-      "import { guard } from './guards.js'; export function release(): void { if (guard !== null) guard('release'); }",
+      "import { guard } from './guards.js'; export function release(active: boolean): void { if (guard !== null && active) guard('release'); }",
     ).module;
     const moduleResolution: CompilerModuleResolutionPlan = {
       edges: [
@@ -214,8 +214,21 @@ describe('createCppCompilerBackend', () => {
       options: { runtimeProfile: 'flight-cpp' },
     }).emitModule(consumer)[0]!.contents;
 
-    expect(emitted).toContain('if (flighthq_geometry::guard.has_value())');
+    expect(emitted).toContain('flighthq_geometry::guard.has_value() && active');
     expect(emitted).toContain('flighthq_geometry::guard.value()(flight::String("release"))');
+  });
+
+  it('does not unwrap a locally narrowed optional callback twice', () => {
+    const emitted = emitIrModuleCpp(
+      lower(
+        'guard.ts',
+        "export function release(guard: ((name: string) => void) | null): void { if (!guard) return; guard('release'); }",
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+
+    expect(emitted).toContain('guard.value()(flight::String("release"))');
+    expect(emitted).not.toContain('guard.value().value()');
   });
 
   it('lowers for-of destructuring through an imported tuple element alias', () => {

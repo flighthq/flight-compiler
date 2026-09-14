@@ -1496,8 +1496,17 @@ function emitExpression(
           return emitExpression(argument, context, getIrCallArgumentExpectedTypeCpp(expression, index, context));
         });
       const calleeType = getIrExpressionTypeEvidenceCpp(expression.callee, context);
+      const calleeStorageType = getIrExpressionBindingTypeCpp(expression.callee, context) ?? calleeType;
+      const calleeAlreadyUnwrapped =
+        expression.callee.kind === 'identifier' &&
+        expression.callee.reference.kind === 'binding' &&
+        expression.callee.presence === 'narrowedPresent' &&
+        context.nullableBindingIds.has(expression.callee.reference.binding.id);
       const optionalCallable = Boolean(
-        calleeType && hasIrTypeAbsentMember(calleeType) && getCppClosedCallableType(calleeType, context, new Set()),
+        calleeStorageType &&
+        !calleeAlreadyUnwrapped &&
+        hasIrTypeAbsentMember(calleeStorageType) &&
+        getCppClosedCallableType(calleeStorageType, context, new Set()),
       );
       const callableObject = getCppCallableObjectExpressionCpp(expression.callee, context);
       const invocationTarget = callableObject
