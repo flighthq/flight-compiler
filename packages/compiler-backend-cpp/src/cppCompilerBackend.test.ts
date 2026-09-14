@@ -1677,7 +1677,7 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
 
     expect(emitted.contents).toContain('#include <flight/symbol.hpp>');
-    expect(emitted.contents).toContain('flight::Symbol key = flight::Symbol::for_key(flight::String("key"))');
+    expect(emitted.contents).toContain('auto key = flight::Symbol::for_key(flight::String("key"))');
     expect(emitted.dependencies).toContain('flight/symbol.hpp');
   });
 
