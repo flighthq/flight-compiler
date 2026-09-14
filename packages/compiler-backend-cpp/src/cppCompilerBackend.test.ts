@@ -8568,6 +8568,25 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(output).not.toContain('values[index]');
   });
 
+  it('unwraps nullable typed-array variants through readonly and default-parameter storage', () => {
+    const output = emitIrModuleCpp(
+      lower(
+        'readonly-defaulted-typed-array-variant.ts',
+        `export function read(
+           required: Readonly<Uint8Array | Uint8ClampedArray | null>,
+           fallback: number,
+           optional: Readonly<Uint8Array | Uint8ClampedArray | null> = null,
+         ): number {
+           return required !== null ? required[fallback] : optional !== null ? optional[fallback] : fallback;
+         }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+
+    expect(output).toContain(', required.value())');
+    expect(output).toContain(', optional.value().value())');
+  });
+
   it('materializes an object literal returned through an imported optional referent', () => {
     const model = lowerPackage(
       '@flighthq/types',

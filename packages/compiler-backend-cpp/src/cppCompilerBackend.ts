@@ -7624,8 +7624,14 @@ function getCppVariantIndexedReceiverCpp(
     });
   if (!compatible) return undefined;
   const receiver = emitExpression(expression.object, context);
-  return storagePlan?.kind === 'optionalVariant' &&
-    (!('presence' in expression.object) || expression.object.presence !== 'narrowedPresent')
+  const underlyingOptionalAutomaticallyUnwrapped =
+    expression.object.kind === 'identifier' &&
+    expression.object.reference.kind === 'binding' &&
+    !context.defaultedParameterIds.has(expression.object.reference.binding.id) &&
+    expression.object.presence === 'narrowedPresent' &&
+    (context.nullableBindingIds.has(expression.object.reference.binding.id) ||
+      context.arrayElementBindingIds.has(expression.object.reference.binding.id));
+  return storagePlan?.kind === 'optionalVariant' && !underlyingOptionalAutomaticallyUnwrapped
     ? `${receiver}.value()`
     : receiver;
 }
