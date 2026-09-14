@@ -3377,15 +3377,16 @@ describe('emitIrModuleRust', () => {
     expect(output).toContain('f64::sqrt');
   });
 
-  it('rejects array findIndex without a Rust ambient member binding', () => {
-    expect(() =>
-      emitIrModuleRust(
-        lower(
-          'arr-findindex.ts',
-          'export function idx(items: number[]): number { return items.findIndex((x: number): boolean => x > 0); }',
-        ).module,
-      ),
-    ).toThrow(/array member findIndex has no Rust binding/);
+  it('emits array findIndex with owned element and numeric index callback adaptation', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'arr-findindex.ts',
+        'export function idx(items: number[]): number { return items.findIndex((x: number, index: number): boolean => x > index); }',
+      ).module,
+    ).contents;
+    expect(output).toContain('.iter().enumerate().position(');
+    expect(output).toContain('predicate_element.clone(), predicate_index as f64');
+    expect(output).toContain('.map(|i| i as f64).unwrap_or(-1.0)');
   });
 
   it('emits object type as anonymous record struct', () => {

@@ -1254,6 +1254,15 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
               : expression.arguments.map((argument) =>
                   borrows ? emitBorrowedTextRust(argument, context) : emitExpression(argument, context),
                 );
+          if (binding.kind === 'predicatePosition') {
+            return emitArrayPredicatePositionRust(
+              receiver,
+              expression.arguments[0],
+              values[0],
+              binding.targetName,
+              context,
+            );
+          }
           if (binding.kind === 'iterator') {
             const firstArg = expression.arguments[0];
             const closure = binding.borrowsElement
@@ -2764,6 +2773,29 @@ function emitIteratorCallbackWrapperRust(
 ): string {
   const name = getGeneratedTargetNameRust('x', context);
   return `|${name}| ${emittedCallee}(${name})`;
+}
+
+function emitArrayPredicatePositionRust(
+  receiver: string,
+  callback: Readonly<IrExpression> | undefined,
+  emittedCallback: string | undefined,
+  targetName: string,
+  context: EmitContext,
+): string {
+  let parameterCount: number | undefined;
+  if (callback?.kind === 'function') {
+    parameterCount = callback.parameters.length;
+  } else if (callback?.kind === 'identifier' && callback.reference.kind === 'binding') {
+    const callbackType = context.bindingTypes.get(callback.reference.binding.id);
+    if (callbackType?.kind === 'function') parameterCount = callbackType.parameters.length;
+  }
+  if (!callback || !emittedCallback || parameterCount === undefined || parameterCount < 1 || parameterCount > 2) {
+    emissionError(context, 'array findIndex requires a statically known one- or two-parameter Rust predicate');
+  }
+  const index = getGeneratedTargetNameRust('predicate_index', context);
+  const element = getGeneratedTargetNameRust('predicate_element', context);
+  const arguments_ = [`${element}.clone()`, ...(parameterCount === 2 ? [`${index} as f64`] : [])];
+  return `${receiver}.iter().enumerate().${targetName}(|(${index}, ${element})| (${emittedCallback})(${arguments_.join(', ')})).map(|i| i as f64).unwrap_or(-1.0)`;
 }
 
 function isIrSelfFieldNonCopyRust(fieldName: string, context: EmitContext): boolean {

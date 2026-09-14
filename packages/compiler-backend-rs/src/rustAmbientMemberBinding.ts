@@ -19,6 +19,7 @@ const rustAmbientMemberBindings: Readonly<Record<string, CompilerRustAmbientMemb
   'array.every': { collect: false, kind: 'iterator', targetName: 'all' },
   'array.filter': { borrowsElement: true, collect: true, kind: 'iterator', targetName: 'filter' },
   'array.find': { borrowsElement: true, collect: false, kind: 'iterator', targetName: 'find' },
+  'array.findIndex': { kind: 'predicatePosition', targetName: 'position' },
   'array.includes': { kind: 'borrowedMethod', targetName: 'contains' },
   'array.indexOf': { kind: 'positionSearch', targetName: 'position' },
   'array.join': { kind: 'borrowedMethod', targetName: 'join' },

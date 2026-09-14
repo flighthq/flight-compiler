@@ -59,6 +59,9 @@ export type CompilerRustAmbientMemberBinding =
       targetName: string;
     }>
   | Readonly<{ kind: 'optionalLookup'; targetName: string }>
+  // A predicate search enumerates so the source callback receives its numeric index, then converts
+  // Rust's optional usize result back to the source's -1-sentinel number.
+  | Readonly<{ kind: 'predicatePosition'; targetName: string }>
   | Readonly<{ kind: 'positionSearch'; targetName: string }>
   | Readonly<{ kind: 'sentinelSearch'; targetName: string }>
   | Readonly<{ kind: 'splitCollect'; targetName: string }>;

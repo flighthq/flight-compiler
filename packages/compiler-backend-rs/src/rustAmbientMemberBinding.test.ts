@@ -164,4 +164,11 @@ describe('getCompilerRustAmbientMemberBinding', () => {
     expect(getCompilerRustAmbientMemberBinding({ name: 'sort', receiver: 'array' })).toBeUndefined();
     expect(getCompilerRustAmbientMemberBinding({ name: 'toFixed', receiver: 'number' })).toBeUndefined();
   });
+
+  it('marks predicate position searches for index and sentinel adaptation', () => {
+    expect(getCompilerRustAmbientMemberBinding({ name: 'findIndex', receiver: 'array' })).toEqual({
+      kind: 'predicatePosition',
+      targetName: 'position',
+    });
+  });
 });
