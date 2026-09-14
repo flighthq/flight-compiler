@@ -2190,7 +2190,9 @@ function emitExpression(
           getCppRuntimeProfile(context.options) === 'flight-cpp' &&
           hasFlightReferenceRepresentationCpp(constructionType, context)
         ) {
-          const storageType = emitType(constructionType, context, 'storage');
+          const storageType =
+            getCppReferenceValueAliasStorageTypeCpp(constructionType, context, new Set()) ??
+            emitType(constructionType, context, 'storage');
           return `flight::make_ref<${storageType}>(${storageType}${initializer})`;
         }
         return initializer;
@@ -3298,7 +3300,8 @@ function emitType(type: Readonly<IrType>, context: EmitContext, representation: 
   if (
     representation === 'value' &&
     getCppRuntimeProfile(context.options) === 'flight-cpp' &&
-    hasFlightReferenceRepresentationCpp(type, context)
+    hasFlightReferenceRepresentationCpp(type, context) &&
+    !isCppReferenceValueAliasCpp(type, context)
   ) {
     return `flight::Ref<${emitType(type, context, 'storage')}>`;
   }
@@ -7931,6 +7934,29 @@ function getCppIdentityPreservingUtilityArgument(type: Readonly<IrType>): Readon
     type.typeArguments.length === 1
     ? type.typeArguments[0]
     : undefined;
+}
+
+function isCppReferenceValueAliasCpp(type: Readonly<IrType>, context: EmitContext): boolean {
+  if (type.kind !== 'named' || type.reference.kind !== 'binding') return false;
+  const target = resolveCppTypeAliasTarget(type, context);
+  if (!target || target.kind === 'object' || target.kind === 'intersection') return false;
+  return hasFlightReferenceRepresentationCpp(target, context);
+}
+
+function getCppReferenceValueAliasStorageTypeCpp(
+  type: Readonly<IrType>,
+  context: EmitContext,
+  resolvingAliases: ReadonlySet<string>,
+): string | undefined {
+  if (!isCppReferenceValueAliasCpp(type, context) || type.kind !== 'named' || type.reference.kind !== 'binding') {
+    return undefined;
+  }
+  const key = `${type.reference.binding.id}\0${JSON.stringify(type.typeArguments)}`;
+  if (resolvingAliases.has(key)) return undefined;
+  const target = resolveCppTypeAliasTarget(type, context);
+  if (!target) return undefined;
+  const nested = getCppReferenceValueAliasStorageTypeCpp(target, context, new Set(resolvingAliases).add(key));
+  return nested ?? emitType(target, context, 'storage');
 }
 
 function getExpectedReturnTypeCpp(context: EmitContext): Readonly<IrType> | undefined {

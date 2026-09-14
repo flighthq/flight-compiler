@@ -4243,6 +4243,24 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     );
   });
 
+  it('constructs through reference-preserving user aliases without nesting references', () => {
+    const result = lower(
+      'reference-alias.ts',
+      `interface Entity { runtime?: object }
+       type WithoutRuntime<Type extends Entity> = Omit<Type, 'runtime'>;
+       interface Rectangle extends Entity { x: number; y: number; width: number; height: number }
+       export type RectangleLike = WithoutRuntime<Rectangle>;
+       export function bounds(): RectangleLike { return { x: 1, y: 2, width: 3, height: 4 }; }`,
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    expect(emitted).toContain('using RectangleLike = WithoutRuntime<flight::Ref<Rectangle>>;');
+    expect(emitted).toContain('RectangleLike bounds()');
+    expect(emitted).toContain('flight::make_ref<Rectangle>(Rectangle{');
+    expect(emitted).not.toContain('flight::Ref<RectangleLike>');
+    expect(emitted).not.toContain('flight::make_ref<WithoutRuntime');
+  });
+
   it('emits the Entity marker, reference projection, runtime record, and interned key together', () => {
     const result = lower(
       'entity.ts',
