@@ -1403,7 +1403,7 @@ describe('emitIrModuleHaxe', () => {
     );
     const output = emitIrModuleHaxe(result.module).contents;
 
-    expect(output).toContain('enum abstract State(String)');
+    expect(output).toContain('typedef State = String;');
     expect(output).toContain('final State:{ Ready:String }');
     expect(output).not.toContain('State_2');
     expect(output).toContain('return State.Ready;');
