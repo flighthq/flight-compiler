@@ -809,7 +809,7 @@ describe('createCppCompilerBackend', () => {
       options: { runtimeProfile: 'flight-cpp' },
     }).emitModule(modules[2]!)[0]!.contents;
 
-    expect(emitted).toContain('auto brightness = options.value()->brightness.value_or(0.0)');
+    expect(emitted).toContain('const double brightness = options.value()->brightness.value_or(0.0)');
     expect(emitted).toContain('flight::row_set<flight::RowKey<"brightness">>(out, std::optional<double>{brightness})');
     expect(emitted).toContain(
       'flight::row_set<flight::RowKey<"contrast">>(out, std::optional<double>{options.value()->contrast.value_or(1.0)})',
@@ -1355,7 +1355,9 @@ export function preferred(): number { return NativeSurface.preferredFormat; }`,
       error = caught;
     }
     expect(error).toBeInstanceOf(Error);
-    expect((error as Error).message).toContain('missing: Proxy[value]');
+    expect((error as Error).message).toContain(
+      'Proxy construction requires an exact structural write-forwarding handler',
+    );
     expect((error as Error).message).not.toContain('PropertyKey[type]');
   });
 
@@ -2378,10 +2380,10 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
       '.shaded_material_binding_cache = flight::WeakMap<flight::Ref<void>, flight::ErasedValue>()',
     );
     expect(shaded).toContain(
-      'const auto state_bindings = flight::checked_weak_map_view<flight::Ref<flight::types::ShadedMaterial>, flight::Ref<ShadedBinding>>(runtime->shaded_material_binding_cache);',
+      'auto state_bindings = flight::checked_weak_map_view<flight::Ref<flight::types::ShadedMaterial>, flight::Ref<ShadedBinding>>(runtime->shaded_material_binding_cache);',
     );
     expect(shaded).toContain(
-      'const auto plans = flight::checked_weak_map_view<flight::Ref<flight::types::ShadedMaterial>, flight::Ref<CachedShadedPlan>>(runtime->shaded_material_plan_cache);',
+      'auto plans = flight::checked_weak_map_view<flight::Ref<flight::types::ShadedMaterial>, flight::Ref<CachedShadedPlan>>(runtime->shaded_material_plan_cache);',
     );
     expect(shaded).not.toContain('static_cast<flight::WeakMap');
 
@@ -10406,10 +10408,10 @@ describe('emitIrModuleCpp conditional capability facets', () => {
 
     expect(result.diagnostics).toEqual([]);
     expect(emitted).toContain('#include <flight/conditional_facet_ref.hpp>');
-    expect(emitted).toContain('struct TrayWithImageFacet final {};');
-    expect(emitted).toContain('using TrayWithImage = flight::FacetRef<TrayIcon, TrayWithImageFacet>;');
+    expect(emitted).toContain('struct tray_with_image_facet final {};');
+    expect(emitted).toContain('using TrayWithImage = flight::FacetRef<TrayIcon, tray_with_image_facet>;');
     expect(emitted).toContain(
-      'flight::RequiredMemberFacet<TrayWithImageFacet, flight::MemberPath<[]<typename Value>(Value& value) -> decltype((value.tray)) { return value.tray; }, []<typename Value>(Value& value) -> decltype((value.image)) { return value.image; }>>',
+      'flight::RequiredMemberFacet<tray_with_image_facet, flight::MemberPath<[]<typename Value>(Value& value) -> decltype((value.tray)) { return value.tray; }, []<typename Value>(Value& value) -> decltype((value.image)) { return value.image; }>>',
     );
     expect(emitted).toContain('flight::assume_conditional_facets<TrayIconForHost<Host>>(icon)');
     expect(emitted).toContain('return icon->runtime;');
