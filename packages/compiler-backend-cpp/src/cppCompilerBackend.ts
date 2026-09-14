@@ -1568,12 +1568,12 @@ function emitExpression(
         (isThisAccess(expression.left) ? rightType : undefined) ??
         getIrOperatorValueDomainTypeCpp(expression.semantics.left.flow) ??
         getIrExpressionTypeEvidenceCpp(expression.left, context) ??
-        getCppClampedArrayElementNumericTypeCpp(expression.left);
+        getCppClampedArrayElementNumericTypeCpp(expression.left, context);
       const rightExpected =
         (isThisAccess(expression.right) ? leftType : undefined) ??
         getIrOperatorValueDomainTypeCpp(expression.semantics.right.flow) ??
         getIrExpressionTypeEvidenceCpp(expression.right, context) ??
-        getCppClampedArrayElementNumericTypeCpp(expression.right);
+        getCppClampedArrayElementNumericTypeCpp(expression.right, context);
       const left = emitExpression(expression.left, context, leftExpected);
       const right = emitExpression(expression.right, context, rightExpected);
       if (bitwise) {
@@ -1621,6 +1621,8 @@ function emitExpression(
       if (arrayFromMapKeys) return arrayFromMapKeys;
       const arrayPushSpread = emitArrayPushSpreadCallCpp(expression, context);
       if (arrayPushSpread) return arrayPushSpread;
+      const typedArrayFill = emitCppTypedArrayRangeFillCpp(expression, context);
+      if (typedArrayFill) return typedArrayFill;
       if (
         expression.callee.kind === 'property' &&
         expression.callee.name === 'toString' &&
@@ -1907,11 +1909,19 @@ function emitExpression(
       ) {
         return `${emitExpression(expression.object, context)}.element(${emitExpression(expression.index, context)})`;
       }
+      const elementObjectType = getIrExpressionTypeEvidenceCpp(expression.object, context);
+      if (
+        getCppRuntimeProfile(context.options) === 'flight-cpp' &&
+        elementObjectType &&
+        isCppStringValueTypeCpp(elementObjectType, context, new Set())
+      ) {
+        return `${emitExpression(expression.object, context)}.char_at(${emitExpression(expression.index, context)})`;
+      }
       if (getCppRuntimeProfile(context.options) === 'flight-cpp' && hasIndexedRuntimeReceiverCpp(expression, context)) {
         const access = `${emitExpression(expression.object, context)}.element(${emitExpression(expression.index, context)})`;
         return expectedType?.kind === 'primitive' &&
           expectedType.name === 'number' &&
-          expression.semantics.receivers.includes('uint8ClampedArray')
+          isCppUint8ClampedArrayElementCpp(expression, context)
           ? `static_cast<double>(${access})`
           : access;
       }
@@ -5811,6 +5821,33 @@ function emitArrayFromMapKeysCpp(
   return `([&]() { ${arrayType} ${result}; for (const auto& [${key}, ${value}] : ${map}) { static_cast<void>(${value}); ${result}.push(${key}); } return ${result}; }())`;
 }
 
+function emitCppTypedArrayRangeFillCpp(
+  expression: Readonly<Extract<IrExpression, { kind: 'call' }>>,
+  context: EmitContext,
+): string | undefined {
+  if (
+    getCppRuntimeProfile(context.options) !== 'flight-cpp' ||
+    expression.callee.kind !== 'property' ||
+    expression.callee.member?.receiver !== 'typedArray' ||
+    expression.callee.name !== 'fill' ||
+    expression.arguments.length < 2 ||
+    expression.arguments.length > 3
+  ) {
+    return undefined;
+  }
+  const receiverName = getGeneratedTargetName('typedArrayFillReceiver', context);
+  const valueName = getGeneratedTargetName('typedArrayFillValue', context);
+  const beginName = getGeneratedTargetName('typedArrayFillBegin', context);
+  const endName = expression.arguments[2] ? getGeneratedTargetName('typedArrayFillEnd', context) : undefined;
+  const receiver = emitExpression(expression.callee.object, context);
+  const value = emitExpression(expression.arguments[0]!, context, getIrCallArgumentExpectedTypeCpp(expression, 0, context));
+  const begin = emitExpression(expression.arguments[1]!, context, getIrCallArgumentExpectedTypeCpp(expression, 1, context));
+  const end = expression.arguments[2]
+    ? emitExpression(expression.arguments[2], context, getIrCallArgumentExpectedTypeCpp(expression, 2, context))
+    : undefined;
+  return `([&]() { auto&& ${receiverName} = ${receiver}; const auto ${valueName} = ${value}; const auto ${beginName} = ${begin};${endName && end ? ` const auto ${endName} = ${end};` : ''} ${receiverName}.subarray(${beginName}${endName ? `, ${endName}` : ''}).fill(${valueName}); return ${receiverName}; }())`;
+}
+
 function getCppCallableReturnType(
   type: Readonly<IrType>,
   context: EmitContext,
@@ -8681,10 +8718,38 @@ function emitIdentifierReference(
   return emitBindingValueCpp(reference.binding, context);
 }
 
-function getCppClampedArrayElementNumericTypeCpp(expression: Readonly<IrExpression>): Readonly<IrType> | undefined {
-  return expression.kind === 'element' && expression.semantics.receivers.includes('uint8ClampedArray')
+function getCppClampedArrayElementNumericTypeCpp(
+  expression: Readonly<IrExpression>,
+  context: EmitContext,
+): Readonly<IrType> | undefined {
+  return expression.kind === 'element' && isCppUint8ClampedArrayElementCpp(expression, context)
     ? { kind: 'primitive', name: 'number' }
     : undefined;
+}
+
+function isCppUint8ClampedArrayElementCpp(
+  expression: Readonly<Extract<IrExpression, { kind: 'element' }>>,
+  context: EmitContext,
+): boolean {
+  if (expression.semantics.receivers.includes('uint8ClampedArray')) return true;
+  const resolve = (type: Readonly<IrType> | undefined, seen: ReadonlySet<string>): boolean => {
+    if (!type) return false;
+    if (type.kind === 'named' && type.reference.kind === 'ambient') {
+      if (type.reference.name === 'Uint8ClampedArray') return true;
+      if (
+        (type.reference.name === 'Readonly' || type.reference.name === 'Required') &&
+        type.typeArguments.length === 1
+      ) {
+        return resolve(type.typeArguments[0], seen);
+      }
+      return false;
+    }
+    if (type.kind !== 'named' || type.reference.kind !== 'binding') return false;
+    const key = `${type.reference.binding.id}\0${JSON.stringify(type.typeArguments)}`;
+    if (seen.has(key)) return false;
+    return resolve(resolveCppTypeAliasTarget(type, context), new Set(seen).add(key));
+  };
+  return resolve(getIrExpressionTypeEvidenceCpp(expression.object, context), new Set());
 }
 
 function emitCppReferenceIdentityComparison(

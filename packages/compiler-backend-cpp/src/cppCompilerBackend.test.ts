@@ -1879,6 +1879,49 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(output).toContain('? static_cast<double>(values.element(index)) : fallback');
   });
 
+  it('projects readonly clamped typed-array reads into the source numeric domain', () => {
+    const output = emitIrModuleCpp(
+      lower(
+        'readonly-clamped-array-number.ts',
+        `export function select(values: Readonly<Uint8ClampedArray>, index: number, valid: boolean): number {
+           const value = valid ? values[index] : 0;
+           return value;
+         }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+
+    expect(output).toContain('? static_cast<double>(values.element(index)) : 0.0');
+  });
+
+  it('emits string element access through the UTF-16 character contract', () => {
+    const output = emitIrModuleCpp(
+      lower(
+        'string-element.ts',
+        `export function hexDigit(hex: string, index: number): string { return hex[index]; }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+
+    expect(output).toContain('return hex.char_at(index)');
+    expect(output).not.toContain('hex[static_cast<size_t>');
+  });
+
+  it('lowers typed-array range fill through a mutable subarray view', () => {
+    const output = emitIrModuleCpp(
+      lower(
+        'typed-array-range-fill.ts',
+        `export function clear(values: Uint8Array, end: number): Uint8Array {
+           return values.fill(0, 0, end);
+         }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+
+    expect(output).toContain('.subarray(typed_array_fill_begin, typed_array_fill_end).fill(typed_array_fill_value)');
+    expect(output).not.toContain('values.fill(0.0, 0.0, end)');
+  });
+
   it('orders module declarations after the local declarations they reference', () => {
     const result = lower(
       'declaration-order.ts',
