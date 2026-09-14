@@ -1972,7 +1972,10 @@ function emitExpression(
           expression.typeParameters,
         ),
         async: false,
-        defaultedParameterIds: collectDefaultedParameterIdsCpp(parameters),
+        defaultedParameterIds: new Set([
+          ...context.defaultedParameterIds,
+          ...collectDefaultedParameterIdsCpp(parameters),
+        ]),
         enclosingReturnType: returns,
         namespaceScope: false,
         returnsAbsent: hasIrTypeAbsentMember(returns),
@@ -3523,7 +3526,9 @@ function emitType(type: Readonly<IrType>, context: EmitContext, representation: 
       emissionError(context, 'conditional facet must be enclosed by one proven shared-referent base');
     case 'function': {
       context.includes.add('functional');
-      const parameters = type.parameters.map((parameter) => emitType(parameter.type, context));
+      const parameters = type.parameters.map((parameter) =>
+        emitOptionalTypeCpp(emitType(parameter.type, context), parameter.optional, context),
+      );
       const returns = emitType(type.returns, context);
       return `std::function<${returns}(${parameters.join(', ')})>`;
     }
@@ -5841,10 +5846,22 @@ function emitCppTypedArrayRangeFillCpp(
   if (
     getCppRuntimeProfile(context.options) !== 'flight-cpp' ||
     expression.callee.kind !== 'property' ||
-    expression.callee.member?.receiver !== 'typedArray' ||
     expression.callee.name !== 'fill' ||
     expression.arguments.length < 2 ||
     expression.arguments.length > 3
+  ) {
+    return undefined;
+  }
+  const receiverType = getIrExpressionTypeEvidenceCpp(expression.callee.object, context);
+  const receiverPlan = receiverType
+    ? context.referenceRepresentationPlanner.plan(
+        getCppNonNullableType(receiverType, context, new Set()) ?? receiverType,
+        context.module,
+      )
+    : undefined;
+  if (
+    expression.callee.member?.receiver !== 'typedArray' &&
+    (receiverPlan?.kind !== 'represented' || receiverPlan.category !== 'typedArray')
   ) {
     return undefined;
   }
@@ -6121,10 +6138,18 @@ function appendCppOmittedInvocationArguments(
   const optionals = expression.semantics.optionalParameters;
   const plan = defaults ?? optionals;
   if (!plan || emitted.length >= plan.parameterCount) return emitted;
+  const declaration =
+    expression.callee.kind === 'identifier' && expression.callee.reference.kind === 'binding'
+      ? getCppFunctionDeclarationForBindingCpp(expression.callee.reference.binding.id, context)
+      : undefined;
+  if (!declaration && !optionals) return emitted;
   if (plan.providedArgumentCount === 'dynamic') {
     emissionError(context, 'spread calls into optional or default parameters require ABI expansion lowering');
   }
-  const omitted = new Set([...(defaults?.omitted ?? []), ...(optionals?.omitted ?? [])]);
+  const omitted = new Set([
+    ...(declaration ? (defaults?.omitted ?? []) : []),
+    ...(optionals?.omitted ?? []),
+  ]);
   const result = [...emitted];
   for (let index = emitted.length; index < plan.parameterCount; index += 1) {
     if (!omitted.has(index)) emissionError(context, `missing required call argument at position ${String(index)}`);
@@ -8833,7 +8858,9 @@ function emitBindingValueCpp(binding: Readonly<{ id: string; name: string }>, co
       getCppRuntimeProfile(context.options) === 'flight-cpp'
         ? `${sharedCaptureTargetName}.read_binding()`
         : `(*${sharedCaptureTargetName})`;
-    return context.uninitializedCaptureStorageBindingIds.has(binding.id) ? `${value}.value()` : value;
+    return context.uninitializedCaptureStorageBindingIds.has(binding.id) || context.defaultedParameterIds.has(binding.id)
+      ? `${value}.value()`
+      : value;
   }
   return context.targetNames.get(binding.id) ?? safeCppName(binding.name);
 }

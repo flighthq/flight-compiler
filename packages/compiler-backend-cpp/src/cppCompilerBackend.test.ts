@@ -6502,6 +6502,39 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(emitted.contents).toContain('defaulted(2.0, std::nullopt)');
   });
 
+  it('leaves runtime-member default arguments to the runtime declaration', () => {
+    const result = lower(
+      'runtime-member-defaults.ts',
+      `export function copy(values: readonly number[]): number[] { return values.slice(); }`,
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+
+    expect(emitted.contents).toContain('return values.slice()');
+    expect(emitted.contents).not.toContain('values.slice(std::nullopt');
+  });
+
+  it('represents optional callable parameters in std::function ABI types', () => {
+    const result = lower(
+      'optional-callable-parameter.ts',
+      `export type Decoder = (bytes: Uint8Array, label?: string) => number;`,
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+
+    expect(emitted.contents).toContain(
+      'using Decoder = std::function<double(flight::Uint8Array, std::optional<flight::String>)>',
+    );
+  });
+
+  it('unwraps initialized default parameters through shared closure captures', () => {
+    const result = lower(
+      'captured-default-parameter.ts',
+      `export function read(value: number = 1): () => number { return () => value; }`,
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+
+    expect(emitted.contents).toContain('return value.value()');
+  });
+
   it('allocates distinct compiler-owned names for repeated destructuring', () => {
     const result = lower(
       'repeated-destructuring.ts',
