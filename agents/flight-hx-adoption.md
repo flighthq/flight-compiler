@@ -12,7 +12,7 @@ Compiler revision `8952dbd3` addresses those five classes. Public extern aliases
 
 Focused verification passed: ten transpiler regressions, all forty extern-emission tests, the backend package typecheck, and a Haxe 4.3.7 compile-and-run probe covering a contract type/value collision plus nullish property assignment. This is not yet the adoption exit: the flight-hx agent's newest 2,682-file candidate was uncommitted and is not present in this isolated workspace, whose available flight-hx checkouts predate that candidate. Flight-hx must regenerate the full trees at `8952dbd3` or later and report the next fail-loud Haxe callback result.
 
-## Current compiler output
+## Earlier 2026-09-13 baseline
 
 The 2026-09-13 transpile run at compiler revision `0a16cb5b29d961039292fc0c01f3dd1f1ecd0ea0` emitted all 2,866 modules and 2,866 compiler files across 154 packages, with zero direct or propagated refusals. The generated tree is dependency-closed. The final compiler commits after that pin add only regression coverage and the expanded runtime ABI manifest; they do not change emitted module contents.
 
@@ -30,9 +30,9 @@ The current extern batch assigns exact representations to all 15 direct roots fr
 
 The compiler also absorbs the correction classes proven by focused flight-hx output: nested callback return parentheses, stable string-union enum member identifiers, generic defaults, callable-constraint erasure, Promise-void carriers, unique-symbol phantom fields, optional calls, assignment grouping, variadic `Math.min`/`Math.max`, runtime `Math` members, multi-value `Array.push`, callable `Symbol` construction, receiver-instantiated optional collection results, and serial async iteration.
 
-## flight-hx blockers
+## Earlier flight-hx blockers
 
-The updated flight-hx integration still has three compiler-report adoption gaps:
+At the earlier integration revision above, flight-hx still had these compiler-report adoption gaps. The 2026-09-14 report supersedes this snapshot and says downstream export adoption and runtime ABI targets are complete:
 
 - `createNormalizedHaxeBackend` copies `name`, `emitModule`, and `createEmissionSession`, but drops the backend's `runtimeAbi` function. The wrapper must forward that function for `compilation.report.runtimeAbi` to reach its manifest or adoption gate.
 - The extern driver still discovers contract value exports with a regular-expression walker and filters holder members downstream. It must consume `compilation.report.exports` as the authoritative type/value/function surface.
