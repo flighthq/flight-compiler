@@ -2767,6 +2767,22 @@ function getIrIterableElementTypeCpp(
   return getIrIterableElementTypeCpp(alias, context, nextResolvingAliases);
 }
 
+function isCppStringValueTypeCpp(
+  type: Readonly<IrType>,
+  context: EmitContext,
+  resolvingAliases: ReadonlySet<string>,
+): boolean {
+  if (type.kind === 'primitive') return type.name === 'string';
+  if (type.kind === 'literal') return typeof type.value === 'string';
+  if (type.kind !== 'named' || type.reference.kind !== 'binding') return false;
+  const bindingId = type.reference.binding.id;
+  if (resolvingAliases.has(bindingId)) return false;
+  const alias = resolveCppTypeAliasTarget(type, context);
+  return alias
+    ? isCppStringValueTypeCpp(alias, context, new Set(resolvingAliases).add(bindingId))
+    : false;
+}
+
 function emitStatement(statement: Readonly<IrStatement>, context: EmitContext): string[] {
   switch (statement.kind) {
     case 'block':
@@ -2839,6 +2855,10 @@ function emitStatement(statement: Readonly<IrStatement>, context: EmitContext): 
       if (statement.await) emissionError(context, 'async iteration requires C++ coroutine lowering');
       if ('pattern' in statement.variable) {
         emissionError(context, 'binding patterns require destructuring lowering before C++ emission');
+      }
+      const iterableType = getIrExpressionTypeEvidenceCpp(statement.iterable, context);
+      if (iterableType && isCppStringValueTypeCpp(iterableType, context, new Set())) {
+        emissionError(context, 'string for-of requires a Unicode code-point iteration runtime contract');
       }
       const collectionView = getCppCollectionIterationView(statement.iterable, context);
       const iterableExpression = collectionView?.collection ?? statement.iterable;

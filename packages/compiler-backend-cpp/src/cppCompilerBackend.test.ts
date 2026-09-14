@@ -7385,6 +7385,17 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(emitted.contents).toContain(' : ');
   });
 
+  it('refuses string for-of until the runtime exposes ECMAScript code-point iteration', () => {
+    const result = lower(
+      'for-of-string.ts',
+      'export function scan(value: string): void { for (const character of value) character.codePointAt(0); }',
+    );
+
+    expect(() => emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' })).toThrow(
+      'string for-of requires a Unicode code-point iteration runtime contract',
+    );
+  });
+
   it('emits forIn with preserve evaluation wrapping object', () => {
     const result = lower(
       'for-in-preserve.ts',
