@@ -619,6 +619,27 @@ describe('analyzeIrModuleAsyncStateMachines', () => {
     ]);
   });
 
+  it('sends unbraced branch jumps to their enclosing async loop', () => {
+    const analysis = analyzeIrModuleAsyncStateMachines(
+      lower(`
+        export async function drain(task: Promise<number>, stop: boolean): Promise<void> {
+          while (true) {
+            await task;
+            if (stop) break;
+            continue;
+          }
+        }
+      `),
+    );
+    const gotos = (analysis.machines[0]?.states.flatMap((state) => state.steps) ?? []).filter(
+      (step) => step.kind === 'goto',
+    );
+
+    expect(analysis.refusals).toEqual([]);
+    expect(gotos.some((step) => step.kind === 'goto' && step.target.kind === 'join')).toBe(true);
+    expect(gotos.some((step) => step.kind === 'goto' && step.target.kind === 'loopHeader')).toBe(true);
+  });
+
   it('sends a labelled jump to the loop that carries the label, not the innermost one', () => {
     const labelled = analyzeIrModuleAsyncStateMachines(
       lower(`

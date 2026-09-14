@@ -851,6 +851,20 @@ function createIrStatementArmAsyncStateMachine(
     draft.terminal = true;
     return undefined;
   }
+  if (armSuspensions.length === 0 && (statement.kind === 'break' || statement.kind === 'continue')) {
+    const target = statement.target;
+    const loop = target
+      ? [...draft.loops].reverse().find((candidate) => candidate.label === target.id)
+      : draft.loops.at(-1);
+    if (!loop) return createCompilerAsyncStateMachineRefusal('escaping-control-flow', path, scope.path);
+    draft.currentSteps.push({
+      kind: 'goto',
+      path,
+      target: statement.kind === 'break' ? loop.breakTarget : loop.continueTarget,
+    });
+    draft.terminal = true;
+    return undefined;
+  }
   if (armSuspensions.length > 0) {
     return createIrStatementSuspensionAsyncStateMachine(scope, statement, path, armSuspensions, draft);
   }
