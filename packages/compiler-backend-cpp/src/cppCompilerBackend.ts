@@ -7227,8 +7227,15 @@ function emitOptionalPropertyExpressionCpp(
       )
     : undefined;
   const resultType = `std::optional<${payload}>`;
+  const declaredUnion = declaredProperty ? getIrUnionTypeCpp(declaredProperty.type, context, new Set()) : undefined;
+  const declaredUnionPlan = declaredUnion ? getCppUnionRepresentationPlan(declaredUnion, context) : undefined;
+  const nestedOptionalStorage =
+    declaredProperty?.optional === true &&
+    (declaredUnionPlan?.kind === 'optionalSingle' || declaredUnionPlan?.kind === 'optionalVariant');
   const returned =
-    projectedStorageType === `std::optional<${resultType}>` ? `${projected}.value_or(std::nullopt)` : projected;
+    nestedOptionalStorage || projectedStorageType === `std::optional<${resultType}>`
+      ? `${projected}.value_or(std::nullopt)`
+      : projected;
   context.includes.add('optional');
   return `([&]() -> ${resultType} { auto optional_chain_receiver = ${object}; if (!optional_chain_receiver.has_value()) return std::nullopt; return ${returned}; }())`;
 }

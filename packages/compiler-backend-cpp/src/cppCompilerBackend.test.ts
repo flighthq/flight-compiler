@@ -300,12 +300,12 @@ describe('createCppCompilerBackend', () => {
     const types = lowerPackage(
       '@flighthq/types',
       'texture.ts',
-      "export type Texture = { readonly kind: 'bitmap'; readonly width: number } | { readonly kind: 'cube'; readonly size: number };",
+      "export type Curve = number[]; export type Texture = { readonly kind: 'bitmap'; readonly width: number } | { readonly kind: 'cube'; readonly size: number };",
     ).module;
     const consumer = lowerPackage(
       '@flighthq/materials',
       'material.ts',
-      "import type { Texture } from '@flighthq/types'; export interface Material { texture: Texture | null } export function initialize(options: Partial<Material>): void {}",
+      "import type { Curve, Texture } from '@flighthq/types'; export interface Material { curve: Curve | null; texture: Texture | null } export function initialize(options?: Partial<Material>): Curve | null { return options?.curve ?? null; }",
     ).module;
     const moduleResolution: CompilerModuleResolutionPlan = {
       edges: [{ specifier: '@flighthq/types', target: { packageName: types.packageName, source: types.source } }],
@@ -318,6 +318,7 @@ describe('createCppCompilerBackend', () => {
     });
     const emitted = session.emitModule(consumer)[0]!.contents;
 
+    expect(emitted).toContain('optional_chain_receiver.value()->curve.value_or(std::nullopt)');
     expect(emitted).toContain('std::optional<std::optional<flighthq_types::Texture>> texture;');
   });
 
