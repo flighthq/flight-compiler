@@ -156,6 +156,7 @@ interface EmitContext {
   async?: boolean | undefined;
   bindingClasses: ReadonlyMap<string, Readonly<IrClassDeclaration>>;
   bindingInitializers: ReadonlyMap<string, Readonly<IrExpression>>;
+  contextualBindingStorageTargetTypes: ReadonlyMap<string, Readonly<IrType>>;
   bindingTypes: ReadonlyMap<string, Readonly<IrType>>;
   currentClass?: Readonly<IrClassDeclaration> | undefined;
   defaultedParameterIds: ReadonlySet<string>;
@@ -277,6 +278,7 @@ function emitIrModuleCppWithContext(
   );
   const closureCapturePlan = createIrModuleClosureCapturePlanCpp(module);
   const sharedCaptureTargetNames = new Map<string, string>();
+  const contextualBindingStorageTargetTypes = new Map<string, Readonly<IrType>>();
   const uninitializedCaptureStorageBindingIds = collectIrModuleUninitializedBindingIdsCpp(module);
   const context: EmitContext = {
     activeDependentCallablePackIds: new Set(),
@@ -286,6 +288,7 @@ function emitIrModuleCppWithContext(
     bindingClasses: collectIrModuleBindingClassesCpp(module, bindingTypes),
     bindingInitializers: collectIrModuleBindingInitializersCpp(module),
     bindingTypes,
+    contextualBindingStorageTargetTypes,
     defaultedParameterIds: new Set(),
     denseArrayLengthBindingIds: collectIrModuleDenseArrayLengthBindingIdsCpp(sourceModule),
     dependentCallablePacks: collectIrModuleDependentCallablePacksCpp(module),
@@ -311,6 +314,9 @@ function emitIrModuleCppWithContext(
     uninitializedCaptureStorageBindingIds,
     generatedNames: new Set(targetNames.values()),
   };
+  for (const [bindingId, targetType] of collectCppContextualBindingStorageTargetTypesCpp(module, context)) {
+    contextualBindingStorageTargetTypes.set(bindingId, targetType);
+  }
   for (const bindingPlan of closureCapturePlan.bindings) {
     const bindingType = bindingTypes.get(bindingPlan.binding.id);
     if (
@@ -982,15 +988,18 @@ function emitVariableDeclaration(declaration: Readonly<IrVariableDeclaration>, c
   const name = getBindingTargetName(declaration.binding, context);
   const arrayElement = context.arrayElementBindingIds.has(declaration.binding.id);
   const externalStorageTarget = context.externalBindingStorageTargetTypes.get(declaration.binding.id);
+  const contextualStorageTarget = context.contextualBindingStorageTargetTypes.get(declaration.binding.id);
   const type = externalStorageTarget
     ? emitCppExternalBindingStorageTypeCpp(declaration.type, externalStorageTarget, context)
-    : declaration.type
-      ? emitType(declaration.type, context)
-      : 'auto';
+    : contextualStorageTarget
+      ? emitType(contextualStorageTarget, context)
+      : declaration.type
+        ? emitType(declaration.type, context)
+        : 'auto';
   const emittedType = arrayElement ? emitOptionalTypeCpp(type, true, context) : type;
   const constness = emitBindingConstnessCpp(declaration.mutable, declaration.type);
   const initializer = declaration.initializer
-    ? ` = ${arrayElement ? emitOptionalExpressionCpp(declaration.initializer, context, declaration.type) : emitExpression(declaration.initializer, context, declaration.type)}`
+    ? ` = ${arrayElement ? emitOptionalExpressionCpp(declaration.initializer, context, declaration.type) : emitExpression(declaration.initializer, context, contextualStorageTarget ?? declaration.type)}`
     : '';
   return [`inline ${constness}${emittedType} ${name}${initializer};`];
 }
@@ -1028,11 +1037,14 @@ function emitVariable(variable: Readonly<IrVariable>, context: EmitContext): str
     context.preservedInitializerTypes.set(variable.binding.id, preservedInitializerType);
   }
   const externalStorageTarget = context.externalBindingStorageTargetTypes.get(variable.binding.id);
+  const contextualStorageTarget = context.contextualBindingStorageTargetTypes.get(variable.binding.id);
   const type = externalStorageTarget
     ? emitCppExternalBindingStorageTypeCpp(variable.type, externalStorageTarget, context)
-    : weakMapViewPlan || !variable.type || preservedInitializerType
-      ? 'auto'
-      : emitType(variable.type, context);
+    : contextualStorageTarget
+      ? emitType(contextualStorageTarget, context)
+      : weakMapViewPlan || !variable.type || preservedInitializerType
+        ? 'auto'
+        : emitType(variable.type, context);
   const emittedType = arrayElement ? emitOptionalTypeCpp(type, true, context) : type;
   const constness = emitBindingConstnessCpp(variable.mutable, variable.type);
   const initializer = variable.initializer
@@ -1044,7 +1056,7 @@ function emitVariable(variable: Readonly<IrVariable>, context: EmitContext): str
             : emitExpression(
                 variable.initializer,
                 context,
-                preservedInitializerType ?? variable.type,
+                contextualStorageTarget ?? preservedInitializerType ?? variable.type,
                 true,
                 context.denseArrayLengthBindingIds.has(variable.binding.id),
               )
@@ -1844,7 +1856,7 @@ function emitExpression(
           context,
           ambientConstructorName
             ? (getIrInvocationProvidedArgumentTypeCpp(expression, index) ??
-              getIrInvocationArgumentExpectedTypeCpp(expression, index))
+                getIrInvocationArgumentExpectedTypeCpp(expression, index))
             : getIrInvocationArgumentExpectedTypeCpp(expression, index),
         ),
       );
@@ -1886,12 +1898,24 @@ function emitExpression(
           : undefined;
       const contextualArrayTypeArguments =
         ambientConstructorName === 'Array' && expectedType?.kind === 'array' ? [expectedType.element] : [];
+      const contextualConstructedType = expectedType
+        ? getCppNonNullableType(expectedType, context, new Set())
+        : undefined;
+      const contextualNamedTypeArguments =
+        ambientConstructorName !== undefined &&
+        contextualConstructedType?.kind === 'named' &&
+        contextualConstructedType.reference.kind === 'ambient' &&
+        contextualConstructedType.reference.name === ambientConstructorName
+          ? contextualConstructedType.typeArguments
+          : [];
       const typeArguments = emitCppTypeArguments(
         expression.typeArguments.length > 0
           ? expression.typeArguments
           : constructedType && constructedType.typeArguments.length > 0
             ? constructedType.typeArguments
-            : contextualArrayTypeArguments,
+            : contextualNamedTypeArguments.length > 0
+              ? contextualNamedTypeArguments
+              : contextualArrayTypeArguments,
         context,
       );
       if (
@@ -4968,6 +4992,19 @@ function isCppExpressionRepresentableAsRuntimeTypeCpp(
   target: Readonly<IrType>,
   context: EmitContext,
 ): boolean {
+  if (expression.kind === 'new' && expression.arguments.length === 0 && expression.typeArguments.length === 0) {
+    const ambientConstructorName = getIrAmbientConstructorNameCpp(expression.callee);
+    const contextualType = getCppNonNullableType(target, context, new Set());
+    if (
+      ambientConstructorName !== undefined &&
+      contextualType?.kind === 'named' &&
+      contextualType.reference.kind === 'ambient' &&
+      contextualType.reference.name === ambientConstructorName &&
+      contextualType.typeArguments.length > 0
+    ) {
+      return true;
+    }
+  }
   if (expression.kind !== 'literal') return isCppExpressionExactlyRepresentableAsTypeCpp(expression, target, context);
   const runtime = getIrTypeRuntimeDomainCpp(target, context, new Set());
   if (expression.value === null) return runtime?.kind === 'null';
@@ -5398,6 +5435,70 @@ function collectCppExternalBindingStorageTargetTypesCpp(
   );
 }
 
+function collectCppContextualBindingStorageTargetTypesCpp(
+  module: Readonly<IrModule>,
+  context: EmitContext,
+): ReadonlyMap<string, Readonly<IrType>> {
+  const candidates = new Map<string, Map<string, Readonly<IrType>>>();
+  const eligible = new Set<string>();
+  analyzeIrModuleTraversal(module, {
+    variable(variable) {
+      if (
+        'binding' in variable &&
+        !variable.mutable &&
+        variable.initializer?.kind === 'object' &&
+        variable.type &&
+        hasFlightReferenceRepresentationCpp(variable.type, context)
+      ) {
+        eligible.add(variable.binding.id);
+      }
+    },
+  });
+  analyzeIrModuleTraversal(module, {
+    expression(expression) {
+      if (expression.kind !== 'call') return;
+      expression.arguments.forEach((argument, index) => {
+        if (
+          argument.kind !== 'identifier' ||
+          argument.reference.kind !== 'binding' ||
+          !eligible.has(argument.reference.binding.id)
+        ) {
+          return;
+        }
+        const bindingId = argument.reference.binding.id;
+        const sourceType = context.bindingTypes.get(bindingId);
+        const expectedType = getIrCallArgumentExpectedTypeCpp(expression, index, context);
+        const targetType = expectedType ? getCppNonNullableType(expectedType, context, new Set()) : undefined;
+        if (
+          !sourceType ||
+          !targetType ||
+          !hasFlightReferenceRepresentationCpp(targetType, context) ||
+          hasFlightStructuralRowRepresentationCpp(targetType, context)
+        ) {
+          return;
+        }
+        const sourceShape = context.referenceRepresentationPlanner.resolveObjectShape(sourceType, context.module);
+        const targetShape = context.referenceRepresentationPlanner.resolveObjectShape(targetType, context.module);
+        if (
+          !sourceShape ||
+          !targetShape ||
+          !areCppObjectShapesRepresentationEquivalent(sourceShape, targetShape, context)
+        ) {
+          return;
+        }
+        const targets = candidates.get(bindingId) ?? new Map<string, Readonly<IrType>>();
+        targets.set(normalizeCompilerStructuralValueCanonical(targetType), targetType);
+        candidates.set(bindingId, targets);
+      });
+    },
+  });
+  return new Map(
+    [...candidates].flatMap(([bindingId, targets]) =>
+      targets.size === 1 ? ([[bindingId, [...targets.values()][0]!] as const] as const) : [],
+    ),
+  );
+}
+
 function isCppUnresolvedExternalStorageTypeCpp(type: Readonly<IrType>): boolean {
   if (type.kind === 'unknown') return true;
   if (type.kind !== 'union') return false;
@@ -5428,6 +5529,8 @@ function getIrCallArgumentExpectedTypeCpp(
   index: number,
   context: EmitContext,
 ): Readonly<IrType> | undefined {
+  const collectionType = getCppCollectionCallArgumentExpectedTypeCpp(expression, index, context);
+  if (collectionType) return collectionType;
   if (expression.callee.kind === 'property' && expression.callee.member) {
     const provided = getIrInvocationProvidedArgumentTypeCpp(expression, index);
     if (provided) return provided;
@@ -5441,6 +5544,25 @@ function getIrCallArgumentExpectedTypeCpp(
     (candidate) => candidate.kind === 'function' && candidate.binding.id === bindingId,
   );
   return declaration?.kind === 'function' ? declaration.parameters[index]?.type : undefined;
+}
+
+function getCppCollectionCallArgumentExpectedTypeCpp(
+  expression: Readonly<Extract<IrExpression, { kind: 'call' }>>,
+  index: number,
+  context: EmitContext,
+): Readonly<IrType> | undefined {
+  if (expression.callee.kind !== 'property' || !expression.callee.member) return undefined;
+  const { member, name, object } = expression.callee;
+  const collection = getIrAmbientCollectionTypeCpp(getIrExpressionTypeEvidenceCpp(object, context), context, new Set());
+  if (!collection) return undefined;
+  if (member.receiver === 'map') {
+    if (index === 0 && ['delete', 'get', 'has', 'set'].includes(name)) return collection.typeArguments[0];
+    if (index === 1 && name === 'set') return collection.typeArguments[1];
+  }
+  if (member.receiver === 'set' && index === 0 && ['add', 'delete', 'has'].includes(name)) {
+    return collection.typeArguments[0];
+  }
+  return undefined;
 }
 
 function getIrInvocationProvidedArgumentTypeCpp(
@@ -5741,6 +5863,7 @@ function getCppComputedPropertySourceName(reference: Readonly<IrValueNameReferen
 
 function getCppBindingTypeCpp(bindingId: string, context: EmitContext): Readonly<IrType> | undefined {
   return (
+    context.contextualBindingStorageTargetTypes.get(bindingId) ??
     context.preservedInitializerTypes.get(bindingId) ??
     context.bindingTypes.get(bindingId) ??
     getCppImportedBindingTypeCpp(bindingId, context)
@@ -6876,8 +6999,10 @@ function isCppVariantIndexedReceiverCpp(
     plan.valueSlots.length > 1 &&
     plan.valueSlots.every((slot) => {
       const representation = context.referenceRepresentationPlanner.plan(slot.runtimeType, context.module);
-      return representation.kind === 'represented' &&
-        (representation.category === 'array' || representation.category === 'typedArray');
+      return (
+        representation.kind === 'represented' &&
+        (representation.category === 'array' || representation.category === 'typedArray')
+      );
     })
   );
 }

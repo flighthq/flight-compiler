@@ -7879,6 +7879,55 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(output).toContain('array_from_result.push(array_from_key)');
   });
 
+  it('uses contextual Map and Set arguments for empty constructors in object fields', () => {
+    const output = emitIrModuleCpp(
+      lower(
+        'contextual-collections.ts',
+        `interface State { byName: Map<string, number>; seen: Set<string> }
+         export function create(): State { return { byName: new Map(), seen: new Set() }; }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+
+    expect(output).toContain('.by_name = flight::Map<flight::String, double>()');
+    expect(output).toContain('.seen = flight::Set<flight::String>()');
+  });
+
+  it('materializes a narrowed optional object assignment with its declared referent', () => {
+    const output = emitIrModuleCpp(
+      lower(
+        'optional-object-assignment.ts',
+        `interface Cell { id: number; values: Set<string> }
+         export function ensure(cell: Cell | undefined): Cell {
+           if (cell === undefined) cell = { id: 1, values: new Set() };
+           return cell;
+         }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+
+    expect(output).toContain(
+      'cell = std::optional<flight::Ref<Cell>>{flight::make_ref<Cell>(Cell{.id = 1.0, .values = flight::Set<flight::String>()})}',
+    );
+  });
+
+  it('stores an immutable structural literal as its sole concrete Map value referent', () => {
+    const output = emitIrModuleCpp(
+      lower(
+        'contextual-map-value.ts',
+        `interface Bounds { min: number; max: number }
+         export function store(values: Map<string, Bounds>): void {
+           const copy = { min: 0, max: 1 };
+           values.set('copy', copy);
+         }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+
+    expect(output).toContain('flight::Ref<Bounds> copy = flight::make_ref<Bounds>');
+    expect(output).toContain('values.set(flight::String("copy"), copy)');
+  });
+
   it('erases Object.freeze after preserving its single value evaluation', () => {
     const output = emitIrModuleCpp(
       lower(
