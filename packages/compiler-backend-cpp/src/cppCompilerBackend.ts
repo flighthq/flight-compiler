@@ -76,9 +76,9 @@ import type {
   IrVariable,
   IrVariableDeclaration,
 } from '../../compiler-types/src/index.js';
-import { cppCallableSignatureAbi } from './cppCallableSignatureAbi.js';
 import { getCompilerCppAmbientMemberBinding } from './cppAmbientMemberBinding.js';
 import { collectIrModuleBindingTypesCpp } from './cppBindingTypeInference.js';
+import { getCompilerCallableSignatureAbiCpp } from './cppCallableSignatureAbi.js';
 import { createIrModuleClosureCapturePlanCpp } from './cppClosureCapturePlan.js';
 import {
   convertSourcePathToCppFileName,
@@ -1583,7 +1583,7 @@ function emitExpression(
         expression.expression.kind === 'cast' &&
         expression.expression.type.kind === 'unknown'
       ) {
-        return `${cppCallableSignatureAbi.bind}<${callableTypeParameter}>(${emitExpression(expression.expression.expression, context)})`;
+        return `${getCompilerCallableSignatureAbiCpp().bind}<${callableTypeParameter}>(${emitExpression(expression.expression.expression, context)})`;
       }
       const callableObject = getCppCallableObjectIrTypeCpp(expression.type, context, new Set());
       if (callableObject && getCppRuntimeProfile(context.options) === 'flight-cpp') {
@@ -7607,7 +7607,8 @@ function emitCppFunctionTemplate(
         : '',
     requirement: packs
       .map(
-        (pack) => `${cppCallableSignatureAbi.trait}<${pack.callableTypeName}>::template accepts<${pack.typeName}...>`,
+        (pack) =>
+          `${getCompilerCallableSignatureAbiCpp().trait}<${pack.callableTypeName}>::template accepts<${pack.typeName}...>`,
       )
       .join(' && '),
   };

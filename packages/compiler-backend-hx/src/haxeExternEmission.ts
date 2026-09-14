@@ -34,9 +34,9 @@ import type {
 } from '../../compiler-types/src/index.js';
 import { convertPackageNameToHaxePackageName } from './haxeCompilerIdentity.js';
 import {
-  canEraseCompilerAmbientUtilityHeritageHaxe,
   getCompilerAmbientUtilityHeritageTargetHaxe,
   getCompilerRuntimeExternalSymbolTargetHaxe,
+  isCompilerAmbientUtilityHeritageErasableHaxe,
 } from './haxeRuntimeExternalSymbolBinding.js';
 import { emitIrTypeHaxe } from './haxeTypeEmission.js';
 
@@ -77,7 +77,7 @@ interface HaxeExternDeclarationLocation {
   readonly module: Readonly<IrModule>;
 }
 
-export interface HaxeExternEmissionIndex {
+interface HaxeExternEmissionIndex {
   readonly declarationLocations: ReadonlyMap<string, readonly HaxeExternDeclarationLocation[]>;
   readonly exportedTypeAliases: Map<string, readonly HaxeExternTypeAliasLocation[]>;
   readonly importRoutes: ReadonlyMap<string, readonly HaxeExternImportRoute[]>;
@@ -196,7 +196,7 @@ export function emitIrModuleHaxeExternWithContext(
         getCompilerRuntimeExternalSymbolTargetHaxe(reference.reference.name, 'type') !== undefined,
       eraseAmbientUtilityHeritage: (reference, declaration) =>
         ambientUtilityHeritageTargets.has(declaration.binding.id) ||
-        canEraseCompilerAmbientUtilityHeritageHaxe(reference),
+        isCompilerAmbientUtilityHeritageErasableHaxe(reference),
     });
   const module = lowerIrModuleWithCompilerPasses(sourceModule, [inheritancePass]);
   const index = emissionIndex ?? createHaxeExternEmissionIndex(sourceModules, moduleResolution);

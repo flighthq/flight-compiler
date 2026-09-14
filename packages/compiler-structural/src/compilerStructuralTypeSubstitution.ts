@@ -155,11 +155,7 @@ function resolveIrTypeStructuralSubstitutionInternal(
         );
       }
       const active = new Set(context.active).add(type.reference.binding.id);
-      return resolveIrTypeStructuralSubstitutionInternal(
-        replacement,
-        { ...context, active },
-        path,
-      );
+      return resolveIrTypeStructuralSubstitutionInternal(replacement, { ...context, active }, path);
     }
     switch (type.kind) {
       case 'array':

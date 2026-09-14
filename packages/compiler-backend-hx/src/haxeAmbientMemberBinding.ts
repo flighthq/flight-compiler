@@ -13,12 +13,6 @@ import type {
 // A member absent from this table has no agreed Haxe spelling and is refused rather than guessed at,
 // because a name that happens to exist on the target is the most expensive kind of coincidence.
 
-export function getCompilerHaxeAmbientMemberBinding(
-  member: Readonly<IrResolvedMember>,
-): CompilerHaxeAmbientMemberBinding | undefined {
-  return haxeAmbientMemberBindings[`${member.receiver}.${member.name}`];
-}
-
 export function createCompilerHaxeAmbientMemberBindingPlan(): CompilerHaxeAmbientMemberBindingPlan {
   return {
     bindings: Object.entries(haxeAmbientMemberBindings)
@@ -33,6 +27,12 @@ export function createCompilerHaxeAmbientMemberBindingPlan(): CompilerHaxeAmbien
       }),
     schema: 'flight-haxe-ambient-member-bindings/1',
   };
+}
+
+export function getCompilerHaxeAmbientMemberBinding(
+  member: Readonly<IrResolvedMember>,
+): CompilerHaxeAmbientMemberBinding | undefined {
+  return haxeAmbientMemberBindings[`${member.receiver}.${member.name}`];
 }
 
 const haxeAmbientMemberBindings: Readonly<Record<string, CompilerHaxeAmbientMemberBinding>> = {

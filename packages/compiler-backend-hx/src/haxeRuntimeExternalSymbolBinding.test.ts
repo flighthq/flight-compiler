@@ -1,11 +1,30 @@
 import type { IrInterfaceDeclaration } from '../../compiler-types/src/index.js';
 import {
-  canEraseCompilerAmbientUtilityHeritageHaxe,
+  createCompilerHaxeRuntimeExternalSymbolBindingPlan,
   createCompilerRuntimeExternalSymbolBindingPlanHaxe,
   getCompilerAmbientUtilityHeritageTargetHaxe,
   getCompilerRuntimeExternalMemberTargetHaxe,
   getCompilerRuntimeExternalSymbolTargetHaxe,
+  isCompilerAmbientUtilityHeritageErasableHaxe,
 } from './haxeRuntimeExternalSymbolBinding.js';
+
+describe('createCompilerHaxeRuntimeExternalSymbolBindingPlan', () => {
+  it('publishes target spellings and returns independent binding records', () => {
+    const first = createCompilerHaxeRuntimeExternalSymbolBindingPlan();
+    const second = createCompilerHaxeRuntimeExternalSymbolBindingPlan();
+
+    expect(first.schema).toBe('flight-haxe-runtime-external-symbol-bindings/1');
+    expect(first.contract).toBe('flight-runtime-contract/2');
+    expect(first.bindings).toEqual(second.bindings);
+    expect(first.bindings).not.toBe(second.bindings);
+    expect(first.bindings).toContainEqual(
+      expect.objectContaining({
+        externalSymbol: { sourceName: 'Promise', space: 'type' },
+        targetName: '_Promise',
+      }),
+    );
+  });
+});
 
 describe('createCompilerRuntimeExternalSymbolBindingPlanHaxe', () => {
   it('elects type and value decisions under the versioned runtime contract', () => {
@@ -129,10 +148,10 @@ describe('createCompilerRuntimeExternalSymbolBindingPlanHaxe', () => {
   });
 });
 
-describe('canEraseCompilerAmbientUtilityHeritageHaxe', () => {
+describe('isCompilerAmbientUtilityHeritageErasableHaxe', () => {
   it('accepts a closed Pick over a bound Haxe host type without requiring sole heritage', () => {
     expect(
-      canEraseCompilerAmbientUtilityHeritageHaxe({
+      isCompilerAmbientUtilityHeritageErasableHaxe({
         kind: 'named',
         reference: { kind: 'ambient', name: 'Pick' },
         typeArguments: [

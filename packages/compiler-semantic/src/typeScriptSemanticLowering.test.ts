@@ -8,7 +8,11 @@ import type {
   IrStatement,
   IrType,
 } from '../../compiler-types/src/index.js';
-import { lowerTypeScriptSource, lowerTypeScriptSources } from './typeScriptSemanticLowering.js';
+import {
+  createCompilerTypeScriptAnalysisIdentity,
+  lowerTypeScriptSource,
+  lowerTypeScriptSources,
+} from './typeScriptSemanticLowering.js';
 
 function lower(file: string, source: string) {
   const sourceFile = ts.createSourceFile(`/flight/packages/math/src/${file}`, source, ts.ScriptTarget.Latest, true);
@@ -17,6 +21,29 @@ function lower(file: string, source: string) {
     upstreamDirectory: '/flight',
   });
 }
+
+describe('createCompilerTypeScriptAnalysisIdentity', () => {
+  it('publishes the exact deterministic checker identity used by package-graph lowering', () => {
+    const first = createCompilerTypeScriptAnalysisIdentity();
+    const second = createCompilerTypeScriptAnalysisIdentity();
+
+    expect(first).toEqual({
+      checkerMode: 'package-graph-program',
+      compilerOptions: {
+        module: 'ESNext',
+        moduleResolution: 'compiler-graph-with-typescript-fallback',
+        noImplicitAny: true,
+        standardLibrary: 'typescript-bundled',
+        strictNullChecks: true,
+        target: 'ESNext',
+      },
+      schema: 'flight-compiler-typescript-analysis/1',
+      typescriptVersion: ts.version,
+    });
+    expect(second).toEqual(first);
+    expect(second).not.toBe(first);
+  });
+});
 
 describe('lowerTypeScriptSource', () => {
   it('retains const, let, and var module initialization identity', () => {

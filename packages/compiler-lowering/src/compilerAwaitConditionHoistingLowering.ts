@@ -184,9 +184,7 @@ function lowerIrDeclarationAwaitConditionHoisting(declaration: Readonly<IrDeclar
         methods: declaration.methods.map((method) => ({
           ...method,
           body: lowerIrStatementListAwaitConditionHoisting(method.body, context),
-          parameters: method.parameters.map((parameter) =>
-            lowerIrParameterAwaitConditionHoisting(parameter, context),
-          ),
+          parameters: method.parameters.map((parameter) => lowerIrParameterAwaitConditionHoisting(parameter, context)),
         })),
       };
     case 'function':
@@ -424,11 +422,7 @@ function lowerIrStatementAwaitConditionHoisting(
       const expression = statement.expression
         ? lowerIrExpressionAwaitConditionHoisting(statement.expression, context)
         : undefined;
-      if (
-        !expression ||
-        expression.kind === 'await' ||
-        !hasIrExpressionAwait(expression)
-      ) {
+      if (!expression || expression.kind === 'await' || !hasIrExpressionAwait(expression)) {
         return expression ? { ...statement, expression } : statement;
       }
       const binding = createIrAwaitValueBinding(context.origin, context.nextBindingOrdinal++);
@@ -472,9 +466,7 @@ function lowerIrExpressionAwaitConditionHoisting(
     case 'new':
       return {
         ...expression,
-        arguments: expression.arguments.map((argument) =>
-          lowerIrExpressionAwaitConditionHoisting(argument, context),
-        ),
+        arguments: expression.arguments.map((argument) => lowerIrExpressionAwaitConditionHoisting(argument, context)),
         callee: lowerIrExpressionAwaitConditionHoisting(expression.callee, context),
       };
     case 'conditional':

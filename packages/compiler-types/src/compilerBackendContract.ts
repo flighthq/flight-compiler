@@ -1,7 +1,7 @@
 import type { IrModule } from './compilerModuleIntermediateRepresentation.js';
 import type { CompilerModuleResolutionPlan } from './compilerModuleResolutionContract.js';
-import type { CompilerSourceIdentity } from './compilerSourceIdentity.js';
 import type { CompilerRuntimeAbiManifest } from './compilerRuntimeContract.js';
+import type { CompilerSourceIdentity } from './compilerSourceIdentity.js';
 
 export interface EmittedFileIdentity {
   readonly path: string;

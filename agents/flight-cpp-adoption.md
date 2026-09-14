@@ -45,8 +45,6 @@ No missing portable runtime header or basic CMake/SDL implementation blocks the 
 The reproduction commands in the isolated flight-cpp checkout were:
 
 ```sh
-npm run sdk:generate:sdl
-FLIGHT_CPP_COMPILE_JOBS=12 npm run sdk:compile:sdl
 cmake --preset development
 cmake --build --preset development --parallel 12
 ctest --preset development

@@ -3,7 +3,24 @@ import ts from 'typescript';
 import { lowerTypeScriptSource } from '../../compiler-semantic/src/index.js';
 import type { CompilerModuleResolutionPlan, EmittedFile } from '../../compiler-types/src/index.js';
 import { createHaxeCompilerBackend, emitIrModuleHaxe } from './haxeCompilerBackend.js';
-import { emitIrModuleHaxeExtern, emitIrModuleHaxeExternWithContext } from './haxeExternEmission.js';
+import {
+  createHaxeExternEmissionIndex,
+  emitIrModuleHaxeExtern,
+  emitIrModuleHaxeExternWithContext,
+} from './haxeExternEmission.js';
+
+describe('createHaxeExternEmissionIndex', () => {
+  it('indexes package modules without mutating the source graph', () => {
+    const module = lower('@flighthq/types', 'model.ts', 'export interface Model { value: number }');
+    const snapshot = structuredClone(module);
+    const index = createHaxeExternEmissionIndex([module], undefined);
+
+    expect(index.modules).toEqual([module]);
+    expect(index.modulesByPackage.get('@flighthq/types')).toEqual([module]);
+    expect(index.modulesByPackageSource.get(`${module.packageName}\0${module.source}`)).toEqual([module]);
+    expect(module).toEqual(snapshot);
+  });
+});
 
 describe('emitIrModuleHaxeExtern', () => {
   it('emits exported interfaces as structural typedefs and values on the package contract holder', () => {

@@ -52,15 +52,6 @@ export function createCompilerRuntimeExternalSymbolBindingPlanCpp(
   };
 }
 
-export function getCompilerExternalBindingConstructionCpp(
-  sourceName: string,
-  externalBindings?: Readonly<CppCompilerExternalBindingManifest> | undefined,
-): CppCompilerExternalBindingConstruction | undefined {
-  return getCppCompilerExternalBindings(externalBindings).find(
-    (binding) => binding.sourceName === sourceName.normalize('NFC') && binding.space === 'value',
-  )?.construction;
-}
-
 export function getCompilerExternalBindingCallResultTypeCpp(
   sourceName: string,
   externalBindings?: Readonly<CppCompilerExternalBindingManifest> | undefined,
@@ -70,13 +61,13 @@ export function getCompilerExternalBindingCallResultTypeCpp(
   )?.callResultType;
 }
 
-export function getCompilerExternalBindingWeakKeyPolicyTargetCpp(
+export function getCompilerExternalBindingConstructionCpp(
   sourceName: string,
   externalBindings?: Readonly<CppCompilerExternalBindingManifest> | undefined,
-): string | undefined {
+): CppCompilerExternalBindingConstruction | undefined {
   return getCppCompilerExternalBindings(externalBindings).find(
-    (binding) => binding.sourceName === sourceName.normalize('NFC') && binding.space === 'type',
-  )?.weakKeyPolicyTargetName;
+    (binding) => binding.sourceName === sourceName.normalize('NFC') && binding.space === 'value',
+  )?.construction;
 }
 
 export function getCompilerExternalBindingEvidenceCpp(
@@ -111,6 +102,15 @@ export function getCompilerExternalBindingHeadersCpp(
       (binding) => binding.sourceName === sourceName.normalize('NFC') && binding.space === space,
     )?.headers ?? []
   );
+}
+
+export function getCompilerExternalBindingWeakKeyPolicyTargetCpp(
+  sourceName: string,
+  externalBindings?: Readonly<CppCompilerExternalBindingManifest> | undefined,
+): string | undefined {
+  return getCppCompilerExternalBindings(externalBindings).find(
+    (binding) => binding.sourceName === sourceName.normalize('NFC') && binding.space === 'type',
+  )?.weakKeyPolicyTargetName;
 }
 
 export function getCompilerRuntimeExternalMemberTargetCpp(

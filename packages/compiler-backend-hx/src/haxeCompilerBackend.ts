@@ -92,17 +92,17 @@ import { getCompilerHaxeAmbientMemberBinding } from './haxeAmbientMemberBinding.
 import { createCompilerLoweringPassAsyncIterationHaxe } from './haxeAsyncIterationLowering.js';
 import { convertPackageNameToHaxePackageName, convertSourcePathToHaxeModuleName } from './haxeCompilerIdentity.js';
 import { createHaxeExternEmissionIndex, emitIrModuleHaxeExternWithContext } from './haxeExternEmission.js';
+import { createCompilerHaxeRuntimeAbiManifest } from './haxeRuntimeAbiManifest.js';
 import { createCompilerRuntimeExternalConstructorAbiPlanHaxe } from './haxeRuntimeExternalConstructorAbi.js';
 import {
-  canEraseCompilerAmbientUtilityHeritageHaxe,
   getCompilerAmbientUtilityHeritageTargetHaxe,
   getCompilerRuntimeExternalMemberTargetHaxe,
   createCompilerRuntimeExternalSymbolBindingPlanHaxe,
   getCompilerRuntimeExternalSymbolTargetHaxe,
+  isCompilerAmbientUtilityHeritageErasableHaxe,
 } from './haxeRuntimeExternalSymbolBinding.js';
 import { createCompilerRuntimeTaskCapabilityPlanHaxe } from './haxeRuntimeTaskCapability.js';
 import { emitCompilerHaxeTaskLoweringFunction } from './haxeTaskEmission.js';
-import { createCompilerHaxeRuntimeAbiManifest } from './haxeRuntimeAbiManifest.js';
 import { isCompilerHaxeTaskLoweringFailure, lowerCompilerAsyncStateMachinesHaxe } from './haxeTaskLowering.js';
 import { emitIrTypeHaxe } from './haxeTypeEmission.js';
 
@@ -166,7 +166,7 @@ export function createHaxeCompilerBackend(): CompilerBackend<HaxeCompilerBackend
           getCompilerRuntimeExternalSymbolTargetHaxe(reference.reference.name, 'type') !== undefined,
         eraseAmbientUtilityHeritage: (reference, declaration) =>
           ambientUtilityHeritageBindingIds.has(declaration.binding.id) ||
-          canEraseCompilerAmbientUtilityHeritageHaxe(reference),
+          isCompilerAmbientUtilityHeritageErasableHaxe(reference),
       });
       const analyzeStructuralObjectCompatibility = createIrModuleStructuralObjectCompatibilityAnalyzer(
         modules,
@@ -293,7 +293,7 @@ function emitIrModuleHaxeWithContext(
           getCompilerRuntimeExternalSymbolTargetHaxe(reference.reference.name, 'type') !== undefined,
         eraseAmbientUtilityHeritage: (reference, declaration) =>
           ambientUtilityHeritageTargets.has(declaration.binding.id) ||
-          canEraseCompilerAmbientUtilityHeritageHaxe(reference),
+          isCompilerAmbientUtilityHeritageErasableHaxe(reference),
       }),
     createCompilerLoweringPassSwitchFallthrough(),
     createCompilerLoweringPassSwitchSuspension(),

@@ -43,11 +43,7 @@ function lowerIrValueAsyncIterationHaxe(value: unknown): unknown {
     Object.entries(value).map(([key, child]) => [key, lowerIrValueAsyncIterationHaxe(child)]),
   ) as Record<string, unknown>;
   if (!isIrAwaitForOfStatement(lowered)) return lowered;
-  if (
-    !('binding' in lowered.variable) ||
-    lowered.label ||
-    hasIrAsyncIterationLoopLocalAbruptCompletion(lowered.body)
-  ) {
+  if (!('binding' in lowered.variable) || lowered.label || hasIrAsyncIterationLoopLocalAbruptCompletion(lowered.body)) {
     return lowered;
   }
 

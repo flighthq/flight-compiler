@@ -242,7 +242,10 @@ describe('resolveIrTypeStructuralSubstitution', () => {
       ),
     ).toEqual(numberType);
     expect(
-      resolveIrTypeStructuralSubstitution(typeReference(first), plan([{ parameter: first, type: typeReference(first) }])),
+      resolveIrTypeStructuralSubstitution(
+        typeReference(first),
+        plan([{ parameter: first, type: typeReference(first) }]),
+      ),
     ).toEqual(typeReference(first));
     expect(
       resolveIrTypeStructuralSubstitution(

@@ -1,6 +1,25 @@
 import { describe, expect, it } from 'vitest';
 
-import { getCompilerHaxeAmbientMemberBinding } from './haxeAmbientMemberBinding.js';
+import {
+  createCompilerHaxeAmbientMemberBindingPlan,
+  getCompilerHaxeAmbientMemberBinding,
+} from './haxeAmbientMemberBinding.js';
+
+describe('createCompilerHaxeAmbientMemberBindingPlan', () => {
+  it('creates an independent, deterministically ordered runtime ABI record', () => {
+    const first = createCompilerHaxeAmbientMemberBindingPlan();
+    const second = createCompilerHaxeAmbientMemberBindingPlan();
+
+    expect(first.schema).toBe('flight-haxe-ambient-member-bindings/1');
+    expect(first.bindings).toEqual(second.bindings);
+    expect(first.bindings).not.toBe(second.bindings);
+    expect(first.bindings.map(({ receiver, sourceMember }) => `${receiver}.${sourceMember}`)).toEqual(
+      [...first.bindings]
+        .map(({ receiver, sourceMember }) => `${receiver}.${sourceMember}`)
+        .sort((left, right) => (left < right ? -1 : left > right ? 1 : 0)),
+    );
+  });
+});
 
 describe('getCompilerHaxeAmbientMemberBinding', () => {
   it('answers a rename, and a member Haxe keeps somewhere other than the value', () => {

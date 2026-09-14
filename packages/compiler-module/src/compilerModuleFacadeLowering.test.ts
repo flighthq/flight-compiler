@@ -64,10 +64,9 @@ describe('createCompilerModuleFacadePlan', () => {
     const originPlan = plan.modules.find((module) => module.module.source === origin.source)!;
     const getSlot = (name: string, lane: 'type' | 'value') =>
       entryPlan.slots.find((slot) => slot.exportName === name && slot.lane === lane);
-    const entryOnlyPlan = createCompilerModuleFacadePlanForEntries(
-      { evaluation, modules: input.modules },
-      [getIdentity(entry)],
-    );
+    const entryOnlyPlan = createCompilerModuleFacadePlanForEntries({ evaluation, modules: input.modules }, [
+      getIdentity(entry),
+    ]);
 
     expect(plan.semantics).toEqual({
       bindingAccess: 'live',
@@ -409,6 +408,28 @@ describe('createCompilerModuleFacadePlan', () => {
         modules: [malformed],
       }),
     ).toThrow(expect.objectContaining({ code: 'missing-facade-binding' }));
+  });
+});
+
+describe('createCompilerModuleFacadePlanForEntries', () => {
+  it('returns only the requested entry module while retaining its dependency routes', () => {
+    const origin = lowerModule('origin.ts', 'export const value = 1;');
+    const entry = lowerModule('entry.ts', "export { value } from './origin.js';");
+    const input = createInput([entry, origin], [createDependency(entry, './origin.js', origin)], [entry, origin]);
+    const plan = createCompilerModuleFacadePlanForEntries(
+      { evaluation: createCompilerModuleEvaluationPlan(input), modules: input.modules },
+      [getIdentity(entry)],
+    );
+
+    expect(plan.modules).toHaveLength(1);
+    expect(plan.modules[0]?.module).toEqual(getIdentity(entry));
+    expect(plan.modules[0]?.slots).toContainEqual(
+      expect.objectContaining({
+        exportName: 'value',
+        lane: 'value',
+        route: expect.objectContaining({ module: getIdentity(origin) }),
+      }),
+    );
   });
 });
 

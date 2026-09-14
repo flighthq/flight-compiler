@@ -48,8 +48,8 @@ The Haxe 4.3.7 complete-tree callback reaches compilation and currently stops at
 From the updated local flight-hx checkout with its dependency lock pointed at the compiler revision under test:
 
 ```sh
-npm run generate -- --extern
-npm run generate -- --transpile
+node tools/backend-hx/generate.mjs --extern
+node tools/backend-hx/generate.mjs --transpile
 node tools/haxe.mjs -cp generated/js -cp generated -D flight_esm -js /tmp/flight-haxe-extern.js --macro "include('flight._js')"
 node tools/haxe.mjs -cp generated/hx -cp src -D flight_hx --no-output --macro "include('flight._hx')"
 ```

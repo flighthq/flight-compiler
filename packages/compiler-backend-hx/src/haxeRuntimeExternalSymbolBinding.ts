@@ -29,25 +29,6 @@ type HaxeRuntimeExternalSymbolBinding =
       targetName: string;
     }>;
 
-export function createCompilerRuntimeExternalSymbolBindingPlanHaxe(): CompilerRuntimeExternalSymbolBindingPlan {
-  const targetPlan = createCompilerHaxeRuntimeExternalSymbolBindingPlan();
-  return {
-    bindings: targetPlan.bindings.map((binding) =>
-      binding.kind === 'runtime'
-        ? {
-            capability: binding.capability,
-            externalSymbol: { ...binding.externalSymbol },
-            kind: binding.kind,
-          }
-        : {
-            externalSymbol: { ...binding.externalSymbol },
-            kind: binding.kind,
-          },
-    ),
-    contract: targetPlan.contract,
-  };
-}
-
 export function createCompilerHaxeRuntimeExternalSymbolBindingPlan(): CompilerHaxeRuntimeExternalSymbolBindingPlan {
   return {
     bindings: haxeRuntimeExternalSymbolBindings.map((sourceBinding) => {
@@ -70,6 +51,25 @@ export function createCompilerHaxeRuntimeExternalSymbolBindingPlan(): CompilerHa
   };
 }
 
+export function createCompilerRuntimeExternalSymbolBindingPlanHaxe(): CompilerRuntimeExternalSymbolBindingPlan {
+  const targetPlan = createCompilerHaxeRuntimeExternalSymbolBindingPlan();
+  return {
+    bindings: targetPlan.bindings.map((binding) =>
+      binding.kind === 'runtime'
+        ? {
+            capability: binding.capability,
+            externalSymbol: { ...binding.externalSymbol },
+            kind: binding.kind,
+          }
+        : {
+            externalSymbol: { ...binding.externalSymbol },
+            kind: binding.kind,
+          },
+    ),
+    contract: targetPlan.contract,
+  };
+}
+
 export function getCompilerAmbientUtilityHeritageTargetHaxe(
   declaration: Readonly<IrInterfaceDeclaration>,
   module?: Readonly<IrModule> | undefined,
@@ -89,22 +89,6 @@ export function getCompilerAmbientUtilityHeritageTargetHaxe(
   const target = heritage.typeArguments[0]!;
   if (target.kind !== 'named' || target.reference.kind !== 'ambient') return undefined;
   return getCompilerRuntimeExternalSymbolTargetHaxe(target.reference.name, 'type');
-}
-
-export function canEraseCompilerAmbientUtilityHeritageHaxe(reference: Readonly<IrTypeReference>): boolean {
-  if (
-    reference.reference.kind !== 'ambient' ||
-    reference.reference.name !== 'Pick' ||
-    reference.typeArguments.length !== 2
-  ) {
-    return false;
-  }
-  const target = reference.typeArguments[0]!;
-  return (
-    target.kind === 'named' &&
-    target.reference.kind === 'ambient' &&
-    getCompilerRuntimeExternalSymbolTargetHaxe(target.reference.name, 'type') !== undefined
-  );
 }
 
 // Namespace-like ambient values have no Haxe value of their own. Their members decide the complete
@@ -141,6 +125,22 @@ export function getCompilerRuntimeExternalSymbolTargetHaxe(
   );
   if (!binding) return undefined;
   return binding.kind === 'runtime' ? `${runtimeModule}.${binding.targetName}` : binding.targetName;
+}
+
+export function isCompilerAmbientUtilityHeritageErasableHaxe(reference: Readonly<IrTypeReference>): boolean {
+  if (
+    reference.reference.kind !== 'ambient' ||
+    reference.reference.name !== 'Pick' ||
+    reference.typeArguments.length !== 2
+  ) {
+    return false;
+  }
+  const target = reference.typeArguments[0]!;
+  return (
+    target.kind === 'named' &&
+    target.reference.kind === 'ambient' &&
+    getCompilerRuntimeExternalSymbolTargetHaxe(target.reference.name, 'type') !== undefined
+  );
 }
 
 function getIrAmbientPickHeritageKeysHaxe(

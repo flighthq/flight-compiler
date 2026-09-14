@@ -9,12 +9,12 @@ import type {
   CompilerModuleEvaluationPlan,
   CompilerModuleLinkDependency,
 } from './compilerModuleEvaluationContract.js';
-import type { CompilerModuleResolutionPlan } from './compilerModuleResolutionContract.js';
 import type { CompilerModuleFacadePlan } from './compilerModuleFacadeContract.js';
+import type { CompilerModuleResolutionPlan } from './compilerModuleResolutionContract.js';
+import type { CompilerRuntimeAbiManifest } from './compilerRuntimeContract.js';
 import type { PatchAudit, SemanticPatch } from './compilerSemanticPatchContract.js';
 import type { CompilerModuleIdentity } from './compilerSourceIdentity.js';
 import type { CompilerTargetCompilationSmoke } from './compilerTargetCompilationSmokeContract.js';
-import type { CompilerRuntimeAbiManifest } from './compilerRuntimeContract.js';
 import type { CompilerTypeScriptAnalysisIdentity } from './compilerTypeScriptContract.js';
 
 export interface CompilerPackageGraphPackage {

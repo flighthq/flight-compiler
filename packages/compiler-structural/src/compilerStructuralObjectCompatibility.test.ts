@@ -603,6 +603,17 @@ describe('analyzeIrModuleStructuralObjectCompatibilityAcrossModules', () => {
   });
 });
 
+describe('createIrModuleStructuralObjectCompatibilityAnalyzer', () => {
+  it('creates a reusable analyzer over an explicit immutable module set', () => {
+    const module = createModule([], []);
+    const snapshot = structuredClone(module);
+    const analyze = createIrModuleStructuralObjectCompatibilityAnalyzer([module]);
+
+    expect(analyze(module)).toMatchObject({ diagnostics: [], status: 'compatible' });
+    expect(module).toEqual(snapshot);
+  });
+});
+
 function aliasDeclaration(
   id: string,
   name: string,

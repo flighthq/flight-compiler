@@ -137,6 +137,22 @@ interface UnsupportedSyntaxFailure extends Error {
 
 type TypeScriptBinaryOperator = Exclude<ts.BinaryOperator, ts.AssignmentOperator>;
 
+export function createCompilerTypeScriptAnalysisIdentity(): CompilerTypeScriptAnalysisIdentity {
+  return {
+    checkerMode: 'package-graph-program',
+    compilerOptions: {
+      module: 'ESNext',
+      moduleResolution: 'compiler-graph-with-typescript-fallback',
+      noImplicitAny: true,
+      standardLibrary: 'typescript-bundled',
+      strictNullChecks: true,
+      target: 'ESNext',
+    },
+    schema: 'flight-compiler-typescript-analysis/1',
+    typescriptVersion: ts.version,
+  };
+}
+
 export function lowerTypeScriptSource(
   sourceFile: ts.SourceFile,
   options: Readonly<LowerTypeScriptSourceOptions>,
@@ -153,22 +169,6 @@ export function lowerTypeScriptSource(
     new Map([[sourceFile.fileName, options]]),
     analysis.symbolReferenceStatements,
   );
-}
-
-export function createCompilerTypeScriptAnalysisIdentity(): CompilerTypeScriptAnalysisIdentity {
-  return {
-    checkerMode: 'package-graph-program',
-    compilerOptions: {
-      module: 'ESNext',
-      moduleResolution: 'compiler-graph-with-typescript-fallback',
-      noImplicitAny: true,
-      standardLibrary: 'typescript-bundled',
-      strictNullChecks: true,
-      target: 'ESNext',
-    },
-    schema: 'flight-compiler-typescript-analysis/1',
-    typescriptVersion: ts.version,
-  };
 }
 
 export function lowerTypeScriptSources(
@@ -1675,9 +1675,7 @@ function getTypeScriptInstantiatedCallResultTypeEvidence(
   }
   let callee: Readonly<IrType> | undefined;
   try {
-    callee = removeIrTypeBindingPatternUndefined(
-      getTypeScriptExpressionBindingTypeEvidence(node.expression, context),
-    );
+    callee = removeIrTypeBindingPatternUndefined(getTypeScriptExpressionBindingTypeEvidence(node.expression, context));
   } catch (error) {
     if (!isUnsupportedSyntaxFailure(error)) throw error;
     const instantiated = getTypeScriptCheckerTypeEvidence(

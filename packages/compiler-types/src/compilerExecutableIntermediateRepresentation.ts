@@ -13,6 +13,7 @@ import type {
 } from './compilerBindingIntermediateRepresentation.js';
 import type { IrBindingPattern } from './compilerBindingPatternIntermediateRepresentation.js';
 import type { IrCatchSemantics } from './compilerCatchCompletionContract.js';
+import type { IrDependentCallableParameterPackEvidence } from './compilerDependentCallablePackContract.js';
 import type {
   IrAssignmentOperator,
   IrBinaryOperator,
@@ -27,7 +28,6 @@ import type {
   IrUnaryOperatorSemantics,
 } from './compilerOperatorSemanticIntermediateRepresentation.js';
 import type { CompilerSourceOrigin } from './compilerSourceIdentity.js';
-import type { IrDependentCallableParameterPackEvidence } from './compilerDependentCallablePackContract.js';
 import type { IrFunctionTypeParameter, IrType, IrTypeParameter } from './compilerTypeIntermediateRepresentation.js';
 
 export type IrParameter = Omit<IrFunctionTypeParameter, 'name'> &
