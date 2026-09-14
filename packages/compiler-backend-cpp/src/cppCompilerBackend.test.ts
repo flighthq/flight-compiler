@@ -6260,6 +6260,20 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(output).not.toContain('return !model;');
   });
 
+  it('compares mutable and readonly object views through structural owner identity', () => {
+    const output = emitIrModuleCpp(
+      lower(
+        'structural-reference-equality.ts',
+        `interface Matrix { values: number[] }
+         export function differs(out: Matrix, source: Readonly<Matrix>): boolean { return out !== source; }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+
+    expect(output).toMatch(/StructuralRef<[^;]+>\(out\) != source/u);
+    expect(output).not.toContain('(out != source)');
+  });
+
   it('detects return in if-otherwise only when consequent has no return', () => {
     const result = lower(
       'if-otherwise-return.ts',

@@ -1322,6 +1322,10 @@ function emitExpression(
         expression.operator === '!==';
       const leftType = equality ? getIrExpressionTypeEvidenceCpp(expression.left, context) : undefined;
       const rightType = equality ? getIrExpressionTypeEvidenceCpp(expression.right, context) : undefined;
+      const referenceIdentity = equality
+        ? emitCppReferenceIdentityComparison(expression, leftType, rightType, context)
+        : undefined;
+      if (referenceIdentity) return referenceIdentity;
       const left = emitExpression(expression.left, context, isThisAccess(expression.left) ? rightType : undefined);
       const right = emitExpression(expression.right, context, isThisAccess(expression.right) ? leftType : undefined);
       if (bitwise) {
@@ -7513,6 +7517,28 @@ function emitIdentifierReference(
   const imported = getCppImportedBindingTargetName(reference.binding.id, [], 'value', context);
   if (imported) return imported;
   return emitBindingValueCpp(reference.binding, context);
+}
+
+function emitCppReferenceIdentityComparison(
+  expression: Readonly<Extract<IrExpression, { kind: 'binary' }>>,
+  leftType: Readonly<IrType> | undefined,
+  rightType: Readonly<IrType> | undefined,
+  context: EmitContext,
+): string | undefined {
+  if (!leftType || !rightType) return undefined;
+  const leftStructural = context.referenceRepresentationPlanner.resolveStructuralRow(leftType, context.module);
+  const rightStructural = context.referenceRepresentationPlanner.resolveStructuralRow(rightType, context.module);
+  if (Boolean(leftStructural) === Boolean(rightStructural)) return undefined;
+  const structuralType = leftStructural ? leftType : rightType;
+  const referenceType = leftStructural ? rightType : leftType;
+  if (!hasFlightReferenceRepresentationCpp(referenceType, context)) return undefined;
+  const structuralExpression = leftStructural ? expression.left : expression.right;
+  const referenceExpression = leftStructural ? expression.right : expression.left;
+  const structural = emitExpression(structuralExpression, context);
+  const referenceAsStructural = `${emitType(structuralType, context)}(${emitExpression(referenceExpression, context)})`;
+  const left = leftStructural ? structural : referenceAsStructural;
+  const right = leftStructural ? referenceAsStructural : structural;
+  return `(${left} ${emitBinaryOperator(expression.operator, expression.semantics, context)} ${right})`;
 }
 
 function emitCppNullishObjectNegation(
