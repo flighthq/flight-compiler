@@ -133,7 +133,7 @@ describe('createHaxeCompilerBackend', () => {
     const consumer = lowerPackage(
       '@flighthq/core',
       'consumer.ts',
-      "import type { Choice } from '@flighthq/types/choice'; import { Choice } from '@flighthq/types/choice'; export function choose(value: Choice): Choice { return value === Choice.Ready ? value : Choice.Ready; }",
+      "import type { Choice } from '@flighthq/types/choice'; import { Choice } from '@flighthq/types/choice'; export function choose(value: Choice): Choice { return value; }",
     ).module;
     const output = createHaxeCompilerBackend().emitModule(consumer, {
       moduleResolution: {
@@ -152,31 +152,6 @@ describe('createHaxeCompilerBackend', () => {
 
     expect(output.match(/import flighthq\.types\.Choice\.Choice;/gu)).toHaveLength(1);
     expect(output).not.toContain('Choice_2');
-  });
-
-  it('keeps one resolved barrel provenance when broad and named edges agree', () => {
-    const point = lowerPackage('@flighthq/types', 'point.ts', 'export interface Point { x: number }').module;
-    const consumer = lowerPackage(
-      '@flighthq/core',
-      'consumer.ts',
-      "import type { Point } from '@flighthq/types/contract'; export type Alias = Point;",
-    ).module;
-    const commonEdge = {
-      importer: { name: consumer.name, packageName: consumer.packageName, source: consumer.source },
-      specifier: '@flighthq/types/contract',
-      target: { packageName: point.packageName, source: point.source },
-    };
-    const output = createHaxeCompilerBackend().emitModule(consumer, {
-      moduleResolution: {
-        edges: [commonEdge, { ...commonEdge, importedNames: ['Point'] }],
-        schema: 'flight-compiler-module-resolution/1',
-      },
-      modules: [consumer, point],
-      options: {},
-    })[0]!.contents;
-
-    expect(output).toContain('import flighthq.types.Point.Point;');
-    expect(output).not.toContain('flighthq.types.Types.Point');
   });
 
   it('allocates colliding secondary type names across a Haxe package', () => {

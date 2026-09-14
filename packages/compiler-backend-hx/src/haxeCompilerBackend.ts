@@ -979,7 +979,13 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
     case 'literal':
       return emitLiteral(expression.value);
     case 'new':
-      if (expression.semantics.construction === 'factory') {
+      if (
+        expression.semantics.construction === 'factory' ||
+        (expression.callee.kind === 'identifier' &&
+          expression.callee.reference.kind === 'binding' &&
+          (expression.callee.reference.binding.kind === 'parameter' ||
+            expression.callee.reference.binding.kind === 'variable'))
+      ) {
         return `Type.createInstance(cast ${emitExpression(expression.callee, context)}, [${expression.arguments
           .map((argument) => emitExpression(argument, context))
           .join(', ')}])`;
@@ -1579,6 +1585,10 @@ function emitImports(imports: readonly IrImport[], context: EmitContext): string
     }>
   >();
   for (const imported of imports) {
+    // Validate even an import with no bindings: side-effect resources still have to be
+    // materialized, and a default resource import should report that boundary before the generic
+    // default-import capability gap.
+    if (imported.specifier.startsWith('.')) haxeImportModule(imported.specifier, context);
     if (imported.bindings.length === 0) continue;
     for (const binding of imported.bindings) {
       if (binding.imported === '*' || binding.imported === 'default') {
@@ -2063,7 +2073,9 @@ function emitFunctionReexportForwardingHaxe(
   modulePath: string,
   context: EmitContext,
 ): string[] {
-  const sourceContext = createFacadeSourceContextHaxe(sourceModule, context);
+  const sourceContext = declaration.parameters.some((parameter) => parameter.initializer)
+    ? createFacadeSourceContextHaxe(sourceModule, context)
+    : undefined;
   const params = declaration.parameters
     .map((p) => {
       const name = getSourceBindingTargetNameHaxe(sourceModule, p.binding, context);
@@ -2072,7 +2084,7 @@ function emitFunctionReexportForwardingHaxe(
         const elementType = p.type.kind === 'array' ? emitFacadeTypeHaxe(p.type.element, sourceModule, context) : type;
         return `...${name}:${elementType}`;
       }
-      if (p.initializer) return `${name}:${type} = ${emitExpression(p.initializer, sourceContext)}`;
+      if (p.initializer) return `${name}:${type} = ${emitExpression(p.initializer, sourceContext!)}`;
       return `${p.optional ? '?' : ''}${name}:${type}`;
     })
     .join(', ');
