@@ -274,7 +274,14 @@ function lowerIrTryStatementFinallyAwaitHoisting(
           },
         },
         kind: 'try',
-        tryBody: protectedStatement,
+        // Keep a source-real block between the synthetic outer guard and an original try/catch.
+        // The task analyzer also uses direct nested tries as a virtual representation of one
+        // try/catch/finally source node; presenting that virtual-only shape here would make its
+        // source paths address `statements` on the inner try itself.
+        tryBody:
+          protectedStatement.kind === 'block'
+            ? protectedStatement
+            : { kind: 'block', statements: [protectedStatement] },
       },
       finallyBody,
       {

@@ -193,6 +193,16 @@ const haxeIntlRuntimeTypeTargets = [
   ['Intl.SegmenterOptions', '_IntlSegmenterOptions'],
 ] as const;
 
+const haxeIntlRuntimeConstructorTargets = [
+  ['Intl.Collator', '_IntlCollator'],
+  ['Intl.DateTimeFormat', '_IntlDateTimeFormat'],
+  ['Intl.ListFormat', '_IntlListFormat'],
+  ['Intl.NumberFormat', '_IntlNumberFormat'],
+  ['Intl.PluralRules', '_IntlPluralRules'],
+  ['Intl.RelativeTimeFormat', '_IntlRelativeTimeFormat'],
+  ['Intl.Segmenter', '_IntlSegmenter'],
+] as const;
+
 // These host declarations are representation-only ABI boundaries. Flight never constructs them
 // through a portable runtime class, so Dynamic preserves the JavaScript host object without
 // pretending that Haxe's standard library has a nominal declaration for every current web API.
@@ -371,6 +381,7 @@ const haxeRuntimeExternalSymbolBindings = [
   { kind: 'native', sourceName: 'AbortController', space: 'type', targetName: 'js.html.AbortController' },
   { kind: 'native', sourceName: 'AbortSignal', space: 'type', targetName: 'js.html.AbortSignal' },
   { kind: 'native', sourceName: 'Array', space: 'type', targetName: 'Array' },
+  { kind: 'native', sourceName: 'Function', space: 'type', targetName: 'Dynamic' },
   {
     capability: 'array',
     kind: 'runtime',
@@ -570,6 +581,13 @@ const haxeRuntimeExternalSymbolBindings = [
     kind: 'runtime' as const,
     sourceName,
     space: 'type' as const,
+    targetName,
+  })),
+  ...haxeIntlRuntimeConstructorTargets.map(([sourceName, targetName]) => ({
+    capability: 'internationalization' as const,
+    kind: 'runtime' as const,
+    sourceName,
+    space: 'value' as const,
     targetName,
   })),
   { kind: 'native', sourceName: 'KeyboardEvent', space: 'type', targetName: 'js.html.KeyboardEvent' },

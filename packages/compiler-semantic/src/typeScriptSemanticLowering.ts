@@ -6214,14 +6214,7 @@ function getTypeScriptCheckerNamedTypeEvidence(
     !symbol ||
     symbol.name === '__type' ||
     symbol.name === '__object' ||
-    Boolean(symbol.flags & ts.SymbolFlags.TypeParameter) ||
-    symbol.declarations?.some(
-      (declaration) =>
-        ts.isMethodSignature(declaration) ||
-        ts.isMethodDeclaration(declaration) ||
-        ts.isPropertySignature(declaration) ||
-        ts.isPropertyDeclaration(declaration),
-    )
+    Boolean(symbol.flags & (ts.SymbolFlags.TypeParameter | ts.SymbolFlags.Method | ts.SymbolFlags.Property))
   ) {
     return undefined;
   }
@@ -6770,8 +6763,22 @@ function isTypeScriptAmbientSymbol(symbol: ts.Symbol | undefined, context: Lower
     declarations.every(
       (declaration) =>
         !context.analysisModuleOptions.has(declaration.getSourceFile().fileName) ||
-        isTypeScriptDeclareDeclaration(declaration),
+        (isTypeScriptDeclareDeclaration(declaration) &&
+          !isTypeScriptCompilerErasedUniqueSymbolDeclaration(declaration)),
     )
+  );
+}
+
+// A local `declare const key: unique symbol` has no emitted declaration, but its references still
+// carry compiler-owned binding identity so computed-key facets remain tied to that declaration.
+// Treating every written `declare` as an external value loses that identity and turns the key into
+// an unbound ambient lookup.
+function isTypeScriptCompilerErasedUniqueSymbolDeclaration(declaration: ts.Declaration): boolean {
+  return (
+    ts.isVariableDeclaration(declaration) &&
+    declaration.type !== undefined &&
+    ts.isTypeOperatorNode(declaration.type) &&
+    declaration.type.operator === ts.SyntaxKind.UniqueKeyword
   );
 }
 

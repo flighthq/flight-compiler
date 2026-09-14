@@ -47,23 +47,21 @@ describe('createCompilerLoweringPassFinallyAwaitHoisting', () => {
     const declaration = output.declarations[0];
     const wrapper = declaration?.kind === 'function' ? declaration.body[0] : undefined;
 
-    expect(wrapper).toMatchObject({
-      kind: 'block',
-      statements: [
-        { declarations: [{ binding: { name: 'finallyThrew' } }] },
-        { declarations: [{ binding: { name: 'finallyError' } }] },
-        {
-          catchClause: {
-            body: {
-              statements: [
-                { expression: { left: { reference: { binding: { name: 'finallyError' } } } } },
-                { expression: { left: { reference: { binding: { name: 'finallyThrew' } } } } },
-              ],
-            },
+    expect(wrapper).toMatchObject({ kind: 'block' });
+    expect(wrapper?.kind === 'block' ? wrapper.statements.slice(0, 3) : undefined).toMatchObject([
+      { declarations: [{ binding: { name: 'finallyThrew' } }] },
+      { declarations: [{ binding: { name: 'finallyError' } }] },
+      {
+        catchClause: {
+          body: {
+            statements: [
+              { expression: { left: { reference: { binding: { name: 'finallyError' } } } } },
+              { expression: { left: { reference: { binding: { name: 'finallyThrew' } } } } },
+            ],
           },
         },
-      ],
-    });
+      },
+    ]);
   });
 
   it('leaves returns in the protected region for a general completion-carrier lowering', () => {
