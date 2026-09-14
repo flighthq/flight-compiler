@@ -499,7 +499,7 @@ function emitClass(declaration: Readonly<IrClassDeclaration>, context: EmitConte
         ? ` = ${emitExpression(field.initializer, context)}`
         : '';
     lines.push(
-      `  ${visibility}${static_}${storage} ${safeHaxeName(field.name)}:${emitType(field.type, context)}${initializer};`,
+      `  ${visibility}${static_}${storage} ${safeHaxeName(field.name)}:${emitStructureFieldTypeHaxe(field.type, context)}${initializer};`,
     );
   });
   if (implicitDerivedBaseParameters) {
@@ -561,7 +561,7 @@ function emitClass(declaration: Readonly<IrClassDeclaration>, context: EmitConte
   for (const [name, accessor] of accessors) {
     lines.push(
       '',
-      `  public var ${safeHaxeName(name)}(${accessor.get ? 'get' : 'never'}, ${accessor.set ? 'set' : 'never'}):${emitType(accessor.type, context)};`,
+      `  public var ${safeHaxeName(name)}(${accessor.get ? 'get' : 'never'}, ${accessor.set ? 'set' : 'never'}):${emitStructureFieldTypeHaxe(accessor.type, context)};`,
     );
   }
   // Haxe requires `override` on a method that replaces an inherited one, and refuses it on one that
@@ -582,7 +582,7 @@ function emitClass(declaration: Readonly<IrClassDeclaration>, context: EmitConte
     const setterValue = method.accessor === 'set' ? method.parameters[0] : undefined;
     const name = method.accessor ? `${method.accessor}_${safeHaxeName(method.name)}` : safeHaxeName(method.name);
     const returns = setterValue ? emitType(setterValue.type, methodContext) : emitType(method.returns, methodContext);
-    const signature = `  ${method.accessor ? '' : visibility}${method.abstract ? 'abstract ' : ''}${overriddenMethodNames.has(method.name) ? 'override ' : ''}${static_}function ${name}${emitTypeParameters(method.typeParameters, methodContext)}(${emitParameters(method.parameters, methodContext)}):${returns}`;
+    const signature = `  ${method.accessor ? '' : visibility}${method.abstract ? 'abstract ' : ''}${overriddenMethodNames.has(method.name) ? 'override ' : ''}${static_}function ${name}${emitTypeParameters(method.typeParameters, methodContext, false)}(${emitParameters(method.parameters, methodContext)}):${returns}`;
     // A method with no implementation has no body to emit: the declaration is the whole contract.
     if (method.abstract) {
       lines.push(`${signature};`);
@@ -638,7 +638,7 @@ function emitEnumNamespaceFunctionHaxe(declaration: Readonly<IrFunctionDeclarati
     returnsAbsent: canIrTypeReturnAbsentHaxe(declaration.returns, outer.module),
   };
   return [
-    `public static function ${getBindingTargetNameHaxe(declaration.binding, context)}${emitTypeParameters(declaration.typeParameters, context)}(${emitParameters(declaration.parameters, context)}):${emitType(declaration.returns, context)} {`,
+    `public static function ${getBindingTargetNameHaxe(declaration.binding, context)}${emitTypeParameters(declaration.typeParameters, context, false)}(${emitParameters(declaration.parameters, context)}):${emitType(declaration.returns, context)} {`,
     ...indentSourceLines(
       declaration.async
         ? emitCompilerHaxeTaskFunctionBody(declaration, context)
@@ -1540,7 +1540,7 @@ function emitFunction(declaration: Readonly<IrFunctionDeclaration>, outer: EmitC
     returnsAbsent: canIrTypeReturnAbsentHaxe(declaration.returns, outer.module),
   };
   return [
-    `${access}function ${getBindingTargetNameHaxe(declaration.binding, context)}${emitTypeParameters(declaration.typeParameters, context)}(${emitParameters(declaration.parameters, context)}):${emitType(declaration.returns, context)} {`,
+    `${access}function ${getBindingTargetNameHaxe(declaration.binding, context)}${emitTypeParameters(declaration.typeParameters, context, false)}(${emitParameters(declaration.parameters, context)}):${emitType(declaration.returns, context)} {`,
     ...indentSourceLines(
       declaration.async
         ? emitCompilerHaxeTaskFunctionBody(declaration, context)
@@ -1665,7 +1665,11 @@ function emitReexportsHaxe(exports: readonly IrExport[], context: EmitContext): 
     const sourceName = target
       ? getSourceBindingTargetNameHaxe(target.module, target.binding, context)
       : safeHaxeTypeName(exported.imported);
-    typeLines.add(`typedef ${targetName} = ${targetModulePath}.${sourceName};`);
+    typeLines.add(
+      target
+        ? emitFacadeTypeAliasHaxe(targetName, target, context)
+        : `typedef ${targetName} = ${targetModulePath}.${sourceName};`,
+    );
   }
   if (hasStarReexport) {
     const facadeLines = emitStarReexportFacadeHaxe(context);
@@ -1711,9 +1715,7 @@ function emitStarReexportFacadeHaxe(
   const valueLines: string[] = [];
   for (const { exportName, sharedNominal, typeName, typeTarget, valueName, valueTarget } of exports_) {
     if (typeTarget && typeName) {
-      typeLines.push(
-        `typedef ${typeName} = ${getHaxeModulePath(typeTarget.module, context.options)}.${getSourceBindingTargetNameHaxe(typeTarget.module, typeTarget.binding, context)};`,
-      );
+      typeLines.push(emitFacadeTypeAliasHaxe(typeName, typeTarget, context));
     }
     if (!valueTarget || sharedNominal || !valueName) continue;
     const modulePath = getHaxeModulePath(valueTarget.module, context.options);
@@ -1757,6 +1759,88 @@ function getModuleFacadeBindingTargetHaxe(
   );
   if (!declaration) emissionError(context, `re-exporting ${slot.exportName} requires its source declaration`);
   return { binding: route.binding, declaration, module };
+}
+
+function emitFacadeTypeAliasHaxe(
+  targetName: string,
+  target: Readonly<{
+    binding: IrBindingIdentity | IrTypeBindingIdentity;
+    declaration: Readonly<IrDeclaration>;
+    module: Readonly<IrModule>;
+  }>,
+  context: EmitContext,
+): string {
+  const parameters = getHaxeTypeDeclarationParameters(target.declaration);
+  const declarationParameters = emitFacadeTypeParametersHaxe(parameters, target.module, context);
+  const arguments_ = parameters.map((parameter) =>
+    getSourceBindingTargetNameHaxe(target.module, parameter.binding, context),
+  );
+  const source = `${getHaxeModulePath(target.module, context.options)}.${getSourceBindingTargetNameHaxe(target.module, target.binding, context)}`;
+  return `typedef ${targetName}${declarationParameters} = ${source}${arguments_.length > 0 ? `<${arguments_.join(', ')}>` : ''};`;
+}
+
+function getHaxeTypeDeclarationParameters(declaration: Readonly<IrDeclaration>): readonly Readonly<IrTypeParameter>[] {
+  return declaration.kind === 'class' || declaration.kind === 'interface' || declaration.kind === 'typeAlias'
+    ? declaration.typeParameters
+    : [];
+}
+
+function emitFacadeTypeParametersHaxe(
+  parameters: readonly Readonly<IrTypeParameter>[],
+  module: Readonly<IrModule>,
+  context: EmitContext,
+): string {
+  if (parameters.length === 0) return '';
+  return `<${parameters
+    .map((parameter) => {
+      const name = getSourceBindingTargetNameHaxe(module, parameter.binding, context);
+      const constraint =
+        parameter.constraint &&
+        parameter.constraint.kind !== 'function' &&
+        !isEntityConstraintHaxeInModule(parameter.constraint, module)
+          ? `:${emitFacadeTypeHaxe(parameter.constraint, module, context)}`
+          : '';
+      const default_ = parameter.default ? ` = ${emitFacadeTypeHaxe(parameter.default, module, context)}` : '';
+      return `${name}${constraint}${default_}`;
+    })
+    .join(', ')}>`;
+}
+
+function emitFacadeTypeHaxe(type: Readonly<IrType>, module: Readonly<IrModule>, context: EmitContext): string {
+  const moduleContext: EmitContext = {
+    ...context,
+    module,
+    packageName: convertPackageNameToHaxePackageName(module.packageName, context.options.rootPackage),
+    targetNames: createIrModuleTargetNamesHaxe(module),
+  };
+  return emitIrTypeHaxe(type, {
+    fail: (message) => emissionError(context, message),
+    getBindingName: (binding) => {
+      if (binding.kind === 'typeParameter') {
+        return getSourceBindingTargetNameHaxe(module, binding, context);
+      }
+      const localDeclaration = module.declarations.find(
+        (declaration) => 'binding' in declaration && declaration.binding.id === binding.id,
+      );
+      if (localDeclaration && 'binding' in localDeclaration) {
+        return `${getHaxeModulePath(module, context.options)}.${getSourceBindingTargetNameHaxe(module, localDeclaration.binding, context)}`;
+      }
+      for (const imported of module.imports) {
+        const importedBinding = imported.bindings.find((candidate) => candidate.binding.id === binding.id);
+        if (!importedBinding) continue;
+        const modulePath = haxeImportModule(imported.specifier, moduleContext, importedBinding.imported);
+        const importedName = getImportedTargetNameHaxe(imported, importedBinding, moduleContext);
+        return `${modulePath}.${importedName}`;
+      }
+      return binding.space === 'type' || binding.kind === 'class' || binding.kind === 'enum'
+        ? safeHaxeTypeName(binding.name)
+        : safeHaxeName(binding.name);
+    },
+    getExternalTypeName: (name) =>
+      getCompilerRuntimeExternalSymbolTargetHaxe(name, 'type', context.options.runtimeModule),
+    getMemberName: safeHaxeName,
+    getTypeName: safeHaxeTypeName,
+  });
 }
 
 function emitValueReexportForwardingHaxe(
@@ -1834,7 +1918,7 @@ function emitValueReexportTargetHaxe(
         safeHaxeTypeName(`${haxeImplementationModule(context.module.source)}_${exportName}`),
         context,
       );
-    return [`typedef ${targetName} = ${modulePath}.${sourceName};`];
+    return [emitFacadeTypeAliasHaxe(targetName, target, context)];
   }
   emissionError(context, `re-exporting value ${exportName} requires Haxe module-facade lowering`);
 }
@@ -1881,7 +1965,7 @@ function emitFunctionReexportForwardingHaxe(
     .join(', ');
   const returnType = emitType(declaration.returns, context);
   return [
-    `function ${targetName}${emitTypeParameters(declaration.typeParameters, context)}(${params}):${returnType} {`,
+    `function ${targetName}${emitTypeParameters(declaration.typeParameters, context, false)}(${params}):${returnType} {`,
     `  return ${modulePath}.${sourceName}(${args});`,
     '}',
   ];
@@ -1901,12 +1985,12 @@ function emitStructInitRecordHaxe(
     '@:structInit',
     `final class ${targetName}${emitTypeParameters(typeParameters, context)} {`,
     ...properties.map((property) => {
-      const type = emitType(property.type, context);
+      const type = emitStructureFieldTypeHaxe(property.type, context);
       // An optional member has to be defaulted, because `@:structInit` reads a field's default as
       // permission to leave it out of the literal.
       return property.optional
         ? `  public var ${safeHaxeName(property.name)}:${hasIrTypeNullMemberHaxe(property.type) ? type : `Null<${type}>`} = null;`
-        : `  public var ${safeHaxeName(property.name)}:${type};`;
+        : `  public var ${safeHaxeName(property.name)}:${emitStructureFieldTypeHaxe(property.type, context)};`;
     }),
     '}',
   ];
@@ -1956,7 +2040,7 @@ function createAmbientUtilityHeritageTargetsHaxe(module: Readonly<IrModule>): Re
 function emitInterfaceMemberHaxe(property: Readonly<IrObjectTypeProperty>, context: EmitContext): string {
   const name = safeHaxeName(property.name);
   if (property.type.kind !== 'function') {
-    return `public var ${name}:${emitType(property.type, context)};`;
+    return `public var ${name}:${emitStructureFieldTypeHaxe(property.type, context)};`;
   }
   const parameters = property.type.parameters
     .map(
@@ -2485,6 +2569,10 @@ function emitType(type: Readonly<IrType>, context: EmitContext): string {
   });
 }
 
+function emitStructureFieldTypeHaxe(type: Readonly<IrType>, context: EmitContext): string {
+  return type.kind === 'primitive' && type.name === 'void' ? 'Dynamic' : emitType(type, context);
+}
+
 function hasIrTypeNullMemberHaxe(type: Readonly<IrType>): boolean {
   return type.kind === 'null' || (type.kind === 'union' && type.types.some((member) => member.kind === 'null'));
 }
@@ -2827,14 +2915,33 @@ function emitTupleSpreadExpressionHaxe(
   return `(function() { ${declarations.join(' ')} return [${elements.join(', ')}]; })()`;
 }
 
-function emitTypeParameters(parameters: readonly IrTypeParameter[], context: EmitContext): string {
+function emitTypeParameters(
+  parameters: readonly IrTypeParameter[],
+  context: EmitContext,
+  includeDefaults = true,
+): string {
   if (parameters.length === 0) return '';
   return `<${parameters
     .map(
       (parameter) =>
-        `${getBindingTargetNameHaxe(parameter.binding, context)}${parameter.constraint && parameter.constraint.kind !== 'function' ? `:${emitType(parameter.constraint, context)}` : ''}${parameter.default ? ` = ${emitType(parameter.default, context)}` : ''}`,
+        `${getBindingTargetNameHaxe(parameter.binding, context)}${parameter.constraint && parameter.constraint.kind !== 'function' && !isEntityConstraintHaxe(parameter.constraint, context) ? `:${emitType(parameter.constraint, context)}` : ''}${includeDefaults && parameter.default ? ` = ${emitType(parameter.default, context)}` : ''}`,
     )
     .join(', ')}>`;
+}
+
+function isEntityConstraintHaxe(type: Readonly<IrType>, context: EmitContext): boolean {
+  return isEntityConstraintHaxeInModule(type, context.module);
+}
+
+function isEntityConstraintHaxeInModule(type: Readonly<IrType>, module: Readonly<IrModule>): boolean {
+  if (type.kind !== 'named' || type.reference.kind !== 'binding' || type.reference.path.length > 0) return false;
+  if (type.reference.binding.name === 'Entity') return true;
+  if (type.reference.binding.kind !== 'import') return false;
+  return module.imports.some((imported) =>
+    imported.bindings.some(
+      (binding) => binding.binding.id === type.reference.binding.id && binding.imported === 'Entity',
+    ),
+  );
 }
 
 function emitOptionalCallHaxe(

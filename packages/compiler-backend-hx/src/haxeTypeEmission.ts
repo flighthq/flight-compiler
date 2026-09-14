@@ -76,8 +76,12 @@ export function emitIrTypeHaxe(type: Readonly<IrType>, context: Readonly<IrTypeH
       return `{ ${type.properties
         .map((property) => {
           const optional = property.optional ? '?' : '';
+          // Void is a valid function result in Haxe, but it cannot be stored in an anonymous
+          // structure field. TypeScript uses it for unique-symbol brands as well as ordinary
+          // impossible-value properties; Dynamic keeps either shape representable without
+          // pretending the field is callable.
           const emittedType =
-            property.phantom && property.type.kind === 'primitive' && property.type.name === 'void'
+            property.type.kind === 'primitive' && property.type.name === 'void'
               ? 'Dynamic'
               : emitIrTypeHaxe(property.type, context);
           return `${optional}${context.getMemberName(property.name)}:${emittedType}`;

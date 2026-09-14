@@ -78,7 +78,10 @@ interface HaxeExternDeclarationLocation {
 }
 
 interface HaxeExternEmissionIndex {
+  readonly activeDependencyClasses: Set<string>;
   readonly declarationLocations: ReadonlyMap<string, readonly HaxeExternDeclarationLocation[]>;
+  readonly dependencyClassFiles: Map<string, EmittedFile>;
+  readonly emittedDependencyClassFiles: Set<string>;
   readonly exportedTypeAliases: Map<string, readonly HaxeExternTypeAliasLocation[]>;
   readonly importRoutes: ReadonlyMap<string, readonly HaxeExternImportRoute[]>;
   readonly localExportNames: Map<string, readonly string[]>;
@@ -152,7 +155,10 @@ export function createHaxeExternEmissionIndex(
     if (owner) packageOwners.set(packageName, owner);
   }
   return {
+    activeDependencyClasses: new Set(),
     declarationLocations,
+    dependencyClassFiles: new Map(),
+    emittedDependencyClassFiles: new Set(),
     exportedTypeAliases: new Map(),
     importRoutes,
     localExportNames: new Map(),
@@ -226,6 +232,11 @@ export function emitIrModuleHaxeExternWithContext(
     const holder = emitPackageHolderHaxeExtern(module.packageName, context);
     if (holder) files.push(holder);
   }
+  for (const [path, dependency] of index.dependencyClassFiles) {
+    if (index.emittedDependencyClassFiles.has(path)) continue;
+    index.emittedDependencyClassFiles.add(path);
+    files.push(dependency);
+  }
   return files;
 }
 
@@ -263,6 +274,16 @@ function emitClassFilesHaxeExtern(
   declaration: Readonly<IrClassDeclaration>,
   context: HaxeExternEmissionContext,
 ): EmittedFile[] {
+  assertClassShapeHaxeExtern(declaration, context);
+  return getDeclarationExportNamesHaxeExtern(declaration, context, 'type').map((exportName) =>
+    emitClassFileHaxeExtern(declaration, safeHaxeExternTypeName(exportName), context, exportName),
+  );
+}
+
+function assertClassShapeHaxeExtern(
+  declaration: Readonly<IrClassDeclaration>,
+  context: HaxeExternEmissionContext,
+): void {
   if (declaration.classConstructor && declaration.classConstructor.overloads.length > 0) {
     emissionErrorHaxeExtern(context, `class ${declaration.binding.name} constructor overloads require Haxe metadata`);
   }
@@ -275,78 +296,85 @@ function emitClassFilesHaxeExtern(
       `class ${declaration.binding.name} method ${unsupportedMethod.name} overloads require Haxe metadata`,
     );
   }
-  return getDeclarationExportNamesHaxeExtern(declaration, context, 'type').map((exportName) => {
-    const targetName = safeHaxeExternTypeName(exportName);
-    const packageName = `${context.rootPackage}._js`;
-    const heritage = [
-      ...(declaration.extends ? [`extends ${emitTypeHaxeExtern(declaration.extends, context)}`] : []),
-      ...declaration.implements.map((type) => `implements ${emitTypeHaxeExtern(type, context)}`),
-    ].join(' ');
-    const lines = [
-      createCompilerGeneratedFileHeader(context.module, '//', context.options.upstreamCommit),
-      '#if js',
-      `package ${packageName};`,
-      '',
-      `@:jsImport(${JSON.stringify(`${context.module.packageName}/contract`)}, ${JSON.stringify(exportName)})`,
-      `extern class ${targetName}${emitTypeParametersHaxeExtern(declaration.typeParameters, context)}${heritage ? ` ${heritage}` : ''} {`,
-    ];
-    for (const field of declaration.fields.filter((candidate) => candidate.visibility === 'public')) {
-      const name = safeHaxeExternName(field.name);
-      if (name !== field.name) lines.push(`  @:native(${JSON.stringify(field.name)})`);
-      const optional = field.optional ? '@:optional ' : '';
-      const target = field.readonly ? `${name}(default, null)` : name;
-      lines.push(
-        `  ${optional}public ${field.static ? 'static ' : ''}var ${target}:${emitTypeHaxeExtern(field.type, context)};`,
+}
+
+function emitClassFileHaxeExtern(
+  declaration: Readonly<IrClassDeclaration>,
+  targetName: string,
+  context: HaxeExternEmissionContext,
+  publicExportName?: string | undefined,
+): EmittedFile {
+  const packageName = `${context.rootPackage}._js`;
+  const heritage = [
+    ...(declaration.extends ? [`extends ${emitTypeHaxeExtern(declaration.extends, context)}`] : []),
+    ...declaration.implements.map((type) => `implements ${emitTypeHaxeExtern(type, context)}`),
+  ].join(' ');
+  const lines = [
+    createCompilerGeneratedFileHeader(context.module, '//', context.options.upstreamCommit),
+    '#if js',
+    `package ${packageName};`,
+    '',
+    ...(publicExportName
+      ? [`@:jsImport(${JSON.stringify(`${context.module.packageName}/contract`)}, ${JSON.stringify(publicExportName)})`]
+      : []),
+    `extern class ${targetName}${emitTypeParametersHaxeExtern(declaration.typeParameters, context)}${heritage ? ` ${heritage}` : ''} {`,
+  ];
+  for (const field of declaration.fields.filter((candidate) => candidate.visibility === 'public')) {
+    const name = safeHaxeExternName(field.name);
+    if (name !== field.name) lines.push(`  @:native(${JSON.stringify(field.name)})`);
+    const optional = field.optional ? '@:optional ' : '';
+    const target = field.readonly ? `${name}(default, null)` : name;
+    lines.push(
+      `  ${optional}public ${field.static ? 'static ' : ''}var ${target}:${emitStructureFieldTypeHaxeExtern(field.type, context)};`,
+    );
+  }
+  const accessors = new Map<string, { get: boolean; set: boolean; static: boolean; type: Readonly<IrType> }>();
+  for (const method of declaration.methods.filter(
+    (candidate) => candidate.visibility === 'public' && candidate.accessor !== undefined,
+  )) {
+    const type = method.accessor === 'get' ? method.returns : method.parameters[0]?.type;
+    if (!type) {
+      emissionErrorHaxeExtern(context, `class ${declaration.binding.name} setter ${method.name} requires a value`);
+    }
+    const existing = accessors.get(method.name);
+    if (existing && existing.static !== method.static) {
+      emissionErrorHaxeExtern(
+        context,
+        `class ${declaration.binding.name} accessor ${method.name} has mixed static state`,
       );
     }
-    const accessors = new Map<string, { get: boolean; set: boolean; static: boolean; type: Readonly<IrType> }>();
-    for (const method of declaration.methods.filter(
-      (candidate) => candidate.visibility === 'public' && candidate.accessor !== undefined,
-    )) {
-      const type = method.accessor === 'get' ? method.returns : method.parameters[0]?.type;
-      if (!type) {
-        emissionErrorHaxeExtern(context, `class ${declaration.binding.name} setter ${method.name} requires a value`);
-      }
-      const existing = accessors.get(method.name);
-      if (existing && existing.static !== method.static) {
-        emissionErrorHaxeExtern(
-          context,
-          `class ${declaration.binding.name} accessor ${method.name} has mixed static state`,
-        );
-      }
-      accessors.set(method.name, {
-        get: existing?.get === true || method.accessor === 'get',
-        set: existing?.set === true || method.accessor === 'set',
-        static: method.static,
-        type: existing?.type ?? type,
-      });
-    }
-    for (const [sourceName, accessor] of accessors) {
-      const name = safeHaxeExternName(sourceName);
-      if (name !== sourceName) lines.push(`  @:native(${JSON.stringify(sourceName)})`);
-      const target =
-        accessor.get && accessor.set
-          ? name
-          : `${name}(${accessor.get ? 'default' : 'never'}, ${accessor.set ? 'default' : 'null'})`;
-      lines.push(
-        `  public ${accessor.static ? 'static ' : ''}var ${target}:${emitTypeHaxeExtern(accessor.type, context)};`,
-      );
-    }
-    const constructorParameters = declaration.classConstructor?.parameters ?? [];
-    lines.push(`  public function new(${emitParametersHaxeExtern(constructorParameters, context)});`);
-    for (const method of declaration.methods.filter(
-      (candidate) => candidate.visibility === 'public' && candidate.accessor === undefined,
-    )) {
-      const name = safeHaxeExternName(method.name);
-      if (name !== method.name) lines.push(`  @:native(${JSON.stringify(method.name)})`);
-      lines.push(`  public ${method.static ? 'static ' : ''}${emitFunctionSignatureHaxeExtern(name, method, context)}`);
-    }
-    lines.push('}', '#end');
-    return {
-      contents: lines.join('\n'),
-      path: `${packageName.replaceAll('.', '/')}/${targetName}.hx`,
-    };
-  });
+    accessors.set(method.name, {
+      get: existing?.get === true || method.accessor === 'get',
+      set: existing?.set === true || method.accessor === 'set',
+      static: method.static,
+      type: existing?.type ?? type,
+    });
+  }
+  for (const [sourceName, accessor] of accessors) {
+    const name = safeHaxeExternName(sourceName);
+    if (name !== sourceName) lines.push(`  @:native(${JSON.stringify(sourceName)})`);
+    const target =
+      accessor.get && accessor.set
+        ? name
+        : `${name}(${accessor.get ? 'default' : 'never'}, ${accessor.set ? 'default' : 'null'})`;
+    lines.push(
+      `  public ${accessor.static ? 'static ' : ''}var ${target}:${emitStructureFieldTypeHaxeExtern(accessor.type, context)};`,
+    );
+  }
+  const constructorParameters = declaration.classConstructor?.parameters ?? [];
+  lines.push(`  public function new(${emitParametersHaxeExtern(constructorParameters, context)});`);
+  for (const method of declaration.methods.filter(
+    (candidate) => candidate.visibility === 'public' && candidate.accessor === undefined,
+  )) {
+    const name = safeHaxeExternName(method.name);
+    if (name !== method.name) lines.push(`  @:native(${JSON.stringify(method.name)})`);
+    lines.push(`  public ${method.static ? 'static ' : ''}${emitFunctionSignatureHaxeExtern(name, method, context)}`);
+  }
+  lines.push('}', '#end');
+  return {
+    contents: lines.join('\n'),
+    path: `${packageName.replaceAll('.', '/')}/${targetName}.hx`,
+  };
 }
 
 function emitEnumFilesHaxeExtern(
@@ -451,8 +479,10 @@ function emitInterfacePropertyHaxeExtern(
   context: HaxeExternEmissionContext,
 ): string {
   const optional = property.optional ? '@:optional ' : '';
+  const name = safeHaxeExternName(property.name);
+  const native = name === property.name ? '' : `@:native(${JSON.stringify(property.name)}) `;
   if (property.type.kind !== 'function') {
-    return `${optional}var ${safeHaxeExternName(property.name)}:${emitTypeHaxeExtern(property.type, context)};`;
+    return `${optional}${native}var ${name}:${emitStructureFieldTypeHaxeExtern(property.type, context)};`;
   }
   const parameters = property.type.parameters
     .map((parameter, index) => {
@@ -461,10 +491,7 @@ function emitInterfacePropertyHaxeExtern(
       return `${parameter.rest ? '...' : parameter.optional ? '?' : ''}${name}:${emitTypeHaxeExtern(type, context)}`;
     })
     .join(', ');
-  return `${optional}function ${safeHaxeExternName(property.name)}(${parameters}):${emitTypeHaxeExtern(
-    property.type.returns,
-    context,
-  )};`;
+  return `${optional}${native}function ${name}(${parameters}):${emitTypeHaxeExtern(property.type.returns, context)};`;
 }
 
 function emitPackageHolderHaxeExtern(packageName: string, context: HaxeExternEmissionContext): EmittedFile | undefined {
@@ -596,7 +623,7 @@ function emitFunctionSignatureHaxeExtern(
   signature: Readonly<IrFunctionSignature>,
   context: HaxeExternEmissionContext,
 ): string {
-  const typeParameters = emitTypeParametersHaxeExtern(signature.typeParameters, context);
+  const typeParameters = emitTypeParametersHaxeExtern(signature.typeParameters, context, false);
   const parameters = emitParametersHaxeExtern(signature.parameters, context);
   const returns = emitTypeHaxeExtern(signature.returns, context);
   return `function ${name}${typeParameters}(${parameters}):${returns};`;
@@ -624,18 +651,33 @@ function emitParametersHaxeExtern(
 function emitTypeParametersHaxeExtern(
   parameters: readonly Readonly<IrTypeParameter>[],
   context: HaxeExternEmissionContext,
+  includeDefaults = true,
 ): string {
   if (parameters.length === 0) return '';
   return `<${parameters
     .map((parameter) => {
       const constraint =
-        parameter.constraint && parameter.constraint.kind !== 'function'
+        parameter.constraint &&
+        parameter.constraint.kind !== 'function' &&
+        !isEntityConstraintHaxeExtern(parameter.constraint, context)
           ? `:${emitTypeHaxeExtern(parameter.constraint, context)}`
           : '';
-      const default_ = parameter.default ? ` = ${emitTypeHaxeExtern(parameter.default, context)}` : '';
+      const default_ =
+        includeDefaults && parameter.default ? ` = ${emitTypeHaxeExtern(parameter.default, context)}` : '';
       return `${safeHaxeExternTypeName(parameter.binding.name)}${constraint}${default_}`;
     })
     .join(', ')}>`;
+}
+
+function isEntityConstraintHaxeExtern(type: Readonly<IrType>, context: HaxeExternEmissionContext): boolean {
+  if (type.kind !== 'named' || type.reference.kind !== 'binding' || type.reference.path.length > 0) return false;
+  if (type.reference.binding.name === 'Entity') return true;
+  if (type.reference.binding.kind !== 'import') return false;
+  return (context.index.importRoutes.get(type.reference.binding.id) ?? []).some((route) => route.imported === 'Entity');
+}
+
+function emitStructureFieldTypeHaxeExtern(type: Readonly<IrType>, context: HaxeExternEmissionContext): string {
+  return type.kind === 'primitive' && type.name === 'void' ? 'Dynamic' : emitTypeHaxeExtern(type, context);
 }
 
 function emitTypeHaxeExtern(
@@ -650,7 +692,9 @@ function emitTypeHaxeExtern(
       getCompilerRuntimeExternalSymbolTargetHaxe(name, 'type', context.options.runtimeModule),
     getMemberName: safeHaxeExternName,
     getTypeName: safeHaxeExternTypeName,
-    resolveNamedType: (reference) => emitTypeAliasReferenceHaxeExtern(reference, context, activeAliases),
+    resolveNamedType: (reference) =>
+      emitTypeAliasReferenceHaxeExtern(reference, context, activeAliases) ??
+      emitPrivateClassReferenceHaxeExtern(reference, context),
   });
 }
 
@@ -764,6 +808,106 @@ function emitPrivateInterfaceReferenceHaxeExtern(
     },
     replaceHaxeExternEmissionModule(context, loweredModule),
     new Set(activeDeclarations).add(identity),
+  );
+}
+
+function emitPrivateClassReferenceHaxeExtern(
+  reference: Readonly<IrTypeReference>,
+  context: HaxeExternEmissionContext,
+): string | undefined {
+  const location = getClassLocationHaxeExtern(reference, context);
+  if (!location || isClassPublicHaxeExtern(location, context)) return undefined;
+  if (!location.declaration.exported) {
+    emissionErrorHaxeExtern(
+      context,
+      `private source class ${location.declaration.binding.name} has no public Haxe extern`,
+    );
+  }
+  const targetName = safeHaxeExternTypeName(location.declaration.binding.name);
+  const packageName = `${getRootPackageHaxeExtern(location.module.packageName, context.options)}._js`;
+  const path = `${packageName.replaceAll('.', '/')}/${targetName}.hx`;
+  const identity = [
+    location.module.packageName,
+    normalizePathPortable(location.module.source),
+    location.declaration.binding.id,
+  ].join('\0');
+  if (!context.index.dependencyClassFiles.has(path) && !context.index.activeDependencyClasses.has(identity)) {
+    context.index.activeDependencyClasses.add(identity);
+    const loweredModule = lowerIrModuleWithCompilerPasses(location.module, [context.interfaceInheritancePass]);
+    const declaration = loweredModule.declarations.find(
+      (candidate): candidate is IrClassDeclaration =>
+        candidate.kind === 'class' && candidate.binding.id === location.declaration.binding.id,
+    );
+    if (!declaration) {
+      emissionErrorHaxeExtern(
+        context,
+        `dependency class ${location.declaration.binding.name} disappeared during lowering`,
+      );
+    }
+    const dependencyContext = {
+      ...context,
+      ambientUtilityHeritageTargets: createAmbientUtilityHeritageTargetsHaxeExtern(loweredModule),
+      module: loweredModule,
+      rootPackage: getRootPackageHaxeExtern(loweredModule.packageName, context.options),
+    };
+    assertClassShapeHaxeExtern(declaration, dependencyContext);
+    context.index.dependencyClassFiles.set(path, emitClassFileHaxeExtern(declaration, targetName, dependencyContext));
+    context.index.activeDependencyClasses.delete(identity);
+  }
+  return `${packageName}.${targetName}`;
+}
+
+function getClassLocationHaxeExtern(
+  reference: Readonly<IrTypeReference>,
+  context: HaxeExternEmissionContext,
+): HaxeExternDeclarationLocation | undefined {
+  if (reference.reference.kind !== 'binding' || reference.reference.path.length > 0) return undefined;
+  const binding = reference.reference.binding;
+  if (binding.kind === 'class') {
+    return context.index.declarationLocations
+      .get(binding.id)
+      ?.find((location) => location.declaration.kind === 'class');
+  }
+  if (binding.kind !== 'import') return undefined;
+  const locations = (context.index.importRoutes.get(binding.id) ?? []).flatMap((route) =>
+    getSpecifierModulesHaxeExtern(route.from, route.specifier, context).flatMap((module) =>
+      module.declarations.flatMap((declaration) =>
+        declaration.kind === 'class' &&
+        getLocalExportNamesHaxeExtern(declaration, module, context.index).includes(route.imported)
+          ? [{ declaration, module }]
+          : [],
+      ),
+    ),
+  );
+  const unique = [
+    ...new Map(
+      locations.map((location) => [
+        `${location.module.packageName}\0${normalizePathPortable(location.module.source)}\0${location.declaration.binding.id}`,
+        location,
+      ]),
+    ).values(),
+  ];
+  if (unique.length > 1) {
+    emissionErrorHaxeExtern(context, `imported class ${binding.name} resolves ambiguously`);
+  }
+  return unique[0];
+}
+
+function isClassPublicHaxeExtern(
+  location: Readonly<HaxeExternDeclarationLocation>,
+  context: HaxeExternEmissionContext,
+): boolean {
+  if (location.declaration.kind !== 'class') return false;
+  const facadePackageName = context.packageFacade?.modules[0]?.module.packageName;
+  if (!context.packageFacade || location.module.packageName !== facadePackageName) {
+    return getLocalExportNamesHaxeExtern(location.declaration, location.module, context.index).length > 0;
+  }
+  return getPackageFacadeSlotsHaxeExtern(context).some(
+    (slot) =>
+      slot.lane === 'type' &&
+      slot.route.kind === 'binding' &&
+      slot.route.binding.id === location.declaration.binding.id &&
+      isSameModuleHaxeExtern(slot.route.module, location.module, context.index),
   );
 }
 
@@ -1169,6 +1313,8 @@ const haxeExternKeywords = new Set([
   'macro',
   'new',
   'null',
+  'operator',
+  'overload',
   'override',
   'package',
   'private',

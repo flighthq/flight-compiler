@@ -191,6 +191,51 @@ describe('createHaxeCompilerBackend', () => {
     expect(output).toContain('typedef BarrelShape = flighthq.math.Target.Shape;');
   });
 
+  it('forwards generic parameters and constraints through type facade aliases', () => {
+    const profile = lowerPackage(
+      '@flighthq/types',
+      'App.ts',
+      "export type MobileOsProfile = 'android' | 'ios';",
+    ).module;
+    const capabilities = lowerPackage(
+      '@flighthq/types',
+      'CapacitorAppCapabilitiesFor.ts',
+      `
+        import type { MobileOsProfile } from './App';
+        export type CapacitorAppCapabilitiesFor<Profile extends MobileOsProfile> = { profile: Profile };
+      `,
+    ).module;
+    const contract = lowerPackage(
+      '@flighthq/types',
+      'contract.ts',
+      "export * from './CapacitorAppCapabilitiesFor';",
+    ).module;
+    const moduleResolution = {
+      edges: [
+        {
+          importer: { name: capabilities.name, packageName: capabilities.packageName, source: capabilities.source },
+          specifier: './App',
+          target: { packageName: profile.packageName, source: profile.source },
+        },
+        {
+          importer: { name: contract.name, packageName: contract.packageName, source: contract.source },
+          specifier: './CapacitorAppCapabilitiesFor',
+          target: { packageName: capabilities.packageName, source: capabilities.source },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1' as const,
+    };
+    const output = createHaxeCompilerBackend().emitModule(contract, {
+      moduleResolution,
+      modules: [contract, capabilities, profile],
+      options: {},
+    })[0]!.contents;
+
+    expect(output).toContain(
+      'typedef ContractCapacitorAppCapabilitiesFor<Profile:flighthq.types.App.MobileOsProfile> = flighthq.types.CapacitorAppCapabilitiesFor.CapacitorAppCapabilitiesFor<Profile>;',
+    );
+  });
+
   it('imports the allocated type name from a contract type and value collision', () => {
     const state = lowerPackage(
       '@flighthq/types',
@@ -740,12 +785,32 @@ describe('emitIrModuleHaxe', () => {
   it('emits source generic defaults and Promise void carriers accepted by Haxe', () => {
     const result = lower(
       'generic-defaults.ts',
-      'export type Box<Value = string> = { value: Value }; export function settle(task: Promise<void>): Promise<void> { return task; }',
+      'export type Box<Value = string> = { value: Value }; export function identity<Value = string>(value: Value): Value { return value; } export function settle(task: Promise<void>): Promise<void> { return task; }',
     );
     const output = emitIrModuleHaxe(result.module).contents;
 
     expect(output).toContain('typedef Box<Value = String>');
+    expect(output).toContain('function identity<Value>(value:Value):Value');
+    expect(output).not.toContain('function identity<Value = String>');
     expect(output).toContain('_Promise<Dynamic>');
+  });
+
+  it('erases structural Entity constraints and widens stored void fields', () => {
+    const result = lower(
+      'entity.ts',
+      `
+        export interface Entity { runtime?: object }
+        export interface Brand { marker?: void }
+        export type EntityView<Type extends Entity> = Type;
+        export function finish<Type extends Entity>(value: Type): Type { return value; }
+      `,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('typedef Brand = { ?marker:Dynamic };');
+    expect(output).toContain('typedef EntityView<Type> = Type;');
+    expect(output).toContain('function finish<Type>(value:Type):Type');
+    expect(output).not.toContain('<Type:Entity>');
   });
 
   it('elects C-style for lowering without lowering native Haxe default parameters', () => {

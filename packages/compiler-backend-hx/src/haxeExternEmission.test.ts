@@ -273,6 +273,30 @@ describe('emitIrModuleHaxeExtern', () => {
     );
   });
 
+  it('emits Haxe-valid void fields, reserved members, and generic declarations', () => {
+    const module = lower(
+      '@flighthq/types',
+      'entity.ts',
+      `
+        export interface Entity { runtime?: object }
+        export interface Controller { brand?: void; operator: string }
+        export type EntityView<Type extends Entity = Entity> = Type;
+        export function identity<Type extends Entity = Entity>(operator: Type): Type { return operator; }
+      `,
+    );
+    const files = emitIrModuleHaxeExtern(module, { rootPackage: 'flight' });
+    const controller = findFile(files, 'flight/_js/Controller.hx');
+    const view = findFile(files, 'flight/_js/EntityView.hx');
+    const holder = findFile(files, 'flight/_js/_fn/Types.hx');
+
+    expect(controller.contents).toContain('@:optional var brand:Dynamic;');
+    expect(controller.contents).toContain('@:native("operator") var operator_:String;');
+    expect(view.contents).toContain('typedef EntityView<Type = flight.Entity> = Type;');
+    expect(holder.contents).toContain('static function identity<Type>(operator_:Type):Type;');
+    expect(holder.contents).not.toContain('identity<Type:');
+    expect(holder.contents).not.toContain('identity<Type =');
+  });
+
   it('emits generic package functions, rest parameters, and untyped variables', () => {
     const module = lower(
       '@flighthq/types',
@@ -284,6 +308,33 @@ describe('emitIrModuleHaxeExtern', () => {
 
     expect(holder.contents).toContain('static var current:Dynamic;');
     expect(holder.contents).toContain('static function first<Value:String>(...values:Value):Value;');
+  });
+
+  it('emits source-exported private class dependencies required by the package contract', () => {
+    const reader = lower(
+      '@flighthq/swf',
+      'swfReader.ts',
+      'export class SwfReader { constructor(readonly source: Uint8Array) {} read(): number { return 0; } }',
+    );
+    const filter = lower(
+      '@flighthq/swf',
+      'swfFilter.ts',
+      "import type { SwfReader } from './swfReader.js'; export function readSwfFilter(reader: SwfReader): number { return reader.read(); }",
+    );
+    const contract = lower('@flighthq/swf', 'contract.ts', "export * from './swfFilter.js';");
+    const session = createHaxeCompilerBackend().createEmissionSession!({
+      modules: [contract, filter, reader],
+      options: { emissionMode: 'extern', rootPackage: 'flight' },
+    });
+
+    const files = [reader, filter, contract].flatMap((module) => session.emitModule(module));
+    const holder = findFile(files, 'flight/_js/_fn/Swf.hx');
+    const dependency = findFile(files, 'flight/_js/SwfReader.hx');
+
+    expect(holder.contents).toContain('static function readSwfFilter(reader:flight._js.SwfReader):Float;');
+    expect(dependency.contents).toContain('extern class SwfReader {');
+    expect(dependency.contents).toContain('public function read():Float;');
+    expect(dependency.contents).not.toContain('@:jsImport');
   });
 
   it('keeps the single-file public emitter transpile-only and defaults the backend to transpilation', () => {
