@@ -128,6 +128,75 @@ describe('createHaxeCompilerBackend', () => {
     expect(files[0]!.contents).toContain('import flighthq.math.Helper.helper;');
   });
 
+  it('deduplicates type and value imports of the same Haxe nominal', () => {
+    const choice = lowerPackage('@flighthq/types', 'choice.ts', 'export enum Choice { Ready }').module;
+    const consumer = lowerPackage(
+      '@flighthq/core',
+      'consumer.ts',
+      "import type { Choice } from '@flighthq/types/choice'; import { Choice } from '@flighthq/types/choice'; export function choose(value: Choice): Choice { return value === Choice.Ready ? value : Choice.Ready; }",
+    ).module;
+    const output = createHaxeCompilerBackend().emitModule(consumer, {
+      moduleResolution: {
+        edges: [
+          {
+            importer: { name: consumer.name, packageName: consumer.packageName, source: consumer.source },
+            specifier: '@flighthq/types/choice',
+            target: { packageName: choice.packageName, source: choice.source },
+          },
+        ],
+        schema: 'flight-compiler-module-resolution/1',
+      },
+      modules: [choice, consumer],
+      options: {},
+    })[0]!.contents;
+
+    expect(output.match(/import flighthq\.types\.Choice\.Choice;/gu)).toHaveLength(1);
+    expect(output).not.toContain('Choice_2');
+  });
+
+  it('keeps one resolved barrel provenance when broad and named edges agree', () => {
+    const point = lowerPackage('@flighthq/types', 'point.ts', 'export interface Point { x: number }').module;
+    const consumer = lowerPackage(
+      '@flighthq/core',
+      'consumer.ts',
+      "import type { Point } from '@flighthq/types/contract'; export type Alias = Point;",
+    ).module;
+    const commonEdge = {
+      importer: { name: consumer.name, packageName: consumer.packageName, source: consumer.source },
+      specifier: '@flighthq/types/contract',
+      target: { packageName: point.packageName, source: point.source },
+    };
+    const output = createHaxeCompilerBackend().emitModule(consumer, {
+      moduleResolution: {
+        edges: [commonEdge, { ...commonEdge, importedNames: ['Point'] }],
+        schema: 'flight-compiler-module-resolution/1',
+      },
+      modules: [consumer, point],
+      options: {},
+    })[0]!.contents;
+
+    expect(output).toContain('import flighthq.types.Point.Point;');
+    expect(output).not.toContain('flighthq.types.Types.Point');
+  });
+
+  it('allocates colliding secondary type names across a Haxe package', () => {
+    const first = lower(
+      'first.ts',
+      'type Scratch = { value: number }; export function first(value: Scratch): number { return value.value; }',
+    ).module;
+    const second = lower(
+      'second.ts',
+      'type Scratch = { value: string }; export function second(value: Scratch): string { return value.value; }',
+    ).module;
+    const session = createHaxeCompilerBackend().createEmissionSession!({
+      modules: [first, second],
+      options: {},
+    });
+
+    expect(session.emitModule(first)[0]!.contents).toContain('typedef First_Scratch =');
+    expect(session.emitModule(second)[0]!.contents).toContain('typedef Second_Scratch =');
+  });
+
   it('emits star re-export facades from graph-wide module context', () => {
     const target = lowerPackage(
       '@flighthq/types',
@@ -233,6 +302,44 @@ describe('createHaxeCompilerBackend', () => {
 
     expect(output).toContain(
       'typedef ContractCapacitorAppCapabilitiesFor<Profile:flighthq.types.App.MobileOsProfile> = flighthq.types.CapacitorAppCapabilitiesFor.CapacitorAppCapabilitiesFor<Profile>;',
+    );
+  });
+
+  it('qualifies imported types in value facade signatures from their source module', () => {
+    const entity = lowerPackage(
+      '@flighthq/types',
+      'entity.ts',
+      'export interface EntityConstruction<Value> { value: Value } export enum Choice { Ready }',
+    ).module;
+    const worker = lowerPackage(
+      '@flighthq/core',
+      'worker.ts',
+      "import { Choice } from '@flighthq/types/entity'; import type { EntityConstruction } from '@flighthq/types/entity'; export function finish<Value>(out: EntityConstruction<Value>, choice: Choice = Choice.Ready): EntityConstruction<Value> { return out; }",
+    ).module;
+    const barrel = lowerPackage('@flighthq/core', 'contract.ts', "export * from './worker';").module;
+    const moduleResolution = {
+      edges: [
+        {
+          importer: { name: worker.name, packageName: worker.packageName, source: worker.source },
+          specifier: '@flighthq/types/entity',
+          target: { packageName: entity.packageName, source: entity.source },
+        },
+        {
+          importer: { name: barrel.name, packageName: barrel.packageName, source: barrel.source },
+          specifier: './worker',
+          target: { packageName: worker.packageName, source: worker.source },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1' as const,
+    };
+    const output = createHaxeCompilerBackend().emitModule(barrel, {
+      moduleResolution,
+      modules: [barrel, entity, worker],
+      options: {},
+    })[0]!.contents;
+
+    expect(output).toContain(
+      'function finish<Value>(out:flighthq.types.Entity.EntityConstruction<Value>, choice:flighthq.types.Entity.Choice = flighthq.types.Entity.Choice.Ready):flighthq.types.Entity.EntityConstruction<Value>',
     );
   });
 
@@ -2093,14 +2200,40 @@ describe('emitIrModuleHaxe expression coverage', () => {
     expect(expressionOutput).toContain('function(value:Float) return (value + 1)');
   });
 
-  it('emits regexp literals in Haxe EReg syntax', () => {
+  it('emits regexp literals through the runtime with Haxe-safe strings', () => {
     const result = lower(
       'regexp.ts',
-      'export function match(): boolean { const pattern = /hello/gi; return pattern.test("x"); }',
+      String.raw`export function match(): boolean { const pattern = /<\/tag>\s+/gi; return pattern.test("x"); }`,
     );
     const output = emitIrModuleHaxe(result.module).contents;
 
-    expect(output).toContain('~/hello/gi');
+    expect(output).toContain('new flighthq._internal._RegExp("<\\\\/tag>\\\\s+", "gi")');
+  });
+
+  it('escapes Haxe string control characters without JSON-only escapes', () => {
+    const result = lower('string-controls.ts', 'export const value: string = "\\b\\f\\u007f";');
+
+    expect(emitIrModuleHaxe(result.module).contents).toContain('"\\x08\\x0c\\x7f"');
+  });
+
+  it('lets Haxe infer initialized function-valued local types', () => {
+    const result = lower(
+      'local-function.ts',
+      'export function apply(value: number): number { const update: (next: number) => void = next => { value += next; }; update(1); return value; }',
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('final update = function(next:Float)');
+    expect(output).not.toContain('final update:(Float)->Void');
+  });
+
+  it('constructs source-declared constructor values reflectively', () => {
+    const result = lower(
+      'factory.ts',
+      'interface Created { value: number } type Factory = new (value: number) => Created; export function create(factory: Factory): Created { return new factory(1); }',
+    );
+
+    expect(emitIrModuleHaxe(result.module).contents).toContain('Type.createInstance(cast factory, [1])');
   });
 
   it('emits empty template literal as an empty string', () => {
@@ -6291,11 +6424,11 @@ describe('emitIrModuleHaxe try-catch without finally', () => {
 });
 
 describe('emitIrModuleHaxe additional coverage', () => {
-  it('emits regexp as Haxe regex literal', () => {
+  it('emits regexp through the portable runtime', () => {
     const output = emitIrModuleHaxe(
       lower('regexp.ts', `export function test(s: string): boolean { return /^hello/i.test(s); }`).module,
     ).contents;
-    expect(output).toContain('~/');
+    expect(output).toContain('new flighthq._internal._RegExp("^hello", "i")');
   });
 
   it('emits bitwise assignment as Std.int cast', () => {
@@ -7769,11 +7902,11 @@ describe('emitIrModuleHaxe enum member emission', () => {
 });
 
 describe('emitIrModuleHaxe regexp expression', () => {
-  it('emits regexp literal as Haxe EReg', () => {
+  it('emits regexp source without a Haxe EReg literal', () => {
     const output = emitIrModuleHaxe(
       lower('regex.ts', 'export function test(s: string): boolean { return /^hello/.test(s); }').module,
     ).contents;
-    expect(output).toContain('~/^hello/');
+    expect(output).toContain('new flighthq._internal._RegExp("^hello", "")');
   });
 });
 
@@ -8489,11 +8622,11 @@ describe('emitIrModuleHaxe prefix operators', () => {
 });
 
 describe('emitIrModuleHaxe regexp expression', () => {
-  it('emits regex literal with pattern and flags', () => {
+  it('emits regex pattern and flags as runtime constructor arguments', () => {
     const output = emitIrModuleHaxe(
       lower('regexp.ts', `export function test(s: string): boolean { return /^[a-z]+$/g.test(s); }`).module,
     ).contents;
-    expect(output).toContain('~/');
+    expect(output).toContain('new flighthq._internal._RegExp("^[a-z]+$", "g")');
   });
 });
 
@@ -9127,7 +9260,7 @@ describe('emitIrModuleHaxe exponentiation operators', () => {
       }`,
     );
     const output = emitIrModuleHaxe(result.module).contents;
-    expect(output).toContain('~/^hello/i');
+    expect(output).toContain('new flighthq._internal._RegExp("^hello", "i")');
   });
 
   it('emits nullish check lowered to null comparison', () => {
