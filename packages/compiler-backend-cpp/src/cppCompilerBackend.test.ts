@@ -5353,6 +5353,34 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(emitted.contents).toContain('-=');
   });
 
+  it('groups assignment expressions nested in arithmetic', () => {
+    const result = lower(
+      'nested-assignment.ts',
+      'export function adjust(value: number): number { return 2 * (value -= 1); }',
+    );
+    const emitted = emitIrModuleCpp(result.module);
+
+    expect(emitted.contents).toContain('2.0 * (value -= 1.0)');
+    expect(emitted.contents).not.toContain('2.0 * value -= 1.0');
+  });
+
+  it('resizes array length for subtraction assignment and elides non-nullish coalescing assignment', () => {
+    const result = lower(
+      'length-assignment.ts',
+      `interface Frames { value: number }
+       export function trim(values: number[]): number { return values.length -= 2; }
+       export function establish(frames: Frames): number { return frames.value ??= 1; }`,
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+
+    expect(emitted.contents).toContain(
+      'const auto assignment_value = static_cast<double>(assignment_receiver.size()) - 2.0;',
+    );
+    expect(emitted.contents).toContain('assignment_receiver.resize(static_cast<std::ptrdiff_t>(assignment_value))');
+    expect(emitted.contents).toContain('return frames->value;');
+    expect(emitted.contents).not.toContain('frames->value.has_value()');
+  });
+
   it('emits bitwise compound assignment with int32 casts', () => {
     const result = lower(
       'bitwise-assign.ts',

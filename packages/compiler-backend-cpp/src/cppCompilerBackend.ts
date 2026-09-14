@@ -1306,15 +1306,22 @@ function emitExpression(
         );
       }
       if (
-        expression.operator === '=' &&
         expression.left.kind === 'property' &&
         expression.left.member?.receiver === 'array' &&
         expression.left.member.name === 'length' &&
         getCppRuntimeProfile(context.options) === 'flight-cpp'
       ) {
+        context.includes.add('cstddef');
         const receiver = emitExpression(expression.left.object, context);
         const operator = memberOp(expression.left.object, context);
-        return `([&]() { auto&& assignment_receiver = ${receiver}; const auto assignment_value = ${right}; assignment_receiver${operator}resize(assignment_value); return assignment_value; }())`;
+        const value =
+          expression.operator === '='
+            ? right
+            : expression.operator === '-='
+              ? `static_cast<double>(assignment_receiver${operator}size()) - ${right}`
+              : undefined;
+        if (!value) emissionError(context, `array length ${expression.operator} requires checked resize lowering`);
+        return `([&]() { auto&& assignment_receiver = ${receiver}; const auto assignment_value = ${value}; assignment_receiver${operator}resize(static_cast<std::ptrdiff_t>(assignment_value)); return assignment_value; }())`;
       }
       if (
         expression.operator === '=' &&
@@ -1370,9 +1377,10 @@ function emitExpression(
         );
       }
       if (expression.operator === '&&=' || expression.operator === '||=' || expression.operator === '??=') {
+        if (expression.operator === '??=' && assignmentType && !hasIrTypeAbsentMember(assignmentType)) return left;
         return emitLogicalAssignmentCpp(left, expression.operator, right);
       }
-      return `${left} ${emitAssignmentOperator(expression.operator)} ${right}`;
+      return `(${left} ${emitAssignmentOperator(expression.operator)} ${right})`;
     }
     case 'await':
       return `co_await ${emitExpression(expression.expression, context)}`;
