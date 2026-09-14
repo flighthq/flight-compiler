@@ -549,7 +549,7 @@ describe('emitIrModuleHaxeExternWithContext', () => {
       'flight/_js/_fn/Consumer.hx',
     );
 
-    expect(holder.contents).toContain('static function read():flight.Model;');
+    expect(holder.contents).toContain('static function read():flight.ModelView;');
   });
 
   it('follows named and star reexports while inlining imported aliases', () => {
@@ -568,13 +568,21 @@ describe('emitIrModuleHaxeExternWithContext', () => {
       'consumer.ts',
       "import type { Flag, Outcome } from './barrel.js'; export function read(): Outcome<Flag> { throw new Error(); }",
     );
-
-    const holder = findFile(
-      emitIrModuleHaxeExternWithContext(aliases, [consumer, barrel, aliases], undefined, { rootPackage: 'flight' }),
-      'flight/_js/_fn/Types.hx',
+    const contract = lower(
+      '@flighthq/types',
+      'contract.ts',
+      "export * from './barrel.js'; export * from './consumer.js';",
     );
+    const session = createHaxeCompilerBackend().createEmissionSession!({
+      modules: [contract, consumer, barrel, aliases],
+      options: { emissionMode: 'extern', rootPackage: 'flight' },
+    });
 
-    expect(holder.contents).toContain('static function read():{ value:Bool };');
+    const files = [contract, consumer, barrel, aliases].flatMap((module) => session.emitModule(module));
+    const holder = findFile(files, 'flight/_js/_fn/Types.hx');
+
+    expect(holder.contents).toContain('static function read():flight.Outcome<flight.Flag>;');
+    expect(files.some((file) => file.path === 'flight/_js/Outcome.hx')).toBe(true);
   });
 
   it('resolves parent-relative extensionless alias imports', () => {
@@ -590,7 +598,7 @@ describe('emitIrModuleHaxeExternWithContext', () => {
       'flight/_js/_fn/Types.hx',
     );
 
-    expect(holder.contents).toContain('static function read():{ value:Float };');
+    expect(holder.contents).toContain('static function read():flight.Result;');
   });
 
   it('refuses qualified namespace aliases because the extern ABI has no qualified alias spelling', () => {
