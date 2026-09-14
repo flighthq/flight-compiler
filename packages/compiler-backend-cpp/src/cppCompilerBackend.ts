@@ -371,6 +371,7 @@ function emitIrModuleCppWithContext(
       return { anonymousStructLines, lines };
     });
   const imports = emitImports(module, context);
+  const importedFunctionForwardDeclarations = emitCppImportedFunctionForwardDeclarations(context);
   const reexports = emitReexportsCpp(module, context);
   const lines = [createCompilerGeneratedFileHeader(module, '//', options.upstreamCommit)];
   lines.push('#pragma once');
@@ -393,6 +394,9 @@ function emitIrModuleCppWithContext(
   const importedForwardDeclarations = emitCppImportedForwardDeclarations(context);
   if (importedForwardDeclarations.length > 0) lines.push('', ...importedForwardDeclarations);
   if (imports.length > 0) lines.push('', ...imports);
+  if (importedFunctionForwardDeclarations.length > 0) {
+    lines.push('', ...importedFunctionForwardDeclarations);
+  }
   const namespaceName = getCppCompilerPackageNamespace(module.packageName, options.packageTargets);
   lines.push('', `namespace ${namespaceName} {`);
   const forwardDeclarations = emitCppForwardDeclarations(module, context);
@@ -584,6 +588,83 @@ function emitCppImportedForwardDeclarations(context: EmitContext): string[] {
       `${left.namespace}\0${left.declaration}`.localeCompare(`${right.namespace}\0${right.declaration}`),
     )
     .map(({ declaration, namespace }) => `namespace ${namespace} { ${declaration} }`);
+}
+
+// A mutually importing header can reach a call before the imported header resumes far enough to
+// define the callee. Declare only functions on a proven back edge; doing this for every import would
+// expose arbitrary private signature dependencies and anonymous structural parameter types.
+function emitCppImportedFunctionForwardDeclarations(context: EmitContext): string[] {
+  const declarations = new Map<string, { namespace: string; declaration: string }>();
+  for (const importItem of context.module.imports) {
+    const targetModules = getCppResolvedImportModules(importItem.specifier, context).filter((targetModule) =>
+      targetModule.imports.some((targetImport) =>
+        context.referenceRepresentationPlanner
+          .resolveModules(targetImport.specifier, targetModule)
+          .some(
+            (resolved) =>
+              resolved.packageName === context.module.packageName && resolved.source === context.module.source,
+          ),
+      ),
+    );
+    for (const binding of importItem.bindings) {
+      if (binding.imported === '*') continue;
+      const matches = targetModules.flatMap((targetModule) =>
+        targetModule.declarations.flatMap((declaration) =>
+          declaration.kind === 'function' &&
+          declaration.binding.name === binding.imported &&
+          hasCppDirectExportName(targetModule, binding.imported)
+            ? [{ declaration, targetModule }]
+            : [],
+        ),
+      );
+      if (matches.length !== 1) continue;
+      const { declaration, targetModule } = matches[0]!;
+      const namespace = getCppCompilerPackageNamespace(targetModule.packageName, context.options.packageTargets);
+      const name =
+        context.targetNameMaps.get(getCppModuleIdentityKey(targetModule))?.get(declaration.binding.id) ??
+        safeCppName(declaration.binding.name);
+      const functionContext: EmitContext = {
+        ...context,
+        activeDependentCallablePackIds: mergeCppDependentCallablePackIds(
+          context.activeDependentCallablePackIds,
+          declaration.parameters,
+        ),
+        anonymousStructTypeParameters: mergeIrTypeParametersCpp(
+          context.anonymousStructTypeParameters,
+          declaration.typeParameters,
+        ),
+      };
+      const template = emitCppFunctionTemplate(
+        declaration.typeParameters,
+        declaration.parameters,
+        functionContext,
+      );
+      const parameters = declaration.parameters
+        .map((parameter) => emitCppForwardParameterCpp(parameter, functionContext))
+        .join(', ');
+      const signature = `${template.parameters ? `template ${template.parameters} ` : ''}${template.requirement ? `requires ${template.requirement} ` : ''}inline ${emitType(declaration.returns, functionContext)} ${name}(${parameters});`;
+      declarations.set(`${namespace}\0${signature}`, { declaration: signature, namespace });
+    }
+  }
+  return [...declarations.values()]
+    .sort((left, right) =>
+      `${left.namespace}\0${left.declaration}`.localeCompare(`${right.namespace}\0${right.declaration}`),
+    )
+    .map(({ declaration, namespace }) => `namespace ${namespace} { ${declaration} }`);
+}
+
+function emitCppForwardParameterCpp(parameter: Readonly<IrParameter>, context: EmitContext): string {
+  const name = getBindingTargetName(parameter.binding, context);
+  if (parameter.dependentCallablePack) {
+    const pack = getCppDependentCallablePack(parameter, context);
+    return `${pack.typeName}&&... ${name}`;
+  }
+  const type = parameter.type ? emitType(parameter.type, context) : 'auto';
+  if (parameter.optional) {
+    context.includes.add('optional');
+    return `std::optional<${type}> ${name}`;
+  }
+  return `${type} ${name}`;
 }
 
 function emitDeclaration(declaration: Readonly<IrDeclaration>, context: EmitContext): string[] {

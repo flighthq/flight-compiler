@@ -5281,6 +5281,57 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(a.indexOf(forward)).toBeLessThan(a.indexOf(include));
   });
 
+  it('forward declares imported functions across a module cycle', () => {
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          specifier: './b.js',
+          target: { packageName: '@flighthq/geometry', source: 'packages/geometry/src/b.ts' },
+        },
+        {
+          specifier: './a.js',
+          target: { packageName: '@flighthq/geometry', source: 'packages/geometry/src/a.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const modules = lowerTypeScriptSources(
+      [
+        {
+          packageName: '@flighthq/geometry',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/geometry/src/a.ts',
+            "import { acquire } from './b.js'; export function create(value?: number): number { return value ?? acquire(); }",
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+        {
+          packageName: '@flighthq/geometry',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/geometry/src/b.ts',
+            "import { create } from './a.js'; export function acquire(): number { return create(1); }",
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+      ],
+      moduleResolution,
+    ).map((result) => result.module);
+    const b = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules,
+      options: { runtimeProfile: 'flight-cpp' },
+    }).emitModule(modules[1]!)[0]!.contents;
+
+    expect(b).toContain('namespace flighthq_geometry { inline double create(std::optional<double> value); }');
+    expect(b.indexOf('inline double create(std::optional<double> value);')).toBeLessThan(
+      b.indexOf('inline double acquire()'),
+    );
+  });
+
   it('falls back to _internal_ output path when source path does not resolve to a file name', () => {
     const result = lower('index.ts', 'export const value = 1;');
     const emitted = emitIrModuleCpp(result.module);
