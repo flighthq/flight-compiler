@@ -3282,7 +3282,7 @@ function emitType(type: Readonly<IrType>, context: EmitContext, representation: 
       const arguments_ =
         sourceName &&
         getCppRuntimeProfile(context.options) === 'flight-cpp' &&
-        isCppConcreteTypedArraySourceName(sourceName)
+        isCppRuntimeTypeWithErasedTypeArguments(sourceName)
           ? []
           : type.typeArguments.map((argument, index) =>
               weakMapTypeArgumentPlan?.valueRepresentation === 'erased' && index === 1
@@ -8455,6 +8455,13 @@ function getCppResolvedExportTargetName(
 
 function isCppConcreteTypedArraySourceName(sourceName: string): boolean {
   return /^(?:Float32|Float64|Int16|Int32|Int8|Uint16|Uint32|Uint8|Uint8Clamped)Array$/u.test(sourceName);
+}
+
+function isCppRuntimeTypeWithErasedTypeArguments(sourceName: string): boolean {
+  // ECMAScript's resizable-buffer declarations parameterize DataView and typed arrays by their
+  // backing-buffer carrier. flight-cpp owns that storage internally, so the parameter is type-only
+  // evidence and must not be applied to its intentionally non-template public carrier.
+  return sourceName === 'DataView' || isCppConcreteTypedArraySourceName(sourceName);
 }
 
 function getBindingTargetName(binding: Readonly<{ id: string; name: string }>, context: EmitContext): string {

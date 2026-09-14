@@ -1574,7 +1574,7 @@ export interface BrowserPermissionMediaTypes {
   return new DataView(bytes.buffer, bytes.byteOffset, 8).getFloat64(0, true);
 }
 export function mutate(bytes: Uint8Array): number {
-  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const view: DataView<ArrayBuffer> = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   view.setUint32(0, 42, true);
   return view.getUint32(0, true) + view.byteLength + view.byteOffset;
 }
@@ -1602,6 +1602,8 @@ export function compare(left: string, right: string, locale: string, options: In
     expect(emitted.contents).toContain('view.get_uint32(0.0, true)');
     expect(emitted.contents).toContain('view.byte_length');
     expect(emitted.contents).toContain('view.byte_offset');
+    expect(emitted.contents).toContain('flight::DataView view =');
+    expect(emitted.contents).not.toContain('flight::DataView<');
     expect(emitted.contents).toContain('flight::TextDecoder().decode(bytes)');
     expect(emitted.contents).toContain('flight::ArrayBuffer(length)');
     expect(emitted.contents).toContain('flight::RegExp(flight::String("^flight$"), flight::String("i")).test(value)');
