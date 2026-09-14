@@ -520,7 +520,13 @@ describe('createIrTypeReferenceRepresentationPlanCpp', () => {
       storageRepresentation: 'rawNamedObject',
       valueRepresentation: 'flightReference',
     });
-    for (const type of utilities) {
+    expect(createIrTypeReferenceRepresentationPlanCpp(utilities[0]!, module)).toMatchObject({
+      category: 'structuralRow',
+      kind: 'represented',
+      storageRepresentation: 'runtimeManaged',
+      valueRepresentation: 'runtimeReference',
+    });
+    for (const type of utilities.slice(1)) {
       expect(createIrTypeReferenceRepresentationPlanCpp(type, module)).toMatchObject({
         category: 'anonymousObject',
         kind: 'represented',
@@ -1025,7 +1031,7 @@ describe('createIrTypeReferenceRepresentationPlannerCpp', () => {
     for (const constructionType of constructionTypes) {
       expect(planner.plan(constructionType, adjustments)).toMatchObject({
         category: 'structuralRow',
-        identity: { identity: 'reference', reason: 'runtime-contract' },
+        identity: { identity: 'reference' },
         kind: 'represented',
         valueRepresentation: 'runtimeReference',
       });
@@ -1343,7 +1349,7 @@ describe('C++ conditional facet reference planning', () => {
       const type = aliases.get(name);
       if (!type) throw new TypeError(`missing ${name}`);
       expect(planner.resolveConditionalFacetReference(type, module)).toBeUndefined();
-      expect(planner.plan(type, module)).toMatchObject({ kind: 'refused', reason: 'compoundReference' });
+      expect(planner.plan(type, module)).toMatchObject({ kind: 'refused', reason: 'indeterminateIdentity' });
     }
   });
 });

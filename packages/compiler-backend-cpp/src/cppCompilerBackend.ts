@@ -1525,6 +1525,22 @@ function emitExpression(
         if (union && getCppUnionRepresentationPlan(union, context).kind === 'dualSentinelVariant') {
           emissionError(context, 'dual-sentinel nullish coalescing requires presence projection lowering');
         }
+        const expectedUnion = expectedType ? getIrUnionTypeCpp(expectedType, context, new Set()) : undefined;
+        const expectedPlan = expectedUnion ? getCppUnionRepresentationPlan(expectedUnion, context) : undefined;
+        const leftRuntime = leftType ? getIrTypeRuntimeDomainCpp(leftType, context, new Set()) : undefined;
+        if (
+          leftUsesOptionalStorage &&
+          leftRuntime &&
+          expectedPlan?.kind === 'optionalSingle' &&
+          expectedPlan.valueSlots[0]?.targetType === emitType(leftRuntime, context) &&
+          ((expression.right.kind === 'literal' && expression.right.value === null) ||
+            expression.right.kind === 'undefinedValue' ||
+            (expression.right.kind === 'identifier' &&
+              expression.right.reference.kind === 'ambient' &&
+              expression.right.reference.name === 'undefined'))
+        ) {
+          return emitOptionalExpressionCpp(expression.left, context, leftType);
+        }
         context.includes.add('optional');
         return `${emitOptionalExpressionCpp(expression.left, context, expectedType)}.value_or(${emitExpression(expression.right, context, expectedType, true, denseArrayLengthInitialized)})`;
       }
@@ -2066,7 +2082,8 @@ function emitExpression(
       }
       if (
         expression.reference.kind === 'binding' &&
-        context.defaultedParameterIds.has(expression.reference.binding.id)
+        context.defaultedParameterIds.has(expression.reference.binding.id) &&
+        !context.sharedCaptureTargetNames.has(expression.reference.binding.id)
       ) {
         return `${emitIdentifierReference(expression.reference, context)}.value()`;
       }

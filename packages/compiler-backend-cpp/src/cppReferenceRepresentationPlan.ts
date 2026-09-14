@@ -7,6 +7,7 @@ import {
   analyzeIrTypeStructuralAssignability,
   createIrTypeParameterSubstitutionPlan,
   createIrTypeValueIdentityAnalyzer,
+  isCompilerStructuralTypeSubstitutionFailure,
   resolveIrTypeStructuralSubstitution,
 } from '../../compiler-structural/src/index.js';
 import type {
@@ -206,9 +207,19 @@ function resolveIrTypeStructuralRowCpp(
     if (declaration.kind !== 'typeAlias') return allowRowOf ? { kind: 'rowOf', type } : undefined;
     const key = `${location.identity}\0${JSON.stringify(type.typeArguments)}`;
     if (aliases.has(key)) return undefined;
+    const typeArguments =
+      type.typeArguments.length === 0 && declaration.typeParameters.length > 0
+        ? declaration.typeParameters.map(
+            (parameter): IrType => ({
+              kind: 'named',
+              reference: { binding: parameter.binding, kind: 'binding', path: [] },
+              typeArguments: [],
+            }),
+          )
+        : type.typeArguments;
     const resolved = resolveIrTypeStructuralSubstitution(
       declaration.type,
-      createIrTypeParameterSubstitutionPlan(declaration.typeParameters, type.typeArguments),
+      createIrTypeParameterSubstitutionPlan(declaration.typeParameters, typeArguments),
     );
     const row = resolveIrTypeStructuralRowCpp(
       resolved,
@@ -284,13 +295,17 @@ function resolveIrTypeAliasCpp(
     (location) => location.declaration.kind === 'typeAlias',
   );
   const alias = aliases.length === 1 ? aliases[0] : undefined;
-  const result =
-    alias?.declaration.kind === 'typeAlias'
-      ? resolveIrTypeStructuralSubstitution(
-          alias.declaration.type,
-          createIrTypeParameterSubstitutionPlan(alias.declaration.typeParameters, type.typeArguments),
-        )
-      : null;
+  let result: Readonly<IrType> | null = null;
+  if (alias?.declaration.kind === 'typeAlias') {
+    try {
+      result = resolveIrTypeStructuralSubstitution(
+        alias.declaration.type,
+        createIrTypeParameterSubstitutionPlan(alias.declaration.typeParameters, type.typeArguments),
+      );
+    } catch (error) {
+      if (!isCompilerStructuralTypeSubstitutionFailure(error)) throw error;
+    }
+  }
   cache.set(key, result);
   return result ?? undefined;
 }
@@ -1135,7 +1150,13 @@ function createTypeAliasReferenceRepresentationPlanCpp(
   context: Readonly<ReferencePlanningContext>,
   identity: Readonly<CompilerTypeValueIdentityAnalysis>,
 ): CompilerCppReferenceRepresentationPlan {
-  const substitution = createIrTypeParameterSubstitutionPlan(declaration.typeParameters, type.typeArguments);
+  let substitution: ReturnType<typeof createIrTypeParameterSubstitutionPlan>;
+  try {
+    substitution = createIrTypeParameterSubstitutionPlan(declaration.typeParameters, type.typeArguments);
+  } catch (error) {
+    if (!isCompilerStructuralTypeSubstitutionFailure(error)) throw error;
+    return createCompilerCppReferenceRepresentationRefusalCpp(identity, 'indeterminateIdentity');
+  }
   const resolved = resolveIrTypeStructuralSubstitution(declaration.type, substitution);
   const plan = createIrTypeReferenceRepresentationPlanInternalCpp(resolved, module, context);
   if (

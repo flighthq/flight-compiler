@@ -1222,7 +1222,8 @@ describe('createCppCompilerBackend', () => {
     const emitted = emitIrModuleCpp(module, { runtimeProfile: 'flight-cpp' }).contents;
 
     expect(emitted).toContain('names = {{1.0, flight::String("one")}};');
-    expect(emitted).toContain('return names.get(index).value();');
+    expect(emitted).toContain('return names.get(index);');
+    expect(emitted).not.toContain('value_or(std::nullopt)');
     expect(emitted).toContain('return expression.exec(input);');
     expect(emitted).not.toContain('std::optional<auto>');
   });
@@ -4509,7 +4510,7 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
       'auto entity_runtime_key = flight::Symbol::for_key(flight::String("EntityRuntime"))',
     );
     expect(emitted.contents).toContain('return entity->entity_runtime_key;');
-    expect(emitted.contents).toContain('entity->entity_runtime_key = runtime;');
+    expect(emitted.contents).toContain('(entity->entity_runtime_key = runtime);');
     expect(emitted.contents).not.toContain('std::optional<auto>');
     expect(emitted.dependencies).toEqual(
       expect.arrayContaining(['flight/runtime.hpp', 'flight/structural_ref.hpp', 'flight/symbol.hpp', 'optional']),
@@ -4604,7 +4605,7 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
 
     expect(result.diagnostics).toEqual([]);
     const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
-    expect(emitted.contents).toContain('entity->runtime_key = std::nullopt;');
+    expect(emitted.contents).toContain('(entity->runtime_key = std::nullopt);');
   });
 
   it('refuses indexedAccess types without a closed object shape', () => {
@@ -5423,7 +5424,8 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     ).contents;
 
     expect(output).toContain('std::optional<flight::Ref<Value>>');
-    expect(output).toContain('return values.get(key).value_or(std::nullopt)');
+    expect(output).toContain('return values.get(key);');
+    expect(output).not.toContain('value_or(std::nullopt)');
     expect(output).not.toContain('return values.get(key).value()');
   });
 
@@ -7948,7 +7950,7 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
       'runtime external symbol binding plan is incomplete',
     );
     expect(emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents).toContain(
-      'return flight::parse_int(flight::String("42"))',
+      'return flight::parse_int(flight::String("42"), std::nullopt)',
     );
   });
 
@@ -10339,7 +10341,7 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
         }
       }
     }
-    expect(() => emitIrModuleCpp(module)).toThrow('typeof on a C++ variant requires proven union member test evidence');
+    expect(() => emitIrModuleCpp(module)).toThrow('typeof requires closed runtime type evidence');
   });
 
   it('emits for-in with flight-cpp runtime keys', () => {
