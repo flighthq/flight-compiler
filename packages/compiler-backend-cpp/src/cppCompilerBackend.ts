@@ -5804,6 +5804,15 @@ function getIrUnionTypeCpp(
   seen: ReadonlySet<string>,
 ): Extract<IrType, { kind: 'union' }> | undefined {
   if (type.kind === 'union') return type;
+  if (
+    type.kind === 'named' &&
+    type.reference.kind === 'ambient' &&
+    (type.reference.name === 'Readonly' || type.reference.name === 'Required') &&
+    type.typeArguments.length === 1 &&
+    type.typeArguments[0]
+  ) {
+    return getIrUnionTypeCpp(type.typeArguments[0], context, seen);
+  }
   if (type.kind !== 'named' || type.reference.kind !== 'binding') return undefined;
   const key = `${type.reference.binding.id}\0${JSON.stringify(type.typeArguments)}`;
   if (seen.has(key)) return undefined;

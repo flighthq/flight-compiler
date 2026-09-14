@@ -5279,7 +5279,7 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
         `interface Circle { readonly kind: 'circle'; readonly radius: number; }
          interface Square { readonly kind: 'square'; readonly side: number; }
          type Shape = Circle | Square;
-         export function area(shape: Shape): number {
+         export function area(shape: Readonly<Shape>): number {
            switch (shape.kind) { case 'circle': return shape.radius; case 'square': return shape.side; }
          }`,
       ).module,
