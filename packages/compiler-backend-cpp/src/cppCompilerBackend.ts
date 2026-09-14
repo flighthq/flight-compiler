@@ -1283,7 +1283,8 @@ function emitExpression(
         const leftUsesOptionalStorage =
           expression.left.kind === 'identifier' &&
           expression.left.reference.kind === 'binding' &&
-          context.nullableBindingIds.has(expression.left.reference.binding.id);
+          (context.nullableBindingIds.has(expression.left.reference.binding.id) ||
+            context.arrayElementBindingIds.has(expression.left.reference.binding.id));
         if (
           leftType &&
           !union &&
