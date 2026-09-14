@@ -1281,10 +1281,13 @@ function emitExpression(
           getIrExpressionTypeEvidenceCpp(expression.left, context);
         const union = leftType ? getIrUnionTypeCpp(leftType, context, new Set()) : undefined;
         const leftUsesOptionalStorage =
-          expression.left.kind === 'identifier' &&
-          expression.left.reference.kind === 'binding' &&
-          (context.nullableBindingIds.has(expression.left.reference.binding.id) ||
-            context.arrayElementBindingIds.has(expression.left.reference.binding.id));
+          (expression.left.kind === 'identifier' &&
+            expression.left.reference.kind === 'binding' &&
+            (context.nullableBindingIds.has(expression.left.reference.binding.id) ||
+              context.arrayElementBindingIds.has(expression.left.reference.binding.id))) ||
+          (expression.left.kind === 'element' &&
+            getCppRuntimeProfile(context.options) === 'flight-cpp' &&
+            hasIndexedRuntimeReceiverCpp(expression.left, context));
         if (
           leftType &&
           !union &&
