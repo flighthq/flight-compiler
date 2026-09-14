@@ -278,6 +278,53 @@ describe('createCppCompilerBackend', () => {
     expect(output).toContain('std::get<1>');
   });
 
+  it('preserves imported reference identity through Object.entries destructuring', () => {
+    const types = ts.createSourceFile(
+      '/flight/packages/types/src/document.ts',
+      `export interface Frame { frame: string }
+       export interface Document { frames: Record<string, Frame> }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const serialize = ts.createSourceFile(
+      '/flight/packages/formats/src/serialize.ts',
+      `import type { Document } from '@flight/types';
+       export function serialize(doc: Readonly<Document>): string {
+         let result = '';
+         for (const [name, frame] of Object.entries(doc.frames)) result += name + frame.frame;
+         return result;
+       }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          specifier: '@flight/types',
+          target: { packageName: '@flight/types', source: 'packages/types/src/document.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const results = lowerTypeScriptSources(
+      [
+        { packageName: '@flight/types', sourceFile: types, upstreamDirectory: '/flight' },
+        { packageName: '@flight/formats', sourceFile: serialize, upstreamDirectory: '/flight' },
+      ],
+      moduleResolution,
+    );
+    const modules = results.map((result) => result.module);
+    const output = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules,
+      options: { runtimeProfile: 'flight-cpp' },
+    }).emitModule(modules[1]!)![0]!.contents;
+
+    expect(results[1]!.diagnostics).toEqual([]);
+    expect(output).toContain('name + frame->frame');
+    expect(output).not.toContain('name + frame.frame');
+  });
+
   it('uses the destructured element type to materialize inline tuple arrays', () => {
     const result = lower(
       'inline-tuple-rows.ts',
@@ -3209,6 +3256,19 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(emitted.contents).toContain('std::make_tuple');
   });
 
+  it('emits Map tuple-array literals through the initializer-list entry ABI', () => {
+    const output = emitIrModuleCpp(
+      lower('map-literal.ts', `export const labels = new Map<string, string>([['short', 'Short'], ['long', 'Long']]);`)
+        .module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+
+    expect(output).toContain(
+      'flight::Map<flight::String, flight::String>({{flight::String("short"), flight::String("Short")}, {flight::String("long"), flight::String("Long")}})',
+    );
+    expect(output).not.toContain('flight::Array<flight::Array<flight::String>>');
+  });
+
   it('emits array literals with std::vector', () => {
     const result = lower('array.ts', 'export function items(): number[] { return [1, 2, 3]; }');
     const emitted = emitIrModuleCpp(result.module);
@@ -5257,6 +5317,21 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(output).toContain('if (flight::to_boolean(logical_or_value_2)) return logical_or_value_2.value();');
     expect(output).toContain('return flight::String("")');
     expect(output).not.toContain(' || ');
+  });
+
+  it('preserves a nullish fallback nested as the last logical-OR operand', () => {
+    const output = emitIrModuleCpp(
+      lower(
+        'logical-or-nullish-tail.ts',
+        `interface Level { height: number }
+         export function height(base: number, levels: Level[]): number {
+           return base || (levels[0]?.height ?? 0);
+         }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+
+    expect(output).toContain('return optional_chain_receiver.value()->height; }()).value_or(0.0)');
   });
 
   it('uses a named contextual callback return type as the lambda ABI', () => {
@@ -8528,6 +8603,37 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(output).toContain(
       'return std::optional<flight::Ref<Metrics>>{flight::make_ref<Metrics>(Metrics{.ascent = 1.0, .descent = 2.0})}',
     );
+  });
+
+  it('constructs the optional carrier around an object-literal ternary branch', () => {
+    const output = emitIrModuleCpp(
+      lower(
+        'optional-object-conditional.ts',
+        `interface Result { cursor: number; value: number }
+         export function read(valid: boolean): Result | null {
+           return valid ? { cursor: 1, value: 2 } : null;
+         }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+
+    expect(output).toContain(
+      'valid ? std::optional<flight::Ref<Result>>{flight::make_ref<Result>(Result{.cursor = 1.0, .value = 2.0})} : std::nullopt',
+    );
+  });
+
+  it('uses a captureless lambda for reordered namespace object initialization', () => {
+    const output = emitIrModuleCpp(
+      lower(
+        'namespace-object-order.ts',
+        `interface Bounds { min: number; max: number }
+         export const bounds: Bounds = { max: 1, min: 0 };`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+
+    expect(output).toContain('inline flight::Ref<Bounds> bounds = ([]()');
+    expect(output).not.toContain('bounds = ([&]()');
   });
 
   it('dereferences a narrowed optional reference before accessing its members', () => {

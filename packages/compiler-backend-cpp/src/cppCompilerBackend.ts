@@ -1505,7 +1505,12 @@ function emitExpression(
                   context,
                   new Set(),
                 ),
-              )));
+              ))) ||
+          (expression.left.kind === 'property' &&
+            expression.left.optional &&
+            expression.left.object.kind === 'element' &&
+            getCppRuntimeProfile(context.options) === 'flight-cpp' &&
+            hasIndexedRuntimeReceiverCpp(expression.left.object, context));
         if (
           leftType &&
           !union &&
@@ -1906,7 +1911,7 @@ function emitExpression(
             }
           : context;
       };
-      return `(${emitExpression(expression.condition, context)} ? ${emitExpression(expression.whenTrue, branchContext(true), expectedType)} : ${emitExpression(expression.whenFalse, branchContext(false), expectedType)})`;
+      return `(${emitExpression(expression.condition, context)} ? ${emitCppConditionalBranchCpp(expression.whenTrue, branchContext(true), expectedType)} : ${emitCppConditionalBranchCpp(expression.whenFalse, branchContext(false), expectedType)})`;
     }
     case 'element': {
       const narrowedPresent = emitCppNarrowedPresentAccessCpp(expression, context, expectedType);
@@ -2125,16 +2130,28 @@ function emitExpression(
       const structuralWriteProxy = emitCppStructuralWriteProxyConstructionCpp(expression, expectedType, context);
       if (structuralWriteProxy) return structuralWriteProxy;
       const ambientConstructorName = getIrAmbientConstructorNameCpp(expression.callee);
-      const args = expression.arguments.map((argument, index) =>
-        emitExpression(
-          argument,
-          context,
-          ambientConstructorName
-            ? (getIrInvocationProvidedArgumentTypeCpp(expression, index) ??
-                getIrInvocationArgumentExpectedTypeCpp(expression, index))
-            : getIrInvocationArgumentExpectedTypeCpp(expression, index),
-        ),
-      );
+      const constructedType = getIrNewExpressionTypeEvidenceCpp(expression, context);
+      const mapType =
+        getCppRuntimeProfile(context.options) === 'flight-cpp' && ambientConstructorName === 'Map'
+          ? getIrAmbientCollectionTypeCpp(constructedType, context, new Set())
+          : undefined;
+      const args = expression.arguments.map((argument, index) => {
+        const mapEntries =
+          index === 0 && mapType?.reference.name === 'Map'
+            ? emitCppMapLiteralConstructorEntriesCpp(argument, mapType, context)
+            : undefined;
+        return (
+          mapEntries ??
+          emitExpression(
+            argument,
+            context,
+            ambientConstructorName
+              ? (getIrInvocationProvidedArgumentTypeCpp(expression, index) ??
+                  getIrInvocationArgumentExpectedTypeCpp(expression, index))
+              : getIrInvocationArgumentExpectedTypeCpp(expression, index),
+          )
+        );
+      });
       if (expression.semantics.construction === 'factory' && ambientConstructorName === undefined) {
         return `${emitExpression(expression.callee, context)}.construct(${args.join(', ')})`;
       }
@@ -2162,7 +2179,6 @@ function emitExpression(
       if (typeName === 'std::runtime_error' || typeName === 'std::range_error') {
         context.includes.add('stdexcept');
       }
-      const constructedType = getIrNewExpressionTypeEvidenceCpp(expression, context);
       const weakMapConstructionType =
         getCppRuntimeProfile(context.options) === 'flight-cpp' && ambientConstructorName === 'WeakMap'
           ? getIrWeakMapTypeCpp(
@@ -2377,7 +2393,7 @@ function emitExpression(
         const initializer = `{${orderedProperties
           .map((property) => `.${safeCppName(property.name)} = ${temporaries.get(property)!}`)
           .join(', ')}}`;
-        return `([&]() { ${evaluations.join(' ')} return ${construction(initializer)}; }())`;
+        return `(${context.namespaceScope ? '[]' : '[&]'}() { ${evaluations.join(' ')} return ${construction(initializer)}; }())`;
       }
       const initializer = `{${properties
         .map(
@@ -2714,6 +2730,22 @@ function emitArrayExpressionCpp(
     return `for (const auto& ${itemName} : ${emitExpression(element.expression, context)}) { ${resultName}.${append}(${itemName}); }`;
   });
   return `([&]() { ${target} ${resultName}; ${statements.join(' ')} return ${resultName}; }())`;
+}
+
+function emitCppMapLiteralConstructorEntriesCpp(
+  expression: Readonly<IrExpression>,
+  mapType: Readonly<IrAmbientNamedTypeCpp>,
+  context: EmitContext,
+): string | undefined {
+  const [keyType, valueType] = mapType.typeArguments;
+  if (expression.kind !== 'array' || !keyType || !valueType) return undefined;
+  const entries = expression.elements.map((element): string | undefined => {
+    if (!element || element.kind !== 'tuple' || element.elements.length !== 2) return undefined;
+    const [key, value] = element.elements;
+    if (!key || !value || key.optional || value.optional) return undefined;
+    return `{${emitExpression(key.expression, context, keyType)}, ${emitExpression(value.expression, context, valueType)}}`;
+  });
+  return entries.some((entry) => entry === undefined) ? undefined : `{${entries.join(', ')}}`;
 }
 
 function emitArrayPushSpreadCallCpp(
@@ -3061,6 +3093,18 @@ function emitStatement(statement: Readonly<IrStatement>, context: EmitContext): 
         emissionError(context, 'binding patterns require destructuring lowering before C++ emission');
       }
       const iterableType = getIrExpressionTypeEvidenceCpp(statement.iterable, context);
+      const iterableElementType = iterableType
+        ? getIrIterableElementTypeCpp(iterableType, context, new Set())
+        : undefined;
+      if (
+        iterableElementType &&
+        (!statement.variable.type ||
+          statement.variable.type.kind === 'unknown' ||
+          (statement.variable.type.kind === 'tuple' &&
+            statement.variable.type.elements.some((element) => element.type.kind === 'unknown')))
+      ) {
+        context.preservedInitializerTypes.set(statement.variable.binding.id, iterableElementType);
+      }
       if (iterableType && isCppStringValueTypeCpp(iterableType, context, new Set())) {
         emissionError(context, 'string for-of requires a Unicode code-point iteration runtime contract');
       }
@@ -5482,6 +5526,8 @@ function getIrCallReturnTypeCpp(
   context: EmitContext,
 ): Readonly<IrType> | undefined {
   if (expression.callee.kind === 'function') return expression.callee.returns;
+  const objectProjection = getCppObjectProjectionCallResultTypeCpp(expression, context);
+  if (objectProjection) return objectProjection;
   if (expression.callee.kind === 'property' && expression.callee.optionalChain) {
     const returns = getCppCallableReturnType(expression.callee.optionalChain.valueType, context, new Set());
     if (returns) {
@@ -6542,6 +6588,41 @@ function getIrNewExpressionTypeEvidenceCpp(
     };
   }
   return { kind: 'named', reference: { kind: 'ambient', name }, typeArguments: [] };
+}
+
+function getCppObjectProjectionCallResultTypeCpp(
+  expression: Readonly<Extract<IrExpression, { kind: 'call' }>>,
+  context: EmitContext,
+): Readonly<Extract<IrType, { kind: 'array' }>> | undefined {
+  if (
+    expression.callee.kind !== 'property' ||
+    expression.callee.object.kind !== 'identifier' ||
+    expression.callee.object.reference.kind !== 'ambient' ||
+    expression.callee.object.reference.name !== 'Object' ||
+    !['entries', 'keys', 'values'].includes(expression.callee.name)
+  ) {
+    return undefined;
+  }
+  const argument = expression.arguments[0];
+  const record = argument
+    ? getCppRecordTypeArgumentsCpp(getIrExpressionTypeEvidenceCpp(argument, context), context, new Set())
+    : undefined;
+  if (!record) return undefined;
+  const element =
+    expression.callee.name === 'keys'
+      ? record.key
+      : expression.callee.name === 'values'
+        ? record.value
+        : ({
+            elements: [record.key, record.value].map((type) => ({
+              optional: false as const,
+              rest: false as const,
+              type,
+            })),
+            kind: 'tuple',
+            readonly: true,
+          } as const);
+  return { element, kind: 'array', readonly: false };
 }
 
 function getIrExpressionTypeEvidenceCpp(
@@ -8066,6 +8147,26 @@ function emitCppValueLogicalOrExpression(
   const last = emitExpression(operands.at(-1)!, context, resultType);
   context.includes.add('flight/boolean.hpp');
   return `([&]() -> ${emitType(resultType, context)} { ${lines.join(' ')} return ${last}; }())`;
+}
+
+function emitCppConditionalBranchCpp(
+  expression: Readonly<IrExpression>,
+  context: EmitContext,
+  expectedType: Readonly<IrType> | undefined,
+): string {
+  const union = expectedType ? getIrUnionTypeCpp(expectedType, context, new Set()) : undefined;
+  const plan = union ? getCppUnionRepresentationPlan(union, context) : undefined;
+  if (expression.kind !== 'object' || plan?.kind !== 'optionalSingle' || !plan.valueSlots[0]) {
+    return emitExpression(expression, context, expectedType);
+  }
+  const slot = plan.valueSlots[0];
+  return emitCppUnionValueConstruction(
+    emitExpression(expression, context, slot.runtimeType, false),
+    slot.targetType,
+    union!,
+    plan.kind,
+    context,
+  );
 }
 
 function getIrAssignmentTargetTypeCpp(
