@@ -2649,7 +2649,7 @@ function emitPrimitiveUnionConstructionRust(
     if (whenTrue === undefined || whenFalse === undefined) return undefined;
     return `if ${condition} { ${whenTrue} } else { ${whenFalse} }`;
   }
-  const emitted = emitOwnedOperandRust(expression, context);
+  const emitted = normalizeSourceTextGrouping(emitOwnedOperandRust(expression, context));
   const primitiveKind = inferIrExpressionPrimitiveKindRust(expression, context);
   if (!primitiveKind) return undefined;
   const variant = targetEnum.variants.find((v) => v.primitiveKind === primitiveKind);

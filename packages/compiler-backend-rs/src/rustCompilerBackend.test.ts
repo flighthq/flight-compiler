@@ -3280,6 +3280,14 @@ describe('emitIrModuleRust', () => {
     expect(output).toContain('StrOrF64::Str(produce())');
   });
 
+  it('drops redundant source grouping inside a primitive union constructor', () => {
+    const output = emitIrModuleRust(
+      lower('union-binary.ts', 'export function sum(a: number, b: number): string | number { return a + b; }').module,
+    ).contents;
+    expect(output).toContain('StrOrF64::F64(a + b)');
+    expect(output).not.toContain('StrOrF64::F64((a + b))');
+  });
+
   it('clones narrowed string from primitive union instead of dereferencing', () => {
     const output = emitIrModuleRust(
       lower(

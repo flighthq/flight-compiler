@@ -42,7 +42,7 @@ pub fn from_conditional(flag: bool) -> StrOrF64 {
 }
 
 pub fn from_binary(a: f64, b: f64) -> StrOrF64 {
-  let value: StrOrF64 = StrOrF64::F64((a + b));
+  let value: StrOrF64 = StrOrF64::F64(a + b);
   return value;
 }
 
