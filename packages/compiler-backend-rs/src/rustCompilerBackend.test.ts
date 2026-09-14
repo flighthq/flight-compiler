@@ -894,12 +894,6 @@ describe('emitIrModuleRust', () => {
     expect(output.match(/let local/g)).toHaveLength(1);
   });
 
-  it.each([])('refuses unsupported %s operators explicitly', (family, source, message) => {
-    const result = lower(`${family.replaceAll(' ', '-')}-operator.ts`, source);
-
-    expect(() => emitIrModuleRust(result.module)).toThrow(message);
-  });
-
   it('evaluates and discards a void operand before producing Rust unit', () => {
     const result = lower(
       'void-operator.ts',

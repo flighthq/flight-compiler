@@ -1592,14 +1592,7 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
         return `{ ${emitExpression(expression.operand, context)}; () }`;
       }
       if (expression.operator === 'typeof') {
-        const sourceName = {
-          bigint: 'bigint',
-          boolean: 'boolean',
-          number: 'number',
-          string: 'string',
-          symbol: 'symbol',
-          undefined: 'undefined',
-        }[expression.semantics.operand.flow];
+        const sourceName = getStaticTypeofNameRust(expression.semantics.operand.flow);
         if (!sourceName) {
           emissionError(
             context,
@@ -2626,7 +2619,7 @@ function emitDualSentinelUnionConstructionRust(
 function inferIrExpressionPrimitiveKindRust(
   expression: Readonly<IrExpression>,
   context: EmitContext,
-): string | undefined {
+): 'boolean' | 'number' | 'string' | undefined {
   switch (expression.kind) {
     case 'literal':
       return typeof expression.value === 'string'
@@ -4328,6 +4321,22 @@ function emitBinaryOperatorRust(
     );
   }
   return emitted;
+}
+
+function getStaticTypeofNameRust(domain: IrOperatorValueDomain): string | undefined {
+  switch (domain) {
+    case 'bigint':
+    case 'boolean':
+    case 'number':
+    case 'string':
+    case 'symbol':
+    case 'undefined':
+      return domain;
+    case 'null':
+    case 'object':
+    case 'unknown':
+      return undefined;
+  }
 }
 
 function emitNumericUpdateUnaryRust(
