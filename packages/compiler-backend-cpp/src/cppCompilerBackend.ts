@@ -2079,6 +2079,8 @@ function emitExpression(
         : emitCppInlineTupleConstructionCpp(elements, context);
     }
     case 'unary': {
+      const nullishNegation = emitCppNullishObjectNegation(expression, context);
+      if (nullishNegation) return nullishNegation;
       if (
         expression.operator === 'typeof' &&
         expression.operand.kind === 'identifier' &&
@@ -7511,6 +7513,48 @@ function emitIdentifierReference(
   const imported = getCppImportedBindingTargetName(reference.binding.id, [], 'value', context);
   if (imported) return imported;
   return emitBindingValueCpp(reference.binding, context);
+}
+
+function emitCppNullishObjectNegation(
+  expression: Readonly<Extract<IrExpression, { kind: 'unary' }>>,
+  context: EmitContext,
+): string | undefined {
+  if (expression.postfix || expression.operator !== '!') return undefined;
+  const operandType = getIrExpressionTypeEvidenceCpp(expression.operand, context);
+  const union = operandType ? getIrUnionTypeCpp(operandType, context, new Set()) : undefined;
+  if (!union) return undefined;
+  const plan = getCppUnionRepresentationPlan(union, context);
+  if (
+    (plan.kind !== 'optionalSingle' && plan.kind !== 'optionalVariant' && plan.kind !== 'dualSentinelVariant') ||
+    !plan.valueSlots.every((slot) => isCppAlwaysTruthySourceType(slot.runtimeType, context, new Set()))
+  ) {
+    return undefined;
+  }
+  const operand = emitExpression(expression.operand, context);
+  if (plan.kind === 'optionalSingle' || plan.kind === 'optionalVariant') return `!${operand}.has_value()`;
+  context.includes.add('variant');
+  const sentinels = getCppDualSentinelTargetTypes(context);
+  return `(std::holds_alternative<${sentinels.null}>(${operand}) || std::holds_alternative<${sentinels.undefined}>(${operand}))`;
+}
+
+function isCppAlwaysTruthySourceType(
+  type: Readonly<IrType>,
+  context: EmitContext,
+  resolvingAliases: ReadonlySet<string>,
+): boolean {
+  if (type.kind === 'array' || type.kind === 'function' || type.kind === 'object' || type.kind === 'tuple') return true;
+  if (type.kind !== 'named') return false;
+  if (type.reference.kind === 'ambient') {
+    return !['ArrayLike', 'PropertyKey'].includes(type.reference.name);
+  }
+  const plan = context.referenceRepresentationPlanner.plan(type, context.module);
+  if (plan.kind === 'represented' && plan.identityDomain === 'object') return true;
+  const bindingId = type.reference.binding.id;
+  if (resolvingAliases.has(bindingId)) return false;
+  const alias = resolveCppTypeAliasTarget(type, context);
+  return alias
+    ? isCppAlwaysTruthySourceType(alias, context, new Set(resolvingAliases).add(bindingId))
+    : false;
 }
 
 function emitBindingValueCpp(binding: Readonly<{ id: string; name: string }>, context: EmitContext): string {

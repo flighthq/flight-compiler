@@ -6245,6 +6245,21 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(emitted.contents).toMatch(/[^!]has_value\(\)/);
   });
 
+  it('emits object truthiness for null-and-undefined unions through their sentinels', () => {
+    const output = emitIrModuleCpp(
+      lower(
+        'nullable-object-truthiness.ts',
+        `interface Model { value: number }
+         export function missing(model: Readonly<Model> | null | undefined): boolean { return !model; }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+
+    expect(output).toContain('std::holds_alternative<flight::Null>(model)');
+    expect(output).toContain('std::holds_alternative<flight::Undefined>(model)');
+    expect(output).not.toContain('return !model;');
+  });
+
   it('detects return in if-otherwise only when consequent has no return', () => {
     const result = lower(
       'if-otherwise-return.ts',
