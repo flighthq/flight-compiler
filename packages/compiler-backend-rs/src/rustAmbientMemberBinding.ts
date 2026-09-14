@@ -14,6 +14,7 @@ export function getCompilerRustAmbientMemberBinding(
 }
 
 const rustAmbientMemberBindings: Readonly<Record<string, CompilerRustAmbientMemberBinding>> = {
+  'arrayBuffer.byteLength': { kind: 'countingMethod', targetName: 'byte_length' },
   'array.concat': { kind: 'method', targetName: 'extend' },
   'array.every': { collect: false, kind: 'iterator', targetName: 'all' },
   'array.filter': { borrowsElement: true, collect: true, kind: 'iterator', targetName: 'filter' },
@@ -69,6 +70,8 @@ const rustAmbientMemberBindings: Readonly<Record<string, CompilerRustAmbientMemb
   'string.toLowerCase': { kind: 'method', targetName: 'to_lowercase' },
   'string.toUpperCase': { kind: 'method', targetName: 'to_uppercase' },
   'string.trim': { kind: 'method', owns: true, targetName: 'trim' },
+  'typedArray.byteLength': { kind: 'countingMethod', targetName: 'byte_length' },
+  'typedArray.byteOffset': { kind: 'countingMethod', targetName: 'byte_offset' },
   'typedArray.length': { kind: 'countingMethod', targetName: 'len' },
   'typedArray.slice': { kind: 'method', targetName: 'slice' },
   'typedArray.subarray': { kind: 'method', targetName: 'subarray' },

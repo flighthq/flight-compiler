@@ -312,22 +312,26 @@ describe('emitIrModuleRust', () => {
   it('emits typed array constructors with all declared fixed arities', () => {
     const result = lower(
       'typed-array-constructor.ts',
-      'export function empty(): Uint8Array { return new Uint8Array(); } export function create(): Uint8Array { return new Uint8Array(3); }',
+      `export function empty(): Uint8Array { return new Uint8Array(); }
+       export function create(): Uint8Array { return new Uint8Array(3); }
+       export function fromBuffer(buffer: ArrayBuffer): Uint8Array { return new Uint8Array(buffer); }
+       export function fromBufferOffset(buffer: ArrayBuffer): Uint8Array { return new Uint8Array(buffer, 1); }
+       export function fromBufferRange(buffer: ArrayBuffer): Uint8Array { return new Uint8Array(buffer, 1, 2); }
+       export function metadata(buffer: ArrayBuffer): number {
+         const view = new Uint8Array(buffer, 1, 2);
+         return buffer.byteLength + view.byteLength + view.byteOffset;
+       }`,
     );
 
-    expect(emitIrModuleRust(result.module).contents).toContain('FlightUint8Array::empty()');
-    expect(emitIrModuleRust(result.module).contents).toContain('FlightUint8Array::from_source(3.0)');
-  });
-
-  it('refuses buffer-backed typed array construction until ArrayBuffer shares the runtime storage model', () => {
-    const result = lower(
-      'typed-array-buffer-constructor.ts',
-      'export function create(buffer: ArrayBuffer): Uint8Array { return new Uint8Array(buffer, 1); }',
-    );
-
-    expect(() => emitIrModuleRust(result.module)).toThrow(
-      'runtime external constructor ABI plan is incomplete (missing: Uint8Array[value](2))',
-    );
+    const output = emitIrModuleRust(result.module).contents;
+    expect(output).toContain('FlightUint8Array::empty()');
+    expect(output).toContain('FlightUint8Array::from_source(3.0)');
+    expect(output).toContain('FlightUint8Array::from_buffer(buffer)');
+    expect(output).toContain('FlightUint8Array::from_buffer_offset(buffer, 1.0)');
+    expect(output).toContain('FlightUint8Array::from_buffer_range(buffer, 1.0, 2.0)');
+    expect(output).toContain('(buffer.byte_length() as f64)');
+    expect(output).toContain('(view.byte_length() as f64)');
+    expect(output).toContain('(view.byte_offset() as f64)');
   });
 
   it('elects fixed array binding lowering and reports residual destructuring semantics', () => {

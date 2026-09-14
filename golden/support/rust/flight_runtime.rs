@@ -68,19 +68,63 @@ pub fn round(value: f64) -> f64 {
     }
 }
 
-/// Defines the storage and JavaScript numeric conversion for one typed-array element kind.
+/// The byte storage shared by every typed-array view over one source ArrayBuffer. A downstream
+/// DataView implementation can use the same storage contract once that runtime capability lands.
+#[derive(Clone)]
+pub struct FlightArrayBuffer {
+    storage: Rc<RefCell<Vec<u8>>>,
+    identity: Rc<()>,
+}
+
+impl FlightArrayBuffer {
+    pub fn new(byte_length: f64) -> Self {
+        Self::from_bytes(vec![0; typed_array_length(byte_length)])
+    }
+
+    pub fn from_bytes(bytes: Vec<u8>) -> Self {
+        Self {
+            storage: Rc::new(RefCell::new(bytes)),
+            identity: Rc::new(()),
+        }
+    }
+
+    pub fn byte_length(&self) -> usize {
+        self.storage.borrow().len()
+    }
+}
+
+impl PartialEq for FlightArrayBuffer {
+    fn eq(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.identity, &other.identity)
+    }
+}
+
+impl fmt::Debug for FlightArrayBuffer {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("FlightArrayBuffer")
+            .field("byte_length", &self.byte_length())
+            .finish_non_exhaustive()
+    }
+}
+
+/// Defines the byte width and JavaScript numeric conversion for one typed-array element kind.
 pub trait FlightTypedArrayCodec: 'static {
     type Element: Copy + Default + 'static;
 
+    const BYTES_PER_ELEMENT: usize;
+
     fn coerce(value: f64) -> Self::Element;
+    fn decode(bytes: &[u8]) -> Self::Element;
+    fn encode(value: Self::Element, bytes: &mut [u8]);
     fn to_number(value: Self::Element) -> f64;
 }
 
 /// A typed-array view. Cloning a value preserves its object identity; `subarray` creates a new
 /// identity over shared storage, and `slice` creates both a new identity and new storage.
 pub struct FlightTypedArray<C: FlightTypedArrayCodec> {
-    storage: Rc<RefCell<Vec<C::Element>>>,
-    offset: usize,
+    buffer: FlightArrayBuffer,
+    byte_offset: usize,
     length: usize,
     identity: Rc<()>,
     codec: PhantomData<C>,
@@ -89,8 +133,8 @@ pub struct FlightTypedArray<C: FlightTypedArrayCodec> {
 impl<C: FlightTypedArrayCodec> Clone for FlightTypedArray<C> {
     fn clone(&self) -> Self {
         Self {
-            storage: self.storage.clone(),
-            offset: self.offset,
+            buffer: self.buffer.clone(),
+            byte_offset: self.byte_offset,
             length: self.length,
             identity: self.identity.clone(),
             codec: PhantomData,
@@ -110,6 +154,7 @@ impl<C: FlightTypedArrayCodec> fmt::Debug for FlightTypedArray<C> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("FlightTypedArray")
+            .field("byte_offset", &self.byte_offset)
             .field("length", &self.length)
             .finish_non_exhaustive()
     }
@@ -149,6 +194,44 @@ impl<C: FlightTypedArrayCodec> FlightTypedArray<C> {
         Self::from_elements(source.into_typed_array_elements())
     }
 
+    pub fn from_buffer(buffer: FlightArrayBuffer) -> Self {
+        Self::from_buffer_offset(buffer, 0.0)
+    }
+
+    pub fn from_buffer_offset(buffer: FlightArrayBuffer, byte_offset: f64) -> Self {
+        let byte_offset = typed_array_byte_offset::<C>(byte_offset, buffer.byte_length());
+        let remaining = buffer.byte_length() - byte_offset;
+        if remaining % C::BYTES_PER_ELEMENT != 0 {
+            panic!("typed-array buffer length is not aligned to its element width");
+        }
+        Self::from_buffer_parts(buffer, byte_offset, remaining / C::BYTES_PER_ELEMENT)
+    }
+
+    pub fn from_buffer_range(buffer: FlightArrayBuffer, byte_offset: f64, length: f64) -> Self {
+        let byte_offset = typed_array_byte_offset::<C>(byte_offset, buffer.byte_length());
+        let length = typed_array_length(length);
+        let byte_length = length
+            .checked_mul(C::BYTES_PER_ELEMENT)
+            .expect("typed-array byte length overflow");
+        byte_offset
+            .checked_add(byte_length)
+            .filter(|end| *end <= buffer.byte_length())
+            .expect("typed-array view exceeds its buffer");
+        Self::from_buffer_parts(buffer, byte_offset, length)
+    }
+
+    pub fn buffer(&self) -> FlightArrayBuffer {
+        self.buffer.clone()
+    }
+
+    pub fn byte_length(&self) -> usize {
+        self.length * C::BYTES_PER_ELEMENT
+    }
+
+    pub fn byte_offset(&self) -> usize {
+        self.byte_offset
+    }
+
     pub fn len(&self) -> usize {
         self.length
     }
@@ -157,13 +240,13 @@ impl<C: FlightTypedArrayCodec> FlightTypedArray<C> {
         let Some(index) = typed_array_index(index, self.length) else {
             return f64::NAN;
         };
-        C::to_number(self.storage.borrow()[self.offset + index])
+        C::to_number(self.read_element(index))
     }
 
     /// Stores the coerced element while returning the uncoerced assignment value.
     pub fn set_index(&self, index: f64, value: f64) -> f64 {
         if let Some(index) = typed_array_index(index, self.length) {
-            self.storage.borrow_mut()[self.offset + index] = C::coerce(value);
+            self.write_element(index, C::coerce(value));
         }
         value
     }
@@ -171,11 +254,13 @@ impl<C: FlightTypedArrayCodec> FlightTypedArray<C> {
     pub fn copy_from<S: FlightTypedArraySource<C>>(&self, source: S, offset: f64) {
         let offset = typed_array_copy_offset(offset, self.length);
         let values = source.into_typed_array_elements();
-        let end = offset
+        offset
             .checked_add(values.len())
             .filter(|end| *end <= self.length)
             .expect("typed-array source exceeds its destination");
-        self.storage.borrow_mut()[self.offset + offset..self.offset + end].copy_from_slice(&values);
+        for (index, value) in values.into_iter().enumerate() {
+            self.write_element(offset + index, value);
+        }
     }
 
     pub fn slice(&self, start: f64) -> Self {
@@ -185,8 +270,7 @@ impl<C: FlightTypedArrayCodec> FlightTypedArray<C> {
     pub fn slice_range(&self, start: f64, end: f64) -> Self {
         let start = typed_array_relative_index(start, self.length);
         let end = typed_array_relative_index(end, self.length).max(start);
-        let values = self.storage.borrow()[self.offset + start..self.offset + end].to_vec();
-        Self::from_elements(values)
+        Self::from_elements((start..end).map(|index| self.read_element(index)).collect())
     }
 
     pub fn subarray(&self, start: f64) -> Self {
@@ -196,10 +280,18 @@ impl<C: FlightTypedArrayCodec> FlightTypedArray<C> {
     pub fn subarray_range(&self, start: f64, end: f64) -> Self {
         let start = typed_array_relative_index(start, self.length);
         let end = typed_array_relative_index(end, self.length).max(start);
+        Self::from_buffer_parts(
+            self.buffer.clone(),
+            self.byte_offset + start * C::BYTES_PER_ELEMENT,
+            end - start,
+        )
+    }
+
+    fn from_buffer_parts(buffer: FlightArrayBuffer, byte_offset: usize, length: usize) -> Self {
         Self {
-            storage: self.storage.clone(),
-            offset: self.offset + start,
-            length: end - start,
+            buffer,
+            byte_offset,
+            length,
             identity: Rc::new(()),
             codec: PhantomData,
         }
@@ -207,13 +299,28 @@ impl<C: FlightTypedArrayCodec> FlightTypedArray<C> {
 
     fn from_elements(elements: Vec<C::Element>) -> Self {
         let length = elements.len();
-        Self {
-            storage: Rc::new(RefCell::new(elements)),
-            offset: 0,
+        let array = Self::from_buffer_parts(
+            FlightArrayBuffer::new((length * C::BYTES_PER_ELEMENT) as f64),
+            0,
             length,
-            identity: Rc::new(()),
-            codec: PhantomData,
+        );
+        for (index, value) in elements.into_iter().enumerate() {
+            array.write_element(index, value);
         }
+        array
+    }
+
+    fn read_element(&self, index: usize) -> C::Element {
+        let start = self.byte_offset + index * C::BYTES_PER_ELEMENT;
+        C::decode(&self.buffer.storage.borrow()[start..start + C::BYTES_PER_ELEMENT])
+    }
+
+    fn write_element(&self, index: usize, value: C::Element) {
+        let start = self.byte_offset + index * C::BYTES_PER_ELEMENT;
+        C::encode(
+            value,
+            &mut self.buffer.storage.borrow_mut()[start..start + C::BYTES_PER_ELEMENT],
+        );
     }
 }
 
@@ -222,11 +329,8 @@ impl<C: FlightTypedArrayCodec> IntoIterator for FlightTypedArray<C> {
     type IntoIter = std::vec::IntoIter<f64>;
 
     fn into_iter(self) -> Self::IntoIter {
-        let storage = self.storage.borrow();
-        storage[self.offset..self.offset + self.length]
-            .iter()
-            .copied()
-            .map(C::to_number)
+        (0..self.length)
+            .map(|index| C::to_number(self.read_element(index)))
             .collect::<Vec<_>>()
             .into_iter()
     }
@@ -237,6 +341,14 @@ fn typed_array_length(value: f64) -> usize {
         panic!("typed-array length must be a finite nonnegative number");
     }
     value.floor() as usize
+}
+
+fn typed_array_byte_offset<C: FlightTypedArrayCodec>(value: f64, buffer_length: usize) -> usize {
+    let offset = typed_array_length(value);
+    if offset > buffer_length || offset % C::BYTES_PER_ELEMENT != 0 {
+        panic!("typed-array byte offset is outside or misaligned with its buffer");
+    }
+    offset
 }
 
 fn typed_array_copy_offset(value: f64, length: usize) -> usize {
@@ -313,8 +425,18 @@ macro_rules! define_flight_typed_array {
         impl FlightTypedArrayCodec for $codec {
             type Element = $element;
 
+            const BYTES_PER_ELEMENT: usize = std::mem::size_of::<$element>();
+
             fn coerce(value: f64) -> Self::Element {
                 ($coerce)(value)
+            }
+
+            fn decode(bytes: &[u8]) -> Self::Element {
+                <$element>::from_ne_bytes(bytes.try_into().expect("typed-array element width"))
+            }
+
+            fn encode(value: Self::Element, bytes: &mut [u8]) {
+                bytes.copy_from_slice(&value.to_ne_bytes());
             }
 
             fn to_number(value: Self::Element) -> f64 {
@@ -421,7 +543,8 @@ pub struct OpaqueHostValue;
 #[cfg(test)]
 mod tests {
     use super::{
-        round, FlightFloat32Array, FlightInt8Array, FlightUint8Array, FlightUint8ClampedArray,
+        round, FlightArrayBuffer, FlightFloat32Array, FlightInt8Array, FlightUint16Array,
+        FlightUint8Array, FlightUint8ClampedArray,
     };
 
     #[test]
@@ -475,5 +598,35 @@ mod tests {
             vec![1.0, 9.0, 8.0, 4.0]
         );
         assert_eq!(copy.into_iter().collect::<Vec<_>>(), vec![2.0, 3.0]);
+    }
+
+    #[test]
+    fn buffer_backed_typed_array_views_share_byte_storage() {
+        let buffer = FlightArrayBuffer::new(4.0);
+        let whole = FlightUint8Array::from_buffer(buffer.clone());
+        let middle = FlightUint8Array::from_buffer_range(buffer.clone(), 1.0, 2.0);
+
+        middle.set_index(0.0, 9.0);
+        middle.set_index(1.0, 8.0);
+
+        assert_eq!(
+            whole.into_iter().collect::<Vec<_>>(),
+            vec![0.0, 9.0, 8.0, 0.0]
+        );
+        assert_eq!(middle.buffer(), buffer);
+    }
+
+    #[test]
+    fn differently_typed_views_share_the_same_bytes() {
+        let buffer = FlightArrayBuffer::new(2.0);
+        let bytes = FlightUint8Array::from_buffer(buffer.clone());
+        let words = FlightUint16Array::from_buffer(buffer);
+
+        words.set_index(0.0, 258.0);
+
+        assert_eq!(
+            bytes.into_iter().collect::<Vec<_>>(),
+            258_u16.to_ne_bytes().map(f64::from),
+        );
     }
 }

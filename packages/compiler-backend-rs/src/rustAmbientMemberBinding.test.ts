@@ -111,6 +111,18 @@ describe('getCompilerRustAmbientMemberBinding', () => {
   });
 
   it('maps typed-array reads, copies, and shared views onto their runtime representation', () => {
+    expect(getCompilerRustAmbientMemberBinding({ name: 'byteLength', receiver: 'arrayBuffer' })).toEqual({
+      kind: 'countingMethod',
+      targetName: 'byte_length',
+    });
+    expect(getCompilerRustAmbientMemberBinding({ name: 'byteLength', receiver: 'typedArray' })).toEqual({
+      kind: 'countingMethod',
+      targetName: 'byte_length',
+    });
+    expect(getCompilerRustAmbientMemberBinding({ name: 'byteOffset', receiver: 'typedArray' })).toEqual({
+      kind: 'countingMethod',
+      targetName: 'byte_offset',
+    });
     expect(getCompilerRustAmbientMemberBinding({ name: 'length', receiver: 'typedArray' })).toEqual({
       kind: 'countingMethod',
       targetName: 'len',

@@ -1357,8 +1357,12 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
           expression.callee.reference.kind === 'ambient' &&
           rustTypedArrayConstructorNames.has(expression.callee.reference.name)
         ) {
-          const method = ['empty', 'from_source'][expression.arguments.length];
-          if (!method) emissionError(context, 'typed-array construction supports zero or one argument');
+          const oneArgument = expression.arguments[0];
+          const method =
+            expression.arguments.length === 1 && oneArgument && isIrExpressionArrayBufferRust(oneArgument, context)
+              ? 'from_buffer'
+              : ['empty', 'from_source', 'from_buffer_offset', 'from_buffer_range'][expression.arguments.length];
+          if (!method) emissionError(context, 'typed-array construction supports zero through three arguments');
           return `${constructor}::${method}(${expression.arguments.map((argument) => emitOwnedOperandRust(argument, context)).join(', ')})`;
         }
         return `${constructor}::new(${expression.arguments.map((argument) => emitOwnedOperandRust(argument, context)).join(', ')})`;
@@ -1632,6 +1636,19 @@ function isIrExpressionTypedArrayRust(expression: Readonly<IrExpression>, contex
     return rustTypedArrayConstructorNames.has(expression.callee.reference.name);
   }
   return isIrTypeTypedArrayRust(type);
+}
+
+function isIrExpressionArrayBufferRust(expression: Readonly<IrExpression>, context: EmitContext): boolean {
+  if (expression.kind === 'identifier' && expression.reference.kind === 'binding') {
+    const type = context.bindingTypes.get(expression.reference.binding.id);
+    return type?.kind === 'named' && type.reference.kind === 'ambient' && type.reference.name === 'ArrayBuffer';
+  }
+  return (
+    expression.kind === 'new' &&
+    expression.callee.kind === 'identifier' &&
+    expression.callee.reference.kind === 'ambient' &&
+    expression.callee.reference.name === 'ArrayBuffer'
+  );
 }
 
 function isIrTypeTypedArrayRust(type: Readonly<IrType> | undefined): boolean {

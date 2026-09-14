@@ -10,7 +10,7 @@ describe('createCompilerRuntimeExternalSymbolBindingPlanRust', () => {
     const plan = createCompilerRuntimeExternalSymbolBindingPlanRust();
 
     expect(plan.contract).toBe('flight-runtime-contract/2');
-    expect(plan.bindings).toHaveLength(47);
+    expect(plan.bindings).toHaveLength(48);
     expect(plan.bindings.filter(({ externalSymbol }) => externalSymbol.sourceName === 'Promise')).toEqual([
       {
         capability: 'task',
@@ -53,7 +53,7 @@ describe('createCompilerRuntimeExternalSymbolBindingPlanRust', () => {
     const second = createCompilerRuntimeExternalSymbolBindingPlanRust();
 
     (first.bindings as unknown[]).pop();
-    expect(second.bindings).toHaveLength(47);
+    expect(second.bindings).toHaveLength(48);
   });
 
   it('adds versioned downstream host bindings without treating them as runtime capabilities', () => {
@@ -117,6 +117,8 @@ describe('getCompilerRuntimeExternalSymbolTargetRust', () => {
     ['Array', 'type', 'Vec'],
     ['Array', 'value', 'Vec'],
     ['ArrayLike', 'type', 'Vec'],
+    ['ArrayBuffer', 'type', 'FlightArrayBuffer'],
+    ['ArrayBuffer', 'value', 'FlightArrayBuffer'],
     ['Boolean', 'type', 'bool'],
     ['Date', 'type', 'FlightDate'],
     ['Date', 'value', 'FlightDate'],

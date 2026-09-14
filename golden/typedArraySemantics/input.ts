@@ -55,3 +55,12 @@ export function viewsHaveDistinctIdentity(): boolean {
   const source: Uint8Array = new Uint8Array([1, 2]);
   return source.subarray(0) !== source && source.slice(0) !== source && source.subarray(0) !== source.subarray(0);
 }
+
+export function bufferBackedViewsShareStorage(): Uint8Array {
+  const buffer: ArrayBuffer = new ArrayBuffer(4);
+  const whole: Uint8Array = new Uint8Array(buffer);
+  const middle: Uint8Array = new Uint8Array(buffer, 1, 2);
+  middle[0] = 9;
+  middle[1] = 8;
+  return whole;
+}
