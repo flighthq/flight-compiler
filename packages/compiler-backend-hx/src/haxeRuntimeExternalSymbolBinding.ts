@@ -312,6 +312,7 @@ const haxeDynamicHostTypeNames = [
   'SVGSVGElement',
   'Text',
   'TextMetrics',
+  'timers.global.NodeJS.Timeout',
   'VideoFrame',
   'WakeLock',
   'WakeLockSentinel',

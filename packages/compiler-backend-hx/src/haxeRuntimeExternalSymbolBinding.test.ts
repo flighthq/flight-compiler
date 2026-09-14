@@ -304,6 +304,7 @@ describe('getCompilerRuntimeExternalSymbolTargetHaxe', () => {
     ['Symbol', 'value', 'flighthq._internal._Symbol'],
     ['TextDecoder', 'type', 'flighthq._internal._TextDecoder'],
     ['TextDecoder', 'value', 'flighthq._internal._TextDecoder'],
+    ['timers.global.NodeJS.Timeout', 'type', 'Dynamic'],
     ['Uint16Array', 'type', 'flighthq._internal._UInt16Array'],
     ['Uint16Array', 'value', 'flighthq._internal._UInt16Array'],
     ['Uint32Array', 'type', 'flighthq._internal._UInt32Array'],
