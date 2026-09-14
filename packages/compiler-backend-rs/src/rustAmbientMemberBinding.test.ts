@@ -186,4 +186,15 @@ describe('getCompilerRustAmbientMemberBinding', () => {
       targetName: 'repeat_text',
     });
   });
+
+  it('maps destructive collection clearing to the native Rust methods', () => {
+    expect(getCompilerRustAmbientMemberBinding({ name: 'clear', receiver: 'map' })).toEqual({
+      kind: 'method',
+      targetName: 'clear',
+    });
+    expect(getCompilerRustAmbientMemberBinding({ name: 'clear', receiver: 'set' })).toEqual({
+      kind: 'method',
+      targetName: 'clear',
+    });
+  });
 });

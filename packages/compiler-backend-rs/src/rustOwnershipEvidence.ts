@@ -458,9 +458,11 @@ const RUST_REFERENT_MUTATING_METHODS: ReadonlySet<string> = new Set([
   'array.reverse',
   'array.shift',
   'array.unshift',
+  'map.clear',
   'map.delete',
   'map.set',
   'set.add',
+  'set.clear',
   'set.delete',
 ]);
 

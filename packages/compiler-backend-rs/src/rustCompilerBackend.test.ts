@@ -9749,6 +9749,19 @@ describe('emitIrModuleRust ambient method binding kinds', () => {
     expect(output).toContain('return repeat_text(&value, count);');
   });
 
+  it('emits native map and set clearing through mutable collection borrows', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'collection-clear.ts',
+        `export function clearMap(values: Map<string, number>): void { values.clear(); }
+         export function clearSet(values: Set<string>): void { values.clear(); }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('values: &mut std::collections::HashMap<String, f64>');
+    expect(output).toContain('values.clear();');
+    expect(output).toContain('values: &mut std::collections::HashSet<String>');
+  });
+
   it('emits map.get as optionalLookup .get().cloned()', () => {
     const output = emitIrModuleRust(
       lower(
