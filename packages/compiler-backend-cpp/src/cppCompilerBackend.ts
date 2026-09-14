@@ -4128,18 +4128,31 @@ function emitUnionMemberAssertionCpp(
   assertedType: Readonly<IrType>,
   context: EmitContext,
 ): string | undefined {
-  if (expression.kind !== 'identifier' || expression.reference.kind !== 'binding') return undefined;
-  const union = getIrBindingVariantUnionTypeCpp(expression.reference.binding.id, context);
+  const sourceType =
+    expression.kind === 'identifier' && expression.reference.kind === 'binding'
+      ? getCppBindingTypeCpp(expression.reference.binding.id, context)
+      : getIrExpressionTypeEvidenceCpp(expression, context);
+  const union = sourceType ? getIrUnionTypeCpp(sourceType, context, new Set()) : undefined;
   if (!union) return undefined;
-  const representation = getCppVariantRepresentationForInspection(union, context);
-  const alternatives = representation.alternatives.filter((alternative) =>
-    alternative.members.some((member) => isDeepStrictEqual(member, assertedType)),
+  const plan = getCppUnionRepresentationPlan(union, context);
+  const assertedTarget = emitType(assertedType, {
+    ...context,
+    anonymousStructs: new Map(),
+    includes: new Set(),
+  });
+  const alternatives = plan.valueSlots.filter(
+    (slot) =>
+      slot.targetType === assertedTarget || slot.sourceAlternatives.some((member) => isDeepStrictEqual(member, assertedType)),
   );
   if (alternatives.length !== 1) {
     emissionError(context, 'type assertion target must identify exactly one C++ variant alternative');
   }
-  if (representation.direct) return emitIdentifierReference(expression.reference, context);
-  return `std::get<${String(representation.alternatives.indexOf(alternatives[0]!))}>(${emitIdentifierReference(expression.reference, context)})`;
+  const value = emitExpression(expression, context);
+  if (plan.kind === 'singleValue') return value;
+  context.includes.add(plan.kind === 'optionalSingle' ? 'optional' : 'variant');
+  if (plan.kind === 'optionalSingle') return `${value}.value()`;
+  if (plan.kind === 'optionalVariant') return `std::get<${alternatives[0]!.targetType}>(${value}.value())`;
+  return `std::get<${alternatives[0]!.targetType}>(${value})`;
 }
 
 function emitUnionMemberTestCpp(evidence: Readonly<IrUnionMemberTestEvidence>, context: EmitContext): string {

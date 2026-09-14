@@ -1596,6 +1596,19 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(emitted.contents).not.toContain('static_cast<int32_t>');
   });
 
+  it('projects an asserted value from an optional array-method result', () => {
+    const output = emitIrModuleCpp(
+      lower(
+        'asserted-pop.ts',
+        'interface Item { value: number } export function take(items: Item[]): Item { return items.pop() as Item; }',
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+
+    expect(output).toContain('return items.pop().value()');
+    expect(output).not.toContain('static_cast<flight::Ref<Item>>');
+  });
+
   it('emits unsigned shifts through the runtime when operand flow is unresolved', () => {
     const result = lower(
       'imported-shift.ts',
