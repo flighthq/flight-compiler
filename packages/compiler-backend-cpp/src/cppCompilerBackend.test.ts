@@ -753,6 +753,66 @@ describe('createCppCompilerBackend', () => {
     );
   });
 
+  it('unwraps present imported properties and projects readonly reference results', () => {
+    const types = ts.createSourceFile(
+      '/flight/packages/types/src/entity.ts',
+      `export interface Entity { [EntityRuntimeKey]: EntityRuntime | undefined; }
+       export interface EntityRuntime { binding: object | null; uid?: string; }
+       export const EntityRuntimeKey = Symbol.for('EntityRuntime');`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const runtime = ts.createSourceFile(
+      '/flight/packages/entity/src/runtime.ts',
+      `import type { Entity, EntityRuntime } from '@flighthq/types/contract';
+       import { EntityRuntimeKey } from '@flighthq/types/contract';
+       export function getEntityRuntime(source: Readonly<Entity>): Readonly<EntityRuntime> {
+         return source[EntityRuntimeKey]!;
+       }
+       export function getEntityUid(runtime: EntityRuntime): string {
+         if (runtime.uid !== undefined) return runtime.uid;
+         return '';
+       }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          specifier: '@flighthq/types/contract',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/entity.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const modules = lowerTypeScriptSources(
+      [
+        { packageName: '@flighthq/types', sourceFile: types, upstreamDirectory: '/flight' },
+        { packageName: '@flighthq/entity', sourceFile: runtime, upstreamDirectory: '/flight' },
+      ],
+      moduleResolution,
+    ).map((result) => result.module);
+    const emitted = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules,
+      options: {
+        packageTargets: {
+          '@flighthq/entity': { includePrefix: 'flight/entity', namespace: 'flight::entity' },
+          '@flighthq/types': { includePrefix: 'flight/types', namespace: 'flight::types' },
+        },
+        runtimeProfile: 'flight-cpp',
+      },
+    }).emitModule(modules[1]!)[0]!.contents;
+
+    expect(emitted).toContain(
+      'flight::StructuralRef<flight::RowReadonly<flight::RowOf<flight::Ref<flight::types::EntityRuntime>>>>(',
+    );
+    expect(emitted).toContain(
+      'flight::row_get<std::optional<flight::Ref<flight::types::EntityRuntime>>>(source, flight::types::entity_runtime_key).value())',
+    );
+    expect(emitted).toContain('return runtime->uid.value();');
+  });
+
   it('recovers optional construction values through a symbol-key Omit projection', () => {
     const model = ts.createSourceFile(
       '/flight/packages/types/src/model.ts',

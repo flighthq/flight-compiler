@@ -138,6 +138,9 @@ export type IrExpression =
       kind: 'element';
       object: IrExpression;
       optional: boolean;
+      // Whether source-language control flow or an explicit non-null assertion proves this access
+      // has a present value even though its declared type admits absence.
+      presence?: 'narrowedPresent' | undefined;
       semantics: IrElementAccessSemantics;
     }>
   | Readonly<{
@@ -185,6 +188,8 @@ export type IrExpression =
       object: IrExpression;
       optional: boolean;
       optionalChain?: IrOptionalChainSemantics | undefined;
+      // Like identifier presence, but scoped to this field access rather than its receiver.
+      presence?: 'narrowedPresent' | undefined;
     }>
   | Readonly<{ flags: string; kind: 'regexp'; pattern: string }>
   | Readonly<{ expression: IrExpression; kind: 'spread' }>

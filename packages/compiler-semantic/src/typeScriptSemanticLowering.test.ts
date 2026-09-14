@@ -7800,6 +7800,30 @@ it('lowers non-null assertion as present binding evidence', () => {
   expect(ret.expression).toMatchObject({ kind: 'identifier', presence: 'narrowedPresent' });
 });
 
+it('preserves explicit and flow-proven presence on property accesses', () => {
+  const result = lower(
+    'access-presence.ts',
+    `interface Box { value?: string }
+     export function asserted(box: Box): string { return box['value']!; }
+     export function guarded(box: Box): string {
+       if (box.value !== undefined) return box.value;
+       return '';
+     }`,
+  );
+  expect(result.diagnostics).toEqual([]);
+  const asserted = result.module.declarations[1];
+  const guarded = result.module.declarations[2];
+  if (asserted?.kind !== 'function' || guarded?.kind !== 'function') throw new Error('Expected functions');
+  expect(asserted.body[0]).toMatchObject({
+    expression: { kind: 'element', presence: 'narrowedPresent' },
+    kind: 'return',
+  });
+  expect(guarded.body[0]).toMatchObject({
+    consequent: { expression: { kind: 'property', presence: 'narrowedPresent' }, kind: 'return' },
+    kind: 'if',
+  });
+});
+
 it('lowers as type assertion expression', () => {
   const result = lower(
     'assertions.ts',

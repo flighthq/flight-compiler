@@ -983,6 +983,7 @@ function lowerExpression(
       kind: 'property',
       ...absent,
       ...member,
+      ...getTypeScriptAccessPresence(node, context),
       ...getTypeScriptValueNamespaceMemberReference(node, context),
       name: node.name.text,
       object: lowerExpression(node.expression, context),
@@ -998,6 +999,7 @@ function lowerExpression(
       kind: 'element',
       object: lowerExpression(node.expression, context),
       optional,
+      ...getTypeScriptAccessPresence(node, context),
       semantics: {
         ...lowerElementAccessSemantics(node.expression, node.argumentExpression, context),
         ...(optional ? { optionalChain: createTypeScriptOptionalChainSemantics(node.expression, node, context) } : {}),
@@ -1165,7 +1167,9 @@ function lowerExpression(
 }
 
 function markIrExpressionPresent(expression: IrExpression): IrExpression {
-  return expression.kind === 'identifier' && expression.reference.kind === 'binding'
+  return (expression.kind === 'identifier' && expression.reference.kind === 'binding') ||
+    expression.kind === 'property' ||
+    expression.kind === 'element'
     ? { ...expression, presence: 'narrowedPresent' }
     : expression;
 }
@@ -5952,6 +5956,31 @@ function getTypeScriptReferencePresence(
     : hasTypeScriptSyntacticReferencePresence(node, symbol, recordedType, context)
       ? { presence: 'narrowedPresent' }
       : {};
+}
+
+function getTypeScriptAccessPresence(
+  node: ts.ElementAccessExpression | ts.PropertyAccessExpression,
+  context: LoweringContext,
+): { presence?: 'narrowedPresent' } {
+  const declared = getTypeScriptExpressionDeclaredType(node, context);
+  if (!declared) return {};
+  const declaredMembers = declared.isUnion() ? declared.types : [declared];
+  if (
+    !declaredMembers.some(
+      (member) => (member.flags & (ts.TypeFlags.Undefined | ts.TypeFlags.Null | ts.TypeFlags.Void)) !== 0,
+    )
+  ) {
+    return {};
+  }
+  const flow = context.checker.getTypeAtLocation(node);
+  const members = flow.isUnion() ? flow.types : [flow];
+  const absent = members.some(
+    (member) => (member.flags & (ts.TypeFlags.Undefined | ts.TypeFlags.Null | ts.TypeFlags.Void)) !== 0,
+  );
+  const indeterminate = members.some(
+    (member) => (member.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown | ts.TypeFlags.TypeParameter)) !== 0,
+  );
+  return !absent && !indeterminate ? { presence: 'narrowedPresent' } : {};
 }
 
 function hasTypeScriptSyntacticReferencePresence(

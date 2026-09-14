@@ -1751,6 +1751,8 @@ function emitExpression(
       return `(${emitExpression(expression.condition, context)} ? ${emitExpression(expression.whenTrue, branchContext(true), expectedType)} : ${emitExpression(expression.whenFalse, branchContext(false), expectedType)})`;
     }
     case 'element': {
+      const narrowedPresent = emitCppNarrowedPresentAccessCpp(expression, context, expectedType);
+      if (narrowedPresent) return narrowedPresent;
       if (expression.optional) return emitOptionalElementExpressionCpp(expression, context);
       const structuralRow = getCppStructuralRowExpressionPlanCpp(expression.object, context);
       if (structuralRow) {
@@ -2204,6 +2206,8 @@ function emitExpression(
       return construction(initializer);
     }
     case 'property': {
+      const narrowedPresent = emitCppNarrowedPresentAccessCpp(expression, context, expectedType);
+      if (narrowedPresent) return narrowedPresent;
       if (expression.optional) return emitOptionalPropertyExpressionCpp(expression, context, expectedType);
       if (getCppStructuralRowExpressionPlanCpp(expression.object, context)) {
         context.includes.add('flight/structural_ref.hpp');
@@ -6153,9 +6157,18 @@ function getIrExpressionTypeEvidenceCpp(
     }
     case 'element': {
       const computedSymbol = getComputedSymbolElementPropertyCpp(expression, context);
-      if (computedSymbol) return computedSymbol.type;
+      if (computedSymbol) {
+        return expression.presence === 'narrowedPresent'
+          ? (getCppNonNullableType(computedSymbol.type, context, new Set()) ?? computedSymbol.type)
+          : computedSymbol.type;
+      }
       const objectType = getIrExpressionTypeEvidenceCpp(expression.object, context);
-      return objectType ? getIrIndexedElementTypeCpp(objectType, expression, context, new Set()) : undefined;
+      const elementType = objectType
+        ? getIrIndexedElementTypeCpp(objectType, expression, context, new Set())
+        : undefined;
+      return elementType && expression.presence === 'narrowedPresent'
+        ? (getCppNonNullableType(elementType, context, new Set()) ?? elementType)
+        : elementType;
     }
     case 'property': {
       if (expression.object.kind === 'identifier' && expression.object.reference.kind === 'this') {
@@ -6163,9 +6176,16 @@ function getIrExpressionTypeEvidenceCpp(
           context.currentClass?.fields.find((field) => field.name === expression.name)?.type ??
           context.currentClass?.methods.find((method) => method.name === expression.name && method.accessor === 'get')
             ?.returns;
-        if (memberType) return memberType;
+        if (memberType) {
+          return expression.presence === 'narrowedPresent'
+            ? (getCppNonNullableType(memberType, context, new Set()) ?? memberType)
+            : memberType;
+        }
       }
-      return getIrPropertyExpressionTypeEvidenceCpp(expression, context);
+      const propertyType = getIrPropertyExpressionTypeEvidenceCpp(expression, context);
+      return propertyType && expression.presence === 'narrowedPresent'
+        ? (getCppNonNullableType(propertyType, context, new Set()) ?? propertyType)
+        : propertyType;
     }
     case 'literal':
     case 'objectRest':
@@ -7734,6 +7754,44 @@ function emitOptionalChainPayloadTypeCpp(type: Readonly<IrType>, context: EmitCo
 
 function emitOptionalChainPayloadIrTypeCpp(type: Readonly<IrType>, context: EmitContext): Readonly<IrType> {
   return hasIrTypeAbsentMember(type) ? getOptionalPayloadTypeCpp(type, context) : type;
+}
+
+function emitCppNarrowedPresentAccessCpp(
+  expression: Readonly<Extract<IrExpression, { kind: 'element' | 'property' }>>,
+  context: EmitContext,
+  expectedType?: Readonly<IrType> | undefined,
+): string | undefined {
+  if (expression.presence !== 'narrowedPresent') return undefined;
+  const unnarrowed = { ...expression, presence: undefined };
+  const sourceType = getIrExpressionTypeEvidenceCpp(unnarrowed, context);
+  if (!sourceType || !hasIrTypeAbsentMember(sourceType)) return undefined;
+  const presentType = getCppNonNullableType(sourceType, context, new Set());
+  if (!presentType) {
+    emissionError(context, 'present access requires one concrete non-nullish C++ value domain');
+  }
+  const union = getIrUnionTypeCpp(sourceType, context, new Set());
+  const plan = union ? getCppUnionRepresentationPlan(union, context) : undefined;
+  if (plan?.kind !== 'optionalSingle') {
+    emissionError(context, 'present access requires optional C++ storage with one value domain');
+  }
+  context.includes.add('optional');
+  const unwrapped = `${emitExpression(unnarrowed, context, presentType)}.value()`;
+  if (expectedType && context.referenceRepresentationPlanner.resolveStructuralRow(expectedType, context.module)) {
+    const sourcePlan = context.referenceRepresentationPlanner.plan(presentType, context.module);
+    if (
+      sourcePlan.kind !== 'represented' ||
+      sourcePlan.identityDomain !== 'object' ||
+      sourcePlan.valueRepresentation === 'inlineValue'
+    ) {
+      emissionError(context, 'present structural-row projection requires a represented object-reference source');
+    }
+    context.includes.add('flight/structural_ref.hpp');
+    const target = emitType(expectedType, context);
+    return sourcePlan.valueRepresentation === 'flightReference'
+      ? `${target}(${unwrapped})`
+      : `flight::structural_ref_cast<${target}>(${unwrapped})`;
+  }
+  return unwrapped;
 }
 
 function getOptionalPayloadTypeCpp(type: Readonly<IrType>, context: EmitContext): Readonly<IrType> {
