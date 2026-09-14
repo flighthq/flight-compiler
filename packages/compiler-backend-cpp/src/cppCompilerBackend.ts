@@ -1326,8 +1326,18 @@ function emitExpression(
         ? emitCppReferenceIdentityComparison(expression, leftType, rightType, context)
         : undefined;
       if (referenceIdentity) return referenceIdentity;
-      const left = emitExpression(expression.left, context, isThisAccess(expression.left) ? rightType : undefined);
-      const right = emitExpression(expression.right, context, isThisAccess(expression.right) ? leftType : undefined);
+      const leftExpected =
+        (isThisAccess(expression.left) ? rightType : undefined) ??
+        getIrOperatorValueDomainTypeCpp(expression.semantics.left.flow) ??
+        getIrExpressionTypeEvidenceCpp(expression.left, context) ??
+        getCppClampedArrayElementNumericTypeCpp(expression.left);
+      const rightExpected =
+        (isThisAccess(expression.right) ? leftType : undefined) ??
+        getIrOperatorValueDomainTypeCpp(expression.semantics.right.flow) ??
+        getIrExpressionTypeEvidenceCpp(expression.right, context) ??
+        getCppClampedArrayElementNumericTypeCpp(expression.right);
+      const left = emitExpression(expression.left, context, leftExpected);
+      const right = emitExpression(expression.right, context, rightExpected);
       if (bitwise) {
         if (getCppRuntimeProfile(context.options) === 'flight-cpp') {
           return emitBitwiseOperationCpp(expression.operator, left, right);
@@ -1596,7 +1606,12 @@ function emitExpression(
       const computedProperty = emitComputedSymbolElementAccessCpp(expression, context);
       if (computedProperty) return computedProperty;
       if (getCppRuntimeProfile(context.options) === 'flight-cpp' && hasIndexedRuntimeReceiverCpp(expression, context)) {
-        return `${emitExpression(expression.object, context)}.element(${emitExpression(expression.index, context)})`;
+        const access = `${emitExpression(expression.object, context)}.element(${emitExpression(expression.index, context)})`;
+        return expectedType?.kind === 'primitive' &&
+          expectedType.name === 'number' &&
+          expression.semantics.receivers.includes('uint8ClampedArray')
+          ? `static_cast<double>(${access})`
+          : access;
       }
       if (expression.semantics.receivers.includes('tuple')) {
         context.includes.add('tuple');
@@ -7517,6 +7532,12 @@ function emitIdentifierReference(
   const imported = getCppImportedBindingTargetName(reference.binding.id, [], 'value', context);
   if (imported) return imported;
   return emitBindingValueCpp(reference.binding, context);
+}
+
+function getCppClampedArrayElementNumericTypeCpp(expression: Readonly<IrExpression>): Readonly<IrType> | undefined {
+  return expression.kind === 'element' && expression.semantics.receivers.includes('uint8ClampedArray')
+    ? { kind: 'primitive', name: 'number' }
+    : undefined;
 }
 
 function emitCppReferenceIdentityComparison(

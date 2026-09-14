@@ -1631,6 +1631,21 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(emitted.contents).not.toContain('levels[static_cast<size_t>');
   });
 
+  it('projects clamped typed-array reads into the source numeric domain', () => {
+    const output = emitIrModuleCpp(
+      lower(
+        'clamped-array-number.ts',
+        `export function select(values: Uint8ClampedArray, index: number, fallback: number): number {
+           return values[index] > fallback ? values[index] : fallback;
+         }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+
+    expect(output).toContain('static_cast<double>(values.element(index)) > fallback');
+    expect(output).toContain('? static_cast<double>(values.element(index)) : fallback');
+  });
+
   it('orders module declarations after the local declarations they reference', () => {
     const result = lower(
       'declaration-order.ts',
