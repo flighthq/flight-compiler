@@ -2470,6 +2470,51 @@ describe('lowerTypeScriptSource', () => {
     });
   });
 
+  it('keeps inferred non-generic alias applications free of their generic target arguments', () => {
+    const model = ts.createSourceFile(
+      '/flight/packages/model/src/model.ts',
+      `export interface Pair<Left, Right> { left: Left; right: Right }
+       export type Concrete = Pair<number, string>;
+       export function create(): Concrete { return { left: 1, right: 'value' }; }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const consumer = ts.createSourceFile(
+      '/flight/packages/app/src/app.ts',
+      "import { create } from '@flight/model'; export const value = create();",
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const [, result] = lowerTypeScriptSources(
+      [
+        { packageName: '@flight/model', sourceFile: model, upstreamDirectory: '/flight' },
+        { packageName: '@flight/app', sourceFile: consumer, upstreamDirectory: '/flight' },
+      ],
+      {
+        edges: [
+          {
+            specifier: '@flight/model',
+            target: { packageName: '@flight/model', source: 'packages/model/src/model.ts' },
+          },
+        ],
+        schema: 'flight-compiler-module-resolution/1',
+      },
+    );
+    const value = result!.module.declarations.find(
+      (declaration) => declaration.kind === 'variable' && declaration.binding.name === 'value',
+    );
+
+    expect(result!.diagnostics).toEqual([]);
+    expect(value).toMatchObject({
+      kind: 'variable',
+      type: {
+        kind: 'named',
+        reference: { binding: { kind: 'import', name: 'Concrete' } },
+        typeArguments: [],
+      },
+    });
+  });
+
   it('introduces a unique same-package type hidden behind an imported Texture interface', () => {
     const source = (file: string, text: string) => ({
       packageName: '@flighthq/types',

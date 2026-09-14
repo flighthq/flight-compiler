@@ -6631,7 +6631,11 @@ function isTypeScriptBindingIntroducedInModule(
 }
 
 function getTypeScriptCheckerTypeArguments(type: ts.Type, checker: ts.TypeChecker): readonly ts.Type[] {
-  if (type.aliasTypeArguments) return type.aliasTypeArguments;
+  // A non-generic alias of a generic target can retain the target's TypeReference arguments even
+  // though the alias itself accepts none. Once alias identity is selected above, only the alias's
+  // own arguments belong on the IR reference; falling through to getTypeArguments would turn
+  // `type Concrete = Pair<number, string>` into the invalid application `Concrete<number, string>`.
+  if (type.aliasSymbol) return type.aliasTypeArguments ?? [];
   if (type.flags & ts.TypeFlags.Object && (type as ts.ObjectType).objectFlags & ts.ObjectFlags.Reference) {
     return checker.getTypeArguments(type as ts.TypeReference);
   }

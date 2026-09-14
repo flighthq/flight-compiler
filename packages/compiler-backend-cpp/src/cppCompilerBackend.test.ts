@@ -2822,6 +2822,17 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(emitted.contents).not.toContain('value unwrap');
   });
 
+  it('allocates valid deterministic names for underscore-only bindings', () => {
+    const result = lower(
+      'underscore.ts',
+      'export function map(values: number[]): number[] { return values.map((_, __) => _ + __); }',
+    );
+    const emitted = emitIrModuleCpp(result.module);
+
+    expect(emitted.contents).toContain('double value, double value_2');
+    expect(emitted.contents).toContain('return (value + value_2);');
+  });
+
   it('folds Math.max spread into std::max_element with empty guard', () => {
     const result = lower(
       'spread-max.ts',

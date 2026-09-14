@@ -8596,12 +8596,15 @@ function getCppStableIdentifierHash(value: string): string {
 }
 
 function safeCppName(name: string): string {
-  const snake = snakeCase(name);
+  // TypeScript permits bindings made entirely from underscores. Trimming punctuation is useful
+  // for ordinary source names, but it must not leave the target-name allocator with an empty C++
+  // identifier. Allocation will deterministically suffix multiple fallback names in one scope.
+  const snake = snakeCase(name) || 'value';
   return isCppCompilerKeyword(snake) ? `${snake}_` : snake;
 }
 
 function safeCppTypeName(name: string): string {
-  return pascalCase(name);
+  return pascalCase(name) || 'Type';
 }
 
 function snakeCase(value: string): string {
