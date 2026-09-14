@@ -1266,6 +1266,10 @@ function emitExpression(
   constructExpectedUnion = true,
   denseArrayLengthInitialized = false,
 ): string {
+  if (expectedType && getCppRuntimeProfile(context.options) === 'flight-cpp') {
+    const structuralConversion = emitCppContextualStructuralReferenceCpp(expression, expectedType, context);
+    if (structuralConversion) return structuralConversion;
+  }
   if (expectedType && constructExpectedUnion) {
     const constructed = emitContextualUnionExpressionCpp(expression, expectedType, context);
     if (constructed) return constructed;
@@ -2436,6 +2440,47 @@ function emitExpression(
     case 'objectRest':
       emissionError(context, `${expression.kind} expressions require C++ structured binding lowering`);
   }
+}
+
+function emitCppContextualStructuralReferenceCpp(
+  expression: Readonly<IrExpression>,
+  expectedType: Readonly<IrType>,
+  context: EmitContext,
+): string | undefined {
+  const sourceType = getIrExpressionTypeEvidenceCpp(expression, context);
+  if (!sourceType) return undefined;
+  const sourceRow = context.referenceRepresentationPlanner.resolveStructuralRow(sourceType, context.module);
+  if (!sourceRow || context.referenceRepresentationPlanner.resolveStructuralRow(expectedType, context.module)) {
+    return undefined;
+  }
+  const source = emitExpression(expression, context, undefined, false);
+  if (expectedType.kind === 'unknown' && expectedType.source === 'object') return `${source}.shared_object()`;
+  const sourceObject = getCppStructuralRowObjectTypeCpp(sourceRow);
+  const targetPlan = context.referenceRepresentationPlanner.plan(expectedType, context.module);
+  if (
+    !sourceObject ||
+    targetPlan.kind !== 'represented' ||
+    targetPlan.identityDomain !== 'object' ||
+    targetPlan.valueRepresentation !== 'flightReference' ||
+    emitType(sourceObject, context) !== emitType(expectedType, context)
+  ) {
+    return undefined;
+  }
+  context.includes.add('flight/structural_ref.hpp');
+  return `flight::structural_ref_cast<${emitType(expectedType, context)}>(${source})`;
+}
+
+function getCppStructuralRowObjectTypeCpp(
+  row: Readonly<CompilerCppStructuralRowPlan>,
+): Readonly<IrType> | undefined {
+  if (row.kind === 'rowOf') return row.type;
+  if (row.kind !== 'merge') return getCppStructuralRowObjectTypeCpp(row.row);
+  const sources = row.rows.map(getCppStructuralRowObjectTypeCpp);
+  if (!sources[0] || sources.some((source) => !source)) return undefined;
+  const canonical = normalizeCompilerStructuralValueCanonical(sources[0]);
+  return sources.every((source) => normalizeCompilerStructuralValueCanonical(source!) === canonical)
+    ? sources[0]
+    : undefined;
 }
 
 function emitArrayExpressionCpp(

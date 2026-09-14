@@ -5888,6 +5888,19 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(output).toContain('cache->value = std::optional<double>{value}');
   });
 
+  it('recovers exact and erased references from contextual structural views', () => {
+    const result = lower(
+      'contextual-structural-reference.ts',
+      `interface Item { value: number }
+       export function recover(item: Readonly<Item>): Item { return item; }
+       export function erase(item: Readonly<Item>): object { return item; }`,
+    );
+    const output = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    expect(output).toContain('return flight::structural_ref_cast<flight::Ref<Item>>(item);');
+    expect(output).toContain('return item.shared_object();');
+  });
+
   it('prefers a written readonly function result over checker-degraded call evidence', () => {
     const result = lower(
       'readonly-call-result.ts',
