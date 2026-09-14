@@ -55,6 +55,20 @@ describe('createCompilerLoweringPassCatchAwaitHoisting', () => {
     expect(pass.verifyIrModule(output)).toEqual({ kind: 'valid' });
   });
 
+  it('refuses a referenced catch binding that would escape across an await', () => {
+    const pass = createCompilerLoweringPassCatchAwaitHoisting();
+    const module = lower(
+      'export async function attempt(task: Promise<number>, backup: Promise<number>): Promise<number> { try { return await task; } catch (error) { await backup; throw error; } }',
+    );
+
+    expect(() => lowerIrModuleWithCompilerPasses(module, [pass])).toThrow(
+      expect.objectContaining({
+        code: 'unsupported-ir',
+        message: expect.stringContaining('referenced catch binding cannot cross an await'),
+      }),
+    );
+  });
+
   it('reaches catch bodies inside class methods', () => {
     const pass = createCompilerLoweringPassCatchAwaitHoisting();
     const output = lowerIrModuleWithCompilerPasses(

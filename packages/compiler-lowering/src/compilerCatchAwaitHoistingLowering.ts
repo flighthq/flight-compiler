@@ -7,6 +7,7 @@ import type {
   IrModule,
   IrStatement,
 } from '../../compiler-types/src/index.js';
+import { createCompilerLoweringFailure } from './compilerLoweringPass.js';
 
 // C++ prohibits `co_await` inside a catch handler. This pass hoists the catch body out:
 //
@@ -53,6 +54,24 @@ function hasIrStatementAwait(statement: Readonly<IrStatement>): boolean {
       if (candidate.kind !== 'await') return undefined;
       found = true;
       return false;
+    },
+  });
+  return found;
+}
+
+function hasIrStatementBindingReference(statement: Readonly<IrStatement>, bindingId: string): boolean {
+  let found = false;
+  analyzeIrStatementSubtreeTraversal(statement, {
+    expression(candidate: Readonly<IrExpression>) {
+      if (
+        candidate.kind === 'identifier' &&
+        candidate.reference.kind === 'binding' &&
+        candidate.reference.binding.id === bindingId
+      ) {
+        found = true;
+        return false;
+      }
+      return undefined;
     },
   });
   return found;
@@ -173,6 +192,18 @@ function lowerIrStatementCatchAwaitHoisting(
             : {}),
           ...(loweredFinally ? { finallyBody: loweredFinally } : {}),
         };
+      }
+
+      if (
+        statement.catchClause.binding &&
+        hasIrStatementBindingReference(statement.catchClause.body, statement.catchClause.binding.id)
+      ) {
+        throw createCompilerLoweringFailure(
+          'unsupported-ir',
+          compilerLoweringPassNameCatchAwaitHoisting,
+          origin,
+          'a referenced catch binding cannot cross an await without owned exception-value lowering',
+        );
       }
 
       const catchBody = lowerIrStatementCatchAwaitHoisting(statement.catchClause.body, origin, counter);
