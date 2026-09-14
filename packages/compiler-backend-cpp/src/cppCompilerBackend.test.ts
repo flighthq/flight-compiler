@@ -6443,6 +6443,22 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(emitted.contents).toContain('#include <variant>');
   });
 
+  it('retains absence storage for nullish-tested record element bindings', () => {
+    const result = lower(
+      'record-element-presence.ts',
+      `export function lookup(values: Readonly<Record<string, string>>, key: string): string {
+         const value = values[key];
+         if (value === undefined) return 'missing';
+         return value;
+       }`,
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+
+    expect(emitted.contents).toContain('std::optional<flight::String> value = values.get(key)');
+    expect(emitted.contents).toContain('if (!value.has_value())');
+    expect(emitted.contents).toContain('return value.value()');
+  });
+
   it('materializes a template argument inferred only from a contextual return type', () => {
     const result = lower(
       'contextual-generic-result.ts',

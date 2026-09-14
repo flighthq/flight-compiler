@@ -301,7 +301,7 @@ function emitIrModuleCppWithContext(
     activeDependentCallablePackIds: new Set(),
     anonymousStructs: new Map(),
     anonymousStructTypeParameters: [],
-    arrayElementBindingIds: collectIrModuleArrayElementBindingIdsCpp(module, bindingTypes),
+    arrayElementBindingIds: collectIrModuleArrayElementBindingIdsCpp(module),
     bindingClasses: collectIrModuleBindingClassesCpp(module, bindingTypes),
     bindingInitializers: collectIrModuleBindingInitializersCpp(module),
     bindingTypes,
@@ -2047,9 +2047,18 @@ function emitExpression(
         return `${emitIdentifierReference(expression.reference, context)}.value()`;
       }
       if (
+        expression.reference.kind === 'binding' &&
+        context.arrayElementBindingIds.has(expression.reference.binding.id) &&
+        expectedType &&
+        !hasIrTypeAbsentMember(expectedType)
+      ) {
+        return `${emitIdentifierReference(expression.reference, context)}.value()`;
+      }
+      if (
         expression.presence === 'narrowedPresent' &&
         expression.reference.kind === 'binding' &&
-        context.nullableBindingIds.has(expression.reference.binding.id)
+        (context.nullableBindingIds.has(expression.reference.binding.id) ||
+          context.arrayElementBindingIds.has(expression.reference.binding.id))
       ) {
         const bindingType = getCppBindingTypeCpp(expression.reference.binding.id, context);
         const union = bindingType ? getIrUnionTypeCpp(bindingType, context, new Set()) : undefined;
@@ -6895,10 +6904,7 @@ function collectIrModuleBindingInitializersCpp(
   return result;
 }
 
-function collectIrModuleArrayElementBindingIdsCpp(
-  module: Readonly<IrModule>,
-  bindingTypes: ReadonlyMap<string, Readonly<IrType>>,
-): ReadonlySet<string> {
+function collectIrModuleArrayElementBindingIdsCpp(module: Readonly<IrModule>): ReadonlySet<string> {
   const candidates = new Set<string>();
   const nullishUsed = new Set<string>();
   analyzeIrModuleTraversal(module, {
@@ -6919,15 +6925,7 @@ function collectIrModuleArrayElementBindingIdsCpp(
     },
     variable(variable) {
       if (!('binding' in variable) || variable.initializer?.kind !== 'element') return;
-      const initializer = variable.initializer;
-      const resolvedReceiver = initializer.semantics.receivers.some(
-        (receiver) => receiver === 'array' || receiver.endsWith('Array'),
-      );
-      const inferredReceiver =
-        initializer.object.kind === 'identifier' &&
-        initializer.object.reference.kind === 'binding' &&
-        bindingTypes.get(initializer.object.reference.binding.id)?.kind === 'array';
-      if (resolvedReceiver || inferredReceiver) candidates.add(variable.binding.id);
+      candidates.add(variable.binding.id);
     },
   });
   const result = new Set<string>();
