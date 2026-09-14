@@ -4121,7 +4121,7 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
 
     const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
     expect(emitted.contents).toContain('template <typename Type>');
-    expect(emitted.contents).toContain('using WithoutRuntime = flight::Ref<Type>');
+    expect(emitted.contents).toContain('using WithoutRuntime = Type');
     expect(() => emitIrModuleCpp(result.module)).toThrow(
       'Omit<T, K> requires a proven reference-preserving flight-cpp representation',
     );
@@ -4152,17 +4152,17 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(emitted.contents).toContain(
       'using EntityConstruction = flight::StructuralRef<flight::RowWritable<flight::RowOf<Type>>>',
     );
-    expect(emitted.contents).toContain('using EntityWithoutRuntime = flight::Ref<Type>');
+    expect(emitted.contents).toContain('using EntityWithoutRuntime = Type');
     expect(emitted.contents).toContain('struct EntityRuntime : public flight::ReferenceEnabled');
-    expect(emitted.contents).toContain('std::optional<std::shared_ptr<void>> binding;');
+    expect(emitted.contents).toContain('std::optional<flight::Ref<void>> binding;');
     expect(emitted.contents).toContain(
-      'flight::Symbol entity_runtime_key = flight::Symbol::for_key(flight::String("EntityRuntime"))',
+      'auto entity_runtime_key = flight::Symbol::for_key(flight::String("EntityRuntime"))',
     );
     expect(emitted.contents).toContain('return entity->entity_runtime_key;');
     expect(emitted.contents).toContain('entity->entity_runtime_key = runtime;');
     expect(emitted.contents).not.toContain('std::optional<auto>');
     expect(emitted.dependencies).toEqual(
-      expect.arrayContaining(['flight/runtime.hpp', 'flight/structural_ref.hpp', 'flight/symbol.hpp', 'memory']),
+      expect.arrayContaining(['flight/runtime.hpp', 'flight/structural_ref.hpp', 'flight/symbol.hpp', 'optional']),
     );
   });
 
