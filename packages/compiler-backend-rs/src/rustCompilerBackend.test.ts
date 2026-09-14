@@ -3514,7 +3514,7 @@ describe('emitIrModuleRust', () => {
         presence: 'required',
       };
     }
-    expect(() => emitIrModuleRust(module)).toThrow('dual-sentinel nullish comparison requires Rust union');
+    expect(() => emitIrModuleRust(module)).toThrow('undefined expressions require Rust Option-aware lowering');
   });
 
   it('refuses nullish comparison that admits both null and undefined', () => {
@@ -3537,7 +3537,7 @@ describe('emitIrModuleRust', () => {
         }
       }
     }
-    expect(() => emitIrModuleRust(module)).toThrow('Option-aware lowering');
+    expect(() => emitIrModuleRust(module)).toThrow('dual-sentinel nullish comparison requires Rust union');
   });
 
   it('refuses binding pattern variable declaration', () => {

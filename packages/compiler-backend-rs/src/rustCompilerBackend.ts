@@ -2260,11 +2260,23 @@ function emitObjectExpressionRust(
   if (expression.members.some((member) => member.kind === 'getAccessor')) {
     emissionError(context, 'object getters require target-specific accessor lowering');
   }
-  const target = emitType(expression.type, context);
-  const properties = getIrObjectConstructionPropertiesRust(expression.type, context);
   const members = expression.members.filter(
     (member): member is Extract<IrObjectMember, { kind: 'property' }> => member.kind === 'property',
   );
+  const openProperties =
+    expression.type.kind === 'unknown' && expression.type.source === 'object'
+      ? members.map((member): IrObjectTypeProperty => {
+          const type = inferIrExpressionTypeRust(member.value, context);
+          if (!type) {
+            emissionError(context, `open object member ${member.name} requires Rust value-type evidence`);
+          }
+          return { name: member.name, optional: false, readonly: false, type };
+        })
+      : undefined;
+  const properties = openProperties ?? getIrObjectConstructionPropertiesRust(expression.type, context);
+  const target = openProperties
+    ? getIrObjectTypeTargetNameRust(openProperties, context)
+    : emitType(expression.type, context);
   const names = new Set<string>();
   const fields = members.map((member) => {
     names.add(member.name);
@@ -2277,6 +2289,48 @@ function emitObjectExpressionRust(
     fields.push(`${safeRustValueName(property.name)}: None,`);
   }
   return `${target} { ${fields.join(' ')} }`;
+}
+
+function inferIrExpressionTypeRust(
+  expression: Readonly<IrExpression>,
+  context: EmitContext,
+): Readonly<IrType> | undefined {
+  switch (expression.kind) {
+    case 'literal':
+      if (expression.value === null) return { kind: 'null' };
+      return typeof expression.value === 'string'
+        ? { kind: 'primitive', name: 'string' }
+        : typeof expression.value === 'number'
+          ? { kind: 'primitive', name: 'number' }
+          : { kind: 'primitive', name: 'boolean' };
+    case 'cast':
+      return expression.type;
+    case 'call':
+      return expression.semantics.resultType;
+    case 'identifier':
+      return expression.reference.kind === 'binding'
+        ? context.bindingTypes.get(expression.reference.binding.id)
+        : undefined;
+    case 'binary':
+    case 'unary': {
+      const domain = expression.semantics.result;
+      return domain === 'bigint' ||
+        domain === 'boolean' ||
+        domain === 'number' ||
+        domain === 'string' ||
+        domain === 'symbol'
+        ? { kind: 'primitive', name: domain }
+        : domain === 'null'
+          ? { kind: 'null' }
+          : domain === 'undefined'
+            ? { kind: 'undefined' }
+            : undefined;
+    }
+    case 'object':
+      return expression.type;
+    default:
+      return undefined;
+  }
 }
 
 function getIrObjectConstructionPropertiesRust(
