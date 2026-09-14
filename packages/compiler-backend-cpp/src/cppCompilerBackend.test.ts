@@ -2880,11 +2880,20 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
         'range-error.ts',
         'export function fail(message: string): never { throw new RangeError(message); }',
       );
+      const fail = result.module.declarations.find(
+        (declaration) => declaration.kind === 'function' && declaration.binding.name === 'fail',
+      );
+      const thrown = fail?.kind === 'function' ? fail.body[0] : undefined;
+      if (thrown?.kind !== 'throw' || thrown.expression.kind !== 'new') {
+        throw new Error('Expected RangeError construction');
+      }
+      Object.assign(thrown.expression.semantics, { construction: 'factory' as const });
       const emitted = emitIrModuleCpp(result.module, { runtimeProfile });
 
       expect(emitted.contents).toContain(
         runtimeProfile === 'flight-cpp' ? 'flight::RangeError(message)' : 'std::range_error(message)',
       );
+      expect(emitted.contents).not.toContain('.construct(');
       expect(emitted.contents).toContain(
         runtimeProfile === 'flight-cpp' ? '#include <flight/error.hpp>' : '#include <stdexcept>',
       );

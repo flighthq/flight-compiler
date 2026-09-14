@@ -1723,10 +1723,10 @@ function emitExpression(
       const args = expression.arguments.map((argument, index) =>
         emitExpression(argument, context, getIrInvocationArgumentExpectedTypeCpp(expression, index)),
       );
-      if (expression.semantics.construction === 'factory') {
+      const ambientConstructorName = getIrAmbientConstructorNameCpp(expression.callee);
+      if (expression.semantics.construction === 'factory' && ambientConstructorName === undefined) {
         return `${emitExpression(expression.callee, context)}.construct(${args.join(', ')})`;
       }
-      const ambientConstructorName = getIrAmbientConstructorNameCpp(expression.callee);
       if (
         expression.callee.kind !== 'identifier' &&
         !(
