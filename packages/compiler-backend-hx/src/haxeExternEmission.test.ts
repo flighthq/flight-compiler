@@ -125,7 +125,7 @@ describe('emitIrModuleHaxeExtern', () => {
     expect(files.some((file) => file.path === 'flight/_js/Hidden.hx')).toBe(false);
   });
 
-  it('inlines local and imported generic aliases at holder use sites without alias files', () => {
+  it('emits public generic aliases while inlining private aliases at their use sites', () => {
     const aliases = lower(
       '@flighthq/geometry',
       'aliases.ts',
@@ -148,9 +148,32 @@ describe('emitIrModuleHaxeExtern', () => {
 
     const files = [aliases, factory].flatMap((module) => session.emitModule(module));
     const holder = findFile(files, 'flight/_js/_fn/Geometry.hx');
+    const alias = findFile(files, 'flight/_js/Result.hx');
 
-    expect(holder.contents).toContain('static function create():{ value:Null<Float>, ok:Bool };');
-    expect(files.every((file) => !file.path.endsWith('/Result.hx') && !file.path.endsWith('/Optional.hx'))).toBe(true);
+    expect(holder.contents).toContain('static function create():flight.Result<Null<Float>>;');
+    expect(alias.contents).toContain('typedef Result<Value> = { value:Value, ok:Bool };');
+    expect(files.every((file) => !file.path.endsWith('/Optional.hx'))).toBe(true);
+  });
+
+  it('uses the package contract facade as the authoritative public type-alias surface', () => {
+    const publicAlias = lower(
+      '@flighthq/types',
+      'ColorTransformFunction.ts',
+      'export type ColorTransformFunction = (out: number[], r: number, g: number, b: number) => void;',
+    );
+    const privateAlias = lower('@flighthq/types', 'Internal.ts', 'export type Internal = { hidden: boolean };');
+    const contract = lower('@flighthq/types', 'contract.ts', "export * from './ColorTransformFunction.js';");
+    const session = createHaxeCompilerBackend().createEmissionSession!({
+      modules: [contract, privateAlias, publicAlias],
+      options: { emissionMode: 'extern', rootPackage: 'flight' },
+    });
+
+    const files = [contract, privateAlias, publicAlias].flatMap((module) => session.emitModule(module));
+
+    expect(findFile(files, 'flight/_js/ColorTransformFunction.hx').contents).toContain(
+      'typedef ColorTransformFunction = (Array<Float>, Float, Float, Float)->Void;',
+    );
+    expect(files.some((file) => file.path === 'flight/_js/Internal.hx')).toBe(false);
   });
 
   it('flattens generic interface inheritance before structural typedef emission', () => {

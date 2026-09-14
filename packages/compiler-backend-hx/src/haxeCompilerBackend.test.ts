@@ -165,12 +165,12 @@ describe('createHaxeCompilerBackend', () => {
     expect(output).toContain('return flighthq.types.Target.add(left, right);');
     expect(output).toContain('function area(shape:Shape):Float');
     expect(output).toContain('final version:Float = flighthq.types.Target.version;');
-    expect(output).toContain('typedef Mode_2 = flighthq.types.Target.Mode_2;');
+    expect(output).toContain('typedef Mode = flighthq.types.Target.Mode;');
     expect(output).toContain('final Mode:{ basic:Float } = flighthq.types.Target.Mode;');
     expect(output).not.toContain('hidden');
   });
 
-  it('reuses same-package Haxe type identities in star re-export facades', () => {
+  it('forwards same-package Haxe type identities through star re-export facades', () => {
     const target = lower('target.ts', 'export interface Shape { value: number }').module;
     const barrel = lower('barrel.ts', "export * from './target';").module;
     const output = createHaxeCompilerBackend().emitModule(barrel, {
@@ -188,7 +188,7 @@ describe('createHaxeCompilerBackend', () => {
       options: {},
     })[0]!.contents;
 
-    expect(output).not.toContain('typedef Shape');
+    expect(output).toContain('typedef Shape = flighthq.math.Target.Shape;');
   });
 
   it('shares a star facade plan across a transpile emission session', () => {
@@ -1376,12 +1376,37 @@ describe('emitIrModuleHaxe', () => {
     expect(output).toContain('return operator_ + operator__2;');
   });
 
+  it('escapes Unicode source identifiers consistently across declarations and references', () => {
+    const result = lower(
+      'unicode-identifiers.ts',
+      'export function project(angle: number): number { const cosφ = Math.cos(angle); return cosφ; }',
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('final cos_u03c6_:');
+    expect(output).toContain('return cos_u03c6_;');
+    expect(output).not.toContain('cosφ');
+  });
+
   it('disambiguates public type collisions introduced by Haxe normalization', () => {
     const result = lower('type-collisions.ts', 'export type operator = number; export type operator_ = operator;');
     const emitted = emitIrModuleHaxe(result.module);
 
     expect(emitted.contents).toContain('Operator');
     expect(emitted.contents).toContain('Operator_2');
+  });
+
+  it('preserves one spelling for paired type and value namespace exports', () => {
+    const result = lower(
+      'paired-type-value.ts',
+      "export const State = { Ready: 'Ready' } as const; export type State = (typeof State)[keyof typeof State]; export function ready(): State { return State.Ready; }",
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('enum abstract State(String)');
+    expect(output).toContain('final State:{ Ready:String }');
+    expect(output).not.toContain('State_2');
+    expect(output).toContain('return State.Ready;');
   });
 
   it('preserves public source spellings when Haxe normalization does not collide', () => {
@@ -2659,7 +2684,7 @@ describe('emitIrModuleHaxe statement coverage', () => {
     );
   });
 
-  it('skips same-package same-name type re-exports and emits renames', () => {
+  it('emits same-package type re-exports and renamed aliases', () => {
     const same = lowerPackage(
       '@flighthq/math',
       'reexport-same.ts',
@@ -2673,7 +2698,7 @@ describe('emitIrModuleHaxe statement coverage', () => {
     const sameOutput = emitIrModuleHaxe(same.module).contents;
     const renamedOutput = emitIrModuleHaxe(renamed.module).contents;
 
-    expect(sameOutput).not.toContain('typedef Point');
+    expect(sameOutput).toContain('typedef Point = flighthq.math.Types.Point;');
     expect(renamedOutput).toContain('typedef Coordinate =');
   });
 
@@ -8673,6 +8698,20 @@ describe('emitIrModuleHaxe assignment operator lowering', () => {
       ).module,
     ).contents;
     expect(output).toContain('== null');
+  });
+
+  it('emits nullish property assignment as a callable expression receiver and evaluates its target once', () => {
+    const output = emitIrModuleHaxe(
+      lower(
+        'nullish-property-receiver.ts',
+        'export function read(state: { nested: { value: number } | null }): number { return (state.nested ??= { value: 1 }).value; }',
+      ).module,
+    ).contents;
+
+    expect(output).toContain('final assignmentReceiver:Dynamic = state;');
+    expect(output).toContain('if (assignmentReceiver.nested == null) assignmentReceiver.nested = { value: 1 };');
+    expect(output).toContain('return assignmentReceiver.nested; })().value;');
+    expect(output.match(/final assignmentReceiver:Dynamic = state;/gu)).toHaveLength(1);
   });
 
   it('routes ||= on an unknown domain through runtime truthiness', () => {

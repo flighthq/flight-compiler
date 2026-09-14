@@ -73,9 +73,7 @@ interface HaxeExternImportRoute {
 }
 
 interface HaxeExternDeclarationLocation {
-  readonly declaration: Readonly<
-    IrDeclaration & { readonly binding: IrBindingIdentity | IrTypeBindingIdentity }
-  >;
+  readonly declaration: Readonly<IrDeclaration & { readonly binding: IrBindingIdentity | IrTypeBindingIdentity }>;
   readonly module: Readonly<IrModule>;
 }
 
@@ -221,6 +219,7 @@ export function emitIrModuleHaxeExternWithContext(
     if (declaration.kind === 'class') return emitClassFilesHaxeExtern(declaration, context);
     if (declaration.kind === 'interface') return emitInterfaceFilesHaxeExtern(declaration, context);
     if (declaration.kind === 'enum') return emitEnumFilesHaxeExtern(declaration, context);
+    if (declaration.kind === 'typeAlias') return emitTypeAliasFilesHaxeExtern(declaration, context);
     return [];
   });
   if (isPackageHolderOwnerHaxeExtern(module, index)) {
@@ -520,17 +519,16 @@ function collectPackageValuesHaxeExtern(
         }
         return [{ declaration: location.declaration, exportName: slot.exportName, module: location.module }];
       })
-    : (context.index.modulesByPackage.get(packageName) ?? [])
-        .flatMap((module) =>
-          module.declarations.flatMap((declaration) => {
-            if (declaration.kind !== 'function' && declaration.kind !== 'variable') return [];
-            return getLocalExportNamesHaxeExtern(declaration, module, context.index).map((exportName) => ({
-              declaration,
-              exportName,
-              module,
-            }));
-          }),
-        );
+    : (context.index.modulesByPackage.get(packageName) ?? []).flatMap((module) =>
+        module.declarations.flatMap((declaration) => {
+          if (declaration.kind !== 'function' && declaration.kind !== 'variable') return [];
+          return getLocalExportNamesHaxeExtern(declaration, module, context.index).map((exportName) => ({
+            declaration,
+            exportName,
+            module,
+          }));
+        }),
+      );
   return values.sort(
     (left, right) =>
       compareTextCodeUnits(left.exportName, right.exportName) ||
@@ -674,23 +672,46 @@ function emitTypeAliasReferenceHaxeExtern(
   if (activeAliases.has(identity)) {
     emissionErrorHaxeExtern(context, `type alias ${location.declaration.binding.name} is cyclic`);
   }
-  let substituted: IrType;
-  try {
-    const plan = createIrTypeParameterSubstitutionPlan(location.declaration.typeParameters, reference.typeArguments);
-    substituted = resolveIrTypeStructuralSubstitution(location.declaration.type, plan);
-  } catch (error) {
-    emissionErrorHaxeExtern(
-      context,
-      `type alias ${location.declaration.binding.name} cannot be inlined: ${
-        error instanceof Error ? error.message : String(error)
-      }`,
-    );
+  if (isTypeAliasPublicHaxeExtern(location, context)) {
+    createTypeAliasSubstitutionPlanHaxeExtern(location, reference, context);
+    return undefined;
   }
+  const plan = createTypeAliasSubstitutionPlanHaxeExtern(location, reference, context);
+  const substituted: IrType = resolveIrTypeStructuralSubstitution(location.declaration.type, plan);
   return emitTypeHaxeExtern(
     substituted,
     replaceHaxeExternEmissionModule(context, location.module),
     new Set(activeAliases).add(identity),
   );
+}
+
+function emitTypeAliasFilesHaxeExtern(
+  declaration: Readonly<IrTypeAliasDeclaration>,
+  context: HaxeExternEmissionContext,
+): EmittedFile[] {
+  return getDeclarationExportNamesHaxeExtern(declaration, context, 'type').map((exportName) => {
+    const targetName = safeHaxeExternTypeName(exportName);
+    const packageName = `${context.rootPackage}._js`;
+    const identity = [
+      context.module.packageName,
+      normalizePathPortable(context.module.source),
+      declaration.binding.id,
+    ].join('\0');
+    const lines = [
+      createCompilerGeneratedFileHeader(context.module, '//', context.options.upstreamCommit),
+      `package ${packageName};`,
+      '',
+      `typedef ${targetName}${emitTypeParametersHaxeExtern(declaration.typeParameters, context)} = ${emitTypeHaxeExtern(
+        declaration.type,
+        context,
+        new Set([identity]),
+      )};`,
+    ];
+    return {
+      contents: lines.join('\n'),
+      path: `${packageName.replaceAll('.', '/')}/${targetName}.hx`,
+    };
+  });
 }
 
 function emitPrivateInterfaceReferenceHaxeExtern(
@@ -774,6 +795,40 @@ function isInterfacePublicHaxeExtern(
   );
 }
 
+function isTypeAliasPublicHaxeExtern(
+  location: Readonly<HaxeExternTypeAliasLocation>,
+  context: HaxeExternEmissionContext,
+): boolean {
+  const facadePackageName = context.packageFacade?.modules[0]?.module.packageName;
+  if (!context.packageFacade || location.module.packageName !== facadePackageName) {
+    return getLocalExportNamesHaxeExtern(location.declaration, location.module, context.index).length > 0;
+  }
+  return getPackageFacadeSlotsHaxeExtern(context).some(
+    (slot) =>
+      slot.lane === 'type' &&
+      slot.route.kind === 'binding' &&
+      slot.route.binding.id === location.declaration.binding.id &&
+      isSameModuleHaxeExtern(slot.route.module, location.module, context.index),
+  );
+}
+
+function createTypeAliasSubstitutionPlanHaxeExtern(
+  location: Readonly<HaxeExternTypeAliasLocation>,
+  reference: Readonly<IrTypeReference>,
+  context: HaxeExternEmissionContext,
+): CompilerStructuralTypeSubstitutionPlan {
+  try {
+    return createIrTypeParameterSubstitutionPlan(location.declaration.typeParameters, reference.typeArguments);
+  } catch (error) {
+    emissionErrorHaxeExtern(
+      context,
+      `type alias ${location.declaration.binding.name} cannot be inlined: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  }
+}
+
 function getTypeAliasLocationHaxeExtern(
   reference: Readonly<IrTypeReference>,
   context: HaxeExternEmissionContext,
@@ -788,7 +843,8 @@ function getTypeAliasLocationHaxeExtern(
     const locations =
       context.index.declarationLocations
         .get(binding.id)
-        ?.filter((location): location is HaxeExternTypeAliasLocation => location.declaration.kind === 'typeAlias') ?? [];
+        ?.filter((location): location is HaxeExternTypeAliasLocation => location.declaration.kind === 'typeAlias') ??
+      [];
     context.index.typeAliasLocations.set(cacheKey, locations);
     return assertUniqueTypeAliasLocationHaxeExtern(binding.name, locations, context);
   }
@@ -945,10 +1001,12 @@ function getSpecifierModulesHaxeExtern(
       resolved.set(getModuleIdentityHaxeExtern(module, context.index), module);
     }
   }
-  const result = [...resolved].sort(
-    (left, right) =>
-      (context.index.moduleOrdinals.get(left[0]) ?? 0) - (context.index.moduleOrdinals.get(right[0]) ?? 0),
-  ).map(([, module]) => module);
+  const result = [...resolved]
+    .sort(
+      (left, right) =>
+        (context.index.moduleOrdinals.get(left[0]) ?? 0) - (context.index.moduleOrdinals.get(right[0]) ?? 0),
+    )
+    .map(([, module]) => module);
   context.index.specifierModules.set(cacheKey, result);
   return result;
 }
@@ -996,10 +1054,7 @@ function getPackageHolderNameHaxeExtern(packageName: string, options: Readonly<H
   return safeHaxeExternTypeName(packageSegment);
 }
 
-function isPackageHolderOwnerHaxeExtern(
-  module: Readonly<IrModule>,
-  index: Readonly<HaxeExternEmissionIndex>,
-): boolean {
+function isPackageHolderOwnerHaxeExtern(module: Readonly<IrModule>, index: Readonly<HaxeExternEmissionIndex>): boolean {
   const owner = index.packageOwners.get(module.packageName);
   return owner !== undefined && isSameModuleHaxeExtern(owner, module, index);
 }
@@ -1071,7 +1126,15 @@ function pascalCaseHaxeExtern(value: string): string {
 
 function safeHaxeExternName(name: string): string {
   const stripped = name.startsWith('#') ? name.slice(1) : name;
-  return haxeExternKeywords.has(stripped) ? `${stripped}_` : stripped;
+  const escaped = [...stripped]
+    .map((character, index) =>
+      (index === 0 ? /[A-Za-z_]/u : /[A-Za-z0-9_]/u).test(character)
+        ? character
+        : `_u${character.codePointAt(0)!.toString(16).padStart(4, '0')}_`,
+    )
+    .join('');
+  const identifier = escaped || '_';
+  return haxeExternKeywords.has(identifier) ? `${identifier}_` : identifier;
 }
 
 function safeHaxeExternTypeName(name: string): string {

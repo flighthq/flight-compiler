@@ -113,6 +113,7 @@ interface EmitContext {
   facadeBindingTargetNames: Map<string, string>;
   finallyCompletion: HaxeFinallyCompletion | undefined;
   generatedNames: Set<string>;
+  generatedTypeNames: Set<string>;
   machineNames: Map<string, string>;
   module: Readonly<IrModule>;
   moduleFacadeSlots: readonly Readonly<CompilerModuleFacadeSlot>[];
@@ -336,6 +337,7 @@ function emitIrModuleHaxeWithContext(
     facadeBindingTargetNames: new Map(),
     finallyCompletion: undefined,
     generatedNames: new Set(targetNames.values()),
+    generatedTypeNames: new Set(targetNames.values()),
     machineNames: new Map(),
     module,
     moduleFacadeSlots:
@@ -721,9 +723,7 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
         );
       }
       if (expression.operator === '??=') {
-        const left = emitExpression(expression.left, context);
-        const right = emitExpression(expression.right, context);
-        return `{ if (${left} == null) ${left} = ${right}; ${left}; }`;
+        return emitNullishAssignmentHaxe(expression, context);
       }
       const runtimeAssignment = emitJavaScriptAssignmentOperatorHaxe(expression, context);
       if (runtimeAssignment) return runtimeAssignment;
@@ -1190,6 +1190,23 @@ function emitJavaScriptAssignmentOperatorHaxe(
   return `(function() { final ${receiver}:Dynamic = ${emitExpression(expression.left.object, context)}; ${assignment}; return ${target}; })()`;
 }
 
+function emitNullishAssignmentHaxe(
+  expression: Readonly<Extract<IrExpression, { kind: 'assignment' }>>,
+  context: EmitContext,
+): string {
+  const right = emitExpression(expression.right, context);
+  if (expression.left.kind === 'identifier') {
+    const target = emitExpression(expression.left, context);
+    return `(function() { if (${target} == null) ${target} = ${right}; return ${target}; })()`;
+  }
+  if (expression.left.kind !== 'property') {
+    return emissionError(context, 'operator ??= requires an assignable Haxe target');
+  }
+  const receiver = getGeneratedTargetNameHaxe('assignmentReceiver', context);
+  const target = `${receiver}.${safeHaxeName(expression.left.name)}`;
+  return `(function() { final ${receiver}:Dynamic = ${emitExpression(expression.left.object, context)}; if (${target} == null) ${target} = ${right}; return ${target}; })()`;
+}
+
 function emitReflectiveElementAssignmentHaxe(
   expression: Readonly<Extract<IrExpression, { kind: 'assignment' }>>,
   context: EmitContext,
@@ -1583,8 +1600,6 @@ function emitReexportsHaxe(exports: readonly IrExport[], context: EmitContext): 
       valueLines.push(...emitValueReexportForwardingHaxe(exported, modulePath, context));
       continue;
     }
-    const samePackage = modulePath.slice(0, modulePath.lastIndexOf('.')) === context.packageName;
-    if (samePackage && exported.exported === exported.imported) continue;
     typeLines.add(
       `typedef ${safeHaxeTypeName(exported.exported)} = ${modulePath}.${safeHaxeTypeName(exported.imported)};`,
     );
@@ -1622,22 +1637,21 @@ function emitStarReexportFacadeHaxe(
         (valueTarget.binding.kind === 'class' || valueTarget.binding.kind === 'enum');
       const valueName =
         valueTarget && !sharedNominal ? getGeneratedTargetNameHaxe(safeHaxeName(exportName), context) : undefined;
-      const samePackageType = typeTarget?.module.packageName === context.module.packageName;
       const typeName = typeTarget
-        ? samePackageType
+        ? typeTarget.module.packageName === context.module.packageName
           ? getSourceBindingTargetNameHaxe(typeTarget.module, typeTarget.binding, context)
-          : getGeneratedTargetNameHaxe(safeHaxeTypeName(exportName), context)
+          : getGeneratedTargetNameHaxe(safeHaxeTypeName(exportName), context, 'type')
         : undefined;
       if (typeTarget && typeName) context.facadeBindingTargetNames.set(typeTarget.binding.id, typeName);
       if (sharedNominal && valueTarget && typeName) {
         context.facadeBindingTargetNames.set(valueTarget.binding.id, typeName);
       }
-      return { exportName, samePackageType, sharedNominal, typeName, typeTarget, valueName, valueTarget };
+      return { exportName, sharedNominal, typeName, typeTarget, valueName, valueTarget };
     });
   const typeLines: string[] = [];
   const valueLines: string[] = [];
-  for (const { exportName, samePackageType, sharedNominal, typeName, typeTarget, valueName, valueTarget } of exports_) {
-    if (typeTarget && typeName && !samePackageType) {
+  for (const { exportName, sharedNominal, typeName, typeTarget, valueName, valueTarget } of exports_) {
+    if (typeTarget && typeName) {
       typeLines.push(
         `typedef ${typeName} = ${getHaxeModulePath(typeTarget.module, context.options)}.${getSourceBindingTargetNameHaxe(typeTarget.module, typeTarget.binding, context)};`,
       );
@@ -2833,7 +2847,7 @@ function getBindingTargetNameHaxe(
 function createIrModuleTargetNamesHaxe(module: Readonly<IrModule>): Map<string, string> {
   return new Map(
     createIrModuleTargetNameAllocation(module, (binding) => ({
-      namespace: 'identifier',
+      namespace: binding.space,
       preferredName:
         binding.space === 'type' || binding.kind === 'class' || binding.kind === 'enum'
           ? safeHaxeTypeName(binding.name)
@@ -2860,10 +2874,15 @@ function getSourceBindingTargetNameHaxe(
   );
 }
 
-function getGeneratedTargetNameHaxe(preferredName: string, context: EmitContext): string {
+function getGeneratedTargetNameHaxe(
+  preferredName: string,
+  context: EmitContext,
+  namespace: 'type' | 'value' = 'value',
+): string {
+  const generatedNames = namespace === 'type' ? context.generatedTypeNames : context.generatedNames;
   let name = preferredName;
-  for (let suffix = 2; context.generatedNames.has(name); suffix += 1) name = `${preferredName}_${String(suffix)}`;
-  context.generatedNames.add(name);
+  for (let suffix = 2; generatedNames.has(name); suffix += 1) name = `${preferredName}_${String(suffix)}`;
+  generatedNames.add(name);
   return name;
 }
 
@@ -3362,7 +3381,15 @@ function pascalCase(value: string): string {
 
 function safeHaxeName(name: string): string {
   const stripped = name.startsWith('#') ? name.slice(1) : name;
-  return haxeKeywords.has(stripped) ? `${stripped}_` : stripped;
+  const escaped = [...stripped]
+    .map((character, index) =>
+      (index === 0 ? /[A-Za-z_]/u : /[A-Za-z0-9_]/u).test(character)
+        ? character
+        : `_u${character.codePointAt(0)!.toString(16).padStart(4, '0')}_`,
+    )
+    .join('');
+  const identifier = escaped || '_';
+  return haxeKeywords.has(identifier) ? `${identifier}_` : identifier;
 }
 
 function safeHaxeTypeName(name: string): string {
