@@ -89,6 +89,7 @@ import type {
   IrVariableDeclaration,
 } from '../../compiler-types/src/index.js';
 import { getCompilerHaxeAmbientMemberBinding } from './haxeAmbientMemberBinding.js';
+import { createCompilerLoweringPassAsyncIterationHaxe } from './haxeAsyncIterationLowering.js';
 import { convertPackageNameToHaxePackageName, convertSourcePathToHaxeModuleName } from './haxeCompilerIdentity.js';
 import { createHaxeExternEmissionIndex, emitIrModuleHaxeExternWithContext } from './haxeExternEmission.js';
 import { createCompilerRuntimeExternalConstructorAbiPlanHaxe } from './haxeRuntimeExternalConstructorAbi.js';
@@ -272,6 +273,7 @@ function emitIrModuleHaxeWithContext(
   const ambientUtilityHeritageTargets = createAmbientUtilityHeritageTargetsHaxe(sourceModule);
   const module = lowerIrModuleWithCompilerPasses(sourceModule, [
     createCompilerLoweringPassExtraArgumentErasure(),
+    createCompilerLoweringPassAsyncIterationHaxe(),
     createCompilerLoweringPassAwaitConditionHoisting(),
     createCompilerLoweringPassFinallyAwaitHoisting(),
     createCompilerLoweringPassBindingPattern(),

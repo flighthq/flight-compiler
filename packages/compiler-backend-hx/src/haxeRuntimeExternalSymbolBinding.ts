@@ -660,7 +660,14 @@ const haxeRuntimeExternalSymbolBindings = [
     targetName: '_Object',
   },
   { capability: 'task', kind: 'runtime', sourceName: 'Promise', space: 'type', targetName: '_Promise' },
-  { capability: 'task', kind: 'runtime', sourceName: 'Promise', space: 'value', targetName: '_Promise' },
+  {
+    capability: 'task',
+    kind: 'runtime',
+    members: [{ sourceMember: 'iterateAsync', targetName: '_Promise.iterateAsync' }],
+    sourceName: 'Promise',
+    space: 'value',
+    targetName: '_Promise',
+  },
   { capability: 'task', kind: 'runtime', sourceName: 'PromiseLike', space: 'type', targetName: '_Promise' },
   {
     capability: 'structural-proxy',

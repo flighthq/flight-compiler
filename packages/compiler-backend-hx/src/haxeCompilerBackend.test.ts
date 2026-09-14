@@ -9047,22 +9047,15 @@ describe('emitIrModuleHaxe mutable module variable without type', () => {
 });
 
 describe('emitIrModuleHaxe for-of with async iteration', () => {
-  it('refuses async for-of iteration that was not lowered', () => {
+  it('routes serial async iteration through the task runtime and lowers its async body', () => {
     const result = lower(
       'for-of.ts',
-      'export function total(items: number[]): number { let s = 0; for (const x of items) { s += x; } return s; }',
+      'export async function visit(items: AsyncIterable<number>): Promise<void> { for await (const value of items) { await Promise.resolve(value); } }',
     );
-    const fn = result.module.declarations.find((d) => d.kind === 'function');
-    if (fn?.kind !== 'function') throw new Error('Expected function');
-    const modified = {
-      ...fn,
-      body: fn.body.map((stmt) => (stmt.kind === 'forOf' ? { ...stmt, await: true } : stmt)),
-    };
-    const module: IrModule = {
-      ...result.module,
-      declarations: result.module.declarations.map((d) => (d === fn ? modified : d)) as IrModule['declarations'],
-    };
-    expect(() => emitIrModuleHaxe(module)).toThrow('async iteration requires the Haxe async-lowering pass');
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('flighthq._internal._Promise.iterateAsync(items, function(value:Dynamic)');
+    expect(output).toContain('flighthq._internal._Promise.normalize(value)');
   });
 });
 
