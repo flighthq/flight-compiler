@@ -13,7 +13,8 @@ describe('createCompilerHaxeRuntimeAbiManifest', () => {
         contract: 'flight-runtime-contract/2',
         schema: 'flight-haxe-runtime-external-symbol-bindings/1',
       },
-      schema: 'flight-haxe-runtime-abi/1',
+      intrinsics: { schema: 'flight-haxe-runtime-intrinsics/1' },
+      schema: 'flight-haxe-runtime-abi/2',
       tasks: { contract: 'flight-runtime-task-capability-abi/1' },
     });
     expect(manifest.ambientMembers.bindings).toContainEqual({
@@ -26,6 +27,16 @@ describe('createCompilerHaxeRuntimeAbiManifest', () => {
       externalSymbol: { sourceName: 'AsyncIterable', space: 'type' },
       kind: 'runtime',
       targetName: '_AsyncIterable',
+    });
+    expect(manifest.intrinsics.requirements).toContainEqual({
+      capability: 'array',
+      members: ['pushMany'],
+      targetName: '_ArrayTools',
+    });
+    expect(manifest.intrinsics.requirements).toContainEqual({
+      capability: 'javascript-semantics',
+      members: expect.arrayContaining(['getProperty', 'strictEqual', 'truthy', 'typeOf']),
+      targetName: '_Js',
     });
     expect(manifest.externalSymbols.bindings).toContainEqual({
       capability: 'async-iterable',

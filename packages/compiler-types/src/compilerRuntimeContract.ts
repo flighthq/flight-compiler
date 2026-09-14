@@ -21,6 +21,7 @@ export type CompilerRuntimeCapabilityName =
   | 'int16-array'
   | 'int32-array'
   | 'internationalization'
+  | 'javascript-semantics'
   | 'json'
   | 'map'
   | 'number-parsing'
@@ -136,11 +137,23 @@ export interface CompilerHaxeRuntimeExternalSymbolBindingPlan {
   readonly schema: 'flight-haxe-runtime-external-symbol-bindings/1';
 }
 
+export interface CompilerHaxeRuntimeIntrinsicRequirement {
+  readonly capability: CompilerRuntimeCapabilityName;
+  readonly members: readonly string[];
+  readonly targetName: string;
+}
+
+export interface CompilerHaxeRuntimeIntrinsicPlan {
+  readonly requirements: readonly CompilerHaxeRuntimeIntrinsicRequirement[];
+  readonly schema: 'flight-haxe-runtime-intrinsics/1';
+}
+
 export interface CompilerHaxeRuntimeAbiManifest {
   readonly ambientMembers: CompilerHaxeAmbientMemberBindingPlan;
   readonly constructors: CompilerRuntimeExternalConstructorAbiPlan;
   readonly externalSymbols: CompilerHaxeRuntimeExternalSymbolBindingPlan;
-  readonly schema: 'flight-haxe-runtime-abi/1';
+  readonly intrinsics: CompilerHaxeRuntimeIntrinsicPlan;
+  readonly schema: 'flight-haxe-runtime-abi/2';
   readonly tasks: CompilerRuntimeTaskCapabilityPlan;
 }
 
