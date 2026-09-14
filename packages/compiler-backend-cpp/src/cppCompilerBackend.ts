@@ -1617,9 +1617,17 @@ function emitExpression(
         expression.callee.member?.receiver === 'number' &&
         expression.callee.member.name === 'toString'
       ) {
-        const value = `std::to_string(${emitExpression(expression.callee.object, context)})`;
+        const receiver = emitExpression(expression.callee.object, context);
+        if (expression.arguments.length === 1) {
+          if (getCppRuntimeProfile(context.options) !== 'flight-cpp') {
+            emissionError(context, 'radix-bearing number toString requires a downstream runtime mapping');
+          }
+          context.includes.add('flight/number.hpp');
+          return `flight::number_to_string(${receiver}, ${emitExpression(expression.arguments[0]!, context)})`;
+        }
+        const value = `std::to_string(${receiver})`;
         if (getCppRuntimeProfile(context.options) === 'flight-cpp') {
-          return `flight::to_string(${emitExpression(expression.callee.object, context)})`;
+          return `flight::to_string(${receiver})`;
         }
         context.includes.add('string');
         return value;

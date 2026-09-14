@@ -1741,6 +1741,15 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     );
   });
 
+  it('emits radix-bearing number toString through the explicit runtime contract', () => {
+    const result = lower('radix-text.ts', 'export function text(value: number): string { return value.toString(16); }');
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    expect(emitted).toContain('#include <flight/number.hpp>');
+    expect(emitted).toContain('return flight::number_to_string(value, 16.0)');
+    expect(emitted).not.toContain('value.to_string');
+  });
+
   it('emits an interface as a C++ struct with properties', () => {
     const result = lower('point.ts', 'export interface Point { x: number; y?: number }');
     const emitted = emitIrModuleCpp(result.module);
