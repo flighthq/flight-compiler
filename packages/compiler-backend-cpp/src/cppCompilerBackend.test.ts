@@ -1046,6 +1046,23 @@ describe('createCppCompilerBackend', () => {
     expect(emitted).not.toContain('std::optional<auto>');
   });
 
+  it('unwraps a truthiness-narrowed String.match result before capture indexing', () => {
+    const emitted = emitIrModuleCpp(
+      lower(
+        'string-match-capture.ts',
+        `export function capture(input: string): string {
+           const match = input.match(/(.)/);
+           if (match) return match[1];
+           return '';
+         }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+
+    expect(emitted).toContain('auto match = input.match(');
+    expect(emitted).toContain('return match.value().element(1.0);');
+  });
+
   it('refuses unresolved auto placeholders in flight-cpp type positions', () => {
     const alias = lower('unknown-alias.ts', 'export type UnknownAlias = unknown;').module;
     const property = lower('unknown-property.ts', 'export interface UnknownProperty { value?: unknown }').module;

@@ -286,6 +286,7 @@ function emitIrModuleCppWithContext(
   const closureCapturePlan = createIrModuleClosureCapturePlanCpp(module);
   const sharedCaptureTargetNames = new Map<string, string>();
   const contextualBindingStorageTargetTypes = new Map<string, Readonly<IrType>>();
+  const nullableBindingIds = new Set(collectIrModuleNullableBindingIds(module));
   const uninitializedCaptureStorageBindingIds = collectIrModuleUninitializedBindingIdsCpp(module);
   const context: EmitContext = {
     activeDependentCallablePackIds: new Set(),
@@ -307,7 +308,7 @@ function emitIrModuleCppWithContext(
     includes: new Set<string>(),
     module,
     namespaceScope: true,
-    nullableBindingIds: collectIrModuleNullableBindingIds(module),
+    nullableBindingIds,
     narrowedBindingTypes: new Map(),
     options,
     preservedInitializerTypes: new Map(),
@@ -326,6 +327,14 @@ function emitIrModuleCppWithContext(
   for (const [bindingId, targetType] of collectCppContextualBindingStorageTargetTypesCpp(module, context)) {
     contextualBindingStorageTargetTypes.set(bindingId, targetType);
   }
+  analyzeIrModuleTraversal(module, {
+    variable(variable) {
+      if (!('binding' in variable) || !variable.initializer) return;
+      if (hasIrTypeAbsentMember(getIrExpressionTypeEvidenceCpp(variable.initializer, context))) {
+        nullableBindingIds.add(variable.binding.id);
+      }
+    },
+  });
   for (const bindingPlan of closureCapturePlan.bindings) {
     const bindingType = bindingTypes.get(bindingPlan.binding.id);
     if (
@@ -1714,6 +1723,12 @@ function emitExpression(
       if (computedProperty) return computedProperty;
       const variantIndexedAccess = emitCppVariantIndexedElementAccessCpp(expression, context);
       if (variantIndexedAccess) return variantIndexedAccess;
+      if (
+        getCppRuntimeProfile(context.options) === 'flight-cpp' &&
+        hasCppRegExpExecArrayIndexedReceiverCpp(expression, context)
+      ) {
+        return `${emitExpression(expression.object, context)}.element(${emitExpression(expression.index, context)})`;
+      }
       if (getCppRuntimeProfile(context.options) === 'flight-cpp' && hasIndexedRuntimeReceiverCpp(expression, context)) {
         const access = `${emitExpression(expression.object, context)}.element(${emitExpression(expression.index, context)})`;
         return expectedType?.kind === 'primitive' &&
@@ -5215,6 +5230,16 @@ function getCppRuntimeMemberCallResultTypeEvidence(
   }
   const receiver = callee.member?.receiver;
   if (receiver === 'string') {
+    if (callee.name === 'match') {
+      return createIrTypeEvidenceUnionCpp([
+        {
+          kind: 'named',
+          reference: { kind: 'ambient', name: 'RegExpExecArray' },
+          typeArguments: [],
+        },
+        { kind: 'null' },
+      ]);
+    }
     if (cppStringReturningCallNames.has(callee.name)) return { kind: 'primitive', name: 'string' };
     if (cppNumberReturningStringCallNames.has(callee.name)) return { kind: 'primitive', name: 'number' };
     if (cppBooleanReturningStringCallNames.has(callee.name)) return { kind: 'primitive', name: 'boolean' };
@@ -6214,6 +6239,7 @@ function getIrIndexedElementTypeCpp(
     if (type.reference.name === 'BigInt64Array' || type.reference.name === 'BigUint64Array') {
       return { kind: 'primitive', name: 'bigint' };
     }
+    if (type.reference.name === 'RegExpExecArray') return { kind: 'primitive', name: 'string' };
     if (
       (type.reference.name === 'Readonly' || type.reference.name === 'Required') &&
       type.typeArguments.length === 1 &&
@@ -7718,6 +7744,17 @@ function hasIndexedRuntimeReceiverCpp(
   if (!type) return false;
   const plan = context.referenceRepresentationPlanner.plan(type, context.module);
   return plan.kind === 'represented' && (plan.category === 'array' || plan.category === 'typedArray');
+}
+
+function hasCppRegExpExecArrayIndexedReceiverCpp(
+  expression: Readonly<Extract<IrExpression, { kind: 'element' }>>,
+  context: EmitContext,
+): boolean {
+  const type = getIrExpressionTypeEvidenceCpp(expression.object, context);
+  const receiver = type ? getCppNonNullableType(type, context, new Set()) : undefined;
+  return (
+    receiver?.kind === 'named' && receiver.reference.kind === 'ambient' && receiver.reference.name === 'RegExpExecArray'
+  );
 }
 
 function hasSharedReferentRepresentationCpp(type: Readonly<IrType>, context: EmitContext): boolean {
