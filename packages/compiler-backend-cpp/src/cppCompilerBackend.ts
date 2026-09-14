@@ -1406,7 +1406,7 @@ function emitExpression(
               ? `static_cast<double>(assignment_receiver${operator}size()) - ${right}`
               : undefined;
         if (!value) emissionError(context, `array length ${expression.operator} requires checked resize lowering`);
-        return `([&]() { auto&& assignment_receiver = ${receiver}; const auto assignment_value = ${value}; assignment_receiver${operator}resize(static_cast<std::ptrdiff_t>(assignment_value)); return assignment_value; }())`;
+        return `([&]() { auto&& assignment_receiver = ${receiver}; const auto assignment_value = ${value}; assignment_receiver${operator}resize(assignment_value); return assignment_value; }())`;
       }
       if (
         expression.operator === '=' &&

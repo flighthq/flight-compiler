@@ -5455,7 +5455,7 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(emitted.contents).toContain(
       'const auto assignment_value = static_cast<double>(assignment_receiver.size()) - 2.0;',
     );
-    expect(emitted.contents).toContain('assignment_receiver.resize(static_cast<std::ptrdiff_t>(assignment_value))');
+    expect(emitted.contents).toContain('assignment_receiver.resize(assignment_value)');
     expect(emitted.contents).toContain('return frames->value;');
     expect(emitted.contents).not.toContain('frames->value.has_value()');
   });
