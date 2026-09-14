@@ -12368,17 +12368,31 @@ describe('emitIrModuleRust do-while loop', () => {
 });
 
 describe('emitIrModuleRust cast expression', () => {
-  it('emits type cast as Rust as operator', () => {
+  it('elects the asserted primitive as the Rust representation of an otherwise unknown parameter', () => {
     const output = emitIrModuleRust(
       lower('cast.ts', 'export function asNum(x: unknown): number { return x as number; }').module,
     ).contents;
-    expect(output).toContain(' as ');
+    expect(output).toContain('pub fn as_num(x: f64) -> f64');
+    expect(output).toContain('return x;');
   });
 
-  it('refuses cast to non-numeric type', () => {
+  it('elects a string representation instead of pretending an opaque host value can be cast', () => {
+    const output = emitIrModuleRust(
+      lower('cast-str.ts', 'export function asStr(x: unknown): string { return x as string; }').module,
+    ).contents;
+
+    expect(output).toContain('pub fn as_str(x: String) -> String');
+    expect(output).toContain('return x;');
+    expect(output).not.toContain('OpaqueHostValue');
+  });
+
+  it('refuses an unknown parameter whose uses do not agree on one native representation', () => {
     expect(() =>
       emitIrModuleRust(
-        lower('cast-str.ts', 'export function asStr(x: unknown): string { return x as string; }').module,
+        lower(
+          'cast-conflict.ts',
+          'export function conflict(x: unknown, flag: boolean): string { return flag ? (x as string) : String(x); }',
+        ).module,
       ),
     ).toThrow('cast to primitive requires Rust type-directed lowering');
   });

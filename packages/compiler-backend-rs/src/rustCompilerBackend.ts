@@ -149,6 +149,7 @@ interface RustNamedTypeDeclarationLocation {
 interface EmitContext {
   abstractFieldNames: ReadonlySet<string>;
   activeTypeParameters: readonly IrTypeParameter[];
+  assertedUnknownBindingTypes: ReadonlyMap<string, Readonly<IrType>>;
   anonymousObjectRecords: Map<string, Readonly<{ name: string; properties: readonly IrObjectTypeProperty[] }>>;
   anonymousUnionEnums: Map<string, RustAnonymousUnionEnum>;
   arrayElementBindingIds: ReadonlySet<string>;
@@ -313,6 +314,7 @@ function emitIrModuleRustWithContext(
   const context: EmitContext = {
     abstractFieldNames: new Set(),
     activeTypeParameters: [],
+    assertedUnknownBindingTypes: collectAssertedUnknownBindingTypesRust(module, bindingTypes),
     accessorClassNames,
     anonymousObjectRecords: new Map(),
     anonymousUnionEnums: new Map(),
@@ -1310,6 +1312,18 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
       return `${expression.callee.kind === 'function' ? `(${emitExpression(expression.callee, context)})` : emitExpression(expression.callee, context)}(${emitCallArgumentsRust(expression, context).join(', ')})`;
 
     case 'cast': {
+      const assertedUnknownType =
+        expression.expression.kind === 'identifier' && expression.expression.reference.kind === 'binding'
+          ? context.assertedUnknownBindingTypes.get(expression.expression.reference.binding.id)
+          : undefined;
+      if (
+        assertedUnknownType &&
+        expression.expression.kind === 'identifier' &&
+        expression.expression.reference.kind === 'binding' &&
+        areIrAssertedUnknownRepresentationsEqualRust(assertedUnknownType, expression.type)
+      ) {
+        return emitOwnedOperandRust(expression.expression, context);
+      }
       const unionCast = emitPrimitiveUnionCastRust(expression, context);
       if (unionCast) return unionCast;
       if (!isIrCastTargetNumericRust(expression.type)) {
@@ -2456,6 +2470,64 @@ function collectIrModuleBindingTypesRust(module: Readonly<IrModule>): ReadonlyMa
   return result;
 }
 
+// `unknown` has no single native Rust representation. A binding used exclusively through one
+// explicit source assertion does, however: the Rust API can expose that asserted type directly and
+// erase the assertion. Any unasserted use or disagreement leaves the binding opaque, so this never
+// guesses a dynamic conversion that the source did not perform.
+function collectAssertedUnknownBindingTypesRust(
+  module: Readonly<IrModule>,
+  bindingTypes: ReadonlyMap<string, Readonly<IrType>>,
+): ReadonlyMap<string, Readonly<IrType>> {
+  const candidates = new Map<string, Readonly<IrType>>();
+  const disqualified = new Set<string>();
+  const parameters = new Set<string>();
+  analyzeIrModuleTraversal(module, {
+    parameter(parameter) {
+      if (parameter.type.kind === 'unknown') parameters.add(parameter.binding.id);
+    },
+  });
+  analyzeIrModuleTraversal(module, {
+    expression(expression, path) {
+      if (expression.kind !== 'identifier' || expression.reference.kind !== 'binding') return;
+      const id = expression.reference.binding.id;
+      if (!parameters.has(id) || bindingTypes.get(id)?.kind !== 'unknown') return;
+      const parent = path.length > 0 ? getIrModuleTraversalPathValue(module, path.slice(0, -1)) : undefined;
+      const asserted =
+        parent &&
+        typeof parent === 'object' &&
+        'kind' in parent &&
+        parent.kind === 'cast' &&
+        'expression' in parent &&
+        parent.expression === expression &&
+        'type' in parent &&
+        isIrTypeAssertedUnknownRepresentationRust(parent.type)
+          ? parent.type
+          : undefined;
+      if (!asserted) {
+        disqualified.add(id);
+        return;
+      }
+      const existing = candidates.get(id);
+      if (existing && !areIrAssertedUnknownRepresentationsEqualRust(existing, asserted)) {
+        disqualified.add(id);
+        return;
+      }
+      candidates.set(id, asserted);
+    },
+  });
+  for (const id of disqualified) candidates.delete(id);
+  return candidates;
+}
+
+function isIrTypeAssertedUnknownRepresentationRust(type: unknown): type is Readonly<IrType> {
+  if (!type || typeof type !== 'object' || !('kind' in type) || type.kind !== 'primitive') return false;
+  return 'name' in type && (type.name === 'boolean' || type.name === 'number' || type.name === 'string');
+}
+
+function areIrAssertedUnknownRepresentationsEqualRust(left: Readonly<IrType>, right: Readonly<IrType>): boolean {
+  return left.kind === 'primitive' && right.kind === 'primitive' && left.name === right.name;
+}
+
 function resolvePrimitiveUnionEnumRust(type: Readonly<IrType>, context: EmitContext): PrimitiveUnionEnum | undefined {
   if (type.kind !== 'union') return undefined;
   const concrete = type.types.filter((t) => t.kind !== 'null' && t.kind !== 'undefined');
@@ -2953,6 +3025,7 @@ function hasIrExpressionThisReferenceRust(expression: Readonly<IrExpression>): b
 }
 
 function emitParameter(parameter: Readonly<IrParameter>, context: EmitContext): string {
+  const parameterType = context.assertedUnknownBindingTypes.get(parameter.binding.id) ?? parameter.type;
   // The source mutates what this parameter names, and the caller sees the change. Moving the value in
   // would mutate a copy and drop it — the same source, a different meaning — so the parameter is
   // borrowed mutably and every call site lends rather than gives.
@@ -2963,17 +3036,17 @@ function emitParameter(parameter: Readonly<IrParameter>, context: EmitContext): 
         `parameter ${parameter.binding.name} is mutated through and cannot also be optional or variadic in Rust`,
       );
     }
-    return `${getBindingTargetNameRust(parameter.binding, context)}: &mut ${emitType(parameter.type, context)}`;
+    return `${getBindingTargetNameRust(parameter.binding, context)}: &mut ${emitType(parameterType, context)}`;
   }
   // A parameter the body assigns to is a local binding in Rust as much as in the source language, and
   // Rust will not accept the assignment without `mut`. Emitting it unconditionally would instead earn
   // an unused-mut warning on every parameter that is only read.
   const binding = `${context.reboundBindingIds.has(parameter.binding.id) ? 'mut ' : ''}${getBindingTargetNameRust(parameter.binding, context)}`;
   if (parameter.initializer) {
-    return `${binding}: Option<${emitType(parameter.type, context)}>`;
+    return `${binding}: Option<${emitType(parameterType, context)}>`;
   }
   if (parameter.optional) {
-    const type = emitType(parameter.type, context);
+    const type = emitType(parameterType, context);
     if (hasIrTypeNullMemberRust(parameter.type) && hasIrTypeUndefinedMemberRust(parameter.type)) {
       emissionError(context, 'optional parameters containing both null and undefined require distinct Rust sentinels');
     }
@@ -2983,8 +3056,8 @@ function emitParameter(parameter: Readonly<IrParameter>, context: EmitContext): 
         : `Option<${type}>`;
     return `${binding}: ${optionalType}`;
   }
-  if (parameter.rest) return `${binding}: ${emitType(parameter.type, context)}`;
-  return `${binding}: ${emitType(parameter.type, context)}`;
+  if (parameter.rest) return `${binding}: ${emitType(parameterType, context)}`;
+  return `${binding}: ${emitType(parameterType, context)}`;
 }
 
 function emitRecord(
