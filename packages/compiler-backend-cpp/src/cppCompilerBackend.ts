@@ -555,7 +555,7 @@ function encodeCppPublicNameComponent(value: string): string {
 function emitCppForwardDeclarations(module: Readonly<IrModule>, context: EmitContext): string[] {
   return module.declarations.flatMap((declaration): string[] => {
     if (declaration.kind !== 'class' && declaration.kind !== 'interface') return [];
-    const typeParameters = emitTypeParameters(declaration.typeParameters, context);
+    const typeParameters = emitTypeParameters(declaration.typeParameters, context, true);
     const declarationLine = `struct ${getBindingTargetName(declaration.binding, context)};`;
     return typeParameters ? [`template ${typeParameters}`, declarationLine] : [declarationLine];
   });
@@ -1085,7 +1085,7 @@ function emitTypeAlias(declaration: Readonly<IrTypeAliasDeclaration>, outer: Emi
   );
   if (structuralRow && getCppRuntimeProfile(context.options) === 'flight-cpp') {
     const name = getBindingTargetName(declaration.binding, context);
-    const typeParams = emitTypeParameters(declaration.typeParameters, context);
+    const typeParams = emitTypeParameters(declaration.typeParameters, context, true);
     const lines: string[] = [];
     if (typeParams) lines.push(`template ${typeParams}`);
     lines.push(`using ${name} = ${emitCppStructuralRowReferenceTypeCpp(structuralRow, context)};`);
@@ -1097,7 +1097,7 @@ function emitTypeAlias(declaration: Readonly<IrTypeAliasDeclaration>, outer: Emi
   );
   if (conditionalFacet && getCppRuntimeProfile(context.options) === 'flight-cpp') {
     const name = getBindingTargetName(declaration.binding, context);
-    const typeParams = emitTypeParameters(declaration.typeParameters, context);
+    const typeParams = emitTypeParameters(declaration.typeParameters, context, true);
     const lines: string[] = [];
     if (typeParams) lines.push(`template ${typeParams}`);
     lines.push(`using ${name} = ${emitCppConditionalFacetReferenceTypeCpp(conditionalFacet, context)};`);
@@ -1124,7 +1124,7 @@ function emitTypeAlias(declaration: Readonly<IrTypeAliasDeclaration>, outer: Emi
   if (callableProjection && getCppRuntimeProfile(context.options) === 'flight-cpp') {
     context.includes.add('utility');
     const name = getBindingTargetName(declaration.binding, context);
-    const typeParams = emitTypeParameters(declaration.typeParameters, context);
+    const typeParams = emitTypeParameters(declaration.typeParameters, context, true);
     const lines: string[] = [];
     if (typeParams) lines.push(`template ${typeParams}`);
     lines.push(`using ${name} = ${emitCppCallableObjectIndexedProjectionTypeCpp(callableProjection, context)};`);
@@ -1138,7 +1138,7 @@ function emitTypeAlias(declaration: Readonly<IrTypeAliasDeclaration>, outer: Emi
         : undefined;
   if (objectProperties) {
     const name = getBindingTargetName(declaration.binding, context);
-    const typeParams = emitTypeParameters(declaration.typeParameters, context);
+    const typeParams = emitTypeParameters(declaration.typeParameters, context, true);
     const lines: string[] = [];
     if (typeParams) lines.push(`template ${typeParams}`);
     lines.push(
@@ -1152,7 +1152,7 @@ function emitTypeAlias(declaration: Readonly<IrTypeAliasDeclaration>, outer: Emi
     return lines;
   }
   const name = getBindingTargetName(declaration.binding, context);
-  const typeParams = emitTypeParameters(declaration.typeParameters, context);
+  const typeParams = emitTypeParameters(declaration.typeParameters, context, true);
   const lines: string[] = [];
   if (typeParams) lines.push(`template ${typeParams}`);
   lines.push(`using ${name} = ${emitType(declaration.type, context)};`);
@@ -3651,12 +3651,16 @@ function emitType(type: Readonly<IrType>, context: EmitContext, representation: 
           : type.typeArguments.map((argument, index) =>
               weakMapTypeArgumentPlan?.valueRepresentation === 'erased' && index === 1
                 ? 'flight::ErasedValue'
-                : emitType(argument, context),
+                : emitCppTypeArgumentCpp(argument, context),
             );
       if (weakMapTypeArgumentPlan?.weakKeyPolicyTargetName) {
         arguments_.push(weakMapTypeArgumentPlan.weakKeyPolicyTargetName);
       }
-      return `${mapped}${arguments_.length > 0 ? `<${arguments_.join(', ')}>` : ''}`;
+      const usesDefaultArguments =
+        arguments_.length === 0 &&
+        type.reference.kind === 'binding' &&
+        getCppTypeReferenceUsesDefaultArgumentsCpp(type, context);
+      return `${mapped}${arguments_.length > 0 ? `<${arguments_.join(', ')}>` : usesDefaultArguments ? '<>' : ''}`;
     }
     case 'never':
       return 'void';
@@ -8548,9 +8552,19 @@ function emitReexportsCpp(module: Readonly<IrModule>, context: EmitContext): str
   });
 }
 
-function emitTypeParameters(parameters: readonly IrTypeParameter[], context: EmitContext): string {
+function emitTypeParameters(
+  parameters: readonly IrTypeParameter[],
+  context: EmitContext,
+  includeDefaults = false,
+): string {
   if (parameters.length === 0) return '';
-  return `<${parameters.map((parameter) => `typename ${context.targetNames.get(parameter.binding.id) ?? pascalCase(parameter.binding.name)}`).join(', ')}>`;
+  return `<${parameters
+    .map((parameter) => {
+      const name = context.targetNames.get(parameter.binding.id) ?? pascalCase(parameter.binding.name);
+      const defaultType = includeDefaults && parameter.default ? ` = ${emitCppTypeArgumentCpp(parameter.default, context)}` : '';
+      return `typename ${name}${defaultType}`;
+    })
+    .join(', ')}>`;
 }
 
 interface CppDependentCallablePack {
@@ -8927,7 +8941,29 @@ function emitCppStringType(context: EmitContext): string {
 }
 
 function emitCppTypeArguments(types: readonly Readonly<IrType>[], context: EmitContext): string {
-  return types.length === 0 ? '' : `<${types.map((type) => emitType(type, context)).join(', ')}>`;
+  return types.length === 0 ? '' : `<${types.map((type) => emitCppTypeArgumentCpp(type, context)).join(', ')}>`;
+}
+
+function emitCppTypeArgumentCpp(type: Readonly<IrType>, context: EmitContext): string {
+  if (type.kind !== 'never') return emitType(type, context);
+  context.includes.add('variant');
+  return 'std::monostate';
+}
+
+function getCppTypeReferenceUsesDefaultArgumentsCpp(
+  type: Readonly<Extract<IrType, { kind: 'named' }>>,
+  context: EmitContext,
+): boolean {
+  if (type.reference.kind !== 'binding') return false;
+  const declaration = getCppDirectBindingOwner(type, context)?.declaration;
+  if (
+    !declaration ||
+    (declaration.kind !== 'class' && declaration.kind !== 'interface' && declaration.kind !== 'typeAlias') ||
+    declaration.typeParameters.length === 0
+  ) {
+    return false;
+  }
+  return declaration.typeParameters.every((parameter) => parameter.default !== undefined);
 }
 
 function collectStringParts(expression: Readonly<IrExpression>, context: EmitContext): string[] {

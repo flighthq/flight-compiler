@@ -6414,6 +6414,35 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(emitted.contents).toContain('typename');
   });
 
+  it('preserves defaulted generic interface arguments in C++ type positions', () => {
+    const result = lower(
+      'defaulted-generic-interface.ts',
+      `export interface Node<Container extends object = object, Item extends object = object> {
+         container: Container | null;
+         item: Item | null;
+       }
+       export interface Tree { nodes: readonly Node[]; }`,
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+
+    expect(emitted.contents).toContain(
+      'template <typename Container = flight::Ref<void>, typename Item = flight::Ref<void>>',
+    );
+    expect(emitted.contents).toContain('flight::Array<flight::Ref<Node<>>> nodes;');
+  });
+
+  it('uses a concrete uninhabited carrier for never in template arguments', () => {
+    const result = lower(
+      'never-record.ts',
+      'export interface Extension { marker?: Record<string, never>; }',
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+
+    expect(emitted.contents).toContain('flight::Record<flight::String, std::monostate>');
+    expect(emitted.contents).not.toContain('flight::Record<flight::String, void>');
+    expect(emitted.contents).toContain('#include <variant>');
+  });
+
   it('materializes a template argument inferred only from a contextual return type', () => {
     const result = lower(
       'contextual-generic-result.ts',
