@@ -42,11 +42,10 @@ import { emitIrTypeHaxe } from './haxeTypeEmission.js';
 
 interface HaxeExternEmissionContext {
   readonly ambientUtilityHeritageTargets: ReadonlyMap<string, string>;
+  readonly index: HaxeExternEmissionIndex;
   readonly interfaceInheritancePass: Readonly<CompilerLoweringPass>;
   readonly module: Readonly<IrModule>;
-  readonly moduleResolution: Readonly<CompilerModuleResolutionPlan> | undefined;
   readonly packageFacade: Readonly<CompilerModuleFacadePlan> | undefined;
-  readonly modules: readonly Readonly<IrModule>[];
   readonly options: Readonly<HaxeCompilerBackendOptions>;
   readonly rootPackage: string;
 }
@@ -67,6 +66,109 @@ interface HaxeExternInterfaceLocation {
   readonly module: Readonly<IrModule>;
 }
 
+interface HaxeExternImportRoute {
+  readonly from: Readonly<IrModule>;
+  readonly imported: string;
+  readonly specifier: string;
+}
+
+interface HaxeExternDeclarationLocation {
+  readonly declaration: Readonly<IrDeclaration>;
+  readonly module: Readonly<IrModule>;
+}
+
+export interface HaxeExternEmissionIndex {
+  readonly declarationLocations: ReadonlyMap<string, readonly HaxeExternDeclarationLocation[]>;
+  readonly exportedTypeAliases: Map<string, readonly HaxeExternTypeAliasLocation[]>;
+  readonly importRoutes: ReadonlyMap<string, readonly HaxeExternImportRoute[]>;
+  readonly localExportNames: Map<string, readonly string[]>;
+  readonly moduleOrdinals: ReadonlyMap<string, number>;
+  readonly modules: readonly Readonly<IrModule>[];
+  readonly modulesByPackage: ReadonlyMap<string, readonly Readonly<IrModule>[]>;
+  readonly modulesByPackageSource: ReadonlyMap<string, readonly Readonly<IrModule>[]>;
+  readonly normalizedPaths: Map<string, string>;
+  readonly packageOwners: ReadonlyMap<string, Readonly<IrModule>>;
+  readonly resolutionExact: ReadonlyMap<string, readonly string[]>;
+  readonly resolutionFallback: ReadonlyMap<string, readonly string[]>;
+  readonly specifierModules: Map<string, readonly Readonly<IrModule>[]>;
+  readonly typeAliasLocations: Map<string, readonly HaxeExternTypeAliasLocation[]>;
+}
+
+export function createHaxeExternEmissionIndex(
+  modules: readonly Readonly<IrModule>[],
+  moduleResolution: Readonly<CompilerModuleResolutionPlan> | undefined,
+): HaxeExternEmissionIndex {
+  const normalizedPaths = new Map<string, string>();
+  const normalize = (source: string) => {
+    const cached = normalizedPaths.get(source);
+    if (cached !== undefined) return cached;
+    const normalized = normalizePathPortable(source);
+    normalizedPaths.set(source, normalized);
+    return normalized;
+  };
+  const moduleKey = (module: Readonly<Pick<IrModule, 'name' | 'packageName' | 'source'>>) =>
+    `${module.packageName}\0${normalize(module.source)}\0${module.name}`;
+  const packageSourceKey = (packageName: string, source: string) => `${packageName}\0${normalize(source)}`;
+  const append = <Value>(map: Map<string, Value[]>, key: string, value: Value) => {
+    const values = map.get(key);
+    if (values) values.push(value);
+    else map.set(key, [value]);
+  };
+  const declarationLocations = new Map<string, HaxeExternDeclarationLocation[]>();
+  const importRoutes = new Map<string, HaxeExternImportRoute[]>();
+  const modulesByPackage = new Map<string, Readonly<IrModule>[]>();
+  const modulesByPackageSource = new Map<string, Readonly<IrModule>[]>();
+  const moduleOrdinals = new Map<string, number>();
+  modules.forEach((module, ordinal) => {
+    moduleOrdinals.set(moduleKey(module), ordinal);
+    append(modulesByPackage, module.packageName, module);
+    append(modulesByPackageSource, packageSourceKey(module.packageName, module.source), module);
+    for (const declaration of module.declarations) {
+      if ('binding' in declaration) append(declarationLocations, declaration.binding.id, { declaration, module });
+    }
+    for (const imported of module.imports) {
+      for (const candidate of imported.bindings) {
+        append(importRoutes, candidate.binding.id, {
+          from: module,
+          imported: candidate.imported,
+          specifier: imported.specifier,
+        });
+      }
+    }
+  });
+  const resolutionExact = new Map<string, string[]>();
+  const resolutionFallback = new Map<string, string[]>();
+  for (const edge of moduleResolution?.edges ?? []) {
+    const target = packageSourceKey(edge.target.packageName, edge.target.source);
+    append(
+      edge.importer ? resolutionExact : resolutionFallback,
+      edge.importer ? `${moduleKey(edge.importer)}\0${edge.specifier}` : edge.specifier,
+      target,
+    );
+  }
+  const packageOwners = new Map<string, Readonly<IrModule>>();
+  for (const [packageName, packageModules] of modulesByPackage) {
+    const owner = [...packageModules].sort(compareModulesHaxeExtern)[0];
+    if (owner) packageOwners.set(packageName, owner);
+  }
+  return {
+    declarationLocations,
+    exportedTypeAliases: new Map(),
+    importRoutes,
+    localExportNames: new Map(),
+    moduleOrdinals,
+    modules,
+    modulesByPackage,
+    modulesByPackageSource,
+    normalizedPaths,
+    packageOwners,
+    resolutionExact,
+    resolutionFallback,
+    specifierModules: new Map(),
+    typeAliasLocations: new Map(),
+  };
+}
+
 export function emitIrModuleHaxeExtern(
   module: Readonly<IrModule>,
   options: Readonly<HaxeCompilerBackendOptions> = {},
@@ -82,6 +184,7 @@ export function emitIrModuleHaxeExternWithContext(
   interfaceInheritancePass?: Readonly<CompilerLoweringPass> | undefined,
   packageContract?: Readonly<IrModule> | undefined,
   getModuleFacade?: ((module: Readonly<IrModule>) => CompilerModuleFacadePlan | undefined) | undefined,
+  emissionIndex?: HaxeExternEmissionIndex | undefined,
 ): readonly EmittedFile[] {
   const ambientUtilityHeritageTargets = createAmbientUtilityHeritageTargetsHaxeExtern(sourceModule);
   const inheritancePass =
@@ -96,16 +199,17 @@ export function emitIrModuleHaxeExternWithContext(
         canEraseCompilerAmbientUtilityHeritageHaxe(reference),
     });
   const module = lowerIrModuleWithCompilerPasses(sourceModule, [inheritancePass]);
-  const modules = replaceIrModuleHaxeExtern(sourceModules, module);
+  const index = emissionIndex ?? createHaxeExternEmissionIndex(sourceModules, moduleResolution);
   const contract = packageContract
-    ? (modules.find((candidate) => isSameModuleHaxeExtern(candidate, packageContract)) ?? packageContract)
+    ? isSameModuleHaxeExtern(module, packageContract, index)
+      ? module
+      : packageContract
     : undefined;
   const context: HaxeExternEmissionContext = {
     ambientUtilityHeritageTargets,
+    index,
     interfaceInheritancePass: inheritancePass,
     module,
-    moduleResolution,
-    modules,
     options,
     packageFacade: contract && getModuleFacade ? getModuleFacade(contract) : undefined,
     rootPackage: getRootPackageHaxeExtern(module.packageName, options),
@@ -117,7 +221,7 @@ export function emitIrModuleHaxeExternWithContext(
     if (declaration.kind === 'enum') return emitEnumFilesHaxeExtern(declaration, context);
     return [];
   });
-  if (isPackageHolderOwnerHaxeExtern(module, modules)) {
+  if (isPackageHolderOwnerHaxeExtern(module, index)) {
     const holder = emitPackageHolderHaxeExtern(module.packageName, context);
     if (holder) files.push(holder);
   }
@@ -126,7 +230,7 @@ export function emitIrModuleHaxeExternWithContext(
 
 function assertModuleShapeHaxeExtern(context: HaxeExternEmissionContext): void {
   if (context.packageFacade) {
-    if (!isPackageHolderOwnerHaxeExtern(context.module, context.modules)) return;
+    if (!isPackageHolderOwnerHaxeExtern(context.module, context.index)) return;
     for (const slot of getPackageFacadeSlotsHaxeExtern(context)) {
       if (slot.route.kind === 'expression') {
         emissionErrorHaxeExtern(context, 'default expression exports have no flight-hx extern representation');
@@ -143,7 +247,7 @@ function assertModuleShapeHaxeExtern(context: HaxeExternEmissionContext): void {
     }
   }
   for (const declaration of context.module.declarations) {
-    const exportNames = getLocalExportNamesHaxeExtern(declaration, context.module);
+    const exportNames = getLocalExportNamesHaxeExtern(declaration, context.module, context.index);
     if (exportNames.length === 0) continue;
     if (declaration.kind === 'variable' && !('binding' in declaration)) {
       emissionErrorHaxeExtern(
@@ -414,12 +518,11 @@ function collectPackageValuesHaxeExtern(
         }
         return [{ declaration: location.declaration, exportName: slot.exportName, module: location.module }];
       })
-    : context.modules
-        .filter((module) => module.packageName === packageName)
+    : (context.index.modulesByPackage.get(packageName) ?? [])
         .flatMap((module) =>
           module.declarations.flatMap((declaration) => {
             if (declaration.kind !== 'function' && declaration.kind !== 'variable') return [];
-            return getLocalExportNamesHaxeExtern(declaration, module).map((exportName) => ({
+            return getLocalExportNamesHaxeExtern(declaration, module, context.index).map((exportName) => ({
               declaration,
               exportName,
               module,
@@ -443,7 +546,7 @@ function getDeclarationExportNamesHaxeExtern(
   lane: 'type' | 'value',
 ): readonly string[] {
   if (!context.packageFacade || !('binding' in declaration)) {
-    return getLocalExportNamesHaxeExtern(declaration, context.module);
+    return getLocalExportNamesHaxeExtern(declaration, context.module, context.index);
   }
   return getPackageFacadeSlotsHaxeExtern(context)
     .filter(
@@ -451,7 +554,7 @@ function getDeclarationExportNamesHaxeExtern(
         slot.lane === lane &&
         slot.route.kind === 'binding' &&
         slot.route.binding.id === declaration.binding.id &&
-        isSameModuleHaxeExtern(slot.route.module, context.module),
+        isSameModuleHaxeExtern(slot.route.module, context.module, context.index),
     )
     .map((slot) => slot.exportName)
     .sort(compareTextCodeUnits);
@@ -465,11 +568,9 @@ function getFacadeDeclarationLocationHaxeExtern(
   route: Extract<CompilerModuleFacadePlan['modules'][number]['slots'][number]['route'], { kind: 'binding' }>,
   context: HaxeExternEmissionContext,
 ): { declaration: Readonly<IrDeclaration>; module: Readonly<IrModule> } | undefined {
-  const module = context.modules.find((candidate) => isSameModuleHaxeExtern(candidate, route.module));
-  const declaration = module?.declarations.find(
-    (candidate) => 'binding' in candidate && candidate.binding.id === route.binding.id,
-  );
-  return module && declaration ? { declaration, module } : undefined;
+  return context.index.declarationLocations
+    .get(route.binding.id)
+    ?.find((location) => isSameModuleHaxeExtern(location.module, route.module, context.index));
 }
 
 function assertPackageValueNamesHaxeExtern(
@@ -649,13 +750,9 @@ function getInterfaceLocationHaxeExtern(
 ): HaxeExternInterfaceLocation | undefined {
   if (reference.reference.kind !== 'binding' || reference.reference.binding.kind === 'import') return undefined;
   const binding = reference.reference.binding;
-  return context.modules
-    .flatMap((module) =>
-      module.declarations.flatMap((declaration) =>
-        declaration.kind === 'interface' && declaration.binding.id === binding.id ? [{ declaration, module }] : [],
-      ),
-    )
-    .at(0);
+  return context.index.declarationLocations
+    .get(binding.id)
+    ?.find((location): location is HaxeExternInterfaceLocation => location.declaration.kind === 'interface');
 }
 
 function isInterfacePublicHaxeExtern(
@@ -664,14 +761,14 @@ function isInterfacePublicHaxeExtern(
 ): boolean {
   const facadePackageName = context.packageFacade?.modules[0]?.module.packageName;
   if (!context.packageFacade || location.module.packageName !== facadePackageName) {
-    return getLocalExportNamesHaxeExtern(location.declaration, location.module).length > 0;
+    return getLocalExportNamesHaxeExtern(location.declaration, location.module, context.index).length > 0;
   }
   return getPackageFacadeSlotsHaxeExtern(context).some(
     (slot) =>
       slot.lane === 'type' &&
       slot.route.kind === 'binding' &&
       slot.route.binding.id === location.declaration.binding.id &&
-      isSameModuleHaxeExtern(slot.route.module, location.module),
+      isSameModuleHaxeExtern(slot.route.module, location.module, context.index),
   );
 }
 
@@ -681,33 +778,22 @@ function getTypeAliasLocationHaxeExtern(
 ): HaxeExternTypeAliasLocation | undefined {
   if (reference.reference.kind !== 'binding') return undefined;
   const binding = reference.reference.binding;
+  const cacheKey = `${binding.id}\0${reference.reference.path.join('\0')}`;
+  const cached = context.index.typeAliasLocations.get(cacheKey);
+  if (cached) return assertUniqueTypeAliasLocationHaxeExtern(binding.name, cached, context);
   if (binding.kind === 'typeAlias') {
-    return context.modules
-      .flatMap((module) =>
-        module.declarations.flatMap((declaration) =>
-          declaration.kind === 'typeAlias' && declaration.binding.id === binding.id ? [{ declaration, module }] : [],
-        ),
-      )
-      .at(0);
+    const locations =
+      context.index.declarationLocations
+        .get(binding.id)
+        ?.filter((location): location is HaxeExternTypeAliasLocation => location.declaration.kind === 'typeAlias') ?? [];
+    context.index.typeAliasLocations.set(cacheKey, locations);
+    return assertUniqueTypeAliasLocationHaxeExtern(binding.name, locations, context);
   }
   if (binding.kind !== 'import') return undefined;
-  const imported = context.modules.flatMap((module) =>
-    module.imports.flatMap((entry) =>
-      entry.bindings.flatMap((candidate) => {
-        if (candidate.binding.id !== binding.id) return [];
-        if (
-          candidate.imported === '*' &&
-          reference.reference.kind === 'binding' &&
-          reference.reference.path.length > 0
-        ) {
-          return [{ exportName: reference.reference.path[0]!, from: module, specifier: entry.specifier }];
-        }
-        return candidate.imported === '*'
-          ? []
-          : [{ exportName: candidate.imported, from: module, specifier: entry.specifier }];
-      }),
-    ),
-  );
+  const imported = (context.index.importRoutes.get(binding.id) ?? []).flatMap((route) => {
+    const exportName = route.imported === '*' ? reference.reference.path[0] : route.imported;
+    return exportName ? [{ exportName, from: route.from, specifier: route.specifier }] : [];
+  });
   const locations = imported.flatMap(({ exportName, from, specifier }) =>
     getSpecifierModulesHaxeExtern(from, specifier, context).flatMap((module) =>
       getExportedTypeAliasesHaxeExtern(module, exportName, context, new Set()),
@@ -725,10 +811,19 @@ function getTypeAliasLocationHaxeExtern(
       ]),
     ).values(),
   ];
-  if (unique.length > 1) {
-    emissionErrorHaxeExtern(context, `imported type alias ${binding.name} resolves ambiguously`);
+  context.index.typeAliasLocations.set(cacheKey, unique);
+  return assertUniqueTypeAliasLocationHaxeExtern(binding.name, unique, context);
+}
+
+function assertUniqueTypeAliasLocationHaxeExtern(
+  bindingName: string,
+  locations: readonly HaxeExternTypeAliasLocation[],
+  context: HaxeExternEmissionContext,
+): HaxeExternTypeAliasLocation | undefined {
+  if (locations.length > 1) {
+    emissionErrorHaxeExtern(context, `imported type alias ${bindingName} resolves ambiguously`);
   }
-  return unique[0];
+  return locations[0];
 }
 
 function getExportedTypeAliasesHaxeExtern(
@@ -737,7 +832,9 @@ function getExportedTypeAliasesHaxeExtern(
   context: HaxeExternEmissionContext,
   seen: ReadonlySet<string>,
 ): HaxeExternTypeAliasLocation[] {
-  const query = `${module.packageName}\0${normalizePathPortable(module.source)}\0${exportName}`;
+  const query = `${getModuleIdentityHaxeExtern(module, context.index)}\0${exportName}`;
+  const cached = seen.size === 0 ? context.index.exportedTypeAliases.get(query) : undefined;
+  if (cached) return [...cached];
   if (seen.has(query)) return [];
   const nextSeen = new Set(seen).add(query);
   const locations: HaxeExternTypeAliasLocation[] = module.declarations.flatMap((declaration) =>
@@ -762,6 +859,7 @@ function getExportedTypeAliasesHaxeExtern(
       }
     }
   }
+  if (seen.size === 0) context.index.exportedTypeAliases.set(query, locations);
   return locations;
 }
 
@@ -770,13 +868,7 @@ function getTypeBindingTargetHaxeExtern(
   context: HaxeExternEmissionContext,
 ): string {
   if (binding.kind === 'typeParameter') return safeHaxeExternTypeName(binding.name);
-  const declarationLocation = context.modules
-    .flatMap((module) =>
-      module.declarations.flatMap((declaration) =>
-        'binding' in declaration && declaration.binding.id === binding.id ? [{ declaration, module }] : [],
-      ),
-    )
-    .at(0);
+  const declarationLocation = context.index.declarationLocations.get(binding.id)?.[0];
   const declaration = declarationLocation?.declaration;
   const localExport = declarationLocation
     ? context.packageFacade &&
@@ -786,11 +878,11 @@ function getTypeBindingTargetHaxeExtern(
             slot.lane === 'type' &&
             slot.route.kind === 'binding' &&
             slot.route.binding.id === declarationLocation.declaration.binding.id &&
-            isSameModuleHaxeExtern(slot.route.module, declarationLocation.module),
+            isSameModuleHaxeExtern(slot.route.module, declarationLocation.module, context.index),
         )?.exportName
-      : getLocalExportNamesHaxeExtern(declarationLocation.declaration, declarationLocation.module)[0]
+      : getLocalExportNamesHaxeExtern(declarationLocation.declaration, declarationLocation.module, context.index)[0]
     : undefined;
-  const importedName = getImportedTypeNameHaxeExtern(binding, context.modules);
+  const importedName = getImportedTypeNameHaxeExtern(binding, context.index);
   if (declaration && localExport === undefined && declaration.kind === 'interface') {
     emissionErrorHaxeExtern(context, `private interface ${declaration.binding.name} was not structurally inlined`);
   }
@@ -802,30 +894,28 @@ function getTypeBindingTargetHaxeExtern(
 
 function getImportedTypeNameHaxeExtern(
   binding: Readonly<IrBindingIdentity | IrTypeBindingIdentity>,
-  modules: readonly Readonly<IrModule>[],
+  index: Readonly<HaxeExternEmissionIndex>,
 ): string | undefined {
   if (binding.kind !== 'import') return undefined;
-  for (const module of modules) {
-    for (const imported of module.imports) {
-      for (const candidate of imported.bindings) {
-        if (candidate.binding.id !== binding.id || candidate.imported === '*') continue;
-        return candidate.imported;
-      }
-    }
-  }
-  return undefined;
+  return index.importRoutes.get(binding.id)?.find((route) => route.imported !== '*')?.imported;
 }
 
 function getLocalExportNamesHaxeExtern(
   declaration: Readonly<IrDeclaration>,
   module: Readonly<IrModule>,
+  index: Readonly<HaxeExternEmissionIndex>,
 ): readonly string[] {
   if (!('binding' in declaration)) return declaration.exported ? ['default'] : [];
+  const cacheKey = `${getModuleIdentityHaxeExtern(module, index)}\0${declaration.binding.id}`;
+  const cached = index.localExportNames.get(cacheKey);
+  if (cached) return cached;
   const names = module.exports.flatMap((exported) =>
     exported.kind === 'local' && exported.binding.id === declaration.binding.id ? [exported.exported] : [],
   );
   if (names.length === 0 && declaration.exported) names.push(declaration.binding.name);
-  return [...new Set(names)].sort(compareTextCodeUnits);
+  const result = [...new Set(names)].sort(compareTextCodeUnits);
+  index.localExportNames.set(cacheKey, result);
+  return result;
 }
 
 function getSpecifierModulesHaxeExtern(
@@ -833,17 +923,31 @@ function getSpecifierModulesHaxeExtern(
   specifier: string,
   context: HaxeExternEmissionContext,
 ): readonly Readonly<IrModule>[] {
+  const cacheKey = `${getModuleIdentityHaxeExtern(from, context.index)}\0${specifier}`;
+  const cached = context.index.specifierModules.get(cacheKey);
+  if (cached) return cached;
   const candidates = getSpecifierSourceCandidatesHaxeExtern(from.source, specifier);
-  const matching = context.moduleResolution?.edges.filter((edge) => edge.specifier === specifier) ?? [];
-  const exact = matching.filter((edge) => edge.importer && isSameModuleHaxeExtern(edge.importer, from));
-  const targets = (exact.length > 0 ? exact : matching.filter((edge) => !edge.importer)).map(
-    (edge) => `${edge.target.packageName}\0${normalizePathPortable(edge.target.source)}`,
-  );
-  return context.modules.filter(
-    (module) =>
-      (module.packageName === from.packageName && candidates.has(normalizePathPortable(module.source))) ||
-      targets.includes(`${module.packageName}\0${normalizePathPortable(module.source)}`),
-  );
+  const exact = context.index.resolutionExact.get(cacheKey) ?? [];
+  const targets = exact.length > 0 ? exact : (context.index.resolutionFallback.get(specifier) ?? []);
+  const resolved = new Map<string, Readonly<IrModule>>();
+  for (const candidate of candidates) {
+    for (const module of context.index.modulesByPackageSource.get(
+      getPackageSourceIdentityHaxeExtern(from.packageName, candidate, context.index),
+    ) ?? []) {
+      resolved.set(getModuleIdentityHaxeExtern(module, context.index), module);
+    }
+  }
+  for (const target of targets) {
+    for (const module of context.index.modulesByPackageSource.get(target) ?? []) {
+      resolved.set(getModuleIdentityHaxeExtern(module, context.index), module);
+    }
+  }
+  const result = [...resolved].sort(
+    (left, right) =>
+      (context.index.moduleOrdinals.get(left[0]) ?? 0) - (context.index.moduleOrdinals.get(right[0]) ?? 0),
+  ).map(([, module]) => module);
+  context.index.specifierModules.set(cacheKey, result);
+  return result;
 }
 
 function getSpecifierSourceCandidatesHaxeExtern(source: string, specifier: string): ReadonlySet<string> {
@@ -889,20 +993,12 @@ function getPackageHolderNameHaxeExtern(packageName: string, options: Readonly<H
   return safeHaxeExternTypeName(packageSegment);
 }
 
-function isPackageHolderOwnerHaxeExtern(module: Readonly<IrModule>, modules: readonly Readonly<IrModule>[]): boolean {
-  const owner = modules
-    .filter((candidate) => candidate.packageName === module.packageName)
-    .sort(compareModulesHaxeExtern)[0];
-  return owner !== undefined && isSameModuleHaxeExtern(owner, module);
-}
-
-function replaceIrModuleHaxeExtern(
-  modules: readonly Readonly<IrModule>[],
-  replacement: Readonly<IrModule>,
-): readonly Readonly<IrModule>[] {
-  return [...modules.filter((module) => !isSameModuleHaxeExtern(module, replacement)), replacement].sort(
-    compareModulesHaxeExtern,
-  );
+function isPackageHolderOwnerHaxeExtern(
+  module: Readonly<IrModule>,
+  index: Readonly<HaxeExternEmissionIndex>,
+): boolean {
+  const owner = index.packageOwners.get(module.packageName);
+  return owner !== undefined && isSameModuleHaxeExtern(owner, module, index);
 }
 
 function replaceHaxeExternEmissionModule(
@@ -923,12 +1019,29 @@ function compareModulesHaxeExtern(left: Readonly<IrModule>, right: Readonly<IrMo
 function isSameModuleHaxeExtern(
   left: Readonly<Pick<IrModule, 'name' | 'packageName' | 'source'>>,
   right: Readonly<Pick<IrModule, 'name' | 'packageName' | 'source'>>,
+  index: Readonly<HaxeExternEmissionIndex>,
 ): boolean {
-  return (
-    left.packageName === right.packageName &&
-    normalizePathPortable(left.source) === normalizePathPortable(right.source) &&
-    left.name === right.name
-  );
+  return getModuleIdentityHaxeExtern(left, index) === getModuleIdentityHaxeExtern(right, index);
+}
+
+function getModuleIdentityHaxeExtern(
+  module: Readonly<Pick<IrModule, 'name' | 'packageName' | 'source'>>,
+  index: Readonly<HaxeExternEmissionIndex>,
+): string {
+  return `${getPackageSourceIdentityHaxeExtern(module.packageName, module.source, index)}\0${module.name}`;
+}
+
+function getPackageSourceIdentityHaxeExtern(
+  packageName: string,
+  source: string,
+  index: Readonly<HaxeExternEmissionIndex>,
+): string {
+  let normalized = index.normalizedPaths.get(source);
+  if (normalized === undefined) {
+    normalized = normalizePathPortable(source);
+    index.normalizedPaths.set(source, normalized);
+  }
+  return `${packageName}\0${normalized}`;
 }
 
 function getDeclarationIdentityHaxeExtern(

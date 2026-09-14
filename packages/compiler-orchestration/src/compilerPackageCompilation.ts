@@ -594,8 +594,14 @@ function collectCompilerPackageGraphReachableKeys(
 }
 
 function getCompilerPackageGraphModuleKey(identity: Readonly<CompilerModuleIdentity>): string {
-  return JSON.stringify([identity.packageName, normalizePathPortable(identity.source), identity.name]);
+  const cached = compilerPackageGraphModuleKeyCache.get(identity);
+  if (cached !== undefined) return cached;
+  const key = JSON.stringify([identity.packageName, normalizePathPortable(identity.source), identity.name]);
+  compilerPackageGraphModuleKeyCache.set(identity, key);
+  return key;
 }
+
+const compilerPackageGraphModuleKeyCache = new WeakMap<object, string>();
 
 function propagateCompilerPackageGraphRefusals(
   records: Map<string, ModuleEmissionRecord>,

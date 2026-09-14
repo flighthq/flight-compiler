@@ -90,7 +90,7 @@ import type {
 } from '../../compiler-types/src/index.js';
 import { getCompilerHaxeAmbientMemberBinding } from './haxeAmbientMemberBinding.js';
 import { convertPackageNameToHaxePackageName, convertSourcePathToHaxeModuleName } from './haxeCompilerIdentity.js';
-import { emitIrModuleHaxeExternWithContext } from './haxeExternEmission.js';
+import { createHaxeExternEmissionIndex, emitIrModuleHaxeExternWithContext } from './haxeExternEmission.js';
 import { createCompilerRuntimeExternalConstructorAbiPlanHaxe } from './haxeRuntimeExternalConstructorAbi.js';
 import {
   canEraseCompilerAmbientUtilityHeritageHaxe,
@@ -146,6 +146,13 @@ export function createHaxeCompilerBackend(): CompilerBackend<HaxeCompilerBackend
   return {
     createEmissionSession({ moduleResolution, modules, options }) {
       const getModuleFacade = createCompilerModuleFacadePlannerHaxe(modules, moduleResolution);
+      const externEmissionIndex = createHaxeExternEmissionIndex(modules, moduleResolution);
+      const packageContractModules = new Map(
+        [...new Set(modules.map((module) => module.packageName))].map((packageName) => [
+          packageName,
+          getPackageContractModuleHaxe(packageName, modules, moduleResolution),
+        ]),
+      );
       const ambientUtilityHeritageBindingIds = new Set(
         modules.flatMap((module) => [...createAmbientUtilityHeritageTargetsHaxe(module).keys()]),
       );
@@ -171,8 +178,9 @@ export function createHaxeCompilerBackend(): CompilerBackend<HaxeCompilerBackend
                 moduleResolution,
                 options,
                 interfaceInheritancePass,
-                getPackageContractModuleHaxe(module.packageName, modules, moduleResolution),
+                packageContractModules.get(module.packageName),
                 getModuleFacade,
+                externEmissionIndex,
               )
             : [
                 emitIrModuleHaxeWithContext(
