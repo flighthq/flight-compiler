@@ -3379,7 +3379,9 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
 
     expect(result.diagnostics).toEqual([]);
-    expect(emitted.contents).toContain('auto channel = object_pattern_value->channel;');
+    expect(emitted.contents).toContain(
+      'const std::optional<flight::String> channel = flight::row_get<flight::RowKey<"channel">>(object_pattern_value);',
+    );
     expect(emitted.contents).toContain('return channel;');
   });
 
@@ -4076,15 +4078,19 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
   it('erases fully materialized closed ambient Pick heritage', () => {
     const result = lower(
       'GlContext.ts',
-      `type GlContextMember = 'ACTIVE_TEXTURE' | 'clear';
+      `interface WebGL2RenderingContext {
+         readonly ACTIVE_TEXTURE: number;
+         clear(mask: number): void;
+       }
+       type GlContextMember = 'ACTIVE_TEXTURE' | 'clear';
        export interface GlContext extends Pick<WebGL2RenderingContext, GlContextMember> {}`,
     );
     const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
 
     expect(result.diagnostics).toEqual([]);
     expect(emitted.contents).toContain('struct GlContext : public flight::ReferenceEnabled');
-    expect(emitted.contents).toContain('auto active_texture;');
-    expect(emitted.contents).toContain('auto clear;');
+    expect(emitted.contents).toContain('double active_texture;');
+    expect(emitted.contents).toContain('std::function<void(double)> clear;');
 
     const incomplete = {
       ...result.module,
@@ -4094,9 +4100,9 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
           : declaration,
       ),
     };
-    expect(() => emitIrModuleCpp(incomplete, { runtimeProfile: 'flight-cpp' })).toThrow(
-      'inherits a nonlocal interface that cannot be structurally resolved',
-    );
+    const completed = emitIrModuleCpp(incomplete, { runtimeProfile: 'flight-cpp' });
+    expect(completed.contents).toContain('double active_texture;');
+    expect(completed.contents).toContain('std::function<void(double)> clear;');
 
     const open = lower(
       'OpenGlContext.ts',
