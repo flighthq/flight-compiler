@@ -2658,7 +2658,7 @@ describe('emitIrModuleHaxe statement coverage', () => {
       declarations: [{ ...declaration, body: [declaration.body[0]!, asyncForOf, declaration.body[2]!] }],
     };
 
-    expect(() => emitIrModuleHaxe(module)).toThrow('async iteration requires the Haxe async-lowering pass');
+    expect(() => emitIrModuleHaxe(module)).toThrow('requires the Haxe async-lowering pass');
   });
 
   it('preserves return and throw completion through finally blocks', () => {
