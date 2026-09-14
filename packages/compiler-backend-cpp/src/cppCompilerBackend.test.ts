@@ -3295,6 +3295,16 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(emitted.contents).not.toContain('flight::String(');
   });
 
+  it('visits closed variants for global String conversion', () => {
+    const result = lower(
+      'variant-string.ts',
+      'export function convert(value: number | string): string { return String(value); }',
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+
+    expect(emitted.contents).toContain('std::visit([](const auto& value) { return flight::to_string(value); }, value)');
+  });
+
   it('emits enum member access with scoped resolution', () => {
     const result = lower(
       'enum-access.ts',
@@ -8002,6 +8012,7 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(output).toMatch(/for \(const auto& \[array_spread_key(?:_\d+)?, array_spread_mapped_value(?:_\d+)?\]/u);
     expect(output).toContain('std::make_tuple(array_spread_key');
     expect(output).toMatch(/for \(const auto& \[for_of_key(?:_\d+)?, for_of_value(?:_\d+)?\] : values\)/u);
+    expect(output).not.toContain('.sort(std::optional<');
     expect(output).not.toContain('.values()');
     expect(output).not.toContain('.entries()');
   });

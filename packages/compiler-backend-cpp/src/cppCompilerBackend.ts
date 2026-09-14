@@ -1591,8 +1591,16 @@ function emitExpression(
         expression.callee.reference.name === 'String' &&
         expression.arguments.length === 1
       ) {
-        const arg = emitExpression(expression.arguments[0]!, context);
+        const argument = expression.arguments[0]!;
+        const arg = emitExpression(argument, context);
         if (getCppRuntimeProfile(context.options) === 'flight-cpp') {
+          const argumentType = getIrExpressionTypeEvidenceCpp(argument, context);
+          const union = argumentType ? getIrUnionTypeCpp(argumentType, context, new Set()) : undefined;
+          const plan = union ? getCppUnionRepresentationPlan(union, context) : undefined;
+          if (plan?.kind === 'multiVariant') {
+            context.includes.add('variant');
+            return `std::visit([](const auto& value) { return flight::to_string(value); }, ${arg})`;
+          }
           return `flight::to_string(${arg})`;
         }
         context.includes.add('string');
@@ -5653,6 +5661,11 @@ function getIrCallArgumentExpectedTypeCpp(
   const collectionType = getCppCollectionCallArgumentExpectedTypeCpp(expression, index, context);
   if (collectionType) return collectionType;
   if (expression.callee.kind === 'property' && expression.callee.member) {
+    const argument = expression.arguments[index];
+    if (argument?.kind === 'function') {
+      const callable = getIrExpressionTypeEvidenceCpp(argument, context);
+      if (callable) return callable;
+    }
     const provided = getIrInvocationProvidedArgumentTypeCpp(expression, index);
     if (provided) return provided;
   }
@@ -5672,9 +5685,15 @@ function getCppCollectionCallArgumentExpectedTypeCpp(
   index: number,
   context: EmitContext,
 ): Readonly<IrType> | undefined {
-  if (expression.callee.kind !== 'property' || !expression.callee.member) return undefined;
+  if (expression.callee.kind !== 'property') return undefined;
   const { member, name, object } = expression.callee;
-  const collection = getIrAmbientCollectionTypeCpp(getIrExpressionTypeEvidenceCpp(object, context), context, new Set());
+  const objectType = getIrExpressionTypeEvidenceCpp(object, context);
+  if (index === 0 && name === 'sort' && getIrArrayTypeCpp(objectType, context, new Set())) {
+    const expected = getIrInvocationArgumentExpectedTypeCpp(expression, index);
+    return expected ? (getCppNonNullableType(expected, context, new Set()) ?? expected) : undefined;
+  }
+  if (!member) return undefined;
+  const collection = getIrAmbientCollectionTypeCpp(objectType, context, new Set());
   if (!collection) return undefined;
   if (member.receiver === 'map') {
     if (index === 0 && ['delete', 'get', 'has', 'set'].includes(name)) return collection.typeArguments[0];
