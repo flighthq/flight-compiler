@@ -5646,6 +5646,26 @@ describe('lowerTypeScriptSources', () => {
     expect(result!.diagnostics).toEqual([]);
   });
 
+  it('uses instantiated checker evidence for ambient mapped call results', () => {
+    const sourceFile = ts.createSourceFile(
+      '/flight/packages/runtime/src/settle.ts',
+      `export function settle(items: Promise<void>[]): void {
+         const result = Promise.allSettled(items);
+         void result;
+       }
+       export async function wait(items: Promise<void>[]): Promise<void> {
+         await Promise.allSettled(items);
+       }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const [result] = lowerTypeScriptSources([
+      { packageName: '@flighthq/runtime', sourceFile, upstreamDirectory: '/flight' },
+    ]);
+
+    expect(result!.diagnostics).toEqual([]);
+  });
+
   it('materializes closed ambient Pick heritage with checker-resolved project aliases', () => {
     const sourceFile = ts.createSourceFile(
       '/flight/packages/types/src/GlContext.ts',

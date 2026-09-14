@@ -1673,9 +1673,23 @@ function getTypeScriptInstantiatedCallResultTypeEvidence(
   ) {
     return undefined;
   }
-  const callee = removeIrTypeBindingPatternUndefined(
-    getTypeScriptExpressionBindingTypeEvidence(node.expression, context),
-  );
+  let callee: Readonly<IrType> | undefined;
+  try {
+    callee = removeIrTypeBindingPatternUndefined(
+      getTypeScriptExpressionBindingTypeEvidence(node.expression, context),
+    );
+  } catch (error) {
+    if (!isUnsupportedSyntaxFailure(error)) throw error;
+    const instantiated = getTypeScriptCheckerTypeEvidence(
+      context.checker.getTypeAtLocation(node),
+      context,
+      0,
+      true,
+      node,
+    );
+    if (instantiated) return instantiated;
+    throw error;
+  }
   if (callee?.kind === 'function') {
     return (ts.isPropertyAccessExpression(node.expression) || ts.isElementAccessExpression(node.expression)) &&
       node.expression.questionDotToken
