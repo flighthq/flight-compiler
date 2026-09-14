@@ -851,7 +851,8 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
             }
             return `${binding.targetPath}(${receiver}, ${emitExchangedClosureHaxe(fold, context)}, ${emitExpression(initial, context)})`;
           }
-          const intPositions = binding.kind === 'method' ? (binding.intArguments ?? []) : [];
+          const intPositions =
+            binding.kind === 'method' || binding.kind === 'runtimeCall' ? (binding.intArguments ?? []) : [];
           const values = expression.arguments.map((argument, position) => {
             const emitted = emitExpression(argument, context);
             if (intPositions.includes(position)) {
