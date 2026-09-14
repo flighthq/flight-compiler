@@ -302,8 +302,8 @@ describe('createCppCompilerBackend', () => {
     const emitted = session.emitModule(consumer)[0]!.contents;
 
     expect(aliases.match(/template <typename Reason>/gu)).toHaveLength(3);
-    expect(aliases).toContain(
-      'using Outcome = std::variant<flight::Ref<reason_1<Reason>>, flight::Ref<reason<Reason>>>;',
+    expect(aliases).toMatch(
+      /using Outcome = std::variant<flight::Ref<reason_[0-9a-f]{16}<Reason>>, flight::Ref<reason_[0-9a-f]{16}<Reason>>>;/u,
     );
     expect(emitted).toContain('flighthq_types::Outcome<flight::String> accept(');
     expect(emitted).not.toContain('flight::Ref<flighthq_types::Outcome');
@@ -2027,9 +2027,8 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
 
     const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
 
-    expect(emitted.contents).toContain('flight::make_ref<value>(value{.value = 0.0})');
-    expect(emitted.contents).toContain(
-      'flight::make_binding_cell(flight::Ref<value>{flight::make_ref<value>(value{.value = 0.0})})',
+    expect(emitted.contents).toMatch(
+      /flight::make_binding_cell\(flight::Ref<(value_[0-9a-f]{16})>\{flight::make_ref<\1>\(\1\{\.value = 0\.0\}\)\}\)/u,
     );
     expect(emitted.contents).toContain('state_capture.read_binding()->value += 1.0');
     expect(emitted.contents).toContain('return alias->value');
@@ -2069,7 +2068,7 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
 
     const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
 
-    expect(emitted.contents).toContain('inline flight::Ref<value> state');
+    expect(emitted.contents).toMatch(/inline flight::Ref<value_[0-9a-f]{16}> state/u);
     expect(emitted.contents).toContain('state->value += 1.0');
   });
 
@@ -2991,7 +2990,7 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     const emitted = emitIrModuleCpp(result.module);
 
     expect(emitted.contents).toContain('#include <variant>');
-    expect(emitted.contents).toContain('return std::get<0>(x)');
+    expect(emitted.contents).toContain('return std::get<double>(x)');
 
     const invalid = structuredClone(result.module);
     const declaration = invalid.declarations[0];
@@ -3304,7 +3303,7 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     const emitted = emitIrModuleCpp(result.module);
 
     expect(emitted.contents).toContain('std::variant<bool, double, std::string> input');
-    expect(emitted.contents).toContain('return std::get<1>(input)');
+    expect(emitted.contents).toContain('return std::get<double>(input)');
   });
 
   it('emits nullable types as std::optional', () => {
@@ -4410,7 +4409,7 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     );
     const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
     const anonymousStructs = emitted.match(
-      /struct entity_id_reason_(?:info|state) : public flight::ReferenceEnabled \{[^}]+\};/gu,
+      /struct entity_id_reason_(?:info|state)_[0-9a-f]{16} : public flight::ReferenceEnabled \{[^}]+\};/gu,
     );
 
     expect(emitted).toContain('#include <variant>');
@@ -4422,7 +4421,7 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(anonymousStructs?.some((struct) => struct.includes('flight::Ref<GPUDeviceLostInfo> info;'))).toBe(true);
     expect(anonymousStructs?.some((struct) => struct.includes('flight::Ref<WgpuRenderState> state;'))).toBe(true);
     expect(emitted).toMatch(
-      /using WgpuOffscreenRenderStateResult = std::variant<flight::Ref<entity_id_reason_(?:info|state)>, flight::Ref<entity_id_reason_(?:info|state)>>;/u,
+      /using WgpuOffscreenRenderStateResult = std::variant<flight::Ref<entity_id_reason_(?:info|state)_[0-9a-f]{16}>, flight::Ref<entity_id_reason_(?:info|state)_[0-9a-f]{16}>>;/u,
     );
   });
 
@@ -4458,7 +4457,7 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
 
     expect(result.diagnostics).toEqual([]);
-    expect(emitted.contents).toContain('struct callable_overloads {');
+    expect(emitted.contents).toMatch(/struct callable_overloads_[0-9a-f]{16} \{/u);
     expect(emitted.contents).toContain(
       'std::function<flight::Task<flight::Ref<CapacitorPluginListenerHandle>>(flight::String, std::function<void(flight::Ref<AppState>)>)> overload_0;',
     );
@@ -4473,7 +4472,7 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
       'flight::Task<flight::Ref<CapacitorPluginListenerHandle>> operator()(flight::String argument_0, std::function<void(flight::Ref<OpenedUrl>)> argument_1) const',
     );
     expect(emitted.contents).toContain('return overload_1(argument_0, argument_1);');
-    expect(emitted.contents).toContain('callable_overloads add_listener;');
+    expect(emitted.contents).toMatch(/callable_overloads_[0-9a-f]{16} add_listener;/u);
     expect(emitted.contents).toContain('return plugin->add_listener(flight::String("appStateChange"), listener);');
     expect(emitted.contents).toContain('return plugin->add_listener(flight::String("appUrlOpen"), listener);');
   });
@@ -4713,7 +4712,7 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
 
     expect(emitted.contents).toContain('std::optional<double> count;');
     expect(emitted.contents).toContain('std::optional<std::string> label;');
-    expect(emitted.contents).toContain('void apply(count_label options)');
+    expect(emitted.contents).toMatch(/void apply\(count_label_[0-9a-f]{16} options\)/u);
   });
 
   it('resolves NonNullable over a named object indexed access', () => {
@@ -4767,7 +4766,7 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
 
     expect(emitted).toContain('std::optional<double> alpha;');
     expect(emitted).toContain('std::optional<bool> visible;');
-    expect(emitted).toContain('std::optional<flight::Ref<alpha_visible>> obj = std::nullopt');
+    expect(emitted).toMatch(/std::optional<flight::Ref<alpha_visible_[0-9a-f]{16}>> obj = std::nullopt/u);
     expect(emitted).toContain('auto optional_chain_receiver = obj;');
     expect(emitted).toContain('std::optional<double>');
     expect(emitted).not.toContain('std::optional<auto>');
