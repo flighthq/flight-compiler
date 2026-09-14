@@ -1575,6 +1575,9 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
       if (expression.operator === '++' || expression.operator === '--') {
         return emitNumericUpdateUnaryRust(expression, context);
       }
+      if (expression.operator === 'void') {
+        return `{ ${emitExpression(expression.operand, context)}; () }`;
+      }
       const operand =
         expression.semantics.operand.flow === 'number'
           ? emitNumericEnumOperandRust(expression.operand, context)

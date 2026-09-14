@@ -900,15 +900,20 @@ describe('emitIrModuleRust', () => {
       'export function type(a: number): string { return typeof a; }',
       'typeof requires Rust semantic lowering',
     ],
-    [
-      'prefix unary void',
-      'export function discard(a: number): void { void a; }',
-      'void requires Rust semantic lowering',
-    ],
   ])('refuses unsupported %s operators explicitly', (family, source, message) => {
     const result = lower(`${family.replaceAll(' ', '-')}-operator.ts`, source);
 
     expect(() => emitIrModuleRust(result.module)).toThrow(message);
+  });
+
+  it('evaluates and discards a void operand before producing Rust unit', () => {
+    const result = lower(
+      'void-operator.ts',
+      'function value(): number { return 1; } export function discard(): void { return void value(); }',
+    );
+    const output = emitIrModuleRust(result.module).contents;
+
+    expect(output).toContain('return { value(); () };');
   });
 
   it('emits nullable and optional parameters but rejects bare undefined expressions', () => {
