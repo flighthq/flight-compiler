@@ -171,4 +171,12 @@ describe('getCompilerRustAmbientMemberBinding', () => {
       targetName: 'position',
     });
   });
+
+  it('maps flatMap to a collected Rust flat-map iterator', () => {
+    expect(getCompilerRustAmbientMemberBinding({ name: 'flatMap', receiver: 'array' })).toEqual({
+      collect: true,
+      kind: 'iterator',
+      targetName: 'flat_map',
+    });
+  });
 });

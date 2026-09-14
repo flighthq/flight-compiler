@@ -6457,6 +6457,19 @@ describe('emitIrModuleRust', () => {
     expect(output).toContain('collect');
   });
 
+  it('emits array flatMap as a collected Rust flat-map iterator', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'flat-map.ts',
+        `export function pairs(items: number[]): number[] {
+          return items.flatMap((x: number): number[] => [x, x + 1]);
+        }`,
+      ).module,
+    ).contents;
+    expect(output).toContain('.into_iter().flat_map(');
+    expect(output).toContain('.collect::<Vec<_>>()');
+  });
+
   it('emits array indexOf as position search', () => {
     const output = emitIrModuleRust(
       lower(
