@@ -7559,6 +7559,19 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(output).toContain('listener(args)');
   });
 
+  it('packs direct trailing arguments for a represented rest-array parameter', () => {
+    const output = emitIrModuleCpp(
+      lower(
+        'rest-array-direct-call.ts',
+        `function setValues(out: number[], ...values: number[]): void { out.push(...values); }
+         export function write(out: number[], value: number): void { setValues(out, value, 0, 1); }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+
+    expect(output).toContain('set_values(out, flight::Array<double>{value, 0.0, 1.0})');
+  });
+
   it('materializes Array.from over ordered map keys without an unbound static member', () => {
     const output = emitIrModuleCpp(
       lower(

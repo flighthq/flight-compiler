@@ -59,6 +59,7 @@ import type {
   IrEnumDeclaration,
   IrExpression,
   IrFunctionDeclaration,
+  IrFunctionTypeParameter,
   IrBindingIdentity,
   IrInterfaceDeclaration,
   IrModule,
@@ -1443,23 +1444,25 @@ function emitExpression(
         callableExpression.kind === 'function'
           ? `(${emitExpression(callableExpression, context)})`
           : emitExpression(callableExpression, context);
-      const args = expression.arguments.map((argument, index) => {
-        const dependentSpread = emitCppDependentCallableSpreadArgument(
-          argument,
-          index,
-          expression.arguments.length,
-          context,
-        );
-        if (dependentSpread) return dependentSpread;
-        if (
-          argument.kind === 'spread' &&
-          expression.semantics.signature?.restParameter === index &&
-          index === expression.arguments.length - 1
-        ) {
-          return emitExpression(argument.expression, context);
-        }
-        return emitExpression(argument, context, getIrCallArgumentExpectedTypeCpp(expression, index, context));
-      });
+      const args =
+        emitCppClosedRestCallArguments(expression, context) ??
+        expression.arguments.map((argument, index) => {
+          const dependentSpread = emitCppDependentCallableSpreadArgument(
+            argument,
+            index,
+            expression.arguments.length,
+            context,
+          );
+          if (dependentSpread) return dependentSpread;
+          if (
+            argument.kind === 'spread' &&
+            expression.semantics.signature?.restParameter === index &&
+            index === expression.arguments.length - 1
+          ) {
+            return emitExpression(argument.expression, context);
+          }
+          return emitExpression(argument, context, getIrCallArgumentExpectedTypeCpp(expression, index, context));
+        });
       const invocationTarget = getCppCallableObjectExpressionCpp(expression.callee, context) ? `(*${callee})` : callee;
       return `${invocationTarget}${emitCppTypeArguments(expression.typeArguments, context)}(${args.join(', ')})`;
     }
@@ -5117,6 +5120,41 @@ function getIrCallArgumentExpectedTypeCpp(
     (candidate) => candidate.kind === 'function' && candidate.binding.id === bindingId,
   );
   return declaration?.kind === 'function' ? declaration.parameters[index]?.type : undefined;
+}
+
+function emitCppClosedRestCallArguments(
+  expression: Readonly<Extract<IrExpression, { kind: 'call' }>>,
+  context: EmitContext,
+): readonly string[] | undefined {
+  const restIndex = expression.semantics.signature?.restParameter;
+  if (restIndex === undefined) return undefined;
+  const parameter = getCppClosedRestCallParameterCpp(expression, restIndex, context);
+  if (!parameter?.rest || parameter.type.kind !== 'array') return undefined;
+  if ('dependentCallablePack' in parameter && parameter.dependentCallablePack) return undefined;
+  const restType = parameter.type;
+  const trailing = expression.arguments.slice(restIndex);
+  if (trailing.some((argument) => argument.kind === 'spread')) return undefined;
+  const fixed = expression.arguments
+    .slice(0, restIndex)
+    .map((argument, index) =>
+      emitExpression(argument, context, getIrCallArgumentExpectedTypeCpp(expression, index, context)),
+    );
+  const values = trailing.map((argument) => emitExpression(argument, context, restType.element));
+  return [...fixed, `${emitType(restType, context)}{${values.join(', ')}}`];
+}
+
+function getCppClosedRestCallParameterCpp(
+  expression: Readonly<Extract<IrExpression, { kind: 'call' }>>,
+  restIndex: number,
+  context: EmitContext,
+): Readonly<IrParameter> | Readonly<IrFunctionTypeParameter> | undefined {
+  if (expression.callee.kind === 'function') return expression.callee.parameters[restIndex];
+  if (expression.callee.kind === 'identifier' && expression.callee.reference.kind === 'binding') {
+    const declaration = getCppFunctionDeclarationForBindingCpp(expression.callee.reference.binding.id, context);
+    if (declaration) return declaration.parameters[restIndex];
+  }
+  const calleeType = getIrExpressionTypeEvidenceCpp(expression.callee, context);
+  return calleeType ? getCppClosedCallableType(calleeType, context, new Set())?.parameters[restIndex] : undefined;
 }
 
 function getCppDependentCallableSpreadParameter(
