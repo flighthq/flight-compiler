@@ -2935,11 +2935,12 @@ function isEntityConstraintHaxe(type: Readonly<IrType>, context: EmitContext): b
 
 function isEntityConstraintHaxeInModule(type: Readonly<IrType>, module: Readonly<IrModule>): boolean {
   if (type.kind !== 'named' || type.reference.kind !== 'binding' || type.reference.path.length > 0) return false;
-  if (type.reference.binding.name === 'Entity') return true;
-  if (type.reference.binding.kind !== 'import') return false;
+  const binding = type.reference.binding;
+  if (binding.name === 'Entity') return true;
+  if (binding.kind !== 'import') return false;
   return module.imports.some((imported) =>
     imported.bindings.some(
-      (binding) => binding.binding.id === type.reference.binding.id && binding.imported === 'Entity',
+      (importedBinding) => importedBinding.binding.id === binding.id && importedBinding.imported === 'Entity',
     ),
   );
 }
