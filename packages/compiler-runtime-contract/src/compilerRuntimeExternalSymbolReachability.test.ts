@@ -1,6 +1,6 @@
 import ts from 'typescript';
 
-import { lowerTypeScriptSource } from '../../compiler-semantic/src/index.js';
+import { lowerTypeScriptSource, lowerTypeScriptSources } from '../../compiler-semantic/src/index.js';
 import type { IrModule } from '../../compiler-types/src/index.js';
 import { collectIrModulesRuntimeExternalSymbolIdentities } from './compilerRuntimeExternalSymbolReachability.js';
 
@@ -156,6 +156,28 @@ describe('collectIrModulesRuntimeExternalSymbolIdentities', () => {
 
     expect(collectIrModulesRuntimeExternalSymbolIdentities([])).toEqual([]);
     expect(collectIrModulesRuntimeExternalSymbolIdentities([lowered.module])).toEqual([]);
+  });
+
+  it('does not elect instantiated ambient method type parameters as runtime symbols', () => {
+    const sourceFile = ts.createSourceFile(
+      '/flight/packages/runtime/src/ambient-methods.ts',
+      `export function visit<T>(items: T[], values: Map<string, T>): void {
+         for (const item of Object.values(items)) void item;
+         for (const value of values.values()) void value;
+         items.flat(1);
+       }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const [lowered] = lowerTypeScriptSources([
+      { packageName: '@flighthq/runtime', sourceFile, upstreamDirectory: '/flight' },
+    ]);
+
+    expect(lowered!.diagnostics).toEqual([]);
+    expect(collectIrModulesRuntimeExternalSymbolIdentities([lowered!.module])).toEqual([
+      { sourceName: 'Map', space: 'type' },
+      { sourceName: 'Object', space: 'value' },
+    ]);
   });
 
   it('treats PropertyKey as a closed compiler-intrinsic type', () => {

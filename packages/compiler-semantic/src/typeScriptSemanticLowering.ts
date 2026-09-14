@@ -1690,7 +1690,7 @@ function getTypeScriptInstantiatedCallResultTypeEvidence(
     if (instantiated) return instantiated;
     throw error;
   }
-  if (callee?.kind === 'function') {
+  if (callee?.kind === 'function' && callee.typeParameters.length === 0) {
     return (ts.isPropertyAccessExpression(node.expression) || ts.isElementAccessExpression(node.expression)) &&
       node.expression.questionDotToken
       ? addIrTypeBindingPatternUndefined(callee.returns)
@@ -6424,6 +6424,23 @@ function getTypeScriptExpressionBindingTypeEvidence(
       return declaration.questionToken ? { kind: 'union', types: [written, { kind: 'undefined' }] } : written;
     }
     if (declaration && (ts.isMethodSignature(declaration) || ts.isMethodDeclaration(declaration))) {
+      const externalTypeParameter = [declaration.type, ...declaration.parameters.map((parameter) => parameter.type)]
+        .filter((type): type is ts.TypeNode => type !== undefined)
+        .some((type) => hasExternalTypeScriptTypeParameter(type, context));
+      if (externalTypeParameter) {
+        const instantiated = getTypeScriptCheckerTypeEvidence(
+          context.checker.getTypeAtLocation(expression),
+          context,
+          0,
+          true,
+          expression,
+        );
+        if (instantiated?.kind === 'function') {
+          return declaration.questionToken
+            ? { kind: 'union', types: [instantiated, { kind: 'undefined' }] }
+            : instantiated;
+        }
+      }
       const written = lowerFunctionType(declaration, context);
       return declaration.questionToken ? { kind: 'union', types: [written, { kind: 'undefined' }] } : written;
     }
