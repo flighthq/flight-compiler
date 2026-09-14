@@ -179,6 +179,8 @@ interface EmitContext {
   resolvingInitializerBindingIds: Set<string>;
   returnsAbsent: boolean;
   sharedCaptureTargetNames: ReadonlyMap<string, string>;
+  sourceModules: readonly Readonly<IrModule>[];
+  targetNameMaps: ReadonlyMap<string, ReadonlyMap<string, string>>;
   targetNames: ReadonlyMap<string, string>;
   uninitializedCaptureStorageBindingIds: ReadonlySet<string>;
   generatedNames: Set<string>;
@@ -196,6 +198,7 @@ export function createCppCompilerBackend(): CompilerBackend<CppCompilerBackendOp
       const interfaceInheritancePass = createCompilerLoweringPassInterfaceInheritanceCpp(modules, moduleResolution);
       const directBindingOwners = createCppDirectBindingOwners(modules);
       const importBindingOwners = createCppImportBindingOwners(modules);
+      const targetNameMaps = createCppTargetNameMaps(modules);
       return Object.freeze({
         emitModule(module: Readonly<IrModule>) {
           return [
@@ -208,6 +211,7 @@ export function createCppCompilerBackend(): CompilerBackend<CppCompilerBackendOp
               interfaceInheritancePass,
               directBindingOwners,
               importBindingOwners,
+              targetNameMaps,
             ),
           ];
         },
@@ -236,6 +240,7 @@ function emitIrModuleCppWithContext(
   interfaceInheritancePass?: Readonly<CompilerLoweringPass> | undefined,
   directBindingOwners?: ReadonlyMap<string, CppDirectBindingOwner | null> | undefined,
   importBindingOwners?: ReadonlyMap<string, CppImportBindingOwner | null> | undefined,
+  targetNameMaps?: ReadonlyMap<string, ReadonlyMap<string, string>> | undefined,
 ): EmittedFile {
   let module: IrModule;
   try {
@@ -259,7 +264,9 @@ function emitIrModuleCppWithContext(
   assertRuntimeExternalSymbolBindingsCpp(module, options);
   let targetNames: Map<string, string>;
   try {
-    targetNames = createCppTargetNameMap(module);
+    targetNames = new Map(
+      (targetNameMaps ?? createCppTargetNameMaps(sourceModules)).get(getCppModuleIdentityKey(module)) ?? [],
+    );
   } catch (error) {
     if (isCompilerTargetNameAllocationFailure(error)) {
       throw createBackendEmissionFailure(
@@ -310,6 +317,8 @@ function emitIrModuleCppWithContext(
     resolvingInitializerBindingIds: new Set(),
     returnsAbsent: false,
     sharedCaptureTargetNames,
+    sourceModules,
+    targetNameMaps: targetNameMaps ?? createCppTargetNameMaps(sourceModules),
     targetNames,
     uninitializedCaptureStorageBindingIds,
     generatedNames: new Set(targetNames.values()),
@@ -420,30 +429,67 @@ function createCompilerLoweringPassInterfaceInheritanceCpp(
   });
 }
 
-function createCppTargetNameMap(module: Readonly<IrModule>): Map<string, string> {
-  const publicNameGroups = new Map<string, (IrBindingIdentity | IrTypeBindingIdentity)[]>();
-  for (const declaration of module.declarations) {
-    if (!declaration.exported) continue;
-    for (const binding of collectCppPublicDeclarationBindings(declaration)) {
-      const preferredName = getCppPreferredBindingName(binding).normalize('NFC');
-      const group = publicNameGroups.get(preferredName) ?? [];
-      group.push(binding);
-      publicNameGroups.set(preferredName, group);
+function createCppTargetNameMaps(
+  modules: readonly Readonly<IrModule>[],
+): ReadonlyMap<string, ReadonlyMap<string, string>> {
+  const entries = modules.flatMap((module) => {
+    const exportedIds = new Set([
+      ...module.declarations.flatMap((declaration) =>
+        declaration.exported ? collectCppPublicDeclarationBindings(declaration).map((binding) => binding.id) : [],
+      ),
+      ...module.exports.flatMap((exported) => (exported.kind === 'local' ? [exported.binding.id] : [])),
+    ]);
+    return module.declarations.flatMap((declaration) =>
+      collectCppPublicDeclarationBindings(declaration).map((binding) => ({
+        binding,
+        exported: exportedIds.has(binding.id),
+        module,
+        preferredName: getCppPreferredBindingName(binding).normalize('NFC'),
+      })),
+    );
+  });
+  const groups = new Map<string, typeof entries>();
+  for (const entry of entries) {
+    const key = `${entry.module.packageName}\0${entry.preferredName}`;
+    const group = groups.get(key) ?? [];
+    group.push(entry);
+    groups.set(key, group);
+  }
+  const collisionNames = new Map<string, string>();
+  for (const group of groups.values()) {
+    if (group.length < 2) continue;
+    const publicEntries = group.filter((entry) => entry.exported);
+    const crossModulePublicCollision = new Set(publicEntries.map((entry) => entry.module.source)).size > 1;
+    if (publicEntries.length > 1) {
+      for (const entry of publicEntries) {
+        const sourceSuffix = crossModulePublicCollision
+          ? `_flight_source_${getCppStableIdentifierHash(entry.module.source)}`
+          : '';
+        collisionNames.set(entry.binding.id, `${createCppPublicCollisionName(entry.binding)}${sourceSuffix}`);
+      }
+    }
+    for (const entry of group.filter((candidate) => !candidate.exported)) {
+      collisionNames.set(
+        entry.binding.id,
+        `${createCppPublicCollisionName(entry.binding)}_flight_private_${getCppStableIdentifierHash(entry.module.source)}`,
+      );
     }
   }
-  const collisionBindingIds = new Set(
-    [...publicNameGroups.values()]
-      .filter((group) => group.length > 1)
-      .flatMap((group) => group.map((binding) => binding.id)),
-  );
   return new Map(
-    createIrModuleTargetNameAllocation(module, (binding) => ({
-      namespace: 'identifier',
-      preferredName: collisionBindingIds.has(binding.id)
-        ? createCppPublicCollisionName(binding)
-        : getCppPreferredBindingName(binding),
-    })).map((allocation) => [allocation.identity, allocation.name]),
+    modules.map((module) => [
+      getCppModuleIdentityKey(module),
+      new Map(
+        createIrModuleTargetNameAllocation(module, (binding) => ({
+          namespace: 'identifier',
+          preferredName: collisionNames.get(binding.id) ?? getCppPreferredBindingName(binding),
+        })).map((allocation) => [allocation.identity, allocation.name]),
+      ),
+    ]),
   );
+}
+
+function getCppModuleIdentityKey(module: Readonly<IrModule>): string {
+  return `${module.packageName}\0${module.source}`;
 }
 
 function collectCppPublicDeclarationBindings(
@@ -7889,7 +7935,7 @@ function emitReexportsCpp(module: Readonly<IrModule>, context: EmitContext): str
     if (exported.kind !== 'reexport') return [];
     const targetModule = getCppResolvedImportModule(exported.specifier, context);
     const targetName = targetModule
-      ? getCppResolvedExportTargetName(targetModule, exported.imported, exported.typeOnly ? 'type' : 'value')
+      ? getCppResolvedExportTargetName(targetModule, exported.imported, exported.typeOnly ? 'type' : 'value', context)
       : pascalCase(exported.imported);
     const qualified =
       targetModule && targetModule.packageName !== module.packageName
@@ -8455,7 +8501,8 @@ function getTypeReferenceTargetName(type: Readonly<IrType & { kind: 'named' }>, 
   const owner = getCppDirectBindingOwner(type, context);
   if (owner && owner.module.packageName !== context.module.packageName) {
     const targetName =
-      createCppTargetNameMap(owner.module).get(type.reference.binding.id) ?? pascalCase(type.reference.binding.name);
+      context.targetNameMaps.get(getCppModuleIdentityKey(owner.module))?.get(type.reference.binding.id) ??
+      pascalCase(type.reference.binding.name);
     return `${getCppCompilerPackageNamespace(owner.module.packageName, context.options.packageTargets)}::${targetName}`;
   }
   return context.targetNames.get(type.reference.binding.id) ?? pascalCase(type.reference.binding.name);
@@ -8521,7 +8568,7 @@ function getCppForeignImportedBindingTargetNameCpp(
       ? directTargets[0]!
       : context.referenceRepresentationPlanner.resolveModule(owner.specifier, owner.module);
   if (!targetModule) return undefined;
-  const targetName = getCppResolvedExportTargetName(targetModule, importedName, 'type');
+  const targetName = getCppResolvedExportTargetName(targetModule, importedName, 'type', context);
   return `${getCppCompilerPackageNamespace(targetModule.packageName, context.options.packageTargets)}::${targetName}`;
 }
 
@@ -8574,7 +8621,7 @@ function getCppImportedBindingTargetName(
     if (!targetModule) {
       emissionError(context, `imported binding ${importedName} requires one module export target`);
     }
-    const targetName = getCppResolvedExportTargetName(targetModule, importedName, space);
+    const targetName = getCppResolvedExportTargetName(targetModule, importedName, space, context);
     return `${getCppCompilerPackageNamespace(targetModule.packageName, context.options.packageTargets)}::${targetName}`;
   }
   return undefined;
@@ -8608,7 +8655,7 @@ function getCppNamespaceImportMemberTargetNameCpp(
     if (!targetModule) {
       emissionError(context, `namespace import ${importedBinding.binding.name} requires module resolution`);
     }
-    const targetName = getCppResolvedExportTargetName(targetModule, expression.name, 'value');
+    const targetName = getCppResolvedExportTargetName(targetModule, expression.name, 'value', context);
     const namespaceName = getCppCompilerPackageNamespace(targetModule.packageName, context.options.packageTargets);
     return `${namespaceName}::${targetName}`;
   }
@@ -8619,6 +8666,7 @@ function getCppResolvedExportTargetName(
   module: Readonly<IrModule>,
   exportedName: string,
   space: 'type' | 'value',
+  context: EmitContext,
 ): string {
   const directBindingId = module.declarations.flatMap((declaration) =>
     'binding' in declaration &&
@@ -8652,7 +8700,7 @@ function getCppResolvedExportTargetName(
   );
   const bindingId = directBindingId ?? (local?.kind === 'local' ? local.binding.id : undefined);
   if (!bindingId) return pascalCase(exportedName);
-  return createCppTargetNameMap(module).get(bindingId) ?? pascalCase(exportedName);
+  return context.targetNameMaps.get(getCppModuleIdentityKey(module))?.get(bindingId) ?? pascalCase(exportedName);
 }
 
 function isCppConcreteTypedArraySourceName(sourceName: string): boolean {

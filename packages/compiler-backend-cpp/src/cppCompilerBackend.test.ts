@@ -5073,6 +5073,56 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(reordered.contents).toContain('double foo_bar_flight_value_function_foo_u00005f_bar()');
   });
 
+  it('deconflicts public and private package names across emitted modules', () => {
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          specifier: './constants.js',
+          target: { packageName: '@flighthq/math', source: 'packages/math/src/constants.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const modules = lowerTypeScriptSources(
+      [
+        {
+          packageName: '@flighthq/math',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/math/src/constants.ts',
+            'export const DEG_TO_RAD = 2; const LOCAL = 3; export function constantLocal(): number { return LOCAL; }',
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+        {
+          packageName: '@flighthq/math',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/math/src/angle.ts',
+            "import { DEG_TO_RAD } from './constants.js'; const LOCAL = 4; export function degToRad(value: number): number { return value * DEG_TO_RAD + LOCAL; }",
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+      ],
+      moduleResolution,
+    ).map((result) => result.module);
+    const session = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules,
+      options: { runtimeProfile: 'flight-cpp' },
+    });
+    const constants = session.emitModule(modules[0]!)[0]!.contents;
+    const angle = session.emitModule(modules[1]!)[0]!.contents;
+
+    expect(constants).toMatch(/deg_to_rad_flight_value_variable_.+_flight_source_[a-f0-9]+/u);
+    expect(angle).toMatch(/deg_to_rad_flight_value_function_.+_flight_source_[a-f0-9]+/u);
+    expect(constants).toMatch(/local_flight_value_variable_.+_flight_private_[a-f0-9]+/u);
+    expect(angle).toMatch(/local_flight_value_variable_.+_flight_private_[a-f0-9]+/u);
+    expect(angle).toContain(constants.match(/deg_to_rad_flight_value_variable_\S+/u)![0]);
+  });
+
   it('falls back to _internal_ output path when source path does not resolve to a file name', () => {
     const result = lower('index.ts', 'export const value = 1;');
     const emitted = emitIrModuleCpp(result.module);
