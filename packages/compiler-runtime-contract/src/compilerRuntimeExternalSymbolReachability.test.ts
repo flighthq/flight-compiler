@@ -158,7 +158,7 @@ describe('collectIrModulesRuntimeExternalSymbolIdentities', () => {
     expect(collectIrModulesRuntimeExternalSymbolIdentities([lowered.module])).toEqual([]);
   });
 
-  it('does not elect instantiated ambient method type parameters as runtime symbols', () => {
+  it('does not elect instantiated ambient method type parameters while retaining the concrete iterator view', () => {
     const sourceFile = ts.createSourceFile(
       '/flight/packages/runtime/src/ambient-methods.ts',
       `export function visit<T>(items: T[], values: Map<string, T>): void {
@@ -176,6 +176,7 @@ describe('collectIrModulesRuntimeExternalSymbolIdentities', () => {
     expect(lowered!.diagnostics).toEqual([]);
     expect(collectIrModulesRuntimeExternalSymbolIdentities([lowered!.module])).toEqual([
       { sourceName: 'Map', space: 'type' },
+      { sourceName: 'MapIterator', space: 'type' },
       { sourceName: 'Object', space: 'value' },
     ]);
   });
@@ -214,7 +215,7 @@ describe('collectIrModulesRuntimeExternalSymbolIdentities', () => {
     ]);
   });
 
-  it('treats unresolved callable projections as intrinsic while retaining runtime-backed views', () => {
+  it('treats unresolved callable projection wrappers as intrinsic while retaining their operands', () => {
     const lowered = lowerTypeScriptSource(
       ts.createSourceFile(
         '/flight/packages/runtime/src/callable-utilities.ts',
@@ -234,6 +235,9 @@ describe('collectIrModulesRuntimeExternalSymbolIdentities', () => {
       { sourceName: 'ArrayBufferLike', space: 'type' },
       { sourceName: 'ArrayLike', space: 'type' },
       { sourceName: 'ArrayStorage', space: 'type' },
+      { sourceName: 'ParameterStorage', space: 'type' },
+      { sourceName: 'ReturnStorage', space: 'type' },
+      { sourceName: 'externalCall', space: 'value' },
     ]);
   });
 

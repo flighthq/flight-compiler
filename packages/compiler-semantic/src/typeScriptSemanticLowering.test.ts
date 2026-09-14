@@ -9607,9 +9607,8 @@ it('infers contextual callback parameter types from array map', () => {
     (candidate) => candidate.kind === 'function' && candidate.binding.name === 'run',
   );
   const returned = declaration?.kind === 'function' ? declaration.body[0] : undefined;
-  const callback = returned?.kind === 'return' && returned.expression?.kind === 'call'
-    ? returned.expression.arguments[0]
-    : undefined;
+  const callback =
+    returned?.kind === 'return' && returned.expression?.kind === 'call' ? returned.expression.arguments[0] : undefined;
 
   expect(result.diagnostics).toEqual([]);
   expect(callback).toMatchObject({

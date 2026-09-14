@@ -128,7 +128,7 @@ describe('emitIrModuleRust', () => {
     expect(output).toContain('return AnonymousObjectRecord { value: 2.0, label: None, };');
   });
 
-  it('builds an object from its own shape when the position it is passed to knows nothing', () => {
+  it('requires closed object construction evidence before choosing a record shape', () => {
     const computed = lower(
       'computed-object.ts',
       'export function create(key: string): object { return { [key]: 1 }; }',
@@ -149,9 +149,7 @@ describe('emitIrModuleRust', () => {
     expect(() => emitIrModuleRust(spread.module)).toThrow(
       'structural object compatibility spread-membership-indeterminate',
     );
-    // A return type of `object` says nothing about what is being built, so the literal's own shape is
-    // what it is built from — a record with the fields it states, rather than a refusal.
-    expect(emitIrModuleRust(open.module).contents).toContain('pub struct AnonymousObjectRecord {');
+    expect(() => emitIrModuleRust(open.module)).toThrow('structural object compatibility open-construction-target');
     expect(() => emitIrModuleRust(duplicate.module)).toThrow(
       'structural object compatibility duplicate-property-requires-normalization',
     );

@@ -6,6 +6,7 @@ import type {
   CompilerModuleEvaluationInput,
   CompilerModuleIdentity,
   CompilerModuleLinkDependency,
+  IrExpression,
   IrModule,
 } from '../../compiler-types/src/index.js';
 import { createCompilerModuleEvaluationPlan, isCompilerModuleEvaluationFailure } from './compilerModuleEvaluation.js';
@@ -297,11 +298,18 @@ describe('createCompilerModuleEvaluationPlan', () => {
   });
 
   it('refuses top-level await in default exports and static fields but not inside function or instance-field closures', () => {
-    const defaultAwait = lowerModule('default-await.ts', 'export default await Promise.resolve(1);');
+    const defaultAwait = lowerModule('default-await.ts', 'export default Promise.resolve(1);');
+    const defaultExport = defaultAwait.exports.find((candidate) => candidate.kind === 'default');
+    if (!defaultExport) throw new Error('Expected default export');
+    Object.assign(defaultExport, { expression: wrapAwait(defaultExport.expression) });
     const staticAwait = lowerModule(
       'static-await.ts',
-      'export class StaticValue { static value = await Promise.resolve(1); }',
+      'export class StaticValue { static value = Promise.resolve(1); }',
     );
+    const staticClass = staticAwait.declarations.find((candidate) => candidate.kind === 'class');
+    const staticField = staticClass?.kind === 'class' ? staticClass.fields.find((field) => field.static) : undefined;
+    if (!staticField?.initializer) throw new Error('Expected static field initializer');
+    Object.assign(staticField, { initializer: wrapAwait(staticField.initializer) });
     const nested = lowerModule(
       'nested-await.ts',
       `
@@ -452,8 +460,29 @@ function createMissingDependencyInput(): CompilerModuleEvaluationInput {
 }
 
 function createTopLevelAwaitInput(): CompilerModuleEvaluationInput {
-  const module = lowerModule('await.ts', 'export const value = await Promise.resolve(1);');
+  const module = lowerModule('await.ts', 'export const value = Promise.resolve(1);');
+  const declaration = module.declarations.find((candidate) => candidate.kind === 'variable');
+  if (declaration?.kind !== 'variable' || !declaration.initializer) {
+    throw new Error('Expected variable initializer');
+  }
+  Object.assign(declaration, { initializer: wrapAwait(declaration.initializer) });
   return createInput([module], [], [module]);
+}
+
+function wrapAwait(expression: Readonly<IrExpression>): IrExpression {
+  return {
+    expression,
+    kind: 'await',
+    semantics: {
+      continuation: 'enqueue-after-settlement',
+      fulfillment: 'resume-normal-with-value',
+      operandEvaluation: 'once-before-suspension',
+      rejection: 'resume-throw-with-reason',
+      schema: 'flight-compiler-await-semantics/1',
+      suspension: 'always-before-continuation',
+      taskResolution: 'normalize-value-task-or-thenable',
+    },
+  };
 }
 
 function createUnexpectedDependencyInput(): CompilerModuleEvaluationInput {

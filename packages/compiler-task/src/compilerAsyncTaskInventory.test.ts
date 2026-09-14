@@ -44,7 +44,7 @@ describe('analyzeIrModuleAsyncTaskInventory', () => {
     expect(inventory.scopes.map((scope) => scope.output.kind)).toEqual([
       'recovered',
       'recovered',
-      'unresolved',
+      'recovered',
       'recovered',
     ]);
     expect(inventory.scopes.every((scope) => scope.taskCreation === 'before-body')).toBe(true);

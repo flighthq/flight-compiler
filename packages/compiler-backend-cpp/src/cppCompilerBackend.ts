@@ -1,7 +1,10 @@
 import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 
-import { normalizeCompilerStructuralValueCanonical } from '../../compiler-canonical-form/src/index.js';
+import {
+  compareTextCodeUnits,
+  normalizeCompilerStructuralValueCanonical,
+} from '../../compiler-canonical-form/src/index.js';
 import {
   collectIrModuleNullableBindingIds,
   createBackendEmissionFailure,
@@ -595,7 +598,7 @@ function emitCppImportedForwardDeclarations(context: EmitContext): string[] {
   }
   return [...declarations.values()]
     .sort((left, right) =>
-      `${left.namespace}\0${left.declaration}`.localeCompare(`${right.namespace}\0${right.declaration}`),
+      compareTextCodeUnits(`${left.namespace}\0${left.declaration}`, `${right.namespace}\0${right.declaration}`),
     )
     .map(({ declaration, namespace }) => `namespace ${namespace} { ${declaration} }`);
 }
@@ -654,7 +657,7 @@ function emitCppImportedFunctionForwardDeclarations(context: EmitContext): strin
   }
   return [...declarations.values()]
     .sort((left, right) =>
-      `${left.namespace}\0${left.declaration}`.localeCompare(`${right.namespace}\0${right.declaration}`),
+      compareTextCodeUnits(`${left.namespace}\0${left.declaration}`, `${right.namespace}\0${right.declaration}`),
     )
     .map(({ declaration, namespace }) => `namespace ${namespace} { ${declaration} }`);
 }
@@ -5446,9 +5449,7 @@ function getCppExpandedUnionSourceAlternativesCpp(
   resolvingAliases: ReadonlySet<string>,
 ): readonly Readonly<IrType>[] {
   if (type.kind === 'union') {
-    return type.types.flatMap((member) =>
-      getCppExpandedUnionSourceAlternativesCpp(member, context, resolvingAliases),
-    );
+    return type.types.flatMap((member) => getCppExpandedUnionSourceAlternativesCpp(member, context, resolvingAliases));
   }
   if (
     type.kind !== 'named' ||
