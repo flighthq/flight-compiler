@@ -3354,7 +3354,7 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
   it('narrows the complementary branch of a nested callable union', () => {
     const result = lower(
       'callable-union-complement.ts',
-      `type Data = string | Readonly<Record<string, unknown>>;
+      `type Data = string | Readonly<Record<string, number>>;
        type Provider = () => Data;
        export function resolve(data: Data | Provider): Data {
          return typeof data === 'function' ? data() : data;
