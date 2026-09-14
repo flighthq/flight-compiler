@@ -1578,6 +1578,24 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
       if (expression.operator === 'void') {
         return `{ ${emitExpression(expression.operand, context)}; () }`;
       }
+      if (expression.operator === 'typeof') {
+        const sourceName = {
+          bigint: 'bigint',
+          boolean: 'boolean',
+          number: 'number',
+          string: 'string',
+          symbol: 'symbol',
+          undefined: 'undefined',
+        }[expression.semantics.operand.flow];
+        if (!sourceName) {
+          emissionError(
+            context,
+            `typeof on ${expression.semantics.operand.flow} requires Rust runtime representation evidence`,
+          );
+        }
+        if (expression.semantics.operand.flow === 'undefined') return '"undefined".to_owned()';
+        return `{ let _ = &${emitExpression(expression.operand, context)}; ${JSON.stringify(sourceName)}.to_owned() }`;
+      }
       const operand =
         expression.semantics.operand.flow === 'number'
           ? emitNumericEnumOperandRust(expression.operand, context)

@@ -894,13 +894,7 @@ describe('emitIrModuleRust', () => {
     expect(output.match(/let local/g)).toHaveLength(1);
   });
 
-  it.each([
-    [
-      'keyword unary',
-      'export function type(a: number): string { return typeof a; }',
-      'typeof requires Rust semantic lowering',
-    ],
-  ])('refuses unsupported %s operators explicitly', (family, source, message) => {
+  it.each([])('refuses unsupported %s operators explicitly', (family, source, message) => {
     const result = lower(`${family.replaceAll(' ', '-')}-operator.ts`, source);
 
     expect(() => emitIrModuleRust(result.module)).toThrow(message);
@@ -914,6 +908,25 @@ describe('emitIrModuleRust', () => {
     const output = emitIrModuleRust(result.module).contents;
 
     expect(output).toContain('return { value(); () };');
+  });
+
+  it('uses static primitive evidence for typeof without consuming the operand', () => {
+    const result = lower(
+      'typeof-primitive.ts',
+      'export function type(value: string): string { const result: string = typeof value; return value + result; }',
+    );
+    const output = emitIrModuleRust(result.module).contents;
+
+    expect(output).toContain('let _ = &value; "string".to_owned()');
+    expect(output).toContain('format!("{}{}", value, result)');
+  });
+
+  it('refuses standalone typeof when the runtime representation remains unknown', () => {
+    const result = lower('typeof-unknown.ts', 'export function type(value: unknown): string { return typeof value; }');
+
+    expect(() => emitIrModuleRust(result.module)).toThrow(
+      'typeof on unknown requires Rust runtime representation evidence',
+    );
   });
 
   it('emits nullable and optional parameters but rejects bare undefined expressions', () => {
