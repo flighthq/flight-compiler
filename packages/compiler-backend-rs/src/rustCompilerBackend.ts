@@ -76,7 +76,6 @@ import type {
   IrObjectMember,
   IrObjectTypeProperty,
   IrParameter,
-  IrPostfixUnaryOperator,
   IrPrefixUnaryOperator,
   IrStatement,
   IrSwitchCase,
@@ -1573,16 +1572,17 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
       return `(${elements.join(', ')}${elements.length === 1 ? ',' : ''})`;
     }
     case 'unary': {
+      if (expression.operator === '++' || expression.operator === '--') {
+        return emitNumericUpdateUnaryRust(expression, context);
+      }
       const operand =
         expression.semantics.operand.flow === 'number'
           ? emitNumericEnumOperandRust(expression.operand, context)
           : emitExpression(expression.operand, context);
-      const operator = expression.postfix
-        ? emitPostfixUnaryOperatorRust(expression.operator, context)
-        : emitPrefixUnaryOperatorRust(expression.operator, expression.semantics, context);
+      const operator = emitPrefixUnaryOperatorRust(expression.operator, expression.semantics, context);
       if (expression.operator === '~') return `(!(${operand} as i32) as f64)`;
       if (expression.operator === '+' && expression.semantics.operand.flow === 'number') return operand;
-      return expression.postfix ? `${operand}${operator}` : `${operator}${operand}`;
+      return `${operator}${operand}`;
     }
     case 'undefinedValue':
       getIrTypeOptionalPayloadRust(expression.type, 'contextual undefined value', context);
@@ -4273,8 +4273,39 @@ function emitBinaryOperatorRust(
   return emitted;
 }
 
-function emitPostfixUnaryOperatorRust(operator: IrPostfixUnaryOperator, context: EmitContext): string {
-  emissionError(context, rustPostfixUnaryOperatorRefusal[operator]);
+function emitNumericUpdateUnaryRust(
+  expression: Readonly<Extract<IrExpression, { kind: 'unary' }>>,
+  context: EmitContext,
+): string {
+  const bindingType =
+    expression.operand.kind === 'identifier' && expression.operand.reference.kind === 'binding'
+      ? context.bindingTypes.get(expression.operand.reference.binding.id)
+      : undefined;
+  if (
+    expression.semantics.operand.flow !== 'number' ||
+    expression.semantics.result !== 'number' ||
+    expression.operand.kind !== 'identifier' ||
+    expression.operand.reference.kind !== 'binding' ||
+    bindingType?.kind !== 'primitive' ||
+    bindingType.name !== 'number'
+  ) {
+    emissionError(context, `operator ${expression.operator} requires a numeric Rust binding target`);
+  }
+  const name = emitIdentifierReferenceRust(expression.operand.reference, context);
+  const arithmetic = expression.operator === '++' ? '+' : '-';
+  if (context.cellWrappedBindingIds.has(expression.operand.reference.binding.id)) {
+    const previous = getGeneratedTargetNameRust('update_previous', context);
+    const updated = `${previous} ${arithmetic} 1.0`;
+    return expression.postfix
+      ? `{ let ${previous} = ${name}.get(); ${name}.set(${updated}); ${previous} }`
+      : `{ let ${previous} = ${name}.get(); ${name}.set(${updated}); ${name}.get() }`;
+  }
+  if (context.refCellWrappedBindingIds.has(expression.operand.reference.binding.id)) {
+    emissionError(context, `operator ${expression.operator} cannot update a non-Copy Rust binding`);
+  }
+  if (!expression.postfix) return `{ ${name} ${arithmetic}= 1.0; ${name} }`;
+  const previous = getGeneratedTargetNameRust('update_previous', context);
+  return `{ let ${previous} = ${name}; ${name} ${arithmetic}= 1.0; ${previous} }`;
 }
 
 function emitPrefixUnaryOperatorRust(
@@ -5224,11 +5255,6 @@ const rustBinaryOperatorEmission = {
   '|': '|',
   '||': '||',
 } as const satisfies Readonly<Record<IrBinaryOperator, string | undefined>>;
-
-const rustPostfixUnaryOperatorRefusal = {
-  '++': 'postfix ++ requires value-preserving Rust lowering',
-  '--': 'postfix -- requires value-preserving Rust lowering',
-} as const satisfies Readonly<Record<IrPostfixUnaryOperator, string>>;
 
 const rustPrefixUnaryOperatorDecision = {
   '!': { emitted: '!' },

@@ -901,16 +901,6 @@ describe('emitIrModuleRust', () => {
       'typeof requires Rust semantic lowering',
     ],
     [
-      'postfix unary',
-      'export function increment(a: number): number { return a++; }',
-      'postfix ++ requires value-preserving Rust lowering',
-    ],
-    [
-      'prefix update unary',
-      'export function increment(a: number): number { return ++a; }',
-      'prefix ++ requires value-preserving Rust lowering',
-    ],
-    [
       'prefix unary void',
       'export function discard(a: number): void { void a; }',
       'void requires Rust semantic lowering',
@@ -4395,12 +4385,12 @@ describe('emitIrModuleRust', () => {
     expect(output).not.toMatch(/pub enum Tag/);
   });
 
-  it('refuses postfix increment before lowering', () => {
-    expect(() =>
-      emitIrModuleRust(
-        lower('postfix.ts', 'export function countUp(n: number): number { let x = n; x++; return x; }').module,
-      ),
-    ).toThrow('postfix ++');
+  it('emits postfix increment while preserving the prior value', () => {
+    const output = emitIrModuleRust(
+      lower('postfix.ts', 'export function countUp(n: number): number { let x = n; return x++; }').module,
+    ).contents;
+    expect(output).toContain('let update_previous = x;');
+    expect(output).toContain('x += 1.0; update_previous');
   });
 
   it('emits substring with one argument as open range', () => {
@@ -8867,19 +8857,31 @@ describe('emitIrModuleRust logical NOT', () => {
   });
 });
 
-describe('emitIrModuleRust prefix increment refusal', () => {
-  it('refuses prefix ++ operator', () => {
-    expect(() =>
-      emitIrModuleRust(lower('pre-inc.ts', 'export function inc(x: number): number { ++x; return x; }').module),
-    ).toThrow('value-preserving');
+describe('emitIrModuleRust update expressions', () => {
+  it('emits prefix increment with the updated value', () => {
+    const output = emitIrModuleRust(
+      lower('pre-inc.ts', 'export function inc(x: number): number { return ++x; }').module,
+    ).contents;
+    expect(output).toContain('{ x += 1.0; x }');
   });
-});
 
-describe('emitIrModuleRust postfix decrement refusal', () => {
-  it('refuses postfix -- operator', () => {
-    expect(() =>
-      emitIrModuleRust(lower('post-dec.ts', 'export function dec(x: number): number { x--; return x; }').module),
-    ).toThrow('value-preserving');
+  it('emits postfix decrement with the prior value', () => {
+    const output = emitIrModuleRust(
+      lower('post-dec.ts', 'export function dec(x: number): number { return x--; }').module,
+    ).contents;
+    expect(output).toContain('let update_previous = x;');
+    expect(output).toContain('x -= 1.0; update_previous');
+  });
+
+  it('updates a captured numeric binding through its shared Cell', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'captured-postfix.ts',
+        'export function counter(): () => number { let x: number = 0; return (): number => x++; }',
+      ).module,
+    ).contents;
+    expect(output).toContain('let update_previous = x.get();');
+    expect(output).toContain('x.set(update_previous + 1.0); update_previous');
   });
 });
 
