@@ -1639,13 +1639,27 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
     const constant = emitted.contents.indexOf('inline const double limit = 4.0');
     const helper = emitted.contents.indexOf('double helper()');
-    const holder = emitted.contents.indexOf('struct Holder');
+    const holder = emitted.contents.indexOf('struct Holder :');
     const read = emitted.contents.indexOf('double read()');
 
     expect(constant).toBeGreaterThan(-1);
     expect(helper).toBeGreaterThan(constant);
     expect(holder).toBeGreaterThan(constant);
     expect(read).toBeGreaterThan(helper);
+  });
+
+  it('forward declares reference types used by earlier callable aliases', () => {
+    const output = emitIrModuleCpp(
+      lower(
+        'callback-before-world.ts',
+        'export type ContactCallback = (world: World) => void; export interface World { active: boolean; }',
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+
+    expect(output).toContain('struct World;');
+    expect(output.indexOf('struct World;')).toBeLessThan(output.indexOf('using ContactCallback'));
+    expect(output).toContain('struct World :');
   });
 
   it('uses portable runtime constants and semantic containers for static iteration and rest values', () => {

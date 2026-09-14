@@ -360,6 +360,8 @@ function emitIrModuleCppWithContext(
   if (imports.length > 0) lines.push('', ...imports);
   const namespaceName = getCppCompilerPackageNamespace(module.packageName, options.packageTargets);
   lines.push('', `namespace ${namespaceName} {`);
+  const forwardDeclarations = emitCppForwardDeclarations(module, context);
+  if (forwardDeclarations.length > 0) lines.push('', ...forwardDeclarations);
   if (reexports.length > 0) lines.push('', ...reexports);
   declarations.forEach((declaration) => {
     lines.push(...declaration.anonymousStructLines);
@@ -463,6 +465,15 @@ function encodeCppPublicNameComponent(value: string): string {
       /^[a-z0-9]$/u.test(character) ? character : `_u${character.codePointAt(0)!.toString(16).padStart(6, '0')}_`,
     )
     .join('');
+}
+
+function emitCppForwardDeclarations(module: Readonly<IrModule>, context: EmitContext): string[] {
+  return module.declarations.flatMap((declaration): string[] => {
+    if (declaration.kind !== 'class' && declaration.kind !== 'interface') return [];
+    const typeParameters = emitTypeParameters(declaration.typeParameters, context);
+    const declarationLine = `struct ${getBindingTargetName(declaration.binding, context)};`;
+    return typeParameters ? [`template ${typeParameters}`, declarationLine] : [declarationLine];
+  });
 }
 
 function emitDeclaration(declaration: Readonly<IrDeclaration>, context: EmitContext): string[] {
