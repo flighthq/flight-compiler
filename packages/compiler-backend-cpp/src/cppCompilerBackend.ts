@@ -1703,6 +1703,26 @@ function emitExpression(
           context.includes.add('variant');
           return `std::get<${plan.valueSlots[0]!.targetType}>(${emitIdentifierReference(expression.reference, context)})`;
         }
+        if (plan?.kind === 'optionalVariant') {
+          const narrowedType = context.narrowedBindingTypes.get(expression.reference.binding.id);
+          const narrowedUnion = narrowedType ? getIrUnionTypeCpp(narrowedType, context, new Set()) : undefined;
+          const narrowedPresentMembers = (narrowedUnion?.types ?? (narrowedType ? [narrowedType] : [])).filter(
+            (member) => member.kind !== 'null' && member.kind !== 'undefined',
+          );
+          if (narrowedPresentMembers.length === 1) {
+            const isolatedContext = { ...context, anonymousStructs: new Map(), includes: new Set<string>() };
+            const narrowedTarget = emitType(narrowedPresentMembers[0]!, isolatedContext);
+            const matchingSlots = plan.valueSlots.filter(
+              (slot) =>
+                slot.targetType === narrowedTarget ||
+                slot.sourceAlternatives.some((member) => isDeepStrictEqual(member, narrowedPresentMembers[0]!)),
+            );
+            if (matchingSlots.length === 1) {
+              context.includes.add('variant');
+              return `std::get<${matchingSlots[0]!.targetType}>(${emitIdentifierReference(expression.reference, context)}.value())`;
+            }
+          }
+        }
         context.includes.add('optional');
         return `${emitIdentifierReference(expression.reference, context)}.value()`;
       }
@@ -4128,7 +4148,8 @@ function getCppUnionMemberComplementTypeCpp(
   if (!union) return undefined;
   const isolatedContext = { ...context, anonymousStructs: new Map(), includes: new Set<string>() };
   const plan = getCppUnionRepresentationPlan(union, isolatedContext);
-  if (plan.sentinels.null !== 'absent' || plan.sentinels.undefined !== 'absent') return undefined;
+  const hasSentinel = plan.sentinels.null !== 'absent' || plan.sentinels.undefined !== 'absent';
+  if (hasSentinel && plan.kind !== 'optionalSingle' && plan.kind !== 'optionalVariant') return undefined;
   const evidenceTarget = emitType(evidence.member, isolatedContext);
   const selected = plan.valueSlots.filter(
     (slot) =>
@@ -4139,7 +4160,10 @@ function getCppUnionMemberComplementTypeCpp(
   const remaining: Readonly<IrType>[] = plan.valueSlots
     .filter((slot) => slot !== selected[0])
     .flatMap((slot) => slot.sourceAlternatives);
-  return createIrTypeEvidenceUnionCpp(remaining);
+  return createIrTypeEvidenceUnionCpp([
+    ...remaining,
+    ...union.types.filter((member) => member.kind === 'null' || member.kind === 'undefined'),
+  ]);
 }
 
 function doesCppVariantAlternativeMatchType(

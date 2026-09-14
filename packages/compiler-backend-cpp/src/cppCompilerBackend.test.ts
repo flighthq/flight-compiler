@@ -2915,6 +2915,20 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(emitted.contents).toContain('#include <flight/number.hpp>');
   });
 
+  it('projects narrowed alternatives from an optional C++ variant', () => {
+    const result = lower(
+      'optional-variant-narrowing.ts',
+      `export function readScale(scale: string | number | undefined): number {
+         if (scale === undefined) return 1;
+         return typeof scale === 'number' ? scale : Number.parseFloat(scale);
+       }`,
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+
+    expect(emitted.contents).toContain('std::get<double>(scale.value())');
+    expect(emitted.contents).toContain('flight::parse_float(std::get<flight::String>(scale.value()))');
+  });
+
   it('emits template literals with std::to_string', () => {
     const result = lower('template.ts', 'export function label(n: number): string { return `item ${n}`; }');
     const emitted = emitIrModuleCpp(result.module);
