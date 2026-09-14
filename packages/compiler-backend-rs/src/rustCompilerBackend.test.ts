@@ -990,15 +990,24 @@ describe('emitIrModuleRust', () => {
     expect(output).toContain('choose(Some(value));');
   });
 
-  it('refuses a type domain that still collapses null and undefined into one Rust sentinel', () => {
+  it('preserves null and undefined as distinct Rust union variants', () => {
     const result = lower(
       'ambiguous-nullish.ts',
-      'export function preserve(value: number | null | undefined): number | null | undefined { return value; }',
+      `export function preserve(value: number | null | undefined): number | null | undefined { return value; }
+       export function is_null(value: number | null | undefined): boolean { return value === null; }
+       export function is_absent(value: number | null | undefined): boolean { return value == null; }
+       export function make_null(): number | null | undefined { return null; }
+       export function make_undefined(): number | null | undefined { return undefined; }`,
     );
+    const output = emitIrModuleRust(result.module).contents;
 
-    expect(() => emitIrModuleRust(result.module)).toThrow(
-      'types containing both null and undefined require distinct Rust sentinels',
-    );
+    expect(output).toContain('enum AnonymousUnion');
+    expect(output).toContain('Null,');
+    expect(output).toContain('Undefined,');
+    expect(output).toContain('matches!(&value, AnonymousUnion::Null)');
+    expect(output).toContain('matches!(&value, AnonymousUnion::Null | AnonymousUnion::Undefined)');
+    expect(output).toContain('return AnonymousUnion::Null;');
+    expect(output).toContain('return AnonymousUnion::Undefined;');
   });
 
   it('refuses dynamic and missing calls while erasing fixed extras after their evaluation', () => {
