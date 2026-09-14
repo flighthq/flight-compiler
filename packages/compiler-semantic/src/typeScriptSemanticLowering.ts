@@ -972,7 +972,11 @@ function lowerExpression(
     const optional = node.questionDotToken !== undefined;
     const receiver = getTypeScriptExpressionBindingTypeEvidence(node.expression, context);
     const resolved =
-      getIrResolvedMemberReceiver(receiver) ?? getIrResolvedMemberReceiverFromNarrowedFlow(node.expression, context);
+      getIrResolvedMemberReceiver(receiver) ??
+      getIrResolvedMemberReceiverFromNarrowedFlow(node.expression, context) ??
+      getIrResolvedMemberReceiver(
+        getTypeScriptCheckerTypeEvidence(context.checker.getTypeAtLocation(node.expression), context, 0, false, node),
+      );
     const member = resolved ? { member: { name: node.name.text, receiver: resolved } } : {};
     const absent = isTypeScriptOptionalMemberAccess(node, context) ? ({ absent: 'optionalMember' } as const) : {};
     return {
@@ -3771,6 +3775,20 @@ function lowerTypeNameNodeReference(
   if (isTypeScriptAmbientSymbol(symbol, context)) {
     return { kind: 'ambient', name: getTypeScriptNodeText(node, context) };
   }
+  // A normal import can introduce both sides of a merged TypeScript declaration. The authored
+  // ImportSpecifier is value-space, but its aliased target may also own a type alias, interface,
+  // class, or enum. Preserve that type lane as its own inferred import identity: targets such as
+  // Haxe do not share TypeScript's merged namespace and may need distinct facade names for the two
+  // declarations.
+  const aliasedTypeSymbol = symbol ? resolveTypeBindingAliasTarget(symbol, context) : undefined;
+  if (symbol && aliasedTypeSymbol && !symbol.declarations?.some(isTypeBindingDeclaration)) {
+    const inferred = lowerTypeScriptInferredTypeImportBinding(aliasedTypeSymbol, context);
+    if (inferred) {
+      context.typeBindings.set(symbol, inferred);
+      context.typeBindings.set(aliasedTypeSymbol, inferred);
+      return { binding: inferred, kind: 'binding', path: parts.path };
+    }
+  }
   if (symbol?.declarations?.some(isTypeBindingDeclaration)) {
     if (!hasTypeBindingDeclarationInModule(symbol, context)) {
       const aliased = resolveTypeBindingAliasTarget(symbol, context);
@@ -6138,6 +6156,17 @@ function getTypeScriptReferenceNarrowedMember(
 // backend cannot bind a member whose receiver it cannot name.
 function getIrResolvedMemberReceiver(type: Readonly<IrType> | undefined): IrResolvedMemberReceiver | undefined {
   if (!type) return undefined;
+  if (type.kind === 'union') {
+    const receivers = new Set(
+      type.types
+        .filter((member) => member.kind !== 'null' && member.kind !== 'undefined')
+        .flatMap((member) => {
+          const receiver = getIrResolvedMemberReceiver(member);
+          return receiver ? [receiver] : [];
+        }),
+    );
+    return receivers.size === 1 ? [...receivers][0] : undefined;
+  }
   if (type.kind === 'array') return 'array';
   if (type.kind === 'tuple') return 'tuple';
   if (type.kind === 'named' && type.reference.kind === 'ambient') {
@@ -6185,6 +6214,9 @@ function getIrResolvedMemberReceiverFromNarrowedFlow(
     if (receiver) return receiver;
   }
   const flow = context.checker.getTypeAtLocation(expression);
+  const flowEvidence = getTypeScriptCheckerTypeEvidence(flow, context, 0, false, expression);
+  const flowReceiver = getIrResolvedMemberReceiver(flowEvidence);
+  if (flowReceiver) return flowReceiver;
   if (flow.isUnion()) return undefined;
   const name = getTypeScriptPrimitiveTypeName(flow);
   if (name === 'string') return 'string';
@@ -7255,6 +7287,21 @@ function lowerTypeScriptInferredTypeImportBinding(
     }
     const moduleSymbol = context.checker.getSymbolAtLocation(statement.moduleSpecifier);
     if (!moduleSymbol) continue;
+    const named = statement.importClause.namedBindings;
+    if (named && ts.isNamedImports(named)) {
+      for (const importedBinding of named.elements) {
+        const local = context.checker.getSymbolAtLocation(importedBinding.name);
+        const target = local && local.flags & ts.SymbolFlags.Alias ? context.checker.getAliasedSymbol(local) : local;
+        if (target !== symbol) continue;
+        const specifier = statement.moduleSpecifier.text;
+        const imported = importedBinding.propertyName?.text ?? importedBinding.name.text;
+        routes.set(JSON.stringify([specifier, imported]), {
+          importDeclaration: statement,
+          imported,
+          specifier,
+        });
+      }
+    }
     for (const exported of context.checker.getExportsOfModule(moduleSymbol)) {
       const target = exported.flags & ts.SymbolFlags.Alias ? context.checker.getAliasedSymbol(exported) : exported;
       if (target !== symbol) continue;

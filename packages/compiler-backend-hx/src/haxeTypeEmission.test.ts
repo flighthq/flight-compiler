@@ -85,7 +85,7 @@ describe('emitIrTypeHaxe', () => {
     ).toBe('String');
   });
 
-  it.each(['Exclude', 'Extract', 'NoInfer', 'NonNullable', 'Omit', 'Partial', 'Pick', 'Readonly', 'Required'])(
+  it.each(['Exclude', 'Extract', 'NoInfer', 'NonNullable', 'Partial', 'Readonly', 'Required'])(
     'erases the representation-only utility %s to its subject type',
     (name) => {
       expect(
@@ -111,6 +111,30 @@ describe('emitIrTypeHaxe', () => {
       ).toBe('String');
     },
   );
+
+  it.each(['Omit', 'Pick'])('widens structural projection utility %s to Dynamic', (name) => {
+    expect(
+      emitIrTypeHaxe(
+        {
+          kind: 'named',
+          reference: { kind: 'ambient', name },
+          typeArguments: [
+            { kind: 'primitive', name: 'string' },
+            { kind: 'literal', value: 'field' },
+          ],
+        },
+        {
+          fail(message: string): never {
+            throw new Error(message);
+          },
+          getBindingName: () => 'Binding',
+          getExternalTypeName: () => undefined,
+          getMemberName: (member) => member,
+          getTypeName: (type) => type,
+        },
+      ),
+    ).toBe('Dynamic');
+  });
 
   it.each(['Parameters', 'ReturnType'])('widens unresolved computed utility %s to Dynamic', (name) => {
     expect(
@@ -152,5 +176,30 @@ describe('emitIrTypeHaxe', () => {
         },
       ),
     ).toBe('Dynamic');
+  });
+
+  it('preserves optional parameters in function types', () => {
+    expect(
+      emitIrTypeHaxe(
+        {
+          kind: 'function',
+          parameters: [
+            { name: 'value', optional: false, rest: false, type: { kind: 'primitive', name: 'string' } },
+            { name: 'fallback', optional: true, rest: false, type: { kind: 'primitive', name: 'number' } },
+          ],
+          returns: { kind: 'primitive', name: 'void' },
+          typeParameters: [],
+        },
+        {
+          fail(message: string): never {
+            throw new Error(message);
+          },
+          getBindingName: () => 'Binding',
+          getExternalTypeName: () => undefined,
+          getMemberName: (member) => member,
+          getTypeName: (type) => type,
+        },
+      ),
+    ).toBe('(String, ?Float)->Void');
   });
 });

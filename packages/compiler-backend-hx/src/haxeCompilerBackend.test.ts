@@ -314,7 +314,10 @@ describe('createHaxeCompilerBackend', () => {
     })[0]!.contents;
 
     expect(output).toContain(
-      'function finish<Value>(out:flighthq.types.Entity.EntityConstruction<Value>, choice:flighthq.types.Entity.Choice = flighthq.types.Entity.Choice.Ready):flighthq.types.Entity.EntityConstruction<Value>',
+      'function finish<Value>(out:flighthq.types.Entity.EntityConstruction<Value>, ?choice:flighthq.types.Entity.Choice):flighthq.types.Entity.EntityConstruction<Value>',
+    );
+    expect(output).toContain(
+      'js.Syntax.strictEq(choice, js.Syntax.code("undefined")) ? flighthq.types.Entity.Choice.Ready',
     );
   });
 
@@ -358,6 +361,69 @@ describe('createHaxeCompilerBackend', () => {
     expect(consumerOutput).toContain('import flighthq.types.Contract.ContractState as StateType;');
     expect(consumerOutput).toContain('import flighthq.types.Contract.State;');
     expect(consumerOutput).toContain('function read(value:StateType):StateType');
+  });
+
+  it('separates the type lane of one merged contract import from its value lane', () => {
+    const moduleResolution = {
+      edges: [
+        {
+          specifier: './state',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/state.ts' },
+        },
+        {
+          specifier: '@flighthq/types/contract',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/contract.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1' as const,
+    };
+    const inputs = [
+      {
+        packageName: '@flighthq/types',
+        sourceFile: ts.createSourceFile(
+          '/flight/packages/types/src/state.ts',
+          "export const State = { Ready: 'Ready' } as const; export type State = (typeof State)[keyof typeof State];",
+          ts.ScriptTarget.Latest,
+          true,
+        ),
+        upstreamDirectory: '/flight',
+      },
+      {
+        packageName: '@flighthq/types',
+        sourceFile: ts.createSourceFile(
+          '/flight/packages/types/src/contract.ts',
+          "export * from './state';",
+          ts.ScriptTarget.Latest,
+          true,
+        ),
+        upstreamDirectory: '/flight',
+      },
+      {
+        packageName: '@flighthq/core',
+        sourceFile: ts.createSourceFile(
+          '/flight/packages/core/src/consumer.ts',
+          "import { State } from '@flighthq/types/contract'; export function read(value: State): State { return State.Ready; }",
+          ts.ScriptTarget.Latest,
+          true,
+        ),
+        upstreamDirectory: '/flight',
+      },
+    ];
+    const [stateResult, contractResult, consumerResult] = lowerTypeScriptSources(inputs, moduleResolution);
+    const state = stateResult!.module;
+    const contract = contractResult!.module;
+    const consumer = consumerResult!.module;
+    const session = createHaxeCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules: [consumer, contract, state],
+      options: {},
+    });
+    const consumerOutput = session.emitModule(consumer)[0]!.contents;
+
+    expect(consumerOutput).toContain('import flighthq.types.Contract.ContractState as State_2;');
+    expect(consumerOutput).toContain('import flighthq.types.Contract.State;');
+    expect(consumerOutput).toContain('function read(value:State_2):State_2');
+    expect(consumerOutput).toContain('return State.Ready;');
   });
 
   it('shares a star facade plan across a transpile emission session', () => {
@@ -773,9 +839,9 @@ describe('emitIrModuleHaxe', () => {
     expect(output).toContain('task:flighthq._internal._Promise<Float>');
     expect(custom).toContain('task:custom.runtime._Promise<Float>');
     expect(valueOutput).toContain('new flighthq._internal._Map()');
-    expect(valueOutput).toContain('new flighthq._internal._UInt8Array(3)');
+    expect(valueOutput).toContain('new flighthq._internal._UInt8Array(Std.int(3))');
     expect(valueOutput).toContain('flighthq._internal._Promise.resolve(1)');
-    expect(customValueOutput).toContain('new custom.runtime._UInt8Array(3)');
+    expect(customValueOutput).toContain('new custom.runtime._UInt8Array(Std.int(3))');
     expect(customValueOutput).toContain('new custom.runtime._Map()');
     expect(customValueOutput).toContain('custom.runtime._Promise.resolve(1)');
     expect(weakMapOutput).toContain('flighthq._internal._WeakMap');
@@ -845,6 +911,17 @@ describe('emitIrModuleHaxe', () => {
     );
   });
 
+  it('preserves Math cbrt and hypot through target-JavaScript syntax', () => {
+    const result = lower(
+      'math-modern.ts',
+      'export function length(x: number, y: number): number { return Math.cbrt(Math.hypot(x, y)); }',
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('js.Syntax.code("Math.hypot({0}, {1})", x, y)');
+    expect(output).toContain('js.Syntax.code("Math.cbrt({0})"');
+  });
+
   it('uses the Haxe self-call constructor spelling for Symbol', () => {
     const result = lower('symbol-call.ts', 'export function key(name: string): symbol { return Symbol(name); }');
 
@@ -862,6 +939,104 @@ describe('emitIrModuleHaxe', () => {
     expect(emitIrModuleHaxe(result.module, { runtimeModule: 'flight._internal' }).contents).toContain(
       'flight._internal._ArrayTools.pushMany(values, [1, 2])',
     );
+  });
+
+  it('lowers writable Array.length through resize while preserving the assigned value', () => {
+    const result = lower(
+      'array-length-write.ts',
+      'export function resize(values: number[], size: number): number { return values.length = size; }',
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('arrayLengthReceiver.resize(Std.int(arrayLengthValue))');
+    expect(output).toContain('return arrayLengthValue');
+  });
+
+  it('lowers variadic Array concat and inserting splice to Haxe collection operations', () => {
+    const result = lower(
+      'array-variadic.ts',
+      `export function merge(a: number[], b: number[], c: number[]): number[] { return a.concat(b, c); }
+       export function insert(values: number[], at: number, value: number): number[] { return values.splice(at, 0, value); }`,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('a.concat(b).concat(c)');
+    expect(output).toContain('.insert(splicePosition, value)');
+    expect(output).toContain('return spliceRemoved');
+  });
+
+  it('narrows integer typed-array writes to the Haxe element domain', () => {
+    const result = lower(
+      'typed-array-write.ts',
+      'export function write(values: Uint32Array, index: number, value: number): void { values[index] = value; }',
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('values[Std.int(index)] = Std.int(value)');
+  });
+
+  it('materializes Haxe rest packs as arrays for ordinary collection methods', () => {
+    const result = lower(
+      'rest-array.ts',
+      'export function copy(...values: number[]): number[] { return values.copy(); }',
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('final valuesArray:Array<Float> = values.toArray();');
+    expect(output).toContain('return valuesArray.copy();');
+  });
+
+  it('hoists a local captured by a closure before its declaration', () => {
+    const result = lower(
+      'forward-capture.ts',
+      `export function create(): () => number {
+         const read = () => value;
+         const value = 1;
+         return read;
+       }`,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output.indexOf('var value:Float;')).toBeLessThan(output.indexOf('final read'));
+    expect(output).toContain('value = 1;');
+  });
+
+  it('uses JavaScript truthiness for nullable structural and callable conditions', () => {
+    const result = lower(
+      'truthiness.ts',
+      `export function choose(value: { ok: boolean } | null, callback: (() => number) | null): number {
+         if (value) return callback ? callback() : 1;
+         return 0;
+       }`,
+    );
+    const output = emitIrModuleHaxe(result.module, { runtimeModule: 'flight._internal' }).contents;
+
+    expect(output).toContain('flight._internal._Js.truthy(value)');
+    expect(output).toContain('flight._internal._Js.truthy(callback) ?');
+  });
+
+  it('widens generic projected structural aliases that Haxe cannot represent', () => {
+    const result = lower(
+      'omit-shape.ts',
+      `type Public<Value> = Omit<Value, 'hidden'>;
+       export function read<Value>(value: Public<Value>): unknown { return value; }`,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('typedef Public<Value> = Dynamic;');
+  });
+
+  it('writes DynamicAccess fields reflectively', () => {
+    const result = lower(
+      'dynamic-access-write.ts',
+      `export function write(value: Record<string, unknown>): unknown {
+         value.extra = 1;
+         return value;
+       }`,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('Reflect.setField(dynamicAccessReceiver, "extra", dynamicAccessValue)');
   });
 
   it('emits source generic defaults and Promise void carriers accepted by Haxe', () => {
@@ -909,7 +1084,9 @@ describe('emitIrModuleHaxe', () => {
     expect(output).toContain('var index:Float = 0;');
     expect(output).toContain('while (index < limit)');
     expect(output).toContain('(index += 1);');
-    expect(emitIrModuleHaxe(defaults.module).contents).toContain('factor:Float = 2');
+    expect(emitIrModuleHaxe(defaults.module).contents).toContain(
+      'js.Syntax.strictEq(factor, js.Syntax.code("undefined")) ? 2',
+    );
   });
 
   it('emits one overload implementation and calls its native default ABI', () => {
@@ -926,7 +1103,8 @@ describe('emitIrModuleHaxe', () => {
 
     // One implementation, not one per overload signature.
     expect(output.match(/function choose/gu)).toHaveLength(1);
-    expect(output).toContain('function choose(value:Float, radix:Float = 10):Float');
+    expect(output).toContain('function choose(value:Float, ?radix:Float):Float');
+    expect(output).toContain('radixDefault:Float');
     expect(output).toContain('return choose(1);');
   });
 
@@ -945,7 +1123,8 @@ describe('emitIrModuleHaxe', () => {
     const output = emitIrModuleHaxe(result.module).contents;
 
     expect(output.match(/function choose/gu)).toHaveLength(1);
-    expect(output).toContain('public function choose(value:Float, radix:Float = 10):Float');
+    expect(output).toContain('public function choose(value:Float, ?radix:Float):Float');
+    expect(output).toContain('radixDefault:Float');
     expect(output).toContain('return picker.choose(1);');
   });
 
@@ -964,7 +1143,8 @@ describe('emitIrModuleHaxe', () => {
     const output = emitIrModuleHaxe(result.module).contents;
 
     expect(output.match(/public function new/gu)).toHaveLength(1);
-    expect(output).toContain('public function new(value:Float, radix:Float = 10)');
+    expect(output).toContain('public function new(value:Float, ?radix:Float)');
+    expect(output).toContain('radixDefault:Float');
     expect(output).toContain('return new Box(1);');
   });
 
@@ -1169,7 +1349,7 @@ describe('emitIrModuleHaxe', () => {
     // A tuple with an optional position has no Haxe array type that holds it, so it is
     // `Array<Dynamic>` and reads out of it reach their declared type by cast.
     expect(emitIrModuleHaxe(defaulted.module).contents).toContain(
-      'final first:Float = cast((arrayPatternValue[0] ?? 0), Float);',
+      'final first:Float = (cast (arrayPatternValue[0] ?? 0) : Float);',
     );
     // A tuple written with an explicit `undefined` member is homogeneous, so Haxe can type it and
     // the read needs no cast.
@@ -1502,7 +1682,7 @@ describe('emitIrModuleHaxe', () => {
 
     const output = emitIrModuleHaxe(result.module).contents;
     expect(output).toContain('...values:Float');
-    expect(output).not.toContain('Array<Float>');
+    expect(output).toContain('final valuesArray:Array<Float> = values.toArray();');
   });
 
   it('emits contextual and exact undefined values with Haxe absent-value storage', () => {
@@ -1969,7 +2149,7 @@ describe('emitIrModuleHaxe', () => {
 
     expect(emitIrModuleHaxe(doWhile.module).contents).toContain('do {');
     expect(emitIrModuleHaxe(doWhile.module).contents).toContain('(count += 1);');
-    expect(emitIrModuleHaxe(doWhile.module).contents).toContain('} while ((count < 3));');
+    expect(emitIrModuleHaxe(doWhile.module).contents).toContain('} while (count < 3);');
     expect(emitIrModuleHaxe(throwStatement.module).contents).toContain('throw');
   });
 
@@ -2121,10 +2301,10 @@ describe('emitIrModuleHaxe', () => {
       'export function widest(values: number[], first: number): number { return Math.max(first, ...values); }',
     );
 
-    expect(emitIrModuleHaxe(simple.module).contents).toContain('Reflect.callMethod(Math, Math.max, values)');
+    expect(emitIrModuleHaxe(simple.module).contents).toContain('Reflect.callMethod(Math, cast(Math.max), values)');
     // Fixed arguments around the spread keep their source order.
     expect(emitIrModuleHaxe(mixed.module).contents).toContain(
-      'Reflect.callMethod(Math, Math.max, [first].concat(values))',
+      'Reflect.callMethod(Math, cast(Math.max), [first].concat(values))',
     );
   });
 });
@@ -2249,7 +2429,21 @@ describe('emitIrModuleHaxe expression coverage', () => {
     );
     const output = emitIrModuleHaxe(result.module).contents;
 
-    expect(output).toContain('cast(value, Float)');
+    expect(output).toContain('cast value : Float');
+  });
+
+  it('uses annotation casts for generic and callable targets', () => {
+    const result = lower(
+      'cast-shapes.ts',
+      `export function generic<Value>(value: unknown): Value { return value as Value; }
+       export function callable(value: unknown): (input: number) => void {
+         return value as (input: number) => void;
+       }`,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('cast value : Value');
+    expect(output).toContain('cast value : (Float)->Void');
   });
 
   it('emits object rest with named and computed exclusions', () => {
@@ -2277,7 +2471,7 @@ describe('emitIrModuleHaxe expression coverage', () => {
     );
     const output = emitIrModuleHaxe(result.module).contents;
 
-    expect(output).toContain('cast(record, Dynamic)');
+    expect(output).toContain('(cast record : Dynamic)');
   });
 
   it('uses the lowered storage field for computed symbol property reads and writes', () => {
@@ -2313,7 +2507,9 @@ describe('emitIrModuleHaxe expression coverage', () => {
       'export function clear(copy: Record<string, unknown>): void { copy.value = undefined; }',
     );
 
-    expect(emitIrModuleHaxe(result.module).contents).toContain('(copy.value = js.Syntax.code("undefined"));');
+    expect(emitIrModuleHaxe(result.module).contents).toContain(
+      'Reflect.setField(dynamicAccessReceiver, "value", dynamicAccessValue)',
+    );
   });
 
   it('deletes symbol-backed and dynamic properties through their represented keys', () => {
@@ -3209,7 +3405,7 @@ describe('emitIrModuleHaxe statement extended coverage', () => {
     const output = emitIrModuleHaxe(result.module).contents;
 
     expect(output).toContain('do {');
-    expect(output).toContain('} while ((i > 0));');
+    expect(output).toContain('} while (i > 0);');
   });
 
   it('emits for-of loop', () => {
@@ -4475,7 +4671,8 @@ describe('emitIrModuleHaxe default parameter', () => {
     const result = lower('default-param.ts', 'export function greet(name: string = "world"): string { return name; }');
     const output = emitIrModuleHaxe(result.module).contents;
 
-    expect(output).toContain('name:String = ');
+    expect(output).toContain('?name:String');
+    expect(output).toContain('js.Syntax.strictEq(name, js.Syntax.code("undefined")) ? "world"');
   });
 });
 
@@ -5479,7 +5676,8 @@ describe('emitIrModuleHaxe re-export facade', () => {
     const backend = createHaxeCompilerBackend();
     const files = backend.emitModule(facade.module, { modules: [facade.module, helper.module], options: {} });
     const output = files[0]!.contents;
-    expect(output).toContain('value:Float = 5');
+    expect(output).toContain('?value:Float');
+    expect(output).toContain('js.Syntax.strictEq(value, js.Syntax.code("undefined")) ? 5');
   });
 
   it('forwards rest parameter in value re-export', () => {
@@ -6455,7 +6653,7 @@ describe('emitIrModuleHaxe additional coverage', () => {
     const output = emitIrModuleHaxe(
       lower('default-param.ts', `export function greet(name: string = "world"): string { return name; }`).module,
     ).contents;
-    expect(output).toContain('= "world"');
+    expect(output).toContain('? "world" :');
   });
 
   it('emits intersection type as Dynamic for multiple members', () => {
@@ -7488,7 +7686,7 @@ describe('emitIrModuleHaxe spread call emission', () => {
       lower('spread-push.ts', 'export function append(out: number[], values: number[]): void { out.push(...values); }')
         .module,
     ).contents;
-    expect(output).toContain('Reflect.callMethod(out, out.push, values)');
+    expect(output).toContain('Reflect.callMethod(out, cast(out.push), values)');
   });
 
   it('routes mixed fixed and spread array pushes through reflective arity', () => {
@@ -7498,7 +7696,7 @@ describe('emitIrModuleHaxe spread call emission', () => {
         'export function append(out: number[], first: number, middle: number[], last: number): void { out.push(first, ...middle, last); }',
       ).module,
     ).contents;
-    expect(output).toContain('Reflect.callMethod(out, out.push, [first].concat(middle).concat([last]))');
+    expect(output).toContain('Reflect.callMethod(out, cast(out.push), [first].concat(middle).concat([last]))');
   });
 });
 
@@ -8203,7 +8401,7 @@ describe('emitIrModuleHaxe parameter with initializer', () => {
     const output = emitIrModuleHaxe(
       lower('default-param.ts', 'export function greet(name: string = "world"): string { return name; }').module,
     ).contents;
-    expect(output).toContain('= "world"');
+    expect(output).toContain('? "world" :');
   });
 });
 

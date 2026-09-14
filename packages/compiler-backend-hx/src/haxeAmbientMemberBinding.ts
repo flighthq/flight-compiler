@@ -39,6 +39,7 @@ const haxeAmbientMemberBindings: Readonly<Record<string, CompilerHaxeAmbientMemb
   'arrayBuffer.slice': { kind: 'runtimeCall', targetName: '_ArrayBuffer.slice' },
   'array.at': { intArguments: [0], kind: 'runtimeCall', targetName: '_Array.at' },
   'array.concat': { kind: 'method', targetName: 'concat' },
+  'array.copy': { kind: 'method', targetName: 'copy' },
   'array.copyWithin': { kind: 'runtimeCall', targetName: '_Array.copyWithin' },
   'array.entries': { kind: 'runtimeCall', targetName: '_Array.entries' },
   'array.every': { kind: 'staticCall', targetPath: 'Lambda.foreach' },

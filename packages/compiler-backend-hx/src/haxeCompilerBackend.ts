@@ -12,7 +12,11 @@ import {
   normalizeSourceTextGrouping,
   isCompilerTargetNameAllocationFailure,
 } from '../../compiler-emission/src/index.js';
-import { analyzeIrModuleTraversal, getIrModuleTraversalPathValue } from '../../compiler-ir-traversal/src/index.js';
+import {
+  analyzeIrModuleTraversal,
+  analyzeIrStatementSubtreeTraversal,
+  getIrModuleTraversalPathValue,
+} from '../../compiler-ir-traversal/src/index.js';
 import {
   createCompilerLoweringPassAwaitConditionHoisting,
   createCompilerLoweringPassBindingPattern,
@@ -108,11 +112,13 @@ import { emitIrTypeHaxe } from './haxeTypeEmission.js';
 
 interface EmitContext {
   ambientUtilityHeritageTargets: ReadonlyMap<string, string>;
+  bindingTypes: ReadonlyMap<string, IrType>;
   breakableDepth: number;
   controlFlowLabels: HaxeControlFlowLabel[];
   facadeBindingTargetNames: Map<string, string>;
   facadeTypeTargetNames: ReadonlyMap<string, string>;
   finallyCompletion: HaxeFinallyCompletion | undefined;
+  forwardDeclaredBindingIds: ReadonlySet<string>;
   generatedNames: Set<string>;
   getModuleFacade: ((module: Readonly<IrModule>) => CompilerModuleFacadePlan | undefined) | undefined;
   machineNames: Map<string, string>;
@@ -349,13 +355,24 @@ function emitIrModuleHaxeWithContext(
   const sourceModuleTargetNames = new Map(sessionSourceModuleTargetNames);
   sourceModuleTargetNames.set(getHaxeCompilerModuleKey(module), targetNames);
   const facadeTypeTargetNames = createHaxeFacadeTypeTargetNames(module, moduleFacade, targetNames);
+  const bindingTypes = new Map<string, IrType>();
+  analyzeIrModuleTraversal(module, {
+    parameter(parameter) {
+      bindingTypes.set(parameter.binding.id, parameter.type);
+    },
+    variable(variable) {
+      if ('binding' in variable && variable.type) bindingTypes.set(variable.binding.id, variable.type);
+    },
+  });
   const context: EmitContext = {
     ambientUtilityHeritageTargets,
+    bindingTypes,
     breakableDepth: 0,
     controlFlowLabels: [],
     facadeBindingTargetNames: new Map(),
     facadeTypeTargetNames,
     finallyCompletion: undefined,
+    forwardDeclaredBindingIds: new Set(),
     generatedNames: new Set([...targetNames.values(), ...facadeTypeTargetNames.values()]),
     getModuleFacade,
     machineNames: new Map(),
@@ -517,10 +534,11 @@ function emitClass(declaration: Readonly<IrClassDeclaration>, context: EmitConte
   });
   if (implicitDerivedBaseParameters) {
     if (declaration.fields.length > 0 || requiresErrorNameStorage) lines.push('');
-    lines.push(`  public function new(${emitParameters(implicitDerivedBaseParameters, context)}) {`);
-    const body: string[] = [];
+    const emittedParameters = emitParametersWithInitializersHaxe(implicitDerivedBaseParameters, context);
+    lines.push(`  public function new(${emittedParameters.signature}) {`);
+    const body: string[] = [...emittedParameters.initializers];
     const args = implicitDerivedBaseParameters
-      .map((parameter) => getBindingTargetNameHaxe(parameter.binding, context))
+      .map((parameter) => getBindingTargetNameHaxe(parameter.binding, emittedParameters.context))
       .join(', ');
     body.push(`super(${args});`);
     if (requiresErrorNameStorage) body.push('this.name = "Error";');
@@ -539,22 +557,36 @@ function emitClass(declaration: Readonly<IrClassDeclaration>, context: EmitConte
     (declaration.classConstructor.parameters.length > 0 || declaration.classConstructor.body.length > 0)
   ) {
     if (declaration.fields.length > 0 || requiresErrorNameStorage) lines.push('');
-    lines.push(`  public function new(${emitParameters(declaration.classConstructor.parameters, context)}) {`);
-    const body: string[] = [];
+    const emittedParameters = emitParametersWithInitializersHaxe(declaration.classConstructor.parameters, context);
+    const constructorContext = emittedParameters.context;
+    lines.push(`  public function new(${emittedParameters.signature}) {`);
+    const body: string[] = [...emittedParameters.initializers];
     body.push(
-      ...emitIrClassFieldInitializationsHaxe(declaration, initialization, 'base-constructor-body-entry', context),
+      ...emitIrClassFieldInitializationsHaxe(
+        declaration,
+        initialization,
+        'base-constructor-body-entry',
+        constructorContext,
+      ),
     );
     for (const statement of declaration.classConstructor.body) {
-      body.push(...emitStatements([statement], context));
+      body.push(...emitStatements([statement], constructorContext));
       if (isIrStatementSuperConstructorCall(statement)) {
         if (requiresErrorNameStorage) body.push('this.name = "Error";');
-        body.push(...emitIrClassFieldInitializationsHaxe(declaration, initialization, 'derived-super-return', context));
+        body.push(
+          ...emitIrClassFieldInitializationsHaxe(
+            declaration,
+            initialization,
+            'derived-super-return',
+            constructorContext,
+          ),
+        );
         body.push(
           ...emitIrClassFieldInitializationsHaxe(
             declaration,
             initialization,
             'derived-super-return-after-fields',
-            context,
+            constructorContext,
           ),
         );
       }
@@ -595,7 +627,14 @@ function emitClass(declaration: Readonly<IrClassDeclaration>, context: EmitConte
     const setterValue = method.accessor === 'set' ? method.parameters[0] : undefined;
     const name = method.accessor ? `${method.accessor}_${safeHaxeName(method.name)}` : safeHaxeName(method.name);
     const returns = setterValue ? emitType(setterValue.type, methodContext) : emitType(method.returns, methodContext);
-    const signature = `  ${method.accessor ? '' : visibility}${method.abstract ? 'abstract ' : ''}${overriddenMethodNames.has(method.name) ? 'override ' : ''}${static_}function ${name}${emitTypeParameters(method.typeParameters, methodContext, false)}(${emitParameters(method.parameters, methodContext)}):${returns}`;
+    const emittedParameters = method.abstract
+      ? {
+          context: methodContext,
+          initializers: [] as string[],
+          signature: emitParameters(method.parameters, methodContext),
+        }
+      : emitParametersWithInitializersHaxe(method.parameters, methodContext);
+    const signature = `  ${method.accessor ? '' : visibility}${method.abstract ? 'abstract ' : ''}${overriddenMethodNames.has(method.name) ? 'override ' : ''}${static_}function ${name}${emitTypeParameters(method.typeParameters, methodContext, false)}(${emittedParameters.signature}):${returns}`;
     // A method with no implementation has no body to emit: the declaration is the whole contract.
     if (method.abstract) {
       lines.push(`${signature};`);
@@ -605,10 +644,13 @@ function emitClass(declaration: Readonly<IrClassDeclaration>, context: EmitConte
       `${signature} {`,
       ...indentSourceLines(
         [
+          ...emittedParameters.initializers,
           ...(method.async
-            ? emitCompilerHaxeTaskFunctionBody(method, methodContext)
-            : emitStatements(method.body, methodContext)),
-          ...(setterValue ? [`return ${getBindingTargetNameHaxe(setterValue.binding, methodContext)};`] : []),
+            ? emitCompilerHaxeTaskFunctionBody(method, emittedParameters.context)
+            : emitFunctionStatementsHaxe(method.body, emittedParameters.context)),
+          ...(setterValue
+            ? [`return ${getBindingTargetNameHaxe(setterValue.binding, emittedParameters.context)};`]
+            : []),
         ],
         2,
       ),
@@ -650,13 +692,15 @@ function emitEnumNamespaceFunctionHaxe(declaration: Readonly<IrFunctionDeclarati
     finallyCompletion: undefined,
     returnsAbsent: canIrTypeReturnAbsentHaxe(declaration.returns, outer.module),
   };
+  const emittedParameters = emitParametersWithInitializersHaxe(declaration.parameters, context);
   return [
-    `public static function ${getBindingTargetNameHaxe(declaration.binding, context)}${emitTypeParameters(declaration.typeParameters, context, false)}(${emitParameters(declaration.parameters, context)}):${emitType(declaration.returns, context)} {`,
-    ...indentSourceLines(
-      declaration.async
-        ? emitCompilerHaxeTaskFunctionBody(declaration, context)
-        : emitStatements(declaration.body, context),
-    ),
+    `public static function ${getBindingTargetNameHaxe(declaration.binding, context)}${emitTypeParameters(declaration.typeParameters, context, false)}(${emittedParameters.signature}):${emitType(declaration.returns, context)} {`,
+    ...indentSourceLines([
+      ...emittedParameters.initializers,
+      ...(declaration.async
+        ? emitCompilerHaxeTaskFunctionBody(declaration, emittedParameters.context)
+        : emitFunctionStatementsHaxe(declaration.body, emittedParameters.context)),
+    ]),
     '}',
   ];
 }
@@ -691,6 +735,10 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
     case 'array':
       return emitArrayExpressionHaxe(expression, context);
     case 'assignment': {
+      const arrayLengthAssignment = emitArrayLengthAssignmentHaxe(expression, context);
+      if (arrayLengthAssignment) return arrayLengthAssignment;
+      const dynamicPropertyAssignment = emitDynamicAccessPropertyAssignmentHaxe(expression, context);
+      if (dynamicPropertyAssignment) return dynamicPropertyAssignment;
       const reflectiveAssignment = emitReflectiveElementAssignmentHaxe(expression, context);
       if (reflectiveAssignment) return reflectiveAssignment;
       if (
@@ -790,6 +838,18 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
         return `Math.pow(${left}, ${right})`;
       }
       if (
+        (expression.operator === '<' ||
+          expression.operator === '<=' ||
+          expression.operator === '>' ||
+          expression.operator === '>=') &&
+        expression.semantics.left.flow === 'number' &&
+        expression.semantics.right.flow === 'number' &&
+        (getIrExpressionTypeHaxe(expression.left, context)?.kind === 'named' ||
+          getIrExpressionTypeHaxe(expression.right, context)?.kind === 'named')
+      ) {
+        return `((cast ${emitExpression(expression.left, context)}) ${expression.operator} (cast ${emitExpression(expression.right, context)}))`;
+      }
+      if (
         expression.operator === '>>>' &&
         expression.semantics.left.flow === 'number' &&
         expression.semantics.right.flow === 'number'
@@ -823,6 +883,28 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
         expression.callee.kind === 'property' &&
         expression.callee.object.kind === 'identifier' &&
         expression.callee.object.reference.kind === 'ambient' &&
+        expression.callee.object.reference.name === 'Reflect' &&
+        expression.callee.name === 'callMethod' &&
+        expression.arguments.length === 3
+      ) {
+        const [receiver, callable, arguments_] = expression.arguments;
+        return `Reflect.callMethod(${emitExpression(receiver!, context)}, cast(${emitExpression(callable!, context)}), ${emitExpression(arguments_!, context)})`;
+      }
+      if (
+        expression.callee.kind === 'property' &&
+        expression.callee.object.kind === 'identifier' &&
+        expression.callee.object.reference.kind === 'ambient' &&
+        expression.callee.object.reference.name === 'Math' &&
+        (expression.callee.name === 'cbrt' || expression.callee.name === 'hypot')
+      ) {
+        const arguments_ = expression.arguments.map((argument) => emitExpression(argument, context));
+        const source = `Math.${expression.callee.name}(${arguments_.map((_, index) => `{${String(index)}}`).join(', ')})`;
+        return `js.Syntax.code(${emitHaxeStringLiteral(source)}${arguments_.length > 0 ? `, ${arguments_.join(', ')}` : ''})`;
+      }
+      if (
+        expression.callee.kind === 'property' &&
+        expression.callee.object.kind === 'identifier' &&
+        expression.callee.object.reference.kind === 'ambient' &&
         expression.callee.object.reference.name === 'Math' &&
         (expression.callee.name === 'max' || expression.callee.name === 'min') &&
         expression.arguments.length > 2
@@ -843,6 +925,28 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
         if (expression.arguments.length === 0) return `${receiver}.copy()`;
         const bounds = expression.arguments.map((argument) => `Std.int(${emitExpression(argument, context)})`);
         return `${receiver}.slice(${bounds.join(', ')})`;
+      }
+      if (
+        expression.callee.kind === 'property' &&
+        expression.callee.member?.receiver === 'array' &&
+        expression.callee.member.name === 'concat' &&
+        expression.arguments.length > 1 &&
+        expression.arguments.every((argument) => argument.kind !== 'spread')
+      ) {
+        const receiver = emitExpression(expression.callee.object, context);
+        return expression.arguments.reduce(
+          (result, argument) => `${result}.concat(${emitExpression(argument, context)})`,
+          receiver,
+        );
+      }
+      if (
+        expression.callee.kind === 'property' &&
+        expression.callee.member?.receiver === 'array' &&
+        expression.callee.member.name === 'splice' &&
+        expression.arguments.length > 2 &&
+        expression.arguments.every((argument) => argument.kind !== 'spread')
+      ) {
+        return emitArraySpliceInsertionHaxe(expression, context);
       }
       if (
         expression.callee.kind === 'property' &&
@@ -914,7 +1018,7 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
     case 'cast':
       return emitCastExpressionHaxe(expression, context);
     case 'conditional':
-      return `(${emitExpression(expression.condition, context)} ? ${emitExpression(expression.whenTrue, context)} : ${emitExpression(expression.whenFalse, context)})`;
+      return `(${emitConditionHaxe(expression.condition, context)} ? ${emitExpression(expression.whenTrue, context)} : ${emitExpression(expression.whenFalse, context)})`;
     case 'element':
       if (
         expression.semantics.receivers.includes('object') ||
@@ -966,14 +1070,26 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
         finallyCompletion: undefined,
         returnsAbsent: canIrTypeReturnAbsentHaxe(expression.returns, context.module),
       };
+      const emittedParameters = emitParametersWithInitializersHaxe(expression.parameters, functionContext);
       if (expression.async) {
-        return `function(${emitParameters(expression.parameters, functionContext)}) {\n${indentSourceLines(
-          emitCompilerHaxeTaskFunctionBody(expression, functionContext),
-        ).join('\n')}\n}`;
+        return `function(${emittedParameters.signature}) {\n${indentSourceLines([
+          ...emittedParameters.initializers,
+          ...emitCompilerHaxeTaskFunctionBody(expression, emittedParameters.context),
+        ]).join('\n')}\n}`;
       }
-      return expression.expression
-        ? `function(${emitParameters(expression.parameters, functionContext)}) return ${emitExpression(expression.expression, functionContext)}`
-        : `function(${emitParameters(expression.parameters, functionContext)}) {\n${indentSourceLines(emitStatements(expression.body, functionContext)).join('\n')}\n}`;
+      if (expression.expression && emittedParameters.initializers.length === 0) {
+        return `function(${emittedParameters.signature}) return ${emitExpression(expression.expression, emittedParameters.context)}`;
+      }
+      const body = expression.expression
+        ? [
+            ...emittedParameters.initializers,
+            `return ${emitExpression(expression.expression, emittedParameters.context)};`,
+          ]
+        : [
+            ...emittedParameters.initializers,
+            ...emitFunctionStatementsHaxe(expression.body, emittedParameters.context),
+          ];
+      return `function(${emittedParameters.signature}) {\n${indentSourceLines(body).join('\n')}\n}`;
     case 'identifier':
       return emitIdentifierReferenceHaxe(expression.reference, context);
     case 'literal':
@@ -1016,7 +1132,7 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
           return `js.Syntax.code(${emitHaxeStringLiteral(construction)}${arguments_.length > 0 ? `, ${arguments_.join(', ')}` : ''})`;
         }
       }
-      return `new ${emitExpression(expression.callee, context)}(${expression.arguments.map((argument) => emitExpression(argument, context)).join(', ')})`;
+      return `new ${emitExpression(expression.callee, context)}(${emitNewArgumentsHaxe(expression, context).join(', ')})`;
     case 'object':
       return emitObjectExpressionHaxe(expression, context);
     case 'objectRest': {
@@ -1074,7 +1190,7 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
       const object = narrowed
         ? narrowedIsTypedef
           ? `cast(${emitExpression(expression.object, context)})`
-          : `cast(${emitExpression(expression.object, context)}, ${narrowed})`
+          : `(cast ${emitExpression(expression.object, context)} : ${narrowed})`
         : emitExpression(expression.object, context);
       return `${object}${expression.optional ? '?.' : '.'}${safeHaxeName(expression.name)}`;
     }
@@ -1200,6 +1316,69 @@ function emitArrayExpressionHaxe(
   if (!first) return '[]';
   const initial = first.kind === 'spread' ? `${first.value}.copy()` : first.value;
   return `${initial}${rest.map((group) => `.concat(${group.value})`).join('')}`;
+}
+
+function emitArrayLengthAssignmentHaxe(
+  expression: Readonly<Extract<IrExpression, { kind: 'assignment' }>>,
+  context: EmitContext,
+): string | undefined {
+  const left = expression.left;
+  if (
+    left.kind !== 'property' ||
+    left.name !== 'length' ||
+    (left.member?.receiver !== 'array' && left.member?.receiver !== 'tuple') ||
+    (expression.operator !== '=' && expression.operator !== '+=' && expression.operator !== '-=')
+  ) {
+    return undefined;
+  }
+  const receiver = getGeneratedTargetNameHaxe('arrayLengthReceiver', context);
+  const value = getGeneratedTargetNameHaxe('arrayLengthValue', context);
+  const right = emitExpression(expression.right, context);
+  const updated =
+    expression.operator === '=' ? right : `${receiver}.length ${expression.operator === '+=' ? '+' : '-'} ${right}`;
+  return `(function() { final ${receiver} = ${emitExpression(left.object, context)}; final ${value}:Float = ${updated}; ${receiver}.resize(Std.int(${value})); return ${value}; })()`;
+}
+
+function emitDynamicAccessPropertyAssignmentHaxe(
+  expression: Readonly<Extract<IrExpression, { kind: 'assignment' }>>,
+  context: EmitContext,
+): string | undefined {
+  const left = expression.left;
+  if (
+    expression.operator !== '=' ||
+    left.kind !== 'property' ||
+    left.member !== undefined ||
+    left.object.kind !== 'identifier' ||
+    left.object.reference.kind !== 'binding'
+  ) {
+    return undefined;
+  }
+  const receiverType = context.bindingTypes.get(left.object.reference.binding.id);
+  if (!receiverType || !emitType(receiverType, context).startsWith('haxe.DynamicAccess<')) return undefined;
+  const receiver = getGeneratedTargetNameHaxe('dynamicAccessReceiver', context);
+  const value = getGeneratedTargetNameHaxe('dynamicAccessValue', context);
+  return `(function() { final ${receiver} = ${emitExpression(left.object, context)}; final ${value}:Dynamic = ${emitExpression(expression.right, context)}; Reflect.setField(${receiver}, ${emitHaxeStringLiteral(left.name)}, ${value}); return ${value}; })()`;
+}
+
+function emitArraySpliceInsertionHaxe(
+  expression: Readonly<Extract<IrExpression, { kind: 'call' }>>,
+  context: EmitContext,
+): string {
+  if (expression.callee.kind !== 'property') {
+    return emissionError(context, 'array splice insertion requires a property call');
+  }
+  const receiver = getGeneratedTargetNameHaxe('spliceReceiver', context);
+  const position = getGeneratedTargetNameHaxe('splicePosition', context);
+  const removed = getGeneratedTargetNameHaxe('spliceRemoved', context);
+  const [start, count, ...inserted] = expression.arguments;
+  if (!start || !count) return emissionError(context, 'array splice insertion requires start and count');
+  const insertions = inserted
+    .map(
+      (item, index) =>
+        `${receiver}.insert(${index === 0 ? position : `${position} + ${String(index)}`}, ${emitExpression(item, context)});`,
+    )
+    .join(' ');
+  return `(function() { final ${receiver} = ${emitExpression(expression.callee.object, context)}; final ${position}:Int = Std.int(${emitExpression(start, context)}); final ${removed} = ${receiver}.splice(${position}, Std.int(${emitExpression(count, context)})); ${insertions} return ${removed}; })()`;
 }
 
 function emitJavaScriptAssignmentOperatorHaxe(
@@ -1383,6 +1562,13 @@ function emitAssignmentRightHaxe(
 ): string {
   if (
     expression.operator === '=' &&
+    expression.left.kind === 'element' &&
+    expression.left.semantics.receivers.every((receiver) => haxeIntegerTypedArrayReceivers.has(receiver))
+  ) {
+    return `Std.int(${emitExpression(expression.right, context)})`;
+  }
+  if (
+    expression.operator === '=' &&
     expression.semantics.left.flow === 'unknown' &&
     expression.right.kind === 'identifier' &&
     expression.right.reference.kind === 'ambient' &&
@@ -1394,6 +1580,16 @@ function emitAssignmentRightHaxe(
   }
   return emitExpression(expression.right, context);
 }
+
+const haxeIntegerTypedArrayReceivers = new Set([
+  'int8Array',
+  'int16Array',
+  'int32Array',
+  'uint8Array',
+  'uint8ClampedArray',
+  'uint16Array',
+  'uint32Array',
+]);
 
 function getComputedObjectStorageNameHaxe(
   expression: Readonly<Extract<IrExpression, { kind: 'element' }>>,
@@ -1563,13 +1759,15 @@ function emitFunction(declaration: Readonly<IrFunctionDeclaration>, outer: EmitC
     finallyCompletion: undefined,
     returnsAbsent: canIrTypeReturnAbsentHaxe(declaration.returns, outer.module),
   };
+  const emittedParameters = emitParametersWithInitializersHaxe(declaration.parameters, context);
   return [
-    `${access}function ${getBindingTargetNameHaxe(declaration.binding, context)}${emitTypeParameters(declaration.typeParameters, context, false)}(${emitParameters(declaration.parameters, context)}):${emitType(declaration.returns, context)} {`,
-    ...indentSourceLines(
-      declaration.async
-        ? emitCompilerHaxeTaskFunctionBody(declaration, context)
-        : emitStatements(declaration.body, context),
-    ),
+    `${access}function ${getBindingTargetNameHaxe(declaration.binding, context)}${emitTypeParameters(declaration.typeParameters, context, false)}(${emittedParameters.signature}):${emitType(declaration.returns, context)} {`,
+    ...indentSourceLines([
+      ...emittedParameters.initializers,
+      ...(declaration.async
+        ? emitCompilerHaxeTaskFunctionBody(declaration, emittedParameters.context)
+        : emitFunctionStatementsHaxe(declaration.body, emittedParameters.context)),
+    ]),
     '}',
   ];
 }
@@ -2076,6 +2274,10 @@ function emitFunctionReexportForwardingHaxe(
   const sourceContext = declaration.parameters.some((parameter) => parameter.initializer)
     ? createFacadeSourceContextHaxe(sourceModule, context)
     : undefined;
+  const bodyContext = sourceContext
+    ? { ...sourceContext, facadeBindingTargetNames: new Map(sourceContext.facadeBindingTargetNames) }
+    : undefined;
+  const initializers: string[] = [];
   const params = declaration.parameters
     .map((p) => {
       const name = getSourceBindingTargetNameHaxe(sourceModule, p.binding, context);
@@ -2084,19 +2286,28 @@ function emitFunctionReexportForwardingHaxe(
         const elementType = p.type.kind === 'array' ? emitFacadeTypeHaxe(p.type.element, sourceModule, context) : type;
         return `...${name}:${elementType}`;
       }
-      if (p.initializer) return `${name}:${type} = ${emitExpression(p.initializer, sourceContext!)}`;
+      if (p.initializer) {
+        const effective = getGeneratedTargetNameHaxe(`${name}Default`, bodyContext!);
+        const initializer = emitExpression(p.initializer, bodyContext!);
+        initializers.push(
+          `final ${effective}:${type} = js.Syntax.strictEq(${name}, js.Syntax.code("undefined")) ? ${initializer} : (cast ${name} : ${type});`,
+        );
+        bodyContext!.facadeBindingTargetNames.set(p.binding.id, effective);
+        return `?${name}:${type}`;
+      }
       return `${p.optional ? '?' : ''}${name}:${type}`;
     })
     .join(', ');
   const args = declaration.parameters
     .map(
       (parameter) =>
-        `${parameter.rest ? '...' : ''}${getSourceBindingTargetNameHaxe(sourceModule, parameter.binding, context)}`,
+        `${parameter.rest ? '...' : ''}${bodyContext ? getBindingTargetNameHaxe(parameter.binding, bodyContext) : getSourceBindingTargetNameHaxe(sourceModule, parameter.binding, context)}`,
     )
     .join(', ');
   const returnType = emitFacadeTypeHaxe(declaration.returns, sourceModule, context);
   return [
     `function ${targetName}${emitFacadeTypeParametersHaxe(declaration.typeParameters, sourceModule, context, false)}(${params}):${returnType} {`,
+    ...initializers.map((line) => `  ${line}`),
     `  return ${modulePath}.${sourceName}(${args});`,
     '}',
   ];
@@ -2204,7 +2415,7 @@ function emitCastExpressionHaxe(
 ): string {
   const inner = emitExpression(expression.expression, context);
   if (isIrCastTargetUntypedHaxe(expression.type, context)) return `cast(${inner})`;
-  return `cast(${inner}, ${emitType(expression.type, context)})`;
+  return `(cast ${inner} : ${emitType(expression.type, context)})`;
 }
 
 function isIrCastTargetTypedefHaxe(type: Readonly<IrType>, context: EmitContext): boolean {
@@ -2380,10 +2591,40 @@ function emitParameters(parameters: readonly IrParameter[], context: EmitContext
         const elementType = parameter.type.kind === 'array' ? emitType(parameter.type.element, context) : type;
         return `...${name}:${elementType}`;
       }
-      if (parameter.initializer) return `${name}:${type} = ${emitExpression(parameter.initializer, context)}`;
+      if (parameter.initializer) return `?${name}:${type}`;
       return `${parameter.optional ? '?' : ''}${name}:${type}`;
     })
     .join(', ');
+}
+
+function emitParametersWithInitializersHaxe(
+  parameters: readonly IrParameter[],
+  context: EmitContext,
+): { context: EmitContext; initializers: string[]; signature: string } {
+  const bodyContext: EmitContext = {
+    ...context,
+    facadeBindingTargetNames: new Map(context.facadeBindingTargetNames),
+  };
+  const initializers: string[] = [];
+  for (const parameter of parameters) {
+    const sourceName = getBindingTargetNameHaxe(parameter.binding, context);
+    if (parameter.rest) {
+      const targetName = getGeneratedTargetNameHaxe(`${sourceName}Array`, bodyContext);
+      const type = emitType(parameter.type, bodyContext);
+      initializers.push(`final ${targetName}:${type} = ${sourceName}.toArray();`);
+      bodyContext.facadeBindingTargetNames.set(parameter.binding.id, targetName);
+      continue;
+    }
+    if (!parameter.initializer) continue;
+    const targetName = getGeneratedTargetNameHaxe(`${sourceName}Default`, bodyContext);
+    const type = parameter.dependentCallablePack ? 'Dynamic' : emitType(parameter.type, bodyContext);
+    const initializer = emitExpression(parameter.initializer, bodyContext);
+    initializers.push(
+      `final ${targetName}:${type} = js.Syntax.strictEq(${sourceName}, js.Syntax.code("undefined")) ? ${initializer} : (cast ${sourceName} : ${type});`,
+    );
+    bodyContext.facadeBindingTargetNames.set(parameter.binding.id, targetName);
+  }
+  return { context: bodyContext, initializers, signature: emitParameters(parameters, context) };
 }
 
 function emitStatement(statement: Readonly<IrStatement>, context: EmitContext): string[] {
@@ -2403,7 +2644,7 @@ function emitStatement(statement: Readonly<IrStatement>, context: EmitContext): 
       return emitControlFlowBoundaryHaxe(statement.label, true, context, () => [
         'do {',
         ...indentSourceLines(emitStatementBody(statement.body, context)),
-        `} while (${emitExpression(statement.condition, context)});`,
+        `} while (${emitConditionHaxe(statement.condition, context)});`,
       ]);
     case 'expression':
       return [`${emitExpression(statement.expression, context)};`];
@@ -2442,7 +2683,7 @@ function emitStatement(statement: Readonly<IrStatement>, context: EmitContext): 
       ]);
     case 'if': {
       const lines = [
-        `if (${normalizeSourceTextGrouping(emitExpression(statement.condition, context))}) {`,
+        `if (${emitConditionHaxe(statement.condition, context)}) {`,
         ...indentSourceLines(emitStatementBody(statement.consequent, context)),
         '}',
       ];
@@ -2512,7 +2753,7 @@ function emitStatement(statement: Readonly<IrStatement>, context: EmitContext): 
       return statement.declarations.map((variable) => emitVariable(variable, context));
     case 'while':
       return emitControlFlowBoundaryHaxe(statement.label, true, context, () => [
-        `while (${normalizeSourceTextGrouping(emitExpression(statement.condition, context))}) {`,
+        `while (${emitConditionHaxe(statement.condition, context)}) {`,
         ...indentSourceLines(emitStatementBody(statement.body, context)),
         '}',
       ]);
@@ -2707,6 +2948,42 @@ function emitStatements(statements: readonly IrStatement[], context: EmitContext
   return statements.flatMap((statement) => emitStatement(statement, context));
 }
 
+function emitFunctionStatementsHaxe(statements: readonly IrStatement[], context: EmitContext): string[] {
+  const declarations = statements.flatMap((statement, statementIndex) =>
+    statement.kind === 'variable'
+      ? statement.declarations.flatMap((variable) => ('binding' in variable ? [{ statementIndex, variable }] : []))
+      : [],
+  );
+  const forward = declarations.filter(({ statementIndex, variable }) => {
+    for (let index = 0; index < statementIndex; index += 1) {
+      let found = false;
+      analyzeIrStatementSubtreeTraversal(statements[index]!, {
+        expression(expression) {
+          if (
+            expression.kind === 'identifier' &&
+            expression.reference.kind === 'binding' &&
+            expression.reference.binding.id === variable.binding.id
+          ) {
+            found = true;
+            return false;
+          }
+          return undefined;
+        },
+      });
+      if (found) return true;
+    }
+    return false;
+  });
+  if (forward.length === 0) return emitStatements(statements, context);
+  const ids = new Set(forward.map(({ variable }) => variable.binding.id));
+  const bodyContext: EmitContext = { ...context, forwardDeclaredBindingIds: ids };
+  const prefix = forward.map(({ variable }) => {
+    const type = variable.type ? emitType(variable.type, bodyContext) : 'Dynamic';
+    return `var ${getBindingTargetNameHaxe(variable.binding, bodyContext)}:${type};`;
+  });
+  return [...prefix, ...emitStatements(statements, bodyContext).filter(Boolean)];
+}
+
 function emitType(type: Readonly<IrType>, context: EmitContext): string {
   return emitIrTypeHaxe(type, {
     fail: (message) => emissionError(context, message),
@@ -2716,6 +2993,51 @@ function emitType(type: Readonly<IrType>, context: EmitContext): string {
     getMemberName: safeHaxeName,
     getTypeName: safeHaxeTypeName,
   });
+}
+
+function getIrExpressionTypeHaxe(
+  expression: Readonly<IrExpression>,
+  context: EmitContext,
+): Readonly<IrType> | undefined {
+  switch (expression.kind) {
+    case 'cast':
+      return expression.type;
+    case 'call':
+      return expression.semantics.resultType;
+    case 'identifier':
+      return expression.reference.kind === 'binding'
+        ? context.bindingTypes.get(expression.reference.binding.id)
+        : undefined;
+    case 'literal':
+      return expression.value === null
+        ? { kind: 'null' }
+        : typeof expression.value === 'boolean'
+          ? { kind: 'primitive', name: 'boolean' }
+          : typeof expression.value === 'number'
+            ? { kind: 'primitive', name: 'number' }
+            : { kind: 'primitive', name: 'string' };
+    case 'property':
+      return expression.member?.name === 'length' ? { kind: 'primitive', name: 'number' } : undefined;
+    default:
+      return undefined;
+  }
+}
+
+function emitConditionHaxe(expression: Readonly<IrExpression>, context: EmitContext): string {
+  if (isIrExpressionBooleanHaxe(expression, context)) {
+    return normalizeSourceTextGrouping(emitExpression(expression, context));
+  }
+  const runtime = `${context.options.runtimeModule ?? 'flighthq._internal'}._Js`;
+  return `${runtime}.truthy(${normalizeSourceTextGrouping(emitExpression(expression, context))})`;
+}
+
+function isIrExpressionBooleanHaxe(expression: Readonly<IrExpression>, context: EmitContext): boolean {
+  if (expression.kind === 'binary' || expression.kind === 'unary') return expression.semantics.result === 'boolean';
+  const type = getIrExpressionTypeHaxe(expression, context);
+  return (
+    (type?.kind === 'primitive' && type.name === 'boolean') ||
+    (type?.kind === 'literal' && typeof type.value === 'boolean')
+  );
 }
 
 function emitStructureFieldTypeHaxe(type: Readonly<IrType>, context: EmitContext): string {
@@ -2732,6 +3054,35 @@ function emitArrayIndexHaxe(index: Readonly<IrExpression>, context: EmitContext)
     ? emitted
     : `Std.int(${emitted})`;
 }
+
+function emitNewArgumentsHaxe(
+  expression: Readonly<Extract<IrExpression, { kind: 'new' }>>,
+  context: EmitContext,
+): string[] {
+  const integerLengthConstructor =
+    expression.callee.kind === 'identifier' &&
+    expression.callee.reference.kind === 'ambient' &&
+    haxeTypedArrayConstructorNames.has(expression.callee.reference.name);
+  return expression.arguments.map((argument, index) => {
+    const emitted = emitExpression(argument, context);
+    const type = getIrExpressionTypeHaxe(argument, context);
+    return integerLengthConstructor && index === 0 && type?.kind === 'primitive' && type.name === 'number'
+      ? `Std.int(${emitted})`
+      : emitted;
+  });
+}
+
+const haxeTypedArrayConstructorNames = new Set([
+  'Float32Array',
+  'Float64Array',
+  'Int8Array',
+  'Int16Array',
+  'Int32Array',
+  'Uint8Array',
+  'Uint8ClampedArray',
+  'Uint16Array',
+  'Uint32Array',
+]);
 
 // A spread of an unbounded collection has no arity until run time, so the call itself becomes a
 // reflective one: Haxe's `Reflect.callMethod` takes the arguments as an array, which is exactly the
@@ -2763,7 +3114,7 @@ function emitSpreadCallHaxe(
           .map((group) => `.concat(${group})`)
           .join('')}`;
   const receiver = expression.callee.kind === 'property' ? emitExpression(expression.callee.object, context) : 'null';
-  return `Reflect.callMethod(${receiver}, ${emitExpression(expression.callee, context)}, ${args})`;
+  return `Reflect.callMethod(${receiver}, cast(${emitExpression(expression.callee, context)}), ${args})`;
 }
 
 function emitAnonymousType(properties: readonly IrObjectTypeProperty[], context: EmitContext): string {
@@ -3110,6 +3461,12 @@ function emitOptionalCallHaxe(
 function emitVariable(variable: Readonly<IrVariable>, context: EmitContext): string {
   if ('pattern' in variable)
     emissionError(context, 'binding patterns require destructuring lowering before Haxe emission');
+  if (context.forwardDeclaredBindingIds.has(variable.binding.id)) {
+    const target = getBindingTargetNameHaxe(variable.binding, context);
+    if (variable.initialValue === 'undefined') return `${target} = js.Syntax.code("undefined");`;
+    if (!variable.initializer) return '';
+    return `${target} = ${normalizeSourceTextGrouping(emitExpression(variable.initializer, context))};`;
+  }
   if (
     variable.initialValue === 'undefined' ||
     (variable.initializer === undefined && variable.type && hasIrTypeAbsentMemberHaxe(variable.type, context.module))
@@ -3135,7 +3492,7 @@ function emitVariable(variable: Readonly<IrVariable>, context: EmitContext): str
     variable.initializer !== undefined &&
     isIrExpressionDynamicReadHaxe(variable.initializer, context);
   const initializer = variable.initializer
-    ? ` = ${restCast ? (isIrCastTargetUntypedHaxe(variable.type!, context) ? `cast(${emitExpression(variable.initializer, context)})` : `cast(${emitExpression(variable.initializer, context)}, ${emitType(variable.type!, context)})`) : normalizeSourceTextGrouping(emitExpression(variable.initializer, context))}`
+    ? ` = ${restCast ? (isIrCastTargetUntypedHaxe(variable.type!, context) ? `cast(${emitExpression(variable.initializer, context)})` : `(cast ${emitExpression(variable.initializer, context)} : ${emitType(variable.type!, context)})`) : normalizeSourceTextGrouping(emitExpression(variable.initializer, context))}`
     : '';
   return `${variable.mutable ? 'var' : 'final'} ${getBindingTargetNameHaxe(variable.binding, context)}${type}${initializer};`;
 }

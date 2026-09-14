@@ -19,7 +19,10 @@ export function emitIrTypeHaxe(type: Readonly<IrType>, context: Readonly<IrTypeH
     case 'array':
       return `Array<${emitIrTypeHaxe(type.element, context)}>`;
     case 'function': {
-      const parameters = type.parameters.map((parameter) => emitIrTypeHaxe(parameter.type, context));
+      const parameters = type.parameters.map((parameter) => {
+        const emitted = emitIrTypeHaxe(parameter.type, context);
+        return parameter.optional ? `?${emitted}` : emitted;
+      });
       const returns = emitIrTypeHaxe(type.returns, context);
       return `(${parameters.join(', ')})->${type.returns.kind === 'function' ? `(${returns})` : returns}`;
     }
@@ -122,15 +125,21 @@ const haxeErasedUtilityTypeNames = new Set([
   'Extract',
   'NoInfer',
   'NonNullable',
-  'Omit',
   'Partial',
-  'Pick',
   'Readonly',
   'Required',
   'ThisType',
 ]);
 
-const haxeDynamicUtilityTypeNames = new Set(['Awaited', 'FlatArray', 'Parameters', 'PropertyKey', 'ReturnType']);
+const haxeDynamicUtilityTypeNames = new Set([
+  'Awaited',
+  'FlatArray',
+  'Omit',
+  'Parameters',
+  'Pick',
+  'PropertyKey',
+  'ReturnType',
+]);
 
 function hasIrTypeKindHaxe(type: Readonly<IrType>, kind: IrType['kind']): boolean {
   return type.kind === kind || (type.kind === 'union' && type.types.some((member) => member.kind === kind));
