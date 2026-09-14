@@ -4224,10 +4224,10 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     }).emitModule(modules[1]!)[0]!.contents;
 
     expect(emitted).toContain(
-      'flight::StructuralRef<flight::RowMerge<flight::RowOf<Type>, flight::RowOf<flighthq_types::Entity>>>',
+      'flight::StructuralRef<flight::RowMerge<flight::RowOf<Type>, flight::RowOf<flight::Ref<flighthq_types::Entity>>>>',
     );
     expect(emitted).toContain(
-      'flight::make_structural_write_proxy<flight::RowMerge<flight::RowOf<Type>, flight::RowOf<flighthq_types::Entity>>>(entity, flighthq_types::entity_runtime_key, [=]()',
+      'flight::make_structural_write_proxy<flight::RowMerge<flight::RowOf<Type>, flight::RowOf<flight::Ref<flighthq_types::Entity>>>>(entity, flighthq_types::entity_runtime_key, [=]()',
     );
     expect(emitted).toContain('return entity;');
 
