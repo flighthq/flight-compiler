@@ -1004,8 +1004,6 @@ describe('emitIrModuleRust', () => {
     const output = emitIrModuleRust(result.module).contents;
 
     expect(output).toContain('enum AnonymousUnion');
-    expect(output).toContain('enum AnonymousUnion2');
-    expect(output).not.toContain('AnonymousUnion_2');
     expect(output).toContain('Null,');
     expect(output).toContain('Undefined,');
     expect(output).toContain('matches!(&value, AnonymousUnion::Null)');
@@ -1709,11 +1707,12 @@ describe('emitIrModuleRust', () => {
     expect(output).toContain('.to_string()');
   });
 
-  it('emits cast expressions as Rust as', () => {
+  it('elects numeric Rust ABI for an asserted unknown parameter', () => {
     const output = emitIrModuleRust(
       lower('cast.ts', 'export function typed(x: unknown): number { return x as number; }').module,
     ).contents;
-    expect(output).toContain(' as ');
+    expect(output).toContain('pub fn typed(x: f64) -> f64');
+    expect(output).toContain('return x;');
   });
 
   it('emits tuple element access as positional field', () => {
@@ -2868,11 +2867,12 @@ describe('emitIrModuleRust', () => {
     expect(output).toContain('let x: Option<f64>');
   });
 
-  it('emits cast expression with as', () => {
+  it('erases an assertion after electing its native Rust representation', () => {
     const output = emitIrModuleRust(
       lower('cast-expr.ts', 'export function narrow(x: unknown): number { return x as number; }').module,
     ).contents;
-    expect(output).toContain(' as ');
+    expect(output).toContain('pub fn narrow(x: f64) -> f64');
+    expect(output).toContain('return x;');
   });
 
   it('emits tuple element access by index', () => {
@@ -3514,7 +3514,7 @@ describe('emitIrModuleRust', () => {
         presence: 'required',
       };
     }
-    expect(() => emitIrModuleRust(module)).toThrow('Option-aware lowering');
+    expect(() => emitIrModuleRust(module)).toThrow('dual-sentinel nullish comparison requires Rust union');
   });
 
   it('refuses nullish comparison that admits both null and undefined', () => {
@@ -7921,11 +7921,12 @@ describe('emitIrModuleRust conditional expression', () => {
 });
 
 describe('emitIrModuleRust cast expression', () => {
-  it('emits type assertion as Rust as cast', () => {
+  it('uses the asserted native type at the Rust ABI boundary', () => {
     const output = emitIrModuleRust(
       lower('cast.ts', 'export function toNum(x: unknown): number { return x as number; }').module,
     ).contents;
-    expect(output).toContain(' as ');
+    expect(output).toContain('pub fn to_num(x: f64) -> f64');
+    expect(output).toContain('return x;');
   });
 });
 

@@ -75,6 +75,7 @@ import type {
   IrModule,
   IrObjectMember,
   IrObjectTypeProperty,
+  IrOperatorValueDomain,
   IrParameter,
   IrPrefixUnaryOperator,
   IrStatement,
@@ -4169,7 +4170,10 @@ function assertStructuralObjectCompatibilityRust(
   ).diagnostics;
   const diagnostic =
     diagnostics.find((candidate) => candidate.disposition !== 'indeterminate') ??
-    diagnostics.find((candidate) => candidate.code !== 'unresolved-named-construction-target');
+    diagnostics.find(
+      (candidate) =>
+        candidate.code !== 'open-construction-target' && candidate.code !== 'unresolved-named-construction-target',
+    );
   if (diagnostic) {
     throw createBackendEmissionFailure(
       'rust',
@@ -4337,6 +4341,7 @@ function getStaticTypeofNameRust(domain: IrOperatorValueDomain): string | undefi
     case 'unknown':
       return undefined;
   }
+  return undefined;
 }
 
 function emitNumericUpdateUnaryRust(
