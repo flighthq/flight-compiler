@@ -1664,7 +1664,11 @@ function emitExpression(
         : optionalCallable
           ? `${callee}.value()`
           : callee;
-      return `${invocationTarget}${emitCppTypeArguments(expression.typeArguments, context)}(${args.join(', ')})`;
+      const typeArguments =
+        expression.typeArguments.length > 0
+          ? expression.typeArguments
+          : (getCppContextualCallTypeArgumentsCpp(expression, expectedType, context) ?? []);
+      return `${invocationTarget}${emitCppTypeArguments(typeArguments, context)}(${args.join(', ')})`;
     }
     case 'cast': {
       if (isCppErasedWeakMapType(getIrExpressionTypeEvidenceCpp(expression.expression, context), context)) {
@@ -5271,6 +5275,128 @@ function getIrCallReturnTypeCpp(
   if (runtimeResult) return runtimeResult;
   const calleeType = getIrExpressionTypeEvidenceCpp(expression.callee, context);
   return calleeType ? getCppCallableReturnType(calleeType, context, new Set()) : undefined;
+}
+
+// C++ cannot infer a function template parameter which appears only in the return type. TypeScript
+// can accept such a call from its contextual destination, however, and call-result semantics retain
+// the checker's instantiated type. Recover only a complete, structurally aligned substitution: an
+// incomplete result is left to ordinary C++ argument deduction instead of manufacturing `auto` or
+// choosing a constraint as a runtime type.
+function getCppContextualCallTypeArgumentsCpp(
+  expression: Readonly<Extract<IrExpression, { kind: 'call' }>>,
+  expectedType: Readonly<IrType> | undefined,
+  context: EmitContext,
+): readonly Readonly<IrType>[] | undefined {
+  if (expression.callee.kind !== 'identifier' || expression.callee.reference.kind !== 'binding') return undefined;
+  const declaration = getCppFunctionDeclarationForBindingCpp(expression.callee.reference.binding.id, context);
+  if (!declaration || declaration.typeParameters.length === 0) return undefined;
+  const parameterIds = new Set(declaration.typeParameters.map((parameter) => parameter.binding.id));
+  const candidates = [expectedType, expression.semantics.resultType].flatMap((candidate) =>
+    candidate && candidate.kind !== 'unknown' ? [candidate] : [],
+  );
+  for (const candidate of candidates) {
+    const substitutions = new Map<string, Readonly<IrType>>();
+    if (!collectCppResultTypeSubstitutionsCpp(declaration.returns, candidate, parameterIds, substitutions, context)) {
+      continue;
+    }
+    const arguments_ = declaration.typeParameters.map(
+      (parameter) => substitutions.get(parameter.binding.id) ?? parameter.default,
+    );
+    if (arguments_.every((argument): argument is Readonly<IrType> => argument !== undefined)) return arguments_;
+  }
+  return undefined;
+}
+
+function collectCppResultTypeSubstitutionsCpp(
+  pattern: Readonly<IrType>,
+  candidate: Readonly<IrType>,
+  parameterIds: ReadonlySet<string>,
+  substitutions: Map<string, Readonly<IrType>>,
+  context: EmitContext,
+): boolean {
+  if (
+    pattern.kind === 'named' &&
+    pattern.reference.kind === 'binding' &&
+    pattern.reference.binding.kind === 'typeParameter' &&
+    pattern.reference.path.length === 0 &&
+    pattern.typeArguments.length === 0 &&
+    parameterIds.has(pattern.reference.binding.id)
+  ) {
+    const previous = substitutions.get(pattern.reference.binding.id);
+    if (!previous) {
+      substitutions.set(pattern.reference.binding.id, candidate);
+      return true;
+    }
+    return normalizeCompilerStructuralValueCanonical(previous) === normalizeCompilerStructuralValueCanonical(candidate);
+  }
+  if (pattern.kind === 'named' && candidate.kind === 'named') {
+    if (
+      pattern.typeArguments.length !== candidate.typeArguments.length ||
+      getTypeReferenceTargetName(pattern, context) !== getTypeReferenceTargetName(candidate, context)
+    ) {
+      return false;
+    }
+    return pattern.typeArguments.every((argument, index) =>
+      collectCppResultTypeSubstitutionsCpp(
+        argument,
+        candidate.typeArguments[index]!,
+        parameterIds,
+        substitutions,
+        context,
+      ),
+    );
+  }
+  if (pattern.kind === 'array' && candidate.kind === 'array') {
+    return collectCppResultTypeSubstitutionsCpp(
+      pattern.element,
+      candidate.element,
+      parameterIds,
+      substitutions,
+      context,
+    );
+  }
+  if (pattern.kind === 'tuple' && candidate.kind === 'tuple' && pattern.elements.length === candidate.elements.length) {
+    return pattern.elements.every((element, index) =>
+      element.optional === candidate.elements[index]!.optional &&
+      element.rest === candidate.elements[index]!.rest &&
+      collectCppResultTypeSubstitutionsCpp(
+        element.type,
+        candidate.elements[index]!.type,
+        parameterIds,
+        substitutions,
+        context,
+      ),
+    );
+  }
+  if (
+    pattern.kind === 'function' &&
+    candidate.kind === 'function' &&
+    pattern.typeParameters.length === 0 &&
+    candidate.typeParameters.length === 0 &&
+    pattern.parameters.length === candidate.parameters.length
+  ) {
+    return (
+      pattern.parameters.every((parameter, index) =>
+        parameter.optional === candidate.parameters[index]!.optional &&
+        parameter.rest === candidate.parameters[index]!.rest &&
+        collectCppResultTypeSubstitutionsCpp(
+          parameter.type,
+          candidate.parameters[index]!.type,
+          parameterIds,
+          substitutions,
+          context,
+        ),
+      ) &&
+      collectCppResultTypeSubstitutionsCpp(
+        pattern.returns,
+        candidate.returns,
+        parameterIds,
+        substitutions,
+        context,
+      )
+    );
+  }
+  return normalizeCompilerStructuralValueCanonical(pattern) === normalizeCompilerStructuralValueCanonical(candidate);
 }
 
 // The package-graph source program deliberately does not make a host TypeScript library part of

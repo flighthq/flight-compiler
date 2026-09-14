@@ -6278,6 +6278,21 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(emitted.contents).toContain('typename');
   });
 
+  it('materializes a template argument inferred only from a contextual return type', () => {
+    const result = lower(
+      'contextual-generic-result.ts',
+      `interface Signal<T> { emit: T }
+       function createSignal<T extends (...args: any[]) => void>(): Signal<T> { throw new Error('unused'); }
+       export function initialize(out: { onValue: Signal<(value: number) => void> }): void {
+         out.onValue = createSignal();
+       }`,
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+
+    expect(emitted.contents).toContain('create_signal<std::function<void(double)>>()');
+    expect(emitted.contents).not.toContain('out->on_value = create_signal()');
+  });
+
   it('emits try-finally with return only in if-consequent (no otherwise)', () => {
     const result = lower(
       'try-if-no-else.ts',
