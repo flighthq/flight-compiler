@@ -6367,6 +6367,49 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(emitted.contents).not.toContain('out->on_value = create_signal()');
   });
 
+  it('materializes a template argument retained only in a call argument alias', () => {
+    const result = lower(
+      'generic-argument-alias.ts',
+      `interface Signal<T> { emit: T }
+       type Construction<T> = { value: T };
+       function initialize<T>(out: Construction<Signal<T>>): void { out.value.emit; }
+       export function use(out: Construction<Signal<(value: number) => void>>): void {
+         initialize(out);
+       }`,
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+
+    expect(emitted.contents).toContain('initialize<std::function<void(double)>>(out)');
+  });
+
+  it('materializes omitted optional and default call arguments', () => {
+    const result = lower(
+      'omitted-call-arguments.ts',
+      `function optional(value: number, label?: string): number { return value; }
+       function defaulted(value: number, label = 'unused'): number { return value; }
+       export function use(): number { return optional(1) + defaulted(2); }`,
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+
+    expect(emitted.contents).toContain('optional(1.0, std::nullopt)');
+    expect(emitted.contents).toContain('defaulted(2.0, std::nullopt)');
+  });
+
+  it('allocates distinct compiler-owned names for repeated destructuring', () => {
+    const result = lower(
+      'repeated-destructuring.ts',
+      `export function add(left: { value: number }, right: { value: number }): number {
+         const { value: first } = left;
+         const { value: second } = right;
+         return first + second;
+       }`,
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+
+    expect(emitted.contents).toContain('object_pattern_value');
+    expect(emitted.contents).toContain('object_pattern_value_2');
+  });
+
   it('emits try-finally with return only in if-consequent (no otherwise)', () => {
     const result = lower(
       'try-if-no-else.ts',

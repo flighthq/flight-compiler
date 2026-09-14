@@ -267,6 +267,15 @@ function emitIrModuleCppWithContext(
     targetNames = new Map(
       (targetNameMaps ?? createCppTargetNameMaps(sourceModules)).get(getCppModuleIdentityKey(module)) ?? [],
     );
+    // Binding-pattern lowering introduces compiler-owned temporaries after package-wide target
+    // names have been allocated from the source graph. Allocate the lowered module as well so
+    // repeated destructuring in one scope cannot fall back to the same unchecked preferred name.
+    for (const allocation of createIrModuleTargetNameAllocation(module, (binding) => ({
+      namespace: 'identifier',
+      preferredName: getCppPreferredBindingName(binding),
+    }))) {
+      if (!targetNames.has(allocation.identity)) targetNames.set(allocation.identity, allocation.name);
+    }
   } catch (error) {
     if (isCompilerTargetNameAllocationFailure(error)) {
       throw createBackendEmissionFailure(
@@ -1717,25 +1726,28 @@ function emitExpression(
         callableExpression.kind === 'function'
           ? `(${emitExpression(callableExpression, context)})`
           : emitExpression(callableExpression, context);
-      const args =
+      const args = appendCppOmittedInvocationArguments(
+        expression,
         emitCppClosedRestCallArguments(expression, context) ??
-        expression.arguments.map((argument, index) => {
-          const dependentSpread = emitCppDependentCallableSpreadArgument(
-            argument,
-            index,
-            expression.arguments.length,
-            context,
-          );
-          if (dependentSpread) return dependentSpread;
-          if (
-            argument.kind === 'spread' &&
-            expression.semantics.signature?.restParameter === index &&
-            index === expression.arguments.length - 1
-          ) {
-            return emitExpression(argument.expression, context);
-          }
-          return emitExpression(argument, context, getIrCallArgumentExpectedTypeCpp(expression, index, context));
-        });
+          expression.arguments.map((argument, index) => {
+            const dependentSpread = emitCppDependentCallableSpreadArgument(
+              argument,
+              index,
+              expression.arguments.length,
+              context,
+            );
+            if (dependentSpread) return dependentSpread;
+            if (
+              argument.kind === 'spread' &&
+              expression.semantics.signature?.restParameter === index &&
+              index === expression.arguments.length - 1
+            ) {
+              return emitExpression(argument.expression, context);
+            }
+            return emitExpression(argument, context, getIrCallArgumentExpectedTypeCpp(expression, index, context));
+          }),
+        context,
+      );
       const calleeType = getIrExpressionTypeEvidenceCpp(expression.callee, context);
       const calleeStorageType = getIrExpressionBindingTypeCpp(expression.callee, context) ?? calleeType;
       const calleeAlreadyUnwrapped =
@@ -5452,11 +5464,29 @@ function getCppContextualCallTypeArgumentsCpp(
   const declaration = getCppFunctionDeclarationForBindingCpp(expression.callee.reference.binding.id, context);
   if (!declaration || declaration.typeParameters.length === 0) return undefined;
   const parameterIds = new Set(declaration.typeParameters.map((parameter) => parameter.binding.id));
+  let argumentSubstitutions = new Map<string, Readonly<IrType>>();
+  expression.arguments.forEach((argument, index) => {
+    const parameter = declaration.parameters[index];
+    const argumentType = getIrExpressionTypeEvidenceCpp(argument, context);
+    if (!parameter?.type || !argumentType || argumentType.kind === 'unknown') return;
+    const candidateSubstitutions = new Map(argumentSubstitutions);
+    if (
+      collectCppResultTypeSubstitutionsCpp(
+        parameter.type,
+        argumentType,
+        parameterIds,
+        candidateSubstitutions,
+        context,
+      )
+    ) {
+      argumentSubstitutions = candidateSubstitutions;
+    }
+  });
   const candidates = [expectedType, expression.semantics.resultType].flatMap((candidate) =>
     candidate && candidate.kind !== 'unknown' ? [candidate] : [],
   );
   for (const candidate of candidates) {
-    const substitutions = new Map<string, Readonly<IrType>>();
+    const substitutions = new Map(argumentSubstitutions);
     if (!collectCppResultTypeSubstitutionsCpp(declaration.returns, candidate, parameterIds, substitutions, context)) {
       continue;
     }
@@ -5465,7 +5495,10 @@ function getCppContextualCallTypeArgumentsCpp(
     );
     if (arguments_.every((argument): argument is Readonly<IrType> => argument !== undefined)) return arguments_;
   }
-  return undefined;
+  const arguments_ = declaration.typeParameters.map(
+    (parameter) => argumentSubstitutions.get(parameter.binding.id) ?? parameter.default,
+  );
+  return arguments_.every((argument): argument is Readonly<IrType> => argument !== undefined) ? arguments_ : undefined;
 }
 
 function collectCppResultTypeSubstitutionsCpp(
@@ -6012,6 +6045,28 @@ function getIrInvocationProvidedArgumentTypeCpp(
     ...(expression.semantics.optionalParameters?.provided ?? []),
   ].find((argument) => argument.position === index);
   return provided?.argumentType.kind === 'unknown' ? undefined : provided?.argumentType;
+}
+
+function appendCppOmittedInvocationArguments(
+  expression: Readonly<Extract<IrExpression, { kind: 'call' }>>,
+  emitted: readonly string[],
+  context: EmitContext,
+): readonly string[] {
+  const defaults = expression.semantics.defaultParameters;
+  const optionals = expression.semantics.optionalParameters;
+  const plan = defaults ?? optionals;
+  if (!plan || emitted.length >= plan.parameterCount) return emitted;
+  if (plan.providedArgumentCount === 'dynamic') {
+    emissionError(context, 'spread calls into optional or default parameters require ABI expansion lowering');
+  }
+  const omitted = new Set([...(defaults?.omitted ?? []), ...(optionals?.omitted ?? [])]);
+  const result = [...emitted];
+  for (let index = emitted.length; index < plan.parameterCount; index += 1) {
+    if (!omitted.has(index)) emissionError(context, `missing required call argument at position ${String(index)}`);
+    result.push('std::nullopt');
+  }
+  context.includes.add('optional');
+  return result;
 }
 
 function emitCppClosedRestCallArguments(
