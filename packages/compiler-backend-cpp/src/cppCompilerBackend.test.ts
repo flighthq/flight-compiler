@@ -1750,6 +1750,17 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(emitted).not.toContain('value.to_string');
   });
 
+  it('recovers numeric toString receivers from expression evidence', () => {
+    const result = lower(
+      'radix-expression-text.ts',
+      'export function text(value: number): string { return (value & 0xffffff).toString(16); }',
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    expect(emitted).toContain('flight::number_to_string(flight::bitwise_and(value, 16777215.0), 16.0)');
+    expect(emitted).not.toContain('.to_string');
+  });
+
   it('emits an interface as a C++ struct with properties', () => {
     const result = lower('point.ts', 'export interface Point { x: number; y?: number }');
     const emitted = emitIrModuleCpp(result.module);
@@ -1779,6 +1790,14 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(emitted.contents).toContain('#include <flight/symbol.hpp>');
     expect(emitted.contents).toContain('auto key = flight::Symbol::for_key(flight::String("key"))');
     expect(emitted.dependencies).toContain('flight/symbol.hpp');
+  });
+
+  it('does not wrap a direct Symbol argument in its TypeScript constructor union', () => {
+    const result = lower('symbol.ts', "export const key = Symbol('key');");
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+
+    expect(emitted.contents).toContain('auto key = flight::Symbol(flight::String("key"))');
+    expect(emitted.contents).not.toContain('flight::Symbol(std::variant');
   });
 
   it('uses source numeric and error semantics in the runtime profile', () => {

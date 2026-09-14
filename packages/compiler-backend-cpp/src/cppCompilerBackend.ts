@@ -1623,8 +1623,9 @@ function emitExpression(
       if (arrayPushSpread) return arrayPushSpread;
       if (
         expression.callee.kind === 'property' &&
-        expression.callee.member?.receiver === 'number' &&
-        expression.callee.member.name === 'toString'
+        expression.callee.name === 'toString' &&
+        (expression.callee.member?.receiver === 'number' ||
+          isIrNumberTypeEvidenceCpp(getIrExpressionTypeEvidenceCpp(expression.callee.object, context)))
       ) {
         const receiver = emitExpression(expression.callee.object, context);
         if (expression.arguments.length === 1) {
@@ -1694,6 +1695,16 @@ function emitExpression(
           context.includes.add('limits');
           return `${spreadOperand}.empty() ? ${foldTarget.identity} : *${foldTarget.algorithm}(${spreadOperand}.begin(), ${spreadOperand}.end())`;
         }
+      }
+      if (
+        expression.callee.kind === 'identifier' &&
+        expression.callee.reference.kind === 'ambient' &&
+        expression.callee.reference.name === 'Symbol' &&
+        expression.arguments.length === 1 &&
+        getCppRuntimeProfile(context.options) === 'flight-cpp'
+      ) {
+        context.includes.add('flight/symbol.hpp');
+        return `flight::Symbol(${emitExpression(expression.arguments[0]!, context)})`;
       }
       if (
         expression.callee.kind === 'identifier' &&
@@ -5448,6 +5459,10 @@ function getIrCallReturnTypeCpp(
   if (runtimeResult) return runtimeResult;
   const calleeType = getIrExpressionTypeEvidenceCpp(expression.callee, context);
   return calleeType ? getCppCallableReturnType(calleeType, context, new Set()) : undefined;
+}
+
+function isIrNumberTypeEvidenceCpp(type: Readonly<IrType> | undefined): boolean {
+  return type?.kind === 'primitive' && type.name === 'number';
 }
 
 // C++ cannot infer a function template parameter which appears only in the return type. TypeScript
