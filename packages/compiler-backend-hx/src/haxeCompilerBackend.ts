@@ -559,14 +559,19 @@ function emitClass(declaration: Readonly<IrClassDeclaration>, context: EmitConte
   const overriddenMethodNames = getIrClassInheritedMethodNamesHaxe(declaration, context);
   declaration.methods.forEach((method) => {
     if (lines.length > 1) lines.push('');
+    const methodContext: EmitContext = {
+      ...context,
+      finallyCompletion: undefined,
+      returnsAbsent: canIrTypeReturnAbsentHaxe(method.returns, context.module),
+    };
     const visibility = method.visibility === 'public' ? 'public ' : method.visibility === 'private' ? 'private ' : '';
     const static_ = method.static ? 'static ' : '';
     // A Haxe setter yields the value it was given, so the source's void setter gains the return the
     // property contract requires.
     const setterValue = method.accessor === 'set' ? method.parameters[0] : undefined;
     const name = method.accessor ? `${method.accessor}_${safeHaxeName(method.name)}` : safeHaxeName(method.name);
-    const returns = setterValue ? emitType(setterValue.type, context) : emitType(method.returns, context);
-    const signature = `  ${method.accessor ? '' : visibility}${method.abstract ? 'abstract ' : ''}${overriddenMethodNames.has(method.name) ? 'override ' : ''}${static_}function ${name}${emitTypeParameters(method.typeParameters, context)}(${emitParameters(method.parameters, context)}):${returns}`;
+    const returns = setterValue ? emitType(setterValue.type, methodContext) : emitType(method.returns, methodContext);
+    const signature = `  ${method.accessor ? '' : visibility}${method.abstract ? 'abstract ' : ''}${overriddenMethodNames.has(method.name) ? 'override ' : ''}${static_}function ${name}${emitTypeParameters(method.typeParameters, methodContext)}(${emitParameters(method.parameters, methodContext)}):${returns}`;
     // A method with no implementation has no body to emit: the declaration is the whole contract.
     if (method.abstract) {
       lines.push(`${signature};`);
@@ -576,8 +581,10 @@ function emitClass(declaration: Readonly<IrClassDeclaration>, context: EmitConte
       `${signature} {`,
       ...indentSourceLines(
         [
-          ...(method.async ? emitCompilerHaxeTaskFunctionBody(method, context) : emitStatements(method.body, context)),
-          ...(setterValue ? [`return ${getBindingTargetNameHaxe(setterValue.binding, context)};`] : []),
+          ...(method.async
+            ? emitCompilerHaxeTaskFunctionBody(method, methodContext)
+            : emitStatements(method.body, methodContext)),
+          ...(setterValue ? [`return ${getBindingTargetNameHaxe(setterValue.binding, methodContext)};`] : []),
         ],
         2,
       ),
@@ -617,7 +624,7 @@ function emitEnumNamespaceFunctionHaxe(declaration: Readonly<IrFunctionDeclarati
   const context: EmitContext = {
     ...outer,
     finallyCompletion: undefined,
-    returnsAbsent: hasIrTypeAbsentMemberHaxe(declaration.returns, outer.module),
+    returnsAbsent: canIrTypeReturnAbsentHaxe(declaration.returns, outer.module),
   };
   return [
     `public static function ${getBindingTargetNameHaxe(declaration.binding, context)}${emitTypeParameters(declaration.typeParameters, context)}(${emitParameters(declaration.parameters, context)}):${emitType(declaration.returns, context)} {`,
@@ -931,7 +938,11 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
     case 'function':
       if (expression.typeParameters.length > 0)
         emissionError(context, 'generic function expressions are not valid Haxe values');
-      const functionContext: EmitContext = { ...context, finallyCompletion: undefined };
+      const functionContext: EmitContext = {
+        ...context,
+        finallyCompletion: undefined,
+        returnsAbsent: canIrTypeReturnAbsentHaxe(expression.returns, context.module),
+      };
       if (expression.async) {
         return `function(${emitParameters(expression.parameters, functionContext)}) {\n${indentSourceLines(
           emitCompilerHaxeTaskFunctionBody(expression, functionContext),
@@ -1499,7 +1510,7 @@ function emitFunction(declaration: Readonly<IrFunctionDeclaration>, outer: EmitC
   const context: EmitContext = {
     ...outer,
     finallyCompletion: undefined,
-    returnsAbsent: hasIrTypeAbsentMemberHaxe(declaration.returns, outer.module),
+    returnsAbsent: canIrTypeReturnAbsentHaxe(declaration.returns, outer.module),
   };
   return [
     `${access}function ${getBindingTargetNameHaxe(declaration.binding, context)}${emitTypeParameters(declaration.typeParameters, context)}(${emitParameters(declaration.parameters, context)}):${emitType(declaration.returns, context)} {`,
@@ -1972,6 +1983,10 @@ function hasIrTypeAbsentMemberHaxe(
   } catch {
     return false;
   }
+}
+
+function canIrTypeReturnAbsentHaxe(type: Readonly<IrType>, module: Readonly<IrModule>): boolean {
+  return type.kind === 'unknown' || hasIrTypeAbsentMemberHaxe(type, module);
 }
 
 function emitIrClassFieldInitializationsHaxe(

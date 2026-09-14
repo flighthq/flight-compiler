@@ -8831,6 +8831,17 @@ describe('emitIrModuleHaxe nullable return', () => {
 
     expect(() => emitIrModuleHaxe(result.module)).not.toThrow();
   });
+
+  it('allows absent values from Dynamic-returning nested functions', () => {
+    const result = lower(
+      'dynamic-nested-return.ts',
+      `export function record(result?: unknown): () => unknown {
+         return () => { return result; };
+       }`,
+    );
+
+    expect(() => emitIrModuleHaxe(result.module)).not.toThrow();
+  });
 });
 
 describe('emitIrModuleHaxe interface function property', () => {
