@@ -2811,15 +2811,17 @@ function getCppSwitchCaseUnionMemberTestCpp(
   const declared = getCppBindingTypeCpp(binding.id, context);
   const union = declared ? getIrUnionTypeCpp(declared, context, new Set()) : undefined;
   if (!union) return undefined;
-  const matching = union.types.filter((member) => {
-    const property = getIrObjectPropertyTypeCpp(member, discriminant.name, context);
+  const matching = getCppUnionRepresentationPlan(union, context).valueSlots.filter((slot) => {
+    const property = getIrObjectPropertyTypeCpp(slot.runtimeType, discriminant.name, context);
     if (!property) return false;
     if (property.kind === 'literal') return property.value === caseExpression.value;
     return property.kind === 'union'
-      ? property.types.some((alternative) => alternative.kind === 'literal' && alternative.value === caseExpression.value)
+      ? property.types.some(
+          (alternative) => alternative.kind === 'literal' && alternative.value === caseExpression.value,
+        )
       : false;
   });
-  return matching.length === 1 ? { binding, member: matching[0]!, whenResult: true } : undefined;
+  return matching.length === 1 ? { binding, member: matching[0]!.runtimeType, whenResult: true } : undefined;
 }
 
 function emitStatementBody(statement: Readonly<IrStatement>, context: EmitContext): string[] {
@@ -3232,7 +3234,7 @@ function emitType(type: Readonly<IrType>, context: EmitContext, representation: 
       const emittedProperties = type.properties.map((property) => ({
         name: safeCppName(property.name),
         optional: property.optional,
-        type: emitType(property.type, context),
+        type: emitCppMaterializedObjectPropertyTypeCpp(property.type, context),
       }));
       const unresolved = emittedProperties.find((property) => /\bauto\b/u.test(property.type));
       if (unresolved) {
@@ -3821,13 +3823,10 @@ function emitCppCallableObjectStorageTypeCpp(
     structuralHash,
     context,
   );
-  context.anonymousStructs.set(
-    key,
-    {
-      ...createCppCallableObjectStructCpp(structName, representation, typeParameters, context),
-      guard: getCppAnonymousStructGuard(structuralHash, context),
-    },
-  );
+  context.anonymousStructs.set(key, {
+    ...createCppCallableObjectStructCpp(structName, representation, typeParameters, context),
+    guard: getCppAnonymousStructGuard(structuralHash, context),
+  });
   return `${structName}${typeParameters.length > 0 ? `<${typeParameters.join(', ')}>` : ''}`;
 }
 
@@ -3845,13 +3844,10 @@ function emitCppCallableOverloadStorageTypeCpp(
   if (existing) return `${existing.name}${typeParameters.length > 0 ? `<${typeParameters.join(', ')}>` : ''}`;
   const structuralHash = getCppStableIdentifierHash(key);
   const structName = generateAnonymousStructName([{ name: 'callableOverloads' }], structuralHash, context);
-  context.anonymousStructs.set(
-    key,
-    {
-      ...createCppCallableOverloadStructCpp(structName, representation, typeParameters, context),
-      guard: getCppAnonymousStructGuard(structuralHash, context),
-    },
-  );
+  context.anonymousStructs.set(key, {
+    ...createCppCallableOverloadStructCpp(structName, representation, typeParameters, context),
+    guard: getCppAnonymousStructGuard(structuralHash, context),
+  });
   return `${structName}${typeParameters.length > 0 ? `<${typeParameters.join(', ')}>` : ''}`;
 }
 
@@ -4206,7 +4202,8 @@ function emitUnionMemberAssertionCpp(
   });
   const alternatives = plan.valueSlots.filter(
     (slot) =>
-      slot.targetType === assertedTarget || slot.sourceAlternatives.some((member) => isDeepStrictEqual(member, assertedType)),
+      slot.targetType === assertedTarget ||
+      slot.sourceAlternatives.some((member) => isDeepStrictEqual(member, assertedType)),
   );
   if (alternatives.length !== 1) {
     emissionError(context, 'type assertion target must identify exactly one C++ variant alternative');
@@ -4316,11 +4313,13 @@ function emitCppVariantCommonPropertyExpression(
   if (!union) return undefined;
   const representation = getCppVariantRepresentationForInspection(union, context);
   if (representation.direct) return undefined;
-  const propertyTypes = representation.alternatives.flatMap((alternative) =>
-    alternative.members.map((member) => getIrObjectPropertyTypeCpp(member, expression.name, context)),
+  const propertyTypes = representation.alternatives.map((alternative) =>
+    getIrObjectPropertyTypeCpp(alternative.runtimeType, expression.name, context),
   );
   if (propertyTypes.length === 0 || propertyTypes.some((type) => !type)) return undefined;
-  const emittedTypes = new Set(propertyTypes.map((type) => emitType(type!, context)));
+  const emittedTypes = new Set(
+    propertyTypes.map((type) => emitType(getIrTypeRuntimeDomainCpp(type!, context, new Set()) ?? type!, context)),
+  );
   if (emittedTypes.size !== 1) return undefined;
   const referenceModes = new Set(
     representation.alternatives.map((alternative) =>
@@ -4382,12 +4381,25 @@ function emitNarrowedUnionMemberCpp(
     narrowedType && exactMatches.length === 0
       ? emitType(narrowedType, { ...context, anonymousStructs: new Map(), includes: new Set() })
       : undefined;
+  const targetMatches = narrowedTargetType
+    ? sourceAlternatives.filter(({ alternative }) => alternative.targetType === narrowedTargetType)
+    : [];
+  const namedMatches = expression.narrowedMember
+    ? sourceAlternatives.filter(({ member }) => getIrUnionMemberNameCpp(member) === expression.narrowedMember)
+    : [];
+  const discriminantMatches = narrowedType
+    ? sourceAlternatives.filter(({ alternative }) =>
+        areCppUnionMemberDiscriminantsEquivalent(alternative.runtimeType, narrowedType, context),
+      )
+    : [];
   const matches =
     exactMatches.length > 0
       ? exactMatches
-      : narrowedTargetType
-        ? sourceAlternatives.filter(({ alternative }) => alternative.targetType === narrowedTargetType)
-        : sourceAlternatives.filter(({ member }) => getIrUnionMemberNameCpp(member) === expression.narrowedMember);
+      : targetMatches.length > 0
+        ? targetMatches
+        : namedMatches.length > 0
+          ? namedMatches
+          : discriminantMatches;
   if (matches.length !== 1) {
     emissionError(
       context,
@@ -4396,6 +4408,21 @@ function emitNarrowedUnionMemberCpp(
   }
   if (representation.direct) return emitIdentifierReference(expression.reference, context);
   return `std::get<${String(representation.alternatives.indexOf(matches[0]!.alternative))}>(${emitIdentifierReference(expression.reference, context)})`;
+}
+
+function areCppUnionMemberDiscriminantsEquivalent(
+  left: Readonly<IrType>,
+  right: Readonly<IrType>,
+  context: EmitContext,
+): boolean {
+  const leftProperties = context.referenceRepresentationPlanner.resolveObjectShape(left, context.module);
+  const rightProperties = context.referenceRepresentationPlanner.resolveObjectShape(right, context.module);
+  if (!leftProperties || !rightProperties) return false;
+  return leftProperties.some((property) => {
+    if (property.type.kind !== 'literal') return false;
+    const candidate = rightProperties.find((rightProperty) => rightProperty.name === property.name);
+    return candidate?.type.kind === 'literal' && candidate.type.value === property.type.value;
+  });
 }
 
 function getCppVariantRepresentation(
@@ -7106,8 +7133,21 @@ function emitOptionalPropertyExpressionCpp(
   } else {
     projected = `optional_chain_receiver.value()${memberOperator}${safeCppName(expression.name)}`;
   }
+  const declaredProperty = context.referenceRepresentationPlanner
+    .resolveObjectShape(receiverType, context.module)
+    ?.find((property) => property.name === expression.name);
+  const projectedStorageType = declaredProperty
+    ? emitOptionalTypeCpp(
+        emitCppMaterializedObjectPropertyTypeCpp(declaredProperty.type, context),
+        declaredProperty.optional,
+        context,
+      )
+    : undefined;
+  const resultType = `std::optional<${payload}>`;
+  const returned =
+    projectedStorageType === `std::optional<${resultType}>` ? `${projected}.value_or(std::nullopt)` : projected;
   context.includes.add('optional');
-  return `([&]() -> std::optional<${payload}> { auto optional_chain_receiver = ${object}; if (!optional_chain_receiver.has_value()) return std::nullopt; return ${projected}; }())`;
+  return `([&]() -> ${resultType} { auto optional_chain_receiver = ${object}; if (!optional_chain_receiver.has_value()) return std::nullopt; return ${returned}; }())`;
 }
 
 function emitOptionalChainReceiverCpp(expression: Readonly<IrExpression>, context: EmitContext): string {
@@ -7145,6 +7185,28 @@ function emitOptionalTypeCpp(type: string, optional: boolean, context: EmitConte
   if (!optional) return type;
   context.includes.add('optional');
   return `std::optional<${type}>`;
+}
+
+// Partial<T> and other structural utilities materialize a new anonymous object. If one of its
+// properties adds a nullish sentinel around an imported union alias, retain the defining alias as
+// the payload. Re-expanding that alias here creates package-local anonymous alternatives with a
+// distinct C++ identity even though the source property still names the upstream ABI type.
+function emitCppMaterializedObjectPropertyTypeCpp(type: Readonly<IrType>, context: EmitContext): string {
+  if (type.kind !== 'union') return emitType(type, context);
+  const sentinels = type.types.filter((member) => member.kind === 'null' || member.kind === 'undefined');
+  const values = type.types.filter((member) => member.kind !== 'null' && member.kind !== 'undefined');
+  const value = values.length === 1 ? values[0] : undefined;
+  if (
+    sentinels.length === 1 &&
+    value?.kind === 'named' &&
+    value.reference.kind === 'binding' &&
+    value.reference.binding.kind === 'import' &&
+    resolveCppTypeAliasTarget(value, context)?.kind === 'union'
+  ) {
+    context.includes.add('optional');
+    return `std::optional<${emitType(value, context)}>`;
+  }
+  return emitType(type, context);
 }
 
 function hasIndexedRuntimeReceiverCpp(
@@ -7640,9 +7702,7 @@ function isCppAlwaysTruthySourceType(
   const bindingId = type.reference.binding.id;
   if (resolvingAliases.has(bindingId)) return false;
   const alias = resolveCppTypeAliasTarget(type, context);
-  return alias
-    ? isCppAlwaysTruthySourceType(alias, context, new Set(resolvingAliases).add(bindingId))
-    : false;
+  return alias ? isCppAlwaysTruthySourceType(alias, context, new Set(resolvingAliases).add(bindingId)) : false;
 }
 
 function emitBindingValueCpp(binding: Readonly<{ id: string; name: string }>, context: EmitContext): string {

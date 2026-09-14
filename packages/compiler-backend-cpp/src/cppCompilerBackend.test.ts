@@ -265,6 +265,31 @@ describe('createCppCompilerBackend', () => {
     expect(emitted).not.toContain('flight::Ref<flighthq_types::Outcome');
   });
 
+  it('preserves an imported union alias when a surrounding union adds absence', () => {
+    const types = lowerPackage(
+      '@flighthq/types',
+      'texture.ts',
+      "export type Texture = { readonly kind: 'bitmap'; readonly width: number } | { readonly kind: 'cube'; readonly size: number };",
+    ).module;
+    const consumer = lowerPackage(
+      '@flighthq/materials',
+      'material.ts',
+      "import type { Texture } from '@flighthq/types'; export interface Material { texture: Texture | null } export function initialize(options: Partial<Material>): void {}",
+    ).module;
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [{ specifier: '@flighthq/types', target: { packageName: types.packageName, source: types.source } }],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const session = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules: [consumer, types],
+      options: { runtimeProfile: 'flight-cpp' },
+    });
+    const emitted = session.emitModule(consumer)[0]!.contents;
+
+    expect(emitted).toContain('std::optional<std::optional<flighthq_types::Texture>> texture;');
+  });
+
   it('includes and qualifies every source in a split named-import request', () => {
     const alpha = lowerPackage('@flighthq/types', 'alpha.ts', 'export interface Alpha { value: number }').module;
     const beta = lowerPackage('@flighthq/types', 'beta.ts', 'export interface Beta { label: string }').module;
@@ -399,11 +424,24 @@ describe('createCppCompilerBackend', () => {
       binding: { name: 'outcome' },
       whenResult: true,
     });
-    const outcome = types.declarations.find(
-      (declaration) => declaration.kind === 'typeAlias' && declaration.binding.name === 'Outcome',
-    );
-    expect(switchStatement?.kind === 'switch' ? switchStatement.cases[0]?.unionMemberTest?.member : undefined).toEqual(
-      outcome?.kind === 'typeAlias' && outcome.type.kind === 'union' ? outcome.type.types[0] : undefined,
+    const narrowedMember =
+      switchStatement?.kind === 'switch' ? switchStatement.cases[0]?.unionMemberTest?.member : undefined;
+    expect(narrowedMember).toMatchObject({
+      kind: 'named',
+      reference: { kind: 'ambient', name: 'Readonly' },
+    });
+    const narrowedObject = narrowedMember?.kind === 'named' ? narrowedMember.typeArguments[0] : undefined;
+    expect(narrowedObject?.kind === 'object' ? narrowedObject.properties : undefined).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ name: 'reason', type: { kind: 'literal', value: 'downloaded' } }),
+        expect.objectContaining({
+          name: 'update',
+          type: expect.objectContaining({
+            kind: 'named',
+            reference: expect.objectContaining({ binding: expect.objectContaining({ name: 'DownloadedUpdate' }) }),
+          }),
+        }),
+      ]),
     );
     const session = createCppCompilerBackend().createEmissionSession!({
       moduleResolution,
@@ -413,8 +451,32 @@ describe('createCppCompilerBackend', () => {
     const emitted = session.emitModule(consumer)[0]!.contents;
 
     expect(emitted).toContain('std::visit([](const auto& value) { return value->reason; }, outcome)');
-    expect(emitted).toMatch(/std::get<\d+>\(outcome\)->update->version/u);
+    expect(emitted).toMatch(/row_get<.*"update".*>\(std::get<\d+>\(outcome\)\)->version/u);
     expect(emitted).not.toContain('struct reason_update');
+  });
+
+  it('projects a discriminant through a nested union alias', () => {
+    const result = lower(
+      'nested-shape.ts',
+      `interface Circle { radius: number }
+       interface Box { width: number }
+       type BuiltIn = (Circle & { kind: 'circle' }) | (Box & { kind: 'box' });
+       type VendorKind = \`\${string}.\${string}\`;
+       interface Vendor { kind: VendorKind }
+       type Shape = BuiltIn | Vendor;
+       export function supported(shape: Readonly<Shape>): boolean {
+         switch (shape.kind) {
+           case 'circle': return shape.radius > 0;
+           case 'box': return shape.width > 0;
+           default: return false;
+         }
+       }`,
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+
+    expect(emitted.contents).toContain('std::visit([](const auto& value) { return value->kind; }, shape)');
+    expect(emitted.contents).toMatch(/std::get<\d+>\(shape\)->radius/u);
+    expect(emitted.contents).toMatch(/std::get<\d+>\(shape\)->width/u);
   });
 
   it('narrows an imported collider union to its named variant alternative', () => {
@@ -5673,9 +5735,7 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     }).contents;
 
     expect(output).toContain('std::optional<flight::Array<double>> value');
-    expect(output).toMatch(
-      /value = static_cast<flight::Ref<color_matrix_[0-9a-f]+>>\(operation\)->color_matrix;/u,
-    );
+    expect(output).toMatch(/value = static_cast<flight::Ref<color_matrix_[0-9a-f]+>>\(operation\)->color_matrix;/u);
     expect(output).toContain('value.value().size()');
     expect(output).not.toContain('value = std::optional<flight::Array<double>>{static_cast');
   });
@@ -6265,8 +6325,10 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
   });
 
   it('guards structurally identical anonymous structs shared by package headers', () => {
-    const first = lower('first.ts', 'export function first(): { x: number; y: number } { return { x: 1, y: 2 }; }')
-      .module;
+    const first = lower(
+      'first.ts',
+      'export function first(): { x: number; y: number } { return { x: 1, y: 2 }; }',
+    ).module;
     const second = lower(
       'second.ts',
       'export function second(): { x: number; y: number } { return { x: 3, y: 4 }; }',
@@ -9735,6 +9797,21 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     const emitted = emitIrModuleCpp(result.module);
     expect(emitted.contents).toContain('optional_chain_receiver');
     expect(emitted.contents).toContain('.x');
+  });
+
+  it('flattens optional-chain reads of nullable optional properties', () => {
+    const result = lower(
+      'optional-nullable-prop.ts',
+      `export interface Texture { width: number }
+       export interface Options { texture?: Texture | null }
+       export function read(options: Options | undefined): Texture | null {
+         return options?.texture ?? null;
+       }`,
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+
+    expect(emitted.contents).toContain('texture.value_or(std::nullopt)');
+    expect(emitted.contents).not.toContain('return optional_chain_receiver.value()->texture;');
   });
 
   it('emits optional call with non-nullish receiver as direct call', () => {
