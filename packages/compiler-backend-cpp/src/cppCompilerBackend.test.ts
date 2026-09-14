@@ -5049,7 +5049,7 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(emitted.contents).not.toContain('#include "external');
   });
 
-  it('emits typeof prefix as typeid', () => {
+  it('emits typeof from closed runtime type evidence', () => {
     const result = lower('typeof.ts', 'export const x: number = 1;');
     const module = structuredClone(result.module);
     const decl = module.declarations[0];
@@ -5064,7 +5064,8 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
       };
     }
     const emitted = emitIrModuleCpp(module);
-    expect(emitted.contents).toContain('typeid');
+    expect(emitted.contents).toContain('std::string("number")');
+    expect(emitted.contents).not.toContain('typeid');
   });
 
   it('emits void prefix operator', () => {

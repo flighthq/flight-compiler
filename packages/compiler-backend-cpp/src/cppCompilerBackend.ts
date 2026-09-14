@@ -2435,6 +2435,13 @@ function emitExpression(
       ) {
         emissionError(context, 'typeof on a C++ variant requires proven union member test evidence');
       }
+      if (expression.operator === 'typeof') {
+        const value = getCppStaticTypeofValueCpp(expression.operand, context);
+        if (!value) emissionError(context, 'typeof requires closed runtime type evidence');
+        return getCppRuntimeProfile(context.options) === 'flight-cpp'
+          ? `flight::String(${JSON.stringify(value)})`
+          : `std::string(${JSON.stringify(value)})`;
+      }
       const sharedCaptureTargetName = getSharedCaptureTargetNameCpp(expression.operand, context);
       if (
         sharedCaptureTargetName &&
@@ -8945,9 +8952,54 @@ function emitBoundAmbientTypeofUndefinedComparisonCpp(
 }
 
 function emitPrefixUnaryOperator(operator: string): string {
-  if (operator === 'typeof') return 'typeid';
   if (operator === 'void') return '(void)';
   return operator;
+}
+
+function getCppStaticTypeofValueCpp(
+  expression: Readonly<IrExpression>,
+  context: EmitContext,
+): 'bigint' | 'boolean' | 'function' | 'number' | 'object' | 'string' | 'symbol' | 'undefined' | undefined {
+  if (expression.kind === 'literal') {
+    if (expression.value === null) return 'object';
+    return typeof expression.value;
+  }
+  if (expression.kind === 'undefinedValue' || expression.kind === 'undefinedDefault') return 'undefined';
+  const type = getIrExpressionTypeEvidenceCpp(expression, context);
+  return type ? getCppStaticTypeofTypeCpp(type, context, new Set()) : undefined;
+}
+
+function getCppStaticTypeofTypeCpp(
+  type: Readonly<IrType>,
+  context: EmitContext,
+  resolvingAliases: ReadonlySet<string>,
+): 'bigint' | 'boolean' | 'function' | 'number' | 'object' | 'string' | 'symbol' | 'undefined' | undefined {
+  if (type.kind === 'primitive') return type.name === 'void' ? 'undefined' : type.name;
+  if (type.kind === 'literal') return typeof type.value;
+  if (type.kind === 'undefined') return 'undefined';
+  if (type.kind === 'function') return 'function';
+  if (
+    type.kind === 'array' ||
+    type.kind === 'intersection' ||
+    type.kind === 'null' ||
+    type.kind === 'object' ||
+    type.kind === 'tuple'
+  ) {
+    return 'object';
+  }
+  if (type.kind === 'union') {
+    const values = new Set(
+      type.types.map((member) => getCppStaticTypeofTypeCpp(member, context, resolvingAliases)),
+    );
+    return values.size === 1 ? [...values][0] : undefined;
+  }
+  if (type.kind !== 'named') return undefined;
+  if (type.reference.kind === 'ambient') return 'object';
+  const bindingId = type.reference.binding.id;
+  if (resolvingAliases.has(bindingId)) return 'object';
+  const alias = resolveCppTypeAliasTarget(type, context);
+  if (alias) return getCppStaticTypeofTypeCpp(alias, context, new Set(resolvingAliases).add(bindingId));
+  return 'object';
 }
 
 function emitPostfixUnaryOperator(operator: string): string {
