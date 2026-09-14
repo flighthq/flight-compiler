@@ -73,7 +73,9 @@ interface HaxeExternImportRoute {
 }
 
 interface HaxeExternDeclarationLocation {
-  readonly declaration: Readonly<IrDeclaration>;
+  readonly declaration: Readonly<
+    IrDeclaration & { readonly binding: IrBindingIdentity | IrTypeBindingIdentity }
+  >;
   readonly module: Readonly<IrModule>;
 }
 
@@ -777,8 +779,9 @@ function getTypeAliasLocationHaxeExtern(
   context: HaxeExternEmissionContext,
 ): HaxeExternTypeAliasLocation | undefined {
   if (reference.reference.kind !== 'binding') return undefined;
-  const binding = reference.reference.binding;
-  const cacheKey = `${binding.id}\0${reference.reference.path.join('\0')}`;
+  const nameReference = reference.reference;
+  const binding = nameReference.binding;
+  const cacheKey = `${binding.id}\0${nameReference.path.join('\0')}`;
   const cached = context.index.typeAliasLocations.get(cacheKey);
   if (cached) return assertUniqueTypeAliasLocationHaxeExtern(binding.name, cached, context);
   if (binding.kind === 'typeAlias') {
@@ -791,7 +794,7 @@ function getTypeAliasLocationHaxeExtern(
   }
   if (binding.kind !== 'import') return undefined;
   const imported = (context.index.importRoutes.get(binding.id) ?? []).flatMap((route) => {
-    const exportName = route.imported === '*' ? reference.reference.path[0] : route.imported;
+    const exportName = route.imported === '*' ? nameReference.path[0] : route.imported;
     return exportName ? [{ exportName, from: route.from, specifier: route.specifier }] : [];
   });
   const locations = imported.flatMap(({ exportName, from, specifier }) =>
