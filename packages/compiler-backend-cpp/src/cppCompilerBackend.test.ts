@@ -1041,7 +1041,7 @@ describe('createCppCompilerBackend', () => {
     const emitted = emitIrModuleCpp(module, { runtimeProfile: 'flight-cpp' }).contents;
 
     expect(emitted).toContain('names = {{1.0, flight::String("one")}};');
-    expect(emitted).toContain('return names[static_cast<size_t>(index)];');
+    expect(emitted).toContain('return names.get(index).value();');
     expect(emitted).toContain('return expression.exec(input);');
     expect(emitted).not.toContain('std::optional<auto>');
   });
@@ -1185,7 +1185,7 @@ describe('createCppCompilerBackend', () => {
 
     expect(emitted).toContain('return channel_levels.get(channel);');
     expect(emitted).toContain(
-      'std::optional<std::function<std::unordered_map<flight::String, double>(double)>> serializer',
+      'std::optional<std::function<flight::Record<flight::String, double>(double)>> serializer',
     );
 
     const lookalike = lower(
@@ -1350,7 +1350,7 @@ export function preferred(): number { return NativeSurface.preferredFormat; }`,
     ).module;
     const emitted = emitIrModuleCpp(propertyBag, { runtimeProfile: 'flight-cpp' }).contents;
 
-    expect(emitted).toContain('using PropertyBag = std::unordered_map<std::variant<');
+    expect(emitted).toContain('using PropertyBag = flight::Record<std::variant<');
     expect(emitted).toContain('flight::String');
     expect(emitted).toContain('double');
     expect(emitted).toContain('flight::Symbol');
@@ -7004,7 +7004,7 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     );
     const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
 
-    expect(emitted.contents).toContain('return values[key];');
+    expect(emitted.contents).toContain('return values.get(key).value();');
     expect(emitted.contents).toContain('return holder->selected;');
     expect(emitted.contents).not.toContain('std::optional<std::optional');
   });

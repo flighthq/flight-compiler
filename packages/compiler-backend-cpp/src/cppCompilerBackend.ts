@@ -1730,10 +1730,10 @@ function emitExpression(
       const object = emitExpression(expression.object, context);
       const index = emitExpression(expression.index, context);
       const objectType = getIrExpressionTypeEvidenceCpp(expression.object, context);
-      const record =
-        objectType?.kind === 'named' &&
-        objectType.reference.kind === 'ambient' &&
-        objectType.reference.name === 'Record';
+      const record = getCppRecordTypeArgumentsCpp(objectType, context, new Set());
+      if (record && getCppRuntimeProfile(context.options) === 'flight-cpp') {
+        return `${object}.get(${index}).value()`;
+      }
       return record || expression.semantics.receivers.every((receiver) => receiver === 'object')
         ? `${object}[${index}]`
         : `${object}[static_cast<size_t>(${index})]`;
@@ -1954,14 +1954,20 @@ function emitExpression(
         contextualConstructedType.reference.name === ambientConstructorName
           ? contextualConstructedType.typeArguments
           : [];
+      const eraseRuntimeTypeArguments =
+        getCppRuntimeProfile(context.options) === 'flight-cpp' &&
+        ambientConstructorName !== undefined &&
+        isCppRuntimeTypeWithErasedTypeArguments(ambientConstructorName);
       const typeArguments = emitCppTypeArguments(
-        expression.typeArguments.length > 0
-          ? expression.typeArguments
-          : constructedType && constructedType.typeArguments.length > 0
-            ? constructedType.typeArguments
-            : contextualNamedTypeArguments.length > 0
-              ? contextualNamedTypeArguments
-              : contextualArrayTypeArguments,
+        eraseRuntimeTypeArguments
+          ? []
+          : expression.typeArguments.length > 0
+            ? expression.typeArguments
+            : constructedType && constructedType.typeArguments.length > 0
+              ? constructedType.typeArguments
+              : contextualNamedTypeArguments.length > 0
+                ? contextualNamedTypeArguments
+                : contextualArrayTypeArguments,
         context,
       );
       if (
@@ -7440,6 +7446,12 @@ function emitOptionalExpressionCpp(
     hasIndexedRuntimeReceiverCpp(expression, context)
   ) {
     return `${emitExpression(expression.object, context)}.get(${emitExpression(expression.index, context)})`;
+  }
+  if (expression.kind === 'element' && getCppRuntimeProfile(context.options) === 'flight-cpp') {
+    const objectType = getIrExpressionTypeEvidenceCpp(expression.object, context);
+    if (getCppRecordTypeArgumentsCpp(objectType, context, new Set())) {
+      return `${emitExpression(expression.object, context)}.get(${emitExpression(expression.index, context)})`;
+    }
   }
   if (
     expression.kind === 'property' &&

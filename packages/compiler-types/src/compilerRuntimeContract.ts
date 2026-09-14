@@ -27,6 +27,7 @@ export type CompilerRuntimeCapabilityName =
   | 'number-parsing'
   | 'object'
   | 'regexp'
+  | 'record'
   | 'set'
   | 'string'
   | 'structural-proxy'

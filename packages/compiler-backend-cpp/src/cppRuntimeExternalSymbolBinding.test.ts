@@ -338,6 +338,13 @@ describe('getCompilerExternalBindingHeadersCpp', () => {
     expect(getCompilerExternalBindingHeadersCpp('ReadonlySet', 'type', undefined, 'flight-cpp')).toEqual([]);
   });
 
+  it('returns the semantic runtime header for a Flight Record binding', () => {
+    expect(getCompilerExternalBindingHeadersCpp('Record', 'type')).toEqual(['unordered_map']);
+    expect(getCompilerExternalBindingHeadersCpp('Record', 'type', undefined, 'flight-cpp')).toEqual([
+      'flight/record.hpp',
+    ]);
+  });
+
   it('returns the semantic runtime header for the interned symbol binding', () => {
     expect(getCompilerExternalBindingHeadersCpp('Symbol', 'value')).toEqual([]);
     expect(getCompilerExternalBindingHeadersCpp('Symbol', 'value', undefined, 'flight-cpp')).toEqual([
