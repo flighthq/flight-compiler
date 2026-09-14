@@ -568,7 +568,7 @@ describe('emitIrModuleHaxe', () => {
 
     expect(output).toContain('finallyThrew');
     expect(output).toContain('finallyError');
-    expect(output).toContain('normalize(cleanup)');
+    expect(output).toContain('_Promise.resolve(cleanup)');
   });
 
   it('emits shared traceable provenance with an optional upstream commit', () => {

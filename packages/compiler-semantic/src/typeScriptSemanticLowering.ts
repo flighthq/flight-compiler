@@ -1726,7 +1726,7 @@ function getTypeScriptWrittenCallResultTypeEvidence(
   if (!result || !ts.isTypeNode(result) || hasTypeScriptContextualResultReference(result, context.checker)) {
     return undefined;
   }
-  return lowerTypeScriptTypeNodeEvidence(result, context);
+  return lowerType(result, context);
 }
 
 function hasTypeScriptContextualResultReference(node: ts.TypeNode, checker: ts.TypeChecker): boolean {
