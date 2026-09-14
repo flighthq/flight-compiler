@@ -162,6 +162,7 @@ interface EmitContext {
   denseArrayLengthBindingIds: ReadonlySet<string>;
   dependentCallablePacks: ReadonlyMap<string, Readonly<IrParameter>>;
   directBindingOwners: ReadonlyMap<string, CppDirectBindingOwner | null>;
+  externalBindingStorageTargetTypes: ReadonlyMap<string, string>;
   importBindingOwners: ReadonlyMap<string, CppImportBindingOwner | null>;
   importedBindingTypes: Map<string, Readonly<IrType> | null>;
   finallyReturnVar?: string | undefined;
@@ -269,6 +270,11 @@ function emitIrModuleCppWithContext(
     throw error;
   }
   const bindingTypes = collectIrModuleBindingTypesCpp(module);
+  const externalBindingStorageTargetTypes = collectCppExternalBindingStorageTargetTypesCpp(
+    module,
+    bindingTypes,
+    options,
+  );
   const closureCapturePlan = createIrModuleClosureCapturePlanCpp(module);
   const sharedCaptureTargetNames = new Map<string, string>();
   const uninitializedCaptureStorageBindingIds = collectIrModuleUninitializedBindingIdsCpp(module);
@@ -284,6 +290,7 @@ function emitIrModuleCppWithContext(
     denseArrayLengthBindingIds: collectIrModuleDenseArrayLengthBindingIdsCpp(sourceModule),
     dependentCallablePacks: collectIrModuleDependentCallablePacksCpp(module),
     directBindingOwners: directBindingOwners ?? createCppDirectBindingOwners(sourceModules),
+    externalBindingStorageTargetTypes,
     facetTagNames: new Map(),
     importBindingOwners: importBindingOwners ?? createCppImportBindingOwners(sourceModules),
     importedBindingTypes: new Map(),
@@ -974,7 +981,12 @@ function emitVariableDeclaration(declaration: Readonly<IrVariableDeclaration>, c
   }
   const name = getBindingTargetName(declaration.binding, context);
   const arrayElement = context.arrayElementBindingIds.has(declaration.binding.id);
-  const type = declaration.type ? emitType(declaration.type, context) : 'auto';
+  const externalStorageTarget = context.externalBindingStorageTargetTypes.get(declaration.binding.id);
+  const type = externalStorageTarget
+    ? emitCppExternalBindingStorageTypeCpp(declaration.type, externalStorageTarget, context)
+    : declaration.type
+      ? emitType(declaration.type, context)
+      : 'auto';
   const emittedType = arrayElement ? emitOptionalTypeCpp(type, true, context) : type;
   const constness = emitBindingConstnessCpp(declaration.mutable, declaration.type);
   const initializer = declaration.initializer
@@ -1015,8 +1027,12 @@ function emitVariable(variable: Readonly<IrVariable>, context: EmitContext): str
   if (preservedInitializerType) {
     context.preservedInitializerTypes.set(variable.binding.id, preservedInitializerType);
   }
-  const type =
-    weakMapViewPlan || !variable.type || preservedInitializerType ? 'auto' : emitType(variable.type, context);
+  const externalStorageTarget = context.externalBindingStorageTargetTypes.get(variable.binding.id);
+  const type = externalStorageTarget
+    ? emitCppExternalBindingStorageTypeCpp(variable.type, externalStorageTarget, context)
+    : weakMapViewPlan || !variable.type || preservedInitializerType
+      ? 'auto'
+      : emitType(variable.type, context);
   const emittedType = arrayElement ? emitOptionalTypeCpp(type, true, context) : type;
   const constness = emitBindingConstnessCpp(variable.mutable, variable.type);
   const initializer = variable.initializer
@@ -4609,7 +4625,11 @@ function emitContextualUnionExpressionCpp(
   const externalCallResult = getCppExternalCallResultTargetCpp(expression, context);
   if (externalCallResult) {
     const targetSlots = plan.valueSlots.filter((slot) => slot.targetType === externalCallResult);
-    if (targetSlots.length !== 1) {
+    const unresolvedTargetSlot =
+      targetSlots.length === 0 &&
+      plan.valueSlots.length === 1 &&
+      plan.valueSlots[0]!.sourceAlternatives.every((alternative) => alternative.kind === 'unknown');
+    if (targetSlots.length !== 1 && !unresolvedTargetSlot) {
       emissionError(
         context,
         `external call result type ${externalCallResult} is not one represented contextual runtime domain`,
@@ -5285,6 +5305,72 @@ function getCppExternalCallResultTargetCpp(
     expression.callee.reference.name,
     context.options.externalBindings,
   );
+}
+
+function collectCppExternalBindingStorageTargetTypesCpp(
+  module: Readonly<IrModule>,
+  bindingTypes: ReadonlyMap<string, Readonly<IrType>>,
+  options: Readonly<CppCompilerBackendOptions>,
+): ReadonlyMap<string, string> {
+  const candidates = new Map<string, Set<string>>();
+  analyzeIrModuleTraversal(module, {
+    expression(expression) {
+      if (
+        expression.kind !== 'assignment' ||
+        expression.operator !== '=' ||
+        expression.left.kind !== 'identifier' ||
+        expression.left.reference.kind !== 'binding' ||
+        expression.right.kind !== 'call' ||
+        expression.right.optional ||
+        expression.right.semantics.optionalChain ||
+        expression.right.callee.kind !== 'identifier' ||
+        expression.right.callee.reference.kind !== 'ambient'
+      ) {
+        return;
+      }
+      const bindingId = expression.left.reference.binding.id;
+      const declaredType = bindingTypes.get(bindingId);
+      if (!declaredType || !isCppUnresolvedExternalStorageTypeCpp(declaredType)) return;
+      const targetType = getCompilerExternalBindingCallResultTypeCpp(
+        expression.right.callee.reference.name,
+        options.externalBindings,
+      );
+      if (!targetType) return;
+      const targets = candidates.get(bindingId) ?? new Set<string>();
+      targets.add(targetType);
+      candidates.set(bindingId, targets);
+    },
+  });
+  return new Map(
+    [...candidates].flatMap(([bindingId, targets]) =>
+      targets.size === 1 ? ([[bindingId, [...targets][0]!] as const] as const) : [],
+    ),
+  );
+}
+
+function isCppUnresolvedExternalStorageTypeCpp(type: Readonly<IrType>): boolean {
+  if (type.kind === 'unknown') return true;
+  if (type.kind !== 'union') return false;
+  const present = type.types.filter((member) => member.kind !== 'null' && member.kind !== 'undefined');
+  return present.length === 1 && present[0]!.kind === 'unknown';
+}
+
+function emitCppExternalBindingStorageTypeCpp(
+  type: Readonly<IrType> | undefined,
+  targetType: string,
+  context: EmitContext,
+): string {
+  if (!type || type.kind === 'unknown') return targetType;
+  if (type.kind !== 'union') {
+    emissionError(context, `external binding storage ${targetType} requires unresolved source type evidence`);
+  }
+  const present = type.types.filter((member) => member.kind !== 'null' && member.kind !== 'undefined');
+  const absent = type.types.filter((member) => member.kind === 'null' || member.kind === 'undefined');
+  if (present.length !== 1 || present[0]!.kind !== 'unknown' || absent.length !== 1) {
+    emissionError(context, `external binding storage ${targetType} requires one unresolved optional value domain`);
+  }
+  context.includes.add('optional');
+  return `std::optional<${targetType}>`;
 }
 
 function getIrCallArgumentExpectedTypeCpp(
