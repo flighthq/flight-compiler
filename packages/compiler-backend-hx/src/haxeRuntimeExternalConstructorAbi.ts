@@ -33,6 +33,7 @@ const haxeRuntimeExternalConstructorAbis = [
   createHaxeRuntimeExternalConstructorAbi('Intl.DateTimeFormat', [0, 1, 2]),
   createHaxeRuntimeExternalConstructorAbi('Intl.ListFormat', [0, 1, 2]),
   createHaxeRuntimeExternalConstructorAbi('Intl.NumberFormat', [0, 1, 2]),
+  createHaxeRuntimeExternalConstructorAbi('Intl.PluralRules', [0, 1, 2]),
   createHaxeRuntimeExternalConstructorAbi('Intl.RelativeTimeFormat', [0, 1, 2]),
   createHaxeRuntimeExternalConstructorAbi('Map', [0, 1]),
   createHaxeRuntimeExternalConstructorAbi('OffscreenCanvas', [2]),
