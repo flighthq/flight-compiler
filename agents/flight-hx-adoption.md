@@ -1,8 +1,16 @@
 # flight-hx adoption register
 
-Status: the compiler publishes the Haxe integration contracts; full downstream adoption is not yet buildable.
+Status: the compiler publishes the Haxe integration contracts and the latest reported compiler-owned emission fixes; a fresh full downstream build is still required.
 
 This register separates Haxe source-generation failures owned by `flight-compiler` from runtime, host-binding, and public-package assembly owned by `flight-hx`. The measured input is the full Flight SDK closure at Flight revision `65889a191bb0d2f5f2f95148590874f3e49bf9d4`, using flight-hx integration revision `0d8dd838b03601dc3bb6e771bd3f1edfbcb37e7d`. The extern graph has 154 packages and 2,855 source modules; the transpile graph has 2,866 modules.
+
+## 2026-09-14 compiler follow-up
+
+Flight-hx reported that its run at compiler revision `993c28080d1b3f6e55214ae2d92215d51cd192ff` reached 2,855/2,855 extern modules with zero refusals or corrections and verified all 7,077 reported exports, including 6,204 functions and 873 values. Its remaining failures were compiler-owned: 32 referenced public aliases had no extern file, type/value collision suffixes diverged across facade imports, Unicode identifiers remained unescaped, nullish property assignment produced an invalid block receiver, and contract type re-exports were absent.
+
+Compiler revision `8952dbd3` addresses those five classes. Public extern aliases now emit as nominal files from the authoritative package facade, non-public aliases remain structurally inlined, Unicode identifiers use deterministic code-point escapes, nullish assignment uses a value-returning closure and evaluates property receivers once, and contract facades emit/import their type aliases through one collision-aware allocation. Facade aliases include the facade module name because Haxe 4.3.7 treats secondary type names as package-global; redeclaring a source alias under the same simple name in `Contract.hx` is itself invalid Haxe.
+
+Focused verification passed: ten transpiler regressions, all forty extern-emission tests, the backend package typecheck, and a Haxe 4.3.7 compile-and-run probe covering a contract type/value collision plus nullish property assignment. This is not yet the adoption exit: the flight-hx agent's newest 2,682-file candidate was uncommitted and is not present in this isolated workspace, whose available flight-hx checkouts predate that candidate. Flight-hx must regenerate the full trees at `8952dbd3` or later and report the next fail-loud Haxe callback result.
 
 ## Current compiler output
 
