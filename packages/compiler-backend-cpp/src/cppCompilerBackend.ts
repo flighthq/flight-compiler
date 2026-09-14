@@ -1827,10 +1827,17 @@ function emitExpression(
     case 'new': {
       const structuralWriteProxy = emitCppStructuralWriteProxyConstructionCpp(expression, expectedType, context);
       if (structuralWriteProxy) return structuralWriteProxy;
-      const args = expression.arguments.map((argument, index) =>
-        emitExpression(argument, context, getIrInvocationArgumentExpectedTypeCpp(expression, index)),
-      );
       const ambientConstructorName = getIrAmbientConstructorNameCpp(expression.callee);
+      const args = expression.arguments.map((argument, index) =>
+        emitExpression(
+          argument,
+          context,
+          ambientConstructorName
+            ? (getIrInvocationProvidedArgumentTypeCpp(expression, index) ??
+              getIrInvocationArgumentExpectedTypeCpp(expression, index))
+            : getIrInvocationArgumentExpectedTypeCpp(expression, index),
+        ),
+      );
       if (expression.semantics.construction === 'factory' && ambientConstructorName === undefined) {
         return `${emitExpression(expression.callee, context)}.construct(${args.join(', ')})`;
       }
@@ -5406,6 +5413,10 @@ function getIrCallArgumentExpectedTypeCpp(
   index: number,
   context: EmitContext,
 ): Readonly<IrType> | undefined {
+  if (expression.callee.kind === 'property' && expression.callee.member) {
+    const provided = getIrInvocationProvidedArgumentTypeCpp(expression, index);
+    if (provided) return provided;
+  }
   const semanticType = getIrInvocationArgumentExpectedTypeCpp(expression, index);
   if (semanticType) return semanticType;
   if (expression.callee.kind === 'function') return expression.callee.parameters[index]?.type;
@@ -5415,6 +5426,17 @@ function getIrCallArgumentExpectedTypeCpp(
     (candidate) => candidate.kind === 'function' && candidate.binding.id === bindingId,
   );
   return declaration?.kind === 'function' ? declaration.parameters[index]?.type : undefined;
+}
+
+function getIrInvocationProvidedArgumentTypeCpp(
+  expression: Readonly<Extract<IrExpression, { kind: 'call' | 'new' }>>,
+  index: number,
+): Readonly<IrType> | undefined {
+  const provided = [
+    ...(expression.semantics.defaultParameters?.provided ?? []),
+    ...(expression.semantics.optionalParameters?.provided ?? []),
+  ].find((argument) => argument.position === index);
+  return provided?.argumentType.kind === 'unknown' ? undefined : provided?.argumentType;
 }
 
 function emitCppClosedRestCallArguments(

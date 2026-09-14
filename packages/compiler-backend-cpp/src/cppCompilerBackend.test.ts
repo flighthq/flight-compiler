@@ -7804,7 +7804,7 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     const output = emitIrModuleCpp(
       lower(
         'rest-array-call.ts',
-        `export function invoke(listener: (...args: readonly unknown[]) => void, args: readonly unknown[]): void {
+        `export function invoke(listener: (...args: readonly number[]) => void, args: readonly number[]): void {
            listener(...args);
          }`,
       ).module,

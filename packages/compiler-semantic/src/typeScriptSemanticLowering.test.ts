@@ -9533,7 +9533,20 @@ it('infers contextual callback parameter types from array map', () => {
         }
       `,
   );
+  const declaration = result.module.declarations.find(
+    (candidate) => candidate.kind === 'function' && candidate.binding.name === 'run',
+  );
+  const returned = declaration?.kind === 'function' ? declaration.body[0] : undefined;
+  const callback = returned?.kind === 'return' && returned.expression?.kind === 'call'
+    ? returned.expression.arguments[0]
+    : undefined;
+
   expect(result.diagnostics).toEqual([]);
+  expect(callback).toMatchObject({
+    kind: 'function',
+    parameters: [{ type: { kind: 'primitive', name: 'number' } }],
+    returns: { kind: 'primitive', name: 'number' },
+  });
 });
 
 it('infers contextual tuple types for destructured callback parameters', () => {

@@ -1252,7 +1252,43 @@ function getTypeScriptInstantiatedInvocationParameterType(
   // is the only local proof available to the caller.
   if (type.flags & ts.TypeFlags.TypeParameter) return undefined;
   const evidence = getTypeScriptCheckerTypeEvidence(type, context, 0, true);
-  return evidence?.kind === 'unknown' ? undefined : evidence;
+  if (!evidence || evidence.kind === 'unknown') return undefined;
+  return refineTypeScriptInvocationParameterEvidence(evidence, inferInitializerType(argument, context));
+}
+
+function refineTypeScriptInvocationParameterEvidence(
+  parameter: Readonly<IrType>,
+  argument: Readonly<IrType>,
+): IrType {
+  if (parameter.kind === 'union' && argument.kind === 'function') {
+    const callableIndices = parameter.types.flatMap((member, index) => (member.kind === 'function' ? [index] : []));
+    if (callableIndices.length !== 1) return parameter;
+    const index = callableIndices[0]!;
+    const types = [...parameter.types];
+    types[index] = refineTypeScriptInvocationParameterEvidence(types[index]!, argument);
+    return { kind: 'union', types: [types[0]!, types[1]!, ...types.slice(2)] };
+  }
+  if (
+    parameter.kind !== 'function' ||
+    argument.kind !== 'function' ||
+    parameter.parameters.length !== argument.parameters.length
+  ) {
+    return parameter;
+  }
+  return {
+    ...parameter,
+    parameters: parameter.parameters.map((value, index) => ({
+      ...value,
+      type:
+        value.type.kind === 'unknown' && value.type.source === 'any'
+          ? argument.parameters[index]!.type
+          : value.type,
+    })),
+    returns:
+      parameter.returns.kind === 'unknown' && parameter.returns.source === 'any'
+        ? argument.returns
+        : parameter.returns,
+  };
 }
 
 function addTypeScriptExtraArgumentErasureSemantics(
@@ -1957,9 +1993,17 @@ function lowerFunctionSignature(node: ts.SignatureDeclaration, context: Lowering
     parameters: node.parameters
       .filter((parameter) => !isThisParameter(parameter))
       .map((item) => lowerParameter(item, context)),
-    returns: node.type ? lowerType(node.type, context) : { kind: 'unknown', source: 'any' },
+    returns: node.type ? lowerType(node.type, context) : inferTypeScriptFunctionReturnType(node, context),
     typeParameters: lowerTypeParameters(node.typeParameters, context),
   };
+}
+
+function inferTypeScriptFunctionReturnType(node: ts.SignatureDeclaration, context: LoweringContext): IrType {
+  const signature = context.checker.getSignatureFromDeclaration(node);
+  const evidence = signature
+    ? getTypeScriptCheckerTypeEvidence(context.checker.getReturnTypeOfSignature(signature), context, 0, true, node)
+    : undefined;
+  return evidence ?? { kind: 'unknown', source: 'any' };
 }
 
 function getTypeScriptFunctionReturnValueType(
@@ -1986,7 +2030,7 @@ function lowerFunctionType(
     parameters: node.parameters
       .filter((parameter) => !isThisParameter(parameter))
       .map((parameter) => lowerFunctionTypeParameter(parameter, context)),
-    returns: node.type ? lowerType(node.type, context) : { kind: 'unknown', source: 'any' },
+    returns: node.type ? lowerType(node.type, context) : inferTypeScriptFunctionReturnType(node, context),
     typeParameters: lowerTypeParameters(node.typeParameters, context),
   };
 }
