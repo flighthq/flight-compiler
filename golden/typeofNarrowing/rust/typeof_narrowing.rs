@@ -2,7 +2,7 @@
 #![forbid(unsafe_code)]
 
 #[derive(Clone, Debug)]
-enum StrOrF64 {
+pub enum StrOrF64 {
   Str(String),
   F64(f64),
 }
@@ -32,7 +32,7 @@ impl std::fmt::Display for StrOrF64 {
 }
 
 #[derive(Clone, Debug)]
-enum StrOrF64OrBool {
+pub enum StrOrF64OrBool {
   Str(String),
   F64(f64),
   Bool(bool),

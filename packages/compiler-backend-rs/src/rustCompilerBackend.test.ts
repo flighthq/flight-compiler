@@ -2520,7 +2520,7 @@ describe('emitIrModuleRust', () => {
     const output = emitIrModuleRust(
       lower('prim-union.ts', 'export function accept(x: string | number): string { return x.toString(); }').module,
     ).contents;
-    expect(output).toContain('enum');
+    expect(output).toContain('pub enum StrOrF64');
     expect(output).toContain('Str(String)');
     expect(output).toContain('F64(f64)');
     expect(output).toContain('impl std::fmt::Display');

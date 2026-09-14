@@ -4779,7 +4779,10 @@ function collectPrimitiveUnionBindingsRust(module: Readonly<IrModule>, context: 
 function emitPrimitiveUnionEnumRust(union: PrimitiveUnionEnum): string[] {
   const lines = [
     '#[derive(Clone, Debug)]',
-    `enum ${union.name} {`,
+    // Primitive unions are structural products of a public signature rather than source-named
+    // declarations. Keeping the generated enum private makes every exported function that carries
+    // one unusable outside its module, so the representation itself is part of the public ABI.
+    `pub enum ${union.name} {`,
     ...union.variants.map((v) => `  ${v.variantName}(${v.rustType}),`),
     '}',
     '',

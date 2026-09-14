@@ -2,7 +2,7 @@
 #![forbid(unsafe_code)]
 
 #[derive(Clone, Debug)]
-enum StrOrF64 {
+pub enum StrOrF64 {
   Str(String),
   F64(f64),
 }
