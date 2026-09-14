@@ -27,6 +27,22 @@ describe('getCompilerHaxeAmbientMemberBinding', () => {
       kind: 'property',
       targetName: 'length',
     });
+    expect(getCompilerHaxeAmbientMemberBinding({ name: 'index', receiver: 'array' })).toEqual({
+      kind: 'property',
+      targetName: 'index',
+    });
+    expect(getCompilerHaxeAmbientMemberBinding({ name: 'name', receiver: 'error' })).toEqual({
+      kind: 'property',
+      targetName: 'name',
+    });
+    expect(getCompilerHaxeAmbientMemberBinding({ name: 'stack', receiver: 'error' })).toEqual({
+      kind: 'property',
+      targetName: 'stack',
+    });
+    expect(getCompilerHaxeAmbientMemberBinding({ name: 'cause', receiver: 'error' })).toEqual({
+      kind: 'property',
+      targetName: 'cause',
+    });
     // `trim` is a `StringTools` function in Haxe, so the receiver becomes its first argument.
     expect(getCompilerHaxeAmbientMemberBinding({ name: 'trim', receiver: 'string' })).toEqual({
       kind: 'staticCall',
@@ -56,6 +72,7 @@ describe('getCompilerHaxeAmbientMemberBinding', () => {
 
   it('routes source-only collection and string semantics through the selected runtime', () => {
     expect(getCompilerHaxeAmbientMemberBinding({ name: 'slice', receiver: 'arrayBuffer' })).toEqual({
+      intArguments: [0, 1],
       kind: 'runtimeCall',
       targetName: '_ArrayBuffer.slice',
     });
@@ -69,14 +86,17 @@ describe('getCompilerHaxeAmbientMemberBinding', () => {
       targetName: '_Array.at',
     });
     expect(getCompilerHaxeAmbientMemberBinding({ name: 'padStart', receiver: 'string' })).toEqual({
+      intArguments: [0],
       kind: 'runtimeCall',
       targetName: '_StringTools.padStart',
     });
     expect(getCompilerHaxeAmbientMemberBinding({ name: 'slice', receiver: 'string' })).toEqual({
+      intArguments: [0, 1],
       kind: 'runtimeCall',
       targetName: '_StringTools.slice',
     });
     expect(getCompilerHaxeAmbientMemberBinding({ name: 'repeat', receiver: 'string' })).toEqual({
+      intArguments: [0],
       kind: 'runtimeCall',
       targetName: '_StringTools.repeat',
     });
@@ -97,6 +117,7 @@ describe('getCompilerHaxeAmbientMemberBinding', () => {
       targetName: '_Array.flatMap',
     });
     expect(getCompilerHaxeAmbientMemberBinding({ name: 'flat', receiver: 'array' })).toEqual({
+      intArguments: [0],
       kind: 'runtimeCall',
       targetName: '_Array.flat',
     });
@@ -105,6 +126,7 @@ describe('getCompilerHaxeAmbientMemberBinding', () => {
       targetName: '_Array.entries',
     });
     expect(getCompilerHaxeAmbientMemberBinding({ name: 'fill', receiver: 'array' })).toEqual({
+      intArguments: [1, 2],
       kind: 'runtimeCall',
       targetName: '_Array.fill',
     });
@@ -129,16 +151,33 @@ describe('getCompilerHaxeAmbientMemberBinding', () => {
     expect(getCompilerHaxeAmbientMemberBinding({ name: 'charCodeAt', receiver: 'string' })).toMatchObject({
       intArguments: [0],
     });
+    expect(getCompilerHaxeAmbientMemberBinding({ name: 'codePointAt', receiver: 'string' })).toMatchObject({
+      intArguments: [0],
+    });
+    expect(getCompilerHaxeAmbientMemberBinding({ name: 'slice', receiver: 'string' })).toMatchObject({
+      intArguments: [0, 1],
+    });
     expect(getCompilerHaxeAmbientMemberBinding({ name: 'substring', receiver: 'string' })).toMatchObject({
       intArguments: [0, 1],
     });
     expect(getCompilerHaxeAmbientMemberBinding({ name: 'indexOf', receiver: 'string' })).toMatchObject({
       intArguments: [1],
     });
+    expect(getCompilerHaxeAmbientMemberBinding({ name: 'toString', receiver: 'number' })).toEqual({
+      intArguments: [0],
+      kind: 'runtimeCall',
+      targetName: '_Number.toString',
+    });
+    expect(getCompilerHaxeAmbientMemberBinding({ name: 'split', receiver: 'string' })).toEqual({
+      intArguments: [1],
+      kind: 'runtimeCall',
+      targetName: '_StringTools.split',
+    });
   });
 
   it('keeps the typed-array members supplied by the Haxe runtime wrappers', () => {
     expect(getCompilerHaxeAmbientMemberBinding({ name: 'copyWithin', receiver: 'typedArray' })).toEqual({
+      intArguments: [0, 1, 2],
       kind: 'runtimeCall',
       targetName: '_TypedArray.copyWithin',
     });
@@ -147,10 +186,12 @@ describe('getCompilerHaxeAmbientMemberBinding', () => {
       targetName: 'length',
     });
     expect(getCompilerHaxeAmbientMemberBinding({ name: 'slice', receiver: 'typedArray' })).toEqual({
+      intArguments: [0, 1],
       kind: 'method',
       targetName: 'slice',
     });
     expect(getCompilerHaxeAmbientMemberBinding({ name: 'subarray', receiver: 'typedArray' })).toEqual({
+      intArguments: [0, 1],
       kind: 'method',
       targetName: 'subarray',
     });
@@ -197,6 +238,7 @@ describe('getCompilerHaxeAmbientMemberBinding', () => {
       targetName: '_Promise.finallyTask',
     });
     expect(getCompilerHaxeAmbientMemberBinding({ name: 'padEnd', receiver: 'string' })).toEqual({
+      intArguments: [0],
       kind: 'runtimeCall',
       targetName: '_StringTools.padEnd',
     });

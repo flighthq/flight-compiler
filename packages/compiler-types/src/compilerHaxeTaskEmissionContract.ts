@@ -2,6 +2,7 @@ import type { IrBindingIdentity } from './compilerBindingIntermediateRepresentat
 import type { IrExpression, IrStatement } from './compilerExecutableIntermediateRepresentation.js';
 
 export interface CompilerHaxeTaskEmissionCapabilities {
+  readonly emitCondition: (expression: Readonly<IrExpression>) => string;
   readonly emitExpression: (expression: Readonly<IrExpression>) => string;
   readonly emitStatement: (statement: Readonly<IrStatement>) => readonly string[];
   readonly fail: (message: string) => never;

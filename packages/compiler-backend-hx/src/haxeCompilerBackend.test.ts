@@ -854,7 +854,7 @@ describe('emitIrModuleHaxe', () => {
       'export function create(values: []): Map<string, number> { return new Map<string, number>(...values); }',
     );
 
-    expect(emitIrModuleHaxe(fixed.module).contents).toContain('new flighthq._internal._Array(3)');
+    expect(emitIrModuleHaxe(fixed.module).contents).toContain('new flighthq._internal._Array(Std.int(3))');
     expect(() => emitIrModuleHaxe(dynamic.module)).toThrow(
       'runtime external constructor ABI plan is incomplete (missing: Map[value](...))',
     );
@@ -963,6 +963,16 @@ describe('emitIrModuleHaxe', () => {
     expect(output).toContain('a.concat(b).concat(c)');
     expect(output).toContain('.insert(splicePosition, value)');
     expect(output).toContain('return spliceRemoved');
+  });
+
+  it('supplies the target length when source Array.splice omits deleteCount', () => {
+    const result = lower(
+      'drain-array.ts',
+      'export function drain(values: number[]): number[] { return values.splice(0); }',
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('return spliceReceiver.splice(splicePosition, spliceReceiver.length);');
   });
 
   it('narrows integer typed-array writes to the Haxe element domain', () => {
@@ -1357,7 +1367,7 @@ describe('emitIrModuleHaxe', () => {
       'final first:Float = arrayPatternValue[0] ?? 0;',
     );
     expect(emitIrModuleHaxe(rest.module).contents).toContain(
-      'final rest:Array<Float> = cast(arrayPatternValue.slice(1));',
+      'final rest:Array<Float> = (cast arrayPatternValue.slice(1) : Array<Float>);',
     );
     expect(emitIrModuleHaxe(nestedDefault.module).contents).toContain('(arrayPatternValue[0] ?? [1])');
     expect(emitIrModuleHaxe(fixedRest.module).contents).toContain(
@@ -2021,7 +2031,7 @@ describe('emitIrModuleHaxe', () => {
     const output = emitIrModuleHaxe(result.module).contents;
 
     expect(output).toContain('typedef Style = { webkitClipPath:String };');
-    expect(output).toContain('(cast(style).webkitClipPath = "");');
+    expect(output).toContain('((cast style : Style).webkitClipPath = "");');
   });
 
   it('emits an implemented shape as a nominal interface and leaves an unimplemented one structural', () => {
@@ -2255,6 +2265,21 @@ describe('emitIrModuleHaxe', () => {
     expect(output).toContain('for (value in values)');
   });
 
+  it('iterates source strings as Unicode characters', () => {
+    const result = lower(
+      'for-of-string.ts',
+      `export function visible(value: string): string {
+         let out = '';
+         for (const character of value.trim()) if (character.charCodeAt(0) > 32) out += character;
+         return out;
+       }`,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('new haxe.iterators.StringIteratorUnicode(StringTools.trim(value))');
+    expect(output).toContain('final character = String.fromCharCode(characterCodePoint);');
+  });
+
   it('emits array.slice calls with Int-narrowed bounds', () => {
     const result = lower(
       'array-slice.ts',
@@ -2350,7 +2375,7 @@ describe('emitIrModuleHaxe expression coverage', () => {
     const bodyOutput = emitIrModuleHaxe(body.module).contents;
     const expressionOutput = emitIrModuleHaxe(expression.module).contents;
 
-    expect(bodyOutput).toContain('function(value:Float) {\n');
+    expect(bodyOutput).toContain('function(value:Float):Float {\n');
     expect(bodyOutput).toContain('return value + 1;');
     expect(expressionOutput).toContain('function(value:Float) return (value + 1)');
   });
@@ -2380,6 +2405,7 @@ describe('emitIrModuleHaxe expression coverage', () => {
 
     expect(output).toContain('final update = function(next:Float)');
     expect(output).not.toContain('final update:(Float)->Void');
+    expect(output).not.toContain('return null;');
   });
 
   it('constructs source-declared constructor values reflectively', () => {
@@ -2442,8 +2468,40 @@ describe('emitIrModuleHaxe expression coverage', () => {
     );
     const output = emitIrModuleHaxe(result.module).contents;
 
-    expect(output).toContain('cast value : Value');
-    expect(output).toContain('cast value : (Float)->Void');
+    expect(output).toContain('return (cast value : Value);');
+    expect(output).toContain('return (cast value : (Float)->Void);');
+  });
+
+  it('preserves annotation-cast grouping on initialized locals', () => {
+    const result = lower(
+      'cast-local.ts',
+      `export function make<Value>(): Value {
+         const out = {} as Value;
+         return out;
+       }`,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('final out:Value = (cast {  } : Value);');
+  });
+
+  it('adapts source-compatible function shapes at value boundaries', () => {
+    const result = lower(
+      'function-shape.ts',
+      `type Handler = (value: string, count: number) => string;
+       function short(value: string): string { return value; }
+       function accept(handler: Handler): void { handler('flight', 1); }
+       export function wire(): Handler {
+         const handler: Handler = short;
+         accept(short);
+         return handler;
+       }`,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('final handler:Handler = cast(short);');
+    expect(output).toContain('accept(cast(short));');
+    expect(output).toContain('return cast(handler);');
   });
 
   it('emits object rest with named and computed exclusions', () => {
@@ -2474,7 +2532,7 @@ describe('emitIrModuleHaxe expression coverage', () => {
     expect(output).toContain('(cast record : Dynamic)');
   });
 
-  it('uses the lowered storage field for computed symbol property reads and writes', () => {
+  it('preserves computed symbol identity for property reads and writes', () => {
     const result = lower(
       'computed-symbol-property.ts',
       `const RuntimeKey = Symbol.for('Runtime');
@@ -2484,8 +2542,8 @@ describe('emitIrModuleHaxe expression coverage', () => {
     );
     const output = emitIrModuleHaxe(result.module, { runtimeModule: 'flight._hx._runtime' }).contents;
 
-    expect(output).toContain('return entity.RuntimeKey;');
-    expect(output).toContain('(entity.RuntimeKey = value);');
+    expect(output).toContain('return flight._hx._runtime._Js.getProperty(entity, RuntimeKey);');
+    expect(output).toContain('flight._hx._runtime._Js.setProperty(assignmentReceiver, assignmentKey, assignmentValue)');
   });
 
   it('uses the nullable target of a computed symbol assignment to lower undefined', () => {
@@ -2497,7 +2555,7 @@ describe('emitIrModuleHaxe expression coverage', () => {
     );
 
     expect(emitIrModuleHaxe(result.module, { runtimeModule: 'flight._hx._runtime' }).contents).toContain(
-      '(entity.RuntimeKey = js.Syntax.code("undefined"));',
+      'flight._hx._runtime._Js.setProperty(assignmentReceiver, assignmentKey, assignmentValue)',
     );
   });
 
@@ -2512,6 +2570,40 @@ describe('emitIrModuleHaxe expression coverage', () => {
     );
   });
 
+  it('reflects named reads from dynamic records and generic structural values', () => {
+    const result = lower(
+      'reflective-property-read.ts',
+      `export function read(record: Record<string, string>): string { return record.value; }
+       export function readGeneric<Value extends { value: string }>(record: Value): string {
+         return record.value;
+       }
+       export function readReadonlyGeneric<Value extends { value: string }>(record: Readonly<Value>): string {
+         return record.value;
+       }`,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('return Reflect.field(record, "value");');
+    expect(output).toContain('function readGeneric<Value:');
+    expect(output.match(/return Reflect\.field\(record, "value"\);/gu)).toHaveLength(3);
+  });
+
+  it('reflects fields read through structural casts and numeric updates on generic records', () => {
+    const result = lower(
+      'reflective-cast-and-update.ts',
+      `export function kind(value: unknown): unknown {
+         return (value as Record<string, unknown>).__kind;
+       }
+       export function increment<Value extends { depth: number }>(value: Value): void {
+         value.depth++;
+       }`,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('return Reflect.field((cast value : haxe.DynamicAccess<Dynamic>), "__kind");');
+    expect(output).toContain('Reflect.setField(updateReceiver, "depth", updateResult)');
+  });
+
   it('deletes symbol-backed and dynamic properties through their represented keys', () => {
     const result = lower(
       'delete-properties.ts',
@@ -2523,7 +2615,7 @@ describe('emitIrModuleHaxe expression coverage', () => {
     );
     const output = emitIrModuleHaxe(result.module, { runtimeModule: 'flight._hx._runtime' }).contents;
 
-    expect(output).toContain('Reflect.deleteField(entity, "RuntimeKey")');
+    expect(output).toContain('flight._hx._runtime._Js.deleteProperty(entity, RuntimeKey)');
     expect(output).toContain('flight._hx._runtime._Js.deleteProperty(record, key)');
   });
 
@@ -2567,28 +2659,27 @@ describe('emitIrModuleHaxe expression coverage', () => {
     expect(output).toContain('flight._hx._runtime._Js.getProperty(assignmentReceiver_2, assignmentKey_2)');
   });
 
-  it('emits untyped cast when target type is array with element type', () => {
+  it('emits annotation cast when target type is array with element type', () => {
     const result = lower(
       'cast-array.ts',
       'export function toNumbers(values: unknown[]): number[] { return values as number[]; }',
     );
     const output = emitIrModuleHaxe(result.module).contents;
 
-    expect(output).toContain('cast(values)');
-    expect(output).not.toContain('Array<Float>)');
+    expect(output).toContain('(cast values : Array<Float>)');
   });
 
-  it('emits untyped cast when target type is tuple', () => {
+  it('emits annotation cast when target type is tuple', () => {
     const result = lower(
       'cast-tuple.ts',
       'export function first(values: [[number]?]): number { const [[x] = [1]] = values; return x; }',
     );
     const output = emitIrModuleHaxe(result.module).contents;
 
-    expect(output).not.toContain('Array<Float>)');
+    expect(output).toContain('(cast (arrayPatternValue[0] ?? [1]) : Array<Float>)');
   });
 
-  it('emits untyped cast when target is typedef interface', () => {
+  it('emits annotation cast when target is typedef interface', () => {
     const result = lower(
       'cast-typedef.ts',
       `
@@ -2598,8 +2689,7 @@ describe('emitIrModuleHaxe expression coverage', () => {
     );
     const output = emitIrModuleHaxe(result.module).contents;
 
-    expect(output).toContain('cast(value)');
-    expect(output).not.toContain('cast(value, Item)');
+    expect(output).toContain('(cast value : Item).count');
   });
 
   it('emits undefined-default as null-coalescing', () => {
@@ -2684,7 +2774,7 @@ describe('emitIrModuleHaxe expression coverage', () => {
     );
     const output = emitIrModuleHaxe(result.module).contents;
 
-    expect(output).toContain('a == b');
+    expect(output).toContain('flighthq._internal._Js.strictEqual(a, b)');
   });
 
   it('emits strict inequality for number domain', () => {
@@ -3234,8 +3324,8 @@ describe('emitIrModuleHaxe ambient member coverage', () => {
     );
     const output = emitIrModuleHaxe(result.module, { runtimeModule: 'flight._hx._runtime' }).contents;
 
-    expect(output).toContain('Lambda.iter(values, effect)');
-    expect(output).toContain('flight._hx._runtime._Array.flatMap(values,');
+    expect(output).toContain('Lambda.iter(values, cast(effect))');
+    expect(output).toContain('flight._hx._runtime._Array.flatMap(values, cast(');
   });
 
   it('emits string.endsWith as StringTools.endsWith static call', () => {
@@ -3271,6 +3361,62 @@ describe('emitIrModuleHaxe ambient member coverage', () => {
 
     expect(output).toContain('.charCodeAt(');
     expect(output).toContain('Std.int(pos)');
+  });
+
+  it('coerces numeric string/runtime bounds and preserves regexp split', () => {
+    const result = lower(
+      'string-runtime-bounds.ts',
+      `export function inspect(value: string, numberValue: number, index: number): string[] {
+         value[index];
+         value.codePointAt(index);
+         value.slice(index, index + 1);
+         numberValue.toString(index);
+         return value.split(/\\s+/);
+       }`,
+    );
+    const output = emitIrModuleHaxe(result.module, { runtimeModule: 'flight._hx._runtime' }).contents;
+
+    expect(output).toContain('flight._hx._runtime._Js.getProperty(value, index)');
+    expect(output).toContain('flight._hx._runtime._StringTools.codePointAt(value, Std.int(index))');
+    expect(output).toContain('flight._hx._runtime._StringTools.slice(value, Std.int(index), Std.int((index + 1)))');
+    expect(output).toContain('flight._hx._runtime._Number.toString(numberValue, Std.int(index))');
+    expect(output).toContain('flight._hx._runtime._StringTools.split(value, new flight._hx._runtime._RegExp');
+  });
+
+  it('coerces dynamic array lengths and emits JavaScript Math.imul', () => {
+    const result = lower(
+      'integer-runtime-values.ts',
+      `export function create(length: number, left: number, right: number): number[] {
+         Math.imul(left, right);
+         return new Array<number>(length);
+       }`,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('js.Syntax.code("Math.imul({0}, {1})", left, right)');
+    expect(output).toContain('new flighthq._internal._Array(Std.int(length))');
+  });
+
+  it('keeps numeric Array.fill inference in the source number domain', () => {
+    const result = lower(
+      'array-fill-number.ts',
+      `export function create(length: number): number[] {
+         return new Array<number>(length).fill(1);
+       }`,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('._Array.fill(');
+    expect(output).toContain('(cast 1 : Float)');
+  });
+
+  it('preserves source code-point validation and variadic construction on the JS target', () => {
+    const result = lower(
+      'from-code-point.ts',
+      'export function character(code: number): string { return String.fromCodePoint(code); }',
+    );
+
+    expect(emitIrModuleHaxe(result.module).contents).toContain('js.Syntax.code("String.fromCodePoint({0})", code)');
   });
 });
 
@@ -4616,6 +4762,21 @@ describe('emitIrModuleHaxe switch statement', () => {
 
     expect(output).toContain('switch (');
   });
+
+  it('materializes an absent return after a non-exhaustive target switch', () => {
+    const result = lower(
+      'switch-absent-return.ts',
+      `export function lookup(value: string): string | undefined {
+         switch (value) {
+           case 'flight': return value;
+         }
+       }`,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('case "flight":');
+    expect(output).toContain('}\n  return null;');
+  });
 });
 
 describe('emitIrModuleHaxe if-else statement', () => {
@@ -4801,7 +4962,19 @@ describe('emitIrModuleHaxe object literal', () => {
     expect(emitIrModuleHaxe(result.module).contents).toContain('values.copy().concat([value])');
   });
 
-  it('uses a declared unique-symbol storage slot for a computed object property', () => {
+  it('types heterogeneous array literals as dynamic collections', () => {
+    const result = lower(
+      'heterogeneous-array.ts',
+      `export function key(name: string, count: number): string {
+         return [name, count, count === 0].join(':');
+       }`,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('([name, count, (count == 0)] : Array<Dynamic>).join(":")');
+  });
+
+  it('preserves a declared unique-symbol key for a computed object property', () => {
     const result = lower(
       'computed-object-property.ts',
       `const RuntimeKey = Symbol.for('Runtime');
@@ -4810,7 +4983,7 @@ describe('emitIrModuleHaxe object literal', () => {
     );
     const output = emitIrModuleHaxe(result.module, { runtimeModule: 'flight._hx._runtime' }).contents;
 
-    expect(output).toContain('Reflect.setField(objectSpreadValue, "RuntimeKey", 1)');
+    expect(output).toContain('flight._hx._runtime._Js.setProperty(objectSpreadValue, RuntimeKey, 1)');
   });
 
   it('preserves an object getter with a generated cross-target accessor carrier', () => {
@@ -4941,7 +5114,7 @@ describe('emitIrModuleHaxe string equality', () => {
     const result = lower('str-eq.ts', 'export function same(a: string, b: string): boolean { return a === b; }');
     const output = emitIrModuleHaxe(result.module).contents;
 
-    expect(output).toContain('==');
+    expect(output).toContain('flighthq._internal._Js.strictEqual(a, b)');
   });
 });
 
@@ -5958,6 +6131,31 @@ describe('emitIrModuleHaxe array method bindings', () => {
     const output = emitIrModuleHaxe(result.module).contents;
 
     expect(output).toContain('indexOf');
+  });
+
+  it('preserves RegExp match index metadata inherited through its array surface', () => {
+    const result = lower(
+      'regexp-match-index.ts',
+      `export function matchIndex(input: string): number | null {
+         const match = /x/.exec(input);
+         return match === null ? null : match.index;
+       }`,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('match.index');
+  });
+
+  it('preserves ambient Error name reads', () => {
+    const result = lower(
+      'error-name.ts',
+      `export function errorName(value: unknown): string {
+         return value instanceof Error ? value.name : '';
+       }`,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('value.name');
   });
 });
 
@@ -8224,7 +8422,7 @@ describe('emitIrModuleHaxe string equality', () => {
     const output = emitIrModuleHaxe(
       lower('str-eq.ts', 'export function eq(a: string, b: string): boolean { return a === b; }').module,
     ).contents;
-    expect(output).toContain('==');
+    expect(output).toContain('flighthq._internal._Js.strictEqual(a, b)');
   });
 });
 
@@ -8671,7 +8869,7 @@ describe('emitIrModuleHaxe comparison operators', () => {
     const output = emitIrModuleHaxe(
       lower('strict-neq.ts', `export function diff(a: string, b: string): boolean { return a !== b; }`).module,
     ).contents;
-    expect(output).toContain('!=');
+    expect(output).toContain('!flighthq._internal._Js.strictEqual(a, b)');
   });
 
   it('emits numeric relational operators', () => {
@@ -9455,7 +9653,7 @@ describe('emitIrModuleHaxe exponentiation operators', () => {
       }`,
     );
     const output = emitIrModuleHaxe(result.module).contents;
-    expect(output).toContain('==');
+    expect(output).toContain('flighthq._internal._Js.strictEqual(a, b)');
   });
 
   it('emits assignment compound operators preserving number domain', () => {
@@ -9505,7 +9703,7 @@ describe('emitIrModuleHaxe for-of with async iteration', () => {
     );
     const output = emitIrModuleHaxe(result.module).contents;
 
-    expect(output).toContain('flighthq._internal._AsyncIterable.forEachAsync(items, function(value:Dynamic)');
+    expect(output).toContain('flighthq._internal._AsyncIterable.forEachAsync(items, cast(function(value:Dynamic)');
     expect(output).toContain('flighthq._internal._Promise.resolve(');
   });
 });

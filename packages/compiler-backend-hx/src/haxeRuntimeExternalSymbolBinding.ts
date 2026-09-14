@@ -708,7 +708,13 @@ const haxeRuntimeExternalSymbolBindings = [
     targetName: 'js.lib.SharedArrayBuffer',
   },
   { kind: 'native', sourceName: 'String', space: 'type', targetName: 'String' },
-  { kind: 'native', sourceName: 'String', space: 'value', targetName: 'String' },
+  {
+    kind: 'native',
+    members: [{ sourceMember: 'fromCodePoint', targetName: 'js.Syntax.code("String.fromCodePoint")' }],
+    sourceName: 'String',
+    space: 'value',
+    targetName: 'String',
+  },
   {
     capability: 'symbol',
     kind: 'runtime',

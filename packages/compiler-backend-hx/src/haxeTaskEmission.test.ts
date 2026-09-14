@@ -31,6 +31,7 @@ describe('emitCompilerHaxeTaskLoweringFunction', () => {
     );
     const names = new Map<string, number>();
     const lines = emitCompilerHaxeTaskLoweringFunction(lowering.functions[0]!, lowering.runtime, module, {
+      emitCondition: emitExpression,
       emitExpression: emitExpression,
       emitStatement: emitStatement,
       fail(message): never {
@@ -84,6 +85,7 @@ describe('emitCompilerHaxeTaskLoweringFunction', () => {
     );
     const names = new Map<string, number>();
     const source = emitCompilerHaxeTaskLoweringFunction(lowering.functions[0]!, lowering.runtime, module, {
+      emitCondition: (expression) => `truthy(${emitExpression(expression)})`,
       emitExpression: emitExpression,
       emitStatement: emitStatement,
       fail(message): never {
@@ -101,7 +103,7 @@ describe('emitCompilerHaxeTaskLoweringFunction', () => {
     // and calling it is what keeps a nested branch from duplicating the whole tail of the machine.
     expect(source.match(/var taskJoin = function\(\) \{/gu)).toHaveLength(1);
     expect(source.match(/taskJoin\(\);/gu)).toHaveLength(2);
-    expect(source).toContain('if (flag) {');
+    expect(source).toContain('if (truthy(flag)) {');
     expect(source).toContain('} else {');
     expect(source).toContain('resolveTask(total);');
   });
@@ -123,6 +125,7 @@ describe('emitCompilerHaxeTaskLoweringFunction', () => {
     );
     const names = new Map<string, number>();
     const source = emitCompilerHaxeTaskLoweringFunction(lowering.functions[0]!, lowering.runtime, module, {
+      emitCondition: emitExpression,
       emitExpression: emitExpression,
       emitStatement: emitStatement,
       fail(message): never {
@@ -369,6 +372,7 @@ function emitFunction(
 ): readonly string[] {
   const names = new Map<string, number>();
   return emitCompilerHaxeTaskLoweringFunction(functionPlan, lowering.runtime, module, {
+    emitCondition: emitExpression,
     emitExpression,
     emitStatement,
     fail(message): never {
