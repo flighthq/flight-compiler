@@ -22,6 +22,7 @@ export function collectIrModulesRuntimeExternalSymbolIdentities(
         }
       },
       type(type, path) {
+        if (isCompilerOptionalChainValueTypePath(path)) return;
         if (erasedTypeArgumentPaths.some((prefix) => isCompilerIrTraversalPathWithin(path, prefix))) return;
         if (type.kind === 'named' && type.reference.kind === 'ambient') {
           for (const index of compilerErasedTypeArgumentIndexes.get(type.reference.name) ?? []) {
@@ -34,6 +35,13 @@ export function collectIrModulesRuntimeExternalSymbolIdentities(
     });
   }
   return [...identities.values()].sort(compareIrRuntimeExternalSymbolIdentities);
+}
+
+// Optional-chain valueType is checker evidence used to classify the source operation. It is not a
+// value representation that the selected runtime must provide; the concrete resultType remains
+// independently reachable and authoritative for emitted storage.
+function isCompilerOptionalChainValueTypePath(path: readonly (number | string)[]): boolean {
+  return path.some((part, index) => part === 'optionalChain' && path[index + 1] === 'valueType');
 }
 
 function isCompilerIrTraversalPathWithin(

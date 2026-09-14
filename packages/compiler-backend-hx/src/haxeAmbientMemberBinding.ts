@@ -37,6 +37,7 @@ export function createCompilerHaxeAmbientMemberBindingPlan(): CompilerHaxeAmbien
 
 const haxeAmbientMemberBindings: Readonly<Record<string, CompilerHaxeAmbientMemberBinding>> = {
   'arrayBuffer.slice': { kind: 'runtimeCall', targetName: '_ArrayBuffer.slice' },
+  'array.at': { intArguments: [0], kind: 'runtimeCall', targetName: '_Array.at' },
   'array.concat': { kind: 'method', targetName: 'concat' },
   'array.copyWithin': { kind: 'runtimeCall', targetName: '_Array.copyWithin' },
   'array.entries': { kind: 'runtimeCall', targetName: '_Array.entries' },

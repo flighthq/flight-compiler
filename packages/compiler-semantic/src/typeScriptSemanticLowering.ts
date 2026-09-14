@@ -1631,7 +1631,7 @@ function lowerCallSemantics(
   const semantics: IrCallSemantics = {
     ...lowerInvocationSemantics(node, signature, context),
     resultType:
-      getTypeScriptMapLookupResultTypeEvidence(node, context) ??
+      getTypeScriptCollectionCallResultTypeEvidence(node, context) ??
       getTypeScriptInstantiatedCallResultTypeEvidence(node, signature, context) ??
       getTypeScriptWrittenCallResultTypeEvidence(signature, context) ??
       getTypeScriptCheckerTypeEvidence(context.checker.getTypeAtLocation(node), context, 0) ??
@@ -1699,24 +1699,25 @@ function getTypeScriptInstantiatedCallResultTypeEvidence(
   return getTypeScriptCheckerTypeEvidence(context.checker.getTypeAtLocation(node), context, 0, true, node);
 }
 
-// The checker exposes numeric enums through Map.get as `number`, losing the imported identity that
-// the receiver's written Map<K, V> preserves. Derive this one standard-library result from that
-// explicit value argument; neither WeakMap nor a lookalike `get` method qualifies by spelling.
-function getTypeScriptMapLookupResultTypeEvidence(
+// The checker can preserve an uninstantiated standard-library method result instead of the
+// receiver's concrete element/value. Recover the result only for collection identities whose
+// source contract makes that relationship explicit; lookalike methods do not qualify by spelling.
+function getTypeScriptCollectionCallResultTypeEvidence(
   node: ts.CallExpression,
   context: LoweringContext,
 ): Readonly<IrType> | undefined {
-  if (
-    node.arguments.length !== 1 ||
-    !ts.isPropertyAccessExpression(node.expression) ||
-    node.expression.name.text !== 'get'
-  ) {
+  if (node.arguments.length !== 1 || !ts.isPropertyAccessExpression(node.expression)) {
     return undefined;
   }
   const receiver = removeIrTypeBindingPatternUndefined(
     getTypeScriptExpressionBindingTypeEvidence(node.expression.expression, context),
   );
+  if (node.expression.name.text === 'at' && receiver?.kind === 'array') {
+    const elements = receiver.element.kind === 'union' ? receiver.element.types : [receiver.element];
+    return commonType([{ kind: 'undefined' }, elements[0]!, ...elements.slice(1)]);
+  }
   if (
+    node.expression.name.text !== 'get' ||
     receiver?.kind !== 'named' ||
     receiver.reference.kind !== 'ambient' ||
     !['Map', 'ReadonlyMap', 'WeakMap'].includes(receiver.reference.name)
@@ -5355,7 +5356,7 @@ function inferInitializerType(node: ts.Expression, context: LoweringContext): Ir
   if (ts.isCallExpression(node)) {
     const signature = getTypeScriptInvocationSignatureResolution(node, context.checker);
     const callResult =
-      getTypeScriptMapLookupResultTypeEvidence(node, context) ??
+      getTypeScriptCollectionCallResultTypeEvidence(node, context) ??
       getTypeScriptInstantiatedCallResultTypeEvidence(node, signature, context) ??
       getTypeScriptWrittenCallResultTypeEvidence(signature, context);
     if (callResult) return callResult;

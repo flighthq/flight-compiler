@@ -44,6 +44,11 @@ describe('getCompilerHaxeAmbientMemberBinding', () => {
       kind: 'runtimeCall',
       targetName: '_Array.sort',
     });
+    expect(getCompilerHaxeAmbientMemberBinding({ name: 'at', receiver: 'array' })).toEqual({
+      intArguments: [0],
+      kind: 'runtimeCall',
+      targetName: '_Array.at',
+    });
     expect(getCompilerHaxeAmbientMemberBinding({ name: 'padStart', receiver: 'string' })).toEqual({
       kind: 'runtimeCall',
       targetName: '_StringTools.padStart',

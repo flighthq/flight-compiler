@@ -417,7 +417,6 @@ describe('collectIrModulesRuntimeExternalSymbolIdentities', () => {
       { sourceName: 'SemanticParameter', space: 'type' },
       { sourceName: 'SemanticReceiver', space: 'type' },
       { sourceName: 'SemanticResult', space: 'type' },
-      { sourceName: 'SemanticValue', space: 'type' },
       { sourceName: 'invoke', space: 'value' },
     ]);
   });

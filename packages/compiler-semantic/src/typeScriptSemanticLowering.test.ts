@@ -10393,7 +10393,35 @@ it('instantiates optional Map and WeakMap lookup results from their receivers', 
   );
 
   expect(result.diagnostics).toEqual([]);
-  expect(JSON.stringify(result.module)).not.toMatch(/"name":"[KV]"/u);
+  const callResultTypes: IrType[] = [];
+  analyzeIrModuleTraversal(result.module, {
+    expression(expression) {
+      if (expression.kind === 'call') callResultTypes.push(expression.semantics.resultType);
+    },
+  });
+  expect(JSON.stringify(callResultTypes)).not.toMatch(/"name":"[KV]"/u);
+});
+
+it('instantiates optional Array.at results from the receiver element', () => {
+  const result = lower(
+    'optional-array-at.ts',
+    `interface Value { label: string }
+     export function last(values?: Value[]): Value | undefined {
+       return values?.at(-1);
+     }`,
+  );
+
+  expect(result.diagnostics).toEqual([]);
+  const callResultTypes: IrType[] = [];
+  analyzeIrModuleTraversal(result.module, {
+    expression(expression) {
+      if (expression.kind === 'call') callResultTypes.push(expression.semantics.resultType);
+    },
+  });
+  expect(callResultTypes).toMatchObject([
+    { kind: 'union', types: [{ kind: 'undefined' }, { kind: 'object', name: 'Value' }] },
+  ]);
+  expect(JSON.stringify(callResultTypes)).not.toContain('"name":"T"');
 });
 
 it('resolves type reference through a type alias for indexed receivers', () => {
