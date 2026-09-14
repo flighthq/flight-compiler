@@ -2,16 +2,19 @@
   {
     "call": "first",
     "arguments": [[10, "hello"]],
-    "returns": "number"
+    "returns": "number",
+    "rustTypes": ["(f64, String)"]
   },
   {
     "call": "second",
     "arguments": [[10, "hello"]],
-    "returns": "string"
+    "returns": "string",
+    "rustTypes": ["(f64, String)"]
   },
   {
     "call": "sum_pair",
     "arguments": [[3, 7]],
-    "returns": "number"
+    "returns": "number",
+    "rustTypes": ["(f64, f64)"]
   }
 ]

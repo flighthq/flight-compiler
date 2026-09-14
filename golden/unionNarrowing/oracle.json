@@ -2,41 +2,49 @@
   {
     "call": "narrow_typeof",
     "arguments": ["hello"],
-    "returns": "string"
+    "returns": "string",
+    "rustTypes": ["StrOrF64"]
   },
   {
     "call": "narrow_typeof",
     "arguments": [42],
-    "returns": "string"
+    "returns": "string",
+    "rustTypes": ["StrOrF64"]
   },
   {
     "call": "narrow_typeof_number",
     "arguments": [42],
-    "returns": "number"
+    "returns": "number",
+    "rustTypes": ["StrOrF64"]
   },
   {
     "call": "narrow_typeof_number",
     "arguments": ["hello"],
-    "returns": "number"
+    "returns": "number",
+    "rustTypes": ["StrOrF64"]
   },
   {
     "call": "narrow_branch",
     "arguments": ["hello", true],
-    "returns": "string"
+    "returns": "string",
+    "rustTypes": ["StrOrF64", null]
   },
   {
     "call": "narrow_branch",
     "arguments": ["hello", false],
-    "returns": "string"
+    "returns": "string",
+    "rustTypes": ["StrOrF64", null]
   },
   {
     "call": "assert_string",
     "arguments": ["test"],
-    "returns": "string"
+    "returns": "string",
+    "rustTypes": ["StrOrF64"]
   },
   {
     "call": "assert_number",
     "arguments": [7],
-    "returns": "number"
+    "returns": "number",
+    "rustTypes": ["StrOrF64"]
   }
 ]

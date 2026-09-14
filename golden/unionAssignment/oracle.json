@@ -7,12 +7,14 @@
   {
     "call": "assign_number",
     "arguments": [42],
-    "returns": "number"
+    "returns": "number",
+    "rustReturns": "string"
   },
   {
     "call": "reassign",
     "arguments": [true],
-    "returns": "number"
+    "returns": "number",
+    "rustReturns": "string"
   },
   {
     "call": "reassign",
@@ -41,6 +43,7 @@
   {
     "call": "return_member",
     "arguments": [false],
-    "returns": "number"
+    "returns": "number",
+    "rustReturns": "string"
   }
 ]

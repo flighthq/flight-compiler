@@ -37,6 +37,9 @@ import { resolveDependency } from './dependencyLock.js';
 // compiler. Every side rounds to six decimals and trims, so the comparison is of values.
 // A case may name target adapters when another adapter cannot construct its parameter representation;
 // that is a harness limitation, not a waiver for a behavioral divergence in a target that runs it.
+// Rust type hints construct target ABI shapes such as `Option<Point>`, tuples, and generated primitive
+// unions; `rustReturns` selects formatting for a generated return representation without changing the
+// source-language answer kind.
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const goldenDirectory = path.join(root, 'golden');
@@ -58,7 +61,9 @@ interface OracleCase {
   readonly rustCall?: string;
   readonly rustOptional?: readonly number[];
   readonly rustRef?: readonly number[];
+  readonly rustReturns?: OracleValueKind;
   readonly rustTraits?: readonly string[];
+  readonly rustTypes?: readonly (string | null)[];
   readonly targets?: readonly OracleTarget[];
 }
 
@@ -106,6 +111,14 @@ interface OracleDivergence {
   readonly subject: string;
   readonly target: string;
 }
+
+interface OracleFilters {
+  readonly fixtures: ReadonlySet<string>;
+  readonly targets: ReadonlySet<OracleTarget>;
+  readonly verbose: boolean;
+}
+
+const rustPrimitiveTypes = new Set(['bool', 'f64', 'String']);
 
 const cppKeywords = new Set([
   'alignas',
@@ -202,17 +215,22 @@ const cppKeywords = new Set([
   'xor_eq',
 ]);
 
+const filters = parseOracleFilters(process.argv.slice(2));
 const fixtures = readdirSync(goldenDirectory, { withFileTypes: true })
   .filter((entry) => entry.isDirectory() && existsSync(path.join(goldenDirectory, entry.name, 'oracle.json')))
   .map((entry) => entry.name)
+  .filter((fixture) => filters.fixtures.size === 0 || filters.fixtures.has(fixture))
   .sort();
 
-const haxeAvailable = hasCommand('haxe');
-const rustAvailable = hasCommand('rustc') && hasCommand('cc');
+const haxeSelected = filters.targets.has('haxe');
+const rustSelected = filters.targets.has('rust');
+const cppSelected = filters.targets.has('cpp');
+const haxeAvailable = haxeSelected && hasCommand('haxe');
+const rustAvailable = rustSelected && hasCommand('rustc') && hasCommand('cc');
 // The runtime lives in its own repository now, so the C++ lane needs a rehydrated checkout as well
 // as a toolchain. An absent checkout is reported and skipped, exactly like an absent compiler.
-const cppRuntimeInclude = path.join(resolveDependency(root, 'flight-cpp').directory, 'include');
-const cppRuntimeAvailable = existsSync(cppRuntimeInclude);
+const cppRuntimeInclude = cppSelected ? path.join(resolveDependency(root, 'flight-cpp').directory, 'include') : '';
+const cppRuntimeAvailable = cppSelected && existsSync(cppRuntimeInclude);
 const cppToolchain = cppRuntimeAvailable ? findCppCompilerToolchain() : undefined;
 const divergences: OracleDivergence[] = [];
 const buildFailures: Array<{ fixture: string; target: string; message: string }> = [];
@@ -276,6 +294,11 @@ if (buildFailures.length > 0) {
     .map(([target, failedFixtures]) => `${target}: ${String(failedFixtures.length)} (${failedFixtures.join(', ')})`)
     .join('; ');
   process.stderr.write(`\n${String(buildFailures.length)} fixture(s) failed to build (${summary}), skipped.\n`);
+  if (filters.verbose) {
+    for (const failure of buildFailures) {
+      process.stderr.write(`\n${failure.target}/${failure.fixture}\n${failure.message}\n`);
+    }
+  }
 }
 
 if (divergences.length > 0) {
@@ -289,9 +312,9 @@ if (divergences.length > 0) {
 }
 
 const skipped = [
-  ...(haxeAvailable ? [] : ['haxe']),
-  ...(rustAvailable ? [] : ['rust']),
-  ...(cppToolchain ? [] : [cppRuntimeAvailable ? 'cpp' : 'cpp (flight-cpp not rehydrated)']),
+  ...(!haxeSelected || haxeAvailable ? [] : ['haxe']),
+  ...(!rustSelected || rustAvailable ? [] : ['rust']),
+  ...(!cppSelected || cppToolchain ? [] : [cppRuntimeAvailable ? 'cpp' : 'cpp (flight-cpp not rehydrated)']),
 ];
 process.stdout.write(
   `Emitted source agrees with the source language: ${String(compared)} answers across ${String(fixtures.length)} fixtures${
@@ -307,6 +330,38 @@ function compare(fixture: string, target: string, expected: readonly string[], a
       divergences.push({ actual: observed, expected: value, fixture, subject: `answer ${String(index + 1)}`, target });
     }
   }
+}
+
+function parseOracleFilters(args: readonly string[]): OracleFilters {
+  const fixtures = new Set<string>();
+  const targets = new Set<OracleTarget>();
+  let verbose = false;
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === '--verbose') {
+      verbose = true;
+      continue;
+    }
+    if (arg !== '--fixture' && arg !== '--target') {
+      throw new Error(`Unknown oracle argument: ${arg ?? ''}`);
+    }
+    const value = args[index + 1];
+    if (!value) throw new Error(`${arg} requires a value`);
+    index += 1;
+    if (arg === '--fixture') {
+      fixtures.add(value);
+    } else if (value === 'cpp' || value === 'haxe' || value === 'rust') {
+      targets.add(value);
+    } else {
+      throw new Error(`Unknown oracle target: ${value}`);
+    }
+  }
+  if (targets.size === 0) {
+    targets.add('cpp');
+    targets.add('haxe');
+    targets.add('rust');
+  }
+  return { fixtures, targets, verbose };
 }
 
 function selectOracleCases(
@@ -462,12 +517,18 @@ function runRustOracle(fixture: string, cases: readonly OracleCase[]): readonly 
             args.push('None');
           } else if (refPositions.has(argIndex)) {
             const name = `__ref_${String(caseIndex)}_${String(argIndex)}`;
-            bindings.push(`    let mut ${name} = ${renderRustValue(arg, rustModule)};`);
+            bindings.push(
+              `    let mut ${name} = ${renderRustValue(arg, rustModule, oracleCase.rustTypes?.[argIndex])};`,
+            );
             args.push(`&mut ${name}`);
           } else if (optionalPositions.has(argIndex)) {
-            args.push(arg === null || arg === undefined ? 'None' : `Some(${renderRustValue(arg, rustModule)})`);
+            args.push(
+              arg === null || arg === undefined
+                ? 'None'
+                : `Some(${renderRustValue(arg, rustModule, oracleCase.rustTypes?.[argIndex])})`,
+            );
           } else {
-            args.push(renderRustValue(arg, rustModule));
+            args.push(renderRustValue(arg, rustModule, oracleCase.rustTypes?.[argIndex]));
           }
         }
         const rustName = oracleCase.rustCall ?? toSnakeCase(oracleCase.call);
@@ -478,7 +539,7 @@ function runRustOracle(fixture: string, cases: readonly OracleCase[]): readonly 
         const rustField = oracleCase.returnField ? toSnakeCase(oracleCase.returnField) : '';
         const access = rustField ? `(${call}).${rustField}` : call;
         let printLine: string;
-        switch (oracleCase.returns) {
+        switch (oracleCase.rustReturns ?? oracleCase.returns) {
           case 'number':
             printLine = `    println!("{}", say_number(${access}));`;
             break;
@@ -714,26 +775,71 @@ function renderHaxeValue(value: unknown): string {
   return JSON.stringify(value);
 }
 
-function renderRustValue(value: unknown, rustModule?: string): string {
+function renderRustValue(value: unknown, rustModule?: string, hint?: string | null): string {
+  const optionType = /^Option<(?<inner>.+)>$/u.exec(hint ?? '')?.groups?.inner;
+  if (optionType) {
+    return value === null || value === undefined ? 'None' : `Some(${renderRustValue(value, rustModule, optionType)})`;
+  }
+  if (Array.isArray(value) && hint?.startsWith('(') && hint.endsWith(')')) {
+    const itemTypes = splitRustTupleTypes(hint.slice(1, -1));
+    if (itemTypes.length !== value.length) {
+      throw new Error(`Rust oracle tuple hint ${hint} does not match ${JSON.stringify(value)}`);
+    }
+    return `(${value.map((item, index) => renderRustValue(item, rustModule, itemTypes[index])).join(', ')})`;
+  }
   if (isStringEnumArgument(value)) {
     const module = rustModule ?? 'fixture';
     return `${module}::${value.$stringEnum}::${value.variant}`;
   }
-  if (isRecordArgument(value)) {
-    const module = rustModule ?? 'fixture';
-    const fields = Object.entries(value)
-      .filter(([key]) => key !== '$type')
-      .map(([key, fieldValue]) => `${toSnakeCase(key)}: ${renderRustValue(fieldValue, rustModule)}`);
-    return `${module}::${value.$type} { ${fields.join(', ')} }`;
-  }
   if (isTaskArgument(value)) return `flight_runtime::FlightTask::ready(${renderRustValue(value.task, rustModule)})`;
   if (isRejectedTaskArgument(value))
     return `flight_runtime::FlightTask::reject(${JSON.stringify(String(value.rejects))})`;
+  if (isRecordArgument(value) || (isPlainRecord(value) && hint)) {
+    const module = rustModule ?? 'fixture';
+    const typeName = isRecordArgument(value) ? value.$type : hint;
+    const fields = Object.entries(value)
+      .filter(([key]) => key !== '$type')
+      .map(([key, fieldValue]) => `${toSnakeCase(key)}: ${renderRustValue(fieldValue, rustModule)}`);
+    return `${module}::${typeName} { ${fields.join(', ')} }`;
+  }
 
   if (Array.isArray(value)) return `vec![${value.map((item) => renderRustValue(item, rustModule)).join(', ')}]`;
+  const primitive = renderRustPrimitive(value);
+  if (primitive !== undefined && hint && !rustPrimitiveTypes.has(hint)) {
+    const module = rustModule ?? 'fixture';
+    const variant = typeof value === 'string' ? 'Str' : typeof value === 'number' ? 'F64' : 'Bool';
+    return `${module}::${hint}::${variant}(${primitive})`;
+  }
+  if (primitive !== undefined) return primitive;
+  return String(value);
+}
+
+function renderRustPrimitive(value: unknown): string | undefined {
   if (typeof value === 'string') return `${JSON.stringify(value)}.to_owned()`;
   if (typeof value === 'number') return Number.isInteger(value) ? `${String(value)}.0` : String(value);
-  return String(value);
+  if (typeof value === 'boolean') return String(value);
+  return undefined;
+}
+
+function isPlainRecord(value: unknown): value is Readonly<Record<string, unknown>> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function splitRustTupleTypes(value: string): readonly string[] {
+  const types: string[] = [];
+  let depth = 0;
+  let start = 0;
+  for (let index = 0; index < value.length; index += 1) {
+    const character = value[index];
+    if (character === '<' || character === '(' || character === '[') depth += 1;
+    else if (character === '>' || character === ')' || character === ']') depth -= 1;
+    else if (character === ',' && depth === 0) {
+      types.push(value.slice(start, index).trim());
+      start = index + 1;
+    }
+  }
+  types.push(value.slice(start).trim());
+  return types;
 }
 
 function collectRustTraitUses(cases: readonly OracleCase[], rustModule: string): readonly string[] {

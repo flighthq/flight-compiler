@@ -2,26 +2,31 @@
   {
     "call": "safe_x",
     "arguments": [{ "x": 3, "y": 4 }],
-    "returns": "number"
+    "returns": "number",
+    "rustTypes": ["Option<Point>"]
   },
   {
     "call": "safe_x",
     "arguments": [null],
-    "returns": "number"
+    "returns": "number",
+    "rustTypes": ["Option<Point>"]
   },
   {
     "call": "safe_y",
     "arguments": [{ "x": 3, "y": 4 }],
-    "returns": "number"
+    "returns": "number",
+    "rustTypes": ["Option<Point>"]
   },
   {
     "call": "safe_sum",
     "arguments": [{ "x": 3, "y": 4 }],
-    "returns": "number"
+    "returns": "number",
+    "rustTypes": ["Option<Point>"]
   },
   {
     "call": "safe_sum",
     "arguments": [null],
-    "returns": "number"
+    "returns": "number",
+    "rustTypes": ["Option<Point>"]
   }
 ]
