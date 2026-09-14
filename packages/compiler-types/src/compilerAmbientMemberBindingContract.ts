@@ -41,6 +41,9 @@ export type CompilerRustAmbientMemberBinding =
   // `owns` marks a member whose result is borrowed from the receiver where the source's is a value of
   // its own: `trim` hands back a slice, and the source's `string` is owned.
   | Readonly<{ kind: 'method'; leadingArguments?: readonly string[]; owns?: boolean; targetName: string }>
+  // A runtime method is a free function whose first argument borrows the source receiver. It is
+  // used where Rust's similarly named inherent method does not implement source-language edge cases.
+  | Readonly<{ kind: 'runtimeMethod'; targetName: string }>
   | Readonly<{ kind: 'borrowedMethod'; owns?: boolean; targetName: string; trailingArguments?: readonly string[] }>
   | Readonly<{ kind: 'countingMethod'; targetName: string }>
   // A source property whose Rust representation returns an owned value through a zero-argument

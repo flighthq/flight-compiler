@@ -9738,6 +9738,17 @@ describe('emitIrModuleRust ambient method binding kinds', () => {
     expect(output).toContain('collect::<Vec<String>>()');
   });
 
+  it('emits string repeat through the runtime count adapter', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'str-repeat.ts',
+        'export function repeat(value: string, count: number): string { return value.repeat(count); }',
+      ).module,
+    ).contents;
+    expect(output).toContain('use flight_runtime::repeat_text;');
+    expect(output).toContain('return repeat_text(&value, count);');
+  });
+
   it('emits map.get as optionalLookup .get().cloned()', () => {
     const output = emitIrModuleRust(
       lower(

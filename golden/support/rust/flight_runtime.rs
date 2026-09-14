@@ -68,6 +68,17 @@ pub fn round(value: f64) -> f64 {
     }
 }
 
+/// Repeats text using JavaScript's numeric count rules rather than Rust's usize-only API.
+pub fn repeat_text(value: &str, count: f64) -> String {
+    if count.is_nan() || count == 0.0 {
+        return String::new();
+    }
+    if count < 0.0 || count.is_infinite() {
+        panic!("invalid string repeat count");
+    }
+    value.repeat(count.trunc() as usize)
+}
+
 /// The byte storage shared by every typed-array view over one source ArrayBuffer. A downstream
 /// DataView implementation can use the same storage contract once that runtime capability lands.
 #[derive(Clone)]

@@ -1254,6 +1254,10 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
               : expression.arguments.map((argument) =>
                   borrows ? emitBorrowedTextRust(argument, context) : emitExpression(argument, context),
                 );
+          if (binding.kind === 'runtimeMethod') {
+            const target = recordRuntimeTypeRust(binding.targetName, context);
+            return `${target}(&${receiver}${values.length > 0 ? `, ${values.join(', ')}` : ''})`;
+          }
           if (binding.kind === 'predicatePosition') {
             return emitArrayPredicatePositionRust(
               receiver,

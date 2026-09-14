@@ -86,6 +86,7 @@ const rustAmbientMemberBindings: Readonly<Record<string, CompilerRustAmbientMemb
   // The source language replaces the first occurrence; Rust's `replace` replaces every one, and
   // `replacen` with a count of one is the member that means what the source meant.
   'string.replace': { kind: 'borrowedMethod', targetName: 'replacen', trailingArguments: ['1'] },
+  'string.repeat': { kind: 'runtimeMethod', targetName: 'repeat_text' },
   'string.split': { kind: 'splitCollect', targetName: 'split' },
   'string.startsWith': { kind: 'borrowedMethod', targetName: 'starts_with' },
   'string.toLowerCase': { kind: 'method', targetName: 'to_lowercase' },

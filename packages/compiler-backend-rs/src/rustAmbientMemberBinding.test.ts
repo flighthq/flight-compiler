@@ -179,4 +179,11 @@ describe('getCompilerRustAmbientMemberBinding', () => {
       targetName: 'flat_map',
     });
   });
+
+  it('maps repeat through the runtime numeric-semantics adapter', () => {
+    expect(getCompilerRustAmbientMemberBinding({ name: 'repeat', receiver: 'string' })).toEqual({
+      kind: 'runtimeMethod',
+      targetName: 'repeat_text',
+    });
+  });
 });
