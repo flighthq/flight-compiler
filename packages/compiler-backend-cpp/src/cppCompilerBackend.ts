@@ -1952,6 +1952,33 @@ function emitExpression(
         context.module,
       );
       if (structuralRow && getCppRuntimeProfile(context.options) === 'flight-cpp') {
+        const spread =
+          expression.members.length === 1 && expression.members[0]?.kind === 'spread'
+            ? expression.members[0]
+            : undefined;
+        if (spread) {
+          const properties = context.referenceRepresentationPlanner.resolveObjectShape(
+            constructionType,
+            context.module,
+          );
+          const sourceType = getIrExpressionTypeEvidenceCpp(spread.expression, context);
+          if (
+            !properties ||
+            properties.some((property) => property.computedKey) ||
+            !sourceType ||
+            !hasFlightStructuralRowRepresentationCpp(sourceType, context)
+          ) {
+            emissionError(context, 'structural-row spread construction requires one closed named structural source');
+          }
+          const sourceName = getGeneratedTargetName('structuralSpreadSource', context);
+          const source = emitExpression(spread.expression, context, sourceType);
+          const fields = properties.map(
+            (property) =>
+              `flight::row_field<flight::RowKey<${JSON.stringify(property.name)}>>(flight::row_get<flight::RowKey<${JSON.stringify(property.name)}>>(${sourceName}))`,
+          );
+          context.includes.add('flight/structural_ref.hpp');
+          return `([&]() { auto&& ${sourceName} = ${source}; return flight::make_structural_ref<${emitCppStructuralRowSchemaTypeCpp(structuralRow, context)}>(${fields.join(', ')}); }())`;
+        }
         if (expression.members.some((member) => member.kind !== 'property')) {
           emissionError(context, 'structural-row construction requires explicit named properties');
         }

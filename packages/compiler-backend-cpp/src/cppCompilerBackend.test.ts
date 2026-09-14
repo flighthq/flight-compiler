@@ -5703,6 +5703,8 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
       options: { runtimeProfile: 'flight-cpp' },
     }).emitModule(modules[2]!)[0]!.contents;
 
+    expect(output).toContain('flight::make_structural_ref<');
+    expect(output).toContain('flight::row_get<flight::RowKey<"redScale">>(structural_spread_source)');
     expect(output).toContain('flight::Array<double> result = flight::Array<double>');
     expect(output).not.toContain('std::variant<double, auto>');
   });
@@ -5768,7 +5770,9 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
       options: { runtimeProfile: 'flight-cpp' },
     }).emitModule(consumer)[0]!.contents;
 
-    expect(output).toContain('auto value = flight::make_ref<flighthq_types::ColorScaleBiasLike>(*color_scale_bias);');
+    expect(output).toContain('auto value = ([&]() { auto&& structural_spread_source = color_scale_bias;');
+    expect(output).toContain('flight::make_structural_ref<');
+    expect(output).toContain('flight::row_field<flight::RowKey<"redScale">>');
     expect(output).toContain('auto color_matrix = flight::Array<double>');
     expect(output).not.toContain('std::variant<double, auto>');
   });
