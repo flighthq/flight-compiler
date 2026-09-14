@@ -105,6 +105,7 @@ interface AnonymousStruct {
     parameters: readonly Readonly<{ name: string; type: string }>[];
     returns: string;
   }>[];
+  guard?: string;
   name: string;
   properties: readonly { name: string; optional: boolean; type: string }[];
   referenceEnabled?: boolean;
@@ -483,6 +484,7 @@ function emitDeclaration(declaration: Readonly<IrDeclaration>, context: EmitCont
 
 function emitAnonymousStructCpp(struct: Readonly<AnonymousStruct>, context: EmitContext): string[] {
   const lines: string[] = [];
+  if (struct.guard) lines.push(`#ifndef ${struct.guard}`, `#define ${struct.guard}`);
   if (struct.typeParameters.length > 0) {
     lines.push(`template <${struct.typeParameters.map((parameter) => `typename ${parameter}`).join(', ')}>`);
   }
@@ -507,6 +509,7 @@ function emitAnonymousStructCpp(struct: Readonly<AnonymousStruct>, context: Emit
     lines.push('  }');
   }
   lines.push('};');
+  if (struct.guard) lines.push(`#endif // ${struct.guard}`);
   return lines;
 }
 
@@ -3179,8 +3182,14 @@ function emitType(type: Readonly<IrType>, context: EmitContext, representation: 
       if (existing) {
         return `${existing.name}${typeParameters.length > 0 ? `<${typeParameters.join(', ')}>` : ''}`;
       }
-      const structName = generateAnonymousStructName(type.properties, context);
-      context.anonymousStructs.set(key, { name: structName, properties: emittedProperties, typeParameters });
+      const structuralHash = getCppStableIdentifierHash(key);
+      const structName = generateAnonymousStructName(type.properties, structuralHash, context);
+      context.anonymousStructs.set(key, {
+        guard: getCppAnonymousStructGuard(structuralHash, context),
+        name: structName,
+        properties: emittedProperties,
+        typeParameters,
+      });
       return `${structName}${typeParameters.length > 0 ? `<${typeParameters.join(', ')}>` : ''}`;
     }
     case 'primitive':
@@ -3742,10 +3751,18 @@ function emitCppCallableObjectStorageTypeCpp(
   const key = `${typeParameterKey}\0callable\0${normalizeCompilerStructuralValueCanonical(type)}`;
   const existing = context.anonymousStructs.get(key);
   if (existing) return `${existing.name}${typeParameters.length > 0 ? `<${typeParameters.join(', ')}>` : ''}`;
-  const structName = generateAnonymousStructName([{ name: 'callable' }, ...representation.properties], context);
+  const structuralHash = getCppStableIdentifierHash(key);
+  const structName = generateAnonymousStructName(
+    [{ name: 'callable' }, ...representation.properties],
+    structuralHash,
+    context,
+  );
   context.anonymousStructs.set(
     key,
-    createCppCallableObjectStructCpp(structName, representation, typeParameters, context),
+    {
+      ...createCppCallableObjectStructCpp(structName, representation, typeParameters, context),
+      guard: getCppAnonymousStructGuard(structuralHash, context),
+    },
   );
   return `${structName}${typeParameters.length > 0 ? `<${typeParameters.join(', ')}>` : ''}`;
 }
@@ -3762,10 +3779,14 @@ function emitCppCallableOverloadStorageTypeCpp(
   const key = `${typeParameterKey}\0callable-overloads\0${normalizeCompilerStructuralValueCanonical(type)}`;
   const existing = context.anonymousStructs.get(key);
   if (existing) return `${existing.name}${typeParameters.length > 0 ? `<${typeParameters.join(', ')}>` : ''}`;
-  const structName = generateAnonymousStructName([{ name: 'callableOverloads' }], context);
+  const structuralHash = getCppStableIdentifierHash(key);
+  const structName = generateAnonymousStructName([{ name: 'callableOverloads' }], structuralHash, context);
   context.anonymousStructs.set(
     key,
-    createCppCallableOverloadStructCpp(structName, representation, typeParameters, context),
+    {
+      ...createCppCallableOverloadStructCpp(structName, representation, typeParameters, context),
+      guard: getCppAnonymousStructGuard(structuralHash, context),
+    },
   );
   return `${structName}${typeParameters.length > 0 ? `<${typeParameters.join(', ')}>` : ''}`;
 }
@@ -8086,9 +8107,14 @@ function generateUniqueName(base: string, context: EmitContext): string {
   return candidate;
 }
 
-function generateAnonymousStructName(properties: readonly { readonly name: string }[], context: EmitContext): string {
-  const base = properties.map((property) => snakeCase(property.name)).join('_');
-  let candidate = base || 'anonymous';
+function generateAnonymousStructName(
+  properties: readonly { readonly name: string }[],
+  structuralHash: string,
+  context: EmitContext,
+): string {
+  const propertyStem = properties.map((property) => snakeCase(property.name)).join('_') || 'anonymous';
+  const base = `${propertyStem}_${structuralHash}`;
+  let candidate = base;
   let suffix = 0;
   while (context.generatedNames.has(candidate)) {
     suffix++;
@@ -8096,6 +8122,22 @@ function generateAnonymousStructName(properties: readonly { readonly name: strin
   }
   context.generatedNames.add(candidate);
   return candidate;
+}
+
+function getCppAnonymousStructGuard(structuralHash: string, context: EmitContext): string {
+  const packageIdentity = context.module.packageName.replace(/[^A-Za-z0-9]+/gu, '_').toUpperCase();
+  return `FLIGHT_COMPILER_ANONYMOUS_${packageIdentity}_${structuralHash.toUpperCase()}`;
+}
+
+function getCppStableIdentifierHash(value: string): string {
+  let first = 0x811c9dc5;
+  let second = 0x9e3779b9;
+  for (let index = 0; index < value.length; index++) {
+    const code = value.charCodeAt(index);
+    first = Math.imul(first ^ code, 0x01000193) >>> 0;
+    second = Math.imul(second ^ code, 0x85ebca6b) >>> 0;
+  }
+  return `${first.toString(16).padStart(8, '0')}${second.toString(16).padStart(8, '0')}`;
 }
 
 function safeCppName(name: string): string {

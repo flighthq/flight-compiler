@@ -6176,8 +6176,32 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
        export function strPt(): { x: string; y: string } { return { x: 'a', y: 'b' }; }`,
     );
     const emitted = emitIrModuleCpp(result.module);
-    expect(emitted.contents).toContain('x_y');
-    expect(emitted.contents).toContain('x_y_1');
+    const names = [...emitted.contents.matchAll(/struct (x_y_[0-9a-f]+) /gu)].map((match) => match[1]);
+    expect(new Set(names).size).toBe(2);
+  });
+
+  it('guards structurally identical anonymous structs shared by package headers', () => {
+    const first = lower('first.ts', 'export function first(): { x: number; y: number } { return { x: 1, y: 2 }; }')
+      .module;
+    const second = lower(
+      'second.ts',
+      'export function second(): { x: number; y: number } { return { x: 3, y: 4 }; }',
+    ).module;
+    const session = createCppCompilerBackend().createEmissionSession!({
+      modules: [first, second],
+      options: { runtimeProfile: 'flight-cpp' },
+    });
+    const firstOutput = session.emitModule(first)[0]!.contents;
+    const secondOutput = session.emitModule(second)[0]!.contents;
+    const firstName = firstOutput.match(/struct (x_y_[0-9a-f]+) /u)?.[1];
+    const secondName = secondOutput.match(/struct (x_y_[0-9a-f]+) /u)?.[1];
+    const firstGuard = firstOutput.match(/#ifndef (FLIGHT_COMPILER_ANONYMOUS_\w+)/u)?.[1];
+    const secondGuard = secondOutput.match(/#ifndef (FLIGHT_COMPILER_ANONYMOUS_\w+)/u)?.[1];
+
+    expect(firstName).toBeDefined();
+    expect(firstName).toBe(secondName);
+    expect(firstGuard).toBeDefined();
+    expect(firstGuard).toBe(secondGuard);
   });
 
   it('throws on missing runtime external symbol binding', () => {
