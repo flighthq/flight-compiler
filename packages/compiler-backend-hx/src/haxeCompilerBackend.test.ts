@@ -1070,6 +1070,21 @@ describe('emitIrModuleHaxe', () => {
     expect(output).toContain('value = 1;');
   });
 
+  it('hoists a local captured by a closure in its own initializer', () => {
+    const result = lower(
+      'self-capture.ts',
+      `interface Cursor { read(): number }
+       export function create(): Cursor {
+         const cursor: Cursor = { read: () => cursor.read() };
+         return cursor;
+       }`,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output.indexOf('var cursor:Cursor;')).toBeLessThan(output.indexOf('cursor ='));
+    expect(output).not.toContain('final cursor:Cursor =');
+  });
+
   it('uses JavaScript truthiness for nullable structural and callable conditions', () => {
     const result = lower(
       'truthiness.ts',

@@ -14,6 +14,7 @@ import {
   isCompilerTargetNameAllocationFailure,
 } from '../../compiler-emission/src/index.js';
 import {
+  analyzeIrExpressionSubtreeTraversal,
   analyzeIrModuleTraversal,
   analyzeIrStatementSubtreeTraversal,
   getIrModuleTraversalPathValue,
@@ -3967,6 +3968,23 @@ function emitFunctionStatementsHaxe(statements: readonly IrStatement[], context:
       : [],
   );
   const forward = declarations.filter(({ statementIndex, variable }) => {
+    if (variable.initializer) {
+      let selfCaptured = false;
+      analyzeIrExpressionSubtreeTraversal(variable.initializer, {
+        expression(expression) {
+          if (
+            expression.kind === 'identifier' &&
+            expression.reference.kind === 'binding' &&
+            expression.reference.binding.id === variable.binding.id
+          ) {
+            selfCaptured = true;
+            return false;
+          }
+          return undefined;
+        },
+      });
+      if (selfCaptured) return true;
+    }
     for (let index = 0; index < statementIndex; index += 1) {
       let found = false;
       analyzeIrStatementSubtreeTraversal(statements[index]!, {
