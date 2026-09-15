@@ -972,7 +972,9 @@ describe('createCppCompilerBackend', () => {
     const types = ts.createSourceFile(
       '/flight/packages/types/src/runtime.ts',
       `export interface BaseRuntime { version: number }
-       export interface DerivedRuntime extends BaseRuntime { cache: { value: number } | null }`,
+       export interface DerivedRuntime extends BaseRuntime { cache: { value: number } | null }
+       export interface Key { time: number; color: { r: number; g: number; b: number } }
+       export interface Gradient { keys: Key[] }`,
       ts.ScriptTarget.Latest,
       true,
     );
@@ -986,10 +988,14 @@ describe('createCppCompilerBackend', () => {
     const consumer = ts.createSourceFile(
       '/flight/packages/consumer/src/cache.ts',
       `import { runtime } from '@flighthq/host/contract';
-       import type { BaseRuntime, DerivedRuntime } from '@flighthq/types/contract';
+       import type { BaseRuntime, DerivedRuntime, Gradient } from '@flighthq/types/contract';
        export function cache(value: Readonly<BaseRuntime>): void {
          const derived = runtime(value) as DerivedRuntime;
          derived.cache = { value: 1 };
+       }
+       export function gradient(values: readonly number[]): Gradient {
+         const keys = values.map((value) => ({ time: 0, color: { r: value, g: value, b: value } }));
+         return { keys };
        }`,
       ts.ScriptTarget.Latest,
       true,
@@ -1028,6 +1034,9 @@ describe('createCppCompilerBackend', () => {
       /flight::row_set<flight::RowKey<"cache">>\(derived, flight::make_ref<flighthq_types::value_[0-9a-f]{16}>/u,
     );
     expect(emitted).not.toMatch(/struct value_[0-9a-f]{16}/u);
+    expect(emitted).toContain('return flight::make_ref<flighthq_types::Key>');
+    expect(emitted).toMatch(/flight::make_ref<flighthq_types::r_g_b_[0-9a-f]{16}>/u);
+    expect(emitted).not.toMatch(/struct r_g_b_[0-9a-f]{16}/u);
   });
 
   it('recovers optional construction values through a symbol-key Omit projection', () => {
@@ -9072,13 +9081,17 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
         `interface RectangleLike { x: number; y: number; width: number; height: number }
          interface FreeRectangle { x: number; y: number; width: number; height: number }
          function intersects(rectangle: Readonly<RectangleLike>): boolean { return rectangle.width > 0; }
-         export function measure(rectangle: FreeRectangle): boolean { return intersects(rectangle); }`,
+         export function measure(rectangle: FreeRectangle): boolean {
+           const node = rectangle;
+           return intersects(node);
+         }`,
       ).module,
       { runtimeProfile: 'flight-cpp' },
     ).contents;
 
+    expect(output).toContain('flight::Ref<FreeRectangle> node = rectangle;');
     expect(output).toContain(
-      'intersects(flight::structural_ref_cast<flight::StructuralRef<flight::RowReadonly<flight::RowOf<flight::Ref<RectangleLike>>>>>(flight::StructuralRef<flight::RowWritable<flight::RowOf<flight::Ref<FreeRectangle>>>>(rectangle)))',
+      'intersects(flight::structural_ref_cast<flight::StructuralRef<flight::RowReadonly<flight::RowOf<flight::Ref<RectangleLike>>>>>(flight::StructuralRef<flight::RowWritable<flight::RowOf<flight::Ref<FreeRectangle>>>>(node)))',
     );
   });
 

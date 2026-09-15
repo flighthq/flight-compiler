@@ -2557,6 +2557,15 @@ function emitExpression(
         constructionType,
         context.module,
       );
+      const constructionOwner = getCppTypeReferenceOwnerModuleCpp(constructionType, context);
+      const emitPropertyValue = (property: (typeof properties)[number]): string => {
+        const propertyType = getIrObjectPropertyTypeCpp(constructionType, property.name, context);
+        return (
+          (constructionOwner.packageName !== context.module.packageName && propertyType
+            ? emitCppForeignAnonymousObjectValueCpp(property.value, propertyType, constructionOwner, context)
+            : undefined) ?? emitExpression(property.value, context, propertyType)
+        );
+      };
       const propertiesByName = new Map(properties.map((property) => [property.name, property] as const));
       const orderedProperties =
         constructionProperties && propertiesByName.size === properties.length
@@ -2588,7 +2597,7 @@ function emitExpression(
         );
         const evaluations = properties.map(
           (property) =>
-            `auto ${temporaries.get(property)!} = ${emitExpression(property.value, context, getIrObjectPropertyTypeCpp(constructionType, property.name, context))};`,
+            `auto ${temporaries.get(property)!} = ${emitPropertyValue(property)};`,
         );
         const initializer = `{${orderedProperties
           .map((property) => `.${safeCppName(property.name)} = ${temporaries.get(property)!}`)
@@ -2596,10 +2605,7 @@ function emitExpression(
         return `(${context.namespaceScope ? '[]' : '[&]'}() { ${evaluations.join(' ')} return ${construction(initializer)}; }())`;
       }
       const initializer = `{${properties
-        .map(
-          (property) =>
-            `.${safeCppName(property.name)} = ${emitExpression(property.value, context, getIrObjectPropertyTypeCpp(constructionType, property.name, context))}`,
-        )
+        .map((property) => `.${safeCppName(property.name)} = ${emitPropertyValue(property)}`)
         .join(', ')}}`;
       return construction(initializer);
     }
@@ -6542,9 +6548,8 @@ function collectCppContextualBindingStorageTargetTypesCpp(
         !variable.mutable &&
         variable.initializer &&
         variable.type &&
-        (variable.initializer.kind === 'object' ||
-          hasFlightReferenceRepresentationCpp(variable.type, context) ||
-          getIrArrayTypeCpp(variable.type, context, new Set()) !== undefined ||
+        ((variable.initializer.kind === 'object' &&
+          hasFlightReferenceRepresentationCpp(variable.type, context)) ||
           getIrArrayTypeCpp(inferredType, context, new Set()) !== undefined)
       ) {
         eligible.add(variable.binding.id);
@@ -8910,8 +8915,21 @@ function emitCppForeignAnonymousPropertyObjectCpp(
   const property = context.referenceRepresentationPlanner
     .resolveObjectShape(receiverType, context.module)
     ?.find((candidate) => candidate.name === target.name);
-  const objectType = property ? getCppNonNullableType(property.type, context, new Set()) : undefined;
-  if (objectType?.kind !== 'object' || value.members.some((member) => member.kind !== 'property')) {
+  return property ? emitCppForeignAnonymousObjectValueCpp(value, property.type, owner, context) : undefined;
+}
+
+function emitCppForeignAnonymousObjectValueCpp(
+  value: Readonly<IrExpression>,
+  type: Readonly<IrType>,
+  owner: Readonly<IrModule>,
+  context: EmitContext,
+): string | undefined {
+  const objectType = getCppNonNullableType(type, context, new Set()) ?? type;
+  if (
+    value.kind !== 'object' ||
+    objectType.kind !== 'object' ||
+    value.members.some((member) => member.kind !== 'property')
+  ) {
     return undefined;
   }
   const members = value.members as readonly Readonly<Extract<IrObjectMember, { kind: 'property' }>>[];
@@ -8927,6 +8945,12 @@ function emitCppForeignAnonymousPropertyObjectCpp(
   const key = `\0${normalizeCompilerStructuralValueCanonical(objectType)}`;
   const name = getCppAnonymousStructBaseName(objectType.properties, getCppStableIdentifierHash(key));
   const qualified = `${getCppCompilerPackageNamespace(owner.packageName, context.options.packageTargets)}::${name}`;
+  const emitMemberValue = (
+    member: Readonly<Extract<IrObjectMember, { kind: 'property' }>>,
+    expected: Readonly<IrType> | undefined,
+  ): string =>
+    (expected ? emitCppForeignAnonymousObjectValueCpp(member.value, expected, owner, context) : undefined) ??
+    emitExpression(member.value, context, expected);
   const sourceOrder = members.map((member) => member.name);
   const targetOrder = ordered.map(({ member }) => member.name);
   const reordered = sourceOrder.some((name, index) => name !== targetOrder[index]);
@@ -8935,8 +8959,10 @@ function emitCppForeignAnonymousPropertyObjectCpp(
       members.map((member) => [member, getGeneratedTargetName(`object_member_${member.name}`, context)] as const),
     );
     const evaluations = members.map(
-      (member) =>
-        `auto ${temporaries.get(member)!} = ${emitExpression(member.value, context, objectType.properties.find((property) => property.name === member.name)?.type)};`,
+      (member) => {
+        const expected = objectType.properties.find((property) => property.name === member.name)?.type;
+        return `auto ${temporaries.get(member)!} = ${emitMemberValue(member, expected)};`;
+      },
     );
     const initializer = ordered
       .map(({ member }) => `.${safeCppName(member.name)} = ${temporaries.get(member)!}`)
@@ -8946,7 +8972,7 @@ function emitCppForeignAnonymousPropertyObjectCpp(
   const initializer = ordered
     .map(
       ({ expected, member }) =>
-        `.${safeCppName(member.name)} = ${emitExpression(member.value, context, expected.type)}`,
+        `.${safeCppName(member.name)} = ${emitMemberValue(member, expected.type)}`,
     )
     .join(', ');
   return `flight::make_ref<${qualified}>(${qualified}{${initializer}})`;
