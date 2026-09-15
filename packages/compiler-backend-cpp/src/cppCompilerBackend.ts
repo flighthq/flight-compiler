@@ -1851,7 +1851,12 @@ function emitExpression(
               expression.arguments.length === 1,
           );
           const args = expression.arguments.map((argument, index) =>
-            emitExpression(argument, context, getIrCallArgumentExpectedTypeCpp(expression, index, context)),
+            emitExpression(
+              argument,
+              context,
+              getCppContextualArrayMapCallbackTypeCpp(expression, expectedType, index, context) ??
+                getIrCallArgumentExpectedTypeCpp(expression, index, context),
+            ),
           );
           const call = `${receiver}${memberOp(expression.callee.object, context)}${binding.targetName}${emitCppTypeArguments(expression.typeArguments, context)}(${args.join(', ')})`;
           if (
@@ -6519,6 +6524,10 @@ function collectCppContextualBindingStorageTargetTypesCpp(
   const eligible = new Set<string>();
   analyzeIrModuleTraversal(module, {
     variable(variable) {
+      const inferredType =
+        'binding' in variable && variable.initializer
+          ? getIrExpressionTypeEvidenceCpp(variable.initializer, context)
+          : undefined;
       if ('binding' in variable && !variable.mutable && variable.initializer) {
         const runtimeMemberType = getCppRuntimeMemberStorageTypeCpp(variable.initializer, context);
         if (runtimeMemberType) {
@@ -6531,9 +6540,12 @@ function collectCppContextualBindingStorageTargetTypesCpp(
       if (
         'binding' in variable &&
         !variable.mutable &&
-        variable.initializer?.kind === 'object' &&
+        variable.initializer &&
         variable.type &&
-        hasFlightReferenceRepresentationCpp(variable.type, context)
+        (variable.initializer.kind === 'object' ||
+          hasFlightReferenceRepresentationCpp(variable.type, context) ||
+          getIrArrayTypeCpp(variable.type, context, new Set()) !== undefined ||
+          getIrArrayTypeCpp(inferredType, context, new Set()) !== undefined)
       ) {
         eligible.add(variable.binding.id);
       }
@@ -6632,9 +6644,13 @@ function collectCppObjectContextualStorageTargetsCpp(
       continue;
     }
     const bindingId = member.value.reference.binding.id;
-    const sourceType = context.bindingTypes.get(bindingId);
+    const declaredType = context.bindingTypes.get(bindingId);
+    const sourceType =
+      declaredType && declaredType.kind !== 'unknown'
+        ? declaredType
+        : getIrExpressionTypeEvidenceCpp(context.bindingInitializers.get(bindingId)!, context);
     const targetType = getIrObjectPropertyTypeCpp(contextualType, member.name, context);
-    if (!sourceType || !targetType || !isCppReadonlyCollectionProjectionCpp(sourceType, targetType, context)) {
+    if (!sourceType || !targetType || !isCppContextualCollectionProjectionCpp(sourceType, targetType, context)) {
       continue;
     }
     const targets = candidates.get(bindingId) ?? new Map<string, Readonly<IrType>>();
@@ -6643,17 +6659,31 @@ function collectCppObjectContextualStorageTargetsCpp(
   }
 }
 
-function isCppReadonlyCollectionProjectionCpp(
+function isCppContextualCollectionProjectionCpp(
   source: Readonly<IrType>,
   target: Readonly<IrType>,
   context: EmitContext,
 ): boolean {
   const sourceCollection = getIrAmbientCollectionTypeCpp(source, context, new Set());
   const targetCollection = getIrAmbientCollectionTypeCpp(target, context, new Set());
-  if (!sourceCollection || !targetCollection) return false;
-  return (
-    (sourceCollection.reference.name === 'Map' && targetCollection.reference.name === 'ReadonlyMap') ||
-    (sourceCollection.reference.name === 'Set' && targetCollection.reference.name === 'ReadonlySet')
+  if (
+    sourceCollection &&
+    targetCollection &&
+    ((sourceCollection.reference.name === 'Map' && targetCollection.reference.name === 'ReadonlyMap') ||
+      (sourceCollection.reference.name === 'Set' && targetCollection.reference.name === 'ReadonlySet'))
+  ) {
+    return true;
+  }
+  const sourceArray = getIrArrayTypeCpp(source, context, new Set());
+  const targetArray = getIrArrayTypeCpp(target, context, new Set());
+  if (!sourceArray || !targetArray) return false;
+  const sourceShape = context.referenceRepresentationPlanner.resolveObjectShape(sourceArray.element, context.module);
+  const targetShape = context.referenceRepresentationPlanner.resolveObjectShape(targetArray.element, context.module);
+  return Boolean(
+    sourceShape &&
+      targetShape &&
+      hasFlightReferenceRepresentationCpp(targetArray.element, context) &&
+      areCppObjectShapesRepresentationEquivalent(sourceShape, targetShape, context),
   );
 }
 
@@ -6724,6 +6754,25 @@ function getIrCallArgumentExpectedTypeCpp(
   if (expression.callee.kind !== 'identifier' || expression.callee.reference.kind !== 'binding') return undefined;
   return getCppFunctionDeclarationForBindingCpp(expression.callee.reference.binding.id, context)?.parameters[index]
     ?.type;
+}
+
+function getCppContextualArrayMapCallbackTypeCpp(
+  expression: Readonly<Extract<IrExpression, { kind: 'call' }>>,
+  expectedType: Readonly<IrType> | undefined,
+  index: number,
+  context: EmitContext,
+): Readonly<Extract<IrType, { kind: 'function' }>> | undefined {
+  if (
+    index !== 0 ||
+    expression.callee.kind !== 'property' ||
+    expression.callee.member?.receiver !== 'array' ||
+    expression.callee.member.name !== 'map'
+  ) {
+    return undefined;
+  }
+  const result = getIrArrayTypeCpp(expectedType, context, new Set());
+  const callback = getIrExpressionTypeEvidenceCpp(expression.arguments[index]!, context);
+  return result && callback?.kind === 'function' ? { ...callback, returns: result.element } : undefined;
 }
 
 function getCppCollectionCallArgumentExpectedTypeCpp(

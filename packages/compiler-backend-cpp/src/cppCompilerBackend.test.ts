@@ -9254,6 +9254,29 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(output).toContain('.tables = tables');
   });
 
+  it('constructs inferred object arrays as their named result-property element type', () => {
+    const output = emitIrModuleCpp(
+      lower(
+        'contextual-object-array.ts',
+        `interface Color { r: number; g: number; b: number }
+         interface Key { time: number; color: Color }
+         interface Gradient { colorKeys: Key[] }
+         export function create(colors: readonly Color[], mapped: boolean): Gradient {
+           const colorKeys = mapped
+             ? colors.map((color) => ({ time: 0, color }))
+             : [{ time: 1, color: { r: 1, g: 1, b: 1 } }];
+           return { colorKeys };
+         }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+
+    expect(output).toContain('flight::Array<flight::Ref<Key>> color_keys =');
+    expect(output).toContain('return flight::make_ref<Key>(Key{.time = 0.0, .color = color})');
+    expect(output).toContain('flight::Array<flight::Ref<Key>>{flight::make_ref<Key>');
+    expect(output).toContain('.color_keys = color_keys');
+  });
+
   it('stores a locally built Map in an imported readonly structural result view', () => {
     const types = ts.createSourceFile(
       '/flight/packages/types/src/directory.ts',
