@@ -3,6 +3,7 @@ import ts from 'typescript';
 import { lowerTypeScriptSource } from '../../compiler-semantic/src/index.js';
 import { analyzeIrModuleAsyncStateMachines } from '../../compiler-task/src/index.js';
 import type {
+  CompilerHaxeTaskEmissionCapabilities,
   CompilerHaxeTaskLowering,
   CompilerHaxeTaskLoweringFunction,
   IrExpression,
@@ -164,6 +165,38 @@ describe('emitCompilerHaxeTaskLoweringFunction', () => {
     expect(actions).toContain('rejectTask(value);');
     expect(actions.match(/\.resolve\(input\)\.then\(/gu)).toHaveLength(2);
     expect(empty).toContain('resolveTask(null);');
+  });
+
+  it('declares an executed local before an initializer that captures itself', () => {
+    const { lowering, module } = createFixture(`
+      export async function attach(ready: Promise<void>) {
+        await ready;
+        const stable = 1, release = {
+          released: false,
+          async release(): Promise<void> {
+            if (release.released) return;
+            release.released = true;
+          },
+        };
+        return { release, stable };
+      }
+    `);
+    const source = emitFunction(lowering.functions[0]!, lowering, module, {
+      emitExpression(expression) {
+        return expression.kind === 'object' ? 'objectInitializer' : emitExpression(expression);
+      },
+      emitStatement(statement) {
+        if (statement.kind !== 'variable') return [`execute:${statement.kind};`];
+        return statement.declarations.map((variable) => {
+          if ('pattern' in variable) throw new Error('Unexpected binding pattern');
+          return `${variable.mutable ? 'var' : 'final'} ${variable.binding.name}${variable.initializer ? ` = ${variable.initializer.kind === 'object' ? 'objectInitializer' : emitExpression(variable.initializer)}` : ''};`;
+        });
+      },
+    }).join('\n');
+
+    expect(source).toContain('final stable = 1;');
+    expect(source).toMatch(/var release;\s+release = objectInitializer;/u);
+    expect(source).not.toContain('final release = objectInitializer;');
   });
 
   it('fails loudly for malformed state graphs, completion values, and source paths', () => {
@@ -369,12 +402,13 @@ function emitFunction(
   functionPlan: Readonly<CompilerHaxeTaskLoweringFunction>,
   lowering: Readonly<CompilerHaxeTaskLowering>,
   module: Readonly<IrModule>,
+  overrides: Partial<CompilerHaxeTaskEmissionCapabilities> = {},
 ): readonly string[] {
   const names = new Map<string, number>();
   return emitCompilerHaxeTaskLoweringFunction(functionPlan, lowering.runtime, module, {
-    emitCondition: emitExpression,
-    emitExpression,
-    emitStatement,
+    emitCondition: overrides.emitCondition ?? emitExpression,
+    emitExpression: overrides.emitExpression ?? emitExpression,
+    emitStatement: overrides.emitStatement ?? emitStatement,
     fail(message): never {
       throw new Error(message);
     },

@@ -1,5 +1,8 @@
 import { indentSourceLines } from '../../compiler-emission/src/index.js';
-import { getIrModuleTraversalPathValue } from '../../compiler-ir-traversal/src/index.js';
+import {
+  analyzeIrExpressionSubtreeTraversal,
+  getIrModuleTraversalPathValue,
+} from '../../compiler-ir-traversal/src/index.js';
 import type {
   CompilerAsyncStateMachineGuardedState,
   CompilerAsyncStateMachineStateIdentity,
@@ -315,11 +318,10 @@ function emitCompilerHaxeTaskLoweringStep(
       return [`${joinName}();`, 'return;'];
     }
     case 'executeSource':
-      return [
-        ...capabilities.emitStatement(
-          getCompilerHaxeTaskEmissionSourceValue<IrStatement>(module, step.path, capabilities),
-        ),
-      ];
+      return emitCompilerHaxeTaskSourceStatement(
+        getCompilerHaxeTaskEmissionSourceValue<IrStatement>(module, step.path, capabilities),
+        capabilities,
+      );
     case 'rejectTask':
     case 'resolveTask': {
       const value = emitCompilerHaxeTaskCompletionValue(step.value, module, capabilities, undefined);
@@ -365,6 +367,61 @@ function emitCompilerHaxeTaskLoweringStep(
       ];
     }
   }
+}
+
+// An execute step is emitted on its own, outside the source statement list that ordinarily elects
+// forward declarations. Preserve that election here for a local whose initializer closes over the
+// local itself (most visibly an object with an async method): Haxe cannot resolve the binding from a
+// `final value = initializer` declaration until after it has checked the initializer.
+function emitCompilerHaxeTaskSourceStatement(
+  statement: Readonly<IrStatement>,
+  capabilities: Readonly<CompilerHaxeTaskEmissionCapabilities>,
+): readonly string[] {
+  if (statement.kind !== 'variable') return capabilities.emitStatement(statement);
+  const selfCapturing = statement.declarations.some(
+    (variable) =>
+      'binding' in variable &&
+      variable.initializer !== undefined &&
+      doesCompilerHaxeTaskExpressionCaptureBinding(variable.initializer, variable.binding.id),
+  );
+  if (!selfCapturing) return capabilities.emitStatement(statement);
+
+  return statement.declarations.flatMap((variable) => {
+    const single = { declarations: [variable], kind: 'variable' as const };
+    if ('pattern' in variable || !variable.initializer) return capabilities.emitStatement(single);
+    if (!doesCompilerHaxeTaskExpressionCaptureBinding(variable.initializer, variable.binding.id)) {
+      return capabilities.emitStatement(single);
+    }
+
+    const declaration = {
+      ...variable,
+      initialValue: 'uninitialized' as const,
+      initializer: undefined,
+      mutable: true,
+    };
+    return [
+      ...capabilities.emitStatement({ declarations: [declaration], kind: 'variable' }),
+      `${capabilities.getBindingName(variable.binding)} = ${capabilities.emitExpression(variable.initializer)};`,
+    ];
+  });
+}
+
+function doesCompilerHaxeTaskExpressionCaptureBinding(expression: Readonly<IrExpression>, bindingId: string): boolean {
+  let captured = false;
+  analyzeIrExpressionSubtreeTraversal(expression, {
+    expression(candidate) {
+      if (
+        candidate.kind === 'identifier' &&
+        candidate.reference.kind === 'binding' &&
+        candidate.reference.binding.id === bindingId
+      ) {
+        captured = true;
+        return false;
+      }
+      return undefined;
+    },
+  });
+  return captured;
 }
 
 function emitCompilerHaxeTaskEmissionBranchArm(
