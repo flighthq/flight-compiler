@@ -2433,7 +2433,7 @@ describe('emitIrModuleHaxe structural record election', () => {
     expect(nominal).toContain('  public var max:Float;');
     // An optional member is defaulted, because a missing default makes the field required.
     expect(nominal).toContain('  public var min:Null<Float> = null;');
-    // The construction site is unchanged either way, which is what makes the election an option.
+    // The construction site is explicitly directed to the elected record identity.
     expect(nominal).toContain('return (cast { max: (range.max + by), min: 0 } : Range);');
   });
 
@@ -3233,7 +3233,7 @@ describe('emitIrModuleHaxe statement coverage', () => {
     );
     const output = emitIrModuleHaxe(result.module).contents;
 
-    expect(output).toContain('return (cast _backend : Backend);');
+    expect(output).toContain('return _backend;');
   });
 
   it('emits type parameters with constraints on functions and classes', () => {
@@ -8071,7 +8071,7 @@ describe('emitIrModuleHaxe interface extends chain', () => {
     const session = createHaxeCompilerBackend().createEmissionSession!({ moduleResolution, modules, options: {} });
     const output = session.emitModule(modules[2]!)[0]!.contents;
 
-    expect(output).toContain('(Item)->Void');
+    expect(output).toContain('function(value:Item)');
     expect(output).not.toContain('Item_2');
   });
 
@@ -10682,8 +10682,8 @@ describe('emitIrModuleHaxe complete Flight semantic tail', () => {
       ).module,
     ).contents;
 
-    expect(output).toContain('create: (cast function');
-    expect(output).toContain('supports: (cast function');
+    expect(output).toContain('create: cast(function');
+    expect(output).toContain('supports: cast(function');
   });
 
   it('writes non-numeric typed-array indexes through the reflective property ABI', () => {
