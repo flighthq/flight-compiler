@@ -2818,17 +2818,31 @@ describe('emitIrModuleHaxe expression coverage', () => {
     expect(output).toContain('new flighthq._internal._Proxy(target, cast({ set:');
   });
 
-  it('uses native array-buffer constructor identities for instanceof', () => {
+  it('uses native JavaScript constructor identities for instanceof', () => {
     const result = lower(
       'typed-array-instanceof.ts',
-      'export function isBuffer(value: unknown): boolean { return value instanceof ArrayBuffer; } export function isFloat32(value: unknown): boolean { return value instanceof Float32Array; }',
+      `export function classify(value: unknown): boolean {
+         return value instanceof ArrayBuffer || value instanceof DataView || value instanceof Float32Array ||
+           value instanceof Map || value instanceof Set || value instanceof Date || value instanceof RegExp;
+       }`,
+    );
+
+    const output = emitIrModuleHaxe(result.module).contents;
+    for (const constructor of ['ArrayBuffer', 'DataView', 'Float32Array', 'Map', 'Set', 'Date', 'RegExp']) {
+      expect(output).toContain(`flighthq._internal._Js.instanceOf(value, js.lib.${constructor})`);
+    }
+  });
+
+  it('materializes undefined when a void call is used as an argument', () => {
+    const result = lower(
+      'void-call-argument.ts',
+      `interface Sink { stop(): void; }
+       function consume<T>(value: T): void { void value; }
+       export function stop(sink: Sink): void { consume(sink.stop()); }`,
     );
 
     expect(emitIrModuleHaxe(result.module).contents).toContain(
-      'flighthq._internal._Js.instanceOf(value, js.lib.ArrayBuffer)',
-    );
-    expect(emitIrModuleHaxe(result.module).contents).toContain(
-      'flighthq._internal._Js.instanceOf(value, js.lib.Float32Array)',
+      'consume((function() { sink.stop(); return js.Syntax.code("undefined"); })());',
     );
   });
 

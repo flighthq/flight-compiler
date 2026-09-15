@@ -2307,11 +2307,16 @@ const haxeNativeInstanceofConstructorTargets = new Map<string, string>([
   ['ArrayBuffer', 'js.lib.ArrayBuffer'],
   ['BigInt64Array', 'js.lib.BigInt64Array'],
   ['BigUint64Array', 'js.lib.BigUint64Array'],
+  ['DataView', 'js.lib.DataView'],
+  ['Date', 'js.lib.Date'],
   ['Float32Array', 'js.lib.Float32Array'],
   ['Float64Array', 'js.lib.Float64Array'],
   ['Int16Array', 'js.lib.Int16Array'],
   ['Int32Array', 'js.lib.Int32Array'],
   ['Int8Array', 'js.lib.Int8Array'],
+  ['Map', 'js.lib.Map'],
+  ['RegExp', 'js.lib.RegExp'],
+  ['Set', 'js.lib.Set'],
   ['Uint16Array', 'js.lib.Uint16Array'],
   ['Uint32Array', 'js.lib.Uint32Array'],
   ['Uint8Array', 'js.lib.Uint8Array'],
@@ -2564,6 +2569,14 @@ function getIrCallParameterTypeHaxe(type: Readonly<IrType>): Readonly<IrType> | 
 
 function emitHaxeCallArgument(expression: Readonly<IrExpression>, context: EmitContext): string {
   const emitted = emitExpression(expression, context);
+  const type = getIrExpressionTypeHaxe(expression, context);
+  const concrete = type ? getIrSingleConcreteTypeHaxe(type) : undefined;
+  if (concrete?.kind === 'primitive' && concrete.name === 'void') {
+    // JavaScript permits a void-returning call in value position and passes its `undefined`
+    // completion value. Haxe's `Void` is not a value, so materialize the source completion after
+    // evaluating the call exactly once (notably for generic compile-time assertions of sync APIs).
+    return `(function() { ${emitted}; return js.Syntax.code("undefined"); })()`;
+  }
   return isIrExpressionFunctionValuedHaxe(expression, context) ? `cast(${emitted})` : emitted;
 }
 
